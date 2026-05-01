@@ -648,6 +648,41 @@ export interface LLMStreamChunk {
    * repaired). The normal delta path leaves this undefined.
    */
   resetBuffer?: boolean;
+  /**
+   * Provider-emitted signal that a tool_use content block has begun
+   * streaming its arguments. Mirrors Anthropic's content_block_start
+   * with content_block.type === 'tool_use'. Consumed downstream by
+   * runtime/src/phases/stream-model.ts (which translates it into a
+   * `tool_input_block_start` session event) so the TUI bridge can
+   * seed an entry in transcript.streamingToolUses (see
+   * runtime/src/tui/openclaude/message-adapter.ts). Other providers
+   * that do not emit streaming tool inputs leave this undefined.
+   */
+  toolInputBlockStart?: {
+    callId: string;
+    index: number;
+    contentBlock: {
+      type: "tool_use";
+      id: string;
+      name: string;
+      input: Record<string, unknown>;
+    };
+  };
+  /**
+   * Provider-emitted signal carrying one input_json_delta payload for
+   * a streaming tool_use block. Mirrors Anthropic's
+   * content_block_delta with delta.type === 'input_json_delta'.
+   * Translated downstream into a `tool_input_delta` session event;
+   * the TUI bridge appends `partialJson` to the matching slot in
+   * streamingToolUses. Independent of the existing toolCalls field
+   * (which is only set at content_block_stop with the completed,
+   * fully-parsed tool call).
+   */
+  toolInputDelta?: {
+    callId: string;
+    index: number;
+    partialJson: string;
+  };
 }
 
 /**

@@ -1,0 +1,81 @@
+{
+  "rowId": "tui-host-streamingtooluses",
+  "verdict": "APPROVED",
+  "reviewedAt": "2026-04-30T20:33:30.000Z",
+  "reviewer": "general-purpose-agent",
+  "matrixPath": "/home/tetsuo/git/AgenC-worktrees/contract-streaming-tool-use-parity/parity/streaming-tool-use-parity.json",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
+  "targetRoot": "/home/tetsuo/git/AgenC-worktrees/contract-streaming-tool-use-parity",
+  "behaviorsAudited": [
+    {
+      "behavior": "App.tsx no longer hardcodes streamingToolUses={[]}; reads the array from transcript.streamingToolUses (sourced via use-session-transcript.ts) and passes it to <Messages>",
+      "implementedAt": "runtime/src/tui/openclaude/App.tsx:266",
+      "assertedAt": "App.streaming-tool-use.parity.test.tsx:E1.4 + E1.5 (no-hardcode regex + transcript.streamingToolUses regex match)",
+      "ok": true
+    },
+    {
+      "behavior": "Initial render with no in-flight tools passes an empty array, matching upstream REPL.tsx:853 initial state",
+      "implementedAt": "runtime/src/tui/openclaude/message-adapter.ts:589 (init []) and :811 (return)",
+      "assertedAt": "App.streaming-tool-use.parity.test.tsx:B1.1 (field exposed) + B1.2/E1.1 (empty events => empty array)",
+      "ok": true
+    },
+    {
+      "behavior": "Array identity is stable across re-renders when contents are unchanged (no new reference per render), matching the memoization Messages.tsx:732+ relies on",
+      "implementedAt": "runtime/src/tui/openclaude/use-session-transcript.ts:88-91 (useMemo on [state.events, startupMessages])",
+      "assertedAt": null,
+      "ok": true
+    }
+  ],
+  "edgeCasesAudited": [
+    {
+      "edgeCase": "adaptTranscriptEvents([]) returns an AdaptedTranscript whose streamingToolUses field is an empty array (typeof === 'object' && length === 0)",
+      "assertedAt": "App.streaming-tool-use.parity.test.tsx:B1.1 + B1.2/E1.1",
+      "ok": true
+    },
+    {
+      "edgeCase": "Constructing an AdaptedTranscript with streamingToolUses set to a single-element array containing {index: 0, contentBlock: {type:'tool_use', id:'a', name:'X', input:{}}, unparsedToolInput: '{\"q\":'} preserves the element identity when read back",
+      "assertedAt": "App.streaming-tool-use.parity.test.tsx:E1.2 (synthesized single element, identity-preserving read)",
+      "ok": true
+    },
+    {
+      "edgeCase": "Constructing an AdaptedTranscript with two streamingToolUses entries at indices 0 and 1 preserves both elements with their distinct unparsedToolInput strings",
+      "assertedAt": "App.streaming-tool-use.parity.test.tsx:E1.3 (two-element synthesized array, distinct unparsedToolInput)",
+      "ok": true
+    },
+    {
+      "edgeCase": "App.tsx source no longer contains the literal hardcoded JSX 'streamingToolUses={[]}' (asserted by reading the file and matching with a non-trivial regex)",
+      "assertedAt": "App.streaming-tool-use.parity.test.tsx:E1.4 (regex /streamingToolUses\\s*=\\s*\\{\\s*\\[\\s*\\]\\s*\\}/ negated)",
+      "ok": true
+    },
+    {
+      "edgeCase": "App.tsx source contains the wiring 'streamingToolUses={transcript.streamingToolUses}' (or an equivalent prop expression that references the transcript field)",
+      "assertedAt": "App.streaming-tool-use.parity.test.tsx:E1.5 (regex /streamingToolUses\\s*=\\s*\\{\\s*transcript\\.streamingToolUses[^}]*\\}/ matches the `as never[]` cast)",
+      "ok": true
+    },
+    {
+      "edgeCase": "message-adapter.ts imports StreamingToolUse from runtime/src/agenc/upstream/utils/messages.js so the AgenC transcript field type is identical to the upstream <Messages> consumer prop type",
+      "assertedAt": "App.streaming-tool-use.parity.test.tsx:E1.6 (regex matches `import type { StreamingToolUse } from \"../../agenc/upstream/utils/messages.js\"`)",
+      "ok": true
+    }
+  ],
+  "missingBehaviors": [],
+  "missingEdgeCases": [],
+  "scopeDrift": [],
+  "hiddenCoupling": [
+    {
+      "description": "App.tsx:266 forces the prop type via `as never[]` rather than letting the typed `readonly StreamingToolUse[]` flow through. Functional today because the regex test E1.5 still matches and the upstream <Messages> shallow-comparator at Messages.tsx:741-752 accepts the same array; but the cast hides any future type-shape regression at the wiring boundary that this row is supposed to lock in.",
+      "severity": "low"
+    }
+  ],
+  "unverifiedAssumptions": [
+    {
+      "assumption": "R3 (array identity stable across re-renders) is satisfied implicitly via the surrounding `useMemo([state.events, startupMessages])` in use-session-transcript.ts:88, plus the fact that upstream Messages.tsx:741-752 uses a custom comparator that does not require strict array identity (only length+contentBlock identity). The row does not list an executable edge case for R3, so the parity test does not assert array stability directly. This is acceptable because the row scope explicitly defines edge cases E1-E6 only, and R3 is wired through the useMemo seam owned by row R5/use-session-transcript, not this row.",
+      "needsResolution": false
+    },
+    {
+      "assumption": "Row R5 (transcript-streaming-tool-use-accumulator) will populate the array in production; the row description for this row explicitly notes 'population of the array (R5) and the producer of deltas (R6) are explicitly out of scope for this row — the row reviewer must not penalize R1 for the array always being empty in tests, only penalize if the wiring or types are missing.' Wiring and types are present, so the always-empty test data is in-scope-correct.",
+      "needsResolution": false
+    }
+  ],
+  "summary": "Row tui-host-streamingtooluses is correctly implemented and tested for its declared scope (consumer-side wiring). App.tsx:266 reads `transcript.streamingToolUses` instead of the old hardcoded `[]`, message-adapter.ts:5 imports `StreamingToolUse` from `../../agenc/upstream/utils/messages.js`, declares it on `AdaptedTranscript` at :54, initializes the accumulator at :589, and returns it at :811. The parity test exercises all six listed edge cases via 8 passing test cases (verified via `npx vitest run`). R3 (array identity) is implemented via `useMemo` in use-session-transcript.ts:88 and is consistent with the upstream Messages.tsx:741-752 custom comparator that does not require strict array identity; the row does not list an executable edge case for R3 so its absence from the test is in-scope-correct. One low-severity hidden coupling note: the `as never[]` cast at App.tsx:266 weakens the type contract at the wiring boundary, but does not break any required behavior for this row. No missing behaviors, no missing edge cases, no scope drift, no blocking unverified assumptions."
+}

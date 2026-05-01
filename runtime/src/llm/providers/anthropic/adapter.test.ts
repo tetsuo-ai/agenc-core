@@ -130,6 +130,29 @@ describe("AnthropicProvider", () => {
       {
         content: "",
         done: false,
+        toolInputBlockStart: {
+          callId: "toolu_1",
+          index: 1,
+          contentBlock: {
+            type: "tool_use",
+            id: "toolu_1",
+            name: "system.echo",
+            input: {},
+          },
+        },
+      },
+      {
+        content: "",
+        done: false,
+        toolInputDelta: {
+          callId: "toolu_1",
+          index: 1,
+          partialJson: '{"text":"hi"}',
+        },
+      },
+      {
+        content: "",
+        done: false,
         toolCalls: [
           { id: "toolu_1", name: "system.echo", arguments: '{"text":"hi"}' },
         ],

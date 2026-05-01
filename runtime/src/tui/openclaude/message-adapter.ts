@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { LLMMessage } from "../../llm/types.js";
 import type { Event } from "../../session/event-log.js";
+import type { StreamingToolUse } from "../../agenc/upstream/utils/messages.js";
 
 /**
  * Hardcoded copy of `FILE_EDIT_TOOL_NAME` from
@@ -18,13 +19,6 @@ type BridgeEvent =
   | Event
   | { readonly type: string; readonly payload?: unknown; readonly [key: string]: unknown };
 
-export interface RunningToolProgress {
-  readonly toolName: string;
-  readonly latestChunk: string;
-  readonly chunkCount: number;
-  readonly stream: "stdout" | "stderr" | "status" | undefined;
-}
-
 export interface AdaptedTranscript {
   readonly messages: readonly any[];
   readonly streamingText: string | null;
@@ -33,13 +27,16 @@ export interface AdaptedTranscript {
   readonly isStreaming: boolean;
   readonly currentTurnId: string | null;
   /**
-   * Per-call accumulated `tool_progress` chunks for tools that are
-   * currently mid-execution. Populated by `tool_progress` events,
-   * cleared when the matching `tool_call_completed` /
-   * `exec_command_end` / `mcp_tool_call_end` arrives. Surfaced so the
-   * TUI composer can show a live "tool running" indicator.
+   * Mid-stream tool input accumulator that mirrors the upstream
+   * OpenClaude `streamingToolUses` state from `screens/REPL.tsx:853`.
+   * Each entry tracks an `input_json_delta`-driven tool-use block
+   * whose JSON arguments are still arriving. Consumed by the upstream
+   * `<Messages>` component (`components/Messages.tsx:222`) to render
+   * synthetic streaming-tool-use cells while the model emits partial
+   * arguments. Populated by row R5 of the streaming-tool-use parity
+   * contract (`message-adapter` accumulator). Empty until R5 lands.
    */
-  readonly runningToolProgress: ReadonlyMap<string, RunningToolProgress>;
+  readonly streamingToolUses: readonly StreamingToolUse[];
 }
 
 const SYNTHETIC_MODEL = "agenc";
@@ -573,7 +570,7 @@ export function adaptTranscriptEvents(
   const openTools = new Set<string>();
   const toolNames = new Set<string>();
   const runningToolNames = new Map<string, string>();
-  const runningToolProgress = new Map<string, RunningToolProgress>();
+  const streamingToolUses: StreamingToolUse[] = [];
   let streamingText = "";
   let currentTurnId: string | null = null;
   let lastAssistantText = "";
@@ -592,6 +589,11 @@ export function adaptTranscriptEvents(
         streamingText = "";
         currentTurnId =
           typeof payload.turnId === "string" ? payload.turnId : currentTurnId;
+        // Mirrors upstream REPL.tsx:1609 / :2940 setStreamingToolUses([]) on
+        // a new turn boundary — any partially-streamed tool inputs from the
+        // previous turn are abandoned because they will never receive a
+        // matching completion event in this turn.
+        streamingToolUses.length = 0;
         break;
       case "turn_complete": {
         const content =
@@ -611,6 +613,11 @@ export function adaptTranscriptEvents(
       case "turn_aborted":
         streamingText = "";
         isStreaming = false;
+        // Mirrors upstream REPL.tsx:1609 setStreamingToolUses([]) on
+        // stream cancellation — any partially-streamed tool inputs are
+        // abandoned because their completion events will never arrive
+        // for this turn.
+        streamingToolUses.length = 0;
         out.push(makeSystemMessage(`Turn aborted: ${stringResult(payload.reason)}`, "warning"));
         break;
       case "user_message":
@@ -686,31 +693,75 @@ export function adaptTranscriptEvents(
         runningToolNames.set(callId, toolName);
         break;
       }
-      case "tool_progress": {
+      case "tool_input_block_start": {
+        // Provider-emitted (R6: Anthropic adapter) when a tool_use content
+        // block begins streaming. Mirrors the upstream content_block_start
+        // case in messages.ts:3024-3037 that appends a new element to the
+        // streamingToolUses array. The upstream Messages.tsx:446 filter
+        // removes the element again once the same callId/id appears in
+        // inProgressToolUseIDs (which our `tool_call_started` handler
+        // already populates via openTools).
         const callId =
           typeof payload.callId === "string" ? payload.callId : null;
         if (callId === null) break;
-        const toolName =
-          typeof payload.toolName === "string"
-            ? payload.toolName
-            : (runningToolNames.get(callId) ?? "tool");
-        const chunk =
-          typeof payload.chunk === "string"
-            ? payload.chunk
-            : stringResult(payload.chunk);
-        const stream =
-          payload.stream === "stdout" ||
-          payload.stream === "stderr" ||
-          payload.stream === "status"
-            ? payload.stream
-            : undefined;
-        const previous = runningToolProgress.get(callId);
-        runningToolProgress.set(callId, {
-          toolName,
-          latestChunk: chunk,
-          chunkCount: (previous?.chunkCount ?? 0) + 1,
-          stream,
-        });
+        const indexCandidate =
+          typeof payload.index === "number" ? payload.index : null;
+        if (indexCandidate === null) break;
+        const contentBlockRaw = payload.contentBlock;
+        const contentBlock =
+          contentBlockRaw &&
+          typeof contentBlockRaw === "object" &&
+          (contentBlockRaw as Record<string, unknown>).type === "tool_use"
+            ? (contentBlockRaw as StreamingToolUse["contentBlock"])
+            : ({
+                type: "tool_use",
+                id: callId,
+                name:
+                  typeof payload.toolName === "string" ? payload.toolName : "tool",
+                input: {},
+              } as StreamingToolUse["contentBlock"]);
+        // De-dupe on (index, contentBlock.id): if the same block_start fires
+        // twice (e.g. retried stream), reuse the existing slot rather than
+        // appending a duplicate that would confuse the Messages filter.
+        const existing = streamingToolUses.findIndex(
+          (entry) =>
+            entry.index === indexCandidate &&
+            entry.contentBlock.id === contentBlock.id,
+        );
+        if (existing === -1) {
+          streamingToolUses.push({
+            index: indexCandidate,
+            contentBlock,
+            unparsedToolInput: "",
+          });
+        }
+        break;
+      }
+      case "tool_input_delta": {
+        // Provider-emitted (R6) for each Anthropic input_json_delta. Mirrors
+        // messages.ts:3062-3079: locate the element with the matching index
+        // and append the partial JSON; if no element is found, return the
+        // array unchanged (the upstream `if (!element) return _` early
+        // return on line 3068-3070).
+        const indexCandidate =
+          typeof payload.index === "number" ? payload.index : null;
+        if (indexCandidate === null) break;
+        const partialJson =
+          typeof payload.partialJson === "string"
+            ? payload.partialJson
+            : typeof payload.partial_json === "string"
+              ? payload.partial_json
+              : null;
+        if (partialJson === null) break;
+        const slot = streamingToolUses.findIndex(
+          (entry) => entry.index === indexCandidate,
+        );
+        if (slot === -1) break;
+        const previous = streamingToolUses[slot]!;
+        streamingToolUses[slot] = {
+          ...previous,
+          unparsedToolInput: previous.unparsedToolInput + partialJson,
+        };
         break;
       }
       case "tool_call_completed":
@@ -733,7 +784,18 @@ export function adaptTranscriptEvents(
         const result = formatStructuredToolResult(toolName, event.type, payload);
         pushToolResult(out, openTools, callId, result, isError);
         runningToolNames.delete(callId);
-        runningToolProgress.delete(callId);
+        // Remove the matching streaming-tool-use element so the upstream
+        // <Messages> consumer stops rendering a synthetic streaming cell
+        // for a tool that has already settled. Upstream relies on the
+        // Messages.tsx:446 filter (drop ids in inProgressToolUseIDs or
+        // normalizedToolUseIDs) to do this; we drop here on completion
+        // because AgenC moves the call out of openTools at the same step.
+        const slot = streamingToolUses.findIndex(
+          (entry) => entry.contentBlock.id === callId,
+        );
+        if (slot !== -1) {
+          streamingToolUses.splice(slot, 1);
+        }
         break;
       }
       case "context_compacted":
@@ -798,6 +860,6 @@ export function adaptTranscriptEvents(
     toolNames,
     isStreaming,
     currentTurnId,
-    runningToolProgress,
+    streamingToolUses,
   };
 }

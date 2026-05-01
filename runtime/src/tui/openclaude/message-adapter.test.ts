@@ -109,8 +109,8 @@ describe("OpenClaude TUI transcript bridge", () => {
     ]);
   });
 
-  test("accumulates tool_progress chunks per call_id and clears on tool_call_completed", () => {
-    const mid = adaptTranscriptEvents([
+  test("tool_progress events are no longer captured into a runningToolProgress map (replaced by upstream streamingToolUses contract; see streaming-tool-use-parity row tui-remove-runningtoolprogressindicator)", () => {
+    const transcript = adaptTranscriptEvents([
       {
         id: "turn",
         msg: { type: "turn_started", payload: { turnId: "t1" } },
@@ -126,62 +126,20 @@ describe("OpenClaude TUI transcript bridge", () => {
         id: "p1",
         msg: {
           type: "tool_progress",
-          payload: {
-            callId: "c1",
-            toolName: "Bash",
-            chunk: "first chunk",
-            stream: "stdout",
-          },
+          payload: { callId: "c1", chunk: "x" },
         },
       },
       {
-        id: "p2",
+        id: "end",
         msg: {
-          type: "tool_progress",
-          payload: {
-            callId: "c1",
-            toolName: "Bash",
-            chunk: "second chunk",
-            stream: "stdout",
-          },
+          type: "exec_command_end",
+          payload: { callId: "c1", stdout: "done", exitCode: 0 },
         },
       },
     ]);
-    expect(mid.runningToolProgress.size).toBe(1);
-    const progress = mid.runningToolProgress.get("c1");
-    expect(progress?.toolName).toBe("Bash");
-    expect(progress?.latestChunk).toBe("second chunk");
-    expect(progress?.chunkCount).toBe(2);
-    expect(progress?.stream).toBe("stdout");
-
-    const after = adaptTranscriptEvents([
-      ...[
-        { id: "turn", msg: { type: "turn_started", payload: { turnId: "t1" } } },
-        {
-          id: "begin",
-          msg: {
-            type: "exec_command_begin",
-            payload: { callId: "c1", toolName: "Bash" },
-          },
-        },
-        {
-          id: "p1",
-          msg: {
-            type: "tool_progress",
-            payload: { callId: "c1", chunk: "x" },
-          },
-        },
-        {
-          id: "end",
-          msg: {
-            type: "exec_command_end",
-            payload: { callId: "c1", stdout: "done", exitCode: 0 },
-          },
-        },
-      ],
-    ]);
-    expect(after.runningToolProgress.size).toBe(0);
-    expect(after.inProgressToolUseIDs.size).toBe(0);
+    expect(transcript).not.toHaveProperty("runningToolProgress");
+    expect(transcript.inProgressToolUseIDs.size).toBe(0);
+    expect(Array.isArray(transcript.streamingToolUses)).toBe(true);
   });
 
   test("formatStructuredToolResult wraps Bash stdout/stderr in upstream <bash-stdout>/<bash-stderr> tags so UserBashOutputMessage's extractTag can consume the joined content", () => {

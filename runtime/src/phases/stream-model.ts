@@ -266,6 +266,41 @@ export class StreamModelError extends Error {
 }
 
 /**
+ * Translate the optional streaming-tool-use fields on an
+ * {@link LLMStreamChunk} into AgenC session events that feed the TUI
+ * bridge accumulator at
+ * `runtime/src/tui/openclaude/message-adapter.ts`. Mirrors the upstream
+ * content_block_start / input_json_delta handling at
+ * `openclaude/src/utils/messages.ts:3024-3079` — the chunk fields are
+ * the AgenC-side equivalent of those upstream event payloads. Exported
+ * so the row R6 parity test can drive it directly without booting a
+ * full {@link streamModel} run.
+ */
+export function emitToolInputChunkEvents(
+  chunk: LLMStreamChunk,
+  session: Session,
+): void {
+  if (chunk.toolInputBlockStart) {
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "tool_input_block_start",
+        payload: chunk.toolInputBlockStart,
+      },
+    });
+  }
+  if (chunk.toolInputDelta) {
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "tool_input_delta",
+        payload: chunk.toolInputDelta,
+      },
+    });
+  }
+}
+
+/**
  * Rough tokens-per-chunk estimator. Providers don't report per-chunk
  * token counts; we approximate with char-length / 4 (GPT's typical
  * English chars-per-token ratio). Good enough for I-22's sampling
@@ -405,6 +440,8 @@ export async function streamModel(
       }
       emitSanitizedAssistantDelta(display, session);
     }
+
+    emitToolInputChunkEvents(chunk, session);
 
     if (chunk.toolCalls && chunk.toolCalls.length > 0) {
       const normalizedToolCalls = normalizeToolCallsForProvider(

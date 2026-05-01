@@ -1,0 +1,82 @@
+{
+  "verdict": "APPROVED",
+  "reviewedAt": "2026-05-01T03:45:00Z",
+  "reviewer": "general-purpose-agent",
+  "matrixPath": "/home/tetsuo/git/AgenC-worktrees/contract-streaming-tool-use-parity/parity/streaming-tool-use-parity.json",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
+  "targetRoot": "/home/tetsuo/git/AgenC-worktrees/contract-streaming-tool-use-parity",
+  "rowVerdicts": [
+    {
+      "rowId": "tui-host-streamingtooluses",
+      "verdict": "APPROVED",
+      "verdictPath": "/home/tetsuo/git/AgenC-worktrees/contract-streaming-tool-use-parity/parity/streaming-tool-use-parity.reviews/tui-host-streamingtooluses.json"
+    },
+    {
+      "rowId": "tui-host-tooljsx-state",
+      "verdict": "APPROVED",
+      "verdictPath": "/home/tetsuo/git/AgenC-worktrees/contract-streaming-tool-use-parity/parity/streaming-tool-use-parity.reviews/tui-host-tooljsx-state.json"
+    },
+    {
+      "rowId": "tui-host-tooljsx-gating",
+      "verdict": "APPROVED",
+      "verdictPath": "/home/tetsuo/git/AgenC-worktrees/contract-streaming-tool-use-parity/parity/streaming-tool-use-parity.reviews/tui-host-tooljsx-gating.json"
+    },
+    {
+      "rowId": "tui-remove-runningtoolprogressindicator",
+      "verdict": "APPROVED",
+      "verdictPath": "/home/tetsuo/git/AgenC-worktrees/contract-streaming-tool-use-parity/parity/streaming-tool-use-parity.reviews/tui-remove-runningtoolprogressindicator.json"
+    },
+    {
+      "rowId": "transcript-streaming-tool-use-accumulator",
+      "verdict": "APPROVED",
+      "verdictPath": "/home/tetsuo/git/AgenC-worktrees/contract-streaming-tool-use-parity/parity/streaming-tool-use-parity.reviews/transcript-streaming-tool-use-accumulator.json"
+    },
+    {
+      "rowId": "anthropic-input-json-delta-forwarding",
+      "verdict": "APPROVED",
+      "verdictPath": "/home/tetsuo/git/AgenC-worktrees/contract-streaming-tool-use-parity/parity/streaming-tool-use-parity.reviews/anthropic-input-json-delta-forwarding.json"
+    }
+  ],
+  "missingRows": [],
+  "missingInventory": [],
+  "missingCrossCutting": [],
+  "unverifiedAssumptions": [
+    {
+      "assumption": "R5 assumes tool_input_block_start arrives BEFORE any tool_input_delta for the same index — the matrix asserts this in R6's required behaviors ('fired BEFORE any input_json_delta for that block reaches the consumer'). R5 reviewer notes that out-of-order delivery (delta-first) is handled by E5.4 (drop-on-missing-index). The R5↔R6 ordering contract is consistent.",
+      "needsResolution": false
+    },
+    {
+      "assumption": "R5 reads BOTH camelCase 'partialJson' (from R6 via stream-model session-event payload) AND snake_case 'partial_json' (defensive fallback for any non-stream-model emitter). Verified: message-adapter.ts:743-748 reads partialJson first, falls back to partial_json. R6 emits camelCase 'partialJson' on the chunk (adapter.ts:320) and the session-event payload (stream-model.ts:288/297). Both directions of the contract are satisfied; the snake_case fallback is purely defensive.",
+      "needsResolution": false
+    },
+    {
+      "assumption": "R1 assumes the StreamingToolUse type imported by message-adapter.ts is the same type consumed by upstream Messages.tsx. Verified: message-adapter.ts:5 imports from '../../agenc/upstream/utils/messages.js', which is the AgenC-vendored copy of the upstream type. R5 reviewer asserted this in the test (E1.6 regex match). R5 imports from the same path — type identity is consistent.",
+      "needsResolution": false
+    },
+    {
+      "assumption": "R3's approvedDivergence (no host SpinnerWithVerb / idle timer) is consistent with the rest of the matrix. Verified: no other row references SpinnerWithVerb, idleNotificationTimer, showSpinner, apiMetricsRef, responseLengthRef, or streamMode plumbing as required behavior. R4 removes RunningToolProgressIndicator (which is AgenC-specific, not the upstream SpinnerWithVerb). The divergence is correctly scoped to host-level streaming-status surfaces and does not implicitly contradict any other row.",
+      "needsResolution": false
+    },
+    {
+      "assumption": "R4 (remove RunningToolProgressIndicator) assumes streamingToolUses is the replacement UI surface for in-flight tool input. R1 wires the prop and R5 populates the array. R6 emits the underlying provider events. The chain R6→stream-model→R5→R1 is the replacement story, and the parity tests cover each link. Now consistent end-to-end: the EventMsg union and KNOWN_EVENT_TYPES set in event-log.ts declare both new tags, tsc passes cleanly with zero errors, and the bridge test asserts isKnownEventType returns true for both new variants.",
+      "needsResolution": false
+    },
+    {
+      "assumption": "Transient streaming events (tool_input_block_start, tool_input_delta) intentionally do NOT need to be added to bootstrap.ts:283 TRANSCRIPT_BOOT_EVENT_TYPES set or to file-history.ts:614 onEvent reducer. Verified: TRANSCRIPT_BOOT_EVENT_TYPES gates which events are replayed at session-resume reconstruction time; in-flight tool-input deltas are correctly excluded because the resumed session only needs the completed tool_call_started/tool_call_completed pair, not the per-delta accumulation that drove the live UI during the original turn. file-history.ts only listens for tool_call_started/completed and turn_complete to drive snapshot timing — streaming deltas do not affect snapshot policy. No additional registration surfaces require updates.",
+      "needsResolution": false
+    }
+  ],
+  "scopeAdherence": {
+    "upstreamSurfaceCovered": true,
+    "outOfScopeCorrectlyExcluded": true,
+    "notes": "The matrix scope statement explicitly excludes non-Anthropic providers (openai, grok, deepseek, gemini, groq, lmstudio, ollama, openrouter). Verified that the upstream non-Anthropic shim implementations at openclaude/src/services/api/openaiShim.ts (lines 1138, 1159, 1186-1209, 1237-1238) and codexShim.ts (lines 814-815, 855-856) emit synthetic 'input_json_delta' events with 'partial_json' payloads — these are real upstream surfaces that AgenC will eventually need to mirror, but the contract scope statement legitimately defers them to a follow-up parity contract. R6's edgeCase E6.8 explicitly asserts non-Anthropic providers that don't set the new chunk fields produce no streaming-tool-use UI but their existing tool-call emission is unaffected — this is the correct backward-compatible behavior for an Anthropic-scoped contract. The Anthropic surface itself (REPL.tsx host integration, Messages.tsx consumer prop, messages.ts streaming handler, claude.ts adapter analog) is fully covered by the six rows. event-log.ts EventMsg union and KNOWN_EVENT_TYPES set are now in matrix.targetFiles, and the new event-log.tool-input-events.parity.test.ts is in matrix.testFiles. Scope adherence is correct."
+  },
+  "previousRoundFindings": {
+    "resolved": [
+      "CRITICAL — Missing event-log registration: runtime/src/session/event-log.ts now declares 'tool_input_block_start' and 'tool_input_delta' EventMsg variants at lines 484-504 with the documented payload shapes ({callId, index, contentBlock} and {callId, index, partialJson}) and adds both tags to KNOWN_EVENT_TYPES at lines 709-710. tsc --noEmit -p tsconfig.json now passes with zero errors (previously failed with 4 errors at stream-model.ts:287/288/296/297). The new test file runtime/src/session/event-log.tool-input-events.parity.test.ts verifies isKnownEventType returns true for both tags, KNOWN_EVENT_TYPES.has() returns true for both, and the EventMsg union accepts the documented payload shapes. The test file is in matrix.testFiles (line 227). event-log.ts is in matrix.targetFiles (line 215). The R6 row's targets array includes runtime/src/session/event-log.ts and a new requiredBehavior asserts the EventMsg + KNOWN_EVENT_TYPES registration.",
+      "MEDIUM — R5 turn_aborted clearing: runtime/src/tui/openclaude/message-adapter.ts now clears streamingToolUses on turn_aborted at lines 613-622 (in addition to the existing turn_started clear at lines 586-597), matching upstream REPL.tsx:1609 setStreamingToolUses([]) on stream cancellation. The matrix R5 row's edgeCase 'Stream cancelled mid-delta (turn_aborted event) clears the array; subsequent stream starts from empty' is now covered. New test E5.6c at message-adapter.streaming-tool-use.parity.test.ts:128 asserts the turn_aborted boundary behavior. R5 reviewer re-ran and re-approved."
+    ],
+    "stillOpen": []
+  },
+  "summary": "All six rows are APPROVED individually and the two prior critical/medium findings are fully resolved. Live verification: tsc --noEmit -p tsconfig.json passes with zero errors (previously 4 errors at stream-model.ts:287/288/296/297); the new event-log parity test plus the R5 turn_aborted parity test plus all message-adapter streaming-tool-use parity tests pass (20/20). EventMsg discriminated union and KNOWN_EVENT_TYPES set in runtime/src/session/event-log.ts now declare both 'tool_input_block_start' and 'tool_input_delta' variants with documented payload shapes; message-adapter.ts clears streamingToolUses on both turn_started and turn_aborted matching upstream REPL.tsx:1609. event-log.ts is in matrix.targetFiles and event-log.tool-input-events.parity.test.ts is in matrix.testFiles. No additional registration surfaces require updates: TRANSCRIPT_BOOT_EVENT_TYPES at bootstrap.ts:283 correctly excludes the transient streaming events (resumed sessions only need completed tool_call_started/completed pairs) and file-history.ts:614 only listens for tool_call_started/completed/turn_complete for snapshot timing. Scope adherence is correct: non-Anthropic providers remain out of scope as a future contract, and the Anthropic surface is fully covered by the six rows. Contract is approved for implementation."
+}
