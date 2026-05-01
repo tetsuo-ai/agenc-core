@@ -1,19 +1,19 @@
 /**
  * `FileRead` — first-class file reading tool for AgenC.
  *
- * Lifted (and adapted) from openclaude `src/tools/FileReadTool/`. The
+ * Lifted (and adapted) from the upstream file-read tool. The
  * model-facing prompt mirrors AgenC's `FileReadTool/prompt.ts` so
  * a model trained on the AgenC surface behaves identically here.
  *
  * Key behaviors preserved from AgenC:
  *   - Token-aware text-file size cap (defaults to 25k tokens, matching
- *     openclaude `DEFAULT_MAX_OUTPUT_TOKENS`). When the rough estimate
+ *     the upstream `DEFAULT_MAX_OUTPUT_TOKENS`). When the rough estimate
  *     exceeds the cap, the read is rejected with the exact error
  *     message AgenC emits so model-side recovery copy still works.
  *   - Image multimodal output: PNG/JPG/JPEG/GIF/WEBP read as bytes,
  *     base64-encoded, and returned via `contentItems` as
  *     `input_image` with a data URL. The text `content` carries a
- *     short summary so the codex runtime envelope is never empty.
+ *     short summary so the runtime envelope is never empty.
  *   - PDF text extraction uses the upstream-style Poppler path
  *     (`pdfinfo` + `pdftotext`) with page-range guards and a large-PDF
  *     prompt that asks the model to request explicit pages.
@@ -29,7 +29,7 @@
  *     (`snapshotTopRecentReads`) can rebuild context after a compact.
  *
  * The error envelope is plain text in `content` with `isError: true` —
- * codex runtime shape, not JSON-wrapped. Matches the envelope used by `Edit`
+ * runtime shape, not JSON-wrapped. Matches the envelope used by `Edit`
  * and `Write`.
  *
  * @module
@@ -51,6 +51,7 @@ import {
   resolveSessionId,
   safePathAllowingSessionPlanFile,
 } from "./filesystem.js";
+import { checkToolPathPermission } from "../../permissions/path-validation.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -69,7 +70,7 @@ export const DEFAULT_MAX_OUTPUT_TOKENS = 25_000;
 
 /**
  * Default upper bound on raw file size for text reads. 256 KB is the
- * openclaude `MAX_OUTPUT_SIZE` derived value. Acts as a cheap pre-read
+ * upstream `MAX_OUTPUT_SIZE` derived value. Acts as a cheap pre-read
  * gate so we don't slurp gigantic files into memory just to reject them
  * post-read on the token cap.
  */
@@ -189,7 +190,7 @@ export interface FileReadToolConfig {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────
 
-/** codex runtime-shape error envelope: plain text body, isError flag. */
+/** Runtime-shape error envelope: plain text body, isError flag. */
 function errorResult(message: string): ToolResult {
   return { content: message, isError: true };
 }
@@ -252,7 +253,7 @@ function hasBinaryExtension(filePath: string): boolean {
   return BINARY_EXTENSIONS.has(ext);
 }
 
-/** Produce the codex runtime `cat -n` style numbered output. */
+/** Produce the runtime `cat -n` style numbered output. */
 function formatNumbered(content: string, startLine: number): string {
   return addLineNumbers({ content, startLine });
 }
@@ -712,10 +713,10 @@ async function readImageFile(
     rawContent: base64,
   });
 
-  // The `FunctionCallOutputContentItem` shape (port of codex runtime
+  // The `FunctionCallOutputContentItem` shape (port of the runtime
   // `FunctionCallOutputContentItem`) accepts `input_image` carrying a
   // URL — providers that support the OpenAI Responses API consume data
-  // URLs verbatim. The text body remains a brief summary so the codex runtime
+  // URLs verbatim. The text body remains a brief summary so the runtime
   // envelope is never empty.
   const dataUrl = `data:${mime};base64,${base64}`;
   const contentItems: FunctionCallOutputContentItem[] = [
@@ -792,6 +793,30 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
       },
       required: ["file_path"],
       additionalProperties: false,
+    },
+    checkPermissions(input, context) {
+      const args = input as FileReadInput;
+      const filePath =
+        typeof args.file_path === "string" ? args.file_path : "";
+      if (filePath.trim().length === 0) {
+        return {
+          behavior: "ask",
+          message: "file_path must be a non-empty string",
+        };
+      }
+      const cwd =
+        typeof args.cwd === "string" && args.cwd.length > 0
+          ? args.cwd
+          : config.allowedPaths[0] ?? process.cwd();
+      return checkToolPathPermission({
+        toolName: FILE_READ_TOOL_NAME,
+        input: input as Record<string, unknown>,
+        path: filePath,
+        cwd,
+        context: context.getAppState().toolPermissionContext,
+        operationType: "read",
+        extraWorkingDirectories: config.allowedPaths,
+      });
     },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const args = rawArgs as FileReadInput;
