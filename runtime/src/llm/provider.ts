@@ -5,6 +5,8 @@
  */
 
 import { resolveApiKey } from "./_deps/env.js";
+import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
+import { AgenCProvider } from "./providers/agenc/index.js";
 import { GrokProvider } from "./providers/grok/index.js";
 import type { GrokProviderConfig } from "./providers/grok/index.js";
 import { OllamaProvider } from "./providers/ollama/index.js";
@@ -29,7 +31,8 @@ export type ProviderName =
   | "openrouter"
   | "groq"
   | "deepseek"
-  | "gemini";
+  | "gemini"
+  | "agenc";
 
 export interface ProviderFactoryOptions {
   readonly apiKey?: string;
@@ -58,6 +61,7 @@ export const KNOWN_PROVIDER_NAMES = [
   "groq",
   "deepseek",
   "gemini",
+  "agenc",
 ] as const satisfies readonly ProviderName[];
 
 export interface PreparedProviderSwitch {
@@ -78,6 +82,7 @@ const DOCUMENTED_PROVIDER_DEFAULT_MODELS = {
   ollama: "llama3.3",
   deepseek: "deepseek-reasoner",
   gemini: "gemini-2.5-pro",
+  agenc: "agenc",
 } as const;
 
 type ProviderRuntimeExtra = Partial<
@@ -494,6 +499,54 @@ function readRuntimeExtra(
   };
 }
 
+function readAuthBackendExtra(
+  extra: Record<string, unknown> | undefined,
+): AuthBackend | undefined {
+  const value = extra?.authBackend;
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value as Partial<Record<keyof AuthBackend, unknown>>;
+  return typeof candidate.login === "function" &&
+    typeof candidate.logout === "function" &&
+    typeof candidate.whoami === "function" &&
+    typeof candidate.vendKey === "function" &&
+    typeof candidate.inferAgencModel === "function" &&
+    typeof candidate.getSubscriptionTier === "function"
+    ? (value as AuthBackend)
+    : undefined;
+}
+
+function readAuthSubscriptionTierExtra(
+  extra: Record<string, unknown> | undefined,
+): AuthSubscriptionTier | undefined {
+  const value = readString(extra, "subscriptionTier");
+  switch (value) {
+    case "free":
+    case "pro":
+    case "team":
+    case "enterprise":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function stripAgenCProviderRuntimeExtra(
+  extra: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!extra) return undefined;
+  const stripped = Object.fromEntries(
+    Object.entries(extra)
+      .filter(
+        ([key]) =>
+          key !== "authBackend" &&
+          key !== "sessionId" &&
+          key !== "subscriptionTier",
+      )
+      .map(([key, value]) => [key, cloneExtraValue(value)]),
+  );
+  return Object.keys(stripped).length > 0 ? stripped : undefined;
+}
+
 function buildCommonConfig(
   extra: ProviderRuntimeExtra,
 ): Omit<LLMProviderConfig, "model" | "tools" | "timeoutMs"> {
@@ -635,6 +688,61 @@ export function createProvider(
 ): LLMProvider {
   const extra = readRuntimeExtra(opts.extra);
   switch (name) {
+    case "agenc": {
+      const authBackend = readAuthBackendExtra(opts.extra);
+      if (authBackend === undefined) {
+        throw new Error(
+          "agenc provider requires authBackend in factory options extra",
+        );
+      }
+      const sessionId = firstNonEmpty(readString(opts.extra, "sessionId"));
+      if (sessionId === undefined) {
+        throw new Error(
+          "agenc provider requires sessionId in factory options extra",
+        );
+      }
+      const model = requireModel(
+        "agenc",
+        opts.model,
+        process.env.AGENC_MODEL,
+        "AGENC_MODEL",
+        DOCUMENTED_PROVIDER_DEFAULT_MODELS.agenc,
+      );
+      const providerExtra = stripAgenCProviderRuntimeExtra(opts.extra);
+      const provider = markFactoryProvider(
+        new AgenCProvider({
+          ...buildCommonConfig(extra),
+          authBackend,
+          sessionId,
+          ...(readAuthSubscriptionTierExtra(opts.extra) !== undefined
+            ? { subscriptionTier: readAuthSubscriptionTierExtra(opts.extra) }
+            : {}),
+          model,
+          tools: opts.tools ? [...opts.tools] : undefined,
+          ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+          providerFactory: (concreteProvider, providerOptions) =>
+            createProvider(concreteProvider, providerOptions),
+          ...(opts.baseURL !== undefined || providerExtra !== undefined
+            ? {
+              providerOptions: {
+                ...(opts.baseURL !== undefined ? { baseURL: opts.baseURL } : {}),
+                ...(providerExtra !== undefined ? { extra: providerExtra } : {}),
+              },
+            }
+            : {}),
+        }),
+        {
+          provider: "agenc",
+          options: {
+            ...(opts.baseURL !== undefined ? { baseURL: opts.baseURL } : {}),
+            model,
+            ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+            ...(providerExtra !== undefined ? { extra: providerExtra } : {}),
+          },
+        },
+      );
+      return provider;
+    }
     case "grok": {
       const apiKey = opts.apiKey ?? resolveApiKey(process.env);
       if (!apiKey) {

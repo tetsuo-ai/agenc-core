@@ -48,7 +48,7 @@ import {
   bootstrapSession,
   type BootstrapSessionConfiguredPayload,
 } from "../session/bootstrap.js";
-import { SidecarManager } from "../session/sidecar.js";
+import { SidecarManager, type Sidecar } from "../session/sidecar.js";
 import { FileHistory, FileHistorySidecar } from "../session/file-history.js";
 import { ErrorLogSidecar } from "../session/error-log.js";
 import { CostSidecar } from "../session/cost.js";
@@ -136,6 +136,21 @@ function buildCodeSessionBaseUrl(baseUrl: string, sessionId: string): string {
 interface ResolvedAuthModelSelection {
   readonly provider: ProviderName;
   readonly model: string;
+  readonly profileProvider: ProviderName;
+  readonly profileModel: string;
+}
+
+function isHostedAgencProvider(provider: string): boolean {
+  return provider.trim().toLowerCase() === "agenc";
+}
+
+function firstNonEmptyString(...values: Array<string | undefined>): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
 }
 
 async function resolveAuthSubscriptionTier(
@@ -167,7 +182,12 @@ async function resolveAuthModelSelection(params: {
     params.authBackend === undefined ||
     !requiresAuthModelInference(params.provider, params.model)
   ) {
-    return { provider: params.provider, model: params.model };
+    return {
+      provider: params.provider,
+      model: params.model,
+      profileProvider: params.provider,
+      profileModel: params.model,
+    };
   }
   const inferred = await params.authBackend.inferAgencModel({
     provider: params.provider,
@@ -175,9 +195,33 @@ async function resolveAuthModelSelection(params: {
     sessionId: params.sessionId,
     subscriptionTier: params.subscriptionTier,
   });
+  const inferredProvider = normalizeProviderName(inferred.provider);
+  const inferredModel = firstNonEmptyString(inferred.model);
+  if (inferredModel === undefined) {
+    throw new Error("AuthBackend model inference returned an empty model");
+  }
+  if (isHostedAgencProvider(params.provider)) {
+    return {
+      provider: params.provider,
+      model: params.model,
+      profileProvider:
+        inferredProvider !== null && inferredProvider !== "agenc"
+          ? inferredProvider
+          : params.provider,
+      profileModel: inferredModel,
+    };
+  }
   return {
-    provider: normalizeProviderName(inferred.provider) ?? params.provider,
-    model: inferred.model,
+    provider:
+      inferredProvider !== null && inferredProvider !== "agenc"
+        ? inferredProvider
+        : params.provider,
+    model: inferredModel,
+    profileProvider:
+      inferredProvider !== null && inferredProvider !== "agenc"
+        ? inferredProvider
+        : params.provider,
+    profileModel: inferredModel,
   };
 }
 
@@ -538,6 +582,16 @@ function buildDeferredConfig(
   };
 }
 
+function createMemoryAutoSaveSidecar(): Sidecar {
+  return {
+    name: "memory-auto-save",
+    onEvent: () => {
+      // Memory extraction is not wired yet, but bootstrap must preserve the
+      // sidecar registration point for consumers that inspect live services.
+    },
+  };
+}
+
 function mapApprovalPolicy(
   raw: AgenCConfig["approval_policy"] | undefined,
 ): SessionConfiguration["approvalPolicy"]["value"] {
@@ -728,18 +782,24 @@ export async function bootstrapLocalRuntimeSession(
     subscriptionTier: authSubscriptionTier,
   });
   const resolvedProvider = modelSelection.provider;
-  const model = modelSelection.model;
-  const providerSettings = resolveProviderSettings(
+  const providerModel = modelSelection.model;
+  const profileProvider = modelSelection.profileProvider;
+  const model = modelSelection.profileModel;
+  const runtimeProviderSettings = resolveProviderSettings(
     resolvedProvider,
     startup.config,
     env,
   );
+  const providerSettings =
+    profileProvider === resolvedProvider
+      ? runtimeProviderSettings
+      : resolveProviderSettings(profileProvider, startup.config, env);
   const byokApiKey = selectByokPrecedenceApiKey({
     explicitApiKey: options.apiKey,
     byokApiKey: startup.apiKey,
   });
   const managedKey =
-    byokApiKey === undefined
+    byokApiKey === undefined && !isHostedAgencProvider(resolvedProvider)
       ? await vendProviderKeyOrUndefined({
           authBackend: options.authBackend,
           provider: resolvedProvider,
@@ -748,7 +808,7 @@ export async function bootstrapLocalRuntimeSession(
       : { attempted: false };
   const selectedApiKey = requireProviderApiKeyOrUndefined({
     provider: resolvedProvider,
-    providerSettings,
+    providerSettings: runtimeProviderSettings,
     apiKey: selectByokPrecedenceApiKey({
       explicitApiKey: options.apiKey,
       byokApiKey: startup.apiKey,
@@ -790,7 +850,7 @@ export async function bootstrapLocalRuntimeSession(
     status?: number;
   }): void => {
     markCapabilityDrift({
-      provider: resolvedProvider,
+      provider: profileProvider,
       model,
       overrides: providerSettings?.capabilityOverrides,
     });
@@ -798,8 +858,8 @@ export async function bootstrapLocalRuntimeSession(
       cause: "capability_drift_detected",
       message:
         warning.status !== undefined
-          ? `${resolvedProvider}/${model} rejected a capability the registry claimed it supported (HTTP ${warning.status}): ${warning.message}`
-          : `${resolvedProvider}/${model} rejected a capability the registry claimed it supported: ${warning.message}`,
+          ? `${profileProvider}/${model} rejected a capability the registry claimed it supported (HTTP ${warning.status}): ${warning.message}`
+          : `${profileProvider}/${model} rejected a capability the registry claimed it supported: ${warning.message}`,
     });
   };
 
@@ -819,13 +879,22 @@ export async function bootstrapLocalRuntimeSession(
     resolvedProvider as ProviderName,
     {
       apiKey: selectedApiKey,
-      ...(providerSettings?.baseURL ? { baseURL: providerSettings.baseURL } : {}),
-      model,
+      ...(providerSettings?.baseURL
+        ? { baseURL: providerSettings.baseURL }
+        : {}),
+      model: providerModel,
       tools: registry.toLLMTools(),
       extra: {
         emitWarning: emitProviderWarning,
         emitDiagnostic: emitProviderDiagnostic,
         onCapabilityDrift: handleCapabilityDrift,
+        ...(options.authBackend !== undefined
+          ? {
+            authBackend: options.authBackend,
+            sessionId: conversationId,
+            subscriptionTier: authSubscriptionTier,
+          }
+          : {}),
         ...(providerSettings?.contextWindowTokens !== undefined
           ? { contextWindowTokens: providerSettings.contextWindowTokens }
           : {}),
@@ -836,7 +905,7 @@ export async function bootstrapLocalRuntimeSession(
     },
   );
   const capabilityEntry = resolveProviderCapabilityEntry({
-    provider: resolvedProvider,
+    provider: profileProvider,
     model,
     overrides: providerSettings?.capabilityOverrides,
   });
@@ -847,7 +916,7 @@ export async function bootstrapLocalRuntimeSession(
         .then((healthy) => {
           if (!healthy) return;
           markCapabilityVerified({
-            provider: resolvedProvider,
+            provider: profileProvider,
             model,
           });
         })
@@ -862,7 +931,7 @@ export async function bootstrapLocalRuntimeSession(
   });
   const modelsManager = new StaticModelsManager({
     config: startup.config,
-    fallbackProvider: resolvedProvider,
+    fallbackProvider: profileProvider,
     metadata: {
       fetchImpl: globalThis.fetch.bind(globalThis),
       env,
@@ -1213,6 +1282,7 @@ export async function bootstrapLocalRuntimeSession(
         (s.services as { costSidecar?: CostSidecar }).costSidecar =
           costSidecar;
         sidecarManager.register(costSidecar);
+        sidecarManager.register(createMemoryAutoSaveSidecar());
 
 
         ctxForReturn = buildTurnContext({

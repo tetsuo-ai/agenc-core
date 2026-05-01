@@ -20,6 +20,7 @@ export const BUILT_IN_PROVIDER_DEFAULT_MODELS = Object.freeze({
   groq: "llama-3.3-70b-versatile",
   deepseek: "deepseek-reasoner",
   gemini: "gemini-2.5-pro",
+  agenc: "agenc",
 } as const);
 
 export const BUILT_IN_PROVIDER_BASE_URLS = Object.freeze({
@@ -32,6 +33,7 @@ export const BUILT_IN_PROVIDER_BASE_URLS = Object.freeze({
   groq: "https://api.groq.com/openai/v1",
   deepseek: "https://api.deepseek.com/v1",
   gemini: "https://generativelanguage.googleapis.com/v1beta",
+  agenc: "https://api.agenc.tech/v1",
 } as const);
 
 export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
@@ -54,6 +56,7 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   groq: Object.freeze(["llama-3.3-70b-versatile"]),
   deepseek: Object.freeze(["deepseek-reasoner"]),
   gemini: Object.freeze(["gemini-2.5-pro"]),
+  agenc: Object.freeze(["agenc"]),
 });
 
 export type ProviderSlug = keyof typeof BUILT_IN_PROVIDER_DEFAULT_MODELS;
