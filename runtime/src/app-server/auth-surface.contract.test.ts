@@ -7,8 +7,8 @@ import {
   AGENC_DAEMON_AUTH_METHODS,
   createAgenCDaemonAuthHandlers,
   isAgenCDaemonAuthMethod,
-  type AgenCDaemonAuthBackend,
 } from "./auth.js";
+import type { AuthBackend } from "../auth/backend.js";
 
 describe("AgenC daemon auth surface", () => {
   it("exposes only the AgenC-owned auth method trio", () => {
@@ -40,7 +40,7 @@ describe("AgenC daemon auth surface", () => {
 
   it("routes auth methods through the supplied backend shape", async () => {
     const calls: string[] = [];
-    const backend: AgenCDaemonAuthBackend = {
+    const backend: Pick<AuthBackend, "login" | "whoami" | "logout"> = {
       login: () => {
         calls.push("login");
         return { authenticated: true, provider: "local" };
