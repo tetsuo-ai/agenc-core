@@ -105,7 +105,7 @@ import {
 } from "../app-server/agent-cli.js";
 import {
   ensureAgenCDaemonAutostart,
-  shouldAutostartAgenCDaemon,
+  resolveAgenCDaemonAutostartEnabled,
 } from "../app-server/daemon-autostart.js";
 import {
   parseAgenCAuthCliArgs,
@@ -1698,7 +1698,7 @@ export async function main(): Promise<number> {
     process.stdout.write(`${startupShortCircuit.text}\n`);
     return 0;
   }
-  if (shouldAutostartAgenCDaemon(process.env)) {
+  if (await resolveAgenCDaemonAutostartEnabled(process.env)) {
     try {
       await ensureAgenCDaemonAutostart();
     } catch (error) {
