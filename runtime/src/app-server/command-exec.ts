@@ -174,7 +174,7 @@ export class AgenCCommandExecService implements AgenCCommandExec {
     const streamStdin = tty || params.streamStdin === true;
     const streamStdoutStderr = tty || params.streamStdoutStderr === true;
     if (
-      params.processId === undefined &&
+      params.processId == null &&
       (tty || streamStdin || streamStdoutStderr)
     ) {
       throw invalidArgument(
@@ -266,7 +266,7 @@ export class AgenCCommandExecService implements AgenCCommandExec {
     context: CommandExecContext,
   ): Promise<CommandExecWriteResponse> {
     validateControlProcessId("commandExec.write", params.processId);
-    if (params.deltaBase64 === undefined && params.closeStdin !== true) {
+    if (params.deltaBase64 == null && params.closeStdin !== true) {
       throw invalidArgument(
         "commandExec.write requires deltaBase64 or closeStdin",
       );

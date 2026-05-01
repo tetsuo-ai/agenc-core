@@ -503,6 +503,51 @@ describe("AgenC daemon command exec", () => {
       service.start(
         {
           command: [process.execPath, "-e", "process.stdout.write('out')"],
+          processId: null,
+          tty: true,
+        },
+        { connectionId: "invalid" },
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message:
+        "commandExec.start tty or streaming requires a client-supplied processId",
+    });
+
+    await expect(
+      service.start(
+        {
+          command: [process.execPath, "-e", "process.stdout.write('out')"],
+          processId: null,
+          streamStdin: true,
+        },
+        { connectionId: "invalid" },
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message:
+        "commandExec.start tty or streaming requires a client-supplied processId",
+    });
+
+    await expect(
+      service.start(
+        {
+          command: [process.execPath, "-e", "process.stdout.write('out')"],
+          processId: null,
+          streamStdoutStderr: true,
+        },
+        { connectionId: "invalid" },
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message:
+        "commandExec.start tty or streaming requires a client-supplied processId",
+    });
+
+    await expect(
+      service.start(
+        {
+          command: [process.execPath, "-e", "process.stdout.write('out')"],
           streamStdoutStderr: true,
         },
         { connectionId: "invalid" },
@@ -537,6 +582,34 @@ describe("AgenC daemon command exec", () => {
       code: "INVALID_ARGUMENT",
       message: "invalid deltaBase64",
     });
+
+    const closeOnly = service.start(
+      {
+        command: [
+          process.execPath,
+          "-e",
+          "process.stdin.resume(); process.stdin.on('end', () => process.exit(0))",
+        ],
+        processId: "close-only",
+        streamStdin: true,
+        disableTimeout: true,
+      },
+      { connectionId: "invalid" },
+    );
+    await expect(
+      service.write(
+        { processId: "close-only", deltaBase64: null },
+        { connectionId: "invalid" },
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "commandExec.write requires deltaBase64 or closeStdin",
+    });
+    await service.write(
+      { processId: "close-only", deltaBase64: null, closeStdin: true },
+      { connectionId: "invalid" },
+    );
+    await expect(closeOnly).resolves.toMatchObject({ exitCode: 0 });
   });
 
   it("terminates all sessions for a closed connection", async () => {
