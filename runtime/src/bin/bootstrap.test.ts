@@ -771,7 +771,7 @@ describe("bootstrapLocalRuntimeSession", () => {
       expect(boot.modelInfo.slug).toBe("grok-4-fast");
       expect(boot.ctx.modelInfo.slug).toBe("grok-4-fast");
       expect(boot.initialState.sessionConfiguration.provider).toEqual({
-        slug: "grok",
+        slug: "agenc",
       });
       expect(boot.initialState.sessionConfiguration.collaborationMode.model).toBe(
         "grok-4-fast",

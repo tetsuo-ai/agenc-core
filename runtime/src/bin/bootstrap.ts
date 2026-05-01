@@ -48,7 +48,7 @@ import {
   bootstrapSession,
   type BootstrapSessionConfiguredPayload,
 } from "../session/bootstrap.js";
-import { SidecarManager } from "../session/sidecar.js";
+import { SidecarManager, type Sidecar } from "../session/sidecar.js";
 import { FileHistory, FileHistorySidecar } from "../session/file-history.js";
 import { ErrorLogSidecar } from "../session/error-log.js";
 import { CostSidecar } from "../session/cost.js";
@@ -582,6 +582,16 @@ function buildDeferredConfig(
   };
 }
 
+function createMemoryAutoSaveSidecar(): Sidecar {
+  return {
+    name: "memory-auto-save",
+    onEvent: () => {
+      // Memory extraction is not wired yet, but bootstrap must preserve the
+      // sidecar registration point for consumers that inspect live services.
+    },
+  };
+}
+
 function mapApprovalPolicy(
   raw: AgenCConfig["approval_policy"] | undefined,
 ): SessionConfiguration["approvalPolicy"]["value"] {
@@ -942,7 +952,7 @@ export async function bootstrapLocalRuntimeSession(
     config: startup.config,
     workspaceRoot,
     model,
-    provider: profileProvider,
+    provider: resolvedProvider,
   });
   const sessionConfiguration = cli.allowDangerouslySkipPermissions
     ? ({
@@ -989,7 +999,7 @@ export async function bootstrapLocalRuntimeSession(
   const bootstrapServices: BootstrapSessionServicesHandle =
     buildBootstrapSessionServices({
       provider,
-      providerName: profileProvider,
+      providerName: resolvedProvider,
       ...(selectedApiKey
         ? { apiKey: selectedApiKey }
         : {}),
@@ -1061,7 +1071,7 @@ export async function bootstrapLocalRuntimeSession(
       sessionConfigured: (): BootstrapSessionConfiguredPayload => ({
         sessionId: conversationId,
         model,
-        modelProviderId: profileProvider,
+        modelProviderId: resolvedProvider,
         cwd: workspaceRoot,
         historyLogId: 0,
         historyEntryCount: initialState.history.length,
@@ -1121,7 +1131,7 @@ export async function bootstrapLocalRuntimeSession(
           originator: "agenc-cli",
           agencVersion: "0.2.0",
           model,
-          modelProvider: profileProvider,
+          modelProvider: resolvedProvider,
         });
         s.mountRolloutStore(rolloutStore);
         rolloutStoreForReturn = rolloutStore;
@@ -1272,6 +1282,7 @@ export async function bootstrapLocalRuntimeSession(
         (s.services as { costSidecar?: CostSidecar }).costSidecar =
           costSidecar;
         sidecarManager.register(costSidecar);
+        sidecarManager.register(createMemoryAutoSaveSidecar());
 
 
         ctxForReturn = buildTurnContext({
@@ -1296,7 +1307,7 @@ export async function bootstrapLocalRuntimeSession(
             payload: {
               sessionId: conversationId,
               model,
-              modelProviderId: profileProvider,
+              modelProviderId: resolvedProvider,
               cwd: workspaceRoot,
               historyLogId: 0,
               historyEntryCount: initialState.history.length,
