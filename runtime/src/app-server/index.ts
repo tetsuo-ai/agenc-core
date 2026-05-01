@@ -4,5 +4,6 @@ export * from "./daemon-autostart.js";
 export * from "./daemon-cli.js";
 export * from "./health.js";
 export * from "./protocol/index.js";
+export * from "./reattach.js";
 export * from "./session-lifecycle.js";
 export * from "./transport/index.js";
