@@ -280,6 +280,57 @@ describe("AgenC background agent lifecycle", () => {
     expect(stopAgent).toHaveBeenCalledTimes(1);
   });
 
+  it("stops all active background agents during daemon cleanup", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_1", "session_2"]),
+      createAttachmentId: sequence(["attachment_1", "attachment_2"]),
+      now: sequence([
+        "2026-05-01T12:00:01.000Z",
+        "2026-05-01T12:00:02.000Z",
+        "2026-05-01T12:00:05.000Z",
+        "2026-05-01T12:00:06.000Z",
+      ]),
+    });
+    const startedAgents = ["agent_one", "agent_two"];
+    const stopAgent = vi.fn(async () => {});
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: startedAgents.shift()!,
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      stopAgent,
+    };
+    const agents = new AgenCDaemonAgentManager({
+      defaultCwd: () => "/workspace",
+      now: sequence([
+        "2026-05-01T12:00:00.000Z",
+        "2026-05-01T12:00:00.250Z",
+        "2026-05-01T12:00:03.000Z",
+        "2026-05-01T12:00:04.000Z",
+      ]),
+      runner,
+      sessionManager: sessions,
+    });
+
+    await agents.createAgent({ objective: "one" });
+    await agents.createAgent({ objective: "two" });
+
+    await expect(agents.stopAll("daemon_shutdown")).resolves.toBe(2);
+
+    expect(stopAgent).toHaveBeenCalledWith("agent_one", "daemon_shutdown");
+    expect(stopAgent).toHaveBeenCalledWith("agent_two", "daemon_shutdown");
+    await expect(agents.listAgents()).resolves.toEqual({ agents: [] });
+    await expect(sessions.getSession("session_1")).resolves.toMatchObject({
+      status: "closed",
+      closedAt: "2026-05-01T12:00:05.000Z",
+    });
+    await expect(sessions.getSession("session_2")).resolves.toMatchObject({
+      status: "closed",
+      closedAt: "2026-05-01T12:00:06.000Z",
+    });
+  });
+
   it("keeps final stop state durable while runner shutdown is in flight", async () => {
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_1"]),

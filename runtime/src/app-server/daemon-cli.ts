@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
 import { AgenCDelegateBackgroundAgentRunner } from "./background-agent-runner.js";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
+import { AgenCCommandExecService } from "./command-exec.js";
 import {
   AgenCDaemonJsonRpcDispatcher,
   type AgenCDaemonJsonRpcConnection,
@@ -21,6 +22,12 @@ import {
 import type { JsonObject } from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import { AgenCUnixSocketServer } from "./transport/unix-socket.js";
+import {
+  AgenCCleanupRegistry,
+  installAgenCShutdownSignalHandlers,
+  summarizeAgenCShutdown,
+  type AgenCSignalProcess,
+} from "../lifecycle/index.js";
 
 export const AGENC_DAEMON_PID_FILENAME = "daemon.pid";
 export const AGENC_DAEMON_SOCKET_FILENAME = "daemon.sock";
@@ -58,6 +65,7 @@ export interface AgenCDaemonCliHost {
 export interface RunAgenCDaemonCliOptions {
   readonly io?: AgenCDaemonCliIo;
   readonly host?: AgenCDaemonCliHost;
+  readonly signalProcess?: AgenCSignalProcess;
   readonly stopTimeoutMs?: number;
 }
 
@@ -174,7 +182,7 @@ async function runAgenCDaemonAction(
       return startAgenCDaemon(host, io);
     }
     case "run":
-      return runAgenCDaemonForeground(host, io);
+      return runAgenCDaemonForeground(host, io, options.signalProcess);
   }
 }
 
@@ -252,6 +260,7 @@ async function statusAgenCDaemon(
 async function runAgenCDaemonForeground(
   host: AgenCDaemonCliHost,
   io: AgenCDaemonCliIo,
+  signalProcess: AgenCSignalProcess = process,
 ): Promise<number> {
   const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
   const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
@@ -262,6 +271,8 @@ async function runAgenCDaemonForeground(
   const clientMultiplexer = new AgenCDaemonClientMultiplexer({
     sessionManager,
   });
+  const commandExec = new AgenCCommandExecService();
+  const cleanup = new AgenCCleanupRegistry();
   const runner = new AgenCDelegateBackgroundAgentRunner({
     env: host.env,
     argv: [host.execPath, host.entrypointPath, "--autonomous"],
@@ -277,6 +288,7 @@ async function runAgenCDaemonForeground(
   const dispatcher = new AgenCDaemonJsonRpcDispatcher({
     agentManager,
     clientMultiplexer,
+    commandExec,
     initializeAuthenticator: (params) => params.authCookie === daemonCookie,
   });
   const connections = new Map<number, AgenCDaemonJsonRpcConnection>();
@@ -316,22 +328,43 @@ async function runAgenCDaemonForeground(
       }
     },
   });
+  cleanup.register("daemon-pid", async () => {
+    await removeAgenCDaemonPid(pidPath, host.pid);
+  });
+  cleanup.register("daemon-socket", async () => {
+    await socketServer.close();
+  });
+  cleanup.register("daemon-connections", async () => {
+    const activeConnections = [...connections.values()];
+    connections.clear();
+    socketConnections.clear();
+    await Promise.all(activeConnections.map((connection) => connection.close()));
+  });
+  cleanup.register("daemon-command-exec", async () => {
+    await commandExec.closeAll("daemon_shutdown");
+  });
+  cleanup.register("daemon-agents", async () => {
+    await agentManager.stopAll("daemon_shutdown");
+  });
 
   await socketServer.listen();
+  const shutdownSignal = installAgenCShutdownSignalHandlers(
+    async (event) => {
+      io.stderr.write(`${summarizeAgenCShutdown(event)}\n`);
+      await cleanup.run(event);
+    },
+    signalProcess,
+  );
   try {
     await writeAgenCDaemonPid(pidPath, host.pid);
     io.stdout.write(`AgenC daemon running (pid ${host.pid})\n`);
 
-    await new Promise<void>((resolve) => {
-      const shutdown = () => resolve();
-      process.once("SIGINT", shutdown);
-      process.once("SIGTERM", shutdown);
-    });
+    const event = await shutdownSignal.completed;
+    return event.exitCode;
   } finally {
-    await socketServer.close();
-    await removeAgenCDaemonPid(pidPath, host.pid);
+    shutdownSignal.dispose();
+    await cleanup.run({ reason: "daemon_shutdown" });
   }
-  return 0;
 }
 
 async function waitForPidExit(

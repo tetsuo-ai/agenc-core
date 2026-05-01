@@ -674,4 +674,40 @@ describe("AgenC daemon command exec", () => {
       message: 'no active commandExec session for process id "closed-1"',
     });
   });
+
+  it("terminates every live child process during daemon cleanup", async () => {
+    const service = new AgenCCommandExecService();
+    const first = service.start(
+      {
+        command: [process.execPath, "-e", idleScript],
+        processId: "daemon-1",
+        disableTimeout: true,
+      },
+      { connectionId: "one" },
+    );
+    const second = service.start(
+      {
+        command: [process.execPath, "-e", idleScript],
+        processId: "daemon-2",
+        disableTimeout: true,
+      },
+      { connectionId: "two" },
+    );
+
+    await service.closeAll("daemon_shutdown");
+
+    await expect(first).resolves.toMatchObject({ stdout: "", stderr: "" });
+    await expect(second).resolves.toMatchObject({ stdout: "", stderr: "" });
+    expect((await first).exitCode).not.toBe(0);
+    expect((await second).exitCode).not.toBe(0);
+    await expect(
+      service.terminate(
+        { processId: "daemon-1" },
+        { connectionId: "one" },
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: 'no active commandExec session for process id "daemon-1"',
+    });
+  });
 });

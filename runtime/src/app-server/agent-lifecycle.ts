@@ -348,6 +348,36 @@ export class AgenCDaemonAgentManager {
     return { agentId, stopped: true };
   }
 
+  async stopAll(reason = "daemon_shutdown"): Promise<number> {
+    const targets = await this.#state.with(async (state) => {
+      await this.#refreshAgentsFromRunner(state);
+      return [...state.agents.values()]
+        .filter(isActiveAgent)
+        .map((agent) => ({
+          agentId: agent.agentId,
+          sessionIds: [...agent.sessionIds],
+        }));
+    });
+    let stopped = 0;
+    for (const target of targets) {
+      const stopRunner = this.#runner?.stopAgent?.bind(this.#runner);
+      if (stopRunner !== undefined) {
+        await stopRunner(target.agentId, reason);
+      }
+      const stoppedAt = this.#now();
+      await this.#state.with((state) => {
+        const agent = state.agents.get(target.agentId);
+        if (agent === undefined) return;
+        agent.status = "stopped";
+        agent.lastActiveAt = stoppedAt;
+        agent.sessionIds = [];
+      });
+      await this.#terminateAgentSessions(target.sessionIds, reason);
+      stopped += 1;
+    }
+    return stopped;
+  }
+
   async approveTool(params: ToolApproveParams): Promise<ToolDecisionResult> {
     const agentId = await this.#resolveActiveAgentIdForSession(params.sessionId);
     const resolved = await this.#runner!.resolveToolDecision!(agentId, {
