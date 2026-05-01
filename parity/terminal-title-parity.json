@@ -1,0 +1,64 @@
+{
+  "contractName": "terminal-title-parity",
+  "scope": "Wire upstream terminal title side effects into the live AgenC TUI shell",
+  "generatedAt": "2026-05-01T00:00:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/ink/hooks/use-terminal-title.ts",
+    "src/screens/REPL.tsx"
+  ],
+  "targetFiles": [
+    "runtime/src/tui/openclaude/App.tsx"
+  ],
+  "testFiles": [
+    "runtime/src/tui/openclaude/App.terminal-title.parity.test.tsx"
+  ],
+  "rows": [
+    {
+      "id": "title-hook-wiring",
+      "source": "src/ink/hooks/use-terminal-title.ts",
+      "target": "runtime/src/tui/openclaude/App.tsx",
+      "requiredBehaviors": [
+        "live TUI shell calls the upstream terminal-title hook from a leaf component",
+        "disabled title state passes null through to the hook",
+        "non-disabled title state writes the computed title through the upstream hook"
+      ],
+      "edgeCases": [
+        "title hook remains a no-op when disabled",
+        "title text can be composed from provider and model when both are available",
+        "title text falls back to the product name when model metadata is absent"
+      ],
+      "tests": [
+        "runtime/src/tui/openclaude/App.terminal-title.parity.test.tsx"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/tui/openclaude/App.terminal-title.parity.test.tsx"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "title-animation-leaf",
+      "source": "src/screens/REPL.tsx",
+      "target": "runtime/src/tui/openclaude/App.tsx",
+      "requiredBehaviors": [
+        "terminal title animation uses the upstream two-frame spinner and 960ms interval",
+        "animation state is isolated in a leaf component so title ticks do not drive shell state",
+        "title animation is suppressed while the session waits for permission or renders local JSX"
+      ],
+      "edgeCases": [
+        "animation interval is not started when the terminal is unfocused",
+        "animation interval is not started when title prefixing is disabled",
+        "static prefix remains stable while no turn is streaming"
+      ],
+      "tests": [
+        "runtime/src/tui/openclaude/App.terminal-title.parity.test.tsx"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/tui/openclaude/App.terminal-title.parity.test.tsx"
+      ],
+      "status": "required"
+    }
+  ]
+}

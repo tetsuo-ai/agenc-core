@@ -10,7 +10,12 @@ import {
   useAppState,
   useSetAppState,
 } from "../../agenc/upstream/state/AppState.js";
-import { Box, useApp } from "../../agenc/upstream/ink.js";
+import {
+  Box,
+  useApp,
+  useTerminalFocus,
+  useTerminalTitle,
+} from "../../agenc/upstream/ink.js";
 import type { LLMMessage } from "../../llm/types.js";
 import type { ToolPermissionContext } from "../../permissions/types.js";
 import { createBridgeTools } from "./tool-stubs.js";
@@ -103,6 +108,62 @@ function useInitialSubmit(
       void session.submit?.("", { displayUserMessage: null }).catch(() => {});
     }
   }, [initialPrompt, initialUserMessages, session, submit]);
+}
+
+const TITLE_ANIMATION_FRAMES = ["⠂", "⠐"];
+const TITLE_STATIC_PREFIX = "✳";
+const TITLE_ANIMATION_INTERVAL_MS = 960;
+
+/**
+ * Ports upstream `src/ink/hooks/use-terminal-title.ts` and the terminal-title
+ * leaf from `src/screens/REPL.tsx` onto the live AgenC TUI shell.
+ *
+ * Shape difference from upstream:
+ *   - AgenC does not yet carry upstream session rename or generated-title
+ *     state in this bridge, so the title is derived from the active
+ *     provider/model when available and otherwise falls back to the product
+ *     name.
+ *
+ * Cross-cuts deliberately NOT carried:
+ *   - Generated title extraction and session rename persistence; those need
+ *     their own runtime state bridge before they can be live behavior.
+ *   - Terminal tab status integration; this port only owns OSC title writes.
+ */
+function AnimatedTerminalTitle({
+  isAnimating,
+  title,
+  disabled = false,
+  noPrefix = false,
+}: {
+  readonly isAnimating: boolean;
+  readonly title: string;
+  readonly disabled?: boolean;
+  readonly noPrefix?: boolean;
+}): null {
+  const terminalFocused = useTerminalFocus();
+  const [frame, setFrame] = useState(0);
+
+  useEffect(() => {
+    if (disabled || noPrefix || !isAnimating || !terminalFocused) return;
+    const interval = setInterval(() => {
+      setFrame((current) => (current + 1) % TITLE_ANIMATION_FRAMES.length);
+    }, TITLE_ANIMATION_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [disabled, isAnimating, noPrefix, terminalFocused]);
+
+  const prefix = isAnimating
+    ? TITLE_ANIMATION_FRAMES[frame] ?? TITLE_STATIC_PREFIX
+    : TITLE_STATIC_PREFIX;
+  useTerminalTitle(disabled ? null : noPrefix ? title : `${prefix} ${title}`);
+  return null;
+}
+
+function terminalTitle(props: Parameters<typeof startupModel>[0]): string {
+  const provider = props.session.sessionConfiguration?.provider?.slug?.trim();
+  const model = startupModel(props)?.trim();
+  if (provider && model) return `AgenC ${provider}/${model}`;
+  if (model) return `AgenC ${model}`;
+  return "AgenC";
 }
 
 function OpenClaudeShell(props: OpenClaudeTuiProps): React.ReactElement {
@@ -208,9 +269,13 @@ function OpenClaudeShell(props: OpenClaudeTuiProps): React.ReactElement {
     () => buildToolUseConfirmQueue(permissionRequests, tools),
     [permissionRequests, tools],
   );
+  const title = useMemo(() => terminalTitle(props), [props]);
+  const titleIsAnimating =
+    transcript.isStreaming && permissionRequests.length === 0 && toolJSX === null;
 
   return (
     <Box flexDirection="column" width="100%">
+      <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
       <Messages
         messages={transcript.messages as any[]}
         tools={tools as any}
