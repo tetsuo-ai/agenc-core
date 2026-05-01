@@ -40,6 +40,7 @@ import type {
   MessageContent,
 } from "./protocol/index.js";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
+import { createAgenCDaemonRuntimeAuthBackend } from "./provider-key-vending.js";
 
 export interface AgenCBackgroundAgentStartParams {
   readonly objective: string;
@@ -177,7 +178,10 @@ export class AgenCDelegateBackgroundAgentRunner
     this.#delegate = options.delegateFn ?? delegate;
     this.#ensureAgentControl =
       options.ensureAgentControl ?? ensureAgentControl;
-    this.#authBackend = options.authBackend;
+    this.#authBackend =
+      options.authBackend === undefined
+        ? undefined
+        : createAgenCDaemonRuntimeAuthBackend(options.authBackend);
     this.#env = options.env;
     this.#argv = options.argv;
     this.#now = options.now ?? (() => new Date().toISOString());
