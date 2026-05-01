@@ -12,6 +12,7 @@
  */
 
 export const JSON_RPC_VERSION = "2.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.0.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -34,6 +35,7 @@ export interface JsonObject {
 export type RequestId = string | number;
 
 export const AGENC_DAEMON_METHODS = [
+  "initialize",
   "agent.create",
   "agent.list",
   "agent.attach",
@@ -75,6 +77,13 @@ function defineMethodSpecs<const Spec extends {
 }
 
 export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
+  initialize: {
+    method: "initialize",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Initialize a daemon JSON-RPC connection.",
+  },
   "agent.create": {
     method: "agent.create",
     direction: "client-to-server",
@@ -222,12 +231,22 @@ export function isAgenCDaemonMethod(value: string): value is AgenCDaemonMethod {
 }
 
 export interface AgentCreateParams extends JsonObject {
+  readonly objective?: string;
   readonly cwd?: string;
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
   readonly instructions?: string;
+  readonly unattendedAllow?: readonly string[];
+  readonly unattendedDeny?: readonly string[];
   readonly metadata?: JsonObject;
+}
+
+export interface InitializeParams extends JsonObject {
+  readonly protocolVersion?: string;
+  readonly clientName?: string;
+  readonly authCookie?: string;
+  readonly capabilities?: JsonObject;
 }
 
 export interface AgentListParams extends JsonObject {
@@ -331,6 +350,7 @@ export interface AgenCDaemonRequestWithoutParams<
 }
 
 export type AgenCDaemonRequest =
+  | AgenCDaemonRequestWithParams<"initialize", InitializeParams>
   | AgenCDaemonRequestWithParams<"agent.create", AgentCreateParams>
   | AgenCDaemonRequestWithParams<"agent.list", AgentListParams>
   | AgenCDaemonRequestWithParams<"agent.attach", AgentAttachParams>
@@ -360,8 +380,12 @@ export type SessionStatus = "idle" | "running" | "waiting" | "closed" | "error";
 
 export interface AgentSummary extends JsonObject {
   readonly agentId: string;
+  readonly agentPath?: string;
+  readonly objective?: string;
   readonly status: AgentStatus;
   readonly createdAt: string;
+  readonly startedAt?: string;
+  readonly lastActiveAt?: string;
   readonly cwd?: string;
   readonly activeSessionIds?: readonly string[];
   readonly metadata?: JsonObject;
@@ -396,6 +420,12 @@ export interface AgentAttachResult extends JsonObject {
 export interface AgentStopResult extends JsonObject {
   readonly agentId: string;
   readonly stopped: boolean;
+}
+
+export interface InitializeResult extends JsonObject {
+  readonly type: "initialized";
+  readonly protocolVersion: string;
+  readonly capabilities: JsonObject;
 }
 
 export interface SessionCreateResult extends SessionSummary {}
@@ -511,6 +541,7 @@ export interface AuthLogoutResult extends JsonObject {
 }
 
 export interface AgenCDaemonResultByMethod {
+  readonly initialize: InitializeResult;
   readonly "agent.create": AgentCreateResult;
   readonly "agent.list": AgentListResult;
   readonly "agent.attach": AgentAttachResult;

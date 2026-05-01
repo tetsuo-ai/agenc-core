@@ -98,6 +98,10 @@ import {
   runAgenCDaemonCli,
 } from "../app-server/daemon-cli.js";
 import {
+  parseAgenCAgentCliArgs,
+  runAgenCAgentCli,
+} from "../app-server/agent-cli.js";
+import {
   ensureAgenCDaemonAutostart,
   shouldAutostartAgenCDaemon,
 } from "../app-server/daemon-autostart.js";
@@ -117,6 +121,7 @@ export function formatCliHelpText(): string {
   return [
     "Usage: agenc [options] [PROMPT]",
     "       agenc daemon <start|stop|status|restart>",
+    "       agenc agent start <objective>",
     "",
     "Options:",
     "  --help                                   Show this help text",
@@ -1509,6 +1514,10 @@ export async function main(): Promise<number> {
   const daemonCommand = parseAgenCDaemonCliArgs(argv);
   if (daemonCommand !== null) {
     return runAgenCDaemonCli(daemonCommand);
+  }
+  const agentCommand = parseAgenCAgentCliArgs(argv);
+  if (agentCommand !== null) {
+    return runAgenCAgentCli(agentCommand);
   }
 
   const startupShortCircuit = detectStartupShortCircuit(argv);

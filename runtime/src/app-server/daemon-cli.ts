@@ -7,11 +7,22 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
+import { AgenCDelegateBackgroundAgentRunner } from "./background-agent-runner.js";
+import {
+  AgenCDaemonJsonRpcDispatcher,
+  type AgenCDaemonJsonRpcConnection,
+} from "./daemon-dispatcher.js";
+import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
+import { AgenCUnixSocketServer } from "./transport/unix-socket.js";
 
 export const AGENC_DAEMON_PID_FILENAME = "daemon.pid";
+export const AGENC_DAEMON_SOCKET_FILENAME = "daemon.sock";
+export const AGENC_DAEMON_COOKIE_FILENAME = "daemon.cookie";
 
 export type AgenCDaemonCliAction =
   | "restart"
@@ -67,6 +78,23 @@ export function resolveAgenCDaemonPidPath(
   userHome = homedir(),
 ): string {
   return join(resolveAgenCDaemonHome(env, userHome), AGENC_DAEMON_PID_FILENAME);
+}
+
+export function resolveAgenCDaemonSocketPath(
+  env: NodeJS.ProcessEnv = process.env,
+  userHome = homedir(),
+): string {
+  return join(
+    resolveAgenCDaemonHome(env, userHome),
+    AGENC_DAEMON_SOCKET_FILENAME,
+  );
+}
+
+export function resolveAgenCDaemonCookiePath(
+  env: NodeJS.ProcessEnv = process.env,
+  userHome = homedir(),
+): string {
+  return join(resolveAgenCDaemonHome(env, userHome), AGENC_DAEMON_COOKIE_FILENAME);
 }
 
 export function formatAgenCDaemonCliHelpText(): string {
@@ -224,15 +252,59 @@ async function runAgenCDaemonForeground(
   io: AgenCDaemonCliIo,
 ): Promise<number> {
   const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
-  await writeAgenCDaemonPid(pidPath, host.pid);
-  io.stdout.write(`AgenC daemon running (pid ${host.pid})\n`);
-
-  await new Promise<void>((resolve) => {
-    const shutdown = () => resolve();
-    process.once("SIGINT", shutdown);
-    process.once("SIGTERM", shutdown);
+  const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
+  const daemonCookie = await ensureAgenCDaemonCookie(
+    resolveAgenCDaemonCookiePath(host.env, host.userHome),
+  );
+  const sessionManager = new AgenCDaemonSessionManager();
+  const runner = new AgenCDelegateBackgroundAgentRunner({
+    env: host.env,
+    argv: [host.execPath, host.entrypointPath, "--autonomous"],
   });
-  await removeAgenCDaemonPid(pidPath, host.pid);
+  const agentManager = new AgenCDaemonAgentManager({
+    runner,
+    sessionManager,
+    defaultCwd: () => process.cwd(),
+  });
+  const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+    agentManager,
+    initializeAuthenticator: (params) => params.authCookie === daemonCookie,
+  });
+  const connections = new Map<number, AgenCDaemonJsonRpcConnection>();
+  const connectionFor = (connectionId: number): AgenCDaemonJsonRpcConnection => {
+    const current = connections.get(connectionId);
+    if (current !== undefined) return current;
+    const next = dispatcher.createConnection();
+    connections.set(connectionId, next);
+    return next;
+  };
+  const socketServer = new AgenCUnixSocketServer({
+    socketPath,
+    onMessage: async (message, context) => {
+      await context.send(await connectionFor(context.connectionId).dispatch(message));
+    },
+    onError: (error) => {
+      io.stderr.write(`agenc: daemon socket error: ${error.message}\n`);
+    },
+    onConnectionClosed: (connectionId) => {
+      connections.delete(connectionId);
+    },
+  });
+
+  await socketServer.listen();
+  try {
+    await writeAgenCDaemonPid(pidPath, host.pid);
+    io.stdout.write(`AgenC daemon running (pid ${host.pid})\n`);
+
+    await new Promise<void>((resolve) => {
+      const shutdown = () => resolve();
+      process.once("SIGINT", shutdown);
+      process.once("SIGTERM", shutdown);
+    });
+  } finally {
+    await socketServer.close();
+    await removeAgenCDaemonPid(pidPath, host.pid);
+  }
   return 0;
 }
 
@@ -279,6 +351,25 @@ export async function removeAgenCDaemonPid(
     if (currentPid !== expectedPid) return;
   }
   await rm(pidPath, { force: true });
+}
+
+export async function ensureAgenCDaemonCookie(
+  cookiePath: string,
+): Promise<string> {
+  try {
+    const existing = (await readFile(cookiePath, "utf8")).trim();
+    if (existing.length > 0) {
+      await chmod(cookiePath, 0o600).catch(() => {});
+      return existing;
+    }
+  } catch (error) {
+    if (asNodeError(error).code !== "ENOENT") throw error;
+  }
+
+  const cookie = randomBytes(32).toString("hex");
+  await mkdir(dirname(cookiePath), { recursive: true, mode: 0o700 });
+  await writeFile(cookiePath, `${cookie}\n`, { mode: 0o600 });
+  return cookie;
 }
 
 export function createNodeDaemonCliHost(): AgenCDaemonCliHost {

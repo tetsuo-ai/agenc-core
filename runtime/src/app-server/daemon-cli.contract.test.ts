@@ -1,12 +1,15 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   defaultAgenCDaemonPidPath,
+  ensureAgenCDaemonCookie,
   parseAgenCDaemonCliArgs,
   readAgenCDaemonPid,
+  resolveAgenCDaemonCookiePath,
   resolveAgenCDaemonPidPath,
+  resolveAgenCDaemonSocketPath,
   runAgenCDaemonCli,
   writeAgenCDaemonPid,
   type AgenCDaemonCliHost,
@@ -81,6 +84,36 @@ describe("AgenC daemon CLI", () => {
     expect(resolveAgenCDaemonPidPath({ AGENC_HOME: "/tmp/agenc-home" })).toBe(
       "/tmp/agenc-home/daemon.pid",
     );
+    expect(resolveAgenCDaemonSocketPath({}, "/home/test")).toBe(
+      "/home/test/.agenc/daemon.sock",
+    );
+    expect(resolveAgenCDaemonSocketPath({ AGENC_HOME: "/tmp/agenc-home" })).toBe(
+      "/tmp/agenc-home/daemon.sock",
+    );
+    expect(resolveAgenCDaemonCookiePath({}, "/home/test")).toBe(
+      "/home/test/.agenc/daemon.cookie",
+    );
+    expect(resolveAgenCDaemonCookiePath({ AGENC_HOME: "/tmp/agenc-home" })).toBe(
+      "/tmp/agenc-home/daemon.cookie",
+    );
+  });
+
+  it("creates a private daemon cookie and reuses it", async () => {
+    const agencHome = await tempAgencHome();
+    const cookiePath = resolveAgenCDaemonCookiePath(
+      { AGENC_HOME: agencHome },
+      "/home/test",
+    );
+
+    const first = await ensureAgenCDaemonCookie(cookiePath);
+    const second = await ensureAgenCDaemonCookie(cookiePath);
+    const mode = (await stat(cookiePath)).mode & 0o777;
+
+    expect(first).toHaveLength(64);
+    expect(second).toBe(first);
+    expect(mode).toBe(0o600);
+
+    await rm(agencHome, { recursive: true, force: true });
   });
 
   it("parses daemon subcommands without claiming normal prompts", () => {
