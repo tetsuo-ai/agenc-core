@@ -9,6 +9,7 @@ export { RemoteAuthBackend } from "./backends/remote.js";
 export type {
   RemoteAuthBackendOptions,
   RemoteAuthKeyVendor,
+  RemoteAuthModelInferer,
   RemoteAuthVendKeyRequest,
 } from "./backends/remote.js";
 export {

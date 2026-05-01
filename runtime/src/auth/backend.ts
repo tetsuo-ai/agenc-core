@@ -63,7 +63,7 @@ export interface AuthInferAgencModelParams extends AuthSessionRef {
 }
 
 export interface AuthInferredAgencModel extends AuthJsonObject {
-  readonly provider: "agenc";
+  readonly provider: AuthProviderSlug | string;
   readonly model: string;
   readonly subscriptionTier?: AuthSubscriptionTier;
   readonly reason?: string;

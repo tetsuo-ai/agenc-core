@@ -18,6 +18,9 @@ import type { EnvSnapshot } from "../../config/env.js";
 
 export const DEFAULT_REMOTE_AUTH_KEY_VENDING_URL =
   "https://api.agenc.tech/v1/auth/vend-key" as const;
+export const DEFAULT_REMOTE_AUTH_MODEL_INFERENCE_URL =
+  "https://api.agenc.tech/v1/auth/infer-model" as const;
+export const REMOTE_AUTH_MODEL_URL_ENV = "AGENC_REMOTE_AUTH_MODEL_URL" as const;
 export const REMOTE_AUTH_URL_ENV = "AGENC_REMOTE_AUTH_URL" as const;
 export const REMOTE_AUTH_TOKEN_ENV = "AGENC_REMOTE_AUTH_TOKEN" as const;
 export const REMOTE_AUTH_KEY_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -31,12 +34,18 @@ export type RemoteAuthKeyVendor = (
   request: RemoteAuthVendKeyRequest,
 ) => AuthVendedKey | Promise<AuthVendedKey>;
 
+export type RemoteAuthModelInferer = (
+  request: AuthInferAgencModelParams,
+) => AuthInferredAgencModel | Promise<AuthInferredAgencModel>;
+
 export interface RemoteAuthBackendOptions {
   readonly keyVendor?: RemoteAuthKeyVendor;
+  readonly modelInferer?: RemoteAuthModelInferer;
   readonly endpoint?: string;
   readonly env?: EnvSnapshot;
   readonly fetchImpl?: typeof fetch;
   readonly keyCacheTtlMs?: number;
+  readonly modelEndpoint?: string;
   readonly nowMs?: () => number;
   readonly token?: string;
 }
@@ -48,12 +57,15 @@ interface CachedRemoteAuthKey {
 
 export class RemoteAuthBackend implements AuthBackend {
   readonly #keyVendor: RemoteAuthKeyVendor;
+  readonly #modelInferer: RemoteAuthModelInferer;
   readonly #keyCacheTtlMs: number;
   readonly #nowMs: () => number;
   readonly #vendedKeys = new Map<string, CachedRemoteAuthKey>();
 
   constructor(options: RemoteAuthBackendOptions = {}) {
     this.#keyVendor = options.keyVendor ?? createHttpRemoteAuthKeyVendor(options);
+    this.#modelInferer =
+      options.modelInferer ?? createHttpRemoteAuthModelInferer(options);
     this.#keyCacheTtlMs = positiveTtlMs(options.keyCacheTtlMs);
     this.#nowMs = options.nowMs ?? (() => Date.now());
   }
@@ -124,12 +136,10 @@ export class RemoteAuthBackend implements AuthBackend {
     return pruned;
   }
 
-  inferAgencModel(
-    _params: AuthInferAgencModelParams = {},
-  ): AuthInferredAgencModel {
-    throw new Error(
-      "RemoteAuthBackend model inference is not available until hosted model routing is configured",
-    );
+  async inferAgencModel(
+    params: AuthInferAgencModelParams = {},
+  ): Promise<AuthInferredAgencModel> {
+    return this.#requestInferredModel(params);
   }
 
   getSubscriptionTier(
@@ -164,6 +174,13 @@ export class RemoteAuthBackend implements AuthBackend {
       apiKey,
     };
   }
+
+  async #requestInferredModel(
+    params: AuthInferAgencModelParams,
+  ): Promise<AuthInferredAgencModel> {
+    const inferred = await this.#modelInferer(params);
+    return normalizeRemoteAuthModelInference(inferred);
+  }
 }
 
 function createHttpRemoteAuthKeyVendor(
@@ -181,15 +198,9 @@ function createHttpRemoteAuthKeyVendor(
     if (fetchImpl === undefined) {
       throw new Error("RemoteAuthBackend requires fetch for remote key vending");
     }
-    const headers: Record<string, string> = {
-      "content-type": "application/json",
-    };
-    if (token !== undefined) {
-      headers.authorization = `Bearer ${token}`;
-    }
     const response = await fetchImpl(endpoint, {
       method: "POST",
-      headers,
+      headers: remoteAuthJsonHeaders(token),
       body: JSON.stringify({
         provider: request.provider,
         sessionId: request.sessionId,
@@ -202,6 +213,58 @@ function createHttpRemoteAuthKeyVendor(
     }
     return parseRemoteAuthVendKeyResponse(await response.json(), request);
   };
+}
+
+function createHttpRemoteAuthModelInferer(
+  options: RemoteAuthBackendOptions,
+): RemoteAuthModelInferer {
+  const env = options.env ?? process.env;
+  const endpoint =
+    trimNonEmpty(options.modelEndpoint) ??
+    trimNonEmpty(env[REMOTE_AUTH_MODEL_URL_ENV]) ??
+    DEFAULT_REMOTE_AUTH_MODEL_INFERENCE_URL;
+  const token =
+    trimNonEmpty(options.token) ?? trimNonEmpty(env[REMOTE_AUTH_TOKEN_ENV]);
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
+  return async (request) => {
+    if (fetchImpl === undefined) {
+      throw new Error("RemoteAuthBackend requires fetch for hosted model routing");
+    }
+    const response = await fetchImpl(endpoint, {
+      method: "POST",
+      headers: remoteAuthJsonHeaders(token),
+      body: JSON.stringify(compactRemoteAuthModelRequest(request)),
+    });
+    if (!response.ok) {
+      throw new Error(
+        `RemoteAuthBackend hosted model routing failed with HTTP ${response.status}`,
+      );
+    }
+    return parseRemoteAuthModelInferenceResponse(await response.json());
+  };
+}
+
+function remoteAuthJsonHeaders(
+  token: string | undefined,
+): Record<string, string> {
+  return {
+    "content-type": "application/json",
+    ...(token !== undefined ? { authorization: `Bearer ${token}` } : {}),
+  };
+}
+
+function compactRemoteAuthModelRequest(
+  request: AuthInferAgencModelParams,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries({
+      provider: request.provider,
+      requestedModel: request.requestedModel,
+      sessionId: request.sessionId,
+      subscriptionTier: request.subscriptionTier,
+      metadata: request.metadata,
+    }).filter(([, value]) => value !== undefined),
+  );
 }
 
 function parseRemoteAuthVendKeyResponse(
@@ -233,6 +296,66 @@ function parseRemoteAuthVendKeyResponse(
       ? { expiresAt: record.expiresAt }
       : {}),
   };
+}
+
+function parseRemoteAuthModelInferenceResponse(
+  value: unknown,
+): AuthInferredAgencModel {
+  if (!value || typeof value !== "object") {
+    throw new Error(
+      "RemoteAuthBackend hosted model routing returned a non-object response",
+    );
+  }
+  return normalizeRemoteAuthModelInference(
+    value as Partial<AuthInferredAgencModel>,
+  );
+}
+
+function normalizeRemoteAuthModelInference(
+  value: Partial<AuthInferredAgencModel>,
+): AuthInferredAgencModel {
+  const provider =
+    typeof value.provider === "string" ? trimNonEmpty(value.provider) : undefined;
+  if (provider === undefined) {
+    throw new Error("RemoteAuthBackend hosted model routing response missing provider");
+  }
+  const model =
+    typeof value.model === "string" ? trimNonEmpty(value.model) : undefined;
+  if (model === undefined) {
+    throw new Error("RemoteAuthBackend hosted model routing response missing model");
+  }
+  const subscriptionTier =
+    typeof value.subscriptionTier === "string"
+      ? normalizeSubscriptionTier(value.subscriptionTier)
+      : undefined;
+  if (value.subscriptionTier !== undefined && subscriptionTier === undefined) {
+    throw new Error(
+      "RemoteAuthBackend hosted model routing response has invalid subscriptionTier",
+    );
+  }
+  return {
+    ...value,
+    provider,
+    model,
+    ...(subscriptionTier !== undefined ? { subscriptionTier } : {}),
+    ...(typeof value.reason === "string" && value.reason.trim().length > 0
+      ? { reason: value.reason.trim() }
+      : {}),
+  };
+}
+
+function normalizeSubscriptionTier(
+  value: string,
+): AuthSubscriptionTier | undefined {
+  switch (value.trim()) {
+    case "free":
+    case "pro":
+    case "team":
+    case "enterprise":
+      return value.trim() as AuthSubscriptionTier;
+    default:
+      return undefined;
+  }
 }
 
 function trimNonEmpty(value: string | undefined): string | undefined {

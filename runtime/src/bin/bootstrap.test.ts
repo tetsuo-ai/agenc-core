@@ -108,6 +108,19 @@ describe("resolveStartupSelection", () => {
     expect(resolved.provider).toBe("openai");
     expect(resolved.model).toBe("gpt-5");
   });
+
+  it("selects the hosted AgenC provider when requested", () => {
+    const resolved = resolveStartupSelection({
+      config: defaultConfig(),
+      env: {
+        AGENC_PROVIDER: "agenc",
+      },
+      argv: ["node", "agenc"],
+    });
+
+    expect(resolved.provider).toBe("agenc");
+    expect(resolved.model).toBe("agenc");
+  });
 });
 
 describe("readStartupCliFlags", () => {
@@ -667,6 +680,95 @@ describe("bootstrapLocalRuntimeSession", () => {
         "getSubscriptionTier:conv-hosted",
         "inferAgencModel:grok:agenc:team",
         "vendKey:grok:conv-hosted",
+      ]);
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("routes the hosted AgenC provider through AuthBackend model inference", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const calls: string[] = [];
+    const authBackend: AuthBackend = {
+      login: () => ({ authenticated: true, provider: "local" }),
+      logout: () => ({ authenticated: false }),
+      whoami: () => ({ authenticated: true, provider: "local" }),
+      vendKey: (provider, sessionId) => {
+        calls.push(`vendKey:${provider}:${sessionId}`);
+        return { provider, sessionId, apiKey: "managed-key" };
+      },
+      inferAgencModel: ({ provider, requestedModel, subscriptionTier } = {}) => {
+        calls.push(
+          `inferAgencModel:${provider ?? ""}:${requestedModel ?? ""}:${subscriptionTier ?? ""}`,
+        );
+        return {
+          provider: "grok",
+          model: "grok-4-fast",
+          subscriptionTier,
+        };
+      },
+      getSubscriptionTier: ({ sessionId } = {}) => {
+        calls.push(`getSubscriptionTier:${sessionId ?? ""}`);
+        return "team";
+      },
+    };
+
+    const providerMod = await import("../llm/provider.js");
+    const createProviderSpy = vi
+      .spyOn(providerMod, "createProvider")
+      .mockImplementation(
+        () =>
+          ({
+            name: "stub",
+            chat: async () => ({
+              content: "ok",
+              toolCalls: [],
+              usage: {
+                promptTokens: 1,
+                completionTokens: 1,
+                totalTokens: 2,
+              },
+            }),
+          }) as never,
+      );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        authBackend,
+        conversationId: "conv-agenc-provider",
+        argv: ["node", "agenc", "--provider", "agenc"],
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          AGENC_XAI_API_KEY: "",
+          HOME: home,
+          GROK_API_KEY: "",
+          XAI_API_KEY: "",
+        },
+      });
+      shutdown = boot.shutdown;
+
+      expect(boot.resolvedProvider).toBe("grok");
+      expect(boot.model).toBe("grok-4-fast");
+      expect(createProviderSpy).toHaveBeenCalledWith(
+        "grok",
+        expect.objectContaining({
+          apiKey: "managed-key",
+          model: "grok-4-fast",
+        }),
+      );
+      expect(calls).toEqual([
+        "getSubscriptionTier:conv-agenc-provider",
+        "inferAgencModel:agenc:agenc:team",
+        "vendKey:grok:conv-agenc-provider",
       ]);
     } finally {
       await shutdown?.().catch(() => {

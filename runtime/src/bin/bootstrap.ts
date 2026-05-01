@@ -175,8 +175,12 @@ async function resolveAuthModelSelection(params: {
     sessionId: params.sessionId,
     subscriptionTier: params.subscriptionTier,
   });
+  const inferredProvider = normalizeProviderName(inferred.provider);
   return {
-    provider: normalizeProviderName(inferred.provider) ?? params.provider,
+    provider:
+      inferredProvider !== null && inferredProvider !== "agenc"
+        ? inferredProvider
+        : params.provider,
     model: inferred.model,
   };
 }
@@ -826,6 +830,13 @@ export async function bootstrapLocalRuntimeSession(
         emitWarning: emitProviderWarning,
         emitDiagnostic: emitProviderDiagnostic,
         onCapabilityDrift: handleCapabilityDrift,
+        ...(options.authBackend !== undefined
+          ? {
+            authBackend: options.authBackend,
+            sessionId: conversationId,
+            subscriptionTier: authSubscriptionTier,
+          }
+          : {}),
         ...(providerSettings?.contextWindowTokens !== undefined
           ? { contextWindowTokens: providerSettings.contextWindowTokens }
           : {}),

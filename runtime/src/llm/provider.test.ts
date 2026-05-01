@@ -1,4 +1,6 @@
 import { describe, expect, test } from "vitest";
+import type { AuthBackend } from "../auth/backend.js";
+import { AgenCProvider } from "./providers/agenc/index.js";
 import { AnthropicProvider } from "./providers/anthropic/index.js";
 import { DeepSeekProvider } from "./providers/deepseek/index.js";
 import { GeminiProvider } from "./providers/gemini/index.js";
@@ -38,6 +40,18 @@ function withEnv<T>(
 }
 
 describe("createProvider", () => {
+  const authBackend: AuthBackend = {
+    login: () => ({ authenticated: true, provider: "remote" }),
+    logout: () => ({ authenticated: false }),
+    whoami: () => ({ authenticated: true, provider: "remote" }),
+    vendKey: (provider, sessionId) => ({ provider, sessionId, apiKey: "key" }),
+    inferAgencModel: () => ({
+      provider: "grok",
+      model: "grok-4-fast",
+    }),
+    getSubscriptionTier: () => "team",
+  };
+
   test("routes 'grok' to GrokProvider", () => {
     const provider = createProvider("grok", {
       apiKey: "test-key",
@@ -45,6 +59,43 @@ describe("createProvider", () => {
     });
     expect(provider).toBeInstanceOf(GrokProvider);
     expect(isFactoryProvider(provider)).toBe(true);
+  });
+
+  test("routes 'agenc' to AgenCProvider with explicit auth context", () => {
+    const provider = createProvider("agenc", {
+      model: "agenc",
+      extra: {
+        authBackend,
+        sessionId: "session-1",
+        subscriptionTier: "team",
+        maxTokens: 2048,
+      },
+    });
+
+    expect(provider).toBeInstanceOf(AgenCProvider);
+    expect(isFactoryProvider(provider)).toBe(true);
+    expect(readProviderIdentity(provider)).toBe("agenc");
+    expect(readProviderFactoryOptions(provider)).toMatchObject({
+      model: "agenc",
+      extra: {
+        maxTokens: 2048,
+      },
+    });
+    expect(readProviderFactoryOptions(provider).extra).not.toHaveProperty(
+      "authBackend",
+    );
+  });
+
+  test("'agenc' without auth context throws explanatory error", () => {
+    expect(() => createProvider("agenc", { model: "agenc" })).toThrow(
+      /authBackend/,
+    );
+    expect(() =>
+      createProvider("agenc", {
+        model: "agenc",
+        extra: { authBackend },
+      }),
+    ).toThrow(/sessionId/);
   });
 
   test("routes 'openai' to OpenAIProvider", () => {

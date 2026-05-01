@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  REMOTE_AUTH_MODEL_URL_ENV,
   REMOTE_AUTH_TOKEN_ENV,
   REMOTE_AUTH_URL_ENV,
   RemoteAuthBackend,
@@ -201,7 +202,103 @@ describe("RemoteAuthBackend", () => {
     );
   });
 
-  it("keeps non-vending remote auth surfaces explicit until their rows land", () => {
+  it("infers hosted AgenC model aliases through the configured model inferer", async () => {
+    const modelInferer = vi.fn(
+      ({ subscriptionTier }) => ({
+        provider: " grok ",
+        model: " grok-4-fast ",
+        ...(subscriptionTier ? { subscriptionTier } : {}),
+        reason: " team route ",
+      }),
+    );
+    const backend = new RemoteAuthBackend({ modelInferer });
+
+    await expect(
+      backend.inferAgencModel({
+        provider: "agenc",
+        requestedModel: "agenc",
+        sessionId: "session-1",
+        subscriptionTier: "team",
+      }),
+    ).resolves.toEqual({
+      provider: "grok",
+      model: "grok-4-fast",
+      subscriptionTier: "team",
+      reason: "team route",
+    });
+    expect(modelInferer).toHaveBeenCalledWith({
+      provider: "agenc",
+      requestedModel: "agenc",
+      sessionId: "session-1",
+      subscriptionTier: "team",
+    });
+  });
+
+  it("uses the configured HTTP hosted model routing endpoint", async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          provider: "grok",
+          model: "grok-4-fast",
+          subscriptionTier: "pro",
+          reason: "hosted routing",
+        }),
+        { status: 200 },
+      ),
+    );
+    const backend = new RemoteAuthBackend({
+      env: {
+        [REMOTE_AUTH_MODEL_URL_ENV]: "https://api.agenc.tech/test/infer-model",
+        [REMOTE_AUTH_TOKEN_ENV]: "remote-token",
+      },
+      fetchImpl,
+    });
+
+    await expect(
+      backend.inferAgencModel({
+        provider: "agenc",
+        requestedModel: "agenc:fast",
+        sessionId: "session-1",
+        subscriptionTier: "pro",
+      }),
+    ).resolves.toEqual({
+      provider: "grok",
+      model: "grok-4-fast",
+      subscriptionTier: "pro",
+      reason: "hosted routing",
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://api.agenc.tech/test/infer-model",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer remote-token",
+        },
+        body: JSON.stringify({
+          provider: "agenc",
+          requestedModel: "agenc:fast",
+          sessionId: "session-1",
+          subscriptionTier: "pro",
+        }),
+      },
+    );
+  });
+
+  it("rejects hosted model routing responses without a concrete model", async () => {
+    const backend = new RemoteAuthBackend({
+      modelInferer: () => ({
+        provider: "grok",
+        model: " ",
+      }),
+    });
+
+    await expect(backend.inferAgencModel({ requestedModel: "agenc" })).rejects.toThrow(
+      /missing model/,
+    );
+  });
+
+  it("keeps non-hosted remote auth surfaces explicit until their rows land", () => {
     const backend = new RemoteAuthBackend();
 
     expect(() => backend.login()).toThrow(/remote login flow/);
@@ -210,7 +307,6 @@ describe("RemoteAuthBackend", () => {
       provider: "remote",
     });
     expect(backend.logout()).toEqual({ authenticated: false });
-    expect(() => backend.inferAgencModel()).toThrow(/hosted model routing/);
     expect(backend.getSubscriptionTier()).toBe("free");
   });
 });
