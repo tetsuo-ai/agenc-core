@@ -3,6 +3,10 @@
   "$id": "urn:agenc:app-server:protocol",
   "title": "AgenC Daemon JSON-RPC Protocol",
   "description": "Initial AgenC daemon JSON-RPC method surface.",
+  "x-agenc-package": {
+    "name": "@tetsuo-ai/protocol",
+    "export": "./daemon-json-rpc.schema.json"
+  },
   "x-agenc-methods": [
     "agent.create",
     "agent.list",

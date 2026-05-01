@@ -12,6 +12,17 @@
  */
 
 export const JSON_RPC_VERSION = "2.0" as const;
+export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
+  "urn:agenc:app-server:protocol" as const;
+export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
+  "@tetsuo-ai/protocol" as const;
+export const AGENC_DAEMON_PROTOCOL_SCHEMA_EXPORT =
+  "./daemon-json-rpc.schema.json" as const;
+export const AGENC_DAEMON_PROTOCOL_PUBLISH_TARGET = {
+  packageName: AGENC_DAEMON_PROTOCOL_PACKAGE_NAME,
+  schemaExport: AGENC_DAEMON_PROTOCOL_SCHEMA_EXPORT,
+  schemaId: AGENC_DAEMON_PROTOCOL_SCHEMA_ID,
+} as const;
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonArray = readonly JsonValue[];
