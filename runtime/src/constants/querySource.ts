@@ -1,8 +1,13 @@
-// @ts-nocheck
-// Stub for AgenC's `src/constants/querySource.ts`, which is imported by
-// the ported compact/ tree but never exists in upstream source. Compact uses
-// this only as a type-only reference, so a permissive alias is sufficient.
-//
-// When the codex runtime supplies a real `QuerySource` shape, replace this
-// stub with the genuine type.
+/**
+ * Ports OC `src/constants/querySource.ts` onto AgenC's runtime.
+ *
+ * Why this lives here / shape difference from upstream:
+ *   - The donor snapshot exposes query sources as a permissive alias because
+ *     the concrete source enum is outside that source slice.
+ *
+ * Cross-cuts deliberately NOT carried:
+ *   - None; this file is type-only compatibility for query-source imports.
+ */
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
 export type QuerySource = any;
