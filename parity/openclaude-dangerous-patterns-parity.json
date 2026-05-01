@@ -1,0 +1,56 @@
+{
+  "contractName": "openclaude-dangerous-patterns-parity",
+  "scope": "Replace inline dangerous permission-rule patterns with the upstream dangerousPatterns constants",
+  "generatedAt": "2026-05-01T05:19:06.000Z",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/utils/permissions/dangerousPatterns.ts",
+    "src/utils/permissions/permissionSetup.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/permissions/dangerous-patterns.ts",
+    "runtime/src/permissions/mode.ts"
+  ],
+  "testFiles": [
+    "runtime/src/permissions/dangerous-patterns.test.ts",
+    "runtime/src/permissions/mode.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "dangerous-pattern-constants",
+      "source": "src/utils/permissions/dangerousPatterns.ts",
+      "target": "runtime/src/permissions/dangerous-patterns.ts",
+      "requiredBehaviors": [
+        "CROSS_PLATFORM_CODE_EXEC matches upstream order and contents",
+        "DANGEROUS_BASH_PATTERNS matches upstream order and contents for the current environment",
+        "the live permission-mode path imports the shared constants instead of maintaining an inline subset"
+      ],
+      "tests": [
+        "runtime/src/permissions/dangerous-patterns.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/permissions/dangerous-patterns.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "dangerous-rule-matching",
+      "source": "src/utils/permissions/permissionSetup.ts",
+      "target": "runtime/src/permissions/mode.ts",
+      "requiredBehaviors": [
+        "Bash dangerous-rule stripping uses DANGEROUS_BASH_PATTERNS from the shared constants module",
+        "PowerShell dangerous-rule stripping uses CROSS_PLATFORM_CODE_EXEC plus PowerShell-specific escape hatches",
+        "PowerShell .exe forms derived from shared patterns are stripped the same way as upstream"
+      ],
+      "tests": [
+        "runtime/src/permissions/mode.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/permissions/mode.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

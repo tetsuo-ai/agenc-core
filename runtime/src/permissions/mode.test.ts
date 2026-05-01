@@ -422,6 +422,14 @@ describe("isDangerousBashPermission", () => {
     expect(isDangerousBashPermission("Bash", "python -c*")).toBe(true);
   });
 
+  it("uses the live upstream Bash pattern list instead of the old subset", () => {
+    if (process.env.USER_TYPE === "ant") {
+      expect(isDangerousBashPermission("Bash", "gh api:*")).toBe(true);
+    } else {
+      expect(isDangerousBashPermission("Bash", "gh api:*")).toBe(false);
+    }
+  });
+
   it("ignores non-Bash tools", () => {
     expect(isDangerousBashPermission("Read", "*")).toBe(false);
   });
@@ -429,6 +437,34 @@ describe("isDangerousBashPermission", () => {
   it("allows narrow Bash rules", () => {
     expect(isDangerousBashPermission("Bash", "ls -la")).toBe(false);
     expect(isDangerousBashPermission("Bash", "git status")).toBe(false);
+  });
+});
+
+describe("PowerShell dangerous permission parity", () => {
+  it("strips PowerShell rules for cross-platform interpreters", () => {
+    const ctx = baseCtx({
+      alwaysAllowRules: {
+        userSettings: ["PowerShell(python:*)", "Read(src/**)"],
+      },
+    });
+    const stripped = stripDangerousPermissionsForAutoMode(ctx);
+    expect(stripped.alwaysAllowRules.userSettings).toEqual(["Read(src/**)"]);
+    expect(stripped.strippedDangerousRules?.userSettings).toEqual([
+      "PowerShell(python:*)",
+    ]);
+  });
+
+  it("strips PowerShell .exe forms derived from shared patterns", () => {
+    const ctx = baseCtx({
+      alwaysAllowRules: {
+        userSettings: ["PowerShell(npm.exe run:*)", "Read(src/**)"],
+      },
+    });
+    const stripped = stripDangerousPermissionsForAutoMode(ctx);
+    expect(stripped.alwaysAllowRules.userSettings).toEqual(["Read(src/**)"]);
+    expect(stripped.strippedDangerousRules?.userSettings).toEqual([
+      "PowerShell(npm.exe run:*)",
+    ]);
   });
 });
 
