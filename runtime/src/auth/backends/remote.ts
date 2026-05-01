@@ -1,0 +1,267 @@
+import type {
+  AuthBackend,
+  AuthInferAgencModelParams,
+  AuthInferredAgencModel,
+  AuthLoginParams,
+  AuthLoginResult,
+  AuthLogoutParams,
+  AuthLogoutResult,
+  AuthProviderSlug,
+  AuthSessionId,
+  AuthSessionRef,
+  AuthSubscriptionTier,
+  AuthVendedKey,
+  AuthWhoamiParams,
+  AuthWhoamiResult,
+} from "../backend.js";
+import type { EnvSnapshot } from "../../config/env.js";
+
+export const DEFAULT_REMOTE_AUTH_KEY_VENDING_URL =
+  "https://api.agenc.tech/v1/auth/vend-key" as const;
+export const REMOTE_AUTH_URL_ENV = "AGENC_REMOTE_AUTH_URL" as const;
+export const REMOTE_AUTH_TOKEN_ENV = "AGENC_REMOTE_AUTH_TOKEN" as const;
+export const REMOTE_AUTH_KEY_CACHE_TTL_MS = 5 * 60 * 1000;
+
+export interface RemoteAuthVendKeyRequest {
+  readonly provider: AuthProviderSlug | string;
+  readonly sessionId: AuthSessionId;
+}
+
+export type RemoteAuthKeyVendor = (
+  request: RemoteAuthVendKeyRequest,
+) => AuthVendedKey | Promise<AuthVendedKey>;
+
+export interface RemoteAuthBackendOptions {
+  readonly keyVendor?: RemoteAuthKeyVendor;
+  readonly endpoint?: string;
+  readonly env?: EnvSnapshot;
+  readonly fetchImpl?: typeof fetch;
+  readonly keyCacheTtlMs?: number;
+  readonly nowMs?: () => number;
+  readonly token?: string;
+}
+
+interface CachedRemoteAuthKey {
+  readonly promise: Promise<AuthVendedKey>;
+  readonly expiresAtMs: number;
+}
+
+export class RemoteAuthBackend implements AuthBackend {
+  readonly #keyVendor: RemoteAuthKeyVendor;
+  readonly #keyCacheTtlMs: number;
+  readonly #nowMs: () => number;
+  readonly #vendedKeys = new Map<string, CachedRemoteAuthKey>();
+
+  constructor(options: RemoteAuthBackendOptions = {}) {
+    this.#keyVendor = options.keyVendor ?? createHttpRemoteAuthKeyVendor(options);
+    this.#keyCacheTtlMs = positiveTtlMs(options.keyCacheTtlMs);
+    this.#nowMs = options.nowMs ?? (() => Date.now());
+  }
+
+  login(_params: AuthLoginParams = {}): AuthLoginResult {
+    throw new Error(
+      "RemoteAuthBackend login is not available until the remote login flow is configured",
+    );
+  }
+
+  logout(_params: AuthLogoutParams = {}): AuthLogoutResult {
+    return { authenticated: false };
+  }
+
+  whoami(_params: AuthWhoamiParams = {}): AuthWhoamiResult {
+    return { authenticated: false, provider: "remote" };
+  }
+
+  vendKey(
+    provider: AuthProviderSlug | string,
+    sessionId: AuthSessionId,
+  ): Promise<AuthVendedKey> {
+    const cacheKey = remoteProviderKeyCacheKey(provider, sessionId);
+    const now = this.#nowMs();
+    this.pruneExpiredKeys(now);
+    const existing = this.#vendedKeys.get(cacheKey);
+    if (existing !== undefined && existing.expiresAtMs > now) {
+      return existing.promise;
+    }
+    if (existing !== undefined) {
+      this.#vendedKeys.delete(cacheKey);
+    }
+
+    const uncached = this.#requestVendedKey(provider, sessionId).catch((error) => {
+      this.#vendedKeys.delete(cacheKey);
+      throw error;
+    });
+    const cached = uncached.then((key) => {
+      const expiresAtMs = cacheExpiresAtMs(
+        key,
+        this.#nowMs(),
+        this.#keyCacheTtlMs,
+      );
+      const current = this.#vendedKeys.get(cacheKey);
+      if (current?.promise === cached) {
+        this.#vendedKeys.set(cacheKey, {
+          promise: cached,
+          expiresAtMs,
+        });
+      }
+      return key;
+    });
+    this.#vendedKeys.set(cacheKey, {
+      promise: cached,
+      expiresAtMs: now + this.#keyCacheTtlMs,
+    });
+    return cached;
+  }
+
+  pruneExpiredKeys(nowMs: number = this.#nowMs()): number {
+    let pruned = 0;
+    for (const [cacheKey, cached] of this.#vendedKeys) {
+      if (cached.expiresAtMs <= nowMs) {
+        this.#vendedKeys.delete(cacheKey);
+        pruned += 1;
+      }
+    }
+    return pruned;
+  }
+
+  inferAgencModel(
+    _params: AuthInferAgencModelParams = {},
+  ): AuthInferredAgencModel {
+    throw new Error(
+      "RemoteAuthBackend model inference is not available until hosted model routing is configured",
+    );
+  }
+
+  getSubscriptionTier(
+    _params: AuthSessionRef = {},
+  ): AuthSubscriptionTier {
+    return "free";
+  }
+
+  async #requestVendedKey(
+    provider: AuthProviderSlug | string,
+    sessionId: AuthSessionId,
+  ): Promise<AuthVendedKey> {
+    const vended = await this.#keyVendor({ provider, sessionId });
+    const apiKey = vended.apiKey.trim();
+    if (apiKey.length === 0) {
+      throw new Error(
+        `RemoteAuthBackend returned an empty managed key for provider "${provider}" in session "${sessionId}"`,
+      );
+    }
+    if (vended.provider !== provider) {
+      throw new Error(
+        `RemoteAuthBackend key vending response provider mismatch for "${provider}"`,
+      );
+    }
+    if (vended.sessionId !== sessionId) {
+      throw new Error(
+        `RemoteAuthBackend key vending response session mismatch for "${sessionId}"`,
+      );
+    }
+    return {
+      ...vended,
+      apiKey,
+    };
+  }
+}
+
+function createHttpRemoteAuthKeyVendor(
+  options: RemoteAuthBackendOptions,
+): RemoteAuthKeyVendor {
+  const env = options.env ?? process.env;
+  const endpoint =
+    trimNonEmpty(options.endpoint) ??
+    trimNonEmpty(env[REMOTE_AUTH_URL_ENV]) ??
+    DEFAULT_REMOTE_AUTH_KEY_VENDING_URL;
+  const token =
+    trimNonEmpty(options.token) ?? trimNonEmpty(env[REMOTE_AUTH_TOKEN_ENV]);
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
+  return async (request) => {
+    if (fetchImpl === undefined) {
+      throw new Error("RemoteAuthBackend requires fetch for remote key vending");
+    }
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+    };
+    if (token !== undefined) {
+      headers.authorization = `Bearer ${token}`;
+    }
+    const response = await fetchImpl(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        provider: request.provider,
+        sessionId: request.sessionId,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(
+        `RemoteAuthBackend key vending failed with HTTP ${response.status}`,
+      );
+    }
+    return parseRemoteAuthVendKeyResponse(await response.json(), request);
+  };
+}
+
+function parseRemoteAuthVendKeyResponse(
+  value: unknown,
+  request: RemoteAuthVendKeyRequest,
+): AuthVendedKey {
+  if (!value || typeof value !== "object") {
+    throw new Error("RemoteAuthBackend key vending returned a non-object response");
+  }
+  const record = value as Record<string, unknown>;
+  if (record.provider !== request.provider) {
+    throw new Error(
+      `RemoteAuthBackend key vending response provider mismatch for "${request.provider}"`,
+    );
+  }
+  if (record.sessionId !== request.sessionId) {
+    throw new Error(
+      `RemoteAuthBackend key vending response session mismatch for "${request.sessionId}"`,
+    );
+  }
+  if (typeof record.apiKey !== "string") {
+    throw new Error("RemoteAuthBackend key vending response missing apiKey");
+  }
+  return {
+    provider: record.provider,
+    sessionId: record.sessionId,
+    apiKey: record.apiKey,
+    ...(typeof record.expiresAt === "string" && record.expiresAt.length > 0
+      ? { expiresAt: record.expiresAt }
+      : {}),
+  };
+}
+
+function trimNonEmpty(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
+function positiveTtlMs(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : REMOTE_AUTH_KEY_CACHE_TTL_MS;
+}
+
+function cacheExpiresAtMs(
+  key: AuthVendedKey,
+  nowMs: number,
+  ttlMs: number,
+): number {
+  const ttlExpiresAt = nowMs + ttlMs;
+  if (key.expiresAt === undefined) return ttlExpiresAt;
+  const keyExpiresAt = Date.parse(key.expiresAt);
+  return Number.isFinite(keyExpiresAt)
+    ? Math.min(ttlExpiresAt, keyExpiresAt)
+    : ttlExpiresAt;
+}
+
+function remoteProviderKeyCacheKey(
+  provider: AuthProviderSlug | string,
+  sessionId: AuthSessionId,
+): string {
+  return `${sessionId}\0${provider}`;
+}

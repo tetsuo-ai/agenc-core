@@ -5,10 +5,15 @@ import {
   LocalAuthBackend,
   type LocalAuthBackendOptions,
 } from "./backends/local.js";
+import {
+  RemoteAuthBackend,
+  type RemoteAuthBackendOptions,
+} from "./backends/remote.js";
 
 export interface AuthBackendSelectionOptions {
   readonly agencHome?: string;
   readonly env?: EnvSnapshot;
+  readonly remote?: RemoteAuthBackendOptions;
 }
 
 export class InvalidAuthBackendConfigError extends Error {
@@ -43,9 +48,7 @@ export function createAuthBackend(
     case "local":
       return new LocalAuthBackend(localBackendOptions(options));
     case "remote":
-      throw new Error(
-        "RemoteAuthBackend is not available in this AgenC build; use auth.backend = \"local\"",
-      );
+      return new RemoteAuthBackend(remoteBackendOptions(options));
   }
 }
 
@@ -55,5 +58,14 @@ function localBackendOptions(
   return {
     ...(options.agencHome ? { agencHome: options.agencHome } : {}),
     ...(options.env ? { env: options.env } : {}),
+  };
+}
+
+function remoteBackendOptions(
+  options: AuthBackendSelectionOptions,
+): RemoteAuthBackendOptions {
+  return {
+    ...(options.env ? { env: options.env } : {}),
+    ...(options.remote ?? {}),
   };
 }
