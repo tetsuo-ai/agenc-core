@@ -291,6 +291,39 @@ describe("AgenCProvider", () => {
     ]);
   });
 
+  it("converts delegate health check rejections to false", async () => {
+    const authBackend: AuthBackend = {
+      login: () => ({ authenticated: true, provider: "remote" }),
+      logout: () => ({ authenticated: false }),
+      whoami: () => ({ authenticated: true, provider: "remote" }),
+      vendKey: (provider, sessionId) => ({
+        provider,
+        sessionId,
+        apiKey: "managed-key",
+      }),
+      inferAgencModel: () => ({
+        provider: "grok",
+        model: "grok-4-fast",
+      }),
+      getSubscriptionTier: () => "team",
+    };
+    const delegate = {
+      ...makeDelegateProvider("grok-4-fast"),
+      healthCheck: vi.fn(async () => {
+        throw new Error("delegate unavailable");
+      }),
+    };
+    const provider = new AgenCProvider({
+      authBackend,
+      sessionId: "session-1",
+      model: "agenc",
+      providerFactory: () => delegate,
+    });
+
+    await expect(provider.healthCheck()).resolves.toBe(false);
+    expect(delegate.healthCheck).toHaveBeenCalledOnce();
+  });
+
   it("fails closed when model inference returns the AgenC provider again", async () => {
     const authBackend: AuthBackend = {
       login: () => ({ authenticated: true, provider: "remote" }),

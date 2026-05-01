@@ -91,7 +91,7 @@ export class AgenCProvider implements LLMProvider {
   async healthCheck(): Promise<boolean> {
     try {
       const delegate = await this.resolveDelegate();
-      return delegate.instance.healthCheck();
+      return await delegate.instance.healthCheck();
     } catch {
       return false;
     }
