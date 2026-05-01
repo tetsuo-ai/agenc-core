@@ -41,6 +41,7 @@ export class AgenCClientMultiplexerError extends Error {
 export interface AgenCClientMultiplexerOptions {
   readonly sessionManager: AgenCDaemonSessionManager;
   readonly createClientId?: () => string;
+  readonly maxBufferedEventsPerSession?: number;
 }
 
 export interface AgenCClientRegistration {
@@ -73,6 +74,7 @@ interface MutableClient {
 interface MutableSessionRoute {
   sessionId: string;
   clientAttachmentIds: Map<string, string>;
+  bufferedEvents: JsonObject[];
 }
 
 interface MultiplexerState {
@@ -88,6 +90,7 @@ interface EnqueuedDelivery {
 export class AgenCDaemonClientMultiplexer {
   readonly #sessionManager: AgenCDaemonSessionManager;
   readonly #createClientId: () => string;
+  readonly #maxBufferedEventsPerSession: number;
   readonly #state = new AsyncLock<MultiplexerState>({
     clients: new Map(),
     sessions: new Map(),
@@ -97,6 +100,8 @@ export class AgenCDaemonClientMultiplexer {
     this.#sessionManager = options.sessionManager;
     this.#createClientId =
       options.createClientId ?? (() => `client_${randomUUID()}`);
+    this.#maxBufferedEventsPerSession =
+      options.maxBufferedEventsPerSession ?? 1000;
   }
 
   async registerClient(
@@ -125,18 +130,37 @@ export class AgenCDaemonClientMultiplexer {
     sessionId: string,
     clientId: string,
   ): Promise<SessionAttachResult> {
-    return this.#state.with(async (state) => {
-      const client = requireClient(state, clientId);
-      const attachment = await this.#sessionManager.attachSession({
-        sessionId,
-        clientId,
-      });
-      const route = getOrCreateRoute(state, sessionId);
+    const { attachment, replayedEventCount, replay } = await this.#state.with(
+      async (state) => {
+        const client = requireClient(state, clientId);
+        const attachment = await this.#sessionManager.attachSession({
+          sessionId,
+          clientId,
+        });
+        const route = getOrCreateRoute(state, sessionId);
 
-      client.sessionIds.add(sessionId);
-      route.clientAttachmentIds.set(clientId, attachment.attachmentId);
-      return attachment;
-    });
+        client.sessionIds.add(sessionId);
+        route.clientAttachmentIds.set(clientId, attachment.attachmentId);
+        const replayedEventCount = route.bufferedEvents.length;
+        const replay = route.bufferedEvents
+          .map((event) => enqueueDelivery(client, event))
+          .filter((delivery): delivery is EnqueuedDelivery => delivery !== null);
+
+        return { attachment, replayedEventCount, replay };
+      },
+    );
+
+    if (replay.length > 0) {
+      const replayResult = await settleDeliveries(replay);
+      if (replayResult.failed.length === 0) {
+        await this.#state.with((state) => {
+          const route = state.sessions.get(sessionId);
+          route?.bufferedEvents.splice(0, replayedEventCount);
+        });
+      }
+    }
+
+    return attachment;
   }
 
   async detachClientFromSession(
@@ -159,7 +183,7 @@ export class AgenCDaemonClientMultiplexer {
       });
       route.clientAttachmentIds.delete(clientId);
       if (route.clientAttachmentIds.size === 0) {
-        state.sessions.delete(sessionId);
+        deleteRouteIfEmpty(state, route);
       }
       client.sessionIds.delete(sessionId);
       return detached;
@@ -167,6 +191,10 @@ export class AgenCDaemonClientMultiplexer {
   }
 
   async removeClient(clientId: string): Promise<readonly string[]> {
+    return this.disconnectClient(clientId);
+  }
+
+  async disconnectClient(clientId: string): Promise<readonly string[]> {
     return this.#state.with(async (state) => {
       const client = requireClient(state, clientId);
       const detachedSessionIds = [...client.sessionIds];
@@ -175,9 +203,6 @@ export class AgenCDaemonClientMultiplexer {
       for (const sessionId of detachedSessionIds) {
         const route = state.sessions.get(sessionId);
         route?.clientAttachmentIds.delete(clientId);
-        if (route !== undefined && route.clientAttachmentIds.size === 0) {
-          state.sessions.delete(sessionId);
-        }
         await this.#sessionManager.detachSession({ sessionId, clientId });
       }
 
@@ -200,40 +225,23 @@ export class AgenCDaemonClientMultiplexer {
       const route = state.sessions.get(sessionId);
       if (route === undefined) return [];
 
-      return [...route.clientAttachmentIds.keys()]
+      const activeClientIds = [...route.clientAttachmentIds.keys()].filter(
+        (clientId) => state.clients.has(clientId),
+      );
+
+      if (activeClientIds.length === 0) {
+        bufferSessionEvent(route, event, this.#maxBufferedEventsPerSession);
+        return [];
+      }
+
+      return activeClientIds
         .map((clientId) => enqueueDelivery(state.clients.get(clientId), event))
         .filter((delivery): delivery is EnqueuedDelivery => delivery !== null);
     });
 
-    const settled = await Promise.all(
-      deliveries.map(async (delivery) => {
-        try {
-          await delivery.delivered;
-          return {
-            clientId: delivery.clientId,
-            delivered: true as const,
-          };
-        } catch (error) {
-          return {
-            clientId: delivery.clientId,
-            delivered: false as const,
-            message: errorMessage(error),
-          };
-        }
-      }),
-    );
-
     return {
       sessionId,
-      deliveredClientIds: settled
-        .filter((result) => result.delivered)
-        .map((result) => result.clientId),
-      failed: settled
-        .filter((result) => !result.delivered)
-        .map((result) => ({
-          clientId: result.clientId,
-          message: result.message,
-        })),
+      ...(await settleDeliveries(deliveries)),
     };
   }
 }
@@ -261,6 +269,7 @@ function getOrCreateRoute(
     route = {
       sessionId,
       clientAttachmentIds: new Map(),
+      bufferedEvents: [],
     };
     state.sessions.set(sessionId, route);
   }
@@ -284,6 +293,69 @@ function enqueueDelivery(
     clientId: client.clientId,
     delivered,
   };
+}
+
+async function settleDeliveries(
+  deliveries: readonly EnqueuedDelivery[],
+): Promise<{
+  readonly deliveredClientIds: readonly string[];
+  readonly failed: readonly AgenCSessionBroadcastFailure[];
+}> {
+  const settled = await Promise.all(
+    deliveries.map(async (delivery) => {
+      try {
+        await delivery.delivered;
+        return {
+          clientId: delivery.clientId,
+          delivered: true as const,
+        };
+      } catch (error) {
+        return {
+          clientId: delivery.clientId,
+          delivered: false as const,
+          message: errorMessage(error),
+        };
+      }
+    }),
+  );
+
+  return {
+    deliveredClientIds: settled
+      .filter((result) => result.delivered)
+      .map((result) => result.clientId),
+    failed: settled
+      .filter((result) => !result.delivered)
+      .map((result) => ({
+        clientId: result.clientId,
+        message: result.message,
+      })),
+  };
+}
+
+function bufferSessionEvent(
+  route: MutableSessionRoute,
+  event: JsonObject,
+  maxBufferedEvents: number,
+): void {
+  route.bufferedEvents.push(event);
+  if (route.bufferedEvents.length > maxBufferedEvents) {
+    route.bufferedEvents.splice(
+      0,
+      route.bufferedEvents.length - maxBufferedEvents,
+    );
+  }
+}
+
+function deleteRouteIfEmpty(
+  state: MultiplexerState,
+  route: MutableSessionRoute,
+): void {
+  if (
+    route.clientAttachmentIds.size === 0 &&
+    route.bufferedEvents.length === 0
+  ) {
+    state.sessions.delete(route.sessionId);
+  }
 }
 
 function errorMessage(error: unknown): string {
