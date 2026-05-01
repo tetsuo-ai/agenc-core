@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultConfig, mergeConfigs } from "../config/schema.js";
 import { LocalAuthBackend } from "./backends/local.js";
 import { RemoteAuthBackend } from "./backends/remote.js";
@@ -59,6 +59,54 @@ describe("auth backend selection", () => {
       provider: "grok",
       sessionId: "session-1",
       apiKey: "managed-key",
+    });
+  });
+
+  it("passes remote login prompt options through non-CLI backend selection", async () => {
+    const agencHome = await makeTempHome();
+    homes.push(agencHome);
+    const config = mergeConfigs(defaultConfig(), {
+      auth: { backend: "remote" },
+    });
+    const onDeviceCode = vi.fn();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            device_code: "device-1",
+            user_code: "USER-1",
+            verification_uri: "https://agenc.tech/login",
+            interval: 1,
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ token: "remote-token" }), {
+          status: 200,
+        }),
+      );
+
+    const backend = createAuthBackend(config, {
+      agencHome,
+      remote: {
+        fetchImpl,
+        loginPollEndpoint: "https://api.agenc.tech/test/login/poll",
+        loginStartEndpoint: "https://api.agenc.tech/test/login/start",
+        onDeviceCode,
+      },
+    });
+
+    await expect(backend.login({ sessionId: "daemon" })).resolves.toMatchObject({
+      authenticated: true,
+      provider: "remote",
+      token: "remote-token",
+    });
+    expect(onDeviceCode).toHaveBeenCalledWith({
+      verificationUri: "https://agenc.tech/login",
+      userCode: "USER-1",
+      intervalSeconds: 1,
     });
   });
 

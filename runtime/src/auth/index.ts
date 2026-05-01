@@ -8,7 +8,12 @@ export type {
 export { RemoteAuthBackend } from "./backends/remote.js";
 export type {
   RemoteAuthBackendOptions,
+  RemoteAuthDeviceCodeHandler,
+  RemoteAuthDeviceCodePrompt,
   RemoteAuthKeyVendor,
+  RemoteAuthLoginFlow,
+  RemoteAuthLoginFlowResult,
+  RemoteAuthLoginRequest,
   RemoteAuthModelInferer,
   RemoteAuthSubscriptionTierResolver,
   RemoteAuthVendKeyRequest,
