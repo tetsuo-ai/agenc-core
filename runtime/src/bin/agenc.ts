@@ -97,6 +97,10 @@ import {
   parseAgenCDaemonCliArgs,
   runAgenCDaemonCli,
 } from "../app-server/daemon-cli.js";
+import {
+  ensureAgenCDaemonAutostart,
+  shouldAutostartAgenCDaemon,
+} from "../app-server/daemon-autostart.js";
 
 export {
   bootstrapLocalRuntimeSession,
@@ -1515,6 +1519,16 @@ export async function main(): Promise<number> {
     }
     process.stdout.write(`${startupShortCircuit.text}\n`);
     return 0;
+  }
+  if (shouldAutostartAgenCDaemon(process.env)) {
+    try {
+      await ensureAgenCDaemonAutostart();
+    } catch (error) {
+      process.stderr.write(
+        `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      return 1;
+    }
   }
   return routeCLI({
     argv: process.argv,
