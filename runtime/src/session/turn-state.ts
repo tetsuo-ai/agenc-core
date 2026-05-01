@@ -4,10 +4,9 @@
  * Hand-port of agenc `src/query.ts`'s `State` type (query.ts:203) plus
  * the 22 loop-local variables the body destructures/re-assigns each iteration
  * (query.ts:315-339). Every field below cites its exact AgenC source
- * line per `docs/plan/translation-conventions.md` "full-port with citations"
- * rule. Forward-dep types (StreamingToolExecutor, MemoryPrefetch, etc.)
- * whose real implementations land in T7/T8/T10 get placeholder `unknown`
- * typings with named-tranche TODOs.
+ * line per `docs/plan/translation-conventions.md` "full-port with citations".
+ * Cross-subsystem fields are bound to the concrete in-tree contracts that
+ * currently own those runtime surfaces.
  *
  * Invariants covered here (as data fields; wiring lands in the named
  * tranche):
@@ -20,8 +19,13 @@
  */
 
 import type { LLMMessage, LLMToolCall, LLMUsage } from "../llm/types.js";
+import type { TokenBudgetDecision as BoundaryTokenBudgetDecision } from "../llm/token-budget.js";
+import type { StreamingToolExecutor } from "../phases/_deps/tool-runtime.js";
 import type { TurnContext } from "./turn-context.js";
-import { provisionContentReplacementState } from "./_deps/tool-result-storage.js";
+import {
+  provisionContentReplacementState,
+  type ContentReplacementState,
+} from "./_deps/tool-result-storage.js";
 
 /**
  * Continue — the 8 recovery re-entry reasons captured at each
@@ -92,9 +96,9 @@ export interface Terminal {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Forward-dep placeholder types. Real impls land in the named tranche;
-// we use `unknown` (with a narrow structural alias) instead of the real
-// type so TS typechecks without pulling in deps that aren't ported yet.
+// Turn-local contracts.
+// These aliases describe the runtime objects carried between phases.
+// Concrete behavior is owned by the imported subsystem modules.
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -111,8 +115,7 @@ export interface AutoCompactTrackingState {
 
 /**
  * agenc `ToolUseSummaryMessage` (services/tools/StreamingToolExecutor).
- * T7 wires real type. Used as a pending promise whose resolution is
- * awaited before the next phase iteration.
+ * Awaited before the next phase iteration.
  */
 export type ToolUseSummaryMessage = {
   readonly type: "tool_use_summary";
@@ -121,44 +124,31 @@ export type ToolUseSummaryMessage = {
 };
 
 /**
- * agenc `StreamingToolExecutor` instance. T7 wires real class.
- * Held loop-local so the next iteration can await pending executor
- * completion before re-entering streamModel.
- */
-export type StreamingToolExecutor = unknown;
-
-/**
- * Memory prefetch handle. T10 (memory subsystem) wires real impl.
+ * Memory prefetch handle owned by `utils/attachments.ts`.
  * Uses `using` / Symbol.dispose semantics at the session level.
  */
 export interface MemoryPrefetch {
-  readonly settledAt?: number;
-  [Symbol.dispose]?: () => void;
+  readonly promise: Promise<unknown>;
+  readonly settledAt: number | null;
+  readonly consumedOnIteration: number;
+  [Symbol.dispose](): void;
 }
 
 /**
- * Skill prefetch handle. T10 (skills) wires real impl. Consumed
- * post-tools alongside the memory prefetch.
+ * Skill discovery prefetch handle. The live skill-search module is loaded
+ * lazily from the upstream-compatible attachment path; this captures the
+ * disposable contract carried by `TurnState`.
  */
 export interface SkillPrefetch {
-  readonly settledAt?: number;
-  [Symbol.dispose]?: () => void;
+  readonly promise?: Promise<unknown>;
+  readonly settledAt: number | null;
+  readonly consumedOnIteration?: number;
+  [Symbol.dispose](): void;
 }
 
 /**
- * Content-replacement state (tool-result budget enforcement). Real
- * impl in `utils/toolResultStorage.ts` (AgenC). T7 wires real
- * type; carried on TurnState so iteration-to-iteration sees persisted
- * replacements.
- */
-export interface ContentReplacementState {
-  readonly replacements: Map<string, unknown>;
-}
-
-/**
- * Single assistant message (one model turn's output). T7 wires real
- * shape from provider adapter. Structurally: role="assistant" LLMMessage
- * plus parsed tool-use blocks.
+ * Single assistant message (one model turn's output). Structurally:
+ * role="assistant" `LLMMessage` plus parsed tool-use blocks.
  */
 export interface AssistantMessage {
   readonly uuid: string;
@@ -170,9 +160,8 @@ export interface AssistantMessage {
 }
 
 /**
- * Single tool-result user message. T7 wires real shape. AgenC
- * query.ts:562 collects these alongside AttachmentMessage into
- * `toolResults`.
+ * Single tool-result user message. AgenC query.ts:562 collects these
+ * alongside AttachmentMessage into `toolResults`.
  */
 export interface UserMessage {
   readonly uuid: string;
@@ -183,9 +172,8 @@ export interface UserMessage {
 }
 
 /**
- * Single attachment-injection message (skills, memory, system
- * reminders, etc.). T10 wires real shape. Appears in `toolResults`
- * to be sent with the next request.
+ * Single attachment-injection message (skills, memory, system reminders,
+ * etc.). Appears in `toolResults` to be sent with the next request.
  */
 export interface AttachmentMessage {
   readonly uuid: string;
@@ -195,10 +183,10 @@ export interface AttachmentMessage {
 }
 
 /**
- * Parsed tool-use block extracted from an assistant message. T7 wires
- * real shape. Exists as a separate type on TurnState because AgenC
- * uses non-empty `toolUseBlocks` as the sole loop-exit signal (stop_reason
- * is unreliable). See query.ts:564-567.
+ * Parsed tool-use block extracted from an assistant message. Exists as a
+ * separate type on TurnState because AgenC uses non-empty `toolUseBlocks`
+ * as the sole loop-exit signal (stop_reason is unreliable). See
+ * query.ts:564-567.
  */
 export interface ToolUseBlock {
   readonly type: "tool_use";
@@ -208,13 +196,22 @@ export interface ToolUseBlock {
 }
 
 /**
- * Token-budget decision for mid-stream continuation (I-22).
- * T8 wires real implementation. Pending decision is captured during
- * stream phase and acted on at continuation-nudge.
+ * Turn-state view of a token-budget continuation decision (I-22).
+ * `llm/token-budget.ts` owns the boundary decision; the phase ladder carries
+ * a compact `kind/reason` envelope so recovery can inject the continuation
+ * nudge without depending on the tracker instance.
  */
 export type TokenBudgetDecision =
-  | { readonly kind: "continue"; readonly remaining: number }
-  | { readonly kind: "stop"; readonly reason: string };
+  | {
+      readonly kind: "continue";
+      readonly remaining: number;
+      readonly boundary?: BoundaryTokenBudgetDecision;
+    }
+  | {
+      readonly kind: "stop";
+      readonly reason: string;
+      readonly boundary?: BoundaryTokenBudgetDecision;
+    };
 
 // ─────────────────────────────────────────────────────────────────────
 // TurnState — the mutable working set carried across phase iterations.
@@ -274,16 +271,16 @@ export interface TurnState {
 
   /** Memory prefetch handle started once per turn (query.ts:305).
    *  Awaited in executeTools phase; `using`-managed for disposal on
-   *  all exit paths. T10 wires real impl. */
+   *  all exit paths. */
   pendingMemoryPrefetch: MemoryPrefetch | undefined;
 
   /** Skill discovery prefetch (query.ts:335) — per-iteration, replaces
    *  the blocking assistant_turn path in getAttachmentMessages. Awaited
-   *  post-tools. T10 wires real impl. */
+   *  post-tools. */
   pendingSkillPrefetch: SkillPrefetch | undefined;
 
   /** Content-replacement state for per-message tool-result budget
-   *  enforcement. AgenC query.ts:383-404. T7 wires real type. */
+   *  enforcement. AgenC query.ts:383-404. */
   contentReplacementState: ContentReplacementState | undefined;
 
   // ── Phase 2 — stream model (AgenC query.ts:561-1082) ─────────
