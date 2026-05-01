@@ -543,11 +543,16 @@ function validateStartParams(params: CommandExecStartParams): void {
     throw invalidArgument("commandExec.start requires command");
   }
   for (const [index, part] of params.command.entries()) {
-    if (typeof part !== "string" || part.trim().length === 0) {
+    if (typeof part !== "string") {
       throw invalidArgument(
-        `commandExec.start param 'command[${index}]' must be a non-empty string`,
+        `commandExec.start param 'command[${index}]' must be a string`,
       );
     }
+  }
+  if (params.command[0] === undefined || params.command[0].trim().length === 0) {
+    throw invalidArgument(
+      "commandExec.start param 'command[0]' must be a non-empty string",
+    );
   }
   if (params.processId !== undefined && params.processId !== null) {
     validateControlProcessId("commandExec.start", params.processId);

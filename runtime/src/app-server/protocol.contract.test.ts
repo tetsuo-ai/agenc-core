@@ -301,7 +301,7 @@ describe("AgenC daemon protocol surface", () => {
         id: 17,
         method: "commandExec.start",
         params: {
-          command: ["node", "-e", "process.stdout.write('ok')"],
+          command: ["node", "-e", "process.stdout.write('ok')", "", " "],
           processId: "proc_1",
           streamStdoutStderr: true,
           timeoutMs: 1000,
@@ -404,6 +404,15 @@ describe("AgenC daemon protocol surface", () => {
         jsonrpc: JSON_RPC_VERSION,
         method: "agent.list",
         params: {},
+      }),
+    ).toBe(false);
+
+    expect(
+      validate({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "empty-command-program",
+        method: "commandExec.start",
+        params: { command: [""] },
       }),
     ).toBe(false);
   });

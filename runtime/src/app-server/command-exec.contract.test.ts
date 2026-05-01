@@ -201,6 +201,30 @@ describe("AgenC daemon command exec", () => {
     });
   });
 
+  it("preserves empty and whitespace argv entries after the executable", async () => {
+    const service = new AgenCCommandExecService();
+
+    await expect(
+      service.start(
+        {
+          command: [
+            process.execPath,
+            "-e",
+            "const args = process.argv.slice(1); process.stdout.write(JSON.stringify(args)); process.exit(args[0] === '' && args[1] === ' ' ? 0 : 1);",
+            "",
+            " ",
+          ],
+          timeoutMs: 2000,
+        },
+        { connectionId: "argv" },
+      ),
+    ).resolves.toEqual({
+      exitCode: 0,
+      stdout: JSON.stringify(["", " "]),
+      stderr: "",
+    });
+  });
+
   it("streams stdout and stderr as base64 notifications", async () => {
     const service = new AgenCCommandExecService();
     const notifications: JsonObject[] = [];
@@ -498,6 +522,19 @@ describe("AgenC daemon command exec", () => {
 
   it("rejects unsafe or malformed commandExec requests", async () => {
     const service = new AgenCCommandExecService();
+
+    await expect(
+      service.start(
+        {
+          command: ["", "-e", "process.stdout.write('out')"],
+        },
+        { connectionId: "invalid" },
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message:
+        "commandExec.start param 'command[0]' must be a non-empty string",
+    });
 
     await expect(
       service.start(

@@ -460,9 +460,15 @@
         "command": {
           "type": "array",
           "minItems": 1,
-          "items": {
+          "items": [
+            {
+              "type": "string",
+              "minLength": 1
+            }
+          ],
+          "additionalItems": {
             "type": "string",
-            "minLength": 1
+            "minLength": 0
           }
         },
         "processId": {
