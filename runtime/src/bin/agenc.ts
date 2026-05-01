@@ -126,6 +126,7 @@ export function formatCliHelpText(): string {
     "       agenc agent start <objective>",
     "       agenc agent list",
     "       agenc agent attach <id>",
+    "       agenc agent stop <id>",
     "",
     "Options:",
     "  --help                                   Show this help text",

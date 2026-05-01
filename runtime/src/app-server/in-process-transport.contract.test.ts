@@ -212,6 +212,7 @@ describe("AgenC in-process app-server transport", () => {
           requestId: "unused",
           decision: "cancelled",
         }),
+        stopAgent: async () => ({ agentId: "agent_1", stopped: true }),
       },
       clientMultiplexer,
     });

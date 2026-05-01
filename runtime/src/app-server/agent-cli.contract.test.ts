@@ -9,6 +9,7 @@ import {
   formatAgenCAgentAttachResult,
   formatAgenCAgentList,
   formatAgenCAgentCliHelpText,
+  formatAgenCAgentStopResult,
   parseAgenCAgentCliArgs,
   resolveAgenCAgentAttachCwd,
   runAgenCAgentCli,
@@ -19,7 +20,7 @@ import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import { AgenCUnixSocketServer } from "./transport/unix-socket.js";
-import type { AgentCreateParams } from "./protocol/index.js";
+import type { AgentCreateParams, AgentStopParams } from "./protocol/index.js";
 import type {
   AgenCBackgroundAgentMessageParams,
   AgenCBackgroundAgentRunner,
@@ -85,6 +86,18 @@ describe("agenc agent start CLI", () => {
       kind: "error",
       message: "agent attach accepts exactly one agent id",
     });
+    expect(parseAgenCAgentCliArgs(["agent", "stop", "agent_1"])).toEqual({
+      kind: "stop",
+      agentId: "agent_1",
+    });
+    expect(parseAgenCAgentCliArgs(["agent", "stop"])).toEqual({
+      kind: "error",
+      message: "agent stop requires an agent id",
+    });
+    expect(parseAgenCAgentCliArgs(["agent", "stop", "agent_1", "extra"])).toEqual({
+      kind: "error",
+      message: "agent stop accepts exactly one agent id",
+    });
     expect(parseAgenCAgentCliArgs(["agent", "start", "build", "it"])).toEqual({
       kind: "start",
       objective: "build it",
@@ -144,6 +157,7 @@ describe("agenc agent start CLI", () => {
     );
     expect(formatAgenCAgentCliHelpText()).toContain("list");
     expect(formatAgenCAgentCliHelpText()).toContain("attach <id>");
+    expect(formatAgenCAgentCliHelpText()).toContain("stop <id>");
   });
 
   it("prints only the daemon-returned agent ID", async () => {
@@ -175,6 +189,9 @@ describe("agenc agent start CLI", () => {
             listAgents: async () => ({ agents: [] }),
             attachAgent: async () => {
               throw new Error("attachAgent should not be called");
+            },
+            stopAgent: async () => {
+              throw new Error("stopAgent should not be called");
             },
           },
         },
@@ -222,6 +239,9 @@ describe("agenc agent start CLI", () => {
             }),
             attachAgent: async () => {
               throw new Error("attachAgent should not be called");
+            },
+            stopAgent: async () => {
+              throw new Error("stopAgent should not be called");
             },
           },
         },
@@ -311,6 +331,9 @@ describe("agenc agent start CLI", () => {
             attachAgent: async () => {
               throw new Error("attachAgent should not be called");
             },
+            stopAgent: async () => {
+              throw new Error("stopAgent should not be called");
+            },
           },
         },
       ),
@@ -354,6 +377,9 @@ describe("agenc agent start CLI", () => {
                 sessionIds: ["session_1"],
               };
             },
+            stopAgent: async () => {
+              throw new Error("stopAgent should not be called");
+            },
           },
         },
       ),
@@ -394,6 +420,46 @@ describe("agenc agent start CLI", () => {
     expect(io.stderrText()).toBe("");
   });
 
+  it("sends agent.stop and prints the stop outcome", async () => {
+    const io = createIo();
+    const requests: AgentStopParams[] = [];
+
+    await expect(
+      runAgenCAgentCli(
+        { kind: "stop", agentId: "agent_1" },
+        {
+          ensureDaemonReady: async () => {},
+          io,
+          client: {
+            createAgent: async () => {
+              throw new Error("createAgent should not be called");
+            },
+            listAgents: async () => {
+              throw new Error("listAgents should not be called");
+            },
+            attachAgent: async () => {
+              throw new Error("attachAgent should not be called");
+            },
+            stopAgent: async (params) => {
+              requests.push(params);
+              return { agentId: params.agentId, stopped: true };
+            },
+          },
+        },
+      ),
+    ).resolves.toBe(0);
+
+    expect(requests).toEqual([
+      { agentId: "agent_1", reason: "agenc agent stop" },
+    ]);
+    expect(io.stdoutText()).toBe("agent_1\tstopped\n");
+    expect(io.stderrText()).toBe("");
+    expect(formatAgenCAgentStopResult({
+      agentId: "agent_2",
+      stopped: false,
+    })).toBe("agent_2\talready_stopped");
+  });
+
   it("hands agent attach to the TUI launcher when provided", async () => {
     const io = createIo();
     const launches: unknown[] = [];
@@ -415,6 +481,9 @@ describe("agenc agent start CLI", () => {
             },
             attachAgent: async () => {
               throw new Error("attachAgent should not be called");
+            },
+            stopAgent: async () => {
+              throw new Error("stopAgent should not be called");
             },
           },
           attachTui: async (context) => {
@@ -475,6 +544,7 @@ describe("agenc agent start CLI", () => {
         "2026-05-01T12:00:01.000Z",
         "2026-05-01T12:00:02.000Z",
         "2026-05-01T12:00:03.000Z",
+        "2026-05-01T12:00:04.000Z",
       ]),
     });
     const clientMultiplexer = new AgenCDaemonClientMultiplexer({
@@ -482,6 +552,7 @@ describe("agenc agent start CLI", () => {
     });
     const starts: AgenCBackgroundAgentStartParams[] = [];
     const submitted: AgenCBackgroundAgentMessageParams[] = [];
+    const stops: unknown[] = [];
     let sessionBinding: AgenCBackgroundAgentSessionEventBinding | undefined;
     const runner: AgenCBackgroundAgentRunner = {
       startAgent: async (params) => {
@@ -532,11 +603,17 @@ describe("agenc agent start CLI", () => {
           },
         });
       },
+      stopAgent: async (agentId, reason) => {
+        stops.push({ agentId, reason });
+      },
     };
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: new AgenCDaemonAgentManager({
         defaultCwd: () => "/daemon",
-        now: sequence(["2026-05-01T12:00:00.000Z"]),
+        now: sequence([
+          "2026-05-01T12:00:00.000Z",
+          "2026-05-01T12:00:04.500Z",
+        ]),
         runner,
         sessionManager,
         broadcastSessionEvent: async (sessionId, event) => {
@@ -712,6 +789,38 @@ describe("agenc agent start CLI", () => {
           },
         },
       ]);
+
+      const stopIo = createIo();
+      await expect(
+        runAgenCAgentCli(
+          { kind: "stop", agentId: "agent_socket" },
+          {
+            client: createAgenCJsonLineDaemonClient({
+              socketPath,
+              authCookie: "socket-cookie",
+            }),
+            ensureDaemonReady: async () => {},
+            io: stopIo,
+          },
+        ),
+      ).resolves.toBe(0);
+      expect(stopIo.stdoutText()).toBe("agent_socket\tstopped\n");
+
+      const stoppedListIo = createIo();
+      await expect(
+        runAgenCAgentCli(
+          { kind: "list" },
+          {
+            client: createAgenCJsonLineDaemonClient({
+              socketPath,
+              authCookie: "socket-cookie",
+            }),
+            ensureDaemonReady: async () => {},
+            io: stoppedListIo,
+          },
+        ),
+      ).resolves.toBe(0);
+      expect(stoppedListIo.stdoutText()).toBe("No active agents\n");
     } finally {
       await server.close();
       await rm(dir, { recursive: true, force: true });
@@ -732,6 +841,9 @@ describe("agenc agent start CLI", () => {
         unattendedDeny: [],
       },
     ]);
+    expect(stops).toEqual([
+      { agentId: "agent_socket", reason: "agenc agent stop" },
+    ]);
     expect(submitted).toEqual([
       {
         sessionId: "session_1",
@@ -744,6 +856,8 @@ describe("agenc agent start CLI", () => {
     ]);
     await expect(sessionManager.getSession("session_1")).resolves.toMatchObject({
       agentId: "agent_socket",
+      status: "closed",
+      closedAt: "2026-05-01T12:00:04.000Z",
       metadata: {
         objective: "background compile",
         source: "agent.start",
