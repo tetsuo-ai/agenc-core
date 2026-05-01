@@ -190,6 +190,12 @@ export interface McpServerConfig {
   readonly required?: boolean;
 }
 
+export type DaemonTransport = "unix" | "stdio";
+
+export interface DaemonConfig {
+  readonly transport?: DaemonTransport;
+}
+
 /**
  * T12 Wave 4-B: status line configuration.
  *
@@ -337,6 +343,7 @@ export interface AgenCConfig {
   readonly compact_prompt?: string;
   readonly hooks?: HooksMap;
   readonly mcp_servers?: Readonly<Record<string, McpServerConfig>>;
+  readonly daemon?: DaemonConfig;
 
   // ── Settings fields ────────────────────────────────────────────────
   readonly autoUpdates?: boolean;
@@ -467,6 +474,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "compact_prompt",
   "hooks",
   "mcp_servers",
+  "daemon",
   "autoUpdates",
   "bypassPermissionsModeAcceptedIn",
   "experiments",
@@ -510,6 +518,9 @@ export function defaultConfig(): AgenCConfig {
     auth: Object.freeze({
       backend: "local",
     }) as AuthConfig,
+    daemon: Object.freeze({
+      transport: "unix",
+    }) as DaemonConfig,
     permissions: Object.freeze({
       default_mode: "on-request",
     }) as PermissionsConfig,
@@ -757,7 +768,7 @@ function validateStringArray(
  * `InvalidPermissionsConfigError` on shape violations (wrong types,
  * unknown mode literal, etc.).
  *
- * Unknown sub-fields are silently dropped — the five keys declared on
+ * Unknown sub-fields are silently dropped — the keys declared on
  * `PermissionsConfig` are the contract surface. If a new key is added
  * to `PermissionsConfig`, it must be wired through here too.
  */

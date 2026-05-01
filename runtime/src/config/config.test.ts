@@ -65,6 +65,7 @@ describe("schema: defaultConfig", () => {
     expect(cfg.agent_max_threads).toBe(4);
     expect(cfg.agent_max_depth).toBe(1);
     expect(cfg.auth?.backend).toBe("local");
+    expect(cfg.daemon?.transport).toBe("unix");
     expect(cfg.permissions?.default_mode).toBe("on-request");
     expect(cfg.editorMode).toBe("default");
     expect(cfg.voiceInput?.enabled).toBe(false);
@@ -209,6 +210,15 @@ describe("schema: normalizeRawConfig", () => {
     expect(out.sandbox).toEqual({ mode: "off" });
     expect(out._unknown).toBeUndefined();
     expect(KNOWN_CONFIG_KEYS.includes("sandbox")).toBe(true);
+  });
+
+  test("preserves daemon.transport config on the typed path", () => {
+    const out = normalizeRawConfig({
+      daemon: { transport: "stdio" },
+    });
+    expect(out.daemon).toEqual({ transport: "stdio" });
+    expect(out._unknown).toBeUndefined();
+    expect(KNOWN_CONFIG_KEYS.includes("daemon")).toBe(true);
   });
 
   test("preserves permissions.default_mode config on the typed path", () => {
@@ -853,6 +863,20 @@ mode = "read-only"
     expect(out.exists).toBe(true);
     expect(out.config.sandbox?.mode).toBe("read-only");
     expect(out.config._unknown?.sandbox).toBeUndefined();
+  });
+
+  test("daemon.transport TOML overrides the unix default", async () => {
+    writeFileSync(
+      join(dir, "config.toml"),
+      `
+[daemon]
+transport = "stdio"
+      `,
+    );
+    const out = await loadConfig({ home: dir });
+    expect(out.exists).toBe(true);
+    expect(out.config.daemon?.transport).toBe("stdio");
+    expect(out.config._unknown?.daemon).toBeUndefined();
   });
 
   test("permissions.default_mode TOML overrides the on-request default", async () => {
