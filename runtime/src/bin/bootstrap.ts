@@ -138,6 +138,10 @@ interface ResolvedAuthModelSelection {
   readonly model: string;
 }
 
+function isHostedAgencProvider(provider: string): boolean {
+  return provider.trim().toLowerCase() === "agenc";
+}
+
 async function resolveAuthSubscriptionTier(
   authBackend: AuthBackend | undefined,
   sessionId: string,
@@ -165,6 +169,7 @@ async function resolveAuthModelSelection(params: {
 }): Promise<ResolvedAuthModelSelection> {
   if (
     params.authBackend === undefined ||
+    isHostedAgencProvider(params.provider) ||
     !requiresAuthModelInference(params.provider, params.model)
   ) {
     return { provider: params.provider, model: params.model };
@@ -743,7 +748,7 @@ export async function bootstrapLocalRuntimeSession(
     byokApiKey: startup.apiKey,
   });
   const managedKey =
-    byokApiKey === undefined
+    byokApiKey === undefined && !isHostedAgencProvider(resolvedProvider)
       ? await vendProviderKeyOrUndefined({
           authBackend: options.authBackend,
           provider: resolvedProvider,

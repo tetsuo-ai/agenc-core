@@ -690,7 +690,7 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
-  it("routes the hosted AgenC provider through AuthBackend model inference", async () => {
+  it("constructs the hosted AgenC provider as the normal routing boundary", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
     const calls: string[] = [];
@@ -756,20 +756,20 @@ describe("bootstrapLocalRuntimeSession", () => {
       });
       shutdown = boot.shutdown;
 
-      expect(boot.resolvedProvider).toBe("grok");
-      expect(boot.model).toBe("grok-4-fast");
+      expect(boot.resolvedProvider).toBe("agenc");
+      expect(boot.model).toBe("agenc");
       expect(createProviderSpy).toHaveBeenCalledWith(
-        "grok",
+        "agenc",
         expect.objectContaining({
-          apiKey: "managed-key",
-          model: "grok-4-fast",
+          model: "agenc",
+          extra: expect.objectContaining({
+            authBackend,
+            sessionId: "conv-agenc-provider",
+            subscriptionTier: "team",
+          }),
         }),
       );
-      expect(calls).toEqual([
-        "getSubscriptionTier:conv-agenc-provider",
-        "inferAgencModel:agenc:agenc:team",
-        "vendKey:grok:conv-agenc-provider",
-      ]);
+      expect(calls).toEqual(["getSubscriptionTier:conv-agenc-provider"]);
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */

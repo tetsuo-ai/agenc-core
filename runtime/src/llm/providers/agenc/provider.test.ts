@@ -113,6 +113,40 @@ describe("AgenCProvider", () => {
         model: "grok-4-fast",
       }),
     );
+
+    const chunks: LLMStreamChunk[] = [];
+    await expect(
+      provider.chatStream(
+        [{ role: "user", content: "stream" }],
+        (chunk) => chunks.push(chunk),
+        { model: "agenc:fast" },
+      ),
+    ).resolves.toMatchObject({
+      content: "ok",
+      model: "grok-4-fast",
+    });
+    await expect(provider.healthCheck()).resolves.toBe(true);
+    await expect(provider.getExecutionProfile()).resolves.toMatchObject({
+      provider: "grok",
+      model: "grok-4-fast",
+      contextWindowTokens: 131_072,
+    });
+    expect(chunks).toEqual([{ content: "ok", done: true }]);
+    expect(delegate.chatStream).toHaveBeenCalledWith(
+      [{ role: "user", content: "stream" }],
+      expect.any(Function),
+      expect.objectContaining({
+        model: "grok-4-fast",
+      }),
+    );
+    expect(delegate.healthCheck).toHaveBeenCalledOnce();
+    expect(delegate.getExecutionProfile).toHaveBeenCalledOnce();
+    expect(calls).toEqual([
+      "infer:agenc:agenc:fast:session-1:team",
+      "vendKey:grok:session-1",
+      "infer:agenc:agenc:session-1:team",
+      "vendKey:grok:session-1",
+    ]);
   });
 
   it("fails closed when model inference returns the AgenC provider again", async () => {
