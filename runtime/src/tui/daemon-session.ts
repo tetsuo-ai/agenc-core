@@ -14,9 +14,25 @@ import type {
   SessionAttachParams,
 } from "../app-server/protocol/index.js";
 
+export const AGENC_DAEMON_RECONNECTING_MESSAGE =
+  "daemon disconnected, reconnecting";
+
+export type AgenCDaemonConnectionStatus =
+  | "connected"
+  | "disconnected"
+  | "reconnecting";
+
+export interface AgenCDaemonConnectionState extends JsonObject {
+  readonly status: AgenCDaemonConnectionStatus;
+  readonly id?: string;
+  readonly message?: string;
+}
+
 export interface AgenCTuiBridgeSession {
   readonly conversationId: string;
   readonly services: unknown;
+  readonly initialTranscriptEvents?: readonly unknown[];
+  getInitialTranscriptEvents?(): readonly unknown[];
   subscribeToEvents?(cb: (event: unknown) => void): () => void;
   submit?(
     message: string,
@@ -26,8 +42,15 @@ export interface AgenCTuiBridgeSession {
 
 export type AgenCDaemonBackedTuiSession<
   Session extends AgenCTuiBridgeSession = AgenCTuiBridgeSession,
-> = Omit<Session, "conversationId" | "submit" | "subscribeToEvents"> & {
+> = Omit<
+  Session,
+  | "conversationId"
+  | "getInitialTranscriptEvents"
+  | "submit"
+  | "subscribeToEvents"
+> & {
   readonly conversationId: string;
+  getInitialTranscriptEvents(): readonly unknown[];
   subscribeToEvents(cb: (event: unknown) => void): () => void;
   submit(
     message: string,
@@ -43,6 +66,10 @@ export interface AgenCDaemonTuiClient {
   subscribeToSessionEvents(
     sessionId: string,
     cb: (event: JsonObject) => void,
+  ): () => void;
+  getConnectionState?(): AgenCDaemonConnectionState | null;
+  subscribeToConnectionState?(
+    cb: (state: AgenCDaemonConnectionState) => void,
   ): () => void;
 }
 
@@ -85,10 +112,44 @@ export function createDaemonTuiSession<
       } satisfies MessageStreamParams);
     },
     subscribeToEvents: (cb) =>
-      client.subscribeToSessionEvents(sessionId, (event) => {
-        cb(toTranscriptEvent(event));
-      }),
+      subscribeToDaemonEvents(client, sessionId, cb),
+    getInitialTranscriptEvents: () => [
+      ...baseInitialTranscriptEvents(baseSession),
+      ...connectionNoticeEvents(client.getConnectionState?.() ?? null),
+    ],
   } as AgenCDaemonBackedTuiSession<Session>;
+}
+
+function subscribeToDaemonEvents(
+  client: AgenCDaemonTuiClient,
+  sessionId: string,
+  cb: (event: unknown) => void,
+): () => void {
+  const unsubscribeSession = client.subscribeToSessionEvents(
+    sessionId,
+    (event) => {
+      cb(toTranscriptEvent(event));
+    },
+  );
+  const unsubscribeConnection = client.subscribeToConnectionState?.((state) => {
+    for (const event of connectionNoticeEvents(state)) {
+      cb(event);
+    }
+  });
+  return () => {
+    unsubscribeSession();
+    unsubscribeConnection?.();
+  };
+}
+
+function baseInitialTranscriptEvents(
+  session: AgenCTuiBridgeSession,
+): readonly unknown[] {
+  return [
+    ...((session.getInitialTranscriptEvents?.() ??
+      session.initialTranscriptEvents ??
+      []) as readonly unknown[]),
+  ];
 }
 
 function toTranscriptEvent(event: JsonObject): JsonObject {
@@ -97,6 +158,22 @@ function toTranscriptEvent(event: JsonObject): JsonObject {
     return msg;
   }
   return event;
+}
+
+function connectionNoticeEvents(
+  state: AgenCDaemonConnectionState | null,
+): readonly JsonObject[] {
+  if (state === null || state.status === "connected") return [];
+  return [
+    {
+      id: state.id ?? `agenc-daemon-${state.status}`,
+      type: "warning",
+      payload: {
+        message: state.message ?? AGENC_DAEMON_RECONNECTING_MESSAGE,
+        status: state.status,
+      },
+    },
+  ];
 }
 
 function isJsonObject(value: JsonValue | undefined): value is JsonObject {

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  AGENC_DAEMON_RECONNECTING_MESSAGE,
   attachDaemonTuiSession,
   createDaemonTuiSession,
+  type AgenCDaemonConnectionState,
   type AgenCDaemonTuiClient,
   type AgenCTuiBridgeSession,
 } from "./daemon-session.js";
@@ -32,15 +34,21 @@ function createClient(): AgenCDaemonTuiClient & {
     readonly method: AgenCDaemonMethod;
     readonly params?: JsonObject;
   }>;
+  connectionState: AgenCDaemonConnectionState | null;
+  emitConnection(state: AgenCDaemonConnectionState): void;
   emit(sessionId: string, event: JsonObject): void;
 } {
   const listeners = new Map<string, Set<(event: JsonObject) => void>>();
+  const connectionListeners = new Set<
+    (state: AgenCDaemonConnectionState) => void
+  >();
   const requests: Array<{
     readonly method: AgenCDaemonMethod;
     readonly params?: JsonObject;
   }> = [];
   return {
     requests,
+    connectionState: null,
     async request<Method extends AgenCDaemonMethod>(
       method: Method,
       params?: JsonObject,
@@ -58,6 +66,21 @@ function createClient(): AgenCDaemonTuiClient & {
       return () => {
         sessionListeners?.delete(cb);
       };
+    },
+    getConnectionState() {
+      return this.connectionState;
+    },
+    subscribeToConnectionState: (cb) => {
+      connectionListeners.add(cb);
+      return () => {
+        connectionListeners.delete(cb);
+      };
+    },
+    emitConnection(state) {
+      this.connectionState = state;
+      for (const listener of connectionListeners) {
+        listener(state);
+      }
     },
     emit: (sessionId, event) => {
       for (const listener of listeners.get(sessionId) ?? []) {
@@ -133,5 +156,71 @@ describe("AgenC TUI daemon session adapter", () => {
     });
 
     expect(received).toEqual([{ type: "turn_start", id: "turn_1" }]);
+  });
+
+  it("shows a reconnecting notice without dropping the daemon event stream", () => {
+    const client = createClient();
+    const received: JsonObject[] = [];
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    const unsubscribe = session.subscribeToEvents((event) => {
+      received.push(event as JsonObject);
+    });
+    client.emit("session_1", {
+      type: "daemon.event",
+      msg: { type: "turn_start", id: "turn_1" },
+    });
+    client.emitConnection({ status: "reconnecting" });
+    client.emit("session_1", {
+      type: "daemon.event",
+      msg: { type: "turn_complete", id: "turn_1" },
+    });
+    unsubscribe();
+
+    expect(received).toEqual([
+      { type: "turn_start", id: "turn_1" },
+      {
+        id: "agenc-daemon-reconnecting",
+        type: "warning",
+        payload: {
+          message: AGENC_DAEMON_RECONNECTING_MESSAGE,
+          status: "reconnecting",
+        },
+      },
+      { type: "turn_complete", id: "turn_1" },
+    ]);
+  });
+
+  it("preserves initial transcript state while surfacing an existing disconnect", () => {
+    const client = createClient();
+    client.connectionState = { status: "disconnected" };
+    const session = createDaemonTuiSession({
+      baseSession: {
+        ...createBaseSession(),
+        initialTranscriptEvents: [
+          { type: "user_message", payload: { message: "status" } },
+        ],
+      },
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    expect(session.getInitialTranscriptEvents()).toEqual([
+      { type: "user_message", payload: { message: "status" } },
+      {
+        id: "agenc-daemon-disconnected",
+        type: "warning",
+        payload: {
+          message: AGENC_DAEMON_RECONNECTING_MESSAGE,
+          status: "disconnected",
+        },
+      },
+    ]);
   });
 });
