@@ -9,6 +9,7 @@
   },
   "x-agenc-methods": [
     "initialize",
+    "request.cancel",
     "agent.create",
     "agent.list",
     "agent.attach",
@@ -22,6 +23,7 @@
     "message.stream",
     "tool.approve",
     "tool.deny",
+    "tool.cancel",
     "permission.list",
     "fs.fuzzy_search",
     "commandExec.start",
@@ -124,6 +126,19 @@
           "$ref": "#/definitions/JsonObject"
         }
       }
+    },
+    "RequestCancelParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requestId": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": ["requestId"]
     },
     "AgentCreateParams": {
       "type": "object",
@@ -366,6 +381,24 @@
       "required": ["sessionId", "requestId"]
     },
     "ToolDenyParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": ["sessionId", "requestId"]
+    },
+    "ToolCancelParams": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -678,6 +711,9 @@
           "$ref": "#/definitions/InitializeRequest"
         },
         {
+          "$ref": "#/definitions/RequestCancelRequest"
+        },
+        {
           "$ref": "#/definitions/AgentCreateRequest"
         },
         {
@@ -715,6 +751,9 @@
         },
         {
           "$ref": "#/definitions/ToolDenyRequest"
+        },
+        {
+          "$ref": "#/definitions/ToolCancelRequest"
         },
         {
           "$ref": "#/definitions/PermissionListRequest"
@@ -792,6 +831,25 @@
         },
         "params": {
           "$ref": "#/definitions/InitializeParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "RequestCancelRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "request.cancel"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestCancelParams"
         }
       },
       "required": ["jsonrpc", "id", "method", "params"]
@@ -1039,6 +1097,25 @@
         },
         "params": {
           "$ref": "#/definitions/ToolDenyParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "ToolCancelRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "tool.cancel"
+        },
+        "params": {
+          "$ref": "#/definitions/ToolCancelParams"
         }
       },
       "required": ["jsonrpc", "id", "method", "params"]

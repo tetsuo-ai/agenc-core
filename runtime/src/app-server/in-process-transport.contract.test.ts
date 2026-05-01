@@ -208,6 +208,10 @@ describe("AgenC in-process app-server transport", () => {
           decision: "approved",
         }),
         denyTool: async () => ({ requestId: "unused", decision: "denied" }),
+        cancelTool: async () => ({
+          requestId: "unused",
+          decision: "cancelled",
+        }),
       },
       clientMultiplexer,
     });

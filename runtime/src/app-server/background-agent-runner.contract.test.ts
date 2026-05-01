@@ -10,7 +10,7 @@ import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,
 } from "../permissions/types.js";
-import { APPROVED } from "../permissions/review-decision.js";
+import { ABORT, APPROVED } from "../permissions/review-decision.js";
 import type { AgentStatus } from "../agents/status.js";
 import type { ApprovalResolver } from "../tools/orchestrator.js";
 
@@ -380,6 +380,143 @@ describe("AgenC delegate background-agent runner", () => {
       }),
     ).resolves.toBe(true);
     await expect(decision).resolves.toBe(APPROVED);
+  });
+
+  it("cancels active background tool work by interrupting the live agent", async () => {
+    const shutdown = vi.fn(async () => {});
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    const services: { approvalResolver?: ApprovalResolver } = {};
+    const session = {
+      conversationId: "parent-session",
+      permissionModeRegistry,
+      services,
+    };
+    const control = {
+      interrupt: vi.fn(),
+      shutdown: vi.fn(async () => {}),
+    };
+    const thread = {
+      threadId: "agent_live",
+      agentPath: "/root/agent_live",
+      join: vi.fn(() => new Promise(() => {})),
+    } as unknown as AgentThread;
+    let resolver: ApprovalResolver | undefined;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        shutdown,
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      delegateFn: vi.fn(async (opts: Parameters<AgenCDelegateFunction>[0]) => {
+        resolver = opts.parent.services.approvalResolver;
+        return {
+          kind: "async_launched",
+          thread,
+        };
+      }) as unknown as AgenCDelegateFunction,
+      now: () => "2026-05-01T12:00:00.500Z",
+    });
+
+    await runner.startAgent({
+      objective: "compile the daemon",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    const decision = resolver!.request({
+      callId: "call_1",
+      toolName: "Bash",
+      turnId: "turn_1",
+      invocation: {
+        session: { conversationId: "agent_live" },
+        payload: {
+          kind: "function",
+          arguments: JSON.stringify({ command: "sleep 60" }),
+        },
+      },
+    } as never);
+    await Promise.resolve();
+
+    await expect(
+      runner.cancelTool("agent_live", {
+        requestId: "call_1",
+        reason: "user stop",
+      }),
+    ).resolves.toBe(true);
+    expect(control.interrupt).toHaveBeenCalledWith("agent_live", "user stop");
+    await expect(decision).resolves.toBe(ABORT);
+  });
+
+  it("does not interrupt an active agent for an unknown tool cancel request", async () => {
+    const shutdown = vi.fn(async () => {});
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    const session = {
+      conversationId: "parent-session",
+      permissionModeRegistry,
+    };
+    const control = {
+      interrupt: vi.fn(),
+      shutdown: vi.fn(async () => {}),
+    };
+    const thread = {
+      threadId: "agent_live",
+      agentPath: "/root/agent_live",
+      join: vi.fn(() => new Promise(() => {})),
+    } as unknown as AgentThread;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        shutdown,
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      delegateFn: vi.fn(async (opts: Parameters<AgenCDelegateFunction>[0]) => {
+        await opts.onProgress?.(
+          {
+            kind: "tool_call",
+            callId: "call_known",
+            toolName: "Bash",
+          },
+          thread,
+        );
+        return {
+          kind: "async_launched",
+          thread,
+        };
+      }) as unknown as AgenCDelegateFunction,
+      now: () => "2026-05-01T12:00:00.500Z",
+    });
+
+    await runner.startAgent({
+      objective: "compile the daemon",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await expect(
+      runner.cancelTool("agent_live", {
+        requestId: "missing_call",
+        reason: "stale client request",
+      }),
+    ).resolves.toBe(false);
+    expect(control.interrupt).not.toHaveBeenCalled();
+
+    await expect(
+      runner.cancelTool("agent_live", {
+        requestId: "call_known",
+        reason: "user stop",
+      }),
+    ).resolves.toBe(true);
+    expect(control.interrupt).toHaveBeenCalledWith("agent_live", "user stop");
   });
 
   it("preserves structured attached input and honors hidden display submits", async () => {

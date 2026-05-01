@@ -36,6 +36,7 @@ export type RequestId = string | number;
 
 export const AGENC_DAEMON_METHODS = [
   "initialize",
+  "request.cancel",
   "agent.create",
   "agent.list",
   "agent.attach",
@@ -49,6 +50,7 @@ export const AGENC_DAEMON_METHODS = [
   "message.stream",
   "tool.approve",
   "tool.deny",
+  "tool.cancel",
   "permission.list",
   "fs.fuzzy_search",
   "commandExec.start",
@@ -110,6 +112,13 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     params: "required",
     result: "object",
     description: "Initialize a daemon JSON-RPC connection.",
+  },
+  "request.cancel": {
+    method: "request.cancel",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Cancel an in-flight daemon request on the same connection.",
   },
   "agent.create": {
     method: "agent.create",
@@ -201,6 +210,13 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     params: "required",
     result: "object",
     description: "Deny a pending tool or permission request.",
+  },
+  "tool.cancel": {
+    method: "tool.cancel",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Cancel a pending tool or permission request.",
   },
   "permission.list": {
     method: "permission.list",
@@ -329,6 +345,11 @@ export interface InitializeParams extends JsonObject {
   readonly capabilities?: JsonObject;
 }
 
+export interface RequestCancelParams extends JsonObject {
+  readonly requestId: RequestId;
+  readonly reason?: string;
+}
+
 export interface AgentListParams extends JsonObject {
   readonly cursor?: string;
   readonly limit?: number;
@@ -403,6 +424,12 @@ export interface ToolApproveParams extends JsonObject {
 }
 
 export interface ToolDenyParams extends JsonObject {
+  readonly sessionId: string;
+  readonly requestId: string;
+  readonly reason?: string;
+}
+
+export interface ToolCancelParams extends JsonObject {
   readonly sessionId: string;
   readonly requestId: string;
   readonly reason?: string;
@@ -521,6 +548,7 @@ export interface AgenCDaemonRequestWithoutParams<
 
 export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"initialize", InitializeParams>
+  | AgenCDaemonRequestWithParams<"request.cancel", RequestCancelParams>
   | AgenCDaemonRequestWithParams<"agent.create", AgentCreateParams>
   | AgenCDaemonRequestWithParams<"agent.list", AgentListParams>
   | AgenCDaemonRequestWithParams<"agent.attach", AgentAttachParams>
@@ -537,6 +565,7 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"message.stream", MessageStreamParams>
   | AgenCDaemonRequestWithParams<"tool.approve", ToolApproveParams>
   | AgenCDaemonRequestWithParams<"tool.deny", ToolDenyParams>
+  | AgenCDaemonRequestWithParams<"tool.cancel", ToolCancelParams>
   | AgenCDaemonRequestWithParams<"permission.list", PermissionListParams>
   | AgenCDaemonRequestWithParams<"fs.fuzzy_search", FuzzyFileSearchParams>
   | AgenCDaemonRequestWithParams<"commandExec.start", CommandExecStartParams>
@@ -608,6 +637,12 @@ export interface InitializeResult extends JsonObject {
   readonly capabilities: JsonObject;
 }
 
+export interface RequestCancelResult extends JsonObject {
+  readonly requestId: RequestId;
+  readonly cancelled: boolean;
+  readonly reason?: string;
+}
+
 export interface SessionCreateResult extends SessionSummary {}
 
 export interface SessionListResult extends JsonObject {
@@ -649,7 +684,7 @@ export interface MessageStreamResult extends MessageSendResult {
 
 export interface ToolDecisionResult extends JsonObject {
   readonly requestId: string;
-  readonly decision: "approved" | "denied";
+  readonly decision: "approved" | "denied" | "cancelled";
 }
 
 export interface PermissionGrant extends JsonObject {
@@ -735,6 +770,7 @@ export interface AuthLogoutResult extends JsonObject {
 
 export interface AgenCDaemonResultByMethod {
   readonly initialize: InitializeResult;
+  readonly "request.cancel": RequestCancelResult;
   readonly "agent.create": AgentCreateResult;
   readonly "agent.list": AgentListResult;
   readonly "agent.attach": AgentAttachResult;
@@ -748,6 +784,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "message.stream": MessageStreamResult;
   readonly "tool.approve": ToolDecisionResult;
   readonly "tool.deny": ToolDecisionResult;
+  readonly "tool.cancel": ToolDecisionResult;
   readonly "permission.list": PermissionListResult;
   readonly "fs.fuzzy_search": FuzzyFileSearchResponse;
   readonly "commandExec.start": CommandExecResponse;

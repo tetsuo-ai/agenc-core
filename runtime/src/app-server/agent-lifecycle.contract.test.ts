@@ -965,6 +965,10 @@ describe("AgenC background agent lifecycle", () => {
         streamAgentMessage: async () => {},
         approveTool: async () => ({ requestId: "unused", decision: "approved" }),
         denyTool: async () => ({ requestId: "unused", decision: "denied" }),
+        cancelTool: async () => ({
+          requestId: "unused",
+          decision: "cancelled",
+        }),
         attachAgent: async () => ({
           agentId: "agent_multi",
           attachmentId: "attachment_new",

@@ -71,6 +71,7 @@ interface PtyModule {
 export interface CommandExecContext {
   readonly connectionId: string;
   readonly sendNotification?: (message: JsonObject) => void | Promise<void>;
+  readonly signal?: AbortSignal;
 }
 
 export interface AgenCCommandExec {
@@ -243,9 +244,21 @@ export class AgenCCommandExecService implements AgenCCommandExec {
     });
     this.#rememberSession(session);
 
+    let removeAbortListener: (() => void) | undefined;
     try {
       this.#spawnSession(session, params, context);
       this.#armTimeout(session, params);
+      const abortCommand = (): void => {
+        terminateSession(session);
+      };
+      if (context.signal?.aborted === true) {
+        abortCommand();
+      } else if (context.signal !== undefined) {
+        context.signal.addEventListener("abort", abortCommand, { once: true });
+        removeAbortListener = () => {
+          context.signal?.removeEventListener("abort", abortCommand);
+        };
+      }
       const exitCode = await session.exitPromise;
       await Promise.allSettled([...session.pendingNotifications]);
       if (session.spawnError !== null) {
@@ -257,6 +270,7 @@ export class AgenCCommandExecService implements AgenCCommandExec {
         stderr: streamStdoutStderr ? "" : session.stderr.text(),
       };
     } finally {
+      removeAbortListener?.();
       this.#forgetSession(session);
     }
   }

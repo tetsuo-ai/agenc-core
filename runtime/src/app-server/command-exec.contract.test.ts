@@ -99,10 +99,11 @@ describe("AgenC daemon command exec", () => {
         streamStdoutStderr: true,
         timeoutMs: 1000,
       },
-      {
+      expect.objectContaining({
         connectionId: expect.stringMatching(/^connection_/),
         sendNotification: expect.any(Function),
-      },
+        signal: expect.any(AbortSignal),
+      }),
     );
 
     await connection.dispatch({

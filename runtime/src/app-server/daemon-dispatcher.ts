@@ -40,8 +40,10 @@ import {
   type InitializeParams,
   type JsonObject,
   type MessageStreamParams,
+  type RequestCancelParams,
   type RequestId,
   type ToolApproveParams,
+  type ToolCancelParams,
   type ToolDenyParams,
 } from "./protocol/index.js";
 
@@ -50,6 +52,7 @@ export interface AgenCDaemonDispatcherOptions {
     AgenCDaemonAgentManager,
     | "approveTool"
     | "attachAgent"
+    | "cancelTool"
     | "createAgent"
     | "denyTool"
     | "listAgents"
@@ -73,6 +76,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     AgenCDaemonAgentManager,
     | "approveTool"
     | "attachAgent"
+    | "cancelTool"
     | "createAgent"
     | "denyTool"
     | "listAgents"
@@ -120,6 +124,7 @@ export class AgenCDaemonJsonRpcDispatcher {
   async closeConnection(
     connection: AgenCDaemonJsonRpcConnection,
   ): Promise<void> {
+    connection.cancelAllInFlightRequests("connection closed");
     if (this.#clientMultiplexer !== undefined) {
       for (const clientId of connection.trackedClientIds) {
         await this.#clientMultiplexer.removeClient(clientId).catch((error) => {
@@ -150,9 +155,10 @@ export class AgenCDaemonJsonRpcDispatcher {
     if (!isAgenCDaemonMethod(message.method)) {
       return errorResponse(id, -32601, `unknown daemon method: ${message.method}`);
     }
+    const method = message.method;
     try {
       const params = objectParams(message.params);
-      if (message.method === "initialize") {
+      if (method === "initialize") {
         const initializeParams = validateInitializeParams(params);
         if (this.#initializeAuthenticator !== undefined) {
           const authenticated = await this.#initializeAuthenticator(
@@ -183,11 +189,25 @@ export class AgenCDaemonJsonRpcDispatcher {
         );
       }
 
+      if (method === "request.cancel") {
+        return successResponse(
+          id,
+          connection.cancelInFlightRequest(validateRequestCancelParams(params)),
+        );
+      }
+
+      if (methodSupportsRequestCancellation(method)) {
+        return await connection.runCancellableRequest(id, (signal) =>
+          this.#dispatchKnownMethod(connection, id, method, params, signal),
+        );
+      }
+
       return await this.#dispatchKnownMethod(
         connection,
         id,
-        message.method,
+        method,
         params,
+        INERT_ABORT_SIGNAL,
       );
     } catch (error) {
       return mapDispatchError(id, error);
@@ -199,6 +219,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     id: RequestId,
     method: Method,
     params: JsonObject,
+    signal: AbortSignal,
   ): Promise<AgenCDaemonResponse> {
     switch (method) {
       case "agent.create":
@@ -220,7 +241,7 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#fuzzyFileSearch.search(
             validateFuzzyFileSearchParams(params),
-            { cancellationScope: connection.cancellationScope },
+            { cancellationScope: connection.cancellationScope, signal },
           ),
         );
       case "commandExec.start":
@@ -229,6 +250,7 @@ export class AgenCDaemonJsonRpcDispatcher {
           await this.#commandExec.start(validateCommandExecStartParams(params), {
             connectionId: connection.cancellationScope,
             sendNotification: connection.sendNotification,
+            signal,
           }),
         );
       case "commandExec.write":
@@ -267,6 +289,11 @@ export class AgenCDaemonJsonRpcDispatcher {
         return successResponse(
           id,
           await this.#agentManager.denyTool(validateToolDenyParams(params)),
+        );
+      case "tool.cancel":
+        return successResponse(
+          id,
+          await this.#agentManager.cancelTool(validateToolCancelParams(params)),
         );
       default:
         return errorResponse(
@@ -364,6 +391,7 @@ export class AgenCDaemonJsonRpcConnection {
     | undefined;
   readonly #cancellationScope: string;
   readonly #clientIds = new Set<string>();
+  readonly #inFlightRequests = new Map<string, AbortController>();
   #initialized = false;
 
   constructor(
@@ -402,6 +430,77 @@ export class AgenCDaemonJsonRpcConnection {
     return [...this.#clientIds];
   }
 
+  async runCancellableRequest<T>(
+    id: RequestId,
+    run: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const key = requestIdKey(id);
+    if (this.#inFlightRequests.has(key)) {
+      throw invalidParams(`daemon request is already in flight: ${String(id)}`);
+    }
+    const controller = new AbortController();
+    this.#inFlightRequests.set(key, controller);
+
+    let removeAbortListener: (() => void) | undefined;
+    const abortPromise = new Promise<never>((_, reject) => {
+      const rejectCancelled = (): void => {
+        reject(
+          new AgenCDaemonRequestCancelledError(
+            id,
+            String(controller.signal.reason ?? "request cancelled"),
+          ),
+        );
+      };
+      if (controller.signal.aborted) {
+        rejectCancelled();
+        return;
+      }
+      controller.signal.addEventListener("abort", rejectCancelled, {
+        once: true,
+      });
+      removeAbortListener = () => {
+        controller.signal.removeEventListener("abort", rejectCancelled);
+      };
+    });
+
+    try {
+      return await Promise.race([run(controller.signal), abortPromise]);
+    } finally {
+      removeAbortListener?.();
+      if (this.#inFlightRequests.get(key) === controller) {
+        this.#inFlightRequests.delete(key);
+      }
+    }
+  }
+
+  cancelInFlightRequest(
+    params: RequestCancelParams,
+  ): AgenCDaemonResultByMethod["request.cancel"] {
+    const controller = this.#inFlightRequests.get(
+      requestIdKey(params.requestId),
+    );
+    const reason = params.reason ?? "request.cancel";
+    if (controller === undefined) {
+      return {
+        requestId: params.requestId,
+        cancelled: false,
+        ...(params.reason !== undefined ? { reason: params.reason } : {}),
+      };
+    }
+    controller.abort(reason);
+    return {
+      requestId: params.requestId,
+      cancelled: true,
+      ...(params.reason !== undefined ? { reason: params.reason } : {}),
+    };
+  }
+
+  cancelAllInFlightRequests(reason: string): void {
+    for (const controller of this.#inFlightRequests.values()) {
+      controller.abort(reason);
+    }
+  }
+
   async dispatch(message: JsonObject): Promise<AgenCDaemonResponse> {
     return this.#dispatcher.dispatchForConnection(this, message);
   }
@@ -415,6 +514,28 @@ function requestIdFromMessage(message: JsonObject): RequestId | null {
   return typeof message.id === "string" || typeof message.id === "number"
     ? message.id
     : null;
+}
+
+function requestIdKey(id: RequestId): string {
+  return `${typeof id}:${String(id)}`;
+}
+
+class AgenCDaemonRequestCancelledError extends Error {
+  readonly requestId: RequestId;
+  readonly reason: string;
+
+  constructor(requestId: RequestId, reason: string) {
+    super(`daemon request cancelled: ${String(requestId)}`);
+    this.name = "AgenCDaemonRequestCancelledError";
+    this.requestId = requestId;
+    this.reason = reason;
+  }
+}
+
+const INERT_ABORT_SIGNAL = new AbortController().signal;
+
+function methodSupportsRequestCancellation(method: AgenCDaemonMethod): boolean {
+  return method === "fs.fuzzy_search" || method === "commandExec.start";
 }
 
 function objectParams(params: unknown): JsonObject {
@@ -434,6 +555,24 @@ function validateInitializeParams(params: JsonObject): InitializeParams {
     stringFields: ["protocolVersion", "clientName", "authCookie"],
     objectFields: ["capabilities"],
   }) as InitializeParams;
+}
+
+function validateRequestCancelParams(params: JsonObject): RequestCancelParams {
+  const validated = validateObjectShape(params, {
+    methodName: "request.cancel",
+    stringFields: ["reason"],
+    valueFields: ["requestId"],
+  });
+  const requestId = validated.requestId;
+  if (
+    !(
+      (typeof requestId === "string" && requestId.trim().length > 0) ||
+      typeof requestId === "number"
+    )
+  ) {
+    throw invalidParams("request.cancel requires requestId");
+  }
+  return validated as RequestCancelParams;
 }
 
 function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
@@ -657,6 +796,16 @@ function validateToolDenyParams(params: JsonObject): ToolDenyParams {
   return validated as ToolDenyParams;
 }
 
+function validateToolCancelParams(params: JsonObject): ToolCancelParams {
+  const validated = validateObjectShape(params, {
+    methodName: "tool.cancel",
+    stringFields: ["sessionId", "requestId", "reason"],
+  });
+  validateRequiredString(validated, "tool.cancel", "sessionId");
+  validateRequiredString(validated, "tool.cancel", "requestId");
+  return validated as ToolCancelParams;
+}
+
 function validateRequiredString(
   params: JsonObject,
   methodName: string,
@@ -734,6 +883,13 @@ function mapDispatchError(
   id: RequestId | null,
   error: unknown,
 ): AgenCDaemonResponse {
+  if (error instanceof AgenCDaemonRequestCancelledError) {
+    return errorResponse(id, -32000, error.message, {
+      code: "REQUEST_CANCELLED",
+      requestId: error.requestId,
+      reason: error.reason,
+    });
+  }
   if (error instanceof AgenCDaemonAgentLifecycleError) {
     return errorResponse(id, -32602, error.message, { code: error.code });
   }
