@@ -67,6 +67,7 @@ describe("AgenC SDK plus TUI co-attach example", () => {
     expect(packageJson.scripts?.test).toBe("vitest run index.test.ts");
     expect(packageJson.scripts?.typecheck).toBe("tsc --noEmit -p tsconfig.json");
     expect(source).toContain("export async function runDaemonCoAttach");
+    expect(source).toContain("attachTui");
     expect(source).toContain("client.attachSession");
     expect(source).toContain("client.sendMessage");
     expect(source).toContain("client.streamMessage");
@@ -77,10 +78,11 @@ describe("AgenC SDK plus TUI co-attach example", () => {
     expect(source).not.toMatch(/createAgent|agent\.create/);
     expect(testSource).toContain("attach:sdk-test");
     expect(testSource).toContain("attach:tui-test");
+    expect(testSource).toContain("attachTui:tui-test");
     expect(testSource).toContain("sdk:session_1");
     expect(testSource).toContain("tui:session_1");
     expect(readme).toContain("one daemon session");
-    expect(readme).toContain("TUI client ID");
+    expect(readme).toContain("TUI daemon bridge");
 
     const typecheck = spawnSync("npm", ["run", "typecheck"], {
       cwd: exampleDir,
