@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   REMOTE_AUTH_MODEL_URL_ENV,
+  REMOTE_AUTH_TIER_URL_ENV,
   REMOTE_AUTH_TOKEN_ENV,
   REMOTE_AUTH_URL_ENV,
   RemoteAuthBackend,
@@ -298,8 +299,69 @@ describe("RemoteAuthBackend", () => {
     );
   });
 
-  it("keeps non-hosted remote auth surfaces explicit until their rows land", () => {
-    const backend = new RemoteAuthBackend();
+  it("returns subscription tiers through the configured resolver", async () => {
+    const subscriptionTierResolver = vi.fn(({ sessionId }) => {
+      expect(sessionId).toBe("session-1");
+      return "team";
+    });
+    const backend = new RemoteAuthBackend({ subscriptionTierResolver });
+
+    await expect(
+      backend.getSubscriptionTier({ sessionId: "session-1" }),
+    ).resolves.toBe("team");
+    expect(subscriptionTierResolver).toHaveBeenCalledWith({
+      sessionId: "session-1",
+    });
+  });
+
+  it("uses the configured HTTP subscription tier endpoint", async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          subscriptionTier: "pro",
+        }),
+        { status: 200 },
+      ),
+    );
+    const backend = new RemoteAuthBackend({
+      env: {
+        [REMOTE_AUTH_TIER_URL_ENV]:
+          "https://api.agenc.tech/test/subscription-tier",
+        [REMOTE_AUTH_TOKEN_ENV]: "remote-token",
+      },
+      fetchImpl,
+    });
+
+    await expect(
+      backend.getSubscriptionTier({ sessionId: "session-1" }),
+    ).resolves.toBe("pro");
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://api.agenc.tech/test/subscription-tier",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer remote-token",
+        },
+        body: JSON.stringify({
+          sessionId: "session-1",
+        }),
+      },
+    );
+  });
+
+  it("rejects invalid subscription tier responses", async () => {
+    const backend = new RemoteAuthBackend({
+      subscriptionTierResolver: () => "trial" as never,
+    });
+
+    await expect(backend.getSubscriptionTier()).rejects.toThrow(/invalid tier/);
+  });
+
+  it("keeps non-hosted remote auth surfaces explicit until their rows land", async () => {
+    const backend = new RemoteAuthBackend({
+      subscriptionTierResolver: () => "free",
+    });
 
     expect(() => backend.login()).toThrow(/remote login flow/);
     expect(backend.whoami()).toEqual({
@@ -307,6 +369,6 @@ describe("RemoteAuthBackend", () => {
       provider: "remote",
     });
     expect(backend.logout()).toEqual({ authenticated: false });
-    expect(backend.getSubscriptionTier()).toBe("free");
+    await expect(backend.getSubscriptionTier()).resolves.toBe("free");
   });
 });

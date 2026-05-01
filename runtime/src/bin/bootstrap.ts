@@ -161,6 +161,41 @@ async function resolveAuthSubscriptionTier(
   return authBackend.getSubscriptionTier({ sessionId });
 }
 
+function isRemoteAuthBackend(
+  authBackend: AuthBackend | undefined,
+): boolean {
+  return authBackend?.kind === "remote";
+}
+
+function isSubscriptionEntitled(tier: AuthSubscriptionTier): boolean {
+  return tier === "pro" || tier === "team" || tier === "enterprise";
+}
+
+function enforceRemoteSubscriptionGate(params: {
+  readonly authBackend: AuthBackend | undefined;
+  readonly subscriptionTier: AuthSubscriptionTier;
+  readonly provider: ProviderName;
+  readonly model: string;
+  readonly providerSettings: ResolvedProviderSettings | undefined;
+  readonly byokApiKey: string | undefined;
+}): void {
+  if (!isRemoteAuthBackend(params.authBackend)) return;
+  if (isSubscriptionEntitled(params.subscriptionTier)) return;
+  if (requiresAuthModelInference(params.provider, params.model)) {
+    throw new Error(
+      "Hosted AgenC model routing requires an active AgenC subscription",
+    );
+  }
+  if (
+    params.byokApiKey === undefined &&
+    providerApiKeyEnvHint(params.provider, params.providerSettings) !== undefined
+  ) {
+    throw new Error(
+      "Managed provider keys require an active AgenC subscription; configure BYOK provider credentials instead",
+    );
+  }
+}
+
 function requiresAuthModelInference(provider: string, model: string): boolean {
   const normalizedProvider = provider.trim().toLowerCase();
   const normalizedModel = model.trim().toLowerCase();
@@ -774,6 +809,23 @@ export async function bootstrapLocalRuntimeSession(
     options.authBackend,
     conversationId,
   );
+  const byokApiKey = selectByokPrecedenceApiKey({
+    explicitApiKey: options.apiKey,
+    byokApiKey: startup.apiKey,
+  });
+  const startupProviderSettings = resolveProviderSettings(
+    startup.provider,
+    startup.config,
+    env,
+  );
+  enforceRemoteSubscriptionGate({
+    authBackend: options.authBackend,
+    subscriptionTier: authSubscriptionTier,
+    provider: startup.provider,
+    model: startup.model,
+    providerSettings: startupProviderSettings,
+    byokApiKey,
+  });
   const modelSelection = await resolveAuthModelSelection({
     authBackend: options.authBackend,
     provider: startup.provider,
@@ -794,10 +846,6 @@ export async function bootstrapLocalRuntimeSession(
     profileProvider === resolvedProvider
       ? runtimeProviderSettings
       : resolveProviderSettings(profileProvider, startup.config, env);
-  const byokApiKey = selectByokPrecedenceApiKey({
-    explicitApiKey: options.apiKey,
-    byokApiKey: startup.apiKey,
-  });
   const managedKey =
     byokApiKey === undefined && !isHostedAgencProvider(resolvedProvider)
       ? await vendProviderKeyOrUndefined({

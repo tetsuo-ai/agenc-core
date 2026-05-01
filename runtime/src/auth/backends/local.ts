@@ -56,6 +56,8 @@ export interface LocalAuthWhoamiResult extends AuthWhoamiResult {
 }
 
 export class LocalAuthBackend implements AuthBackend {
+  readonly kind = "local";
+
   private readonly authFilePath: string;
   private readonly now: () => Date;
   private readonly randomUUID: () => string;
