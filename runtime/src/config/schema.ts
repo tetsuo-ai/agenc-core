@@ -19,6 +19,8 @@ export type ApprovalPolicy =
   | "on-request"
   | "never";
 
+export type PermissionDefaultMode = ApprovalPolicy;
+
 export type SandboxMode =
   | "read-only"
   | "workspace-write"
@@ -244,8 +246,10 @@ export interface TuiLayoutConfig {
  *
  * Rule arrays (`allow` / `deny` / `ask`) carry rule strings in the
  * `Tool(filter)` or bare `Tool` form parsed by
- * `src/permissions/rules.ts::parseRuleString`. `defaultMode` accepts any
- * variant of the `PermissionMode` union.
+ * `src/permissions/rules.ts::parseRuleString`. `default_mode` is the PE-04
+ * scaffold for AgenC's permission approval default and accepts the
+ * config-file `ApprovalPolicy` literals. `defaultMode` keeps the
+ * upstream-style permission mode surface used by settings files.
  *
  * Precedence (top-down, highest wins) for the runtime permission
  * context — implemented progressively across T11:
@@ -270,6 +274,7 @@ export interface PermissionsConfig {
   readonly deny?: readonly string[];
   readonly ask?: readonly string[];
   readonly additionalDirectories?: readonly string[];
+  readonly default_mode?: PermissionDefaultMode;
   readonly defaultMode?: PermissionMode;
 }
 
@@ -505,6 +510,9 @@ export function defaultConfig(): AgenCConfig {
     auth: Object.freeze({
       backend: "local",
     }) as AuthConfig,
+    permissions: Object.freeze({
+      default_mode: "on-request",
+    }) as PermissionsConfig,
     project_root_markers: Object.freeze([
       ".git",
       "package.json",
@@ -712,6 +720,17 @@ export function isValidPermissionMode(value: unknown): value is PermissionMode {
   );
 }
 
+export function isValidPermissionDefaultMode(
+  value: unknown,
+): value is PermissionDefaultMode {
+  return (
+    value === "untrusted" ||
+    value === "on-failure" ||
+    value === "on-request" ||
+    value === "never"
+  );
+}
+
 function validateStringArray(
   value: unknown,
   field: string,
@@ -774,6 +793,16 @@ export function validatePermissionsConfig(
       );
     }
     out.defaultMode = raw.defaultMode;
+  }
+
+  if (raw.default_mode !== undefined) {
+    if (!isValidPermissionDefaultMode(raw.default_mode)) {
+      throw new InvalidPermissionsConfigError(
+        "default_mode",
+        `unknown mode '${String(raw.default_mode)}'`,
+      );
+    }
+    out.default_mode = raw.default_mode;
   }
 
   return Object.freeze(out as PermissionsConfig);
