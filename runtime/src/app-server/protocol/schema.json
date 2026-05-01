@@ -15,7 +15,9 @@
     "tool.approve",
     "tool.deny",
     "permission.list",
-    "auth.whoami"
+    "auth.login",
+    "auth.whoami",
+    "auth.logout"
   ],
   "oneOf": [
     {
@@ -279,7 +281,17 @@
         }
       }
     },
+    "AuthLoginParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
     "AuthWhoamiParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "AuthLogoutParams": {
       "type": "object",
       "additionalProperties": false,
       "properties": {}
@@ -320,7 +332,13 @@
           "$ref": "#/definitions/PermissionListRequest"
         },
         {
+          "$ref": "#/definitions/AuthLoginRequest"
+        },
+        {
           "$ref": "#/definitions/AuthWhoamiRequest"
+        },
+        {
+          "$ref": "#/definitions/AuthLogoutRequest"
         }
       ]
     },
@@ -533,6 +551,25 @@
       },
       "required": ["jsonrpc", "id", "method", "params"]
     },
+    "AuthLoginRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "auth.login"
+        },
+        "params": {
+          "$ref": "#/definitions/AuthLoginParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method"]
+    },
     "AuthWhoamiRequest": {
       "type": "object",
       "additionalProperties": false,
@@ -548,6 +585,25 @@
         },
         "params": {
           "$ref": "#/definitions/AuthWhoamiParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method"]
+    },
+    "AuthLogoutRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "auth.logout"
+        },
+        "params": {
+          "$ref": "#/definitions/AuthLogoutParams"
         }
       },
       "required": ["jsonrpc", "id", "method"]

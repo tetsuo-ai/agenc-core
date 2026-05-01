@@ -28,7 +28,9 @@ const expectedMethods = [
   "tool.approve",
   "tool.deny",
   "permission.list",
+  "auth.login",
   "auth.whoami",
+  "auth.logout",
 ] as const;
 
 function readProtocolSchema(): ProtocolSchema {
@@ -60,7 +62,7 @@ describe("AgenC daemon protocol surface", () => {
     }
 
     expect(isAgenCDaemonMethod("thread/start")).toBe(false);
-    expect(isAgenCDaemonMethod("auth.login")).toBe(false);
+    expect(isAgenCDaemonMethod("account/login/start")).toBe(false);
   });
 
   it("publishes a schema with the same method list", () => {
@@ -149,7 +151,17 @@ describe("AgenC daemon protocol surface", () => {
       {
         jsonrpc: JSON_RPC_VERSION,
         id: 12,
+        method: "auth.login",
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: 13,
         method: "auth.whoami",
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: 14,
+        method: "auth.logout",
       },
     ];
 
@@ -173,8 +185,8 @@ describe("AgenC daemon protocol surface", () => {
     expect(
       validate({
         jsonrpc: JSON_RPC_VERSION,
-        id: "not-initial",
-        method: "auth.login",
+        id: "not-owned",
+        method: "account/login/start",
         params: {},
       }),
     ).toBe(false);

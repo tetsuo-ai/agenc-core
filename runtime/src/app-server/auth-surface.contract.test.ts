@@ -1,0 +1,72 @@
+import { describe, expect, it } from "vitest";
+import {
+  AGENC_DAEMON_METHODS,
+  isAgenCDaemonMethod,
+} from "./protocol/index.js";
+import {
+  AGENC_DAEMON_AUTH_METHODS,
+  createAgenCDaemonAuthHandlers,
+  isAgenCDaemonAuthMethod,
+  type AgenCDaemonAuthBackend,
+} from "./auth.js";
+
+describe("AgenC daemon auth surface", () => {
+  it("exposes only the AgenC-owned auth method trio", () => {
+    expect(AGENC_DAEMON_AUTH_METHODS).toEqual([
+      "auth.login",
+      "auth.whoami",
+      "auth.logout",
+    ]);
+    expect(AGENC_DAEMON_METHODS).toEqual(
+      expect.arrayContaining(AGENC_DAEMON_AUTH_METHODS),
+    );
+
+    for (const method of AGENC_DAEMON_AUTH_METHODS) {
+      expect(isAgenCDaemonMethod(method)).toBe(true);
+      expect(isAgenCDaemonAuthMethod(method)).toBe(true);
+    }
+
+    for (const method of [
+      "account/login/start",
+      "account/logout",
+      "account/read",
+      "experimentalFeature/list",
+      "plugin/list",
+    ]) {
+      expect(isAgenCDaemonMethod(method)).toBe(false);
+      expect(isAgenCDaemonAuthMethod(method)).toBe(false);
+    }
+  });
+
+  it("routes auth methods through the supplied backend shape", async () => {
+    const calls: string[] = [];
+    const backend: AgenCDaemonAuthBackend = {
+      login: () => {
+        calls.push("login");
+        return { authenticated: true, provider: "local" };
+      },
+      whoami: () => {
+        calls.push("whoami");
+        return { authenticated: true, provider: "local" };
+      },
+      logout: () => {
+        calls.push("logout");
+        return { authenticated: false };
+      },
+    };
+    const handlers = createAgenCDaemonAuthHandlers(backend);
+
+    await expect(handlers["auth.login"]()).resolves.toEqual({
+      authenticated: true,
+      provider: "local",
+    });
+    await expect(handlers["auth.whoami"]()).resolves.toEqual({
+      authenticated: true,
+      provider: "local",
+    });
+    await expect(handlers["auth.logout"]()).resolves.toEqual({
+      authenticated: false,
+    });
+    expect(calls).toEqual(["login", "whoami", "logout"]);
+  });
+});
