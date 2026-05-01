@@ -6,6 +6,7 @@ import {
   type AgenCEnsureAgentControlFunction,
 } from "./background-agent-runner.js";
 import type { AgentThread } from "../agents/thread.js";
+import type { AuthBackend } from "../auth/backend.js";
 import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,
@@ -109,6 +110,57 @@ describe("AgenC delegate background-agent runner", () => {
       "exec_command",
     ]);
     expect(shutdown).not.toHaveBeenCalled();
+  });
+
+  it("passes the daemon AuthBackend into delegate bootstrap", async () => {
+    const shutdown = vi.fn(async () => {});
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    const session = { conversationId: "parent-session", permissionModeRegistry };
+    const control = { shutdown: vi.fn(async () => {}) };
+    const thread = {
+      threadId: "agent_live",
+      agentPath: "/root/agent_live",
+      join: vi.fn(() => new Promise(() => {})),
+    } as AgentThread;
+    const authBackend = {
+      login: vi.fn(),
+      logout: vi.fn(),
+      whoami: vi.fn(),
+      vendKey: vi.fn(),
+      inferAgencModel: vi.fn(),
+      getSubscriptionTier: vi.fn(),
+    } as unknown as AuthBackend;
+    const bootstrap = vi.fn(async () => ({
+      session,
+      shutdown,
+    })) as unknown as AgenCBootstrapFunction;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      authBackend,
+      bootstrap,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      delegateFn: vi.fn(async () => ({
+        kind: "async_launched",
+        thread,
+      })) as unknown as AgenCDelegateFunction,
+      argv: ["node", "agenc"],
+    });
+
+    await runner.startAgent({
+      objective: "compile the daemon",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    expect(bootstrap).toHaveBeenCalledWith({
+      authBackend,
+      argv: ["node", "agenc", "--autonomous"],
+    });
   });
 
   it("still shuts down bootstrap resources when control shutdown fails", async () => {

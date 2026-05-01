@@ -23,6 +23,7 @@ import { MailboxClosedError } from "../agents/mailbox.js";
 import type { AgentPath } from "../agents/registry.js";
 import type { AgentThread } from "../agents/thread.js";
 import type { RunAgentProgressEvent } from "../agents/run-agent.js";
+import type { AuthBackend } from "../auth/backend.js";
 import type { LLMContentPart } from "../llm/types.js";
 import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
 import { setRulesForSource } from "../permissions/rules.js";
@@ -146,6 +147,7 @@ export interface AgenCDelegateBackgroundAgentRunnerOptions {
   readonly bootstrap?: AgenCBootstrapFunction;
   readonly delegateFn?: AgenCDelegateFunction;
   readonly ensureAgentControl?: AgenCEnsureAgentControlFunction;
+  readonly authBackend?: AuthBackend;
   readonly env?: NodeJS.ProcessEnv;
   readonly argv?: readonly string[];
   readonly now?: () => string;
@@ -157,6 +159,7 @@ export class AgenCDelegateBackgroundAgentRunner
   readonly #bootstrap: AgenCBootstrapFunction;
   readonly #delegate: AgenCDelegateFunction;
   readonly #ensureAgentControl: AgenCEnsureAgentControlFunction;
+  readonly #authBackend: AuthBackend | undefined;
   readonly #env: NodeJS.ProcessEnv | undefined;
   readonly #argv: readonly string[] | undefined;
   readonly #now: () => string;
@@ -174,6 +177,7 @@ export class AgenCDelegateBackgroundAgentRunner
     this.#delegate = options.delegateFn ?? delegate;
     this.#ensureAgentControl =
       options.ensureAgentControl ?? ensureAgentControl;
+    this.#authBackend = options.authBackend;
     this.#env = options.env;
     this.#argv = options.argv;
     this.#now = options.now ?? (() => new Date().toISOString());
@@ -184,6 +188,9 @@ export class AgenCDelegateBackgroundAgentRunner
   ): Promise<AgenCBackgroundAgentStartResult> {
     const bootstrap = await this.#bootstrap({
       ...(this.#env !== undefined ? { env: this.#env } : {}),
+      ...(this.#authBackend !== undefined
+        ? { authBackend: this.#authBackend }
+        : {}),
       argv: buildBootstrapArgv(params, this.#argv),
       ...(params.cwd !== undefined ? { cwd: params.cwd } : {}),
     });
