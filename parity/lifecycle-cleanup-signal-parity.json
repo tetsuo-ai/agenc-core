@@ -79,6 +79,7 @@
       ],
       "edgeCases": [
         "SIGHUP follows the cleanup path and returns the interrupt exit code",
+        "signals observed during startup do not write daemon.pid or advertise the daemon as running",
         "cleanup failures are surfaced and convert orderly shutdown to a non-zero exit",
         "cleanup is idempotent between signal-triggered cleanup and finally cleanup",
         "one background agent stop failure cannot prevent later agents from being stopped and closed",

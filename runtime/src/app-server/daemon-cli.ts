@@ -70,6 +70,7 @@ export interface RunAgenCDaemonCliOptions {
   readonly io?: AgenCDaemonCliIo;
   readonly host?: AgenCDaemonCliHost;
   readonly signalProcess?: AgenCSignalProcess;
+  readonly beforeDaemonReady?: () => void | Promise<void>;
   readonly stopTimeoutMs?: number;
 }
 
@@ -196,7 +197,10 @@ async function runAgenCDaemonAction(
       return startAgenCDaemon(host, io);
     }
     case "run":
-      return runAgenCDaemonForeground(host, io, options.signalProcess);
+      return runAgenCDaemonForeground(host, io, {
+        signalProcess: options.signalProcess,
+        beforeDaemonReady: options.beforeDaemonReady,
+      });
   }
 }
 
@@ -274,7 +278,10 @@ async function statusAgenCDaemon(
 async function runAgenCDaemonForeground(
   host: AgenCDaemonCliHost,
   io: AgenCDaemonCliIo,
-  signalProcess: AgenCSignalProcess = process,
+  options: {
+    readonly signalProcess?: AgenCSignalProcess;
+    readonly beforeDaemonReady?: () => void | Promise<void>;
+  } = {},
 ): Promise<number> {
   const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
   const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
@@ -377,7 +384,7 @@ async function runAgenCDaemonForeground(
       shuttingDown = true;
       io.stderr.write(`${summarizeAgenCShutdown(event)}\n`);
     },
-    signalProcess,
+    options.signalProcess ?? process,
   );
   let exitCode = 0;
   let cleanupContext:
@@ -385,8 +392,13 @@ async function runAgenCDaemonForeground(
     | Awaited<typeof shutdownSignal.completed> = { reason: "daemon_shutdown" };
   try {
     await socketServer.listen();
-    await writeAgenCDaemonPid(pidPath, host.pid);
-    io.stdout.write(`AgenC daemon running (pid ${host.pid})\n`);
+    await options.beforeDaemonReady?.();
+    if (!shuttingDown) {
+      await writeAgenCDaemonPid(pidPath, host.pid);
+    }
+    if (!shuttingDown) {
+      io.stdout.write(`AgenC daemon running (pid ${host.pid})\n`);
+    }
 
     const event = await shutdownSignal.completed;
     cleanupContext = event;

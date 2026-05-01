@@ -264,6 +264,30 @@ describe("AgenC daemon CLI", () => {
     await rm(agencHome, { recursive: true, force: true });
   });
 
+  it("foreground daemon does not advertise running after startup signal", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      {
+        host,
+        io,
+        signalProcess,
+        beforeDaemonReady: () => signalProcess.emit("SIGHUP"),
+      },
+    );
+
+    await expect(running).resolves.toBe(130);
+    await expect(readAgenCDaemonPid(pidPath)).resolves.toBeNull();
+    expect(io.stdoutText()).not.toContain("AgenC daemon running");
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
   it("foreground daemon reports cleanup failures and keeps cleaning up", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
