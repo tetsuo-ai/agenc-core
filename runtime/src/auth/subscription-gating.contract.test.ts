@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { createAgenCDaemonRuntimeAuthBackend } from "../app-server/provider-key-vending.js";
 import { bootstrapLocalRuntimeSession } from "../bin/bootstrap.js";
 import { Session } from "../session/session.js";
 import { RemoteAuthBackend } from "./backends/remote.js";
@@ -25,6 +26,43 @@ describe("remote subscription gating", () => {
         bootstrapLocalRuntimeSession({
           authBackend,
           conversationId: "conv-free-managed",
+          env: {
+            AGENC_HOME: agencHome,
+            AGENC_WORKSPACE: workspace,
+            AGENC_XAI_API_KEY: "",
+            GROK_API_KEY: "",
+            HOME: agencHome,
+            XAI_API_KEY: "",
+          },
+        }),
+      ).rejects.toThrow(/Managed provider keys require an active AgenC subscription/);
+      expect(keyVendor).not.toHaveBeenCalled();
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects remote free-tier managed key startup through the daemon wrapper", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-tier-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-tier-ws-"));
+    const keyVendor = vi.fn(() => ({
+      provider: "grok",
+      sessionId: "conv-free-daemon-managed",
+      apiKey: "managed-key",
+    }));
+    const authBackend = createAgenCDaemonRuntimeAuthBackend(
+      new RemoteAuthBackend({
+        keyVendor,
+        subscriptionTierResolver: () => "free",
+      }),
+    );
+
+    try {
+      await expect(
+        bootstrapLocalRuntimeSession({
+          authBackend,
+          conversationId: "conv-free-daemon-managed",
           env: {
             AGENC_HOME: agencHome,
             AGENC_WORKSPACE: workspace,
