@@ -1,8 +1,8 @@
 /**
- * `Write` — port of openclaude `FileWriteTool`.
+ * `Write` — port of the upstream file-write tool.
  *
- * Lifted from openclaude `src/tools/FileWriteTool/FileWriteTool.ts` and
- * `src/tools/FileWriteTool/prompt.ts`. The model-facing description is
+ * Lifted from the upstream file-write implementation and prompt. The
+ * model-facing description is
  * the AgenC wording, lightly adapted to AgenC's voice.
  *
  * Behavior preserved from upstream:
@@ -25,7 +25,7 @@
  *   - `.ipynb` is rejected with a redirect to the notebook tool.
  *   - Path safety enforced via AgenC's `safePath` and
  *     `resolveToolAllowedPaths`.
- *   - Errors are returned as plain text (codex runtime envelope), not JSON.
+ *   - Errors are returned as plain text (runtime envelope), not JSON.
  *
  * Lifted FROM AgenC; the following AgenC couplings are
  * intentionally NOT lifted:
@@ -57,11 +57,12 @@ import {
   SESSION_ID_ARG,
   type SessionReadViewKind,
 } from "./filesystem.js";
+import { checkToolPathPermission } from "../../permissions/path-validation.js";
 
 export const FILE_WRITE_TOOL_NAME = "Write";
 
 /**
- * Verbatim wording from openclaude `src/tools/FileWriteTool/prompt.ts`,
+ * Verbatim wording from the upstream file-write prompt,
  * lightly adapted: the upstream "Edit tool" reference is kept (AgenC
  * exposes `Edit` for incremental edits), and the
  * pre-read instruction is generalized away from the exact
@@ -78,15 +79,14 @@ Usage:
 - Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.`;
 
 /**
- * Verbatim from openclaude `FileWriteTool.ts:202-205`. Used when the
+ * Verbatim from the upstream file-write tool. Used when the
  * target file exists but the model has not read it in this session.
  */
 const READ_REQUIRED_MESSAGE =
   "File has not been read yet. Read it first before writing to it.";
 
 /**
- * Verbatim from openclaude `FileEditTool/constants.ts` (re-exported by
- * `FileWriteTool.ts:43,213-217`). Used when the target was read
+ * Verbatim from the upstream file-edit constants. Used when the target was read
  * previously but the on-disk content has drifted since that read.
  */
 const FILE_UNEXPECTEDLY_MODIFIED_MESSAGE =
@@ -199,6 +199,26 @@ export function createFileWriteTool(
       required: ["file_path", "content"],
       additionalProperties: false,
     },
+    checkPermissions(input, context) {
+      const args = input as FileWriteToolInput;
+      const filePath = asNonEmptyString(args.file_path);
+      if (!filePath) {
+        return {
+          behavior: "ask",
+          message: "file_path must be a non-empty string",
+        };
+      }
+      const cwd = asNonEmptyString(args.cwd) ?? allowedPaths[0] ?? process.cwd();
+      return checkToolPathPermission({
+        toolName: FILE_WRITE_TOOL_NAME,
+        input: input as Record<string, unknown>,
+        path: filePath,
+        cwd,
+        context: context.getAppState().toolPermissionContext,
+        operationType: "write",
+        extraWorkingDirectories: allowedPaths,
+      });
+    },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const args = rawArgs as FileWriteToolInput;
 
@@ -264,7 +284,7 @@ export function createFileWriteTool(
         }
       }
 
-      // Read-before-overwrite enforcement. Verbatim openclaude wording
+      // Read-before-overwrite enforcement. Verbatim upstream wording
       // when the existing file was not read in this session. Headless
       // invocations (no `__agencSessionId`) bypass the gate so unit
       // tests and embedded contexts keep working — same convention as
@@ -363,7 +383,7 @@ export function createFileWriteTool(
         );
       }
 
-      // Plain-text result — codex runtime envelope. Matches AgenC's
+      // Plain-text result — runtime envelope. Matches AgenC's
       // `mapToolResultToToolResultBlockParam` (FileWriteTool.ts:421-435).
       void existingStat;
       return {

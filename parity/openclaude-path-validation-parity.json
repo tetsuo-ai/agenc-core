@@ -1,0 +1,227 @@
+{
+  "contractName": "openclaude-path-validation-parity",
+  "scope": "Port upstream permission path validation into AgenC filesystem tool permission checks",
+  "generatedAt": "2026-05-01T00:00:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/utils/permissions/pathValidation.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/permissions/path-validation.ts",
+    "runtime/src/tools/system/file-read.ts",
+    "runtime/src/tools/system/file-write.ts",
+    "runtime/src/tools/system/file-edit.ts"
+  ],
+  "testFiles": [
+    "runtime/src/permissions/path-validation.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "path-normalization-and-expansion-guards",
+      "source": "src/utils/permissions/pathValidation.ts",
+      "target": "runtime/src/permissions/path-validation.ts",
+      "requiredBehaviors": [
+        "strip surrounding path quotes before validation",
+        "expand only safe tilde forms and reject unresolved tilde variants",
+        "reject shell expansion syntax before filesystem resolution",
+        "reject UNC network paths before filesystem resolution",
+        "extract glob base directories for read validation and reject glob writes"
+      ],
+      "edgeCases": [
+        "a path starting with $HOME is rejected without resolving against cwd",
+        "a write path containing a glob is rejected with an exact-file-path reason",
+        "a read glob validates the base directory rather than the literal glob path",
+        "~root remains unresolved and requires manual approval"
+      ],
+      "tests": [
+        "runtime/src/permissions/path-validation.test.ts"
+      ],
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime exec vitest run src/permissions/path-validation.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "working-directory-and-rule-decisions",
+      "source": "src/utils/permissions/pathValidation.ts",
+      "target": "runtime/src/permissions/path-validation.ts",
+      "requiredBehaviors": [
+        "allow reads inside the active working directory without explicit rules",
+        "require acceptEdits mode before auto-allowing writes inside the active working directory",
+        "apply content-specific deny rules before working-directory allows",
+        "apply content-specific allow rules to write targets outside the working directory",
+        "emit ask decisions and suggestions when no allow path applies"
+      ],
+      "edgeCases": [
+        "FileRead deny rules beat an otherwise allowed cwd read",
+        "Write allow rules with /** match descendants outside cwd",
+        "default-mode writes inside cwd ask instead of auto-allowing",
+        "acceptEdits writes inside cwd return a mode allow decision"
+      ],
+      "tests": [
+        "runtime/src/permissions/path-validation.test.ts"
+      ],
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime exec vitest run src/permissions/path-validation.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "file-read-permission-wiring",
+      "source": "src/utils/permissions/pathValidation.ts",
+      "target": "runtime/src/tools/system/file-read.ts",
+      "requiredBehaviors": [
+        "FileRead routes file_path through path validation before execution",
+        "configured allowed paths are included as extra working directories for FileRead",
+        "missing file_path returns an ask decision instead of throwing"
+      ],
+      "edgeCases": [
+        "missing FileRead file_path returns an ask decision instead of throwing",
+        "FileRead uses the configured allowed path as cwd when input cwd is absent"
+      ],
+      "tests": [
+        "runtime/src/permissions/path-validation.test.ts"
+      ],
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime exec vitest run src/permissions/path-validation.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "file-write-permission-wiring",
+      "source": "src/utils/permissions/pathValidation.ts",
+      "target": "runtime/src/tools/system/file-write.ts",
+      "requiredBehaviors": [
+        "Write routes file_path through path validation before execution",
+        "tool permission checks preserve the tool input as updatedInput on allow",
+        "tool permission checks surface blockedPath on ask decisions",
+        "configured allowed paths are included as extra working directories for Write"
+      ],
+      "edgeCases": [
+        "Write outside cwd asks and returns the resolved denied target",
+        "missing Write file_path returns an ask decision instead of throwing",
+        "Write passes the original input through updatedInput when validation allows"
+      ],
+      "tests": [
+        "runtime/src/permissions/path-validation.test.ts"
+      ],
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime exec vitest run src/permissions/path-validation.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "file-edit-permission-wiring",
+      "source": "src/utils/permissions/pathValidation.ts",
+      "target": "runtime/src/tools/system/file-edit.ts",
+      "requiredBehaviors": [
+        "Edit routes file_path through path validation before execution",
+        "Edit treats missing or empty old_string as create validation",
+        "configured allowed paths are included as extra working directories for Edit"
+      ],
+      "edgeCases": [
+        "Edit treats an empty old_string as create validation",
+        "missing Edit file_path returns an ask decision instead of throwing",
+        "Edit validates write operations before execution when old_string is present"
+      ],
+      "tests": [
+        "runtime/src/permissions/path-validation.test.ts"
+      ],
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime exec vitest run src/permissions/path-validation.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "dangerous-removal-path-classification",
+      "source": "src/utils/permissions/pathValidation.ts",
+      "target": "runtime/src/permissions/path-validation.ts",
+      "requiredBehaviors": [
+        "classify wildcard removals as dangerous",
+        "classify filesystem roots as dangerous",
+        "classify home directory removal as dangerous",
+        "classify direct root children and Windows drive roots as dangerous",
+        "leave deeper ordinary workspace descendants non-dangerous"
+      ],
+      "edgeCases": [
+        "root slash is dangerous",
+        "a direct POSIX root child is dangerous",
+        "C:/ and C:/Windows are dangerous",
+        "a child below a temporary workspace root is not dangerous"
+      ],
+      "tests": [
+        "runtime/src/permissions/path-validation.test.ts"
+      ],
+      "commands": [
+        "npm --workspace=@tetsuo-ai/runtime exec vitest run src/permissions/path-validation.test.ts"
+      ],
+      "status": "required"
+    }
+  ],
+  "approvedExceptions": [
+    {
+      "id": "typescript-unknown-keyword",
+      "type": "forbidden-language",
+      "approvedBy": "path-validation-parity-contract",
+      "approvedAt": "2026-05-01T00:00:00.000Z",
+      "pattern": "\\bunknown\\b",
+      "files": [
+        "runtime/src/permissions/path-validation.ts",
+        "runtime/src/permissions/path-validation.test.ts",
+        "runtime/src/tools/system/file-read.ts",
+        "runtime/src/tools/system/file-write.ts",
+        "runtime/src/tools/system/file-edit.ts"
+      ],
+      "reason": "Allows TypeScript top-type annotations; not an unspecified implementation placeholder."
+    },
+    {
+      "id": "permission-result-blocked-path-field",
+      "type": "forbidden-language",
+      "approvedBy": "path-validation-parity-contract",
+      "approvedAt": "2026-05-01T00:00:00.000Z",
+      "pattern": "\\bblockedPath\\b",
+      "files": [
+        "runtime/src/permissions/path-validation.ts",
+        "runtime/src/permissions/path-validation.test.ts"
+      ],
+      "reason": "Allows the existing PermissionResult API field name for ask decisions; it is not deferred-work language."
+    },
+    {
+      "id": "file-read-partial-range-term",
+      "type": "forbidden-language",
+      "approvedBy": "path-validation-parity-contract",
+      "approvedAt": "2026-05-01T00:00:00.000Z",
+      "pattern": "\\b[Pp]artial\\b|\\bpartial\\b",
+      "files": [
+        "runtime/src/tools/system/file-read.ts"
+      ],
+      "reason": "Allows the existing FileRead range-view term; not a partial implementation marker."
+    },
+    {
+      "id": "tool-schema-deferred-field",
+      "type": "forbidden-language",
+      "approvedBy": "path-validation-parity-contract",
+      "approvedAt": "2026-05-01T00:00:00.000Z",
+      "pattern": "\\bdeferred\\b",
+      "files": [
+        "runtime/src/tools/system/file-read.ts",
+        "runtime/src/tools/system/file-write.ts",
+        "runtime/src/tools/system/file-edit.ts"
+      ],
+      "reason": "Allows the Tool API schema field for synchronous tools; not a deferred implementation marker."
+    },
+    {
+      "id": "pre-existing-file-edit-comments",
+      "type": "forbidden-language",
+      "approvedBy": "path-validation-parity-contract",
+      "approvedAt": "2026-05-01T00:00:00.000Z",
+      "pattern": "\\bskipped\\b|\\bTODO\\b",
+      "files": [
+        "runtime/src/tools/system/file-edit.ts"
+      ],
+      "reason": "Allows pre-existing FileEdit comments outside this path-validation port; behavior rows remain required."
+    }
+  ]
+}

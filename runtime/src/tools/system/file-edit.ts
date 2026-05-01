@@ -1,7 +1,7 @@
 /**
  * `Edit` — first-class string-replacement editor.
  *
- * Lifted from openclaude `FileEditTool` (src/tools/FileEditTool/*) and
+ * Lifted from the upstream file-edit tool and
  * adapted to the AgenC tool contract. Behavior summary:
  *
  *   - Read-before-write enforcement via {@link hasSessionRead}. The
@@ -52,6 +52,7 @@ import {
   resolveSessionId,
   safePathAllowingSessionPlanFile,
 } from "./filesystem.js";
+import { checkToolPathPermission } from "../../permissions/path-validation.js";
 
 export const FILE_EDIT_TOOL_NAME = "Edit";
 
@@ -73,7 +74,7 @@ Usage:
 - Use \`replace_all\` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.`;
 
 // V8/Bun string length cap. 1 GiB stat-size guard prevents OOM on
-// gigabyte files. Lifted from openclaude FileEditTool.ts:84.
+// gigabyte files. Lifted from the upstream file-edit guard.
 const MAX_EDIT_FILE_SIZE = 1024 * 1024 * 1024;
 
 // ── quote normalization (lifted from AgenC utils.ts) ─────────────
@@ -92,7 +93,7 @@ const UNICODE_SPACE_RE = /[  -   　]/gu;
 
 /**
  * Normalize curly quotes, Unicode dashes, and exotic spaces to their
- * ASCII equivalents. Lifted from openclaude `utils.ts` `normalizeQuotes`,
+ * ASCII equivalents. Lifted from the upstream `normalizeQuotes` helper,
  * extended with dash/space passes so a model whose `old_string` is
  * pure ASCII can still match against typographic file content.
  */
@@ -107,7 +108,7 @@ function normalizeQuotes(str: string): string {
 }
 
 /**
- * Verbatim port of openclaude `utils.ts:findActualString`. When
+ * Verbatim port of the upstream `findActualString` helper. When
  * `searchString` is not literally present in `fileContent`, retry with
  * a quote/dash/space-normalized comparison and return the actual byte
  * range from the file at the matching offset.
@@ -154,6 +155,7 @@ interface EditArgs extends ToolExecutionInjectedArgs {
   readonly old_string?: unknown;
   readonly new_string?: unknown;
   readonly replace_all?: unknown;
+  readonly cwd?: unknown;
 }
 
 interface ResolvedEditInputs {
@@ -273,8 +275,8 @@ function applyEdit(
 }
 
 /**
- * Format a successful-edit result line. Mirrors openclaude
- * `mapToolResultToToolResultBlockParam` (FileEditTool.ts:578-597),
+ * Format a successful-edit result line. Mirrors the upstream
+ * tool-result mapper,
  * adapted for AgenC's plain-text content envelope.
  */
 function successText(filePath: string, replaceAll: boolean): string {
@@ -322,6 +324,29 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       },
       required: ["file_path", "old_string", "new_string"],
       additionalProperties: false,
+    },
+    checkPermissions(input, context) {
+      const args = input as EditArgs;
+      const filePath = asNonEmptyString(args.file_path);
+      if (!filePath) {
+        return {
+          behavior: "ask",
+          message: "file_path must be a non-empty string",
+        };
+      }
+      const cwd =
+        asNonEmptyString(args.cwd) ?? config.allowedPaths[0] ?? process.cwd();
+      return checkToolPathPermission({
+        toolName: FILE_EDIT_TOOL_NAME,
+        input: input as Record<string, unknown>,
+        path: filePath,
+        cwd,
+        context: context.getAppState().toolPermissionContext,
+        operationType: asNonEmptyString(args.old_string) === undefined
+          ? "create"
+          : "write",
+        extraWorkingDirectories: config.allowedPaths,
+      });
     },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const args = rawArgs as EditArgs;
