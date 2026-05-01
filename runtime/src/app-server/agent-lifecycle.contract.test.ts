@@ -25,6 +25,20 @@ function sequence(values: readonly string[]): () => string {
   };
 }
 
+function createDeferred<T = void>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T | PromiseLike<T>) => void;
+  readonly reject: (error: unknown) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("AgenC background agent lifecycle", () => {
   it("agent.create launches a running background agent and seeds its session", async () => {
     const sessions = new AgenCDaemonSessionManager({
@@ -264,6 +278,103 @@ describe("AgenC background agent lifecycle", () => {
       stopped: false,
     });
     expect(stopAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps final stop state durable while runner shutdown is in flight", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_1"]),
+      now: sequence([
+        "2026-05-01T12:00:01.000Z",
+        "2026-05-01T12:00:03.000Z",
+      ]),
+    });
+    const stopStarted = createDeferred();
+    const releaseStop = createDeferred();
+    let stopping = false;
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent_race",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      getAgentSnapshot: async () =>
+        stopping
+          ? null
+          : {
+              status: "running",
+              lastActiveAt: "2026-05-01T12:00:00.500Z",
+            },
+      stopAgent: async () => {
+        stopping = true;
+        stopStarted.resolve(undefined);
+        await releaseStop.promise;
+      },
+    };
+    const agents = new AgenCDaemonAgentManager({
+      defaultCwd: () => "/workspace",
+      now: sequence([
+        "2026-05-01T12:00:00.000Z",
+        "2026-05-01T12:00:02.000Z",
+      ]),
+      runner,
+      sessionManager: sessions,
+    });
+
+    await agents.createAgent({ objective: "race stop" });
+    const stop = agents.stopAgent({ agentId: "agent_race" });
+    await stopStarted.promise;
+
+    await expect(agents.listAgents()).resolves.toEqual({ agents: [] });
+    await expect(agents.getAgent("agent_race")).resolves.toMatchObject({
+      agentId: "agent_race",
+      status: "stopping",
+      lastActiveAt: "2026-05-01T12:00:02.000Z",
+    });
+    await expect(
+      agents.attachAgent({ agentId: "agent_race" }),
+    ).rejects.toMatchObject({ code: "AGENT_NOT_FOUND" });
+
+    releaseStop.resolve(undefined);
+    await expect(stop).resolves.toEqual({
+      agentId: "agent_race",
+      stopped: true,
+    });
+    await expect(agents.getAgent("agent_race")).resolves.toMatchObject({
+      agentId: "agent_race",
+      status: "stopped",
+      lastActiveAt: "2026-05-01T12:00:02.000Z",
+    });
+  });
+
+  it("keeps stop failures from being reported as successful stops", async () => {
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent_fail_stop",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      stopAgent: async () => {
+        throw new Error("shutdown failed");
+      },
+    };
+    const agents = new AgenCDaemonAgentManager({
+      defaultCwd: () => "/workspace",
+      now: sequence([
+        "2026-05-01T12:00:00.000Z",
+        "2026-05-01T12:00:02.000Z",
+      ]),
+      runner,
+    });
+
+    await agents.createAgent({ objective: "fail stop" });
+    await expect(agents.stopAgent({ agentId: "agent_fail_stop" })).rejects.toThrow(
+      "shutdown failed",
+    );
+    await expect(agents.getAgent("agent_fail_stop")).resolves.toMatchObject({
+      agentId: "agent_fail_stop",
+      status: "error",
+      lastActiveAt: "2026-05-01T12:00:02.000Z",
+    });
   });
 
   it("refreshes active list status and omits agents no longer active", async () => {

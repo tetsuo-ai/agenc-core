@@ -11,12 +11,14 @@
   ],
   "targetFiles": [
     "runtime/src/app-server/agent-lifecycle.ts",
+    "runtime/src/app-server/background-agent-runner.ts",
     "runtime/src/app-server/daemon-dispatcher.ts",
     "runtime/src/app-server/agent-cli.ts",
     "runtime/src/bin/agenc.ts"
   ],
   "testFiles": [
     "runtime/src/app-server/agent-lifecycle.contract.test.ts",
+    "runtime/src/app-server/background-agent-runner.contract.test.ts",
     "runtime/src/app-server/agent-cli.contract.test.ts"
   ],
   "rows": [
@@ -46,14 +48,34 @@
         "stopping a live daemon agent calls the background runner stop hook with the requested reason",
         "daemon-owned sessions for the agent are terminated during stop",
         "the agent is omitted from active listing after stop but getAgent keeps a stopped summary for final-state inspection",
-        "stopping an already stopped persisted agent returns stopped=false without invoking the runner again"
+        "stopping an already stopped persisted agent returns stopped=false without invoking the runner again",
+        "the lifecycle state enters a non-refreshable stopping state before runner shutdown can make the live runner snapshot disappear"
       ],
       "edgeCases": [
         "agents that disappear from the runner before explicit stop are treated as not found",
-        "stopped agents are not refreshed away by runner snapshots after the final state is recorded"
+        "stopping and stopped agents are not refreshed away by runner snapshots after the final state is recorded",
+        "runner shutdown failure marks the daemon agent as error and does not report stopped=true"
       ],
       "tests": [
         "runtime/src/app-server/agent-lifecycle.contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "runner-stop-error-surface",
+      "source": "core/src/agent/control.rs",
+      "target": "runtime/src/app-server/background-agent-runner.ts",
+      "requiredBehaviors": [
+        "the delegate background runner keeps an agent visible as stopping while shutdown is in progress",
+        "control shutdown failures propagate to callers instead of being swallowed",
+        "failed shutdown attempts leave the runner snapshot in an error state for lifecycle callers"
+      ],
+      "edgeCases": [
+        "bootstrap cleanup is only attempted after control shutdown succeeds",
+        "successful shutdown still removes the active runner entry and buffered daemon state"
+      ],
+      "tests": [
+        "runtime/src/app-server/background-agent-runner.contract.test.ts"
       ],
       "status": "required"
     },

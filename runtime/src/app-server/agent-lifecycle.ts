@@ -288,6 +288,9 @@ export class AgenCDaemonAgentManager {
   async stopAgent(params: AgentStopParams): Promise<AgentStopResult> {
     const agentId = normalizeRequiredAgentId(params.agentId, "agent.stop");
     const reason = normalizeNonEmpty(params.reason) ?? "agent.stop";
+    const runner = this.#runner;
+    const stopRunner = runner?.stopAgent?.bind(runner);
+    let transitionAt: string | undefined;
     const target = await this.#state.with(async (state) => {
       const agent = state.agents.get(agentId);
       if (agent !== undefined) {
@@ -303,6 +306,15 @@ export class AgenCDaemonAgentManager {
       if (!isActiveAgent(refreshed)) {
         return null;
       }
+      if (stopRunner === undefined) {
+        throw new AgenCDaemonAgentLifecycleError(
+          "BACKGROUND_RUNNER_UNAVAILABLE",
+          "agent.stop requires a background runner",
+        );
+      }
+      transitionAt = this.#now();
+      refreshed.status = "stopping";
+      refreshed.lastActiveAt = transitionAt;
       return {
         sessionIds: [...refreshed.sessionIds],
       };
@@ -311,16 +323,20 @@ export class AgenCDaemonAgentManager {
     if (target === null) {
       return { agentId, stopped: false };
     }
-    if (this.#runner?.stopAgent === undefined) {
+    if (stopRunner === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
         "BACKGROUND_RUNNER_UNAVAILABLE",
         "agent.stop requires a background runner",
       );
     }
+    try {
+      await stopRunner(agentId, reason);
+    } catch (error) {
+      await this.#markAgentStopFailed(agentId, transitionAt);
+      throw error;
+    }
 
-    await this.#runner.stopAgent(agentId, reason);
-    await this.#terminateAgentSessions(target.sessionIds, reason);
-    const stoppedAt = this.#now();
+    const stoppedAt = transitionAt ?? this.#now();
     await this.#state.with((state) => {
       const agent = state.agents.get(agentId);
       if (agent === undefined) return;
@@ -328,6 +344,7 @@ export class AgenCDaemonAgentManager {
       agent.lastActiveAt = stoppedAt;
       agent.sessionIds = [];
     });
+    await this.#terminateAgentSessions(target.sessionIds, reason);
     return { agentId, stopped: true };
   }
 
@@ -538,6 +555,18 @@ export class AgenCDaemonAgentManager {
       await this.#sessionManager.terminateSession({ sessionId, reason });
     }
   }
+
+  async #markAgentStopFailed(
+    agentId: string,
+    failedAt: string | undefined,
+  ): Promise<void> {
+    await this.#state.with((state) => {
+      const agent = state.agents.get(agentId);
+      if (agent === undefined || agent.status !== "stopping") return;
+      agent.status = "error";
+      agent.lastActiveAt = failedAt ?? this.#now();
+    });
+  }
 }
 
 function normalizeObjective(params: AgentCreateParams): string {
@@ -607,7 +636,11 @@ function applyAgentSnapshot(
 }
 
 function isActiveAgent(agent: MutableAgent): boolean {
-  return agent.status !== "stopped" && agent.status !== "error";
+  return (
+    agent.status !== "stopping" &&
+    agent.status !== "stopped" &&
+    agent.status !== "error"
+  );
 }
 
 function compareAgentsForList(left: MutableAgent, right: MutableAgent): number {

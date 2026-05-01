@@ -103,6 +103,58 @@ describe("AgenC delegate background-agent runner", () => {
     expect(shutdown).not.toHaveBeenCalled();
   });
 
+  it("propagates background stop shutdown failures", async () => {
+    const shutdown = vi.fn(async () => {});
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    const session = { conversationId: "parent-session", permissionModeRegistry };
+    const control = {
+      shutdown: vi.fn(async () => {
+        throw new Error("control shutdown failed");
+      }),
+    };
+    const thread = {
+      threadId: "agent_live",
+      agentPath: "/root/agent_live",
+      join: vi.fn(() => new Promise(() => {})),
+    } as AgentThread;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        shutdown,
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      delegateFn: vi.fn(async () => ({
+        kind: "async_launched",
+        thread,
+      })) as unknown as AgenCDelegateFunction,
+      now: () => "2026-05-01T12:00:00.500Z",
+    });
+
+    await runner.startAgent({
+      objective: "compile the daemon",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await expect(
+      runner.stopAgent("agent_live", "operator stop"),
+    ).rejects.toThrow("control shutdown failed");
+    expect(control.shutdown).toHaveBeenCalledWith(
+      "agent_live",
+      "operator stop",
+    );
+    expect(shutdown).not.toHaveBeenCalled();
+    await expect(runner.getAgentSnapshot("agent_live")).resolves.toEqual({
+      status: "error",
+      lastActiveAt: "2026-05-01T12:00:00.500Z",
+    });
+  });
+
   it("replays real delegate progress to the bound daemon session and routes attached input to the live agent", async () => {
     const shutdown = vi.fn(async () => {});
     const permissionModeRegistry = {
