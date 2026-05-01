@@ -72,5 +72,11 @@ describe("AgenC SDK hello-world daemon example", () => {
       encoding: "utf8",
     });
     expect(typecheck.status, typecheck.stderr || typecheck.stdout).toBe(0);
+
+    const test = spawnSync("npm", ["test"], {
+      cwd: exampleDir,
+      encoding: "utf8",
+    });
+    expect(test.status, test.stderr || test.stdout).toBe(0);
   });
 });
