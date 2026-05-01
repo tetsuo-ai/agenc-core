@@ -196,6 +196,7 @@ describe("schema: normalizeRawConfig", () => {
     });
     expect(out.auth).toEqual({ backend: "remote" });
     expect(out._unknown).toBeUndefined();
+    expect(KNOWN_CONFIG_KEYS.includes("auth")).toBe(true);
   });
 });
 
@@ -787,6 +788,20 @@ model = "grok-4-fast"
     expect(out.config.model).toBe("grok-3");
     expect(out.config.max_turns).toBe(7);
     expect(out.config.profiles?.fast?.model).toBe("grok-4-fast");
+  });
+
+  test("auth.backend TOML overrides the local default", async () => {
+    writeFileSync(
+      join(dir, "config.toml"),
+      `
+[auth]
+backend = "remote"
+      `,
+    );
+    const out = await loadConfig({ home: dir });
+    expect(out.exists).toBe(true);
+    expect(out.config.auth?.backend).toBe("remote");
+    expect(out.config._unknown?.auth).toBeUndefined();
   });
 
   test("unknown keys preserved in _unknown forward-compat table", async () => {
