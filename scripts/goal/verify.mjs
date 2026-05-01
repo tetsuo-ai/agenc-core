@@ -29,6 +29,596 @@ const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
 const DIM = "\x1b[2m";
 
+// Per-item named-evidence map. Each entry declares the concrete evidence
+// the gate must find before passing. Items not registered here fall back to
+// the per-prefix generic gate registered below.
+//
+// Evidence shape:
+//   files: string[] | { globUnder, matching, minCount?, optional? }[]
+//   grepPresent: { pattern, scope }[]
+//   grepNotPresent: { pattern, scope }[]
+//   tests: string[] | { globUnder, matching, minCount?, optional? }[]
+//   runStrict: boolean — if true, typecheck gate enforces zero errors.
+const ITEM_EVIDENCE = {
+  "F-01": {
+    files: ["runtime/src/constants/querySource.ts"],
+    grepNotPresent: [{ pattern: "@ts-nocheck", scope: "runtime/src/constants/querySource.ts" }],
+  },
+  "F-02": {
+    files: ["runtime/src/types/message.ts"],
+    grepNotPresent: [{ pattern: "@ts-nocheck", scope: "runtime/src/types/message.ts" }],
+  },
+  "F-03a": {
+    files: [
+      "runtime/src/app-server/protocol/index.ts",
+      "runtime/src/app-server/protocol/schema.json",
+    ],
+    grepPresent: [
+      { pattern: "agent.create", scope: "runtime/src/app-server/protocol" },
+      { pattern: "agent.list", scope: "runtime/src/app-server/protocol" },
+      { pattern: "agent.attach", scope: "runtime/src/app-server/protocol" },
+      { pattern: "agent.stop", scope: "runtime/src/app-server/protocol" },
+      { pattern: "session.create", scope: "runtime/src/app-server/protocol" },
+      { pattern: "session.list", scope: "runtime/src/app-server/protocol" },
+      { pattern: "message.send", scope: "runtime/src/app-server/protocol" },
+      { pattern: "message.stream", scope: "runtime/src/app-server/protocol" },
+      { pattern: "tool.approve", scope: "runtime/src/app-server/protocol" },
+      { pattern: "tool.deny", scope: "runtime/src/app-server/protocol" },
+      { pattern: "permission.list", scope: "runtime/src/app-server/protocol" },
+      { pattern: "auth.whoami", scope: "runtime/src/app-server/protocol" },
+    ],
+    tests: ["runtime/src/app-server/protocol.contract.test.ts"],
+  },
+  "F-03b": {
+    files: ["runtime/src/app-server/transport/stdio.ts"],
+    tests: [{ globUnder: "runtime/src/app-server/transport", matching: /stdio.*\.test\.tsx?$/ }],
+  },
+  "F-03c": {
+    files: ["runtime/src/app-server/transport/unix-socket.ts"],
+    tests: [{ globUnder: "runtime/src/app-server/transport", matching: /unix-socket.*\.test\.tsx?$/ }],
+  },
+  "F-03d": {
+    grepNotPresent: [
+      { pattern: "ChatGPT", scope: "runtime/src/app-server" },
+      { pattern: "openai\\.com\\/oauth", scope: "runtime/src/app-server" },
+    ],
+    grepPresent: [
+      { pattern: "auth.login", scope: "runtime/src/app-server/protocol" },
+      { pattern: "auth.logout", scope: "runtime/src/app-server/protocol" },
+      { pattern: "auth.whoami", scope: "runtime/src/app-server/protocol" },
+    ],
+  },
+  "F-03e": {
+    grepPresent: [
+      { pattern: "AuthBackend", scope: "runtime/src/app-server" },
+    ],
+    grepNotPresent: [
+      { pattern: "process\\.env\\.\\w*_API_KEY", scope: "runtime/src/app-server" },
+    ],
+  },
+  "F-03f": {
+    grepPresent: [
+      { pattern: "session\\.create", scope: "runtime/src/app-server" },
+      { pattern: "session\\.attach", scope: "runtime/src/app-server" },
+      { pattern: "session\\.detach|session\\.terminate|session\\.close", scope: "runtime/src/app-server" },
+    ],
+  },
+  "F-03g": {
+    tests: [{ globUnder: "runtime/src/app-server", matching: /multi.?client|concurrent/i }],
+  },
+  "F-03h": {
+    tests: [{ globUnder: "runtime/src/app-server", matching: /disconnect|resilience|reattach/i }],
+  },
+  "F-03i": {
+    grepPresent: [
+      { pattern: "agenc daemon start|daemon\\.start", scope: "runtime/src/bin" },
+      { pattern: "agenc daemon stop|daemon\\.stop", scope: "runtime/src/bin" },
+      { pattern: "agenc daemon status|daemon\\.status", scope: "runtime/src/bin" },
+    ],
+  },
+  "F-03j": {
+    grepPresent: [
+      { pattern: "health\\.ping", scope: "runtime/src/app-server" },
+      { pattern: "health\\.ready", scope: "runtime/src/app-server" },
+      { pattern: "health\\.stats", scope: "runtime/src/app-server" },
+    ],
+  },
+  "F-03k": {
+    tests: [{ globUnder: "runtime/src/app-server", matching: /\.contract\.test\.tsx?$/, minCount: 2 }],
+  },
+  "F-03l": {
+    files: ["runtime/src/app-server/fuzzy-file-search.ts"],
+    grepPresent: [{ pattern: "fs.fuzzy_search", scope: "runtime/src/app-server" }],
+  },
+  "F-03m": {
+    grepPresent: [
+      { pattern: "commandExec\\.start", scope: "runtime/src/app-server" },
+      { pattern: "commandExec\\.write", scope: "runtime/src/app-server" },
+      { pattern: "commandExec\\.terminate", scope: "runtime/src/app-server" },
+    ],
+  },
+  "F-03n": {
+    files: ["runtime/src/app-server/transport/in-process.ts"],
+  },
+  "F-03o": {
+    files: ["runtime/src/app-server/transport/websocket.ts"],
+  },
+  "F-03p": {
+    grepPresent: [
+      { pattern: "SO_PEERCRED|peerCred|cookie", scope: "runtime/src/app-server/transport" },
+    ],
+  },
+  "F-03q": {
+    grepPresent: [
+      { pattern: "initialize", scope: "runtime/src/app-server/protocol" },
+      { pattern: "protocol.version|protocolVersion", scope: "runtime/src/app-server/protocol" },
+    ],
+  },
+  "F-03r": {
+    grepPresent: [
+      { pattern: "request\\.cancel", scope: "runtime/src/app-server" },
+      { pattern: "tool\\.cancel", scope: "runtime/src/app-server" },
+    ],
+  },
+  "F-03s": {
+    grepPresent: [
+      { pattern: "event\\.message_chunk|event\\.tool_request|event\\.permission_request|event\\.agent_status", scope: "runtime/src/app-server/protocol" },
+    ],
+  },
+  "F-04a": {
+    files: ["runtime/src/app-server-client/index.ts"],
+    grepPresent: [{ pattern: "autostart|spawnDaemon|startDaemon", scope: "runtime/src/app-server-client" }],
+  },
+  "F-04b": {
+    files: [{ globUnder: "runtime/src/app-server-client", matching: /\.tsx?$/, minCount: 2 }],
+  },
+  "F-04c": {
+    grepPresent: [
+      { pattern: "reattach|resume", scope: "runtime/src/app-server-client" },
+    ],
+  },
+  "F-04d": {
+    grepPresent: [
+      { pattern: "reconnect|disconnect", scope: "runtime/src/app-server-client" },
+    ],
+  },
+  "F-05a": {
+    grepPresent: [
+      { pattern: "@tetsuo-ai/protocol", scope: "runtime/src/app-server" },
+    ],
+  },
+  "F-05b": {
+    files: [{ globUnder: "runtime/src/app-server", matching: /sdk-?client/i, minCount: 1 }],
+  },
+  "F-05c": {
+    files: [{ globUnder: "../agenc-sdk", matching: /examples?/, minCount: 1, optional: true }],
+  },
+  "F-06a": {
+    grepPresent: [{ pattern: "agenc agent start|agent\\.start", scope: "runtime/src/bin" }],
+  },
+  "F-06b": {
+    grepPresent: [{ pattern: "agenc agent list|agent\\.list", scope: "runtime/src/bin" }],
+  },
+  "F-06c": {
+    grepPresent: [{ pattern: "agenc agent attach|agent\\.attach", scope: "runtime/src/bin" }],
+  },
+  "F-06d": {
+    grepPresent: [{ pattern: "agenc agent stop|agent\\.stop", scope: "runtime/src/bin" }],
+  },
+  "F-06e": {
+    grepPresent: [{ pattern: "agenc agent logs|agent\\.logs", scope: "runtime/src/bin" }],
+  },
+  "F-06f": {
+    tests: [{ globUnder: "runtime/src", matching: /persistence|recover.*restart|restart.*recover/i }],
+  },
+  "F-06g": {
+    tests: [{ globUnder: "runtime/src", matching: /e2e.*c.?compiler|compiler.*e2e/i, optional: true }],
+  },
+  "F-06h": {
+    grepPresent: [
+      { pattern: "agent\\.budget", scope: "runtime/src" },
+      { pattern: "token_cap|dollar_cap|wall_clock_seconds", scope: "runtime/src" },
+    ],
+  },
+  "F-07": {
+    files: [{ globUnder: "runtime/src/lifecycle", matching: /\.tsx?$/, minCount: 1 }],
+  },
+  "F-08": {
+    files: [
+      { globUnder: "packaging", matching: /\.(service|plist|xml)$/, minCount: 1 },
+    ],
+  },
+  "A-00a": {
+    files: ["runtime/src/auth/backend.ts"],
+    grepPresent: [
+      { pattern: "interface AuthBackend|type AuthBackend", scope: "runtime/src/auth/backend.ts" },
+      { pattern: "login|logout|whoami|vendKey|inferAgencModel|getSubscriptionTier", scope: "runtime/src/auth/backend.ts" },
+    ],
+  },
+  "A-00b": {
+    files: ["runtime/src/auth/backends/local.ts"],
+    grepPresent: [{ pattern: "LocalAuthBackend", scope: "runtime/src/auth/backends/local.ts" }],
+  },
+  "A-00c": {
+    grepPresent: [{ pattern: "auth\\.backend", scope: "runtime/src/config" }],
+  },
+  "A-01": {
+    grepPresent: [
+      { pattern: "agenc login|auth\\.login", scope: "runtime/src/bin" },
+      { pattern: "agenc logout|auth\\.logout", scope: "runtime/src/bin" },
+      { pattern: "agenc whoami|auth\\.whoami", scope: "runtime/src/bin" },
+    ],
+  },
+  "A-03": {
+    tests: [{ globUnder: "runtime/src/auth", matching: /byok|precedence|env.*key/i }],
+  },
+  "A-06": {
+    grepPresent: [{ pattern: "vendKey", scope: "runtime/src/app-server" }],
+    grepNotPresent: [{ pattern: "process\\.env\\.\\w*_API_KEY", scope: "runtime/src/app-server" }],
+  },
+  "A-07": {
+    tests: [{ globUnder: "runtime/src/auth", matching: /fallback|byok-fallback/i }],
+  },
+  "A-09": {
+    grepPresent: [{ pattern: "peerCred|peerUid|cookie", scope: "runtime/src/auth" }],
+  },
+  "C-01a": {
+    files: [{ globUnder: "runtime/src/sandbox/linux", matching: /\.tsx?$/, minCount: 1 }],
+    tests: [{ globUnder: "runtime/src/sandbox", matching: /linux.*\.test\.tsx?$/ }],
+  },
+  "C-01b": {
+    files: [{ globUnder: "runtime/src/sandbox/hardening", matching: /\.tsx?$/, minCount: 1 }],
+  },
+  "C-01c": {
+    files: [{ globUnder: "runtime/src/sandbox/policy", matching: /\.tsx?$/, minCount: 1 }],
+    tests: [{ globUnder: "runtime/src/sandbox/policy", matching: /\.test\.tsx?$/ }],
+  },
+  "C-01d": {
+    grepPresent: [
+      { pattern: "sandbox\\.mode", scope: "runtime/src/sandbox" },
+      { pattern: "workspace-write|read-only|sandbox.*off", scope: "runtime/src/sandbox" },
+    ],
+  },
+  "C-01e": {
+    grepPresent: [{ pattern: "sandbox.*bypass|bypass.*sandbox", scope: "runtime/src/sandbox" }],
+  },
+  "C-01f": {
+    files: ["runtime/src/sandbox/environment-selection.ts"],
+  },
+  "C-01g": {
+    files: ["runtime/src/sandbox/network-policy.ts"],
+  },
+  "C-02": {
+    files: [
+      { globUnder: "runtime/src/mcp-client/transports", matching: /stdio.*\.tsx?$/, minCount: 1 },
+      { globUnder: "runtime/src/mcp-client/transports", matching: /websocket.*\.tsx?$|\bws\b.*\.tsx?$/, minCount: 1 },
+    ],
+  },
+  "C-03": {
+    files: ["runtime/src/utils/terminal-detection.ts"],
+  },
+  "C-04": {
+    files: [{ globUnder: "runtime/src", matching: /file-search|git-utils/, minCount: 1 }],
+  },
+  "C-05": {
+    files: [{ globUnder: "runtime/src/tools/code-mode", matching: /\.tsx?$/, minCount: 2 }],
+  },
+  "C-06": {
+    files: [{ globUnder: "runtime/src/connectors", matching: /\.tsx?$/, minCount: 1 }],
+  },
+  "RT-01": {
+    files: [{ globUnder: "runtime/src/conversation", matching: /thread.*manager|conversation/i, minCount: 1 }],
+  },
+  "RT-02": {
+    files: ["runtime/src/conversation/multi-turn-context.ts"],
+  },
+  "FW-01": {
+    files: [{ globUnder: "runtime/src/file-watcher", matching: /\.tsx?$/, minCount: 1 }],
+    tests: [{ globUnder: "runtime/src/file-watcher", matching: /\.test\.tsx?$/ }],
+  },
+  "SE-01": {
+    files: [{ globUnder: "runtime/src/secrets", matching: /sanitiz/i, minCount: 1 }],
+    tests: [{ globUnder: "runtime/src/secrets", matching: /\.test\.tsx?$/ }],
+  },
+  "SK-01": {
+    files: [{ globUnder: "runtime/src/skills", matching: /load.*skills|skills.*load/i, minCount: 1 }],
+  },
+  "SK-02": {
+    files: [{ globUnder: "runtime/src/skills", matching: /change.*detector|hot.?reload/i, minCount: 1 }],
+  },
+  "ST-01": {
+    grepPresent: [{ pattern: "CREATE TABLE.*agent_runs|agent_runs.*CREATE TABLE|table.*agent_runs", scope: "runtime/src/state" }],
+  },
+  "ST-02": {
+    grepPresent: [{ pattern: "CREATE TABLE.*session_state_snapshots|session_state_snapshots.*CREATE TABLE|table.*session_state_snapshots", scope: "runtime/src/state" }],
+  },
+  "ST-03": {
+    grepPresent: [{ pattern: "CREATE TABLE.*in_flight_tool_calls|in_flight_tool_calls.*CREATE TABLE|table.*in_flight_tool_calls", scope: "runtime/src/state" }],
+  },
+  "ST-04": {
+    tests: [{ globUnder: "runtime/src/state", matching: /recovery|restart/i }],
+  },
+  "ST-05": {
+    grepPresent: [{ pattern: "snapshotPolicy|snapshot.*policy", scope: "runtime/src/state" }],
+  },
+  "ST-06": {
+    files: [{ globUnder: "runtime/src/state/migrations", matching: /\d+_/, minCount: 1 }],
+  },
+  "ST-07": {
+    grepPresent: [{ pattern: "retention|prun", scope: "runtime/src/state" }],
+  },
+  "ST-08": {
+    tests: [{ globUnder: "runtime/src/state", matching: /concurren|race/i }],
+  },
+  "ST-09": {
+    grepPresent: [{ pattern: "agenc state export|agenc state import|state\\.export|state\\.import", scope: "runtime/src" }],
+  },
+  "ST-10": {
+    files: [{ globUnder: "runtime/src/rollout", matching: /recorder|session.?index/i, minCount: 1 }],
+  },
+  "ST-11": {
+    files: [{ globUnder: "runtime/src/thread-store", matching: /\.tsx?$/, minCount: 1 }],
+  },
+  "ST-12": {
+    grepPresent: [{ pattern: "fsync|atomic.*rename|atomicWrite|tmp.*rename", scope: "runtime/src/state" }],
+  },
+  "ST-13": {
+    grepPresent: [{ pattern: "recoveryCategory|recovery_category|toolCategory|poison", scope: "runtime/src/state" }],
+  },
+  "ST-14": {
+    grepPresent: [{ pattern: "snapshotRetention|prune.*snapshot|snapshot.*prune", scope: "runtime/src/state" }],
+  },
+  "ST-15": {
+    grepPresent: [{ pattern: "outputRotation|output.*rotation|rotate.*output", scope: "runtime/src" }],
+  },
+  "TL-01": {
+    grepPresent: [{ pattern: "\"bash\"|'bash'", scope: "runtime/src/tool-registry.ts" }],
+    files: [{ globUnder: "runtime/src/tools", matching: /bash/i, minCount: 1 }],
+  },
+  "TL-02": {
+    grepPresent: [{ pattern: "\"edit\"|'edit'", scope: "runtime/src/tool-registry.ts" }],
+    files: [{ globUnder: "runtime/src/tools", matching: /edit/i, minCount: 1 }],
+  },
+  "TL-03": {
+    grepPresent: [{ pattern: "\"read\"|'read'", scope: "runtime/src/tool-registry.ts" }],
+    files: [{ globUnder: "runtime/src/tools", matching: /read/i, minCount: 1 }],
+  },
+  "TL-04": {
+    grepPresent: [{ pattern: "\"write\"|'write'", scope: "runtime/src/tool-registry.ts" }],
+    files: [{ globUnder: "runtime/src/tools", matching: /write/i, minCount: 1 }],
+  },
+  "TL-05": {
+    grepPresent: [{ pattern: "\"grep\"|'grep'", scope: "runtime/src/tool-registry.ts" }],
+  },
+  "TL-06": {
+    grepPresent: [{ pattern: "\"glob\"|'glob'", scope: "runtime/src/tool-registry.ts" }],
+  },
+  "TL-07": {
+    grepPresent: [{ pattern: "multi.?edit", scope: "runtime/src/tool-registry.ts" }],
+  },
+  "TL-08": {
+    grepPresent: [{ pattern: "web_fetch|webFetch", scope: "runtime/src/tool-registry.ts" }],
+  },
+  "TL-09": {
+    grepPresent: [{ pattern: "web_search|webSearch", scope: "runtime/src/tool-registry.ts" }],
+  },
+  "TL-10": {
+    grepPresent: [{ pattern: "TodoWrite|todo_write", scope: "runtime/src/tool-registry.ts" }],
+  },
+  "TL-11": {
+    grepPresent: [{ pattern: "EnterPlanMode|ExitPlanMode|plan_mode", scope: "runtime/src/tool-registry.ts" }],
+  },
+  "TL-12": {
+    grepPresent: [{ pattern: "AgentTool|agent_tool", scope: "runtime/src/tool-registry.ts" }],
+  },
+  "TL-13": {
+    grepPresent: [{ pattern: "SkillCreate|skill_invoke|Skill.*Tool", scope: "runtime/src/tool-registry.ts" }],
+  },
+  "TL-14": {
+    grepPresent: [{ pattern: "NotebookRead|notebook_read", scope: "runtime/src/tool-registry.ts" }],
+  },
+  "TL-15": {
+    grepPresent: [{ pattern: "NotebookEdit|notebook_edit", scope: "runtime/src/tool-registry.ts" }],
+  },
+  "TL-19": {
+    files: ["runtime/src/tool-registry.ts"],
+    tests: [{ globUnder: "runtime/src", matching: /tool-registry.*\.test\.tsx?$/ }],
+  },
+  "TL-21": {
+    files: [{ globUnder: "runtime/src/tools/runtimes", matching: /\.tsx?$/, minCount: 1 }],
+  },
+  "TL-22": {
+    files: [{ globUnder: "runtime/src/agents/v2", matching: /\.tsx?$/, minCount: 2 }],
+  },
+  "TL-23": {
+    files: [{ globUnder: "runtime/src/elicitation", matching: /\.tsx?$/, minCount: 1 }],
+  },
+  "TL-24": {
+    files: [{ globUnder: "runtime/src/tools/apply-patch", matching: /\.tsx?$/, minCount: 1 }],
+  },
+  "TL-25": {
+    files: [{ globUnder: "runtime/src/tools/tasks", matching: /\.tsx?$/, minCount: 2 }],
+    grepPresent: [{ pattern: "TaskCreate|TaskList|TaskStop", scope: "runtime/src/tool-registry.ts" }],
+  },
+  "TL-26": {
+    files: [{ globUnder: "runtime/src/tools/ask-user-question", matching: /\.tsx?$/, minCount: 1 }],
+    grepPresent: [{ pattern: "AskUserQuestion", scope: "runtime/src/tool-registry.ts" }],
+  },
+  "PE-01": {
+    files: [{ globUnder: "runtime/src/permissions", matching: /approval.?cache/i, minCount: 1 }],
+    tests: [{ globUnder: "runtime/src/permissions", matching: /approval.?cache.*\.test/i }],
+  },
+  "PE-02": {
+    files: [{ globUnder: "runtime/src/permissions", matching: /dangerous.?pattern/i, minCount: 1 }],
+    tests: [{ globUnder: "runtime/src/permissions", matching: /dangerous.?pattern.*\.test/i }],
+  },
+  "PE-03": {
+    files: [{ globUnder: "runtime/src/permissions", matching: /tool.?approval/i, minCount: 1 }],
+  },
+  "PE-04": {
+    files: [{ globUnder: "runtime/src/permissions", matching: /permission.?mode/i, minCount: 1 }],
+    tests: [{ globUnder: "runtime/src/permissions", matching: /permission.?mode.*\.test/i }],
+  },
+  "PE-05": {
+    grepPresent: [{ pattern: "sandbox", scope: "runtime/src/permissions" }],
+  },
+  "PE-06": {
+    files: [{ globUnder: "runtime/src/hooks", matching: /\.tsx?$/, minCount: 1 }],
+  },
+  "PE-07": {
+    grepPresent: [{ pattern: "agenc permissions", scope: "runtime/src" }],
+  },
+  "PE-08": {
+    grepPresent: [{ pattern: "audit.?log", scope: "runtime/src/permissions" }],
+  },
+  "PE-09": {
+    files: [{ globUnder: "runtime/src/permissions/trust", matching: /\.tsx?$/, minCount: 1 }],
+  },
+  "PE-10": {
+    files: [{ globUnder: "runtime/src/hooks/engine", matching: /dispatcher/i, minCount: 1 }],
+  },
+  "PE-11": {
+    files: [{ globUnder: "runtime/src/permissions/guardian", matching: /\.tsx?$/, minCount: 1 }],
+  },
+  "PE-12": {
+    files: ["runtime/src/permissions/command-parser.ts"],
+  },
+  "PE-13": {
+    grepPresent: [
+      { pattern: "RequestPermissions|request.?permissions", scope: "runtime/src/permissions" },
+    ],
+  },
+  "PE-14": {
+    grepPresent: [
+      { pattern: "unattended", scope: "runtime/src/permissions" },
+    ],
+  },
+  "PE-15": {
+    grepPresent: [
+      { pattern: "PreToolUse", scope: "runtime/src/hooks" },
+      { pattern: "PostToolUse", scope: "runtime/src/hooks" },
+      { pattern: "PermissionRequest", scope: "runtime/src/hooks" },
+      { pattern: "SessionStart", scope: "runtime/src/hooks" },
+      { pattern: "Stop", scope: "runtime/src/hooks" },
+    ],
+  },
+  "MS-01": {
+    files: [{ globUnder: "runtime/src/mcp-server", matching: /\.tsx?$/, minCount: 1 }],
+  },
+  "MS-02": {
+    grepPresent: [{ pattern: "registerTool|tool.*register", scope: "runtime/src/mcp-server" }],
+  },
+  "MS-03": {
+    files: [{ globUnder: "runtime/src/mcp-server", matching: /stdio/i, minCount: 1 }],
+  },
+  "MS-04": {
+    files: [{ globUnder: "runtime/src/mcp-server", matching: /http|sse/i, minCount: 1 }],
+  },
+  "MS-05": {
+    grepPresent: [{ pattern: "permission|guardian", scope: "runtime/src/mcp-server" }],
+  },
+  "MS-06": {
+    grepPresent: [{ pattern: "agenc mcp|mcp\\.serve", scope: "runtime/src/bin" }],
+  },
+  "PK-01": {
+    files: [{ globUnder: "runtime/src/plugins", matching: /loader/i, minCount: 1 }],
+  },
+  "PK-02": {
+    grepPresent: [{ pattern: "plugin\\.json|pluginManifest", scope: "runtime/src/plugins" }],
+  },
+  "PK-03": {
+    grepPresent: [{ pattern: "registerTool|tool.*register", scope: "runtime/src/plugins" }],
+  },
+  "PK-04": {
+    grepPresent: [{ pattern: "permission|capability", scope: "runtime/src/plugins" }],
+  },
+  "PK-05": {
+    grepPresent: [{ pattern: "sandbox|isolation", scope: "runtime/src/plugins" }],
+  },
+  "PK-06": {
+    grepPresent: [{ pattern: "agenc plugin", scope: "runtime/src" }],
+  },
+  "PK-09": {
+    grepPresent: [
+      { pattern: "plugin.*resolve|resolvePlugin", scope: "runtime/src/plugins" },
+      { pattern: "verifySignature|signature.*verify", scope: "runtime/src/plugins" },
+    ],
+  },
+  "MG-01": {
+    files: ["runtime/src/bin/agenc.ts"],
+  },
+  "MG-04": {
+    grepNotPresent: [{ pattern: "directRuntime|direct.*runtime|legacy.*direct", scope: "runtime/src/bin" }],
+  },
+  "MG-06": {
+    grepPresent: [{ pattern: "autostart|spawnDaemon", scope: "packages/agenc" }],
+  },
+  "CF-01": {
+    grepPresent: [{ pattern: "auth\\.backend", scope: "runtime/src/config" }],
+  },
+  "CF-05": {
+    grepPresent: [{ pattern: "sandbox\\.mode", scope: "runtime/src/config" }],
+  },
+  "CF-07": {
+    grepPresent: [{ pattern: "permissions\\.default_mode", scope: "runtime/src/config" }],
+  },
+  "CF-08": {
+    grepPresent: [{ pattern: "daemon\\.transport", scope: "runtime/src/config" }],
+  },
+  "CF-09": {
+    grepPresent: [{ pattern: "daemon\\.autostart", scope: "runtime/src/config" }],
+  },
+  "CF-15": {
+    grepPresent: [{ pattern: "agent\\.budget", scope: "runtime/src/config" }],
+  },
+  "CF-12": {
+    grepPresent: [{ pattern: "configMigration|migrateConfig|configVersion", scope: "runtime/src/config" }],
+  },
+  "CF-13": {
+    tests: [{ globUnder: "runtime/src/config", matching: /\.test\.tsx?$/ }],
+  },
+  "CF-14": {
+    grepPresent: [{ pattern: "agenc config", scope: "runtime/src" }],
+  },
+  "OB-01": {
+    grepPresent: [{ pattern: "onboarding|firstRun|first-run", scope: "runtime/src" }],
+  },
+  "OB-02": {
+    grepPresent: [{ pattern: "--help", scope: "runtime/src/bin" }],
+  },
+  "OB-03": {
+    grepPresent: [{ pattern: "/help", scope: "runtime/src/commands" }],
+  },
+  "OB-04": {
+    grepPresent: [{ pattern: "/doctor", scope: "runtime/src/commands" }],
+  },
+  "OB-06": {
+    grepPresent: [{ pattern: "agenc init", scope: "runtime/src" }],
+  },
+  "OB-07": {
+    grepPresent: [{ pattern: "AGENC\\.md", scope: "runtime/src/prompts" }],
+  },
+  "OB-09": {
+    grepPresent: [{ pattern: "byok|paste.*key|enter.*api.*key", scope: "runtime/src" }],
+  },
+  "UP-01": {
+    grepPresent: [{ pattern: "agenc update", scope: "runtime/src" }],
+  },
+  "UP-06": {
+    files: [{ globUnder: "runtime/src/install-context", matching: /\.tsx?$/, minCount: 1 }],
+  },
+  "PR-02": {
+    grepPresent: [{ pattern: "AGENC\\.md", scope: "runtime/src/prompts" }],
+  },
+  "MM-06": {
+    grepPresent: [{ pattern: "agenc memory", scope: "runtime/src" }],
+  },
+  "Z-04": {
+    // Strict typecheck must pass with NO baseline tolerance.
+    runStrict: true,
+  },
+};
+
 function usage() {
   process.stderr.write(
     `Usage: node scripts/goal/verify.mjs <item-id> [--skip-validate] [--skip-typecheck]\n`,
@@ -118,6 +708,20 @@ if (toScan.length === 0) {
   pass(`branding clean (${toScan.length} file(s))`);
 }
 
+// --- Gate 2.5: per-item named evidence ----------------------------------
+
+header(`item evidence for ${id}`);
+const evidence = ITEM_EVIDENCE[id];
+if (evidence) {
+  const failures = evaluateEvidence(id, evidence);
+  if (failures.length > 0) {
+    failGate(`item-evidence check failed for ${id}:\n  - ${failures.join("\n  - ")}`);
+  }
+  pass("named evidence present");
+} else {
+  process.stdout.write(`${YELLOW}!${RESET} no named-evidence map registered for ${id}; falling back to per-prefix generic gate.\n`);
+}
+
 // --- Gate 3: item-specific gates ----------------------------------------
 
 header(`item-specific gates for ${id}`);
@@ -163,20 +767,28 @@ if (skipTypecheck) {
   header("typecheck (baseline + delta)");
   const r = run("npm", ["run", "typecheck"], { silent: true });
   const errCount = countTscErrors((r.stdout || "") + "\n" + (r.stderr || ""));
-  const baselinePath = path.join(root, ".typecheck-baseline.json");
-  const baseline = readBaselineSafe(baselinePath);
-  if (baseline === null) {
-    // First run on this branch — establish the baseline locally.
-    writeBaseline(baselinePath, errCount);
-    pass(`baseline established: ${errCount} error(s) (saved to .typecheck-baseline.json)`);
-  } else if (errCount > baseline) {
-    failGate(`typecheck added ${errCount - baseline} new error(s) (baseline ${baseline} → now ${errCount})`);
+  const strictItem = ITEM_EVIDENCE[id]?.runStrict === true;
+  if (strictItem) {
+    if (errCount !== 0) {
+      failGate(`Z-04 requires strict typecheck (zero errors); current count: ${errCount}`);
+    }
+    pass("strict typecheck clean (Z-04 mode)");
   } else {
-    if (errCount < baseline) {
+    const baselinePath = path.join(root, ".typecheck-baseline.json");
+    const baseline = readBaselineSafe(baselinePath);
+    if (baseline === null) {
+      // First run on this branch — establish the baseline locally.
       writeBaseline(baselinePath, errCount);
-      pass(`typecheck improved: ${baseline} → ${errCount} (baseline tightened)`);
+      pass(`baseline established: ${errCount} error(s) (saved to .typecheck-baseline.json)`);
+    } else if (errCount > baseline) {
+      failGate(`typecheck added ${errCount - baseline} new error(s) (baseline ${baseline} → now ${errCount})`);
     } else {
-      pass(`typecheck within baseline (${errCount} ≤ ${baseline})`);
+      if (errCount < baseline) {
+        writeBaseline(baselinePath, errCount);
+        pass(`typecheck improved: ${baseline} → ${errCount} (baseline tightened)`);
+      } else {
+        pass(`typecheck within baseline (${errCount} ≤ ${baseline})`);
+      }
     }
   }
 }
@@ -606,6 +1218,91 @@ async function ideExtensionGates(item) {
 function grepRepo(pattern, scope = "runtime/src") {
   const r = run("rg", ["--no-messages", "-l", pattern, scope], { silent: true });
   return r.status === 0 && r.stdout.trim().length > 0;
+}
+
+// ---- per-item evidence helpers -----------------------------------------
+
+function checkFileExists(p) {
+  return existsSync(path.join(root, p));
+}
+
+function checkFilesGlob(spec) {
+  // spec: { globUnder, matching, minCount?, optional? }
+  const minCount = spec.minCount ?? 1;
+  const dir = path.join(root, spec.globUnder);
+  if (!existsSync(dir)) {
+    return spec.optional ? { ok: true, count: 0 } : { ok: false, reason: `dir missing: ${spec.globUnder}` };
+  }
+  const matched = walkFiles(dir).filter(
+    (f) => spec.matching.test(path.relative(root, f)) || spec.matching.test(path.basename(f)),
+  );
+  if (matched.length < minCount) {
+    return {
+      ok: false,
+      reason: `expected ${minCount} file(s) matching ${spec.matching} under ${spec.globUnder}, found ${matched.length}`,
+    };
+  }
+  return { ok: true, count: matched.length };
+}
+
+function checkGrepPresent(spec) {
+  const r = run("rg", ["--no-messages", "-l", spec.pattern, spec.scope], { silent: true });
+  if (r.status !== 0 || !r.stdout.trim()) {
+    return { ok: false, reason: `pattern not found: ${spec.pattern} in ${spec.scope}` };
+  }
+  return { ok: true };
+}
+
+function checkGrepNotPresent(spec) {
+  const r = run("rg", ["--no-messages", "-l", spec.pattern, spec.scope], { silent: true });
+  if (r.status === 0 && r.stdout.trim()) {
+    return {
+      ok: false,
+      reason: `forbidden pattern found: ${spec.pattern} in ${spec.scope} (files: ${r.stdout
+        .trim()
+        .split("\n")
+        .slice(0, 3)
+        .join(", ")})`,
+    };
+  }
+  return { ok: true };
+}
+
+function evaluateEvidence(itemId, evidence) {
+  const failures = [];
+  if (evidence.files) {
+    for (const f of evidence.files) {
+      if (typeof f === "string") {
+        if (!checkFileExists(f)) failures.push(`file missing: ${f}`);
+      } else {
+        const res = checkFilesGlob(f);
+        if (!res.ok) failures.push(res.reason);
+      }
+    }
+  }
+  if (evidence.grepPresent) {
+    for (const s of evidence.grepPresent) {
+      const res = checkGrepPresent(s);
+      if (!res.ok) failures.push(res.reason);
+    }
+  }
+  if (evidence.grepNotPresent) {
+    for (const s of evidence.grepNotPresent) {
+      const res = checkGrepNotPresent(s);
+      if (!res.ok) failures.push(res.reason);
+    }
+  }
+  if (evidence.tests) {
+    for (const t of evidence.tests) {
+      if (typeof t === "string") {
+        if (!checkFileExists(t)) failures.push(`test missing: ${t}`);
+      } else {
+        const res = checkFilesGlob(t);
+        if (!res.ok && !t.optional) failures.push(res.reason);
+      }
+    }
+  }
+  return failures;
 }
 
 function countTscErrors(output) {

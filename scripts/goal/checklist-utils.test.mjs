@@ -34,7 +34,11 @@ const sample = items.find((i) => i.id === "F-01");
 assert("F-01 found", !!sample);
 assert("F-01 has title", sample && sample.title.length > 0);
 assert("F-01 has body", sample && sample.body.length > 0);
-assert("F-01 status is open", sample && sample.statusToken === STATUS.OPEN);
+assert(
+  "F-01 status is one of {open, in-progress, done}",
+  sample &&
+    [STATUS.OPEN, STATUS.IN_PROGRESS, STATUS.DONE].includes(sample.statusToken),
+);
 
 // Status name conversion.
 assert("statusName open", statusName(STATUS.OPEN) === "open");
