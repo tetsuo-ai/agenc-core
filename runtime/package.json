@@ -118,6 +118,7 @@
     "@tetsuo-ai/plugin-kit": "0.2.0",
     "@tetsuo-ai/protocol": "0.2.0",
     "@tetsuo-ai/sdk": "1.4.0",
+    "agenc-marketplace-agent-kit": "https://github.com/tetsuo-ai/agenc-marketplace-agent-kit/archive/3728fa00e300d8078f93c36712ed3e42d29f9952.tar.gz",
     "bn.js": "^5.2.3",
     "jimp": "^1.6.1",
     "undici": "^7.22.0"
