@@ -13,6 +13,10 @@ import {
 } from "./agent-lifecycle.js";
 import type { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import {
+  AgenCFuzzyFileSearchService,
+  type AgenCFuzzyFileSearch,
+} from "./fuzzy-file-search.js";
+import {
   AGENC_DAEMON_PROTOCOL_VERSION,
   isAgenCDaemonMethod,
   JSON_RPC_VERSION,
@@ -24,6 +28,7 @@ import {
   type AgenCDaemonMethod,
   type AgenCDaemonResponse,
   type AgenCDaemonResultByMethod,
+  type FuzzyFileSearchParams,
   type InitializeParams,
   type JsonObject,
   type MessageStreamParams,
@@ -50,6 +55,7 @@ export interface AgenCDaemonDispatcherOptions {
     "attachClientToSession" | "broadcastSessionEvent" | "registerClient" | "removeClient"
   >;
   readonly createMessageId?: () => string;
+  readonly fuzzyFileSearch?: AgenCFuzzyFileSearch;
   readonly now?: () => string;
 }
 
@@ -76,6 +82,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       >
     | undefined;
   readonly #createMessageId: () => string;
+  readonly #fuzzyFileSearch: AgenCFuzzyFileSearch;
   readonly #now: () => string;
 
   constructor(options: AgenCDaemonDispatcherOptions) {
@@ -84,6 +91,8 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#clientMultiplexer = options.clientMultiplexer;
     this.#createMessageId =
       options.createMessageId ?? (() => `message_${Date.now().toString(36)}`);
+    this.#fuzzyFileSearch =
+      options.fuzzyFileSearch ?? new AgenCFuzzyFileSearchService();
     this.#now = options.now ?? (() => new Date().toISOString());
   }
 
@@ -179,6 +188,14 @@ export class AgenCDaemonJsonRpcDispatcher {
         return this.#attachAgent(id, connection, params);
       case "message.stream":
         return this.#streamMessage(id, params);
+      case "fs.fuzzy_search":
+        return successResponse(
+          id,
+          await this.#fuzzyFileSearch.search(
+            validateFuzzyFileSearchParams(params),
+            { cancellationScope: connection.cancellationScope },
+          ),
+        );
       case "tool.approve":
         return successResponse(
           id,
@@ -276,11 +293,14 @@ export interface AgenCDaemonJsonRpcConnectionOptions {
   readonly sendNotification?: (message: JsonObject) => void | Promise<void>;
 }
 
+let nextConnectionId = 0;
+
 export class AgenCDaemonJsonRpcConnection {
   readonly #dispatcher: AgenCDaemonJsonRpcDispatcher;
   readonly #sendNotification:
     | ((message: JsonObject) => void | Promise<void>)
     | undefined;
+  readonly #cancellationScope: string;
   readonly #clientIds = new Set<string>();
   #initialized = false;
 
@@ -290,10 +310,16 @@ export class AgenCDaemonJsonRpcConnection {
   ) {
     this.#dispatcher = dispatcher;
     this.#sendNotification = options.sendNotification;
+    nextConnectionId += 1;
+    this.#cancellationScope = `connection_${nextConnectionId.toString(36)}`;
   }
 
   get initialized(): boolean {
     return this.#initialized;
+  }
+
+  get cancellationScope(): string {
+    return this.#cancellationScope;
   }
 
   markInitialized(): void {
@@ -420,6 +446,45 @@ function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
     }
   }
   return validated as MessageStreamParams;
+}
+
+function validateFuzzyFileSearchParams(
+  params: JsonObject,
+): FuzzyFileSearchParams {
+  const validated = validateObjectShape(params, {
+    methodName: "fs.fuzzy_search",
+    stringFields: ["query"],
+    stringArrayFields: ["roots"],
+    valueFields: ["cancellationToken"],
+  });
+  if (typeof validated.query !== "string") {
+    throw invalidParams("fs.fuzzy_search requires query");
+  }
+  if (
+    validated.cancellationToken !== undefined &&
+    validated.cancellationToken !== null &&
+    typeof validated.cancellationToken !== "string"
+  ) {
+    throw invalidParams(
+      "fs.fuzzy_search param 'cancellationToken' must be a string or null",
+    );
+  }
+  if (
+    typeof validated.cancellationToken === "string" &&
+    validated.cancellationToken.trim().length === 0
+  ) {
+    throw invalidParams(
+      "fs.fuzzy_search param 'cancellationToken' must not be empty",
+    );
+  }
+  const roots = validated.roots;
+  if (!Array.isArray(roots)) {
+    throw invalidParams("fs.fuzzy_search requires roots");
+  }
+  if ((roots as readonly string[]).some((root) => root.trim().length === 0)) {
+    throw invalidParams("fs.fuzzy_search param 'roots' must not contain empty paths");
+  }
+  return validated as FuzzyFileSearchParams;
 }
 
 function displayUserMessageFromMetadata(
