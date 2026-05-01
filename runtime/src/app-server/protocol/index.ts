@@ -29,6 +29,9 @@ export const AGENC_DAEMON_METHODS = [
   "agent.stop",
   "session.create",
   "session.list",
+  "session.attach",
+  "session.detach",
+  "session.terminate",
   "message.send",
   "message.stream",
   "tool.approve",
@@ -99,6 +102,27 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     params: "required",
     result: "object",
     description: "List daemon-owned sessions.",
+  },
+  "session.attach": {
+    method: "session.attach",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Attach a client to a daemon-owned session.",
+  },
+  "session.detach": {
+    method: "session.detach",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Detach a client from a daemon-owned session.",
+  },
+  "session.terminate": {
+    method: "session.terminate",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Terminate a daemon-owned session.",
   },
   "message.send": {
     method: "message.send",
@@ -199,6 +223,22 @@ export interface SessionListParams extends JsonObject {
   readonly limit?: number;
 }
 
+export interface SessionAttachParams extends JsonObject {
+  readonly sessionId: string;
+  readonly clientId?: string;
+}
+
+export interface SessionDetachParams extends JsonObject {
+  readonly sessionId: string;
+  readonly attachmentId?: string;
+  readonly clientId?: string;
+}
+
+export interface SessionTerminateParams extends JsonObject {
+  readonly sessionId: string;
+  readonly reason?: string;
+}
+
 export interface MessageContentBlock extends JsonObject {
   readonly type: "text";
   readonly text: string;
@@ -262,6 +302,12 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"agent.stop", AgentStopParams>
   | AgenCDaemonRequestWithParams<"session.create", SessionCreateParams>
   | AgenCDaemonRequestWithParams<"session.list", SessionListParams>
+  | AgenCDaemonRequestWithParams<"session.attach", SessionAttachParams>
+  | AgenCDaemonRequestWithParams<"session.detach", SessionDetachParams>
+  | AgenCDaemonRequestWithParams<
+      "session.terminate",
+      SessionTerminateParams
+    >
   | AgenCDaemonRequestWithParams<"message.send", MessageSendParams>
   | AgenCDaemonRequestWithParams<"message.stream", MessageStreamParams>
   | AgenCDaemonRequestWithParams<"tool.approve", ToolApproveParams>
@@ -290,6 +336,8 @@ export interface SessionSummary extends JsonObject {
   readonly createdAt: string;
   readonly cwd?: string;
   readonly metadata?: JsonObject;
+  readonly activeAttachmentIds?: readonly string[];
+  readonly closedAt?: string;
 }
 
 export interface AgentCreateResult extends AgentSummary {
@@ -317,6 +365,29 @@ export interface SessionCreateResult extends SessionSummary {}
 export interface SessionListResult extends JsonObject {
   readonly sessions: readonly SessionSummary[];
   readonly nextCursor?: string;
+}
+
+export interface SessionAttachResult extends JsonObject {
+  readonly sessionId: string;
+  readonly attachmentId: string;
+  readonly attachedAt: string;
+  readonly clientId?: string;
+  readonly activeAttachmentIds: readonly string[];
+}
+
+export interface SessionDetachResult extends JsonObject {
+  readonly sessionId: string;
+  readonly detached: boolean;
+  readonly attachmentId?: string;
+  readonly remainingAttachmentIds: readonly string[];
+}
+
+export interface SessionTerminateResult extends JsonObject {
+  readonly sessionId: string;
+  readonly terminated: boolean;
+  readonly status: "closed";
+  readonly closedAt: string;
+  readonly reason?: string;
 }
 
 export interface MessageSendResult extends JsonObject {
@@ -376,6 +447,9 @@ export interface AgenCDaemonResultByMethod {
   readonly "agent.stop": AgentStopResult;
   readonly "session.create": SessionCreateResult;
   readonly "session.list": SessionListResult;
+  readonly "session.attach": SessionAttachResult;
+  readonly "session.detach": SessionDetachResult;
+  readonly "session.terminate": SessionTerminateResult;
   readonly "message.send": MessageSendResult;
   readonly "message.stream": MessageStreamResult;
   readonly "tool.approve": ToolDecisionResult;
