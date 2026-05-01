@@ -396,6 +396,47 @@ describe("AgenC background agent lifecycle", () => {
     });
   });
 
+  it("waits for in-flight agent.create before daemon cleanup snapshots agents", async () => {
+    const started = createDeferred<{
+      readonly agentId: string;
+      readonly startedAt: string;
+      readonly status: "running";
+    }>();
+    const stopAgent = vi.fn(async () => {});
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: vi.fn(async () => started.promise),
+      stopAgent,
+    };
+    const agents = new AgenCDaemonAgentManager({
+      defaultCwd: () => "/workspace",
+      now: sequence(["2026-05-01T12:00:00.000Z"]),
+      runner,
+    });
+
+    const create = agents.createAgent({ objective: "late create" });
+    await Promise.resolve();
+    const stopAll = agents.stopAll("daemon_shutdown");
+    started.resolve({
+      agentId: "agent_late",
+      startedAt: "2026-05-01T12:00:00.500Z",
+      status: "running",
+    });
+
+    await expect(create).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "agent.start cancelled because the daemon is shutting down",
+    });
+    await expect(stopAll).resolves.toBe(0);
+    expect(stopAgent).toHaveBeenCalledWith("agent_late", "daemon_shutdown");
+    await expect(agents.listAgents()).resolves.toEqual({ agents: [] });
+    await expect(
+      agents.createAgent({ objective: "after shutdown" }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "agent.start rejected because the daemon is shutting down",
+    });
+  });
+
   it("flushes daemon agent snapshots after cleanup transitions", async () => {
     const flushed: unknown[] = [];
     const runner: AgenCBackgroundAgentRunner = {

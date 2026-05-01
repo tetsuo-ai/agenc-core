@@ -116,6 +116,9 @@ export class AgenCDaemonAgentManager {
   readonly #broadcastSessionEvent:
     | ((sessionId: string, event: JsonObject) => void | Promise<void>)
     | undefined;
+  #shuttingDown = false;
+  #activeCreates = 0;
+  readonly #createWaiters = new Set<() => void>();
   readonly #state = new AsyncLock<AgentLifecycleState>({
     agents: new Map(),
   });
@@ -130,82 +133,124 @@ export class AgenCDaemonAgentManager {
   }
 
   async createAgent(params: AgentCreateParams): Promise<AgentCreateResult> {
+    const finishCreate = this.#beginCreate();
     if (this.#runner === undefined) {
+      finishCreate();
       throw new AgenCDaemonAgentLifecycleError(
         "BACKGROUND_RUNNER_UNAVAILABLE",
         "agent.start requires a background runner",
       );
     }
-
-    const objective = normalizeObjective(params);
-    const createdAt = this.#now();
-    const cwd = normalizeNonEmpty(params.cwd) ?? this.#defaultCwd();
-    const unattendedAllow = normalizeStringList(
-      params.unattendedAllow,
-      DEFAULT_UNATTENDED_ALLOWLIST,
-    );
-    const unattendedDeny = normalizeStringList(params.unattendedDeny, []);
-    const metadata: JsonObject = {
-      ...(params.metadata ?? {}),
-      unattendedAllow,
-      unattendedDeny,
-    };
-    const started = await this.#runner.startAgent({
-      objective,
-      cwd,
-      ...(params.model !== undefined ? { model: params.model } : {}),
-      ...(params.provider !== undefined ? { provider: params.provider } : {}),
-      ...(params.profile !== undefined ? { profile: params.profile } : {}),
-      metadata,
-      unattendedAllow,
-      unattendedDeny,
-    });
-
-    const agent: MutableAgent = {
-      agentId: started.agentId,
-      ...(started.agentPath !== undefined ? { agentPath: started.agentPath } : {}),
-      objective,
-      status: started.status,
-      createdAt,
-      startedAt: started.startedAt,
-      lastActiveAt: started.startedAt,
-      sessionIds: [],
-      cwd,
-      metadata,
-    };
-
     try {
-      if (this.#sessionManager !== undefined) {
-        const session = await this.#sessionManager.createSession({
-          agentId: agent.agentId,
-          cwd: agent.cwd,
-          initialPrompt: objective,
-          metadata: {
-            ...(params.metadata ?? {}),
-            objective,
-            source: "agent.start",
-            unattendedAllow,
-            unattendedDeny,
-          },
-        });
-        agent.sessionIds.push(session.sessionId);
-        await this.#runner.attachAgentSessionEvents?.(agent.agentId, {
-          sessionId: session.sessionId,
-          emit: (event) => this.#broadcastSessionEvent?.(session.sessionId, event),
-        });
+      const objective = normalizeObjective(params);
+      const createdAt = this.#now();
+      const cwd = normalizeNonEmpty(params.cwd) ?? this.#defaultCwd();
+      const unattendedAllow = normalizeStringList(
+        params.unattendedAllow,
+        DEFAULT_UNATTENDED_ALLOWLIST,
+      );
+      const unattendedDeny = normalizeStringList(params.unattendedDeny, []);
+      const metadata: JsonObject = {
+        ...(params.metadata ?? {}),
+        unattendedAllow,
+        unattendedDeny,
+      };
+      const started = await this.#runner.startAgent({
+        objective,
+        cwd,
+        ...(params.model !== undefined ? { model: params.model } : {}),
+        ...(params.provider !== undefined ? { provider: params.provider } : {}),
+        ...(params.profile !== undefined ? { profile: params.profile } : {}),
+        metadata,
+        unattendedAllow,
+        unattendedDeny,
+      });
+
+      if (this.#shuttingDown) {
+        await this.#runner.stopAgent?.(started.agentId, "daemon_shutdown");
+        throw new AgenCDaemonAgentLifecycleError(
+          "INVALID_ARGUMENT",
+          "agent.start cancelled because the daemon is shutting down",
+        );
       }
 
-      return await this.#state.with((state) => {
-        state.agents.set(agent.agentId, agent);
-        return toAgentCreateResult(agent);
-      });
-    } catch (error) {
-      await this.#runner.stopAgent?.(
-        agent.agentId,
-        "agent.create rollback after lifecycle failure",
-      );
-      throw error;
+      const agent: MutableAgent = {
+        agentId: started.agentId,
+        ...(started.agentPath !== undefined ? { agentPath: started.agentPath } : {}),
+        objective,
+        status: started.status,
+        createdAt,
+        startedAt: started.startedAt,
+        lastActiveAt: started.startedAt,
+        sessionIds: [],
+        cwd,
+        metadata,
+      };
+
+      try {
+        if (this.#sessionManager !== undefined) {
+          const session = await this.#sessionManager.createSession({
+            agentId: agent.agentId,
+            cwd: agent.cwd,
+            initialPrompt: objective,
+            metadata: {
+              ...(params.metadata ?? {}),
+              objective,
+              source: "agent.start",
+              unattendedAllow,
+              unattendedDeny,
+            },
+          });
+          agent.sessionIds.push(session.sessionId);
+          await this.#runner.attachAgentSessionEvents?.(agent.agentId, {
+            sessionId: session.sessionId,
+            emit: (event) => this.#broadcastSessionEvent?.(session.sessionId, event),
+          });
+        }
+
+        return await this.#state.with((state) => {
+          state.agents.set(agent.agentId, agent);
+          return toAgentCreateResult(agent);
+        });
+      } catch (error) {
+        await this.#runner.stopAgent?.(
+          agent.agentId,
+          "agent.create rollback after lifecycle failure",
+        );
+        throw error;
+      }
+    } finally {
+      finishCreate();
     }
+  }
+
+  #beginCreate(): () => void {
+    if (this.#shuttingDown) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "agent.start rejected because the daemon is shutting down",
+      );
+    }
+    this.#activeCreates += 1;
+    let finished = false;
+    return () => {
+      if (finished) return;
+      finished = true;
+      this.#activeCreates -= 1;
+      if (this.#activeCreates === 0) {
+        for (const waiter of this.#createWaiters) {
+          waiter();
+        }
+        this.#createWaiters.clear();
+      }
+    };
+  }
+
+  async #waitForActiveCreates(): Promise<void> {
+    if (this.#activeCreates === 0) return;
+    await new Promise<void>((resolve) => {
+      this.#createWaiters.add(resolve);
+    });
   }
 
   async listAgents(params: AgentListParams = {}): Promise<AgentListResult> {
@@ -362,6 +407,8 @@ export class AgenCDaemonAgentManager {
   }
 
   async stopAll(reason = "daemon_shutdown"): Promise<number> {
+    this.#shuttingDown = true;
+    await this.#waitForActiveCreates();
     const targets = await this.#state.with(async (state) => {
       await this.#refreshAgentsFromRunner(state);
       return [...state.agents.values()]
