@@ -10,6 +10,7 @@ import type {
   AuthLogoutResult,
   AuthWhoamiResult,
 } from "./protocol/index.js";
+import type { AuthBackend } from "../auth/backend.js";
 
 export const AGENC_DAEMON_AUTH_METHODS = [
   "auth.login",
@@ -20,11 +21,10 @@ export const AGENC_DAEMON_AUTH_METHODS = [
 export type AgenCDaemonAuthMethod =
   (typeof AGENC_DAEMON_AUTH_METHODS)[number];
 
-export interface AgenCDaemonAuthBackend {
-  login(): AuthLoginResult | Promise<AuthLoginResult>;
-  whoami(): AuthWhoamiResult | Promise<AuthWhoamiResult>;
-  logout(): AuthLogoutResult | Promise<AuthLogoutResult>;
-}
+export type AgenCDaemonAuthBackend = Pick<
+  AuthBackend,
+  "login" | "whoami" | "logout"
+>;
 
 export type AgenCDaemonAuthHandlers = {
   readonly [Method in AgenCDaemonAuthMethod]: () => Promise<
