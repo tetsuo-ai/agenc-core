@@ -194,6 +194,7 @@ export type DaemonTransport = "unix" | "stdio";
 
 export interface DaemonConfig {
   readonly transport?: DaemonTransport;
+  readonly autostart?: boolean;
 }
 
 /**
@@ -520,6 +521,7 @@ export function defaultConfig(): AgenCConfig {
     }) as AuthConfig,
     daemon: Object.freeze({
       transport: "unix",
+      autostart: true,
     }) as DaemonConfig,
     permissions: Object.freeze({
       default_mode: "on-request",

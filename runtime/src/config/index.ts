@@ -23,6 +23,8 @@ export type {
   AttachmentsConfig,
   AuthBackendConfigKind,
   AuthConfig,
+  DaemonConfig,
+  DaemonTransport,
   PermissionsConfig,
   ProviderCapabilityOverrides,
   ProviderConfig,
