@@ -697,7 +697,7 @@ describe("bootstrapLocalRuntimeSession", () => {
       join(home, "config.toml"),
       [
         "[providers.grok]",
-        'base_url = "https://grok.example/v1"',
+        'base_url = "http://127.0.0.1:8000/v1"',
         "",
       ].join("\n"),
       "utf8",
@@ -779,7 +779,7 @@ describe("bootstrapLocalRuntimeSession", () => {
       expect(createProviderSpy).toHaveBeenCalledWith(
         "agenc",
         expect.objectContaining({
-          baseURL: "https://grok.example/v1",
+          baseURL: "http://127.0.0.1:8000/v1",
           model: "agenc",
           extra: expect.objectContaining({
             authBackend,
@@ -796,6 +796,46 @@ describe("bootstrapLocalRuntimeSession", () => {
       await shutdown?.().catch(() => {
         /* best effort */
       });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects hosted AgenC model inference responses with empty models", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const authBackend: AuthBackend = {
+      login: () => ({ authenticated: true, provider: "local" }),
+      logout: () => ({ authenticated: false }),
+      whoami: () => ({ authenticated: true, provider: "local" }),
+      vendKey: () => {
+        throw new Error("vendKey should not run");
+      },
+      inferAgencModel: () => ({
+        provider: "grok",
+        model: "   ",
+      }),
+      getSubscriptionTier: () => "team",
+    };
+
+    try {
+      await expect(
+        bootstrapLocalRuntimeSession({
+          authBackend,
+          conversationId: "conv-empty-model",
+          argv: ["node", "agenc", "--provider", "agenc"],
+          env: {
+            ...process.env,
+            AGENC_HOME: home,
+            AGENC_WORKSPACE: workspace,
+            AGENC_XAI_API_KEY: "",
+            HOME: home,
+            GROK_API_KEY: "",
+            XAI_API_KEY: "",
+          },
+        }),
+      ).rejects.toThrow(/empty model/);
+    } finally {
       await rm(home, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
     }

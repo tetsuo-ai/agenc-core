@@ -196,7 +196,10 @@ async function resolveAuthModelSelection(params: {
     subscriptionTier: params.subscriptionTier,
   });
   const inferredProvider = normalizeProviderName(inferred.provider);
-  const inferredModel = firstNonEmptyString(inferred.model) ?? params.model;
+  const inferredModel = firstNonEmptyString(inferred.model);
+  if (inferredModel === undefined) {
+    throw new Error("AuthBackend model inference returned an empty model");
+  }
   if (isHostedAgencProvider(params.provider)) {
     return {
       provider: params.provider,

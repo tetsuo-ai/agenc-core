@@ -86,7 +86,7 @@ describe("AgenCProvider", () => {
       model: "agenc",
       providerFactory,
       providerOptions: {
-        baseURL: "https://grok.example/v1",
+        baseURL: "http://127.0.0.1:8000/v1",
       },
     });
 
@@ -107,7 +107,7 @@ describe("AgenCProvider", () => {
       "grok",
       expect.objectContaining({
         apiKey: "managed-key",
-        baseURL: "https://grok.example/v1",
+        baseURL: "http://127.0.0.1:8000/v1",
         model: "grok-4-fast",
       }),
     );
