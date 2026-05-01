@@ -7,11 +7,13 @@
 // Steps:
 //   1. Run verify.mjs (no skip flags). Exit on failure.
 //   2. Verify the working tree is clean (no uncommitted changes).
-//   3. Switch to main, merge port/<id> with --no-ff (local only).
-//   4. Delete the feature branch.
-//   5. Write .goal-completed/<id>.json marker (excluded from git).
-//   6. Flip PORT_CHECKLIST.md row from [ ] / [~] to [x].
-//   7. Print a one-line success summary.
+//   3. Verify the branch shape is port/<id>.
+//   4. Run reviewer subagent (review.mjs). Exit on NEEDS_REVISION/BLOCKED.
+//   5. Switch to main, merge port/<id> with --no-ff (local only).
+//   6. Delete the feature branch.
+//   7. Write .goal-completed/<id>.json marker (excluded from git).
+//   8. Flip PORT_CHECKLIST.md row from [ ] / [~] to [x].
+//   9. Print a one-line success summary.
 //
 // Strict invariants:
 //   - Never push to any remote.
@@ -113,9 +115,22 @@ if (branch !== expected) {
 }
 ok(`on ${expected}`);
 
-// ---- step 4: switch to main + merge ------------------------------------
+// ---- step 4: senior-engineer reviewer subagent -------------------------
 
-header(`step 3 — local merge ${expected} → main (--no-ff)`);
+// branding-scan: allow names the reviewer CLI binary in the gate header
+header("step 4 — reviewer subagent (codex exec review)");
+const reviewScript = path.join(root, "scripts/goal/review.mjs");
+const reviewRes = run("node", [reviewScript, id]);
+if (reviewRes.status !== 0) {
+  abort(
+    `reviewer subagent rejected ${id}; address the issues above and re-run scripts/goal/complete.mjs ${id}.`,
+  );
+}
+ok("reviewer APPROVED");
+
+// ---- step 5: switch to main + merge ------------------------------------
+
+header(`step 5 — local merge ${expected} → main (--no-ff)`);
 const checkoutMain = run("git", ["checkout", "main"]);
 if (checkoutMain.status !== 0) abort("git checkout main failed");
 
@@ -142,7 +157,7 @@ if (mergeRes.status !== 0) {
 }
 ok("merged into main");
 
-// ---- step 5: delete feature branch -------------------------------------
+// ---- step 6: delete feature branch -------------------------------------
 
 const deleteRes = run("git", ["branch", "-d", expected]);
 if (deleteRes.status !== 0) {
@@ -151,9 +166,9 @@ if (deleteRes.status !== 0) {
   ok(`feature branch ${expected} deleted`);
 }
 
-// ---- step 6: marker file -----------------------------------------------
+// ---- step 7: marker file -----------------------------------------------
 
-header("step 4 — writing completion marker");
+header("step 7 — writing completion marker");
 const markerData = {
   itemId: id,
   title: item.title,
@@ -164,9 +179,9 @@ const markerData = {
 writeFileSync(markerPath(id), JSON.stringify(markerData, null, 2) + "\n");
 ok(`marker written: .goal-completed/${id}.json`);
 
-// ---- step 7: flip checklist status -------------------------------------
+// ---- step 8: flip checklist status -------------------------------------
 
-header("step 5 — flipping PORT_CHECKLIST.md row to [x]");
+header("step 8 — flipping PORT_CHECKLIST.md row to [x]");
 const flip = await setItemStatus(id, STATUS.DONE);
 if (flip.changed) {
   ok(`PORT_CHECKLIST.md updated`);
