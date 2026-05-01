@@ -12,7 +12,7 @@ import { readFile } from "node:fs/promises";
 import { cwd as processCwd } from "node:process";
 import {
   ensureAgenCDaemonAutostart,
-  shouldAutostartAgenCDaemon,
+  resolveAgenCDaemonAutostartEnabled,
 } from "./daemon-autostart.js";
 import {
   createNodeDaemonCliHost,
@@ -681,12 +681,13 @@ export function defaultEnsureDaemonReady(
     ensureAgenCDaemonAutostart,
 ): () => Promise<void> {
   return async () => {
-    if (shouldAutostartAgenCDaemon(env)) {
+    const host = {
+      ...createNodeDaemonCliHost(),
+      env,
+    };
+    if (await resolveAgenCDaemonAutostartEnabled(env, host.userHome)) {
       await ensureAutostart({
-        host: {
-          ...createNodeDaemonCliHost(),
-          env,
-        },
+        host,
       });
     }
   };

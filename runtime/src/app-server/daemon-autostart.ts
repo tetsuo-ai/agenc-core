@@ -10,9 +10,11 @@ import {
   readAgenCDaemonPid,
   resolveAgenCDaemonPidPath,
   runAgenCDaemonCli,
+  resolveAgenCDaemonHome,
   type AgenCDaemonCliHost,
   type AgenCDaemonCliIo,
 } from "./daemon-cli.js";
+import { loadConfig } from "../config/index.js";
 
 export type AgenCDaemonAutostartStatus = "already-running" | "started";
 
@@ -48,9 +50,23 @@ export class AgenCDaemonAutostartError extends Error {
 
 export function shouldAutostartAgenCDaemon(
   env: NodeJS.ProcessEnv = process.env,
+  configAutostart = true,
 ): boolean {
   const raw = env.AGENC_DAEMON_AUTOSTART?.trim().toLowerCase();
-  return raw !== "0" && raw !== "false" && raw !== "off";
+  if (raw !== undefined && raw.length > 0) {
+    return raw !== "0" && raw !== "false" && raw !== "off";
+  }
+  return configAutostart;
+}
+
+export async function resolveAgenCDaemonAutostartEnabled(
+  env: NodeJS.ProcessEnv = process.env,
+  userHome?: string,
+): Promise<boolean> {
+  const home = resolveAgenCDaemonHome(env, userHome);
+  const loaded = await loadConfig({ home });
+  const configAutostart = loaded.config.daemon?.autostart ?? true;
+  return shouldAutostartAgenCDaemon(env, configAutostart);
 }
 
 export async function ensureAgenCDaemonAutostart(

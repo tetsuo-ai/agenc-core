@@ -50,6 +50,7 @@ async function tempAgencHome(): Promise<string> {
 describe("AgenC daemon autostart", () => {
   it("honors the autostart environment opt-out", () => {
     expect(shouldAutostartAgenCDaemon({})).toBe(true);
+    expect(shouldAutostartAgenCDaemon({}, false)).toBe(false);
     expect(shouldAutostartAgenCDaemon({ AGENC_DAEMON_AUTOSTART: "0" })).toBe(
       false,
     );
@@ -59,6 +60,9 @@ describe("AgenC daemon autostart", () => {
     expect(shouldAutostartAgenCDaemon({ AGENC_DAEMON_AUTOSTART: "off" })).toBe(
       false,
     );
+    expect(
+      shouldAutostartAgenCDaemon({ AGENC_DAEMON_AUTOSTART: "1" }, false),
+    ).toBe(true);
   });
 
   it("connects to an already-running daemon without spawning", async () => {

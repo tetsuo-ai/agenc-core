@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -531,6 +531,37 @@ describe("agenc agent start CLI", () => {
         env,
       },
     });
+  });
+
+  it("skips daemon autostart when config disables it", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-agent-config-"));
+    const env = {
+      AGENC_HOME: agencHome,
+    };
+    const calls: unknown[] = [];
+    await writeFile(
+      join(agencHome, "config.toml"),
+      `
+[daemon]
+autostart = false
+      `,
+    );
+
+    await expect(
+      defaultEnsureDaemonReady(env, async (options) => {
+        calls.push(options);
+        return {
+          pid: 1234,
+          pidPath: join(agencHome, "daemon.pid"),
+          status: "already-running",
+          ready: true,
+          connected: false,
+        };
+      })(),
+    ).resolves.toBeUndefined();
+
+    expect(calls).toEqual([]);
+    await rm(agencHome, { recursive: true, force: true });
   });
 
   it("sends agent.create over the daemon JSON-line socket", async () => {
