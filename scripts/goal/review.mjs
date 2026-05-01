@@ -55,7 +55,7 @@ const { item } = await findItem(id);
 
 const disciplinePath = path.join(root, "GOAL_DISCIPLINE.md");
 const discipline = existsSync(disciplinePath) ? readFileSync(disciplinePath, "utf8") : "";
-const crossRepoEvidence = collectCrossRepoEvidence(item.body);
+const crossRepoEvidence = collectCrossRepoEvidence(`${item.title}\n${item.body}`);
 
 const reviewerInstructions = `You are a senior software engineer reviewing one work item from an AgenC port checklist.
 
