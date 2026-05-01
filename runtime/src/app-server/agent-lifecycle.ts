@@ -12,6 +12,8 @@ import type {
   AgenCBackgroundAgentRunner,
 } from "./background-agent-runner.js";
 import type {
+  AgentAttachParams,
+  AgentAttachResult,
   AgentCreateParams,
   AgentCreateResult,
   AgentListParams,
@@ -19,7 +21,13 @@ import type {
   AgentStatus,
   AgentSummary,
   JsonObject,
+  MessageContent,
+  SessionSummary,
+  ToolApproveParams,
+  ToolDecisionResult,
+  ToolDenyParams,
 } from "./protocol/index.js";
+import { APPROVED, APPROVED_FOR_SESSION, DENIED } from "../permissions/review-decision.js";
 import type { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 
 export type AgenCDaemonAgentLifecycleErrorCode =
@@ -43,6 +51,10 @@ export interface AgenCDaemonAgentManagerOptions {
   readonly now?: () => string;
   readonly runner?: AgenCBackgroundAgentRunner;
   readonly sessionManager?: AgenCDaemonSessionManager;
+  readonly broadcastSessionEvent?: (
+    sessionId: string,
+    event: JsonObject,
+  ) => void | Promise<void>;
 }
 
 export const DEFAULT_UNATTENDED_ALLOWLIST = [
@@ -66,6 +78,11 @@ interface MutableAgent {
   sessionIds: string[];
 }
 
+interface AgentAttachmentTarget {
+  readonly agentId: string;
+  readonly sessionIds: readonly string[];
+}
+
 interface AgentLifecycleState {
   agents: Map<string, MutableAgent>;
 }
@@ -75,6 +92,9 @@ export class AgenCDaemonAgentManager {
   readonly #now: () => string;
   readonly #runner: AgenCBackgroundAgentRunner | undefined;
   readonly #sessionManager: AgenCDaemonSessionManager | undefined;
+  readonly #broadcastSessionEvent:
+    | ((sessionId: string, event: JsonObject) => void | Promise<void>)
+    | undefined;
   readonly #state = new AsyncLock<AgentLifecycleState>({
     agents: new Map(),
   });
@@ -84,6 +104,7 @@ export class AgenCDaemonAgentManager {
     this.#now = options.now ?? (() => new Date().toISOString());
     this.#runner = options.runner;
     this.#sessionManager = options.sessionManager;
+    this.#broadcastSessionEvent = options.broadcastSessionEvent;
   }
 
   async createAgent(params: AgentCreateParams): Promise<AgentCreateResult> {
@@ -146,6 +167,10 @@ export class AgenCDaemonAgentManager {
           },
         });
         agent.sessionIds.push(session.sessionId);
+        await this.#runner.attachAgentSessionEvents?.(agent.agentId, {
+          sessionId: session.sessionId,
+          emit: (event) => this.#broadcastSessionEvent?.(session.sessionId, event),
+        });
       }
 
       return await this.#state.with((state) => {
@@ -186,6 +211,60 @@ export class AgenCDaemonAgentManager {
     });
   }
 
+  async attachAgent(params: AgentAttachParams): Promise<AgentAttachResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "agent.attach requires a daemon session manager",
+      );
+    }
+
+    const target = await this.#resolveAttachmentTarget(params.agentId);
+    const sessions = (
+      await Promise.all(
+        target.sessionIds.map((sessionId) =>
+          this.#sessionManager!.getSession(sessionId),
+        ),
+      )
+    ).filter((session): session is SessionSummary =>
+      session !== null && isActiveSession(session),
+    );
+    const session = newestSession(sessions);
+    if (session === null) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "AGENT_NOT_FOUND",
+        `AgenC daemon agent has no active session: ${params.agentId}`,
+      );
+    }
+
+    const attachment = await this.#sessionManager.attachSession({
+      sessionId: session.sessionId,
+      ...(params.clientId !== undefined ? { clientId: params.clientId } : {}),
+    });
+    const orderedSessionIds = [
+      session.sessionId,
+      ...sessions
+        .map((activeSession) => activeSession.sessionId)
+        .filter((sessionId) => sessionId !== session.sessionId),
+    ];
+    const attachedSessions = (
+      await Promise.all(
+        orderedSessionIds.map((sessionId) =>
+          this.#sessionManager!.getSession(sessionId),
+        ),
+      )
+    ).filter((activeSession): activeSession is SessionSummary =>
+      activeSession !== null && isActiveSession(activeSession),
+    );
+    return {
+      agentId: target.agentId,
+      attachmentId: attachment.attachmentId,
+      sessionIds: orderedSessionIds,
+      runtimeSessionId: target.agentId,
+      sessions: attachedSessions,
+    };
+  }
+
   async getAgent(agentId: string): Promise<AgentSummary | null> {
     return this.#state.with(async (state) => {
       const agent = state.agents.get(agentId);
@@ -197,10 +276,136 @@ export class AgenCDaemonAgentManager {
     });
   }
 
+  async approveTool(params: ToolApproveParams): Promise<ToolDecisionResult> {
+    const agentId = await this.#resolveActiveAgentIdForSession(params.sessionId);
+    const resolved = await this.#runner!.resolveToolDecision!(agentId, {
+      requestId: params.requestId,
+      decision:
+        params.scope === "session" || params.scope === "agent"
+          ? APPROVED_FOR_SESSION
+          : APPROVED,
+    });
+    if (!resolved) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        `AgenC daemon tool request is not pending: ${params.requestId}`,
+      );
+    }
+    return { requestId: params.requestId, decision: "approved" };
+  }
+
+  async denyTool(params: ToolDenyParams): Promise<ToolDecisionResult> {
+    const agentId = await this.#resolveActiveAgentIdForSession(params.sessionId);
+    const resolved = await this.#runner!.resolveToolDecision!(agentId, {
+      requestId: params.requestId,
+      decision: DENIED,
+    });
+    if (!resolved) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        `AgenC daemon tool request is not pending: ${params.requestId}`,
+      );
+    }
+    return { requestId: params.requestId, decision: "denied" };
+  }
+
+  async streamAgentMessage(params: {
+    readonly sessionId: string;
+    readonly content: MessageContent;
+    readonly messageId: string;
+    readonly streamId: string;
+    readonly acceptedAt: string;
+    readonly displayUserMessage?: string | null;
+  }): Promise<void> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "message.stream requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.submitAgentMessage === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "message.stream requires a background runner",
+      );
+    }
+
+    const session = await this.#sessionManager.getSession(params.sessionId);
+    if (session === null || !isActiveSession(session)) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "AGENT_NOT_FOUND",
+        `AgenC daemon session not found or closed: ${params.sessionId}`,
+      );
+    }
+
+    await this.#state.with(async (state) => {
+      const agent = state.agents.get(session.agentId);
+      if (agent !== undefined) {
+        await this.#refreshAgentFromRunner(state, agent);
+      }
+      const refreshed = state.agents.get(session.agentId);
+      if (refreshed === undefined || !isActiveAgent(refreshed)) {
+        throw new AgenCDaemonAgentLifecycleError(
+          "AGENT_NOT_FOUND",
+          `AgenC daemon agent not found: ${session.agentId}`,
+        );
+      }
+    });
+
+    await this.#runner.submitAgentMessage(session.agentId, {
+      sessionId: params.sessionId,
+      content: params.content,
+      originalContent: params.content,
+      ...(params.displayUserMessage !== undefined
+        ? { displayUserMessage: params.displayUserMessage }
+        : {}),
+      messageId: params.messageId,
+      streamId: params.streamId,
+      acceptedAt: params.acceptedAt,
+    });
+  }
+
   async #refreshAgentsFromRunner(state: AgentLifecycleState): Promise<void> {
     for (const agent of [...state.agents.values()]) {
       await this.#refreshAgentFromRunner(state, agent);
     }
+  }
+
+  async #resolveActiveAgentIdForSession(sessionId: string): Promise<string> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "tool decision requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.resolveToolDecision === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "tool decision requires a background runner",
+      );
+    }
+
+    const session = await this.#sessionManager.getSession(sessionId);
+    if (session === null || !isActiveSession(session)) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "AGENT_NOT_FOUND",
+        `AgenC daemon session not found or closed: ${sessionId}`,
+      );
+    }
+    await this.#state.with(async (state) => {
+      const agent = state.agents.get(session.agentId);
+      if (agent !== undefined) {
+        await this.#refreshAgentFromRunner(state, agent);
+      }
+      const refreshed = state.agents.get(session.agentId);
+      if (refreshed === undefined || !isActiveAgent(refreshed)) {
+        throw new AgenCDaemonAgentLifecycleError(
+          "AGENT_NOT_FOUND",
+          `AgenC daemon agent not found: ${session.agentId}`,
+        );
+      }
+    });
+    return session.agentId;
   }
 
   async #refreshAgentFromRunner(
@@ -214,6 +419,26 @@ export class AgenCDaemonAgentManager {
       return;
     }
     applyAgentSnapshot(agent, snapshot);
+  }
+
+  async #resolveAttachmentTarget(agentId: string): Promise<AgentAttachmentTarget> {
+    return this.#state.with(async (state) => {
+      const agent = state.agents.get(agentId);
+      if (agent !== undefined) {
+        await this.#refreshAgentFromRunner(state, agent);
+      }
+      const refreshed = state.agents.get(agentId);
+      if (refreshed === undefined || !isActiveAgent(refreshed)) {
+        throw new AgenCDaemonAgentLifecycleError(
+          "AGENT_NOT_FOUND",
+          `AgenC daemon agent not found: ${agentId}`,
+        );
+      }
+      return {
+        agentId: refreshed.agentId,
+        sessionIds: [...refreshed.sessionIds],
+      };
+    });
   }
 }
 
@@ -278,6 +503,29 @@ function isActiveAgent(agent: MutableAgent): boolean {
 
 function compareAgentsForList(left: MutableAgent, right: MutableAgent): number {
   return left.agentId.localeCompare(right.agentId);
+}
+
+function isActiveSession(session: SessionSummary): boolean {
+  return session.status !== "closed" && session.status !== "error";
+}
+
+function newestSession(
+  sessions: readonly SessionSummary[],
+): SessionSummary | null {
+  if (sessions.length === 0) return null;
+  return [...sessions].sort(compareNewestSessionFirst)[0] ?? null;
+}
+
+function compareNewestSessionFirst(
+  left: SessionSummary,
+  right: SessionSummary,
+): number {
+  const rightTime = Date.parse(right.createdAt);
+  const leftTime = Date.parse(left.createdAt);
+  if (Number.isFinite(rightTime) && Number.isFinite(leftTime)) {
+    return rightTime - leftTime;
+  }
+  return right.createdAt.localeCompare(left.createdAt);
 }
 
 function toAgentCreateResult(agent: MutableAgent): AgentCreateResult {

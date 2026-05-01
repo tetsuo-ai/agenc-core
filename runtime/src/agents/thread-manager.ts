@@ -8,13 +8,17 @@ import type { AgentStatus } from "./status.js";
 import { BehaviorSubject } from "./_deps/behavior-subject.js";
 import type { AgentPath, AgentRegistry, ThreadId } from "./registry.js";
 import type { AgentControl, LiveAgent } from "./control.js";
+import type { LLMContentPart } from "../llm/types.js";
 import {
   forkSnapshotRollout,
   type ForkSnapshot,
 } from "./thread-rollout-truncation.js";
 
 export type ThreadManagerOp =
-  | { readonly type: "user_input"; readonly input: string }
+  | {
+      readonly type: "user_input";
+      readonly input: string | readonly LLMContentPart[];
+    }
   | {
       readonly type: "inter_agent_communication";
       readonly communication: Omit<InterAgentCommunication, "seq" | "direction">;
@@ -523,7 +527,7 @@ async function submitToSession(
 ): Promise<string> {
   switch (op.type) {
     case "user_input":
-      await session.submit(op.input);
+      await session.submit(inputPreview(op.input));
       return session.conversationId;
     case "inter_agent_communication":
       session.mailbox.send({
@@ -557,19 +561,31 @@ async function submitToSession(
   }
 }
 
+function inputPreview(input: string | readonly LLMContentPart[]): string {
+  if (typeof input === "string") return input;
+  return input
+    .map((part) => (part.type === "text" ? part.text : "[image]"))
+    .join("\n");
+}
+
 async function submitToLiveAgent(
   live: LiveAgent,
   op: ThreadManagerOp,
 ): Promise<string> {
   switch (op.type) {
     case "user_input":
+      const preview = typeof op.input === "string"
+        ? op.input
+        : op.input
+            .map((part) => (part.type === "text" ? part.text : "[image]"))
+            .join("\n");
       live.downInbox.send({
         author: live.agentPath,
         recipient: live.agentPath,
-        content: op.input,
+        content: preview,
         triggerTurn: true,
         direction: "down",
-        metadata: { kind: "user_input" },
+        metadata: { kind: "user_input", inputContent: op.input },
       });
       return live.agentId;
     case "inter_agent_communication":

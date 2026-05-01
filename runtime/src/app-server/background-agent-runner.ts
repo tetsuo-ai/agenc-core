@@ -19,16 +19,22 @@ import {
   type DelegateOutcome,
 } from "../agents/delegate.js";
 import type { AgentControl } from "../agents/control.js";
+import { MailboxClosedError } from "../agents/mailbox.js";
 import type { AgentPath } from "../agents/registry.js";
 import type { AgentThread } from "../agents/thread.js";
+import type { RunAgentProgressEvent } from "../agents/run-agent.js";
+import type { LLMContentPart } from "../llm/types.js";
+import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
 import { setRulesForSource } from "../permissions/rules.js";
 import type { PermissionModeRegistry } from "../permissions/mode.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
+import { ABORT, DENIED, type ReviewDecision } from "../permissions/review-decision.js";
 import { isFinal } from "../agents/status.js";
 import type { AgentStatus as ThreadAgentStatus } from "../agents/status.js";
 import type {
   AgentStatus as DaemonAgentStatus,
   JsonObject,
+  MessageContent,
 } from "./protocol/index.js";
 
 export interface AgenCBackgroundAgentStartParams {
@@ -54,6 +60,26 @@ export interface AgenCBackgroundAgentSnapshot {
   readonly lastActiveAt: string;
 }
 
+export interface AgenCBackgroundAgentSessionEventBinding {
+  readonly sessionId: string;
+  readonly emit: (event: JsonObject) => void | Promise<void>;
+}
+
+export interface AgenCBackgroundAgentMessageParams {
+  readonly sessionId: string;
+  readonly content: MessageContent;
+  readonly originalContent: MessageContent;
+  readonly displayUserMessage?: string | null;
+  readonly messageId: string;
+  readonly streamId: string;
+  readonly acceptedAt: string;
+}
+
+export interface AgenCBackgroundAgentToolDecisionParams {
+  readonly requestId: string;
+  readonly decision: ReviewDecision;
+}
+
 export interface AgenCBackgroundAgentRunner {
   startAgent(
     params: AgenCBackgroundAgentStartParams,
@@ -62,6 +88,18 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
   ): Promise<AgenCBackgroundAgentSnapshot | null>;
   stopAgent?(agentId: string, reason?: string): Promise<void>;
+  attachAgentSessionEvents?(
+    agentId: string,
+    binding: AgenCBackgroundAgentSessionEventBinding,
+  ): Promise<void> | void;
+  submitAgentMessage?(
+    agentId: string,
+    params: AgenCBackgroundAgentMessageParams,
+  ): Promise<void>;
+  resolveToolDecision?(
+    agentId: string,
+    params: AgenCBackgroundAgentToolDecisionParams,
+  ): Promise<boolean>;
 }
 
 export type AgenCDelegateFunction = (opts: DelegateOpts) => Promise<DelegateOutcome>;
@@ -77,6 +115,18 @@ interface ActiveBackgroundAgent {
   status: DaemonAgentStatus;
   lastActiveAt: string;
   unsubscribeStatus?: () => void;
+  uninstallApprovalBridge?: () => void;
+  sessionBinding?: AgenCBackgroundAgentSessionEventBinding;
+  bufferedEvents: BackgroundAgentDaemonEvent[];
+}
+
+interface BackgroundAgentDaemonEvent {
+  readonly id: string;
+  readonly type: string;
+  readonly payload?: JsonObject;
+  readonly messageId?: string;
+  readonly streamId?: string;
+  readonly acceptedAt?: string;
 }
 
 export interface AgenCDelegateBackgroundAgentRunnerOptions {
@@ -98,6 +148,12 @@ export class AgenCDelegateBackgroundAgentRunner
   readonly #argv: readonly string[] | undefined;
   readonly #now: () => string;
   readonly #active = new Map<string, ActiveBackgroundAgent>();
+  readonly #pendingEvents = new Map<string, BackgroundAgentDaemonEvent[]>();
+  readonly #assistantTextByAgent = new Map<string, string>();
+  readonly #pendingToolDecisions = new Map<
+    string,
+    Map<string, (decision: ReviewDecision) => void>
+  >();
 
   constructor(options: AgenCDelegateBackgroundAgentRunnerOptions = {}) {
     this.#bootstrap = options.bootstrap ?? bootstrapLocalRuntimeSession;
@@ -117,6 +173,8 @@ export class AgenCDelegateBackgroundAgentRunner
       argv: buildBootstrapArgv(params, this.#argv),
       ...(params.cwd !== undefined ? { cwd: params.cwd } : {}),
     });
+    const uninstallApprovalBridge =
+      this.#installDaemonApprovalBridge(bootstrap.session);
 
     try {
       const { control, registry } = this.#ensureAgentControl(bootstrap.session);
@@ -134,6 +192,8 @@ export class AgenCDelegateBackgroundAgentRunner
         runInBackground: true,
         isolation: "cwd",
         ...(params.model !== undefined ? { model: params.model } : {}),
+        onProgress: (event, thread) =>
+          this.#recordProgressEvent(thread.threadId, event),
       });
 
       if (outcome.kind !== "async_launched") {
@@ -151,7 +211,10 @@ export class AgenCDelegateBackgroundAgentRunner
         thread: outcome.thread,
         status: "running",
         lastActiveAt: startedAt,
+        uninstallApprovalBridge,
+        bufferedEvents: this.#pendingEvents.get(outcome.thread.threadId) ?? [],
       };
+      this.#pendingEvents.delete(outcome.thread.threadId);
       this.#trackAgentStatus(active);
       this.#active.set(outcome.thread.threadId, active);
       this.#cleanupWhenComplete(outcome.thread.threadId, outcome.thread);
@@ -162,6 +225,7 @@ export class AgenCDelegateBackgroundAgentRunner
         status: "running",
       };
     } catch (error) {
+      uninstallApprovalBridge();
       await bootstrap.shutdown().catch(() => {});
       throw error;
     }
@@ -186,8 +250,129 @@ export class AgenCDelegateBackgroundAgentRunner
     if (active === undefined) return;
     this.#active.delete(agentId);
     active.unsubscribeStatus?.();
+    active.uninstallApprovalBridge?.();
     await active.control.shutdown(agentId, reason).catch(() => {});
     await active.bootstrap.shutdown().catch(() => {});
+  }
+
+  async attachAgentSessionEvents(
+    agentId: string,
+    binding: AgenCBackgroundAgentSessionEventBinding,
+  ): Promise<void> {
+    const active = this.#active.get(agentId);
+    if (active === undefined) return;
+    active.sessionBinding = binding;
+    const replay = active.bufferedEvents.splice(0);
+    for (const event of replay) {
+      await this.#emitDaemonEvent(active, event);
+    }
+  }
+
+  async submitAgentMessage(
+    agentId: string,
+    params: AgenCBackgroundAgentMessageParams,
+  ): Promise<void> {
+    const active = this.#active.get(agentId);
+    if (active === undefined) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const input = messageContentToAgentInput(params.content);
+    if (typeof input === "string") {
+      await active.control.sendInput(agentId, input);
+    } else {
+      submitStructuredAgentInput(
+        active,
+        input,
+        messageContentDisplayText(params.content),
+      );
+    }
+    active.lastActiveAt = this.#now();
+    if (params.displayUserMessage !== null) {
+      const displayText =
+        params.displayUserMessage ?? messageContentDisplayText(params.content);
+      await this.#emitOrBufferEvent(active, {
+        id: params.messageId,
+        type: "user_message",
+        messageId: params.messageId,
+        streamId: params.streamId,
+        acceptedAt: params.acceptedAt,
+        payload: {
+          message: params.originalContent,
+          displayText,
+        },
+      });
+    }
+  }
+
+  async resolveToolDecision(
+    agentId: string,
+    params: AgenCBackgroundAgentToolDecisionParams,
+  ): Promise<boolean> {
+    const pendingForAgent = this.#pendingToolDecisions.get(agentId);
+    const resolve = pendingForAgent?.get(params.requestId);
+    if (resolve === undefined) return false;
+    pendingForAgent!.delete(params.requestId);
+    if (pendingForAgent!.size === 0) {
+      this.#pendingToolDecisions.delete(agentId);
+    }
+    resolve(params.decision);
+    return true;
+  }
+
+  #installDaemonApprovalBridge(session: LocalRuntimeBootstrap["session"]): () => void {
+    const services = (session as { services?: {
+      approvalResolver?: ApprovalResolver;
+    } }).services;
+    if (services === undefined) return () => {};
+    const previousResolver = services.approvalResolver;
+    const resolver: ApprovalResolver = {
+      request: (ctx) => this.#requestDaemonToolDecision(ctx),
+    };
+    services.approvalResolver = resolver;
+    return () => {
+      if (services.approvalResolver === resolver) {
+        if (previousResolver === undefined) {
+          delete services.approvalResolver;
+        } else {
+          services.approvalResolver = previousResolver;
+        }
+      }
+    };
+  }
+
+  async #requestDaemonToolDecision(ctx: ApprovalCtx): Promise<ReviewDecision> {
+    const agentId = readApprovalAgentId(ctx);
+    if (agentId === null) return DENIED;
+    const requestId = ctx.callId;
+    const decision = new Promise<ReviewDecision>((resolve) => {
+      let pendingForAgent = this.#pendingToolDecisions.get(agentId);
+      if (pendingForAgent === undefined) {
+        pendingForAgent = new Map();
+        this.#pendingToolDecisions.set(agentId, pendingForAgent);
+      }
+      pendingForAgent.set(requestId, resolve);
+      const abort = (): void => {
+        pendingForAgent!.delete(requestId);
+        if (pendingForAgent!.size === 0) {
+          this.#pendingToolDecisions.delete(agentId);
+        }
+        resolve(ABORT);
+      };
+      ctx.signal?.addEventListener("abort", abort, { once: true });
+    });
+    await this.#emitOrBufferAgentEvent(agentId, {
+      id: requestId,
+      type: "request_permissions",
+      payload: {
+        callId: requestId,
+        toolName: ctx.toolName,
+        turnId: ctx.turnId,
+        permissions: ["tool.use"],
+        ...(ctx.retryReason !== undefined ? { reason: ctx.retryReason } : {}),
+        input: approvalInputFromPayload(ctx.invocation.payload),
+      },
+    });
+    return decision;
   }
 
   #trackAgentStatus(active: ActiveBackgroundAgent): void {
@@ -195,7 +380,23 @@ export class AgenCDelegateBackgroundAgentRunner
     let sawInitialStatus = false;
     active.unsubscribeStatus = active.thread.onStatusChange((status) => {
       active.status = mapThreadStatus(status);
-      if (sawInitialStatus) active.lastActiveAt = this.#now();
+      if (status.status === "running") {
+        this.#assistantTextByAgent.set(active.thread.threadId, "");
+      } else if (
+        status.status === "completed" ||
+        status.status === "errored" ||
+        status.status === "interrupted" ||
+        status.status === "shutdown" ||
+        status.status === "not_found"
+      ) {
+        this.#assistantTextByAgent.delete(active.thread.threadId);
+      }
+      if (sawInitialStatus) {
+        active.lastActiveAt = this.#now();
+        void this.#emitOrBufferEvent(active, eventFromThreadStatus(status));
+      } else {
+        void this.#emitOrBufferEvent(active, eventFromThreadStatus(status));
+      }
       sawInitialStatus = true;
     });
   }
@@ -208,9 +409,99 @@ export class AgenCDelegateBackgroundAgentRunner
         const active = this.#active.get(agentId);
         if (active === undefined || active.thread !== thread) return;
         this.#active.delete(agentId);
+        this.#pendingEvents.delete(agentId);
+        this.#assistantTextByAgent.delete(agentId);
         active.unsubscribeStatus?.();
+        active.uninstallApprovalBridge?.();
         await active.bootstrap.shutdown().catch(() => {});
       });
+  }
+
+  async #emitOrBufferAgentEvent(
+    agentId: string,
+    event: BackgroundAgentDaemonEvent | null,
+  ): Promise<void> {
+    const active = this.#active.get(agentId);
+    if (active === undefined) {
+      if (event !== null) {
+        const pending = this.#pendingEvents.get(agentId) ?? [];
+        pending.push(event);
+        this.#pendingEvents.set(agentId, pending);
+      }
+      return;
+    }
+    await this.#emitOrBufferEvent(active, event);
+  }
+
+  async #recordProgressEvent(
+    agentId: string,
+    progress: RunAgentProgressEvent,
+  ): Promise<void> {
+    const event = this.#eventFromProgress(agentId, progress);
+    if (event === null) return;
+    const active = this.#active.get(agentId);
+    if (active === undefined) {
+      const pending = this.#pendingEvents.get(agentId) ?? [];
+      pending.push(event);
+      this.#pendingEvents.set(agentId, pending);
+      return;
+    }
+    await this.#emitOrBufferEvent(active, event);
+  }
+
+  #eventFromProgress(
+    agentId: string,
+    progress: RunAgentProgressEvent,
+  ): BackgroundAgentDaemonEvent | null {
+    if (progress.kind === "message" && progress.message.role === "assistant") {
+      const text = messageText(progress.message.content);
+      const previous = this.#assistantTextByAgent.get(agentId) ?? "";
+      const delta = text.startsWith(previous) ? text.slice(previous.length) : text;
+      this.#assistantTextByAgent.set(agentId, text);
+      if (delta.length === 0) return null;
+      return {
+        id: `delta-${agentId}-${hashStable(`${previous.length}:${delta}`)}`,
+        type: "agent_message_delta",
+        payload: { delta },
+      };
+    }
+    return eventFromProgress(agentId, progress);
+  }
+
+  async #emitOrBufferEvent(
+    active: ActiveBackgroundAgent,
+    event: BackgroundAgentDaemonEvent | null,
+  ): Promise<void> {
+    if (event === null) return;
+    if (active.sessionBinding === undefined) {
+      active.bufferedEvents.push(event);
+      return;
+    }
+    await this.#emitDaemonEvent(active, event);
+  }
+
+  async #emitDaemonEvent(
+    active: ActiveBackgroundAgent,
+    event: BackgroundAgentDaemonEvent,
+  ): Promise<void> {
+    const binding = active.sessionBinding;
+    if (binding === undefined) {
+      active.bufferedEvents.push(event);
+      return;
+    }
+    const envelope: JsonObject = {
+      type: "daemon.event",
+      sessionId: binding.sessionId,
+      ...(event.messageId !== undefined ? { messageId: event.messageId } : {}),
+      ...(event.streamId !== undefined ? { streamId: event.streamId } : {}),
+      ...(event.acceptedAt !== undefined ? { acceptedAt: event.acceptedAt } : {}),
+      msg: {
+        id: event.id,
+        type: event.type,
+        ...(event.payload !== undefined ? { payload: event.payload } : {}),
+      },
+    };
+    await binding.emit(envelope);
   }
 }
 
@@ -241,6 +532,249 @@ function mapThreadStatus(status: ThreadAgentStatus): DaemonAgentStatus {
     case "running":
       return "running";
   }
+}
+
+function eventFromThreadStatus(
+  status: ThreadAgentStatus,
+): BackgroundAgentDaemonEvent | null {
+  switch (status.status) {
+    case "running":
+      return {
+        id: status.turnId,
+        type: "turn_started",
+        payload: {
+          turnId: status.turnId,
+          ...(status.startedAtMs !== undefined
+            ? { startedAt: status.startedAtMs }
+            : {}),
+        },
+      };
+    case "completed":
+      return {
+        id: status.turnId,
+        type: "turn_complete",
+        payload: {
+          turnId: status.turnId,
+          ...(status.lastMessage !== undefined
+            ? { lastAgentMessage: status.lastMessage }
+            : {}),
+          ...(status.endedAtMs !== undefined ? { completedAt: status.endedAtMs } : {}),
+        },
+      };
+    case "errored":
+      return {
+        id: status.turnId,
+        type: "error",
+        payload: {
+          cause: "background_agent_error",
+          message: status.error,
+          turnId: status.turnId,
+        },
+      };
+    case "interrupted":
+      return {
+        id: status.turnId,
+        type: "turn_aborted",
+        payload: {
+          turnId: status.turnId,
+          reason: status.reason,
+        },
+      };
+    case "shutdown":
+      return {
+        id: `shutdown-${status.endedAtMs}`,
+        type: "turn_aborted",
+        payload: {
+          reason: "shutdown",
+        },
+      };
+    case "pending_init":
+    case "not_found":
+      return null;
+  }
+}
+
+function eventFromProgress(
+  agentId: string,
+  progress: RunAgentProgressEvent,
+): BackgroundAgentDaemonEvent | null {
+  switch (progress.kind) {
+    case "status":
+      return {
+        id: `status-${agentId}-${hashStable(progress.text)}`,
+        type: "warning",
+        payload: {
+          cause: "background_agent_status",
+          message: progress.text,
+        },
+      };
+    case "message": {
+      const text = messageText(progress.message.content);
+      if (progress.message.role === "user") {
+        return {
+          id: `user-${agentId}-${hashStable(text)}`,
+          type: "user_message",
+          payload: {
+            message: progress.message.content,
+            displayText: text,
+          },
+        };
+      }
+      return {
+        id: `agent-${agentId}-${hashStable(text)}`,
+        type: "agent_message",
+        payload: {
+          message: text,
+        },
+      };
+    }
+    case "tool_call":
+      return {
+        id: progress.callId,
+        type: "tool_call_started",
+        payload: {
+          callId: progress.callId,
+          toolName: progress.toolName,
+          args: "{}",
+        },
+      };
+    case "tool_result":
+      return {
+        id: `tool-result-${progress.callId}`,
+        type: "tool_call_completed",
+        payload: {
+          callId: progress.callId,
+          result: progress.result,
+          isError: progress.isError,
+          metadata: {
+            toolName: progress.toolName,
+          },
+        },
+      };
+    case "run_error":
+    case "run_interrupted":
+    case "run_complete":
+      void agentId;
+      return null;
+  }
+}
+
+function messageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return String(content ?? "");
+  return content
+    .map((part) => {
+      if (
+        part !== null &&
+        typeof part === "object" &&
+        typeof (part as { text?: unknown }).text === "string"
+      ) {
+        return (part as { text: string }).text;
+      }
+      return "";
+    })
+    .filter((part) => part.length > 0)
+    .join("\n");
+}
+
+function messageContentToAgentInput(
+  content: MessageContent,
+): string | readonly LLMContentPart[] {
+  if (typeof content === "string") return content;
+  return content.map((part) => {
+    if (part.type === "text") return { type: "text", text: part.text };
+    return { type: "image_url", image_url: { url: part.image_url.url } };
+  });
+}
+
+function submitStructuredAgentInput(
+  active: ActiveBackgroundAgent,
+  input: readonly LLMContentPart[],
+  displayText: string,
+): void {
+  const live = active.thread.live;
+  try {
+    live.downInbox.send({
+      author: live.agentPath,
+      recipient: live.agentPath,
+      content: displayText,
+      triggerTurn: true,
+      direction: "down",
+      metadata: { kind: "user_input", inputContent: input },
+    });
+  } catch (error) {
+    if (error instanceof MailboxClosedError) {
+      throw new Error(`AgenC daemon agent not running: ${active.thread.threadId}`);
+    }
+    throw error;
+  }
+}
+
+function messageContentDisplayText(content: MessageContent): string {
+  if (typeof content === "string") return content;
+  return content
+    .map((part) => (part.type === "text" ? part.text : "[image]"))
+    .filter((part) => part.trim().length > 0)
+    .join("\n");
+}
+
+function hashStable(value: string): string {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash.toString(36);
+}
+
+function readApprovalAgentId(ctx: ApprovalCtx): string | null {
+  const session = ctx.invocation.session as { conversationId?: unknown };
+  return typeof session.conversationId === "string" &&
+    session.conversationId.length > 0
+    ? session.conversationId
+    : null;
+}
+
+function approvalInputFromPayload(value: unknown): JsonObject {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  const payload = value as {
+    readonly kind?: unknown;
+    readonly arguments?: unknown;
+    readonly rawArguments?: unknown;
+    readonly input?: unknown;
+    readonly params?: unknown;
+  };
+  if (payload.kind === "function" && typeof payload.arguments === "string") {
+    return parseJsonObject(payload.arguments);
+  }
+  if (payload.kind === "mcp" && typeof payload.rawArguments === "string") {
+    return parseJsonObject(payload.rawArguments);
+  }
+  if (payload.kind === "custom" && typeof payload.input === "string") {
+    return { input: payload.input };
+  }
+  if (
+    payload.kind === "local_shell" &&
+    payload.params !== null &&
+    typeof payload.params === "object" &&
+    !Array.isArray(payload.params)
+  ) {
+    return payload.params as JsonObject;
+  }
+  return {};
+}
+
+function parseJsonObject(raw: string): JsonObject {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as JsonObject;
+    }
+  } catch {
+    // Fall through to the raw-input carrier below.
+  }
+  return { input: raw };
 }
 
 function buildBootstrapArgv(

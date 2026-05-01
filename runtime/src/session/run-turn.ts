@@ -204,24 +204,32 @@ function appendTextPart(parts: LLMContentPart[], text: string): void {
 }
 
 function mergePendingInputIntoUserContent(
-  userMessage: string,
+  userMessage: string | readonly LLMContentPart[],
   pending: readonly LLMMessage[],
 ): string | LLMContentPart[] {
-  if (pending.length === 0) return userMessage;
+  if (pending.length === 0) {
+    return typeof userMessage === "string" ? userMessage : [...userMessage];
+  }
   const hasMultimodalContent = pending.some(
     (message) => Array.isArray(message.content) &&
       message.content.some((part) => part.type === "image_url"),
-  );
+  ) || Array.isArray(userMessage);
   if (!hasMultimodalContent) {
     const parts = [
-      userMessage.trim().length > 0 ? userMessage : "",
+      typeof userMessage === "string" && userMessage.trim().length > 0
+        ? userMessage
+        : "",
       ...pending.map(messageText).filter((part) => part.trim().length > 0),
     ].filter((part) => part.length > 0);
     return parts.join("\n\n");
   }
 
   const contentParts: LLMContentPart[] = [];
-  appendTextPart(contentParts, userMessage);
+  if (typeof userMessage === "string") {
+    appendTextPart(contentParts, userMessage);
+  } else {
+    contentParts.push(...userMessage);
+  }
   for (const message of pending) {
     if (typeof message.content === "string") {
       appendTextPart(contentParts, message.content);
@@ -1287,7 +1295,7 @@ export function getLastAssistantMessageFromTurn(
 export async function* runTurnKernel(
   session: Session,
   ctx: TurnContext,
-  userMessage: string,
+  userMessage: string | readonly LLMContentPart[],
   opts: RunTurnOptions = {},
 ): AsyncGenerator<PhaseEvent, Terminal> {
   // T6 gap #119: canonical turn-lifecycle emits. Each `runTurn`
@@ -2128,12 +2136,12 @@ async function* runTurnKernelInner(
 export function runTurn(
   session: Session,
   ctx: TurnContext,
-  userMessage: string,
+  userMessage: string | readonly LLMContentPart[],
   opts: RunTurnOptions = {},
 ): AsyncGenerator<PhaseEvent, Terminal> {
   const sessionOwner = session as Session & {
     runTurn?: (
-      userMessage: string,
+      userMessage: string | readonly LLMContentPart[],
       opts?: {
         ctx?: TurnContext;
         systemPrompt?: string;

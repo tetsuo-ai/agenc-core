@@ -13,10 +13,12 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
 import { AgenCDelegateBackgroundAgentRunner } from "./background-agent-runner.js";
+import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import {
   AgenCDaemonJsonRpcDispatcher,
   type AgenCDaemonJsonRpcConnection,
 } from "./daemon-dispatcher.js";
+import type { JsonObject } from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import { AgenCUnixSocketServer } from "./transport/unix-socket.js";
 
@@ -257,6 +259,9 @@ async function runAgenCDaemonForeground(
     resolveAgenCDaemonCookiePath(host.env, host.userHome),
   );
   const sessionManager = new AgenCDaemonSessionManager();
+  const clientMultiplexer = new AgenCDaemonClientMultiplexer({
+    sessionManager,
+  });
   const runner = new AgenCDelegateBackgroundAgentRunner({
     env: host.env,
     argv: [host.execPath, host.entrypointPath, "--autonomous"],
@@ -265,29 +270,49 @@ async function runAgenCDaemonForeground(
     runner,
     sessionManager,
     defaultCwd: () => process.cwd(),
+    broadcastSessionEvent: async (sessionId, event) => {
+      await clientMultiplexer.broadcastSessionEvent(sessionId, event);
+    },
   });
   const dispatcher = new AgenCDaemonJsonRpcDispatcher({
     agentManager,
+    clientMultiplexer,
     initializeAuthenticator: (params) => params.authCookie === daemonCookie,
   });
   const connections = new Map<number, AgenCDaemonJsonRpcConnection>();
+  const socketConnections = new Map<
+    number,
+    { readonly send: (message: JsonObject) => Promise<void> }
+  >();
   const connectionFor = (connectionId: number): AgenCDaemonJsonRpcConnection => {
     const current = connections.get(connectionId);
     if (current !== undefined) return current;
-    const next = dispatcher.createConnection();
+    const next = dispatcher.createConnection({
+      sendNotification: async (message) => {
+        await socketConnections.get(connectionId)?.send(message);
+      },
+    });
     connections.set(connectionId, next);
     return next;
   };
   const socketServer = new AgenCUnixSocketServer({
     socketPath,
     onMessage: async (message, context) => {
+      socketConnections.set(context.connectionId, {
+        send: (notification) => context.send(notification),
+      });
       await context.send(await connectionFor(context.connectionId).dispatch(message));
     },
     onError: (error) => {
       io.stderr.write(`agenc: daemon socket error: ${error.message}\n`);
     },
     onConnectionClosed: (connectionId) => {
+      const connection = connections.get(connectionId);
       connections.delete(connectionId);
+      socketConnections.delete(connectionId);
+      for (const clientId of connection?.trackedClientIds ?? []) {
+        void clientMultiplexer.removeClient(clientId).catch(() => {});
+      }
     },
   });
 

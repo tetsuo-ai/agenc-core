@@ -293,10 +293,15 @@ export interface SessionTerminateParams extends JsonObject {
   readonly reason?: string;
 }
 
-export interface MessageContentBlock extends JsonObject {
-  readonly type: "text";
-  readonly text: string;
-}
+export type MessageContentBlock =
+  | (JsonObject & {
+      readonly type: "text";
+      readonly text: string;
+    })
+  | (JsonObject & {
+      readonly type: "image_url";
+      readonly image_url: JsonObject & { readonly url: string };
+    });
 
 export type MessageContent = string | readonly MessageContentBlock[];
 
@@ -415,6 +420,8 @@ export interface AgentAttachResult extends JsonObject {
   readonly agentId: string;
   readonly attachmentId: string;
   readonly sessionIds: readonly string[];
+  readonly runtimeSessionId?: string;
+  readonly sessions?: readonly SessionSummary[];
 }
 
 export interface AgentStopResult extends JsonObject {

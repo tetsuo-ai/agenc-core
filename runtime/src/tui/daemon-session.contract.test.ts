@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AGENC_DAEMON_RECONNECTING_MESSAGE,
+  attachDaemonAgentTuiSession,
   attachDaemonTuiSession,
   createDaemonTuiSession,
   type AgenCDaemonConnectionState,
@@ -12,6 +13,7 @@ import type {
   AgenCDaemonResultByMethod,
   JsonObject,
 } from "../app-server/protocol/index.js";
+import { APPROVED, DENIED } from "../permissions/review-decision.js";
 
 function createBaseSession(): AgenCTuiBridgeSession {
   return {
@@ -91,6 +93,47 @@ function createClient(): AgenCDaemonTuiClient & {
 }
 
 describe("AgenC TUI daemon session adapter", () => {
+  it("attaches the TUI to an agent before subscribing to its daemon session", async () => {
+    const client = createClient();
+    client.request = async (method, params) => {
+      client.requests.push({ method, params });
+      if (method === "agent.attach") {
+        return {
+          agentId: "agent_1",
+          attachmentId: "attachment_1",
+          sessionIds: ["session_1"],
+          runtimeSessionId: "agent_runtime",
+        } as never;
+      }
+      return {} as never;
+    };
+
+    const session = await attachDaemonAgentTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      agentId: "agent_1",
+      clientId: "tui_1",
+    });
+    const received: JsonObject[] = [];
+    const unsubscribe = session.subscribeToEvents((event) => {
+      received.push(event as JsonObject);
+    });
+    client.emit("session_1", {
+      type: "daemon.event",
+      msg: { type: "turn_delta", id: "turn_1" },
+    });
+    unsubscribe();
+
+    expect(session.conversationId).toBe("agent_runtime");
+    expect(client.requests).toEqual([
+      {
+        method: "agent.attach",
+        params: { agentId: "agent_1", clientId: "tui_1" },
+      },
+    ]);
+    expect(received).toEqual([{ type: "turn_delta", id: "turn_1" }]);
+  });
+
   it("attaches the TUI client before returning a daemon-backed session", async () => {
     const client = createClient();
 
@@ -130,6 +173,163 @@ describe("AgenC TUI daemon session adapter", () => {
         content: "run tests",
       },
     });
+  });
+
+  it("flushes queued TUI idle input through an empty submit", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    expect(
+      session.enqueueIdleInput({
+        role: "user",
+        content: [
+          { type: "text", text: "look at this" },
+          { type: "image_url", image_url: { url: "file:///tmp/screenshot.png" } },
+        ],
+      }),
+    ).toBe(1);
+    await session.submit("", { displayUserMessage: null });
+
+    expect(client.requests).toEqual([
+      {
+        method: "message.stream",
+        params: {
+          sessionId: "session_1",
+          content: [
+            { type: "text", text: "look at this" },
+            {
+              type: "image_url",
+              image_url: { url: "file:///tmp/screenshot.png" },
+            },
+          ],
+          metadata: { displayUserMessage: null },
+          streamId: expect.stringMatching(/^tui_1:/),
+        },
+      },
+    ]);
+  });
+
+  it("combines queued idle input with explicit attached submit text", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    expect(session.enqueueIdleInput({ role: "user", content: "queued" })).toBe(1);
+    await session.submit("typed");
+
+    expect(client.requests[0]).toMatchObject({
+      method: "message.stream",
+      params: {
+        sessionId: "session_1",
+        content: [
+          { type: "text", text: "queued" },
+          { type: "text", text: "typed" },
+        ],
+      },
+    });
+  });
+
+  it("bridges daemon permission requests back through tool decisions", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: {
+        ...createBaseSession(),
+        services: {
+          ...createBaseSession().services,
+          approvalResolver: {
+            request: async (ctx) => {
+              expect(ctx.callId).toBe("call_1");
+              expect(ctx.toolName).toBe("Bash");
+              return APPROVED;
+            },
+          },
+        },
+      },
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    const unsubscribe = session.subscribeToEvents(() => {});
+    client.emit("session_1", {
+      type: "daemon.event",
+      msg: {
+        type: "request_permissions",
+        payload: {
+          callId: "call_1",
+          toolName: "Bash",
+          turnId: "turn_1",
+          input: { kind: "function", arguments: "{}" },
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    unsubscribe();
+
+    expect(client.requests).toEqual([
+      {
+        method: "tool.approve",
+        params: {
+          sessionId: "session_1",
+          requestId: "call_1",
+          scope: "once",
+        },
+      },
+    ]);
+  });
+
+  it("sends daemon deny decisions when permission bridge rejects", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: {
+        ...createBaseSession(),
+        services: {
+          ...createBaseSession().services,
+          approvalResolver: {
+            request: async () => DENIED,
+          },
+        },
+      },
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    const unsubscribe = session.subscribeToEvents(() => {});
+    client.emit("session_1", {
+      type: "daemon.event",
+      msg: {
+        type: "request_permissions",
+        payload: {
+          callId: "call_2",
+          toolName: "Bash",
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    unsubscribe();
+
+    expect(client.requests).toEqual([
+      {
+        method: "tool.deny",
+        params: {
+          sessionId: "session_1",
+          requestId: "call_2",
+          reason: "denied",
+        },
+      },
+    ]);
   });
 
   it("subscribes the TUI to daemon session events", () => {

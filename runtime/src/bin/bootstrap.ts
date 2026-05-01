@@ -524,6 +524,7 @@ export interface BootstrapLocalRuntimeSessionOptions {
   readonly argv?: readonly string[];
   readonly cwd?: string;
   readonly conversationId?: string;
+  readonly resumeConversation?: boolean;
   readonly toolRegistryOptions?: Omit<BuildToolRegistryOptions, "workspaceRoot">;
 }
 
@@ -705,6 +706,8 @@ export async function bootstrapLocalRuntimeSession(
   }
   const conversationId =
     options.conversationId ?? `conv-${Date.now().toString(36)}`;
+  const resumeConversation =
+    options.conversationId !== undefined && options.resumeConversation !== false;
   const config = buildDeferredConfig(workspaceRoot, model, {
     ...startup.config,
     autonomous_mode: autonomousModeEnabled,
@@ -755,7 +758,7 @@ export async function bootstrapLocalRuntimeSession(
       },
     } as SessionConfiguration,
     history: [],
-    ...(options.conversationId !== undefined
+    ...(resumeConversation
       ? { pendingSessionStartSource: "resume" as const }
       : {}),
   };
@@ -899,7 +902,7 @@ export async function bootstrapLocalRuntimeSession(
           cwd: workspaceRoot,
           sessionId: conversationId,
           agencVersion: "0.2.0",
-          ...(options.conversationId !== undefined ? { resume: true } : {}),
+          ...(resumeConversation ? { resume: true } : {}),
           ...(sessionProjectRootMarkers !== undefined
             ? { projectRootMarkers: sessionProjectRootMarkers }
             : {}),
@@ -918,7 +921,7 @@ export async function bootstrapLocalRuntimeSession(
         bootstrapServices.bindRolloutStore({
           session: s,
           rolloutStore,
-          resume: options.conversationId !== undefined,
+          resume: resumeConversation,
           threadMetadata: {
             agentPath: "/root",
             sessionSource: "cli_main",
