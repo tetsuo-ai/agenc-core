@@ -310,6 +310,7 @@ async function runAgenCDaemonForeground(
       const connection = connections.get(connectionId);
       connections.delete(connectionId);
       socketConnections.delete(connectionId);
+      void connection?.close().catch(() => {});
       for (const clientId of connection?.trackedClientIds ?? []) {
         void clientMultiplexer.removeClient(clientId).catch(() => {});
       }

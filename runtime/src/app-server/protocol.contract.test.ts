@@ -50,6 +50,10 @@ const expectedMethods = [
   "tool.deny",
   "permission.list",
   "fs.fuzzy_search",
+  "commandExec.start",
+  "commandExec.write",
+  "commandExec.resize",
+  "commandExec.terminate",
   "health.ping",
   "health.ready",
   "health.stats",
@@ -262,31 +266,67 @@ describe("AgenC daemon protocol surface", () => {
       {
         jsonrpc: JSON_RPC_VERSION,
         id: 17,
-        method: "health.ping",
+        method: "commandExec.start",
+        params: {
+          command: ["node", "-e", "process.stdout.write('ok')"],
+          processId: "proc_1",
+          streamStdoutStderr: true,
+          timeoutMs: 1000,
+        },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
         id: 18,
-        method: "health.ready",
+        method: "commandExec.write",
+        params: {
+          processId: "proc_1",
+          deltaBase64: "aGVsbG8=",
+          closeStdin: true,
+        },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
         id: 19,
-        method: "health.stats",
+        method: "commandExec.resize",
+        params: {
+          processId: "proc_1",
+          size: { rows: 40, cols: 120 },
+        },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
         id: 20,
-        method: "auth.login",
+        method: "commandExec.terminate",
+        params: { processId: "proc_1" },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
         id: 21,
-        method: "auth.whoami",
+        method: "health.ping",
       },
       {
         jsonrpc: JSON_RPC_VERSION,
         id: 22,
+        method: "health.ready",
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: 23,
+        method: "health.stats",
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: 24,
+        method: "auth.login",
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: 25,
+        method: "auth.whoami",
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: 26,
         method: "auth.logout",
       },
     ];

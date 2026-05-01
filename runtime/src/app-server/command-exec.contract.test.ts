@@ -1,0 +1,310 @@
+import { Buffer } from "node:buffer";
+import { describe, expect, it, vi } from "vitest";
+import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
+import {
+  AgenCCommandExecService,
+  type AgenCCommandExec,
+} from "./command-exec.js";
+import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
+import { JSON_RPC_VERSION, type JsonObject } from "./protocol/index.js";
+
+const idleScript = "setInterval(() => {}, 1000)";
+
+describe("AgenC daemon command exec", () => {
+  it("dispatches commandExec methods through initialized JSON-RPC connections", async () => {
+    const commandExec: AgenCCommandExec = {
+      start: vi.fn(async () => ({ exitCode: 0, stdout: "ok", stderr: "" })),
+      write: vi.fn(async () => ({})),
+      resize: vi.fn(async () => ({})),
+      terminate: vi.fn(async () => ({})),
+      closeConnection: vi.fn(async () => {}),
+    };
+    const notifications: JsonObject[] = [];
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+      commandExec,
+    });
+    const connection = dispatcher.createConnection({
+      sendNotification: (notification) => notifications.push(notification),
+    });
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "init",
+      method: "initialize",
+      params: { protocolVersion: "1.0.0", clientName: "contract-test" },
+    });
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "start",
+        method: "commandExec.start",
+        params: {
+          command: [process.execPath, "-e", "process.stdout.write('ok')"],
+          processId: "proc-1",
+          streamStdoutStderr: true,
+          timeoutMs: 1000,
+        },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "start",
+      result: { exitCode: 0, stdout: "ok", stderr: "" },
+    });
+    expect(commandExec.start).toHaveBeenCalledWith(
+      {
+        command: [process.execPath, "-e", "process.stdout.write('ok')"],
+        processId: "proc-1",
+        streamStdoutStderr: true,
+        timeoutMs: 1000,
+      },
+      {
+        connectionId: expect.stringMatching(/^connection_/),
+        sendNotification: expect.any(Function),
+      },
+    );
+
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "write",
+      method: "commandExec.write",
+      params: { processId: "proc-1", deltaBase64: "cGluZw==" },
+    });
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "resize",
+      method: "commandExec.resize",
+      params: { processId: "proc-1", size: { rows: 30, cols: 100 } },
+    });
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "terminate",
+      method: "commandExec.terminate",
+      params: { processId: "proc-1" },
+    });
+    await connection.close();
+
+    expect(commandExec.write).toHaveBeenCalledWith(
+      { processId: "proc-1", deltaBase64: "cGluZw==" },
+      expect.objectContaining({ connectionId: expect.stringMatching(/^connection_/) }),
+    );
+    expect(commandExec.resize).toHaveBeenCalledWith(
+      { processId: "proc-1", size: { rows: 30, cols: 100 } },
+      expect.objectContaining({ connectionId: expect.stringMatching(/^connection_/) }),
+    );
+    expect(commandExec.terminate).toHaveBeenCalledWith(
+      { processId: "proc-1" },
+      expect.objectContaining({ connectionId: expect.stringMatching(/^connection_/) }),
+    );
+    expect(commandExec.closeConnection).toHaveBeenCalledWith(
+      expect.stringMatching(/^connection_/),
+    );
+    expect(notifications).toEqual([]);
+  });
+
+  it("returns buffered stdout and stderr for non-streaming commands", async () => {
+    const service = new AgenCCommandExecService();
+
+    await expect(
+      service.start(
+        {
+          command: [
+            process.execPath,
+            "-e",
+            "process.stdout.write(process.env.AGENC_TEST_VALUE); process.stderr.write('warn')",
+          ],
+          env: { AGENC_TEST_VALUE: "hello" },
+          timeoutMs: 2000,
+        },
+        { connectionId: "buffered" },
+      ),
+    ).resolves.toEqual({
+      exitCode: 0,
+      stdout: "hello",
+      stderr: "warn",
+    });
+  });
+
+  it("streams stdout and stderr as base64 notifications", async () => {
+    const service = new AgenCCommandExecService();
+    const notifications: JsonObject[] = [];
+
+    const result = await service.start(
+      {
+        command: [
+          process.execPath,
+          "-e",
+          "process.stdout.write('out'); process.stderr.write('err')",
+        ],
+        processId: "stream-1",
+        streamStdoutStderr: true,
+        timeoutMs: 2000,
+      },
+      {
+        connectionId: "streaming",
+        sendNotification: (message) => notifications.push(message),
+      },
+    );
+
+    expect(result).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+    expect(notifications).toEqual(
+      expect.arrayContaining([
+        {
+          jsonrpc: JSON_RPC_VERSION,
+          method: "commandExec.outputDelta",
+          params: {
+            processId: "stream-1",
+            stream: "stdout",
+            deltaBase64: Buffer.from("out").toString("base64"),
+            capReached: false,
+          },
+        },
+        {
+          jsonrpc: JSON_RPC_VERSION,
+          method: "commandExec.outputDelta",
+          params: {
+            processId: "stream-1",
+            stream: "stderr",
+            deltaBase64: Buffer.from("err").toString("base64"),
+            capReached: false,
+          },
+        },
+      ]),
+    );
+  });
+
+  it("writes stdin and closes it for pipe-backed sessions", async () => {
+    const service = new AgenCCommandExecService();
+    const context = { connectionId: "stdin" };
+    const started = service.start(
+      {
+        command: [
+          process.execPath,
+          "-e",
+          "process.stdin.on('data', (d) => process.stdout.write(d)); process.stdin.on('end', () => process.exit(0))",
+        ],
+        processId: "stdin-1",
+        streamStdin: true,
+        disableTimeout: true,
+      },
+      context,
+    );
+
+    await service.write(
+      {
+        processId: "stdin-1",
+        deltaBase64: Buffer.from("ping").toString("base64"),
+        closeStdin: true,
+      },
+      context,
+    );
+
+    await expect(started).resolves.toEqual({
+      exitCode: 0,
+      stdout: "ping",
+      stderr: "",
+    });
+  });
+
+  it("rejects duplicate process ids and terminates active sessions", async () => {
+    const service = new AgenCCommandExecService();
+    const context = { connectionId: "terminate" };
+    const started = service.start(
+      {
+        command: [process.execPath, "-e", idleScript],
+        processId: "term-1",
+        disableTimeout: true,
+      },
+      context,
+    );
+
+    await expect(
+      service.start(
+        {
+          command: [process.execPath, "-e", idleScript],
+          processId: "term-1",
+          disableTimeout: true,
+        },
+        context,
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: 'duplicate active commandExec process id: "term-1"',
+    });
+
+    await expect(
+      service.terminate({ processId: "term-1" }, context),
+    ).resolves.toEqual({});
+    await expect(started).resolves.toMatchObject({ stdout: "", stderr: "" });
+    const result = await started;
+    expect(result.exitCode).not.toBe(0);
+  });
+
+  it("rejects unsafe or malformed commandExec requests", async () => {
+    const service = new AgenCCommandExecService();
+
+    await expect(
+      service.start(
+        {
+          command: [process.execPath, "-e", "process.stdout.write('out')"],
+          streamStdoutStderr: true,
+        },
+        { connectionId: "invalid" },
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message:
+        "commandExec.start tty or streaming requires a client-supplied processId",
+    });
+
+    await expect(
+      service.start(
+        {
+          command: [process.execPath, "-e", "process.stdout.write('out')"],
+          outputBytesCap: 1,
+          disableOutputCap: true,
+        },
+        { connectionId: "invalid" },
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message:
+        "commandExec.start cannot combine outputBytesCap with disableOutputCap",
+    });
+
+    await expect(
+      service.write(
+        { processId: "missing", deltaBase64: "not base64" },
+        { connectionId: "invalid" },
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "invalid deltaBase64",
+    });
+  });
+
+  it("terminates all sessions for a closed connection", async () => {
+    const service = new AgenCCommandExecService();
+    const context = { connectionId: "closed" };
+    const started = service.start(
+      {
+        command: [process.execPath, "-e", idleScript],
+        processId: "closed-1",
+        disableTimeout: true,
+      },
+      context,
+    );
+
+    await service.closeConnection("closed");
+
+    await expect(started).resolves.toMatchObject({ stdout: "", stderr: "" });
+    const result = await started;
+    expect(result.exitCode).not.toBe(0);
+    await expect(
+      service.terminate({ processId: "closed-1" }, context),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: 'no active commandExec session for process id "closed-1"',
+    });
+  });
+});
