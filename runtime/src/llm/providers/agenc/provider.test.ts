@@ -149,6 +149,75 @@ describe("AgenCProvider", () => {
     ]);
   });
 
+  it("refreshes routed delegates after the vended key expires", async () => {
+    let nowMs = 1_000;
+    let vendCount = 0;
+    const calls: string[] = [];
+    const authBackend: AuthBackend = {
+      login: () => ({ authenticated: true, provider: "remote" }),
+      logout: () => ({ authenticated: false }),
+      whoami: () => ({ authenticated: true, provider: "remote" }),
+      vendKey: (provider, sessionId) => {
+        calls.push(`vendKey:${provider}:${sessionId}`);
+        vendCount += 1;
+        return {
+          provider,
+          sessionId,
+          apiKey: `managed-key-${vendCount}`,
+          expiresAt: new Date(nowMs + 50).toISOString(),
+        };
+      },
+      inferAgencModel: ({
+        provider,
+        requestedModel,
+        sessionId,
+        subscriptionTier,
+      } = {}) => {
+        calls.push(
+          `infer:${provider ?? ""}:${requestedModel ?? ""}:${sessionId ?? ""}:${subscriptionTier ?? ""}`,
+        );
+        return {
+          provider: "grok",
+          model: "grok-4-fast",
+          subscriptionTier,
+        };
+      },
+      getSubscriptionTier: () => "team",
+    };
+    const firstDelegate = makeDelegateProvider("grok-4-fast");
+    const secondDelegate = makeDelegateProvider("grok-4-fast");
+    let factoryIndex = 0;
+    const providerFactory = vi.fn(() => {
+      const delegate = [firstDelegate, secondDelegate][factoryIndex];
+      factoryIndex += 1;
+      return delegate ?? makeDelegateProvider("grok-4-fast");
+    });
+    const provider = new AgenCProvider({
+      authBackend,
+      sessionId: "session-1",
+      subscriptionTier: "team",
+      model: "agenc:fast",
+      providerFactory,
+      nowMs: () => nowMs,
+    });
+
+    await provider.chat([{ role: "user", content: "first" }]);
+    nowMs += 49;
+    await provider.chat([{ role: "user", content: "still cached" }]);
+    nowMs += 2;
+    await provider.chat([{ role: "user", content: "refresh" }]);
+
+    expect(providerFactory).toHaveBeenCalledTimes(2);
+    expect(firstDelegate.chat).toHaveBeenCalledTimes(2);
+    expect(secondDelegate.chat).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual([
+      "infer:agenc:agenc:fast:session-1:team",
+      "vendKey:grok:session-1",
+      "infer:agenc:agenc:fast:session-1:team",
+      "vendKey:grok:session-1",
+    ]);
+  });
+
   it("fails closed when model inference returns the AgenC provider again", async () => {
     const authBackend: AuthBackend = {
       login: () => ({ authenticated: true, provider: "remote" }),

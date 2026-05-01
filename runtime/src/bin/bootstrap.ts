@@ -136,10 +136,21 @@ function buildCodeSessionBaseUrl(baseUrl: string, sessionId: string): string {
 interface ResolvedAuthModelSelection {
   readonly provider: ProviderName;
   readonly model: string;
+  readonly profileProvider: ProviderName;
+  readonly profileModel: string;
 }
 
 function isHostedAgencProvider(provider: string): boolean {
   return provider.trim().toLowerCase() === "agenc";
+}
+
+function firstNonEmptyString(...values: Array<string | undefined>): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
 }
 
 async function resolveAuthSubscriptionTier(
@@ -169,10 +180,14 @@ async function resolveAuthModelSelection(params: {
 }): Promise<ResolvedAuthModelSelection> {
   if (
     params.authBackend === undefined ||
-    isHostedAgencProvider(params.provider) ||
     !requiresAuthModelInference(params.provider, params.model)
   ) {
-    return { provider: params.provider, model: params.model };
+    return {
+      provider: params.provider,
+      model: params.model,
+      profileProvider: params.provider,
+      profileModel: params.model,
+    };
   }
   const inferred = await params.authBackend.inferAgencModel({
     provider: params.provider,
@@ -181,12 +196,29 @@ async function resolveAuthModelSelection(params: {
     subscriptionTier: params.subscriptionTier,
   });
   const inferredProvider = normalizeProviderName(inferred.provider);
+  const inferredModel = firstNonEmptyString(inferred.model) ?? params.model;
+  if (isHostedAgencProvider(params.provider)) {
+    return {
+      provider: params.provider,
+      model: params.model,
+      profileProvider:
+        inferredProvider !== null && inferredProvider !== "agenc"
+          ? inferredProvider
+          : params.provider,
+      profileModel: inferredModel,
+    };
+  }
   return {
     provider:
       inferredProvider !== null && inferredProvider !== "agenc"
         ? inferredProvider
         : params.provider,
-    model: inferred.model,
+    model: inferredModel,
+    profileProvider:
+      inferredProvider !== null && inferredProvider !== "agenc"
+        ? inferredProvider
+        : params.provider,
+    profileModel: inferredModel,
   };
 }
 
@@ -737,12 +769,18 @@ export async function bootstrapLocalRuntimeSession(
     subscriptionTier: authSubscriptionTier,
   });
   const resolvedProvider = modelSelection.provider;
-  const model = modelSelection.model;
-  const providerSettings = resolveProviderSettings(
+  const providerModel = modelSelection.model;
+  const profileProvider = modelSelection.profileProvider;
+  const model = modelSelection.profileModel;
+  const runtimeProviderSettings = resolveProviderSettings(
     resolvedProvider,
     startup.config,
     env,
   );
+  const providerSettings =
+    profileProvider === resolvedProvider
+      ? runtimeProviderSettings
+      : resolveProviderSettings(profileProvider, startup.config, env);
   const byokApiKey = selectByokPrecedenceApiKey({
     explicitApiKey: options.apiKey,
     byokApiKey: startup.apiKey,
@@ -757,7 +795,7 @@ export async function bootstrapLocalRuntimeSession(
       : { attempted: false };
   const selectedApiKey = requireProviderApiKeyOrUndefined({
     provider: resolvedProvider,
-    providerSettings,
+    providerSettings: runtimeProviderSettings,
     apiKey: selectByokPrecedenceApiKey({
       explicitApiKey: options.apiKey,
       byokApiKey: startup.apiKey,
@@ -799,7 +837,7 @@ export async function bootstrapLocalRuntimeSession(
     status?: number;
   }): void => {
     markCapabilityDrift({
-      provider: resolvedProvider,
+      provider: profileProvider,
       model,
       overrides: providerSettings?.capabilityOverrides,
     });
@@ -807,8 +845,8 @@ export async function bootstrapLocalRuntimeSession(
       cause: "capability_drift_detected",
       message:
         warning.status !== undefined
-          ? `${resolvedProvider}/${model} rejected a capability the registry claimed it supported (HTTP ${warning.status}): ${warning.message}`
-          : `${resolvedProvider}/${model} rejected a capability the registry claimed it supported: ${warning.message}`,
+          ? `${profileProvider}/${model} rejected a capability the registry claimed it supported (HTTP ${warning.status}): ${warning.message}`
+          : `${profileProvider}/${model} rejected a capability the registry claimed it supported: ${warning.message}`,
     });
   };
 
@@ -828,8 +866,10 @@ export async function bootstrapLocalRuntimeSession(
     resolvedProvider as ProviderName,
     {
       apiKey: selectedApiKey,
-      ...(providerSettings?.baseURL ? { baseURL: providerSettings.baseURL } : {}),
-      model,
+      ...(runtimeProviderSettings?.baseURL
+        ? { baseURL: runtimeProviderSettings.baseURL }
+        : {}),
+      model: providerModel,
       tools: registry.toLLMTools(),
       extra: {
         emitWarning: emitProviderWarning,
@@ -852,7 +892,7 @@ export async function bootstrapLocalRuntimeSession(
     },
   );
   const capabilityEntry = resolveProviderCapabilityEntry({
-    provider: resolvedProvider,
+    provider: profileProvider,
     model,
     overrides: providerSettings?.capabilityOverrides,
   });
@@ -863,7 +903,7 @@ export async function bootstrapLocalRuntimeSession(
         .then((healthy) => {
           if (!healthy) return;
           markCapabilityVerified({
-            provider: resolvedProvider,
+            provider: profileProvider,
             model,
           });
         })
@@ -878,7 +918,7 @@ export async function bootstrapLocalRuntimeSession(
   });
   const modelsManager = new StaticModelsManager({
     config: startup.config,
-    fallbackProvider: resolvedProvider,
+    fallbackProvider: profileProvider,
     metadata: {
       fetchImpl: globalThis.fetch.bind(globalThis),
       env,
@@ -899,7 +939,7 @@ export async function bootstrapLocalRuntimeSession(
     config: startup.config,
     workspaceRoot,
     model,
-    provider: resolvedProvider,
+    provider: profileProvider,
   });
   const sessionConfiguration = cli.allowDangerouslySkipPermissions
     ? ({
@@ -946,7 +986,7 @@ export async function bootstrapLocalRuntimeSession(
   const bootstrapServices: BootstrapSessionServicesHandle =
     buildBootstrapSessionServices({
       provider,
-      providerName: resolvedProvider,
+      providerName: profileProvider,
       ...(selectedApiKey
         ? { apiKey: selectedApiKey }
         : {}),
@@ -1018,7 +1058,7 @@ export async function bootstrapLocalRuntimeSession(
       sessionConfigured: (): BootstrapSessionConfiguredPayload => ({
         sessionId: conversationId,
         model,
-        modelProviderId: resolvedProvider,
+        modelProviderId: profileProvider,
         cwd: workspaceRoot,
         historyLogId: 0,
         historyEntryCount: initialState.history.length,
@@ -1078,7 +1118,7 @@ export async function bootstrapLocalRuntimeSession(
           originator: "agenc-cli",
           agencVersion: "0.2.0",
           model,
-          modelProvider: resolvedProvider,
+          modelProvider: profileProvider,
         });
         s.mountRolloutStore(rolloutStore);
         rolloutStoreForReturn = rolloutStore;
@@ -1253,7 +1293,7 @@ export async function bootstrapLocalRuntimeSession(
             payload: {
               sessionId: conversationId,
               model,
-              modelProviderId: resolvedProvider,
+              modelProviderId: profileProvider,
               cwd: workspaceRoot,
               historyLogId: 0,
               historyEntryCount: initialState.history.length,

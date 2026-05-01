@@ -30,12 +30,14 @@ export interface AgenCProviderConfig extends LLMProviderConfig {
   readonly subscriptionTier?: AuthSubscriptionTier;
   readonly providerFactory: AgenCConcreteProviderFactory;
   readonly providerOptions?: Pick<ProviderFactoryOptions, "extra">;
+  readonly nowMs?: () => number;
 }
 
 interface ResolvedAgenCDelegate {
   readonly provider: ConcreteProviderName;
   readonly model: string;
   readonly instance: LLMProvider;
+  readonly expiresAtMs?: number;
 }
 
 const CONCRETE_PROVIDER_NAMES = [
@@ -102,18 +104,35 @@ export class AgenCProvider implements LLMProvider {
     );
   }
 
-  private resolveDelegate(
+  private async resolveDelegate(
     options?: Pick<LLMChatOptions, "model">,
   ): Promise<ResolvedAgenCDelegate> {
-    const requestedModel = firstNonEmpty(options?.model, this.#config.model) ?? "agenc";
+    const requestedModel =
+      firstNonEmpty(options?.model, this.#config.model) ?? "agenc";
     const cacheKey = `${this.#config.subscriptionTier ?? ""}\0${requestedModel}`;
     const existing = this.#delegates.get(cacheKey);
-    if (existing !== undefined) return existing;
+    if (existing !== undefined) {
+      const delegate = await existing;
+      if (!this.isDelegateExpired(delegate)) return delegate;
+      if (this.#delegates.get(cacheKey) === existing) {
+        this.#delegates.delete(cacheKey);
+      }
+    }
 
-    const resolved = this.createDelegate(requestedModel).catch((error) => {
-      this.#delegates.delete(cacheKey);
-      throw error;
-    });
+    const resolved = this.createDelegate(requestedModel)
+      .then((delegate) => {
+        if (
+          this.isDelegateExpired(delegate) &&
+          this.#delegates.get(cacheKey) === resolved
+        ) {
+          this.#delegates.delete(cacheKey);
+        }
+        return delegate;
+      })
+      .catch((error) => {
+        this.#delegates.delete(cacheKey);
+        throw error;
+      });
     this.#delegates.set(cacheKey, resolved);
     return resolved;
   }
@@ -142,6 +161,7 @@ export class AgenCProvider implements LLMProvider {
     if (apiKey === undefined) {
       throw new Error("AgenCProvider managed key vending returned an empty key");
     }
+    const expiresAtMs = parseExpiresAtMs(key.expiresAt);
     return {
       provider,
       model,
@@ -156,7 +176,18 @@ export class AgenCProvider implements LLMProvider {
           ? { extra: this.#config.providerOptions.extra }
           : {}),
       }),
+      ...(expiresAtMs !== undefined ? { expiresAtMs } : {}),
     };
+  }
+
+  private isDelegateExpired(delegate: ResolvedAgenCDelegate): boolean {
+    return (
+      delegate.expiresAtMs !== undefined && delegate.expiresAtMs <= this.nowMs()
+    );
+  }
+
+  private nowMs(): number {
+    return this.#config.nowMs?.() ?? Date.now();
   }
 }
 
@@ -182,4 +213,10 @@ function firstNonEmpty(...values: Array<string | undefined>): string | undefined
     }
   }
   return undefined;
+}
+
+function parseExpiresAtMs(expiresAt: string | undefined): number | undefined {
+  if (expiresAt === undefined) return undefined;
+  const parsed = Date.parse(expiresAt);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }

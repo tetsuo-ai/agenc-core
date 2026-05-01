@@ -757,7 +757,16 @@ describe("bootstrapLocalRuntimeSession", () => {
       shutdown = boot.shutdown;
 
       expect(boot.resolvedProvider).toBe("agenc");
-      expect(boot.model).toBe("agenc");
+      expect(boot.model).toBe("grok-4-fast");
+      expect(boot.config.model).toBe("grok-4-fast");
+      expect(boot.modelInfo.slug).toBe("grok-4-fast");
+      expect(boot.ctx.modelInfo.slug).toBe("grok-4-fast");
+      expect(boot.initialState.sessionConfiguration.provider).toEqual({
+        slug: "grok",
+      });
+      expect(boot.initialState.sessionConfiguration.collaborationMode.model).toBe(
+        "grok-4-fast",
+      );
       expect(createProviderSpy).toHaveBeenCalledWith(
         "agenc",
         expect.objectContaining({
@@ -769,7 +778,10 @@ describe("bootstrapLocalRuntimeSession", () => {
           }),
         }),
       );
-      expect(calls).toEqual(["getSubscriptionTier:conv-agenc-provider"]);
+      expect(calls).toEqual([
+        "getSubscriptionTier:conv-agenc-provider",
+        "inferAgencModel:agenc:agenc:team",
+      ]);
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */
