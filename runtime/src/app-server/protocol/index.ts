@@ -50,6 +50,7 @@ export const AGENC_DAEMON_METHODS = [
   "tool.approve",
   "tool.deny",
   "permission.list",
+  "fs.fuzzy_search",
   "health.ping",
   "health.ready",
   "health.stats",
@@ -181,6 +182,13 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     params: "required",
     result: "object",
     description: "List effective permissions for an agent or session.",
+  },
+  "fs.fuzzy_search": {
+    method: "fs.fuzzy_search",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Search workspace files and directories with fuzzy matching.",
   },
   "health.ping": {
     method: "health.ping",
@@ -333,6 +341,12 @@ export interface PermissionListParams extends JsonObject {
   readonly sessionId?: string;
 }
 
+export interface FuzzyFileSearchParams extends JsonObject {
+  readonly query: string;
+  readonly roots: readonly string[];
+  readonly cancellationToken?: string | null;
+}
+
 export type EmptyParams = Record<string, never>;
 
 export interface AgenCDaemonRequestWithParams<
@@ -373,6 +387,7 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"tool.approve", ToolApproveParams>
   | AgenCDaemonRequestWithParams<"tool.deny", ToolDenyParams>
   | AgenCDaemonRequestWithParams<"permission.list", PermissionListParams>
+  | AgenCDaemonRequestWithParams<"fs.fuzzy_search", FuzzyFileSearchParams>
   | AgenCDaemonRequestWithoutParams<"health.ping">
   | AgenCDaemonRequestWithoutParams<"health.ready">
   | AgenCDaemonRequestWithoutParams<"health.stats">
@@ -492,6 +507,19 @@ export interface PermissionListResult extends JsonObject {
   readonly permissions: readonly PermissionGrant[];
 }
 
+export interface FuzzyFileSearchResult extends JsonObject {
+  readonly root: string;
+  readonly path: string;
+  readonly match_type: "file" | "directory";
+  readonly file_name: string;
+  readonly score: number;
+  readonly indices?: readonly number[];
+}
+
+export interface FuzzyFileSearchResponse extends JsonObject {
+  readonly files: readonly FuzzyFileSearchResult[];
+}
+
 export interface HealthPingResult extends JsonObject {
   readonly ok: true;
   readonly now: string;
@@ -563,6 +591,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "tool.approve": ToolDecisionResult;
   readonly "tool.deny": ToolDecisionResult;
   readonly "permission.list": PermissionListResult;
+  readonly "fs.fuzzy_search": FuzzyFileSearchResponse;
   readonly "health.ping": HealthPingResult;
   readonly "health.ready": HealthReadyResult;
   readonly "health.stats": HealthStatsResult;

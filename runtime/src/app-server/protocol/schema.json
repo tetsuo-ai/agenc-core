@@ -23,6 +23,7 @@
     "tool.approve",
     "tool.deny",
     "permission.list",
+    "fs.fuzzy_search",
     "health.ping",
     "health.ready",
     "health.stats",
@@ -386,6 +387,34 @@
         }
       }
     },
+    "FuzzyFileSearchParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "roots": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "cancellationToken": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": ["query", "roots"]
+    },
     "HealthPingParams": {
       "type": "object",
       "additionalProperties": false,
@@ -462,6 +491,9 @@
         },
         {
           "$ref": "#/definitions/PermissionListRequest"
+        },
+        {
+          "$ref": "#/definitions/FuzzyFileSearchRequest"
         },
         {
           "$ref": "#/definitions/HealthPingRequest"
@@ -764,6 +796,25 @@
         },
         "params": {
           "$ref": "#/definitions/PermissionListParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "FuzzyFileSearchRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "fs.fuzzy_search"
+        },
+        "params": {
+          "$ref": "#/definitions/FuzzyFileSearchParams"
         }
       },
       "required": ["jsonrpc", "id", "method", "params"]
