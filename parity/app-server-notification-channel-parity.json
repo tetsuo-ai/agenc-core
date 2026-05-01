@@ -50,11 +50,12 @@
         "background agent progress is emitted as typed event.* JSON-RPC notifications instead of opaque daemon.event wrappers",
         "agent message deltas map to event.message_chunk notifications",
         "tool starts and permission prompts map to event.tool_request and event.permission_request notifications",
-        "turn status changes map to event.agent_status notifications while unrecognized events remain available through event.session_event"
+        "non-abort turn status changes map to event.agent_status notifications while unrecognized events remain available through event.session_event"
       ],
       "edgeCases": [
         "permission request input remains attached for the TUI approval bridge",
-        "messageId, streamId, and acceptedAt metadata survive where the typed method supports them"
+        "messageId, streamId, and acceptedAt metadata survive where the typed method supports them",
+        "interrupted turns remain event.session_event turn_aborted events instead of being converted to turn_complete"
       ],
       "tests": [
         "runtime/src/app-server/background-agent-runner.contract.test.ts"

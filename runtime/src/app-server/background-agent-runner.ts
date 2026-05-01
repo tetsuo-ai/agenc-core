@@ -35,6 +35,7 @@ import type {
   AgenCDaemonSessionNotification,
   AgentStatus as DaemonAgentStatus,
   JsonObject,
+  JsonValue,
   MessageContent,
 } from "./protocol/index.js";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
@@ -600,6 +601,7 @@ function notificationFromDaemonEvent(
     typeof payload.callId === "string" &&
     typeof payload.toolName === "string"
   ) {
+    const input = toolRequestInputFromPayload(payload);
     return {
       jsonrpc: JSON_RPC_VERSION,
       method: "event.tool_request",
@@ -607,7 +609,7 @@ function notificationFromDaemonEvent(
         ...base,
         requestId: payload.callId,
         toolName: payload.toolName,
-        input: payload,
+        ...(input !== undefined ? { input } : {}),
       },
     };
   }
@@ -633,7 +635,6 @@ function notificationFromDaemonEvent(
   if (
     (event.type === "turn_started" ||
       event.type === "turn_complete" ||
-      event.type === "turn_aborted" ||
       event.type === "error") &&
     isJsonObject(payload)
   ) {
@@ -695,14 +696,43 @@ function agentStatusFromEventType(type: string): DaemonAgentStatus {
     case "error":
       return "error";
     case "turn_complete":
-    case "turn_aborted":
     default:
       return "idle";
   }
 }
 
+function toolRequestInputFromPayload(payload: JsonObject): JsonValue | undefined {
+  if (payload.input !== undefined && isJsonValue(payload.input)) {
+    return payload.input;
+  }
+  if (typeof payload.args !== "string") return undefined;
+  try {
+    const parsed: unknown = JSON.parse(payload.args);
+    return isJsonValue(parsed) ? parsed : payload.args;
+  } catch {
+    return payload.args;
+  }
+}
+
 function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isJsonValue(value: unknown): value is JsonValue {
+  if (value === null) return true;
+  switch (typeof value) {
+    case "string":
+    case "number":
+    case "boolean":
+      return true;
+    case "object":
+      if (Array.isArray(value)) return value.every(isJsonValue);
+      return Object.values(value).every(
+        (item) => item === undefined || isJsonValue(item),
+      );
+    default:
+      return false;
+  }
 }
 
 function stringArray(value: unknown): readonly string[] {
@@ -841,7 +871,7 @@ function eventFromProgress(
         payload: {
           callId: progress.callId,
           toolName: progress.toolName,
-          args: "{}",
+          args: progress.arguments ?? "{}",
         },
       };
     case "tool_result":

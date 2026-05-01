@@ -13,7 +13,14 @@ import {
 import { ABORT, APPROVED } from "../permissions/review-decision.js";
 import type { AgentStatus } from "../agents/status.js";
 import type { ApprovalResolver } from "../tools/orchestrator.js";
-import { JSON_RPC_VERSION } from "./protocol/index.js";
+import {
+  JSON_RPC_VERSION,
+  type JsonObject,
+} from "./protocol/index.js";
+import {
+  createDaemonTuiSession,
+  type AgenCDaemonTuiClient,
+} from "../tui/daemon-session.js";
 
 describe("AgenC delegate background-agent runner", () => {
   it("starts agent.create through the async delegate path and keeps it alive", async () => {
@@ -198,6 +205,7 @@ describe("AgenC delegate background-agent runner", () => {
           kind: "tool_call",
           callId: "tool_1",
           toolName: "FileRead",
+          arguments: JSON.stringify({ path: "src/index.ts" }),
         },
         thread,
       );
@@ -295,11 +303,7 @@ describe("AgenC delegate background-agent runner", () => {
           eventId: "tool_1",
           requestId: "tool_1",
           toolName: "FileRead",
-          input: {
-            callId: "tool_1",
-            toolName: "FileRead",
-            args: "{}",
-          },
+          input: { path: "src/index.ts" },
         },
       },
       {
@@ -358,6 +362,95 @@ describe("AgenC delegate background-agent runner", () => {
       },
     ]);
   });
+
+  it("feeds runner-emitted tool requests through the TUI adapter with real input", async () => {
+    const shutdown = vi.fn(async () => {});
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    const session = { conversationId: "parent-session", permissionModeRegistry };
+    const control = { shutdown: vi.fn(async () => {}) };
+    const thread = {
+      threadId: "agent_live",
+      agentPath: "/root/agent_live",
+      join: vi.fn(() => new Promise(() => {})),
+    } as unknown as AgentThread;
+    const delegateFn = vi.fn(async (opts: Parameters<AgenCDelegateFunction>[0]) => {
+      await opts.onProgress?.(
+        {
+          kind: "tool_call",
+          callId: "tool_1",
+          toolName: "FileRead",
+          arguments: JSON.stringify({ path: "src/index.ts" }),
+        },
+        thread,
+      );
+      return {
+        kind: "async_launched",
+        thread,
+      };
+    }) as unknown as AgenCDelegateFunction;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        shutdown,
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      delegateFn,
+      now: () => "2026-05-01T12:00:00.500Z",
+    });
+    let sessionListener: ((event: JsonObject) => void) | undefined;
+    const client: AgenCDaemonTuiClient = {
+      request: async () => ({}) as never,
+      subscribeToSessionEvents: (sessionId, listener) => {
+        expect(sessionId).toBe("session_1");
+        sessionListener = listener;
+        return () => {
+          sessionListener = undefined;
+        };
+      },
+    };
+    const tuiSession = createDaemonTuiSession({
+      baseSession: { conversationId: "session_1", services: {} },
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const received: JsonObject[] = [];
+    const unsubscribe = tuiSession.subscribeToEvents((event) => {
+      received.push(event as JsonObject);
+    });
+
+    await runner.startAgent({
+      objective: "compile the daemon",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("agent_live", {
+      sessionId: "session_1",
+      emit: (event) => {
+        sessionListener?.(event as JsonObject);
+      },
+    });
+    unsubscribe();
+
+    expect(received).toEqual([
+      {
+        id: "tool_1",
+        type: "tool_call_started",
+        payload: {
+          callId: "tool_1",
+          toolName: "FileRead",
+          args: JSON.stringify({ path: "src/index.ts" }),
+        },
+      },
+    ]);
+  });
+
   it("bridges background tool approvals through daemon session decisions", async () => {
     const shutdown = vi.fn(async () => {});
     const permissionModeRegistry = {
@@ -755,6 +848,101 @@ describe("AgenC delegate background-agent runner", () => {
       status: "running",
       lastActiveAt: "2026-05-01T12:00:01.000Z",
     });
+  });
+
+  it("preserves interrupted thread status as a turn_aborted session event", async () => {
+    const shutdown = vi.fn(async () => {});
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    const session = { conversationId: "parent-session", permissionModeRegistry };
+    const control = { shutdown: vi.fn(async () => {}) };
+    let currentStatus: AgentStatus = {
+      status: "running",
+      turnId: "turn-1",
+      startedAtMs: 1,
+    };
+    let statusListener: ((status: AgentStatus) => void) | undefined;
+    const thread = {
+      threadId: "agent_live",
+      agentPath: "/root/agent_live",
+      get currentStatus() {
+        return currentStatus;
+      },
+      onStatusChange: vi.fn((listener: (status: AgentStatus) => void) => {
+        statusListener = listener;
+        listener(currentStatus);
+        return vi.fn();
+      }),
+      join: vi.fn(() => new Promise(() => {})),
+    } as unknown as AgentThread;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        shutdown,
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      delegateFn: vi.fn(async () => ({
+        kind: "async_launched",
+        thread,
+      })) as unknown as AgenCDelegateFunction,
+      now: () => "2026-05-01T12:00:00.500Z",
+    });
+    const emitted: unknown[] = [];
+
+    await runner.startAgent({
+      objective: "compile the daemon",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("agent_live", {
+      sessionId: "session_1",
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+    currentStatus = {
+      status: "interrupted",
+      turnId: "turn-1",
+      endedAtMs: 2,
+      reason: "waiting for approval",
+    };
+    statusListener?.(currentStatus);
+
+    expect(emitted).toEqual([
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.agent_status",
+        params: {
+          sessionId: "session_1",
+          agentId: "agent_live",
+          eventId: "turn-1",
+          status: "running",
+          turnId: "turn-1",
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.session_event",
+        params: {
+          sessionId: "session_1",
+          agentId: "agent_live",
+          eventId: "turn-1",
+          event: {
+            id: "turn-1",
+            type: "turn_aborted",
+            payload: {
+              turnId: "turn-1",
+              reason: "waiting for approval",
+            },
+          },
+        },
+      },
+    ]);
   });
 
   it("shuts down the bootstrap when delegate rejects the background start", async () => {
