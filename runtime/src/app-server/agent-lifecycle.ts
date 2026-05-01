@@ -358,22 +358,41 @@ export class AgenCDaemonAgentManager {
           sessionIds: [...agent.sessionIds],
         }));
     });
+    const failures: Array<{ readonly agentId: string; readonly error: unknown }> = [];
     let stopped = 0;
     for (const target of targets) {
       const stopRunner = this.#runner?.stopAgent?.bind(this.#runner);
+      let stopFailed = false;
       if (stopRunner !== undefined) {
-        await stopRunner(target.agentId, reason);
+        try {
+          await stopRunner(target.agentId, reason);
+        } catch (error) {
+          stopFailed = true;
+          failures.push({ agentId: target.agentId, error });
+        }
       }
       const stoppedAt = this.#now();
       await this.#state.with((state) => {
         const agent = state.agents.get(target.agentId);
         if (agent === undefined) return;
-        agent.status = "stopped";
+        agent.status = stopFailed ? "error" : "stopped";
         agent.lastActiveAt = stoppedAt;
         agent.sessionIds = [];
       });
-      await this.#terminateAgentSessions(target.sessionIds, reason);
+      try {
+        await this.#terminateAgentSessions(target.sessionIds, reason);
+      } catch (error) {
+        failures.push({ agentId: target.agentId, error });
+      }
       stopped += 1;
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures.map((failure) => failure.error),
+        `AgenC daemon cleanup failed for ${failures.length} agent(s): ${failures
+          .map((failure) => failure.agentId)
+          .join(", ")}`,
+      );
     }
     return stopped;
   }
