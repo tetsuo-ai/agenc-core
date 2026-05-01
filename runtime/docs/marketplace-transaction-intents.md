@@ -43,6 +43,11 @@ reward caps, reward mints, task types, validation modes, public auto-settle
 artifact attempts, missing job-spec verification, private ZK completion, or
 mutated account metas before the signer is used.
 
+When `expectedAccountMetas` is supplied, the delegated public agent-kit policy
+uses strict account-meta matching by default. That means unexpected extra
+writable or signer accounts are rejected unless `strictAccountMetas: false` is
+set deliberately for a narrow preview-only case.
+
 For the reviewed-public canary, signer policies should include:
 
 - `allowedTaskTypes: ["Exclusive"]`

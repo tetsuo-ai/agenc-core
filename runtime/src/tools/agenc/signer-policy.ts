@@ -46,6 +46,12 @@ export interface MarketplaceSignerPolicy {
     readonly isSigner?: boolean;
     readonly isWritable?: boolean;
   }[];
+  /**
+   * When expectedAccountMetas is supplied, require the final intent account-meta
+   * name set to match exactly. Delegated to agenc-marketplace-agent-kit/policy
+   * and defaults to true there.
+   */
+  readonly strictAccountMetas?: boolean;
   /** Restrict task creation/completion to canary-safe task types, e.g. Exclusive. */
   readonly allowedTaskTypes?: readonly string[];
   /** Restrict validation modes, e.g. CreatorReview only for reviewed-public canary. */

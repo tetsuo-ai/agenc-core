@@ -312,6 +312,58 @@ describe("AgenC protocol tool factory", () => {
         code: "ACCOUNT_META_PUBKEY_MISMATCH",
       },
       {
+        name: "unexpected account meta",
+        policy: {
+          allowedTools: ["agenc.completeTask"],
+          expectedAccountMetas: [
+            {
+              name: "task",
+              pubkey: "Task111111111111111111111111111111111111111",
+              isWritable: true,
+            },
+          ],
+        },
+        intent: {
+          ...intent,
+          accountMetas: [
+            ...intent.accountMetas,
+            {
+              name: "unexpectedWritable",
+              pubkey: "Unexpected1111111111111111111111111111111111",
+              isSigner: false,
+              isWritable: true,
+            },
+          ],
+        },
+        code: "ACCOUNT_META_UNEXPECTED",
+      },
+      {
+        name: "unexpected signer account meta",
+        policy: {
+          allowedTools: ["agenc.completeTask"],
+          expectedAccountMetas: [
+            {
+              name: "task",
+              pubkey: "Task111111111111111111111111111111111111111",
+              isWritable: true,
+            },
+          ],
+        },
+        intent: {
+          ...intent,
+          accountMetas: [
+            ...intent.accountMetas,
+            {
+              name: "unexpectedSigner",
+              pubkey: "UnexpectedSigner111111111111111111111111111",
+              isSigner: true,
+              isWritable: false,
+            },
+          ],
+        },
+        code: "ACCOUNT_META_UNEXPECTED",
+      },
+      {
         name: "token reward denied",
         policy: {
           allowedTools: ["agenc.completeTask"],

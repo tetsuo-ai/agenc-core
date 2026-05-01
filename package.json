@@ -85,7 +85,7 @@
   "devDependencies": {
     "@coral-xyz/anchor": "^0.32.1",
     "@solana/web3.js": "^1.98.4",
-    "agenc-marketplace-agent-kit": "https://github.com/tetsuo-ai/agenc-marketplace-agent-kit/archive/421bda6417bfe2c68631e1ec7444c787931ee349.tar.gz",
+    "agenc-marketplace-agent-kit": "https://github.com/tetsuo-ai/agenc-marketplace-agent-kit/archive/9bdba655b06d31cb33d6fc7d9b62a611b1db2cb2.tar.gz",
     "bn.js": "^5.2.3",
     "typescript": "^5.0.0",
     "vitest": "^1.0.0"
