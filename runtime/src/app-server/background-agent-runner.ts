@@ -32,10 +32,12 @@ import { ABORT, DENIED, type ReviewDecision } from "../permissions/review-decisi
 import { isFinal } from "../agents/status.js";
 import type { AgentStatus as ThreadAgentStatus } from "../agents/status.js";
 import type {
+  AgenCDaemonSessionNotification,
   AgentStatus as DaemonAgentStatus,
   JsonObject,
   MessageContent,
 } from "./protocol/index.js";
+import { JSON_RPC_VERSION } from "./protocol/index.js";
 
 export interface AgenCBackgroundAgentStartParams {
   readonly objective: string;
@@ -563,20 +565,150 @@ export class AgenCDelegateBackgroundAgentRunner
       active.bufferedEvents.push(event);
       return;
     }
-    const envelope: JsonObject = {
-      type: "daemon.event",
-      sessionId: binding.sessionId,
-      ...(event.messageId !== undefined ? { messageId: event.messageId } : {}),
-      ...(event.streamId !== undefined ? { streamId: event.streamId } : {}),
-      ...(event.acceptedAt !== undefined ? { acceptedAt: event.acceptedAt } : {}),
-      msg: {
-        id: event.id,
-        type: event.type,
-        ...(event.payload !== undefined ? { payload: event.payload } : {}),
+    await binding.emit(
+      notificationFromDaemonEvent(binding.sessionId, active.thread.threadId, event),
+    );
+  }
+}
+
+function notificationFromDaemonEvent(
+  sessionId: string,
+  agentId: string,
+  event: BackgroundAgentDaemonEvent,
+): AgenCDaemonSessionNotification {
+  const base = eventBaseParams(sessionId, agentId, event);
+  const payload = event.payload;
+  if (
+    event.type === "agent_message_delta" &&
+    isJsonObject(payload) &&
+    typeof payload.delta === "string"
+  ) {
+    return {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.message_chunk",
+      params: {
+        ...base,
+        ...(event.messageId !== undefined ? { messageId: event.messageId } : {}),
+        ...(event.streamId !== undefined ? { streamId: event.streamId } : {}),
+        delta: payload.delta,
       },
     };
-    await binding.emit(envelope);
   }
+  if (
+    event.type === "tool_call_started" &&
+    isJsonObject(payload) &&
+    typeof payload.callId === "string" &&
+    typeof payload.toolName === "string"
+  ) {
+    return {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.tool_request",
+      params: {
+        ...base,
+        requestId: payload.callId,
+        toolName: payload.toolName,
+        input: payload,
+      },
+    };
+  }
+  if (
+    event.type === "request_permissions" &&
+    isJsonObject(payload) &&
+    typeof payload.callId === "string"
+  ) {
+    return {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.permission_request",
+      params: {
+        ...base,
+        requestId: payload.callId,
+        ...(typeof payload.toolName === "string" ? { toolName: payload.toolName } : {}),
+        ...(typeof payload.turnId === "string" ? { turnId: payload.turnId } : {}),
+        permissions: stringArray(payload.permissions),
+        ...(payload.input !== undefined ? { input: payload.input } : {}),
+        ...(typeof payload.reason === "string" ? { reason: payload.reason } : {}),
+      },
+    };
+  }
+  if (
+    (event.type === "turn_started" ||
+      event.type === "turn_complete" ||
+      event.type === "turn_aborted" ||
+      event.type === "error") &&
+    isJsonObject(payload)
+  ) {
+    return {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.agent_status",
+      params: {
+        ...base,
+        agentId: base.agentId ?? sessionId,
+        status: agentStatusFromEventType(event.type),
+        ...(typeof payload.turnId === "string" ? { turnId: payload.turnId } : {}),
+        ...(typeof payload.message === "string"
+          ? { message: payload.message }
+          : typeof payload.lastAgentMessage === "string"
+            ? { message: payload.lastAgentMessage }
+            : {}),
+      },
+    };
+  }
+  return {
+    jsonrpc: JSON_RPC_VERSION,
+    method: "event.session_event",
+    params: {
+      ...base,
+      event: {
+        id: event.id,
+        type: event.type,
+        ...(event.messageId !== undefined ? { messageId: event.messageId } : {}),
+        ...(event.streamId !== undefined ? { streamId: event.streamId } : {}),
+        ...(event.acceptedAt !== undefined ? { acceptedAt: event.acceptedAt } : {}),
+        ...(payload !== undefined ? { payload } : {}),
+      },
+    },
+  };
+}
+
+function eventBaseParams(
+  sessionId: string,
+  agentId: string,
+  event: BackgroundAgentDaemonEvent,
+): {
+  readonly sessionId: string;
+  readonly eventId: string;
+  readonly agentId: string;
+  readonly acceptedAt?: string;
+} {
+  return {
+    sessionId,
+    eventId: event.id,
+    agentId,
+    ...(event.acceptedAt !== undefined ? { acceptedAt: event.acceptedAt } : {}),
+  };
+}
+
+function agentStatusFromEventType(type: string): DaemonAgentStatus {
+  switch (type) {
+    case "turn_started":
+      return "running";
+    case "error":
+      return "error";
+    case "turn_complete":
+    case "turn_aborted":
+    default:
+      return "idle";
+  }
+}
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringArray(value: unknown): readonly string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
 }
 
 function hasCurrentStatus(

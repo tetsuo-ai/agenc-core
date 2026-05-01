@@ -221,6 +221,23 @@ describe("AgenC daemon client multiplexer", () => {
     expect(received).toEqual([event]);
   });
 
+  it("rejects typed notifications whose embedded session does not match the route", async () => {
+    const { sessionManager, multiplexer } = createHarness();
+
+    await sessionManager.createSession({ agentId: "agent_1" });
+    await expect(
+      multiplexer.broadcastSessionNotification("session_1", {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.session_event",
+        params: {
+          sessionId: "session_2",
+          eventId: "mismatched",
+          event: { type: "session.delta" },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "SESSION_NOTIFICATION_MISMATCH" });
+  });
+
   it("rejects unknown and duplicate clients before mutating session routes", async () => {
     const { sessionManager, multiplexer } = createHarness();
     await sessionManager.createSession({ agentId: "agent_1" });

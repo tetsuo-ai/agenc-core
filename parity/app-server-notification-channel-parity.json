@@ -12,12 +12,16 @@
   "targetFiles": [
     "runtime/src/app-server/protocol/index.ts",
     "runtime/src/app-server/protocol/schema.json",
-    "runtime/src/app-server/client-multiplexer.ts"
+    "runtime/src/app-server/client-multiplexer.ts",
+    "runtime/src/app-server/background-agent-runner.ts",
+    "runtime/src/tui/daemon-session.ts"
   ],
   "testFiles": [
     "runtime/src/app-server/protocol.contract.test.ts",
     "runtime/src/app-server/client-multiplexer.contract.test.ts",
-    "runtime/src/app-server/disconnect-resilience.contract.test.ts"
+    "runtime/src/app-server/disconnect-resilience.contract.test.ts",
+    "runtime/src/app-server/background-agent-runner.contract.test.ts",
+    "runtime/src/tui/daemon-session.contract.test.ts"
   ],
   "rows": [
     {
@@ -39,17 +43,38 @@
       "status": "required"
     },
     {
+      "id": "background-agent-event-push",
+      "source": "app-server/src/outgoing_message.rs",
+      "target": "runtime/src/app-server/background-agent-runner.ts",
+      "requiredBehaviors": [
+        "background agent progress is emitted as typed event.* JSON-RPC notifications instead of opaque daemon.event wrappers",
+        "agent message deltas map to event.message_chunk notifications",
+        "tool starts and permission prompts map to event.tool_request and event.permission_request notifications",
+        "turn status changes map to event.agent_status notifications while unrecognized events remain available through event.session_event"
+      ],
+      "edgeCases": [
+        "permission request input remains attached for the TUI approval bridge",
+        "messageId, streamId, and acceptedAt metadata survive where the typed method supports them"
+      ],
+      "tests": [
+        "runtime/src/app-server/background-agent-runner.contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
       "id": "session-subscription-fanout",
       "source": "app-server/src/outgoing_message.rs",
       "target": "runtime/src/app-server/client-multiplexer.ts",
       "requiredBehaviors": [
         "typed session notifications are delivered through the same session route as existing daemon session events",
         "multiple clients attached to one session receive independent ordered delivery",
-        "delivery failure for one client does not prevent delivery to other clients"
+        "delivery failure for one client does not prevent delivery to other clients",
+        "typed notifications are rejected if params.sessionId does not match the session route"
       ],
       "edgeCases": [
         "unknown clients cannot attach to session routes",
-        "duplicate client ids are rejected before mutating session state"
+        "duplicate client ids are rejected before mutating session state",
+        "mismatched typed notifications fail before they are buffered or delivered"
       ],
       "tests": [
         "runtime/src/app-server/client-multiplexer.contract.test.ts"
@@ -72,6 +97,24 @@
       "tests": [
         "runtime/src/app-server/disconnect-resilience.contract.test.ts",
         "runtime/src/app-server/client-multiplexer.contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "tui-typed-event-adapter",
+      "source": "app-server/src/outgoing_message.rs",
+      "target": "runtime/src/tui/daemon-session.ts",
+      "requiredBehaviors": [
+        "typed event.* notifications are converted into the existing TUI transcript event shapes",
+        "typed permission requests still flow through the TUI approval resolver",
+        "event.session_event preserves raw fallback events for compatibility"
+      ],
+      "edgeCases": [
+        "event.agent_status running produces a turn start transcript event",
+        "event.agent_status idle preserves the final message as lastAgentMessage"
+      ],
+      "tests": [
+        "runtime/src/tui/daemon-session.contract.test.ts"
       ],
       "status": "required"
     }

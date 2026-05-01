@@ -13,6 +13,7 @@ import {
 import { ABORT, APPROVED } from "../permissions/review-decision.js";
 import type { AgentStatus } from "../agents/status.js";
 import type { ApprovalResolver } from "../tools/orchestrator.js";
+import { JSON_RPC_VERSION } from "./protocol/index.js";
 
 describe("AgenC delegate background-agent runner", () => {
   it("starts agent.create through the async delegate path and keeps it alive", async () => {
@@ -266,30 +267,35 @@ describe("AgenC delegate background-agent runner", () => {
     expect(control.sendInput).toHaveBeenCalledWith("agent_live", "continue");
     expect(emitted).toEqual([
       {
-        type: "daemon.event",
-        sessionId: "session_1",
-        msg: {
-          id: expect.any(String),
-          type: "agent_message_delta",
-          payload: { delta: "he" },
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.message_chunk",
+        params: {
+          sessionId: "session_1",
+          agentId: "agent_live",
+          eventId: expect.any(String),
+          delta: "he",
         },
       },
       {
-        type: "daemon.event",
-        sessionId: "session_1",
-        msg: {
-          id: expect.any(String),
-          type: "agent_message_delta",
-          payload: { delta: "llo" },
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.message_chunk",
+        params: {
+          sessionId: "session_1",
+          agentId: "agent_live",
+          eventId: expect.any(String),
+          delta: "llo",
         },
       },
       {
-        type: "daemon.event",
-        sessionId: "session_1",
-        msg: {
-          id: "tool_1",
-          type: "tool_call_started",
-          payload: {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.tool_request",
+        params: {
+          sessionId: "session_1",
+          agentId: "agent_live",
+          eventId: "tool_1",
+          requestId: "tool_1",
+          toolName: "FileRead",
+          input: {
             callId: "tool_1",
             toolName: "FileRead",
             args: "{}",
@@ -297,52 +303,61 @@ describe("AgenC delegate background-agent runner", () => {
         },
       },
       {
-        type: "daemon.event",
-        sessionId: "session_1",
-        msg: {
-          id: "tool-result-tool_1",
-          type: "tool_call_completed",
-          payload: {
-            callId: "tool_1",
-            result: "file text",
-            isError: false,
-            metadata: {
-              toolName: "FileRead",
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.session_event",
+        params: {
+          sessionId: "session_1",
+          agentId: "agent_live",
+          eventId: "tool-result-tool_1",
+          event: {
+            id: "tool-result-tool_1",
+            type: "tool_call_completed",
+            payload: {
+              callId: "tool_1",
+              result: "file text",
+              isError: false,
+              metadata: {
+                toolName: "FileRead",
+              },
             },
           },
         },
       },
       {
-        type: "daemon.event",
-        sessionId: "session_1",
-        msg: {
-          id: expect.any(String),
-          type: "turn_complete",
-          payload: {
-            turnId: "turn_1",
-            lastAgentMessage: "hello",
-            completedAt: 100,
-          },
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.agent_status",
+        params: {
+          sessionId: "session_1",
+          agentId: "agent_live",
+          eventId: expect.any(String),
+          status: "idle",
+          turnId: "turn_1",
+          message: "hello",
         },
       },
       {
-        type: "daemon.event",
-        sessionId: "session_1",
-        messageId: "message_1",
-        streamId: "stream_1",
-        acceptedAt: "2026-05-01T12:00:01.000Z",
-        msg: {
-          id: "message_1",
-          type: "user_message",
-          payload: {
-            message: "continue",
-            displayText: "continue",
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.session_event",
+        params: {
+          sessionId: "session_1",
+          agentId: "agent_live",
+          eventId: "message_1",
+          acceptedAt: "2026-05-01T12:00:01.000Z",
+          event: {
+            id: "message_1",
+            type: "user_message",
+            messageId: "message_1",
+            streamId: "stream_1",
+            acceptedAt: "2026-05-01T12:00:01.000Z",
+            payload: {
+              message: "continue",
+              displayText: "continue",
+            },
           },
         },
       },
     ]);
   });
-
   it("bridges background tool approvals through daemon session decisions", async () => {
     const shutdown = vi.fn(async () => {});
     const permissionModeRegistry = {
@@ -410,18 +425,17 @@ describe("AgenC delegate background-agent runner", () => {
 
     expect(emitted).toEqual([
       {
-        type: "daemon.event",
-        sessionId: "session_1",
-        msg: {
-          id: "call_1",
-          type: "request_permissions",
-          payload: {
-            callId: "call_1",
-            toolName: "Bash",
-            turnId: "turn_1",
-            permissions: ["tool.use"],
-            input: { command: "pwd" },
-          },
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.permission_request",
+        params: {
+          sessionId: "session_1",
+          agentId: "agent_live",
+          eventId: "call_1",
+          requestId: "call_1",
+          toolName: "Bash",
+          turnId: "turn_1",
+          permissions: ["tool.use"],
+          input: { command: "pwd" },
         },
       },
     ]);
