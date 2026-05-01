@@ -23,6 +23,9 @@ const expectedMethods = [
   "agent.stop",
   "session.create",
   "session.list",
+  "session.attach",
+  "session.detach",
+  "session.terminate",
   "message.send",
   "message.stream",
   "tool.approve",
@@ -113,12 +116,30 @@ describe("AgenC daemon protocol surface", () => {
       {
         jsonrpc: JSON_RPC_VERSION,
         id: 7,
+        method: "session.attach",
+        params: { sessionId: "session_1", clientId: "tui_1" },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: 8,
+        method: "session.detach",
+        params: { sessionId: "session_1", clientId: "tui_1" },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: 9,
+        method: "session.terminate",
+        params: { sessionId: "session_1", reason: "user requested stop" },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: 10,
         method: "message.send",
         params: { sessionId: "session_1", content: "Run tests" },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 8,
+        id: 11,
         method: "message.stream",
         params: {
           sessionId: "session_1",
@@ -128,13 +149,13 @@ describe("AgenC daemon protocol surface", () => {
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 9,
+        id: 12,
         method: "tool.approve",
         params: { sessionId: "session_1", requestId: "approval_1" },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 10,
+        id: 13,
         method: "tool.deny",
         params: {
           sessionId: "session_1",
@@ -144,23 +165,23 @@ describe("AgenC daemon protocol surface", () => {
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 11,
+        id: 14,
         method: "permission.list",
         params: { sessionId: "session_1" },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 12,
+        id: 15,
         method: "auth.login",
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 13,
+        id: 16,
         method: "auth.whoami",
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 14,
+        id: 17,
         method: "auth.logout",
       },
     ];
@@ -188,6 +209,15 @@ describe("AgenC daemon protocol surface", () => {
         id: "not-owned",
         method: "account/login/start",
         params: {},
+      }),
+    ).toBe(false);
+
+    expect(
+      validate({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "missing-detach-target",
+        method: "session.detach",
+        params: { sessionId: "session_1" },
       }),
     ).toBe(false);
 

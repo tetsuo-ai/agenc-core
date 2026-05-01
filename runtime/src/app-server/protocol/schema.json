@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://schema.agenc.dev/app-server/protocol.schema.json",
+  "$id": "urn:agenc:app-server:protocol",
   "title": "AgenC Daemon JSON-RPC Protocol",
   "description": "Initial AgenC daemon JSON-RPC method surface.",
   "x-agenc-methods": [
@@ -10,6 +10,9 @@
     "agent.stop",
     "session.create",
     "session.list",
+    "session.attach",
+    "session.detach",
+    "session.terminate",
     "message.send",
     "message.stream",
     "tool.approve",
@@ -184,6 +187,62 @@
         }
       }
     },
+    "SessionAttachParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clientId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["sessionId"]
+    },
+    "SessionDetachParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attachmentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clientId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["sessionId"],
+      "anyOf": [
+        {
+          "required": ["attachmentId"]
+        },
+        {
+          "required": ["clientId"]
+        }
+      ]
+    },
+    "SessionTerminateParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": ["sessionId"]
+    },
     "MessageSendParams": {
       "type": "object",
       "additionalProperties": false,
@@ -315,6 +374,15 @@
         },
         {
           "$ref": "#/definitions/SessionListRequest"
+        },
+        {
+          "$ref": "#/definitions/SessionAttachRequest"
+        },
+        {
+          "$ref": "#/definitions/SessionDetachRequest"
+        },
+        {
+          "$ref": "#/definitions/SessionTerminateRequest"
         },
         {
           "$ref": "#/definitions/MessageSendRequest"
@@ -452,6 +520,63 @@
         },
         "params": {
           "$ref": "#/definitions/SessionListParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "SessionAttachRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.attach"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionAttachParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "SessionDetachRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.detach"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionDetachParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "SessionTerminateRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.terminate"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionTerminateParams"
         }
       },
       "required": ["jsonrpc", "id", "method", "params"]
