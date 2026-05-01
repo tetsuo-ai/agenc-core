@@ -1,5 +1,6 @@
 export * from "./auth.js";
 export * from "./client-multiplexer.js";
+export * from "./daemon-autostart.js";
 export * from "./daemon-cli.js";
 export * from "./health.js";
 export * from "./protocol/index.js";

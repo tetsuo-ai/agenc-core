@@ -281,7 +281,7 @@ export async function removeAgenCDaemonPid(
   await rm(pidPath, { force: true });
 }
 
-function createNodeDaemonCliHost(): AgenCDaemonCliHost {
+export function createNodeDaemonCliHost(): AgenCDaemonCliHost {
   const entrypointPath = process.argv[1] ?? "";
   return {
     env: process.env,
