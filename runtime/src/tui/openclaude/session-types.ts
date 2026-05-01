@@ -16,6 +16,7 @@ export interface PermissionModeRegistryLike {
 }
 
 export interface OpenClaudeBridgeSession {
+  readonly conversationId: string;
   readonly services: {
     readonly permissionModeRegistry: PermissionModeRegistryLike;
     approvalResolver?: ApprovalResolver;

@@ -114,7 +114,20 @@ function assertSourceSnapshot() {
       "src/hooks/usePromptsFromAgenCInChrome.tsx",
     ],
   ]);
-  const expected = sourceFiles.map((file) => substitutions.get(file) ?? file).sort();
+  // AgenC-only additions to the copied upstream tree. Each entry must
+  // record why upstream's published source omits the file and why AgenC
+  // cannot. Adding a new entry here is the explicit acknowledgement that
+  // the inventory has diverged on purpose.
+  const agencAdditions = new Map([
+    [
+      "src/components/tasks/MonitorMcpDetailDialog.tsx",
+      "Upstream BackgroundTasksDialog.tsx evaluates require('./MonitorMcpDetailDialog.js') under feature('MONITOR_TOOL'); upstream's published source ships the require but not the module. AgenC routes monitoring through LocalShellTask, so this file is a no-op placeholder that exposes the MonitorMcpDetailDialog name to satisfy the feature-gated require. See commit 1b55a077.",
+    ],
+  ]);
+  const expected = sourceFiles
+    .map((file) => substitutions.get(file) ?? file)
+    .concat([...agencAdditions.keys()])
+    .sort();
   const actualFiles = normalizedCopied.sort();
   const missing = expected.filter((file) => !actualFiles.includes(file));
   const extra = actualFiles.filter((file) => !expected.includes(file));
@@ -130,15 +143,24 @@ function assertOldTuiRemoved() {
     "main.tsx",
     "openclaude/App.tsx",
     "openclaude/message-adapter.ts",
-    "openclaude/message-adapter.test.ts",
     "openclaude/permission-bridge.tsx",
     "openclaude/session-types.ts",
     "openclaude/tool-stubs.tsx",
     "openclaude/use-session-transcript.ts",
+    "openclaude/use-tool-jsx.ts",
   ]);
+  // Test files under runtime/src/tui/openclaude/ are co-located with the
+  // live wiring on purpose (parity, contract, and adapter tests). Accept
+  // any *.test.ts / *.test.tsx in that directory; the assertion below
+  // still fails closed on old TUI directories like composer/, transcript/,
+  // ink/, etc.
+  const isAllowedTest = (file) =>
+    /^openclaude\/[^/]+\.test\.tsx?$/.test(file);
   const liveFiles = walk(liveTuiRoot);
   for (const file of liveFiles) {
-    if (!allowed.has(file)) fail(`unexpected live TUI file remains: ${file}`);
+    if (allowed.has(file)) continue;
+    if (isAllowedTest(file)) continue;
+    fail(`unexpected live TUI file remains: ${file}`);
   }
   for (const dir of [
     "composer",
