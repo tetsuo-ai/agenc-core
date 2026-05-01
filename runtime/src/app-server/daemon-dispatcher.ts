@@ -21,6 +21,11 @@ import {
   type AgenCCommandExec,
 } from "./command-exec.js";
 import {
+  createAgenCDaemonAuthHandlers,
+  type AgenCDaemonAuthHandlers,
+} from "./auth.js";
+import type { AuthBackend } from "../auth/backend.js";
+import {
   AGENC_DAEMON_PROTOCOL_VERSION,
   isAgenCDaemonMethod,
   JSON_RPC_VERSION,
@@ -70,6 +75,7 @@ export interface AgenCDaemonDispatcherOptions {
   readonly createMessageId?: () => string;
   readonly fuzzyFileSearch?: AgenCFuzzyFileSearch;
   readonly commandExec?: AgenCCommandExec;
+  readonly authBackend?: AuthBackend;
   readonly now?: () => string;
 }
 
@@ -100,6 +106,7 @@ export class AgenCDaemonJsonRpcDispatcher {
   readonly #createMessageId: () => string;
   readonly #fuzzyFileSearch: AgenCFuzzyFileSearch;
   readonly #commandExec: AgenCCommandExec;
+  readonly #authHandlers: AgenCDaemonAuthHandlers | undefined;
   readonly #now: () => string;
 
   constructor(options: AgenCDaemonDispatcherOptions) {
@@ -111,6 +118,10 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#fuzzyFileSearch =
       options.fuzzyFileSearch ?? new AgenCFuzzyFileSearchService();
     this.#commandExec = options.commandExec ?? new AgenCCommandExecService();
+    this.#authHandlers =
+      options.authBackend !== undefined
+        ? createAgenCDaemonAuthHandlers(options.authBackend)
+        : undefined;
     this.#now = options.now ?? (() => new Date().toISOString());
   }
 
@@ -303,6 +314,10 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.cancelTool(validateToolCancelParams(params)),
         );
+      case "auth.login":
+      case "auth.whoami":
+      case "auth.logout":
+        return this.#dispatchAuthMethod(id, method);
       default:
         return errorResponse(
           id,
@@ -310,6 +325,21 @@ export class AgenCDaemonJsonRpcDispatcher {
           `daemon method is not implemented yet: ${method}`,
       );
     }
+  }
+
+  async #dispatchAuthMethod(
+    id: RequestId,
+    method: "auth.login" | "auth.whoami" | "auth.logout",
+  ): Promise<AgenCDaemonResponse> {
+    if (this.#authHandlers === undefined) {
+      return errorResponse(
+        id,
+        -32000,
+        "daemon auth backend is not configured",
+        { code: "AUTH_BACKEND_NOT_CONFIGURED" },
+      );
+    }
+    return successResponse(id, await this.#authHandlers[method]());
   }
 
   async #attachAgent(

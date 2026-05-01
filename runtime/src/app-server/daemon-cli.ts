@@ -31,6 +31,8 @@ import {
   summarizeAgenCShutdown,
   type AgenCSignalProcess,
 } from "../lifecycle/index.js";
+import { createAuthBackend } from "../auth/index.js";
+import { loadConfig } from "../config/index.js";
 
 export const AGENC_DAEMON_PID_FILENAME = "daemon.pid";
 export const AGENC_DAEMON_SOCKET_FILENAME = "daemon.sock";
@@ -284,11 +286,20 @@ async function runAgenCDaemonForeground(
   } = {},
 ): Promise<number> {
   const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+  const daemonHome = resolveAgenCDaemonHome(host.env, host.userHome);
   const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
   const snapshotPath = resolveAgenCDaemonSnapshotPath(host.env, host.userHome);
   const daemonCookie = await ensureAgenCDaemonCookie(
     resolveAgenCDaemonCookiePath(host.env, host.userHome),
   );
+  const loadedConfig = await loadConfig({
+    home: daemonHome,
+    onWarn: (message) => io.stderr.write(`${message}\n`),
+  });
+  const authBackend = createAuthBackend(loadedConfig.config, {
+    agencHome: daemonHome,
+    env: host.env,
+  });
   const sessionManager = new AgenCDaemonSessionManager();
   const clientMultiplexer = new AgenCDaemonClientMultiplexer({
     sessionManager,
@@ -313,6 +324,7 @@ async function runAgenCDaemonForeground(
     agentManager,
     clientMultiplexer,
     commandExec,
+    authBackend,
     initializeAuthenticator: (params) => params.authCookie === daemonCookie,
   });
   const connections = new Map<number, AgenCDaemonJsonRpcConnection>();

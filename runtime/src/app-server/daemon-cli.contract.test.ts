@@ -5,6 +5,9 @@ import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
 import type { AgenCShutdownSignal } from "../lifecycle/index.js";
 import {
+  createAgenCJsonLineDaemonRequestClient,
+} from "./agent-cli.js";
+import {
   defaultAgenCDaemonPidPath,
   ensureAgenCDaemonCookie,
   parseAgenCDaemonCliArgs,
@@ -260,6 +263,48 @@ describe("AgenC daemon CLI", () => {
     expect(io.stderrText()).toContain(
       "AgenC daemon received SIGHUP; treating terminal loss as shutdown",
     );
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("foreground daemon instantiates AuthBackend for auth requests", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
+    const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+
+    const authCookie = (await readFile(cookiePath, "utf8")).trim();
+    const client = createAgenCJsonLineDaemonRequestClient({
+      socketPath,
+      authCookie,
+      timeoutMs: 1000,
+    });
+    await expect(client.request("auth.whoami")).resolves.toEqual({
+      authenticated: false,
+    });
+    await expect(client.request("auth.login")).resolves.toMatchObject({
+      authenticated: true,
+      provider: "local",
+    });
+    await expect(readFile(join(agencHome, "auth.json"), "utf8")).resolves.toContain(
+      '"token"',
+    );
+    await expect(client.request("auth.whoami")).resolves.toMatchObject({
+      authenticated: true,
+      provider: "local",
+    });
+
+    signalProcess.emit("SIGTERM");
+    await expect(running).resolves.toBe(0);
 
     await rm(agencHome, { recursive: true, force: true });
   });
