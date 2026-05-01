@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# agenc-core pre-commit hook.
+#
+# Currently runs the _deps/ real-vs-stub audit on staged files only.
+# Add additional fast checks here as they are written.
+#
+# Skip via: git commit --no-verify (only when you really mean it).
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+# Only run if any staged file is under runtime/src/. Keep the hook fast for
+# changes that obviously don't touch the runtime tree.
+STAGED_RUNTIME=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^runtime/src/.*\.(ts|tsx|mts|cts)$' || true)
+if [ -z "$STAGED_RUNTIME" ]; then
+  exit 0
+fi
+
+# _deps/ real-vs-stub audit
+node runtime/scripts/check-deps-stubs.mjs --staged
