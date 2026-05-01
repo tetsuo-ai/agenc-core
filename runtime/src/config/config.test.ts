@@ -15,6 +15,7 @@ import {
   InvalidPermissionsConfigError,
   InvalidStatusLineConfigError,
   UnknownModelError,
+  isValidPermissionDefaultMode,
   isValidPermissionMode,
   validatePermissionsConfig,
   validateHooksConfig,
@@ -64,6 +65,7 @@ describe("schema: defaultConfig", () => {
     expect(cfg.agent_max_threads).toBe(4);
     expect(cfg.agent_max_depth).toBe(1);
     expect(cfg.auth?.backend).toBe("local");
+    expect(cfg.permissions?.default_mode).toBe("on-request");
     expect(cfg.editorMode).toBe("default");
     expect(cfg.voiceInput?.enabled).toBe(false);
     expect(cfg.tuiLayout?.mode).toBe("single");
@@ -207,6 +209,15 @@ describe("schema: normalizeRawConfig", () => {
     expect(out.sandbox).toEqual({ mode: "off" });
     expect(out._unknown).toBeUndefined();
     expect(KNOWN_CONFIG_KEYS.includes("sandbox")).toBe(true);
+  });
+
+  test("preserves permissions.default_mode config on the typed path", () => {
+    const out = normalizeRawConfig({
+      permissions: { default_mode: "never" },
+    });
+    expect(out.permissions).toEqual({ default_mode: "never" });
+    expect(out._unknown).toBeUndefined();
+    expect(KNOWN_CONFIG_KEYS.includes("permissions")).toBe(true);
   });
 });
 
@@ -408,6 +419,7 @@ describe("schema: permissions block (T11)", () => {
       deny: ["Bash(rm *)"],
       ask: ["Edit(*)"],
       additionalDirectories: ["/tmp/sandbox"],
+      default_mode: "on-request",
       defaultMode: "plan",
     });
     expect(out).toBeDefined();
@@ -415,6 +427,7 @@ describe("schema: permissions block (T11)", () => {
     expect(out?.deny).toEqual(["Bash(rm *)"]);
     expect(out?.ask).toEqual(["Edit(*)"]);
     expect(out?.additionalDirectories).toEqual(["/tmp/sandbox"]);
+    expect(out?.default_mode).toBe("on-request");
     expect(out?.defaultMode).toBe("plan");
     expect(Object.isFrozen(out)).toBe(true);
   });
@@ -431,6 +444,12 @@ describe("schema: permissions block (T11)", () => {
   test("validatePermissionsConfig rejects an invalid defaultMode", () => {
     expect(() =>
       validatePermissionsConfig({ defaultMode: "nonsense" }),
+    ).toThrow(InvalidPermissionsConfigError);
+  });
+
+  test("validatePermissionsConfig rejects an invalid default_mode", () => {
+    expect(() =>
+      validatePermissionsConfig({ default_mode: "nonsense" }),
     ).toThrow(InvalidPermissionsConfigError);
   });
 
@@ -461,6 +480,14 @@ describe("schema: permissions block (T11)", () => {
     expect(isValidPermissionMode("nonsense")).toBe(false);
     expect(isValidPermissionMode(null)).toBe(false);
     expect(isValidPermissionMode(42)).toBe(false);
+  });
+
+  test("isValidPermissionDefaultMode matches approval policy literals", () => {
+    for (const m of ["untrusted", "on-failure", "on-request", "never"]) {
+      expect(isValidPermissionDefaultMode(m)).toBe(true);
+    }
+    expect(isValidPermissionDefaultMode("plan")).toBe(false);
+    expect(isValidPermissionDefaultMode("on_request")).toBe(false);
   });
 });
 
@@ -826,6 +853,20 @@ mode = "read-only"
     expect(out.exists).toBe(true);
     expect(out.config.sandbox?.mode).toBe("read-only");
     expect(out.config._unknown?.sandbox).toBeUndefined();
+  });
+
+  test("permissions.default_mode TOML overrides the on-request default", async () => {
+    writeFileSync(
+      join(dir, "config.toml"),
+      `
+[permissions]
+default_mode = "never"
+      `,
+    );
+    const out = await loadConfig({ home: dir });
+    expect(out.exists).toBe(true);
+    expect(out.config.permissions?.default_mode).toBe("never");
+    expect(out.config._unknown?.permissions).toBeUndefined();
   });
 
   test("unknown keys preserved in _unknown forward-compat table", async () => {
