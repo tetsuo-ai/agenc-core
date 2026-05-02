@@ -62,7 +62,7 @@ const program = createProgram(provider);
 | `llm/` | `LLMTaskExecutor` | Bridge LLM providers to task execution | `LLMTaskExecutorConfig` |
 | `llm/providers/grok/` | `GrokProvider` | xAI Grok adapter (via `openai` SDK) | `GrokProviderConfig` |
 | `llm/anthropic/` | `AnthropicProvider` | Anthropic adapter | `AnthropicProviderConfig` |
-| `llm/ollama/` | `OllamaProvider` | Ollama local adapter | `OllamaProviderConfig` |
+| `llm/providers/ollama/` | `OllamaProvider` | Ollama local adapter | `OllamaProviderConfig` |
 | `llm/openai-compat/` | `OpenAICompatProvider` | OpenAI-compatible local adapter (LM Studio, llama.cpp, vLLM) | `OpenAICompatProviderConfig` |
 | `tools/` | `ToolRegistry` | MCP-compatible tool management | `ToolRegistryConfig` |
 | `memory/` | `InMemoryBackend` | Zero-dep memory storage | `InMemoryBackendConfig` |

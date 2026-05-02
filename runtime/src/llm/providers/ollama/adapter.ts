@@ -19,21 +19,21 @@ import type {
   LLMUsage,
   LLMTool,
   StreamProgressCallback,
-} from "../types.js";
-import { validateToolCall } from "../types.js";
+} from "../../types.js";
+import { validateToolCall } from "../../types.js";
 import type { OllamaProviderConfig } from "./types.js";
-import { LLMProviderError, mapLLMError } from "../errors.js";
-import { ensureLazyImport } from "../lazy-import.js";
+import { LLMProviderError, mapLLMError } from "../../errors.js";
+import { ensureLazyImport } from "../../lazy-import.js";
 import {
   buildUnsupportedCompactionDiagnostics,
   resolveLLMCompactionConfig,
   type ResolvedLLMCompactionConfig,
-} from "../provider-capabilities.js";
-import { withTimeout } from "../timeout.js";
-import { repairToolTurnSequence, validateToolTurnSequence } from "../tool-turn-validator.js";
-import { safeStringify } from "../_deps/safe-stringify.js";
-import { resolveContextWindowProfile } from "../_deps/context-window.js";
-import { withOllamaHealthSidecar } from "../providers/ollama/health.js";
+} from "../../provider-capabilities.js";
+import { withTimeout } from "../../timeout.js";
+import { repairToolTurnSequence, validateToolTurnSequence } from "../../tool-turn-validator.js";
+import { safeStringify } from "../../_deps/safe-stringify.js";
+import { resolveContextWindowProfile } from "../../_deps/context-window.js";
+import { withOllamaHealthSidecar } from "./health.js";
 
 const DEFAULT_HOST = "http://localhost:11434";
 const DEFAULT_MODEL = "llama3";

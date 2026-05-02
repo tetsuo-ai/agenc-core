@@ -1,6 +1,24 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { OllamaProvider } from "./index.js";
+import { withOllamaHealthSidecar } from "./health.js";
+
+function setClient(
+  provider: OllamaProvider,
+  client: { readonly chat?: unknown; readonly list?: unknown },
+): void {
+  (provider as unknown as { client: unknown }).client = client;
+}
+
+async function* streamChunks(chunks: readonly unknown[]): AsyncGenerator<unknown> {
+  for (const chunk of chunks) {
+    yield chunk;
+  }
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("providers/ollama entrypoint", () => {
   test("exports the canonical Ollama provider class", () => {
@@ -22,5 +40,190 @@ describe("providers/ollama entrypoint", () => {
     );
 
     expect(params.model).toBe("qwen-reviewer");
+  });
+
+  test("sends native SDK chat requests with local model options", async () => {
+    const chat = vi.fn().mockResolvedValue({
+      model: "qwen2.5-coder:7b",
+      message: {
+        role: "assistant",
+        content: "ok",
+      },
+      prompt_eval_count: 8,
+      eval_count: 2,
+    });
+    const provider = new OllamaProvider({
+      model: "llama3.3",
+      host: "http://localhost:11434",
+      maxTokens: 128,
+      numCtx: 8192,
+      keepAlive: "10m",
+    });
+    setClient(provider, { chat });
+
+    const response = await provider.chat(
+      [{ role: "user", content: "review" }],
+      {
+        model: "qwen2.5-coder:7b",
+        maxOutputTokens: 64,
+        systemPrompt: "Be terse.",
+      },
+    );
+
+    expect(response.content).toBe("ok");
+    expect(response.model).toBe("qwen2.5-coder:7b");
+    expect(response.usage).toEqual({
+      promptTokens: 8,
+      completionTokens: 2,
+      totalTokens: 10,
+    });
+    expect(chat).toHaveBeenCalledTimes(1);
+    const [params, options] = chat.mock.calls[0] ?? [];
+    expect(params).toMatchObject({
+      model: "qwen2.5-coder:7b",
+      keep_alive: "10m",
+      options: {
+        num_predict: 64,
+        num_ctx: 8192,
+      },
+      messages: [
+        { role: "system", content: "Be terse." },
+        { role: "user", content: "review" },
+      ],
+    });
+    expect(options).toMatchObject({
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  test("streams native SDK chat chunks through the provider callback", async () => {
+    const chat = vi.fn().mockResolvedValue(
+      streamChunks([
+        {
+          model: "llama3.3",
+          message: { role: "assistant", content: "hel" },
+        },
+        {
+          model: "llama3.3",
+          message: { role: "assistant", content: "lo" },
+          prompt_eval_count: 5,
+          eval_count: 2,
+        },
+      ]),
+    );
+    const provider = new OllamaProvider({
+      model: "llama3.3",
+    });
+    setClient(provider, { chat, list: vi.fn().mockResolvedValue({ models: [] }) });
+    const chunks: Array<{ content: string; done: boolean }> = [];
+
+    const response = await provider.chatStream(
+      [{ role: "user", content: "hello" }],
+      (chunk) => chunks.push({ content: chunk.content, done: chunk.done }),
+    );
+
+    expect(response.content).toBe("hello");
+    expect(response.model).toBe("llama3.3");
+    expect(response.usage).toEqual({
+      promptTokens: 5,
+      completionTokens: 2,
+      totalTokens: 7,
+    });
+    expect(chunks).toEqual([
+      { content: "hel", done: false },
+      { content: "lo", done: false },
+      { content: "", done: true },
+    ]);
+    const [params, options] = chat.mock.calls[0] ?? [];
+    expect(params).toMatchObject({
+      model: "llama3.3",
+      stream: true,
+      messages: [{ role: "user", content: "hello" }],
+    });
+    expect(options).toMatchObject({
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  test("healthCheck probes the local SDK model list", async () => {
+    const list = vi.fn().mockResolvedValue({ models: [] });
+    const provider = new OllamaProvider({
+      model: "llama3.3",
+    });
+    setClient(provider, { list });
+
+    await expect(provider.healthCheck()).resolves.toBe(true);
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  test("maps refused local connections to a useful Ollama error", async () => {
+    const refused = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1"), {
+      code: "ECONNREFUSED",
+    });
+    const chat = vi.fn().mockRejectedValue(refused);
+    const provider = new OllamaProvider({
+      model: "llama3.3",
+      host: "http://localhost:11434",
+    });
+    setClient(provider, { chat });
+
+    await expect(
+      provider.chat([{ role: "user", content: "hello" }]),
+    ).rejects.toThrow(
+      "Cannot connect to Ollama at http://localhost:11434. Is the server running?",
+    );
+  });
+
+  test("health sidecar aborts long streams when Ollama goes down", async () => {
+    vi.useFakeTimers();
+    const healthCheck = vi.fn().mockResolvedValue(false);
+
+    const pending = withOllamaHealthSidecar({
+      intervalMs: 5,
+      healthCheck,
+      operation: (signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        }),
+    });
+    const observed = pending.catch((error: unknown) => error);
+
+    await vi.advanceTimersByTimeAsync(5);
+
+    await expect(observed).resolves.toMatchObject({
+      name: "LLMProviderError",
+      providerName: "ollama",
+    });
+    expect(healthCheck).toHaveBeenCalledTimes(1);
+  });
+
+  test("health sidecar treats refused local connections as provider loss", async () => {
+    vi.useFakeTimers();
+    const refused = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1"), {
+      code: "ECONNREFUSED",
+    });
+    const healthCheck = vi.fn().mockRejectedValue(refused);
+
+    const pending = withOllamaHealthSidecar({
+      intervalMs: 5,
+      healthCheck,
+      operation: (signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        }),
+    });
+    const observed = pending.catch((error: unknown) => error);
+
+    await vi.advanceTimersByTimeAsync(5);
+
+    await expect(observed).resolves.toMatchObject({
+      name: "LLMProviderError",
+      providerName: "ollama",
+    });
+    expect(healthCheck).toHaveBeenCalledTimes(1);
   });
 });
