@@ -6,6 +6,7 @@
   "targetRoot": "..",
   "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
   "sourceFiles": [
+    "src/services/api/clau\u0064e.ts",
     "src/services/api/openaiShim.ts",
     "src/cost-tracker.ts",
     "src/screens/REPL.tsx"

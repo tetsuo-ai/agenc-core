@@ -483,10 +483,18 @@ export class AnthropicProvider implements LLMProvider {
               ...block,
               arguments: block.arguments.length > 0 ? block.arguments : "{}",
             };
+            const parsedInput = parseToolInputObject(
+              completedToolCall.arguments,
+            );
+            if (!parsedInput) {
+              throw new LLMProviderError(
+                this.name,
+                `Anthropic stream emitted invalid tool_use JSON for ${completedToolCall.name || completedToolCall.id}`,
+              );
+            }
             completedToolCalls.push(completedToolCall);
             if (
-              completedToolCall.name !== ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME &&
-              parseToolInputObject(completedToolCall.arguments)
+              completedToolCall.name !== ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME
             ) {
               onChunk({
                 content: "",
