@@ -1,6 +1,6 @@
 /**
- * Ports donor runtime `co\u0064ex-rs/features/src/*` staged feature registry
- * semantics onto AgenC feature names.
+ * Ports upstream runtime staged feature registry semantics onto AgenC
+ * feature names.
  */
 
 export type AgenCFeatureStage =

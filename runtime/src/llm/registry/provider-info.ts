@@ -1,6 +1,5 @@
 /**
- * Ports donor runtime `co\u0064ex-rs/model-provider-info/src/lib.rs` provider
- * defaults onto AgenC provider identities.
+ * Ports upstream runtime provider defaults onto AgenC provider identities.
  *
  * Shape difference from upstream:
  *   - AgenC keeps provider auth in `AuthBackend`/BYOK config, so this registry

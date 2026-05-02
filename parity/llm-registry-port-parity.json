@@ -2,21 +2,20 @@
   "contractName": "llm-registry-port",
   "scope": "Port donor model catalog, provider info, and staged feature registry into AgenC's LLM registry layer",
   "generatedAt": "2026-05-02T00:00:00.000Z",
-  "sourceRoot": "/home/tetsuo/git/co\u0064ex",
-  "sourceRootBrandingScanOverride": "branding-scan: allow upstream source path",
+  "sourceRoot": "/home/tetsuo/git/codex/codex-rs", "sourceRootBrandingScanOverride": "branding-scan: allow upstream source path",
   "targetRoot": "..",
   "sourceCommit": "48791920a8b122939c4d3feb15673c0a690ca4a0",
   "sourceFiles": [
-    "co\u0064ex-rs/models-manager/src/model_info.rs",
-    "co\u0064ex-rs/models-manager/src/manager.rs",
-    "co\u0064ex-rs/models-manager/src/cache.rs",
-    "co\u0064ex-rs/models-manager/src/config.rs",
-    "co\u0064ex-rs/models-manager/src/model_presets.rs",
-    "co\u0064ex-rs/models-manager/models.json",
-    "co\u0064ex-rs/model-provider-info/src/lib.rs",
-    "co\u0064ex-rs/features/src/lib.rs",
-    "co\u0064ex-rs/features/src/legacy.rs",
-    "co\u0064ex-rs/features/src/feature_configs.rs"
+    "models-manager/src/model_info.rs",
+    "models-manager/src/manager.rs",
+    "models-manager/src/cache.rs",
+    "models-manager/src/config.rs",
+    "models-manager/src/model_presets.rs",
+    "models-manager/models.json",
+    "model-provider-info/src/lib.rs",
+    "features/src/lib.rs",
+    "features/src/legacy.rs",
+    "features/src/feature_configs.rs"
   ],
   "targetFiles": [
     "runtime/src/llm/registry/model-catalog.ts",
@@ -47,7 +46,7 @@
   "rows": [
     {
       "id": "bundled-model-catalog",
-      "source": "co\u0064ex-rs/models-manager/models.json + models-manager/src/model_info.rs",
+      "source": "models-manager/models.json + models-manager/src/model_info.rs",
       "target": "runtime/src/llm/registry/model-catalog.ts",
       "requiredBehaviors": [
         "store every bundled donor model row, including hidden review-only models",
@@ -80,7 +79,7 @@
     },
     {
       "id": "provider-info-registry",
-      "source": "co\u0064ex-rs/model-provider-info/src/lib.rs",
+      "source": "model-provider-info/src/lib.rs",
       "target": "runtime/src/llm/registry/provider-info.ts",
       "requiredBehaviors": [
         "centralize built-in provider default model and base URL data",
@@ -105,7 +104,7 @@
     },
     {
       "id": "feature-stage-registry",
-      "source": "co\u0064ex-rs/features/src/lib.rs + co\u0064ex-rs/features/src/legacy.rs + co\u0064ex-rs/features/src/feature_configs.rs",
+      "source": "features/src/lib.rs + features/src/legacy.rs + features/src/feature_configs.rs",
       "target": "runtime/src/llm/registry/features.ts",
       "requiredBehaviors": [
         "store every donor feature key with AgenC-owned naming",

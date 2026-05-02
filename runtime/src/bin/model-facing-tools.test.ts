@@ -709,6 +709,17 @@ describe("model-facing tools", () => {
     expect(JSON.parse(forkTurns.content).error).toBe(
       "fork_turns must be `none`, `all`, or a positive integer string",
     );
+
+    const hiddenModel = await spawnAgent.execute({
+      message: "inspect",
+      task_name: "task_1",
+      model: "codex-auto-review", // branding-scan: allow OpenAI model identifier
+      fork_turns: "none",
+    });
+    expect(hiddenModel.isError).toBe(true);
+    expect(JSON.parse(hiddenModel.content).error).toBe(
+      "Unknown model `codex-auto-review` for spawn_agent. Available models: test-model", // branding-scan: allow OpenAI model identifier
+    );
   });
 
   it("rejects over-depth spawn_agent before emitting lifecycle events", async () => {

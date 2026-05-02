@@ -65,6 +65,8 @@ export interface ModelInfo {
   readonly defaultReasoningLevel?: ReasoningEffort;
   readonly defaultReasoningSummary: ReasoningSummary;
   readonly truncationPolicy: TruncationPolicy;
+  readonly visibility?: "list" | "hide" | "none";
+  readonly showInPicker?: boolean;
   /** Whether the metadata came from a fallback (warn user — see agenc runtime 594-606). */
   readonly usedFallbackModelMetadata: boolean;
 }

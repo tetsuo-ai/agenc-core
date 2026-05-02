@@ -121,6 +121,7 @@ export function modelRegistryEntryToModelInfo(
     provider: entry.provider,
     model: entry.model,
   });
+  const visibility = catalog?.visibility ?? "list";
   return {
     slug: entry.model,
     ...(entry.metadata.contextWindow !== undefined
@@ -149,6 +150,8 @@ export function modelRegistryEntryToModelInfo(
     ...(defaultReasoningLevel !== undefined ? { defaultReasoningLevel } : {}),
     defaultReasoningSummary: catalog?.defaultReasoningSummary ?? "auto",
     truncationPolicy: "off",
+    visibility,
+    showInPicker: visibility === "list",
     usedFallbackModelMetadata: entry.metadata.usedFallbackModelMetadata,
   };
 }

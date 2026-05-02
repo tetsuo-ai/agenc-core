@@ -1,6 +1,6 @@
 /**
- * Ports donor runtime `co\u0064ex-rs/models-manager/src/*` model catalog
- * semantics onto AgenC's provider-neutral registry.
+ * Ports upstream runtime model catalog semantics onto AgenC's
+ * provider-neutral registry.
  *
  * Shape difference from upstream:
  *   - The donor catalog includes prompt/personality text. AgenC stores only

@@ -39,7 +39,7 @@ describe("StaticModelsManager", () => {
 
     const listed = await manager.listModels();
     expect(listed.map((entry) => entry.slug)).toContain("gpt-5.4");
-    expect(listed.map((entry) => entry.slug)).toContain(
+    expect(listed.map((entry) => entry.slug)).not.toContain(
       "codex-auto-review", // branding-scan: allow OpenAI model identifier
     );
 
@@ -57,6 +57,15 @@ describe("StaticModelsManager", () => {
       "high",
       "xhigh",
     ]);
+
+    const hidden = await manager.getModelInfo(
+      "codex-auto-review", // branding-scan: allow OpenAI model identifier
+    );
+    expect(hidden).toMatchObject({
+      slug: "codex-auto-review", // branding-scan: allow OpenAI model identifier
+      visibility: "hide",
+      showInPicker: false,
+    });
   });
 
   it("lists configured provider default models alongside built-ins", async () => {

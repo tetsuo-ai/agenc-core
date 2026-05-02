@@ -289,7 +289,14 @@ describe("guardian approval reviewer", () => {
           observedModel = options?.model;
         },
       }),
-      models: [mkModelInfo("test-model"), mkModelInfo(GUARDIAN_PREFERRED_MODEL)],
+      models: [
+        mkModelInfo("test-model"),
+        {
+          ...mkModelInfo(GUARDIAN_PREFERRED_MODEL),
+          visibility: "hide",
+          showInPicker: false,
+        },
+      ],
     });
     const turn = newDefaultTurnWithSubId(session, "turn-preferred-model");
     const reviewer = createDefaultGuardianApprovalReviewer({ timeoutMs: 5_000 });

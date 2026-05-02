@@ -26,7 +26,7 @@ import type {
   AgenCReviewOneShotRequest,
 } from "./agenc-delegate.js";
 import { buildGuardianReviewSessionConfig } from "./agenc-delegate.js";
-import type { ModelInfo, TurnContext } from "./turn-context.js";
+import type { TurnContext } from "./turn-context.js";
 import {
   ReviewManager,
   type ReviewFinding,
@@ -423,17 +423,10 @@ async function chooseGuardianModel(
   session: GuardianApprovalReviewSession,
   turn: TurnContext,
 ): Promise<string> {
-  const models = await listModels(session.services?.modelsManager);
-  const preferred = models.find((model) => model.slug === GUARDIAN_PREFERRED_MODEL);
-  return preferred?.slug ?? turn.modelInfo.slug;
-}
-
-async function listModels(
-  modelsManager: GuardianModelsManager | undefined,
-): Promise<ReadonlyArray<ModelInfo>> {
-  const listed = modelsManager?.tryListModels?.();
-  if (listed !== undefined) return listed;
-  return (await modelsManager?.listModels?.()) ?? [];
+  const preferred = await session.services?.modelsManager?.getModelInfo?.(
+    GUARDIAN_PREFERRED_MODEL,
+  );
+  return preferred?.visibility === "hide" ? preferred.slug : turn.modelInfo.slug;
 }
 
 interface BuildOneShotRequestOptions {
