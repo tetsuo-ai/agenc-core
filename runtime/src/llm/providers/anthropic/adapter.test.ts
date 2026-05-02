@@ -401,6 +401,123 @@ describe("AnthropicProvider", () => {
     expect(headers.get("anthropic-beta")).toContain("context-management-2025-06-27");
   });
 
+  test("sends AGENC.md context as a cacheable Anthropic system block", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "msg_1",
+          type: "message",
+          role: "assistant",
+          model: "claude-3-7-sonnet",
+          content: [{ type: "text", text: "ok" }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-3-7-sonnet",
+      fetchImpl,
+    });
+
+    await provider.chat([
+      {
+        role: "system",
+        content: "## Project Instructions\nThis is AGENC.md content.",
+      },
+      { role: "user", content: "apply the project instructions" },
+    ]);
+
+    const request = JSON.parse(
+      String(fetchImpl.mock.calls[0]?.[1]?.body),
+    ) as Record<string, unknown>;
+    expect(request.system).toEqual([
+      {
+        type: "text",
+        text: "## Project Instructions\nThis is AGENC.md content.",
+        cache_control: { type: "ephemeral" },
+      },
+    ]);
+    expect(request.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "apply the project instructions",
+            cache_control: { type: "ephemeral" },
+          },
+        ],
+      },
+    ]);
+  });
+
+  test("serializes vision content into Anthropic image blocks", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "msg_1",
+          type: "message",
+          role: "assistant",
+          model: "claude-3-7-sonnet",
+          content: [{ type: "text", text: "image seen" }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-3-7-sonnet",
+      fetchImpl,
+    });
+
+    await provider.chat([
+      {
+        role: "user",
+        content: [
+          {
+            type: "image_url",
+            image_url: { url: "http://localhost/screenshot.png" },
+          },
+          { type: "text", text: "Describe it" },
+        ],
+      },
+    ]);
+
+    const request = JSON.parse(
+      String(fetchImpl.mock.calls[0]?.[1]?.body),
+    ) as Record<string, unknown>;
+    expect(request.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: {
+              type: "url",
+              url: "http://localhost/screenshot.png",
+            },
+          },
+          {
+            type: "text",
+            text: "Describe it",
+            cache_control: { type: "ephemeral" },
+          },
+        ],
+      },
+    ]);
+  });
+
   test("streams messages-api text deltas and emits final tool calls from tool_use blocks", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       sseResponse([
