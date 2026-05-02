@@ -203,12 +203,11 @@ CREATE INDEX IF NOT EXISTS idx_logs_thread ON logs(thread_id, timestamp);
     version: 2,
     name: "csv_agent_jobs_schema",
     sql: `
--- Codex agent-jobs surface, persisted. Tables are namespaced \`csv_*\` so
+-- Imported agent-jobs surface, persisted. Tables are namespaced \`csv_*\` so
 -- they do not collide with AgenC's pre-existing \`agent_jobs\` queue table
 -- which carries a different schema (kind/priority/worker_id/...).
 --
--- Mirrors codex codex-rs/state/migrations/0014_agent_jobs.sql plus the
--- 0015_agent_jobs_max_runtime_seconds.sql column folded in.
+-- Mirrors the upstream batch-job schema with the max-runtime column folded in.
 CREATE TABLE IF NOT EXISTS csv_agent_jobs (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -250,6 +249,27 @@ CREATE INDEX IF NOT EXISTS idx_csv_agent_jobs_status
   ON csv_agent_jobs(status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_csv_agent_job_items_status
   ON csv_agent_job_items(job_id, status, row_index ASC);
+`,
+  },
+  {
+    version: 3,
+    name: "agent_runs_schema",
+    sql: `
+CREATE TABLE IF NOT EXISTS agent_runs (
+  id TEXT PRIMARY KEY,
+  objective TEXT NOT NULL,
+  status TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  last_active_at TEXT NOT NULL,
+  current_session_id TEXT,
+  created_by_client TEXT,
+  last_snapshot_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_runs_status_last_active
+  ON agent_runs(status, last_active_at);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_current_session
+  ON agent_runs(current_session_id);
 `,
   },
 ];
