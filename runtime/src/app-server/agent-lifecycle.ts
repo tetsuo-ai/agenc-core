@@ -24,6 +24,7 @@ import type {
   AgentStatus,
   AgentSummary,
   JsonObject,
+  JsonValue,
   MessageContent,
   SessionSummary,
   ToolApproveParams,
@@ -67,6 +68,44 @@ export interface AgenCDaemonAgentManagerOptions {
     sessionId: string,
     event: JsonObject,
   ) => void | Promise<void>;
+  readonly recordMessageExchange?: (
+    exchange: AgenCDaemonMessageExchangeSnapshot,
+  ) => void | Promise<void>;
+  readonly recordAgentStatusTransition?: (
+    transition: AgenCDaemonAgentStatusSnapshot,
+  ) => void | Promise<void>;
+  readonly registerSnapshotSession?: (
+    session: AgenCDaemonSnapshotSessionRoute,
+  ) => void | Promise<void>;
+  readonly onSnapshotError?: (error: unknown) => void;
+}
+
+export interface AgenCDaemonMessageExchangeSnapshot {
+  readonly sessionId: string;
+  readonly agentId: string;
+  readonly cwd?: string;
+  readonly stateProjectDir?: string;
+  readonly content: JsonValue;
+  readonly messageId: string;
+  readonly streamId: string;
+  readonly acceptedAt: string;
+}
+
+export interface AgenCDaemonAgentStatusSnapshot {
+  readonly sessionId: string;
+  readonly agentId: string;
+  readonly cwd?: string;
+  readonly stateProjectDir?: string;
+  readonly status: AgentStatus;
+  readonly transitionAt: string;
+  readonly reason?: string;
+}
+
+export interface AgenCDaemonSnapshotSessionRoute {
+  readonly sessionId: string;
+  readonly agentId: string;
+  readonly cwd?: string;
+  readonly stateProjectDir?: string;
 }
 
 export interface AgenCDaemonAgentSnapshotFlush extends JsonObject {
@@ -83,6 +122,7 @@ export interface AgenCDaemonAgentRestoreRecord {
   readonly startedAt?: string;
   readonly lastActiveAt?: string;
   readonly cwd?: string;
+  readonly stateProjectDir?: string;
   readonly metadata?: JsonObject;
   readonly sessionIds?: readonly string[];
 }
@@ -104,10 +144,16 @@ interface MutableAgent {
   startedAt: string;
   lastActiveAt: string;
   cwd?: string;
+  stateProjectDir?: string;
   metadata?: JsonObject;
   sessionIds: string[];
   recovered?: boolean;
   runtimeAvailable?: boolean;
+}
+
+interface AgenCDaemonSnapshotRoute {
+  readonly cwd?: string;
+  readonly stateProjectDir?: string;
 }
 
 interface AgentAttachmentTarget {
@@ -130,6 +176,16 @@ export class AgenCDaemonAgentManager {
   readonly #broadcastSessionEvent:
     | ((sessionId: string, event: JsonObject) => void | Promise<void>)
     | undefined;
+  readonly #recordMessageExchange:
+    | ((exchange: AgenCDaemonMessageExchangeSnapshot) => void | Promise<void>)
+    | undefined;
+  readonly #recordAgentStatusTransition:
+    | ((transition: AgenCDaemonAgentStatusSnapshot) => void | Promise<void>)
+    | undefined;
+  readonly #registerSnapshotSession:
+    | ((session: AgenCDaemonSnapshotSessionRoute) => void | Promise<void>)
+    | undefined;
+  readonly #onSnapshotError: (error: unknown) => void;
   #shuttingDown = false;
   #activeCreates = 0;
   readonly #createWaiters = new Set<() => void>();
@@ -144,6 +200,10 @@ export class AgenCDaemonAgentManager {
     this.#sessionManager = options.sessionManager;
     this.#snapshotFlush = options.snapshotFlush;
     this.#broadcastSessionEvent = options.broadcastSessionEvent;
+    this.#recordMessageExchange = options.recordMessageExchange;
+    this.#recordAgentStatusTransition = options.recordAgentStatusTransition;
+    this.#registerSnapshotSession = options.registerSnapshotSession;
+    this.#onSnapshotError = options.onSnapshotError ?? (() => {});
   }
 
   async createAgent(params: AgentCreateParams): Promise<AgentCreateResult> {
@@ -216,16 +276,26 @@ export class AgenCDaemonAgentManager {
             },
           });
           agent.sessionIds.push(session.sessionId);
+          await this.#registerSnapshotSessionRoute(session.sessionId, agent);
           await this.#runner.attachAgentSessionEvents?.(agent.agentId, {
             sessionId: session.sessionId,
             emit: (event) => this.#broadcastSessionEvent?.(session.sessionId, event),
           });
         }
 
-        return await this.#state.with((state) => {
+        const result = await this.#state.with((state) => {
           state.agents.set(agent.agentId, agent);
           return toAgentCreateResult(agent);
         });
+        await this.#recordAgentStatusSnapshots(
+          agent.sessionIds,
+          agent.agentId,
+          agent.status,
+          agent.lastActiveAt,
+          undefined,
+          snapshotRouteForAgent(agent),
+        );
+        return result;
       } catch (error) {
         await this.#runner.stopAgent?.(
           agent.agentId,
@@ -264,6 +334,9 @@ export class AgenCDaemonAgentManager {
       runtimeAvailable: false,
     };
     if (record.cwd !== undefined) agent.cwd = record.cwd;
+    if (record.stateProjectDir !== undefined) {
+      agent.stateProjectDir = record.stateProjectDir;
+    }
     if (record.metadata !== undefined) agent.metadata = record.metadata;
 
     return this.#state.with((state) => {
@@ -425,12 +498,21 @@ export class AgenCDaemonAgentManager {
       refreshed.lastActiveAt = transitionAt;
       return {
         sessionIds: [...refreshed.sessionIds],
+        route: snapshotRouteForAgent(refreshed),
       };
     });
 
     if (target === null) {
       return { agentId, stopped: false };
     }
+    await this.#recordAgentStatusSnapshots(
+      target.sessionIds,
+      agentId,
+      "stopping",
+      transitionAt ?? this.#now(),
+      reason,
+      target.route,
+    );
     if (stopRunner === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
         "BACKGROUND_RUNNER_UNAVAILABLE",
@@ -440,7 +522,16 @@ export class AgenCDaemonAgentManager {
     try {
       await stopRunner(agentId, reason);
     } catch (error) {
-      await this.#markAgentStopFailed(agentId, transitionAt);
+      const failedAt = transitionAt ?? this.#now();
+      await this.#markAgentStopFailed(agentId, failedAt);
+      await this.#recordAgentStatusSnapshots(
+        target.sessionIds,
+        agentId,
+        "error",
+        failedAt,
+        reason,
+        target.route,
+      );
       throw error;
     }
 
@@ -452,6 +543,14 @@ export class AgenCDaemonAgentManager {
       agent.lastActiveAt = stoppedAt;
       agent.sessionIds = [];
     });
+    await this.#recordAgentStatusSnapshots(
+      target.sessionIds,
+      agentId,
+      "stopped",
+      stoppedAt,
+      reason,
+      target.route,
+    );
     await this.#terminateAgentSessions(target.sessionIds, reason);
     return { agentId, stopped: true };
   }
@@ -466,6 +565,7 @@ export class AgenCDaemonAgentManager {
         .map((agent) => ({
           agentId: agent.agentId,
           sessionIds: [...agent.sessionIds],
+          route: snapshotRouteForAgent(agent),
         }));
     });
     const failures: Array<{ readonly agentId: string; readonly error: unknown }> = [];
@@ -482,13 +582,22 @@ export class AgenCDaemonAgentManager {
         }
       }
       const stoppedAt = this.#now();
+      const finalStatus = stopFailed ? "error" : "stopped";
       await this.#state.with((state) => {
         const agent = state.agents.get(target.agentId);
         if (agent === undefined) return;
-        agent.status = stopFailed ? "error" : "stopped";
+        agent.status = finalStatus;
         agent.lastActiveAt = stoppedAt;
         agent.sessionIds = [];
       });
+      await this.#recordAgentStatusSnapshots(
+        target.sessionIds,
+        target.agentId,
+        finalStatus,
+        stoppedAt,
+        reason,
+        target.route,
+      );
       try {
         await this.#terminateAgentSessions(target.sessionIds, reason);
       } catch (error) {
@@ -604,7 +713,7 @@ export class AgenCDaemonAgentManager {
       );
     }
 
-    const recoveredRuntimeUnavailable = await this.#state.with(async (state) => {
+    const messageTarget = await this.#state.with(async (state) => {
       const agent = state.agents.get(session.agentId);
       if (agent !== undefined) {
         await this.#refreshAgentFromRunner(state, agent);
@@ -616,9 +725,12 @@ export class AgenCDaemonAgentManager {
           `AgenC daemon agent not found: ${session.agentId}`,
         );
       }
-      return isRecoveredRuntimeUnavailable(refreshed);
+      return {
+        recoveredRuntimeUnavailable: isRecoveredRuntimeUnavailable(refreshed),
+        route: snapshotRouteForAgent(refreshed),
+      };
     });
-    if (recoveredRuntimeUnavailable) {
+    if (messageTarget.recoveredRuntimeUnavailable) {
       throw new AgenCDaemonAgentLifecycleError(
         "BACKGROUND_RUNNER_UNAVAILABLE",
         `AgenC daemon agent recovered without a live runtime: ${session.agentId}`,
@@ -636,11 +748,72 @@ export class AgenCDaemonAgentManager {
       streamId: params.streamId,
       acceptedAt: params.acceptedAt,
     });
+    await this.#recordMessageExchangeSnapshot({
+      sessionId: params.sessionId,
+      agentId: session.agentId,
+      ...messageTarget.route,
+      content: params.content as JsonValue,
+      messageId: params.messageId,
+      streamId: params.streamId,
+      acceptedAt: params.acceptedAt,
+    });
   }
 
   async #refreshAgentsFromRunner(state: AgentLifecycleState): Promise<void> {
     for (const agent of [...state.agents.values()]) {
       await this.#refreshAgentFromRunner(state, agent);
+    }
+  }
+
+  async #recordAgentStatusSnapshots(
+    sessionIds: readonly string[],
+    agentId: string,
+    status: AgentStatus,
+    transitionAt: string,
+    reason?: string,
+    route: AgenCDaemonSnapshotRoute = {},
+  ): Promise<void> {
+    if (this.#recordAgentStatusTransition === undefined) return;
+    for (const sessionId of sessionIds) {
+      try {
+        await this.#recordAgentStatusTransition({
+          sessionId,
+          agentId,
+          ...route,
+          status,
+          transitionAt,
+          ...(reason !== undefined ? { reason } : {}),
+        });
+      } catch (error) {
+        this.#onSnapshotError(error);
+      }
+    }
+  }
+
+  async #recordMessageExchangeSnapshot(
+    exchange: AgenCDaemonMessageExchangeSnapshot,
+  ): Promise<void> {
+    if (this.#recordMessageExchange === undefined) return;
+    try {
+      await this.#recordMessageExchange(exchange);
+    } catch (error) {
+      this.#onSnapshotError(error);
+    }
+  }
+
+  async #registerSnapshotSessionRoute(
+    sessionId: string,
+    agent: MutableAgent,
+  ): Promise<void> {
+    if (this.#registerSnapshotSession === undefined) return;
+    try {
+      await this.#registerSnapshotSession({
+        sessionId,
+        agentId: agent.agentId,
+        ...snapshotRouteForAgent(agent),
+      });
+    } catch (error) {
+      this.#onSnapshotError(error);
     }
   }
 
@@ -705,9 +878,21 @@ export class AgenCDaemonAgentManager {
       state.agents.delete(agent.agentId);
       return;
     }
+    const previousStatus = agent.status;
+    const sessionIds = [...agent.sessionIds];
     agent.recovered = false;
     agent.runtimeAvailable = true;
     applyAgentSnapshot(agent, snapshot);
+    if (agent.status !== previousStatus) {
+      await this.#recordAgentStatusSnapshots(
+        sessionIds,
+        agent.agentId,
+        agent.status,
+        agent.lastActiveAt,
+        undefined,
+        snapshotRouteForAgent(agent),
+      );
+    }
   }
 
   async #resolveAttachmentTarget(agentId: string): Promise<AgentAttachmentTarget> {
@@ -817,6 +1002,15 @@ function applyAgentSnapshot(
 ): void {
   agent.status = snapshot.status;
   agent.lastActiveAt = snapshot.lastActiveAt;
+}
+
+function snapshotRouteForAgent(agent: MutableAgent): AgenCDaemonSnapshotRoute {
+  return {
+    ...(agent.cwd !== undefined ? { cwd: agent.cwd } : {}),
+    ...(agent.stateProjectDir !== undefined
+      ? { stateProjectDir: agent.stateProjectDir }
+      : {}),
+  };
 }
 
 function isActiveAgent(agent: MutableAgent): boolean {

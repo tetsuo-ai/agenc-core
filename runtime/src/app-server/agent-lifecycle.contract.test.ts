@@ -1,4 +1,12 @@
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { AgenCSessionSnapshotPolicy } from "../state/snapshot-policy.js";
+import {
+  openStateDatabases,
+  type StateSqliteDriver,
+} from "../state/sqlite-driver.js";
 import {
   AgenCDaemonAgentLifecycleError,
   AgenCDaemonAgentManager,
@@ -10,6 +18,7 @@ import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import type {
   AgenCBackgroundAgentSnapshot,
   AgenCBackgroundAgentRunner,
+  AgenCBackgroundAgentSessionEventBinding,
   AgenCBackgroundAgentStartParams,
 } from "./background-agent-runner.js";
 
@@ -37,6 +46,44 @@ function createDeferred<T = void>(): {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+function snapshotCount(driver: StateSqliteDriver, sessionId: string): number {
+  return (
+    driver
+      .prepareState<[string], { count: number }>(
+        `SELECT COUNT(*) AS count
+         FROM session_state_snapshots
+         WHERE session_id = ?`,
+      )
+      .get(sessionId)?.count ?? 0
+  );
+}
+
+function latestSnapshot(
+  driver: StateSqliteDriver,
+  sessionId: string,
+): {
+  readonly conversation: unknown;
+  readonly toolState: unknown;
+} {
+  const row = driver
+    .prepareState<
+      [string],
+      { conversation_json: string; tool_state_json: string }
+    >(
+      `SELECT conversation_json, tool_state_json
+       FROM session_state_snapshots
+       WHERE session_id = ?
+       ORDER BY snapshot_at DESC
+       LIMIT 1`,
+    )
+    .get(sessionId);
+  if (row === undefined) throw new Error("snapshot missing");
+  return {
+    conversation: JSON.parse(row.conversation_json),
+    toolState: JSON.parse(row.tool_state_json),
+  };
 }
 
 describe("AgenC background agent lifecycle", () => {
@@ -560,6 +607,11 @@ describe("AgenC background agent lifecycle", () => {
   });
 
   it("keeps stop failures from being reported as successful stops", async () => {
+    const statusSnapshots: unknown[] = [];
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_fail_stop"]),
+      now: sequence(["2026-05-01T12:00:00.000Z"]),
+    });
     const runner: AgenCBackgroundAgentRunner = {
       startAgent: async () => ({
         agentId: "agent_fail_stop",
@@ -577,6 +629,10 @@ describe("AgenC background agent lifecycle", () => {
         "2026-05-01T12:00:02.000Z",
       ]),
       runner,
+      sessionManager: sessions,
+      recordAgentStatusTransition: async (transition) => {
+        statusSnapshots.push(transition);
+      },
     });
 
     await agents.createAgent({ objective: "fail stop" });
@@ -588,6 +644,31 @@ describe("AgenC background agent lifecycle", () => {
       status: "error",
       lastActiveAt: "2026-05-01T12:00:02.000Z",
     });
+    expect(statusSnapshots).toEqual([
+      {
+        sessionId: "session_fail_stop",
+        agentId: "agent_fail_stop",
+        cwd: "/workspace",
+        status: "running",
+        transitionAt: "2026-05-01T12:00:00.500Z",
+      },
+      {
+        sessionId: "session_fail_stop",
+        agentId: "agent_fail_stop",
+        cwd: "/workspace",
+        status: "stopping",
+        transitionAt: "2026-05-01T12:00:02.000Z",
+        reason: "agent.stop",
+      },
+      {
+        sessionId: "session_fail_stop",
+        agentId: "agent_fail_stop",
+        cwd: "/workspace",
+        status: "error",
+        transitionAt: "2026-05-01T12:00:02.000Z",
+        reason: "agent.stop",
+      },
+    ]);
   });
 
   it("refreshes active list status and omits agents no longer active", async () => {
@@ -767,6 +848,286 @@ describe("AgenC background agent lifecycle", () => {
           acceptedAt: "2026-05-01T12:00:01.000Z",
         },
       },
+    ]);
+  });
+
+  it("records snapshot-policy hooks for agent status and message exchanges", async () => {
+    const cwd = "/tmp/agenc-snapshot-policy-cwd";
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_snapshot"]),
+      now: sequence(["2026-05-01T12:00:00.000Z"]),
+    });
+    const statusSnapshots: unknown[] = [];
+    const messageSnapshots: unknown[] = [];
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent_snapshot_policy",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      submitAgentMessage: async () => {},
+    };
+    const agents = new AgenCDaemonAgentManager({
+      now: sequence(["2026-05-01T12:00:00.000Z"]),
+      sessionManager: sessions,
+      runner,
+      recordAgentStatusTransition: async (transition) => {
+        statusSnapshots.push(transition);
+      },
+      recordMessageExchange: async (exchange) => {
+        messageSnapshots.push(exchange);
+      },
+    });
+
+    await agents.createAgent({ objective: "snapshot policy", cwd });
+    await agents.streamAgentMessage({
+      sessionId: "session_snapshot",
+      content: "continue",
+      messageId: "message_snapshot",
+      streamId: "stream_snapshot",
+      acceptedAt: "2026-05-01T12:00:01.000Z",
+    });
+
+    expect(statusSnapshots).toEqual([
+      {
+        sessionId: "session_snapshot",
+        agentId: "agent_snapshot_policy",
+        cwd,
+        status: "running",
+        transitionAt: "2026-05-01T12:00:00.500Z",
+      },
+    ]);
+    expect(messageSnapshots).toEqual([
+      {
+        sessionId: "session_snapshot",
+        agentId: "agent_snapshot_policy",
+        cwd,
+        content: "continue",
+        messageId: "message_snapshot",
+        streamId: "stream_snapshot",
+        acceptedAt: "2026-05-01T12:00:01.000Z",
+      },
+    ]);
+  });
+
+  it("deduplicates runner events and lifecycle hooks in snapshot policy", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-lifecycle-snapshot-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-lifecycle-snapshot-cwd-"));
+    mkdirSync(join(cwd, ".git"));
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      const sessions = new AgenCDaemonSessionManager({
+        createSessionId: sequence(["session_combined_snapshot"]),
+        now: sequence(["2026-05-01T12:00:00.000Z"]),
+      });
+      const policy = new AgenCSessionSnapshotPolicy(driver, {
+        now: sequence([
+          "2026-05-01T12:00:00.500Z",
+          "2026-05-01T12:00:01.000Z",
+          "2026-05-01T12:00:02.000Z",
+          "2026-05-01T12:00:03.000Z",
+        ]),
+      });
+      let binding: AgenCBackgroundAgentSessionEventBinding | undefined;
+      const runner: AgenCBackgroundAgentRunner = {
+        startAgent: async () => ({
+          agentId: "agent_combined_snapshot",
+          startedAt: "2026-05-01T12:00:00.500Z",
+          status: "running",
+        }),
+        attachAgentSessionEvents: async (_agentId, nextBinding) => {
+          binding = nextBinding;
+          await nextBinding.emit({
+            jsonrpc: JSON_RPC_VERSION,
+            method: "event.agent_status",
+            params: {
+              sessionId: nextBinding.sessionId,
+              eventId: "status-start",
+              agentId: "agent_combined_snapshot",
+              status: "running",
+            },
+          });
+        },
+        submitAgentMessage: async (_agentId, params) => {
+          await binding?.emit({
+            jsonrpc: JSON_RPC_VERSION,
+            method: "event.session_event",
+            params: {
+              sessionId: params.sessionId,
+              eventId: params.messageId,
+              agentId: "agent_combined_snapshot",
+              event: {
+                id: params.messageId,
+                type: "user_message",
+                messageId: params.messageId,
+                streamId: params.streamId,
+                acceptedAt: params.acceptedAt,
+                payload: {
+                  message: params.originalContent,
+                  displayText: "continue",
+                },
+              },
+            },
+          });
+        },
+      };
+      const agents = new AgenCDaemonAgentManager({
+        defaultCwd: () => cwd,
+        now: sequence(["2026-05-01T12:00:00.000Z"]),
+        sessionManager: sessions,
+        runner,
+        broadcastSessionEvent: (sessionId, event) => {
+          policy.recordSessionEvent(sessionId, event);
+        },
+        recordAgentStatusTransition: (transition) => {
+          policy.recordAgentStatusTransition(transition);
+        },
+        recordMessageExchange: (exchange) => {
+          policy.recordMessageExchange(exchange);
+        },
+      });
+
+      await agents.createAgent({ objective: "dedupe snapshots", cwd });
+      await agents.streamAgentMessage({
+        sessionId: "session_combined_snapshot",
+        content: "continue",
+        messageId: "message_combined_snapshot",
+        streamId: "stream_combined_snapshot",
+        acceptedAt: "2026-05-01T12:00:01.000Z",
+      });
+
+      expect(snapshotCount(driver, "session_combined_snapshot")).toBe(2);
+      expect(latestSnapshot(driver, "session_combined_snapshot")).toMatchObject({
+        conversation: [
+          {
+            role: "user",
+            messageId: "message_combined_snapshot",
+          },
+        ],
+        toolState: {
+          statusTransitions: [
+            {
+              agentId: "agent_combined_snapshot",
+              status: "running",
+            },
+          ],
+        },
+      });
+    } finally {
+      driver.close();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("records runner-observed status transitions during refresh", async () => {
+    const cwd = "/tmp/agenc-status-refresh";
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_status_refresh"]),
+      now: sequence(["2026-05-01T12:00:00.000Z"]),
+    });
+    const statusSnapshots: unknown[] = [];
+    let currentSnapshot: AgenCBackgroundAgentSnapshot = {
+      status: "running",
+      lastActiveAt: "2026-05-01T12:00:00.500Z",
+    };
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent_status_refresh",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      getAgentSnapshot: async () => currentSnapshot,
+    };
+    const agents = new AgenCDaemonAgentManager({
+      defaultCwd: () => cwd,
+      now: sequence(["2026-05-01T12:00:00.000Z"]),
+      sessionManager: sessions,
+      runner,
+      recordAgentStatusTransition: async (transition) => {
+        statusSnapshots.push(transition);
+      },
+    });
+
+    await agents.createAgent({ objective: "watch status" });
+    currentSnapshot = {
+      status: "idle",
+      lastActiveAt: "2026-05-01T12:00:02.000Z",
+    };
+    await expect(agents.listAgents()).resolves.toMatchObject({
+      agents: [{ agentId: "agent_status_refresh", status: "idle" }],
+    });
+
+    expect(statusSnapshots).toEqual([
+      {
+        sessionId: "session_status_refresh",
+        agentId: "agent_status_refresh",
+        cwd,
+        status: "running",
+        transitionAt: "2026-05-01T12:00:00.500Z",
+      },
+      {
+        sessionId: "session_status_refresh",
+        agentId: "agent_status_refresh",
+        cwd,
+        status: "idle",
+        transitionAt: "2026-05-01T12:00:02.000Z",
+      },
+    ]);
+  });
+
+  it("does not fail create or message delivery when snapshot hooks fail", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_snapshot_error"]),
+      now: sequence(["2026-05-01T12:00:00.000Z"]),
+    });
+    const submitted: unknown[] = [];
+    const errors: unknown[] = [];
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent_snapshot_error",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      submitAgentMessage: async (agentId, params) => {
+        submitted.push({ agentId, params });
+      },
+    };
+    const agents = new AgenCDaemonAgentManager({
+      now: sequence(["2026-05-01T12:00:00.000Z"]),
+      sessionManager: sessions,
+      runner,
+      recordAgentStatusTransition: async () => {
+        throw new Error("status snapshot unavailable");
+      },
+      recordMessageExchange: async () => {
+        throw new Error("message snapshot unavailable");
+      },
+      onSnapshotError: (error) => {
+        errors.push(error);
+      },
+    });
+
+    await expect(
+      agents.createAgent({ objective: "snapshot failures should not block" }),
+    ).resolves.toMatchObject({
+      agentId: "agent_snapshot_error",
+      sessionId: "session_snapshot_error",
+    });
+    await expect(
+      agents.streamAgentMessage({
+        sessionId: "session_snapshot_error",
+        content: "continue",
+        messageId: "message_snapshot_error",
+        streamId: "stream_snapshot_error",
+        acceptedAt: "2026-05-01T12:00:01.000Z",
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(submitted).toHaveLength(1);
+    expect(errors.map((error) => (error as Error).message)).toEqual([
+      "status snapshot unavailable",
+      "message snapshot unavailable",
     ]);
   });
 
