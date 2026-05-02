@@ -105,6 +105,29 @@ describe("StaticModelsManager", () => {
     expect(info.effectiveContextWindowPercent).toBe(100);
   });
 
+  it("uses the configured provider for unknown slugs without an explicit fallback", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "lmstudio",
+        providers: {
+          lmstudio: {
+            default_model: "configured-local-model",
+            context_window_tokens: 196_608,
+            max_output_tokens: 24_576,
+          },
+        },
+      }),
+      metadata: { fetchImpl },
+    });
+
+    const info = await manager.getModelInfo("custom-local-model");
+    expect(info.contextWindow).toBe(196_608);
+    expect(info.maxOutputTokens).toBe(24_576);
+    expect(info.usedFallbackModelMetadata).toBe(false);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("uses explicit provider context metadata before fetching anything", async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const manager = new StaticModelsManager({

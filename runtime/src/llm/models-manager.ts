@@ -1,86 +1,20 @@
 import {
-  buildProviderModelCatalog,
   normalizeProviderSlug,
-  readProviderConfig,
-  resolveDisambiguatedModelSelection,
   type AgenCConfig,
 } from "./_deps/config.js";
 import {
-  resolveProviderCapabilityEntry,
-  type ProviderCapabilityRegistryEntry,
-} from "./capabilities.js";
-import {
-  ModelMetadataResolver,
+  ModelRegistry,
+  modelRegistryEntryToModelInfo,
   type ModelMetadataResolverOptions,
-  type ResolvedModelMetadata,
-} from "./model-metadata.js";
+} from "./model-registry.js";
 import type { ModelsManager } from "../session/session.js";
-import type { ModelInfo, ReasoningEffort } from "../session/turn-context.js";
-
-const DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT = 95;
-
-function inferReasoningLevels(
-  caps: ProviderCapabilityRegistryEntry,
-): readonly ReasoningEffort[] {
-  return caps.acceptsReasoningEffort
-    ? (["low", "medium", "high"] as const)
-    : [];
-}
-
-function buildModelInfo(params: {
-  readonly provider: string;
-  readonly model: string;
-  readonly config: AgenCConfig;
-  readonly metadata: ResolvedModelMetadata;
-}): ModelInfo {
-  const overrides = readProviderConfig(params.config, params.provider)
-    ?.capability_overrides;
-  const caps = resolveProviderCapabilityEntry({
-    provider: params.provider,
-    model: params.model,
-    overrides,
-  });
-  const supportedReasoningLevels = inferReasoningLevels(caps);
-  return {
-    slug: params.model,
-    ...(params.metadata.contextWindow !== undefined
-      ? { contextWindow: params.metadata.contextWindow }
-      : {}),
-    ...(params.metadata.maxOutputTokens !== undefined
-      ? { maxOutputTokens: params.metadata.maxOutputTokens }
-      : {}),
-    ...(params.metadata.maxOutputTokensUpperLimit !== undefined
-      ? { maxOutputTokensUpperLimit: params.metadata.maxOutputTokensUpperLimit }
-      : {}),
-    ...(params.metadata.maxOutputTokensExplicit !== undefined
-      ? { maxOutputTokensExplicit: params.metadata.maxOutputTokensExplicit }
-      : {}),
-    ...(params.metadata.maxOutputTokensCappedDefault !== undefined
-      ? {
-        maxOutputTokensCappedDefault:
-          params.metadata.maxOutputTokensCappedDefault,
-      }
-      : {}),
-    effectiveContextWindowPercent:
-      params.metadata.usedFallbackModelMetadata
-        ? 100
-        : DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
-    supportedReasoningLevels,
-    ...(supportedReasoningLevels.length > 0
-      ? { defaultReasoningLevel: "medium" as const }
-      : {}),
-    defaultReasoningSummary: "auto",
-    truncationPolicy: "off",
-    usedFallbackModelMetadata: params.metadata.usedFallbackModelMetadata,
-  };
-}
+import type { ModelInfo } from "../session/turn-context.js";
 
 export class StaticModelsManager implements ModelsManager {
-  private readonly catalog: Readonly<Record<string, readonly string[]>>;
-  private readonly config: AgenCConfig;
   private readonly fallbackProvider?: string;
+  private readonly configDefaultProvider?: string;
   private readonly availableModels: readonly ModelInfo[];
-  private readonly metadataResolver: ModelMetadataResolver;
+  private readonly modelRegistry: ModelRegistry;
   private readonly modelInfoCache = new Map<string, Promise<ModelInfo>>();
 
   constructor(params: {
@@ -88,66 +22,28 @@ export class StaticModelsManager implements ModelsManager {
     readonly fallbackProvider?: string;
     readonly metadata?: ModelMetadataResolverOptions;
   }) {
-    this.config = params.config;
     this.fallbackProvider = normalizeProviderSlug(params.fallbackProvider);
-    this.catalog = buildProviderModelCatalog(params.config);
-    this.metadataResolver = new ModelMetadataResolver(params.metadata);
-    this.availableModels = Object.freeze(
-      Object.entries(this.catalog).flatMap(([provider, models]) =>
-        models.map((model) =>
-          buildModelInfo({
-            provider,
-            model,
-            config: this.config,
-            metadata: this.metadataResolver.resolveSync({
-              provider,
-              model,
-              config: this.config,
-            }),
-          }),
-        ),
-      ),
+    this.configDefaultProvider = normalizeProviderSlug(
+      params.config.model_provider,
     );
+    this.modelRegistry = new ModelRegistry({
+      config: params.config,
+      metadata: params.metadata,
+    });
+    this.availableModels = this.modelRegistry
+      .listEntriesSync()
+      .map((entry) => modelRegistryEntryToModelInfo(entry));
   }
 
   async getModelInfo(modelSlug: string): Promise<ModelInfo> {
     const trimmed = modelSlug.trim();
-    if (trimmed.length === 0) {
-      return await this.resolveModelInfo({
-        provider: this.fallbackProvider ?? "grok",
-        model: "unknown-model",
-      });
-    }
-
-    const explicitSeparator = trimmed.indexOf(":");
-    if (explicitSeparator > 0) {
-      const provider = trimmed.slice(0, explicitSeparator);
-      const model = trimmed.slice(explicitSeparator + 1);
-      return await this.resolveModelInfo({
-        provider,
-        model,
-      });
-    }
-
-    try {
-      const resolved = resolveDisambiguatedModelSelection({
-        slug: trimmed,
-        config: this.config,
-        catalog: this.catalog,
-      });
-      return await this.resolveModelInfo({
-        provider: resolved.provider,
-        model: resolved.model,
-      });
-    } catch {
-      return await this.resolveModelInfo({
-        provider:
-          this.fallbackProvider ??
-          normalizeProviderSlug(this.config.model_provider) ??
-          "grok",
-        model: trimmed,
-      });
-    }
+    const fallbackProvider =
+      trimmed.length === 0
+        ? this.fallbackProvider ?? "grok"
+        : this.fallbackProvider ?? this.configDefaultProvider ?? "grok";
+    return await this.resolveModelInfo(
+      this.modelRegistry.resolveSelection(trimmed, fallbackProvider),
+    );
   }
 
   tryListModels(): ReadonlyArray<ModelInfo> | undefined {
@@ -174,15 +70,8 @@ export class StaticModelsManager implements ModelsManager {
     readonly provider: string;
     readonly model: string;
   }): Promise<ModelInfo> {
-    return buildModelInfo({
-      provider: params.provider,
-      model: params.model,
-      config: this.config,
-      metadata: await this.metadataResolver.resolve({
-        provider: params.provider,
-        model: params.model,
-        config: this.config,
-      }),
-    });
+    return modelRegistryEntryToModelInfo(
+      await this.modelRegistry.resolve(params),
+    );
   }
 }

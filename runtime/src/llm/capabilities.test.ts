@@ -25,13 +25,16 @@ describe("resolveProviderModelCapabilities", () => {
     expect(caps).toMatchObject({
       provider: "grok",
       model: "grok-4.20-multi-agent-latest",
+      supportsToolUse: true,
       supportsPromptCaching: true,
       supportsContextEdits: false,
       supportsImageInput: true,
+      supportsVisionInput: true,
       supportsAudioInput: false,
       supportsAudioOutput: false,
       supportsStructuredOutput: true,
       supportsStructuredOutputWithTools: true,
+      supportsProviderNativeWebSearch: true,
       supportsExtendedThinking: false,
       acceptsImageHistory: true,
       acceptsAudioHistory: false,
@@ -59,13 +62,16 @@ describe("resolveProviderModelCapabilities", () => {
       }),
     ).toMatchObject({
       provider: "openai",
+      supportsToolUse: true,
       supportsPromptCaching: true,
       supportsContextEdits: false,
       supportsImageInput: true,
+      supportsVisionInput: true,
       supportsAudioInput: false,
       supportsAudioOutput: false,
       supportsStructuredOutput: true,
       supportsStructuredOutputWithTools: true,
+      supportsProviderNativeWebSearch: false,
       supportsExtendedThinking: true,
       acceptsImageHistory: true,
       acceptsAudioHistory: false,
@@ -272,13 +278,16 @@ describe("resolveProviderModelCapabilities", () => {
     ).toMatchObject({
       provider: "unknown-provider",
       model: "some-model",
+      supportsToolUse: false,
       supportsPromptCaching: false,
       supportsContextEdits: false,
       supportsImageInput: false,
+      supportsVisionInput: false,
       supportsAudioInput: false,
       supportsAudioOutput: false,
       supportsStructuredOutput: false,
       supportsStructuredOutputWithTools: false,
+      supportsProviderNativeWebSearch: false,
       supportsExtendedThinking: false,
       acceptsImageHistory: false,
       acceptsAudioHistory: false,
@@ -292,11 +301,13 @@ describe("resolveProviderModelCapabilities", () => {
       provider: "openrouter",
       model: "openai/gpt-5",
       overrides: {
+        supportsToolUse: false,
         acceptsThinkingHistory: true,
         acceptsReasoningEffort: true,
       },
     });
 
+    expect(caps.supportsToolUse).toBe(false);
     expect(caps.acceptsThinkingHistory).toBe(true);
     expect(caps.acceptsReasoningEffort).toBe(true);
   });
