@@ -747,6 +747,36 @@ describe("OpenAIProvider", () => {
     expect(headers.get("accept")).toBe("text/event-stream");
   });
 
+  test("rejects responses-api stream tool calls with invalid completed JSON", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        'event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_bad","call_id":"call_bad","name":"system.echo","arguments":"not-json"}}\n\n',
+        'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_1","status":"completed","model":"gpt-5","output":[]}}\n\n',
+      ]),
+    );
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "gpt-5",
+      fetchImpl,
+    });
+    const chunks: unknown[] = [];
+
+    await expect(
+      provider.chatStream(
+        [{ role: "user", content: "hello" }],
+        (chunk) => chunks.push(chunk),
+      ),
+    ).rejects.toThrow("OpenAI Responses stream emitted invalid function_call");
+    expect(
+      chunks.some(
+        (chunk) =>
+          typeof chunk === "object" &&
+          chunk !== null &&
+          "toolCalls" in chunk,
+      ),
+    ).toBe(false);
+  });
+
   test("refreshes oauth credentials before retrying a streaming request", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
@@ -857,6 +887,34 @@ describe("OpenAIProvider", () => {
     const request = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
     expect(request.stream).toBe(true);
     expect(request.stream_options).toEqual({ include_usage: true });
+    expectNoRequestMetadataWarning(emitWarning);
+  });
+
+  test("rejects chat-completions stream tool calls with invalid completed JSON", async () => {
+    const emitWarning = vi.fn();
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        'data: {"id":"chatcmpl_1","model":"gpt-5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_bad","type":"function","function":{"name":"system.echo","arguments":"not-json"}}]}}]}\n\n',
+        'data: {"id":"chatcmpl_1","model":"gpt-5","choices":[{"index":0,"finish_reason":"tool_calls"}]}\n\n',
+        "data: [DONE]\n\n",
+      ]),
+    );
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "gpt-5",
+      useResponsesApi: false,
+      fetchImpl,
+      emitWarning,
+    });
+    const chunks: unknown[] = [];
+
+    await expect(
+      provider.chatStream(
+        [{ role: "user", content: "hello" }],
+        (chunk) => chunks.push(chunk),
+      ),
+    ).rejects.toThrow("OpenAI chat-completions stream emitted invalid tool_call");
+    expect(chunks).toEqual([]);
     expectNoRequestMetadataWarning(emitWarning);
   });
 
