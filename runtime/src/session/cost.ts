@@ -39,6 +39,12 @@ export interface ModelCostEntry {
   readonly inputUsdPer1K: number;
   readonly outputUsdPer1K: number;
   readonly cachedInputUsdPer1K?: number;
+  /**
+   * Some providers report cached input as a subset of input tokens.
+   * When true, cached tokens are subtracted from the full-rate input
+   * portion before applying cached-input pricing.
+   */
+  readonly cachedInputIncludedInInputTokens?: boolean;
   readonly cacheCreationUsdPer1K?: number;
   readonly reasoningOutputUsdPer1K?: number;
   readonly webSearchUsdPerRequest?: number;
@@ -68,19 +74,63 @@ export const DEFAULT_UNKNOWN_MODEL_COST: Readonly<ModelCostEntry> =
     label: "fallback",
   });
 
-const COST_TIER_GPT_5: Readonly<ModelCostEntry> = Object.freeze({
-  inputUsdPer1K: 0.00125,
-  outputUsdPer1K: 0.01,
-  cachedInputUsdPer1K: 0.000125,
-  webSearchUsdPerRequest: 0.01,
-});
+function openAiCachedInputTier(
+  inputUsdPer1M: number,
+  outputUsdPer1M: number,
+  cachedInputUsdPer1M: number,
+): Readonly<ModelCostEntry> {
+  return Object.freeze({
+    inputUsdPer1K: inputUsdPer1M / 1000,
+    outputUsdPer1K: outputUsdPer1M / 1000,
+    cachedInputUsdPer1K: cachedInputUsdPer1M / 1000,
+    cachedInputIncludedInInputTokens: true,
+    webSearchUsdPerRequest: 0.01,
+  });
+}
 
-const COST_TIER_O3: Readonly<ModelCostEntry> = Object.freeze({
-  inputUsdPer1K: 0.002,
-  outputUsdPer1K: 0.008,
-  cachedInputUsdPer1K: 0.0005,
-  webSearchUsdPerRequest: 0.01,
-});
+function openAiUncachedInputTier(
+  inputUsdPer1M: number,
+  outputUsdPer1M: number,
+): Readonly<ModelCostEntry> {
+  return Object.freeze({
+    inputUsdPer1K: inputUsdPer1M / 1000,
+    outputUsdPer1K: outputUsdPer1M / 1000,
+    webSearchUsdPerRequest: 0.01,
+  });
+}
+
+function openAiCostAliases(
+  model: string,
+  entry: ModelCostEntry,
+): Record<string, ModelCostEntry> {
+  return {
+    [`openai:${model}`]: entry,
+    [model]: entry,
+    [`openai/${model}`]: entry,
+    [`openrouter:openai/${model}`]: entry,
+    [`openrouter:${model}`]: entry,
+  };
+}
+
+const COST_TIER_GPT_5_4 = openAiCachedInputTier(2.5, 15, 0.25);
+const COST_TIER_GPT_5_4_MINI = openAiCachedInputTier(0.75, 4.5, 0.075);
+const COST_TIER_GPT_5_4_NANO = openAiCachedInputTier(0.2, 1.25, 0.02);
+const COST_TIER_GPT_5_2 = openAiCachedInputTier(1.75, 14, 0.175);
+const COST_TIER_GPT_5_1 = openAiCachedInputTier(1.25, 10, 0.125);
+const COST_TIER_GPT_5 = openAiCachedInputTier(1.25, 10, 0.125);
+const COST_TIER_GPT_5_MINI = openAiCachedInputTier(0.25, 2, 0.025);
+const COST_TIER_GPT_5_NANO = openAiCachedInputTier(0.05, 0.4, 0.005);
+const COST_TIER_GPT_4_1 = openAiCachedInputTier(2, 8, 0.5);
+const COST_TIER_GPT_4_1_MINI = openAiCachedInputTier(0.4, 1.6, 0.1);
+const COST_TIER_GPT_4_1_NANO = openAiCachedInputTier(0.1, 0.4, 0.025);
+const COST_TIER_GPT_4O = openAiCachedInputTier(2.5, 10, 1.25);
+const COST_TIER_GPT_4O_MINI = openAiCachedInputTier(0.15, 0.6, 0.075);
+const COST_TIER_O1 = openAiCachedInputTier(15, 60, 7.5);
+const COST_TIER_O1_MINI = openAiCachedInputTier(1.1, 4.4, 0.55);
+const COST_TIER_O1_PRO = openAiUncachedInputTier(150, 600);
+const COST_TIER_O3 = openAiCachedInputTier(2, 8, 0.5);
+const COST_TIER_O3_MINI = openAiCachedInputTier(1.1, 4.4, 0.55);
+const COST_TIER_O4_MINI = openAiCachedInputTier(1.1, 4.4, 0.275);
 
 const COST_TIER_SONNET: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.003,
@@ -138,36 +188,26 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
       reasoningOutputUsdPer1K: 0.012,
       webSearchUsdPerRequest: 0.01,
     },
-    "openai:gpt-5": COST_TIER_GPT_5,
-    "gpt-5": COST_TIER_GPT_5,
-    "openrouter:openai/gpt-5": COST_TIER_GPT_5,
-    "openrouter:gpt-5": COST_TIER_GPT_5,
-    "openai/gpt-5": COST_TIER_GPT_5,
-    "openai:o3": COST_TIER_O3,
-    "o3": COST_TIER_O3,
-    "openrouter:openai/o3": COST_TIER_O3,
-    "openrouter:o3": COST_TIER_O3,
-    "openai/o3": COST_TIER_O3,
-    "openai:gpt-4o": {
-      inputUsdPer1K: 0.0025,
-      outputUsdPer1K: 0.01,
-      webSearchUsdPerRequest: 0.01,
-    },
-    "gpt-4o": {
-      inputUsdPer1K: 0.0025,
-      outputUsdPer1K: 0.01,
-      webSearchUsdPerRequest: 0.01,
-    },
-    "openai:gpt-4o-mini": {
-      inputUsdPer1K: 0.00015,
-      outputUsdPer1K: 0.0006,
-      webSearchUsdPerRequest: 0.01,
-    },
-    "gpt-4o-mini": {
-      inputUsdPer1K: 0.00015,
-      outputUsdPer1K: 0.0006,
-      webSearchUsdPerRequest: 0.01,
-    },
+    ...openAiCostAliases("gpt-5.4", COST_TIER_GPT_5_4),
+    ...openAiCostAliases("gpt-5.4-mini", COST_TIER_GPT_5_4_MINI),
+    ...openAiCostAliases("gpt-5.4-nano", COST_TIER_GPT_5_4_NANO),
+    ...openAiCostAliases("gpt-5.2", COST_TIER_GPT_5_2),
+    ...openAiCostAliases("gpt-5.1", COST_TIER_GPT_5_1),
+    ...openAiCostAliases("gpt-5", COST_TIER_GPT_5),
+    ...openAiCostAliases("gpt-5-mini", COST_TIER_GPT_5_MINI),
+    ...openAiCostAliases("gpt-5-nano", COST_TIER_GPT_5_NANO),
+    ...openAiCostAliases("gpt-4.1", COST_TIER_GPT_4_1),
+    ...openAiCostAliases("gpt-4.1-mini", COST_TIER_GPT_4_1_MINI),
+    ...openAiCostAliases("gpt-4.1-nano", COST_TIER_GPT_4_1_NANO),
+    ...openAiCostAliases("gpt-4o", COST_TIER_GPT_4O),
+    ...openAiCostAliases("gpt-4o-mini", COST_TIER_GPT_4O_MINI),
+    ...openAiCostAliases("o1", COST_TIER_O1),
+    ...openAiCostAliases("o1-preview", COST_TIER_O1),
+    ...openAiCostAliases("o1-mini", COST_TIER_O1_MINI),
+    ...openAiCostAliases("o1-pro", COST_TIER_O1_PRO),
+    ...openAiCostAliases("o3", COST_TIER_O3),
+    ...openAiCostAliases("o3-mini", COST_TIER_O3_MINI),
+    ...openAiCostAliases("o4-mini", COST_TIER_O4_MINI),
     // branding-scan: allow documented Anthropic API model identifier
     "anthropic:claude-sonnet-4-6": COST_TIER_SONNET,
     // branding-scan: allow documented Anthropic API model identifier
@@ -288,7 +328,10 @@ export function computeUsdCostWithResolution(
 ): CostResolution {
   const match = resolveModelCostEntry(usage, registry);
   const entry = match?.entry ?? DEFAULT_UNKNOWN_MODEL_COST;
-  const inputCost = (usage.inputTokens / 1000) * entry.inputUsdPer1K;
+  const fullRateInputTokens = entry.cachedInputIncludedInInputTokens
+    ? Math.max(0, usage.inputTokens - usage.cachedInputTokens)
+    : usage.inputTokens;
+  const inputCost = (fullRateInputTokens / 1000) * entry.inputUsdPer1K;
   const outputCost = (usage.outputTokens / 1000) * entry.outputUsdPer1K;
   const cachedCost =
     entry.cachedInputUsdPer1K !== undefined
@@ -345,8 +388,24 @@ function canonicalModel(model: string): string {
     : pathUnqualified;
   if (unqualified.startsWith("grok-4-fast")) return "grok-4-fast";
   if (unqualified.startsWith("grok-4")) return "grok-4.20-0309-reasoning";
+  if (unqualified.startsWith("gpt-5.4-mini")) return "gpt-5.4-mini";
+  if (unqualified.startsWith("gpt-5.4-nano")) return "gpt-5.4-nano";
+  if (unqualified.startsWith("gpt-5.4")) return "gpt-5.4";
+  if (unqualified.startsWith("gpt-5.2")) return "gpt-5.2";
+  if (unqualified.startsWith("gpt-5.1")) return "gpt-5.1";
+  if (unqualified.startsWith("gpt-5-mini")) return "gpt-5-mini";
+  if (unqualified.startsWith("gpt-5-nano")) return "gpt-5-nano";
   if (unqualified.startsWith("gpt-5")) return "gpt-5";
+  if (unqualified.startsWith("o1-mini")) return "o1-mini";
+  if (unqualified.startsWith("o1-preview")) return "o1-preview";
+  if (unqualified.startsWith("o1-pro")) return "o1-pro";
+  if (unqualified.startsWith("o1")) return "o1";
+  if (unqualified.startsWith("o3-mini")) return "o3-mini";
   if (unqualified.startsWith("o3")) return "o3";
+  if (unqualified.startsWith("o4-mini")) return "o4-mini";
+  if (unqualified.startsWith("gpt-4.1-mini")) return "gpt-4.1-mini";
+  if (unqualified.startsWith("gpt-4.1-nano")) return "gpt-4.1-nano";
+  if (unqualified.startsWith("gpt-4.1")) return "gpt-4.1";
   if (unqualified.startsWith("gpt-4o-mini")) return "gpt-4o-mini";
   if (unqualified.startsWith("gpt-4o")) return "gpt-4o";
   // branding-scan: allow documented Anthropic API model identifier
