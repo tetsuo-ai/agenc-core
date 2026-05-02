@@ -3,7 +3,7 @@ export * from "./backfill.js";
 export * from "./errors.js";
 export * from "./logs.js";
 export * from "./memories.js";
-export * from "./migrations.js";
+export * from "./migrations/index.js";
 export * from "./recovery.js";
 export * from "./remote-control.js";
 export * from "./resume.js";

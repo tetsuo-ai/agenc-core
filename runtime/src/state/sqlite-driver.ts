@@ -11,7 +11,7 @@ import {
   LOGS_DB_MIGRATIONS,
   STATE_DB_MIGRATIONS,
   type SqlMigration,
-} from "./migrations.js";
+} from "./migrations/index.js";
 
 export interface OpenStateDatabaseOptions {
   readonly cwd: string;

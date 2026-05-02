@@ -1,20 +1,12 @@
 /**
- * CSV agent-jobs persistence (codex-v2 parity).
+ * CSV agent-jobs persistence.
  *
- * Hand-port of:
- *   - codex `state/src/model/agent_job.rs` (status enums, record types,
- *     create-params, row decoder)
- *   - codex `state/src/runtime/agent_jobs.rs` (CRUD + transitions)
+ * AgenC stores imported batch jobs in `csv_agent_jobs` /
+ * `csv_agent_job_items` so they do not collide with the existing
+ * `agent_jobs` queue table. The schema is created by migration v2 in the
+ * versioned state migration registry.
  *
- * Codex stores agent-jobs in a dedicated SQLite database with two tables
- * (`agent_jobs` and `agent_job_items`). AgenC already has a different
- * `agent_jobs` table for its own queue system, so the codex-shaped tables
- * are namespaced `csv_agent_jobs` / `csv_agent_job_items` (see migration v2
- * in `state/migrations.ts`). The schema columns match codex byte-for-byte
- * including the `max_runtime_seconds` column folded in from
- * codex's 0015 migration.
- *
- * Dates are stored as Unix epoch seconds (integers), matching codex.
+ * Dates are stored as Unix epoch seconds.
  *
  * @module
  */
@@ -78,7 +70,7 @@ function parseItemStatus(raw: string): CsvAgentJobItemStatus {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Records and create-params (mirrors codex `model/agent_job.rs`)
+// Records and create-params
 // ─────────────────────────────────────────────────────────────────────
 
 export interface CsvAgentJob {
