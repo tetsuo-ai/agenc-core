@@ -19,24 +19,24 @@ import type {
   LLMUsage,
   LLMTool,
   StreamProgressCallback,
-} from "../types.js";
-import { validateToolCall } from "../types.js";
+} from "../../types.js";
+import { validateToolCall } from "../../types.js";
 import type { OllamaProviderConfig } from "./types.js";
-import { LLMProviderError, mapLLMError } from "../errors.js";
-import { ensureLazyImport } from "../lazy-import.js";
+import { LLMProviderError, mapLLMError } from "../../errors.js";
+import { ensureLazyImport } from "../../lazy-import.js";
 import {
   buildUnsupportedCompactionDiagnostics,
   resolveLLMCompactionConfig,
   type ResolvedLLMCompactionConfig,
-} from "../provider-capabilities.js";
-import { withTimeout } from "../timeout.js";
-import { repairToolTurnSequence, validateToolTurnSequence } from "../tool-turn-validator.js";
-import { safeStringify } from "../_deps/safe-stringify.js";
-import { resolveContextWindowProfile } from "../_deps/context-window.js";
-import { withOllamaHealthSidecar } from "../providers/ollama/health.js";
+} from "../../provider-capabilities.js";
+import { withTimeout } from "../../timeout.js";
+import { repairToolTurnSequence, validateToolTurnSequence } from "../../tool-turn-validator.js";
+import { safeStringify } from "../../_deps/safe-stringify.js";
+import { resolveContextWindowProfile } from "../../_deps/context-window.js";
+import { withOllamaHealthSidecar } from "./health.js";
 
 const DEFAULT_HOST = "http://localhost:11434";
-const DEFAULT_MODEL = "llama3";
+const DEFAULT_MODEL = "llama3.3";
 
 function normalizeTimeoutMs(timeoutMs: number | undefined): number | undefined {
   if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs)) {
@@ -234,6 +234,84 @@ function buildToolSelectionTraceContext(
   };
 }
 
+function readAbortReason(signal: AbortSignal): unknown {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error("Ollama stream aborted");
+}
+
+async function nextWithAbort<T>(
+  iterator: AsyncIterator<T>,
+  signal: AbortSignal,
+): Promise<IteratorResult<T>> {
+  if (signal.aborted) {
+    throw readAbortReason(signal);
+  }
+
+  return await new Promise<IteratorResult<T>>((resolve, reject) => {
+    const abort = (): void => reject(readAbortReason(signal));
+    signal.addEventListener("abort", abort, { once: true });
+    void iterator.next()
+      .then(resolve, reject)
+      .finally(() => {
+        signal.removeEventListener("abort", abort);
+      });
+  });
+}
+
+async function* abortableAsyncIterable<T>(
+  iterable: AsyncIterable<T>,
+  signal: AbortSignal,
+): AsyncGenerator<T> {
+  const iterator = iterable[Symbol.asyncIterator]();
+  try {
+    while (true) {
+      const result = await nextWithAbort(iterator, signal);
+      if (result.done) return;
+      yield result.value;
+    }
+  } finally {
+    void iterator.return?.();
+  }
+}
+
+function onAbort(signal: AbortSignal, abort: () => void): () => void {
+  if (signal.aborted) {
+    abort();
+    return () => {};
+  }
+  const handleAbort = (): void => abort();
+  signal.addEventListener("abort", handleAbort, { once: true });
+  return () => signal.removeEventListener("abort", handleAbort);
+}
+
+function abortOllamaStream(stream: unknown): void {
+  const abort = (stream as { abort?: unknown })?.abort;
+  if (typeof abort === "function") {
+    abort.call(stream);
+  }
+}
+
+function abortOllamaClient(client: unknown): void {
+  const abort = (client as { abort?: unknown })?.abort;
+  if (typeof abort === "function") {
+    abort.call(client);
+  }
+}
+
+function parseToolCallArguments(argumentsJson: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(argumentsJson) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Fall through to an empty object; malformed historical arguments should
+    // not make provider serialization fail before the validator can respond.
+  }
+  return {};
+}
+
 export class OllamaProvider implements LLMProvider {
   readonly name = "ollama";
 
@@ -281,7 +359,7 @@ export class OllamaProvider implements LLMProvider {
         context: buildToolSelectionTraceContext(toolSelection, requestTimeoutMs),
       });
       const response = await withTimeout(
-        async (signal) => (client as any).chat(params, { signal }),
+        async () => (client as any).chat(params),
         requestTimeoutMs,
         this.name,
         options?.signal,
@@ -348,43 +426,56 @@ export class OllamaProvider implements LLMProvider {
           { error: "provider_request_trace_unavailable" },
         context: buildToolSelectionTraceContext(toolSelection, requestTimeoutMs),
       });
-      const stream = await withOllamaHealthSidecar({
+      await withOllamaHealthSidecar({
         signal: options?.signal,
         healthCheck: async () => await this.healthCheck(),
-        operation: async (signal) =>
-          await withTimeout(
-            async (activeSignal) =>
-              (client as any).chat(params, { signal: activeSignal }),
+        operation: async (signal) => {
+          const cleanupClientAbort = onAbort(signal, () =>
+            abortOllamaClient(client));
+          const stream = await withTimeout(
+            async () => (client as any).chat(params),
             requestTimeoutMs,
             this.name,
             signal,
-          ),
-      });
+          ).finally(() => {
+            cleanupClientAbort();
+          });
+          const cleanupStreamAbort = onAbort(signal, () =>
+            abortOllamaStream(stream));
 
-      for await (const chunk of stream as AsyncIterable<any>) {
-        if (chunk.message?.content) {
-          content += chunk.message.content;
-          onChunk({ content: chunk.message.content, done: false });
-        }
+          try {
+            for await (const chunk of abortableAsyncIterable(
+              stream as AsyncIterable<any>,
+              signal,
+            )) {
+              if (chunk.message?.content) {
+                content += chunk.message.content;
+                onChunk({ content: chunk.message.content, done: false });
+              }
 
-        // Accumulate tool calls
-        if (chunk.message?.tool_calls) {
-          for (const tc of chunk.message.tool_calls) {
-            const validated = validateToolCall({
-              id: randomUUID(),
-              name: tc.function?.name ?? "",
-              arguments: JSON.stringify(tc.function?.arguments ?? {}),
-            });
-            if (validated) {
-              toolCalls.push(validated);
+              // Accumulate tool calls
+              if (chunk.message?.tool_calls) {
+                for (const tc of chunk.message.tool_calls) {
+                  const validated = validateToolCall({
+                    id: randomUUID(),
+                    name: tc.function?.name ?? "",
+                    arguments: JSON.stringify(tc.function?.arguments ?? {}),
+                  });
+                  if (validated) {
+                    toolCalls.push(validated);
+                  }
+                }
+              }
+
+              if (chunk.model) model = chunk.model;
+              if (chunk.prompt_eval_count) promptTokens = chunk.prompt_eval_count;
+              if (chunk.eval_count) completionTokens = chunk.eval_count;
             }
+          } finally {
+            cleanupStreamAbort();
           }
-        }
-
-        if (chunk.model) model = chunk.model;
-        if (chunk.prompt_eval_count) promptTokens = chunk.prompt_eval_count;
-        if (chunk.eval_count) completionTokens = chunk.eval_count;
-      }
+        },
+      });
 
       const finishReason: LLMResponse["finishReason"] =
         toolCalls.length > 0 ? "tool_calls" : "stop";
@@ -661,6 +752,19 @@ export class OllamaProvider implements LLMProvider {
         role: "tool",
         content,
         tool_call_id: msg.toolCallId,
+        ...(msg.toolName ? { tool_name: msg.toolName } : {}),
+      };
+    }
+    if (msg.role === "assistant" && msg.toolCalls?.length) {
+      return {
+        role: "assistant",
+        content: msg.content,
+        tool_calls: msg.toolCalls.map((toolCall) => ({
+          function: {
+            name: toolCall.name,
+            arguments: parseToolCallArguments(toolCall.arguments),
+          },
+        })),
       };
     }
     return { role: msg.role, content: msg.content };

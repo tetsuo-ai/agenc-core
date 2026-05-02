@@ -1,8 +1,8 @@
 /**
- * Ollama local LLM provider module
+ * Compatibility exports for the Ollama local LLM provider.
  *
  * @module
  */
 
-export { OllamaProvider } from "./adapter.js";
-export type { OllamaProviderConfig } from "./types.js";
+export { OllamaProvider } from "../providers/ollama/index.js";
+export type { OllamaProviderConfig } from "../providers/ollama/index.js";
