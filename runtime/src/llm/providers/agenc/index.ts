@@ -1,3 +1,12 @@
+/**
+ * AgenC-native hosted provider scaffold.
+ *
+ * This provider exposes the same LLMProvider surface as concrete providers
+ * while routing model selection and managed key vending through AuthBackend.
+ * A-04 owns the full hosted implementation; LP-19 records the provider
+ * interface shape and factory integration.
+ */
+
 import type {
   AuthBackend,
   AuthSessionId,
