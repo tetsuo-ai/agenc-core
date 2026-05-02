@@ -12,7 +12,7 @@ It is the canonical reference for pipeline states, delegation behavior, budget c
 - `runtime/src/llm/prompt-budget.ts`
 - `runtime/src/llm/tool-turn-validator.ts`
 - `runtime/src/llm/policy.ts`
-- `runtime/src/llm/grok/adapter.ts`
+- `runtime/src/llm/providers/grok/adapter.ts`
 - `runtime/src/gateway/daemon.ts`
 - `runtime/src/eval/pipeline-quality-runner.ts`
 - `runtime/src/eval/pipeline-gates.ts`

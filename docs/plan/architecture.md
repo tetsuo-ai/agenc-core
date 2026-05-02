@@ -153,7 +153,7 @@ graph TB
 | AgenC runtime | `core/src/agent/{control,registry,role,status}.rs` | ~2,019 | `runtime/src/agents/{control,registry,role,status}.ts` (hand-port) |
 | AgenC runtime | `core/src/agent/mailbox.rs` | 161 | `runtime/src/agents/mailbox.ts` (hand-port) |
 | AgenC runtime | `protocol/src/protocol.rs` (event enums only) | ~500 effective | `runtime/src/session/event-log.ts` (hand-port) |
-| AgenC (keep) | `runtime/src/llm/grok/` | 8,144 | — verbatim |
+| AgenC (relocate) | `runtime/src/llm/grok/` | 8,144 | `runtime/src/llm/providers/grok/` with compatibility exports retained |
 | AgenC (keep) | `runtime/src/watch/agenc-watch-{art,splash,ui-primitives,terminal-sequences}.mjs` | ~700 | — verbatim |
 
 ---
@@ -231,9 +231,10 @@ agenc-core/runtime/src/
     context.ts                   # AgenC implementation: ToolPayload
     registry.ts                  # extend existing tool-registry.ts
   llm/
-    grok/                        # historical Grok implementation retained
+    grok/                        # compatibility exports for historical imports
     ollama/                      # historical Ollama implementation retained
-    providers/                   # canonical provider entrypoints
+    providers/                   # canonical provider implementations and entrypoints
+      grok/                      # canonical Grok implementation
     wire/                        # provider request/response shims
     oauth/                       # shared OAuth refresh loop
     provider.ts                  # factory createProvider()

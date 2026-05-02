@@ -18,7 +18,7 @@
     "runtime/src/llm/wire/responses-openai.ts",
     "runtime/src/llm/wire/chat-completions.ts",
     "runtime/src/llm/wire/messages-anthropic.ts",
-    "runtime/src/llm/grok/adapter.ts",
+    "runtime/src/llm/providers/grok/adapter.ts",
     "runtime/src/llm/providers/openai/adapter.ts",
     "runtime/src/llm/providers/anthropic/adapter.ts"
   ],
@@ -30,7 +30,7 @@
     "runtime/src/llm/wire/responses-openai.test.ts",
     "runtime/src/llm/wire/chat-completions.test.ts",
     "runtime/src/llm/wire/messages-anthropic.test.ts",
-    "runtime/src/llm/grok/adapter.test.ts",
+    "runtime/src/llm/providers/grok/adapter.test.ts",
     "runtime/src/llm/providers/openai/adapter.test.ts",
     "runtime/src/llm/providers/anthropic/adapter.test.ts"
   ],
