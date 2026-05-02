@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../config/index.js";
 import type {
   AuthBackend,
+  AuthProviderSlug,
+  AuthSessionId,
   AuthSubscriptionTier,
 } from "../auth/index.js";
 import {
@@ -39,6 +41,9 @@ function createIo(): AgenCProvidersCliIo & {
 function authBackend(
   kind: "local" | "remote",
   tier: AuthSubscriptionTier,
+  overrides: Partial<
+    Pick<AuthBackend, "vendKey" | "inferAgencModel" | "getSubscriptionTier">
+  > = {},
 ): AuthBackend {
   return {
     kind,
@@ -51,16 +56,16 @@ function authBackend(
       authenticated: true,
       provider: kind,
     }),
-    vendKey: (provider, sessionId) => ({
+    vendKey: overrides.vendKey ?? ((provider, sessionId) => ({
       provider,
       sessionId,
       apiKey: "managed-key",
-    }),
-    inferAgencModel: () => ({
+    })),
+    inferAgencModel: overrides.inferAgencModel ?? (() => ({
       provider: "grok",
       model: "grok-4-fast",
-    }),
-    getSubscriptionTier: () => tier,
+    })),
+    getSubscriptionTier: overrides.getSubscriptionTier ?? (() => tier),
   };
 }
 
@@ -157,9 +162,65 @@ describe("providers CLI", () => {
     });
   });
 
-  it("marks hosted and managed-key providers usable for paid remote auth", async () => {
+  it("passes configured bearer credentials to key-backed local probes", async () => {
+    const seenHeaders = new Map<string, string | null>();
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      const url = String(input);
+      const authHeader = new Headers(init?.headers).get("authorization");
+      seenHeaders.set(url, authHeader);
+      if (url === "http://localhost:1234/v1/models") {
+        return new Response("{}", {
+          status: authHeader === "Bearer studio-key" ? 200 : 401,
+        });
+      }
+      if (url === "http://localhost:8000/v1/models") {
+        return new Response("{}", {
+          status: authHeader === "Bearer compat-key" ? 200 : 401,
+        });
+      }
+      return new Response("{}", { status: 200 });
+    });
+
     const report = await collectProviderAvailability({
-      authBackend: authBackend("remote", "pro"),
+      authBackend: authBackend("local", "free"),
+      config: defaultConfig(),
+      env: {
+        LMSTUDIO_API_KEY: "studio-key",
+        OPENAI_COMPATIBLE_API_KEY: "compat-key",
+      },
+      fetchImpl,
+    });
+    const entries = byProvider(report.entries);
+
+    expect(entries.get("lmstudio")).toMatchObject({
+      usable: true,
+      keyStatus: "present",
+      localStatus: "up",
+      localStatusCode: 200,
+    });
+    expect(entries.get("openai-compatible")).toMatchObject({
+      usable: true,
+      keyStatus: "present",
+      localStatus: "up",
+      localStatusCode: 200,
+    });
+    expect(seenHeaders.get("http://localhost:1234/v1/models")).toBe(
+      "Bearer studio-key",
+    );
+    expect(seenHeaders.get("http://localhost:8000/v1/models")).toBe(
+      "Bearer compat-key",
+    );
+  });
+
+  it("marks hosted and managed-key providers usable for paid remote auth", async () => {
+    const calls: string[] = [];
+    const report = await collectProviderAvailability({
+      authBackend: authBackend("remote", "pro", {
+        vendKey: (provider, sessionId) => {
+          calls.push(`vendKey:${provider}:${sessionId}`);
+          return { provider, sessionId, apiKey: `managed-${provider}` };
+        },
+      }),
       checkLocal: false,
       config: defaultConfig(),
       env: {},
@@ -176,6 +237,110 @@ describe("providers CLI", () => {
       keyStatus: "not-required",
       subscriptionTier: "pro",
     });
+    expect(calls).toContain("vendKey:grok:cli");
+    expect(calls).toContain("vendKey:openai:cli");
+  });
+
+  it("marks managed-key provider rows unusable when vending fails", async () => {
+    const report = await collectProviderAvailability({
+      authBackend: authBackend("remote", "pro", {
+        vendKey: (provider, sessionId) => {
+          if (provider === "grok") throw new Error("grok denied");
+          return { provider, sessionId, apiKey: "managed-key" };
+        },
+      }),
+      checkLocal: false,
+      config: defaultConfig(),
+      env: {},
+    });
+    const entries = byProvider(report.entries);
+
+    expect(entries.get("grok")).toMatchObject({
+      usable: false,
+      keyStatus: "unavailable",
+    });
+    expect(entries.get("grok")?.detail).toContain("grok denied");
+  });
+
+  it("rejects managed-key vending with an empty or mismatched key response", async () => {
+    const report = await collectProviderAvailability({
+      authBackend: authBackend("remote", "team", {
+        vendKey: (provider, sessionId) => {
+          if (provider === "openai") {
+            return { provider: "grok", sessionId, apiKey: "managed-key" };
+          }
+          if (provider === "anthropic") {
+            return { provider, sessionId, apiKey: " " };
+          }
+          return { provider, sessionId, apiKey: "managed-key" };
+        },
+      }),
+      checkLocal: false,
+      config: defaultConfig(),
+      env: {},
+    });
+    const entries = byProvider(report.entries);
+
+    expect(entries.get("openai")).toMatchObject({
+      usable: false,
+      keyStatus: "unavailable",
+    });
+    expect(entries.get("openai")?.detail).toContain("provider mismatch");
+    expect(entries.get("anthropic")).toMatchObject({
+      usable: false,
+      keyStatus: "unavailable",
+    });
+    expect(entries.get("anthropic")?.detail).toContain("empty key");
+  });
+
+  it("marks hosted AgenC routing unusable when inference fails", async () => {
+    const report = await collectProviderAvailability({
+      authBackend: authBackend("remote", "team", {
+        inferAgencModel: () => {
+          throw new Error("routing denied");
+        },
+      }),
+      checkLocal: false,
+      config: defaultConfig(),
+      env: {},
+    });
+    const entries = byProvider(report.entries);
+
+    expect(entries.get("agenc")).toMatchObject({
+      usable: false,
+      keyStatus: "not-required",
+      subscriptionTier: "team",
+    });
+    expect(entries.get("agenc")?.detail).toContain("routing denied");
+  });
+
+  it("marks hosted AgenC routing unusable when inferred key vending fails", async () => {
+    const calls: string[] = [];
+    const report = await collectProviderAvailability({
+      authBackend: authBackend("remote", "team", {
+        inferAgencModel: () => ({
+          provider: "openai",
+          model: "gpt-5",
+        }),
+        vendKey: (provider: AuthProviderSlug | string, sessionId: AuthSessionId) => {
+          calls.push(`vendKey:${provider}:${sessionId}`);
+          if (provider === "openai") throw new Error("openai denied");
+          return { provider, sessionId, apiKey: "managed-key" };
+        },
+      }),
+      checkLocal: false,
+      config: defaultConfig(),
+      env: {},
+    });
+    const entries = byProvider(report.entries);
+
+    expect(entries.get("agenc")).toMatchObject({
+      usable: false,
+      keyStatus: "not-required",
+      subscriptionTier: "team",
+    });
+    expect(entries.get("agenc")?.detail).toContain("openai denied");
+    expect(calls).toContain("vendKey:openai:cli");
   });
 
   it("prints JSON reports without booting a session", async () => {

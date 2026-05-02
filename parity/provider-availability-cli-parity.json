@@ -32,7 +32,10 @@
         "missing hosted provider key",
         "present hosted provider key",
         "remote paid subscription can use managed keys",
-        "hosted AgenC routing requires a paid subscription"
+        "managed key vending failure makes a hosted provider unusable",
+        "empty or mismatched managed key responses are rejected",
+        "hosted AgenC routing requires a paid subscription",
+        "hosted AgenC routing verifies model inference and inferred-provider key vending"
       ],
       "tests": [
         "runtime/src/bin/providers-cli.test.ts"
@@ -57,6 +60,7 @@
         "local server returns success",
         "local server returns a non-2xx status",
         "local check skipped",
+        "key-backed local endpoints receive bearer auth on the probe",
         "provider-specific base URL overrides"
       ],
       "tests": [
