@@ -277,7 +277,8 @@ function findNamespacedSuffix(
   const [namespace, suffix, extra] = model.split("/");
   if (extra !== undefined || suffix === undefined) return undefined;
   if (!/^\w+$/.test(namespace)) return undefined;
-  return findExactModel(suffix, candidates);
+  return findExactModel(suffix, candidates) ??
+    findLongestPrefix(suffix, candidates);
 }
 
 function findLongestPrefix(

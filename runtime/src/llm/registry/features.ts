@@ -91,6 +91,27 @@ export interface AgenCFeatureSpec {
   readonly announcement?: string;
 }
 
+export interface AgenCMultiAgentV2Config {
+  readonly enabled?: boolean;
+  readonly max_concurrent_threads_per_session?: number;
+  readonly min_wait_timeout_ms?: number;
+  readonly usage_hint_enabled?: boolean;
+  readonly usage_hint_text?: string;
+  readonly root_agent_usage_hint_text?: string;
+  readonly subagent_usage_hint_text?: string;
+  readonly hide_spawn_agent_metadata?: boolean;
+}
+
+export interface AgenCAppsMcpPathOverrideConfig {
+  readonly enabled?: boolean;
+  readonly path?: string;
+}
+
+export type AgenCFeatureConfigEntry =
+  | boolean
+  | AgenCMultiAgentV2Config
+  | AgenCAppsMcpPathOverrideConfig;
+
 const PREVENT_IDLE_SLEEP_STAGE: AgenCFeatureStage =
   process.platform === "darwin" ||
   process.platform === "linux" ||
@@ -308,7 +329,7 @@ export class AgenCFeatureSet {
   }
 
   static fromConfig(
-    entries: Readonly<Record<string, boolean | undefined>> = {},
+    entries: Readonly<Record<string, AgenCFeatureConfigEntry | undefined>> = {},
   ): AgenCFeatureSet {
     const features = AgenCFeatureSet.withDefaults();
     features.apply(entries);
@@ -332,13 +353,17 @@ export class AgenCFeatureSet {
     }
   }
 
-  apply(entries: Readonly<Record<string, boolean | undefined>>): void {
-    for (const [rawKey, enabled] of Object.entries(entries)) {
-      if (enabled === undefined) continue;
+  apply(
+    entries: Readonly<Record<string, AgenCFeatureConfigEntry | undefined>>,
+  ): void {
+    for (const [rawKey, rawValue] of Object.entries(entries)) {
+      if (rawValue === undefined) continue;
       const feature = featureForKey(rawKey);
       if (feature === undefined || IGNORED_FEATURE_CONFIG_KEYS.has(feature)) {
         continue;
       }
+      const enabled = featureEnabledFromConfigEntry(feature, rawValue);
+      if (enabled === undefined) continue;
       this.setEnabled(feature, enabled);
     }
   }
@@ -369,6 +394,32 @@ export function experimentalFeatureSpecs(): readonly AgenCFeatureSpec[] {
   return Object.freeze(
     AGENC_FEATURE_SPECS.filter((spec) => spec.stage === "experimental"),
   );
+}
+
+function featureEnabledFromConfigEntry(
+  feature: AgenCFeatureKey,
+  value: AgenCFeatureConfigEntry,
+): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (!isRecord(value)) return undefined;
+  const configured = optionalBoolean(value.enabled);
+  if (configured !== undefined) return configured;
+  if (feature === "apps_mcp_path_override" && nonEmptyString(value.path)) {
+    return true;
+  }
+  return undefined;
+}
+
+function optionalBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isCanonicalFeatureKey(key: string): key is AgenCFeatureKey {

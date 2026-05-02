@@ -32,7 +32,8 @@
     "runtime/src/session/turn-context.ts",
     "runtime/src/agents/role.ts",
     "runtime/src/bin/model-facing-tools.ts",
-    "runtime/src/config/schema.ts"
+    "runtime/src/config/schema.ts",
+    "runtime/src/session/guardian-approval-review.ts"
   ],
   "testFiles": [
     "runtime/src/llm/registry/registry.test.ts",
@@ -40,7 +41,8 @@
     "runtime/src/llm/models-manager.test.ts",
     "runtime/src/llm/capabilities.test.ts",
     "runtime/src/bin/model-facing-tools.test.ts",
-    "runtime/src/agents/role.test.ts"
+    "runtime/src/agents/role.test.ts",
+    "runtime/src/session/guardian-approval-review.test.ts"
   ],
   "rows": [
     {
@@ -53,13 +55,14 @@
         "store model input modality and tool/search capability hints",
         "preserve default and supported reasoning levels including xhigh",
         "resolve exact, longest-prefix, and single-namespace model identifiers",
-        "feed the existing ModelRegistry and StaticModelsManager surfaces"
+        "feed the existing ModelRegistry and StaticModelsManager surfaces",
+        "connect the hidden review-only model to the guardian review selector"
       ],
       "edgeCases": [
         "newer bundled OpenAI models not present in the previous ad-hoc table",
-        "hidden review-only model row stays registered but rebranded for display",
+        "hidden review-only model row stays registered and selectable by guardian review",
         "gpt-5.4 defaults to xhigh rather than being silently downgraded",
-        "namespaced model lookup falls back to the suffix only for a single safe namespace",
+        "namespaced model lookup applies prefix matching to the stripped suffix",
         "unknown models continue to use conservative fallback metadata"
       ],
       "tests": [
@@ -67,10 +70,11 @@
         "runtime/src/llm/model-registry.test.ts",
         "runtime/src/llm/models-manager.test.ts",
         "runtime/src/bin/model-facing-tools.test.ts",
-        "runtime/src/agents/role.test.ts"
+        "runtime/src/agents/role.test.ts",
+        "runtime/src/session/guardian-approval-review.test.ts"
       ],
       "commands": [
-        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/registry/registry.test.ts src/llm/model-registry.test.ts src/llm/models-manager.test.ts src/llm/capabilities.test.ts src/bin/model-facing-tools.test.ts src/agents/role.test.ts"
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/registry/registry.test.ts src/llm/model-registry.test.ts src/llm/models-manager.test.ts src/llm/capabilities.test.ts src/bin/model-facing-tools.test.ts src/agents/role.test.ts src/session/guardian-approval-review.test.ts"
       ],
       "status": "required"
     },
@@ -101,12 +105,13 @@
     },
     {
       "id": "feature-stage-registry",
-      "source": "co\u0064ex-rs/features/src/lib.rs + co\u0064ex-rs/features/src/legacy.rs",
+      "source": "co\u0064ex-rs/features/src/lib.rs + co\u0064ex-rs/features/src/legacy.rs + co\u0064ex-rs/features/src/feature_configs.rs",
       "target": "runtime/src/llm/registry/features.ts",
       "requiredBehaviors": [
         "store every donor feature key with AgenC-owned naming",
         "store feature stage and default-enabled metadata",
         "normalize legacy feature keys onto AgenC-owned canonical keys",
+        "accept structured feature config entries for multi_agent_v2 and apps_mcp_path_override",
         "apply configured feature maps on top of defaults",
         "normalize feature dependencies such as code_mode_only requiring code_mode and fanout requiring multi_agent"
       ],
@@ -114,6 +119,8 @@
         "unknown feature keys are ignored",
         "legacy apply_patch aliases map to apply_patch_freeform",
         "legacy memory and screen-context aliases map to rebranded AgenC keys",
+        "apps_mcp_path_override enables when path is present unless enabled is false",
+        "multi_agent_v2 config fields are accepted while enablement still follows enabled",
         "removed compatibility flags are known without re-enabling deleted behavior",
         "experimental feature specs are discoverable for menus"
       ],

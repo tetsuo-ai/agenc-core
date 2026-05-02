@@ -10,6 +10,7 @@ import {
 } from "./guardian-rejection-circuit-breaker.js";
 import {
   createDefaultGuardianApprovalReviewer,
+  GUARDIAN_PREFERRED_MODEL,
   parseGuardianAssessment,
 } from "./guardian-approval-review.js";
 import { ReviewManager } from "./review.js";
@@ -147,9 +148,11 @@ function mkProvider(opts: ScriptedProviderOptions = {}): LLMProvider {
 function mkSession(opts: {
   readonly provider: LLMProvider;
   readonly breaker?: GuardianRejectionCircuitBreaker;
+  readonly models?: readonly ModelInfo[];
 }): { session: Session; events: Event[]; breaker: GuardianRejectionCircuitBreaker } {
   const events: Event[] = [];
   const breaker = opts.breaker ?? createGuardianRejectionCircuitBreaker();
+  const models = opts.models ?? [mkModelInfo()];
   const services = {
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
@@ -176,6 +179,12 @@ function mkSession(opts: {
     guardianRejections: new Map(),
     guardianRejectionCircuitBreaker: breaker,
     reviewManager: new ReviewManager(),
+    modelsManager: {
+      tryListModels: () => models,
+      listModels: async () => models,
+      getModelInfo: async (slug: string) =>
+        models.find((model) => model.slug === slug) ?? mkModelInfo(slug),
+    },
   } as unknown as SessionServices;
   const session = new Session({
     conversationId: "conv-guardian-approval-test",
@@ -269,6 +278,29 @@ describe("guardian approval reviewer", () => {
           event.msg.type === "guardian_assessment" ? event.msg.payload.status : "",
         ),
     ).toEqual(["in_progress", "approved"]);
+  });
+
+  it("selects the hidden auto-review model when it is available", async () => {
+    let observedModel: string | undefined;
+    const { session } = mkSession({
+      provider: mkProvider({
+        content: '{"outcome":"allow"}',
+        onChat: (_messages, options) => {
+          observedModel = options?.model;
+        },
+      }),
+      models: [mkModelInfo("test-model"), mkModelInfo(GUARDIAN_PREFERRED_MODEL)],
+    });
+    const turn = newDefaultTurnWithSubId(session, "turn-preferred-model");
+    const reviewer = createDefaultGuardianApprovalReviewer({ timeoutMs: 5_000 });
+
+    const result = await reviewer.reviewApprovalRequest({
+      ctx: mkApprovalCtx(session, turn),
+      args: { path: "file.txt", content: "ok" },
+    });
+
+    expect(result.decision.kind).toBe("approved");
+    expect(observedModel).toBe(GUARDIAN_PREFERRED_MODEL);
   });
 
   it("guardian deny assessment records a denial and returns the rationale", async () => {

@@ -147,6 +147,15 @@ describe("LLM registry", () => {
     ).toMatchObject({
       contextWindow: 272_000,
     });
+
+    expect(
+      resolveModelCatalogMetadata({
+        provider: "openai",
+        model: "preview/gpt-5.4-2026-02-01",
+      }),
+    ).toMatchObject({
+      contextWindow: 272_000,
+    });
   });
 
   it("preserves the complete bundled donor model catalog shape", () => {
@@ -200,6 +209,7 @@ describe("LLM registry", () => {
       enable_fanout: true,
       code_mode_only: true,
       multi_agent_v2: true,
+      apps_mcp_path_override: { path: "/tmp/agenc-apps.mjs" },
       js_repl: true,
       unknown_feature: true,
     });
@@ -215,10 +225,44 @@ describe("LLM registry", () => {
     expect(features.enabled("code_mode")).toBe(true);
     expect(features.enabled("multi_agent_v2")).toBe(true);
     expect(features.enabled("multi_agent")).toBe(true);
+    expect(features.enabled("apps_mcp_path_override")).toBe(true);
     expect(features.enabled("js_repl")).toBe(false);
     expect(experimentalFeatureSpecs().map((entry) => entry.key)).toContain(
       "goals",
     );
+  });
+
+  it("normalizes structured staged feature config entries", () => {
+    const enabled = AgenCFeatureSet.fromConfig({
+      multi_agent_v2: {
+        enabled: true,
+        max_concurrent_threads_per_session: 3,
+        min_wait_timeout_ms: 10_000,
+        usage_hint_enabled: true,
+        usage_hint_text: "Use agents sparingly.",
+        root_agent_usage_hint_text: "Root hint",
+        subagent_usage_hint_text: "Child hint",
+        hide_spawn_agent_metadata: false,
+      },
+      apps_mcp_path_override: {
+        path: "/tmp/agenc-apps.mjs",
+      },
+    });
+    expect(enabled.enabled("multi_agent_v2")).toBe(true);
+    expect(enabled.enabled("multi_agent")).toBe(true);
+    expect(enabled.enabled("apps_mcp_path_override")).toBe(true);
+
+    const disabled = AgenCFeatureSet.fromConfig({
+      multi_agent_v2: {
+        max_concurrent_threads_per_session: 3,
+      },
+      apps_mcp_path_override: {
+        enabled: false,
+        path: "/tmp/agenc-apps.mjs",
+      },
+    });
+    expect(disabled.enabled("multi_agent_v2")).toBe(false);
+    expect(disabled.enabled("apps_mcp_path_override")).toBe(false);
   });
 
   it("preserves donor feature keys, stages, and default states", () => {
