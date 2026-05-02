@@ -22,6 +22,10 @@ import {
   type AgenCDaemonCliHost,
   type AgenCDaemonCliIo,
 } from "./daemon-cli.js";
+import type {
+  AgenCBackgroundAgentRunner,
+  AgenCBackgroundAgentSessionEventBinding,
+} from "./background-agent-runner.js";
 
 function createIo(): AgenCDaemonCliIo & {
   readonly stdoutText: () => string;
@@ -110,6 +114,21 @@ async function waitForPid(pidPath: string): Promise<number> {
     await delay(10);
   }
   throw new Error("timed out waiting for daemon pid");
+}
+
+async function waitForSnapshotCount(
+  agencHome: string,
+  cwd: string,
+  sessionId: string,
+  minimum: number,
+): Promise<number> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 2_000) {
+    const count = snapshotCount(agencHome, cwd, sessionId);
+    if (count >= minimum) return count;
+    await delay(10);
+  }
+  throw new Error(`timed out waiting for snapshots for ${sessionId}`);
 }
 
 describe("AgenC daemon CLI", () => {
@@ -400,9 +419,20 @@ describe("AgenC daemon CLI", () => {
 
     const running = runAgenCDaemonCli(
       { kind: "command", action: "run" },
-      { host, io, signalProcess },
+      { host, io, signalProcess, snapshotPeriodicIntervalMs: 10 },
     );
     await expect(waitForPid(pidPath)).resolves.toBe(4100);
+    await expect(
+      waitForSnapshotCount(agencHome, process.cwd(), "session-restart", 2),
+    ).resolves.toBeGreaterThanOrEqual(2);
+    await expect(
+      waitForSnapshotCount(agencHome, otherCwd, "session-other", 2),
+    ).resolves.toBeGreaterThanOrEqual(2);
+    expect(latestSnapshotToolState(agencHome, otherCwd, "session-other"))
+      .toMatchObject({
+        lastTrigger: "periodic",
+        pending: ["tool-other"],
+      });
 
     expect(io.stderrText()).toContain(
       "daemon recovery loaded 2 agent run(s) from state",
@@ -500,6 +530,76 @@ describe("AgenC daemon CLI", () => {
     expect(readRecoveredToolStatus(agencHome, otherCwd, "tool-other")).toBe(
       "failed",
     );
+
+    await rm(otherCwd, { recursive: true, force: true });
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("routes attach-time session events to a non-default project database", async () => {
+    const agencHome = await tempAgencHome();
+    const otherCwd = await mkdtemp(join(tmpdir(), "agenc-daemon-event-cwd-"));
+    await mkdir(join(otherCwd, ".git"));
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+    let binding: AgenCBackgroundAgentSessionEventBinding | undefined;
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent-early-route",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      attachAgentSessionEvents: async (_agentId, nextBinding) => {
+        binding = nextBinding;
+        await nextBinding.emit({
+          jsonrpc: "2.0",
+          method: "event.tool_request",
+          params: {
+            sessionId: nextBinding.sessionId,
+            eventId: "tool-early-route",
+            agentId: "agent-early-route",
+            requestId: "tool-early-route",
+            toolName: "FileRead",
+            input: { path: "a.txt" },
+          },
+        });
+      },
+    };
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess, runner },
+    );
+    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+
+    const authCookie = (await readFile(cookiePath, "utf8")).trim();
+    const client = createAgenCJsonLineDaemonRequestClient({
+      socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
+      authCookie,
+      timeoutMs: 1000,
+    });
+    const created = await client.request("agent.create", {
+      objective: "route attach event",
+      cwd: otherCwd,
+    });
+    const sessionId = created.sessionId;
+    if (sessionId === undefined) throw new Error("session id missing");
+    expect(binding?.sessionId).toBe(sessionId);
+    expect(snapshotCount(agencHome, process.cwd(), sessionId)).toBe(0);
+    expect(latestSnapshotToolState(agencHome, otherCwd, sessionId))
+      .toMatchObject({
+        inFlight: {
+          "tool-early-route": {
+            requestId: "tool-early-route",
+            toolName: "FileRead",
+          },
+        },
+      });
+
+    signalProcess.emit("SIGTERM");
+    await expect(running).resolves.toBe(0);
 
     await rm(otherCwd, { recursive: true, force: true });
     await rm(agencHome, { recursive: true, force: true });
@@ -629,6 +729,56 @@ function readRecoveredToolStatus(
          WHERE tool_call_id = ?`,
       )
       .get(toolCallId)?.status;
+  } finally {
+    driver.close();
+  }
+}
+
+function snapshotCount(
+  agencHome: string,
+  cwd: string,
+  sessionId: string,
+): number {
+  const driver = openStateDatabases({
+    cwd,
+    agencHome,
+  });
+  try {
+    return (
+      driver
+        .prepareState<[string], { count: number }>(
+          `SELECT COUNT(*) AS count
+           FROM session_state_snapshots
+           WHERE session_id = ?`,
+        )
+        .get(sessionId)?.count ?? 0
+    );
+  } finally {
+    driver.close();
+  }
+}
+
+function latestSnapshotToolState(
+  agencHome: string,
+  cwd: string,
+  sessionId: string,
+): unknown {
+  const driver = openStateDatabases({
+    cwd,
+    agencHome,
+  });
+  try {
+    const row = driver
+      .prepareState<[string], { tool_state_json: string }>(
+        `SELECT tool_state_json
+         FROM session_state_snapshots
+         WHERE session_id = ?
+         ORDER BY snapshot_at DESC
+         LIMIT 1`,
+      )
+      .get(sessionId);
+    if (row === undefined) throw new Error("snapshot missing");
+    return JSON.parse(row.tool_state_json);
   } finally {
     driver.close();
   }

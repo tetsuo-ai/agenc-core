@@ -7,6 +7,7 @@ export * from "./migrations.js";
 export * from "./recovery.js";
 export * from "./remote-control.js";
 export * from "./resume.js";
+export * from "./snapshot-policy.js";
 export * from "./spawn-edges.js";
 export * from "./sqlite-driver.js";
 export * from "./threads.js";

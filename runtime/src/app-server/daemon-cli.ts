@@ -14,8 +14,14 @@ import { dirname, join } from "node:path";
 import {
   AgenCDaemonAgentManager,
   type AgenCDaemonAgentSnapshotFlush,
+  type AgenCDaemonAgentStatusSnapshot,
+  type AgenCDaemonMessageExchangeSnapshot,
+  type AgenCDaemonSnapshotSessionRoute,
 } from "./agent-lifecycle.js";
-import { AgenCDelegateBackgroundAgentRunner } from "./background-agent-runner.js";
+import {
+  AgenCDelegateBackgroundAgentRunner,
+  type AgenCBackgroundAgentRunner,
+} from "./background-agent-runner.js";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCCommandExecService } from "./command-exec.js";
 import {
@@ -47,11 +53,15 @@ import {
   type RecoveredAgentRun,
   type RecoveredSessionStateSnapshot,
 } from "../state/recovery.js";
+import { AgenCSessionSnapshotPolicy } from "../state/snapshot-policy.js";
 import {
   discoverStateDatabasePaths,
+  LOGS_DATABASE_FILENAME,
   openStateDatabasePaths,
   resolveStateDatabasePaths,
+  STATE_DATABASE_FILENAME,
   type StateDatabasePaths,
+  type StateSqliteDriver,
 } from "../state/sqlite-driver.js";
 
 export const AGENC_DAEMON_PID_FILENAME = "daemon.pid";
@@ -93,6 +103,8 @@ export interface RunAgenCDaemonCliOptions {
   readonly host?: AgenCDaemonCliHost;
   readonly signalProcess?: AgenCSignalProcess;
   readonly beforeDaemonReady?: () => void | Promise<void>;
+  readonly runner?: AgenCBackgroundAgentRunner;
+  readonly snapshotPeriodicIntervalMs?: number;
   readonly stopTimeoutMs?: number;
 }
 
@@ -222,6 +234,8 @@ async function runAgenCDaemonAction(
       return runAgenCDaemonForeground(host, io, {
         signalProcess: options.signalProcess,
         beforeDaemonReady: options.beforeDaemonReady,
+        runner: options.runner,
+        snapshotPeriodicIntervalMs: options.snapshotPeriodicIntervalMs,
       });
   }
 }
@@ -306,6 +320,8 @@ async function runAgenCDaemonForeground(
   options: {
     readonly signalProcess?: AgenCSignalProcess;
     readonly beforeDaemonReady?: () => void | Promise<void>;
+    readonly runner?: AgenCBackgroundAgentRunner;
+    readonly snapshotPeriodicIntervalMs?: number;
   } = {},
 ): Promise<number> {
   const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
@@ -337,11 +353,30 @@ async function runAgenCDaemonForeground(
   });
   const commandExec = new AgenCCommandExecService();
   const cleanup = new AgenCCleanupRegistry();
-  const runner = new AgenCDelegateBackgroundAgentRunner({
-    env: host.env,
-    argv: [host.execPath, host.entrypointPath, "--autonomous"],
-    authBackend: authStartup.authBackend,
-  });
+  const runner =
+    options.runner ??
+    new AgenCDelegateBackgroundAgentRunner({
+      env: host.env,
+      argv: [host.execPath, host.entrypointPath, "--autonomous"],
+      authBackend: authStartup.authBackend,
+    });
+  let snapshotPolicies: AgenCDaemonSnapshotPolicyRegistry;
+  try {
+    snapshotPolicies = new AgenCDaemonSnapshotPolicyRegistry({
+      agencHome: authStartup.daemonHome,
+      defaultCwd: process.cwd(),
+      periodicIntervalMs: options.snapshotPeriodicIntervalMs,
+      onError: (error) =>
+        io.stderr.write(
+          `agenc: daemon snapshot policy failed: ${formatCleanupError(error)}\n`,
+        ),
+    });
+  } catch (error) {
+    io.stderr.write(
+      `agenc: daemon snapshot policy initialization failed: ${formatCleanupError(error)}\n`,
+    );
+    return 1;
+  }
   const agentManager = new AgenCDaemonAgentManager({
     runner,
     sessionManager,
@@ -349,14 +384,62 @@ async function runAgenCDaemonForeground(
     snapshotFlush: (snapshot) =>
       writeAgenCDaemonSnapshot(snapshotPath, snapshot),
     broadcastSessionEvent: async (sessionId, event) => {
+      try {
+        snapshotPolicies.recordSessionEvent(sessionId, event);
+      } catch (error) {
+        io.stderr.write(
+          `agenc: daemon snapshot policy failed: ${formatCleanupError(error)}\n`,
+        );
+      }
       await clientMultiplexer.broadcastSessionEvent(sessionId, event);
     },
+    recordMessageExchange: (exchange) => {
+      try {
+        snapshotPolicies.recordMessageExchange(exchange);
+      } catch (error) {
+        io.stderr.write(
+          `agenc: daemon snapshot policy failed: ${formatCleanupError(error)}\n`,
+        );
+      }
+    },
+    recordAgentStatusTransition: (transition) => {
+      try {
+        snapshotPolicies.recordAgentStatusTransition(transition);
+      } catch (error) {
+        io.stderr.write(
+          `agenc: daemon snapshot policy failed: ${formatCleanupError(error)}\n`,
+        );
+      }
+    },
+    registerSnapshotSession: (session) => {
+      try {
+        snapshotPolicies.registerSession(session);
+      } catch (error) {
+        io.stderr.write(
+          `agenc: daemon snapshot policy failed: ${formatCleanupError(error)}\n`,
+        );
+      }
+    },
+    onSnapshotError: (error) =>
+      io.stderr.write(
+        `agenc: daemon snapshot policy failed: ${formatCleanupError(error)}\n`,
+      ),
   });
   await hydrateAgenCDaemonStartupRecovery(
     sessionManager,
     agentManager,
     startupRecovery,
   );
+  try {
+    snapshotPolicies.hydrateStartupRecovery(startupRecovery);
+    snapshotPolicies.startPeriodic();
+  } catch (error) {
+    snapshotPolicies.close();
+    io.stderr.write(
+      `agenc: daemon snapshot policy initialization failed: ${formatCleanupError(error)}\n`,
+    );
+    return 1;
+  }
   const dispatcher = new AgenCDaemonJsonRpcDispatcher({
     agentManager,
     clientMultiplexer,
@@ -408,6 +491,9 @@ async function runAgenCDaemonForeground(
   });
   cleanup.register("daemon-pid", async () => {
     await removeAgenCDaemonPid(pidPath, host.pid);
+  });
+  cleanup.register("daemon-snapshot-policy", async () => {
+    snapshotPolicies.close();
   });
   cleanup.register("daemon-snapshots", async () => {
     await agentManager.flushSnapshots("daemon_shutdown");
@@ -516,6 +602,159 @@ function uniqueStateDatabasePaths(
   );
 }
 
+interface AgenCDaemonSnapshotPolicyRegistryOptions {
+  readonly agencHome: string;
+  readonly defaultCwd: string;
+  readonly periodicIntervalMs?: number;
+  readonly onError: (error: unknown) => void;
+}
+
+interface AgenCDaemonSnapshotPolicyEntry {
+  readonly driver: StateSqliteDriver;
+  readonly policy: AgenCSessionSnapshotPolicy;
+}
+
+class AgenCDaemonSnapshotPolicyRegistry {
+  readonly #agencHome: string;
+  readonly #defaultCwd: string;
+  readonly #periodicIntervalMs: number;
+  readonly #onError: (error: unknown) => void;
+  readonly #policies = new Map<string, AgenCDaemonSnapshotPolicyEntry>();
+  readonly #sessionPolicyKeys = new Map<string, string>();
+  #periodicTimer: ReturnType<typeof setInterval> | undefined;
+
+  constructor(options: AgenCDaemonSnapshotPolicyRegistryOptions) {
+    this.#agencHome = options.agencHome;
+    this.#defaultCwd = options.defaultCwd;
+    this.#periodicIntervalMs = options.periodicIntervalMs ?? 30_000;
+    this.#onError = options.onError;
+    this.#policyForCwd(this.#defaultCwd);
+  }
+
+  hydrateStartupRecovery(report: DaemonStartupRecoveryReport): void {
+    for (const run of report.recoveredRuns) {
+      if (run.currentSessionId === undefined) continue;
+      const policy = this.#policyForProjectDir(run.projectDir);
+      this.#rememberSession(run.currentSessionId, policy.driver.stateDbPath);
+      if (run.latestSnapshot !== undefined) {
+        policy.policy.hydrateSession({
+          sessionId: run.currentSessionId,
+          snapshotAt: run.latestSnapshot.snapshotAt,
+          conversation: run.latestSnapshot.conversation,
+          toolState: run.latestSnapshot.toolState,
+          mcpConnectionState: run.latestSnapshot.mcpConnectionState,
+        });
+      } else {
+        policy.policy.trackSession(run.currentSessionId);
+      }
+    }
+  }
+
+  startPeriodic(): void {
+    if (this.#periodicTimer !== undefined) return;
+    this.#periodicTimer = setInterval(() => {
+      try {
+        this.flushPeriodic();
+      } catch (error) {
+        this.#onError(error);
+      }
+    }, this.#periodicIntervalMs);
+    this.#periodicTimer.unref?.();
+  }
+
+  flushPeriodic(): void {
+    for (const entry of this.#policies.values()) {
+      entry.policy.flushPeriodic();
+    }
+  }
+
+  close(): void {
+    if (this.#periodicTimer !== undefined) {
+      clearInterval(this.#periodicTimer);
+      this.#periodicTimer = undefined;
+    }
+    for (const entry of this.#policies.values()) {
+      entry.driver.close();
+    }
+    this.#policies.clear();
+    this.#sessionPolicyKeys.clear();
+  }
+
+  recordSessionEvent(sessionId: string, event: JsonObject): void {
+    const entry = this.#policyForSession(sessionId);
+    entry.policy.recordSessionEvent(sessionId, event);
+  }
+
+  registerSession(session: AgenCDaemonSnapshotSessionRoute): void {
+    const entry = this.#policyForRoute(session);
+    this.#rememberSession(session.sessionId, entry.driver.stateDbPath);
+    entry.policy.trackSession(session.sessionId);
+  }
+
+  recordMessageExchange(exchange: AgenCDaemonMessageExchangeSnapshot): void {
+    const entry = this.#policyForRoute(exchange);
+    this.#rememberSession(exchange.sessionId, entry.driver.stateDbPath);
+    entry.policy.recordMessageExchange(exchange);
+  }
+
+  recordAgentStatusTransition(transition: AgenCDaemonAgentStatusSnapshot): void {
+    const entry = this.#policyForRoute(transition);
+    this.#rememberSession(transition.sessionId, entry.driver.stateDbPath);
+    entry.policy.recordAgentStatusTransition(transition);
+  }
+
+  #policyForSession(sessionId: string): AgenCDaemonSnapshotPolicyEntry {
+    const key = this.#sessionPolicyKeys.get(sessionId);
+    if (key !== undefined) {
+      const entry = this.#policies.get(key);
+      if (entry !== undefined) return entry;
+    }
+    const entry = this.#policyForCwd(this.#defaultCwd);
+    this.#rememberSession(sessionId, entry.driver.stateDbPath);
+    return entry;
+  }
+
+  #policyForRoute(route: {
+    readonly cwd?: string;
+    readonly stateProjectDir?: string;
+  }): AgenCDaemonSnapshotPolicyEntry {
+    if (route.stateProjectDir !== undefined) {
+      return this.#policyForProjectDir(route.stateProjectDir);
+    }
+    return this.#policyForCwd(route.cwd ?? this.#defaultCwd);
+  }
+
+  #policyForCwd(cwd: string): AgenCDaemonSnapshotPolicyEntry {
+    return this.#policyForPaths(
+      resolveStateDatabasePaths({ cwd, agencHome: this.#agencHome }),
+    );
+  }
+
+  #policyForProjectDir(projectDir: string): AgenCDaemonSnapshotPolicyEntry {
+    return this.#policyForPaths({
+      projectDir,
+      stateDbPath: join(projectDir, STATE_DATABASE_FILENAME),
+      logsDbPath: join(projectDir, LOGS_DATABASE_FILENAME),
+    });
+  }
+
+  #policyForPaths(paths: StateDatabasePaths): AgenCDaemonSnapshotPolicyEntry {
+    const existing = this.#policies.get(paths.stateDbPath);
+    if (existing !== undefined) return existing;
+    const driver = openStateDatabasePaths(paths);
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      onError: this.#onError,
+    });
+    const entry = { driver, policy };
+    this.#policies.set(paths.stateDbPath, entry);
+    return entry;
+  }
+
+  #rememberSession(sessionId: string, stateDbPath: string): void {
+    this.#sessionPolicyKeys.set(sessionId, stateDbPath);
+  }
+}
+
 async function hydrateAgenCDaemonStartupRecovery(
   sessionManager: AgenCDaemonSessionManager,
   agentManager: AgenCDaemonAgentManager,
@@ -540,6 +779,7 @@ async function hydrateAgenCDaemonStartupRecovery(
       createdAt: run.startedAt,
       startedAt: run.startedAt,
       lastActiveAt: run.lastActiveAt,
+      stateProjectDir: run.projectDir,
       metadata,
       ...(run.currentSessionId !== undefined
         ? { sessionIds: [run.currentSessionId] }
