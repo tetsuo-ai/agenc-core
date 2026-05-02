@@ -150,6 +150,8 @@ export function modelRegistryEntryToModelInfo(
     ...(defaultReasoningLevel !== undefined ? { defaultReasoningLevel } : {}),
     defaultReasoningSummary: catalog?.defaultReasoningSummary ?? "auto",
     truncationPolicy: "off",
+    supportsToolUse: entry.capabilities.supportsToolUse,
+    supportsParallelToolCalls: catalog?.supportsParallelToolCalls ?? false,
     visibility,
     showInPicker: visibility === "list",
     usedFallbackModelMetadata: entry.metadata.usedFallbackModelMetadata,

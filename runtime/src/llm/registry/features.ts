@@ -3,6 +3,8 @@
  * feature names.
  */
 
+import type { ManagedFeatures } from "../../session/turn-context.js";
+
 export type AgenCFeatureStage =
   | "under_development"
   | "experimental"
@@ -381,6 +383,21 @@ export class AgenCFeatureSet {
   }
 }
 
+export function createManagedFeatures(
+  config: unknown = {},
+): ManagedFeatures {
+  const features = AgenCFeatureSet.fromConfig(readFeatureConfigEntries(config));
+  return Object.freeze({
+    enabled: (feature: string) => {
+      const key = featureForKey(feature);
+      return key !== undefined && features.enabled(key);
+    },
+    appsEnabledForAuth: (isChatgptAuth: boolean) =>
+      features.enabled("apps") && isChatgptAuth,
+    useLegacyLandlock: () => features.enabled("use_legacy_landlock"),
+  });
+}
+
 export function featureForKey(key: string): AgenCFeatureKey | undefined {
   if (isCanonicalFeatureKey(key)) return key;
   return LEGACY_FEATURE_ALIASES[key];
@@ -408,6 +425,22 @@ function featureEnabledFromConfigEntry(
     return true;
   }
   return undefined;
+}
+
+function readFeatureConfigEntries(
+  config: unknown,
+): Readonly<Record<string, AgenCFeatureConfigEntry | undefined>> {
+  if (!isRecord(config)) return {};
+  const direct = config.features;
+  if (isFeatureConfigRecord(direct)) return direct;
+  const unknown = isRecord(config._unknown) ? config._unknown.features : undefined;
+  return isFeatureConfigRecord(unknown) ? unknown : {};
+}
+
+function isFeatureConfigRecord(
+  value: unknown,
+): value is Readonly<Record<string, AgenCFeatureConfigEntry | undefined>> {
+  return isRecord(value);
 }
 
 function optionalBoolean(value: unknown): boolean | undefined {

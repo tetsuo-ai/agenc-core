@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 
+import { defaultConfig } from "../../config/index.js";
+import { buildPrompt } from "../../session/run-turn.js";
+import type { TurnContext } from "../../session/turn-context.js";
+import { StaticModelsManager } from "../models-manager.js";
 import {
   AGENC_FEATURE_SPECS,
   AgenCFeatureSet,
+  createManagedFeatures,
   experimentalFeatureSpecs,
   featureForKey,
   listBuiltInProviderInfo,
@@ -187,6 +192,26 @@ describe("LLM registry", () => {
     });
   });
 
+  it("feeds catalog parallel-tool metadata into prompt shaping", async () => {
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "openai",
+    });
+    const modelInfo = await manager.getModelInfo("gpt-5.4");
+
+    const prompt = buildPrompt(
+      [{ role: "user", content: "hello" }],
+      [],
+      {
+        modelInfo,
+        dynamicTools: [],
+      } as unknown as TurnContext,
+      "Follow the local contract.",
+    );
+
+    expect(prompt.parallelToolCalls).toBe(true);
+  });
+
   it("exposes model capability hints from the bundled catalog", () => {
     expect(
       resolveModelCapabilityHints({
@@ -263,6 +288,22 @@ describe("LLM registry", () => {
     });
     expect(disabled.enabled("multi_agent_v2")).toBe(false);
     expect(disabled.enabled("apps_mcp_path_override")).toBe(false);
+  });
+
+  it("creates runtime managed features from config feature tables", () => {
+    const managed = createManagedFeatures({
+      _unknown: {
+        features: {
+          apps: false,
+          use_legacy_landlock: true,
+        },
+      },
+    });
+
+    expect(managed.enabled?.("apps")).toBe(false);
+    expect(managed.enabled?.("use_legacy_landlock")).toBe(true);
+    expect(managed.appsEnabledForAuth(true)).toBe(false);
+    expect(managed.useLegacyLandlock()).toBe(true);
   });
 
   it("preserves donor feature keys, stages, and default states", () => {
