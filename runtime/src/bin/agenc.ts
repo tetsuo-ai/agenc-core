@@ -111,6 +111,10 @@ import {
   parseAgenCAuthCliArgs,
   runAgenCAuthCli,
 } from "./auth-cli.js";
+import {
+  parseAgenCProvidersCliArgs,
+  runAgenCProvidersCli,
+} from "./providers-cli.js";
 
 export {
   bootstrapLocalRuntimeSession,
@@ -129,6 +133,7 @@ export function formatCliHelpText(): string {
     "       agenc login",
     "       agenc logout",
     "       agenc whoami",
+    "       agenc providers [--json]",
     "       agenc daemon <start|stop|status|restart>",
     "       agenc agent start <objective>",
     "       agenc agent list",
@@ -1687,6 +1692,10 @@ export async function main(): Promise<number> {
   const authCommand = parseAgenCAuthCliArgs(argv);
   if (authCommand !== null) {
     return runAgenCAuthCli(authCommand);
+  }
+  const providersCommand = parseAgenCProvidersCliArgs(argv);
+  if (providersCommand !== null) {
+    return runAgenCProvidersCli(providersCommand);
   }
 
   const startupShortCircuit = detectStartupShortCircuit(argv);
