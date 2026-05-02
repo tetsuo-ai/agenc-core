@@ -50,6 +50,22 @@ describe("openStateDatabases", () => {
         "created_by_client",
         "last_snapshot_at",
       ]);
+      const snapshotColumns = driver
+        .prepareState<[], { name: string; notnull: number; pk: number }>(
+          "PRAGMA table_info(session_state_snapshots)",
+        )
+        .all();
+      expect(snapshotColumns.map((column) => column.name)).toEqual([
+        "session_id",
+        "snapshot_at",
+        "conversation_json",
+        "tool_state_json",
+        "mcp_connection_state_json",
+      ]);
+      expect(snapshotColumns.find((column) => column.name === "session_id"))
+        .toMatchObject({ notnull: 1, pk: 1 });
+      expect(snapshotColumns.find((column) => column.name === "snapshot_at"))
+        .toMatchObject({ notnull: 1, pk: 2 });
       expect(
         driver
           .prepareLogs<[], { name: string }>(
