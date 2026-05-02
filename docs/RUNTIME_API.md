@@ -107,7 +107,7 @@ await runtime.stop();               // set Inactive + cleanup
 ### LLM Provider Selection
 
 ```typescript
-import { GrokProvider, AnthropicProvider, OllamaProvider } from '@tetsuo-ai/runtime';
+import { GrokProvider, AnthropicProvider, OllamaProvider, OpenAICompatibleProvider } from '@tetsuo-ai/runtime';
 
 // Grok (requires: npm install openai)
 const grok = new GrokProvider({ apiKey: process.env.XAI_API_KEY!, model: 'grok-3', tools });
@@ -119,12 +119,11 @@ const anthropic = new AnthropicProvider({ apiKey: '...', model: 'claude-sonnet-4
 const ollama = new OllamaProvider({ model: 'llama3', tools });
 
 // OpenAI-compatible local server (LM Studio, llama.cpp, vLLM)
-// baseUrl is validated on startup to be a local/LAN address
-const local = new OpenAICompatProvider({
+const local = new OpenAICompatibleProvider({
   model: 'google_gemma-4-26b-a4b-it',
-  baseUrl: 'http://127.0.0.1:1234/v1',
-  apiKey: 'local',             // not validated by local servers
-  contextWindowTokens: 32768,  // required — local servers don't expose this
+  baseURL: 'http://127.0.0.1:1234/v1',
+  apiKey: 'local',
+  contextWindowTokens: 32768,
   tools,
 });
 ```
