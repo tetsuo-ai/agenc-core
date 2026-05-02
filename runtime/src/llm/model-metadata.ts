@@ -318,6 +318,7 @@ function shouldQueryLiveEndpoint(
   const providerConfig = readProviderConfig(params.config, provider);
   return (
     provider === "lmstudio" ||
+    provider === "openai-compatible" ||
     Boolean(providerConfig?.base_url?.trim()) ||
     Boolean(envBaseUrl(provider, env))
   );

@@ -456,7 +456,10 @@ function createAuthManager(opts: {
   const providerName = opts.providerName;
   if (
     providerName === "ollama" ||
-    (providerName === "lmstudio" && !opts.apiKey && !providerOptions.apiKey)
+    ((providerName === "lmstudio" ||
+      providerName === "openai-compatible") &&
+      !opts.apiKey &&
+      !providerOptions.apiKey)
   ) {
     return { mode: "local_no_auth" };
   }

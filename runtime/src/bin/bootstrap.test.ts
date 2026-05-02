@@ -21,6 +21,30 @@ import { Session } from "../session/session.js";
 import { SidecarManager } from "../session/sidecar.js";
 import { getCurrentRuntimeSession } from "./_deps/current-session.js";
 
+function jsonResponse(value: unknown): Response {
+  return new Response(JSON.stringify(value), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function clearProcessEnv(keys: readonly string[]): () => void {
+  const previous = new Map<string, string | undefined>();
+  for (const key of keys) {
+    previous.set(key, process.env[key]);
+    delete process.env[key];
+  }
+  return () => {
+    for (const [key, value] of previous) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  };
+}
+
 describe("resolveStartupSelection", () => {
   it("applies CLI provider/model/profile ahead of env and config", () => {
     const config = mergeConfigs(defaultConfig(), {
@@ -561,6 +585,62 @@ describe("bootstrapLocalRuntimeSession", () => {
       await shutdown?.().catch(() => {
         /* best effort */
       });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies no-key generic OpenAI-compatible startup as local no-auth", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const restoreEnv = clearProcessEnv([
+      "OPENAI_API_KEY",
+      "OPENAI_API_BASE",
+      "OPENAI_BASE_URL",
+      "OPENAI_MODEL",
+      "OPENAI_COMPATIBLE_API_KEY",
+      "OPENAI_COMPATIBLE_BASE_URL",
+      "OPENAI_COMPATIBLE_MODEL",
+    ]);
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({
+        data: [
+          {
+            id: "local-model",
+            max_model_len: 65_536,
+            max_output_tokens: 8_192,
+          },
+        ],
+      }),
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        env: {
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          AGENC_PROVIDER: "openai-compatible",
+          OPENAI_COMPATIBLE_MODEL: "local-model",
+          HOME: home,
+          SHELL: "/bin/sh",
+        },
+        argv: ["node", "agenc"],
+      });
+      shutdown = boot.shutdown;
+
+      expect(boot.resolvedProvider).toBe("openai-compatible");
+      expect(boot.model).toBe("local-model");
+      expect(boot.session.services.authManager).toEqual({
+        mode: "local_no_auth",
+      });
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      restoreEnv();
       await rm(home, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
     }

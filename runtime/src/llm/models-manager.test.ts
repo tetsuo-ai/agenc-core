@@ -203,6 +203,34 @@ describe("StaticModelsManager", () => {
     expect(info.usedFallbackModelMetadata).toBe(false);
   });
 
+  it("reads default generic OpenAI-compatible endpoint metadata without requiring auth", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe("http://localhost:8000/v1/models");
+      expect(init?.headers).toBeUndefined();
+      return jsonResponse({
+        data: [
+          {
+            id: "local-model",
+            max_model_len: 131_072,
+            max_output_tokens: 16_384,
+          },
+        ],
+      });
+    });
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "openai-compatible",
+      metadata: { fetchImpl, env: {} },
+    });
+
+    const info = await manager.getModelInfo("local-model");
+    expect(info.contextWindow).toBe(131_072);
+    expect(info.maxOutputTokens).toBe(16_384);
+    expect(info.maxOutputTokensUpperLimit).toBe(16_384);
+    expect(info.usedFallbackModelMetadata).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("uses OpenRouter registry metadata for OpenRouter models", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input) => {
       expect(String(input)).toBe("https://openrouter.ai/api/v1/models");
