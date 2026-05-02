@@ -19,27 +19,19 @@ import type { AnthropicProviderConfig } from "./providers/anthropic/index.js";
 import { GeminiProvider } from "./providers/gemini/index.js";
 import { LMStudioProvider } from "./providers/lmstudio/index.js";
 import { OpenRouterProvider } from "./providers/openrouter/index.js";
-import { GroqProvider, GROQ_DEFAULT_MODEL } from "./providers/groq/index.js";
+import { GroqProvider } from "./providers/groq/index.js";
 import { DeepSeekProvider } from "./providers/deepseek/index.js";
-import {
-  OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
-  OPENAI_COMPATIBLE_DEFAULT_MODEL,
-  OpenAICompatibleProvider,
-} from "./providers/openai-compatible/index.js";
+import { OpenAICompatibleProvider } from "./providers/openai-compatible/index.js";
 import type { ProviderFallbackLadderOptions } from "./api/fallback-ladder.js";
+import {
+  builtInProviderIds,
+  normalizeBuiltInProviderSlug,
+  resolveBuiltInProviderInfo,
+  type BuiltInProviderInfo,
+  type BuiltInProviderSlug,
+} from "./registry/provider-info.js";
 
-export type ProviderName =
-  | "grok"
-  | "openai"
-  | "anthropic"
-  | "ollama"
-  | "lmstudio"
-  | "openai-compatible"
-  | "openrouter"
-  | "groq"
-  | "deepseek"
-  | "gemini"
-  | "agenc";
+export type ProviderName = BuiltInProviderSlug;
 
 export interface ProviderFactoryOptions {
   readonly apiKey?: string;
@@ -58,19 +50,7 @@ type FactoryMarkedProvider = LLMProvider & {
   [FACTORY_PROVIDER_STATE]?: ProviderRuntimeState;
 };
 
-export const KNOWN_PROVIDER_NAMES = [
-  "grok",
-  "openai",
-  "anthropic",
-  "ollama",
-  "lmstudio",
-  "openai-compatible",
-  "openrouter",
-  "groq",
-  "deepseek",
-  "gemini",
-  "agenc",
-] as const satisfies readonly ProviderName[];
+export const KNOWN_PROVIDER_NAMES: readonly ProviderName[] = builtInProviderIds();
 
 export interface PreparedProviderSwitch {
   readonly provider: ProviderName;
@@ -82,17 +62,6 @@ export interface ProviderRuntimeState {
   readonly provider: ProviderName;
   readonly options: ProviderFactoryOptions;
 }
-
-const DOCUMENTED_PROVIDER_DEFAULT_MODELS = {
-  grok: "grok-4-fast",
-  openai: "gpt-5",
-  anthropic: "claude-opus-4-7",
-  ollama: "llama3.3",
-  "openai-compatible": OPENAI_COMPATIBLE_DEFAULT_MODEL,
-  deepseek: "deepseek-reasoner",
-  gemini: "gemini-2.5-pro",
-  agenc: "agenc",
-} as const;
 
 type ProviderRuntimeExtra = Partial<
   Omit<LLMProviderConfig, "model" | "tools" | "timeoutMs">
@@ -249,6 +218,32 @@ function firstNonEmpty(...values: Array<string | undefined>): string | undefined
     }
   }
   return undefined;
+}
+
+function requireBuiltInProviderInfo(
+  provider: ProviderName,
+): BuiltInProviderInfo {
+  const info = resolveBuiltInProviderInfo(provider);
+  if (info === undefined) {
+    throw new Error(`unknown provider: ${String(provider)}`);
+  }
+  return info;
+}
+
+function defaultModelFor(provider: ProviderName): string {
+  return requireBuiltInProviderInfo(provider).defaultModel;
+}
+
+function defaultBaseURLFor(provider: ProviderName): string {
+  return requireBuiltInProviderInfo(provider).baseURL;
+}
+
+function apiKeyEnvVarFor(provider: ProviderName): string {
+  const envVar = requireBuiltInProviderInfo(provider).apiKeyEnvVar;
+  if (envVar === undefined) {
+    throw new Error(`${provider} provider does not declare an API key env var`);
+  }
+  return envVar;
 }
 
 function requireModel(
@@ -613,26 +608,24 @@ function buildOpenAICompatibleProvider(
   >,
   opts: ProviderFactoryOptions,
   input: {
-    readonly defaultBaseURL: string;
     readonly envBaseURL?: string;
     readonly envModel?: string;
     readonly envModelLabel: string;
-    readonly defaultModel?: string;
     readonly envApiKey?: string;
     readonly alternateApiKeys?: readonly string[];
     readonly apiKeyMode: "required" | "optional";
-    readonly apiKeyEnvLabel: string;
     readonly useResponsesApi: boolean;
     readonly providerCtor?: new (config: OpenAIProviderConfig) => LLMProvider;
   },
 ): LLMProvider {
   const extra = readRuntimeExtra(opts.extra);
+  const apiKeyEnvLabel = apiKeyEnvVarFor(provider);
   const model = requireModel(
     provider,
     opts.model,
     input.envModel,
     input.envModelLabel,
-    input.defaultModel,
+    defaultModelFor(provider),
   );
   const oauthConfig =
     extra.authMode === "oauth" &&
@@ -642,12 +635,16 @@ function buildOpenAICompatibleProvider(
       ? (extra.oauth as unknown as OpenAIProviderConfig["oauth"])
       : undefined;
   const apiKey = oauthConfig
-    ? firstNonEmpty(opts.apiKey, input.envApiKey, ...(input.alternateApiKeys ?? []))
+    ? firstNonEmpty(
+      opts.apiKey,
+      input.envApiKey,
+      ...(input.alternateApiKeys ?? []),
+    )
     : input.apiKeyMode === "required"
     ? requireApiKey(
       provider,
       opts.apiKey,
-      input.apiKeyEnvLabel,
+      apiKeyEnvLabel,
       input.envApiKey,
       ...(input.alternateApiKeys ?? []),
     )
@@ -662,12 +659,12 @@ function buildOpenAICompatibleProvider(
     ...(apiKey !== undefined ? { apiKey } : {}),
     model,
     providerName: provider,
-    apiKeyEnvLabel: input.apiKeyEnvLabel,
+    apiKeyEnvLabel,
     tools: opts.tools ? [...opts.tools] : undefined,
     baseURL:
       normalizeBaseURL(opts.baseURL) ??
       normalizeBaseURL(input.envBaseURL) ??
-      input.defaultBaseURL,
+      defaultBaseURLFor(provider),
     useResponsesApi: extra.useResponsesApi ?? input.useResponsesApi,
     ...(extra.store !== undefined ? { store: extra.store } : {}),
     ...(extra.contextWindowTokens !== undefined
@@ -699,20 +696,7 @@ function buildOpenAICompatibleProvider(
 export function normalizeProviderName(
   provider: string | undefined,
 ): ProviderName | null {
-  const raw = firstNonEmpty(provider)?.toLowerCase() ?? "";
-  if (raw === "xai") {
-    return "grok";
-  }
-  if (
-    raw === "custom" ||
-    raw === "openai_compatible" ||
-    raw === "openai-compatible"
-  ) {
-    return "openai-compatible";
-  }
-  return (KNOWN_PROVIDER_NAMES as readonly string[]).includes(raw)
-    ? (raw as ProviderName)
-    : null;
+  return normalizeBuiltInProviderSlug(provider) ?? null;
 }
 
 export function createProvider(
@@ -739,7 +723,7 @@ export function createProvider(
         opts.model,
         process.env.AGENC_MODEL,
         "AGENC_MODEL",
-        DOCUMENTED_PROVIDER_DEFAULT_MODELS.agenc,
+        defaultModelFor("agenc"),
       );
       const providerExtra = stripAgenCProviderRuntimeExtra(opts.extra);
       const provider = markFactoryProvider(
@@ -780,7 +764,7 @@ export function createProvider(
       const apiKey = opts.apiKey ?? resolveApiKey(process.env);
       if (!apiKey) {
         throw new Error(
-          "grok provider requires apiKey — set XAI_API_KEY in the environment",
+          `grok provider requires apiKey — set ${apiKeyEnvVarFor("grok")} in the environment`,
         );
       }
       const model = requireModel(
@@ -788,13 +772,14 @@ export function createProvider(
         opts.model,
         process.env.AGENC_MODEL,
         "AGENC_MODEL",
+        defaultModelFor("grok"),
       );
       const cfg: GrokProviderConfig = {
         ...buildCommonConfig(extra),
         apiKey,
         model,
         tools: opts.tools ? [...opts.tools] : undefined,
-        ...(opts.baseURL !== undefined ? { baseURL: opts.baseURL } : {}),
+        baseURL: normalizeBaseURL(opts.baseURL) ?? defaultBaseURLFor("grok"),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
         ...(extra.contextWindowTokens !== undefined
           ? { contextWindowTokens: extra.contextWindowTokens }
@@ -832,12 +817,13 @@ export function createProvider(
       });
     }
     case "openai": {
+      const apiKeyEnvLabel = apiKeyEnvVarFor("openai");
       const model = requireModel(
         "openai",
         opts.model,
         process.env.OPENAI_MODEL,
         "OPENAI_MODEL",
-        DOCUMENTED_PROVIDER_DEFAULT_MODELS.openai,
+        defaultModelFor("openai"),
       );
       const oauthConfig =
         extra.authMode === "oauth" &&
@@ -847,24 +833,24 @@ export function createProvider(
           ? (extra.oauth as unknown as OpenAIProviderConfig["oauth"])
           : undefined;
       const apiKey = oauthConfig
-        ? firstNonEmpty(opts.apiKey, process.env.OPENAI_API_KEY)
+        ? firstNonEmpty(opts.apiKey, process.env[apiKeyEnvLabel])
         : requireApiKey(
           "openai",
           opts.apiKey,
-          "OPENAI_API_KEY",
-          process.env.OPENAI_API_KEY,
+          apiKeyEnvLabel,
+          process.env[apiKeyEnvLabel],
         );
       const cfg: OpenAIProviderConfig = {
         ...buildCommonConfig(extra),
         ...(apiKey !== undefined ? { apiKey } : {}),
         model,
         providerName: "openai",
-        apiKeyEnvLabel: "OPENAI_API_KEY",
+        apiKeyEnvLabel,
         tools: opts.tools ? [...opts.tools] : undefined,
         baseURL:
           normalizeBaseURL(opts.baseURL) ??
           normalizeBaseURL(process.env.OPENAI_BASE_URL) ??
-          "https://api.openai.com/v1",
+          defaultBaseURLFor("openai"),
         useResponsesApi: extra.useResponsesApi ?? true,
         ...(extra.store !== undefined ? { store: extra.store } : {}),
         ...(extra.contextWindowTokens !== undefined
@@ -900,30 +886,29 @@ export function createProvider(
       });
     }
     case "anthropic": {
+      const apiKeyEnvLabel = apiKeyEnvVarFor("anthropic");
       const apiKey = requireApiKey(
         "anthropic",
         opts.apiKey,
-        "ANTHROPIC_API_KEY",
-        process.env.ANTHROPIC_API_KEY,
+        apiKeyEnvLabel,
+        process.env[apiKeyEnvLabel],
       );
       const model = requireModel(
         "anthropic",
         opts.model,
         process.env.ANTHROPIC_MODEL,
         "ANTHROPIC_MODEL",
-        DOCUMENTED_PROVIDER_DEFAULT_MODELS.anthropic,
+        defaultModelFor("anthropic"),
       );
       const cfg: AnthropicProviderConfig = {
         ...buildCommonConfig(extra),
         apiKey,
         model,
         tools: opts.tools ? [...opts.tools] : undefined,
-        ...(normalizeBaseURL(opts.baseURL ?? process.env.ANTHROPIC_BASE_URL)
-          ? {
-            baseURL:
-              normalizeBaseURL(opts.baseURL ?? process.env.ANTHROPIC_BASE_URL),
-          }
-          : {}),
+        baseURL:
+          normalizeBaseURL(opts.baseURL) ??
+          normalizeBaseURL(process.env.ANTHROPIC_BASE_URL) ??
+          defaultBaseURLFor("anthropic"),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
         ...(extra.anthropicVersion
           ? { anthropicVersion: extra.anthropicVersion }
@@ -956,18 +941,13 @@ export function createProvider(
           opts.model,
           process.env.OLLAMA_MODEL,
           "OLLAMA_MODEL",
-          DOCUMENTED_PROVIDER_DEFAULT_MODELS.ollama,
+          defaultModelFor("ollama"),
         ),
         tools: opts.tools ? [...opts.tools] : undefined,
-        ...(normalizeOllamaHost(
-          opts.baseURL ?? process.env.OLLAMA_BASE_URL,
-        )
-          ? {
-            host: normalizeOllamaHost(
-              opts.baseURL ?? process.env.OLLAMA_BASE_URL,
-            ),
-          }
-          : {}),
+        host:
+          normalizeOllamaHost(opts.baseURL) ??
+          normalizeOllamaHost(process.env.OLLAMA_BASE_URL) ??
+          normalizeOllamaHost(defaultBaseURLFor("ollama")),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
         ...(extra.keepAlive ? { keepAlive: extra.keepAlive } : {}),
         ...(extra.numCtx !== undefined ? { numCtx: extra.numCtx } : {}),
@@ -987,7 +967,6 @@ export function createProvider(
     }
     case "lmstudio":
       return buildOpenAICompatibleProvider("lmstudio", opts, {
-        defaultBaseURL: "http://localhost:1234/v1",
         envBaseURL:
           process.env.LMSTUDIO_BASE_URL ??
           (!process.env.LMSTUDIO_API_KEY && process.env.OPENAI_API_KEY
@@ -1000,13 +979,11 @@ export function createProvider(
           ? [process.env.OPENAI_API_KEY]
           : [],
         apiKeyMode: "optional",
-        apiKeyEnvLabel: "LMSTUDIO_API_KEY",
         useResponsesApi: false,
         providerCtor: LMStudioProvider,
       });
     case "openai-compatible":
       return buildOpenAICompatibleProvider("openai-compatible", opts, {
-        defaultBaseURL: OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
         envBaseURL:
           process.env.OPENAI_COMPATIBLE_BASE_URL ??
           process.env.OPENAI_BASE_URL ??
@@ -1018,75 +995,66 @@ export function createProvider(
         alternateApiKeys: process.env.OPENAI_API_KEY
           ? [process.env.OPENAI_API_KEY]
           : [],
-        defaultModel: OPENAI_COMPATIBLE_DEFAULT_MODEL,
         apiKeyMode: "optional",
-        apiKeyEnvLabel: "OPENAI_COMPATIBLE_API_KEY",
         useResponsesApi: false,
         providerCtor: OpenAICompatibleProvider,
       });
     case "openrouter":
       return buildOpenAICompatibleProvider("openrouter", opts, {
-        defaultBaseURL: "https://openrouter.ai/api/v1",
         envBaseURL: process.env.OPENROUTER_BASE_URL,
         envModel: process.env.OPENROUTER_MODEL,
         envModelLabel: "OPENROUTER_MODEL",
         envApiKey: process.env.OPENROUTER_API_KEY,
         apiKeyMode: "required",
-        apiKeyEnvLabel: "OPENROUTER_API_KEY",
         useResponsesApi: false,
         providerCtor: OpenRouterProvider,
       });
     case "groq":
       return buildOpenAICompatibleProvider("groq", opts, {
-        defaultBaseURL: "https://api.groq.com/openai/v1",
         envBaseURL: process.env.GROQ_BASE_URL,
         envModel: process.env.GROQ_MODEL,
         envModelLabel: "GROQ_MODEL",
         envApiKey: process.env.GROQ_API_KEY,
-        defaultModel: GROQ_DEFAULT_MODEL,
         apiKeyMode: "required",
-        apiKeyEnvLabel: "GROQ_API_KEY",
         useResponsesApi: false,
         providerCtor: GroqProvider,
       });
     case "deepseek":
       return buildOpenAICompatibleProvider("deepseek", opts, {
-        defaultBaseURL: "https://api.deepseek.com/v1",
         envBaseURL: process.env.DEEPSEEK_BASE_URL,
         envModel: process.env.DEEPSEEK_MODEL,
         envModelLabel: "DEEPSEEK_MODEL",
         envApiKey: process.env.DEEPSEEK_API_KEY,
-        defaultModel: DOCUMENTED_PROVIDER_DEFAULT_MODELS.deepseek,
         apiKeyMode: "required",
-        apiKeyEnvLabel: "DEEPSEEK_API_KEY",
         useResponsesApi: false,
         providerCtor: DeepSeekProvider,
       });
     case "gemini": {
+      const apiKeyEnvLabel = apiKeyEnvVarFor("gemini");
       const apiKey = requireApiKey(
         "gemini",
         opts.apiKey,
-        "GEMINI_API_KEY",
-        process.env.GEMINI_API_KEY,
+        apiKeyEnvLabel,
+        process.env[apiKeyEnvLabel],
       );
       const model = requireModel(
         "gemini",
         opts.model,
         process.env.GEMINI_MODEL,
         "GEMINI_MODEL",
-        DOCUMENTED_PROVIDER_DEFAULT_MODELS.gemini,
+        defaultModelFor("gemini"),
       );
       const cfg: OpenAIProviderConfig = {
         ...buildCommonConfig(extra),
         apiKey,
         model,
         providerName: "gemini",
-        apiKeyEnvLabel: "GEMINI_API_KEY",
+        apiKeyEnvLabel,
         tools: opts.tools ? [...opts.tools] : undefined,
         baseURL:
           normalizeBaseURL(opts.baseURL) ??
           normalizeBaseURL(process.env.GEMINI_BASE_URL) ??
-          "https://generativelanguage.googleapis.com/v1beta",
+          defaultBaseURLFor("gemini"),
         useResponsesApi: false,
         authStrategy: "bearer",
         ...(extra.defaultHeaders ? { defaultHeaders: extra.defaultHeaders } : {}),

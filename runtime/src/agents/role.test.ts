@@ -97,6 +97,18 @@ describe("role registry", () => {
     expect(role.config.timeoutMs).toBe(3_600_000);
   });
 
+  it("derives xhigh reasoning effort from user role layers", () => {
+    registerAgentRole({
+      name: "deep-review",
+      config: {
+        description: "review",
+        configToml: 'model_reasoning_effort = "xhigh"',
+      },
+    });
+
+    expect(getAgentRole("deep-review")?.config.reasoningEffort).toBe("xhigh");
+  });
+
   it("registerAgentRole overrides built-ins by name", () => {
     registerAgentRole({
       name: "explorer",

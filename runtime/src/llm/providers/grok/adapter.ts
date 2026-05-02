@@ -85,9 +85,11 @@ import {
   XAI_ENCRYPTED_REASONING_INCLUDE,
 } from "../../wire/responses-xai.js";
 import { coerceUsage } from "../../wire/shared.js";
+import {
+  BUILT_IN_PROVIDER_BASE_URLS,
+  BUILT_IN_PROVIDER_DEFAULT_MODELS,
+} from "../../registry/provider-info.js";
 
-const DEFAULT_BASE_URL = "https://api.x.ai/v1";
-const DEFAULT_MODEL = "grok-4-1-fast-reasoning";
 const DEFAULT_VISION_MODEL = "grok-4-0709";
 const DEFAULT_TIMEOUT_MS = 120_000;
 // MAX_TOOL_SCHEMA_CHARS_FOLLOWUP removed 2026-04-09: see buildParams() comment
@@ -679,8 +681,8 @@ export class GrokProvider implements LLMProvider {
     this.configuredTimeoutMs = config.timeoutMs;
     this.config = {
       ...config,
-      model: config.model ?? DEFAULT_MODEL,
-      baseURL: config.baseURL ?? DEFAULT_BASE_URL,
+      model: config.model ?? BUILT_IN_PROVIDER_DEFAULT_MODELS.grok,
+      baseURL: config.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS.grok,
       timeoutMs: normalizeTimeoutMs(config.timeoutMs),
       parallelToolCalls: config.parallelToolCalls ?? false,
     };

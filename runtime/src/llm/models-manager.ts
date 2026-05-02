@@ -13,6 +13,7 @@ import type { ModelInfo } from "../session/turn-context.js";
 export class StaticModelsManager implements ModelsManager {
   private readonly fallbackProvider?: string;
   private readonly configDefaultProvider?: string;
+  private readonly allModels: readonly ModelInfo[];
   private readonly availableModels: readonly ModelInfo[];
   private readonly modelRegistry: ModelRegistry;
   private readonly modelInfoCache = new Map<string, Promise<ModelInfo>>();
@@ -30,9 +31,13 @@ export class StaticModelsManager implements ModelsManager {
       config: params.config,
       metadata: params.metadata,
     });
-    this.availableModels = this.modelRegistry
+    this.allModels = this.modelRegistry
       .listEntriesSync()
       .map((entry) => modelRegistryEntryToModelInfo(entry));
+    this.availableModels = this.allModels.filter((model) =>
+      model.showInPicker !== false && model.visibility !== "hide" &&
+      model.visibility !== "none"
+    );
   }
 
   async getModelInfo(modelSlug: string): Promise<ModelInfo> {

@@ -34,6 +34,39 @@ describe("ModelRegistry", () => {
     });
   });
 
+  it("uses the registered model catalog for newer OpenAI model metadata", () => {
+    const registry = new ModelRegistry({ config: defaultConfig() });
+
+    const entry = registry.resolveSync({
+      provider: "openai",
+      model: "gpt-5.4",
+    });
+
+    expect(entry.metadata.contextWindow).toBe(272_000);
+    expect(entry.capabilities.supportsProviderNativeWebSearch).toBe(true);
+    expect(modelRegistryEntryToModelInfo(entry)).toMatchObject({
+      slug: "gpt-5.4",
+      defaultReasoningLevel: "xhigh",
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+    });
+  });
+
+  it("preserves hidden model visibility in model info", () => {
+    const registry = new ModelRegistry({ config: defaultConfig() });
+
+    const entry = registry.resolveSync({
+      provider: "openai",
+      model: "codex-auto-review", // branding-scan: allow OpenAI model identifier
+    });
+
+    expect(modelRegistryEntryToModelInfo(entry)).toMatchObject({
+      slug: "codex-auto-review", // branding-scan: allow OpenAI model identifier
+      visibility: "hide",
+      showInPicker: false,
+    });
+  });
+
   it("keeps local provider costs free while preserving conservative metadata", () => {
     const registry = new ModelRegistry({ config: defaultConfig() });
 

@@ -31,6 +31,43 @@ describe("StaticModelsManager", () => {
     expect(info.supportedReasoningLevels).toEqual(["low", "medium", "high"]);
   });
 
+  it("lists and resolves registered bundled model catalog entries", async () => {
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "openai",
+    });
+
+    const listed = await manager.listModels();
+    expect(listed.map((entry) => entry.slug)).toContain("gpt-5.4");
+    expect(listed.map((entry) => entry.slug)).not.toContain(
+      "codex-auto-review", // branding-scan: allow OpenAI model identifier
+    );
+
+    const info = await manager.getModelInfo("gpt-5.4");
+    expect(info).toMatchObject({
+      slug: "gpt-5.4",
+      contextWindow: 272_000,
+      defaultReasoningLevel: "xhigh",
+      defaultReasoningSummary: "none",
+      usedFallbackModelMetadata: false,
+    });
+    expect(info.supportedReasoningLevels).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+    ]);
+
+    const hidden = await manager.getModelInfo(
+      "codex-auto-review", // branding-scan: allow OpenAI model identifier
+    );
+    expect(hidden).toMatchObject({
+      slug: "codex-auto-review", // branding-scan: allow OpenAI model identifier
+      visibility: "hide",
+      showInPicker: false,
+    });
+  });
+
   it("lists configured provider default models alongside built-ins", async () => {
     const manager = new StaticModelsManager({
       config: mergeConfigs(defaultConfig(), {
@@ -153,6 +190,29 @@ describe("StaticModelsManager", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("caps explicit context metadata at the registered model maximum", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "openai",
+        model: "gpt-5.4-mini",
+        providers: {
+          openai: {
+            default_model: "gpt-5.4-mini",
+            context_window_tokens: 1_000_000,
+          },
+        },
+      }),
+      fallbackProvider: "openai",
+      metadata: { fetchImpl },
+    });
+
+    const info = await manager.getModelInfo("gpt-5.4-mini");
+    expect(info.contextWindow).toBe(272_000);
+    expect(info.usedFallbackModelMetadata).toBe(false);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("keeps explicit provider max_output_tokens authoritative", async () => {
     const manager = new StaticModelsManager({
       config: mergeConfigs(defaultConfig(), {
@@ -252,6 +312,37 @@ describe("StaticModelsManager", () => {
     expect(info.maxOutputTokensUpperLimit).toBe(16_384);
     expect(info.usedFallbackModelMetadata).toBe(false);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses registry provider defaults for OpenAI-compatible metadata auth", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe("http://localhost:8000/v1/models");
+      expect((init?.headers as Record<string, string>).Authorization).toBe(
+        "Bearer compat-token",
+      );
+      return jsonResponse({
+        data: [
+          {
+            id: "local-model",
+            max_model_len: 65_536,
+            max_output_tokens: 8_192,
+          },
+        ],
+      });
+    });
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "openai-compatible",
+      metadata: {
+        fetchImpl,
+        env: { OPENAI_COMPATIBLE_API_KEY: "compat-token" },
+      },
+    });
+
+    const info = await manager.getModelInfo("local-model");
+    expect(info.contextWindow).toBe(65_536);
+    expect(info.maxOutputTokens).toBe(8_192);
+    expect(info.usedFallbackModelMetadata).toBe(false);
   });
 
   it("uses OpenRouter registry metadata for OpenRouter models", async () => {

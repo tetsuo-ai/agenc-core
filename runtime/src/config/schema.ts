@@ -31,7 +31,12 @@ export type SandboxConfigMode =
   | "read-only"
   | "workspace-write";
 
-export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
+export type ReasoningEffort =
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh";
 
 export type ReasoningSummary = "auto" | "concise" | "detailed" | "none";
 

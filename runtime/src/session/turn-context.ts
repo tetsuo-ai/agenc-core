@@ -65,11 +65,15 @@ export interface ModelInfo {
   readonly defaultReasoningLevel?: ReasoningEffort;
   readonly defaultReasoningSummary: ReasoningSummary;
   readonly truncationPolicy: TruncationPolicy;
+  readonly supportsToolUse?: boolean;
+  readonly supportsParallelToolCalls?: boolean;
+  readonly visibility?: "list" | "hide" | "none";
+  readonly showInPicker?: boolean;
   /** Whether the metadata came from a fallback (warn user — see agenc runtime 594-606). */
   readonly usedFallbackModelMetadata: boolean;
 }
 
-export type ReasoningEffort = "low" | "medium" | "high" | "none";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "none";
 export type ReasoningSummary = "auto" | "concise" | "detailed" | "none";
 export type TruncationPolicy = "head" | "middle" | "off";
 
@@ -158,6 +162,8 @@ export interface ToolsConfig {
 
 /** agenc runtime `ManagedFeatures`. T10 (config feature flags). */
 export interface ManagedFeatures {
+  /** Returns whether a staged feature key is enabled. */
+  readonly enabled?: (feature: string) => boolean;
   /** Returns whether `apps_enabled_for_auth(is_chatgpt_auth)` is true. */
   readonly appsEnabledForAuth: (isChatgptAuth: boolean) => boolean;
   /** Returns whether to use the legacy Landlock path. */

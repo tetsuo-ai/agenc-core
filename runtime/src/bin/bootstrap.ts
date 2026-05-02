@@ -8,6 +8,7 @@ import {
 } from "../llm/provider.js";
 import type { LLMProvider } from "../llm/types.js";
 import { StaticModelsManager } from "../llm/models-manager.js";
+import { createManagedFeatures } from "../llm/registry/features.js";
 import { setContextWindowUpgradeContext } from "../llm/context-window-upgrade.js";
 import {
   markCapabilityDrift,
@@ -600,15 +601,7 @@ function buildDeferredConfig(
       ? { agent_max_depth: config.agent_max_depth }
       : {}),
     cwd,
-    /**
-     * T10: real feature-flag source. Today both flags are hard-false so the
-     * session does not accidentally believe it is running in a ChatGPT-auth
-     * or legacy-Landlock context before feature-flag wiring lands.
-     */
-    features: {
-      appsEnabledForAuth: () => false,
-      useLegacyLandlock: () => false,
-    },
+    features: createManagedFeatures(config),
     /** T9: `multiAgentV2` hints (subagent usage hints + metadata visibility). */
     multiAgentV2: {
       maxConcurrentThreadsPerSession: config.agent_max_threads ?? 4,

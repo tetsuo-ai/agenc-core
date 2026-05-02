@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import { LLMProviderError } from "../../errors.js";
 import { createProvider } from "../../provider.js";
 import type { LLMTool } from "../../types.js";
+import { resolveBuiltInProviderInfo } from "../../registry/provider-info.js";
 import { GrokProvider } from "./index.js";
 
 const TEST_TOOL: LLMTool = {
@@ -44,6 +45,20 @@ describe("providers/grok entrypoint", () => {
     });
 
     expect(provider.name).toBe("grok");
+  });
+
+  test("uses registry defaults when constructed directly", () => {
+    const registry = resolveBuiltInProviderInfo("grok");
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+    });
+    const config = (provider as any).config as {
+      model: string;
+      baseURL: string;
+    };
+
+    expect(config.model).toBe(registry?.defaultModel);
+    expect(config.baseURL).toBe(registry?.baseURL);
   });
 
   test("attaches native web_search only for Grok 4-capable models", () => {

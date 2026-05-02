@@ -480,6 +480,64 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
+  it("builds runtime ManagedFeatures from config feature tables", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    await writeFile(
+      join(home, "config.toml"),
+      [
+        "[features]",
+        "apps = false",
+        "use_legacy_landlock = true",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      shutdown = boot.shutdown;
+
+      expect(boot.config.features.enabled?.("apps")).toBe(false);
+      expect(boot.config.features.appsEnabledForAuth(true)).toBe(false);
+      expect(boot.config.features.enabled?.("use_legacy_landlock")).toBe(true);
+      expect(boot.config.features.useLegacyLandlock()).toBe(true);
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("falls back to the explicit cwd when no workspace override is configured", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const cwd = await mkdtemp(join(tmpdir(), "agenc-bootstrap-cwd-"));

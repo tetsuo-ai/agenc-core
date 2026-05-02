@@ -4,6 +4,10 @@ import {
   resolveProviderBaseURL as resolveEnvProviderBaseURL,
   type EnvSnapshot,
 } from "./env.js";
+import {
+  BUILT_IN_PROVIDER_DEFAULT_MODELS,
+  BUILT_IN_PROVIDER_MODEL_CATALOG,
+} from "../llm/registry/provider-info.js";
 import type {
   AgenCConfig,
   ProviderCapabilityOverrides,
@@ -11,65 +15,11 @@ import type {
   ProviderFallbackTargetConfig,
 } from "./schema.js";
 
-export const BUILT_IN_PROVIDER_DEFAULT_MODELS = Object.freeze({
-  grok: "grok-4-fast",
-  openai: "gpt-5",
-  anthropic: "claude-opus-4-7",
-  ollama: "llama3.3",
-  lmstudio: "gpt-4o-mini",
-  "openai-compatible": "local-model",
-  openrouter: "openai/gpt-5",
-  groq: "llama-3.3-70b-versatile",
-  deepseek: "deepseek-reasoner",
-  gemini: "gemini-2.5-pro",
-  agenc: "agenc",
-} as const);
-
-export const BUILT_IN_PROVIDER_BASE_URLS = Object.freeze({
-  grok: "https://api.x.ai/v1",
-  openai: "https://api.openai.com/v1",
-  anthropic: "https://api.anthropic.com",
-  ollama: "http://localhost:11434",
-  lmstudio: "http://localhost:1234/v1",
-  "openai-compatible": "http://localhost:8000/v1",
-  openrouter: "https://openrouter.ai/api/v1",
-  groq: "https://api.groq.com/openai/v1",
-  deepseek: "https://api.deepseek.com/v1",
-  gemini: "https://generativelanguage.googleapis.com/v1beta",
-  agenc: "https://api.agenc.tech/v1",
-} as const);
-
-export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
-  Record<string, readonly string[]>
-> = Object.freeze({
-  grok: Object.freeze([
-    "grok-4-fast",
-    "grok-4",
-    "grok-3",
-    "grok-2",
-    "grok-2-mini",
-    "grok-beta",
-    "grok-code-fast-1",
-  ]),
-  openai: Object.freeze(["gpt-5", "o3"]),
-  anthropic: Object.freeze(["claude-opus-4-7"]),
-  ollama: Object.freeze(["llama3.3"]),
-  lmstudio: Object.freeze(["gpt-4o-mini"]),
-  "openai-compatible": Object.freeze(["local-model"]),
-  openrouter: Object.freeze([
-    "openai/gpt-5",
-    "openai/gpt-5-mini",
-    "x-ai/grok-code-fast-1",
-  ]),
-  groq: Object.freeze([
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-    "mixtral-8x7b-32768",
-  ]),
-  deepseek: Object.freeze(["deepseek-reasoner"]),
-  gemini: Object.freeze(["gemini-2.5-pro"]),
-  agenc: Object.freeze(["agenc"]),
-});
+export {
+  BUILT_IN_PROVIDER_BASE_URLS,
+  BUILT_IN_PROVIDER_DEFAULT_MODELS,
+  BUILT_IN_PROVIDER_MODEL_CATALOG,
+} from "../llm/registry/provider-info.js";
 
 export type ProviderSlug = keyof typeof BUILT_IN_PROVIDER_DEFAULT_MODELS;
 

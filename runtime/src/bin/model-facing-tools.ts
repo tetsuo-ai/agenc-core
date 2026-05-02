@@ -309,6 +309,7 @@ function parseReasoningEffort(value: unknown): ReasoningEffort | undefined {
     value === "low" ||
     value === "medium" ||
     value === "high" ||
+    value === "xhigh" ||
     value === "none"
   ) {
     return value;

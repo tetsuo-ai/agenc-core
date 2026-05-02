@@ -779,9 +779,7 @@ export function buildPrompt(
   return {
     input,
     tools: visibleTools,
-    parallelToolCalls:
-      (ctx.modelInfo as unknown as { supportsParallelToolCalls?: boolean })
-        .supportsParallelToolCalls ?? false,
+    parallelToolCalls: ctx.modelInfo.supportsParallelToolCalls ?? false,
     baseInstructions,
     ...(contextWindowTokens !== undefined
       ? { contextWindowTokens }

@@ -44,11 +44,21 @@ function fakeMcpManager() {
 }
 
 function fakeSession(): Session {
+  const modelInfo = {
+    slug: "test-model",
+    effectiveContextWindowPercent: 95,
+    supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+    defaultReasoningLevel: "medium",
+    defaultReasoningSummary: "auto",
+    truncationPolicy: "off",
+    usedFallbackModelMetadata: false,
+  } as const;
   return {
     conversationId: "session-test",
     config: {
       cwd: process.cwd(),
     },
+    modelInfo,
     sessionConfiguration: {
       cwd: process.cwd(),
       collaborationMode: {
@@ -62,6 +72,11 @@ function fakeSession(): Session {
       send: () => 1,
     },
     services: {
+      modelsManager: {
+        tryListModels: () => [modelInfo],
+        listModels: async () => [modelInfo],
+        getModelInfo: async () => modelInfo,
+      },
       mcpManager: fakeMcpManager(),
       skillsManager: {
         skillsForConfig: async () => ({
@@ -694,6 +709,17 @@ describe("model-facing tools", () => {
     expect(JSON.parse(forkTurns.content).error).toBe(
       "fork_turns must be `none`, `all`, or a positive integer string",
     );
+
+    const hiddenModel = await spawnAgent.execute({
+      message: "inspect",
+      task_name: "task_1",
+      model: "codex-auto-review", // branding-scan: allow OpenAI model identifier
+      fork_turns: "none",
+    });
+    expect(hiddenModel.isError).toBe(true);
+    expect(JSON.parse(hiddenModel.content).error).toBe(
+      "Unknown model `codex-auto-review` for spawn_agent. Available models: test-model", // branding-scan: allow OpenAI model identifier
+    );
   });
 
   it("rejects over-depth spawn_agent before emitting lifecycle events", async () => {
@@ -800,6 +826,7 @@ describe("model-facing tools", () => {
       message: "inspect",
       task_name: "task_1",
       agent_type: "runner",
+      reasoning_effort: "xhigh",
       fork_turns: "none",
     });
 
@@ -815,6 +842,7 @@ describe("model-facing tools", () => {
         taskPrompt: "inspect",
         agentName: "task_1",
         role: "worker",
+        reasoningEffort: "xhigh",
         runInBackground: true,
       }),
     );
