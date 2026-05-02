@@ -707,6 +707,28 @@ const MANAGED_KEY_PROVIDERS = new Set<ProviderName>([
   "gemini",
 ]);
 
+function isRemoteAuthBackend(
+  authBackend: AuthBackend | undefined,
+): boolean {
+  return authBackend?.kind === "remote";
+}
+
+function isSubscriptionEntitled(
+  tier: AuthSubscriptionTier | undefined,
+): boolean {
+  return tier === "pro" || tier === "team" || tier === "enterprise";
+}
+
+function requiresHostedModelRouting(provider: string, model: string): boolean {
+  const normalizedProvider = provider.trim().toLowerCase();
+  const normalizedModel = model.trim().toLowerCase();
+  return (
+    normalizedProvider === "agenc" ||
+    normalizedModel === "agenc" ||
+    normalizedModel.startsWith("agenc:")
+  );
+}
+
 function firstNonEmpty(
   ...values: Array<string | undefined>
 ): string | undefined {
@@ -739,6 +761,7 @@ async function providerFactoryOptionsFromSettings(params: {
   readonly authBackend?: AuthBackend;
   readonly authSubscriptionTier?: AuthSubscriptionTier;
   readonly sessionId: string;
+  readonly reusableApiKey?: string;
 }): Promise<ProviderFactoryOptions> {
   const extra: Record<string, unknown> = {};
   if (params.settings?.contextWindowTokens !== undefined) {
@@ -759,8 +782,28 @@ async function providerFactoryOptionsFromSettings(params: {
       extra.subscriptionTier = params.authSubscriptionTier;
     }
   }
+  const byokApiKey = params.settings?.apiKey ?? params.reusableApiKey;
+  if (
+    isRemoteAuthBackend(params.authBackend) &&
+    !isSubscriptionEntitled(params.authSubscriptionTier)
+  ) {
+    if (requiresHostedModelRouting(params.provider, params.model)) {
+      throw new Error(
+        "Hosted AgenC model routing requires an active AgenC subscription",
+      );
+    }
+    if (
+      byokApiKey === undefined &&
+      normalizedProvider !== null &&
+      MANAGED_KEY_PROVIDERS.has(normalizedProvider)
+    ) {
+      throw new Error(
+        "Managed provider keys require an active AgenC subscription; configure BYOK provider credentials instead",
+      );
+    }
+  }
   const managedApiKey =
-    params.settings?.apiKey === undefined && normalizedProvider !== null
+    byokApiKey === undefined && normalizedProvider !== null
       ? await vendManagedProviderKey({
           provider: normalizedProvider,
           authBackend: params.authBackend,
@@ -1442,6 +1485,12 @@ export class Session {
         liveProvider,
         peeked.sessionConfiguration?.provider?.slug,
       );
+      const reusableLiveProviderOptions =
+        liveProviderOptions &&
+        liveProviderIdentity !== null &&
+        liveProviderIdentity === targetNormalizedProvider
+          ? liveProviderOptions
+          : undefined;
       const configStore = (this.services as Partial<SessionServices>).configStore;
       const targetProviderSettings =
         targetNormalizedProvider !== null && configStore?.current
@@ -1460,15 +1509,12 @@ export class Session {
               authBackend: this.services.authBackend,
               authSubscriptionTier: this.services.authSubscriptionTier,
               sessionId: this.conversationId,
+              reusableApiKey: reusableLiveProviderOptions?.apiKey,
             })
           : {};
       preparedSwitch = prepareProviderSwitch(resolvedProvider, {
         ...mergeProviderFactoryOptions(
-          liveProviderOptions &&
-          liveProviderIdentity !== null &&
-          liveProviderIdentity === targetNormalizedProvider
-            ? liveProviderOptions
-            : undefined,
+          reusableLiveProviderOptions,
           settingsOptions,
         ),
         model: resolvedModel,
