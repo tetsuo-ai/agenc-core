@@ -83,6 +83,16 @@ describe("StaticModelsManager", () => {
     );
   });
 
+  it("lists the built-in generic OpenAI-compatible route", async () => {
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "openai-compatible",
+    });
+
+    const listed = await manager.listModels();
+    expect(listed.map((entry) => entry.slug)).toContain("local-model");
+  });
+
   it("falls back cleanly for unknown slugs while preserving the active provider", async () => {
     const manager = new StaticModelsManager({
       config: defaultConfig(),

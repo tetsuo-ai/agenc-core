@@ -392,15 +392,17 @@ describe("provider resolution (T13)", () => {
   });
 
   test("resolveProviderSettings lets OPENAI env configure local compatible endpoints", () => {
-    const settings = resolveProviderSettings("lmstudio", defaultConfig(), {
+    const settings = resolveProviderSettings("openai-compatible", defaultConfig(), {
       OPENAI_API_KEY: "local-token",
       OPENAI_BASE_URL: "http://127.0.0.1:8000/v1",
+      OPENAI_MODEL: "self-hosted-coder",
     });
 
     expect(settings).toMatchObject({
-      provider: "lmstudio",
+      provider: "openai-compatible",
       apiKey: "local-token",
       baseURL: "http://127.0.0.1:8000/v1",
+      defaultModel: "local-model",
     });
   });
 
@@ -1397,6 +1399,15 @@ describe("env: resolvers", () => {
     expect(resolveProviderApiKey("lmstudio", { OPENAI_API_KEY: "local" })).toBe(
       "local",
     );
+    expect(
+      resolveProviderApiKey("openai-compatible", { OPENAI_API_KEY: "local" }),
+    ).toBe("local");
+    expect(
+      resolveProviderApiKey("openai-compatible", {
+        OPENAI_COMPATIBLE_API_KEY: "specific",
+        OPENAI_API_KEY: "local",
+      }),
+    ).toBe("specific");
     expect(resolveProviderApiKey("ollama", {})).toBeUndefined();
   });
 
@@ -1412,6 +1423,17 @@ describe("env: resolvers", () => {
         OPENAI_BASE_URL: "http://127.0.0.1:8000/v1",
       }),
     ).toBe("http://127.0.0.1:1234/v1");
+    expect(
+      resolveProviderBaseURL("openai-compatible", {
+        OPENAI_BASE_URL: "http://127.0.0.1:8000/v1",
+      }),
+    ).toBe("http://127.0.0.1:8000/v1");
+    expect(
+      resolveProviderBaseURL("openai-compatible", {
+        OPENAI_COMPATIBLE_BASE_URL: "http://127.0.0.1:9000/v1",
+        OPENAI_BASE_URL: "http://127.0.0.1:8000/v1",
+      }),
+    ).toBe("http://127.0.0.1:9000/v1");
   });
 });
 

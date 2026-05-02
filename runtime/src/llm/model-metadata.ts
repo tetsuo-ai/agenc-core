@@ -28,6 +28,7 @@ const DEFAULT_PROVIDER_BASE_URLS: Readonly<Record<string, string>> =
     grok: "https://api.x.ai/v1",
     openai: "https://api.openai.com/v1",
     lmstudio: "http://localhost:1234/v1",
+    "openai-compatible": "http://localhost:8000/v1",
     openrouter: "https://openrouter.ai/api/v1",
     groq: "https://api.groq.com/openai/v1",
     deepseek: "https://api.deepseek.com/v1",
@@ -38,6 +39,7 @@ const DEFAULT_PROVIDER_API_KEY_ENVS: Readonly<Record<string, string>> =
     grok: "XAI_API_KEY",
     openai: "OPENAI_API_KEY",
     lmstudio: "LMSTUDIO_API_KEY",
+    "openai-compatible": "OPENAI_COMPATIBLE_API_KEY",
     openrouter: "OPENROUTER_API_KEY",
     groq: "GROQ_API_KEY",
     deepseek: "DEEPSEEK_API_KEY",
@@ -47,6 +49,7 @@ const LIVE_METADATA_PROVIDERS = new Set([
   "grok",
   "openai",
   "lmstudio",
+  "openai-compatible",
   "groq",
   "deepseek",
 ]);
@@ -618,6 +621,8 @@ function providerAliases(provider: string): readonly string[] {
       return ["grok", "xai", "x-ai"];
     case "lmstudio":
       return ["lmstudio", "openai", "openai-compatible"];
+    case "openai-compatible":
+      return ["openai-compatible", "openai", "self-hosted"];
     default:
       return [normalized];
   }
@@ -674,6 +679,11 @@ function envBaseUrl(
       return nonEmpty(env.OPENAI_BASE_URL);
     case "lmstudio":
       return nonEmpty(env.LMSTUDIO_BASE_URL) ?? nonEmpty(env.OPENAI_BASE_URL);
+    case "openai-compatible":
+      return (
+        nonEmpty(env.OPENAI_COMPATIBLE_BASE_URL) ??
+        nonEmpty(env.OPENAI_BASE_URL)
+      );
     case "openrouter":
       return nonEmpty(env.OPENROUTER_BASE_URL);
     case "groq":
@@ -692,7 +702,9 @@ function envApiKey(
   const primaryEnv = DEFAULT_PROVIDER_API_KEY_ENVS[provider];
   const primary = primaryEnv ? nonEmpty(env[primaryEnv]) : undefined;
   if (primary) return primary;
-  return provider === "lmstudio" ? nonEmpty(env.OPENAI_API_KEY) : undefined;
+  return provider === "lmstudio" || provider === "openai-compatible"
+    ? nonEmpty(env.OPENAI_API_KEY)
+    : undefined;
 }
 
 function nonEmpty(value: string | undefined): string | undefined {

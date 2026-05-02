@@ -11,6 +11,7 @@ import { GrokProvider } from "./providers/grok/index.js";
 import { GroqProvider } from "./providers/groq/index.js";
 import { LMStudioProvider } from "./providers/lmstudio/index.js";
 import { OllamaProvider } from "./providers/ollama/index.js";
+import { OpenAICompatibleProvider } from "./providers/openai-compatible/index.js";
 import { OpenAIProvider } from "./providers/openai/index.js";
 import { OpenRouterProvider } from "./providers/openrouter/index.js";
 import type {
@@ -594,6 +595,21 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
             fetchImpl,
           }),
         payload: buildChatCompletionsPayload("gpt-4o-mini", parityCase),
+      }),
+  },
+  {
+    provider: "openai-compatible",
+    model: "local-model",
+    env: {},
+    createHarness: (parityCase) =>
+      createFetchHarness({
+        factory: (fetchImpl) =>
+          new OpenAICompatibleProvider({
+            model: "local-model",
+            tools: parityCase.tools ? [...parityCase.tools] : [],
+            fetchImpl,
+          }),
+        payload: buildChatCompletionsPayload("local-model", parityCase),
       }),
   },
   {
