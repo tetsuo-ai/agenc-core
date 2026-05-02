@@ -126,6 +126,16 @@ export interface ToolBudget {
   readonly reserved_tokens?: number;
 }
 
+export interface AgentBudgetConfig {
+  readonly token_cap?: number;
+  readonly dollar_cap?: number;
+  readonly wall_clock_seconds?: number;
+}
+
+export interface AgentConfig {
+  readonly budget?: AgentBudgetConfig;
+}
+
 export interface HookCommand {
   readonly type: "command";
   readonly command: string;
@@ -363,6 +373,7 @@ export interface AgenCConfig {
   readonly telemetryOptIn?: boolean;
 
   // ── AgenC-specific additions ──────────────────────────────────────
+  readonly agent?: AgentConfig;
   readonly toolBudget?: ToolBudget;
   readonly stream_watchdog_timeout_ms?: number;
   readonly max_output_tokens?: number;
@@ -490,6 +501,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "voiceInput",
   "tuiLayout",
   "telemetryOptIn",
+  "agent",
   "toolBudget",
   "stream_watchdog_timeout_ms",
   "max_output_tokens",
@@ -545,6 +557,13 @@ export function defaultConfig(): AgenCConfig {
       sidePane: "status",
       minColumns: 120,
     }) as TuiLayoutConfig,
+    agent: Object.freeze({
+      budget: Object.freeze({
+        token_cap: 2_000_000,
+        dollar_cap: 25,
+        wall_clock_seconds: 259_200,
+      }) as AgentBudgetConfig,
+    }) as AgentConfig,
     toolBudget: Object.freeze({
       max_calls_per_turn: 32,
       max_bytes_per_call: 256_000,

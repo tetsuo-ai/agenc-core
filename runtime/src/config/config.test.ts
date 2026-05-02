@@ -71,6 +71,11 @@ describe("schema: defaultConfig", () => {
     expect(cfg.editorMode).toBe("default");
     expect(cfg.voiceInput?.enabled).toBe(false);
     expect(cfg.tuiLayout?.mode).toBe("single");
+    expect(cfg.agent?.budget).toEqual({
+      token_cap: 2_000_000,
+      dollar_cap: 25,
+      wall_clock_seconds: 259_200,
+    });
     expect(Object.isFrozen(cfg)).toBe(true);
   });
 });
@@ -220,6 +225,25 @@ describe("schema: normalizeRawConfig", () => {
     expect(out.daemon).toEqual({ transport: "stdio", autostart: false });
     expect(out._unknown).toBeUndefined();
     expect(KNOWN_CONFIG_KEYS.includes("daemon")).toBe(true);
+  });
+
+  test("preserves agent.budget config on the typed path", () => {
+    const out = normalizeRawConfig({
+      agent: {
+        budget: {
+          token_cap: 10_000,
+          dollar_cap: 5,
+          wall_clock_seconds: 3_600,
+        },
+      },
+    });
+    expect(out.agent?.budget).toEqual({
+      token_cap: 10_000,
+      dollar_cap: 5,
+      wall_clock_seconds: 3_600,
+    });
+    expect(out._unknown).toBeUndefined();
+    expect(KNOWN_CONFIG_KEYS.includes("agent")).toBe(true);
   });
 
   test("preserves permissions.default_mode config on the typed path", () => {
@@ -893,6 +917,26 @@ autostart = false
     expect(out.config.daemon?.autostart).toBe(false);
     expect(out.config.daemon?.transport).toBe("unix");
     expect(out.config._unknown?.daemon).toBeUndefined();
+  });
+
+  test("agent.budget TOML overrides the default caps", async () => {
+    writeFileSync(
+      join(dir, "config.toml"),
+      `
+[agent.budget]
+token_cap = 10000
+dollar_cap = 5
+wall_clock_seconds = 3600
+      `,
+    );
+    const out = await loadConfig({ home: dir });
+    expect(out.exists).toBe(true);
+    expect(out.config.agent?.budget).toEqual({
+      token_cap: 10_000,
+      dollar_cap: 5,
+      wall_clock_seconds: 3_600,
+    });
+    expect(out.config._unknown?.agent).toBeUndefined();
   });
 
   test("permissions.default_mode TOML overrides the on-request default", async () => {
