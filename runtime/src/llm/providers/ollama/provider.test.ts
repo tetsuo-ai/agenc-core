@@ -16,6 +16,37 @@ async function* streamChunks(chunks: readonly unknown[]): AsyncGenerator<unknown
   }
 }
 
+function hangingStreamAfterFirstChunk(): {
+  readonly stream: AsyncIterable<unknown>;
+  readonly returnSpy: ReturnType<typeof vi.fn>;
+} {
+  const returnSpy = vi.fn(async () => ({ done: true, value: undefined }));
+  const stream: AsyncIterable<unknown> = {
+    [Symbol.asyncIterator]() {
+      let calls = 0;
+      return {
+        next: async () => {
+          calls += 1;
+          if (calls === 1) {
+            return {
+              done: false,
+              value: {
+                model: "llama3.3",
+                message: { role: "assistant", content: "hel" },
+                prompt_eval_count: 5,
+                eval_count: 1,
+              },
+            };
+          }
+          return await new Promise<IteratorResult<unknown>>(() => {});
+        },
+        return: returnSpy,
+      };
+    },
+  };
+  return { stream, returnSpy };
+}
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -143,6 +174,49 @@ describe("providers/ollama entrypoint", () => {
     expect(options).toMatchObject({
       signal: expect.any(AbortSignal),
     });
+  });
+
+  test("keeps health monitoring active through slow stream consumption", async () => {
+    vi.useFakeTimers();
+    const { stream, returnSpy } = hangingStreamAfterFirstChunk();
+    const chat = vi.fn().mockResolvedValue(stream);
+    const list = vi.fn().mockRejectedValue(new Error("local server down"));
+    const provider = new OllamaProvider({
+      model: "llama3.3",
+    });
+    setClient(provider, { chat, list });
+    const chunks: Array<{ content: string; done: boolean }> = [];
+
+    const pending = provider.chatStream(
+      [{ role: "user", content: "hello" }],
+      (chunk) => chunks.push({ content: chunk.content, done: chunk.done }),
+    );
+    const observed = pending.then(
+      (response) => response,
+      (error: unknown) => error,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(chunks).toEqual([{ content: "hel", done: false }]);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    const response = await observed;
+
+    expect(response).toMatchObject({
+      content: "hel",
+      partial: true,
+      finishReason: "error",
+      error: {
+        name: "LLMProviderError",
+        providerName: "ollama",
+      },
+    });
+    expect(chunks).toEqual([
+      { content: "hel", done: false },
+      { content: "", done: true },
+    ]);
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(returnSpy).toHaveBeenCalledTimes(1);
   });
 
   test("healthCheck probes the local SDK model list", async () => {

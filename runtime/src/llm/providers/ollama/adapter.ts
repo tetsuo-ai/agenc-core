@@ -234,6 +234,47 @@ function buildToolSelectionTraceContext(
   };
 }
 
+function readAbortReason(signal: AbortSignal): unknown {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error("Ollama stream aborted");
+}
+
+async function nextWithAbort<T>(
+  iterator: AsyncIterator<T>,
+  signal: AbortSignal,
+): Promise<IteratorResult<T>> {
+  if (signal.aborted) {
+    throw readAbortReason(signal);
+  }
+
+  return await new Promise<IteratorResult<T>>((resolve, reject) => {
+    const abort = (): void => reject(readAbortReason(signal));
+    signal.addEventListener("abort", abort, { once: true });
+    void iterator.next()
+      .then(resolve, reject)
+      .finally(() => {
+        signal.removeEventListener("abort", abort);
+      });
+  });
+}
+
+async function* abortableAsyncIterable<T>(
+  iterable: AsyncIterable<T>,
+  signal: AbortSignal,
+): AsyncGenerator<T> {
+  const iterator = iterable[Symbol.asyncIterator]();
+  try {
+    while (true) {
+      const result = await nextWithAbort(iterator, signal);
+      if (result.done) return;
+      yield result.value;
+    }
+  } finally {
+    void iterator.return?.();
+  }
+}
+
 export class OllamaProvider implements LLMProvider {
   readonly name = "ollama";
 
@@ -348,43 +389,47 @@ export class OllamaProvider implements LLMProvider {
           { error: "provider_request_trace_unavailable" },
         context: buildToolSelectionTraceContext(toolSelection, requestTimeoutMs),
       });
-      const stream = await withOllamaHealthSidecar({
+      await withOllamaHealthSidecar({
         signal: options?.signal,
         healthCheck: async () => await this.healthCheck(),
-        operation: async (signal) =>
-          await withTimeout(
+        operation: async (signal) => {
+          const stream = await withTimeout(
             async (activeSignal) =>
               (client as any).chat(params, { signal: activeSignal }),
             requestTimeoutMs,
             this.name,
             signal,
-          ),
-      });
+          );
 
-      for await (const chunk of stream as AsyncIterable<any>) {
-        if (chunk.message?.content) {
-          content += chunk.message.content;
-          onChunk({ content: chunk.message.content, done: false });
-        }
-
-        // Accumulate tool calls
-        if (chunk.message?.tool_calls) {
-          for (const tc of chunk.message.tool_calls) {
-            const validated = validateToolCall({
-              id: randomUUID(),
-              name: tc.function?.name ?? "",
-              arguments: JSON.stringify(tc.function?.arguments ?? {}),
-            });
-            if (validated) {
-              toolCalls.push(validated);
+          for await (const chunk of abortableAsyncIterable(
+            stream as AsyncIterable<any>,
+            signal,
+          )) {
+            if (chunk.message?.content) {
+              content += chunk.message.content;
+              onChunk({ content: chunk.message.content, done: false });
             }
-          }
-        }
 
-        if (chunk.model) model = chunk.model;
-        if (chunk.prompt_eval_count) promptTokens = chunk.prompt_eval_count;
-        if (chunk.eval_count) completionTokens = chunk.eval_count;
-      }
+            // Accumulate tool calls
+            if (chunk.message?.tool_calls) {
+              for (const tc of chunk.message.tool_calls) {
+                const validated = validateToolCall({
+                  id: randomUUID(),
+                  name: tc.function?.name ?? "",
+                  arguments: JSON.stringify(tc.function?.arguments ?? {}),
+                });
+                if (validated) {
+                  toolCalls.push(validated);
+                }
+              }
+            }
+
+            if (chunk.model) model = chunk.model;
+            if (chunk.prompt_eval_count) promptTokens = chunk.prompt_eval_count;
+            if (chunk.eval_count) completionTokens = chunk.eval_count;
+          }
+        },
+      });
 
       const finishReason: LLMResponse["finishReason"] =
         toolCalls.length > 0 ? "tool_calls" : "stop";
