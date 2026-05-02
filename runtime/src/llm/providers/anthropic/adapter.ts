@@ -30,6 +30,12 @@ import {
   buildAnthropicMessagesRequest,
   parseAnthropicMessagesResponse,
 } from "../../wire/messages-anthropic.js";
+import {
+  assertProviderStructuredOutputCompatibility,
+} from "../../provider-capabilities.js";
+import {
+  ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
+} from "../../structured-output.js";
 import type { AnthropicProviderConfig } from "./types.js";
 import { parseSSEFrames } from "../../_deps/sse.js";
 import { CONTEXT_MANAGEMENT_BETA_HEADER } from "../../_deps/betas.js";
@@ -226,6 +232,13 @@ export class AnthropicProvider implements LLMProvider {
     const model = options?.model?.trim() || this.config.model;
 
     try {
+      assertProviderStructuredOutputCompatibility({
+        providerName: this.name,
+        model,
+        structuredOutput: options?.structuredOutput,
+        toolsRequested: requestTools.length > 0,
+        api: "messages",
+      });
       const request = buildAnthropicMessagesRequest({
         model,
         messages,
@@ -274,6 +287,13 @@ export class AnthropicProvider implements LLMProvider {
       maxTokens: resolveMaxTokens(options, this.config.maxTokens),
       contextManagement: this.config.contextManagement,
     };
+    assertProviderStructuredOutputCompatibility({
+      providerName: this.name,
+      model: requestModel,
+      structuredOutput: options?.structuredOutput,
+      toolsRequested: requestOptions.tools.length > 0,
+      api: "messages",
+    });
     const request = {
       ...buildAnthropicMessagesRequest(requestOptions),
       stream: true,
@@ -344,6 +364,9 @@ export class AnthropicProvider implements LLMProvider {
               name,
               arguments: "",
             });
+            if (name === ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME) {
+              continue;
+            }
             // Forward a streaming-tool-use start signal alongside the
             // normal accumulator. Downstream consumers translate this
             // into a `tool_input_block_start` session event for the
@@ -388,6 +411,9 @@ export class AnthropicProvider implements LLMProvider {
             const block = toolBlocks.get(index);
             if (block && typeof delta.partial_json === "string") {
               block.arguments += delta.partial_json;
+              if (block.name === ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME) {
+                continue;
+              }
               // Forward the partial JSON delta so the TUI bridge can
               // render the synthetic streaming-tool-use cell as the
               // arguments arrive. Mirrors the upstream input_json_delta
@@ -416,7 +442,10 @@ export class AnthropicProvider implements LLMProvider {
               arguments: block.arguments.length > 0 ? block.arguments : "{}",
             };
             completedToolCalls.push(completedToolCall);
-            if (parseToolInputObject(completedToolCall.arguments)) {
+            if (
+              completedToolCall.name !== ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME &&
+              parseToolInputObject(completedToolCall.arguments)
+            ) {
               onChunk({
                 content: "",
                 done: false,

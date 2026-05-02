@@ -1,0 +1,124 @@
+{
+  "contractName": "api-structured-output-parity",
+  "scope": "Port provider-aware structured-output request shaping, capability gates, and parsing into AgenC LLM adapters",
+  "generatedAt": "2026-05-02T00:00:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/openclaude", "sourceRootBrandingScanOverride": "branding-scan: allow upstream source path",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/utils/betas.ts",
+    "src/tools/SyntheticOutputTool/SyntheticOutputTool.ts",
+    "src/services/api/openaiShim.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/llm/structured-output.ts",
+    "runtime/src/llm/provider-capabilities.ts",
+    "runtime/src/llm/capabilities.ts",
+    "runtime/src/llm/wire/responses-xai.ts",
+    "runtime/src/llm/wire/responses-openai.ts",
+    "runtime/src/llm/wire/chat-completions.ts",
+    "runtime/src/llm/wire/messages-anthropic.ts",
+    "runtime/src/llm/grok/adapter.ts",
+    "runtime/src/llm/providers/openai/adapter.ts",
+    "runtime/src/llm/providers/anthropic/adapter.ts"
+  ],
+  "testFiles": [
+    "runtime/src/llm/structured-output.test.ts",
+    "runtime/src/llm/provider-capabilities.test.ts",
+    "runtime/src/llm/capabilities.test.ts",
+    "runtime/src/llm/wire/responses-xai.test.ts",
+    "runtime/src/llm/wire/responses-openai.test.ts",
+    "runtime/src/llm/wire/chat-completions.test.ts",
+    "runtime/src/llm/wire/messages-anthropic.test.ts",
+    "runtime/src/llm/grok/adapter.test.ts",
+    "runtime/src/llm/providers/openai/adapter.test.ts",
+    "runtime/src/llm/providers/anthropic/adapter.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "provider-capability-gates",
+      "source": "src/utils/betas.ts + provider docs",
+      "target": "runtime/src/llm/structured-output.ts + runtime/src/llm/provider-capabilities.ts + runtime/src/llm/capabilities.ts",
+      "requiredBehaviors": [
+        "resolve native text-format support for xAI and OpenAI providers",
+        "resolve Anthropic structured output as a synthetic tool_use mode",
+        "fail closed for unsupported provider/model combinations",
+        "allow xAI structured output with tools only on Grok 4-family models",
+        "reject Grok code-fast structured output with tools before a provider request",
+        "allow Anthropic structured output to coexist with regular tool-loop tools",
+        "record structured-output support in the capability registry"
+      ],
+      "edgeCases": [
+        "grok-4.20 variants",
+        "grok-code-fast with tools",
+        "Grok imagine models",
+        "known old OpenAI model families",
+        "unknown provider slugs"
+      ],
+      "tests": [
+        "runtime/src/llm/structured-output.test.ts",
+        "runtime/src/llm/provider-capabilities.test.ts",
+        "runtime/src/llm/capabilities.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/structured-output.test.ts src/llm/provider-capabilities.test.ts src/llm/capabilities.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "native-text-format-wire",
+      "source": "src/services/api/openaiShim.ts",
+      "target": "runtime/src/llm/wire/responses-xai.ts + runtime/src/llm/wire/responses-openai.ts + runtime/src/llm/wire/chat-completions.ts",
+      "requiredBehaviors": [
+        "serialize request-scoped json_schema contracts into Responses text.format",
+        "serialize request-scoped json_schema contracts into Chat Completions response_format",
+        "preserve other text controls such as verbosity while adding format",
+        "enforce strict OpenAI-compatible schema constraints recursively",
+        "parse provider JSON text back into LLMResponse.structuredOutput"
+      ],
+      "edgeCases": [
+        "strict defaulting",
+        "optional properties converted to required under strict mode",
+        "uri format stripped before OpenAI-compatible strict schema submission",
+        "invalid or schema-violating provider JSON fails during parse"
+      ],
+      "tests": [
+        "runtime/src/llm/wire/responses-xai.test.ts",
+        "runtime/src/llm/wire/responses-openai.test.ts",
+        "runtime/src/llm/wire/chat-completions.test.ts",
+        "runtime/src/llm/providers/openai/adapter.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/wire/responses-xai.test.ts src/llm/wire/responses-openai.test.ts src/llm/wire/chat-completions.test.ts src/llm/providers/openai/adapter.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "anthropic-tool-use-mode",
+      "source": "src/tools/SyntheticOutputTool/SyntheticOutputTool.ts",
+      "target": "runtime/src/llm/wire/messages-anthropic.ts + runtime/src/llm/providers/anthropic/adapter.ts",
+      "requiredBehaviors": [
+        "represent request-scoped structured output as a provider-facing synthetic tool",
+        "force Anthropic tool_choice to the structured output tool for a single-call structured response when no regular tools are present",
+        "append the structured output tool without forcing tool_choice when regular tools are present",
+        "parse the synthetic tool_use input into LLMResponse.structuredOutput",
+        "exclude the synthetic structured output tool_use from runtime toolCalls",
+        "suppress synthetic streaming tool-use progress events from downstream consumers"
+      ],
+      "edgeCases": [
+        "tool_use stop reason with only structured output maps to finishReason stop",
+        "streamed synthetic input_json_delta is accumulated but not emitted as a runtime tool",
+        "reserved synthetic tool name collisions"
+      ],
+      "tests": [
+        "runtime/src/llm/wire/messages-anthropic.test.ts",
+        "runtime/src/llm/providers/anthropic/adapter.test.ts",
+        "runtime/src/llm/provider-capabilities.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/wire/messages-anthropic.test.ts src/llm/providers/anthropic/adapter.test.ts src/llm/provider-capabilities.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
+import { ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME } from "../../structured-output.js";
 import { AnthropicProvider } from "./adapter.js";
 
 function sseResponse(frames: string[]): Response {
@@ -293,6 +294,72 @@ describe("AnthropicProvider", () => {
     ) as Record<string, unknown>;
     expect(request.model).toBe("claude-reviewer");
     expect(response.model).toBe("claude-reviewer");
+  });
+
+  test("passes structured output through synthetic tool_use and parses the result", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "msg_1",
+          type: "message",
+          role: "assistant",
+          model: "claude-3-7-sonnet",
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_structured",
+              name: ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
+              input: { answer: "ok" },
+            },
+          ],
+          stop_reason: "tool_use",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-3-7-sonnet",
+      fetchImpl,
+    });
+
+    const response = await provider.chat(
+      [{ role: "user", content: "answer" }],
+      {
+        structuredOutput: {
+          schema: {
+            type: "json_schema",
+            name: "answer",
+            schema: {
+              type: "object",
+              properties: {
+                answer: { type: "string" },
+              },
+              required: ["answer"],
+            },
+          },
+        },
+      },
+    );
+
+    const request = JSON.parse(
+      String(fetchImpl.mock.calls[0]?.[1]?.body),
+    ) as Record<string, unknown>;
+    expect(request.tool_choice).toEqual({
+      type: "tool",
+      name: ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
+    });
+    expect(response.toolCalls).toEqual([]);
+    expect(response.finishReason).toBe("stop");
+    expect(response.structuredOutput).toMatchObject({
+      type: "json_schema",
+      name: "answer",
+      parsed: { answer: "ok" },
+    });
   });
 
   test("adds the context-management beta header when context management is configured", async () => {

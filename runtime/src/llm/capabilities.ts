@@ -1,3 +1,10 @@
+import {
+  supportsAnthropicStructuredOutputToolUse,
+  supportsOpenAIStructuredOutputs,
+  supportsXaiStructuredOutputs,
+  supportsXaiStructuredOutputsWithTools,
+} from "./structured-output.js";
+
 export interface ProviderModelCapabilities {
   readonly provider: string;
   readonly model: string;
@@ -6,6 +13,8 @@ export interface ProviderModelCapabilities {
   readonly supportsImageInput: boolean;
   readonly supportsAudioInput: boolean;
   readonly supportsAudioOutput: boolean;
+  readonly supportsStructuredOutput: boolean;
+  readonly supportsStructuredOutputWithTools: boolean;
   readonly supportsExtendedThinking: boolean;
   readonly acceptsImageHistory: boolean;
   readonly acceptsAudioHistory: boolean;
@@ -19,6 +28,8 @@ export interface ProviderCapabilityOverrides {
   readonly supportsImageInput?: boolean;
   readonly supportsAudioInput?: boolean;
   readonly supportsAudioOutput?: boolean;
+  readonly supportsStructuredOutput?: boolean;
+  readonly supportsStructuredOutputWithTools?: boolean;
   readonly supportsExtendedThinking?: boolean;
   readonly acceptsImageHistory?: boolean;
   readonly acceptsAudioHistory?: boolean;
@@ -54,6 +65,10 @@ interface ProviderCapabilityDefinition {
   readonly supportsImageInput: boolean | ((model: string) => boolean);
   readonly supportsAudioInput: boolean | ((model: string) => boolean);
   readonly supportsAudioOutput: boolean | ((model: string) => boolean);
+  readonly supportsStructuredOutput: boolean | ((model: string) => boolean);
+  readonly supportsStructuredOutputWithTools:
+    | boolean
+    | ((model: string) => boolean);
   readonly supportsExtendedThinking: boolean | ((model: string) => boolean);
   readonly acceptsImageHistory: boolean | ((model: string) => boolean);
   readonly acceptsAudioHistory: boolean | ((model: string) => boolean);
@@ -74,6 +89,8 @@ function resolveCapabilityFlag(
     | ProviderCapabilityDefinition["supportsImageInput"]
     | ProviderCapabilityDefinition["supportsAudioInput"]
     | ProviderCapabilityDefinition["supportsAudioOutput"]
+    | ProviderCapabilityDefinition["supportsStructuredOutput"]
+    | ProviderCapabilityDefinition["supportsStructuredOutputWithTools"]
     | ProviderCapabilityDefinition["supportsExtendedThinking"]
     | ProviderCapabilityDefinition["acceptsImageHistory"]
     | ProviderCapabilityDefinition["acceptsAudioHistory"]
@@ -111,6 +128,14 @@ function buildCapabilities(
     ),
     supportsAudioOutput: resolveCapabilityFlag(
       definition.supportsAudioOutput,
+      trimmedModel,
+    ),
+    supportsStructuredOutput: resolveCapabilityFlag(
+      definition.supportsStructuredOutput,
+      trimmedModel,
+    ),
+    supportsStructuredOutputWithTools: resolveCapabilityFlag(
+      definition.supportsStructuredOutputWithTools,
       trimmedModel,
     ),
     supportsExtendedThinking: resolveCapabilityFlag(
@@ -162,6 +187,15 @@ function applyCapabilityOverrides(
     ...(overrides.supportsAudioOutput !== undefined
       ? { supportsAudioOutput: overrides.supportsAudioOutput }
       : {}),
+    ...(overrides.supportsStructuredOutput !== undefined
+      ? { supportsStructuredOutput: overrides.supportsStructuredOutput }
+      : {}),
+    ...(overrides.supportsStructuredOutputWithTools !== undefined
+      ? {
+        supportsStructuredOutputWithTools:
+          overrides.supportsStructuredOutputWithTools,
+      }
+      : {}),
     ...(overrides.supportsExtendedThinking !== undefined
       ? { supportsExtendedThinking: overrides.supportsExtendedThinking }
       : {}),
@@ -199,6 +233,7 @@ function matchesModelFamily(model: string, pattern: RegExp): boolean {
 function isOpenAIReasoningModel(model: string): boolean {
   return matchesModelFamily(
     model,
+    // branding-scan: allow OpenAI model family identifier
     /(?:^|[/:])(?:gpt-5|o1|o3|o4|codex|chatgpt-5)(?:$|[-_.:])/,
   );
 }
@@ -235,6 +270,8 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     supportsImageInput: resolveGrokImageHistory,
     supportsAudioInput: false,
     supportsAudioOutput: false,
+    supportsStructuredOutput: supportsXaiStructuredOutputs,
+    supportsStructuredOutputWithTools: supportsXaiStructuredOutputsWithTools,
     supportsExtendedThinking: false,
     acceptsImageHistory: resolveGrokImageHistory,
     acceptsAudioHistory: false,
@@ -247,6 +284,8 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     supportsImageInput: true,
     supportsAudioInput: false,
     supportsAudioOutput: false,
+    supportsStructuredOutput: supportsAnthropicStructuredOutputToolUse,
+    supportsStructuredOutputWithTools: supportsAnthropicStructuredOutputToolUse,
     supportsExtendedThinking: true,
     acceptsImageHistory: true,
     acceptsAudioHistory: false,
@@ -261,6 +300,8 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     supportsImageInput: isVisionishOllamaModel,
     supportsAudioInput: false,
     supportsAudioOutput: false,
+    supportsStructuredOutput: false,
+    supportsStructuredOutputWithTools: false,
     supportsExtendedThinking: false,
     acceptsImageHistory: isVisionishOllamaModel,
     acceptsAudioHistory: false,
@@ -273,6 +314,8 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     supportsImageInput: true,
     supportsAudioInput: isOpenAIAudioInputModel,
     supportsAudioOutput: isOpenAIAudioOutputModel,
+    supportsStructuredOutput: supportsOpenAIStructuredOutputs,
+    supportsStructuredOutputWithTools: supportsOpenAIStructuredOutputs,
     supportsExtendedThinking: isOpenAIReasoningModel,
     acceptsImageHistory: true,
     // T13 only serializes inline/base64 OpenAI audio parts. Session history
@@ -291,6 +334,8 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     supportsImageInput: false,
     supportsAudioInput: false,
     supportsAudioOutput: false,
+    supportsStructuredOutput: false,
+    supportsStructuredOutputWithTools: false,
     supportsExtendedThinking: false,
     acceptsImageHistory: false,
     acceptsAudioHistory: false,
@@ -303,6 +348,8 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     supportsImageInput: false,
     supportsAudioInput: false,
     supportsAudioOutput: false,
+    supportsStructuredOutput: false,
+    supportsStructuredOutputWithTools: false,
     supportsExtendedThinking: false,
     acceptsImageHistory: false,
     acceptsAudioHistory: false,
@@ -315,6 +362,8 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     supportsImageInput: false,
     supportsAudioInput: false,
     supportsAudioOutput: false,
+    supportsStructuredOutput: false,
+    supportsStructuredOutputWithTools: false,
     supportsExtendedThinking: isDeepSeekThinkingModel,
     acceptsImageHistory: false,
     acceptsAudioHistory: false,
@@ -327,6 +376,8 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     supportsImageInput: true,
     supportsAudioInput: true,
     supportsAudioOutput: true,
+    supportsStructuredOutput: false,
+    supportsStructuredOutputWithTools: false,
     supportsExtendedThinking: isGeminiThinkingModel,
     acceptsImageHistory: true,
     // Gemini's OpenAI-compatible surface accepts inline `input_audio`
@@ -344,6 +395,8 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     supportsImageInput: isVisionishOllamaModel,
     supportsAudioInput: false,
     supportsAudioOutput: false,
+    supportsStructuredOutput: false,
+    supportsStructuredOutputWithTools: false,
     supportsExtendedThinking: false,
     acceptsImageHistory: isVisionishOllamaModel,
     acceptsAudioHistory: false,
@@ -364,6 +417,8 @@ function buildDefaultCapabilities(
     supportsImageInput: false,
     supportsAudioInput: false,
     supportsAudioOutput: false,
+    supportsStructuredOutput: false,
+    supportsStructuredOutputWithTools: false,
     supportsExtendedThinking: false,
     acceptsImageHistory: false,
     acceptsAudioHistory: false,

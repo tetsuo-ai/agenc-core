@@ -11,6 +11,10 @@ import type {
   LLMTool,
   LLMToolCall,
 } from "../types.js";
+import {
+  buildStructuredOutputTextFormat,
+  parseStructuredOutputText,
+} from "../structured-output.js";
 import { DEFAULT_MAX_OUTPUT_TOKENS } from "../openai-compatible-token-limits.js";
 import {
   assistantTextFromContentBlocks,
@@ -145,6 +149,16 @@ export function buildChatCompletionsRequest(
   if (input.options?.serviceTier !== undefined) {
     body.service_tier = input.options.serviceTier;
   }
+  const structuredFormat = buildStructuredOutputTextFormat(
+    input.options?.structuredOutput,
+  );
+  if (structuredFormat) {
+    const { type: _formatType, ...jsonSchema } = structuredFormat;
+    body.response_format = {
+      type: "json_schema",
+      json_schema: jsonSchema,
+    };
+  }
   return body;
 }
 
@@ -252,5 +266,15 @@ export function parseChatCompletionsResponse(
       "/chat/completions",
       response,
     ),
+    structuredOutput:
+      request.options?.structuredOutput?.enabled === false ||
+        !request.options?.structuredOutput?.schema ||
+        content.trim().length === 0
+        ? undefined
+        : parseStructuredOutputText(
+          content,
+          request.options.structuredOutput.schema.name,
+          request.options.structuredOutput.schema.schema,
+        ),
   };
 }

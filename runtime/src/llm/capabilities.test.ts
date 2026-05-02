@@ -30,6 +30,8 @@ describe("resolveProviderModelCapabilities", () => {
       supportsImageInput: true,
       supportsAudioInput: false,
       supportsAudioOutput: false,
+      supportsStructuredOutput: true,
+      supportsStructuredOutputWithTools: true,
       supportsExtendedThinking: false,
       acceptsImageHistory: true,
       acceptsAudioHistory: false,
@@ -46,6 +48,7 @@ describe("resolveProviderModelCapabilities", () => {
 
     expect(caps.acceptsImageHistory).toBe(false);
     expect(caps.acceptsReasoningEffort).toBe(false);
+    expect(caps.supportsStructuredOutput).toBe(false);
   });
 
   it("tracks the documented OpenAI multimodal and reasoning support by model family", () => {
@@ -61,6 +64,8 @@ describe("resolveProviderModelCapabilities", () => {
       supportsImageInput: true,
       supportsAudioInput: false,
       supportsAudioOutput: false,
+      supportsStructuredOutput: true,
+      supportsStructuredOutputWithTools: true,
       supportsExtendedThinking: true,
       acceptsImageHistory: true,
       acceptsAudioHistory: false,
@@ -155,6 +160,8 @@ describe("resolveProviderModelCapabilities", () => {
       supportsImageInput: true,
       supportsAudioInput: false,
       supportsAudioOutput: false,
+      supportsStructuredOutput: true,
+      supportsStructuredOutputWithTools: true,
       supportsExtendedThinking: true,
       acceptsImageHistory: true,
       acceptsAudioHistory: false,
@@ -257,6 +264,8 @@ describe("resolveProviderModelCapabilities", () => {
       supportsImageInput: false,
       supportsAudioInput: false,
       supportsAudioOutput: false,
+      supportsStructuredOutput: false,
+      supportsStructuredOutputWithTools: false,
       supportsExtendedThinking: false,
       acceptsImageHistory: false,
       acceptsAudioHistory: false,

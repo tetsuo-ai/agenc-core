@@ -285,6 +285,46 @@ describe("buildOpenAIResponsesRequest", () => {
     expect(request.text).toEqual({ verbosity: "high" });
   });
 
+  test("sends structured output schemas through Responses text.format", () => {
+    const request = buildOpenAIResponsesRequest({
+      model: "gpt-5",
+      messages: [{ role: "user", content: "hello" }],
+      tools: [],
+      options: {
+        modelVerbosity: "low",
+        structuredOutput: {
+          schema: {
+            type: "json_schema",
+            name: "answer",
+            schema: {
+              type: "object",
+              properties: {
+                answer: { type: "string" },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(request.text).toEqual({
+      verbosity: "low",
+      format: {
+        type: "json_schema",
+        name: "answer",
+        strict: true,
+        schema: {
+          type: "object",
+          properties: {
+            answer: { type: "string" },
+          },
+          additionalProperties: false,
+          required: ["answer"],
+        },
+      },
+    });
+  });
+
   test("forwards reasoning summary for reasoning-capable OpenAI responses models", () => {
     const request = buildOpenAIResponsesRequest({
       model: "gpt-5",
@@ -405,6 +445,53 @@ describe("parseOpenAIResponsesResponse", () => {
         arguments: "{\"cmd\":\"pwd\"}",
       },
     ]);
+  });
+
+  test("parses structured output from Responses output text", () => {
+    const response = parseOpenAIResponsesResponse(
+      "gpt-5",
+      {
+        status: "completed",
+        output: [
+          {
+            type: "message",
+            content: [
+              {
+                type: "output_text",
+                text: "{\"answer\":\"ok\"}",
+              },
+            ],
+          },
+        ],
+      },
+      {
+        model: "gpt-5",
+        messages: [{ role: "user", content: "hello" }],
+        tools: [],
+        options: {
+          structuredOutput: {
+            schema: {
+              type: "json_schema",
+              name: "answer",
+              schema: {
+                type: "object",
+                properties: {
+                  answer: { type: "string" },
+                },
+                required: ["answer"],
+              },
+            },
+          },
+        },
+      },
+    );
+
+    expect(response.structuredOutput).toEqual({
+      type: "json_schema",
+      name: "answer",
+      rawText: "{\"answer\":\"ok\"}",
+      parsed: { answer: "ok" },
+    });
   });
 
   test("maps incomplete max_output_tokens to length", () => {

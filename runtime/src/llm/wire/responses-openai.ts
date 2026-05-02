@@ -12,6 +12,10 @@ import type {
   LLMToolCall,
 } from "../types.js";
 import {
+  buildStructuredOutputTextFormat,
+  parseStructuredOutputText,
+} from "../structured-output.js";
+import {
   assistantTextFromContentBlocks,
   coerceUsage,
   collectRequestMetrics,
@@ -279,6 +283,17 @@ export function buildOpenAIResponsesRequest(
       verbosity: input.options.modelVerbosity,
     };
   }
+  const structuredFormat = buildStructuredOutputTextFormat(
+    input.options?.structuredOutput,
+  );
+  if (structuredFormat) {
+    body.text = {
+      ...(body.text && typeof body.text === "object"
+        ? (body.text as Record<string, unknown>)
+        : {}),
+      format: structuredFormat,
+    };
+  }
   return body;
 }
 
@@ -335,5 +350,15 @@ export function parseOpenAIResponsesResponse(
       typeof response.model === "string" ? response.model : model,
     finishReason: resolveResponsesFinishReason(response, toolCalls),
     requestMetrics: withEndpointMarkers(requestMetrics, "/responses", response),
+    structuredOutput:
+      request.options?.structuredOutput?.enabled === false ||
+        !request.options?.structuredOutput?.schema ||
+        content.trim().length === 0
+        ? undefined
+        : parseStructuredOutputText(
+          content,
+          request.options.structuredOutput.schema.name,
+          request.options.structuredOutput.schema.schema,
+        ),
   };
 }
