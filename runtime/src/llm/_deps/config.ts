@@ -42,7 +42,11 @@ const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   ollama: Object.freeze(["llama3.3"]),
   lmstudio: Object.freeze(["gpt-4o-mini"]),
   openrouter: Object.freeze(["openai/gpt-5"]),
-  groq: Object.freeze(["llama-3.3-70b-versatile"]),
+  groq: Object.freeze([
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "mixtral-8x7b-32768",
+  ]),
   deepseek: Object.freeze(["deepseek-reasoner"]),
   gemini: Object.freeze(["gemini-2.5-pro"]),
   agenc: Object.freeze(["agenc"]),

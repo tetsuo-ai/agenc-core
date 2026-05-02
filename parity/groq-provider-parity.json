@@ -1,0 +1,113 @@
+{
+  "contractName": "groq-provider-parity",
+  "scope": "Finish the Groq OpenAI-compatible provider surface for bearer auth, chat-completions routing, and built-in Llama/Mixtral model routes",
+  "generatedAt": "2026-05-02T00:00:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/openclaude", "sourceRootBrandingScanOverride": "branding-scan: allow upstream source path",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/utils/providerProfiles.ts",
+    "src/utils/model/openaiContextWindows.ts",
+    "src/services/api/openaiShim.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/llm/providers/groq/index.ts",
+    "runtime/src/llm/providers/groq/PARITY.md",
+    "runtime/src/llm/providers/openai/adapter.ts",
+    "runtime/src/llm/wire/chat-completions.ts",
+    "runtime/src/llm/provider.ts",
+    "runtime/src/config/resolve-provider.ts",
+    "runtime/src/llm/_deps/config.ts",
+    "runtime/src/llm/openai-compatible-token-limits.ts",
+    "runtime/src/llm/models-manager.ts"
+  ],
+  "testFiles": [
+    "runtime/src/llm/providers/groq/provider.test.ts",
+    "runtime/src/llm/provider.test.ts",
+    "runtime/src/llm/provider-parity.test.ts",
+    "runtime/src/config/config.test.ts",
+    "runtime/src/llm/models-manager.test.ts",
+    "runtime/src/llm/openai-compatible-token-limits.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "groq-chat-completions-routing",
+      "source": "Groq provider profile and OpenAI-compatible shim anchors",
+      "target": "runtime/src/llm/providers/groq/index.ts + runtime/src/llm/providers/openai/adapter.ts",
+      "requiredBehaviors": [
+        "send Groq requests to the OpenAI-compatible chat-completions route",
+        "use GROQ_API_KEY as the factory and provider API-key label",
+        "send Authorization bearer authentication",
+        "disable Responses API routing for Groq",
+        "keep the default Groq model on llama-3.3-70b-versatile"
+      ],
+      "edgeCases": [
+        "explicit GROQ_MODEL environment override",
+        "explicit factory model override",
+        "missing GROQ_API_KEY error",
+        "request body stream=false for non-stream chat calls"
+      ],
+      "tests": [
+        "runtime/src/llm/providers/groq/provider.test.ts",
+        "runtime/src/llm/provider.test.ts",
+        "runtime/src/llm/provider-parity.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/providers/groq/provider.test.ts src/llm/provider.test.ts src/llm/provider-parity.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "groq-llama-mixtral-model-routes",
+      "source": "Groq provider defaults and OpenAI-compatible context-window anchors",
+      "target": "runtime/src/config/resolve-provider.ts + runtime/src/llm/_deps/config.ts + runtime/src/llm/openai-compatible-token-limits.ts",
+      "requiredBehaviors": [
+        "advertise llama-3.3-70b-versatile as the default Groq route",
+        "advertise llama-3.1-8b-instant as a built-in Groq route",
+        "advertise mixtral-8x7b-32768 as a built-in Groq route",
+        "resolve bare Groq Llama and Mixtral slugs to the Groq provider",
+        "list Groq Llama and Mixtral routes through the runtime models manager"
+      ],
+      "edgeCases": [
+        "bare Llama 8B slug",
+        "bare Mixtral slug",
+        "provider:model disambiguation remains available",
+        "runtime _deps catalog mirrors the config catalog"
+      ],
+      "tests": [
+        "runtime/src/config/config.test.ts",
+        "runtime/src/llm/models-manager.test.ts",
+        "runtime/src/llm/openai-compatible-token-limits.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/config/config.test.ts src/llm/models-manager.test.ts src/llm/openai-compatible-token-limits.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "groq-request-scoped-model-selection",
+      "source": "OpenAI-compatible request builder and Groq model profile anchors",
+      "target": "runtime/src/llm/providers/groq/index.ts + runtime/src/llm/providers/openai/adapter.ts + runtime/src/llm/wire/chat-completions.ts",
+      "requiredBehaviors": [
+        "honor request-scoped model overrides for Groq chat calls",
+        "serialize request-scoped Groq Llama and Mixtral model IDs into the request body",
+        "preserve bearer auth when using request-scoped model overrides",
+        "parse Groq OpenAI-compatible chat-completions responses through the shared adapter"
+      ],
+      "edgeCases": [
+        "request-scoped llama-3.1-8b-instant",
+        "request-scoped mixtral-8x7b-32768",
+        "non-stream response usage accounting",
+        "shared OpenAI-compatible response parser"
+      ],
+      "tests": [
+        "runtime/src/llm/providers/groq/provider.test.ts",
+        "runtime/src/llm/wire/chat-completions.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/providers/groq/provider.test.ts src/llm/wire/chat-completions.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

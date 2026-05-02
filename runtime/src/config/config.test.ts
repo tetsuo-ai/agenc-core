@@ -463,6 +463,28 @@ describe("provider resolution (T13)", () => {
       "anthropic/claude-3.7-sonnet",
     );
   });
+
+  test("buildProviderModelCatalog routes built-in Groq Llama and Mixtral models", () => {
+    const catalog = buildProviderModelCatalog(defaultConfig());
+
+    expect(catalog.groq).toEqual([
+      "llama-3.3-70b-versatile",
+      "llama-3.1-8b-instant",
+      "mixtral-8x7b-32768",
+    ]);
+    expect(
+      resolveModelDisambiguated("llama-3.1-8b-instant", catalog),
+    ).toEqual({
+      provider: "groq",
+      model: "llama-3.1-8b-instant",
+    });
+    expect(
+      resolveModelDisambiguated("mixtral-8x7b-32768", catalog),
+    ).toEqual({
+      provider: "groq",
+      model: "mixtral-8x7b-32768",
+    });
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────
