@@ -22,7 +22,7 @@ import {
   collectRequestMetrics,
   messageTextContent,
   normalizeFinishReason,
-  normalizeToolCalls,
+  normalizeToolCallsStrict,
   parseOpenAIToolChoice,
   prepareMessagesForWire,
   toOpenAIMessageContent,
@@ -213,7 +213,7 @@ export function parseChatCompletionsResponse(
       ? (choice.message as Record<string, unknown>)
       : {};
   const toolCalls = Array.isArray(message.tool_calls)
-    ? normalizeToolCalls(
+    ? normalizeToolCallsStrict(
       (message.tool_calls as Array<Record<string, unknown>>).map(
         (toolCall): LLMToolCall => ({
           id: String(toolCall.id ?? ""),
@@ -229,6 +229,7 @@ export function parseChatCompletionsResponse(
           ),
         }),
       ),
+      "OpenAI chat-completions response emitted invalid tool_call",
     )
     : [];
   const content =

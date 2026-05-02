@@ -1,0 +1,171 @@
+{
+  "contractName": "openai-provider-parity",
+  "scope": "Finish the OpenAI provider surface for Responses API requests, chat-completions fallback, streaming, and tool calls",
+  "generatedAt": "2026-05-02T00:00:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/codex", "sourceRootBrandingScanOverride": "branding-scan: allow upstream source path",
+  "targetRoot": "..",
+  "sourceCommit": "48791920a8b122939c4d3feb15673c0a690ca4a0",
+  "sourceFiles": [
+    "co\u0064ex-rs/co\u0064ex-api/src/common.rs",
+    "co\u0064ex-rs/co\u0064ex-api/src/endpoint/responses.rs",
+    "co\u0064ex-rs/co\u0064ex-api/src/sse/responses.rs",
+    "co\u0064ex-rs/co\u0064ex-api/src/requests/responses.rs",
+    "co\u0064ex-rs/tools/src/responses_api.rs"
+  ],
+  "targetFiles": [
+    "runtime/src/llm/providers/openai/adapter.ts",
+    "runtime/src/llm/providers/openai/auth.ts",
+    "runtime/src/llm/providers/openai/types.ts",
+    "runtime/src/llm/providers/openai/index.ts",
+    "runtime/src/llm/providers/openai/PARITY.md",
+    "runtime/src/llm/wire/responses-openai.ts",
+    "runtime/src/llm/wire/chat-completions.ts",
+    "runtime/src/llm/wire/shared.ts",
+    "runtime/src/llm/provider.ts"
+  ],
+  "testFiles": [
+    "runtime/src/llm/providers/openai/adapter.test.ts",
+    "runtime/src/llm/wire/responses-openai.test.ts",
+    "runtime/src/llm/wire/chat-completions.test.ts",
+    "runtime/src/llm/provider.test.ts",
+    "runtime/src/llm/provider-capabilities.test.ts",
+    "runtime/src/llm/structured-output.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "responses-request-shape",
+      "source": "Responses API request and endpoint client anchors",
+      "target": "runtime/src/llm/providers/openai/adapter.ts + runtime/src/llm/wire/responses-openai.ts",
+      "requiredBehaviors": [
+        "send OpenAI Responses API requests to /responses by default",
+        "serialize user, assistant, tool, image, and audio history into Responses input items",
+        "carry system messages and option-level system prompts into instructions",
+        "forward structured output, reasoning, verbosity, service tier, prompt cache key, store, and max output token options",
+        "route request-scoped model overrides into the request body and fallback metadata"
+      ],
+      "edgeCases": [
+        "empty input creates a user text item",
+        "orphan tool outputs are dropped before request serialization",
+        "stored assistant tool calls replay as function_call items",
+        "data-url audio replays as input_audio",
+        "opaque audio references degrade to text placeholders"
+      ],
+      "tests": [
+        "runtime/src/llm/providers/openai/adapter.test.ts",
+        "runtime/src/llm/wire/responses-openai.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/providers/openai/adapter.test.ts src/llm/wire/responses-openai.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "responses-streaming-tool-calls",
+      "source": "Responses SSE parser and event taxonomy anchors",
+      "target": "runtime/src/llm/providers/openai/adapter.ts + runtime/src/llm/wire/responses-openai.ts",
+      "requiredBehaviors": [
+        "stream response.output_text.delta through StreamProgressCallback",
+        "emit completed function_call output items as LLMToolCall chunks",
+        "parse response.completed payloads into final LLMResponse content, tool calls, usage, and request metrics",
+        "preserve partial stream output instead of triggering provider fallback after content has streamed",
+        "reject malformed completed function_call JSON instead of silently dropping executable tool calls"
+      ],
+      "edgeCases": [
+        "function_call call_id differs from item id",
+        "response.completed carries web_search_call output",
+        "cached and reasoning token details",
+        "response.failed before first content chunk",
+        "response.failed after partial content",
+        "invalid completed function_call arguments"
+      ],
+      "tests": [
+        "runtime/src/llm/providers/openai/adapter.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/providers/openai/adapter.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "chat-completions-fallback",
+      "source": "AgenC OpenAI-compatible fallback path",
+      "target": "runtime/src/llm/providers/openai/adapter.ts + runtime/src/llm/wire/chat-completions.ts",
+      "requiredBehaviors": [
+        "route useResponsesApi=false calls to /chat/completions",
+        "serialize history into chat-completions messages with one leading system message",
+        "use max_completion_tokens for remote OpenAI chat-completions models and max_tokens for local compatible endpoints",
+        "stream chat-completions deltas without buffering the full reply",
+        "accumulate streamed tool_calls fragments into completed LLMToolCall entries",
+        "reject malformed completed streamed tool_call JSON"
+      ],
+      "edgeCases": [
+        "local OpenAI-compatible base URLs",
+        "context-window preflight before network calls",
+        "truncated tool calls with finish_reason length",
+        "cached and reasoning token usage details",
+        "invalid completed streamed tool_call arguments"
+      ],
+      "tests": [
+        "runtime/src/llm/providers/openai/adapter.test.ts",
+        "runtime/src/llm/wire/chat-completions.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/providers/openai/adapter.test.ts src/llm/wire/chat-completions.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "auth-errors-and-fallback",
+      "source": "Responses stream error classification anchors",
+      "target": "runtime/src/llm/providers/openai/adapter.ts + runtime/src/llm/providers/openai/auth.ts",
+      "requiredBehaviors": [
+        "resolve API-key, optional bearer, no-auth, Google API key, and OAuth auth strategies",
+        "refresh OAuth credentials once after a 401 and hard-fail exhausted OAuth sessions until re-authentication",
+        "classify OpenAI-compatible HTTP and stream failures into typed LLM errors",
+        "trigger provider fallback on retryable overloads before first streamed output",
+        "avoid provider fallback after partial streamed content or tool output has appeared"
+      ],
+      "edgeCases": [
+        "401 OAuth refresh success",
+        "401 OAuth refresh exhaustion",
+        "429 rate limit retry-after",
+        "5xx compatible-provider overload",
+        "response.failed overload before and after partial output"
+      ],
+      "tests": [
+        "runtime/src/llm/providers/openai/adapter.test.ts",
+        "runtime/src/llm/provider.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/providers/openai/adapter.test.ts src/llm/provider.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "provider-factory-and-capabilities",
+      "source": "AgenC provider factory and structured-output capability gates",
+      "target": "runtime/src/llm/provider.ts + runtime/src/llm/provider-capabilities.ts + runtime/src/llm/structured-output.ts",
+      "requiredBehaviors": [
+        "createProvider('openai') returns the OpenAI provider with configured model, base URL, and auth state",
+        "rebuild provider factory options without requiring OPENAI_API_KEY for OAuth runtime config",
+        "allow OpenAI structured outputs through Responses text.format",
+        "allow OpenAI-compatible chat-completions structured output through response_format"
+      ],
+      "edgeCases": [
+        "OAuth runtime config",
+        "request-scoped model override",
+        "known old OpenAI models without structured output support",
+        "structured output with strict schema normalization"
+      ],
+      "tests": [
+        "runtime/src/llm/provider.test.ts",
+        "runtime/src/llm/provider-capabilities.test.ts",
+        "runtime/src/llm/structured-output.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/provider.test.ts src/llm/provider-capabilities.test.ts src/llm/structured-output.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

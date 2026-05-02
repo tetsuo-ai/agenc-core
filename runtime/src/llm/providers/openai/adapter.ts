@@ -14,9 +14,10 @@ import type {
   LLMStoredResponse,
   LLMStoredResponseDeleteResult,
   LLMTool,
+  LLMToolCall,
   StreamProgressCallback,
 } from "../../types.js";
-import { validateToolCall } from "../../types.js";
+import { validateToolCallDetailed } from "../../types.js";
 import {
   LLMAuthenticationError,
   LLMContextWindowExceededError,
@@ -256,6 +257,21 @@ function openAIStreamFallbackCandidate(
     error.status = status;
   }
   return error;
+}
+
+function validateProviderToolCallOrThrow(
+  providerName: string,
+  raw: unknown,
+  context: string,
+): LLMToolCall {
+  const result = validateToolCallDetailed(raw);
+  if (result.toolCall) {
+    return result.toolCall;
+  }
+  throw new LLMProviderError(
+    providerName,
+    `${context}: ${result.failure?.message ?? "invalid tool call payload"}`,
+  );
 }
 
 type ProviderFallbackWaitDecision = Extract<
@@ -733,15 +749,17 @@ export class OpenAIProvider implements LLMProvider {
               ? (event.data.item as Record<string, unknown>)
               : undefined;
           if (item?.type === "function_call") {
-            const toolCall = validateToolCall({
-              id: String(item.call_id ?? item.id ?? "").trim(),
-              name: String(item.name ?? "").trim(),
-              arguments: String(item.arguments ?? "{}"),
-            });
-            if (toolCall) {
-              streamedToolCalls.set(toolCall.id, toolCall);
-              onChunk({ content: "", done: false, toolCalls: [toolCall] });
-            }
+            const toolCall = validateProviderToolCallOrThrow(
+              this.name,
+              {
+                id: String(item.call_id ?? item.id ?? "").trim(),
+                name: String(item.name ?? "").trim(),
+                arguments: String(item.arguments ?? "{}"),
+              },
+              "OpenAI Responses stream emitted invalid function_call",
+            );
+            streamedToolCalls.set(toolCall.id, toolCall);
+            onChunk({ content: "", done: false, toolCalls: [toolCall] });
           }
           continue;
         }
@@ -821,13 +839,7 @@ export class OpenAIProvider implements LLMProvider {
       const toolCalls =
         parsed.toolCalls.length > 0
           ? parsed.toolCalls
-          : Array.from(streamedToolCalls.values())
-            .map((toolCall) => validateToolCall(toolCall))
-            .filter(
-              (toolCall): toolCall is NonNullable<
-                ReturnType<typeof validateToolCall>
-              > => toolCall !== null,
-            );
+          : Array.from(streamedToolCalls.values());
       const finalResponse: LLMResponse = {
         ...parsed,
         content: parsed.content.length > 0 ? parsed.content : streamedContent,
@@ -1017,9 +1029,12 @@ export class OpenAIProvider implements LLMProvider {
 
       const includeToolCalls = finishReason !== "length";
       const toolCalls = includeToolCalls
-        ? Array.from(toolCallAccumulator.values()).filter(
-          (toolCall) => toolCall.id.length > 0 && toolCall.name.length > 0,
-        )
+        ? Array.from(toolCallAccumulator.values()).map((toolCall) =>
+          validateProviderToolCallOrThrow(
+            this.name,
+            toolCall,
+            "OpenAI chat-completions stream emitted invalid tool_call",
+          ))
         : [];
       const parsed = withStreamingMetrics(
         parseChatCompletionsResponse(

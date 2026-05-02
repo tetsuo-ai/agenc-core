@@ -22,7 +22,7 @@ import {
   hasOpaqueAudioReference,
   messageTextContent,
   normalizeFinishReason,
-  normalizeToolCalls,
+  normalizeToolCallsStrict,
   parseOpenAIToolChoice,
   prepareMessagesForWire,
   readAudioPayload,
@@ -305,7 +305,7 @@ export function parseOpenAIResponsesResponse(
   const output = Array.isArray(response.output)
     ? (response.output as Array<Record<string, unknown>>)
     : [];
-  const toolCalls = normalizeToolCalls(
+  const toolCalls = normalizeToolCallsStrict(
     output
       .filter((item) => item.type === "function_call")
       .map(
@@ -315,6 +315,7 @@ export function parseOpenAIResponsesResponse(
           arguments: String(item.arguments ?? "{}"),
         }),
       ),
+    "OpenAI Responses response emitted invalid function_call",
   );
 
   const content = output
