@@ -55,6 +55,7 @@ import {
   readProviderFactoryOptions,
   readProviderIdentity,
 } from "../llm/provider.js";
+import type { AuthBackend } from "../auth/backend.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Fixture helpers
@@ -772,6 +773,57 @@ describe("Session.consumePendingProviderSwitch", () => {
               maxFailures: 2,
             },
           },
+        });
+      },
+    );
+  });
+
+  it("uses AuthBackend-managed keys when switching providers without BYOK", async () => {
+    await withEnv(
+      {
+        OPENAI_API_KEY: undefined,
+      },
+      async () => {
+        const calls: string[] = [];
+        const authBackend: AuthBackend = {
+          login: () => ({ authenticated: true, provider: "remote" }),
+          logout: () => ({ authenticated: false }),
+          whoami: () => ({ authenticated: true, provider: "remote" }),
+          vendKey: (provider, sessionId) => {
+            calls.push(`vendKey:${provider}:${sessionId}`);
+            return { provider, sessionId, apiKey: "managed-openai-key" };
+          },
+          inferAgencModel: () => ({
+            provider: "openai",
+            model: "gpt-5",
+          }),
+          getSubscriptionTier: () => "team",
+        };
+        const session = buildSession({
+          services: {
+            provider: createProvider("grok", {
+              apiKey: "test-key",
+              model: "grok-4",
+            }),
+            authBackend,
+          },
+        });
+        session.setPendingProviderSwitch({
+          provider: "openai",
+          model: "gpt-5",
+        });
+
+        const applied = await session.consumePendingProviderSwitch();
+
+        expect(applied).toEqual({
+          applied: true,
+          provider: "openai",
+          model: "gpt-5",
+        });
+        expect(calls).toEqual(["vendKey:openai:conv-test"]);
+        expect(readProviderFactoryOptions(session.services.provider)).toMatchObject({
+          apiKey: "managed-openai-key",
+          model: "gpt-5",
         });
       },
     );

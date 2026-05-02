@@ -50,10 +50,15 @@ import {
   prepareProviderSwitch,
   type ProviderFactoryOptions,
   type PreparedProviderSwitch,
+  type ProviderName,
   readProviderFactoryOptions,
   readProviderIdentity,
 } from "../llm/provider.js";
 import type { ProviderFallbackLadderOptions } from "../llm/api/fallback-ladder.js";
+import type {
+  AuthBackend,
+  AuthSubscriptionTier,
+} from "../auth/backend.js";
 import type { BudgetTracker } from "../llm/token-budget.js";
 import type { SessionSubmitOptions } from "./autonomous-mode.js";
 import type { CostSidecar } from "./cost.js";
@@ -568,6 +573,8 @@ export interface SessionServices {
   readonly showRawAgentReasoning: boolean;
   readonly execPolicy: ExecPolicyManager;
   readonly authManager: AuthManager;
+  readonly authBackend?: AuthBackend;
+  readonly authSubscriptionTier?: AuthSubscriptionTier;
   readonly sessionTelemetry: SessionTelemetry;
   readonly modelsManager: ModelsManager;
   readonly toolApprovals: ApprovalStore;
@@ -690,11 +697,49 @@ function buildProviderFallbackLadderOptions(params: {
   };
 }
 
-function providerFactoryOptionsFromSettings(params: {
+const MANAGED_KEY_PROVIDERS = new Set<ProviderName>([
+  "grok",
+  "openai",
+  "anthropic",
+  "openrouter",
+  "groq",
+  "deepseek",
+  "gemini",
+]);
+
+function firstNonEmpty(
+  ...values: Array<string | undefined>
+): string | undefined {
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (trimmed) return trimmed;
+  }
+  return undefined;
+}
+
+async function vendManagedProviderKey(params: {
+  readonly provider: ProviderName;
+  readonly authBackend: AuthBackend | undefined;
+  readonly sessionId: string;
+}): Promise<string | undefined> {
+  if (!params.authBackend || !MANAGED_KEY_PROVIDERS.has(params.provider)) {
+    return undefined;
+  }
+  const key = await params.authBackend.vendKey(
+    params.provider,
+    params.sessionId,
+  );
+  return firstNonEmpty(key.apiKey);
+}
+
+async function providerFactoryOptionsFromSettings(params: {
   readonly provider: string;
   readonly model: string;
   readonly settings: ResolvedProviderSettings | undefined;
-}): ProviderFactoryOptions {
+  readonly authBackend?: AuthBackend;
+  readonly authSubscriptionTier?: AuthSubscriptionTier;
+  readonly sessionId: string;
+}): Promise<ProviderFactoryOptions> {
   const extra: Record<string, unknown> = {};
   if (params.settings?.contextWindowTokens !== undefined) {
     extra.contextWindowTokens = params.settings.contextWindowTokens;
@@ -706,8 +751,25 @@ function providerFactoryOptionsFromSettings(params: {
   if (providerFallback !== undefined) {
     extra.providerFallback = providerFallback;
   }
+  const normalizedProvider = normalizeProviderName(params.provider);
+  if (normalizedProvider === "agenc" && params.authBackend !== undefined) {
+    extra.authBackend = params.authBackend;
+    extra.sessionId = params.sessionId;
+    if (params.authSubscriptionTier !== undefined) {
+      extra.subscriptionTier = params.authSubscriptionTier;
+    }
+  }
+  const managedApiKey =
+    params.settings?.apiKey === undefined && normalizedProvider !== null
+      ? await vendManagedProviderKey({
+          provider: normalizedProvider,
+          authBackend: params.authBackend,
+          sessionId: params.sessionId,
+      })
+      : undefined;
+  const apiKey = params.settings?.apiKey ?? managedApiKey;
   return {
-    ...(params.settings?.apiKey ? { apiKey: params.settings.apiKey } : {}),
+    ...(apiKey ? { apiKey } : {}),
     ...(params.settings?.baseURL ? { baseURL: params.settings.baseURL } : {}),
     ...(Object.keys(extra).length > 0 ? { extra } : {}),
   };
@@ -1391,10 +1453,13 @@ export class Session {
           : undefined;
       const settingsOptions =
         targetNormalizedProvider !== null
-          ? providerFactoryOptionsFromSettings({
+          ? await providerFactoryOptionsFromSettings({
               provider: targetNormalizedProvider,
               model: resolvedModel,
               settings: targetProviderSettings,
+              authBackend: this.services.authBackend,
+              authSubscriptionTier: this.services.authSubscriptionTier,
+              sessionId: this.conversationId,
             })
           : {};
       preparedSwitch = prepareProviderSwitch(resolvedProvider, {

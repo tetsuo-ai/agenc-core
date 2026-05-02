@@ -1,0 +1,109 @@
+{
+  "contractName": "provider-selection-logic-parity",
+  "scope": "Wire config defaults, per-session provider/model overrides, AuthBackend-managed key vending, and provider fallback ladders through runtime provider selection",
+  "generatedAt": "2026-05-02T00:00:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/openclaude", "sourceRootBrandingScanOverride": "branding-scan: allow upstream source path",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/utils/providerProfiles.ts",
+    "src/utils/managedEnv.ts",
+    "src/services/api/providerConfig.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/bin/startup-selection.ts",
+    "runtime/src/bin/bootstrap.ts",
+    "runtime/src/bin/bootstrap-services.ts",
+    "runtime/src/session/session.ts",
+    "runtime/src/llm/provider.ts",
+    "runtime/src/llm/api/fallback-ladder.ts",
+    "runtime/src/config/resolve-provider.ts",
+    "runtime/src/config/schema.ts",
+    "runtime/src/auth/backend.ts"
+  ],
+  "testFiles": [
+    "runtime/src/bin/bootstrap.test.ts",
+    "runtime/src/session/session.test.ts",
+    "runtime/src/llm/api/fallback-ladder.test.ts",
+    "runtime/src/config/config.test.ts",
+    "runtime/src/auth/byok-fallback.contract.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "startup-provider-selection",
+      "source": "Provider profile and managed-env startup selection",
+      "target": "runtime/src/bin/startup-selection.ts + runtime/src/bin/bootstrap.ts",
+      "requiredBehaviors": [
+        "resolve provider selection from CLI, env, profile, and config in that order",
+        "resolve provider-specific default models when a provider is selected without a model",
+        "honor provider settings for API keys, base URLs, and default models",
+        "use AuthBackend-managed keys when BYOK credentials are absent"
+      ],
+      "edgeCases": [
+        "provider:model CLI disambiguation",
+        "profile-selected provider and model",
+        "generic OpenAI-compatible model env fallback",
+        "remote managed key vending with no provider env key"
+      ],
+      "tests": [
+        "runtime/src/bin/bootstrap.test.ts",
+        "runtime/src/auth/byok-fallback.contract.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/bin/bootstrap.test.ts src/auth/byok-fallback.contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "per-session-provider-override",
+      "source": "Runtime provider profile activation",
+      "target": "runtime/src/session/session.ts + runtime/src/llm/provider.ts",
+      "requiredBehaviors": [
+        "stage and consume per-session provider/model overrides",
+        "rebuild target providers from config settings and live provider snapshots",
+        "vend managed keys through AuthBackend when a target provider lacks BYOK credentials",
+        "reject impossible provider switches without mutating the live session"
+      ],
+      "edgeCases": [
+        "same-provider model switch",
+        "cross-provider switch with configured key env",
+        "cross-provider switch with AuthBackend-managed key",
+        "missing key rejection clears the pending switch"
+      ],
+      "tests": [
+        "runtime/src/session/session.test.ts",
+        "runtime/src/llm/provider.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/session/session.test.ts src/llm/provider.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "provider-fallback-ladder-selection",
+      "source": "Provider config fallback-model selection",
+      "target": "runtime/src/llm/api/fallback-ladder.ts + runtime/src/session/session.ts",
+      "requiredBehaviors": [
+        "normalize configured fallback targets into provider/model pairs",
+        "trigger fallback only after configured failure thresholds",
+        "carry fallback target provider and model into pending provider switches",
+        "preserve provider settings when fallback switches across providers"
+      ],
+      "edgeCases": [
+        "duplicate fallback targets",
+        "same-provider self-target skipped",
+        "custom fallback HTTP statuses",
+        "cross-provider fallback uses configured or managed auth"
+      ],
+      "tests": [
+        "runtime/src/llm/api/fallback-ladder.test.ts",
+        "runtime/src/config/config.test.ts",
+        "runtime/src/session/session.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/api/fallback-ladder.test.ts src/config/config.test.ts src/session/session.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

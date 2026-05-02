@@ -74,6 +74,10 @@ import type {
 import type { ConfigStore } from "../config/store.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import type { UnifiedExecProcessManagerLike } from "../unified-exec/index.js";
+import type {
+  AuthBackend,
+  AuthSubscriptionTier,
+} from "../auth/backend.js";
 
 interface BootstrapShellSnapshot {
   readonly cwd: string;
@@ -86,6 +90,8 @@ export interface BootstrapSessionServicesOptions {
   readonly provider: LLMProvider;
   readonly providerName: string;
   readonly apiKey?: string;
+  readonly authBackend?: AuthBackend;
+  readonly authSubscriptionTier?: AuthSubscriptionTier;
   readonly registry: ToolRegistry;
   readonly mcpManager: SessionServices["mcpManager"];
   readonly unifiedExecManager: UnifiedExecProcessManagerLike;
@@ -560,6 +566,12 @@ export function buildBootstrapSessionServices(
       providerName: opts.providerName,
       ...(opts.apiKey !== undefined ? { apiKey: opts.apiKey } : {}),
     }),
+    ...(opts.authBackend !== undefined
+      ? { authBackend: opts.authBackend }
+      : {}),
+    ...(opts.authSubscriptionTier !== undefined
+      ? { authSubscriptionTier: opts.authSubscriptionTier }
+      : {}),
     sessionTelemetry: createSessionTelemetry({
       model: opts.model,
       providerName: opts.providerName,
