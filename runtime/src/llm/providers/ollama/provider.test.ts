@@ -138,6 +138,90 @@ describe("providers/ollama entrypoint", () => {
     expect(chat.mock.calls[0]).toHaveLength(1);
   });
 
+  test("preserves assistant tool-call history before tool results", () => {
+    const provider = new OllamaProvider({
+      model: "llama3.3",
+    });
+
+    const params = (provider as any).buildParams([
+      { role: "user", content: "echo hi" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          {
+            id: "call_echo_1",
+            name: "system.echo",
+            arguments: '{"text":"hi"}',
+          },
+        ],
+      },
+      {
+        role: "tool",
+        toolCallId: "call_echo_1",
+        toolName: "system.echo",
+        content: "hi",
+      },
+    ]);
+
+    expect(params.messages).toEqual([
+      { role: "user", content: "echo hi" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            function: {
+              name: "system.echo",
+              arguments: { text: "hi" },
+            },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: "hi",
+        tool_call_id: "call_echo_1",
+        tool_name: "system.echo",
+      },
+    ]);
+  });
+
+  test("parses native SDK tool calls from chat responses", async () => {
+    const chat = vi.fn().mockResolvedValue({
+      model: "llama3.3",
+      message: {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            function: {
+              name: "system.echo",
+              arguments: { text: "hi" },
+            },
+          },
+        ],
+      },
+      prompt_eval_count: 8,
+      eval_count: 2,
+    });
+    const provider = new OllamaProvider({
+      model: "llama3.3",
+    });
+    setClient(provider, { chat });
+
+    const response = await provider.chat([{ role: "user", content: "echo hi" }]);
+
+    expect(response.finishReason).toBe("tool_calls");
+    expect(response.toolCalls).toEqual([
+      {
+        id: expect.any(String),
+        name: "system.echo",
+        arguments: '{"text":"hi"}',
+      },
+    ]);
+  });
+
   test("streams native SDK chat chunks through the provider callback", async () => {
     const chat = vi.fn().mockResolvedValue(
       streamChunks([

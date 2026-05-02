@@ -299,6 +299,19 @@ function abortOllamaClient(client: unknown): void {
   }
 }
 
+function parseToolCallArguments(argumentsJson: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(argumentsJson) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Fall through to an empty object; malformed historical arguments should
+    // not make provider serialization fail before the validator can respond.
+  }
+  return {};
+}
+
 export class OllamaProvider implements LLMProvider {
   readonly name = "ollama";
 
@@ -739,6 +752,19 @@ export class OllamaProvider implements LLMProvider {
         role: "tool",
         content,
         tool_call_id: msg.toolCallId,
+        ...(msg.toolName ? { tool_name: msg.toolName } : {}),
+      };
+    }
+    if (msg.role === "assistant" && msg.toolCalls?.length) {
+      return {
+        role: "assistant",
+        content: msg.content,
+        tool_calls: msg.toolCalls.map((toolCall) => ({
+          function: {
+            name: toolCall.name,
+            arguments: parseToolCallArguments(toolCall.arguments),
+          },
+        })),
       };
     }
     return { role: msg.role, content: msg.content };

@@ -18,8 +18,9 @@ This directory owns the AgenC Ollama provider:
   provider label.
 - `index.ts` is the canonical import entrypoint for the provider.
 - `provider.test.ts` covers native request construction, request-scoped local
-  model selection, streaming, health checks, connection-refused errors, and
-  local health-sidecar abort behavior.
+  model selection, assistant tool-call history, native tool-call parsing,
+  streaming, health checks, connection-refused errors, and local health-sidecar
+  abort behavior.
 
 Compatibility exports for the historical path live in:
 - `runtime/src/llm/ollama/index.ts`

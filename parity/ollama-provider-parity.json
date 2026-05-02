@@ -68,11 +68,15 @@
         "default Ollama to http://localhost:11434",
         "honor request-scoped model overrides",
         "serialize system prompts and user messages into Ollama message format",
+        "preserve assistant tool-call history before tool result messages",
+        "parse native Ollama tool calls into AgenC tool calls",
         "map max output tokens and context window settings into Ollama options"
       ],
       "edgeCases": [
         "request-scoped local model",
         "systemPrompt prepending",
+        "assistant tool-call message followed by tool result",
+        "native SDK tool_call arguments object",
         "num_predict override from maxOutputTokens",
         "num_ctx provider configuration",
         "keep_alive provider configuration"
