@@ -13,6 +13,27 @@ describe("OpenAI-compatible token tables", () => {
     expect(getOpenAICompatibleMaxOutputTokens("gpt-4o")).toBe(16_384);
   });
 
+  test("resolves Groq Llama and Mixtral context/output limits", () => {
+    expect(getOpenAICompatibleContextWindow("llama-3.3-70b-versatile")).toBe(
+      128_000,
+    );
+    expect(getOpenAICompatibleMaxOutputTokens("llama-3.3-70b-versatile")).toBe(
+      32_768,
+    );
+    expect(getOpenAICompatibleContextWindow("llama-3.1-8b-instant")).toBe(
+      128_000,
+    );
+    expect(getOpenAICompatibleMaxOutputTokens("llama-3.1-8b-instant")).toBe(
+      8_192,
+    );
+    expect(getOpenAICompatibleContextWindow("mixtral-8x7b-32768")).toBe(
+      32_768,
+    );
+    expect(getOpenAICompatibleMaxOutputTokens("mixtral-8x7b-32768")).toBe(
+      32_768,
+    );
+  });
+
   test("uses longest-prefix matching for dated variants", () => {
     expect(getOpenAICompatibleContextWindow("qwen3-max-2026-01-23")).toBe(
       262_144,
@@ -28,7 +49,7 @@ describe("OpenAI-compatible token tables", () => {
     );
   });
 
-  test("exports OpenClaude-style fallback defaults", () => {
+  test("exports OpenAI-compatible fallback defaults", () => {
     expect(OPENAI_COMPATIBLE_FALLBACK_CONTEXT_WINDOW).toBe(128_000);
     expect(DEFAULT_MAX_OUTPUT_TOKENS).toBe(32_000);
     expect(DEFAULT_MAX_OUTPUT_TOKENS_UPPER_LIMIT).toBe(64_000);

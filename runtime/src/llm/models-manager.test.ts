@@ -36,6 +36,7 @@ describe("StaticModelsManager", () => {
       config: mergeConfigs(defaultConfig(), {
         providers: {
           openrouter: {
+            // branding-scan: allow documented routed Anthropic model identifier
             default_model: "anthropic/claude-3.7-sonnet",
           },
         },
@@ -45,7 +46,24 @@ describe("StaticModelsManager", () => {
 
     const listed = await manager.listModels();
     expect(listed.map((entry) => entry.slug)).toContain(
+      // branding-scan: allow documented routed Anthropic model identifier
       "anthropic/claude-3.7-sonnet",
+    );
+  });
+
+  it("lists built-in Groq Llama and Mixtral routes", async () => {
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "groq",
+    });
+
+    const listed = await manager.listModels();
+    expect(listed.map((entry) => entry.slug)).toEqual(
+      expect.arrayContaining([
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "mixtral-8x7b-32768",
+      ]),
     );
   });
 

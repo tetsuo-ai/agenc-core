@@ -19,7 +19,7 @@ import type { AnthropicProviderConfig } from "./providers/anthropic/index.js";
 import { GeminiProvider } from "./providers/gemini/index.js";
 import { LMStudioProvider } from "./providers/lmstudio/index.js";
 import { OpenRouterProvider } from "./providers/openrouter/index.js";
-import { GroqProvider } from "./providers/groq/index.js";
+import { GroqProvider, GROQ_DEFAULT_MODEL } from "./providers/groq/index.js";
 import { DeepSeekProvider } from "./providers/deepseek/index.js";
 import type { ProviderFallbackLadderOptions } from "./api/fallback-ladder.js";
 
@@ -1008,7 +1008,7 @@ export function createProvider(
         envModel: process.env.GROQ_MODEL,
         envModelLabel: "GROQ_MODEL",
         envApiKey: process.env.GROQ_API_KEY,
-        defaultModel: "llama-3.3-70b-versatile",
+        defaultModel: GROQ_DEFAULT_MODEL,
         apiKeyMode: "required",
         apiKeyEnvLabel: "GROQ_API_KEY",
         useResponsesApi: false,
