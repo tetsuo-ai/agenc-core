@@ -1,0 +1,107 @@
+{
+  "contractName": "stream-interruption-resume-parity",
+  "scope": "LP-07 stream interruption and resume: dropped provider streams are classified as retryable, the sampling request is re-entered with unchanged prompt input, failed-attempt streamed tool state is abandoned with paired terminal events, retry attempts emit transcript-visible stream_error notices, and stale stream errors are cleared after a successful retry.",
+  "generatedAt": "2026-05-02T00:00:00.000Z",
+  "sourceRoot": "urn:agenc:reference-roots",
+  "targetRoot": "..",
+  "sourceCommit": "rust-reference:48791920a8b122939c4d3feb15673c0a690ca4a0; ts-reference:0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceCommits": {
+    "rustReference": "48791920a8b122939c4d3feb15673c0a690ca4a0",
+    "tsReference": "0ca43335375beec6e58711b797d5b0c4bb5019b8"
+  },
+  "sourceFiles": [
+    "urn:agenc:source:rust-reference:core-session-turn-run-sampling-request",
+    "urn:agenc:source:rust-reference:core-session-notify-stream-error",
+    "urn:agenc:source:rust-reference:core-client-map-response-stream",
+    "urn:agenc:source:rust-reference:api-sse-responses"
+  ],
+  "targetFiles": [
+    "runtime/src/phases/_deps/tool-runtime.ts",
+    "runtime/src/recovery/api-errors.ts",
+    "runtime/src/session/run-turn.ts",
+    "runtime/src/tools/streaming-executor.ts"
+  ],
+  "testFiles": ["runtime/src/session/run-turn.test.ts"],
+  "rows": [
+    {
+      "id": "transient-stream-drop-reenters-sampling",
+      "source": "urn:agenc:source:rust-reference:core-session-turn-run-sampling-request",
+      "target": "runtime/src/session/run-turn.ts; runtime/src/recovery/api-errors.ts",
+      "requiredBehaviors": [
+        "A dropped stream whose cause is transient networking remains retryable after the provider stream has already emitted partial text.",
+        "The retry path re-enters the sampling request instead of retrying the raw SSE reader, preserving provider adapters' single-attempt stream semantics.",
+        "The re-entered sampling request receives the same prompt input when the failed partial stream did not commit durable assistant history."
+      ],
+      "edgeCases": [
+        "ECONNRESET, socket-hang-up, fetch/network read failures, nested transient causes, and status/statusCode 5xx causes wrapped in StreamModelError classify as retryable.",
+        "Partial assistant_message_delta output from the failed attempt does not become durable assistant history.",
+        "Successful retry completion still emits turn_complete with the final assistant message from the successful attempt."
+      ],
+      "tests": ["runtime/src/session/run-turn.test.ts"],
+      "commands": ["cd runtime && npx vitest run src/session/run-turn.test.ts -t LP-07"],
+      "status": "required"
+    },
+    {
+      "id": "failed-stream-tool-state-cleared-before-retry",
+      "source": "urn:agenc:source:rust-reference:core-session-turn-run-sampling-request",
+      "target": "runtime/src/session/run-turn.ts; runtime/src/phases/_deps/tool-runtime.ts; runtime/src/tools/streaming-executor.ts",
+      "requiredBehaviors": [
+        "When a stream drops after emitting explicitly replay-safe streamed tool calls, the retry path aborts or discards the failed attempt's streaming tool executor before re-entering sampling.",
+        "Every tool_call_started event from a replay-safe failed attempt receives a paired tool_call_completed error event so observers do not retain orphaned in-flight tool calls.",
+        "Failed-attempt replay-safe tool blocks and tool results are cleared from the mutable turn state so a successful retry with no tools, or different tools, cannot execute stale work.",
+        "When streamed tool work is not explicitly read-only/replay-safe, the reconnect path refuses to resample, cancels queued tool work without dispatching it, and lets already-started work drain instead of duplicating side effects.",
+        "The live turn executor used by runTurn implements abort, discard, and queued-cancellation semantics; tests must not rely only on the standalone executor.",
+        "Drained tool results from a failed incomplete stream are surfaced as events only and are not persisted as orphan provider-visible tool messages.",
+        "Read-only tools that require user interaction are not treated as replay-safe."
+      ],
+      "edgeCases": [
+        "A replay-safe failed attempt's synthetic tool result is not appended to durable model history because the partial stream was never committed.",
+        "In-flight replay-safe failed-attempt tools see an abort before they can finish stale work.",
+        "Retry completion with plain assistant text is allowed to finish without draining the abandoned executor.",
+        "A queued default side-effecting streamed tool is surfaced as a terminal error without being executed after the network drop.",
+        "A default side-effecting streamed tool that starts before the network drop is surfaced once and does not trigger a second sampling request.",
+        "A failed stream with already-started tool work leaves no standalone tool result in persisted session history.",
+        "An interactive read-only streamed tool does not reconnect and replay after a network drop."
+      ],
+      "tests": ["runtime/src/session/run-turn.test.ts"],
+      "commands": ["cd runtime && npx vitest run src/session/run-turn.test.ts -t LP-07"],
+      "status": "required"
+    },
+    {
+      "id": "stream-reconnect-notice",
+      "source": "urn:agenc:source:rust-reference:core-session-notify-stream-error",
+      "target": "runtime/src/session/run-turn.ts; runtime/src/recovery/api-errors.ts",
+      "requiredBehaviors": [
+        "Every accepted transient stream reconnect reservation emits a stream_error event before sleeping for backoff.",
+        "The stream_error payload identifies cause stream_disconnected, the active provider, and any HTTP status available on the underlying error.",
+        "Recovery re-entry reservation still gates the retry so the reconnect path respects the per-turn recovery cap."
+      ],
+      "edgeCases": [
+        "A retry that is refused by the recovery re-entry cap emits no reconnect stream_error and lets the retry loop exhaust.",
+        "Errors with statusCode rather than status still expose the numeric stream_error status.",
+        "Errors without a status still emit a useful stream_error message and provider label."
+      ],
+      "tests": ["runtime/src/session/run-turn.test.ts"],
+      "commands": ["cd runtime && npx vitest run src/session/run-turn.test.ts -t LP-07"],
+      "status": "required"
+    },
+    {
+      "id": "stale-stream-error-cleared-after-resume",
+      "source": "urn:agenc:source:rust-reference:core-session-turn-run-sampling-request",
+      "target": "runtime/src/session/run-turn.ts",
+      "requiredBehaviors": [
+        "A successful retry clears the prior attempt's lastStreamError before post-sample recovery runs.",
+        "The stale transport error cannot trigger streaming fallback or model fallback after the retry has already produced a valid assistant response.",
+        "Subsequent recovery decisions are based on the successful response's actual state rather than the failed attempt's transport cause."
+      ],
+      "edgeCases": [
+        "Successful retries with normal assistant text clear lastStreamError.",
+        "Failed retries keep lastStreamError populated so the retry classifier and recovery ladder can still inspect the real cause.",
+        "Token-budget continuation decisions from a successful retry are preserved while only the stale transport error is cleared."
+      ],
+      "tests": ["runtime/src/session/run-turn.test.ts"],
+      "commands": ["cd runtime && npx vitest run src/session/run-turn.test.ts -t LP-07"],
+      "status": "required"
+    }
+  ]
+}

@@ -49,6 +49,7 @@ import type {
 } from "./turn-context.js";
 import {
   LLMAuthenticationError,
+  LLMCaptivePortalError,
   LLMContextWindowExceededError,
   LLMServerError,
 } from "../llm/errors.js";
@@ -61,8 +62,10 @@ import type {
   LLMToolCall,
   StreamProgressCallback,
 } from "../llm/types.js";
+import { StreamingToolExecutor as LiveStreamingToolExecutor } from "../phases/_deps/tool-runtime.js";
 import { StreamModelError } from "../phases/stream-model.js";
 import type { ToolRegistry } from "../tool-registry.js";
+import type { Tool } from "../tools/types.js";
 import { BudgetTracker } from "../llm/token-budget.js";
 import { PermissionModeRegistry } from "../permissions/mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
@@ -1187,6 +1190,770 @@ describe("runTurn — model request context ordering", () => {
 });
 
 describe("runTurn — D1 isRetryableStreamError type-based discrimination", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("LP-07 retries a mid-stream network drop and emits a stream_error notice", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    let attempts = 0;
+    const seenMessages: LLMMessage[][] = [];
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async (
+        messages: LLMMessage[],
+        onChunk: StreamProgressCallback,
+      ): Promise<LLMResponse> => {
+        attempts += 1;
+        seenMessages.push(messages.map((message) => ({ ...message })));
+        if (attempts === 1) {
+          onChunk({ content: "partial", done: false });
+          throw Object.assign(new Error("socket hang up"), {
+            code: "ECONNRESET",
+            statusCode: 502,
+          });
+        }
+        onChunk({ content: "resumed", done: false });
+        return {
+          content: "resumed",
+          toolCalls: [],
+          usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      },
+    };
+    const { session, events } = mkSession({
+      provider,
+      registry: mkRegistry(),
+    });
+
+    await drain(session.runTurn("hello", { ctx: mkCtx() }));
+
+    expect(attempts).toBe(2);
+    expect(seenMessages[1]).toEqual(seenMessages[0]);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "stream_error",
+          payload: expect.objectContaining({
+            cause: "stream_disconnected",
+            provider: "stub-provider",
+            status: 502,
+          }),
+        },
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "turn_complete",
+          payload: expect.objectContaining({
+            lastAgentMessage: "resumed",
+          }),
+        },
+      }),
+    );
+  });
+
+  test("LP-07 retries statusCode-only 5xx stream drops", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    let attempts = 0;
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async (
+        _messages: LLMMessage[],
+        onChunk: StreamProgressCallback,
+      ): Promise<LLMResponse> => {
+        attempts += 1;
+        if (attempts === 1) {
+          onChunk({ content: "partial", done: false });
+          throw Object.assign(new Error("Bad Gateway"), {
+            statusCode: 502,
+          });
+        }
+        onChunk({ content: "resumed", done: false });
+        return {
+          content: "resumed",
+          toolCalls: [],
+          usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      },
+    };
+    const { session, events } = mkSession({
+      provider,
+      registry: mkRegistry(),
+    });
+
+    await drain(session.runTurn("hello", { ctx: mkCtx() }));
+
+    expect(attempts).toBe(2);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "stream_error",
+          payload: expect.objectContaining({
+            cause: "stream_disconnected",
+            status: 502,
+          }),
+        },
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "turn_complete",
+          payload: expect.objectContaining({
+            lastAgentMessage: "resumed",
+          }),
+        },
+      }),
+    );
+  });
+
+  test("LP-07 retries fetch stream-read failures with nested network causes", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    let attempts = 0;
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async (
+        _messages: LLMMessage[],
+        onChunk: StreamProgressCallback,
+      ): Promise<LLMResponse> => {
+        attempts += 1;
+        if (attempts === 1) {
+          onChunk({ content: "partial", done: false });
+          throw Object.assign(new TypeError("fetch failed"), {
+            cause: Object.assign(
+              new Error("socket connection was closed unexpectedly"),
+              { code: "UND_ERR_SOCKET" },
+            ),
+          });
+        }
+        onChunk({ content: "resumed", done: false });
+        return {
+          content: "resumed",
+          toolCalls: [],
+          usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      },
+    };
+    const { session, events } = mkSession({
+      provider,
+      registry: mkRegistry(),
+    });
+
+    await drain(session.runTurn("hello", { ctx: mkCtx() }));
+
+    expect(attempts).toBe(2);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "stream_error",
+          payload: expect.objectContaining({
+            cause: "stream_disconnected",
+          }),
+        },
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "turn_complete",
+          payload: expect.objectContaining({
+            lastAgentMessage: "resumed",
+          }),
+        },
+      }),
+    );
+  });
+
+  test("LP-07 does not retry captive portal errors that mention network", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    let attempts = 0;
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async (
+        _messages: LLMMessage[],
+        onChunk: StreamProgressCallback,
+      ): Promise<LLMResponse> => {
+        attempts += 1;
+        onChunk({ content: "partial", done: false });
+        throw new LLMCaptivePortalError("stub-provider", {
+          contentType: "text/html",
+          statusCode: 200,
+          expected: "sse",
+        });
+      },
+    };
+    const { session, events } = mkSession({
+      provider,
+      registry: mkRegistry(),
+    });
+
+    await drain(session.runTurn("hello", { ctx: mkCtx() }));
+
+    expect(attempts).toBe(1);
+    expect(events).not.toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "stream_error",
+          payload: expect.objectContaining({
+            cause: "stream_disconnected",
+          }),
+        },
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "turn_complete",
+          payload: expect.objectContaining({
+            lastAgentMessage: "",
+          }),
+        },
+      }),
+    );
+  });
+
+  test("LP-07 clears failed streamed tool state before retrying", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    let attempts = 0;
+    let staleInvocations = 0;
+    let staleSawAbort = false;
+    let staleSideEffect = false;
+    const streamTool: Tool = {
+      name: "stream_tool",
+      description: "streamed tool",
+      inputSchema: { type: "object", additionalProperties: false },
+      metadata: { mutating: false },
+      isReadOnly: true,
+      execute: async (args) => {
+        staleInvocations += 1;
+        const signal = (args as { readonly __abortSignal?: AbortSignal })
+          .__abortSignal;
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          const fallback = setTimeout(resolve, 50);
+          signal?.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(fallback);
+              resolve();
+            },
+            { once: true },
+          );
+        });
+        staleSawAbort = signal?.aborted === true;
+        if (!staleSawAbort) staleSideEffect = true;
+        return {
+          content: staleSawAbort ? "aborted" : "executed",
+          isError: staleSawAbort,
+        };
+      },
+    };
+    const registry: ToolRegistry = {
+      tools: [streamTool],
+      toLLMTools: () => [],
+      dispatch: async (call) =>
+        streamTool.execute(JSON.parse(call.arguments || "{}")),
+    };
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async (
+        _messages: LLMMessage[],
+        onChunk: StreamProgressCallback,
+      ): Promise<LLMResponse> => {
+        attempts += 1;
+        if (attempts === 1) {
+          onChunk({
+            content: "",
+            done: false,
+            toolCalls: [
+              {
+                id: "tool_dropped",
+                name: "stream_tool",
+                arguments: "{}",
+              },
+            ],
+          });
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          throw Object.assign(new Error("socket hang up"), {
+            code: "ECONNRESET",
+          });
+        }
+        onChunk({ content: "retry ok", done: false });
+        return {
+          content: "retry ok",
+          toolCalls: [],
+          usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      },
+    };
+    const { session, events } = mkSession({
+      provider,
+      registry,
+      permissionModeRegistry: new PermissionModeRegistry(
+        createEmptyToolPermissionContext({
+          mode: "bypassPermissions",
+          isBypassPermissionsModeAvailable: true,
+        }),
+      ),
+    });
+
+    await drain(session.runTurn("hello", { ctx: mkCtx() }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(attempts).toBe(2);
+    expect(staleSideEffect).toBe(false);
+    if (staleInvocations > 0) {
+      expect(staleSawAbort).toBe(true);
+    }
+    const started = events.filter(
+      (event) =>
+        event.msg.type === "tool_call_started" &&
+        event.msg.payload.callId === "tool_dropped",
+    );
+    const completed = events.filter(
+      (event) =>
+        event.msg.type === "tool_call_completed" &&
+        event.msg.payload.callId === "tool_dropped",
+    );
+    expect(started).toHaveLength(1);
+    expect(completed).toHaveLength(1);
+    expect(completed[0]?.msg.payload).toEqual(
+      expect.objectContaining({
+        isError: true,
+        metadata: { cause: "stream_disconnected" },
+        result: expect.stringContaining("stream disconnected"),
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "turn_complete",
+          payload: expect.objectContaining({
+            lastAgentMessage: "retry ok",
+          }),
+        },
+      }),
+    );
+  });
+
+  test("LP-07 suppresses streamed tool history when reconnect cap is exhausted", async () => {
+    let reservationAttempts = 0;
+    vi.resetModules();
+    vi.doMock("../recovery/fallback-ladder.js", async (importOriginal) => {
+      const actual =
+        await importOriginal<typeof import("../recovery/fallback-ladder.js")>();
+      return {
+        ...actual,
+        reserveRecoveryReentry: async (
+          session: Parameters<typeof actual.reserveRecoveryReentry>[0],
+          state: Parameters<typeof actual.reserveRecoveryReentry>[1],
+          opts: Parameters<typeof actual.reserveRecoveryReentry>[2],
+        ) => {
+          reservationAttempts += 1;
+          state.recoveryReentryCount = actual.MAX_RECOVERY_REENTRIES;
+          return actual.reserveRecoveryReentry(session, state, opts);
+        },
+      };
+    });
+    try {
+      const { runTurnKernel: runTurnWithCapRefusal } = await import(
+        "./run-turn.js"
+      );
+      let attempts = 0;
+      const streamTool: Tool = {
+        name: "stream_read",
+        description: "streamed read",
+        inputSchema: { type: "object", additionalProperties: false },
+        metadata: { mutating: false },
+        isReadOnly: true,
+        execute: async () => ({ content: "read", isError: false }),
+      };
+      const registry: ToolRegistry = {
+        tools: [streamTool],
+        toLLMTools: () => [],
+        dispatch: async (call) =>
+          streamTool.execute(JSON.parse(call.arguments || "{}")),
+      };
+      const provider: LLMProvider = {
+        ...mkProvider({}),
+        chatStream: async (
+          _messages: LLMMessage[],
+          onChunk: StreamProgressCallback,
+        ): Promise<LLMResponse> => {
+          attempts += 1;
+          onChunk({
+            content: "",
+            done: false,
+            toolCalls: [
+              {
+                id: `tool_cap_${attempts}`,
+                name: "stream_read",
+                arguments: "{}",
+              },
+            ],
+          });
+          throw Object.assign(new Error("socket hang up"), {
+            code: "ECONNRESET",
+          });
+        },
+      };
+      const { session, events, getState } = mkSession({
+        provider,
+        registry,
+        permissionModeRegistry: new PermissionModeRegistry(
+          createEmptyToolPermissionContext({
+            mode: "bypassPermissions",
+            isBypassPermissionsModeAvailable: true,
+          }),
+        ),
+      });
+
+      await drain(runTurnWithCapRefusal(session, mkCtx(), "hello"));
+
+      expect(attempts).toBe(1);
+      expect(reservationAttempts).toBe(1);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          msg: {
+            type: "error",
+            payload: expect.objectContaining({
+              cause: "recovery_loop",
+            }),
+          },
+        }),
+      );
+      const history = getState().history as LLMMessage[];
+      expect(
+        history.some(
+          (message) =>
+            message.role === "tool" ||
+            (typeof message.toolCallId === "string" &&
+              message.toolCallId.startsWith("tool_cap_")),
+        ),
+      ).toBe(false);
+      expect(
+        history.some((message) =>
+          message.toolCalls?.some((call) => call.id.startsWith("tool_cap_")),
+        ),
+      ).toBe(false);
+    } finally {
+      vi.doUnmock("../recovery/fallback-ladder.js");
+      vi.resetModules();
+    }
+  });
+
+  test("LP-07 cancels queued default streamed tool work in the live turn path", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    let attempts = 0;
+    let sideEffects = 0;
+    const sideEffectTool: Tool = {
+      name: "stream_write",
+      description: "streamed write",
+      inputSchema: { type: "object", additionalProperties: false },
+      execute: async () => {
+        sideEffects += 1;
+        return { content: "wrote once", isError: false };
+      },
+    };
+    const registry: ToolRegistry = {
+      tools: [sideEffectTool],
+      toLLMTools: () => [],
+      dispatch: async (call) =>
+        sideEffectTool.execute(JSON.parse(call.arguments || "{}")),
+    };
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async (
+        _messages: LLMMessage[],
+        onChunk: StreamProgressCallback,
+      ): Promise<LLMResponse> => {
+        attempts += 1;
+        if (attempts === 1) {
+          onChunk({
+            content: "",
+            done: false,
+            toolCalls: [
+              {
+                id: "tool_unsafe",
+                name: "stream_write",
+                arguments: "{}",
+              },
+            ],
+          });
+          throw Object.assign(new Error("socket hang up"), {
+            code: "ECONNRESET",
+          });
+        }
+        return {
+          content: "should not retry",
+          toolCalls: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      },
+    };
+    const { session, events, getState } = mkSession({
+      provider,
+      registry,
+      permissionModeRegistry: new PermissionModeRegistry(
+        createEmptyToolPermissionContext({
+          mode: "bypassPermissions",
+          isBypassPermissionsModeAvailable: true,
+        }),
+      ),
+    });
+
+    await drain(session.runTurn("hello", { ctx: mkCtx() }));
+
+    expect(attempts).toBe(1);
+    expect(sideEffects).toBe(0);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "tool_call_completed",
+          payload: expect.objectContaining({
+            callId: "tool_unsafe",
+            isError: true,
+            result: expect.stringContaining("network connection lost"),
+          }),
+        },
+      }),
+    );
+    expect(
+      (getState().history as LLMMessage[]).some(
+        (message) =>
+          message.role === "tool" || message.toolCallId === "tool_unsafe",
+      ),
+    ).toBe(false);
+  });
+
+  test("LP-07 lets already-started live streamed tool work drain once", async () => {
+    let sideEffects = 0;
+    let releaseTool!: () => void;
+    const toolReleased = new Promise<void>((resolve) => {
+      releaseTool = resolve;
+    });
+    let markToolStarted!: () => void;
+    const toolStarted = new Promise<void>((resolve) => {
+      markToolStarted = resolve;
+    });
+    const sideEffectTool: Tool = {
+      name: "stream_write",
+      description: "streamed write",
+      inputSchema: { type: "object", additionalProperties: false },
+      execute: async () => {
+        sideEffects += 1;
+        markToolStarted();
+        await toolReleased;
+        return { content: "wrote once", isError: false };
+      },
+    };
+    const registry: ToolRegistry = {
+      tools: [sideEffectTool],
+      toLLMTools: () => [],
+      dispatch: async (call) =>
+        sideEffectTool.execute(JSON.parse(call.arguments || "{}")),
+    };
+    const executor = new LiveStreamingToolExecutor({
+      registry,
+    });
+
+    executor.addTool(
+      { id: "tool_started", name: "stream_write", input: {} },
+      { id: "tool_started", name: "stream_write", arguments: "{}" },
+    );
+    executor.dispatchPending();
+    await toolStarted;
+    executor.cancelQueued("connection_lost");
+    releaseTool();
+    executor.close();
+
+    const results = [];
+    for await (const result of executor.getRemainingResults()) {
+      results.push(result);
+    }
+
+    expect(sideEffects).toBe(1);
+    expect(results).toContainEqual(
+      expect.objectContaining({
+        toolCall: expect.objectContaining({ id: "tool_started" }),
+        result: expect.objectContaining({
+          isError: false,
+          content: "wrote once",
+        }),
+      }),
+    );
+  });
+
+  test("LP-07 aborts live executor work before replay-safe retry cleanup", async () => {
+    let markToolStarted!: () => void;
+    const toolStarted = new Promise<void>((resolve) => {
+      markToolStarted = resolve;
+    });
+    let sawAbort = false;
+    let settled = false;
+    const streamTool: Tool = {
+      name: "stream_read",
+      description: "streamed read",
+      inputSchema: { type: "object", additionalProperties: false },
+      metadata: { mutating: false },
+      isReadOnly: true,
+      execute: async (args) => {
+        markToolStarted();
+        const signal = (args as { readonly __abortSignal?: AbortSignal })
+          .__abortSignal;
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          const fallback = setTimeout(resolve, 50);
+          signal?.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(fallback);
+              resolve();
+            },
+            { once: true },
+          );
+        });
+        sawAbort = signal?.aborted === true;
+        settled = true;
+        return {
+          content: sawAbort ? "aborted" : "completed",
+          isError: sawAbort,
+        };
+      },
+    };
+    const registry: ToolRegistry = {
+      tools: [streamTool],
+      toLLMTools: () => [],
+      dispatch: async (call) =>
+        streamTool.execute(JSON.parse(call.arguments || "{}")),
+    };
+    const executor = new LiveStreamingToolExecutor({
+      registry,
+    });
+
+    executor.addTool(
+      { id: "tool_read", name: "stream_read", input: {} },
+      { id: "tool_read", name: "stream_read", arguments: "{}" },
+    );
+    executor.dispatchPending();
+    await toolStarted;
+    executor.abort("connection_lost");
+    for (let tick = 0; !settled && tick < 20; tick += 1) {
+      await Promise.resolve();
+    }
+
+    expect(settled).toBe(true);
+    expect(sawAbort).toBe(true);
+  });
+
+  test("LP-07 does not replay interactive read-only streamed tools", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    let attempts = 0;
+    let prompts = 0;
+    const interactiveTool: Tool = {
+      name: "ask_user",
+      description: "ask user",
+      inputSchema: { type: "object", additionalProperties: false },
+      metadata: { mutating: false },
+      isReadOnly: true,
+      requiresUserInteraction: () => true,
+      execute: async () => {
+        prompts += 1;
+        return { content: "asked", isError: false };
+      },
+    };
+    const registry: ToolRegistry = {
+      tools: [interactiveTool],
+      toLLMTools: () => [],
+      dispatch: async (call) =>
+        interactiveTool.execute(JSON.parse(call.arguments || "{}")),
+    };
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async (
+        _messages: LLMMessage[],
+        onChunk: StreamProgressCallback,
+      ): Promise<LLMResponse> => {
+        attempts += 1;
+        if (attempts === 1) {
+          onChunk({
+            content: "",
+            done: false,
+            toolCalls: [
+              {
+                id: "tool_interactive",
+                name: "ask_user",
+                arguments: "{}",
+              },
+            ],
+          });
+          throw Object.assign(new Error("socket hang up"), {
+            code: "ECONNRESET",
+          });
+        }
+        return {
+          content: "should not retry",
+          toolCalls: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      },
+    };
+    const { session, events } = mkSession({ provider, registry });
+
+    await drain(session.runTurn("hello", { ctx: mkCtx() }));
+
+    expect(attempts).toBe(1);
+    expect(prompts).toBe(0);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "stream_error",
+          payload: expect.objectContaining({
+            cause: "stream_disconnected",
+            message: expect.stringContaining("not retrying"),
+          }),
+        },
+      }),
+    );
+    expect(events).not.toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "turn_complete",
+          payload: expect.objectContaining({
+            lastAgentMessage: "should not retry",
+          }),
+        },
+      }),
+    );
+  });
+
   test("typed 504 LLMServerError is retryable", () => {
     const typed = new LLMServerError("openai", 504, "Gateway Timeout");
     const wrapped = new StreamModelError(typed);
