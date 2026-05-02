@@ -23,6 +23,7 @@
     "runtime/src/llm/registry/features.ts",
     "runtime/src/llm/registry/index.ts",
     "runtime/src/llm/registry/PARITY.md",
+    "runtime/src/llm/provider.ts",
     "runtime/src/llm/model-metadata.ts",
     "runtime/src/llm/capabilities.ts",
     "runtime/src/llm/model-registry.ts",
@@ -38,6 +39,7 @@
   ],
   "testFiles": [
     "runtime/src/llm/registry/registry.test.ts",
+    "runtime/src/llm/provider.test.ts",
     "runtime/src/llm/model-registry.test.ts",
     "runtime/src/llm/models-manager.test.ts",
     "runtime/src/llm/capabilities.test.ts",
@@ -77,7 +79,7 @@
         "runtime/src/session/guardian-approval-review.test.ts"
       ],
       "commands": [
-        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/registry/registry.test.ts src/llm/model-registry.test.ts src/llm/models-manager.test.ts src/llm/capabilities.test.ts src/bin/model-facing-tools.test.ts src/agents/role.test.ts src/session/guardian-approval-review.test.ts src/bin/bootstrap.test.ts"
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/registry/registry.test.ts src/llm/provider.test.ts src/llm/model-registry.test.ts src/llm/models-manager.test.ts src/llm/capabilities.test.ts src/bin/model-facing-tools.test.ts src/agents/role.test.ts src/session/guardian-approval-review.test.ts src/bin/bootstrap.test.ts"
       ],
       "status": "required"
     },
@@ -89,20 +91,25 @@
         "centralize built-in provider default model and base URL data",
         "centralize provider API key env var hints",
         "preserve request retry and stream idle timeout defaults",
+        "drive provider factory default models, base URLs, and API key labels from the registry",
         "replace ad-hoc provider model catalog constants in config dependencies",
-        "replace live metadata provider base URL and API key env defaults"
+        "replace live metadata provider base URL and API key env defaults",
+        "document source provider rows outside AgenC's current runtime provider scope"
       ],
       "edgeCases": [
         "xai alias normalizes to grok",
         "openai_compatible/custom aliases normalize to openai-compatible",
         "AgenC hosted provider is marked as managed-auth-backed",
-        "OpenAI-compatible live metadata uses registry-owned URL and auth defaults"
+        "OpenAI-compatible live metadata uses registry-owned URL and auth defaults",
+        "provider factory construction uses registry defaults when env/model overrides are absent",
+        "amazon-bedrock is explicitly recorded as out of scope until an AWS SigV4 runtime provider exists"
       ],
       "tests": [
-        "runtime/src/llm/registry/registry.test.ts"
+        "runtime/src/llm/registry/registry.test.ts",
+        "runtime/src/llm/provider.test.ts"
       ],
       "commands": [
-        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/registry/registry.test.ts"
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/registry/registry.test.ts src/llm/provider.test.ts"
       ],
       "status": "required"
     },

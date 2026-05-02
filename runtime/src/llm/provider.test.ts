@@ -15,11 +15,14 @@ import { OpenRouterProvider } from "./providers/openrouter/index.js";
 import {
   createProvider,
   isFactoryProvider,
+  KNOWN_PROVIDER_NAMES,
   normalizeProviderName,
   readProviderFactoryOptions,
   readProviderIdentity,
   resolveProviderNameFromEnv,
+  type ProviderName,
 } from "./provider.js";
+import { resolveBuiltInProviderInfo } from "./registry/provider-info.js";
 
 function withEnv<T>(
   overrides: Record<string, string | undefined>,
@@ -101,6 +104,67 @@ describe("createProvider", () => {
       }),
     ).toThrow(/sessionId/);
   });
+
+  test.each(KNOWN_PROVIDER_NAMES)(
+    "uses provider registry defaults for '%s'",
+    (name: ProviderName) => {
+      const info = resolveBuiltInProviderInfo(name);
+      expect(info).toBeDefined();
+      const env: Record<string, string | undefined> = {
+        AGENC_MODEL: undefined,
+        OPENAI_MODEL: undefined,
+        ANTHROPIC_MODEL: undefined,
+        OLLAMA_MODEL: undefined,
+        LMSTUDIO_MODEL: undefined,
+        OPENAI_COMPATIBLE_MODEL: undefined,
+        OPENROUTER_MODEL: undefined,
+        GROQ_MODEL: undefined,
+        DEEPSEEK_MODEL: undefined,
+        GEMINI_MODEL: undefined,
+        OPENAI_BASE_URL: undefined,
+        ANTHROPIC_BASE_URL: undefined,
+        OLLAMA_BASE_URL: undefined,
+        LMSTUDIO_BASE_URL: undefined,
+        OPENAI_COMPATIBLE_BASE_URL: undefined,
+        OPENAI_API_BASE: undefined,
+        OPENROUTER_BASE_URL: undefined,
+        GROQ_BASE_URL: undefined,
+        DEEPSEEK_BASE_URL: undefined,
+        GEMINI_BASE_URL: undefined,
+        XAI_API_KEY: undefined,
+        GROK_API_KEY: undefined,
+        AGENC_XAI_API_KEY: undefined,
+        OPENAI_API_KEY: undefined,
+        ANTHROPIC_API_KEY: undefined,
+        LMSTUDIO_API_KEY: undefined,
+        OPENAI_COMPATIBLE_API_KEY: undefined,
+        OPENROUTER_API_KEY: undefined,
+        GROQ_API_KEY: undefined,
+        DEEPSEEK_API_KEY: undefined,
+        GEMINI_API_KEY: undefined,
+      };
+      if (info?.apiKeyEnvVar !== undefined) {
+        env[info.apiKeyEnvVar] = "registry-test-key";
+      }
+
+      const provider = withEnv(env, () =>
+        name === "agenc"
+          ? createProvider(name, {
+            extra: {
+              authBackend,
+              sessionId: "session-1",
+            },
+          })
+          : createProvider(name, {}),
+      );
+
+      const options = readProviderFactoryOptions(provider);
+      expect(options.model).toBe(info?.defaultModel);
+      if (name !== "agenc") {
+        expect(options.baseURL).toBe(info?.baseURL);
+      }
+    },
+  );
 
   test("routes 'openai' to OpenAIProvider", () => {
     const provider = withEnv(
@@ -657,10 +721,15 @@ describe("createProvider", () => {
     );
   });
 
-  test("'grok' without model throws explanatory error", () => {
-    expect(() =>
-      createProvider("grok", { apiKey: "test-key" }),
-    ).toThrow(/AGENC_MODEL|model/i);
+  test("'grok' uses the registry default model without an override", () => {
+    const provider = withEnv(
+      {
+        AGENC_MODEL: undefined,
+      },
+      () => createProvider("grok", { apiKey: "test-key" }),
+    );
+
+    expect(readProviderFactoryOptions(provider).model).toBe("grok-4-fast");
   });
 
   test("'openai' without apiKey throws explanatory error", () => {
@@ -676,31 +745,27 @@ describe("createProvider", () => {
     );
   });
 
-  test("'openrouter' without a configured model throws explanatory error", () => {
-    withEnv(
+  test("'openrouter' uses the registry default model without an override", () => {
+    const provider = withEnv(
       {
         OPENROUTER_API_KEY: "or-test",
         OPENROUTER_MODEL: undefined,
       },
-      () => {
-        expect(() => createProvider("openrouter", {})).toThrow(
-          /OPENROUTER_MODEL|model/i,
-        );
-      },
+      () => createProvider("openrouter", {}),
     );
+
+    expect(readProviderFactoryOptions(provider).model).toBe("openai/gpt-5");
   });
 
-  test("'lmstudio' without a configured model throws explanatory error", () => {
-    withEnv(
+  test("'lmstudio' uses the registry default model without an override", () => {
+    const provider = withEnv(
       {
         LMSTUDIO_MODEL: undefined,
       },
-      () => {
-        expect(() => createProvider("lmstudio", {})).toThrow(
-          /LMSTUDIO_MODEL|model/i,
-        );
-      },
+      () => createProvider("lmstudio", {}),
     );
+
+    expect(readProviderFactoryOptions(provider).model).toBe("gpt-4o-mini");
   });
 
   test("unknown provider string bypassing the type system throws", () => {

@@ -7,6 +7,7 @@ import { StaticModelsManager } from "../models-manager.js";
 import {
   AGENC_FEATURE_SPECS,
   AgenCFeatureSet,
+  BUILT_IN_PROVIDER_SCOPE_OMISSIONS,
   createManagedFeatures,
   experimentalFeatureSpecs,
   featureForKey,
@@ -118,9 +119,19 @@ describe("LLM registry", () => {
       name: "AgenC",
       requiresManagedAuth: true,
     });
+    expect(resolveBuiltInProviderInfo("anthropic")).toMatchObject({
+      baseURL: "https://api.anthropic.com/v1",
+    });
     expect(listBuiltInProviderInfo().map((entry) => entry.id)).toContain(
       "openai-compatible",
     );
+  });
+
+  it("documents provider-info source rows outside AgenC runtime scope", () => {
+    expect(resolveBuiltInProviderInfo("amazon-bedrock")).toBeUndefined();
+    expect(BUILT_IN_PROVIDER_SCOPE_OMISSIONS).toMatchObject({
+      "amazon-bedrock": expect.stringContaining("AWS SigV4"),
+    });
   });
 
   it("resolves donor model catalog metadata by exact, prefix, and namespace", () => {

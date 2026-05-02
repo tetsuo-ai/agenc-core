@@ -30,7 +30,7 @@ export type BuiltInProviderSlug = keyof typeof BUILT_IN_PROVIDER_DEFAULT_MODELS;
 export const BUILT_IN_PROVIDER_BASE_URLS = Object.freeze({
   grok: "https://api.x.ai/v1",
   openai: "https://api.openai.com/v1",
-  anthropic: "https://api.anthropic.com",
+  anthropic: "https://api.anthropic.com/v1",
   ollama: "http://localhost:11434",
   lmstudio: "http://localhost:1234/v1",
   "openai-compatible": "http://localhost:8000/v1",
@@ -40,6 +40,11 @@ export const BUILT_IN_PROVIDER_BASE_URLS = Object.freeze({
   gemini: "https://generativelanguage.googleapis.com/v1beta",
   agenc: "https://api.agenc.tech/v1",
 } as const satisfies Readonly<Record<BuiltInProviderSlug, string>>);
+
+export const BUILT_IN_PROVIDER_SCOPE_OMISSIONS = Object.freeze({
+  "amazon-bedrock":
+    "AgenC does not expose an AWS SigV4 Amazon Bedrock runtime provider yet.",
+} as const);
 
 export const BUILT_IN_PROVIDER_API_KEY_ENVS: Readonly<
   Partial<Record<BuiltInProviderSlug, string>>
