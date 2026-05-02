@@ -234,6 +234,169 @@ describe("ProviderHttpClientSession", () => {
     });
   });
 
+  test("triggers provider fallback after repeated overload responses", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: "overloaded" } }), {
+        status: 529,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const session = new ProviderHttpClientSession({
+      providerName: "openai",
+      baseURL: "http://127.0.0.1:8000/v1",
+      wireApi: "responses",
+      requestRetry: {
+        maxRetries: 4,
+        baseDelayMs: 1,
+        retry5xx: true,
+      },
+      providerFallback: {
+        provider: "openai",
+        model: "gpt-5",
+        targets: [{ provider: "grok", model: "grok-4-fast" }],
+      },
+      fetchImpl,
+    });
+
+    const pending = expect(
+      session.requestJson({
+        body: { ping: "pong" },
+      }),
+    ).rejects.toMatchObject({
+      name: "FallbackTriggeredError",
+      fromProvider: "openai",
+      toProvider: "grok",
+      fromModel: "gpt-5",
+      toModel: "grok-4-fast",
+    });
+    await vi.runAllTimersAsync();
+    await pending;
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  test("fallback wait retries custom request statuses outside the normal retry policy", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: "slow down" } }), {
+        status: 429,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const session = new ProviderHttpClientSession({
+      providerName: "openai",
+      baseURL: "http://127.0.0.1:8000/v1",
+      wireApi: "responses",
+      requestRetry: {
+        maxRetries: 4,
+        baseDelayMs: 1,
+      },
+      providerFallback: {
+        provider: "openai",
+        model: "gpt-5",
+        targets: [{ provider: "grok", model: "grok-4-fast" }],
+        statuses: [429],
+        maxFailures: 2,
+      },
+      fetchImpl,
+    });
+
+    const pending = expect(
+      session.requestJson({
+        body: { ping: "pong" },
+      }),
+    ).rejects.toMatchObject({
+      name: "FallbackTriggeredError",
+      fromProvider: "openai",
+      toProvider: "grok",
+    });
+    await vi.runAllTimersAsync();
+    await pending;
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test("fallback recognizes structured overloaded_error bodies without 529 status", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            error: { type: "overloaded_error", message: "busy" },
+          }),
+          {
+            status: 500,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+      )
+    );
+    const session = new ProviderHttpClientSession({
+      providerName: "anthropic",
+      baseURL: "http://127.0.0.1:8000/v1",
+      wireApi: "messages",
+      requestRetry: {
+        maxRetries: 4,
+        baseDelayMs: 1,
+        retry5xx: false,
+      },
+      providerFallback: {
+        provider: "anthropic",
+        model: "claude-3-7-sonnet",
+        targets: [{ provider: "grok", model: "grok-4-fast" }],
+      },
+      fetchImpl,
+    });
+
+    const pending = expect(
+      session.requestJson({
+        body: { ping: "pong" },
+      }),
+    ).rejects.toMatchObject({
+      name: "FallbackTriggeredError",
+      fromProvider: "anthropic",
+      toProvider: "grok",
+    });
+    await vi.runAllTimersAsync();
+    await pending;
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  test("fallback wait retries custom stream statuses outside the normal retry policy", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: "slow down" } }), {
+        status: 429,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const session = new ProviderHttpClientSession({
+      providerName: "openai",
+      baseURL: "http://127.0.0.1:8000/v1",
+      wireApi: "responses",
+      streamRetry: {
+        maxRetries: 4,
+        baseDelayMs: 1,
+      },
+      providerFallback: {
+        provider: "openai",
+        model: "gpt-5",
+        targets: [{ provider: "grok", model: "grok-4-fast" }],
+        statuses: [429],
+        maxFailures: 2,
+      },
+      fetchImpl,
+    });
+
+    const pending = expect(
+      session.requestStream({
+        body: { ping: "pong" },
+      }),
+    ).rejects.toMatchObject({
+      name: "FallbackTriggeredError",
+      fromProvider: "openai",
+      toProvider: "grok",
+    });
+    await vi.runAllTimersAsync();
+    await pending;
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   test("honors Retry-After seconds when retrying 429 responses", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

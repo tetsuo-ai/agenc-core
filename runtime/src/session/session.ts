@@ -48,10 +48,12 @@ import type { LLMProvider } from "../llm/types.js";
 import {
   normalizeProviderName,
   prepareProviderSwitch,
+  type ProviderFactoryOptions,
   type PreparedProviderSwitch,
   readProviderFactoryOptions,
   readProviderIdentity,
 } from "../llm/provider.js";
+import type { ProviderFallbackLadderOptions } from "../llm/api/fallback-ladder.js";
 import type { BudgetTracker } from "../llm/token-budget.js";
 import type { SessionSubmitOptions } from "./autonomous-mode.js";
 import type { CostSidecar } from "./cost.js";
@@ -70,6 +72,10 @@ import {
   type DenialTrackingState,
 } from "../permissions/denial-tracking.js";
 import type { ConfigStore } from "../config/store.js";
+import {
+  resolveProviderSettings,
+  type ResolvedProviderSettings,
+} from "../config/resolve-provider.js";
 import type {
   ApprovalResolver,
   PermissionRequestHook,
@@ -659,6 +665,65 @@ export interface AppliedProviderSwitchResult {
   readonly provider?: string;
   readonly model?: string;
   readonly reason?: string;
+}
+
+function buildProviderFallbackLadderOptions(params: {
+  readonly provider: string;
+  readonly model: string;
+  readonly settings: ResolvedProviderSettings | undefined;
+}): ProviderFallbackLadderOptions | undefined {
+  const targets = params.settings?.fallbackTargets;
+  if (!targets || targets.length === 0) return undefined;
+  return {
+    provider: params.provider,
+    model: params.model,
+    targets,
+    ...(params.settings?.fallbackMaxFailures !== undefined
+      ? { maxFailures: params.settings.fallbackMaxFailures }
+      : {}),
+    ...(params.settings?.fallbackStatuses !== undefined &&
+    params.settings.fallbackStatuses.length > 0
+      ? { statuses: params.settings.fallbackStatuses }
+      : {}),
+  };
+}
+
+function providerFactoryOptionsFromSettings(params: {
+  readonly provider: string;
+  readonly model: string;
+  readonly settings: ResolvedProviderSettings | undefined;
+}): ProviderFactoryOptions {
+  const extra: Record<string, unknown> = {};
+  if (params.settings?.contextWindowTokens !== undefined) {
+    extra.contextWindowTokens = params.settings.contextWindowTokens;
+  }
+  if (params.settings?.maxOutputTokens !== undefined) {
+    extra.maxTokens = params.settings.maxOutputTokens;
+  }
+  const providerFallback = buildProviderFallbackLadderOptions(params);
+  if (providerFallback !== undefined) {
+    extra.providerFallback = providerFallback;
+  }
+  return {
+    ...(params.settings?.apiKey ? { apiKey: params.settings.apiKey } : {}),
+    ...(params.settings?.baseURL ? { baseURL: params.settings.baseURL } : {}),
+    ...(Object.keys(extra).length > 0 ? { extra } : {}),
+  };
+}
+
+function mergeProviderFactoryOptions(
+  base: ProviderFactoryOptions | undefined,
+  override: ProviderFactoryOptions,
+): ProviderFactoryOptions {
+  const mergedExtra = {
+    ...(base?.extra ?? {}),
+    ...(override.extra ?? {}),
+  };
+  return {
+    ...(base ?? {}),
+    ...override,
+    ...(Object.keys(mergedExtra).length > 0 ? { extra: mergedExtra } : {}),
+  };
 }
 
 export const DEFAULT_LEGACY_EVENT_QUEUE_DEPTH = 1024;
@@ -1313,12 +1378,32 @@ export class Session {
         liveProvider,
         peeked.sessionConfiguration?.provider?.slug,
       );
+      const configStore = (this.services as Partial<SessionServices>).configStore;
+      const targetProviderSettings =
+        targetNormalizedProvider !== null && configStore?.current
+          ? resolveProviderSettings(
+              targetNormalizedProvider,
+              configStore.current(),
+              process.env,
+            )
+          : undefined;
+      const settingsOptions =
+        targetNormalizedProvider !== null
+          ? providerFactoryOptionsFromSettings({
+              provider: targetNormalizedProvider,
+              model: resolvedModel,
+              settings: targetProviderSettings,
+            })
+          : {};
       preparedSwitch = prepareProviderSwitch(resolvedProvider, {
-        ...(liveProviderOptions &&
-        liveProviderIdentity !== null &&
-        liveProviderIdentity === targetNormalizedProvider
-          ? liveProviderOptions
-          : {}),
+        ...mergeProviderFactoryOptions(
+          liveProviderOptions &&
+          liveProviderIdentity !== null &&
+          liveProviderIdentity === targetNormalizedProvider
+            ? liveProviderOptions
+            : undefined,
+          settingsOptions,
+        ),
         model: resolvedModel,
         tools: this.services.registry.toLLMTools(),
       });

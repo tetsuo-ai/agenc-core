@@ -31,6 +31,7 @@ import {
   ProviderHttpError,
   type ProviderHttpStreamResponse,
 } from "../../client-session.js";
+import { isFallbackTriggeredError } from "../../../recovery/api-errors.js";
 import {
   buildOpenAICompatibilityErrorMessage,
   classifyOpenAIHttpFailure,
@@ -49,6 +50,11 @@ import {
 import type { OpenAIProviderConfig } from "./types.js";
 import { OpenAIAuthSession } from "./auth.js";
 import { parseSSEFrames } from "../../_deps/sse.js";
+import {
+  evaluateProviderFallback,
+  type ProviderFallbackDecision,
+} from "../../api/fallback-ladder.js";
+import { getRetryDelay, sleepMs } from "../../api/retry.js";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 
@@ -235,6 +241,30 @@ function mapOpenAIStreamError(args: {
   return new LLMProviderError(args.providerName, message);
 }
 
+function openAIStreamFallbackCandidate(
+  errorBody: unknown,
+  fallbackMessage: string,
+): Error & { status?: number } {
+  const status = inferErrorStatus(errorBody);
+  const bodyText = providerHttpBodyToString(errorBody);
+  const message = bodyText.length > 0 ? bodyText : fallbackMessage;
+  const error = new Error(message) as Error & { status?: number };
+  if (status !== undefined) {
+    error.status = status;
+  }
+  return error;
+}
+
+type ProviderFallbackWaitDecision = Extract<
+  ProviderFallbackDecision,
+  { readonly kind: "wait" }
+>;
+
+function normalizeFallbackRetryBudget(maxRetries: number | undefined): number {
+  if (typeof maxRetries !== "number" || !Number.isFinite(maxRetries)) return 2;
+  return Math.max(0, Math.floor(maxRetries));
+}
+
 export class OpenAIProvider implements LLMProvider {
   readonly name: string;
 
@@ -254,9 +284,50 @@ export class OpenAIProvider implements LLMProvider {
       resolveAuthHeaders: (context) => this.auth.resolveHeaders(context),
       timeoutMs: config.timeoutMs,
       fetchImpl: config.fetchImpl,
+      providerFallback: config.providerFallback,
       emitWarning: config.emitWarning,
       onCapabilityDrift: config.onCapabilityDrift,
     });
+  }
+
+  private evaluateConfiguredFallback(
+    error: unknown,
+    consecutiveFailures: number,
+    model: string = this.config.model,
+  ): ProviderFallbackDecision | null {
+    if (!this.config.providerFallback) return null;
+    const decision = evaluateProviderFallback({
+      ...this.config.providerFallback,
+      model,
+      error,
+      consecutiveFailures,
+    });
+    if (decision.kind === "trigger") {
+      throw decision.error;
+    }
+    return decision;
+  }
+
+  private providerFallbackForModel(
+    model: string,
+  ): OpenAIProviderConfig["providerFallback"] {
+    return this.config.providerFallback
+      ? { ...this.config.providerFallback, model }
+      : undefined;
+  }
+
+  private async waitForConfiguredFallbackRetry(
+    decision: ProviderFallbackWaitDecision,
+    signal: AbortSignal | undefined,
+  ): Promise<boolean> {
+    if (
+      decision.consecutiveFailures >
+      normalizeFallbackRetryBudget(this.config.maxRetries)
+    ) {
+      return false;
+    }
+    await sleepMs(getRetryDelay(decision.consecutiveFailures), signal);
+    return true;
   }
 
   async chat(
@@ -290,6 +361,7 @@ export class OpenAIProvider implements LLMProvider {
             body: request,
             timeoutMs,
             signal: options?.signal,
+            providerFallback: this.providerFallbackForModel(model),
           });
           return parseOpenAIResponsesResponse(
             model,
@@ -321,6 +393,7 @@ export class OpenAIProvider implements LLMProvider {
           body: request,
           timeoutMs,
           signal: options?.signal,
+          providerFallback: this.providerFallbackForModel(model),
         });
         return parseChatCompletionsResponse(model, response.data, {
           model,
@@ -332,6 +405,9 @@ export class OpenAIProvider implements LLMProvider {
         });
       });
     } catch (error) {
+      if (isFallbackTriggeredError(error)) {
+        throw error;
+      }
       if (error instanceof ProviderHttpError) {
         throw mapOpenAIHttpFailureToError({
           providerName: this.name,
@@ -365,6 +441,9 @@ export class OpenAIProvider implements LLMProvider {
         );
       });
     } catch (error) {
+      if (isFallbackTriggeredError(error)) {
+        throw error;
+      }
       if (error instanceof ProviderHttpError) {
         throw mapOpenAIHttpFailureToError({
           providerName: this.name,
@@ -571,123 +650,176 @@ export class OpenAIProvider implements LLMProvider {
       ...buildOpenAIResponsesRequest(requestOptions),
       stream: true,
     };
-    const response = await this.requestStream({
-      api: "responses",
-      path: this.resolvePath("/responses"),
-      body: request,
-      timeoutMs,
-      signal: options?.signal,
-    });
-
-    let streamedContent = "";
-    const streamedToolCalls = new Map<string, { id: string; name: string; arguments: string }>();
-    let completedResponse: Record<string, unknown> | null = null;
-
-    for await (const event of this.readSseEvents(response)) {
-      const eventType = event.event ?? String(event.data.type ?? "");
-
-      if (eventType === "response.output_text.delta") {
-        const delta =
-          typeof event.data.delta === "string" ? event.data.delta : "";
-        if (delta.length > 0) {
-          streamedContent += delta;
-          onChunk({ content: delta, done: false });
-        }
-        continue;
-      }
-
-      if (eventType === "response.output_item.done") {
-        const item =
-          event.data.item && typeof event.data.item === "object"
-            ? (event.data.item as Record<string, unknown>)
-            : undefined;
-        if (item?.type === "function_call") {
-          const toolCall = validateToolCall({
-            id: String(item.call_id ?? item.id ?? "").trim(),
-            name: String(item.name ?? "").trim(),
-            arguments: String(item.arguments ?? "{}"),
-          });
-          if (toolCall) {
-            streamedToolCalls.set(toolCall.id, toolCall);
-            onChunk({ content: "", done: false, toolCalls: [toolCall] });
-          }
-        }
-        continue;
-      }
-
-      if (
-        eventType === "response.completed" ||
-        eventType === "response.incomplete"
-      ) {
-        completedResponse =
-          event.data.response && typeof event.data.response === "object"
-            ? (event.data.response as Record<string, unknown>)
-            : null;
-        break;
-      }
-
-      if (eventType === "response.failed") {
-        const failedResponse =
-          event.data.response && typeof event.data.response === "object"
-            ? (event.data.response as Record<string, unknown>)
-            : {};
-        const failedError =
-          failedResponse.error && typeof failedResponse.error === "object"
-            ? (failedResponse.error as Record<string, unknown>)
-            : undefined;
-        const eventError =
-          event.data.error && typeof event.data.error === "object"
-            ? (event.data.error as Record<string, unknown>)
-            : undefined;
-        const message =
-          typeof failedError?.message === "string"
-            ? String(failedError.message)
-            : typeof eventError?.message === "string"
-              ? String(eventError.message)
-              : "OpenAI stream failed";
-        throw mapOpenAIStreamError({
-          providerName: this.name,
-          errorBody: failedError ?? eventError ?? failedResponse,
-          fallbackMessage: message,
+    let consecutiveFallbackFailures = 0;
+    responseStreamAttempts: while (true) {
+      let response: ProviderHttpStreamResponse;
+      try {
+        response = await this.requestStream({
+          api: "responses",
+          path: this.resolvePath("/responses"),
+          body: request,
+          timeoutMs,
+          signal: options?.signal,
+          providerFallback: this.providerFallbackForModel(model),
         });
+      } catch (error) {
+        if (isFallbackTriggeredError(error)) throw error;
+        const fallbackDecision = this.evaluateConfiguredFallback(
+          error,
+          consecutiveFallbackFailures,
+          model,
+        );
+        if (
+          fallbackDecision?.kind === "wait" &&
+          await this.waitForConfiguredFallbackRetry(
+            fallbackDecision,
+            options?.signal,
+          )
+        ) {
+          consecutiveFallbackFailures = fallbackDecision.consecutiveFailures;
+          continue responseStreamAttempts;
+        }
+        consecutiveFallbackFailures = 0;
+        throw error;
       }
-    }
 
-    if (!completedResponse) {
-      throw new LLMProviderError(
-        this.name,
-        "Stream closed without a response.completed payload",
+      let streamedContent = "";
+      const streamedToolCalls = new Map<
+        string,
+        { id: string; name: string; arguments: string }
+      >();
+      let completedResponse: Record<string, unknown> | null = null;
+
+      for await (const event of this.readSseEvents(response)) {
+        const eventType = event.event ?? String(event.data.type ?? "");
+
+        if (eventType === "response.output_text.delta") {
+          const delta =
+            typeof event.data.delta === "string" ? event.data.delta : "";
+          if (delta.length > 0) {
+            streamedContent += delta;
+            onChunk({ content: delta, done: false });
+          }
+          continue;
+        }
+
+        if (eventType === "response.output_item.done") {
+          const item =
+            event.data.item && typeof event.data.item === "object"
+              ? (event.data.item as Record<string, unknown>)
+              : undefined;
+          if (item?.type === "function_call") {
+            const toolCall = validateToolCall({
+              id: String(item.call_id ?? item.id ?? "").trim(),
+              name: String(item.name ?? "").trim(),
+              arguments: String(item.arguments ?? "{}"),
+            });
+            if (toolCall) {
+              streamedToolCalls.set(toolCall.id, toolCall);
+              onChunk({ content: "", done: false, toolCalls: [toolCall] });
+            }
+          }
+          continue;
+        }
+
+        if (
+          eventType === "response.completed" ||
+          eventType === "response.incomplete"
+        ) {
+          completedResponse =
+            event.data.response && typeof event.data.response === "object"
+              ? (event.data.response as Record<string, unknown>)
+              : null;
+          break;
+        }
+
+        if (eventType === "response.failed") {
+          const failedResponse =
+            event.data.response && typeof event.data.response === "object"
+              ? (event.data.response as Record<string, unknown>)
+              : {};
+          const failedError =
+            failedResponse.error && typeof failedResponse.error === "object"
+              ? (failedResponse.error as Record<string, unknown>)
+              : undefined;
+          const eventError =
+            event.data.error && typeof event.data.error === "object"
+              ? (event.data.error as Record<string, unknown>)
+              : undefined;
+          const message =
+            typeof failedError?.message === "string"
+              ? String(failedError.message)
+              : typeof eventError?.message === "string"
+                ? String(eventError.message)
+                : "OpenAI stream failed";
+          const errorBody = failedError ?? eventError ?? failedResponse;
+          const streamError = mapOpenAIStreamError({
+            providerName: this.name,
+            errorBody,
+            fallbackMessage: message,
+          });
+          if (streamedContent.length === 0 && streamedToolCalls.size === 0) {
+            const fallbackDecision = this.evaluateConfiguredFallback(
+              openAIStreamFallbackCandidate(errorBody, message),
+              consecutiveFallbackFailures,
+              model,
+            );
+            if (
+              fallbackDecision?.kind === "wait" &&
+              await this.waitForConfiguredFallbackRetry(
+                fallbackDecision,
+                options?.signal,
+              )
+            ) {
+              consecutiveFallbackFailures = fallbackDecision.consecutiveFailures;
+              continue responseStreamAttempts;
+            }
+          }
+          consecutiveFallbackFailures = 0;
+          throw streamError;
+        }
+      }
+
+      if (!completedResponse) {
+        throw new LLMProviderError(
+          this.name,
+          "Stream closed without a response.completed payload",
+        );
+      }
+
+      const parsed = withStreamingMetrics(
+        parseOpenAIResponsesResponse(
+          model,
+          completedResponse,
+          requestOptions,
+        ),
       );
+      const toolCalls =
+        parsed.toolCalls.length > 0
+          ? parsed.toolCalls
+          : Array.from(streamedToolCalls.values())
+            .map((toolCall) => validateToolCall(toolCall))
+            .filter(
+              (toolCall): toolCall is NonNullable<
+                ReturnType<typeof validateToolCall>
+              > => toolCall !== null,
+            );
+      const finalResponse: LLMResponse = {
+        ...parsed,
+        content: parsed.content.length > 0 ? parsed.content : streamedContent,
+        toolCalls,
+        finishReason:
+          toolCalls.length > 0 && parsed.finishReason === "stop"
+            ? "tool_calls"
+            : parsed.finishReason,
+      };
+      onChunk({
+        content: "",
+        done: true,
+        ...(toolCalls.length > 0 ? { toolCalls } : {}),
+      });
+      return finalResponse;
     }
-
-    const parsed = withStreamingMetrics(
-      parseOpenAIResponsesResponse(
-        model,
-        completedResponse,
-        requestOptions,
-      ),
-    );
-    const toolCalls =
-      parsed.toolCalls.length > 0
-        ? parsed.toolCalls
-        : Array.from(streamedToolCalls.values())
-          .map((toolCall) => validateToolCall(toolCall))
-          .filter((toolCall): toolCall is NonNullable<ReturnType<typeof validateToolCall>> => toolCall !== null);
-    const finalResponse: LLMResponse = {
-      ...parsed,
-      content: parsed.content.length > 0 ? parsed.content : streamedContent,
-      toolCalls,
-      finishReason:
-        toolCalls.length > 0 && parsed.finishReason === "stop"
-          ? "tool_calls"
-          : parsed.finishReason,
-    };
-    onChunk({
-      content: "",
-      done: true,
-      ...(toolCalls.length > 0 ? { toolCalls } : {}),
-    });
-    return finalResponse;
   }
 
   private async streamChatCompletions(
@@ -710,161 +842,206 @@ export class OpenAIProvider implements LLMProvider {
       stream: true,
       stream_options: { include_usage: true },
     };
-    const response = await this.requestStream({
-      api: "chat_completions",
-      path: this.resolvePath("/chat/completions"),
-      body: request,
-      timeoutMs,
-      signal: options?.signal,
-    });
-
-    let content = "";
-    let model = requestModel;
-    let finishReason: LLMResponse["finishReason"] = "stop";
-    let usage: Record<string, number> = {};
-    const toolCallAccumulator = new Map<
-      number,
-      { id: string; name: string; arguments: string }
-    >();
-
-    for await (const event of this.readSseEvents(response)) {
-      const chunk = event.data;
-      if (chunk.error && typeof chunk.error === "object") {
-        throw mapOpenAIStreamError({
-          providerName: this.name,
-          errorBody: chunk.error,
-          fallbackMessage: "OpenAI stream failed",
+    let consecutiveFallbackFailures = 0;
+    chatStreamAttempts: while (true) {
+      let response: ProviderHttpStreamResponse;
+      try {
+        response = await this.requestStream({
+          api: "chat_completions",
+          path: this.resolvePath("/chat/completions"),
+          body: request,
+          timeoutMs,
+          signal: options?.signal,
+          providerFallback: this.providerFallbackForModel(requestModel),
         });
+      } catch (error) {
+        if (isFallbackTriggeredError(error)) throw error;
+        const fallbackDecision = this.evaluateConfiguredFallback(
+          error,
+          consecutiveFallbackFailures,
+          requestModel,
+        );
+        if (
+          fallbackDecision?.kind === "wait" &&
+          await this.waitForConfiguredFallbackRetry(
+            fallbackDecision,
+            options?.signal,
+          )
+        ) {
+          consecutiveFallbackFailures = fallbackDecision.consecutiveFailures;
+          continue chatStreamAttempts;
+        }
+        consecutiveFallbackFailures = 0;
+        throw error;
       }
 
-      if (typeof chunk.model === "string" && chunk.model.length > 0) {
-        model = chunk.model;
-      }
-      if (chunk.usage && typeof chunk.usage === "object") {
-        usage = chunk.usage as Record<string, number>;
-      }
+      let content = "";
+      let model = requestModel;
+      let finishReason: LLMResponse["finishReason"] = "stop";
+      let usage: Record<string, number> = {};
+      const toolCallAccumulator = new Map<
+        number,
+        { id: string; name: string; arguments: string }
+      >();
 
-      const choices = Array.isArray(chunk.choices)
-        ? (chunk.choices as Array<Record<string, unknown>>)
-        : [];
-      for (const choice of choices) {
-        const delta =
-          choice.delta && typeof choice.delta === "object"
-            ? (choice.delta as Record<string, unknown>)
-            : {};
-        if (typeof delta.content === "string" && delta.content.length > 0) {
-          content += delta.content;
-          onChunk({ content: delta.content, done: false });
+      for await (const event of this.readSseEvents(response)) {
+        const chunk = event.data;
+        if (chunk.error && typeof chunk.error === "object") {
+          const streamError = mapOpenAIStreamError({
+            providerName: this.name,
+            errorBody: chunk.error,
+            fallbackMessage: "OpenAI stream failed",
+          });
+          if (content.length === 0 && toolCallAccumulator.size === 0) {
+            const fallbackDecision = this.evaluateConfiguredFallback(
+              openAIStreamFallbackCandidate(chunk.error, "OpenAI stream failed"),
+              consecutiveFallbackFailures,
+              requestModel,
+            );
+            if (
+              fallbackDecision?.kind === "wait" &&
+              await this.waitForConfiguredFallbackRetry(
+                fallbackDecision,
+                options?.signal,
+              )
+            ) {
+              consecutiveFallbackFailures = fallbackDecision.consecutiveFailures;
+              continue chatStreamAttempts;
+            }
+          }
+          consecutiveFallbackFailures = 0;
+          throw streamError;
         }
 
-        const deltaToolCalls = Array.isArray(delta.tool_calls)
-          ? (delta.tool_calls as Array<Record<string, unknown>>)
+        if (typeof chunk.model === "string" && chunk.model.length > 0) {
+          model = chunk.model;
+        }
+        if (chunk.usage && typeof chunk.usage === "object") {
+          usage = chunk.usage as Record<string, number>;
+        }
+
+        const choices = Array.isArray(chunk.choices)
+          ? (chunk.choices as Array<Record<string, unknown>>)
           : [];
-        for (const toolCall of deltaToolCalls) {
-          const index =
-            typeof toolCall.index === "number"
-              ? toolCall.index
-              : toolCallAccumulator.size;
-          const fn =
-            toolCall.function && typeof toolCall.function === "object"
-              ? (toolCall.function as Record<string, unknown>)
+        for (const choice of choices) {
+          const delta =
+            choice.delta && typeof choice.delta === "object"
+              ? (choice.delta as Record<string, unknown>)
               : {};
-          const existing = toolCallAccumulator.get(index) ?? {
-            id: "",
-            name: "",
-            arguments: "",
-          };
-          if (typeof toolCall.id === "string" && toolCall.id.length > 0) {
-            existing.id = toolCall.id;
+          if (typeof delta.content === "string" && delta.content.length > 0) {
+            content += delta.content;
+            onChunk({ content: delta.content, done: false });
           }
-          if (typeof fn.name === "string" && fn.name.length > 0) {
-            existing.name = fn.name;
-          }
-          if (typeof fn.arguments === "string" && fn.arguments.length > 0) {
-            existing.arguments += fn.arguments;
-          }
-          toolCallAccumulator.set(index, existing);
-        }
 
-        if (typeof choice.finish_reason === "string") {
-          switch (choice.finish_reason) {
-            case "tool_calls":
-              finishReason = "tool_calls";
-              break;
-            case "length":
-              finishReason = "length";
-              break;
-            case "content_filter":
-              finishReason = "content_filter";
-              break;
-            case "error":
-              finishReason = "error";
-              break;
-            default:
-              finishReason = "stop";
-              break;
+          const deltaToolCalls = Array.isArray(delta.tool_calls)
+            ? (delta.tool_calls as Array<Record<string, unknown>>)
+            : [];
+          for (const toolCall of deltaToolCalls) {
+            const index =
+              typeof toolCall.index === "number"
+                ? toolCall.index
+                : toolCallAccumulator.size;
+            const fn =
+              toolCall.function && typeof toolCall.function === "object"
+                ? (toolCall.function as Record<string, unknown>)
+                : {};
+            const existing = toolCallAccumulator.get(index) ?? {
+              id: "",
+              name: "",
+              arguments: "",
+            };
+            if (typeof toolCall.id === "string" && toolCall.id.length > 0) {
+              existing.id = toolCall.id;
+            }
+            if (typeof fn.name === "string" && fn.name.length > 0) {
+              existing.name = fn.name;
+            }
+            if (typeof fn.arguments === "string" && fn.arguments.length > 0) {
+              existing.arguments += fn.arguments;
+            }
+            toolCallAccumulator.set(index, existing);
+          }
+
+          if (typeof choice.finish_reason === "string") {
+            switch (choice.finish_reason) {
+              case "tool_calls":
+                finishReason = "tool_calls";
+                break;
+              case "length":
+                finishReason = "length";
+                break;
+              case "content_filter":
+                finishReason = "content_filter";
+                break;
+              case "error":
+                finishReason = "error";
+                break;
+              default:
+                finishReason = "stop";
+                break;
+            }
           }
         }
       }
-    }
 
-    const includeToolCalls = finishReason !== "length";
-    const toolCalls = includeToolCalls
-      ? Array.from(toolCallAccumulator.values()).filter(
-        (toolCall) => toolCall.id.length > 0 && toolCall.name.length > 0,
-      )
-      : [];
-    const parsed = withStreamingMetrics(
-      parseChatCompletionsResponse(
-        requestModel,
-        {
-          model,
-          choices: [
-            {
-              message: {
-                role: "assistant",
-                content,
-                ...(toolCalls.length > 0
-                  ? {
-                    tool_calls: toolCalls.map((toolCall) => ({
-                      id: toolCall.id,
-                      type: "function",
-                      function: {
-                        name: toolCall.name,
-                        arguments:
-                          toolCall.arguments.length > 0
-                            ? toolCall.arguments
-                            : "{}",
-                      },
-                    })),
-                  }
-                  : {}),
+      const includeToolCalls = finishReason !== "length";
+      const toolCalls = includeToolCalls
+        ? Array.from(toolCallAccumulator.values()).filter(
+          (toolCall) => toolCall.id.length > 0 && toolCall.name.length > 0,
+        )
+        : [];
+      const parsed = withStreamingMetrics(
+        parseChatCompletionsResponse(
+          requestModel,
+          {
+            model,
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content,
+                  ...(toolCalls.length > 0
+                    ? {
+                      tool_calls: toolCalls.map((toolCall) => ({
+                        id: toolCall.id,
+                        type: "function",
+                        function: {
+                          name: toolCall.name,
+                          arguments:
+                            toolCall.arguments.length > 0
+                              ? toolCall.arguments
+                              : "{}",
+                        },
+                      })),
+                    }
+                    : {}),
+                },
+                finish_reason:
+                  finishReason === "tool_calls"
+                    ? "tool_calls"
+                    : finishReason === "length"
+                      ? "length"
+                      : finishReason === "content_filter"
+                        ? "content_filter"
+                        : finishReason === "error"
+                          ? "error"
+                          : "stop",
               },
-              finish_reason:
-                finishReason === "tool_calls"
-                  ? "tool_calls"
-                  : finishReason === "length"
-                    ? "length"
-                    : finishReason === "content_filter"
-                      ? "content_filter"
-                      : finishReason === "error"
-                        ? "error"
-                        : "stop",
-            },
-          ],
-          usage,
-        },
-        requestOptions,
-      ),
-    );
-    onChunk({
-      content: "",
-      done: true,
-      ...(includeToolCalls && parsed.toolCalls.length > 0
-        ? { toolCalls: parsed.toolCalls }
-        : {}),
-    });
-    return parsed;
+            ],
+            usage,
+          },
+          requestOptions,
+        ),
+      );
+      onChunk({
+        content: "",
+        done: true,
+        ...(includeToolCalls && parsed.toolCalls.length > 0
+          ? { toolCalls: parsed.toolCalls }
+          : {}),
+      });
+      return parsed;
+    }
   }
 
   private async *readSseEvents(
@@ -913,6 +1090,7 @@ export class OpenAIProvider implements LLMProvider {
     readonly body: Record<string, unknown>;
     readonly timeoutMs?: number;
     readonly signal?: AbortSignal;
+    readonly providerFallback?: OpenAIProviderConfig["providerFallback"];
   }): Promise<ProviderHttpStreamResponse> {
     const session = this.client.createTurnSession({
       wireApi: args.api,
@@ -925,6 +1103,7 @@ export class OpenAIProvider implements LLMProvider {
       body: args.body,
       timeoutMs: normalizeTimeoutMs(args.timeoutMs),
       signal: args.signal,
+      providerFallback: args.providerFallback,
       // Provider SSE streams do not expose resumable cursors; keep the
       // shared session contract but preserve single-attempt stream semantics.
       retryBudget: { maxRetries: 0 },

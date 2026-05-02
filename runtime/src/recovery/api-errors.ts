@@ -31,15 +31,35 @@ export const CONTEXT_WINDOW_ERROR_MESSAGE = "context_window_exceeded";
  * Phase-3 catches this and triggers the model-fallback strategy
  * (AgenC query.ts:928-981).
  */
+export interface FallbackTriggeredErrorOptions {
+  readonly fromProvider?: string;
+  readonly toProvider?: string;
+  readonly reason?: string;
+  readonly message?: string;
+}
+
 export class FallbackTriggeredError extends Error {
   readonly isFallbackTrigger = true as const;
+  readonly fromProvider?: string;
+  readonly toProvider?: string;
+  readonly reason?: string;
+
   constructor(
     public readonly fromModel: string,
     public readonly toModel: string,
-    message?: string,
+    optionsOrMessage?: string | FallbackTriggeredErrorOptions,
   ) {
-    super(message ?? `fallback: ${fromModel} → ${toModel}`);
+    const options =
+      typeof optionsOrMessage === "string" ? undefined : optionsOrMessage;
+    const message =
+      typeof optionsOrMessage === "string"
+        ? optionsOrMessage
+        : options?.message;
+    super(message ?? `fallback: ${fromModel} -> ${toModel}`);
     this.name = "FallbackTriggeredError";
+    this.fromProvider = options?.fromProvider;
+    this.toProvider = options?.toProvider;
+    this.reason = options?.reason;
   }
 }
 

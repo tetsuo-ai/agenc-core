@@ -66,6 +66,29 @@ function streamFromEvents(
   };
 }
 
+function streamFromEventsThenThrow(
+  events: readonly Record<string, unknown>[],
+  error: Error,
+): AsyncIterable<Record<string, unknown>> {
+  return {
+    async *[Symbol.asyncIterator]() {
+      for (const event of events) {
+        yield event;
+      }
+      throw error;
+    },
+  };
+}
+
+function useDeterministicFallbackTimers(): () => void {
+  vi.useFakeTimers();
+  const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
+  return () => {
+    randomSpy.mockRestore();
+    vi.useRealTimers();
+  };
+}
+
 describe("GrokProvider incremental continuation", () => {
   const previousMessages: LLMMessage[] = [
     { role: "user", content: "hello" },
@@ -75,6 +98,173 @@ describe("GrokProvider incremental continuation", () => {
     { role: "assistant", content: "hi" },
     { role: "user", content: "follow up" },
   ];
+
+  test("triggers configured fallback after repeated chat overloads", async () => {
+    const restoreTimers = useDeterministicFallbackTimers();
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4-fast",
+      providerFallback: {
+        provider: "grok",
+        model: "grok-4-fast",
+        targets: [{ provider: "openai", model: "gpt-5" }],
+      },
+    });
+    const overloaded = Object.assign(new Error("overloaded"), { status: 529 });
+    const create = vi.fn().mockImplementation(() => {
+      throw overloaded;
+    });
+    (provider as any).client = {
+      responses: { create },
+    };
+
+    try {
+      const pending = provider.chat(
+        [{ role: "user", content: "hello" }],
+        { model: "grok-4-reviewer" },
+      );
+      const assertion = expect(pending).rejects.toMatchObject({
+        name: "FallbackTriggeredError",
+        fromProvider: "grok",
+        toProvider: "openai",
+        fromModel: "grok-4-reviewer",
+        toModel: "gpt-5",
+      });
+
+      await vi.advanceTimersByTimeAsync(499);
+      expect(create).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(create).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1000);
+      await assertion;
+      expect(create).toHaveBeenCalledTimes(3);
+    } finally {
+      restoreTimers();
+    }
+  });
+
+  test("triggers configured fallback after repeated stream overloads", async () => {
+    const restoreTimers = useDeterministicFallbackTimers();
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4-fast",
+      providerFallback: {
+        provider: "grok",
+        model: "grok-4-fast",
+        targets: [{ provider: "openai", model: "gpt-5" }],
+      },
+    });
+    const overloaded = Object.assign(new Error("overloaded"), { status: 529 });
+    const create = vi.fn().mockImplementation(() => {
+      throw overloaded;
+    });
+    (provider as any).client = {
+      responses: { create },
+    };
+
+    try {
+      const pending = provider.chatStream(
+        [{ role: "user", content: "hello" }],
+        () => {},
+        { model: "grok-4-reviewer" },
+      );
+      const assertion = expect(pending).rejects.toMatchObject({
+        name: "FallbackTriggeredError",
+        fromProvider: "grok",
+        toProvider: "openai",
+        fromModel: "grok-4-reviewer",
+        toModel: "gpt-5",
+      });
+
+      await vi.advanceTimersByTimeAsync(499);
+      expect(create).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(create).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1000);
+      await assertion;
+      expect(create).toHaveBeenCalledTimes(3);
+    } finally {
+      restoreTimers();
+    }
+  });
+
+  test("bounds fallback waits by provider retry budget", async () => {
+    const restoreTimers = useDeterministicFallbackTimers();
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4-fast",
+      maxRetries: 1,
+      providerFallback: {
+        provider: "grok",
+        model: "grok-4-fast",
+        targets: [{ provider: "openai", model: "gpt-5" }],
+        maxFailures: 5,
+      },
+    });
+    const overloaded = Object.assign(new Error("overloaded"), { status: 529 });
+    const create = vi.fn().mockImplementation(() => {
+      throw overloaded;
+    });
+    (provider as any).client = {
+      responses: { create },
+    };
+
+    try {
+      const pending = provider.chat([{ role: "user", content: "hello" }]);
+      const assertion = expect(pending).rejects.toThrow("overloaded");
+
+      await vi.advanceTimersByTimeAsync(500);
+      await assertion;
+      expect(create).toHaveBeenCalledTimes(2);
+    } finally {
+      restoreTimers();
+    }
+  });
+
+  test("does not trigger stream fallback after partial output", async () => {
+    const restoreTimers = useDeterministicFallbackTimers();
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4-fast",
+      providerFallback: {
+        provider: "grok",
+        model: "grok-4-fast",
+        targets: [{ provider: "openai", model: "gpt-5" }],
+      },
+    });
+    const overloaded = Object.assign(new Error("overloaded"), { status: 529 });
+    let attempt = 0;
+    const create = vi.fn().mockImplementation(() => {
+      attempt += 1;
+      if (attempt < 3) {
+        throw overloaded;
+      }
+      return withResponse(
+        streamFromEventsThenThrow(
+          [{ type: "response.output_text.delta", delta: "partial" }],
+          overloaded,
+        ),
+      );
+    });
+    (provider as any).client = {
+      responses: { create },
+    };
+
+    try {
+      const pending = provider.chatStream(
+        [{ role: "user", content: "hello" }],
+        () => {},
+      );
+
+      await vi.advanceTimersByTimeAsync(1500);
+      const response = await pending;
+      expect(response.content).toBe("partial");
+      expect(response.error).toMatchObject({ statusCode: 529 });
+      expect(create).toHaveBeenCalledTimes(3);
+    } finally {
+      restoreTimers();
+    }
+  });
 
   test("honors request-scoped model overrides when building requests", () => {
     const provider = new GrokProvider({

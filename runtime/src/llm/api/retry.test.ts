@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
+import { FallbackTriggeredError } from "../../recovery/api-errors.js";
 import { AgenCApiError } from "./errors.js";
 import {
   CannotRetryError,
@@ -193,5 +194,65 @@ describe("llm api retry", () => {
     ).rejects.toBeInstanceOf(CannotRetryError);
 
     expect(sleep).not.toHaveBeenCalled();
+  });
+
+  test("throws fallback trigger after repeated fallback-eligible failures", async () => {
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    let calls = 0;
+
+    await expect(
+      withRetry(
+        async () => {
+          calls += 1;
+          throw new AgenCApiError("overloaded", { status: 529 });
+        },
+        {
+          maxRetries: 4,
+          sleep,
+          random: () => 0,
+          fallback: {
+            provider: "grok",
+            model: "grok-4-fast",
+            targets: [{ model: "grok-4" }],
+          },
+        },
+      ),
+    ).rejects.toBeInstanceOf(FallbackTriggeredError);
+
+    expect(calls).toBe(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenNthCalledWith(1, 500, undefined);
+    expect(sleep).toHaveBeenNthCalledWith(2, 1000, undefined);
+  });
+
+  test("fallback wait retries custom statuses outside the normal retry set", async () => {
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    let calls = 0;
+
+    await expect(
+      withRetry(
+        async () => {
+          calls += 1;
+          throw new AgenCApiError("slow down", { status: 429 });
+        },
+        {
+          maxRetries: 4,
+          retryStatuses: [503],
+          sleep,
+          random: () => 0,
+          fallback: {
+            provider: "openai",
+            model: "gpt-5",
+            targets: [{ provider: "grok", model: "grok-4-fast" }],
+            statuses: [429],
+            maxFailures: 2,
+          },
+        },
+      ),
+    ).rejects.toBeInstanceOf(FallbackTriggeredError);
+
+    expect(calls).toBe(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(sleep).toHaveBeenCalledWith(500, undefined);
   });
 });

@@ -177,6 +177,37 @@ describe("schema: normalizeRawConfig", () => {
     expect(out._unknown).toBeUndefined();
   });
 
+  test("preserves provider fallback config on the typed path", () => {
+    const out = normalizeRawConfig({
+      providers: {
+        grok: {
+          fallback_models: ["grok-4"],
+          fallback: {
+            targets: [
+              { provider: "openai", model: "gpt-5", reason: "burst" },
+            ],
+            models: ["grok-3"],
+            max_failures: 2,
+            statuses: [429, 529],
+          },
+        },
+      },
+    });
+
+    expect(out.providers?.grok).toEqual({
+      fallback_models: ["grok-4"],
+      fallback: {
+        targets: [
+          { provider: "openai", model: "gpt-5", reason: "burst" },
+        ],
+        models: ["grok-3"],
+        max_failures: 2,
+        statuses: [429, 529],
+      },
+    });
+    expect(out._unknown).toBeUndefined();
+  });
+
   test("preserves runtime/TUI feature config on the typed path", () => {
     const out = normalizeRawConfig({
       editorMode: "vim",
@@ -371,6 +402,36 @@ describe("provider resolution (T13)", () => {
       apiKey: "local-token",
       baseURL: "http://127.0.0.1:8000/v1",
     });
+  });
+
+  test("resolveProviderSettings normalizes provider fallback targets", () => {
+    const config = mergeConfigs(defaultConfig(), {
+      providers: {
+        grok: {
+          fallback_models: ["grok-2", "grok-2"],
+          fallback: {
+            targets: [
+              { provider: " OpenAI ", model: " gpt-5 ", reason: " burst " },
+              { provider: "openai", model: "gpt-5" },
+              { provider: " XAI ", model: "grok-3" },
+            ],
+            models: ["grok-3"],
+            max_failures: 2,
+            statuses: [529, 429, 429],
+          },
+        },
+      },
+    });
+
+    const settings = resolveProviderSettings("grok", config, {});
+
+    expect(settings?.fallbackTargets).toEqual([
+      { provider: "openai", model: "gpt-5", reason: "burst" },
+      { provider: "grok", model: "grok-3" },
+      { provider: "grok", model: "grok-2" },
+    ]);
+    expect(settings?.fallbackMaxFailures).toBe(2);
+    expect(settings?.fallbackStatuses).toEqual([529, 429]);
   });
 
   test("configuredModelForProvider prefers provider-specific default_model", () => {

@@ -8,6 +8,7 @@ import type {
   AgenCConfig,
   ProviderCapabilityOverrides,
   ProviderConfig,
+  ProviderFallbackTargetConfig,
 } from "./schema.js";
 
 export const BUILT_IN_PROVIDER_DEFAULT_MODELS = Object.freeze({
@@ -70,6 +71,9 @@ export interface ResolvedProviderSettings {
   readonly contextWindowTokens?: number;
   readonly maxOutputTokens?: number;
   readonly capabilityOverrides?: ProviderCapabilityOverrides;
+  readonly fallbackTargets?: readonly ProviderFallbackTargetConfig[];
+  readonly fallbackMaxFailures?: number;
+  readonly fallbackStatuses?: readonly number[];
 }
 
 export function normalizeProviderSlug(
@@ -125,6 +129,13 @@ export function resolveProviderSettings(
     providerConfig?.context_window_tokens,
   );
   const maxOutputTokens = positiveInteger(providerConfig?.max_output_tokens);
+  const fallbackTargets = normalizeProviderFallbackTargets(slug, providerConfig);
+  const fallbackMaxFailures = positiveInteger(
+    providerConfig?.fallback?.max_failures,
+  );
+  const fallbackStatuses = normalizePositiveIntegerArray(
+    providerConfig?.fallback?.statuses,
+  );
   return {
     provider: slug,
     ...(apiKeyEnvVar ? { apiKeyEnvVar } : {}),
@@ -144,6 +155,11 @@ export function resolveProviderSettings(
     ...(providerConfig?.capability_overrides
       ? { capabilityOverrides: providerConfig.capability_overrides }
       : {}),
+    ...(fallbackTargets.length > 0 ? { fallbackTargets } : {}),
+    ...(fallbackMaxFailures !== undefined
+      ? { fallbackMaxFailures }
+      : {}),
+    ...(fallbackStatuses.length > 0 ? { fallbackStatuses } : {}),
   };
 }
 
@@ -151,6 +167,74 @@ function positiveInteger(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   const normalized = Math.floor(value);
   return normalized > 0 ? normalized : undefined;
+}
+
+function normalizePositiveIntegerArray(
+  values: unknown,
+): readonly number[] {
+  if (!Array.isArray(values)) return Object.freeze([]);
+  const out: number[] = [];
+  const seen = new Set<number>();
+  for (const value of values) {
+    const normalized = positiveInteger(value);
+    if (normalized === undefined || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return Object.freeze(out);
+}
+
+function unknownArray(value: unknown): readonly unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizeProviderFallbackTargets(
+  provider: string,
+  config: ProviderConfig | undefined,
+): readonly ProviderFallbackTargetConfig[] {
+  const out: ProviderFallbackTargetConfig[] = [];
+  const seen = new Set<string>();
+
+  const append = (target: ProviderFallbackTargetConfig): void => {
+    const model = target.model.trim();
+    if (!model) return;
+    const trimmedProvider = target.provider?.trim();
+    const targetProvider = trimmedProvider
+      ? normalizeProviderSlug(trimmedProvider) ?? trimmedProvider.toLowerCase()
+      : provider;
+    const reason = target.reason?.trim();
+    const key = `${targetProvider}\0${model}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({
+      provider: targetProvider,
+      model,
+      ...(reason ? { reason } : {}),
+    });
+  };
+
+  for (const target of unknownArray(config?.fallback?.targets)) {
+    if (!target || typeof target !== "object" || Array.isArray(target)) continue;
+    const record = target as Partial<ProviderFallbackTargetConfig>;
+    if (typeof record.model !== "string") continue;
+    append({
+      ...(typeof record.provider === "string"
+        ? { provider: record.provider }
+        : {}),
+      model: record.model,
+      ...(typeof record.reason === "string" ? { reason: record.reason } : {}),
+    });
+  }
+  for (const model of unknownArray(config?.fallback?.models)) {
+    if (typeof model !== "string") continue;
+    append({ provider, model });
+  }
+  for (const model of unknownArray(config?.fallback_models)) {
+    if (typeof model !== "string") continue;
+    append({ provider, model });
+  }
+
+  return Object.freeze(out);
 }
 
 export function buildProviderModelCatalog(
