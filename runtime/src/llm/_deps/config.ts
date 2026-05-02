@@ -12,51 +12,10 @@
  * deeper records, since this stub is not a parser).
  */
 
-const BUILT_IN_PROVIDER_DEFAULT_MODELS = Object.freeze({
-  grok: "grok-4-fast",
-  openai: "gpt-5",
-  anthropic: "claude-opus-4-7",
-  ollama: "llama3.3",
-  lmstudio: "gpt-4o-mini",
-  "openai-compatible": "local-model",
-  openrouter: "openai/gpt-5",
-  groq: "llama-3.3-70b-versatile",
-  deepseek: "deepseek-reasoner",
-  gemini: "gemini-2.5-pro",
-  agenc: "agenc",
-} as const);
-
-const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
-  Record<string, readonly string[]>
-> = Object.freeze({
-  grok: Object.freeze([
-    "grok-4-fast",
-    "grok-4",
-    "grok-3",
-    "grok-2",
-    "grok-2-mini",
-    "grok-beta",
-    "grok-code-fast-1",
-  ]),
-  openai: Object.freeze(["gpt-5", "o3"]),
-  anthropic: Object.freeze(["claude-opus-4-7"]),
-  ollama: Object.freeze(["llama3.3"]),
-  lmstudio: Object.freeze(["gpt-4o-mini"]),
-  "openai-compatible": Object.freeze(["local-model"]),
-  openrouter: Object.freeze([
-    "openai/gpt-5",
-    "openai/gpt-5-mini",
-    "x-ai/grok-code-fast-1",
-  ]),
-  groq: Object.freeze([
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-    "mixtral-8x7b-32768",
-  ]),
-  deepseek: Object.freeze(["deepseek-reasoner"]),
-  gemini: Object.freeze(["gemini-2.5-pro"]),
-  agenc: Object.freeze(["agenc"]),
-});
+import {
+  BUILT_IN_PROVIDER_DEFAULT_MODELS,
+  BUILT_IN_PROVIDER_MODEL_CATALOG,
+} from "../registry/provider-info.js";
 
 export type ProviderSlug = keyof typeof BUILT_IN_PROVIDER_DEFAULT_MODELS;
 

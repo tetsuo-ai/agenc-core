@@ -31,6 +31,25 @@ describe("StaticModelsManager", () => {
     expect(info.supportedReasoningLevels).toEqual(["low", "medium", "high"]);
   });
 
+  it("lists and resolves registered bundled model catalog entries", async () => {
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "openai",
+    });
+
+    const listed = await manager.listModels();
+    expect(listed.map((entry) => entry.slug)).toContain("gpt-5.4");
+
+    const info = await manager.getModelInfo("gpt-5.4");
+    expect(info).toMatchObject({
+      slug: "gpt-5.4",
+      contextWindow: 272_000,
+      defaultReasoningLevel: "high",
+      defaultReasoningSummary: "none",
+      usedFallbackModelMetadata: false,
+    });
+  });
+
   it("lists configured provider default models alongside built-ins", async () => {
     const manager = new StaticModelsManager({
       config: mergeConfigs(defaultConfig(), {

@@ -98,6 +98,22 @@ describe("resolveProviderModelCapabilities", () => {
     });
   });
 
+  it("uses registered model capability hints for staged OpenAI catalog entries", () => {
+    expect(
+      resolveProviderModelCapabilities({
+        provider: "openai",
+        model: "gpt-5.4",
+      }),
+    ).toMatchObject({
+      supportsToolUse: true,
+      supportsVisionInput: true,
+      supportsStructuredOutput: true,
+      supportsStructuredOutputWithTools: true,
+      supportsProviderNativeWebSearch: true,
+      acceptsReasoningEffort: true,
+    });
+  });
+
   it("distinguishes provider-level OpenAI audio support from history replay support", () => {
     expect(
       resolveProviderModelCapabilities({

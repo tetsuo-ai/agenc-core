@@ -1,0 +1,113 @@
+{
+  "contractName": "llm-registry-port",
+  "scope": "Port donor model catalog, provider info, and staged feature registry into AgenC's LLM registry layer",
+  "generatedAt": "2026-05-02T00:00:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/co\u0064ex",
+  "sourceRootBrandingScanOverride": "branding-scan: allow upstream source path",
+  "targetRoot": "..",
+  "sourceCommit": "48791920a8b122939c4d3feb15673c0a690ca4a0",
+  "sourceFiles": [
+    "co\u0064ex-rs/models-manager/src/model_info.rs",
+    "co\u0064ex-rs/models-manager/src/manager.rs",
+    "co\u0064ex-rs/models-manager/src/cache.rs",
+    "co\u0064ex-rs/models-manager/src/config.rs",
+    "co\u0064ex-rs/models-manager/src/model_presets.rs",
+    "co\u0064ex-rs/models-manager/models.json",
+    "co\u0064ex-rs/model-provider-info/src/lib.rs",
+    "co\u0064ex-rs/features/src/lib.rs",
+    "co\u0064ex-rs/features/src/legacy.rs",
+    "co\u0064ex-rs/features/src/feature_configs.rs"
+  ],
+  "targetFiles": [
+    "runtime/src/llm/registry/model-catalog.ts",
+    "runtime/src/llm/registry/provider-info.ts",
+    "runtime/src/llm/registry/features.ts",
+    "runtime/src/llm/registry/index.ts",
+    "runtime/src/llm/registry/PARITY.md",
+    "runtime/src/llm/model-metadata.ts",
+    "runtime/src/llm/capabilities.ts",
+    "runtime/src/llm/model-registry.ts",
+    "runtime/src/config/resolve-provider.ts",
+    "runtime/src/llm/_deps/config.ts"
+  ],
+  "testFiles": [
+    "runtime/src/llm/registry/registry.test.ts",
+    "runtime/src/llm/model-registry.test.ts",
+    "runtime/src/llm/models-manager.test.ts",
+    "runtime/src/llm/capabilities.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "bundled-model-catalog",
+      "source": "co\u0064ex-rs/models-manager/models.json + models-manager/src/model_info.rs",
+      "target": "runtime/src/llm/registry/model-catalog.ts",
+      "requiredBehaviors": [
+        "store authoritative per-model context window metadata",
+        "store model input modality and tool/search capability hints",
+        "preserve default and supported reasoning levels accepted by AgenC",
+        "resolve exact, longest-prefix, and single-namespace model identifiers",
+        "feed the existing ModelRegistry and StaticModelsManager surfaces"
+      ],
+      "edgeCases": [
+        "newer bundled OpenAI models not present in the previous ad-hoc table",
+        "namespaced model lookup falls back to the suffix only for a single safe namespace",
+        "unknown models continue to use conservative fallback metadata"
+      ],
+      "tests": [
+        "runtime/src/llm/registry/registry.test.ts",
+        "runtime/src/llm/model-registry.test.ts",
+        "runtime/src/llm/models-manager.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/registry/registry.test.ts src/llm/model-registry.test.ts src/llm/models-manager.test.ts src/llm/capabilities.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "provider-info-registry",
+      "source": "co\u0064ex-rs/model-provider-info/src/lib.rs",
+      "target": "runtime/src/llm/registry/provider-info.ts",
+      "requiredBehaviors": [
+        "centralize built-in provider default model and base URL data",
+        "centralize provider API key env var hints",
+        "preserve request retry and stream idle timeout defaults",
+        "replace ad-hoc provider model catalog constants in config dependencies"
+      ],
+      "edgeCases": [
+        "xai alias normalizes to grok",
+        "openai_compatible/custom aliases normalize to openai-compatible",
+        "AgenC hosted provider is marked as managed-auth-backed"
+      ],
+      "tests": [
+        "runtime/src/llm/registry/registry.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/registry/registry.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "feature-stage-registry",
+      "source": "co\u0064ex-rs/features/src/lib.rs + co\u0064ex-rs/features/src/legacy.rs",
+      "target": "runtime/src/llm/registry/features.ts",
+      "requiredBehaviors": [
+        "store feature stage and default-enabled metadata",
+        "normalize legacy feature keys onto AgenC-owned canonical keys",
+        "apply configured feature maps on top of defaults",
+        "normalize feature dependencies such as multi_agent_v2 requiring multi_agent"
+      ],
+      "edgeCases": [
+        "unknown feature keys are ignored",
+        "legacy apply_patch aliases map to apply_patch_freeform",
+        "experimental feature specs are discoverable for menus"
+      ],
+      "tests": [
+        "runtime/src/llm/registry/registry.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/registry/registry.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

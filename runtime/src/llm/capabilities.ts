@@ -4,6 +4,7 @@ import {
   supportsXaiStructuredOutputs,
   supportsXaiStructuredOutputsWithTools,
 } from "./structured-output.js";
+import { resolveModelCapabilityHints } from "./registry/model-catalog.js";
 import { supportsGrokServerSideTools } from "./provider-native-search.js";
 
 export interface ProviderModelCapabilities {
@@ -100,17 +101,16 @@ function buildCapabilities(
   definition: ProviderCapabilityDefinition,
 ): ProviderModelCapabilities {
   const trimmedModel = model.trim();
+  const hints = resolveModelCapabilityHints({ provider, model: trimmedModel });
   const supportsImageInput = resolveCapabilityFlag(
-    definition.supportsImageInput,
+    hints?.supportsImageInput ?? definition.supportsImageInput,
     trimmedModel,
   );
   return {
     provider,
     model: trimmedModel,
-    supportsToolUse: resolveCapabilityFlag(
-      definition.supportsToolUse,
-      trimmedModel,
-    ),
+    supportsToolUse: hints?.supportsToolUse ??
+      resolveCapabilityFlag(definition.supportsToolUse, trimmedModel),
     supportsPromptCaching: resolveCapabilityFlag(
       definition.supportsPromptCaching,
       trimmedModel,
@@ -129,26 +129,26 @@ function buildCapabilities(
       definition.supportsAudioOutput,
       trimmedModel,
     ),
-    supportsStructuredOutput: resolveCapabilityFlag(
-      definition.supportsStructuredOutput,
-      trimmedModel,
-    ),
-    supportsStructuredOutputWithTools: resolveCapabilityFlag(
-      definition.supportsStructuredOutputWithTools,
-      trimmedModel,
-    ),
-    supportsProviderNativeWebSearch: resolveCapabilityFlag(
-      definition.supportsProviderNativeWebSearch,
-      trimmedModel,
-    ),
+    supportsStructuredOutput: hints?.supportsStructuredOutput ??
+      resolveCapabilityFlag(definition.supportsStructuredOutput, trimmedModel),
+    supportsStructuredOutputWithTools:
+      hints?.supportsStructuredOutputWithTools ??
+        resolveCapabilityFlag(
+          definition.supportsStructuredOutputWithTools,
+          trimmedModel,
+        ),
+    supportsProviderNativeWebSearch:
+      hints?.supportsProviderNativeWebSearch ??
+        resolveCapabilityFlag(
+          definition.supportsProviderNativeWebSearch,
+          trimmedModel,
+        ),
     supportsExtendedThinking: resolveCapabilityFlag(
       definition.supportsExtendedThinking,
       trimmedModel,
     ),
-    acceptsImageHistory: resolveCapabilityFlag(
-      definition.acceptsImageHistory,
-      trimmedModel,
-    ),
+    acceptsImageHistory: hints?.acceptsImageHistory ??
+      resolveCapabilityFlag(definition.acceptsImageHistory, trimmedModel),
     acceptsAudioHistory: resolveCapabilityFlag(
       definition.acceptsAudioHistory,
       trimmedModel,
@@ -157,10 +157,8 @@ function buildCapabilities(
       definition.acceptsThinkingHistory,
       trimmedModel,
     ),
-    acceptsReasoningEffort: resolveCapabilityFlag(
-      definition.acceptsReasoningEffort,
-      trimmedModel,
-    ),
+    acceptsReasoningEffort: hints?.acceptsReasoningEffort ??
+      resolveCapabilityFlag(definition.acceptsReasoningEffort, trimmedModel),
   };
 }
 

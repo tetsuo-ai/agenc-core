@@ -3,6 +3,7 @@ import {
   readProviderConfig,
   type AgenCConfig,
 } from "./_deps/config.js";
+import { resolveModelCatalogMetadata } from "./registry/model-catalog.js";
 import {
   boundedOutputTokens,
   CAPPED_DEFAULT_MAX_OUTPUT_TOKENS,
@@ -385,6 +386,13 @@ function inferBuiltInMetadata(
 ): ModelMetadataValues | undefined {
   const normalizedProvider = normalizeProvider(provider);
   const normalizedModel = model.trim().toLowerCase();
+  const catalog = resolveModelCatalogMetadata({
+    provider: normalizedProvider,
+    model,
+  });
+  if (hasAnyMetadata(catalog)) {
+    return catalog;
+  }
   if (OPENAI_COMPATIBLE_METADATA_PROVIDERS.has(normalizedProvider)) {
     const contextWindow = getOpenAICompatibleContextWindow(model);
     const maxOutputTokens = getOpenAICompatibleMaxOutputTokens(model);

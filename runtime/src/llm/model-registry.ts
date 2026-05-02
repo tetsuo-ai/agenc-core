@@ -14,6 +14,7 @@ import {
   type ModelMetadataResolverOptions,
   type ResolvedModelMetadata,
 } from "./model-metadata.js";
+import { resolveRegisteredModelCatalogEntry } from "./registry/model-catalog.js";
 import {
   DEFAULT_MODEL_COSTS,
   DEFAULT_UNKNOWN_MODEL_COST,
@@ -47,11 +48,35 @@ export interface ModelRegistryOptions {
 }
 
 function inferReasoningLevels(
-  caps: ProviderCapabilityRegistryEntry,
+  entry: ModelRegistryEntry,
 ): readonly ReasoningEffort[] {
-  return caps.acceptsReasoningEffort
+  const catalog = resolveRegisteredModelCatalogEntry({
+    provider: entry.provider,
+    model: entry.model,
+  });
+  if (catalog?.supportedReasoningLevels.length) {
+    return catalog.supportedReasoningLevels;
+  }
+  return entry.capabilities.acceptsReasoningEffort
     ? (["low", "medium", "high"] as const)
     : [];
+}
+
+function inferDefaultReasoningLevel(
+  entry: ModelRegistryEntry,
+  supportedReasoningLevels: readonly ReasoningEffort[],
+): ReasoningEffort | undefined {
+  const catalog = resolveRegisteredModelCatalogEntry({
+    provider: entry.provider,
+    model: entry.model,
+  });
+  if (
+    catalog?.defaultReasoningLevel !== undefined &&
+    supportedReasoningLevels.includes(catalog.defaultReasoningLevel)
+  ) {
+    return catalog.defaultReasoningLevel;
+  }
+  return supportedReasoningLevels.length > 0 ? "medium" : undefined;
 }
 
 function resolveCostEntry(params: {
@@ -87,7 +112,15 @@ function normalizeRegistrySelection(params: {
 export function modelRegistryEntryToModelInfo(
   entry: ModelRegistryEntry,
 ): ModelInfo {
-  const supportedReasoningLevels = inferReasoningLevels(entry.capabilities);
+  const supportedReasoningLevels = inferReasoningLevels(entry);
+  const defaultReasoningLevel = inferDefaultReasoningLevel(
+    entry,
+    supportedReasoningLevels,
+  );
+  const catalog = resolveRegisteredModelCatalogEntry({
+    provider: entry.provider,
+    model: entry.model,
+  });
   return {
     slug: entry.model,
     ...(entry.metadata.contextWindow !== undefined
@@ -113,10 +146,8 @@ export function modelRegistryEntryToModelInfo(
         ? 100
         : DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
     supportedReasoningLevels,
-    ...(supportedReasoningLevels.length > 0
-      ? { defaultReasoningLevel: "medium" as const }
-      : {}),
-    defaultReasoningSummary: "auto",
+    ...(defaultReasoningLevel !== undefined ? { defaultReasoningLevel } : {}),
+    defaultReasoningSummary: catalog?.defaultReasoningSummary ?? "auto",
     truncationPolicy: "off",
     usedFallbackModelMetadata: entry.metadata.usedFallbackModelMetadata,
   };
