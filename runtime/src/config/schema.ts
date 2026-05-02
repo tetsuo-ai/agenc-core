@@ -137,8 +137,14 @@ export interface AgentBudgetConfig {
   readonly wall_clock_seconds?: number;
 }
 
+export interface AgentRunRetentionConfig {
+  readonly completed_days?: number;
+  readonly failed_days?: number;
+}
+
 export interface AgentConfig {
   readonly budget?: AgentBudgetConfig;
+  readonly retention?: AgentRunRetentionConfig;
 }
 
 export interface HookCommand {
@@ -585,6 +591,10 @@ export function defaultConfig(): AgenCConfig {
         dollar_cap: 25,
         wall_clock_seconds: 259_200,
       }) as AgentBudgetConfig,
+      retention: Object.freeze({
+        completed_days: 30,
+        failed_days: 90,
+      }) as AgentRunRetentionConfig,
     }) as AgentConfig,
     toolBudget: Object.freeze({
       max_calls_per_turn: 32,

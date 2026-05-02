@@ -45,7 +45,7 @@ import {
 } from "../lifecycle/index.js";
 import { createAuthBackend } from "../auth/index.js";
 import type { AuthBackend } from "../auth/backend.js";
-import { loadConfig } from "../config/index.js";
+import { loadConfig, type AgenCConfig } from "../config/index.js";
 import {
   recoverDaemonStateOnStartup,
   type DaemonStartupRecoveryReport,
@@ -53,6 +53,7 @@ import {
   type RecoveredAgentRun,
   type RecoveredSessionStateSnapshot,
 } from "../state/recovery.js";
+import { pruneTerminalAgentRuns } from "../state/pruning.js";
 import { AgenCSessionSnapshotPolicy } from "../state/snapshot-policy.js";
 import {
   discoverStateDatabasePaths,
@@ -339,6 +340,7 @@ async function runAgenCDaemonForeground(
     startupRecovery = recoverAgenCDaemonStartupState(
       authStartup.daemonHome,
       process.cwd(),
+      authStartup.config,
     );
     reportAgenCDaemonStartupRecovery(io, startupRecovery);
   } catch (error) {
@@ -558,6 +560,7 @@ async function runAgenCDaemonForeground(
 function recoverAgenCDaemonStartupState(
   daemonHome: string,
   cwd: string,
+  config: AgenCConfig,
 ): DaemonStartupRecoveryReport {
   const recoveredAt = new Date().toISOString();
   const paths = uniqueStateDatabasePaths([
@@ -571,6 +574,7 @@ function recoverAgenCDaemonStartupState(
   for (const pathSet of paths) {
     const driver = openStateDatabasePaths(pathSet);
     try {
+      pruneTerminalAgentRuns(driver, config.agent?.retention);
       const report = recoverDaemonStateOnStartup(driver, {
         now: () => recoveredAt,
       });
@@ -871,6 +875,7 @@ function reportAgenCDaemonStartupRecovery(
 
 interface AgenCDaemonAuthStartup {
   readonly daemonHome: string;
+  readonly config: AgenCConfig;
   readonly authBackend: AuthBackend;
 }
 
@@ -886,6 +891,7 @@ async function tryResolveAgenCDaemonAuthStartup(
     });
     return {
       daemonHome,
+      config: loadedConfig.config,
       authBackend: createAuthBackend(loadedConfig.config, {
         agencHome: daemonHome,
         env: host.env,

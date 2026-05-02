@@ -409,6 +409,13 @@ describe("AgenC daemon CLI", () => {
       sessionId: "session-restart",
       toolCallId: "tool-restart",
     });
+    seedTerminalDaemonRun(agencHome, {
+      cwd: process.cwd(),
+      runId: "run-prune",
+      sessionId: "session-prune",
+      status: "completed",
+      lastActiveAt: "2026-01-01T00:00:00.000Z",
+    });
     seedRecoverableDaemonState(agencHome, {
       cwd: otherCwd,
       runId: "run-other",
@@ -530,6 +537,7 @@ describe("AgenC daemon CLI", () => {
     expect(readRecoveredToolStatus(agencHome, otherCwd, "tool-other")).toBe(
       "failed",
     );
+    expect(readAgentRunStatus(agencHome, process.cwd(), "run-prune")).toBeUndefined();
 
     await rm(otherCwd, { recursive: true, force: true });
     await rm(agencHome, { recursive: true, force: true });
@@ -712,6 +720,60 @@ function seedRecoverableDaemonState(
   }
 }
 
+function seedTerminalDaemonRun(
+  agencHome: string,
+  params: {
+    readonly cwd: string;
+    readonly runId: string;
+    readonly sessionId: string;
+    readonly status: string;
+    readonly lastActiveAt: string;
+  },
+): void {
+  const driver = openStateDatabases({
+    cwd: params.cwd,
+    agencHome,
+  });
+  try {
+    driver
+      .prepareState(
+        `INSERT INTO agent_runs (
+          id,
+          objective,
+          status,
+          started_at,
+          last_active_at,
+          current_session_id,
+          created_by_client,
+          last_snapshot_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        params.runId,
+        "prune daemon state",
+        params.status,
+        "2026-01-01T00:00:00.000Z",
+        params.lastActiveAt,
+        params.sessionId,
+        "client-1",
+        params.lastActiveAt,
+      );
+    driver
+      .prepareState(
+        `INSERT INTO session_state_snapshots (
+          session_id,
+          snapshot_at,
+          conversation_json,
+          tool_state_json,
+          mcp_connection_state_json
+        ) VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(params.sessionId, params.lastActiveAt, "[]", "{}", "{}");
+  } finally {
+    driver.close();
+  }
+}
+
 function readRecoveredToolStatus(
   agencHome: string,
   cwd: string,
@@ -729,6 +791,28 @@ function readRecoveredToolStatus(
          WHERE tool_call_id = ?`,
       )
       .get(toolCallId)?.status;
+  } finally {
+    driver.close();
+  }
+}
+
+function readAgentRunStatus(
+  agencHome: string,
+  cwd: string,
+  runId: string,
+): string | undefined {
+  const driver = openStateDatabases({
+    cwd,
+    agencHome,
+  });
+  try {
+    return driver
+      .prepareState<[string], { status: string }>(
+        `SELECT status
+         FROM agent_runs
+         WHERE id = ?`,
+      )
+      .get(runId)?.status;
   } finally {
     driver.close();
   }

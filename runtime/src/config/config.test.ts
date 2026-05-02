@@ -76,6 +76,10 @@ describe("schema: defaultConfig", () => {
       dollar_cap: 25,
       wall_clock_seconds: 259_200,
     });
+    expect(cfg.agent?.retention).toEqual({
+      completed_days: 30,
+      failed_days: 90,
+    });
     expect(Object.isFrozen(cfg)).toBe(true);
   });
 });
@@ -272,6 +276,23 @@ describe("schema: normalizeRawConfig", () => {
       token_cap: 10_000,
       dollar_cap: 5,
       wall_clock_seconds: 3_600,
+    });
+    expect(out._unknown).toBeUndefined();
+    expect(KNOWN_CONFIG_KEYS.includes("agent")).toBe(true);
+  });
+
+  test("preserves agent.retention config on the typed path", () => {
+    const out = normalizeRawConfig({
+      agent: {
+        retention: {
+          completed_days: 7,
+          failed_days: 30,
+        },
+      },
+    });
+    expect(out.agent?.retention).toEqual({
+      completed_days: 7,
+      failed_days: 30,
     });
     expect(out._unknown).toBeUndefined();
     expect(KNOWN_CONFIG_KEYS.includes("agent")).toBe(true);
@@ -1038,6 +1059,24 @@ wall_clock_seconds = 3600
       token_cap: 10_000,
       dollar_cap: 5,
       wall_clock_seconds: 3_600,
+    });
+    expect(out.config._unknown?.agent).toBeUndefined();
+  });
+
+  test("agent.retention TOML overrides the default pruning windows", async () => {
+    writeFileSync(
+      join(dir, "config.toml"),
+      `
+[agent.retention]
+completed_days = 3
+failed_days = 14
+      `,
+    );
+    const out = await loadConfig({ home: dir });
+    expect(out.exists).toBe(true);
+    expect(out.config.agent?.retention).toEqual({
+      completed_days: 3,
+      failed_days: 14,
     });
     expect(out.config._unknown?.agent).toBeUndefined();
   });
