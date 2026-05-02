@@ -14,7 +14,7 @@ import type {
   LLMUsage,
 } from "../types.js";
 import { normalizeMessagesForAPI } from "../messages.js";
-import { validateToolCall } from "../types.js";
+import { validateToolCall, validateToolCallDetailed } from "../types.js";
 
 function readContentPartRecord(part: unknown): Record<string, unknown> | null {
   return part && typeof part === "object" && !Array.isArray(part)
@@ -391,6 +391,21 @@ export function normalizeToolCalls(
   return toolCalls
     .map((toolCall) => validateToolCall(toolCall))
     .filter((toolCall): toolCall is LLMToolCall => toolCall !== null);
+}
+
+export function normalizeToolCallsStrict(
+  toolCalls: readonly LLMToolCall[],
+  context: string,
+): LLMToolCall[] {
+  return toolCalls.map((toolCall) => {
+    const result = validateToolCallDetailed(toolCall);
+    if (result.toolCall) {
+      return result.toolCall;
+    }
+    throw new Error(
+      `${context}: ${result.failure?.message ?? "invalid tool call payload"}`,
+    );
+  });
 }
 
 export function collectRequestMetrics(messages: readonly LLMMessage[], tools: readonly LLMTool[]) {

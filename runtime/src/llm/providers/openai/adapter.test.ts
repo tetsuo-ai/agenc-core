@@ -390,6 +390,39 @@ describe("OpenAIProvider", () => {
     });
   });
 
+  test("rejects responses-api non-stream tool calls with invalid JSON", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: "completed",
+          model: "gpt-5",
+          output: [
+            {
+              type: "function_call",
+              id: "fc_bad",
+              call_id: "call_bad",
+              name: "system.echo",
+              arguments: "not-json",
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "gpt-5",
+      fetchImpl,
+    });
+
+    await expect(
+      provider.chat([{ role: "user", content: "hello" }]),
+    ).rejects.toThrow("OpenAI Responses response emitted invalid function_call");
+  });
+
   test("uses local chat-completions request shape for OpenAI-compatible local endpoints", async () => {
     const emitWarning = vi.fn();
     const emitDiagnostic = vi.fn();
@@ -496,6 +529,53 @@ describe("OpenAIProvider", () => {
     ) as Record<string, unknown>;
     expect(request.max_completion_tokens).toBe(2048);
     expect("max_tokens" in request).toBe(false);
+    expectNoRequestMetadataWarning(emitWarning);
+  });
+
+  test("rejects chat-completions non-stream tool calls with invalid JSON", async () => {
+    const emitWarning = vi.fn();
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "chatcmpl_bad",
+          model: "gpt-5",
+          choices: [
+            {
+              message: {
+                role: "assistant",
+                content: "",
+                tool_calls: [
+                  {
+                    id: "call_bad",
+                    type: "function",
+                    function: {
+                      name: "system.echo",
+                      arguments: "not-json",
+                    },
+                  },
+                ],
+              },
+              finish_reason: "tool_calls",
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "gpt-5",
+      useResponsesApi: false,
+      fetchImpl,
+      emitWarning,
+    });
+
+    await expect(
+      provider.chat([{ role: "user", content: "hello" }]),
+    ).rejects.toThrow("OpenAI chat-completions response emitted invalid tool_call");
     expectNoRequestMetadataWarning(emitWarning);
   });
 
@@ -775,6 +855,28 @@ describe("OpenAIProvider", () => {
           "toolCalls" in chunk,
       ),
     ).toBe(false);
+  });
+
+  test("rejects malformed tool calls present only in responses-api completion payloads", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_1","status":"completed","model":"gpt-5","output":[{"type":"function_call","id":"fc_bad","call_id":"call_bad","name":"system.echo","arguments":"not-json"}]}}\n\n',
+      ]),
+    );
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "gpt-5",
+      fetchImpl,
+    });
+    const chunks: unknown[] = [];
+
+    await expect(
+      provider.chatStream(
+        [{ role: "user", content: "hello" }],
+        (chunk) => chunks.push(chunk),
+      ),
+    ).rejects.toThrow("OpenAI Responses response emitted invalid function_call");
+    expect(chunks).toEqual([]);
   });
 
   test("refreshes oauth credentials before retrying a streaming request", async () => {
