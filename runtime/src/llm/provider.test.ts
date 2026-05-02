@@ -188,7 +188,7 @@ describe("createProvider", () => {
       (provider as unknown as { config: OpenAIProviderConfig }).config
         .defaultHeaders,
     ).toMatchObject({
-      "HTTP-Referer": "https://github.com/tetsuo-ai/agenc-core",
+      "HTTP-Referer": "https://agenc.tech",
       "X-Title": "AgenC",
     });
   });

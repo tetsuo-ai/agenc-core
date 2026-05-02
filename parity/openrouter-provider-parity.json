@@ -1,0 +1,112 @@
+{
+  "contractName": "openrouter-provider-parity",
+  "scope": "Finish the OpenRouter OpenAI-compatible provider surface for bearer auth, routing metadata headers, and multi-model routing",
+  "generatedAt": "2026-05-02T00:00:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/openclaude", "sourceRootBrandingScanOverride": "branding-scan: allow upstream source path",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/utils/providerProfiles.ts",
+    "src/components/ProviderManager.tsx",
+    "src/services/api/openaiShim.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/llm/providers/openrouter/index.ts",
+    "runtime/src/llm/providers/openrouter/PARITY.md",
+    "runtime/src/llm/providers/openai/adapter.ts",
+    "runtime/src/llm/wire/chat-completions.ts",
+    "runtime/src/llm/provider.ts",
+    "runtime/src/config/resolve-provider.ts",
+    "runtime/src/llm/_deps/config.ts",
+    "runtime/src/llm/model-metadata.ts",
+    "runtime/src/llm/models-manager.ts"
+  ],
+  "testFiles": [
+    "runtime/src/llm/providers/openrouter/provider.test.ts",
+    "runtime/src/llm/provider.test.ts",
+    "runtime/src/llm/provider-parity.test.ts",
+    "runtime/src/config/config.test.ts",
+    "runtime/src/llm/models-manager.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "openrouter-chat-completions-routing",
+      "source": "OpenRouter provider profile and OpenAI-compatible shim anchors",
+      "target": "runtime/src/llm/providers/openrouter/index.ts + runtime/src/llm/providers/openai/adapter.ts",
+      "requiredBehaviors": [
+        "send OpenRouter requests to the OpenAI-compatible chat-completions route",
+        "use OPENROUTER_API_KEY as the factory and provider API-key label",
+        "send Authorization bearer authentication",
+        "disable Responses API routing for OpenRouter",
+        "keep OpenRouter provider identity distinct from generic OpenAI"
+      ],
+      "edgeCases": [
+        "explicit OPENROUTER_MODEL environment override",
+        "explicit factory model override",
+        "missing OPENROUTER_API_KEY error",
+        "request body stream=false for non-stream chat calls"
+      ],
+      "tests": [
+        "runtime/src/llm/providers/openrouter/provider.test.ts",
+        "runtime/src/llm/provider.test.ts",
+        "runtime/src/llm/provider-parity.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/providers/openrouter/provider.test.ts src/llm/provider.test.ts src/llm/provider-parity.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "openrouter-routing-metadata-headers",
+      "source": "OpenRouter provider profile anchors",
+      "target": "runtime/src/llm/providers/openrouter/index.ts",
+      "requiredBehaviors": [
+        "send default HTTP-Referer metadata using AgenC-owned routing metadata",
+        "send default X-Title metadata with the AgenC product name",
+        "let explicit OpenRouter routing headers override defaults",
+        "preserve authorization headers alongside routing metadata headers"
+      ],
+      "edgeCases": [
+        "default routing headers",
+        "explicit HTTP-Referer override",
+        "explicit X-Title override",
+        "case-insensitive Headers lookup"
+      ],
+      "tests": [
+        "runtime/src/llm/providers/openrouter/provider.test.ts",
+        "runtime/src/llm/provider.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/providers/openrouter/provider.test.ts src/llm/provider.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "openrouter-multi-model-routes",
+      "source": "OpenRouter provider defaults and OpenAI-compatible model-routing anchors",
+      "target": "runtime/src/config/resolve-provider.ts + runtime/src/llm/_deps/config.ts + runtime/src/llm/model-metadata.ts",
+      "requiredBehaviors": [
+        "advertise openai/gpt-5 as the default OpenRouter route",
+        "advertise openai/gpt-5-mini as a built-in OpenRouter seed route",
+        "advertise x-ai/grok-code-fast-1 as a built-in OpenRouter seed route",
+        "resolve bare OpenRouter seed model slugs to the OpenRouter provider",
+        "list OpenRouter seed routes through the runtime models manager"
+      ],
+      "edgeCases": [
+        "bare openai/gpt-5-mini slug",
+        "bare x-ai/grok-code-fast-1 slug",
+        "provider:model disambiguation remains available",
+        "runtime _deps catalog mirrors the config catalog",
+        "OpenRouter registry metadata remains available for routed models"
+      ],
+      "tests": [
+        "runtime/src/config/config.test.ts",
+        "runtime/src/llm/models-manager.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/config/config.test.ts src/llm/models-manager.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

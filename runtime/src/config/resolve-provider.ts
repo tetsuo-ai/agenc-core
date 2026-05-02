@@ -53,7 +53,11 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   anthropic: Object.freeze(["claude-opus-4-7"]),
   ollama: Object.freeze(["llama3.3"]),
   lmstudio: Object.freeze(["gpt-4o-mini"]),
-  openrouter: Object.freeze(["openai/gpt-5"]),
+  openrouter: Object.freeze([
+    "openai/gpt-5",
+    "openai/gpt-5-mini",
+    "x-ai/grok-code-fast-1",
+  ]),
   groq: Object.freeze([
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
