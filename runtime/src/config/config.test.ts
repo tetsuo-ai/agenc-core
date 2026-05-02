@@ -464,6 +464,24 @@ describe("provider resolution (T13)", () => {
     );
   });
 
+  test("buildProviderModelCatalog routes built-in OpenRouter seed models", () => {
+    const catalog = buildProviderModelCatalog(defaultConfig());
+
+    expect(catalog.openrouter).toEqual([
+      "openai/gpt-5",
+      "openai/gpt-5-mini",
+      "x-ai/grok-code-fast-1",
+    ]);
+    expect(resolveModelDisambiguated("openai/gpt-5-mini", catalog)).toEqual({
+      provider: "openrouter",
+      model: "openai/gpt-5-mini",
+    });
+    expect(resolveModelDisambiguated("x-ai/grok-code-fast-1", catalog)).toEqual({
+      provider: "openrouter",
+      model: "x-ai/grok-code-fast-1",
+    });
+  });
+
   test("buildProviderModelCatalog routes built-in Groq Llama and Mixtral models", () => {
     const catalog = buildProviderModelCatalog(defaultConfig());
 

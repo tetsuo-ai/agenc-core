@@ -67,6 +67,22 @@ describe("StaticModelsManager", () => {
     );
   });
 
+  it("lists built-in OpenRouter seed routes", async () => {
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "openrouter",
+    });
+
+    const listed = await manager.listModels();
+    expect(listed.map((entry) => entry.slug)).toEqual(
+      expect.arrayContaining([
+        "openai/gpt-5",
+        "openai/gpt-5-mini",
+        "x-ai/grok-code-fast-1",
+      ]),
+    );
+  });
+
   it("falls back cleanly for unknown slugs while preserving the active provider", async () => {
     const manager = new StaticModelsManager({
       config: defaultConfig(),
