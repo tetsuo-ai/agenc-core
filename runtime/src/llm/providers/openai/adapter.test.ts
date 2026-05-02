@@ -1152,7 +1152,7 @@ describe("OpenAIProvider", () => {
     expect(headers.get("authorization")).toBeNull();
   });
 
-  test("uses x-goog-api-key headers and the /openai path prefix for Gemini", async () => {
+  test("uses bearer headers and the /openai path prefix for Gemini", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -1193,8 +1193,8 @@ describe("OpenAIProvider", () => {
       "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
     );
     const headers = init?.headers as Headers;
-    expect(headers.get("authorization")).toBeNull();
-    expect(headers.get("x-goog-api-key")).toBe("gemini-test");
+    expect(headers.get("authorization")).toBe("Bearer gemini-test");
+    expect(headers.get("x-goog-api-key")).toBeNull();
     const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
     expect("store" in requestBody).toBe(false);
   });
