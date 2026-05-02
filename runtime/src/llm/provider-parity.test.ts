@@ -11,6 +11,7 @@ import { GrokProvider } from "./providers/grok/index.js";
 import { GroqProvider } from "./providers/groq/index.js";
 import { LMStudioProvider } from "./providers/lmstudio/index.js";
 import { OllamaProvider } from "./providers/ollama/index.js";
+import { OpenAICompatibleProvider } from "./providers/openai-compatible/index.js";
 import { OpenAIProvider } from "./providers/openai/index.js";
 import { OpenRouterProvider } from "./providers/openrouter/index.js";
 import type {
@@ -597,6 +598,21 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
       }),
   },
   {
+    provider: "openai-compatible",
+    model: "local-model",
+    env: {},
+    createHarness: (parityCase) =>
+      createFetchHarness({
+        factory: (fetchImpl) =>
+          new OpenAICompatibleProvider({
+            model: "local-model",
+            tools: parityCase.tools ? [...parityCase.tools] : [],
+            fetchImpl,
+          }),
+        payload: buildChatCompletionsPayload("local-model", parityCase),
+      }),
+  },
+  {
     provider: "openrouter",
     model: "openai/gpt-5",
     env: { OPENROUTER_API_KEY: "openrouter-test" },
@@ -666,7 +682,7 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
 ];
 
 describe("provider parity", () => {
-  it("constructs all nine providers and preserves canonical identity/capability/model metadata", async () => {
+  it("constructs every provider and preserves canonical identity/capability/model metadata", async () => {
     const manager = new StaticModelsManager({
       config: defaultConfig(),
       fallbackProvider: "grok",

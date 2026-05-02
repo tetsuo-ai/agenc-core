@@ -21,6 +21,11 @@ import { LMStudioProvider } from "./providers/lmstudio/index.js";
 import { OpenRouterProvider } from "./providers/openrouter/index.js";
 import { GroqProvider, GROQ_DEFAULT_MODEL } from "./providers/groq/index.js";
 import { DeepSeekProvider } from "./providers/deepseek/index.js";
+import {
+  OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
+  OPENAI_COMPATIBLE_DEFAULT_MODEL,
+  OpenAICompatibleProvider,
+} from "./providers/openai-compatible/index.js";
 import type { ProviderFallbackLadderOptions } from "./api/fallback-ladder.js";
 
 export type ProviderName =
@@ -29,6 +34,7 @@ export type ProviderName =
   | "anthropic"
   | "ollama"
   | "lmstudio"
+  | "openai-compatible"
   | "openrouter"
   | "groq"
   | "deepseek"
@@ -58,6 +64,7 @@ export const KNOWN_PROVIDER_NAMES = [
   "anthropic",
   "ollama",
   "lmstudio",
+  "openai-compatible",
   "openrouter",
   "groq",
   "deepseek",
@@ -81,6 +88,7 @@ const DOCUMENTED_PROVIDER_DEFAULT_MODELS = {
   openai: "gpt-5",
   anthropic: "claude-opus-4-7",
   ollama: "llama3.3",
+  "openai-compatible": OPENAI_COMPATIBLE_DEFAULT_MODEL,
   deepseek: "deepseek-reasoner",
   gemini: "gemini-2.5-pro",
   agenc: "agenc",
@@ -601,7 +609,7 @@ function buildCommonConfig(
 function buildOpenAICompatibleProvider(
   provider: Extract<
     ProviderName,
-    "lmstudio" | "openrouter" | "groq" | "deepseek"
+    "lmstudio" | "openai-compatible" | "openrouter" | "groq" | "deepseek"
   >,
   opts: ProviderFactoryOptions,
   input: {
@@ -694,6 +702,13 @@ export function normalizeProviderName(
   const raw = firstNonEmpty(provider)?.toLowerCase() ?? "";
   if (raw === "xai") {
     return "grok";
+  }
+  if (
+    raw === "custom" ||
+    raw === "openai_compatible" ||
+    raw === "openai-compatible"
+  ) {
+    return "openai-compatible";
   }
   return (KNOWN_PROVIDER_NAMES as readonly string[]).includes(raw)
     ? (raw as ProviderName)
@@ -988,6 +1003,26 @@ export function createProvider(
         apiKeyEnvLabel: "LMSTUDIO_API_KEY",
         useResponsesApi: false,
         providerCtor: LMStudioProvider,
+      });
+    case "openai-compatible":
+      return buildOpenAICompatibleProvider("openai-compatible", opts, {
+        defaultBaseURL: OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
+        envBaseURL:
+          process.env.OPENAI_COMPATIBLE_BASE_URL ??
+          process.env.OPENAI_BASE_URL ??
+          process.env.OPENAI_API_BASE,
+        envModel:
+          process.env.OPENAI_COMPATIBLE_MODEL ?? process.env.OPENAI_MODEL,
+        envModelLabel: "OPENAI_COMPATIBLE_MODEL",
+        envApiKey: process.env.OPENAI_COMPATIBLE_API_KEY,
+        alternateApiKeys: process.env.OPENAI_API_KEY
+          ? [process.env.OPENAI_API_KEY]
+          : [],
+        defaultModel: OPENAI_COMPATIBLE_DEFAULT_MODEL,
+        apiKeyMode: "optional",
+        apiKeyEnvLabel: "OPENAI_COMPATIBLE_API_KEY",
+        useResponsesApi: false,
+        providerCtor: OpenAICompatibleProvider,
       });
     case "openrouter":
       return buildOpenAICompatibleProvider("openrouter", opts, {

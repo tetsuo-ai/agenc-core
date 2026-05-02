@@ -8,12 +8,14 @@ import { GrokProvider } from "./providers/grok/index.js";
 import { GroqProvider } from "./providers/groq/index.js";
 import { LMStudioProvider } from "./providers/lmstudio/index.js";
 import { OllamaProvider } from "./providers/ollama/index.js";
+import { OpenAICompatibleProvider } from "./providers/openai-compatible/index.js";
 import { OpenAIProvider } from "./providers/openai/index.js";
 import type { OpenAIProviderConfig } from "./providers/openai/index.js";
 import { OpenRouterProvider } from "./providers/openrouter/index.js";
 import {
   createProvider,
   isFactoryProvider,
+  normalizeProviderName,
   readProviderFactoryOptions,
   readProviderIdentity,
   resolveProviderNameFromEnv,
@@ -159,7 +161,11 @@ describe("createProvider", () => {
     expect(readProviderIdentity(provider)).toBe("openrouter");
   });
 
-  test("routes openrouter/groq/deepseek through dedicated adapter classes", () => {
+  test("routes OpenAI-compatible providers through dedicated adapter classes", () => {
+    const compatible = withEnv(
+      { OPENAI_COMPATIBLE_BASE_URL: "http://127.0.0.1:8000/v1" },
+      () => createProvider("openai-compatible", { model: "self-hosted-coder" }),
+    );
     const openrouter = withEnv(
       { OPENROUTER_API_KEY: "or-test" },
       () => createProvider("openrouter", { model: "openai/gpt-5" }),
@@ -173,9 +179,16 @@ describe("createProvider", () => {
       () => createProvider("deepseek", { model: "deepseek-reasoner" }),
     );
 
+    expect(compatible).toBeInstanceOf(OpenAICompatibleProvider);
     expect(openrouter).toBeInstanceOf(OpenRouterProvider);
     expect(groq).toBeInstanceOf(GroqProvider);
     expect(deepseek).toBeInstanceOf(DeepSeekProvider);
+  });
+
+  test("normalizes generic OpenAI-compatible provider aliases", () => {
+    expect(normalizeProviderName("custom")).toBe("openai-compatible");
+    expect(normalizeProviderName("openai_compatible")).toBe("openai-compatible");
+    expect(normalizeProviderName("openai-compatible")).toBe("openai-compatible");
   });
 
   test("adds the required OpenRouter routing headers", () => {
@@ -334,6 +347,24 @@ describe("createProvider", () => {
       expectedInstance: LMStudioProvider,
       assertApiKey: true,
       expectedApiKey: "lmstudio-secret",
+    },
+    {
+      name: "openai-compatible",
+      env: {
+        OPENAI_COMPATIBLE_API_KEY: undefined,
+        OPENAI_COMPATIBLE_BASE_URL: undefined,
+        OPENAI_COMPATIBLE_MODEL: "self-hosted-coder",
+        OPENAI_API_KEY: "local-token",
+        OPENAI_BASE_URL: "http://127.0.0.1:9000/v1",
+        OPENAI_MODEL: "wrong-openai-model",
+      },
+      model: undefined,
+      expectedBaseURL: "http://127.0.0.1:9000/v1",
+      expectedModel: "self-hosted-coder",
+      expectedUseResponsesApi: false,
+      expectedInstance: OpenAICompatibleProvider,
+      assertApiKey: true,
+      expectedApiKey: "local-token",
     },
     {
       name: "openrouter",
@@ -495,6 +526,26 @@ describe("createProvider", () => {
       apiKey: "or-test",
       baseURL: "https://router.example/api/v1",
       model: "openai/gpt-5-mini",
+    });
+  });
+
+  test("tracks generic OpenAI-compatible provider identity and rebuild options", () => {
+    const provider = withEnv(
+      {
+        OPENAI_COMPATIBLE_API_KEY: "local-token",
+      },
+      () =>
+        createProvider("openai-compatible", {
+          model: "self-hosted-coder",
+          baseURL: "http://127.0.0.1:9000/v1",
+        }),
+    );
+
+    expect(readProviderIdentity(provider)).toBe("openai-compatible");
+    expect(readProviderFactoryOptions(provider)).toMatchObject({
+      apiKey: "local-token",
+      baseURL: "http://127.0.0.1:9000/v1",
+      model: "self-hosted-coder",
     });
   });
 

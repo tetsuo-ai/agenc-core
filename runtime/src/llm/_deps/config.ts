@@ -18,6 +18,7 @@ const BUILT_IN_PROVIDER_DEFAULT_MODELS = Object.freeze({
   anthropic: "claude-opus-4-7",
   ollama: "llama3.3",
   lmstudio: "gpt-4o-mini",
+  "openai-compatible": "local-model",
   openrouter: "openai/gpt-5",
   groq: "llama-3.3-70b-versatile",
   deepseek: "deepseek-reasoner",
@@ -41,6 +42,7 @@ const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   anthropic: Object.freeze(["claude-opus-4-7"]),
   ollama: Object.freeze(["llama3.3"]),
   lmstudio: Object.freeze(["gpt-4o-mini"]),
+  "openai-compatible": Object.freeze(["local-model"]),
   openrouter: Object.freeze([
     "openai/gpt-5",
     "openai/gpt-5-mini",
@@ -128,7 +130,11 @@ export function normalizeProviderSlug(
 ): ProviderSlug | undefined {
   const normalized = provider?.trim().toLowerCase();
   if (!normalized) return undefined;
-  const slug = normalized === "xai" ? "grok" : normalized;
+  const slug = normalized === "xai"
+    ? "grok"
+    : normalized === "custom" || normalized === "openai_compatible"
+      ? "openai-compatible"
+      : normalized;
   return slug in BUILT_IN_PROVIDER_DEFAULT_MODELS
     ? (slug as ProviderSlug)
     : undefined;

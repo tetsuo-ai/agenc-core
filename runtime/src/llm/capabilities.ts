@@ -403,6 +403,21 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     acceptsThinkingHistory: false,
     acceptsReasoningEffort: false,
   },
+  "openai-compatible": {
+    // Generic self-hosted endpoints vary by model and server, so fail closed.
+    supportsPromptCaching: false,
+    supportsContextEdits: false,
+    supportsImageInput: false,
+    supportsAudioInput: false,
+    supportsAudioOutput: false,
+    supportsStructuredOutput: false,
+    supportsStructuredOutputWithTools: false,
+    supportsExtendedThinking: false,
+    acceptsImageHistory: false,
+    acceptsAudioHistory: false,
+    acceptsThinkingHistory: false,
+    acceptsReasoningEffort: false,
+  },
 };
 
 function buildDefaultCapabilities(

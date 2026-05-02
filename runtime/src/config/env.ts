@@ -40,6 +40,9 @@ export interface EnvSnapshot {
   readonly AGENC_XAI_API_KEY?: string;
   readonly OPENAI_API_KEY?: string;
   readonly OPENAI_BASE_URL?: string;
+  readonly OPENAI_COMPATIBLE_API_KEY?: string;
+  readonly OPENAI_COMPATIBLE_BASE_URL?: string;
+  readonly OPENAI_COMPATIBLE_MODEL?: string;
   readonly ANTHROPIC_API_KEY?: string;
   readonly ANTHROPIC_BASE_URL?: string;
   readonly LMSTUDIO_API_KEY?: string;
@@ -98,7 +101,11 @@ function normalizeProvider(
 ): string | undefined {
   const normalized = readNonEmpty(provider)?.toLowerCase();
   if (!normalized) return undefined;
-  return normalized === "xai" ? "grok" : normalized;
+  if (normalized === "xai") return "grok";
+  if (normalized === "custom" || normalized === "openai_compatible") {
+    return "openai-compatible";
+  }
+  return normalized;
 }
 
 /** Provider slug override from AGENC_PROVIDER, or `undefined`. */
@@ -133,6 +140,11 @@ export function resolveProviderApiKey(
       return readNonEmpty(e.ANTHROPIC_API_KEY);
     case "lmstudio":
       return readNonEmpty(e.LMSTUDIO_API_KEY) ?? readNonEmpty(e.OPENAI_API_KEY);
+    case "openai-compatible":
+      return (
+        readNonEmpty(e.OPENAI_COMPATIBLE_API_KEY) ??
+        readNonEmpty(e.OPENAI_API_KEY)
+      );
     case "openrouter":
       return readNonEmpty(e.OPENROUTER_API_KEY);
     case "groq":
@@ -159,6 +171,11 @@ export function resolveProviderBaseURL(
     case "lmstudio":
       return (
         readNonEmpty(e.LMSTUDIO_BASE_URL) ?? readNonEmpty(e.OPENAI_BASE_URL)
+      );
+    case "openai-compatible":
+      return (
+        readNonEmpty(e.OPENAI_COMPATIBLE_BASE_URL) ??
+        readNonEmpty(e.OPENAI_BASE_URL)
       );
     case "openrouter":
       return readNonEmpty(e.OPENROUTER_BASE_URL);

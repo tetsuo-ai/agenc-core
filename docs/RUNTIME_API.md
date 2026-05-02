@@ -63,7 +63,7 @@ const program = createProgram(provider);
 | `llm/providers/grok/` | `GrokProvider` | xAI Grok adapter (via `openai` SDK) | `GrokProviderConfig` |
 | `llm/anthropic/` | `AnthropicProvider` | Anthropic adapter | `AnthropicProviderConfig` |
 | `llm/providers/ollama/` | `OllamaProvider` | Ollama local adapter | `OllamaProviderConfig` |
-| `llm/openai-compat/` | `OpenAICompatProvider` | OpenAI-compatible local adapter (LM Studio, llama.cpp, vLLM) | `OpenAICompatProviderConfig` |
+| `llm/providers/openai-compatible/` | `OpenAICompatibleProvider` | Generic OpenAI-compatible local adapter (self-hosted endpoints) | `OpenAICompatibleProviderConfig` |
 | `tools/` | `ToolRegistry` | MCP-compatible tool management | `ToolRegistryConfig` |
 | `memory/` | `InMemoryBackend` | Zero-dep memory storage | `InMemoryBackendConfig` |
 | `memory/sqlite/` | `SqliteBackend` | SQLite-backed storage | `SqliteBackendConfig` |

@@ -83,6 +83,16 @@ describe("StaticModelsManager", () => {
     );
   });
 
+  it("lists the built-in generic OpenAI-compatible route", async () => {
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "openai-compatible",
+    });
+
+    const listed = await manager.listModels();
+    expect(listed.map((entry) => entry.slug)).toContain("local-model");
+  });
+
   it("falls back cleanly for unknown slugs while preserving the active provider", async () => {
     const manager = new StaticModelsManager({
       config: defaultConfig(),
@@ -191,6 +201,34 @@ describe("StaticModelsManager", () => {
     expect(info.contextWindow).toBe(262_144);
     expect(info.maxOutputTokens).toBe(65_536);
     expect(info.usedFallbackModelMetadata).toBe(false);
+  });
+
+  it("reads default generic OpenAI-compatible endpoint metadata without requiring auth", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe("http://localhost:8000/v1/models");
+      expect(init?.headers).toBeUndefined();
+      return jsonResponse({
+        data: [
+          {
+            id: "local-model",
+            max_model_len: 131_072,
+            max_output_tokens: 16_384,
+          },
+        ],
+      });
+    });
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "openai-compatible",
+      metadata: { fetchImpl, env: {} },
+    });
+
+    const info = await manager.getModelInfo("local-model");
+    expect(info.contextWindow).toBe(131_072);
+    expect(info.maxOutputTokens).toBe(16_384);
+    expect(info.maxOutputTokensUpperLimit).toBe(16_384);
+    expect(info.usedFallbackModelMetadata).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("uses OpenRouter registry metadata for OpenRouter models", async () => {

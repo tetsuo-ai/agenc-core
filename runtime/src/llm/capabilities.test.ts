@@ -145,6 +145,19 @@ describe("resolveProviderModelCapabilities", () => {
       acceptsThinkingHistory: false,
       acceptsReasoningEffort: false,
     });
+
+    expect(
+      resolveProviderModelCapabilities({
+        provider: "openai-compatible",
+        model: "self-hosted-coder",
+      }),
+    ).toMatchObject({
+      provider: "openai-compatible",
+      acceptsImageHistory: false,
+      acceptsAudioHistory: false,
+      acceptsThinkingHistory: false,
+      acceptsReasoningEffort: false,
+    });
   });
 
   it("keeps Anthropic aligned with the documented image and thinking support", () => {
