@@ -14,6 +14,7 @@ import type {
   LLMTool,
   LLMToolChoice,
 } from "../types.js";
+import { buildStructuredOutputTextFormat } from "../structured-output.js";
 
 export const XAI_ENCRYPTED_REASONING_INCLUDE =
   "reasoning.encrypted_content";
@@ -177,21 +178,13 @@ export function buildXaiResponsesRequest(input: {
       params.tool_choice = toolChoice;
     }
   }
-  const structuredOutputSchema = input.options?.structuredOutput?.schema;
-  const structuredOutputEnabled =
-    input.options?.structuredOutput?.enabled !== false &&
-    structuredOutputSchema !== undefined;
-  if (structuredOutputEnabled && structuredOutputSchema) {
+  const structuredFormat = buildStructuredOutputTextFormat(
+    input.options?.structuredOutput,
+    input.options?.structuredOutputsStrict ?? true,
+  );
+  if (structuredFormat) {
     params.text = {
-      format: {
-        type: structuredOutputSchema.type,
-        name: structuredOutputSchema.name,
-        schema: structuredOutputSchema.schema,
-        strict:
-          structuredOutputSchema.strict ??
-          input.options?.structuredOutputsStrict ??
-          true,
-      },
+      format: structuredFormat,
     };
   }
   return params;

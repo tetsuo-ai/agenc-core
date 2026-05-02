@@ -59,6 +59,44 @@ describe("buildChatCompletionsRequest", () => {
     expect("max_tokens" in request).toBe(false);
   });
 
+  test("sends structured output schemas through response_format", () => {
+    const request = buildChatCompletionsRequest({
+      model: "gpt-4.1",
+      messages: [{ role: "user", content: "hello" }],
+      tools: [],
+      options: {
+        structuredOutput: {
+          schema: {
+            type: "json_schema",
+            name: "answer",
+            schema: {
+              type: "object",
+              properties: {
+                answer: { type: "string" },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(request.response_format).toEqual({
+      type: "json_schema",
+      json_schema: {
+        name: "answer",
+        strict: true,
+        schema: {
+          type: "object",
+          properties: {
+            answer: { type: "string" },
+          },
+          additionalProperties: false,
+          required: ["answer"],
+        },
+      },
+    });
+  });
+
   test("collects request metadata without logging prompt bodies", () => {
     const request = buildChatCompletionsRequest({
       model: "qwen-local",
@@ -240,6 +278,51 @@ describe("buildChatCompletionsRequest", () => {
     expect(response.requestMetrics).toMatchObject({
       endpoint: "/chat/completions",
       responseId: "chatcmpl_123",
+    });
+  });
+
+  test("parses structured output from chat completion content", () => {
+    const response = parseChatCompletionsResponse(
+      "gpt-4.1",
+      {
+        id: "chatcmpl_structured",
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: "{\"answer\":\"ok\"}",
+            },
+            finish_reason: "stop",
+          },
+        ],
+      },
+      {
+        model: "gpt-4.1",
+        messages: [{ role: "user", content: "hello" }],
+        tools: [],
+        options: {
+          structuredOutput: {
+            schema: {
+              type: "json_schema",
+              name: "answer",
+              schema: {
+                type: "object",
+                properties: {
+                  answer: { type: "string" },
+                },
+                required: ["answer"],
+              },
+            },
+          },
+        },
+      },
+    );
+
+    expect(response.structuredOutput).toEqual({
+      type: "json_schema",
+      name: "answer",
+      rawText: "{\"answer\":\"ok\"}",
+      parsed: { answer: "ok" },
     });
   });
 

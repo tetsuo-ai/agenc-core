@@ -324,6 +324,72 @@ describe("OpenAIProvider", () => {
     expectNoRequestMetadataWarning(emitWarning);
   });
 
+  test("passes structured output through Responses requests and parses the result", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: "completed",
+          model: "gpt-5",
+          output: [
+            {
+              type: "message",
+              content: [{ type: "output_text", text: "{\"answer\":\"ok\"}" }],
+            },
+          ],
+          usage: {
+            input_tokens: 3,
+            output_tokens: 1,
+            total_tokens: 4,
+          },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "gpt-5",
+      fetchImpl,
+    });
+
+    const response = await provider.chat(
+      [{ role: "user", content: "answer" }],
+      {
+        structuredOutput: {
+          schema: {
+            type: "json_schema",
+            name: "answer",
+            schema: {
+              type: "object",
+              properties: {
+                answer: { type: "string" },
+              },
+              required: ["answer"],
+            },
+          },
+        },
+      },
+    );
+
+    const request = JSON.parse(
+      String(fetchImpl.mock.calls[0]?.[1]?.body),
+    ) as Record<string, unknown>;
+    expect(request.text).toMatchObject({
+      format: {
+        type: "json_schema",
+        name: "answer",
+        strict: true,
+      },
+    });
+    expect(response.structuredOutput).toMatchObject({
+      type: "json_schema",
+      name: "answer",
+      parsed: { answer: "ok" },
+    });
+  });
+
   test("uses local chat-completions request shape for OpenAI-compatible local endpoints", async () => {
     const emitWarning = vi.fn();
     const emitDiagnostic = vi.fn();

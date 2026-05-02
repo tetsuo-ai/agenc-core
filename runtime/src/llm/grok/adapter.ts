@@ -30,6 +30,7 @@ import { validateToolCallDetailed } from "../types.js";
 import { LLMProviderError, mapLLMError } from "../errors.js";
 import { ensureLazyImport } from "../lazy-import.js";
 import {
+  assertProviderStructuredOutputCompatibility,
   assertXaiReasoningEffortCompatibility,
   assertXaiStructuredOutputToolCompatibility,
 } from "../provider-capabilities.js";
@@ -37,7 +38,10 @@ import {
   getProviderNativeToolDefinitions,
   type ProviderNativeToolDefinition,
 } from "../provider-native-search.js";
-import { parseStructuredOutputText } from "../structured-output.js";
+import {
+  buildStructuredOutputTextFormat,
+  parseStructuredOutputText,
+} from "../structured-output.js";
 import { withTimeout } from "../timeout.js";
 import { repairToolTurnSequence, validateToolTurnSequence } from "../tool-turn-validator.js";
 import type { GrokProviderConfig } from "./types.js";
@@ -1755,22 +1759,25 @@ export class GrokProvider implements LLMProvider {
       // model). The runtime compatibility rule for undocumented 200s
       // applies here: raise the assertion at the adapter boundary so the
       // user fixes the config instead of getting a degraded run.
+      assertProviderStructuredOutputCompatibility({
+        providerName: this.name,
+        model: typeof params.model === "string" ? params.model : this.config.model,
+        structuredOutput: options?.structuredOutput,
+        toolsRequested: selectedTools.toolsAttached,
+        api: "responses",
+      });
       assertXaiStructuredOutputToolCompatibility({
         providerName: this.name,
         model: typeof params.model === "string" ? params.model : this.config.model,
         structuredOutputRequested: true,
         toolsRequested: selectedTools.toolsAttached,
       });
+      const structuredFormat = buildStructuredOutputTextFormat(
+        options?.structuredOutput,
+        this.config.structuredOutputs?.strict ?? true,
+      );
       params.text = {
-        format: {
-          type: structuredOutputSchema.type,
-          name: structuredOutputSchema.name,
-          schema: structuredOutputSchema.schema,
-          strict:
-            structuredOutputSchema.strict ??
-            this.config.structuredOutputs?.strict ??
-            true,
-        },
+        format: structuredFormat,
       };
     }
     if (!options?.disableIncremental) {

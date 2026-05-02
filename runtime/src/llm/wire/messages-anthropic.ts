@@ -12,6 +12,10 @@ import type {
   LLMToolCall,
 } from "../types.js";
 import {
+  ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
+  parseStructuredOutputValue,
+} from "../structured-output.js";
+import {
   coerceUsage,
   collectRequestMetrics,
   normalizeFinishReason,
@@ -76,6 +80,30 @@ function normalizeAnthropicMessageContent(
     ]);
   }
   return withEphemeralCacheControl(anthropicContent);
+}
+
+function isAnthropicStructuredOutputRequested(
+  options: LLMChatOptions | undefined,
+): boolean {
+  return options?.structuredOutput?.enabled !== false &&
+    options?.structuredOutput?.schema !== undefined;
+}
+
+function buildAnthropicStructuredOutputTool(
+  options: LLMChatOptions | undefined,
+): LLMTool | undefined {
+  const schema = options?.structuredOutput?.schema;
+  if (!isAnthropicStructuredOutputRequested(options) || !schema) {
+    return undefined;
+  }
+  return {
+    type: "function",
+    function: {
+      name: ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
+      description: "Return the final response in the requested structured format.",
+      parameters: schema.schema,
+    },
+  };
 }
 
 export function buildAnthropicMessagesRequest(
@@ -170,10 +198,31 @@ export function buildAnthropicMessagesRequest(
   };
 
   if (system.length > 0) body.system = system;
-  if (input.tools.length > 0) body.tools = toAnthropicTools(input.tools);
+  const structuredOutputTool = buildAnthropicStructuredOutputTool(input.options);
+  const tools = structuredOutputTool
+    ? [...input.tools, structuredOutputTool]
+    : [...input.tools];
+  if (
+    structuredOutputTool &&
+    input.tools.some(
+      (tool) =>
+        tool.function.name === ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
+    )
+  ) {
+    throw new Error(
+      `tool name ${ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME} is reserved for structured output`,
+    );
+  }
+  if (tools.length > 0) body.tools = toAnthropicTools(tools);
   if (input.options?.toolChoice !== undefined) {
     const toolChoice = parseAnthropicToolChoice(input.options.toolChoice);
     if (toolChoice !== undefined) body.tool_choice = toolChoice;
+  }
+  if (structuredOutputTool && input.tools.length === 0) {
+    body.tool_choice = {
+      type: "tool",
+      name: ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
+    };
   }
   if (input.options?.reasoningEffort !== undefined) {
     body.thinking = {
@@ -199,9 +248,32 @@ export function parseAnthropicMessagesResponse(
   const contentBlocks = Array.isArray(response.content)
     ? (response.content as Array<Record<string, unknown>>)
     : [];
+  const structuredSchema = request.options?.structuredOutput?.schema;
+  const structuredOutputBlock =
+    request.options?.structuredOutput?.enabled === false || !structuredSchema
+      ? undefined
+      : contentBlocks.find(
+        (block) =>
+          block.type === "tool_use" &&
+          block.name === ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
+      );
+  const structuredOutput =
+    structuredSchema &&
+      structuredOutputBlock &&
+      "input" in structuredOutputBlock
+      ? parseStructuredOutputValue(
+        structuredOutputBlock.input,
+        structuredSchema.name,
+        structuredSchema.schema,
+      )
+      : undefined;
   const toolCalls = normalizeToolCalls(
     contentBlocks
-      .filter((block) => block.type === "tool_use")
+      .filter(
+        (block) =>
+          block.type === "tool_use" &&
+          block.name !== ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
+      )
       .map(
         (block): LLMToolCall => ({
           id: String(block.id ?? ""),
@@ -235,7 +307,13 @@ export function parseAnthropicMessagesResponse(
     }),
     model:
       typeof response.model === "string" ? response.model : model,
-    finishReason: normalizeFinishReason(response.stop_reason),
+    finishReason:
+      response.stop_reason === "tool_use" &&
+        toolCalls.length === 0 &&
+        structuredOutput
+        ? "stop"
+        : normalizeFinishReason(response.stop_reason),
     requestMetrics: withEndpointMarkers(requestMetrics, "/messages", response),
+    ...(structuredOutput ? { structuredOutput } : {}),
   };
 }

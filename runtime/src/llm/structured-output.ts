@@ -16,15 +16,85 @@
  */
 
 import type {
+  LLMStructuredOutputRequest,
   LLMStructuredOutputResult,
   LLMStructuredOutputSchema,
 } from "./types.js";
+
+export const ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME = "agenc_structured_output";
+
+export type ProviderStructuredOutputMode =
+  | "native_text_format"
+  | "chat_response_format"
+  | "anthropic_tool_use"
+  | "unsupported";
+
+export function isStructuredOutputRequested(
+  request: LLMStructuredOutputRequest | undefined,
+): boolean {
+  return request?.enabled !== false && request?.schema !== undefined;
+}
+
+export function supportsXaiStructuredOutputs(
+  model: string | undefined,
+): boolean {
+  if (typeof model !== "string") return false;
+  const normalized = model.trim().toLowerCase();
+  if (normalized.length === 0) return false;
+  return !normalized.startsWith("grok-imagine");
+}
 
 export function supportsXaiStructuredOutputsWithTools(
   model: string | undefined,
 ): boolean {
   if (typeof model !== "string") return false;
   return /^grok-4(?:[.-]|$)/i.test(model.trim());
+}
+
+export function supportsOpenAIStructuredOutputs(
+  model: string | undefined,
+): boolean {
+  if (typeof model !== "string") return false;
+  const normalized = model.trim().toLowerCase();
+  if (normalized.length === 0) return false;
+  return ![
+    /(?:^|[/:])gpt-3\.5(?:$|[-_.:])/,
+    /(?:^|[/:])gpt-4-turbo(?:$|[-_.:])/,
+    /(?:^|[/:])gpt-4-(?:0613|0314|1106|0125)(?:$|[-_.:])/,
+    /(?:^|[/:])text-(?:davinci|curie|babbage|ada)(?:$|[-_.:])/,
+    /(?:^|[/:])(?:davinci|curie|babbage|ada)(?:$|[-_.:])/,
+  ].some((pattern) => pattern.test(normalized));
+}
+
+export function supportsAnthropicStructuredOutputToolUse(
+  model: string | undefined,
+): boolean {
+  return typeof model === "string" && model.trim().length > 0;
+}
+
+export function resolveProviderStructuredOutputMode(input: {
+  readonly provider: string | undefined;
+  readonly model: string | undefined;
+  readonly api?: "responses" | "chat_completions" | "messages";
+}): ProviderStructuredOutputMode {
+  const provider = input.provider?.trim().toLowerCase();
+  if (provider === "grok" || provider === "xai") {
+    return supportsXaiStructuredOutputs(input.model)
+      ? "native_text_format"
+      : "unsupported";
+  }
+  if (provider === "openai") {
+    if (!supportsOpenAIStructuredOutputs(input.model)) return "unsupported";
+    return input.api === "chat_completions"
+      ? "chat_response_format"
+      : "native_text_format";
+  }
+  if (provider === "anthropic") {
+    return supportsAnthropicStructuredOutputToolUse(input.model)
+      ? "anthropic_tool_use"
+      : "unsupported";
+  }
+  return "unsupported";
 }
 
 /**
@@ -135,6 +205,111 @@ function validateStructuredValue(
   }
 }
 
+function cloneJsonSchemaValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => cloneJsonSchemaValue(entry));
+  }
+  if (!isPlainObject(value)) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [
+      key,
+      cloneJsonSchemaValue(entry),
+    ]),
+  );
+}
+
+function enforceStrictSchemaValue(value: unknown): unknown {
+  const cloned = cloneJsonSchemaValue(value);
+  if (!isPlainObject(cloned)) {
+    return cloned;
+  }
+  const record: Record<string, unknown> = { ...cloned };
+  if (record.format === "uri") {
+    delete record.format;
+  }
+
+  if (isPlainObject(record.properties)) {
+    const properties: Record<string, unknown> = {};
+    for (const [key, propertySchema] of Object.entries(record.properties)) {
+      properties[key] = enforceStrictSchemaValue(propertySchema);
+    }
+    record.properties = properties;
+  }
+
+  if (isPlainObject(record.items) || Array.isArray(record.items)) {
+    record.items = enforceStrictSchemaValue(record.items);
+  }
+
+  for (const unionKey of ["anyOf", "oneOf", "allOf"] as const) {
+    if (Array.isArray(record[unionKey])) {
+      record[unionKey] = (record[unionKey] as readonly unknown[]).map(
+        (entry) => enforceStrictSchemaValue(entry),
+      );
+    }
+  }
+
+  if (record.type === "object" || isPlainObject(record.properties)) {
+    record.additionalProperties = false;
+    record.required = isPlainObject(record.properties)
+      ? Object.keys(record.properties)
+      : [];
+  }
+
+  return record;
+}
+
+export function enforceStrictStructuredOutputSchema(
+  schema: Record<string, unknown>,
+): Record<string, unknown> {
+  const enforced = enforceStrictSchemaValue(schema);
+  return isPlainObject(enforced) ? enforced : {};
+}
+
+export function buildStructuredOutputTextFormat(
+  request: LLMStructuredOutputRequest | undefined,
+  defaultStrict = true,
+): Record<string, unknown> | undefined {
+  const schema = request?.schema;
+  if (request?.enabled === false || !schema) {
+    return undefined;
+  }
+  const strict = schema.strict ?? defaultStrict;
+  return {
+    type: schema.type,
+    name: schema.name,
+    schema: strict
+      ? enforceStrictStructuredOutputSchema(schema.schema)
+      : cloneJsonSchemaValue(schema.schema),
+    strict,
+  };
+}
+
+export function parseStructuredOutputValue(
+  value: unknown,
+  schemaName?: string,
+  schema?: LLMStructuredOutputSchema["schema"],
+): LLMStructuredOutputResult {
+  if (!isPlainObject(value)) {
+    throw new Error(
+      `${schemaName ?? "structured_output"} must return a top-level JSON object`,
+    );
+  }
+  const validationError = validateStructuredValue(value, schema, "$");
+  if (validationError) {
+    throw new Error(
+      `${schemaName ?? "structured_output"} violated its JSON schema: ${validationError}`,
+    );
+  }
+  return {
+    type: "json_schema",
+    ...(schemaName ? { name: schemaName } : {}),
+    rawText: JSON.stringify(value),
+    parsed: value,
+  };
+}
+
 export function parseStructuredOutputText(
   rawText: string,
   schemaName?: string,
@@ -159,17 +334,9 @@ export function parseStructuredOutputText(
       `${schemaName ?? "structured_output"} must return a top-level JSON object`,
     );
   }
-  const validationError = validateStructuredValue(parsed, schema, "$");
-  if (validationError) {
-    throw new Error(
-      `${schemaName ?? "structured_output"} violated its JSON schema: ${validationError}`,
-    );
-  }
+  const result = parseStructuredOutputValue(parsed, schemaName, schema);
   return {
-    type: "json_schema",
-    ...(schemaName ? { name: schemaName } : {}),
+    ...result,
     rawText,
-    parsed,
   };
 }
-

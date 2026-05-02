@@ -47,6 +47,9 @@ import {
   buildOpenAIResponsesRequest,
   parseOpenAIResponsesResponse,
 } from "../../wire/responses-openai.js";
+import {
+  assertProviderStructuredOutputCompatibility,
+} from "../../provider-capabilities.js";
 import type { OpenAIProviderConfig } from "./types.js";
 import { OpenAIAuthSession } from "./auth.js";
 import { parseSSEFrames } from "../../_deps/sse.js";
@@ -343,6 +346,13 @@ export class OpenAIProvider implements LLMProvider {
     try {
       return await this.auth.withAuthorizedOperation(async () => {
         if (this.config.useResponsesApi !== false) {
+          assertProviderStructuredOutputCompatibility({
+            providerName: this.name,
+            model,
+            structuredOutput: options?.structuredOutput,
+            toolsRequested: requestTools.length > 0,
+            api: "responses",
+          });
           const session = this.client.createTurnSession({
             wireApi: "responses",
           });
@@ -379,6 +389,13 @@ export class OpenAIProvider implements LLMProvider {
 
         const session = this.client.createTurnSession({
           wireApi: "chat_completions",
+        });
+        assertProviderStructuredOutputCompatibility({
+          providerName: this.name,
+          model,
+          structuredOutput: options?.structuredOutput,
+          toolsRequested: requestTools.length > 0,
+          api: "chat_completions",
         });
         const request = this.prepareChatCompletionsRequest({
           model,
@@ -646,6 +663,13 @@ export class OpenAIProvider implements LLMProvider {
       store: this.config.store,
       maxOutputTokens: this.resolveRequestMaxTokens(options),
     };
+    assertProviderStructuredOutputCompatibility({
+      providerName: this.name,
+      model,
+      structuredOutput: options?.structuredOutput,
+      toolsRequested: requestOptions.tools.length > 0,
+      api: "responses",
+    });
     const request = {
       ...buildOpenAIResponsesRequest(requestOptions),
       stream: true,
@@ -837,6 +861,13 @@ export class OpenAIProvider implements LLMProvider {
       maxTokens: this.resolveRequestMaxTokens(options),
       maxTokenField: this.resolveChatCompletionsMaxTokenField(),
     };
+    assertProviderStructuredOutputCompatibility({
+      providerName: this.name,
+      model: requestModel,
+      structuredOutput: options?.structuredOutput,
+      toolsRequested: requestOptions.tools.length > 0,
+      api: "chat_completions",
+    });
     const request = {
       ...this.prepareChatCompletionsRequest(requestOptions),
       stream: true,

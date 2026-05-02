@@ -3,6 +3,7 @@ import {
   buildAnthropicMessagesRequest,
   parseAnthropicMessagesResponse,
 } from "./messages-anthropic.js";
+import { ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME } from "../structured-output.js";
 
 describe("buildAnthropicMessagesRequest", () => {
   test("merges request instructions into the Anthropic system field", () => {
@@ -217,6 +218,81 @@ describe("buildAnthropicMessagesRequest", () => {
     });
   });
 
+  test("represents structured output as a forced Anthropic tool_use", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "claude-sonnet-4.5",
+      messages: [{ role: "user", content: "hello" }],
+      tools: [],
+      options: {
+        structuredOutput: {
+          schema: {
+            type: "json_schema",
+            name: "answer",
+            schema: {
+              type: "object",
+              properties: {
+                answer: { type: "string" },
+              },
+              required: ["answer"],
+            },
+          },
+        },
+      },
+    });
+
+    expect(request.tools).toEqual([
+      {
+        name: ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
+        description: "Return the final response in the requested structured format.",
+        input_schema: {
+          type: "object",
+          properties: {
+            answer: { type: "string" },
+          },
+          required: ["answer"],
+        },
+      },
+    ]);
+    expect(request.tool_choice).toEqual({
+      type: "tool",
+      name: ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
+    });
+  });
+
+  test("adds structured output as a normal tool when regular tools are present", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "claude-sonnet-4.5",
+      messages: [{ role: "user", content: "inspect" }],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "system.echo",
+            description: "Echo input.",
+            parameters: { type: "object" },
+          },
+        },
+      ],
+      options: {
+        structuredOutput: {
+          schema: {
+            type: "json_schema",
+            name: "answer",
+            schema: { type: "object" },
+          },
+        },
+      },
+    });
+
+    expect(request.tools).toHaveLength(2);
+    expect(
+      (request.tools as Array<Record<string, unknown>>).map(
+        (tool) => tool.name,
+      ),
+    ).toEqual(["system.echo", ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME]);
+    expect(request.tool_choice).toBeUndefined();
+  });
+
   test("records anthropic endpoint markers in request metrics", () => {
     const response = parseAnthropicMessagesResponse(
       "claude-sonnet-4.5",
@@ -236,6 +312,54 @@ describe("buildAnthropicMessagesRequest", () => {
     expect(response.requestMetrics).toMatchObject({
       endpoint: "/messages",
       responseId: "msg_123",
+    });
+  });
+
+  test("parses structured output tool_use without exposing it as a runtime tool call", () => {
+    const response = parseAnthropicMessagesResponse(
+      "claude-sonnet-4.5",
+      {
+        id: "msg_structured",
+        model: "claude-sonnet-4.5",
+        stop_reason: "tool_use",
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_structured",
+            name: ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
+            input: { answer: "ok" },
+          },
+        ],
+      },
+      {
+        model: "claude-sonnet-4.5",
+        messages: [{ role: "user", content: "hello" }],
+        tools: [],
+        options: {
+          structuredOutput: {
+            schema: {
+              type: "json_schema",
+              name: "answer",
+              schema: {
+                type: "object",
+                properties: {
+                  answer: { type: "string" },
+                },
+                required: ["answer"],
+              },
+            },
+          },
+        },
+      },
+    );
+
+    expect(response.toolCalls).toEqual([]);
+    expect(response.finishReason).toBe("stop");
+    expect(response.structuredOutput).toEqual({
+      type: "json_schema",
+      name: "answer",
+      rawText: "{\"answer\":\"ok\"}",
+      parsed: { answer: "ok" },
     });
   });
 });
