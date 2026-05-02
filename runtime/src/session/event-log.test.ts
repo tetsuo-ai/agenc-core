@@ -216,18 +216,16 @@ describe("I-4 durable event classification", () => {
 });
 
 describe("usageToTokenCountEvent", () => {
-  test("preserves cached and reasoning token extras", () => {
+  test("preserves cache, reasoning, and web search usage extras", () => {
     expect(
       usageToTokenCountEvent({
         promptTokens: 10,
         completionTokens: 5,
         totalTokens: 15,
         cachedInputTokens: 3,
+        cacheCreationInputTokens: 4,
         reasoningOutputTokens: 2,
-      } as unknown as {
-        promptTokens: number;
-        completionTokens: number;
-        totalTokens: number;
+        webSearchRequests: 1,
       }),
     ).toEqual({
       type: "token_count",
@@ -236,7 +234,9 @@ describe("usageToTokenCountEvent", () => {
         completionTokens: 5,
         totalTokens: 15,
         cachedInputTokens: 3,
+        cacheCreationInputTokens: 4,
         reasoningOutputTokens: 2,
+        webSearchRequests: 1,
       },
     });
   });

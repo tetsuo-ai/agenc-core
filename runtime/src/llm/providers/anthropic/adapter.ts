@@ -53,6 +53,17 @@ interface AnthropicSseEvent {
   readonly data: Record<string, unknown>;
 }
 
+interface AnthropicUsageAccumulator {
+  readonly input_tokens: number;
+  readonly output_tokens: number;
+  readonly cache_read_input_tokens?: number;
+  readonly cache_creation_input_tokens?: number;
+  readonly reasoning_output_tokens?: number;
+  readonly server_tool_use?: {
+    readonly web_search_requests?: number;
+  };
+}
+
 function withStreamingMetrics(response: LLMResponse): LLMResponse {
   return {
     ...response,
@@ -73,14 +84,22 @@ function resolveMaxTokens(
 }
 
 function mergeAnthropicUsage(
-  usage: {
-    readonly input_tokens: number;
-    readonly output_tokens: number;
-  },
+  usage: AnthropicUsageAccumulator,
   partUsage: unknown,
-): { readonly input_tokens: number; readonly output_tokens: number } {
+): AnthropicUsageAccumulator {
   if (!partUsage || typeof partUsage !== "object") return usage;
   const record = partUsage as Record<string, unknown>;
+  const serverToolUse =
+    record.server_tool_use &&
+      typeof record.server_tool_use === "object" &&
+      !Array.isArray(record.server_tool_use)
+      ? (record.server_tool_use as Record<string, unknown>)
+      : undefined;
+  const webSearchRequests =
+    typeof serverToolUse?.web_search_requests === "number" &&
+      Number.isFinite(serverToolUse.web_search_requests)
+      ? serverToolUse.web_search_requests
+      : undefined;
   return {
     input_tokens:
       typeof record.input_tokens === "number" && record.input_tokens > 0
@@ -90,6 +109,26 @@ function mergeAnthropicUsage(
       typeof record.output_tokens === "number"
         ? record.output_tokens
         : usage.output_tokens,
+    ...(typeof record.cache_read_input_tokens === "number"
+      ? { cache_read_input_tokens: record.cache_read_input_tokens }
+      : usage.cache_read_input_tokens !== undefined
+        ? { cache_read_input_tokens: usage.cache_read_input_tokens }
+        : {}),
+    ...(typeof record.cache_creation_input_tokens === "number"
+      ? { cache_creation_input_tokens: record.cache_creation_input_tokens }
+      : usage.cache_creation_input_tokens !== undefined
+        ? { cache_creation_input_tokens: usage.cache_creation_input_tokens }
+        : {}),
+    ...(typeof record.reasoning_output_tokens === "number"
+      ? { reasoning_output_tokens: record.reasoning_output_tokens }
+      : usage.reasoning_output_tokens !== undefined
+        ? { reasoning_output_tokens: usage.reasoning_output_tokens }
+        : {}),
+    ...(webSearchRequests !== undefined
+      ? { server_tool_use: { web_search_requests: webSearchRequests } }
+      : usage.server_tool_use !== undefined
+        ? { server_tool_use: usage.server_tool_use }
+        : {}),
   };
 }
 
@@ -322,7 +361,10 @@ export class AnthropicProvider implements LLMProvider {
       let model = requestModel;
       let finishReason: LLMResponse["finishReason"] = "stop";
       let sawMessageStop = false;
-      let usage = { input_tokens: 0, output_tokens: 0 };
+      let usage: AnthropicUsageAccumulator = {
+        input_tokens: 0,
+        output_tokens: 0,
+      };
       const toolBlocks = new Map<
         number,
         { id: string; name: string; arguments: string }

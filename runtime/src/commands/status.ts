@@ -2,8 +2,8 @@
  * `/status` — show session/runtime status.
  *
  * Read-only snapshot of: session id, project root, cwd, model + provider,
- * turn count, token usage (BudgetTracker.emitted + remaining), uptime,
- * and permission mode. Runs `immediate: true` — no LLM round-trip.
+ * turn count, token usage (BudgetTracker.emitted + remaining), cost summary,
+ * uptime, and permission mode. Runs `immediate: true` — no LLM round-trip.
  *
  * @module
  */
@@ -89,8 +89,14 @@ export function collectStatus(
   // (`session.services.permissionModeRegistry`). Fall back to "default"
   // when the registry is not wired (unit-test fixtures, early bootstrap).
   const services = (session as unknown as {
-    services?: { permissionModeRegistry?: PermissionModeRegistry | null };
+    services?: {
+      permissionModeRegistry?: PermissionModeRegistry | null;
+      costSidecar?: { formatSummary: () => string } | null;
+    };
   }).services;
+  if (services?.costSidecar) {
+    lines.push({ key: "Cost", value: services.costSidecar.formatSummary() });
+  }
   const registry = services?.permissionModeRegistry ?? null;
   lines.push({
     key: "Permission mode",

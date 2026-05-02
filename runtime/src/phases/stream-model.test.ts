@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import { EventLog, type Event } from "../session/event-log.js";
+import { CostSidecar } from "../session/cost.js";
 import type { Session } from "../session/session.js";
 import { AsyncLock } from "../utils/async-lock.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -16,6 +17,7 @@ import type {
 } from "../llm/types.js";
 import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
 import type { Tool } from "../tools/types.js";
+import { parseAnthropicMessagesResponse } from "../llm/wire/messages-anthropic.js";
 
 const streamedDispatchCalls: string[] = [];
 
@@ -782,7 +784,9 @@ describe("streamModel — SessionState.totalTokenUsage accumulator", () => {
             completionTokens: 200,
             totalTokens: 300,
             cachedInputTokens: 10,
+            cacheCreationInputTokens: 4,
             reasoningOutputTokens: 5,
+            webSearchRequests: 2,
           } as unknown as {
             promptTokens: number;
             completionTokens: number;
@@ -834,8 +838,12 @@ describe("streamModel — SessionState.totalTokenUsage accumulator", () => {
         promptTokens: 100,
         completionTokens: 200,
         totalTokens: 300,
+        model: "test-model",
+        provider: "stub-provider",
         cachedInputTokens: 10,
+        cacheCreationInputTokens: 4,
         reasoningOutputTokens: 5,
+        webSearchRequests: 2,
       },
     });
 
@@ -856,6 +864,96 @@ describe("streamModel — SessionState.totalTokenUsage accumulator", () => {
       cachedInputTokens: 13,
       reasoningOutputTokens: 7,
     });
+  });
+
+  test("token_count uses the response model and provider for cost attribution", async () => {
+    const ctx = mkCtx("chat");
+    const provider = mkProvider(async () => ({
+      content: "ok",
+      toolCalls: [],
+      usage: {
+        promptTokens: 10,
+        completionTokens: 5,
+        totalTokens: 15,
+      },
+      model: "actual-response-model",
+      finishReason: "stop",
+    }));
+    const { session, events } = mkSession(provider);
+
+    await streamModel(
+      mkState(ctx),
+      ctx,
+      session,
+      mkRequest([{ role: "user", content: "attribute this" }]),
+    );
+
+    const tokenCount = events.find((event) => event.msg.type === "token_count");
+    expect(tokenCount?.msg).toMatchObject({
+      type: "token_count",
+      payload: {
+        model: "actual-response-model",
+        provider: "stub-provider",
+        promptTokens: 10,
+        completionTokens: 5,
+        totalTokens: 15,
+      },
+    });
+  });
+
+  test("real-shaped provider usage reaches CostSidecar through token_count", async () => {
+    const ctx = mkCtx("chat");
+    const provider = mkProvider(async () =>
+      parseAnthropicMessagesResponse(
+        // branding-scan: allow documented Anthropic API model identifier
+        "claude-sonnet-4-5",
+        {
+          // branding-scan: allow documented Anthropic API model identifier
+          model: "claude-sonnet-4-5",
+          content: [{ type: "text", text: "ok" }],
+          stop_reason: "end_turn",
+          usage: {
+            input_tokens: 1000,
+            output_tokens: 500,
+            cache_read_input_tokens: 200,
+            cache_creation_input_tokens: 300,
+            server_tool_use: { web_search_requests: 2 },
+          },
+        },
+        {
+          // branding-scan: allow documented Anthropic API model identifier
+          model: "claude-sonnet-4-5",
+          messages: [{ role: "user", content: "search" }],
+          tools: [],
+        },
+      )
+    );
+    const { session } = mkSession(provider);
+    const sidecar = new CostSidecar();
+    session.eventLog.subscribe((event) => sidecar.onEvent(event));
+
+    await streamModel(
+      mkState(ctx),
+      ctx,
+      session,
+      mkRequest([{ role: "user", content: "search" }]),
+    );
+
+    expect(sidecar.getPerModelUsage()).toMatchObject([
+      {
+        provider: "stub-provider",
+        // branding-scan: allow documented Anthropic API model identifier
+        model: "claude-sonnet-4-5",
+        inputTokens: 1000,
+        outputTokens: 500,
+        cachedInputTokens: 200,
+        cacheCreationInputTokens: 300,
+        webSearchRequests: 2,
+      },
+    ]);
+    expect(sidecar.getTotalCacheCreationInputTokens()).toBe(300);
+    expect(sidecar.getTotalWebSearchRequests()).toBe(2);
+    expect(sidecar.getTotalCostUsd()).toBeGreaterThan(0.02);
   });
 
   test("survives a non-compacting turn — a third call keeps adding onto the prior two", async () => {

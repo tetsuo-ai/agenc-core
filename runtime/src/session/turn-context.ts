@@ -489,6 +489,7 @@ export interface TurnContextItem {
   readonly network?: TurnContextNetworkItem;
   readonly fileSystemSandboxPolicy?: FileSystemSandboxPolicy;
   readonly model: string;
+  readonly modelProviderId?: string;
   readonly personality?: Personality;
   readonly collaborationMode?: CollaborationMode;
   readonly realtimeActive?: boolean;
@@ -542,6 +543,9 @@ export interface TurnContext {
 
   /** The active provider for this turn (multi-provider per provider-matrix.md). */
   readonly provider: LLMProvider;
+
+  /** Stable provider id for rollout/cost attribution. */
+  readonly modelProviderId: string;
 
   /** Reasoning effort selection (o-series + Grok). */
   readonly reasoningEffort?: ReasoningEffort;
@@ -703,6 +707,7 @@ export function toTurnContextItem(ctx: TurnContext): TurnContextItem {
     sandboxPolicy: ctx.sandboxPolicy.value,
     fileSystemSandboxPolicy: ctx.fileSystemSandboxPolicy,
     model: ctx.modelInfo.slug,
+    modelProviderId: ctx.modelProviderId,
     personality: ctx.personality,
     collaborationMode: ctx.collaborationMode,
     realtimeActive: ctx.realtimeActive,
@@ -1215,6 +1220,7 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
     modelInfo: opts.modelInfo,
     sessionTelemetry: { modelSlug: opts.modelInfo.slug },
     provider: opts.provider,
+    modelProviderId: opts.provider.name,
     reasoningEffort,
     reasoningSummary,
     modelVerbosity: sc.modelVerbosity,

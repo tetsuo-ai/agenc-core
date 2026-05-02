@@ -74,6 +74,49 @@ describe("CostSidecar.loadFromDisk", () => {
     expect(diagnostics[0]?.cause).toBe("cost_load_corrupt");
     expect(sidecar.getLifetimeTotals().inputTokens).toBe(0);
   });
+
+  test("legacy session records without modelUsage still load", async () => {
+    writeFileSync(
+      join(projectDir, COST_TOTALS_FILENAME),
+      JSON.stringify({
+        version: COST_TOTALS_SCHEMA_VERSION,
+        totalUsage: {
+          inputTokens: 120,
+          outputTokens: 30,
+          cacheReadTokens: 0,
+          reasoningOutputTokens: 0,
+          totalTokens: 150,
+        },
+        totalCostUsd: 0.015,
+        sessions: [
+          {
+            sessionId: "legacy-session",
+            startedAtMs: 10,
+            endedAtMs: 20,
+            usage: {
+              inputTokens: 120,
+              outputTokens: 30,
+              cacheReadTokens: 0,
+              reasoningOutputTokens: 0,
+              totalTokens: 150,
+            },
+            costUsd: 0.015,
+          },
+        ],
+        updatedAtMs: 30,
+      }),
+    );
+    const diagnostics: Array<{ level: string; cause: string }> = [];
+    const sidecar = new CostSidecar({
+      projectDir,
+      sessionId: "new-session",
+      onDiagnostic: (d) => diagnostics.push(d),
+    });
+    await sidecar.loadFromDisk();
+    expect(diagnostics).toHaveLength(0);
+    expect(sidecar.getLifetimeTotals().totalTokens).toBe(150);
+    expect(sidecar.getLifetimeCostUsd()).toBeCloseTo(0.015, 6);
+  });
 });
 
 describe("CostSidecar.saveToDisk", () => {
@@ -326,6 +369,120 @@ describe("CostSidecar.stop (lifecycle)", () => {
     expect(parsed.sessions[0]!.usage.inputTokens).toBe(100);
     expect(parsed.sessions[0]!.usage.outputTokens).toBe(50);
     expect(parsed.totalUsage.inputTokens).toBe(100);
+  });
+
+  test("persists per-session provider and model buckets", async () => {
+    const projectDir = makeProjectDir();
+    const sidecar = new CostSidecar({
+      projectDir,
+      sessionId: "sess-provider-buckets",
+      defaultProvider: "openai",
+      defaultModel: "gpt-4o",
+    });
+    await sidecar.loadFromDisk();
+
+    sidecar.onEvent({
+      id: "1",
+      seq: 1,
+      msg: { type: "turn_started", payload: { turnId: "hosted" } },
+    });
+    sidecar.onEvent({
+      id: "2",
+      seq: 2,
+      msg: {
+        type: "token_count",
+        payload: {
+          promptTokens: 1000,
+          completionTokens: 500,
+          cacheCreationInputTokens: 125,
+          webSearchRequests: 2,
+          totalTokens: 1500,
+        },
+      },
+    });
+    sidecar.onEvent({
+      id: "3",
+      seq: 3,
+      msg: { type: "turn_complete", payload: { turnId: "hosted" } },
+    });
+    sidecar.onEvent({
+      id: "4",
+      seq: 4,
+      msg: { type: "turn_started", payload: { turnId: "local" } },
+    });
+    sidecar.onEvent({
+      id: "5",
+      seq: 5,
+      msg: {
+        type: "turn_context",
+        payload: {
+          cwd: "/",
+          approvalPolicy: "never",
+          sandboxPolicy: "read_only",
+          model: "gpt-4o",
+          modelProviderId: "lmstudio",
+        },
+      },
+    });
+    sidecar.onEvent({
+      id: "6",
+      seq: 6,
+      msg: {
+        type: "token_count",
+        payload: {
+          promptTokens: 2000,
+          completionTokens: 250,
+          totalTokens: 2250,
+        },
+      },
+    });
+    sidecar.onEvent({
+      id: "7",
+      seq: 7,
+      msg: { type: "turn_complete", payload: { turnId: "local" } },
+    });
+
+    await sidecar.stop();
+
+    const parsed = JSON.parse(
+      readFileSync(join(projectDir, COST_TOTALS_FILENAME), "utf8"),
+    ) as CostTotalsFile;
+    const session = parsed.sessions[0]!;
+    const rows = [...(session.modelUsage ?? [])].sort((a, b) =>
+      `${a.provider ?? ""}/${a.model}`.localeCompare(
+        `${b.provider ?? ""}/${b.model}`,
+      ),
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      provider: "lmstudio",
+      model: "gpt-4o",
+      inputTokens: 2000,
+      outputTokens: 250,
+      totalTokens: 2250,
+      turns: 1,
+      costUsd: 0,
+    });
+    expect(rows[1]).toMatchObject({
+      provider: "openai",
+      model: "gpt-4o",
+      inputTokens: 1000,
+      outputTokens: 500,
+      cacheCreationTokens: 125,
+      webSearchRequests: 2,
+      totalTokens: 1500,
+      turns: 1,
+    });
+    expect(rows[1]!.costUsd).toBeGreaterThan(0);
+    expect(session.usage.inputTokens).toBe(3000);
+    expect(session.usage.outputTokens).toBe(750);
+    expect(session.usage.cacheCreationTokens).toBe(125);
+    expect(session.usage.webSearchRequests).toBe(2);
+    expect(session.usage.totalTokens).toBe(3750);
+    expect(parsed.totalUsage.inputTokens).toBe(3000);
+    expect(parsed.totalUsage.cacheCreationTokens).toBe(125);
+    expect(parsed.totalUsage.webSearchRequests).toBe(2);
+    expect(parsed.totalCostUsd).toBeCloseTo(rows[1]!.costUsd, 6);
   });
 
   test("no-op when projectDir + sessionId unset", async () => {

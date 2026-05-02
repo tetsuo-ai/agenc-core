@@ -404,7 +404,7 @@ describe("AnthropicProvider", () => {
   test("streams messages-api text deltas and emits final tool calls from tool_use blocks", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       sseResponse([
-        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-3-7-sonnet","content":[],"usage":{"input_tokens":11,"output_tokens":0}}}\n\n',
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-3-7-sonnet","content":[],"usage":{"input_tokens":11,"output_tokens":0,"cache_read_input_tokens":4,"cache_creation_input_tokens":6,"server_tool_use":{"web_search_requests":1}}}}\n\n',
         'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
         'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hel"}}\n\n',
         'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}\n\n',
@@ -482,6 +482,9 @@ describe("AnthropicProvider", () => {
       promptTokens: 11,
       completionTokens: 3,
       totalTokens: 14,
+      cachedInputTokens: 4,
+      cacheCreationInputTokens: 6,
+      webSearchRequests: 1,
     });
 
     const request = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;

@@ -1,12 +1,15 @@
 import { describe, expect, test } from "vitest";
 import {
   CostSidecar,
+  computeUsdCostWithResolution,
   computeUsdCost,
   DEFAULT_MODEL_COSTS,
   formatUsdCost,
   formatTokenCount,
   formatDuration,
+  registerCostSummaryOnExit,
 } from "./cost.js";
+import { BUILT_IN_PROVIDER_DEFAULT_MODELS } from "../config/resolve-provider.js";
 
 describe("cost helpers", () => {
   test("formatUsdCost", () => {
@@ -34,13 +37,107 @@ describe("cost helpers", () => {
       inputTokens: 10_000,
       outputTokens: 5_000,
       cachedInputTokens: 0,
+      cacheCreationInputTokens: 0,
       reasoningOutputTokens: 0,
+      webSearchRequests: 0,
       totalTokens: 15_000,
       turns: 1,
     };
     const cost = computeUsdCost(usage, DEFAULT_MODEL_COSTS);
     // input 10_000 * 0.002 / 1000 = 0.02; output 5_000 * 0.01 / 1000 = 0.05 → 0.07
     expect(cost).toBeCloseTo(0.07, 4);
+  });
+
+  test("computeUsdCost resolves provider-specific local pricing before model fallback", () => {
+    const usage = {
+      provider: "lmstudio",
+      model: "gpt-4o",
+      inputTokens: 10_000,
+      outputTokens: 5_000,
+      cachedInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      reasoningOutputTokens: 0,
+      webSearchRequests: 0,
+      totalTokens: 15_000,
+      turns: 1,
+    };
+    const resolution = computeUsdCostWithResolution(usage, DEFAULT_MODEL_COSTS);
+    expect(resolution.known).toBe(true);
+    expect(resolution.matchedKey).toBe("lmstudio");
+    expect(resolution.costUsd).toBe(0);
+  });
+
+  test("computeUsdCost reports unknown pricing without throwing", () => {
+    const usage = {
+      provider: "unknown-provider",
+      model: "unknown-model",
+      inputTokens: 10_000,
+      outputTokens: 5_000,
+      cachedInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      reasoningOutputTokens: 0,
+      webSearchRequests: 0,
+      totalTokens: 15_000,
+      turns: 1,
+    };
+    const resolution = computeUsdCostWithResolution(usage, DEFAULT_MODEL_COSTS);
+    expect(resolution.known).toBe(false);
+    expect(resolution.costUsd).toBeCloseTo(0.175, 6);
+  });
+
+  test("built-in provider default models resolve as known costs", () => {
+    for (const [provider, model] of Object.entries(
+      BUILT_IN_PROVIDER_DEFAULT_MODELS,
+    )) {
+      const sidecar = new CostSidecar({
+        defaultProvider: provider,
+        defaultModel: model,
+      });
+      sidecar.onEvent({
+        id: `usage-${provider}`,
+        seq: 1,
+        msg: {
+          type: "token_count",
+          payload: {
+            promptTokens: 1000,
+            completionTokens: 500,
+            totalTokens: 1500,
+          },
+        },
+      });
+
+      expect(
+        sidecar.hasUnknownModelCost(),
+        `${provider}:${model} should use a known registry entry`,
+      ).toBe(false);
+      expect(
+        computeUsdCostWithResolution(
+          sidecar.getPerModelUsage()[0]!,
+          DEFAULT_MODEL_COSTS,
+        ).known,
+        `${provider}:${model} should resolve with known=true`,
+      ).toBe(true);
+      if (provider !== "ollama" && provider !== "lmstudio") {
+        expect(sidecar.getTotalCostUsd()).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  test("computeUsdCost prices cache writes and web search requests", () => {
+    const usage = {
+      // branding-scan: allow documented Anthropic API model identifier
+      model: "claude-sonnet-4-5",
+      inputTokens: 1_000,
+      outputTokens: 1_000,
+      cachedInputTokens: 1_000,
+      cacheCreationInputTokens: 1_000,
+      reasoningOutputTokens: 0,
+      webSearchRequests: 2,
+      totalTokens: 2_000,
+      turns: 1,
+    };
+    const cost = computeUsdCost(usage, DEFAULT_MODEL_COSTS);
+    expect(cost).toBeCloseTo(0.04205, 6);
   });
 });
 
@@ -71,6 +168,99 @@ describe("CostSidecar", () => {
     expect(sidecar.getTotalInputTokens()).toBe(3000);
     expect(sidecar.getTotalOutputTokens()).toBe(1500);
     expect(sidecar.getTotalCostUsd()).toBeGreaterThan(0);
+  });
+
+  test("keeps provider/model usage buckets separate", () => {
+    const sidecar = new CostSidecar({
+      defaultProvider: "openai",
+      defaultModel: "gpt-4o",
+    });
+    sidecar.onEvent({
+      id: "1",
+      seq: 1,
+      msg: {
+        type: "token_count",
+        payload: { promptTokens: 1000, completionTokens: 500, totalTokens: 1500 },
+      },
+    });
+    sidecar.onEvent({
+      id: "2",
+      seq: 2,
+      msg: {
+        type: "token_count",
+        payload: {
+          provider: "lmstudio",
+          model: "gpt-4o",
+          promptTokens: 1000,
+          completionTokens: 500,
+          totalTokens: 1500,
+        },
+      },
+    });
+    const usage = sidecar.getPerModelUsage();
+    expect(usage).toHaveLength(2);
+    expect(usage.map((u) => `${u.provider}/${u.model}`).sort()).toEqual([
+      "lmstudio/gpt-4o",
+      "openai/gpt-4o",
+    ]);
+    expect(sidecar.getTotalCostUsd()).toBeCloseTo(0.0075, 4);
+  });
+
+  test("tracks unknown-cost models and marks summaries", () => {
+    const sidecar = new CostSidecar();
+    sidecar.onEvent({
+      id: "1",
+      seq: 1,
+      msg: {
+        type: "token_count",
+        payload: {
+          provider: "unknown-provider",
+          model: "unknown-model",
+          promptTokens: 1000,
+          completionTokens: 500,
+          totalTokens: 1500,
+        },
+      },
+    });
+    expect(sidecar.hasUnknownModelCost()).toBe(true);
+    expect(sidecar.getUnknownCostModels()).toEqual([
+      "unknown-provider:unknown-model",
+    ]);
+    expect(sidecar.formatSummary()).toContain("unknown-cost");
+    expect(sidecar.formatTotalCost()).toContain("unknown model pricing");
+  });
+
+  test("tracks cache writes and web search usage", () => {
+    const sidecar = new CostSidecar({
+      defaultProvider: "anthropic",
+      // branding-scan: allow documented Anthropic API model identifier
+      defaultModel: "claude-sonnet-4-5",
+    });
+    sidecar.onEvent({
+      id: "1",
+      seq: 1,
+      msg: {
+        type: "token_count",
+        payload: {
+          promptTokens: 1000,
+          completionTokens: 500,
+          cachedInputTokens: 200,
+          cacheCreationInputTokens: 300,
+          reasoningOutputTokens: 25,
+          webSearchRequests: 2,
+          totalTokens: 1525,
+        },
+      },
+    });
+
+    const usage = sidecar.getPerModelUsage()[0]!;
+    expect(usage.cacheCreationInputTokens).toBe(300);
+    expect(usage.webSearchRequests).toBe(2);
+    expect(sidecar.getTotalCacheCreationInputTokens()).toBe(300);
+    expect(sidecar.getTotalWebSearchRequests()).toBe(2);
+    expect(sidecar.getTotalCostUsd()).toBeGreaterThan(0.02);
+    expect(sidecar.formatTotalCost()).toContain("300 cache write");
+    expect(sidecar.formatTotalCost()).toContain("2 web search");
   });
 
   test("turn_complete increments turn count for active model", () => {
@@ -104,9 +294,150 @@ describe("CostSidecar", () => {
     expect(sidecar.getTotalTurns()).toBe(1);
   });
 
+  test("turn_complete increments provider-scoped usage", () => {
+    const sidecar = new CostSidecar({
+      defaultProvider: "openai",
+      defaultModel: "gpt-4o",
+    });
+    sidecar.onEvent({
+      id: "1",
+      seq: 1,
+      msg: { type: "turn_started", payload: { turnId: "t1" } },
+    });
+    sidecar.onEvent({
+      id: "2",
+      seq: 2,
+      msg: {
+        type: "token_count",
+        payload: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+      },
+    });
+    sidecar.onEvent({
+      id: "3",
+      seq: 3,
+      msg: {
+        type: "turn_complete",
+        payload: { turnId: "t1" },
+      },
+    });
+
+    expect(sidecar.getPerModelUsage()).toMatchObject([
+      { provider: "openai", model: "gpt-4o", turns: 1 },
+    ]);
+    expect(sidecar.formatSummary()).toContain("turns=1");
+  });
+
+  test("turn_context provider id updates attribution after provider switches", () => {
+    const sidecar = new CostSidecar({
+      defaultProvider: "openai",
+      defaultModel: "gpt-4o",
+    });
+    sidecar.onEvent({
+      id: "1",
+      seq: 1,
+      msg: { type: "turn_started", payload: { turnId: "t1" } },
+    });
+    sidecar.onEvent({
+      id: "2",
+      seq: 2,
+      msg: {
+        type: "turn_context",
+        payload: {
+          cwd: "/",
+          approvalPolicy: "never",
+          sandboxPolicy: "read_only",
+          model: "gpt-4o",
+          modelProviderId: "lmstudio",
+        },
+      },
+    });
+    sidecar.onEvent({
+      id: "3",
+      seq: 3,
+      msg: {
+        type: "token_count",
+        payload: { promptTokens: 1000, completionTokens: 500, totalTokens: 1500 },
+      },
+    });
+    sidecar.onEvent({
+      id: "4",
+      seq: 4,
+      msg: {
+        type: "turn_complete",
+        payload: { turnId: "t1" },
+      },
+    });
+
+    expect(sidecar.getPerModelUsage()).toMatchObject([
+      { provider: "lmstudio", model: "gpt-4o", turns: 1 },
+    ]);
+    expect(sidecar.getTotalCostUsd()).toBe(0);
+  });
+
+  test("lifecycle start installs and stop disposes the exit summary hook", async () => {
+    const handlers: Array<() => void> = [];
+    const writes: string[] = [];
+    const processLike = {
+      stdout: { write: (value: string) => writes.push(value) },
+      on: (event: "exit", handler: () => void) => {
+        handlers.push(handler);
+        return processLike;
+      },
+      off: (event: "exit", handler: () => void) => {
+        const index = handlers.indexOf(handler);
+        if (index >= 0) handlers.splice(index, 1);
+        return processLike;
+      },
+    };
+    const sidecar = new CostSidecar({
+      exitSummary: {
+        processLike,
+        getSummary: () => "lifecycle-summary",
+      },
+    });
+
+    sidecar.start();
+    expect(handlers).toHaveLength(1);
+    await sidecar.stop();
+
+    expect(handlers).toHaveLength(0);
+    expect(writes).toEqual(["\nlifecycle-summary\n"]);
+  });
+
   test("formatSummary produces one-line output", () => {
     const sidecar = new CostSidecar();
     const line = sidecar.formatSummary();
     expect(line).toContain("turns=0");
+  });
+
+  test("registerCostSummaryOnExit writes and unregisters the summary hook", () => {
+    const sidecar = new CostSidecar();
+    const handlers: Array<() => void> = [];
+    const writes: string[] = [];
+    const processLike = {
+      stdout: { write: (value: string) => writes.push(value) },
+      on: (event: string, handler: () => void) => {
+        if (event === "exit") handlers.push(handler);
+        return processLike;
+      },
+      off: (event: string, handler: () => void) => {
+        if (event === "exit") {
+          const index = handlers.indexOf(handler);
+          if (index >= 0) handlers.splice(index, 1);
+        }
+        return processLike;
+      },
+    };
+
+    const dispose = registerCostSummaryOnExit(sidecar, {
+      processLike,
+      getSummary: () => "summary",
+    });
+    expect(handlers).toHaveLength(1);
+    handlers[0]!();
+    expect(writes).toEqual(["\nsummary\n"]);
+
+    dispose();
+    expect(handlers).toHaveLength(0);
   });
 });

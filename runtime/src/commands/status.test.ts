@@ -19,6 +19,7 @@ function stubSession(opts: {
   budget?: StubBudget | null;
   createdAtMs?: number;
   permissionModeRegistry?: PermissionModeRegistry | null;
+  costSummary?: string;
 } = {}): Session {
   const state = {
     sessionConfiguration: {
@@ -36,8 +37,15 @@ function stubSession(opts: {
     createdAtMs: opts.createdAtMs ?? 1000,
     services:
       opts.permissionModeRegistry === null
-        ? {}
-        : { permissionModeRegistry: opts.permissionModeRegistry ?? null },
+        ? opts.costSummary !== undefined
+          ? { costSidecar: { formatSummary: () => opts.costSummary! } }
+          : {}
+        : {
+            permissionModeRegistry: opts.permissionModeRegistry ?? null,
+            ...(opts.costSummary !== undefined
+              ? { costSidecar: { formatSummary: () => opts.costSummary } }
+              : {}),
+          },
   } as unknown as Session;
 }
 
@@ -105,6 +113,17 @@ describe("statusCommand", () => {
     const flat = Object.fromEntries(lines.map((l) => [l.key, l.value]));
     expect(flat["Tokens emitted"]).toBe("1234");
     expect(flat["Tokens remaining"]).toBe("unlimited");
+  });
+
+  it("includes cost summary when CostSidecar is registered", () => {
+    const summary = "$0.010 \u2022 in=1.0K out=500 \u2022 turns=1 \u2022 1.0s";
+    const lines = collectStatus(
+      stubSession({ costSummary: summary }),
+      "/ws",
+      2000,
+    );
+    const flat = Object.fromEntries(lines.map((l) => [l.key, l.value]));
+    expect(flat["Cost"]).toBe(summary);
   });
 
   it("formatStatus aligns keys with a colon separator", () => {

@@ -206,7 +206,9 @@ export interface SessionState {
     readonly completionTokens?: number;
     readonly totalTokens?: number;
     readonly cachedInputTokens?: number;
+    readonly cacheCreationInputTokens?: number;
     readonly reasoningOutputTokens?: number;
+    readonly webSearchRequests?: number;
   };
   /**
    * Cross-turn cumulative token usage. Mirrors agenc runtime

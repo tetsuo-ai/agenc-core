@@ -909,7 +909,7 @@ export class OpenAIProvider implements LLMProvider {
       let content = "";
       let model = requestModel;
       let finishReason: LLMResponse["finishReason"] = "stop";
-      let usage: Record<string, number> = {};
+      let usage: Record<string, unknown> = {};
       const toolCallAccumulator = new Map<
         number,
         { id: string; name: string; arguments: string }
@@ -948,7 +948,7 @@ export class OpenAIProvider implements LLMProvider {
           model = chunk.model;
         }
         if (chunk.usage && typeof chunk.usage === "object") {
-          usage = chunk.usage as Record<string, number>;
+          usage = chunk.usage as Record<string, unknown>;
         }
 
         const choices = Array.isArray(chunk.choices)

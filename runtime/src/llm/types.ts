@@ -173,6 +173,10 @@ export interface LLMUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  cachedInputTokens?: number;
+  cacheCreationInputTokens?: number;
+  reasoningOutputTokens?: number;
+  webSearchRequests?: number;
 }
 
 /**

@@ -1,18 +1,23 @@
 /**
  * Cost sidecar — session cost tracking + formatting.
  *
- * Hand-port of agenc `cost-tracker.ts` (327 LOC) + `costHook.ts`
- * (22 LOC) + relevant `utils/tokens.ts` (261 LOC) bits, restructured
+ * Ports upstream `cost-tracker.ts` + `costHook.ts` session-cost behavior,
+ * restructured
  * to live as a SidecarManager-compatible Sidecar rather than the
  * AgenC bootstrap-state global.
  *
  * Responsibilities:
  *   - Subscribe to `token_count` events and tally cumulative
- *     input/output/cached/reasoning tokens per model.
- *   - Maintain a model cost registry (USD/1K input + USD/1K output
- *     + USD/1K cached). Ships sensible defaults for grok-4-*, gpt-*,
- *     agenc-*, and local providers; callers can override the registry.
+ *     input/output/cache/reasoning tokens plus web search requests per
+ *     provider + model.
+ *   - Maintain a provider-aware model cost registry (USD/1K input +
+ *     USD/1K output + USD/1K cache + USD/search request). Ships
+ *     sensible defaults for xAI, OpenAI, Anthropic, and local
+ *     providers; callers can override the registry.
  *   - Format cumulative cost for `/status` and status-line display.
+ *   - Provide an exit-summary hook equivalent to upstream's React hook,
+ *     but as a plain process listener so the runtime can install or skip
+ *     it without depending on React.
  *   - Emit `token_budget_exceeded` warnings via the session-level
  *     BudgetTracker (integrates with llm/token-budget.ts per I-22).
  *
@@ -34,10 +39,64 @@ export interface ModelCostEntry {
   readonly inputUsdPer1K: number;
   readonly outputUsdPer1K: number;
   readonly cachedInputUsdPer1K?: number;
+  readonly cacheCreationUsdPer1K?: number;
   readonly reasoningOutputUsdPer1K?: number;
+  readonly webSearchUsdPerRequest?: number;
   /** Free-form label for display. */
   readonly label?: string;
 }
+
+export interface CostSummaryProcessLike {
+  readonly stdout: { write: (value: string) => unknown };
+  on(event: "exit", listener: () => void): unknown;
+  off(event: "exit", listener: () => void): unknown;
+}
+
+export interface CostSummaryExitHookOptions {
+  readonly processLike?: CostSummaryProcessLike;
+  readonly shouldPrint?: () => boolean;
+  readonly getSummary?: () => string;
+}
+
+export const DEFAULT_UNKNOWN_MODEL_COST: Readonly<ModelCostEntry> =
+  Object.freeze({
+    inputUsdPer1K: 0.005,
+    outputUsdPer1K: 0.025,
+    cachedInputUsdPer1K: 0.0005,
+    cacheCreationUsdPer1K: 0.00625,
+    webSearchUsdPerRequest: 0.01,
+    label: "fallback",
+  });
+
+const COST_TIER_GPT_5: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.00125,
+  outputUsdPer1K: 0.01,
+  cachedInputUsdPer1K: 0.000125,
+  webSearchUsdPerRequest: 0.01,
+});
+
+const COST_TIER_O3: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.002,
+  outputUsdPer1K: 0.008,
+  cachedInputUsdPer1K: 0.0005,
+  webSearchUsdPerRequest: 0.01,
+});
+
+const COST_TIER_SONNET: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.003,
+  outputUsdPer1K: 0.015,
+  cachedInputUsdPer1K: 0.0003,
+  cacheCreationUsdPer1K: 0.00375,
+  webSearchUsdPerRequest: 0.01,
+});
+
+const COST_TIER_OPUS: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.015,
+  outputUsdPer1K: 0.075,
+  cachedInputUsdPer1K: 0.0015,
+  cacheCreationUsdPer1K: 0.01875,
+  webSearchUsdPerRequest: 0.01,
+});
 
 /**
  * Default model cost registry. Values are best-available public
@@ -47,20 +106,128 @@ export interface ModelCostEntry {
  */
 export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
   Object.freeze({
-    "grok-4-fast": { inputUsdPer1K: 0.002, outputUsdPer1K: 0.01 },
+    "xai:grok-4-fast": {
+      inputUsdPer1K: 0.002,
+      outputUsdPer1K: 0.01,
+      webSearchUsdPerRequest: 0.01,
+    },
+    "grok-4-fast": {
+      inputUsdPer1K: 0.002,
+      outputUsdPer1K: 0.01,
+      webSearchUsdPerRequest: 0.01,
+    },
+    "xai:grok-4-1-fast-non-reasoning": {
+      inputUsdPer1K: 0.002,
+      outputUsdPer1K: 0.01,
+      webSearchUsdPerRequest: 0.01,
+    },
     "grok-4-1-fast-non-reasoning": {
       inputUsdPer1K: 0.002,
       outputUsdPer1K: 0.01,
+      webSearchUsdPerRequest: 0.01,
+    },
+    "xai:grok-4.20-0309-reasoning": {
+      inputUsdPer1K: 0.003,
+      outputUsdPer1K: 0.012,
+      reasoningOutputUsdPer1K: 0.012,
+      webSearchUsdPerRequest: 0.01,
     },
     "grok-4.20-0309-reasoning": {
       inputUsdPer1K: 0.003,
       outputUsdPer1K: 0.012,
       reasoningOutputUsdPer1K: 0.012,
+      webSearchUsdPerRequest: 0.01,
     },
-    "gpt-4o": { inputUsdPer1K: 0.0025, outputUsdPer1K: 0.01 },
-    "gpt-4o-mini": { inputUsdPer1K: 0.00015, outputUsdPer1K: 0.0006 },
-    "agenc-3-5-sonnet": { inputUsdPer1K: 0.003, outputUsdPer1K: 0.015 },
-    "agenc-3-5-haiku": { inputUsdPer1K: 0.001, outputUsdPer1K: 0.005 },
+    "openai:gpt-5": COST_TIER_GPT_5,
+    "gpt-5": COST_TIER_GPT_5,
+    "openrouter:openai/gpt-5": COST_TIER_GPT_5,
+    "openrouter:gpt-5": COST_TIER_GPT_5,
+    "openai/gpt-5": COST_TIER_GPT_5,
+    "openai:o3": COST_TIER_O3,
+    "o3": COST_TIER_O3,
+    "openrouter:openai/o3": COST_TIER_O3,
+    "openrouter:o3": COST_TIER_O3,
+    "openai/o3": COST_TIER_O3,
+    "openai:gpt-4o": {
+      inputUsdPer1K: 0.0025,
+      outputUsdPer1K: 0.01,
+      webSearchUsdPerRequest: 0.01,
+    },
+    "gpt-4o": {
+      inputUsdPer1K: 0.0025,
+      outputUsdPer1K: 0.01,
+      webSearchUsdPerRequest: 0.01,
+    },
+    "openai:gpt-4o-mini": {
+      inputUsdPer1K: 0.00015,
+      outputUsdPer1K: 0.0006,
+      webSearchUsdPerRequest: 0.01,
+    },
+    "gpt-4o-mini": {
+      inputUsdPer1K: 0.00015,
+      outputUsdPer1K: 0.0006,
+      webSearchUsdPerRequest: 0.01,
+    },
+    // branding-scan: allow documented Anthropic API model identifier
+    "anthropic:claude-sonnet-4-6": COST_TIER_SONNET,
+    // branding-scan: allow documented Anthropic API model identifier
+    "claude-sonnet-4-6": COST_TIER_SONNET,
+    // branding-scan: allow documented Anthropic API model identifier
+    "anthropic:claude-sonnet-4-5": COST_TIER_SONNET,
+    // branding-scan: allow documented Anthropic API model identifier
+    "claude-sonnet-4-5": COST_TIER_SONNET,
+    // branding-scan: allow documented Anthropic API model identifier
+    "anthropic:claude-opus-4-7": COST_TIER_OPUS,
+    // branding-scan: allow documented Anthropic API model identifier
+    "claude-opus-4-7": COST_TIER_OPUS,
+    // branding-scan: allow documented Anthropic API model identifier
+    "anthropic:claude-opus-4-7-1m": COST_TIER_OPUS,
+    // branding-scan: allow documented Anthropic API model identifier
+    "claude-opus-4-7-1m": COST_TIER_OPUS,
+    // branding-scan: allow documented Anthropic API model identifier
+    "anthropic:claude-haiku-4-5": {
+      inputUsdPer1K: 0.001,
+      outputUsdPer1K: 0.005,
+      cachedInputUsdPer1K: 0.0001,
+      cacheCreationUsdPer1K: 0.00125,
+      webSearchUsdPerRequest: 0.01,
+    },
+    // branding-scan: allow documented Anthropic API model identifier
+    "claude-haiku-4-5": {
+      inputUsdPer1K: 0.001,
+      outputUsdPer1K: 0.005,
+      cachedInputUsdPer1K: 0.0001,
+      cacheCreationUsdPer1K: 0.00125,
+      webSearchUsdPerRequest: 0.01,
+    },
+    "groq:llama-3.3-70b-versatile": {
+      inputUsdPer1K: 0.00059,
+      outputUsdPer1K: 0.00079,
+    },
+    "llama-3.3-70b-versatile": {
+      inputUsdPer1K: 0.00059,
+      outputUsdPer1K: 0.00079,
+    },
+    "deepseek:deepseek-reasoner": {
+      inputUsdPer1K: 0.00055,
+      outputUsdPer1K: 0.00219,
+      cachedInputUsdPer1K: 0.00014,
+    },
+    "deepseek-reasoner": {
+      inputUsdPer1K: 0.00055,
+      outputUsdPer1K: 0.00219,
+      cachedInputUsdPer1K: 0.00014,
+    },
+    "gemini:gemini-2.5-pro": {
+      inputUsdPer1K: 0.00125,
+      outputUsdPer1K: 0.01,
+    },
+    "gemini-2.5-pro": {
+      inputUsdPer1K: 0.00125,
+      outputUsdPer1K: 0.01,
+    },
+    "agenc:agenc": DEFAULT_UNKNOWN_MODEL_COST,
+    agenc: DEFAULT_UNKNOWN_MODEL_COST,
     ollama: { inputUsdPer1K: 0, outputUsdPer1K: 0, label: "local" },
     lmstudio: { inputUsdPer1K: 0, outputUsdPer1K: 0, label: "local" },
   });
@@ -71,22 +238,28 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
 
 export interface ModelUsage {
   readonly model: string;
+  readonly provider?: string;
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
+  cacheCreationInputTokens: number;
   reasoningOutputTokens: number;
+  webSearchRequests: number;
   totalTokens: number;
   /** Number of completed turns attributed to this model. */
   turns: number;
 }
 
-function emptyModelUsage(model: string): ModelUsage {
+function emptyModelUsage(model: string, provider?: string): ModelUsage {
   return {
     model,
+    ...(provider !== undefined ? { provider } : {}),
     inputTokens: 0,
     outputTokens: 0,
     cachedInputTokens: 0,
+    cacheCreationInputTokens: 0,
     reasoningOutputTokens: 0,
+    webSearchRequests: 0,
     totalTokens: 0,
     turns: 0,
   };
@@ -100,34 +273,116 @@ export function computeUsdCost(
   usage: ModelUsage,
   registry: Readonly<Record<string, ModelCostEntry>>,
 ): number {
-  const entry = registry[usage.model] ?? registry[canonicalModel(usage.model)];
-  if (!entry) return 0;
+  return computeUsdCostWithResolution(usage, registry).costUsd;
+}
+
+export interface CostResolution {
+  readonly costUsd: number;
+  readonly known: boolean;
+  readonly matchedKey?: string;
+}
+
+export function computeUsdCostWithResolution(
+  usage: ModelUsage,
+  registry: Readonly<Record<string, ModelCostEntry>>,
+): CostResolution {
+  const match = resolveModelCostEntry(usage, registry);
+  const entry = match?.entry ?? DEFAULT_UNKNOWN_MODEL_COST;
   const inputCost = (usage.inputTokens / 1000) * entry.inputUsdPer1K;
   const outputCost = (usage.outputTokens / 1000) * entry.outputUsdPer1K;
   const cachedCost =
     entry.cachedInputUsdPer1K !== undefined
       ? (usage.cachedInputTokens / 1000) * entry.cachedInputUsdPer1K
       : 0;
+  const cacheCreationCost =
+    entry.cacheCreationUsdPer1K !== undefined
+      ? (usage.cacheCreationInputTokens / 1000) * entry.cacheCreationUsdPer1K
+      : 0;
   const reasoningCost =
     entry.reasoningOutputUsdPer1K !== undefined
       ? (usage.reasoningOutputTokens / 1000) * entry.reasoningOutputUsdPer1K
       : 0;
-  return inputCost + outputCost + cachedCost + reasoningCost;
+  const webSearchCost =
+    entry.webSearchUsdPerRequest !== undefined
+      ? usage.webSearchRequests * entry.webSearchUsdPerRequest
+      : 0;
+  return {
+    costUsd:
+      inputCost +
+      outputCost +
+      cachedCost +
+      cacheCreationCost +
+      reasoningCost +
+      webSearchCost,
+    known: match !== null,
+    ...(match ? { matchedKey: match.key } : {}),
+  };
+}
+
+function resolveModelCostEntry(
+  usage: Pick<ModelUsage, "model" | "provider">,
+  registry: Readonly<Record<string, ModelCostEntry>>,
+): { readonly key: string; readonly entry: ModelCostEntry } | null {
+  for (const key of costLookupKeys(usage.model, usage.provider)) {
+    const entry = registry[key];
+    if (entry) return { key, entry };
+  }
+  return null;
 }
 
 /**
  * Normalize model slug to a canonical key present in the registry.
  */
 function canonicalModel(model: string): string {
-  if (model.startsWith("grok-4-fast")) return "grok-4-fast";
-  if (model.startsWith("grok-4")) return "grok-4.20-0309-reasoning";
-  if (model.startsWith("gpt-4o-mini")) return "gpt-4o-mini";
-  if (model.startsWith("gpt-4o")) return "gpt-4o";
-  if (model.startsWith("agenc-3-5-haiku")) return "agenc-3-5-haiku";
-  if (model.startsWith("agenc-3-5-sonnet")) return "agenc-3-5-sonnet";
-  if (model.startsWith("ollama:")) return "ollama";
-  if (model.startsWith("lmstudio:")) return "lmstudio";
-  return model;
+  const normalized = model.trim().toLowerCase();
+  if (normalized.startsWith("ollama:")) return "ollama";
+  if (normalized.startsWith("lmstudio:")) return "lmstudio";
+  const pathUnqualified = normalized.includes("/")
+    ? normalized.slice(normalized.lastIndexOf("/") + 1)
+    : normalized;
+  const unqualified = pathUnqualified.includes(":")
+    ? pathUnqualified.slice(pathUnqualified.lastIndexOf(":") + 1)
+    : pathUnqualified;
+  if (unqualified.startsWith("grok-4-fast")) return "grok-4-fast";
+  if (unqualified.startsWith("grok-4")) return "grok-4.20-0309-reasoning";
+  if (unqualified.startsWith("gpt-5")) return "gpt-5";
+  if (unqualified.startsWith("o3")) return "o3";
+  if (unqualified.startsWith("gpt-4o-mini")) return "gpt-4o-mini";
+  if (unqualified.startsWith("gpt-4o")) return "gpt-4o";
+  // branding-scan: allow documented Anthropic API model identifier
+  if (unqualified.startsWith("claude-haiku-4-5")) return "claude-haiku-4-5";
+  // branding-scan: allow documented Anthropic API model identifier
+  if (unqualified.startsWith("claude-sonnet-4")) return "claude-sonnet-4-6";
+  // branding-scan: allow documented Anthropic API model identifier
+  if (unqualified.startsWith("claude-opus-4")) return "claude-opus-4-7";
+  return normalized;
+}
+
+function normalizeProvider(provider: string | undefined): string | undefined {
+  const trimmed = provider?.trim().toLowerCase();
+  return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
+function usageKey(model: string, provider: string | undefined): string {
+  const normalizedProvider = normalizeProvider(provider);
+  return normalizedProvider ? `${normalizedProvider}:${model}` : model;
+}
+
+function costLookupKeys(
+  model: string,
+  provider: string | undefined,
+): string[] {
+  const normalizedProvider = normalizeProvider(provider);
+  const canonical = canonicalModel(model);
+  const keys: string[] = [];
+  if (normalizedProvider) {
+    keys.push(`${normalizedProvider}:${model}`);
+    if (canonical !== model) keys.push(`${normalizedProvider}:${canonical}`);
+    keys.push(normalizedProvider);
+  }
+  keys.push(model);
+  if (canonical !== model) keys.push(canonical);
+  return [...new Set(keys)];
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -169,7 +424,9 @@ export function formatDuration(ms: number): string {
 //     "version": 1,
 //     "totalUsage": { inputTokens, outputTokens, cacheReadTokens, ... },
 //     "totalCostUsd": N,
-//     "sessions": [ { sessionId, startedAtMs, endedAtMs, usage, costUsd } ],
+//     "sessions": [
+//       { sessionId, startedAtMs, endedAtMs, usage, modelUsage, costUsd }
+//     ],
 //     "updatedAtMs": N
 //   }
 //
@@ -185,7 +442,9 @@ export interface CostTotals {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
+  readonly cacheCreationTokens?: number;
   readonly reasoningOutputTokens: number;
+  readonly webSearchRequests?: number;
   readonly totalTokens: number;
 }
 
@@ -194,6 +453,21 @@ export interface SessionCostRecord {
   readonly startedAtMs: number;
   readonly endedAtMs: number;
   readonly usage: CostTotals;
+  readonly costUsd: number;
+  readonly modelUsage?: ReadonlyArray<SessionCostModelUsage>;
+}
+
+export interface SessionCostModelUsage {
+  readonly model: string;
+  readonly provider?: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheCreationTokens: number;
+  readonly reasoningOutputTokens: number;
+  readonly webSearchRequests: number;
+  readonly totalTokens: number;
+  readonly turns: number;
   readonly costUsd: number;
 }
 
@@ -210,7 +484,9 @@ function emptyTotals(): CostTotals {
     inputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,
+    cacheCreationTokens: 0,
     reasoningOutputTokens: 0,
+    webSearchRequests: 0,
     totalTokens: 0,
   };
 }
@@ -219,8 +495,11 @@ function addTotals(a: CostTotals, b: CostTotals): CostTotals {
   return {
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
-    cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
+    cacheReadTokens: (a.cacheReadTokens ?? 0) + (b.cacheReadTokens ?? 0),
+    cacheCreationTokens:
+      (a.cacheCreationTokens ?? 0) + (b.cacheCreationTokens ?? 0),
     reasoningOutputTokens: a.reasoningOutputTokens + b.reasoningOutputTokens,
+    webSearchRequests: (a.webSearchRequests ?? 0) + (b.webSearchRequests ?? 0),
     totalTokens: a.totalTokens + b.totalTokens,
   };
 }
@@ -264,6 +543,16 @@ export async function atomicWriteJson(
 
 export interface CostSidecarOpts {
   readonly registry?: Readonly<Record<string, ModelCostEntry>>;
+  /** Initial model when sidecar registration starts after session setup. */
+  readonly defaultModel?: string;
+  /** Initial provider when sidecar registration starts after session setup. */
+  readonly defaultProvider?: string;
+  /**
+   * Install the cost summary process-exit hook while the sidecar is
+   * running. Disabled by default for unit fixtures; the live CLI
+   * enables it during bootstrap.
+   */
+  readonly exitSummary?: CostSummaryExitHookOptions | false;
   /** Optional BudgetTracker to receive token totals (I-22 integration). */
   readonly budgetTracker?: BudgetTracker | null;
   /**
@@ -300,6 +589,12 @@ export class CostSidecar implements Sidecar {
   private readonly startedAtMs = monotonicMs();
   private lastTurnStartMs: number | null = null;
   private currentModel: string | null = null;
+  private currentProvider: string | null = null;
+  private lastUsageKey: string | null = null;
+  private readonly unknownCostModels = new Set<string>();
+  private readonly exitSummaryOpts: CostSummaryExitHookOptions | false;
+  private disposeExitSummary: (() => void) | null = null;
+  private exitSummaryPrinted = false;
 
   // ── cross-session persistence state ──
   private projectDir: string | null;
@@ -322,6 +617,9 @@ export class CostSidecar implements Sidecar {
   constructor(opts: CostSidecarOpts = {}) {
     this.registry = opts.registry ?? DEFAULT_MODEL_COSTS;
     this.budgetTracker = opts.budgetTracker ?? null;
+    this.currentModel = opts.defaultModel ?? null;
+    this.currentProvider = normalizeProvider(opts.defaultProvider) ?? null;
+    this.exitSummaryOpts = opts.exitSummary ?? false;
     this.projectDir = opts.projectDir ?? null;
     this.sessionId = opts.sessionId ?? null;
     this.onDiagnostic = opts.onDiagnostic;
@@ -333,25 +631,48 @@ export class CostSidecar implements Sidecar {
     switch (msg.type) {
       case "turn_started": {
         this.lastTurnStartMs = monotonicMs();
+        this.lastUsageKey = null;
         break;
       }
       case "turn_context": {
         this.currentModel = msg.payload.model;
+        if (msg.payload.modelProviderId) {
+          this.currentProvider = normalizeProvider(msg.payload.modelProviderId) ?? null;
+        }
+        break;
+      }
+      case "session_configured": {
+        this.currentModel = msg.payload.model;
+        this.currentProvider = normalizeProvider(msg.payload.modelProviderId) ?? null;
         break;
       }
       case "session_meta": {
         if (msg.payload.model) this.currentModel = msg.payload.model;
+        if (msg.payload.modelProvider) {
+          this.currentProvider = normalizeProvider(msg.payload.modelProvider) ?? null;
+        }
         break;
       }
       case "token_count": {
-        const model = this.currentModel ?? "unknown";
-        const usage = this.perModel.get(model) ?? emptyModelUsage(model);
+        const model = msg.payload.model ?? this.currentModel ?? "unknown";
+        const provider =
+          normalizeProvider(msg.payload.provider) ?? this.currentProvider ?? undefined;
+        const key = usageKey(model, provider);
+        const usage = this.perModel.get(key) ?? emptyModelUsage(model, provider);
         usage.inputTokens += msg.payload.promptTokens ?? 0;
         usage.outputTokens += msg.payload.completionTokens ?? 0;
         usage.cachedInputTokens += msg.payload.cachedInputTokens ?? 0;
+        usage.cacheCreationInputTokens += msg.payload.cacheCreationInputTokens ?? 0;
         usage.reasoningOutputTokens += msg.payload.reasoningOutputTokens ?? 0;
+        usage.webSearchRequests += msg.payload.webSearchRequests ?? 0;
         usage.totalTokens += msg.payload.totalTokens ?? 0;
-        this.perModel.set(model, usage);
+        this.perModel.set(key, usage);
+        this.currentModel = model;
+        this.currentProvider = provider ?? null;
+        this.lastUsageKey = key;
+        if (!computeUsdCostWithResolution(usage, this.registry).known) {
+          this.unknownCostModels.add(key);
+        }
         if (this.budgetTracker) {
           this.budgetTracker.addEmitted(
             (msg.payload.completionTokens ?? 0) +
@@ -362,7 +683,8 @@ export class CostSidecar implements Sidecar {
       }
       case "turn_complete": {
         const model = this.currentModel ?? "unknown";
-        const usage = this.perModel.get(model);
+        const key = this.lastUsageKey ?? usageKey(model, this.currentProvider ?? undefined);
+        const usage = this.perModel.get(key);
         if (usage) usage.turns += 1;
         if (this.lastTurnStartMs !== null) {
           this.totalApiDurationMs += monotonicMs() - this.lastTurnStartMs;
@@ -391,6 +713,30 @@ export class CostSidecar implements Sidecar {
     return Array.from(this.perModel.values());
   }
 
+  getSessionModelUsage(): ReadonlyArray<SessionCostModelUsage> {
+    return this.getPerModelUsage().map((usage) => ({
+      model: usage.model,
+      ...(usage.provider !== undefined ? { provider: usage.provider } : {}),
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      cacheReadTokens: usage.cachedInputTokens,
+      cacheCreationTokens: usage.cacheCreationInputTokens,
+      reasoningOutputTokens: usage.reasoningOutputTokens,
+      webSearchRequests: usage.webSearchRequests,
+      totalTokens: usage.totalTokens,
+      turns: usage.turns,
+      costUsd: computeUsdCost(usage, this.registry),
+    }));
+  }
+
+  hasUnknownModelCost(): boolean {
+    return this.unknownCostModels.size > 0;
+  }
+
+  getUnknownCostModels(): ReadonlyArray<string> {
+    return Array.from(this.unknownCostModels).sort();
+  }
+
   getTotalInputTokens(): number {
     let total = 0;
     for (const usage of this.perModel.values()) total += usage.inputTokens;
@@ -409,10 +755,23 @@ export class CostSidecar implements Sidecar {
     return total;
   }
 
+  getTotalCacheCreationInputTokens(): number {
+    let total = 0;
+    for (const usage of this.perModel.values())
+      total += usage.cacheCreationInputTokens;
+    return total;
+  }
+
   getTotalReasoningOutputTokens(): number {
     let total = 0;
     for (const usage of this.perModel.values())
       total += usage.reasoningOutputTokens;
+    return total;
+  }
+
+  getTotalWebSearchRequests(): number {
+    let total = 0;
+    for (const usage of this.perModel.values()) total += usage.webSearchRequests;
     return total;
   }
 
@@ -437,7 +796,46 @@ export class CostSidecar implements Sidecar {
     const output = this.getTotalOutputTokens();
     const turns = this.getTotalTurns();
     const duration = formatDuration(this.getTotalDurationMs());
-    return `${formatUsdCost(cost)} • in=${formatTokenCount(input)} out=${formatTokenCount(output)} • turns=${turns} • ${duration}`;
+    const unknown = this.hasUnknownModelCost() ? " • unknown-cost" : "";
+    return `${formatUsdCost(cost)} • in=${formatTokenCount(input)} out=${formatTokenCount(output)} • turns=${turns} • ${duration}${unknown}`;
+  }
+
+  /** Multi-line summary equivalent to the upstream exit cost summary. */
+  formatTotalCost(): string {
+    const modelLines = this.getPerModelUsage().map((usage) => {
+      const cost = computeUsdCost(usage, this.registry);
+      const label = usage.provider
+        ? `${usage.provider}/${usage.model}`
+        : usage.model;
+      const usageParts = [
+        `${formatTokenCount(usage.inputTokens)} input`,
+        `${formatTokenCount(usage.outputTokens)} output`,
+      ];
+      if (usage.cachedInputTokens > 0) {
+        usageParts.push(`${formatTokenCount(usage.cachedInputTokens)} cache read`);
+      }
+      if (usage.cacheCreationInputTokens > 0) {
+        usageParts.push(
+          `${formatTokenCount(usage.cacheCreationInputTokens)} cache write`,
+        );
+      }
+      if (usage.webSearchRequests > 0) {
+        usageParts.push(
+          `${formatTokenCount(usage.webSearchRequests)} web search`,
+        );
+      }
+      return `${label}: ${usageParts.join(", ")} (${formatUsdCost(cost)})`;
+    });
+    const unknownSuffix = this.hasUnknownModelCost()
+      ? " (costs may be inaccurate due to unknown model pricing)"
+      : "";
+    return [
+      `Total cost: ${formatUsdCost(this.getTotalCostUsd())}${unknownSuffix}`,
+      `Total duration (API): ${formatDuration(this.getTotalApiDurationMs())}`,
+      `Total duration (wall): ${formatDuration(this.getTotalDurationMs())}`,
+      modelLines.length > 0 ? "Usage by model:" : "Usage: 0 input, 0 output",
+      ...modelLines.map((line) => `  ${line}`),
+    ].join("\n");
   }
 
   /** Reset state (for `/clear` and tests). */
@@ -446,6 +844,9 @@ export class CostSidecar implements Sidecar {
     this.totalApiDurationMs = 0;
     this.lastTurnStartMs = null;
     this.currentModel = null;
+    this.currentProvider = null;
+    this.lastUsageKey = null;
+    this.unknownCostModels.clear();
   }
 
   isDegraded(): boolean {
@@ -523,7 +924,9 @@ export class CostSidecar implements Sidecar {
       inputTokens: validated.totalUsage.inputTokens ?? 0,
       outputTokens: validated.totalUsage.outputTokens ?? 0,
       cacheReadTokens: validated.totalUsage.cacheReadTokens ?? 0,
+      cacheCreationTokens: validated.totalUsage.cacheCreationTokens ?? 0,
       reasoningOutputTokens: validated.totalUsage.reasoningOutputTokens ?? 0,
+      webSearchRequests: validated.totalUsage.webSearchRequests ?? 0,
       totalTokens: validated.totalUsage.totalTokens ?? 0,
     };
     this.loadedTotalCostUsd = validated.totalCostUsd;
@@ -536,7 +939,9 @@ export class CostSidecar implements Sidecar {
       inputTokens: this.getTotalInputTokens(),
       outputTokens: this.getTotalOutputTokens(),
       cacheReadTokens: this.getTotalCachedInputTokens(),
+      cacheCreationTokens: this.getTotalCacheCreationInputTokens(),
       reasoningOutputTokens: this.getTotalReasoningOutputTokens(),
+      webSearchRequests: this.getTotalWebSearchRequests(),
       totalTokens: this.getSessionTotalTokensRaw(),
     };
   }
@@ -607,6 +1012,9 @@ export class CostSidecar implements Sidecar {
    * any diagnostic emissions still land in the rollout.
    */
   async stop(): Promise<void> {
+    this.disposeExitSummary?.();
+    this.disposeExitSummary = null;
+    this.writeExitSummary();
     if (!this.projectDir || !this.sessionId) return;
     const usage = this.getSessionTotals();
     const record: SessionCostRecord = {
@@ -615,8 +1023,49 @@ export class CostSidecar implements Sidecar {
       endedAtMs: Date.now(),
       usage,
       costUsd: this.getTotalCostUsd(),
+      modelUsage: this.getSessionModelUsage(),
     };
     this.appendSessionRecord(record);
     await this.saveToDisk();
   }
+
+  start(): void {
+    if (this.exitSummaryOpts === false || this.disposeExitSummary) return;
+    const processLike = this.exitSummaryOpts.processLike ?? process;
+    const onExit = (): void => {
+      this.writeExitSummary();
+    };
+    processLike.on("exit", onExit);
+    this.disposeExitSummary = () => {
+      processLike.off("exit", onExit);
+    };
+  }
+
+  private writeExitSummary(): void {
+    if (this.exitSummaryOpts === false || this.exitSummaryPrinted) return;
+    const shouldPrint = this.exitSummaryOpts.shouldPrint ?? (() => true);
+    if (!shouldPrint()) return;
+    const processLike = this.exitSummaryOpts.processLike ?? process;
+    const getSummary =
+      this.exitSummaryOpts.getSummary ?? (() => this.formatTotalCost());
+    processLike.stdout.write(`\n${getSummary()}\n`);
+    this.exitSummaryPrinted = true;
+  }
+}
+
+export function registerCostSummaryOnExit(
+  sidecar: CostSidecar,
+  opts: CostSummaryExitHookOptions = {},
+): () => void {
+  const processLike = opts.processLike ?? process;
+  const shouldPrint = opts.shouldPrint ?? (() => true);
+  const getSummary = opts.getSummary ?? (() => sidecar.formatTotalCost());
+  const onExit = (): void => {
+    if (!shouldPrint()) return;
+    processLike.stdout.write(`\n${getSummary()}\n`);
+  };
+  processLike.on("exit", onExit);
+  return () => {
+    processLike.off("exit", onExit);
+  };
 }
