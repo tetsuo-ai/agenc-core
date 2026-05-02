@@ -24,6 +24,7 @@
     "runtime/src/llm/registry/index.ts",
     "runtime/src/llm/registry/PARITY.md",
     "runtime/src/llm/provider.ts",
+    "runtime/src/llm/providers/grok/adapter.ts",
     "runtime/src/llm/providers/groq/index.ts",
     "runtime/src/llm/providers/openrouter/index.ts",
     "runtime/src/llm/model-metadata.ts",
@@ -42,6 +43,7 @@
   "testFiles": [
     "runtime/src/llm/registry/registry.test.ts",
     "runtime/src/llm/provider.test.ts",
+    "runtime/src/llm/providers/grok/provider.test.ts",
     "runtime/src/llm/providers/groq/provider.test.ts",
     "runtime/src/llm/providers/openrouter/provider.test.ts",
     "runtime/src/llm/model-registry.test.ts",
@@ -85,7 +87,7 @@
         "runtime/src/session/guardian-approval-review.test.ts"
       ],
       "commands": [
-        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/registry/registry.test.ts src/llm/provider.test.ts src/llm/providers/groq/provider.test.ts src/llm/providers/openrouter/provider.test.ts src/llm/model-registry.test.ts src/llm/models-manager.test.ts src/llm/capabilities.test.ts src/bin/model-facing-tools.test.ts src/agents/role.test.ts src/session/guardian-approval-review.test.ts src/bin/bootstrap.test.ts"
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/registry/registry.test.ts src/llm/provider.test.ts src/llm/providers/grok/provider.test.ts src/llm/providers/groq/provider.test.ts src/llm/providers/openrouter/provider.test.ts src/llm/model-registry.test.ts src/llm/models-manager.test.ts src/llm/capabilities.test.ts src/bin/model-facing-tools.test.ts src/agents/role.test.ts src/session/guardian-approval-review.test.ts src/bin/bootstrap.test.ts"
       ],
       "status": "required"
     },
@@ -98,7 +100,7 @@
         "centralize provider API key env var hints",
         "preserve request retry and stream idle timeout defaults",
         "drive provider factory default models, base URLs, and API key labels from the registry",
-        "drive provider adapter base URLs and model catalogs from the registry",
+        "drive provider adapter base URLs, default models, and model catalogs from the registry",
         "replace ad-hoc provider model catalog constants in config dependencies",
         "replace live metadata provider base URL and API key env defaults",
         "document source provider rows outside AgenC's current runtime provider scope"
@@ -109,17 +111,19 @@
         "AgenC hosted provider is marked as managed-auth-backed",
         "OpenAI-compatible live metadata uses registry-owned URL and auth defaults",
         "provider factory construction uses registry defaults when env/model overrides are absent",
+        "Grok direct construction uses registry defaults",
         "Groq and OpenRouter adapters do not export duplicate model catalogs",
         "amazon-bedrock is explicitly recorded as out of scope until an AWS SigV4 runtime provider exists"
       ],
       "tests": [
         "runtime/src/llm/registry/registry.test.ts",
         "runtime/src/llm/provider.test.ts",
+        "runtime/src/llm/providers/grok/provider.test.ts",
         "runtime/src/llm/providers/groq/provider.test.ts",
         "runtime/src/llm/providers/openrouter/provider.test.ts"
       ],
       "commands": [
-        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/registry/registry.test.ts src/llm/provider.test.ts src/llm/providers/groq/provider.test.ts src/llm/providers/openrouter/provider.test.ts"
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/registry/registry.test.ts src/llm/provider.test.ts src/llm/providers/grok/provider.test.ts src/llm/providers/groq/provider.test.ts src/llm/providers/openrouter/provider.test.ts"
       ],
       "status": "required"
     },
