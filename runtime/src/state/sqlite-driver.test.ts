@@ -36,6 +36,20 @@ describe("openStateDatabases", () => {
           )
           .get()?.name,
       ).toBe("threads");
+      const agentRunColumns = driver
+        .prepareState<[], { name: string }>("PRAGMA table_info(agent_runs)")
+        .all()
+        .map((column) => column.name);
+      expect(agentRunColumns).toEqual([
+        "id",
+        "objective",
+        "status",
+        "started_at",
+        "last_active_at",
+        "current_session_id",
+        "created_by_client",
+        "last_snapshot_at",
+      ]);
       expect(
         driver
           .prepareLogs<[], { name: string }>(
