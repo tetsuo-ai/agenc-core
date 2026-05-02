@@ -89,6 +89,53 @@ function resolveProviderNameOrThrow(raw: string): ProviderName {
   return normalized;
 }
 
+function firstNonEmpty(
+  ...values: Array<string | undefined>
+): string | undefined {
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (trimmed) return trimmed;
+  }
+  return undefined;
+}
+
+function envModelForProvider(
+  provider: ProviderName,
+  env: NodeJS.ProcessEnv,
+): string | undefined {
+  if (provider !== "openai-compatible") return undefined;
+  return firstNonEmpty(env.OPENAI_COMPATIBLE_MODEL, env.OPENAI_MODEL);
+}
+
+function configuredStartupModelForProvider(
+  config: AgenCConfig,
+  provider: ProviderName,
+): string | undefined {
+  const configured = configuredModelForProvider(config, provider);
+  if (provider !== "openai-compatible" || configured !== DEFAULT_MODEL) {
+    return configured;
+  }
+
+  const providerDefault = config.providers?.[provider]?.default_model?.trim();
+  if (providerDefault) return configured;
+
+  return undefined;
+}
+
+function startupModelForProvider(params: {
+  readonly config: AgenCConfig;
+  readonly provider: ProviderName;
+  readonly env: NodeJS.ProcessEnv;
+  readonly modelOverride?: string;
+}): string {
+  return (
+    params.modelOverride ??
+    configuredStartupModelForProvider(params.config, params.provider) ??
+    envModelForProvider(params.provider, params.env) ??
+    defaultModelForProvider(params.provider)
+  );
+}
+
 export function resolveModelOrExit(
   slug: string,
   catalog: Readonly<Record<string, readonly string[]>> = PROVIDER_MODEL_CATALOG,
@@ -163,10 +210,12 @@ export function resolveStartupSelection(params: {
       configWithProfile,
       env,
     );
-    const model =
-      modelOverride ??
-      configuredModelForProvider(configWithProfile, provider) ??
-      defaultModelForProvider(provider);
+    const model = startupModelForProvider({
+      config: configWithProfile,
+      provider,
+      env,
+      ...(modelOverride ? { modelOverride } : {}),
+    });
     return {
       config: configWithProfile,
       ...(profileName !== undefined ? { profileName } : {}),
@@ -186,10 +235,12 @@ export function resolveStartupSelection(params: {
       configWithProfile,
       env,
     );
-    const model =
-      modelOverride ??
-      configuredModelForProvider(configWithProfile, provider) ??
-      defaultModelForProvider(provider);
+    const model = startupModelForProvider({
+      config: configWithProfile,
+      provider,
+      env,
+      ...(modelOverride ? { modelOverride } : {}),
+    });
     return {
       config: configWithProfile,
       ...(profileName !== undefined ? { profileName } : {}),

@@ -682,7 +682,7 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
 ];
 
 describe("provider parity", () => {
-  it("constructs all nine providers and preserves canonical identity/capability/model metadata", async () => {
+  it("constructs every provider and preserves canonical identity/capability/model metadata", async () => {
     const manager = new StaticModelsManager({
       config: defaultConfig(),
       fallbackProvider: "grok",

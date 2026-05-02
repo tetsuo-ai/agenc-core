@@ -121,6 +121,52 @@ describe("resolveStartupSelection", () => {
     expect(resolved.provider).toBe("agenc");
     expect(resolved.model).toBe("agenc");
   });
+
+  it("uses compatible-provider model env ahead of generic OpenAI env", () => {
+    const resolved = resolveStartupSelection({
+      config: defaultConfig(),
+      env: {
+        AGENC_PROVIDER: "openai-compatible",
+        OPENAI_COMPATIBLE_MODEL: "self-hosted-coder",
+        OPENAI_MODEL: "generic-openai-model",
+      },
+      argv: ["node", "agenc"],
+    });
+
+    expect(resolved.provider).toBe("openai-compatible");
+    expect(resolved.model).toBe("self-hosted-coder");
+  });
+
+  it("uses generic OpenAI model env as compatible-provider fallback", () => {
+    const resolved = resolveStartupSelection({
+      config: defaultConfig(),
+      env: {
+        AGENC_PROVIDER: "openai-compatible",
+        OPENAI_MODEL: "generic-openai-model",
+      },
+      argv: ["node", "agenc"],
+    });
+
+    expect(resolved.provider).toBe("openai-compatible");
+    expect(resolved.model).toBe("generic-openai-model");
+  });
+
+  it("uses compatible-provider model env when selected by config", () => {
+    const config = mergeConfigs(defaultConfig(), {
+      model_provider: "openai-compatible",
+    });
+
+    const resolved = resolveStartupSelection({
+      config,
+      env: {
+        OPENAI_COMPATIBLE_MODEL: "config-selected-coder",
+      },
+      argv: ["node", "agenc"],
+    });
+
+    expect(resolved.provider).toBe("openai-compatible");
+    expect(resolved.model).toBe("config-selected-coder");
+  });
 });
 
 describe("readStartupCliFlags", () => {
