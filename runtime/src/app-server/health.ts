@@ -10,6 +10,7 @@ import type {
   HealthPingResult,
   HealthReadyResult,
   HealthSessionStats,
+  HealthStateStats,
   HealthStatsResult,
 } from "./protocol/index.js";
 import type { AgenCSessionCounts } from "./session-lifecycle.js";
@@ -18,11 +19,16 @@ export interface AgenCHealthSessionCounter {
   countSessions(): Promise<AgenCSessionCounts> | AgenCSessionCounts;
 }
 
+export interface AgenCHealthStateCounter {
+  readStateStats(): Promise<HealthStateStats> | HealthStateStats;
+}
+
 export interface AgenCDaemonHealthServiceOptions {
   readonly startedAtMs?: number;
   readonly nowMs?: () => number;
   readonly memoryUsage?: () => NodeJS.MemoryUsage;
   readonly sessionCounter?: AgenCHealthSessionCounter;
+  readonly stateCounter?: AgenCHealthStateCounter;
   readonly ready?: () => boolean;
 }
 
@@ -31,6 +37,7 @@ export class AgenCDaemonHealthService {
   readonly #nowMs: () => number;
   readonly #memoryUsage: () => NodeJS.MemoryUsage;
   readonly #sessionCounter?: AgenCHealthSessionCounter;
+  readonly #stateCounter?: AgenCHealthStateCounter;
   readonly #ready: () => boolean;
 
   constructor(options: AgenCDaemonHealthServiceOptions = {}) {
@@ -38,6 +45,7 @@ export class AgenCDaemonHealthService {
     this.#nowMs = options.nowMs ?? (() => Date.now());
     this.#memoryUsage = options.memoryUsage ?? (() => process.memoryUsage());
     this.#sessionCounter = options.sessionCounter;
+    this.#stateCounter = options.stateCounter;
     this.#ready = options.ready ?? (() => true);
   }
 
@@ -62,6 +70,9 @@ export class AgenCDaemonHealthService {
       now: this.#nowIso(),
       sessions: await this.#sessionStats(),
       memory: toHealthMemoryStats(this.#memoryUsage()),
+      ...(this.#stateCounter !== undefined
+        ? { state: await Promise.resolve(this.#stateCounter.readStateStats()) }
+        : {}),
     };
   }
 

@@ -848,11 +848,22 @@ export interface HealthSessionStats extends JsonObject {
   readonly total: number;
 }
 
+export interface HealthStateStats extends JsonObject {
+  readonly available: boolean;
+  readonly readonly: true;
+  readonly projectDir: string;
+  readonly agentRuns: number;
+  readonly sessionStateSnapshots: number;
+  readonly inFlightToolCalls: number;
+  readonly logs: number;
+}
+
 export interface HealthStatsResult extends JsonObject {
   readonly uptimeMs: number;
   readonly now: string;
   readonly sessions: HealthSessionStats;
   readonly memory: HealthMemoryStats;
+  readonly state?: HealthStateStats;
 }
 
 export interface AuthIdentity extends JsonObject {

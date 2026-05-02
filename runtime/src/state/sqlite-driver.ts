@@ -79,6 +79,47 @@ export class StateSqliteDriver {
   }
 }
 
+export class StateSqliteReader {
+  readonly projectDir: string;
+  readonly stateDbPath: string;
+  readonly logsDbPath: string;
+  readonly state: SqliteDatabase;
+  readonly logs: SqliteDatabase;
+
+  constructor(paths: StateDatabasePaths) {
+    this.projectDir = paths.projectDir;
+    this.stateDbPath = paths.stateDbPath;
+    this.logsDbPath = paths.logsDbPath;
+    this.state = new Database(paths.stateDbPath, {
+      readonly: true,
+      fileMustExist: true,
+    });
+    this.logs = new Database(paths.logsDbPath, {
+      readonly: true,
+      fileMustExist: true,
+    });
+    configureReadOnlyDatabase(this.state);
+    configureReadOnlyDatabase(this.logs);
+  }
+
+  prepareState<Params extends unknown[] = unknown[], Row = unknown>(
+    sql: string,
+  ): SqliteStatement<Params, Row> {
+    return this.state.prepare<Params, Row>(sql);
+  }
+
+  prepareLogs<Params extends unknown[] = unknown[], Row = unknown>(
+    sql: string,
+  ): SqliteStatement<Params, Row> {
+    return this.logs.prepare<Params, Row>(sql);
+  }
+
+  close(): void {
+    if (this.state.open) this.state.close();
+    if (this.logs.open) this.logs.close();
+  }
+}
+
 export function resolveStateDatabasePaths(
   options: OpenStateDatabaseOptions,
 ): StateDatabasePaths {
@@ -108,6 +149,19 @@ export function openStateDatabasePaths(
   return new StateSqliteDriver(paths);
 }
 
+export function openStateDatabaseReader(
+  options: OpenStateDatabaseOptions,
+): StateSqliteReader {
+  const paths = resolveStateDatabasePaths(options);
+  return openStateDatabasePathReader(paths);
+}
+
+export function openStateDatabasePathReader(
+  paths: StateDatabasePaths,
+): StateSqliteReader {
+  return new StateSqliteReader(paths);
+}
+
 export function discoverStateDatabasePaths(
   agencHome: string,
 ): StateDatabasePaths[] {
@@ -135,6 +189,13 @@ export function discoverStateDatabasePaths(
 export function configureDatabase(db: SqliteDatabase): void {
   db.pragma("journal_mode = WAL");
   db.pragma("synchronous = FULL");
+  db.pragma("foreign_keys = ON");
+  db.pragma("busy_timeout = 5000");
+  db.pragma("temp_store = MEMORY");
+}
+
+export function configureReadOnlyDatabase(db: SqliteDatabase): void {
+  db.pragma("query_only = ON");
   db.pragma("foreign_keys = ON");
   db.pragma("busy_timeout = 5000");
   db.pragma("temp_store = MEMORY");
