@@ -1,5 +1,11 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, test, vi } from "vitest";
 import { ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME } from "../../structured-output.js";
+import { loadProjectInstructions } from "../../../prompts/project-instructions.js";
+import { assembleSystemPrompt } from "../../../prompts/system-prompt.js";
 import { AnthropicProvider } from "./adapter.js";
 
 function sseResponse(frames: string[]): Response {
@@ -399,6 +405,188 @@ describe("AnthropicProvider", () => {
       edits: [{ type: "clear_thinking_20251015", keep: "all" }],
     });
     expect(headers.get("anthropic-beta")).toContain("context-management-2025-06-27");
+  });
+
+  test("sends assembled AGENC.md context as a cacheable Anthropic system block", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "msg_1",
+          type: "message",
+          role: "assistant",
+          model: "claude-3-7-sonnet",
+          content: [{ type: "text", text: "ok" }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const root = mkdtempSync(join(tmpdir(), "agenc-anthropic-context-"));
+    const repoRoot = join(root, "repo");
+    const cwd = join(repoRoot, "packages", "runtime");
+    mkdirSync(cwd, { recursive: true });
+    writeFileSync(join(repoRoot, "package.json"), "{}");
+    writeFileSync(
+      join(repoRoot, "AGENC.md"),
+      "## Project Instructions\nUse the repo instructions loaded from disk.",
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-3-7-sonnet",
+      fetchImpl,
+    });
+
+    try {
+      const projectInstructions = await loadProjectInstructions({ cwd });
+      expect(projectInstructions?.path).toBe(join(repoRoot, "AGENC.md"));
+
+      const config = { model: "claude-3-7-sonnet" };
+      const assembled = await assembleSystemPrompt({
+        session: {} as never,
+        ctx: {
+          config,
+          configSnapshot: config,
+          cwd,
+          modelInfo: { slug: "claude-3-7-sonnet" },
+        } as never,
+        projectInstructions: projectInstructions?.content,
+        provider: "anthropic",
+        enabledToolNames: new Set(["exec_command"]),
+        envForSimpleMode: {},
+      });
+
+      await provider.chat([
+        { role: "system", content: assembled.text },
+        { role: "user", content: "apply the project instructions" },
+      ]);
+
+      const request = JSON.parse(
+        String(fetchImpl.mock.calls[0]?.[1]?.body),
+      ) as Record<string, unknown>;
+      expect(request.system).toEqual([
+        {
+          type: "text",
+          text: assembled.text,
+          cache_control: { type: "ephemeral" },
+        },
+      ]);
+      expect(assembled.text).toContain(
+        "Use the repo instructions loaded from disk.",
+      );
+      expect(request.messages).toEqual([
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "apply the project instructions",
+              cache_control: { type: "ephemeral" },
+            },
+          ],
+        },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects streamed tool_use blocks with invalid completed JSON", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-3-7-sonnet","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}\n\n',
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_bad","name":"system.echo","input":{}}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"text\\":"}}\n\n',
+        'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":1}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      ]),
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-3-7-sonnet",
+      fetchImpl,
+    });
+    const chunks: unknown[] = [];
+
+    await expect(
+      provider.chatStream(
+        [{ role: "user", content: "hello" }],
+        (chunk) => chunks.push(chunk),
+      ),
+    ).rejects.toThrow("invalid tool_use JSON");
+    expect(
+      chunks.some(
+        (chunk) =>
+          typeof chunk === "object" &&
+          chunk !== null &&
+          "toolCalls" in chunk,
+      ),
+    ).toBe(false);
+  });
+
+  test("serializes vision content into Anthropic image blocks", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "msg_1",
+          type: "message",
+          role: "assistant",
+          model: "claude-3-7-sonnet",
+          content: [{ type: "text", text: "image seen" }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-3-7-sonnet",
+      fetchImpl,
+    });
+
+    await provider.chat([
+      {
+        role: "user",
+        content: [
+          {
+            type: "image_url",
+            image_url: { url: "http://localhost/screenshot.png" },
+          },
+          { type: "text", text: "Describe it" },
+        ],
+      },
+    ]);
+
+    const request = JSON.parse(
+      String(fetchImpl.mock.calls[0]?.[1]?.body),
+    ) as Record<string, unknown>;
+    expect(request.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: {
+              type: "url",
+              url: "http://localhost/screenshot.png",
+            },
+          },
+          {
+            type: "text",
+            text: "Describe it",
+            cache_control: { type: "ephemeral" },
+          },
+        ],
+      },
+    ]);
   });
 
   test("streams messages-api text deltas and emits final tool calls from tool_use blocks", async () => {

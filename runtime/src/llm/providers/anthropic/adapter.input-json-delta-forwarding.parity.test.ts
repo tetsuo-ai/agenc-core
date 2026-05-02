@@ -108,8 +108,8 @@ describe("R6 Anthropic adapter forwards input_json_delta as toolInputBlockStart 
       messageStart,
       'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_a","name":"A","input":{}}}\n\n',
       'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_b","name":"B","input":{}}}\n\n',
-      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"a-piece"}}\n\n',
-      'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"b-piece"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"a\\":\\"piece\\"}"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"b\\":\\"piece\\"}"}}\n\n',
       'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
       'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n',
       messageDeltaToolUse,
@@ -126,8 +126,8 @@ describe("R6 Anthropic adapter forwards input_json_delta as toolInputBlockStart 
       .map((c) => c.toolInputDelta)
       .filter((d): d is NonNullable<typeof d> => Boolean(d));
     expect(deltas.map((d) => ({ callId: d.callId, index: d.index, partialJson: d.partialJson }))).toEqual([
-      { callId: "toolu_a", index: 0, partialJson: "a-piece" },
-      { callId: "toolu_b", index: 1, partialJson: "b-piece" },
+      { callId: "toolu_a", index: 0, partialJson: '{"a":"piece"}' },
+      { callId: "toolu_b", index: 1, partialJson: '{"b":"piece"}' },
     ]);
   });
 
@@ -155,7 +155,7 @@ describe("R6 Anthropic adapter forwards input_json_delta as toolInputBlockStart 
     const chunks = await runStream([
       messageStart,
       'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"X","input":{}}}\n\n',
-      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"abc"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"abc\\":true}"}}\n\n',
       'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
       messageDeltaToolUse,
       messageStop,
