@@ -1,14 +1,12 @@
-export interface SqlMigration {
-  readonly version: number;
-  readonly name: string;
-  readonly sql: string;
-}
+import type { SqlMigration } from "./types.js";
 
-export const STATE_DB_MIGRATIONS: readonly SqlMigration[] = [
-  {
-    version: 1,
-    name: "initial_state_schema",
-    sql: `
+/**
+ * Initial AgenC project state schema.
+ */
+export const initialStateSchemaMigration: SqlMigration = {
+  version: 1,
+  name: "initial_state_schema",
+  sql: `
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
@@ -198,142 +196,4 @@ CREATE TABLE IF NOT EXISTS logs (
 CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp);
 CREATE INDEX IF NOT EXISTS idx_logs_thread ON logs(thread_id, timestamp);
 `,
-  },
-  {
-    version: 2,
-    name: "csv_agent_jobs_schema",
-    sql: `
--- Imported agent-jobs surface, persisted. Tables are namespaced \`csv_*\` so
--- they do not collide with AgenC's pre-existing \`agent_jobs\` queue table
--- which carries a different schema (kind/priority/worker_id/...).
---
--- Mirrors the upstream batch-job schema with the max-runtime column folded in.
-CREATE TABLE IF NOT EXISTS csv_agent_jobs (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  status TEXT NOT NULL,
-  instruction TEXT NOT NULL,
-  output_schema_json TEXT,
-  input_headers_json TEXT NOT NULL,
-  input_csv_path TEXT NOT NULL,
-  output_csv_path TEXT NOT NULL,
-  auto_export INTEGER NOT NULL DEFAULT 1,
-  max_runtime_seconds INTEGER,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL,
-  started_at INTEGER,
-  completed_at INTEGER,
-  last_error TEXT
-);
-
-CREATE TABLE IF NOT EXISTS csv_agent_job_items (
-  job_id TEXT NOT NULL,
-  item_id TEXT NOT NULL,
-  row_index INTEGER NOT NULL,
-  source_id TEXT,
-  row_json TEXT NOT NULL,
-  status TEXT NOT NULL,
-  assigned_thread_id TEXT,
-  attempt_count INTEGER NOT NULL DEFAULT 0,
-  result_json TEXT,
-  last_error TEXT,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL,
-  completed_at INTEGER,
-  reported_at INTEGER,
-  PRIMARY KEY (job_id, item_id),
-  FOREIGN KEY(job_id) REFERENCES csv_agent_jobs(id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_csv_agent_jobs_status
-  ON csv_agent_jobs(status, updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_csv_agent_job_items_status
-  ON csv_agent_job_items(job_id, status, row_index ASC);
-`,
-  },
-  {
-    version: 3,
-    name: "agent_runs_schema",
-    sql: `
-CREATE TABLE IF NOT EXISTS agent_runs (
-  id TEXT PRIMARY KEY,
-  objective TEXT NOT NULL,
-  status TEXT NOT NULL,
-  started_at TEXT NOT NULL,
-  last_active_at TEXT NOT NULL,
-  current_session_id TEXT,
-  created_by_client TEXT,
-  last_snapshot_at TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_agent_runs_status_last_active
-  ON agent_runs(status, last_active_at);
-CREATE INDEX IF NOT EXISTS idx_agent_runs_current_session
-  ON agent_runs(current_session_id);
-`,
-  },
-  {
-    version: 4,
-    name: "session_state_snapshots_schema",
-    sql: `
-CREATE TABLE IF NOT EXISTS session_state_snapshots (
-  session_id TEXT NOT NULL,
-  snapshot_at TEXT NOT NULL,
-  conversation_json TEXT NOT NULL,
-  tool_state_json TEXT NOT NULL,
-  mcp_connection_state_json TEXT NOT NULL,
-  PRIMARY KEY (session_id, snapshot_at)
-);
-
-CREATE INDEX IF NOT EXISTS idx_session_state_snapshots_latest
-  ON session_state_snapshots(session_id, snapshot_at DESC);
-`,
-  },
-  {
-    version: 5,
-    name: "in_flight_tool_calls_schema",
-    sql: `
-CREATE TABLE IF NOT EXISTS in_flight_tool_calls (
-  session_id TEXT NOT NULL,
-  tool_call_id TEXT NOT NULL,
-  tool_name TEXT NOT NULL,
-  args_json TEXT NOT NULL,
-  status TEXT NOT NULL,
-  output_partial TEXT,
-  started_at TEXT NOT NULL,
-  PRIMARY KEY (session_id, tool_call_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_in_flight_tool_calls_session_status
-  ON in_flight_tool_calls(session_id, status);
-`,
-  },
-];
-
-export const LOGS_DB_MIGRATIONS: readonly SqlMigration[] = [
-  {
-    version: 1,
-    name: "initial_logs_schema",
-    sql: `
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  version INTEGER PRIMARY KEY,
-  name TEXT NOT NULL,
-  applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-);
-
-CREATE TABLE IF NOT EXISTS logs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  timestamp TEXT NOT NULL,
-  level TEXT NOT NULL,
-  scope TEXT,
-  thread_id TEXT,
-  event_type TEXT,
-  message TEXT NOT NULL,
-  payload_json TEXT NOT NULL DEFAULT '{}'
-);
-
-CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp);
-CREATE INDEX IF NOT EXISTS idx_logs_thread ON logs(thread_id, timestamp);
-`,
-  },
-];
+};
