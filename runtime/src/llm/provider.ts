@@ -21,6 +21,7 @@ import { LMStudioProvider } from "./providers/lmstudio/index.js";
 import { OpenRouterProvider } from "./providers/openrouter/index.js";
 import { GroqProvider } from "./providers/groq/index.js";
 import { DeepSeekProvider } from "./providers/deepseek/index.js";
+import type { ProviderFallbackLadderOptions } from "./api/fallback-ladder.js";
 
 export type ProviderName =
   | "grok"
@@ -113,6 +114,7 @@ type ProviderRuntimeExtra = Partial<
   readonly keepAlive?: string;
   readonly numCtx?: number;
   readonly numGpu?: number;
+  readonly providerFallback?: ProviderFallbackLadderOptions;
   readonly emitWarning?: LLMProviderConfig["emitWarning"];
   readonly emitDiagnostic?: LLMProviderConfig["emitDiagnostic"];
   readonly onCapabilityDrift?: LLMProviderConfig["onCapabilityDrift"];
@@ -125,6 +127,7 @@ const PROVIDER_RUNTIME_EXTRA_KEYS = [
   "maxToolRounds",
   "maxRetries",
   "retryDelayMs",
+  "providerFallback",
   "toolHandler",
   "organization",
   "project",
@@ -364,6 +367,14 @@ function readRecord(
   return { ...value };
 }
 
+function readProviderFallback(
+  source: Record<string, unknown> | undefined,
+): ProviderFallbackLadderOptions | undefined {
+  const value = readRecord(source, "providerFallback");
+  if (!value || typeof value.model !== "string") return undefined;
+  return value as unknown as ProviderFallbackLadderOptions;
+}
+
 function readProviderRuntimeExtra(
   source: Record<string, unknown> | undefined,
 ): Record<string, unknown> | undefined {
@@ -381,6 +392,7 @@ function readProviderRuntimeExtra(
 function readRuntimeExtra(
   extra: Record<string, unknown> | undefined,
 ): ProviderRuntimeExtra {
+  const providerFallback = readProviderFallback(extra);
   return {
     ...(readString(extra, "systemPrompt") !== undefined
       ? { systemPrompt: readString(extra, "systemPrompt") }
@@ -399,6 +411,9 @@ function readRuntimeExtra(
       : {}),
     ...(readNumber(extra, "retryDelayMs") !== undefined
       ? { retryDelayMs: readNumber(extra, "retryDelayMs") }
+      : {}),
+    ...(providerFallback !== undefined
+      ? { providerFallback }
       : {}),
     ...(extra?.toolHandler ? { toolHandler: extra.toolHandler as LLMProviderConfig["toolHandler"] } : {}),
     ...(readString(extra, "organization") !== undefined
@@ -564,6 +579,9 @@ function buildCommonConfig(
     ...(extra.maxRetries !== undefined ? { maxRetries: extra.maxRetries } : {}),
     ...(extra.retryDelayMs !== undefined
       ? { retryDelayMs: extra.retryDelayMs }
+      : {}),
+    ...(extra.providerFallback !== undefined
+      ? { providerFallback: extra.providerFallback }
       : {}),
     ...(extra.toolHandler !== undefined
       ? { toolHandler: extra.toolHandler }

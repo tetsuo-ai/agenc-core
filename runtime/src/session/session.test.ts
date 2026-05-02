@@ -718,6 +718,65 @@ describe("Session.consumePendingProviderSwitch", () => {
     });
   });
 
+  it("uses ConfigStore provider settings when switching across providers", async () => {
+    await withEnv(
+      {
+        OPENAI_API_KEY: undefined,
+        TARGET_OPENAI_KEY: "openai-target",
+      },
+      async () => {
+        const session = buildSession({
+          services: {
+            provider: createProvider("grok", {
+              apiKey: "test-key",
+              model: "grok-4",
+            }),
+            configStore: {
+              current: () => ({
+                providers: {
+                  openai: {
+                    api_key_env: "TARGET_OPENAI_KEY",
+                    base_url: "http://127.0.0.1:8000/v1",
+                    fallback: {
+                      targets: [{ provider: "grok", model: "grok-4-fast" }],
+                      max_failures: 2,
+                    },
+                  },
+                },
+              }),
+            },
+          },
+        });
+        session.setPendingProviderSwitch({
+          provider: "openai",
+          model: "gpt-5",
+        });
+
+        const applied = await session.consumePendingProviderSwitch();
+
+        expect(applied).toEqual({
+          applied: true,
+          provider: "openai",
+          model: "gpt-5",
+        });
+        expect(readProviderIdentity(session.services.provider)).toBe("openai");
+        expect(readProviderFactoryOptions(session.services.provider)).toMatchObject({
+          apiKey: "openai-target",
+          baseURL: "http://127.0.0.1:8000/v1",
+          model: "gpt-5",
+          extra: {
+            providerFallback: {
+              provider: "openai",
+              model: "gpt-5",
+              targets: [{ provider: "grok", model: "grok-4-fast" }],
+              maxFailures: 2,
+            },
+          },
+        });
+      },
+    );
+  });
+
   it("rebuilds the current provider from the live provider snapshot instead of OPENAI globals", async () => {
     await withEnv(
       {

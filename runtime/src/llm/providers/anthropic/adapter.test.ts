@@ -17,7 +17,248 @@ function sseResponse(frames: string[]): Response {
   });
 }
 
+function useDeterministicFallbackTimers(): () => void {
+  vi.useFakeTimers();
+  const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
+  return () => {
+    randomSpy.mockRestore();
+    vi.useRealTimers();
+  };
+}
+
 describe("AnthropicProvider", () => {
+  test("propagates fallback trigger from chat requests", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: "overloaded" } }), {
+        status: 529,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-3-7-sonnet",
+      fetchImpl,
+      providerFallback: {
+        provider: "anthropic",
+        model: "claude-3-7-sonnet",
+        targets: [{ provider: "grok", model: "grok-4-fast" }],
+        maxFailures: 1,
+      },
+    });
+
+    await expect(
+      provider.chat([{ role: "user", content: "hello" }]),
+    ).rejects.toMatchObject({
+      name: "FallbackTriggeredError",
+      fromProvider: "anthropic",
+      toProvider: "grok",
+      fromModel: "claude-3-7-sonnet",
+      toModel: "grok-4-fast",
+    });
+  });
+
+  test("binds fallback trigger to request-scoped chat model overrides", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: "overloaded" } }), {
+        status: 529,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-3-7-sonnet",
+      fetchImpl,
+      providerFallback: {
+        provider: "anthropic",
+        model: "claude-3-7-sonnet",
+        targets: [{ provider: "grok", model: "grok-4-fast" }],
+        maxFailures: 1,
+      },
+    });
+
+    await expect(
+      provider.chat(
+        [{ role: "user", content: "hello" }],
+        { model: "claude-reviewer" },
+      ),
+    ).rejects.toMatchObject({
+      name: "FallbackTriggeredError",
+      fromProvider: "anthropic",
+      toProvider: "grok",
+      fromModel: "claude-reviewer",
+      toModel: "grok-4-fast",
+    });
+  });
+
+  test("propagates fallback trigger from stream requests", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: "overloaded" } }), {
+        status: 529,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-3-7-sonnet",
+      fetchImpl,
+      providerFallback: {
+        provider: "anthropic",
+        model: "claude-3-7-sonnet",
+        targets: [{ provider: "grok", model: "grok-4-fast" }],
+        maxFailures: 1,
+      },
+    });
+
+    await expect(
+      provider.chatStream(
+        [{ role: "user", content: "hello" }],
+        () => {},
+      ),
+    ).rejects.toMatchObject({
+      name: "FallbackTriggeredError",
+      fromProvider: "anthropic",
+      toProvider: "grok",
+      fromModel: "claude-3-7-sonnet",
+      toModel: "grok-4-fast",
+    });
+  });
+
+  test("triggers fallback from repeated stream overload events", async () => {
+    const restoreTimers = useDeterministicFallbackTimers();
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(() =>
+      Promise.resolve(
+        sseResponse([
+          'event: error\ndata: {"type":"error","error":{"type":"overloaded_error","message":"busy"}}\n\n',
+        ]),
+      )
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-3-7-sonnet",
+      fetchImpl,
+      providerFallback: {
+        provider: "anthropic",
+        model: "claude-3-7-sonnet",
+        targets: [{ provider: "grok", model: "grok-4-fast" }],
+      },
+    });
+
+    try {
+      const pending = provider.chatStream(
+        [{ role: "user", content: "hello" }],
+        () => {},
+      );
+      const assertion = expect(pending).rejects.toMatchObject({
+        name: "FallbackTriggeredError",
+        fromProvider: "anthropic",
+        toProvider: "grok",
+      });
+
+      await vi.advanceTimersByTimeAsync(499);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1000);
+      await assertion;
+      expect(fetchImpl).toHaveBeenCalledTimes(3);
+    } finally {
+      restoreTimers();
+    }
+  });
+
+  test("triggers fallback from default-threshold stream HTTP overloads", async () => {
+    const restoreTimers = useDeterministicFallbackTimers();
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ error: { message: "overloaded" } }), {
+          status: 529,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-3-7-sonnet",
+      fetchImpl,
+      providerFallback: {
+        provider: "anthropic",
+        model: "claude-3-7-sonnet",
+        targets: [{ provider: "grok", model: "grok-4-fast" }],
+      },
+    });
+
+    try {
+      const pending = provider.chatStream(
+        [{ role: "user", content: "hello" }],
+        () => {},
+      );
+      const assertion = expect(pending).rejects.toMatchObject({
+        name: "FallbackTriggeredError",
+        fromProvider: "anthropic",
+        toProvider: "grok",
+      });
+
+      await vi.advanceTimersByTimeAsync(499);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1000);
+      await assertion;
+      expect(fetchImpl).toHaveBeenCalledTimes(3);
+    } finally {
+      restoreTimers();
+    }
+  });
+
+  test("does not trigger stream fallback after partial message output", async () => {
+    const restoreTimers = useDeterministicFallbackTimers();
+    let attempt = 0;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(() => {
+      attempt += 1;
+      if (attempt < 3) {
+        return Promise.resolve(
+          sseResponse([
+            'event: error\ndata: {"type":"error","error":{"type":"overloaded_error","message":"busy"}}\n\n',
+          ]),
+        );
+      }
+      return Promise.resolve(
+        sseResponse([
+          'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}\n\n',
+          'event: error\ndata: {"type":"error","error":{"type":"overloaded_error","message":"busy"}}\n\n',
+        ]),
+      );
+    });
+    const chunks: string[] = [];
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-3-7-sonnet",
+      fetchImpl,
+      providerFallback: {
+        provider: "anthropic",
+        model: "claude-3-7-sonnet",
+        targets: [{ provider: "grok", model: "grok-4-fast" }],
+      },
+    });
+
+    try {
+      const pending = provider.chatStream(
+        [{ role: "user", content: "hello" }],
+        (chunk) => {
+          if (chunk.content) chunks.push(chunk.content);
+        },
+      );
+      const assertion = expect(pending).rejects.toThrow("busy");
+
+      await vi.advanceTimersByTimeAsync(1500);
+      await assertion;
+      expect(fetchImpl).toHaveBeenCalledTimes(3);
+      expect(chunks).toEqual(["partial"]);
+    } finally {
+      restoreTimers();
+    }
+  });
+
   test("honors request-scoped model overrides on chat calls", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(

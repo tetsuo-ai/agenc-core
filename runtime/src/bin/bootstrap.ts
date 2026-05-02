@@ -73,6 +73,7 @@ import {
   setCurrentRuntimeSession,
 } from "./_deps/current-session.js";
 import { resolveTransportMode } from "../transport/fallback-ladder.js";
+import type { ProviderFallbackLadderOptions } from "../llm/api/fallback-ladder.js";
 import { toInfraSessionId } from "./_deps/session-id-compat.js";
 import {
   ConfigStore,
@@ -309,6 +310,27 @@ function requireProviderApiKeyOrUndefined(params: {
   throw new Error(
     `${params.provider} provider requires an API key. ${managedKeyHint} Set ${envHint} or configure providers.${params.provider}.api_key_env for BYOK fallback.`,
   );
+}
+
+function buildProviderFallbackLadderOptions(params: {
+  readonly provider: string;
+  readonly model: string;
+  readonly settings: ResolvedProviderSettings | undefined;
+}): ProviderFallbackLadderOptions | undefined {
+  const targets = params.settings?.fallbackTargets;
+  if (!targets || targets.length === 0) return undefined;
+  return {
+    provider: params.provider,
+    model: params.model,
+    targets,
+    ...(params.settings?.fallbackMaxFailures !== undefined
+      ? { maxFailures: params.settings.fallbackMaxFailures }
+      : {}),
+    ...(params.settings?.fallbackStatuses !== undefined &&
+    params.settings.fallbackStatuses.length > 0
+      ? { statuses: params.settings.fallbackStatuses }
+      : {}),
+  };
 }
 
 function providerApiKeyEnvHint(
@@ -864,6 +886,11 @@ export async function bootstrapLocalRuntimeSession(
     }),
     managedKey,
   });
+  const providerFallback = buildProviderFallbackLadderOptions({
+    provider: resolvedProvider,
+    model: providerModel,
+    settings: runtimeProviderSettings,
+  });
   const mcpManager = createSessionMcpManagerFromConfig(
     configStore.current(),
     env,
@@ -948,6 +975,9 @@ export async function bootstrapLocalRuntimeSession(
           : {}),
         ...(providerSettings?.maxOutputTokens !== undefined
           ? { maxTokens: providerSettings.maxOutputTokens }
+          : {}),
+        ...(providerFallback !== undefined
+          ? { providerFallback }
           : {}),
       },
     },

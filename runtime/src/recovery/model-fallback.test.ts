@@ -257,4 +257,29 @@ describe("runModelFallback — T8 hardening", () => {
       model: "openai/gpt-5-mini",
     });
   });
+
+  test("honors explicit cross-provider fallback target from the retry layer", () => {
+    const log = new EventLog();
+    const session = mkSession(log);
+    const state = mkState({
+      assistantMessages: [
+        { uuid: "a1", role: "assistant", text: "partial", toolCalls: [] },
+      ],
+    });
+
+    runModelFallback({
+      session,
+      state,
+      error: new FallbackTriggeredError("grok-4-fast", "gpt-5", {
+        fromProvider: "grok",
+        toProvider: "openai",
+        reason: "provider_fallback_ladder",
+      }),
+    });
+
+    expect(session.pendingProviderSwitch).toEqual({
+      provider: "openai",
+      model: "gpt-5",
+    });
+  });
 });

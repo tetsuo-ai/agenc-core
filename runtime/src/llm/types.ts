@@ -7,6 +7,8 @@
  * @module
  */
 
+import type { ProviderFallbackLadderOptions } from "./api/fallback-ladder.js";
+
 /**
  * Message role in a conversation
  */
@@ -654,8 +656,7 @@ export interface LLMStreamChunk {
    * with content_block.type === 'tool_use'. Consumed downstream by
    * runtime/src/phases/stream-model.ts (which translates it into a
    * `tool_input_block_start` session event) so the TUI bridge can
-   * seed an entry in transcript.streamingToolUses (see
-   * runtime/src/tui/openclaude/message-adapter.ts). Other providers
+   * seed an entry in transcript.streamingToolUses. Other providers
    * that do not emit streaming tool inputs leave this undefined.
    */
   toolInputBlockStart?: {
@@ -744,6 +745,8 @@ export interface LLMProviderConfig {
   maxRetries?: number;
   /** Base delay between retries in milliseconds */
   retryDelayMs?: number;
+  /** Ordered model/provider fallback ladder for repeated overload failures. */
+  providerFallback?: ProviderFallbackLadderOptions;
   /** Best-effort warning sink for provider/transport contract events. */
   emitWarning?: (warning: { cause: string; message: string }) => void;
   /** Internal diagnostic sink for debug/replay metadata that must not surface as a warning. */

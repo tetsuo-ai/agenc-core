@@ -30,6 +30,8 @@ export type {
   PermissionsConfig,
   ProviderCapabilityOverrides,
   ProviderConfig,
+  ProviderFallbackConfig,
+  ProviderFallbackTargetConfig,
   ServiceTier,
   WebSearchMode,
   ProfileOverride,

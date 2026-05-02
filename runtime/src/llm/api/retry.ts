@@ -13,6 +13,10 @@
  */
 
 import { AgenCApiError } from "./errors.js";
+import {
+  evaluateProviderFallback,
+  type ProviderFallbackLadderOptions,
+} from "./fallback-ladder.js";
 
 export const DEFAULT_MAX_RETRIES = 10;
 export const BASE_DELAY_MS = 500;
@@ -48,6 +52,7 @@ export interface WithRetryOptions {
     readonly safetyBufferTokens?: number;
     readonly minRequiredTokens?: number;
   };
+  readonly fallback?: ProviderFallbackLadderOptions;
   readonly onRetry?: (event: {
     readonly attempt: number;
     readonly delayMs: number;
@@ -271,6 +276,7 @@ export async function withRetry<T>(
   let lastError: unknown;
   let maxTokensContextOverflow: MaxTokensContextOverflow | undefined;
   let maxTokensOverride: number | undefined;
+  let consecutiveFallbackFailures = 0;
 
   for (let attempt = 1; attempt <= maxRetries + 1; attempt += 1) {
     if (options.signal?.aborted) {
@@ -310,7 +316,29 @@ export async function withRetry<T>(
           maxTokensOverride,
         });
         continue;
-      } else if (!shouldRetryApiError(error, options.retryStatuses)) {
+      }
+
+      let shouldRetryFallback = false;
+      if (options.fallback) {
+        const fallbackDecision = evaluateProviderFallback({
+          ...options.fallback,
+          error,
+          consecutiveFailures: consecutiveFallbackFailures,
+        });
+        if (fallbackDecision.kind === "trigger") {
+          throw fallbackDecision.error;
+        }
+        consecutiveFallbackFailures =
+          fallbackDecision.kind === "wait"
+            ? fallbackDecision.consecutiveFailures
+            : 0;
+        shouldRetryFallback = fallbackDecision.kind === "wait";
+      }
+
+      if (
+        !shouldRetryFallback &&
+        !shouldRetryApiError(error, options.retryStatuses)
+      ) {
         throw new CannotRetryError(error, context);
       }
 
@@ -418,7 +446,7 @@ function abortReasonToError(reason: unknown): Error {
   return err;
 }
 
-function sleepMs(ms: number, signal?: AbortSignal): Promise<void> {
+export function sleepMs(ms: number, signal?: AbortSignal): Promise<void> {
   if (!signal) {
     return new Promise((resolve) => {
       const timer = setTimeout(resolve, ms);

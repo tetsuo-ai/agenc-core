@@ -69,6 +69,12 @@ import {
 } from "./adapter-utils.js";
 import { isProviderCapabilityMismatch } from "../capabilities.js";
 import {
+  evaluateProviderFallback,
+  type ProviderFallbackDecision,
+} from "../api/fallback-ladder.js";
+import { getRetryDelay, sleepMs } from "../api/retry.js";
+import { isFallbackTriggeredError } from "../../recovery/api-errors.js";
+import {
   buildXaiResponsesInputItems,
   resolveXaiResponsesToolChoice,
   toXaiResponsesTools,
@@ -83,6 +89,17 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 // near `selectedTools.tools.length > 0`. The 20K limit was silently dropping
 // the entire tools array on every tool-followup request.
 //
+
+type ProviderFallbackWaitDecision = Extract<
+  ProviderFallbackDecision,
+  { readonly kind: "wait" }
+>;
+
+function normalizeFallbackRetryBudget(maxRetries: number | undefined): number {
+  if (typeof maxRetries !== "number" || !Number.isFinite(maxRetries)) return 2;
+  return Math.max(0, Math.floor(maxRetries));
+}
+
 /** Vision models known to support function-calling alongside image understanding. */
 const VISION_MODELS_WITH_TOOLS = new Set([
   "grok-4-0709",
@@ -751,6 +768,38 @@ export class GrokProvider implements LLMProvider {
     this.config.emitWarning?.({ cause, message });
   }
 
+  private evaluateConfiguredFallback(
+    error: unknown,
+    consecutiveFailures: number,
+    model: string = this.config.model,
+  ): ProviderFallbackDecision | null {
+    if (!this.config.providerFallback) return null;
+    const decision = evaluateProviderFallback({
+      ...this.config.providerFallback,
+      model,
+      error,
+      consecutiveFailures,
+    });
+    if (decision.kind === "trigger") {
+      throw decision.error;
+    }
+    return decision;
+  }
+
+  private async waitForConfiguredFallbackRetry(
+    decision: ProviderFallbackWaitDecision,
+    signal: AbortSignal | undefined,
+  ): Promise<boolean> {
+    if (
+      decision.consecutiveFailures >
+      normalizeFallbackRetryBudget(this.config.maxRetries)
+    ) {
+      return false;
+    }
+    await sleepMs(getRetryDelay(decision.consecutiveFailures), signal);
+    return true;
+  }
+
   private notifyCapabilityDrift(error: unknown): void {
     if (!this.config.onCapabilityDrift) return;
     const candidate = error as {
@@ -898,7 +947,9 @@ export class GrokProvider implements LLMProvider {
       }
     };
 
-    try {
+    let consecutiveFallbackFailures = 0;
+    while (true) {
+      try {
       // I-2 / I-14: record the outbound request shape for the
       // incremental tracker before the HTTP call. clearAllResponseIds
       // (called from AgenC post-compact cleanup) zeros this on every
@@ -934,7 +985,7 @@ export class GrokProvider implements LLMProvider {
         ]);
       }
       return parsed;
-    } catch (err: unknown) {
+      } catch (err: unknown) {
       if (
         isContinuationRetrievalFailure(err) &&
         "previous_response_id" in plan.params
@@ -978,6 +1029,25 @@ export class GrokProvider implements LLMProvider {
       // 401s that propagated past the refresh wrapper classify through
       // the normal mapper so callers see `LLMProviderError` rather
       // than the raw transport.
+      if (isFallbackTriggeredError(err)) {
+        throw err;
+      }
+      const fallbackDecision = this.evaluateConfiguredFallback(
+        err,
+        consecutiveFallbackFailures,
+        String(plan.params.model ?? this.config.model),
+      );
+      if (
+        fallbackDecision?.kind === "wait" &&
+        await this.waitForConfiguredFallbackRetry(
+          fallbackDecision,
+          options?.signal,
+        )
+      ) {
+        consecutiveFallbackFailures = fallbackDecision.consecutiveFailures;
+        continue;
+      }
+      consecutiveFallbackFailures = 0;
       this.notifyCapabilityDrift(err);
       if (isUnauthorizedError(err)) {
         const mapped = this.mapError(
@@ -993,6 +1063,7 @@ export class GrokProvider implements LLMProvider {
       );
       this.logPromptOverflowDiagnostics(mapped, plan.params);
       throw mapped;
+      }
     }
   }
 
@@ -1033,7 +1104,9 @@ export class GrokProvider implements LLMProvider {
         ? Date.now() + streamTimeout.timeoutMs
         : Number.POSITIVE_INFINITY;
 
-    try {
+    let consecutiveFallbackFailures = 0;
+    while (true) {
+      try {
       const requestAttemptTimeout =
         Number.isFinite(streamDeadlineAt)
           ? {
@@ -1347,7 +1420,7 @@ export class GrokProvider implements LLMProvider {
           ),
         });
       return parsed;
-    } catch (err: unknown) {
+      } catch (err: unknown) {
       emitProviderTraceEvent(options, {
         kind: "error",
         transport: "chat_stream",
@@ -1355,6 +1428,28 @@ export class GrokProvider implements LLMProvider {
         model,
         payload: buildProviderTraceErrorPayload(err),
       });
+      if (isFallbackTriggeredError(err)) {
+        throw err;
+      }
+      if (content.length === 0 && toolCallAccum.size === 0) {
+        const fallbackDecision = this.evaluateConfiguredFallback(
+          err,
+          consecutiveFallbackFailures,
+          String(params.model ?? this.config.model),
+        );
+        if (
+          fallbackDecision?.kind === "wait" &&
+          await this.waitForConfiguredFallbackRetry(
+            fallbackDecision,
+            options?.signal,
+          )
+        ) {
+          consecutiveFallbackFailures = fallbackDecision.consecutiveFailures;
+          params = { ...plan.params, stream: true };
+          continue;
+        }
+      }
+      consecutiveFallbackFailures = 0;
       this.notifyCapabilityDrift(err);
       const mappedError = this.mapError(err, streamTimeout.timeoutMs);
       this.logPromptOverflowDiagnostics(mappedError, params);
@@ -1386,8 +1481,10 @@ export class GrokProvider implements LLMProvider {
         };
       }
       throw mappedError;
-    } finally {
+      } finally {
       if (streamIterator) closeAsyncIterator(streamIterator);
+      streamIterator = null;
+    }
     }
   }
 

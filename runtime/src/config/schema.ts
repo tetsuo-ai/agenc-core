@@ -308,6 +308,19 @@ export interface ProviderCapabilityOverrides {
   readonly acceptsReasoningEffort?: boolean;
 }
 
+export interface ProviderFallbackTargetConfig {
+  readonly provider?: string;
+  readonly model: string;
+  readonly reason?: string;
+}
+
+export interface ProviderFallbackConfig {
+  readonly targets?: readonly ProviderFallbackTargetConfig[];
+  readonly models?: readonly string[];
+  readonly max_failures?: number;
+  readonly statuses?: readonly number[];
+}
+
 export interface ProviderConfig {
   readonly api_key_env?: string;
   readonly base_url?: string;
@@ -315,6 +328,8 @@ export interface ProviderConfig {
   readonly context_window_tokens?: number;
   readonly max_output_tokens?: number;
   readonly capability_overrides?: ProviderCapabilityOverrides;
+  readonly fallback_models?: readonly string[];
+  readonly fallback?: ProviderFallbackConfig;
 }
 
 export type AuthBackendConfigKind = "local" | "remote";

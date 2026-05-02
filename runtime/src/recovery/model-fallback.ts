@@ -157,6 +157,7 @@ export function runModelFallback(opts: RunModelFallbackOpts): ModelFallbackOutco
   // path consumes the pending switch before the next stream.
   session.pendingProviderSwitch = {
     provider:
+      error.toProvider ??
       readProviderIdentity(session.services.provider) ??
       session.services.provider.name,
     model: error.toModel,

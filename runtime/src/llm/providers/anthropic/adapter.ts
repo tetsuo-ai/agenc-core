@@ -21,6 +21,7 @@ import {
   ProviderHttpError,
   type ProviderHttpStreamResponse,
 } from "../../client-session.js";
+import { isFallbackTriggeredError } from "../../../recovery/api-errors.js";
 import {
   assertNonEmptyApiKey,
   buildBearerAuthHeaders,
@@ -32,6 +33,11 @@ import {
 import type { AnthropicProviderConfig } from "./types.js";
 import { parseSSEFrames } from "../../_deps/sse.js";
 import { CONTEXT_MANAGEMENT_BETA_HEADER } from "../../_deps/betas.js";
+import {
+  evaluateProviderFallback,
+  type ProviderFallbackDecision,
+} from "../../api/fallback-ladder.js";
+import { getRetryDelay, sleepMs } from "../../api/retry.js";
 
 const DEFAULT_BASE_URL = "https://api.anthropic.com/v1";
 const DEFAULT_ANTHROPIC_VERSION = "2023-06-01";
@@ -95,6 +101,34 @@ function parseToolInputObject(
   }
 }
 
+function anthropicStreamFallbackCandidate(
+  errorRecord: Record<string, unknown>,
+  fallbackMessage: string,
+): Error & { status?: number } {
+  const status =
+    typeof errorRecord.status === "number"
+      ? errorRecord.status
+      : errorRecord.type === "overloaded_error"
+        ? 529
+        : undefined;
+  const message = JSON.stringify(errorRecord) || fallbackMessage;
+  const error = new Error(message) as Error & { status?: number };
+  if (status !== undefined) {
+    error.status = status;
+  }
+  return error;
+}
+
+type ProviderFallbackWaitDecision = Extract<
+  ProviderFallbackDecision,
+  { readonly kind: "wait" }
+>;
+
+function normalizeFallbackRetryBudget(maxRetries: number | undefined): number {
+  if (typeof maxRetries !== "number" || !Number.isFinite(maxRetries)) return 2;
+  return Math.max(0, Math.floor(maxRetries));
+}
+
 export class AnthropicProvider implements LLMProvider {
   readonly name = "anthropic";
 
@@ -132,9 +166,50 @@ export class AnthropicProvider implements LLMProvider {
       authHeaders,
       timeoutMs: config.timeoutMs,
       fetchImpl: config.fetchImpl,
+      providerFallback: config.providerFallback,
       emitWarning: config.emitWarning,
       onCapabilityDrift: config.onCapabilityDrift,
     });
+  }
+
+  private evaluateConfiguredFallback(
+    error: unknown,
+    consecutiveFailures: number,
+    model: string = this.config.model,
+  ): ProviderFallbackDecision | null {
+    if (!this.config.providerFallback) return null;
+    const decision = evaluateProviderFallback({
+      ...this.config.providerFallback,
+      model,
+      error,
+      consecutiveFailures,
+    });
+    if (decision.kind === "trigger") {
+      throw decision.error;
+    }
+    return decision;
+  }
+
+  private providerFallbackForModel(
+    model: string,
+  ): AnthropicProviderConfig["providerFallback"] {
+    return this.config.providerFallback
+      ? { ...this.config.providerFallback, model }
+      : undefined;
+  }
+
+  private async waitForConfiguredFallbackRetry(
+    decision: ProviderFallbackWaitDecision,
+    signal: AbortSignal | undefined,
+  ): Promise<boolean> {
+    if (
+      decision.consecutiveFailures >
+      normalizeFallbackRetryBudget(this.config.maxRetries)
+    ) {
+      return false;
+    }
+    await sleepMs(getRetryDelay(decision.consecutiveFailures), signal);
+    return true;
   }
 
   async chat(
@@ -165,6 +240,7 @@ export class AnthropicProvider implements LLMProvider {
         body: request,
         timeoutMs,
         signal: options?.signal,
+        providerFallback: this.providerFallbackForModel(model),
       });
       return parseAnthropicMessagesResponse(model, response.data, {
         model,
@@ -174,6 +250,9 @@ export class AnthropicProvider implements LLMProvider {
         maxTokens: resolveMaxTokens(options, this.config.maxTokens),
       });
     } catch (error) {
+      if (isFallbackTriggeredError(error)) {
+        throw error;
+      }
       if (error instanceof ProviderHttpError && error.status === 401) {
         throw new LLMAuthenticationError(this.name, error.status);
       }
@@ -204,6 +283,8 @@ export class AnthropicProvider implements LLMProvider {
       wireApi: "messages",
     });
 
+    let consecutiveFallbackFailures = 0;
+    streamAttempts: while (true) {
     try {
       const response = await session.requestStream({
         api: "messages",
@@ -212,6 +293,7 @@ export class AnthropicProvider implements LLMProvider {
         body: request,
         timeoutMs,
         signal: options?.signal,
+        providerFallback: this.providerFallbackForModel(requestModel),
         // Anthropic SSE streams are not resumable; preserve single-attempt
         // stream semantics while using the shared session transport contract.
         retryBudget: { maxRetries: 0 },
@@ -266,9 +348,8 @@ export class AnthropicProvider implements LLMProvider {
             // normal accumulator. Downstream consumers translate this
             // into a `tool_input_block_start` session event for the
             // TUI bridge (see runtime/src/phases/stream-model.ts and
-            // runtime/src/tui/openclaude/message-adapter.ts). Mirrors
-            // upstream content_block_start handling at
-            // openclaude/src/utils/messages.ts:3024-3037.
+            // the TUI message adapter). Mirrors upstream
+            // content_block_start handling.
             onChunk({
               content: "",
               done: false,
@@ -310,7 +391,7 @@ export class AnthropicProvider implements LLMProvider {
               // Forward the partial JSON delta so the TUI bridge can
               // render the synthetic streaming-tool-use cell as the
               // arguments arrive. Mirrors the upstream input_json_delta
-              // handler at openclaude/src/utils/messages.ts:3062-3079.
+              // handler.
               onChunk({
                 content: "",
                 done: false,
@@ -388,6 +469,28 @@ export class AnthropicProvider implements LLMProvider {
             typeof errorRecord.message === "string"
               ? errorRecord.message
               : "Anthropic stream failed";
+          if (
+            content.length === 0 &&
+            completedToolCalls.length === 0 &&
+            toolBlocks.size === 0
+          ) {
+            const fallbackDecision = this.evaluateConfiguredFallback(
+              anthropicStreamFallbackCandidate(errorRecord, message),
+              consecutiveFallbackFailures,
+              requestModel,
+            );
+            if (
+              fallbackDecision?.kind === "wait" &&
+              await this.waitForConfiguredFallbackRetry(
+                fallbackDecision,
+                options?.signal,
+              )
+            ) {
+              consecutiveFallbackFailures = fallbackDecision.consecutiveFailures;
+              continue streamAttempts;
+            }
+          }
+          consecutiveFallbackFailures = 0;
           throw new LLMProviderError(this.name, message);
         }
       }
@@ -449,10 +552,30 @@ export class AnthropicProvider implements LLMProvider {
       });
       return finalResponse;
     } catch (error) {
+      if (isFallbackTriggeredError(error)) {
+        throw error;
+      }
+      const fallbackDecision = this.evaluateConfiguredFallback(
+        error,
+        consecutiveFallbackFailures,
+        requestModel,
+      );
+      if (
+        fallbackDecision?.kind === "wait" &&
+        await this.waitForConfiguredFallbackRetry(
+          fallbackDecision,
+          options?.signal,
+        )
+      ) {
+        consecutiveFallbackFailures = fallbackDecision.consecutiveFailures;
+        continue streamAttempts;
+      }
+      consecutiveFallbackFailures = 0;
       if (error instanceof ProviderHttpError && error.status === 401) {
         throw new LLMAuthenticationError(this.name, error.status);
       }
       throw mapLLMError(this.name, error, timeoutMs ?? 0);
+    }
     }
   }
 

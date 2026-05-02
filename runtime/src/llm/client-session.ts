@@ -1,7 +1,7 @@
 /**
  * Turn-scoped provider HTTP session.
  *
- * Ports the codex runtime provider/session contract into the runtime-facing
+ * Ports the upstream runtime provider/session contract into the runtime-facing
  * TypeScript client layer: provider-level query params, auth/header injection,
  * bounded retry budgets, stream idle timeouts, and explicit wire-api metadata.
  *
@@ -25,6 +25,12 @@ import {
   extractTlsValidationDetails,
   type TlsValidationDetails,
 } from "./errors.js";
+import {
+  evaluateProviderFallback,
+  type ProviderFallbackDecision,
+  type ProviderFallbackLadderOptions,
+} from "./api/fallback-ladder.js";
+import { isFallbackTriggeredError } from "../recovery/api-errors.js";
 import { isProviderCapabilityMismatch } from "./capabilities.js";
 
 const DEFAULT_REQUEST_MAX_RETRIES = 4;
@@ -56,7 +62,7 @@ export interface ProviderHttpRetryBudget {
   /**
    * Retry budget excluding the initial attempt.
    *
-   * Matches codex runtime `request_max_retries` / `stream_max_retries`.
+   * Matches upstream runtime `request_max_retries` / `stream_max_retries`.
    */
   readonly maxRetries?: number;
   readonly baseDelayMs?: number;
@@ -97,6 +103,7 @@ export interface ProviderHttpClientSessionConfig {
   readonly timeoutMs?: number;
   readonly requestRetry?: ProviderHttpRetryBudget;
   readonly streamRetry?: ProviderHttpRetryBudget;
+  readonly providerFallback?: ProviderFallbackLadderOptions;
   readonly streamIdleTimeoutMs?: number;
   readonly supportsStreaming?: boolean;
   readonly supportsWebsockets?: boolean;
@@ -122,6 +129,7 @@ export interface ProviderHttpRequestOptions {
   readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
   readonly retryBudget?: ProviderHttpRetryBudget;
+  readonly providerFallback?: ProviderFallbackLadderOptions;
 }
 
 export interface ProviderHttpJsonResponse<T> {
@@ -647,6 +655,23 @@ function maybeEmitCapabilityDriftWarning(
   });
 }
 
+function evaluateConfiguredProviderFallback(
+  fallback: ProviderFallbackLadderOptions | undefined,
+  error: unknown,
+  consecutiveFailures: number,
+): ProviderFallbackDecision | null {
+  if (!fallback) return null;
+  const decision = evaluateProviderFallback({
+    ...fallback,
+    error,
+    consecutiveFailures,
+  });
+  if (decision.kind === "trigger") {
+    throw decision.error;
+  }
+  return decision;
+}
+
 function clearContinuationState(
   state: ResponsesContinuationState | undefined,
 ): void {
@@ -1051,6 +1076,7 @@ export class ProviderHttpClientSession {
         : DEFAULT_REQUEST_RETRY_POLICY,
     );
     const timeoutMs = resolveTimeoutMs(this.config.timeoutMs, options.timeoutMs);
+    let consecutiveFallbackFailures = 0;
 
     for (
       let attempt = 0;
@@ -1070,9 +1096,20 @@ export class ProviderHttpClientSession {
             this.config.providerName,
             response,
           );
+          const fallbackDecision = evaluateConfiguredProviderFallback(
+            options.providerFallback ?? this.config.providerFallback,
+            error,
+            consecutiveFallbackFailures,
+          );
+          const shouldRetryFallback =
+            fallbackDecision?.kind === "wait";
+          consecutiveFallbackFailures = shouldRetryFallback
+            ? fallbackDecision.consecutiveFailures
+            : 0;
           if (
             attempt < retryBudget.maxRetries &&
-            shouldRetryHttpStatus(response.status, retryBudget)
+            (shouldRetryHttpStatus(response.status, retryBudget) ||
+              shouldRetryFallback)
           ) {
             const retryDelay = resolveRetryDelayMs(
               this.config.providerName,
@@ -1095,10 +1132,14 @@ export class ProviderHttpClientSession {
         return response;
       } catch (error) {
         attemptState.cleanup();
+        if (isFallbackTriggeredError(error)) {
+          throw error;
+        }
         if (error instanceof ProviderHttpError) {
           maybeEmitCapabilityDriftWarning(this.config, error);
           throw error;
         }
+        consecutiveFallbackFailures = 0;
         const transport = normalizeTransportError(error);
         if (
           (attempt < retryBudget.maxRetries &&
@@ -1129,6 +1170,7 @@ export class ProviderHttpClientSession {
     retryBudget: NormalizedRetryBudget,
     initialAttempt: number,
   ): Promise<PreparedStreamAttempt> {
+    let consecutiveFallbackFailures = 0;
     for (
       let attempt = initialAttempt;
       attempt <= retryBudget.maxRetries + 1;
@@ -1146,9 +1188,20 @@ export class ProviderHttpClientSession {
             this.config.providerName,
             response,
           );
+          const fallbackDecision = evaluateConfiguredProviderFallback(
+            options.providerFallback ?? this.config.providerFallback,
+            error,
+            consecutiveFallbackFailures,
+          );
+          const shouldRetryFallback =
+            fallbackDecision?.kind === "wait";
+          consecutiveFallbackFailures = shouldRetryFallback
+            ? fallbackDecision.consecutiveFailures
+            : 0;
           if (
             attempt < retryBudget.maxRetries &&
-            shouldRetryHttpStatus(response.status, retryBudget)
+            (shouldRetryHttpStatus(response.status, retryBudget) ||
+              shouldRetryFallback)
           ) {
             attemptState.cleanup();
             const retryDelay = resolveRetryDelayMs(
@@ -1179,10 +1232,14 @@ export class ProviderHttpClientSession {
         return { attempt, response, attemptState };
       } catch (error) {
         attemptState.cleanup();
+        if (isFallbackTriggeredError(error)) {
+          throw error;
+        }
         if (error instanceof ProviderHttpError) {
           maybeEmitCapabilityDriftWarning(this.config, error);
           throw error;
         }
+        consecutiveFallbackFailures = 0;
         const transport = normalizeTransportError(error);
         if (
           (attempt < retryBudget.maxRetries &&
