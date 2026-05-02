@@ -28,13 +28,19 @@
     "runtime/src/llm/capabilities.ts",
     "runtime/src/llm/model-registry.ts",
     "runtime/src/config/resolve-provider.ts",
-    "runtime/src/llm/_deps/config.ts"
+    "runtime/src/llm/_deps/config.ts",
+    "runtime/src/session/turn-context.ts",
+    "runtime/src/agents/role.ts",
+    "runtime/src/bin/model-facing-tools.ts",
+    "runtime/src/config/schema.ts"
   ],
   "testFiles": [
     "runtime/src/llm/registry/registry.test.ts",
     "runtime/src/llm/model-registry.test.ts",
     "runtime/src/llm/models-manager.test.ts",
-    "runtime/src/llm/capabilities.test.ts"
+    "runtime/src/llm/capabilities.test.ts",
+    "runtime/src/bin/model-facing-tools.test.ts",
+    "runtime/src/agents/role.test.ts"
   ],
   "rows": [
     {
@@ -42,24 +48,29 @@
       "source": "co\u0064ex-rs/models-manager/models.json + models-manager/src/model_info.rs",
       "target": "runtime/src/llm/registry/model-catalog.ts",
       "requiredBehaviors": [
+        "store every bundled donor model row, including hidden review-only models",
         "store authoritative per-model context window metadata",
         "store model input modality and tool/search capability hints",
-        "preserve default and supported reasoning levels accepted by AgenC",
+        "preserve default and supported reasoning levels including xhigh",
         "resolve exact, longest-prefix, and single-namespace model identifiers",
         "feed the existing ModelRegistry and StaticModelsManager surfaces"
       ],
       "edgeCases": [
         "newer bundled OpenAI models not present in the previous ad-hoc table",
+        "hidden review-only model row stays registered but rebranded for display",
+        "gpt-5.4 defaults to xhigh rather than being silently downgraded",
         "namespaced model lookup falls back to the suffix only for a single safe namespace",
         "unknown models continue to use conservative fallback metadata"
       ],
       "tests": [
         "runtime/src/llm/registry/registry.test.ts",
         "runtime/src/llm/model-registry.test.ts",
-        "runtime/src/llm/models-manager.test.ts"
+        "runtime/src/llm/models-manager.test.ts",
+        "runtime/src/bin/model-facing-tools.test.ts",
+        "runtime/src/agents/role.test.ts"
       ],
       "commands": [
-        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/registry/registry.test.ts src/llm/model-registry.test.ts src/llm/models-manager.test.ts src/llm/capabilities.test.ts"
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/registry/registry.test.ts src/llm/model-registry.test.ts src/llm/models-manager.test.ts src/llm/capabilities.test.ts src/bin/model-facing-tools.test.ts src/agents/role.test.ts"
       ],
       "status": "required"
     },
@@ -71,12 +82,14 @@
         "centralize built-in provider default model and base URL data",
         "centralize provider API key env var hints",
         "preserve request retry and stream idle timeout defaults",
-        "replace ad-hoc provider model catalog constants in config dependencies"
+        "replace ad-hoc provider model catalog constants in config dependencies",
+        "replace live metadata provider base URL and API key env defaults"
       ],
       "edgeCases": [
         "xai alias normalizes to grok",
         "openai_compatible/custom aliases normalize to openai-compatible",
-        "AgenC hosted provider is marked as managed-auth-backed"
+        "AgenC hosted provider is marked as managed-auth-backed",
+        "OpenAI-compatible live metadata uses registry-owned URL and auth defaults"
       ],
       "tests": [
         "runtime/src/llm/registry/registry.test.ts"
@@ -91,14 +104,17 @@
       "source": "co\u0064ex-rs/features/src/lib.rs + co\u0064ex-rs/features/src/legacy.rs",
       "target": "runtime/src/llm/registry/features.ts",
       "requiredBehaviors": [
+        "store every donor feature key with AgenC-owned naming",
         "store feature stage and default-enabled metadata",
         "normalize legacy feature keys onto AgenC-owned canonical keys",
         "apply configured feature maps on top of defaults",
-        "normalize feature dependencies such as multi_agent_v2 requiring multi_agent"
+        "normalize feature dependencies such as code_mode_only requiring code_mode and fanout requiring multi_agent"
       ],
       "edgeCases": [
         "unknown feature keys are ignored",
         "legacy apply_patch aliases map to apply_patch_freeform",
+        "legacy memory and screen-context aliases map to rebranded AgenC keys",
+        "removed compatibility flags are known without re-enabling deleted behavior",
         "experimental feature specs are discoverable for menus"
       ],
       "tests": [

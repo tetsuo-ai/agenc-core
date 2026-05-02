@@ -46,9 +46,9 @@ describe("ModelRegistry", () => {
     expect(entry.capabilities.supportsProviderNativeWebSearch).toBe(true);
     expect(modelRegistryEntryToModelInfo(entry)).toMatchObject({
       slug: "gpt-5.4",
-      defaultReasoningLevel: "high",
+      defaultReasoningLevel: "xhigh",
       defaultReasoningSummary: "none",
-      supportedReasoningLevels: ["low", "medium", "high"],
+      supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
     });
   });
 

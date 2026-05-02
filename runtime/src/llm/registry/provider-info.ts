@@ -75,6 +75,7 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
     "gpt-5.4-mini",
     "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
     "gpt-5.2",
+    "codex-auto-review", // branding-scan: allow OpenAI model identifier
     "o3",
   ]),
   anthropic: Object.freeze(["claude-opus-4-7"]),

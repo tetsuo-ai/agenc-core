@@ -24,11 +24,13 @@ export interface RegisteredModelCatalogEntry {
   readonly supportsParallelToolCalls: boolean;
   readonly supportsStructuredOutput: boolean;
   readonly supportsSearchTool: boolean;
+  readonly supportsVerbosity: boolean;
   readonly webSearchToolType: ModelWebSearchToolType;
   readonly supportsReasoningSummaries: boolean;
   readonly defaultReasoningSummary: ReasoningSummary;
   readonly supportedReasoningLevels: readonly ReasoningEffort[];
   readonly defaultReasoningLevel?: ReasoningEffort;
+  readonly additionalSpeedTiers: readonly string[];
   readonly priority: number;
   readonly visibility: "list" | "hide" | "none";
 }
@@ -53,11 +55,14 @@ const OPENAI_REASONING_LEVELS = Object.freeze([
   "low",
   "medium",
   "high",
+  "xhigh",
 ] as const satisfies readonly ReasoningEffort[]);
 const TEXT_IMAGE_MODALITIES = Object.freeze([
   "text",
   "image",
 ] as const satisfies readonly ModelInputModality[]);
+const FAST_SPEED_TIER = Object.freeze(["fast"] as const);
+const NO_ADDITIONAL_SPEED_TIERS = Object.freeze([] as const);
 
 export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
   Object.freeze([
@@ -72,18 +77,20 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       supportsParallelToolCalls: true,
       supportsStructuredOutput: true,
       supportsSearchTool: true,
+      supportsVerbosity: true,
       webSearchToolType: "text_and_image",
       supportsReasoningSummaries: true,
       defaultReasoningSummary: "none",
       supportedReasoningLevels: OPENAI_REASONING_LEVELS,
       defaultReasoningLevel: "medium",
+      additionalSpeedTiers: FAST_SPEED_TIER,
       priority: 0,
       visibility: "list",
     },
     {
       provider: "openai",
       model: "gpt-5.4",
-      displayName: "GPT-5.4",
+      displayName: "gpt-5.4",
       contextWindow: 272_000,
       maxContextWindow: 1_000_000,
       inputModalities: TEXT_IMAGE_MODALITIES,
@@ -91,11 +98,13 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       supportsParallelToolCalls: true,
       supportsStructuredOutput: true,
       supportsSearchTool: true,
+      supportsVerbosity: true,
       webSearchToolType: "text_and_image",
       supportsReasoningSummaries: true,
       defaultReasoningSummary: "none",
       supportedReasoningLevels: OPENAI_REASONING_LEVELS,
-      defaultReasoningLevel: "high",
+      defaultReasoningLevel: "xhigh",
+      additionalSpeedTiers: FAST_SPEED_TIER,
       priority: 2,
       visibility: "list",
     },
@@ -110,18 +119,20 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       supportsParallelToolCalls: true,
       supportsStructuredOutput: true,
       supportsSearchTool: true,
+      supportsVerbosity: true,
       webSearchToolType: "text_and_image",
       supportsReasoningSummaries: true,
       defaultReasoningSummary: "none",
       supportedReasoningLevels: OPENAI_REASONING_LEVELS,
       defaultReasoningLevel: "medium",
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
       priority: 4,
       visibility: "list",
     },
     {
       provider: "openai",
       model: "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
-      displayName: "GPT-5.3 coding",
+      displayName: "gpt-5.3-codex", // branding-scan: allow OpenAI model display identifier
       contextWindow: 272_000,
       maxContextWindow: 272_000,
       inputModalities: TEXT_IMAGE_MODALITIES,
@@ -129,18 +140,20 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       supportsParallelToolCalls: true,
       supportsStructuredOutput: true,
       supportsSearchTool: true,
+      supportsVerbosity: true,
       webSearchToolType: "text",
       supportsReasoningSummaries: true,
       defaultReasoningSummary: "none",
       supportedReasoningLevels: OPENAI_REASONING_LEVELS,
       defaultReasoningLevel: "medium",
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
       priority: 6,
       visibility: "list",
     },
     {
       provider: "openai",
       model: "gpt-5.2",
-      displayName: "GPT-5.2",
+      displayName: "gpt-5.2",
       contextWindow: 272_000,
       maxContextWindow: 272_000,
       inputModalities: TEXT_IMAGE_MODALITIES,
@@ -148,13 +161,36 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       supportsParallelToolCalls: true,
       supportsStructuredOutput: true,
       supportsSearchTool: true,
+      supportsVerbosity: true,
       webSearchToolType: "text",
       supportsReasoningSummaries: true,
       defaultReasoningSummary: "auto",
       supportedReasoningLevels: OPENAI_REASONING_LEVELS,
       defaultReasoningLevel: "medium",
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
       priority: 10,
       visibility: "list",
+    },
+    {
+      provider: "openai",
+      model: "codex-auto-review", // branding-scan: allow OpenAI model identifier
+      displayName: "AgenC Auto Review",
+      contextWindow: 272_000,
+      maxContextWindow: 1_000_000,
+      inputModalities: TEXT_IMAGE_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: true,
+      supportsStructuredOutput: true,
+      supportsSearchTool: true,
+      supportsVerbosity: true,
+      webSearchToolType: "text_and_image",
+      supportsReasoningSummaries: true,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: OPENAI_REASONING_LEVELS,
+      defaultReasoningLevel: "medium",
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority: 29,
+      visibility: "hide",
     },
   ]);
 

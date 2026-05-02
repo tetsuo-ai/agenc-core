@@ -69,7 +69,7 @@ export interface ModelInfo {
   readonly usedFallbackModelMetadata: boolean;
 }
 
-export type ReasoningEffort = "low" | "medium" | "high" | "none";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "none";
 export type ReasoningSummary = "auto" | "concise" | "detailed" | "none";
 export type TruncationPolicy = "head" | "middle" | "off";
 

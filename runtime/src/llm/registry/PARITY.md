@@ -11,6 +11,9 @@ Primary source anchors:
 - `co\u0064ex-rs/features/src/legacy.rs`
 
 This directory owns the AgenC TypeScript registry for LLM catalog data:
-- `model-catalog.ts` stores executable per-model metadata and capability hints.
-- `provider-info.ts` stores built-in provider defaults and request retry metadata.
-- `features.ts` stores staged feature definitions and legacy-key normalization.
+- `model-catalog.ts` stores executable per-model metadata, capability hints,
+  supported reasoning levels, and visibility metadata.
+- `provider-info.ts` stores built-in provider defaults, request retry metadata,
+  and live metadata URL/auth defaults.
+- `features.ts` stores the complete staged feature definition set and
+  legacy-key normalization with AgenC-owned names.

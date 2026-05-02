@@ -44,11 +44,21 @@ function fakeMcpManager() {
 }
 
 function fakeSession(): Session {
+  const modelInfo = {
+    slug: "test-model",
+    effectiveContextWindowPercent: 95,
+    supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+    defaultReasoningLevel: "medium",
+    defaultReasoningSummary: "auto",
+    truncationPolicy: "off",
+    usedFallbackModelMetadata: false,
+  } as const;
   return {
     conversationId: "session-test",
     config: {
       cwd: process.cwd(),
     },
+    modelInfo,
     sessionConfiguration: {
       cwd: process.cwd(),
       collaborationMode: {
@@ -62,6 +72,11 @@ function fakeSession(): Session {
       send: () => 1,
     },
     services: {
+      modelsManager: {
+        tryListModels: () => [modelInfo],
+        listModels: async () => [modelInfo],
+        getModelInfo: async () => modelInfo,
+      },
       mcpManager: fakeMcpManager(),
       skillsManager: {
         skillsForConfig: async () => ({
@@ -800,6 +815,7 @@ describe("model-facing tools", () => {
       message: "inspect",
       task_name: "task_1",
       agent_type: "runner",
+      reasoning_effort: "xhigh",
       fork_turns: "none",
     });
 
@@ -815,6 +831,7 @@ describe("model-facing tools", () => {
         taskPrompt: "inspect",
         agentName: "task_1",
         role: "worker",
+        reasoningEffort: "xhigh",
         runInBackground: true,
       }),
     );

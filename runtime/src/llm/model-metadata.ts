@@ -5,6 +5,10 @@ import {
 } from "./_deps/config.js";
 import { resolveModelCatalogMetadata } from "./registry/model-catalog.js";
 import {
+  BUILT_IN_PROVIDER_API_KEY_ENVS,
+  BUILT_IN_PROVIDER_BASE_URLS,
+} from "./registry/provider-info.js";
+import {
   boundedOutputTokens,
   CAPPED_DEFAULT_MAX_OUTPUT_TOKENS,
   DEFAULT_MAX_OUTPUT_TOKENS,
@@ -23,28 +27,6 @@ const MODELS_DEV_API_URL = "https://models.dev/api.json";
 const LITELLM_MODEL_MAP_URL =
   "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
-
-const DEFAULT_PROVIDER_BASE_URLS: Readonly<Record<string, string>> =
-  Object.freeze({
-    grok: "https://api.x.ai/v1",
-    openai: "https://api.openai.com/v1",
-    lmstudio: "http://localhost:1234/v1",
-    "openai-compatible": "http://localhost:8000/v1",
-    openrouter: "https://openrouter.ai/api/v1",
-    groq: "https://api.groq.com/openai/v1",
-    deepseek: "https://api.deepseek.com/v1",
-  });
-
-const DEFAULT_PROVIDER_API_KEY_ENVS: Readonly<Record<string, string>> =
-  Object.freeze({
-    grok: "XAI_API_KEY",
-    openai: "OPENAI_API_KEY",
-    lmstudio: "LMSTUDIO_API_KEY",
-    "openai-compatible": "OPENAI_COMPATIBLE_API_KEY",
-    openrouter: "OPENROUTER_API_KEY",
-    groq: "GROQ_API_KEY",
-    deepseek: "DEEPSEEK_API_KEY",
-  });
 
 const LIVE_METADATA_PROVIDERS = new Set([
   "grok",
@@ -653,7 +635,7 @@ function providerBaseUrl(
   const providerConfig = readProviderConfig(config, provider);
   const configured = providerConfig?.base_url?.trim();
   const envBaseURL = envBaseUrl(provider, env);
-  return envBaseURL || configured || DEFAULT_PROVIDER_BASE_URLS[provider];
+  return envBaseURL || configured || defaultProviderBaseUrl(provider);
 }
 
 function modelsUrlFromBaseUrl(baseUrl: string): string {
@@ -708,12 +690,22 @@ function envApiKey(
   provider: string,
   env: Readonly<Record<string, string | undefined>>,
 ): string | undefined {
-  const primaryEnv = DEFAULT_PROVIDER_API_KEY_ENVS[provider];
+  const primaryEnv = defaultProviderApiKeyEnv(provider);
   const primary = primaryEnv ? nonEmpty(env[primaryEnv]) : undefined;
   if (primary) return primary;
   return provider === "lmstudio" || provider === "openai-compatible"
     ? nonEmpty(env.OPENAI_API_KEY)
     : undefined;
+}
+
+function defaultProviderBaseUrl(provider: string): string | undefined {
+  const slug = normalizeProviderSlug(provider);
+  return slug === undefined ? undefined : BUILT_IN_PROVIDER_BASE_URLS[slug];
+}
+
+function defaultProviderApiKeyEnv(provider: string): string | undefined {
+  const slug = normalizeProviderSlug(provider);
+  return slug === undefined ? undefined : BUILT_IN_PROVIDER_API_KEY_ENVS[slug];
 }
 
 function nonEmpty(value: string | undefined): string | undefined {

@@ -1,15 +1,99 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  AGENC_FEATURE_SPECS,
   AgenCFeatureSet,
   experimentalFeatureSpecs,
   featureForKey,
   listBuiltInProviderInfo,
+  listRegisteredModelCatalogEntries,
   resolveBuiltInProviderInfo,
   resolveModelCapabilityHints,
   resolveModelCatalogMetadata,
   resolveRegisteredModelCatalogEntry,
 } from "./index.js";
+
+const DONOR_MODEL_IDS = Object.freeze([
+  "gpt-5.5",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
+  "gpt-5.2",
+  "codex-auto-review", // branding-scan: allow OpenAI model identifier
+]);
+
+const DONOR_FEATURE_KEYS = Object.freeze([
+  "undo",
+  "shell_tool",
+  "unified_exec",
+  "shell_zsh_fork",
+  "shell_snapshot",
+  "js_repl",
+  "code_mode",
+  "code_mode_only",
+  "js_repl_tools_only",
+  "terminal_resize_reflow",
+  "web_search_request",
+  "web_search_cached",
+  "search_tool",
+  "agenc_git_commit",
+  "runtime_metrics",
+  "sqlite",
+  "memories",
+  "chronicle",
+  "child_agents_md",
+  "apply_patch_freeform",
+  "apply_patch_streaming_events",
+  "exec_permission_approvals",
+  "hooks",
+  "request_permissions_tool",
+  "use_linux_sandbox_bwrap",
+  "use_legacy_landlock",
+  "request_rule",
+  "experimental_windows_sandbox",
+  "elevated_windows_sandbox",
+  "remote_models",
+  "enable_request_compression",
+  "multi_agent",
+  "multi_agent_v2",
+  "enable_fanout",
+  "apps",
+  "enable_mcp_apps",
+  "apps_mcp_path_override",
+  "tool_search",
+  "tool_search_always_defer_mcp_tools",
+  "unavailable_dummy_tools",
+  "tool_suggest",
+  "plugins",
+  "plugin_hooks",
+  "in_app_browser",
+  "browser_use",
+  "browser_use_external",
+  "computer_use",
+  "remote_plugin",
+  "external_migration",
+  "image_generation",
+  "skill_mcp_dependency_install",
+  "skill_env_var_dependency_prompt",
+  "steer",
+  "default_mode_request_user_input",
+  "guardian_approval",
+  "goals",
+  "collaboration_modes",
+  "tool_call_mcp_elicitation",
+  "personality",
+  "artifact",
+  "fast_mode",
+  "realtime_conversation",
+  "remote_control",
+  "image_detail_original",
+  "tui_app_server",
+  "prevent_idle_sleep",
+  "workspace_owner_usage_nudge",
+  "responses_websockets",
+  "responses_websockets_v2",
+  "workspace_dependencies",
+]);
 
 describe("LLM registry", () => {
   it("lists built-in providers with request and auth metadata", () => {
@@ -41,9 +125,9 @@ describe("LLM registry", () => {
         model: "gpt-5.4",
       }),
     ).toMatchObject({
-      displayName: "GPT-5.4",
+      displayName: "gpt-5.4",
       priority: 2,
-      defaultReasoningLevel: "high",
+      defaultReasoningLevel: "xhigh",
     });
 
     expect(
@@ -62,6 +146,35 @@ describe("LLM registry", () => {
       }),
     ).toMatchObject({
       contextWindow: 272_000,
+    });
+  });
+
+  it("preserves the complete bundled donor model catalog shape", () => {
+    const entries = listRegisteredModelCatalogEntries("openai");
+
+    expect(entries.map((entry) => entry.model)).toEqual(DONOR_MODEL_IDS);
+    for (const entry of entries) {
+      expect(entry.supportedReasoningLevels).toEqual([
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+      ]);
+      expect(entry.supportsVerbosity).toBe(true);
+      expect(entry.supportsParallelToolCalls).toBe(true);
+      expect(entry.supportsReasoningSummaries).toBe(true);
+    }
+    expect(entries.find((entry) => entry.model === "gpt-5.4")).toMatchObject({
+      maxContextWindow: 1_000_000,
+      defaultReasoningLevel: "xhigh",
+      additionalSpeedTiers: ["fast"],
+    });
+    expect(
+      entries.find((entry) => entry.model === "codex-auto-review"), // branding-scan: allow OpenAI model identifier
+    ).toMatchObject({
+      displayName: "AgenC Auto Review",
+      visibility: "hide",
+      priority: 29,
     });
   });
 
@@ -84,17 +197,71 @@ describe("LLM registry", () => {
   it("normalizes staged feature defaults and legacy keys", () => {
     const features = AgenCFeatureSet.fromConfig({
       include_apply_patch_tool: true,
+      enable_fanout: true,
+      code_mode_only: true,
       multi_agent_v2: true,
+      js_repl: true,
       unknown_feature: true,
     });
 
     expect(featureForKey("web_search")).toBe("web_search_request");
+    expect(featureForKey("memory_tool")).toBe("memories");
+    expect(featureForKey("telepathy")).toBe("chronicle");
+    expect(featureForKey("agenc_hooks")).toBe("hooks");
     expect(features.enabled("shell_tool")).toBe(true);
     expect(features.enabled("apply_patch_freeform")).toBe(true);
+    expect(features.enabled("enable_fanout")).toBe(true);
+    expect(features.enabled("code_mode_only")).toBe(true);
+    expect(features.enabled("code_mode")).toBe(true);
     expect(features.enabled("multi_agent_v2")).toBe(true);
     expect(features.enabled("multi_agent")).toBe(true);
+    expect(features.enabled("js_repl")).toBe(false);
     expect(experimentalFeatureSpecs().map((entry) => entry.key)).toContain(
       "goals",
     );
+  });
+
+  it("preserves donor feature keys, stages, and default states", () => {
+    expect(AGENC_FEATURE_SPECS.map((entry) => entry.key)).toEqual(
+      DONOR_FEATURE_KEYS,
+    );
+    expect(new Set(DONOR_FEATURE_KEYS).size).toBe(DONOR_FEATURE_KEYS.length);
+
+    const specByKey = new Map(
+      AGENC_FEATURE_SPECS.map((spec) => [spec.key, spec]),
+    );
+    expect(specByKey.get("tool_search")).toMatchObject({
+      stage: "stable",
+      defaultEnabled: true,
+    });
+    expect(specByKey.get("plugins")).toMatchObject({
+      stage: "stable",
+      defaultEnabled: true,
+    });
+    expect(specByKey.get("computer_use")).toMatchObject({
+      stage: "stable",
+      defaultEnabled: true,
+    });
+    expect(specByKey.get("enable_request_compression")).toMatchObject({
+      stage: "stable",
+      defaultEnabled: true,
+    });
+    expect(specByKey.get("artifact")).toMatchObject({
+      stage: "under_development",
+      defaultEnabled: false,
+    });
+    expect(specByKey.get("use_legacy_landlock")).toMatchObject({
+      stage: "deprecated",
+      defaultEnabled: false,
+    });
+    expect(specByKey.get("search_tool")).toMatchObject({
+      stage: "removed",
+      defaultEnabled: false,
+    });
+    expect(specByKey.get("terminal_resize_reflow")).toMatchObject({
+      stage: "experimental",
+      defaultEnabled: true,
+    });
+    expect(specByKey.get("prevent_idle_sleep")?.defaultEnabled).toBe(false);
   });
 });
