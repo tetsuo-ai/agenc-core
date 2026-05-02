@@ -115,6 +115,10 @@ import {
   parseAgenCProvidersCliArgs,
   runAgenCProvidersCli,
 } from "./providers-cli.js";
+import {
+  parseAgenCStateCliArgs,
+  runAgenCStateCli,
+} from "./state-cli.js";
 
 export {
   bootstrapLocalRuntimeSession,
@@ -134,6 +138,8 @@ export function formatCliHelpText(): string {
     "       agenc logout",
     "       agenc whoami",
     "       agenc providers [--json]",
+    "       agenc state export <agent-id>",
+    "       agenc state import",
     "       agenc daemon <start|stop|status|restart>",
     "       agenc agent start <objective>",
     "       agenc agent list",
@@ -1696,6 +1702,10 @@ export async function main(): Promise<number> {
   const providersCommand = parseAgenCProvidersCliArgs(argv);
   if (providersCommand !== null) {
     return runAgenCProvidersCli(providersCommand);
+  }
+  const stateCommand = parseAgenCStateCliArgs(argv);
+  if (stateCommand !== null) {
+    return runAgenCStateCli(stateCommand);
   }
 
   const startupShortCircuit = detectStartupShortCircuit(argv);
