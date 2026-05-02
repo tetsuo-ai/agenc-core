@@ -1,6 +1,6 @@
 import { readFile } from 'fs/promises'
 import { join } from 'path'
-import { roughTokenCountEstimation } from '../../services/tokenEstimation.js'
+import { roughTokenCountEstimation } from '../../llm/token-estimation.js'
 import { getAgenCConfigHomeDir } from '../../utils/envUtils.js'
 import { getErrnoCode, toError } from '../../utils/errors.js'
 import { logError } from '../../utils/log.js'

@@ -1,0 +1,97 @@
+{
+  "contractName": "api-token-estimation-parity",
+  "scope": "Port provider-aware rough token estimation for tools, compaction, and prompt budgeting",
+  "generatedAt": "2026-05-02T00:00:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/openclaude", "sourceRootBrandingScanOverride": "branding-scan: allow upstream source path",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/services/tokenEstimation.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/llm/token-estimation.ts",
+    "runtime/src/agenc/adapters/compact-runtime.ts",
+    "runtime/src/tools/system/file-read.ts",
+    "runtime/src/services/SessionMemory/prompts.ts"
+  ],
+  "testFiles": [
+    "runtime/src/llm/token-estimation.test.ts",
+    "runtime/src/tools/system/file-read.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "rough-provider-ratios",
+      "source": "src/services/tokenEstimation.ts::roughTokenCountEstimation + getTokenizerConfig",
+      "target": "runtime/src/llm/token-estimation.ts",
+      "requiredBehaviors": [
+        "preserve the rough character-count estimator with a configurable bytes-per-token ratio",
+        "resolve model-family ratios for Anthropic, OpenAI, xAI, Gemini, Llama-compatible, DeepSeek, and MiniMax providers",
+        "fall back to the default four-byte ratio for unknown providers and models",
+        "allow callers to override the ratio explicitly"
+      ],
+      "edgeCases": [
+        "provider hint without model",
+        "model hint without provider",
+        "unknown model family",
+        "invalid explicit ratio"
+      ],
+      "tests": [
+        "runtime/src/llm/token-estimation.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/token-estimation.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "file-content-density",
+      "source": "src/services/tokenEstimation.ts::bytesPerTokenForFileType + roughTokenCountEstimationForFileType",
+      "target": "runtime/src/llm/token-estimation.ts + runtime/src/tools/system/file-read.ts",
+      "requiredBehaviors": [
+        "treat json, jsonl, and jsonc files as dense two-byte-per-token content",
+        "keep text-like files on the default four-byte ratio",
+        "use the shared file-type estimator for FileRead token-cap checks"
+      ],
+      "edgeCases": [
+        "leading-dot extensions",
+        "uppercase or mixed-case extensions",
+        "partial FileRead slices",
+        "PDF text extraction retaining default text ratio"
+      ],
+      "tests": [
+        "runtime/src/llm/token-estimation.test.ts",
+        "runtime/src/tools/system/file-read.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/token-estimation.test.ts src/tools/system/file-read.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "content-and-message-estimation",
+      "source": "src/services/tokenEstimation.ts::detectContentType + estimateWithBounds + roughTokenCountEstimationForMessages",
+      "target": "runtime/src/llm/token-estimation.ts + runtime/src/agenc/adapters/compact-runtime.ts + runtime/src/services/SessionMemory/prompts.ts",
+      "requiredBehaviors": [
+        "detect JSON, table, list, code, technical, and prose content classes",
+        "produce min, max, and typical token estimates from content compression ratios",
+        "estimate multimodal content without serializing image or document payloads",
+        "recurse through tool_result content and stringify tool_use input once",
+        "use the shared message estimator from compaction and session-memory prompt budgeting"
+      ],
+      "edgeCases": [
+        "invalid JSON falling through to other heuristics",
+        "empty content",
+        "image and document blocks",
+        "tool_result arrays",
+        "runtime messages with content outside message.content"
+      ],
+      "tests": [
+        "runtime/src/llm/token-estimation.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/token-estimation.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}
