@@ -12,6 +12,7 @@ export type {
   AgenCConfig,
   AgentBudgetConfig,
   AgentConfig,
+  AgentRunRetentionConfig,
   ApprovalPolicy,
   ApprovalsReviewer,
   SandboxMode,
