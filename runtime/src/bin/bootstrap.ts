@@ -1081,6 +1081,10 @@ export async function bootstrapLocalRuntimeSession(
       ...(selectedApiKey
         ? { apiKey: selectedApiKey }
         : {}),
+      ...(options.authBackend !== undefined
+        ? { authBackend: options.authBackend }
+        : {}),
+      authSubscriptionTier,
       registry,
       mcpManager: createSessionMcpService(mcpManager, { env }),
       unifiedExecManager,
