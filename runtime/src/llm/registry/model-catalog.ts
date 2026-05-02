@@ -37,6 +37,7 @@ export interface RegisteredModelCatalogEntry {
 
 export interface ModelCatalogMetadata {
   readonly contextWindow?: number;
+  readonly maxContextWindow?: number;
   readonly maxOutputTokens?: number;
   readonly maxOutputTokensUpperLimit?: number;
 }
@@ -233,6 +234,9 @@ export function resolveModelCatalogMetadata(input: {
   return {
     ...(entry.contextWindow !== undefined
       ? { contextWindow: entry.contextWindow }
+      : {}),
+    ...(entry.maxContextWindow !== undefined
+      ? { maxContextWindow: entry.maxContextWindow }
       : {}),
     ...(entry.maxOutputTokens !== undefined
       ? {

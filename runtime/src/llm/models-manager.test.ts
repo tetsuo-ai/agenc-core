@@ -190,6 +190,29 @@ describe("StaticModelsManager", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("caps explicit context metadata at the registered model maximum", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "openai",
+        model: "gpt-5.4-mini",
+        providers: {
+          openai: {
+            default_model: "gpt-5.4-mini",
+            context_window_tokens: 1_000_000,
+          },
+        },
+      }),
+      fallbackProvider: "openai",
+      metadata: { fetchImpl },
+    });
+
+    const info = await manager.getModelInfo("gpt-5.4-mini");
+    expect(info.contextWindow).toBe(272_000);
+    expect(info.usedFallbackModelMetadata).toBe(false);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("keeps explicit provider max_output_tokens authoritative", async () => {
     const manager = new StaticModelsManager({
       config: mergeConfigs(defaultConfig(), {

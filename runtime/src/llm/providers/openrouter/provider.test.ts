@@ -3,17 +3,22 @@ import { describe, expect, test, vi } from "vitest";
 import {
   OPENROUTER_DEFAULT_REFERER,
   OPENROUTER_DEFAULT_TITLE,
-  OPENROUTER_MODEL_CATALOG,
   OpenRouterProvider,
 } from "./index.js";
+import {
+  BUILT_IN_PROVIDER_BASE_URLS,
+  BUILT_IN_PROVIDER_DEFAULT_MODELS,
+  BUILT_IN_PROVIDER_MODEL_CATALOG,
+} from "../../registry/provider-info.js";
 
 describe("OpenRouterProvider", () => {
   test("sends OpenRouter routing headers on chat-completions requests", async () => {
+    const model = BUILT_IN_PROVIDER_DEFAULT_MODELS.openrouter;
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({
           id: "chatcmpl_openrouter",
-          model: "openai/gpt-5",
+          model,
           choices: [
             {
               message: {
@@ -38,7 +43,7 @@ describe("OpenRouterProvider", () => {
 
     const provider = new OpenRouterProvider({
       apiKey: "or-test",
-      model: "openai/gpt-5",
+      model,
       fetchImpl,
     });
 
@@ -46,20 +51,23 @@ describe("OpenRouterProvider", () => {
 
     expect(response.content).toBe("ok");
     const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
-    expect(String(requestUrl)).toBe("https://openrouter.ai/api/v1/chat/completions");
+    expect(String(requestUrl)).toBe(
+      `${BUILT_IN_PROVIDER_BASE_URLS.openrouter}/chat/completions`,
+    );
     const headers = init?.headers as Headers;
     expect(headers.get("authorization")).toBe("Bearer or-test");
     expect(headers.get("http-referer")).toBe(OPENROUTER_DEFAULT_REFERER);
     expect(headers.get("x-title")).toBe(OPENROUTER_DEFAULT_TITLE);
     const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    expect(requestBody.model).toBe("openai/gpt-5");
+    expect(requestBody.model).toBe(model);
     expect(requestBody.stream).toBe(false);
   });
 
-  test.each([
-    "openai/gpt-5-mini",
-    "x-ai/grok-code-fast-1",
-  ] as const)(
+  test.each(
+    BUILT_IN_PROVIDER_MODEL_CATALOG.openrouter.filter(
+      (model) => model !== BUILT_IN_PROVIDER_DEFAULT_MODELS.openrouter,
+    ),
+  )(
     "routes OpenRouter model %s through chat completions",
     async (model) => {
       const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
@@ -91,7 +99,7 @@ describe("OpenRouterProvider", () => {
 
       const provider = new OpenRouterProvider({
         apiKey: "or-test",
-        model: "openai/gpt-5",
+        model: BUILT_IN_PROVIDER_DEFAULT_MODELS.openrouter,
         fetchImpl,
       });
 
@@ -103,7 +111,7 @@ describe("OpenRouterProvider", () => {
       expect(response.content).toBe("ok");
       const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
       expect(String(requestUrl)).toBe(
-        "https://openrouter.ai/api/v1/chat/completions",
+        `${BUILT_IN_PROVIDER_BASE_URLS.openrouter}/chat/completions`,
       );
       const headers = init?.headers as Headers;
       expect(headers.get("authorization")).toBe("Bearer or-test");
@@ -111,7 +119,7 @@ describe("OpenRouterProvider", () => {
       expect(headers.get("x-title")).toBe(OPENROUTER_DEFAULT_TITLE);
       const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
       expect(requestBody.model).toBe(model);
-      expect(OPENROUTER_MODEL_CATALOG).toContain(model);
+      expect(BUILT_IN_PROVIDER_MODEL_CATALOG.openrouter).toContain(model);
     },
   );
 
@@ -140,7 +148,7 @@ describe("OpenRouterProvider", () => {
 
     const provider = new OpenRouterProvider({
       apiKey: "or-test",
-      model: "openai/gpt-5",
+      model: BUILT_IN_PROVIDER_DEFAULT_MODELS.openrouter,
       defaultHeaders: {
         "HTTP-Referer": "https://app.agenc.tech",
         "X-Title": "AgenC Test",

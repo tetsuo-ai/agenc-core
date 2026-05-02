@@ -1,18 +1,20 @@
 import { describe, expect, test, vi } from "vitest";
 
+import { GroqProvider } from "./index.js";
 import {
-  GROQ_DEFAULT_MODEL,
-  GROQ_MODEL_CATALOG,
-  GroqProvider,
-} from "./index.js";
+  BUILT_IN_PROVIDER_BASE_URLS,
+  BUILT_IN_PROVIDER_DEFAULT_MODELS,
+  BUILT_IN_PROVIDER_MODEL_CATALOG,
+} from "../../registry/provider-info.js";
 
 describe("GroqProvider", () => {
   test("uses the OpenAI-compatible Groq endpoint and bearer auth", async () => {
+    const model = BUILT_IN_PROVIDER_DEFAULT_MODELS.groq;
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({
           id: "chatcmpl_groq",
-          model: GROQ_DEFAULT_MODEL,
+          model,
           choices: [
             {
               message: {
@@ -37,7 +39,7 @@ describe("GroqProvider", () => {
 
     const provider = new GroqProvider({
       apiKey: "groq-test",
-      model: GROQ_DEFAULT_MODEL,
+      model,
       fetchImpl,
     });
 
@@ -45,18 +47,21 @@ describe("GroqProvider", () => {
 
     expect(response.content).toBe("ok");
     const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
-    expect(String(requestUrl)).toBe("https://api.groq.com/openai/v1/chat/completions");
+    expect(String(requestUrl)).toBe(
+      `${BUILT_IN_PROVIDER_BASE_URLS.groq}/chat/completions`,
+    );
     const headers = init?.headers as Headers;
     expect(headers.get("authorization")).toBe("Bearer groq-test");
     const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    expect(requestBody.model).toBe(GROQ_DEFAULT_MODEL);
+    expect(requestBody.model).toBe(model);
     expect(requestBody.stream).toBe(false);
   });
 
-  test.each([
-    "llama-3.1-8b-instant",
-    "mixtral-8x7b-32768",
-  ] as const)("routes Groq model %s through chat completions", async (model) => {
+  test.each(
+    BUILT_IN_PROVIDER_MODEL_CATALOG.groq.filter(
+      (model) => model !== BUILT_IN_PROVIDER_DEFAULT_MODELS.groq,
+    ),
+  )("routes Groq model %s through chat completions", async (model) => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -86,7 +91,7 @@ describe("GroqProvider", () => {
 
     const provider = new GroqProvider({
       apiKey: "groq-test",
-      model: GROQ_DEFAULT_MODEL,
+      model: BUILT_IN_PROVIDER_DEFAULT_MODELS.groq,
       fetchImpl,
     });
 
@@ -97,11 +102,13 @@ describe("GroqProvider", () => {
 
     expect(response.content).toBe("ok");
     const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
-    expect(String(requestUrl)).toBe("https://api.groq.com/openai/v1/chat/completions");
+    expect(String(requestUrl)).toBe(
+      `${BUILT_IN_PROVIDER_BASE_URLS.groq}/chat/completions`,
+    );
     const headers = init?.headers as Headers;
     expect(headers.get("authorization")).toBe("Bearer groq-test");
     const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
     expect(requestBody.model).toBe(model);
-    expect(GROQ_MODEL_CATALOG).toContain(model);
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.groq).toContain(model);
   });
 });

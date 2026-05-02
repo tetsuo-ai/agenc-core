@@ -71,6 +71,7 @@ interface LookupParams {
 
 interface ModelMetadataValues {
   readonly contextWindow?: number;
+  readonly maxContextWindow?: number;
   readonly maxOutputTokens?: number;
   readonly maxOutputTokensUpperLimit?: number;
   readonly maxOutputTokensExplicit?: boolean;
@@ -313,19 +314,23 @@ function readExplicitConfigMetadata(
   const providerConfig = readProviderConfig(params.config, params.provider) as
     | Record<string, unknown>
     | undefined;
+  const explicitContextWindow = readPositiveInteger(
+    providerConfig,
+    "context_window_tokens",
+    "contextWindowTokens",
+  );
+  const catalogMaxContextWindow = resolveModelCatalogMetadata({
+    provider: params.provider,
+    model: params.model,
+  })?.maxContextWindow;
+  const contextWindow =
+    explicitContextWindow !== undefined && catalogMaxContextWindow !== undefined
+      ? Math.min(explicitContextWindow, catalogMaxContextWindow)
+      : explicitContextWindow;
   return {
-    ...(readPositiveInteger(
-      providerConfig,
-      "context_window_tokens",
-      "contextWindowTokens",
-    ) !== undefined
-      ? {
-        contextWindow: readPositiveInteger(
-          providerConfig,
-          "context_window_tokens",
-          "contextWindowTokens",
-        ),
-      }
+    ...(contextWindow !== undefined ? { contextWindow } : {}),
+    ...(catalogMaxContextWindow !== undefined
+      ? { maxContextWindow: catalogMaxContextWindow }
       : {}),
     ...(readPositiveInteger(
       providerConfig,

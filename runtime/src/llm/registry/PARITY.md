@@ -14,10 +14,13 @@ Primary source anchors:
 This directory owns the AgenC TypeScript registry for LLM catalog data:
 - `model-catalog.ts` stores executable per-model metadata, capability hints,
   supported reasoning levels, and visibility metadata. The hidden review-only
-  model row feeds guardian approval review selection.
+  model row feeds guardian approval review selection, and model maximum context
+  windows cap explicit provider configuration.
 - `provider-info.ts` stores built-in provider defaults, request retry metadata,
   live metadata URL/auth defaults, and source rows that are intentionally
-  outside AgenC's current runtime provider scope.
+  outside AgenC's current runtime provider scope. Provider factories and
+  adapter defaults consume this registry rather than exporting local model
+  catalog tables.
 - `features.ts` stores the complete staged feature definition set and
   legacy-key normalization with AgenC-owned names, including structured
   feature config enablement semantics.
