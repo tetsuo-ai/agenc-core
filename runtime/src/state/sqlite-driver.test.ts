@@ -66,6 +66,24 @@ describe("openStateDatabases", () => {
         .toMatchObject({ notnull: 1, pk: 1 });
       expect(snapshotColumns.find((column) => column.name === "snapshot_at"))
         .toMatchObject({ notnull: 1, pk: 2 });
+      const toolCallColumns = driver
+        .prepareState<[], { name: string; notnull: number; pk: number }>(
+          "PRAGMA table_info(in_flight_tool_calls)",
+        )
+        .all();
+      expect(toolCallColumns.map((column) => column.name)).toEqual([
+        "session_id",
+        "tool_call_id",
+        "tool_name",
+        "args_json",
+        "status",
+        "output_partial",
+        "started_at",
+      ]);
+      expect(toolCallColumns.find((column) => column.name === "session_id"))
+        .toMatchObject({ notnull: 1, pk: 1 });
+      expect(toolCallColumns.find((column) => column.name === "tool_call_id"))
+        .toMatchObject({ notnull: 1, pk: 2 });
       expect(
         driver
           .prepareLogs<[], { name: string }>(
