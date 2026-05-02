@@ -1,0 +1,75 @@
+{
+  "contractName": "provider-availability-cli-parity",
+  "scope": "Expose `agenc providers` readiness for BYOK credentials, local provider health, and AgenC subscription-backed managed keys",
+  "generatedAt": "2026-05-02T00:00:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/codex", "sourceRootBrandingScanOverride": "branding-scan: allow upstream source path",
+  "targetRoot": "..",
+  "sourceCommit": "48791920a8b122939c4d3feb15673c0a690ca4a0",
+  "sourceFiles": [
+    "co\u0064ex-rs/ollama/src/client.rs",
+    "co\u0064ex-rs/lmstudio/src/client.rs"
+  ],
+  "targetFiles": [
+    "runtime/src/bin/providers-cli.ts",
+    "runtime/src/bin/agenc.ts"
+  ],
+  "testFiles": [
+    "runtime/src/bin/providers-cli.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "provider-readiness-table",
+      "source": "local provider client startup checks plus AgenC auth/key configuration",
+      "target": "runtime/src/bin/providers-cli.ts",
+      "requiredBehaviors": [
+        "list every built-in provider and its default model",
+        "show whether each provider is currently usable",
+        "show BYOK key presence and the relevant provider key env var",
+        "show the active auth backend and subscription tier",
+        "emit text and JSON output without booting a model session"
+      ],
+      "edgeCases": [
+        "missing hosted provider key",
+        "present hosted provider key",
+        "remote paid subscription can use managed keys",
+        "managed key vending failure makes a hosted provider unusable",
+        "empty or mismatched managed key responses are rejected",
+        "hosted AgenC routing requires a paid subscription",
+        "hosted AgenC routing verifies model inference and inferred-provider key vending"
+      ],
+      "tests": [
+        "runtime/src/bin/providers-cli.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/bin/providers-cli.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "local-provider-health",
+      "source": "co\u0064ex-rs/ollama/src/client.rs + co\u0064ex-rs/lmstudio/src/client.rs health probes",
+      "target": "runtime/src/bin/providers-cli.ts",
+      "requiredBehaviors": [
+        "probe Ollama through the native `/api/tags` endpoint",
+        "probe LM Studio through its `/models` endpoint",
+        "probe generic OpenAI-compatible endpoints through `/models`",
+        "surface failed local probes as unusable provider rows",
+        "support `--no-local-check` for fast non-probing diagnostics"
+      ],
+      "edgeCases": [
+        "local server returns success",
+        "local server returns a non-2xx status",
+        "local check skipped",
+        "key-backed local endpoints receive bearer auth on the probe",
+        "provider-specific base URL overrides"
+      ],
+      "tests": [
+        "runtime/src/bin/providers-cli.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/bin/providers-cli.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}
