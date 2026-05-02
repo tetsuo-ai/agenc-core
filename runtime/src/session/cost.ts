@@ -270,6 +270,11 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     agenc: DEFAULT_UNKNOWN_MODEL_COST,
     ollama: { inputUsdPer1K: 0, outputUsdPer1K: 0, label: "local" },
     lmstudio: { inputUsdPer1K: 0, outputUsdPer1K: 0, label: "local" },
+    "openai-compatible": {
+      inputUsdPer1K: 0,
+      outputUsdPer1K: 0,
+      label: "local",
+    },
   });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -362,7 +367,7 @@ export function computeUsdCostWithResolution(
   };
 }
 
-function resolveModelCostEntry(
+export function resolveModelCostEntry(
   usage: Pick<ModelUsage, "model" | "provider">,
   registry: Readonly<Record<string, ModelCostEntry>>,
 ): { readonly key: string; readonly entry: ModelCostEntry } | null {

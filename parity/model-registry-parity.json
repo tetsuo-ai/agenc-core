@@ -1,0 +1,103 @@
+{
+  "contractName": "model-registry-parity",
+  "scope": "Provide a single runtime model registry view that composes provider identity, context/output metadata, cost pricing, and provider/model capabilities",
+  "generatedAt": "2026-05-02T00:00:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/openclaude", "sourceRootBrandingScanOverride": "branding-scan: allow upstream source path",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/utils/model/modelOptions.ts",
+    "src/utils/modelCost.ts",
+    "src/cost-tracker.ts",
+    "src/services/api/providerConfig.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/llm/model-registry.ts",
+    "runtime/src/llm/model-metadata.ts",
+    "runtime/src/llm/capabilities.ts",
+    "runtime/src/llm/models-manager.ts",
+    "runtime/src/session/cost.ts",
+    "runtime/src/session/turn-context.ts"
+  ],
+  "testFiles": [
+    "runtime/src/llm/model-registry.test.ts",
+    "runtime/src/llm/models-manager.test.ts",
+    "runtime/src/llm/capabilities.test.ts",
+    "runtime/src/session/cost.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "registry-entry-composition",
+      "source": "model options, cost tracker, and provider config metadata anchors",
+      "target": "runtime/src/llm/model-registry.ts",
+      "requiredBehaviors": [
+        "return a single entry containing provider, model, metadata, cost, and capabilities",
+        "use ModelMetadataResolver as the context/output source",
+        "use the provider capability registry as the capability source",
+        "use the session cost registry as the pricing source"
+      ],
+      "edgeCases": [
+        "known hosted model",
+        "unknown local model",
+        "provider-qualified model names",
+        "unknown-cost fallback"
+      ],
+      "tests": [
+        "runtime/src/llm/model-registry.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/model-registry.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "models-manager-registry-consumer",
+      "source": "runtime model option listing anchors",
+      "target": "runtime/src/llm/models-manager.ts",
+      "requiredBehaviors": [
+        "build listed models from ModelRegistry entries",
+        "resolve provider:model selections through the registry",
+        "preserve context, output, reasoning, and fallback metadata in ModelInfo",
+        "keep live metadata lookup behavior unchanged"
+      ],
+      "edgeCases": [
+        "ambiguous model disambiguation",
+        "fallback provider for unknown slugs",
+        "live OpenAI-compatible /models metadata",
+        "explicit provider metadata overrides"
+      ],
+      "tests": [
+        "runtime/src/llm/models-manager.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/models-manager.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "cost-and-capability-registry-links",
+      "source": "cost tracker and capability metadata anchors",
+      "target": "runtime/src/session/cost.ts + runtime/src/llm/capabilities.ts",
+      "requiredBehaviors": [
+        "expose model cost resolution for registry composition",
+        "preserve provider-specific local zero-cost resolution",
+        "preserve capability overrides and drift state",
+        "fail closed for provider/model capability ambiguity"
+      ],
+      "edgeCases": [
+        "local provider model name matches paid hosted model",
+        "provider-specific cost aliases",
+        "capability overrides from config",
+        "stale capability drift marking"
+      ],
+      "tests": [
+        "runtime/src/session/cost.test.ts",
+        "runtime/src/llm/capabilities.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/session/cost.test.ts src/llm/capabilities.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

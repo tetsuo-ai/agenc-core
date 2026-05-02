@@ -11,6 +11,12 @@ import {
 } from "./cost.js";
 import { BUILT_IN_PROVIDER_DEFAULT_MODELS } from "../config/resolve-provider.js";
 
+const ZERO_COST_DEFAULT_PROVIDERS = new Set([
+  "lmstudio",
+  "ollama",
+  "openai-compatible",
+]);
+
 describe("cost helpers", () => {
   test("formatUsdCost", () => {
     expect(formatUsdCost(0)).toBe("$0.00");
@@ -225,7 +231,7 @@ describe("cost helpers", () => {
         ).known,
         `${provider}:${model} should resolve with known=true`,
       ).toBe(true);
-      if (provider !== "ollama" && provider !== "lmstudio") {
+      if (!ZERO_COST_DEFAULT_PROVIDERS.has(provider)) {
         expect(sidecar.getTotalCostUsd()).toBeGreaterThan(0);
       }
     }
