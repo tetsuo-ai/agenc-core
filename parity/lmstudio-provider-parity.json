@@ -1,0 +1,138 @@
+{
+  "contractName": "lmstudio-provider-parity",
+  "scope": "Finish the LM Studio OpenAI-compatible local provider surface for no-auth chat-completions routing, optional bearer auth, local model overrides, and stream health monitoring",
+  "generatedAt": "2026-05-02T00:00:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/openclaude", "sourceRootBrandingScanOverride": "branding-scan: allow upstream source path",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/utils/providerProfiles.ts",
+    "src/utils/providerDiscovery.ts",
+    "src/utils/providerAutoDetect.ts",
+    "src/services/api/openaiShim.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/llm/providers/lmstudio/index.ts",
+    "runtime/src/llm/providers/lmstudio/health.ts",
+    "runtime/src/llm/providers/lmstudio/PARITY.md",
+    "runtime/src/llm/providers/shared/local-health.ts",
+    "runtime/src/llm/providers/openai/adapter.ts",
+    "runtime/src/llm/wire/chat-completions.ts",
+    "runtime/src/llm/provider.ts",
+    "runtime/src/config/resolve-provider.ts",
+    "runtime/src/llm/_deps/config.ts",
+    "runtime/src/llm/model-metadata.ts",
+    "runtime/src/llm/models-manager.ts"
+  ],
+  "testFiles": [
+    "runtime/src/llm/providers/lmstudio/provider.test.ts",
+    "runtime/src/llm/provider.test.ts",
+    "runtime/src/llm/provider-parity.test.ts",
+    "runtime/src/config/config.test.ts",
+    "runtime/src/llm/models-manager.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "lmstudio-local-chat-completions-routing",
+      "source": "LM Studio provider profile, local discovery, and OpenAI-compatible shim anchors",
+      "target": "runtime/src/llm/providers/lmstudio/index.ts + runtime/src/llm/providers/openai/adapter.ts",
+      "requiredBehaviors": [
+        "send LM Studio requests to the local OpenAI-compatible chat-completions route",
+        "default LM Studio to http://localhost:1234/v1",
+        "omit authorization when no local API key is configured",
+        "send optional bearer authorization when LMSTUDIO_API_KEY is configured",
+        "disable Responses API routing for LM Studio"
+      ],
+      "edgeCases": [
+        "no local API key",
+        "explicit LMSTUDIO_API_KEY",
+        "request body stream=false for non-stream chat calls",
+        "provider identity remains lmstudio"
+      ],
+      "tests": [
+        "runtime/src/llm/providers/lmstudio/provider.test.ts",
+        "runtime/src/llm/provider.test.ts",
+        "runtime/src/llm/provider-parity.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/providers/lmstudio/provider.test.ts src/llm/provider.test.ts src/llm/provider-parity.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "lmstudio-first-class-factory-and-env",
+      "source": "LM Studio profile and local endpoint discovery anchors",
+      "target": "runtime/src/llm/provider.ts + runtime/src/config/resolve-provider.ts + runtime/src/llm/_deps/config.ts",
+      "requiredBehaviors": [
+        "create the first-class LMStudioProvider through the provider factory",
+        "honor LMSTUDIO_MODEL and explicit factory model overrides",
+        "honor LMSTUDIO_BASE_URL and default to the local port when unset",
+        "fall back to OPENAI_API_KEY and OPENAI_BASE_URL for OpenAI-compatible local setups when LM Studio-specific values are absent",
+        "require an explicit model for factory creation when no configured model exists"
+      ],
+      "edgeCases": [
+        "LMSTUDIO_MODEL-only configuration",
+        "OPENAI_BASE_URL plus OPENAI_API_KEY fallback",
+        "LMSTUDIO_API_KEY takes precedence",
+        "runtime _deps catalog mirrors the config catalog"
+      ],
+      "tests": [
+        "runtime/src/llm/provider.test.ts",
+        "runtime/src/config/config.test.ts",
+        "runtime/src/llm/models-manager.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/provider.test.ts src/config/config.test.ts src/llm/models-manager.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "lmstudio-local-health-sidecar",
+      "source": "Local LM Studio endpoint detection and local-provider stream behavior anchors",
+      "target": "runtime/src/llm/providers/lmstudio/health.ts + runtime/src/llm/providers/shared/local-health.ts",
+      "requiredBehaviors": [
+        "wrap LM Studio streaming calls in local health polling",
+        "abort long-running streams when LM Studio reports unhealthy",
+        "treat ECONNREFUSED from the local endpoint as provider loss",
+        "surface provider loss as an lmstudio LLMProviderError"
+      ],
+      "edgeCases": [
+        "false health-check result",
+        "ECONNREFUSED health-check failure",
+        "caller abort signal propagation",
+        "timer cleanup after operation completion"
+      ],
+      "tests": [
+        "runtime/src/llm/providers/lmstudio/provider.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/providers/lmstudio/provider.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "lmstudio-local-model-metadata",
+      "source": "OpenAI-compatible model listing and local provider labeling anchors",
+      "target": "runtime/src/llm/model-metadata.ts + runtime/src/llm/models-manager.ts",
+      "requiredBehaviors": [
+        "read live local model metadata from the OpenAI-compatible /models endpoint",
+        "label localhost:1234-compatible endpoints as LM Studio",
+        "map LM Studio provider aliases to lmstudio, openai, and openai-compatible",
+        "keep explicit provider context metadata authoritative over live endpoint discovery"
+      ],
+      "edgeCases": [
+        "lmstudio-prefixed model lookup",
+        "missing local model lookup",
+        "local endpoint fetch failure",
+        "explicit context and output token metadata"
+      ],
+      "tests": [
+        "runtime/src/llm/models-manager.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/models-manager.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}
