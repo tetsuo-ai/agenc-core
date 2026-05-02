@@ -374,9 +374,6 @@ export class AgenCFeatureSet {
     if (this.enabled("enable_fanout")) {
       this.setEnabled("multi_agent", true);
     }
-    if (this.enabled("multi_agent_v2")) {
-      this.setEnabled("multi_agent", true);
-    }
     if (this.enabled("code_mode_only")) {
       this.setEnabled("code_mode", true);
     }

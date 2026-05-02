@@ -268,8 +268,19 @@ describe("LLM registry", () => {
     );
   });
 
+  it("keeps multi_agent_v2 independent from the older multi_agent flag", () => {
+    const features = AgenCFeatureSet.fromConfig({
+      multi_agent: false,
+      multi_agent_v2: true,
+    });
+
+    expect(features.enabled("multi_agent_v2")).toBe(true);
+    expect(features.enabled("multi_agent")).toBe(false);
+  });
+
   it("normalizes structured staged feature config entries", () => {
     const enabled = AgenCFeatureSet.fromConfig({
+      multi_agent: false,
       multi_agent_v2: {
         enabled: true,
         max_concurrent_threads_per_session: 3,
@@ -285,7 +296,7 @@ describe("LLM registry", () => {
       },
     });
     expect(enabled.enabled("multi_agent_v2")).toBe(true);
-    expect(enabled.enabled("multi_agent")).toBe(true);
+    expect(enabled.enabled("multi_agent")).toBe(false);
     expect(enabled.enabled("apps_mcp_path_override")).toBe(true);
 
     const disabled = AgenCFeatureSet.fromConfig({

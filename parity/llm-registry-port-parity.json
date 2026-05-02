@@ -132,6 +132,7 @@
         "legacy memory and screen-context aliases map to rebranded AgenC keys",
         "apps_mcp_path_override enables when path is present unless enabled is false",
         "multi_agent_v2 config fields are accepted while enablement still follows enabled",
+        "multi_agent_v2 does not imply the older multi_agent flag",
         "bootstrap config tables can disable apps and enable legacy Landlock through ManagedFeatures",
         "removed compatibility flags are known without re-enabling deleted behavior",
         "experimental feature specs are discoverable for menus"
