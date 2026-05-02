@@ -26,7 +26,7 @@ export class GeminiProvider extends OpenAIProvider {
       ...config,
       providerName: "gemini",
       apiKeyEnvLabel: "GEMINI_API_KEY",
-      authStrategy: config.authStrategy ?? "google_api_key",
+      authStrategy: config.authStrategy ?? "bearer",
       useResponsesApi: false,
       baseURL: normalizeGeminiBaseURL(config.baseURL) ?? DEFAULT_GEMINI_BASE_URL,
       basePath: config.basePath ?? "/openai",

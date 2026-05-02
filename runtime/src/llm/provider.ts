@@ -1053,7 +1053,7 @@ export function createProvider(
           normalizeBaseURL(process.env.GEMINI_BASE_URL) ??
           "https://generativelanguage.googleapis.com/v1beta",
         useResponsesApi: false,
-        authStrategy: "google_api_key",
+        authStrategy: "bearer",
         ...(extra.defaultHeaders ? { defaultHeaders: extra.defaultHeaders } : {}),
         ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
         ...(extra.project ? { project: extra.project } : {}),
