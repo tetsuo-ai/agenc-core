@@ -9,7 +9,9 @@ import type { LLMProviderConfig } from "../../types.js";
 /**
  * Configuration specific to the Ollama local inference provider.
  */
-export interface OllamaProviderConfig extends LLMProviderConfig {
+export interface OllamaProviderConfig extends Omit<LLMProviderConfig, "model"> {
+  /** Model identifier (default: 'llama3.3') */
+  model?: string;
   /** Ollama server host URL (default: 'http://localhost:11434') */
   host?: string;
   /** Keep model in memory after request (default: '5m') */

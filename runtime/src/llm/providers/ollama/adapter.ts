@@ -36,7 +36,7 @@ import { resolveContextWindowProfile } from "../../_deps/context-window.js";
 import { withOllamaHealthSidecar } from "./health.js";
 
 const DEFAULT_HOST = "http://localhost:11434";
-const DEFAULT_MODEL = "llama3";
+const DEFAULT_MODEL = "llama3.3";
 
 function normalizeTimeoutMs(timeoutMs: number | undefined): number | undefined {
   if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs)) {
@@ -275,6 +275,30 @@ async function* abortableAsyncIterable<T>(
   }
 }
 
+function onAbort(signal: AbortSignal, abort: () => void): () => void {
+  if (signal.aborted) {
+    abort();
+    return () => {};
+  }
+  const handleAbort = (): void => abort();
+  signal.addEventListener("abort", handleAbort, { once: true });
+  return () => signal.removeEventListener("abort", handleAbort);
+}
+
+function abortOllamaStream(stream: unknown): void {
+  const abort = (stream as { abort?: unknown })?.abort;
+  if (typeof abort === "function") {
+    abort.call(stream);
+  }
+}
+
+function abortOllamaClient(client: unknown): void {
+  const abort = (client as { abort?: unknown })?.abort;
+  if (typeof abort === "function") {
+    abort.call(client);
+  }
+}
+
 export class OllamaProvider implements LLMProvider {
   readonly name = "ollama";
 
@@ -322,7 +346,7 @@ export class OllamaProvider implements LLMProvider {
         context: buildToolSelectionTraceContext(toolSelection, requestTimeoutMs),
       });
       const response = await withTimeout(
-        async (signal) => (client as any).chat(params, { signal }),
+        async () => (client as any).chat(params),
         requestTimeoutMs,
         this.name,
         options?.signal,
@@ -393,40 +417,49 @@ export class OllamaProvider implements LLMProvider {
         signal: options?.signal,
         healthCheck: async () => await this.healthCheck(),
         operation: async (signal) => {
+          const cleanupClientAbort = onAbort(signal, () =>
+            abortOllamaClient(client));
           const stream = await withTimeout(
-            async (activeSignal) =>
-              (client as any).chat(params, { signal: activeSignal }),
+            async () => (client as any).chat(params),
             requestTimeoutMs,
             this.name,
             signal,
-          );
+          ).finally(() => {
+            cleanupClientAbort();
+          });
+          const cleanupStreamAbort = onAbort(signal, () =>
+            abortOllamaStream(stream));
 
-          for await (const chunk of abortableAsyncIterable(
-            stream as AsyncIterable<any>,
-            signal,
-          )) {
-            if (chunk.message?.content) {
-              content += chunk.message.content;
-              onChunk({ content: chunk.message.content, done: false });
-            }
+          try {
+            for await (const chunk of abortableAsyncIterable(
+              stream as AsyncIterable<any>,
+              signal,
+            )) {
+              if (chunk.message?.content) {
+                content += chunk.message.content;
+                onChunk({ content: chunk.message.content, done: false });
+              }
 
-            // Accumulate tool calls
-            if (chunk.message?.tool_calls) {
-              for (const tc of chunk.message.tool_calls) {
-                const validated = validateToolCall({
-                  id: randomUUID(),
-                  name: tc.function?.name ?? "",
-                  arguments: JSON.stringify(tc.function?.arguments ?? {}),
-                });
-                if (validated) {
-                  toolCalls.push(validated);
+              // Accumulate tool calls
+              if (chunk.message?.tool_calls) {
+                for (const tc of chunk.message.tool_calls) {
+                  const validated = validateToolCall({
+                    id: randomUUID(),
+                    name: tc.function?.name ?? "",
+                    arguments: JSON.stringify(tc.function?.arguments ?? {}),
+                  });
+                  if (validated) {
+                    toolCalls.push(validated);
+                  }
                 }
               }
-            }
 
-            if (chunk.model) model = chunk.model;
-            if (chunk.prompt_eval_count) promptTokens = chunk.prompt_eval_count;
-            if (chunk.eval_count) completionTokens = chunk.eval_count;
+              if (chunk.model) model = chunk.model;
+              if (chunk.prompt_eval_count) promptTokens = chunk.prompt_eval_count;
+              if (chunk.eval_count) completionTokens = chunk.eval_count;
+            }
+          } finally {
+            cleanupStreamAbort();
           }
         },
       });

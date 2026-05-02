@@ -17,11 +17,14 @@ async function* streamChunks(chunks: readonly unknown[]): AsyncGenerator<unknown
 }
 
 function hangingStreamAfterFirstChunk(): {
-  readonly stream: AsyncIterable<unknown>;
+  readonly stream: AsyncIterable<unknown> & { abort: () => void };
+  readonly abortSpy: ReturnType<typeof vi.fn>;
   readonly returnSpy: ReturnType<typeof vi.fn>;
 } {
+  const abortSpy = vi.fn();
   const returnSpy = vi.fn(async () => ({ done: true, value: undefined }));
-  const stream: AsyncIterable<unknown> = {
+  const stream: AsyncIterable<unknown> & { abort: () => void } = {
+    abort: abortSpy,
     [Symbol.asyncIterator]() {
       let calls = 0;
       return {
@@ -44,7 +47,7 @@ function hangingStreamAfterFirstChunk(): {
       };
     },
   };
-  return { stream, returnSpy };
+  return { stream, abortSpy, returnSpy };
 }
 
 afterEach(() => {
@@ -71,6 +74,16 @@ describe("providers/ollama entrypoint", () => {
     );
 
     expect(params.model).toBe("qwen-reviewer");
+  });
+
+  test("uses the documented Ollama default model for direct construction", () => {
+    const provider = new OllamaProvider({});
+
+    const params = (provider as any).buildParams([
+      { role: "user", content: "review" },
+    ]);
+
+    expect(params.model).toBe("llama3.3");
   });
 
   test("sends native SDK chat requests with local model options", async () => {
@@ -109,7 +122,7 @@ describe("providers/ollama entrypoint", () => {
       totalTokens: 10,
     });
     expect(chat).toHaveBeenCalledTimes(1);
-    const [params, options] = chat.mock.calls[0] ?? [];
+    const [params] = chat.mock.calls[0] ?? [];
     expect(params).toMatchObject({
       model: "qwen2.5-coder:7b",
       keep_alive: "10m",
@@ -122,9 +135,7 @@ describe("providers/ollama entrypoint", () => {
         { role: "user", content: "review" },
       ],
     });
-    expect(options).toMatchObject({
-      signal: expect.any(AbortSignal),
-    });
+    expect(chat.mock.calls[0]).toHaveLength(1);
   });
 
   test("streams native SDK chat chunks through the provider callback", async () => {
@@ -165,20 +176,18 @@ describe("providers/ollama entrypoint", () => {
       { content: "lo", done: false },
       { content: "", done: true },
     ]);
-    const [params, options] = chat.mock.calls[0] ?? [];
+    const [params] = chat.mock.calls[0] ?? [];
     expect(params).toMatchObject({
       model: "llama3.3",
       stream: true,
       messages: [{ role: "user", content: "hello" }],
     });
-    expect(options).toMatchObject({
-      signal: expect.any(AbortSignal),
-    });
+    expect(chat.mock.calls[0]).toHaveLength(1);
   });
 
   test("keeps health monitoring active through slow stream consumption", async () => {
     vi.useFakeTimers();
-    const { stream, returnSpy } = hangingStreamAfterFirstChunk();
+    const { stream, abortSpy, returnSpy } = hangingStreamAfterFirstChunk();
     const chat = vi.fn().mockResolvedValue(stream);
     const list = vi.fn().mockRejectedValue(new Error("local server down"));
     const provider = new OllamaProvider({
@@ -216,6 +225,7 @@ describe("providers/ollama entrypoint", () => {
       { content: "", done: true },
     ]);
     expect(list).toHaveBeenCalledTimes(1);
+    expect(abortSpy).toHaveBeenCalledTimes(1);
     expect(returnSpy).toHaveBeenCalledTimes(1);
   });
 
