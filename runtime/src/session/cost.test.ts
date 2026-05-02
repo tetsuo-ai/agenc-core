@@ -54,7 +54,7 @@ describe("cost helpers", () => {
       model: "gpt-4o",
       inputTokens: 10_000,
       outputTokens: 5_000,
-      cachedInputTokens: 0,
+      cachedInputTokens: 1_000,
       cacheCreationInputTokens: 0,
       reasoningOutputTokens: 0,
       webSearchRequests: 0,
@@ -66,6 +66,114 @@ describe("cost helpers", () => {
     expect(resolution.matchedKey).toBe("lmstudio");
     expect(resolution.costUsd).toBe(0);
   });
+
+  test("computeUsdCost applies OpenAI cached-input pricing", () => {
+    const usage = {
+      provider: "openai",
+      model: "gpt-4o",
+      inputTokens: 1_000,
+      outputTokens: 0,
+      cachedInputTokens: 1_000,
+      cacheCreationInputTokens: 0,
+      reasoningOutputTokens: 0,
+      webSearchRequests: 0,
+      totalTokens: 1_000,
+      turns: 1,
+    };
+    const resolution = computeUsdCostWithResolution(usage, DEFAULT_MODEL_COSTS);
+    expect(resolution.known).toBe(true);
+    expect(resolution.matchedKey).toBe("openai:gpt-4o");
+    expect(resolution.costUsd).toBeCloseTo(0.00125, 8);
+  });
+
+  test("computeUsdCost only charges OpenAI uncached input at full rate", () => {
+    const usage = {
+      provider: "openai",
+      model: "gpt-4o",
+      inputTokens: 2_000,
+      outputTokens: 0,
+      cachedInputTokens: 500,
+      cacheCreationInputTokens: 0,
+      reasoningOutputTokens: 0,
+      webSearchRequests: 0,
+      totalTokens: 2_000,
+      turns: 1,
+    };
+    const resolution = computeUsdCostWithResolution(usage, DEFAULT_MODEL_COSTS);
+    expect(resolution.known).toBe(true);
+    expect(resolution.matchedKey).toBe("openai:gpt-4o");
+    expect(resolution.costUsd).toBeCloseTo(0.004375, 8);
+  });
+
+  test("computeUsdCost applies OpenAI mini cached-input pricing", () => {
+    const usage = {
+      provider: "openai",
+      model: "gpt-4o-mini",
+      inputTokens: 1_000,
+      outputTokens: 0,
+      cachedInputTokens: 1_000,
+      cacheCreationInputTokens: 0,
+      reasoningOutputTokens: 0,
+      webSearchRequests: 0,
+      totalTokens: 1_000,
+      turns: 1,
+    };
+    const resolution = computeUsdCostWithResolution(usage, DEFAULT_MODEL_COSTS);
+    expect(resolution.known).toBe(true);
+    expect(resolution.matchedKey).toBe("openai:gpt-4o-mini");
+    expect(resolution.costUsd).toBeCloseTo(0.000075, 8);
+  });
+
+  test.each([
+    ["gpt-5.4", 0.0025, 0.00025],
+    ["gpt-5.4-mini", 0.00075, 0.000075],
+    ["gpt-4.1", 0.002, 0.0005],
+    ["o4-mini", 0.0011, 0.000275],
+  ])(
+    "computeUsdCost uses current OpenAI cached-input accounting for %s",
+    (model, inputUsdPer1K, cachedInputUsdPer1K) => {
+      const fullCache = computeUsdCostWithResolution(
+        {
+          provider: "openai",
+          model,
+          inputTokens: 1_000,
+          outputTokens: 0,
+          cachedInputTokens: 1_000,
+          cacheCreationInputTokens: 0,
+          reasoningOutputTokens: 0,
+          webSearchRequests: 0,
+          totalTokens: 1_000,
+          turns: 1,
+        },
+        DEFAULT_MODEL_COSTS,
+      );
+      expect(fullCache.known).toBe(true);
+      expect(fullCache.matchedKey).toBe(`openai:${model}`);
+      expect(fullCache.costUsd).toBeCloseTo(cachedInputUsdPer1K, 8);
+
+      const partialCache = computeUsdCostWithResolution(
+        {
+          provider: "openai",
+          model,
+          inputTokens: 2_000,
+          outputTokens: 0,
+          cachedInputTokens: 500,
+          cacheCreationInputTokens: 0,
+          reasoningOutputTokens: 0,
+          webSearchRequests: 0,
+          totalTokens: 2_000,
+          turns: 1,
+        },
+        DEFAULT_MODEL_COSTS,
+      );
+      expect(partialCache.known).toBe(true);
+      expect(partialCache.matchedKey).toBe(`openai:${model}`);
+      expect(partialCache.costUsd).toBeCloseTo(
+        (1.5 * inputUsdPer1K) + (0.5 * cachedInputUsdPer1K),
+        8,
+      );
+    },
+  );
 
   test("computeUsdCost reports unknown pricing without throwing", () => {
     const usage = {

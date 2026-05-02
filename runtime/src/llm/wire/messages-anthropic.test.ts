@@ -5,6 +5,24 @@ import {
 } from "./messages-anthropic.js";
 import { ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME } from "../structured-output.js";
 
+function countCacheControlBlocks(value: unknown): number {
+  if (Array.isArray(value)) {
+    return value.reduce((sum, item) => sum + countCacheControlBlocks(item), 0);
+  }
+  if (!value || typeof value !== "object") {
+    return 0;
+  }
+  const record = value as Record<string, unknown>;
+  const current = Object.prototype.hasOwnProperty.call(record, "cache_control")
+    ? 1
+    : 0;
+  return current +
+    Object.values(record).reduce(
+      (sum, item) => sum + countCacheControlBlocks(item),
+      0,
+    );
+}
+
 describe("buildAnthropicMessagesRequest", () => {
   test("merges request instructions into the Anthropic system field", () => {
     const request = buildAnthropicMessagesRequest({
@@ -33,6 +51,28 @@ describe("buildAnthropicMessagesRequest", () => {
       },
     ]);
     expect(request.max_tokens).toBe(4096);
+  });
+
+  test("adds a cache_control breakpoint to request instructions when they are the system prefix", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "claude-sonnet-4.5",
+      messages: [
+        { role: "user", content: "hello" },
+      ],
+      tools: [],
+      options: {
+        systemPrompt: "base instructions",
+      },
+    });
+
+    expect(request.system).toEqual([
+      {
+        type: "text",
+        text: "base instructions",
+        cache_control: { type: "ephemeral" },
+      },
+    ]);
+    expect(countCacheControlBlocks(request.system)).toBe(1);
   });
 
   test("drops orphan tool results instead of synthesizing tool_use blocks", () => {
@@ -88,7 +128,7 @@ describe("buildAnthropicMessagesRequest", () => {
             { type: "text", text: "Screenshot captured" },
             {
               type: "image_url",
-              image_url: { url: "https://example.com/cat.png" },
+              image_url: { url: "http://localhost/cat.png" },
             },
           ],
         },
@@ -131,7 +171,7 @@ describe("buildAnthropicMessagesRequest", () => {
                 type: "image",
                 source: {
                   type: "url",
-                  url: "https://example.com/cat.png",
+                  url: "http://localhost/cat.png",
                 },
               },
             ],
@@ -153,7 +193,10 @@ describe("buildAnthropicMessagesRequest", () => {
         {
           role: "user",
           content: [
-            { type: "image_url", image_url: { url: "https://example.com/cat.png" } },
+            {
+              type: "image_url",
+              image_url: { url: "http://localhost/cat.png" },
+            },
             { type: "text", text: "Describe the image" },
           ],
           cacheControl: "ephemeral",
@@ -180,7 +223,7 @@ describe("buildAnthropicMessagesRequest", () => {
             type: "image",
             source: {
               type: "url",
-              url: "https://example.com/cat.png",
+              url: "http://localhost/cat.png",
             },
           },
           {
@@ -191,6 +234,66 @@ describe("buildAnthropicMessagesRequest", () => {
         ],
       },
     ]);
+  });
+
+  test("normalizes strategic messages into at most three Anthropic cache_control breakpoints", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "claude-sonnet-4.5",
+      messages: [
+        { role: "system", content: "stable prefix" },
+        { role: "user", content: "inspect" },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            {
+              id: "call_1",
+              name: "system.echo",
+              arguments: "{\"text\":\"ok\"}",
+            },
+          ],
+        },
+        {
+          role: "tool",
+          toolCallId: "call_1",
+          toolName: "system.echo",
+          content: "ok",
+        },
+        { role: "user", content: "continue" },
+      ],
+      tools: [],
+    });
+
+    expect(countCacheControlBlocks(request)).toBe(3);
+    expect(request.system).toEqual([
+      {
+        type: "text",
+        text: "stable prefix",
+        cache_control: { type: "ephemeral" },
+      },
+    ]);
+    const messages = request.messages as Array<Record<string, unknown>>;
+    expect(messages.at(-2)).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "call_1",
+          content: "ok",
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+    });
+    expect(messages.at(-1)).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: "continue",
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+    });
   });
 
   test("passes Anthropic context management through the request body", () => {

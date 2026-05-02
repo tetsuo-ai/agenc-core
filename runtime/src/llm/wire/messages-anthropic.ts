@@ -112,11 +112,17 @@ export function buildAnthropicMessagesRequest(
   const messages = prepareMessagesForWire(input.messages);
   const systemMessages = messages.filter((message) => message.role === "system");
   const optionSystemPrompt = input.options?.systemPrompt?.trim();
+  const systemMessageHasCacheControl = systemMessages.some((message) =>
+    hasEphemeralCacheControl(message)
+  );
   const systemBlocks = [
     ...(optionSystemPrompt
       ? [{
         type: "text",
         text: optionSystemPrompt,
+        ...(!systemMessageHasCacheControl
+          ? { cache_control: { type: "ephemeral" } }
+          : {}),
       }]
       : []),
     ...systemMessages.flatMap((message) => {
@@ -132,10 +138,13 @@ export function buildAnthropicMessagesRequest(
       return normalized.filter((block) => block.type === "text");
     }),
   ];
+  const systemHasCacheControl = systemBlocks.some((block) =>
+    Object.prototype.hasOwnProperty.call(block, "cache_control")
+  );
   const system =
     systemBlocks.length === 0
       ? ""
-      : systemMessages.some((message) => hasEphemeralCacheControl(message))
+      : systemHasCacheControl
       ? systemBlocks
       : systemBlocks.map((block) => String(block.text ?? "")).join("\n\n");
 
