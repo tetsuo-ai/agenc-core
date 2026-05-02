@@ -1,7 +1,7 @@
 /**
  * StreamingToolExecutor — full AgenC port.
  *
- * Hand-port of openclaude `services/tools/StreamingToolExecutor.ts`.
+ * Hand-port of the reference streaming tool executor.
  * Dispatches tools as they stream in from the model, with four-class
  * concurrency control (via the T7 `classify` analyzer) + sibling-
  * abort cascade on Bash errors + order-preserving yield of completed
@@ -11,21 +11,21 @@
  *
  * T6 closure parity pointers (direct code references):
  *   - `discard()` flips a boolean only, no synthesis:
- *     openclaude `StreamingToolExecutor.ts:69-71`.
+ *     reference `StreamingToolExecutor.ts:69-71`.
  *   - Yield paths early-return on `discarded`:
- *     openclaude `StreamingToolExecutor.ts:412-415, :454-456`.
+ *     reference `StreamingToolExecutor.ts:412-415, :454-456`.
  *   - Unknown-tool pre-synthesis:
- *     openclaude `StreamingToolExecutor.ts:77-102`.
+ *     reference `StreamingToolExecutor.ts:77-102`.
  *   - `createChildAbortController` + bubble-up on non-`sibling_error`:
- *     openclaude `StreamingToolExecutor.ts:301-318`.
+ *     reference `StreamingToolExecutor.ts:301-318`.
  *   - Head-of-line stop (non-safe executing tool blocks downstream):
- *     openclaude `StreamingToolExecutor.ts:436-438`.
+ *     reference `StreamingToolExecutor.ts:436-438`.
  *   - `Promise.race` wake-up (executingPromises + progressPromise):
- *     openclaude `StreamingToolExecutor.ts:453-490`.
+ *     reference `StreamingToolExecutor.ts:453-490`.
  *   - Progress interleaved into result stream:
- *     openclaude `StreamingToolExecutor.ts:366-378, :419-422`.
+ *     reference `StreamingToolExecutor.ts:366-378, :419-422`.
  *   - `interruptBehavior()` per-tool interrupt gating:
- *     openclaude `StreamingToolExecutor.ts:219-241, :254-260`.
+ *     reference `StreamingToolExecutor.ts:219-241, :254-260`.
  *
  * Invariants wired here:
  *   I-8  (every error site emits a typed event) — synthetic error
@@ -89,6 +89,8 @@ export interface TrackedTool {
   readonly classification: ConcurrencyClass;
   status: ToolStatus;
   isConcurrencySafe: boolean;
+  hasDispatched: boolean;
+  cancelBeforeDispatch?: SyntheticErrorReason;
   promise?: Promise<void>;
   result?: ToolDispatchResult;
   error?: Error;
@@ -289,6 +291,7 @@ export class StreamingToolExecutor {
         classification: classify(classifiable, {}),
         status: "completed",
         isConcurrencySafe: true,
+        hasDispatched: false,
         result: syntheticResult,
         error: new Error(`No such tool available: ${toolCall.name}`),
         pendingProgress: [],
@@ -310,7 +313,7 @@ export class StreamingToolExecutor {
     // from the tool's `isConcurrencySafe(args)` hook. We keep the T7
     // classification model but also cache the boolean so the
     // head-of-line-break logic in `getCompletedResults` matches
-    // openclaude `:436-438` semantics exactly.
+    // reference `:436-438` semantics exactly.
     const tool = this.registry.tools.find((t) => t.name === toolCall.name);
     let concurrencySafe = false;
     if (tool?.isConcurrencySafe) {
@@ -333,6 +336,7 @@ export class StreamingToolExecutor {
       classification,
       status: "queued",
       isConcurrencySafe: concurrencySafe,
+      hasDispatched: false,
       pendingProgress: [],
     };
     this.tools.push(tracked);
@@ -410,7 +414,7 @@ export class StreamingToolExecutor {
 
   /**
    * Unified update iterator: yields progress events AND completed
-   * results interleaved in submission order. Mirrors openclaude's
+   * results interleaved in submission order. Mirrors the reference
    * `MessageUpdate` yield shape from `getCompletedResults` (AgenC
    * :412-440). The plain `getCompletedResults` generator remains the
    * compat surface for callers that only want terminal results.
@@ -546,6 +550,26 @@ export class StreamingToolExecutor {
     }));
   }
 
+  /**
+   * Convert not-yet-dispatched queued tools into terminal errors without
+   * starting them. Used when a provider stream drops after tool_use blocks
+   * but before the model response is safe to replay: already-executing work
+   * must drain, but queued side-effecting work must not be launched solely
+   * because the error path is closing the executor.
+   */
+  cancelQueued(reason: SyntheticErrorReason = "connection_lost"): void {
+    for (const tool of this.tools) {
+      if (tool.status === "queued") {
+        tool.error = new Error(reason);
+        tool.result = this.createSyntheticError(tool.toolCall, reason);
+        tool.status = "completed";
+      } else if (tool.status === "executing" && !tool.hasDispatched) {
+        tool.cancelBeforeDispatch = reason;
+      }
+    }
+    this.signalProgress();
+  }
+
   /** External dispatch override for tests / phase-5 integration. */
   setConcurrencyClassFor(
     toolName: string,
@@ -663,6 +687,7 @@ export class StreamingToolExecutor {
       if (tool.status !== "queued") continue;
       if (this.canExecuteTool(tool)) {
         // Fire but don't await — multiple safe tools can start.
+        tool.status = "executing";
         void this.executeTool(tool);
         // Track progress marker for optional fast-forward.
         if (i > this.lastDispatchedIndex) this.lastDispatchedIndex = i;
@@ -679,6 +704,7 @@ export class StreamingToolExecutor {
   }
 
   private async executeTool(tool: TrackedTool): Promise<void> {
+    if (tool.status === "completed" || tool.status === "yielded") return;
     tool.status = "executing";
     tool.promise = this.runOne(tool);
     try {
@@ -694,7 +720,7 @@ export class StreamingToolExecutor {
   private async runOne(tool: TrackedTool): Promise<void> {
     const startedAtMs = performance.now();
 
-    // openclaude `getAbortReason` + `collectResults` pre-check
+    // Reference `getAbortReason` + `collectResults` pre-check
     // (AgenC :278-292). If the sibling / parent controllers are
     // already aborted when we start, synthesize the terminal result
     // and return. For `interrupt`-class aborts, honor the tool's
@@ -743,6 +769,14 @@ export class StreamingToolExecutor {
 
     try {
       const dispatch = async (): Promise<ToolDispatchResult> => {
+        if (tool.cancelBeforeDispatch) {
+          tool.error = new Error(tool.cancelBeforeDispatch);
+          return this.createSyntheticError(
+            tool.toolCall,
+            tool.cancelBeforeDispatch,
+          );
+        }
+        tool.hasDispatched = true;
         if (this.liveToolDispatch) {
           return await this.liveToolDispatch.router.dispatchModelToolCall(
             tool.toolCall,
@@ -782,8 +816,8 @@ export class StreamingToolExecutor {
       const syntheticReason = this.resolveSyntheticErrorReason(tool.error);
       tool.result = this.createSyntheticError(tool.toolCall, syntheticReason);
       tool.status = "completed";
-      // Bash-thrown errors also trigger sibling abort (parity with
-      // codex line 354-363 behaviour when a Bash run throws).
+      // Bash-thrown errors also trigger sibling abort (parity with the
+      // reference runtime behavior when a Bash run throws).
       if (
         tool.toolCall.name === this.bashToolName &&
         !this.hasBashErrored
@@ -805,7 +839,7 @@ export class StreamingToolExecutor {
   }
 
   /**
-   * openclaude `getAbortReason` (`StreamingToolExecutor.ts:209-231`):
+   * Reference `getAbortReason` (`StreamingToolExecutor.ts:209-231`):
    * resolve the reason a tool should be cancelled based on the
    * current executor state. Returns `null` when the tool may proceed.
    *

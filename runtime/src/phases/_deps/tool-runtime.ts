@@ -54,6 +54,10 @@ import type {
 } from "../../tools/context.js";
 import type { Tool } from "../../tools/types.js";
 import {
+  buildTerminalToolResult,
+  type TerminalToolCause,
+} from "../../recovery/terminal-tool-result.js";
+import {
   ApprovalRejectedError,
   orchestrateToolCall,
   type ApprovalPolicy,
@@ -189,8 +193,10 @@ interface TrackedTool {
   readonly toolCall: LLMToolCall;
   status: ToolStatus;
   result?: ToolDispatchResultLike;
+  hasDispatched: boolean;
   /** When set, the tool was queued but never dispatched (abort-drain). */
   drainErrorMessage?: string;
+  cancelBeforeDispatch?: TerminalToolCause;
 }
 
 interface SessionLike {
@@ -418,7 +424,8 @@ function emitOn(
 
 export class StreamingToolExecutor {
   private readonly registry: ToolRegistryLike;
-  private readonly abortSignal?: AbortSignal;
+  private readonly abortController = new AbortController();
+  private readonly abortSignal: AbortSignal;
   private readonly liveToolDispatch?: {
     readonly router: ToolRouterLike | RealToolRouter;
     readonly options: LiveDispatchOptions;
@@ -427,12 +434,28 @@ export class StreamingToolExecutor {
   private readonly tools: TrackedTool[] = [];
   private readonly inflight: Set<TrackedTool> = new Set();
   private closed = false;
+  private discarded = false;
 
   constructor(opts: StreamingToolExecutorOptions) {
     this.registry = opts.registry;
-    this.abortSignal = opts.abortSignal;
+    this.abortSignal = this.abortController.signal;
     this.liveToolDispatch = opts.liveToolDispatch;
     this.liveOptions = opts.liveToolDispatch?.options;
+    if (opts.abortSignal?.aborted) {
+      this.abortController.abort(
+        (opts.abortSignal as AbortSignal & { reason?: unknown }).reason,
+      );
+    } else {
+      opts.abortSignal?.addEventListener(
+        "abort",
+        () => {
+          this.abortController.abort(
+            (opts.abortSignal as AbortSignal & { reason?: unknown }).reason,
+          );
+        },
+        { once: true },
+      );
+    }
   }
 
   addTool(_block: unknown, toolCall: LLMToolCall): void {
@@ -443,6 +466,7 @@ export class StreamingToolExecutor {
       id: toolCall.id,
       toolCall,
       status: "queued",
+      hasDispatched: false,
     };
 
     // Abort-drain: if the abort signal is already tripped, this call
@@ -465,6 +489,35 @@ export class StreamingToolExecutor {
     this.closed = true;
   }
 
+  discard(reason = "discarded"): void {
+    this.discarded = true;
+    this.closed = true;
+    if (!this.abortController.signal.aborted) {
+      this.abortController.abort(reason);
+    }
+  }
+
+  abort(reason = "executor_abort"): void {
+    if (!this.abortController.signal.aborted) {
+      this.abortController.abort(reason);
+    }
+    this.discard(reason);
+  }
+
+  cancelQueued(reason: TerminalToolCause = "connection_lost"): void {
+    for (const tool of this.tools) {
+      if (tool.status === "queued") {
+        tool.result = buildTerminalToolResult({
+          toolCall: tool.toolCall,
+          cause: reason,
+        });
+        tool.status = "completed";
+      } else if (tool.status === "executing" && !tool.hasDispatched) {
+        tool.cancelBeforeDispatch = reason;
+      }
+    }
+  }
+
   getToolStates(): ReadonlyArray<{
     readonly id: string;
     readonly status: ToolStatus;
@@ -480,6 +533,7 @@ export class StreamingToolExecutor {
   // Drain whatever is already completed. Used by the env-cap loop in
   // `executeTools` to thread results into TurnState as workers finish.
   *getCompletedResults(): Generator<StreamingToolResult, void> {
+    if (this.discarded) return;
     for (const tool of this.tools) {
       if (tool.status !== "completed" || !tool.result) continue;
       tool.status = "yielded";
@@ -496,6 +550,7 @@ export class StreamingToolExecutor {
   // Drain everything not yet yielded — runs the actual dispatch for
   // queued tools through hooks + permission + MCP routing.
   async *getRemainingResults(): AsyncGenerator<StreamingToolResult, void> {
+    if (this.discarded) return;
     // Kick any queued tools that have not started yet.
     const pending: Array<Promise<TrackedTool>> = [];
     for (const tool of this.tools) {
@@ -574,12 +629,21 @@ export class StreamingToolExecutor {
         return tool;
       }
 
+      if (tool.cancelBeforeDispatch) {
+        tool.result = buildTerminalToolResult({
+          toolCall: tool.toolCall,
+          cause: tool.cancelBeforeDispatch,
+        });
+        return tool;
+      }
+
       if (this.liveToolDispatch?.router.dispatchModelToolCall) {
+        tool.hasDispatched = true;
         tool.result = await this.liveToolDispatch.router.dispatchModelToolCall(
           tool.toolCall,
           {
             ...this.liveToolDispatch.options,
-            ...(this.abortSignal !== undefined ? { signal: this.abortSignal } : {}),
+            signal: this.abortSignal,
           } as never,
         );
         return tool;
@@ -711,13 +775,9 @@ export class StreamingToolExecutor {
               callId: tool.toolCall.id,
               toolName: tool.toolCall.name,
               turnId: resolveTurnId(this.liveOptions),
-              ...(this.abortSignal !== undefined
-                ? { signal: this.abortSignal }
-                : {}),
+              signal: this.abortSignal,
             },
-            ...(this.abortSignal !== undefined
-              ? { signal: this.abortSignal }
-              : {}),
+            signal: this.abortSignal,
             approvalPolicy: this.liveOptions?.approvalPolicy ?? "never",
             sandboxMode: this.liveOptions?.sandboxMode ?? "workspace_write",
             payload,
@@ -747,6 +807,13 @@ export class StreamingToolExecutor {
               });
             },
             dispatch: async () => {
+              if (tool.cancelBeforeDispatch) {
+                return buildTerminalToolResult({
+                  toolCall: tool.toolCall,
+                  cause: tool.cancelBeforeDispatch,
+                });
+              }
+              tool.hasDispatched = true;
               // Plumb the session id so filesystem tools can resolve
               // the active plan-file path (AgenC behavior:
               // `checkEditableInternalPath` allowlists plan files
@@ -767,6 +834,7 @@ export class StreamingToolExecutor {
                   : null;
               return dispatchWithInjectedArgs(this.registry, dispatchCall, {
                 __onProgress: onProgress,
+                __abortSignal: this.abortSignal,
                 __callId: tool.toolCall.id,
                 ...(this.liveOptions?.agencHome !== undefined
                   ? { [SESSION_AGENC_HOME_ARG]: this.liveOptions.agencHome }

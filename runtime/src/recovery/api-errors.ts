@@ -12,6 +12,14 @@
  */
 
 import type { AssistantMessage, TurnState } from "../session/turn-state.js";
+import {
+  LLMCaptivePortalError,
+  LLMCertificateError,
+  LLMAuthenticationError,
+  LLMContextWindowExceededError,
+  LLMInvalidResponseError,
+  LLMMessageValidationError,
+} from "../llm/errors.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // String constants
@@ -232,17 +240,101 @@ export function isStreamingFallbackOccured(state: TurnState): boolean {
  * backoff (500ms → 8s). Non-transient errors surface as terminal.
  */
 export function isTransientProviderError(err: unknown): boolean {
+  return isTransientProviderErrorInner(err, new Set<object>(), 0);
+}
+
+const TRANSIENT_PROVIDER_ERROR_CODES = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+  "EPIPE",
+  "EAI_AGAIN",
+  "ECONNABORTED",
+  "ENETUNREACH",
+  "EHOSTUNREACH",
+  "UND_ERR_SOCKET",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+]);
+
+const TRANSIENT_PROVIDER_HTTP_STATUSES = new Set([500, 502, 503, 504]);
+
+const TRANSIENT_PROVIDER_MESSAGE_PARTS = [
+  "econnreset",
+  "econnrefused",
+  "etimedout",
+  "socket hang up",
+  "stream_idle",
+  "fetch failed",
+  "connection reset by peer",
+  "connection reset",
+  "socket connection was closed unexpectedly",
+  "socket closed",
+];
+
+function isExplicitNonTransientProviderError(err: unknown): boolean {
+  return (
+    err instanceof LLMAuthenticationError ||
+    err instanceof LLMContextWindowExceededError ||
+    err instanceof LLMMessageValidationError ||
+    err instanceof LLMCaptivePortalError ||
+    err instanceof LLMCertificateError ||
+    err instanceof LLMInvalidResponseError
+  );
+}
+
+function isTransientProviderErrorInner(
+  err: unknown,
+  seen: Set<object>,
+  depth: number,
+): boolean {
+  if (depth > 4) return false;
+  if (isExplicitNonTransientProviderError(err)) return false;
   if (err instanceof Error) {
     const msg = err.message.toLowerCase();
-    if (msg.includes("econnreset")) return true;
-    if (msg.includes("econnrefused")) return true;
-    if (msg.includes("etimedout")) return true;
-    if (msg.includes("socket hang up")) return true;
-    if (msg.includes("stream_idle")) return true;
-    const status = (err as { status?: number }).status;
-    if (status === 500 || status === 502 || status === 503 || status === 504) {
+    if (TRANSIENT_PROVIDER_MESSAGE_PARTS.some((part) => msg.includes(part))) {
       return true;
     }
   }
+  if (!err || typeof err !== "object") return false;
+  if (seen.has(err)) return false;
+  seen.add(err);
+
+  const record = err as {
+    readonly cause?: unknown;
+    readonly code?: unknown;
+    readonly status?: unknown;
+    readonly statusCode?: unknown;
+    readonly errors?: unknown;
+  };
+  if (isExplicitNonTransientProviderError(record.cause)) return false;
+  if (typeof record.code === "string") {
+    if (TRANSIENT_PROVIDER_ERROR_CODES.has(record.code.toUpperCase())) {
+      return true;
+    }
+  }
+
+  const status = record.status ?? record.statusCode;
+  if (
+    typeof status === "number" &&
+    Number.isFinite(status) &&
+    TRANSIENT_PROVIDER_HTTP_STATUSES.has(status)
+  ) {
+    return true;
+  }
+
+  if (isTransientProviderErrorInner(record.cause, seen, depth + 1)) {
+    return true;
+  }
+
+  if (Array.isArray(record.errors)) {
+    for (const nested of record.errors) {
+      if (isTransientProviderErrorInner(nested, seen, depth + 1)) {
+        return true;
+      }
+    }
+  }
+
   return false;
 }
