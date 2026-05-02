@@ -61,11 +61,13 @@ const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
 export type ProviderSlug = keyof typeof BUILT_IN_PROVIDER_DEFAULT_MODELS;
 
 export interface ProviderCapabilityOverrides {
+  readonly supportsToolUse?: boolean;
   readonly supportsPromptCaching?: boolean;
   readonly supportsContextEdits?: boolean;
   readonly supportsImageInput?: boolean;
   readonly supportsAudioInput?: boolean;
   readonly supportsAudioOutput?: boolean;
+  readonly supportsProviderNativeWebSearch?: boolean;
   readonly supportsExtendedThinking?: boolean;
   readonly acceptsImageHistory?: boolean;
   readonly acceptsAudioHistory?: boolean;

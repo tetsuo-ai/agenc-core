@@ -13,9 +13,11 @@
   ],
   "targetFiles": [
     "runtime/src/llm/model-registry.ts",
+    "runtime/src/llm/_deps/config.ts",
     "runtime/src/llm/model-metadata.ts",
     "runtime/src/llm/capabilities.ts",
     "runtime/src/llm/models-manager.ts",
+    "runtime/src/config/schema.ts",
     "runtime/src/session/cost.ts",
     "runtime/src/session/turn-context.ts"
   ],
@@ -34,12 +36,14 @@
         "return a single entry containing provider, model, metadata, cost, and capabilities",
         "use ModelMetadataResolver as the context/output source",
         "use the provider capability registry as the capability source",
-        "use the session cost registry as the pricing source"
+        "use the session cost registry as the pricing source",
+        "canonicalize provider aliases before composing metadata, capability, and cost entries"
       ],
       "edgeCases": [
         "known hosted model",
         "unknown local model",
         "provider-qualified model names",
+        "provider alias normalization",
         "unknown-cost fallback"
       ],
       "tests": [
@@ -80,6 +84,7 @@
       "target": "runtime/src/session/cost.ts + runtime/src/llm/capabilities.ts",
       "requiredBehaviors": [
         "expose model cost resolution for registry composition",
+        "expose explicit tool-use, vision, structured-output, and provider-native web-search capability dimensions",
         "preserve provider-specific local zero-cost resolution",
         "preserve capability overrides and drift state",
         "fail closed for provider/model capability ambiguity"

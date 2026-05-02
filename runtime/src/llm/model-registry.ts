@@ -1,5 +1,6 @@
 import {
   buildProviderModelCatalog,
+  normalizeProviderSlug,
   readProviderConfig,
   resolveDisambiguatedModelSelection,
   type AgenCConfig,
@@ -69,6 +70,20 @@ function resolveCostEntry(params: {
   };
 }
 
+function normalizeRegistryProvider(provider: string): string {
+  return normalizeProviderSlug(provider) ?? provider.trim().toLowerCase();
+}
+
+function normalizeRegistrySelection(params: {
+  readonly provider: string;
+  readonly model: string;
+}): { readonly provider: string; readonly model: string } {
+  return {
+    provider: normalizeRegistryProvider(params.provider),
+    model: params.model.trim(),
+  };
+}
+
 export function modelRegistryEntryToModelInfo(
   entry: ModelRegistryEntry,
 ): ModelInfo {
@@ -134,25 +149,28 @@ export class ModelRegistry {
   } {
     const trimmed = modelSlug.trim();
     if (trimmed.length === 0) {
-      return { provider: fallbackProvider, model: "unknown-model" };
+      return normalizeRegistrySelection({
+        provider: fallbackProvider,
+        model: "unknown-model",
+      });
     }
 
     const explicitSeparator = trimmed.indexOf(":");
     if (explicitSeparator > 0) {
-      return {
+      return normalizeRegistrySelection({
         provider: trimmed.slice(0, explicitSeparator),
         model: trimmed.slice(explicitSeparator + 1),
-      };
+      });
     }
 
     try {
-      return resolveDisambiguatedModelSelection({
+      return normalizeRegistrySelection(resolveDisambiguatedModelSelection({
         slug: trimmed,
         config: this.config,
         catalog: this.catalog,
-      });
+      }));
     } catch {
-      return { provider: fallbackProvider, model: trimmed };
+      return normalizeRegistrySelection({ provider: fallbackProvider, model: trimmed });
     }
   }
 
@@ -160,11 +178,12 @@ export class ModelRegistry {
     readonly provider: string;
     readonly model: string;
   }): ModelRegistryEntry {
+    const selection = normalizeRegistrySelection(params);
     return this.buildEntry({
-      ...params,
+      ...selection,
       metadata: this.metadataResolver.resolveSync({
-        provider: params.provider,
-        model: params.model,
+        provider: selection.provider,
+        model: selection.model,
         config: this.config,
       }),
     });
@@ -174,11 +193,12 @@ export class ModelRegistry {
     readonly provider: string;
     readonly model: string;
   }): Promise<ModelRegistryEntry> {
+    const selection = normalizeRegistrySelection(params);
     return this.buildEntry({
-      ...params,
+      ...selection,
       metadata: await this.metadataResolver.resolve({
-        provider: params.provider,
-        model: params.model,
+        provider: selection.provider,
+        model: selection.model,
         config: this.config,
       }),
     });
