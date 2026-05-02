@@ -268,10 +268,9 @@ export class StreamModelError extends Error {
 /**
  * Translate the optional streaming-tool-use fields on an
  * {@link LLMStreamChunk} into AgenC session events that feed the TUI
- * bridge accumulator at
- * `runtime/src/tui/openclaude/message-adapter.ts`. Mirrors the upstream
+ * bridge accumulator. Mirrors the upstream
  * content_block_start / input_json_delta handling at
- * `openclaude/src/utils/messages.ts:3024-3079` — the chunk fields are
+ * `src/utils/messages.ts:3024-3079` — the chunk fields are
  * the AgenC-side equivalent of those upstream event payloads. Exported
  * so the row R6 parity test can drive it directly without booting a
  * full {@link streamModel} run.
@@ -563,10 +562,22 @@ export async function streamModel(
   // instead of returning a hardcoded {0,0,0}. Downstream auto-compact
   // and the outer runTurn usage accumulator depend on real numbers.
   if (response.usage) {
+    const cached = response.usage.cachedInputTokens;
+    const cacheCreation = response.usage.cacheCreationInputTokens;
+    const reasoning = response.usage.reasoningOutputTokens;
+    const webSearch = response.usage.webSearchRequests;
     state.lastResponseUsage = {
       promptTokens: response.usage.promptTokens,
       completionTokens: response.usage.completionTokens,
       totalTokens: response.usage.totalTokens,
+      ...(cached !== undefined ? { cachedInputTokens: cached } : {}),
+      ...(cacheCreation !== undefined
+        ? { cacheCreationInputTokens: cacheCreation }
+        : {}),
+      ...(reasoning !== undefined
+        ? { reasoningOutputTokens: reasoning }
+        : {}),
+      ...(webSearch !== undefined ? { webSearchRequests: webSearch } : {}),
     };
     // Cross-turn token accumulator — agenc runtime
     // `Session::update_token_info_from_usage` (session/mod.rs:2739-2749)
@@ -577,10 +588,8 @@ export async function streamModel(
     // cache/reasoning fields contribute 0 to those slots, so missing
     // breakdowns don't leak as phantom tokens.
     const last = response.usage;
-    const cached = (last as { cachedInputTokens?: number })
-      .cachedInputTokens ?? 0;
-    const reasoning = (last as { reasoningOutputTokens?: number })
-      .reasoningOutputTokens ?? 0;
+    const cachedForTotal = last.cachedInputTokens ?? 0;
+    const reasoningForTotal = last.reasoningOutputTokens ?? 0;
     await session.state.with((s) => {
       const current = s.totalTokenUsage;
       const prev = typeof current === "number"
@@ -602,8 +611,8 @@ export async function streamModel(
         promptTokens: prev.promptTokens + last.promptTokens,
         completionTokens: prev.completionTokens + last.completionTokens,
         totalTokens: prev.totalTokens + last.totalTokens,
-        cachedInputTokens: prev.cachedInputTokens + cached,
-        reasoningOutputTokens: prev.reasoningOutputTokens + reasoning,
+        cachedInputTokens: prev.cachedInputTokens + cachedForTotal,
+        reasoningOutputTokens: prev.reasoningOutputTokens + reasoningForTotal,
       };
     });
   }
@@ -646,10 +655,10 @@ export async function streamModel(
   // completion tokens back into the tracker before boundary truth is
   // resolved.
   if (response.usage) {
-    const cached = (response.usage as { cachedInputTokens?: number })
-      .cachedInputTokens;
-    const reasoning = (response.usage as { reasoningOutputTokens?: number })
-      .reasoningOutputTokens;
+    const cached = response.usage.cachedInputTokens;
+    const cacheCreation = response.usage.cacheCreationInputTokens;
+    const reasoning = response.usage.reasoningOutputTokens;
+    const webSearch = response.usage.webSearchRequests;
     session.emit({
       id: session.nextInternalSubId(),
       msg: {
@@ -658,8 +667,16 @@ export async function streamModel(
           promptTokens: response.usage.promptTokens,
           completionTokens: response.usage.completionTokens,
           totalTokens: response.usage.totalTokens,
+          model: response.model,
+          provider: providerName,
           ...(cached !== undefined ? { cachedInputTokens: cached } : {}),
-          ...(reasoning !== undefined ? { reasoningOutputTokens: reasoning } : {}),
+          ...(cacheCreation !== undefined
+            ? { cacheCreationInputTokens: cacheCreation }
+            : {}),
+          ...(reasoning !== undefined
+            ? { reasoningOutputTokens: reasoning }
+            : {}),
+          ...(webSearch !== undefined ? { webSearchRequests: webSearch } : {}),
         },
       },
     });

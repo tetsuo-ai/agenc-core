@@ -84,6 +84,7 @@ import {
   toXaiResponsesTools,
   XAI_ENCRYPTED_REASONING_INCLUDE,
 } from "../wire/responses-xai.js";
+import { coerceUsage } from "../wire/shared.js";
 
 const DEFAULT_BASE_URL = "https://api.x.ai/v1";
 const DEFAULT_MODEL = "grok-4-1-fast-reasoning";
@@ -2121,11 +2122,32 @@ export class GrokProvider implements LLMProvider {
 
   private parseUsage(response: Record<string, unknown>): LLMUsage {
     const usage = response.usage as Record<string, unknown> | undefined;
-    return {
-      promptTokens: Number(usage?.input_tokens ?? 0),
-      completionTokens: Number(usage?.output_tokens ?? 0),
-      totalTokens: Number(usage?.total_tokens ?? 0),
-    };
+    const inputDetails =
+      usage?.input_tokens_details &&
+        typeof usage.input_tokens_details === "object" &&
+        !Array.isArray(usage.input_tokens_details)
+        ? (usage.input_tokens_details as Record<string, unknown>)
+        : {};
+    const outputDetails =
+      usage?.output_tokens_details &&
+        typeof usage.output_tokens_details === "object" &&
+        !Array.isArray(usage.output_tokens_details)
+        ? (usage.output_tokens_details as Record<string, unknown>)
+        : {};
+    const serverSideToolUsage =
+      response.server_side_tool_usage &&
+        typeof response.server_side_tool_usage === "object" &&
+        !Array.isArray(response.server_side_tool_usage)
+        ? (response.server_side_tool_usage as Record<string, unknown>)
+        : {};
+    return coerceUsage({
+      promptTokens: usage?.input_tokens,
+      completionTokens: usage?.output_tokens,
+      totalTokens: usage?.total_tokens,
+      cachedInputTokens: inputDetails.cached_tokens,
+      reasoningOutputTokens: outputDetails.reasoning_tokens,
+      webSearchRequests: serverSideToolUsage.SERVER_SIDE_TOOL_WEB_SEARCH,
+    });
   }
 
   private extractProviderEvidence(

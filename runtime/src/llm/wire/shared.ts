@@ -80,15 +80,31 @@ export function coerceUsage(usage: {
   readonly promptTokens?: unknown;
   readonly completionTokens?: unknown;
   readonly totalTokens?: unknown;
+  readonly cachedInputTokens?: unknown;
+  readonly cacheCreationInputTokens?: unknown;
+  readonly reasoningOutputTokens?: unknown;
+  readonly webSearchRequests?: unknown;
 }): LLMUsage {
   const promptTokens = toOptionalNumber(usage.promptTokens) ?? 0;
   const completionTokens = toOptionalNumber(usage.completionTokens) ?? 0;
   const totalTokens =
     toOptionalNumber(usage.totalTokens) ?? promptTokens + completionTokens;
+  const cachedInputTokens = toOptionalNumber(usage.cachedInputTokens);
+  const cacheCreationInputTokens = toOptionalNumber(
+    usage.cacheCreationInputTokens,
+  );
+  const reasoningOutputTokens = toOptionalNumber(usage.reasoningOutputTokens);
+  const webSearchRequests = toOptionalNumber(usage.webSearchRequests);
   return {
     promptTokens,
     completionTokens,
     totalTokens,
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(cacheCreationInputTokens !== undefined
+      ? { cacheCreationInputTokens }
+      : {}),
+    ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
+    ...(webSearchRequests !== undefined ? { webSearchRequests } : {}),
   };
 }
 

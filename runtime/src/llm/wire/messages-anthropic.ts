@@ -290,6 +290,12 @@ export function parseAnthropicMessagesResponse(
     response.usage && typeof response.usage === "object"
       ? (response.usage as Record<string, unknown>)
       : {};
+  const serverToolUse =
+    usageRecord.server_tool_use &&
+      typeof usageRecord.server_tool_use === "object" &&
+      !Array.isArray(usageRecord.server_tool_use)
+      ? (usageRecord.server_tool_use as Record<string, unknown>)
+      : {};
   const preparedMessages = prepareMessagesForWire(request.messages);
   const requestMetrics = withSerializedMetrics(
     collectRequestMetrics(preparedMessages, request.tools),
@@ -304,6 +310,10 @@ export function parseAnthropicMessagesResponse(
       promptTokens: usageRecord.input_tokens,
       completionTokens: usageRecord.output_tokens,
       totalTokens: undefined,
+      cachedInputTokens: usageRecord.cache_read_input_tokens,
+      cacheCreationInputTokens: usageRecord.cache_creation_input_tokens,
+      reasoningOutputTokens: usageRecord.reasoning_output_tokens,
+      webSearchRequests: serverToolUse.web_search_requests,
     }),
     model:
       typeof response.model === "string" ? response.model : model,

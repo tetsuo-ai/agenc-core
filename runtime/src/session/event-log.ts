@@ -115,7 +115,13 @@ export interface TokenCountEvent {
   readonly completionTokens?: number;
   readonly totalTokens?: number;
   readonly cachedInputTokens?: number;
+  readonly cacheCreationInputTokens?: number;
   readonly reasoningOutputTokens?: number;
+  readonly webSearchRequests?: number;
+  /** Optional model override for this usage payload. */
+  readonly model?: string;
+  /** Optional provider override for this usage payload. */
+  readonly provider?: string;
 }
 
 export interface McpToolCallBeginEvent {
@@ -404,6 +410,7 @@ export interface TurnContextItem {
   readonly sandboxPolicy: string;
   readonly fileSystemSandboxPolicy?: FileSystemSandboxPolicy;
   readonly model: string;
+  readonly modelProviderId?: string;
   readonly personality?: string;
   readonly collaborationMode?: CollaborationMode;
   readonly realtimeActive?: boolean;
@@ -963,21 +970,23 @@ export function llmMessageToEvent(message: LLMMessage): EventMsg | null {
 }
 
 export function usageToTokenCountEvent(usage: LLMUsage): EventMsg {
-  const extended = usage as LLMUsage & {
-    readonly cachedInputTokens?: number;
-    readonly reasoningOutputTokens?: number;
-  };
   return {
     type: "token_count",
     payload: {
       promptTokens: usage.promptTokens,
       completionTokens: usage.completionTokens,
       totalTokens: usage.totalTokens,
-      ...(extended.cachedInputTokens !== undefined
-        ? { cachedInputTokens: extended.cachedInputTokens }
+      ...(usage.cachedInputTokens !== undefined
+        ? { cachedInputTokens: usage.cachedInputTokens }
         : {}),
-      ...(extended.reasoningOutputTokens !== undefined
-        ? { reasoningOutputTokens: extended.reasoningOutputTokens }
+      ...(usage.cacheCreationInputTokens !== undefined
+        ? { cacheCreationInputTokens: usage.cacheCreationInputTokens }
+        : {}),
+      ...(usage.reasoningOutputTokens !== undefined
+        ? { reasoningOutputTokens: usage.reasoningOutputTokens }
+        : {}),
+      ...(usage.webSearchRequests !== undefined
+        ? { webSearchRequests: usage.webSearchRequests }
         : {}),
     },
   };

@@ -239,6 +239,22 @@ export function parseChatCompletionsResponse(
         : typeof message.reasoning_content === "string"
           ? message.reasoning_content
           : "";
+  const usageRecord =
+    response.usage && typeof response.usage === "object"
+      ? (response.usage as Record<string, unknown>)
+      : {};
+  const promptDetails =
+    usageRecord.prompt_tokens_details &&
+      typeof usageRecord.prompt_tokens_details === "object" &&
+      !Array.isArray(usageRecord.prompt_tokens_details)
+      ? (usageRecord.prompt_tokens_details as Record<string, unknown>)
+      : {};
+  const completionDetails =
+    usageRecord.completion_tokens_details &&
+      typeof usageRecord.completion_tokens_details === "object" &&
+      !Array.isArray(usageRecord.completion_tokens_details)
+      ? (usageRecord.completion_tokens_details as Record<string, unknown>)
+      : {};
   const preparedMessages = prepareMessagesForWire(request.messages);
   const requestMetrics = withSerializedMetrics(
     collectRequestMetrics(preparedMessages, request.tools),
@@ -250,13 +266,11 @@ export function parseChatCompletionsResponse(
     content,
     toolCalls,
     usage: coerceUsage({
-      promptTokens:
-        (response.usage as Record<string, unknown> | undefined)?.prompt_tokens,
-      completionTokens:
-        (response.usage as Record<string, unknown> | undefined)
-          ?.completion_tokens,
-      totalTokens:
-        (response.usage as Record<string, unknown> | undefined)?.total_tokens,
+      promptTokens: usageRecord.prompt_tokens,
+      completionTokens: usageRecord.completion_tokens,
+      totalTokens: usageRecord.total_tokens,
+      cachedInputTokens: promptDetails.cached_tokens,
+      reasoningOutputTokens: completionDetails.reasoning_tokens,
     }),
     model:
       typeof response.model === "string" ? response.model : model,

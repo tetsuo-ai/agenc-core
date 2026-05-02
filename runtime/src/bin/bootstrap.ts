@@ -1344,6 +1344,11 @@ export async function bootstrapLocalRuntimeSession(
         );
 
         const costSidecar = new CostSidecar({
+          defaultModel: model,
+          defaultProvider: resolvedProvider,
+          exitSummary: {
+            shouldPrint: () => process.env.AGENC_DISABLE_COST_SUMMARY !== "1",
+          },
           budgetTracker: s.budgetTracker,
           projectDir,
           sessionId: conversationId,

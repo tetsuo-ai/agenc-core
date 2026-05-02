@@ -496,6 +496,42 @@ describe("GrokProvider incremental continuation", () => {
     expect(requestBodies[0]?.tool_choice).not.toBe("none");
   });
 
+  test("carries xAI usage details into LLMUsage", async () => {
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4-fast",
+    });
+    const create = vi.fn(() =>
+      withResponse({
+        ...buildXaiResponse("resp_usage", "searched"),
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          total_tokens: 15,
+          input_tokens_details: { cached_tokens: 4 },
+          output_tokens_details: { reasoning_tokens: 3 },
+        },
+        server_side_tool_usage: {
+          SERVER_SIDE_TOOL_WEB_SEARCH: 2,
+        },
+      })
+    );
+    (provider as any).client = {
+      responses: { create },
+    };
+
+    const result = await provider.chat([{ role: "user", content: "search" }]);
+
+    expect(result.usage).toMatchObject({
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+      cachedInputTokens: 4,
+      reasoningOutputTokens: 3,
+      webSearchRequests: 2,
+    });
+  });
+
   test("does not replace streamed text with a tool-disabled retry", async () => {
     const provider = new GrokProvider({
       apiKey: "xai-test",

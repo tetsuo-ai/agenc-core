@@ -412,8 +412,8 @@ describe("applySessionConfiguration sandbox cascade", () => {
       ...mkSessionConfiguration(),
       sandboxPolicy: { value: "read_only" },
       networkSandboxPolicy: {
-        allowlist: ["api.example.com"],
-        denylist: ["blocked.example.com"],
+        allowlist: ["urn:agenc:test:api"],
+        denylist: ["urn:agenc:test:blocked"],
         allowManagedDomainsOnly: false,
         enabled: false,
       },
@@ -422,8 +422,8 @@ describe("applySessionConfiguration sandbox cascade", () => {
       sandboxPolicy: "danger_full_access",
     });
     expect(next.networkSandboxPolicy).toEqual({
-      allowlist: ["api.example.com"],
-      denylist: ["blocked.example.com"],
+      allowlist: ["urn:agenc:test:api"],
+      denylist: ["urn:agenc:test:blocked"],
       allowManagedDomainsOnly: false,
       enabled: true,
     });
@@ -629,7 +629,7 @@ describe("toTurnContextItem field parity", () => {
     expect(ctx.turnMetadataState.cwd).toBe("/repo/.agenc-worktrees/feat");
   });
 
-  test("all 8 extended fields round-trip through toTurnContextItem", () => {
+  test("all extended fields round-trip through toTurnContextItem", () => {
     const sc: SessionConfiguration = {
       ...mkSessionConfiguration(),
       userInstructions: "user-inst",
@@ -652,6 +652,7 @@ describe("toTurnContextItem field parity", () => {
     expect(item.finalOutputJsonSchema).toBeUndefined();
     expect(item.truncationPolicy).toBe("off");
     expect(item.collaborationMode).toEqual({ model: "test-model" });
+    expect(item.modelProviderId).toBe("stub-provider");
     expect(item.fileSystemSandboxPolicy).toEqual(
       sc.fileSystemSandboxPolicy,
     );

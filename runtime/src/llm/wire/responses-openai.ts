@@ -331,6 +331,21 @@ export function parseOpenAIResponsesResponse(
     response.usage && typeof response.usage === "object"
       ? (response.usage as Record<string, unknown>)
       : {};
+  const inputDetails =
+    usageRecord.input_tokens_details &&
+      typeof usageRecord.input_tokens_details === "object" &&
+      !Array.isArray(usageRecord.input_tokens_details)
+      ? (usageRecord.input_tokens_details as Record<string, unknown>)
+      : {};
+  const outputDetails =
+    usageRecord.output_tokens_details &&
+      typeof usageRecord.output_tokens_details === "object" &&
+      !Array.isArray(usageRecord.output_tokens_details)
+      ? (usageRecord.output_tokens_details as Record<string, unknown>)
+      : {};
+  const webSearchRequests = output.filter(
+    (item) => item.type === "web_search_call",
+  ).length;
   const preparedMessages = prepareMessagesForWire(request.messages);
   const requestMetrics = withSerializedMetrics(
     collectRequestMetrics(preparedMessages, request.tools),
@@ -345,6 +360,9 @@ export function parseOpenAIResponsesResponse(
       promptTokens: usageRecord.input_tokens,
       completionTokens: usageRecord.output_tokens,
       totalTokens: usageRecord.total_tokens,
+      cachedInputTokens: inputDetails.cached_tokens,
+      reasoningOutputTokens: outputDetails.reasoning_tokens,
+      webSearchRequests: webSearchRequests > 0 ? webSearchRequests : undefined,
     }),
     model:
       typeof response.model === "string" ? response.model : model,

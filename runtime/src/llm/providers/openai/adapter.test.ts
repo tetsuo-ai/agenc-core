@@ -690,7 +690,7 @@ describe("OpenAIProvider", () => {
         'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"Hel"}\n\n',
         'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"lo"}\n\n',
         'event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"system.echo","arguments":"{\\"text\\":\\"hi\\"}"}}\n\n',
-        'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_1","status":"completed","model":"gpt-5","output":[{"type":"message","content":[{"type":"output_text","text":"Hello"}]},{"type":"function_call","id":"fc_1","call_id":"call_1","name":"system.echo","arguments":"{\\"text\\":\\"hi\\"}"}],"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}\n\n',
+        'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_1","status":"completed","model":"gpt-5","output":[{"type":"message","content":[{"type":"output_text","text":"Hello"}]},{"type":"web_search_call","id":"ws_1","status":"completed"},{"type":"function_call","id":"fc_1","call_id":"call_1","name":"system.echo","arguments":"{\\"text\\":\\"hi\\"}"}],"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7,"input_tokens_details":{"cached_tokens":2},"output_tokens_details":{"reasoning_tokens":1}}}}\n\n',
       ]),
     );
     const provider = new OpenAIProvider({
@@ -732,6 +732,14 @@ describe("OpenAIProvider", () => {
       { id: "call_1", name: "system.echo", arguments: '{"text":"hi"}' },
     ]);
     expect(response.finishReason).toBe("tool_calls");
+    expect(response.usage).toEqual({
+      promptTokens: 5,
+      completionTokens: 2,
+      totalTokens: 7,
+      cachedInputTokens: 2,
+      reasoningOutputTokens: 1,
+      webSearchRequests: 1,
+    });
 
     const request = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
     const headers = fetchImpl.mock.calls[0]?.[1]?.headers as Headers;
@@ -801,7 +809,7 @@ describe("OpenAIProvider", () => {
         'data: {"id":"chatcmpl_1","model":"gpt-5","choices":[{"index":0,"delta":{"content":"Hi "}}]}\n\n',
         'data: {"id":"chatcmpl_1","model":"gpt-5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"system.echo","arguments":"{\\"text\\":"}}]}}]}\n\n',
         'data: {"id":"chatcmpl_1","model":"gpt-5","choices":[{"index":0,"delta":{"content":"there","tool_calls":[{"index":0,"function":{"arguments":"\\"hi\\"}"}}]}}]}\n\n',
-        'data: {"id":"chatcmpl_1","model":"gpt-5","choices":[{"index":0,"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":7,"completion_tokens":4,"total_tokens":11}}\n\n',
+        'data: {"id":"chatcmpl_1","model":"gpt-5","choices":[{"index":0,"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":7,"completion_tokens":4,"total_tokens":11,"prompt_tokens_details":{"cached_tokens":3},"completion_tokens_details":{"reasoning_tokens":2}}}\n\n',
         "data: [DONE]\n\n",
       ]),
     );
@@ -842,6 +850,8 @@ describe("OpenAIProvider", () => {
       promptTokens: 7,
       completionTokens: 4,
       totalTokens: 11,
+      cachedInputTokens: 3,
+      reasoningOutputTokens: 2,
     });
 
     const request = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
