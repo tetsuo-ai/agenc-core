@@ -65,7 +65,7 @@ which don't resolve in AgenC's build graph. AgenC reproduces the
 synchronous-cleanup contract (serial with compaction, complete before
 the next request is built) and routes the `previous_response_id` clear
 through a tracker-registry shim at
-`runtime/src/llm/grok/incremental.ts::clearAllResponseIds`. Adapters
+`runtime/src/llm/providers/grok/incremental.ts::clearAllResponseIds`. Adapters
 without `previous_response_id` (Anthropic, local, Ollama) register a
 no-op clear. AgenC's other cache-clearing helpers (image,
 tool-result, etc.) are ported selectively as AgenC grows those caches.

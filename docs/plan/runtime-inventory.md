@@ -731,4 +731,4 @@ AgenC runtime structure:
 AgenC mirror in `runtime/src/`:
 - `utils/` — shared helpers
 - `session/`, `phases/`, `tools/`, `permissions/`, `agents/`, `recovery/`, `transport/`, `tui/`, `commands/`, `prompts/` — domain modules
-- `llm/grok/`, `llm/openai/`, `llm/anthropic/` — adapters
+- `llm/providers/{grok,openai,anthropic}/` — adapters

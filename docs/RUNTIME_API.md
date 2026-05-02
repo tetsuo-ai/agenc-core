@@ -60,7 +60,7 @@ const program = createProgram(provider);
 | `task/` | `TaskOperations` | Claim, complete, submit, review, and cancel tasks on-chain | `TaskOpsConfig` |
 | `events/` | `EventMonitor` | Subscribe to all protocol events | `EventMonitorConfig` |
 | `llm/` | `LLMTaskExecutor` | Bridge LLM providers to task execution | `LLMTaskExecutorConfig` |
-| `llm/grok/` | `GrokProvider` | xAI Grok adapter (via `openai` SDK) | `GrokProviderConfig` |
+| `llm/providers/grok/` | `GrokProvider` | xAI Grok adapter (via `openai` SDK) | `GrokProviderConfig` |
 | `llm/anthropic/` | `AnthropicProvider` | Anthropic adapter | `AnthropicProviderConfig` |
 | `llm/ollama/` | `OllamaProvider` | Ollama local adapter | `OllamaProviderConfig` |
 | `llm/openai-compat/` | `OpenAICompatProvider` | OpenAI-compatible local adapter (LM Studio, llama.cpp, vLLM) | `OpenAICompatProviderConfig` |

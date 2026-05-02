@@ -1,10 +1,10 @@
 /**
- * Grok (xAI) LLM provider module
+ * Compatibility entrypoint for the relocated Grok provider module.
  *
  * @module
  */
 
-export { GrokProvider } from "./adapter.js";
+export { GrokProvider } from "../providers/grok/adapter.js";
 export type {
   GrokProviderConfig,
-} from "./types.js";
+} from "../providers/grok/types.js";

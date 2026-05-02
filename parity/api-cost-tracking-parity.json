@@ -23,7 +23,7 @@
     "runtime/src/llm/wire/chat-completions.ts",
     "runtime/src/llm/providers/anthropic/adapter.ts",
     "runtime/src/llm/providers/openai/adapter.ts",
-    "runtime/src/llm/grok/adapter.ts",
+    "runtime/src/llm/providers/grok/adapter.ts",
     "runtime/src/phases/stream-model.ts",
     "runtime/src/bin/bootstrap.ts",
     "runtime/src/commands/status.ts"
@@ -35,7 +35,7 @@
     "runtime/src/session/turn-context.test.ts",
     "runtime/src/llm/providers/anthropic/adapter.test.ts",
     "runtime/src/llm/providers/openai/adapter.test.ts",
-    "runtime/src/llm/grok/adapter.test.ts",
+    "runtime/src/llm/providers/grok/adapter.test.ts",
     "runtime/src/phases/stream-model.test.ts",
     "runtime/src/commands/status.test.ts"
   ],
@@ -70,12 +70,12 @@
         "runtime/src/session/event-log.test.ts",
         "runtime/src/llm/providers/anthropic/adapter.test.ts",
         "runtime/src/llm/providers/openai/adapter.test.ts",
-        "runtime/src/llm/grok/adapter.test.ts",
+        "runtime/src/llm/providers/grok/adapter.test.ts",
         "runtime/src/phases/stream-model.test.ts",
         "runtime/src/session/turn-context.test.ts"
       ],
       "commands": [
-        "npm run test --workspace=@tetsuo-ai/runtime -- src/session/cost.test.ts src/session/event-log.test.ts src/llm/providers/anthropic/adapter.test.ts src/llm/providers/openai/adapter.test.ts src/llm/grok/adapter.test.ts src/phases/stream-model.test.ts src/session/turn-context.test.ts"
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/session/cost.test.ts src/session/event-log.test.ts src/llm/providers/anthropic/adapter.test.ts src/llm/providers/openai/adapter.test.ts src/llm/providers/grok/adapter.test.ts src/phases/stream-model.test.ts src/session/turn-context.test.ts"
       ],
       "status": "required"
     },

@@ -1,0 +1,118 @@
+{
+  "contractName": "grok-provider-relocation-parity",
+  "scope": "Relocate the default Grok provider implementation into runtime/src/llm/providers/grok while keeping historical imports compatible",
+  "generatedAt": "2026-05-02T00:00:00.000Z",
+  "sourceRoot": "..",
+  "targetRoot": "..",
+  "sourceCommit": "559904c8df2fa48d6bf2dd55290a7c1afd36554d",
+  "sourceFiles": [
+    "runtime/src/llm/grok/adapter.ts",
+    "runtime/src/llm/grok/adapter-utils.ts",
+    "runtime/src/llm/grok/auth-refresh.ts",
+    "runtime/src/llm/grok/incremental.ts",
+    "runtime/src/llm/grok/types.ts",
+    "runtime/src/llm/grok/adapter.test.ts",
+    "runtime/src/llm/grok/adapter-utils.test.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/llm/providers/grok/adapter.ts",
+    "runtime/src/llm/providers/grok/adapter-utils.ts",
+    "runtime/src/llm/providers/grok/auth-refresh.ts",
+    "runtime/src/llm/providers/grok/incremental.ts",
+    "runtime/src/llm/providers/grok/types.ts",
+    "runtime/src/llm/providers/grok/index.ts",
+    "runtime/src/llm/providers/grok/PARITY.md",
+    "runtime/src/llm/grok/adapter.ts",
+    "runtime/src/llm/grok/adapter-utils.ts",
+    "runtime/src/llm/grok/auth-refresh.ts",
+    "runtime/src/llm/grok/incremental.ts",
+    "runtime/src/llm/grok/types.ts",
+    "runtime/src/llm/grok/index.ts"
+  ],
+  "testFiles": [
+    "runtime/src/llm/providers/grok/provider.test.ts",
+    "runtime/src/llm/providers/grok/adapter.test.ts",
+    "runtime/src/llm/providers/grok/adapter-utils.test.ts",
+    "runtime/src/llm/providers/grok/incremental.test.ts",
+    "runtime/src/llm/grok/adapter.test.ts",
+    "runtime/src/llm/grok/adapter-utils.test.ts",
+    "runtime/src/llm/provider.test.ts",
+    "runtime/src/llm/provider-capabilities.test.ts",
+    "runtime/src/llm/structured-output.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "canonical-provider-namespace",
+      "source": "runtime/src/llm/grok/",
+      "target": "runtime/src/llm/providers/grok/",
+      "requiredBehaviors": [
+        "export GrokProvider and GrokProviderConfig from providers/grok",
+        "keep runtime/src/llm/grok imports working through compatibility exports",
+        "keep createProvider('grok') wired to the provider namespace"
+      ],
+      "edgeCases": [
+        "old adapter helper imports",
+        "old incremental cleanup imports",
+        "provider factory default route"
+      ],
+      "tests": [
+        "runtime/src/llm/providers/grok/provider.test.ts",
+        "runtime/src/llm/grok/adapter-utils.test.ts",
+        "runtime/src/llm/providers/grok/incremental.test.ts",
+        "runtime/src/llm/provider.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/providers/grok/provider.test.ts src/llm/grok/adapter-utils.test.ts src/llm/providers/grok/incremental.test.ts src/llm/provider.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "grok-native-server-tools",
+      "source": "runtime/src/llm/grok/adapter.ts + runtime/src/llm/provider-native-search.ts",
+      "target": "runtime/src/llm/providers/grok/adapter.ts + runtime/src/llm/provider-native-search.ts",
+      "requiredBehaviors": [
+        "attach xAI native web_search when webSearch is enabled on Grok 4-family models",
+        "do not attach native server-side tools for grok-code-fast-1",
+        "keep native provider tools in the same tool-selection catalog as function tools"
+      ],
+      "edgeCases": [
+        "webSearch true with Grok 4 model",
+        "webSearch true with grok-code-fast-1",
+        "allowlist resolution across function and native tools"
+      ],
+      "tests": [
+        "runtime/src/llm/providers/grok/provider.test.ts",
+        "runtime/src/llm/providers/grok/adapter-utils.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/providers/grok/provider.test.ts src/llm/providers/grok/adapter-utils.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "structured-output-model-family-gates",
+      "source": "runtime/src/llm/grok/adapter.ts + runtime/src/llm/provider-capabilities.ts + runtime/src/llm/structured-output.ts",
+      "target": "runtime/src/llm/providers/grok/adapter.ts + runtime/src/llm/provider-capabilities.ts + runtime/src/llm/structured-output.ts",
+      "requiredBehaviors": [
+        "use xAI Responses text.format for supported structured outputs",
+        "allow structured output with tools only for Grok 4-family models",
+        "reject grok-code-fast-1 structured output with tools before sending a provider request",
+        "route grok-code-fast-1 through the default Grok provider factory without adding native search tools"
+      ],
+      "edgeCases": [
+        "Grok 4 structured output with tools",
+        "grok-code-fast-1 structured output with tools",
+        "factory options carrying provider-native search flags"
+      ],
+      "tests": [
+        "runtime/src/llm/providers/grok/provider.test.ts",
+        "runtime/src/llm/provider-capabilities.test.ts",
+        "runtime/src/llm/structured-output.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/providers/grok/provider.test.ts src/llm/provider-capabilities.test.ts src/llm/structured-output.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}
