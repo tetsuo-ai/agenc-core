@@ -75,6 +75,18 @@ export interface AgenCDaemonAgentSnapshotFlush extends JsonObject {
   readonly agents: readonly AgentSummary[];
 }
 
+export interface AgenCDaemonAgentRestoreRecord {
+  readonly agentId: string;
+  readonly objective: string;
+  readonly status?: AgentStatus;
+  readonly createdAt?: string;
+  readonly startedAt?: string;
+  readonly lastActiveAt?: string;
+  readonly cwd?: string;
+  readonly metadata?: JsonObject;
+  readonly sessionIds?: readonly string[];
+}
+
 export const DEFAULT_UNATTENDED_ALLOWLIST = [
   "FileRead",
   "system.grep",
@@ -94,6 +106,8 @@ interface MutableAgent {
   cwd?: string;
   metadata?: JsonObject;
   sessionIds: string[];
+  recovered?: boolean;
+  runtimeAvailable?: boolean;
 }
 
 interface AgentAttachmentTarget {
@@ -222,6 +236,42 @@ export class AgenCDaemonAgentManager {
     } finally {
       finishCreate();
     }
+  }
+
+  async restoreAgent(
+    record: AgenCDaemonAgentRestoreRecord,
+  ): Promise<AgentSummary> {
+    const agentId = normalizeNonEmpty(record.agentId);
+    const objective = normalizeNonEmpty(record.objective);
+    if (agentId === undefined || objective === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "agent restore requires agentId and objective",
+      );
+    }
+    const createdAt = normalizeNonEmpty(record.createdAt) ?? this.#now();
+    const startedAt = normalizeNonEmpty(record.startedAt) ?? createdAt;
+    const lastActiveAt = normalizeNonEmpty(record.lastActiveAt) ?? startedAt;
+    const agent: MutableAgent = {
+      agentId,
+      objective,
+      status: record.status ?? "running",
+      createdAt,
+      startedAt,
+      lastActiveAt,
+      sessionIds: normalizeStringList(record.sessionIds, []),
+      recovered: true,
+      runtimeAvailable: false,
+    };
+    if (record.cwd !== undefined) agent.cwd = record.cwd;
+    if (record.metadata !== undefined) agent.metadata = record.metadata;
+
+    return this.#state.with((state) => {
+      const existing = state.agents.get(agentId);
+      if (existing !== undefined) return toAgentSummary(existing);
+      state.agents.set(agentId, agent);
+      return toAgentSummary(agent);
+    });
   }
 
   #beginCreate(): () => void {
@@ -554,7 +604,7 @@ export class AgenCDaemonAgentManager {
       );
     }
 
-    await this.#state.with(async (state) => {
+    const recoveredRuntimeUnavailable = await this.#state.with(async (state) => {
       const agent = state.agents.get(session.agentId);
       if (agent !== undefined) {
         await this.#refreshAgentFromRunner(state, agent);
@@ -566,7 +616,14 @@ export class AgenCDaemonAgentManager {
           `AgenC daemon agent not found: ${session.agentId}`,
         );
       }
+      return isRecoveredRuntimeUnavailable(refreshed);
     });
+    if (recoveredRuntimeUnavailable) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        `AgenC daemon agent recovered without a live runtime: ${session.agentId}`,
+      );
+    }
 
     await this.#runner.submitAgentMessage(session.agentId, {
       sessionId: params.sessionId,
@@ -626,6 +683,12 @@ export class AgenCDaemonAgentManager {
           `AgenC daemon agent not found: ${session.agentId}`,
         );
       }
+      if (isRecoveredRuntimeUnavailable(refreshed)) {
+        throw new AgenCDaemonAgentLifecycleError(
+          "BACKGROUND_RUNNER_UNAVAILABLE",
+          `AgenC daemon agent recovered without a live runtime: ${session.agentId}`,
+        );
+      }
     });
     return session.agentId;
   }
@@ -638,9 +701,12 @@ export class AgenCDaemonAgentManager {
     const snapshot = await this.#runner?.getAgentSnapshot?.(agent.agentId);
     if (snapshot === undefined) return;
     if (snapshot === null) {
+      if (agent.recovered === true) return;
       state.agents.delete(agent.agentId);
       return;
     }
+    agent.recovered = false;
+    agent.runtimeAvailable = true;
     applyAgentSnapshot(agent, snapshot);
   }
 
@@ -759,6 +825,10 @@ function isActiveAgent(agent: MutableAgent): boolean {
     agent.status !== "stopped" &&
     agent.status !== "error"
   );
+}
+
+function isRecoveredRuntimeUnavailable(agent: MutableAgent): boolean {
+  return agent.recovered === true && agent.runtimeAvailable !== true;
 }
 
 function compareAgentsForList(left: MutableAgent, right: MutableAgent): number {

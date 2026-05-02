@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
 import type { AgenCShutdownSignal } from "../lifecycle/index.js";
+import { openStateDatabases } from "../state/sqlite-driver.js";
 import {
   createAgenCJsonLineDaemonRequestClient,
 } from "./agent-cli.js";
@@ -374,6 +375,136 @@ describe("AgenC daemon CLI", () => {
     await rm(agencHome, { recursive: true, force: true });
   });
 
+  it("foreground daemon runs restart recovery before advertising readiness", async () => {
+    const agencHome = await tempAgencHome();
+    const otherCwd = await mkdtemp(join(tmpdir(), "agenc-daemon-other-cwd-"));
+    await mkdir(join(otherCwd, ".git"));
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+    seedRecoverableDaemonState(agencHome, {
+      cwd: process.cwd(),
+      runId: "run-restart",
+      sessionId: "session-restart",
+      toolCallId: "tool-restart",
+    });
+    seedRecoverableDaemonState(agencHome, {
+      cwd: otherCwd,
+      runId: "run-other",
+      sessionId: "session-other",
+      toolCallId: "tool-other",
+      status: "blocked",
+    });
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+
+    expect(io.stderrText()).toContain(
+      "daemon recovery loaded 2 agent run(s) from state",
+    );
+    expect(io.stderrText()).toContain(
+      "daemon recovery marked 2 stale in-flight tool call(s) failed",
+    );
+    const authCookie = (await readFile(cookiePath, "utf8")).trim();
+    const client = createAgenCJsonLineDaemonRequestClient({
+      socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
+      authCookie,
+      timeoutMs: 1000,
+    });
+    const agentList = await client.request("agent.list", {});
+    expect(agentList.agents.map((agent) => agent.agentId)).toEqual([
+      "run-other",
+      "run-restart",
+    ]);
+    expect(agentList.agents[1]).toMatchObject({
+      agentId: "run-restart",
+      objective: "recover daemon state",
+      status: "idle",
+      activeSessionIds: ["session-restart"],
+      metadata: {
+        recovery: {
+          runStatus: "running",
+          runnable: false,
+          runtimeRestore: "unavailable",
+          toolRecoveryMode: "mark_failed",
+          snapshot: {
+            sessionId: "session-restart",
+            toolState: { pending: ["tool-restart"] },
+            failedToolCalls: [
+              {
+                toolCallId: "tool-restart",
+                statusAfter: "failed",
+              },
+            ],
+          },
+        },
+      },
+    });
+    expect(agentList.agents[0]).toMatchObject({
+      agentId: "run-other",
+      status: "idle",
+      metadata: {
+        recovery: {
+          runStatus: "blocked",
+          runnable: false,
+        },
+      },
+    });
+    await expect(
+      client.request("agent.attach", {
+        agentId: "run-restart",
+        clientId: "client-restart",
+      }),
+    ).resolves.toMatchObject({
+      agentId: "run-restart",
+      sessionIds: ["session-restart"],
+      sessions: [
+        {
+          sessionId: "session-restart",
+          agentId: "run-restart",
+          status: "waiting",
+          metadata: {
+            recovery: {
+              snapshot: {
+                failedToolCalls: [
+                  {
+                    toolCallId: "tool-restart",
+                    statusAfter: "failed",
+                  },
+                ],
+              },
+            },
+          },
+        },
+      ],
+    });
+    await expect(
+      client.request("message.stream", {
+        sessionId: "session-restart",
+        content: "continue",
+      }),
+    ).rejects.toThrow(
+      "AgenC daemon agent recovered without a live runtime: run-restart",
+    );
+
+    signalProcess.emit("SIGTERM");
+    await expect(running).resolves.toBe(0);
+    expect(readRecoveredToolStatus(agencHome, process.cwd(), "tool-restart")).toBe(
+      "failed",
+    );
+    expect(readRecoveredToolStatus(agencHome, otherCwd, "tool-other")).toBe(
+      "failed",
+    );
+
+    await rm(otherCwd, { recursive: true, force: true });
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
   it("foreground daemon reports cleanup failures and keeps cleaning up", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
@@ -399,3 +530,106 @@ describe("AgenC daemon CLI", () => {
     await rm(agencHome, { recursive: true, force: true });
   });
 });
+
+function seedRecoverableDaemonState(
+  agencHome: string,
+  params: {
+    readonly cwd: string;
+    readonly runId: string;
+    readonly sessionId: string;
+    readonly toolCallId: string;
+    readonly status?: string;
+  },
+): void {
+  const driver = openStateDatabases({
+    cwd: params.cwd,
+    agencHome,
+  });
+  try {
+    driver
+      .prepareState(
+        `INSERT INTO agent_runs (
+          id,
+          objective,
+          status,
+          started_at,
+          last_active_at,
+          current_session_id,
+          created_by_client,
+          last_snapshot_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        params.runId,
+        "recover daemon state",
+        params.status ?? "running",
+        "2026-05-01T00:00:00.000Z",
+        "2026-05-01T00:05:00.000Z",
+        params.sessionId,
+        "client-1",
+        "2026-05-01T00:06:00.000Z",
+      );
+    driver
+      .prepareState(
+        `INSERT INTO session_state_snapshots (
+          session_id,
+          snapshot_at,
+          conversation_json,
+          tool_state_json,
+          mcp_connection_state_json
+        ) VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(
+        params.sessionId,
+        "2026-05-01T00:06:00.000Z",
+        JSON.stringify([{ role: "assistant", content: "state" }]),
+        JSON.stringify({ pending: [params.toolCallId] }),
+        JSON.stringify({ connected: true }),
+      );
+    driver
+      .prepareState(
+        `INSERT INTO in_flight_tool_calls (
+          session_id,
+          tool_call_id,
+          tool_name,
+          args_json,
+          status,
+          output_partial,
+          started_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        params.sessionId,
+        params.toolCallId,
+        "FileWrite",
+        JSON.stringify({ path: "a.txt" }),
+        "running",
+        null,
+        "2026-05-01T00:05:00.000Z",
+      );
+  } finally {
+    driver.close();
+  }
+}
+
+function readRecoveredToolStatus(
+  agencHome: string,
+  cwd: string,
+  toolCallId: string,
+): string | undefined {
+  const driver = openStateDatabases({
+    cwd,
+    agencHome,
+  });
+  try {
+    return driver
+      .prepareState<[string], { status: string }>(
+        `SELECT status
+         FROM in_flight_tool_calls
+         WHERE tool_call_id = ?`,
+      )
+      .get(toolCallId)?.status;
+  } finally {
+    driver.close();
+  }
+}

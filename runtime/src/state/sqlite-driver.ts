@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import type BetterSqlite3 from "better-sqlite3";
@@ -15,6 +15,7 @@ import {
 
 export interface OpenStateDatabaseOptions {
   readonly cwd: string;
+  readonly agencHome?: string;
   readonly projectRootMarkers?: readonly string[];
 }
 
@@ -23,6 +24,9 @@ export interface StateDatabasePaths {
   readonly stateDbPath: string;
   readonly logsDbPath: string;
 }
+
+export const STATE_DATABASE_FILENAME = "agenc-state_1.sqlite";
+export const LOGS_DATABASE_FILENAME = "agenc-logs_1.sqlite";
 
 export type SqliteDatabase = BetterSqlite3.Database;
 export type SqliteStatement<
@@ -81,11 +85,12 @@ export function resolveStateDatabasePaths(
   const projectDir = getProjectDir(
     options.cwd,
     options.projectRootMarkers ?? DEFAULT_SESSION_ROOT_MARKERS,
+    options.agencHome,
   );
   return {
     projectDir,
-    stateDbPath: join(projectDir, "agenc-state_1.sqlite"),
-    logsDbPath: join(projectDir, "agenc-logs_1.sqlite"),
+    stateDbPath: join(projectDir, STATE_DATABASE_FILENAME),
+    logsDbPath: join(projectDir, LOGS_DATABASE_FILENAME),
   };
 }
 
@@ -93,8 +98,38 @@ export function openStateDatabases(
   options: OpenStateDatabaseOptions,
 ): StateSqliteDriver {
   const paths = resolveStateDatabasePaths(options);
+  return openStateDatabasePaths(paths);
+}
+
+export function openStateDatabasePaths(
+  paths: StateDatabasePaths,
+): StateSqliteDriver {
   mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
   return new StateSqliteDriver(paths);
+}
+
+export function discoverStateDatabasePaths(
+  agencHome: string,
+): StateDatabasePaths[] {
+  const projectsDir = join(agencHome, "projects");
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(projectsDir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => {
+      const projectDir = join(projectsDir, entry.name);
+      return {
+        projectDir,
+        stateDbPath: join(projectDir, STATE_DATABASE_FILENAME),
+        logsDbPath: join(projectDir, LOGS_DATABASE_FILENAME),
+      };
+    })
+    .filter((paths) => existsSync(paths.stateDbPath));
 }
 
 export function configureDatabase(db: SqliteDatabase): void {

@@ -155,8 +155,8 @@ export function slugifyCwd(cwd: string): string {
   return `${base.slice(0, 40) || "root"}-${hash}`;
 }
 
-export function getAgencHomeDir(): string {
-  const explicit = process.env.AGENC_HOME;
+export function getAgencHomeDir(agencHome?: string): string {
+  const explicit = agencHome ?? process.env.AGENC_HOME;
   if (explicit) return explicit;
   const home = process.env.HOME;
   if (!home) {
@@ -224,18 +224,24 @@ export function findProjectRootSync(
 export function getProjectDir(
   cwd: string,
   projectRootMarkers: readonly string[] = DEFAULT_SESSION_ROOT_MARKERS,
+  agencHome?: string,
 ): string {
   const root = findProjectRootSync(cwd, projectRootMarkers);
   const slugInput = root ? root.rootDir : cwd;
-  return join(getAgencHomeDir(), "projects", slugifyCwd(slugInput));
+  return join(getAgencHomeDir(agencHome), "projects", slugifyCwd(slugInput));
 }
 
 export function getSessionDir(
   cwd: string,
   sessionId: string,
   projectRootMarkers: readonly string[] = DEFAULT_SESSION_ROOT_MARKERS,
+  agencHome?: string,
 ): string {
-  return join(getProjectDir(cwd, projectRootMarkers), "sessions", sessionId);
+  return join(
+    getProjectDir(cwd, projectRootMarkers, agencHome),
+    "sessions",
+    sessionId,
+  );
 }
 
 export function buildRolloutFilename(

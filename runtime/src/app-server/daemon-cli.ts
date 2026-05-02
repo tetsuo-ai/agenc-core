@@ -22,7 +22,13 @@ import {
   AgenCDaemonJsonRpcDispatcher,
   type AgenCDaemonJsonRpcConnection,
 } from "./daemon-dispatcher.js";
-import { JSON_RPC_VERSION, type JsonObject } from "./protocol/index.js";
+import {
+  JSON_RPC_VERSION,
+  type AgentStatus,
+  type JsonObject,
+  type JsonValue,
+  type SessionStatus,
+} from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import { AgenCUnixSocketServer } from "./transport/unix-socket.js";
 import {
@@ -34,6 +40,19 @@ import {
 import { createAuthBackend } from "../auth/index.js";
 import type { AuthBackend } from "../auth/backend.js";
 import { loadConfig } from "../config/index.js";
+import {
+  recoverDaemonStateOnStartup,
+  type DaemonStartupRecoveryReport,
+  type FailedInFlightToolCall,
+  type RecoveredAgentRun,
+  type RecoveredSessionStateSnapshot,
+} from "../state/recovery.js";
+import {
+  discoverStateDatabasePaths,
+  openStateDatabasePaths,
+  resolveStateDatabasePaths,
+  type StateDatabasePaths,
+} from "../state/sqlite-driver.js";
 
 export const AGENC_DAEMON_PID_FILENAME = "daemon.pid";
 export const AGENC_DAEMON_SOCKET_FILENAME = "daemon.sock";
@@ -299,6 +318,19 @@ async function runAgenCDaemonForeground(
   const daemonCookie = await ensureAgenCDaemonCookie(
     resolveAgenCDaemonCookiePath(host.env, host.userHome),
   );
+  let startupRecovery: DaemonStartupRecoveryReport;
+  try {
+    startupRecovery = recoverAgenCDaemonStartupState(
+      authStartup.daemonHome,
+      process.cwd(),
+    );
+    reportAgenCDaemonStartupRecovery(io, startupRecovery);
+  } catch (error) {
+    io.stderr.write(
+      `agenc: daemon state recovery failed: ${formatCleanupError(error)}\n`,
+    );
+    return 1;
+  }
   const sessionManager = new AgenCDaemonSessionManager();
   const clientMultiplexer = new AgenCDaemonClientMultiplexer({
     sessionManager,
@@ -320,6 +352,11 @@ async function runAgenCDaemonForeground(
       await clientMultiplexer.broadcastSessionEvent(sessionId, event);
     },
   });
+  await hydrateAgenCDaemonStartupRecovery(
+    sessionManager,
+    agentManager,
+    startupRecovery,
+  );
   const dispatcher = new AgenCDaemonJsonRpcDispatcher({
     agentManager,
     clientMultiplexer,
@@ -430,6 +467,166 @@ async function runAgenCDaemonForeground(
     }
   }
   return exitCode;
+}
+
+function recoverAgenCDaemonStartupState(
+  daemonHome: string,
+  cwd: string,
+): DaemonStartupRecoveryReport {
+  const recoveredAt = new Date().toISOString();
+  const paths = uniqueStateDatabasePaths([
+    ...discoverStateDatabasePaths(daemonHome),
+    resolveStateDatabasePaths({ cwd, agencHome: daemonHome }),
+  ]);
+  const recoveredRuns: RecoveredAgentRun[] = [];
+  const failedToolCalls: FailedInFlightToolCall[] = [];
+  const warnings: DaemonStartupRecoveryReport["warnings"][number][] = [];
+
+  for (const pathSet of paths) {
+    const driver = openStateDatabasePaths(pathSet);
+    try {
+      const report = recoverDaemonStateOnStartup(driver, {
+        now: () => recoveredAt,
+      });
+      recoveredRuns.push(...report.recoveredRuns);
+      failedToolCalls.push(...report.failedToolCalls);
+      warnings.push(...report.warnings);
+    } finally {
+      driver.close();
+    }
+  }
+
+  return {
+    recoveredAt,
+    recoveredRuns,
+    failedToolCalls,
+    warnings,
+  };
+}
+
+function uniqueStateDatabasePaths(
+  paths: readonly StateDatabasePaths[],
+): StateDatabasePaths[] {
+  const byStateDb = new Map<string, StateDatabasePaths>();
+  for (const pathSet of paths) {
+    byStateDb.set(pathSet.stateDbPath, pathSet);
+  }
+  return [...byStateDb.values()].sort((left, right) =>
+    left.projectDir.localeCompare(right.projectDir),
+  );
+}
+
+async function hydrateAgenCDaemonStartupRecovery(
+  sessionManager: AgenCDaemonSessionManager,
+  agentManager: AgenCDaemonAgentManager,
+  report: DaemonStartupRecoveryReport,
+): Promise<void> {
+  for (const run of report.recoveredRuns) {
+    const metadata = recoveryMetadataForRun(report, run);
+    if (run.currentSessionId !== undefined) {
+      await sessionManager.restoreSession({
+        sessionId: run.currentSessionId,
+        agentId: run.id,
+        status: sessionStatusForRecoveredRun(run),
+        createdAt: run.startedAt,
+        initialPrompt: run.objective,
+        metadata,
+      });
+    }
+    await agentManager.restoreAgent({
+      agentId: run.id,
+      objective: run.objective,
+      status: agentStatusForRecoveredRun(run),
+      createdAt: run.startedAt,
+      startedAt: run.startedAt,
+      lastActiveAt: run.lastActiveAt,
+      metadata,
+      ...(run.currentSessionId !== undefined
+        ? { sessionIds: [run.currentSessionId] }
+        : {}),
+    });
+  }
+}
+
+function agentStatusForRecoveredRun(_run: RecoveredAgentRun): AgentStatus {
+  return "idle";
+}
+
+function sessionStatusForRecoveredRun(_run: RecoveredAgentRun): SessionStatus {
+  return "waiting";
+}
+
+function recoveryMetadataForRun(
+  report: DaemonStartupRecoveryReport,
+  run: RecoveredAgentRun,
+): JsonObject {
+  return {
+    recovery: {
+      recoveredAt: report.recoveredAt,
+      projectDir: run.projectDir,
+      runStatus: run.status,
+      runnable: false,
+      runtimeRestore: "unavailable",
+      toolRecoveryMode: "mark_failed",
+      ...(run.createdByClient !== undefined
+        ? { createdByClient: run.createdByClient }
+        : {}),
+      ...(run.latestSnapshot !== undefined
+        ? { snapshot: recoverySnapshotMetadata(run.latestSnapshot) }
+        : {}),
+    },
+  };
+}
+
+function recoverySnapshotMetadata(
+  snapshot: RecoveredSessionStateSnapshot,
+): JsonObject {
+  return {
+    projectDir: snapshot.projectDir,
+    sessionId: snapshot.sessionId,
+    snapshotAt: snapshot.snapshotAt,
+    conversation: snapshot.conversation as JsonValue,
+    toolState: snapshot.toolState as JsonValue,
+    mcpConnectionState: snapshot.mcpConnectionState as JsonValue,
+    failedToolCalls: snapshot.failedToolCalls.map(recoveryToolCallMetadata),
+  };
+}
+
+function recoveryToolCallMetadata(call: FailedInFlightToolCall): JsonObject {
+  return {
+    projectDir: call.projectDir,
+    sessionId: call.sessionId,
+    toolCallId: call.toolCallId,
+    toolName: call.toolName,
+    statusBefore: call.statusBefore,
+    statusAfter: "failed",
+    startedAt: call.startedAt,
+    ...(call.args !== undefined ? { args: call.args as JsonValue } : {}),
+    ...(call.outputPartial !== undefined
+      ? { outputPartial: call.outputPartial }
+      : {}),
+  };
+}
+
+function reportAgenCDaemonStartupRecovery(
+  io: AgenCDaemonCliIo,
+  report: DaemonStartupRecoveryReport,
+): void {
+  if (report.recoveredRuns.length > 0) {
+    io.stderr.write(
+      `agenc: daemon recovery loaded ${report.recoveredRuns.length} agent run(s) from state\n`,
+    );
+  }
+  if (report.failedToolCalls.length > 0) {
+    io.stderr.write(
+      `agenc: daemon recovery marked ${report.failedToolCalls.length} stale in-flight tool call(s) failed\n`,
+    );
+  }
+  if (report.warnings.length > 0) {
+    io.stderr.write(
+      `agenc: daemon recovery emitted ${report.warnings.length} warning(s)\n`,
+    );
+  }
 }
 
 interface AgenCDaemonAuthStartup {
