@@ -61,6 +61,16 @@ export interface AgenCSessionLifecycleOptions {
   readonly defaultAgentId?: string;
 }
 
+export interface AgenCSessionRestoreRecord {
+  readonly sessionId: string;
+  readonly agentId: string;
+  readonly status?: SessionStatus;
+  readonly createdAt?: string;
+  readonly cwd?: string;
+  readonly initialPrompt?: string;
+  readonly metadata?: JsonObject;
+}
+
 export interface AgenCSessionCounts {
   readonly active: number;
   readonly closed: number;
@@ -130,6 +140,39 @@ export class AgenCDaemonSessionManager {
           `AgenC daemon session already exists: ${sessionId}`,
         );
       }
+      state.sessions.set(sessionId, session);
+      return toSessionSummary(session);
+    });
+  }
+
+  async restoreSession(
+    record: AgenCSessionRestoreRecord,
+  ): Promise<SessionSummary> {
+    const sessionId = nonEmptyString(record.sessionId);
+    const agentId = nonEmptyString(record.agentId);
+    if (sessionId === undefined || agentId === undefined) {
+      throw new AgenCSessionLifecycleError(
+        "INVALID_ARGUMENT",
+        "AgenC daemon session restore requires sessionId and agentId",
+      );
+    }
+
+    const session: MutableSession = {
+      sessionId,
+      agentId,
+      status: record.status ?? "waiting",
+      createdAt: nonEmptyString(record.createdAt) ?? this.#now(),
+      attachments: new Map(),
+    };
+    if (record.cwd !== undefined) session.cwd = record.cwd;
+    if (record.initialPrompt !== undefined) {
+      session.initialPrompt = record.initialPrompt;
+    }
+    if (record.metadata !== undefined) session.metadata = record.metadata;
+
+    return this.#state.with((state) => {
+      const existing = state.sessions.get(sessionId);
+      if (existing !== undefined) return toSessionSummary(existing);
       state.sessions.set(sessionId, session);
       return toSessionSummary(session);
     });
