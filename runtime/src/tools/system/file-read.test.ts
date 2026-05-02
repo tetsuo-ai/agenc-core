@@ -66,6 +66,20 @@ describe("FileRead tool", () => {
     expect(() => JSON.parse(result.content)).toThrow();
   });
 
+  test("uses dense token estimation for JSON files", async () => {
+    const file = join(root, "data.json");
+    await writeFile(file, "x".repeat(240), "utf8");
+    const tool = createFileReadTool({
+      allowedPaths: [root],
+      maxTokens: 100,
+    });
+
+    const result = await tool.execute({ file_path: file });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("File content (120 tokens)");
+  });
+
   test("rejects an unreadable path with plain-text error", async () => {
     const tool = createFileReadTool({ allowedPaths: [root] });
     const result = await tool.execute({

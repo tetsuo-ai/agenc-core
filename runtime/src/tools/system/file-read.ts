@@ -52,6 +52,7 @@ import {
   safePathAllowingSessionPlanFile,
 } from "./filesystem.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
+import { roughTokenCountEstimationForFileType } from "../../llm/token-estimation.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -222,8 +223,8 @@ function formatBytes(bytes: number): string {
  * here). Aligns with how AgenC's `validateContentTokens` uses the
  * rough estimate to decide whether to invoke the API tokenizer.
  */
-function estimateTokens(content: string): number {
-  return Math.ceil(content.length / 4);
+function estimateTokens(content: string, fileExtension = ""): number {
+  return roughTokenCountEstimationForFileType(content, fileExtension);
 }
 
 /**
@@ -457,7 +458,7 @@ async function readTextFile(
 
   // Token cap — match AgenC's MaxFileReadTokenExceededError
   // verbatim so any model-side recovery prompt still triggers.
-  const estimated = estimateTokens(sliced.content);
+  const estimated = estimateTokens(sliced.content, extname(opts.displayPath));
   if (estimated > opts.maxTokens) {
     return errorResult(
       `File content (${estimated} tokens) exceeds maximum allowed tokens (${opts.maxTokens}). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.`,

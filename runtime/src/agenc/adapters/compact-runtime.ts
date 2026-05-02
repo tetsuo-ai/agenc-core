@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { LLMProvider } from "../../llm/types.js";
+import {
+  roughTokenCountEstimationForMessages,
+  type TokenizerProviderHint,
+} from "../../llm/token-estimation.js";
 
 type RuntimeMessage = {
   readonly role?: "system" | "user" | "assistant" | "tool";
@@ -92,7 +96,10 @@ export async function autoCompactIfNeeded(
       consecutiveFailures: tracking?.consecutiveFailures,
     };
   }
-  const tokenCount = Math.max(0, estimateMessagesTokens(messages) - snipTokensFreed);
+  const tokenCount = Math.max(
+    0,
+    estimateMessagesTokens(messages, context) - snipTokensFreed,
+  );
   if (tokenCount < autoCompactThreshold(context)) {
     return { wasCompacted: false, consecutiveFailures: 0 };
   }
@@ -129,7 +136,7 @@ export async function contextUsageCall(
   context: CompactContext & { readonly messages?: RuntimeMessage[] },
 ): Promise<{ readonly value: string }> {
   const messages = context.messages ?? [];
-  const used = estimateMessagesTokens(messages);
+  const used = estimateMessagesTokens(messages, context);
   const window = context.options?.contextWindowTokens ?? 0;
   const percent = window > 0 ? Math.min(100, Math.round((used / window) * 100)) : 0;
   return {
@@ -290,7 +297,7 @@ async function compactMessages(
   context: CompactContext,
   customInstructions = "",
 ): Promise<CompactionResult> {
-  const preCompactTokenCount = estimateMessagesTokens(messages);
+  const preCompactTokenCount = estimateMessagesTokens(messages, context);
   const keepCount = chooseKeepCount(messages);
   const messagesToSummarize = messages.slice(0, Math.max(0, messages.length - keepCount));
   const messagesToKeep = messages.slice(Math.max(0, messages.length - keepCount));
@@ -305,11 +312,10 @@ async function compactMessages(
     true,
   );
   const summaryMessage = createRuntimeMessage("user", summary, true);
-  const postCompactTokenCount = estimateMessagesTokens([
-    boundaryMarker,
-    summaryMessage,
-    ...messagesToKeep,
-  ]);
+  const postCompactTokenCount = estimateMessagesTokens(
+    [boundaryMarker, summaryMessage, ...messagesToKeep],
+    context,
+  );
   return {
     boundaryMarker,
     summaryMessages: [summaryMessage],
@@ -375,12 +381,18 @@ function autoCompactThreshold(context: CompactContext): number {
   return Math.max(1, Math.floor(window * 0.8));
 }
 
-function estimateMessagesTokens(messages: readonly RuntimeMessage[]): number {
-  return messages.reduce((sum, message) => sum + estimateTextTokens(messageText(message)), 0);
+function estimateMessagesTokens(
+  messages: readonly RuntimeMessage[],
+  context?: CompactContext,
+): number {
+  return roughTokenCountEstimationForMessages(messages, providerHint(context));
 }
 
-function estimateTextTokens(text: string): number {
-  return Math.max(1, Math.ceil(text.length / 4));
+function providerHint(context: CompactContext | undefined): TokenizerProviderHint {
+  return {
+    provider: context?.provider?.name,
+    model: context?.options?.mainLoopModel,
+  };
 }
 
 function messageText(message: RuntimeMessage): string {
