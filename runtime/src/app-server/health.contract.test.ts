@@ -84,6 +84,44 @@ describe("AgenC daemon health service", () => {
     });
   });
 
+  it("includes read-only state stats when a state counter is configured", async () => {
+    const health = new AgenCDaemonHealthService({
+      startedAtMs: 1000,
+      nowMs: () => 2500,
+      stateCounter: {
+        readStateStats: () => ({
+          available: true,
+          readonly: true,
+          projectDir: "/tmp/agenc-project",
+          agentRuns: 2,
+          sessionStateSnapshots: 3,
+          inFlightToolCalls: 4,
+          logs: 5,
+        }),
+      },
+      memoryUsage: () => ({
+        rss: 1,
+        heapTotal: 2,
+        heapUsed: 3,
+        external: 4,
+        arrayBuffers: 5,
+      }),
+    });
+
+    await expect(health.stats()).resolves.toMatchObject({
+      uptimeMs: 1500,
+      state: {
+        available: true,
+        readonly: true,
+        projectDir: "/tmp/agenc-project",
+        agentRuns: 2,
+        sessionStateSnapshots: 3,
+        inFlightToolCalls: 4,
+        logs: 5,
+      },
+    });
+  });
+
   it("normalizes Node memory usage into the protocol shape", () => {
     expect(
       toHealthMemoryStats({

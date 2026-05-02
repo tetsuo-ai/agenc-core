@@ -21,6 +21,10 @@ import {
   type AgenCCommandExec,
 } from "./command-exec.js";
 import {
+  AgenCDaemonHealthService,
+  type AgenCHealthStateCounter,
+} from "./health.js";
+import {
   createAgenCDaemonAuthHandlers,
   type AgenCDaemonAuthHandlers,
 } from "./auth.js";
@@ -76,6 +80,8 @@ export interface AgenCDaemonDispatcherOptions {
   readonly fuzzyFileSearch?: AgenCFuzzyFileSearch;
   readonly commandExec?: AgenCCommandExec;
   readonly authBackend?: AuthBackend;
+  readonly health?: Pick<AgenCDaemonHealthService, "ping" | "ready" | "stats">;
+  readonly healthStateCounter?: AgenCHealthStateCounter;
   readonly now?: () => string;
 }
 
@@ -107,6 +113,7 @@ export class AgenCDaemonJsonRpcDispatcher {
   readonly #fuzzyFileSearch: AgenCFuzzyFileSearch;
   readonly #commandExec: AgenCCommandExec;
   readonly #authHandlers: AgenCDaemonAuthHandlers | undefined;
+  readonly #health: Pick<AgenCDaemonHealthService, "ping" | "ready" | "stats">;
   readonly #now: () => string;
 
   constructor(options: AgenCDaemonDispatcherOptions) {
@@ -118,6 +125,11 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#fuzzyFileSearch =
       options.fuzzyFileSearch ?? new AgenCFuzzyFileSearchService();
     this.#commandExec = options.commandExec ?? new AgenCCommandExecService();
+    this.#health =
+      options.health ??
+      new AgenCDaemonHealthService({
+        stateCounter: options.healthStateCounter,
+      });
     this.#authHandlers =
       options.authBackend !== undefined
         ? createAgenCDaemonAuthHandlers(options.authBackend)
@@ -314,6 +326,12 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.cancelTool(validateToolCancelParams(params)),
         );
+      case "health.ping":
+        return successResponse(id, this.#health.ping());
+      case "health.ready":
+        return successResponse(id, this.#health.ready());
+      case "health.stats":
+        return successResponse(id, await this.#health.stats());
       case "auth.login":
       case "auth.whoami":
       case "auth.logout":

@@ -37,6 +37,7 @@ import {
 } from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import { AgenCUnixSocketServer } from "./transport/unix-socket.js";
+import { AgenCDaemonHealthService } from "./health.js";
 import {
   AgenCCleanupRegistry,
   installAgenCShutdownSignalHandlers,
@@ -54,6 +55,7 @@ import {
   type RecoveredSessionStateSnapshot,
 } from "../state/recovery.js";
 import { pruneTerminalAgentRuns } from "../state/pruning.js";
+import { StateSqliteHealthStatsReader } from "../state/health-stats.js";
 import { AgenCSessionSnapshotPolicy } from "../state/snapshot-policy.js";
 import {
   discoverStateDatabasePaths,
@@ -355,6 +357,7 @@ async function runAgenCDaemonForeground(
   });
   const commandExec = new AgenCCommandExecService();
   const cleanup = new AgenCCleanupRegistry();
+  let shuttingDown = false;
   const runner =
     options.runner ??
     new AgenCDelegateBackgroundAgentRunner({
@@ -442,11 +445,22 @@ async function runAgenCDaemonForeground(
     );
     return 1;
   }
+  const health = new AgenCDaemonHealthService({
+    sessionCounter: sessionManager,
+    stateCounter: new StateSqliteHealthStatsReader(
+      resolveStateDatabasePaths({
+        cwd: process.cwd(),
+        agencHome: authStartup.daemonHome,
+      }),
+    ),
+    ready: () => !shuttingDown,
+  });
   const dispatcher = new AgenCDaemonJsonRpcDispatcher({
     agentManager,
     clientMultiplexer,
     commandExec,
     authBackend: authStartup.authBackend,
+    health,
     initializeAuthenticator: (params) => params.authCookie === daemonCookie,
   });
   const connections = new Map<number, AgenCDaemonJsonRpcConnection>();
@@ -454,7 +468,6 @@ async function runAgenCDaemonForeground(
     number,
     { readonly send: (message: JsonObject) => Promise<void> }
   >();
-  let shuttingDown = false;
   const connectionFor = (connectionId: number): AgenCDaemonJsonRpcConnection => {
     const current = connections.get(connectionId);
     if (current !== undefined) return current;

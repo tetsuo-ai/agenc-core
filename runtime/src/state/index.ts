@@ -1,6 +1,7 @@
 export * from "./agent-jobs.js";
 export * from "./backfill.js";
 export * from "./errors.js";
+export * from "./health-stats.js";
 export * from "./logs.js";
 export * from "./memories.js";
 export * from "./migrations/index.js";

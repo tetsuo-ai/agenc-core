@@ -348,6 +348,104 @@ describe("AgenC daemon CLI", () => {
     await rm(agencHome, { recursive: true, force: true });
   });
 
+  it("foreground daemon serves read-only state stats to daemon clients", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+    const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent-health-state",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      submitAgentMessage: async () => {},
+    };
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess, runner },
+    );
+    let stopped = false;
+    try {
+      await expect(waitForPid(pidPath)).resolves.toBe(4100);
+
+      const authCookie = (await readFile(cookiePath, "utf8")).trim();
+      const writerClient = createAgenCJsonLineDaemonRequestClient({
+        socketPath,
+        authCookie,
+        timeoutMs: 1000,
+      });
+      const readerClientA = createAgenCJsonLineDaemonRequestClient({
+        socketPath,
+        authCookie,
+        timeoutMs: 1000,
+      });
+      const readerClientB = createAgenCJsonLineDaemonRequestClient({
+        socketPath,
+        authCookie,
+        timeoutMs: 1000,
+      });
+
+      const created = await writerClient.request("agent.create", {
+        objective: "health state",
+      });
+      if (created.sessionId === undefined) throw new Error("session id missing");
+      const initialStats = await readerClientA.request("health.stats");
+      expect(initialStats.sessions).toMatchObject({
+        active: 1,
+        closed: 0,
+        total: 1,
+      });
+      expect(initialStats.state).toMatchObject({
+        available: true,
+        readonly: true,
+        agentRuns: 0,
+      });
+      const initialSnapshots = initialStats.state?.sessionStateSnapshots ?? 0;
+
+      const [streamed, statsA, statsB] = await Promise.all([
+        writerClient.request("message.stream", {
+          sessionId: created.sessionId,
+          content: "hello",
+          clientMessageId: "message-health-state",
+          streamId: "stream-health-state",
+        }),
+        readerClientA.request("health.stats"),
+        readerClientB.request("health.stats"),
+      ]);
+      expect(streamed).toMatchObject({
+        messageId: "message-health-state",
+        streamId: "stream-health-state",
+      });
+      expect(statsA.state).toMatchObject({
+        available: true,
+        readonly: true,
+      });
+      expect(statsB.state).toMatchObject({
+        available: true,
+        readonly: true,
+      });
+      const finalStats = await readerClientA.request("health.stats");
+      expect(finalStats.state?.sessionStateSnapshots).toBeGreaterThan(
+        initialSnapshots,
+      );
+
+      signalProcess.emit("SIGTERM");
+      stopped = true;
+      await expect(running).resolves.toBe(0);
+    } finally {
+      if (!stopped) {
+        signalProcess.emit("SIGTERM");
+        await running.catch(() => {});
+      }
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("foreground daemon does not advertise running after startup signal", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
