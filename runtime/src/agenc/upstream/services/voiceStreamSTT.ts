@@ -19,7 +19,7 @@ import {
   getAgenCAIOAuthTokens,
   isAnthropicAuthEnabled,
 } from '../utils/auth.js'
-import { logForDebugging } from '../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { getUserAgent } from '../utils/http.js'
 import { logError } from '../utils/log.js'
 import { getWebSocketTLSOptions } from '../utils/mtls.js'

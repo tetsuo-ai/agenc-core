@@ -12,7 +12,7 @@
 
 import { updatePluginOp } from '../../services/plugins/pluginOperations.js'
 import { shouldSkipPluginAutoupdate } from '../config.js'
-import { logForDebugging } from '../debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage } from '../errors.js'
 import { logError } from '../log.js'
 import {

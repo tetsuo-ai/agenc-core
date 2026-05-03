@@ -25,7 +25,7 @@
 
 import { posix } from 'path'
 import { registerCleanup } from './cleanupRegistry.js'
-import { logForDebugging } from './debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { toError } from './errors.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
 import { logError } from './log.js'

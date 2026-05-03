@@ -31,7 +31,7 @@ afterEach(() => {
 
 test('logs a warning when OPENAI_BASE_URL is literal undefined', async () => {
   const debugSpy = mock(() => {})
-  mock.module('../../utils/debug.js', () => ({
+  mock.module('src/utils/debug.js', () => ({
     logForDebugging: debugSpy,
   }))
 
@@ -59,7 +59,7 @@ test('logs a warning when OPENAI_BASE_URL is literal undefined', async () => {
 
 test('does not warn for OPENAI_API_BASE when OPENAI_BASE_URL is active', async () => {
   const debugSpy = mock(() => {})
-  mock.module('../../utils/debug.js', () => ({
+  mock.module('src/utils/debug.js', () => ({
     logForDebugging: debugSpy,
   }))
 
@@ -87,7 +87,7 @@ test('does not warn for OPENAI_API_BASE when OPENAI_BASE_URL is active', async (
 
 test('uses OPENAI_API_BASE as fallback in mistral mode when MISTRAL_BASE_URL is unset', async () => {
   const debugSpy = mock(() => {})
-  mock.module('../../utils/debug.js', () => ({
+  mock.module('src/utils/debug.js', () => ({
     logForDebugging: debugSpy,
   }))
 

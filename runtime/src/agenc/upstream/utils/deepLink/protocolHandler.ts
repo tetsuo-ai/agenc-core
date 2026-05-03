@@ -12,7 +12,7 @@
  */
 
 import { homedir } from 'os'
-import { logForDebugging } from '../debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import {
   filterExistingPaths,
   getKnownPathsForRepo,

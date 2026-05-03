@@ -1,6 +1,6 @@
 import type { LogOption, SerializedMessage } from '../types/logs.js'
 import { count } from './array.js'
-import { logForDebugging } from './debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { getLogDisplayTitle, logError } from './log.js'
 import { getSmallFastModel } from './model/model.js'
 import { isLiteLog, loadFullLog } from './sessionStorage.js'

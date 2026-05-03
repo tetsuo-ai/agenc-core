@@ -7,7 +7,7 @@ import type {
   FileAttributionState,
 } from '../types/logs.js'
 import { getCwd } from './cwd.js'
-import { logForDebugging } from './debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { execFileNoThrowWithCwd } from './execFileNoThrow.js'
 import { getFsImplementation } from './fsOperations.js'
 import { isGeneratedFile } from './generatedFiles.js'

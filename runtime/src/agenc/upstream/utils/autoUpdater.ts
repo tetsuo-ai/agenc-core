@@ -10,7 +10,7 @@ import {
 } from 'src/services/analytics/index.js'
 import { type ReleaseChannel, saveGlobalConfig } from './config.js'
 import { getAPIProvider } from './model/providers.js'
-import { logForDebugging } from './debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { env } from './env.js'
 import { getAgenCConfigHomeDir } from './envUtils.js'
 import { AgenCError, getErrnoCode, isENOENT } from './errors.js'

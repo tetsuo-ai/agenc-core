@@ -8,7 +8,7 @@ import {
   readCodexCredentials,
   type CodexCredentialBlob,
 } from '../../utils/codexCredentials.js'
-import { logForDebugging } from '../../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import {
   asTrimmedString,

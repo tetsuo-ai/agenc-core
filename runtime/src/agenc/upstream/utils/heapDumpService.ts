@@ -15,7 +15,7 @@ import {
 } from 'v8'
 import { getSessionId } from '../bootstrap/state.js'
 import { logEvent } from '../services/analytics/index.js'
-import { logForDebugging } from './debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { toError } from './errors.js'
 import { getDesktopPath } from './file.js'
 import { getFsImplementation } from './fsOperations.js'

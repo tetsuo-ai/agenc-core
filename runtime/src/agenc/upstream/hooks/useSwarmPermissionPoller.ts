@@ -10,7 +10,7 @@
  * could forge approval files. The mailbox path is the sole active channel.
  */
 
-import { logForDebugging } from '../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import {
   type PermissionUpdate,
   permissionUpdateSchema,

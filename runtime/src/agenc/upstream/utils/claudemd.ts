@@ -55,7 +55,7 @@ import {
   getMemoryPath,
   getUserAgenCRulesDir,
 } from './config.js'
-import { logForDebugging } from './debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { getAgenCConfigHomeDir, isEnvTruthy } from './envUtils.js'
 import { getErrnoCode } from './errors.js'

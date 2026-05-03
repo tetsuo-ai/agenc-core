@@ -47,7 +47,7 @@ import {
   getGlobalConfig,
   saveGlobalConfig,
 } from './config.js'
-import { logAntError, logForDebugging } from './debug.js'
+import { logAntError, logForDebugging } from 'src/utils/debug.js'
 import {
   getAgenCConfigHomeDir,
   isBareMode,
