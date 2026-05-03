@@ -5,7 +5,7 @@ import type { TeleportRemoteResponse } from 'src/utils/conversationRecovery.js';
 import type { CodeSession } from 'src/utils/teleport/api.js';
 import { type TeleportSource, useTeleportResume } from '../hooks/useTeleportResume.js';
 import { Box, Text } from '../../../tui/ink.js';
-import { useKeybinding } from '../keybindings/useKeybinding.js';
+import { useKeybinding } from '../../../tui/keybindings/useKeybinding.js';
 import { ResumeTask } from './ResumeTask.js';
 import { Spinner } from './Spinner.js';
 interface TeleportResumeWrapperProps {

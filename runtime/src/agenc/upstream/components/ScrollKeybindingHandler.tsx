@@ -8,7 +8,7 @@ import { isXtermJs } from '../../../tui/ink/terminal.js';
 import { getClipboardPath } from '../../../tui/ink/termio/osc.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- Esc needs conditional propagation based on selection state
 import { type Key, useInput } from '../../../tui/ink.js';
-import { useKeybindings } from '../keybindings/useKeybinding.js';
+import { useKeybindings } from '../../../tui/keybindings/useKeybinding.js';
 import { logForDebugging } from 'src/utils/debug.js';
 type Props = {
   scrollRef: RefObject<ScrollBoxHandle | null>;

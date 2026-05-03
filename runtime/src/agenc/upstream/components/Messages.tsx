@@ -14,7 +14,7 @@ import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import type { ScrollBoxHandle } from '../../../tui/ink/components/ScrollBox.js';
 import { useTerminalNotification } from '../../../tui/ink/useTerminalNotification.js';
 import { Box, Text } from '../../../tui/ink.js';
-import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
+import { useShortcutDisplay } from '../../../tui/keybindings/useShortcutDisplay.js';
 import type { Screen } from '../screens/REPL.js';
 import type { Tools } from '../Tool.js';
 import { findToolByName } from '../Tool.js';

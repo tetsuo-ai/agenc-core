@@ -6,7 +6,7 @@ import { useExitOnCtrlCDWithKeybindings } from 'src/hooks/useExitOnCtrlCDWithKey
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from 'src/services/analytics/index.js';
 import { FAST_MODE_MODEL_DISPLAY, isFastModeAvailable, isFastModeCooldown, isFastModeEnabled } from 'src/utils/fastMode.js';
 import { Box, Text } from '../../../tui/ink.js';
-import { useKeybindings } from '../keybindings/useKeybinding.js';
+import { useKeybindings } from '../../../tui/keybindings/useKeybinding.js';
 import { useAppState, useSetAppState } from '../../../tui/state/AppState.js';
 import { convertEffortValueToLevel, type EffortLevel, getDefaultEffortForModel, modelSupportsEffort, modelSupportsMaxEffort, resolvePickerEffortPersistence, toPersistableEffort } from '../utils/effort.js';
 import { getDefaultMainLoopModel, type ModelSetting, modelDisplayString, parseUserSpecifiedModel } from '../utils/model/model.js';

@@ -7,9 +7,9 @@ import { useGetVoiceState, useSetVoiceState, useVoiceState } from '../context/vo
 import { KeyboardEvent } from '../../../tui/ink/events/keyboard-event.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- backward-compat bridge until REPL wires handleKeyDown to <Box onKeyDown>
 import { useInput } from '../../../tui/ink.js';
-import { useOptionalKeybindingContext } from '../keybindings/KeybindingContext.js';
-import { keystrokesEqual } from '../keybindings/resolver.js';
-import type { ParsedKeystroke } from '../keybindings/types.js';
+import { useOptionalKeybindingContext } from '../../../tui/keybindings/KeybindingContext.js';
+import { keystrokesEqual } from '../../../tui/keybindings/resolver.js';
+import type { ParsedKeystroke } from '../../../tui/keybindings/types.js';
 import { normalizeFullWidthSpace } from '../utils/stringUtils.js';
 import { useVoiceEnabled } from './useVoiceEnabled.js';
 

@@ -10,7 +10,7 @@ import { type DiffStats, fileHistoryCanRestore, fileHistoryEnabled, fileHistoryG
 import { logError } from 'src/utils/log.js';
 import { useExitOnCtrlCDWithKeybindings } from '../hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Text } from '../../../tui/ink.js';
-import { useKeybinding, useKeybindings } from '../keybindings/useKeybinding.js';
+import { useKeybinding, useKeybindings } from '../../../tui/keybindings/useKeybinding.js';
 import type { Message, PartialCompactDirection, UserMessage } from '../types/message.js';
 import { stripDisplayTags } from '../utils/displayTags.js';
 import { createUserMessage, extractTag, isEmptyMessageText, isSyntheticMessage, isToolUseResultMessage } from '../utils/messages.js';

@@ -3,8 +3,8 @@ import { useTerminalSize } from 'src/hooks/useTerminalSize.js';
 import { type CodeSession, fetchCodeSessionsFromSessionsAPI } from 'src/utils/teleport/api.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw j/k/arrow list navigation
 import { Box, Text, useInput } from '../../../tui/ink.js';
-import { useKeybinding } from '../keybindings/useKeybinding.js';
-import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
+import { useKeybinding } from '../../../tui/keybindings/useKeybinding.js';
+import { useShortcutDisplay } from '../../../tui/keybindings/useShortcutDisplay.js';
 import { logForDebugging } from 'src/utils/debug.js';
 import { detectCurrentRepository } from '../utils/detectRepository.js';
 import { formatRelativeTime } from '../utils/format.js';

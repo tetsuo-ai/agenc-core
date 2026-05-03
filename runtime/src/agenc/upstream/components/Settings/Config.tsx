@@ -5,7 +5,7 @@ import { Box, Text, useTheme, useThemeSetting, useTerminalFocus } from '../../..
 import type { KeyboardEvent } from '../../../../tui/ink/events/keyboard-event.js';
 import * as React from 'react';
 import { useState, useCallback } from 'react';
-import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.js';
+import { useKeybinding, useKeybindings } from '../../../../tui/keybindings/useKeybinding.js';
 import figures from 'figures';
 import { type GlobalConfig, saveGlobalConfig, getCurrentProjectConfig, type OutputStyle } from '../../utils/config.js';
 import { normalizeApiKeyForConfig } from '../../utils/authPortable.js';

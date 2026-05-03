@@ -111,7 +111,7 @@ function isAbsorbImportRewriteLine(line) {
   if (line === "") return true;
   return (
     /(?:^import\b|^export\b|from\s+|import\s*\(|require\s*\()/.test(line) &&
-    /(?:^|[./])(?:ink(?:\.js|\/)|(?:tui\/)?state\/(?:AppState|AppStateStore|store)(?:\.js)?)/.test(line)
+    /(?:^|[./])(?:ink(?:\.js|\/)|(?:tui\/)?state\/(?:AppState|AppStateStore|store)(?:\.js)?|(?:tui\/)?keybindings\/)/.test(line)
   );
 }
 

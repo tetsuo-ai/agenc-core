@@ -5,7 +5,7 @@ import React from 'react'
 import stripAnsi from 'strip-ansi'
 
 import { createRoot } from '../../../tui/ink.js'
-import { KeybindingSetup } from '../keybindings/KeybindingProviderSetup.js'
+import { KeybindingSetup } from '../../../tui/keybindings/KeybindingProviderSetup.js'
 import { AppStateProvider } from '../../../tui/state/AppState.js'
 
 const SYNC_START = '\x1B[?2026h'

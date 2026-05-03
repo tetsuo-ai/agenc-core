@@ -10,7 +10,7 @@ import { shouldOfferTerminalSetup } from '../../commands/terminalSetup/terminalS
 import { getDesktopUpsellConfig } from '../../components/DesktopUpsell/DesktopUpsellStartup.js'
 import { color } from '../../components/design-system/color.js'
 import { shouldShowOverageCreditUpsell } from '../../components/LogoV2/OverageCreditUpsell.js'
-import { getShortcutDisplay } from '../../keybindings/shortcutFormat.js'
+import { getShortcutDisplay } from '../../../../tui/keybindings/shortcutFormat.js'
 import { isKairosCronEnabled } from '../../tools/ScheduleCronTool/prompt.js'
 import { is1PApiCustomer } from '../../utils/auth.js'
 import { countConcurrentSessions } from '../../utils/concurrentSessions.js'

@@ -3,7 +3,6 @@
  * Generates a well-documented template file for ~/.agenc/keybindings.json
  */
 
-import { jsonStringify } from '../utils/slowOperations.js'
 import { DEFAULT_BINDINGS } from './defaultBindings.js'
 import {
   NON_REBINDABLE,
@@ -43,10 +42,10 @@ export function generateKeybindingsTemplate(): string {
 
   // Format as object wrapper with bindings array
   const config = {
-    $schema: 'https://www.schemastore.org/agenc-code-keybindings.json',
-    $docs: 'https://code.agenc.com/docs/en/keybindings',
+    $schema: 'urn:agenc:keybindings:schema',
+    $docs: 'urn:agenc:keybindings:docs',
     bindings,
   }
 
-  return jsonStringify(config, null, 2) + '\n'
+  return JSON.stringify(config, null, 2) + '\n'
 }

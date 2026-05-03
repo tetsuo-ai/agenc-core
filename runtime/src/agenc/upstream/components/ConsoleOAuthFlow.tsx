@@ -5,7 +5,7 @@ import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { setClipboard } from '../../../tui/ink/termio/osc.js';
 import { useTerminalNotification } from '../../../tui/ink/useTerminalNotification.js';
 import { Box, Link, Text } from '../../../tui/ink.js';
-import { useKeybinding } from '../keybindings/useKeybinding.js';
+import { useKeybinding } from '../../../tui/keybindings/useKeybinding.js';
 import { getSSLErrorHint } from '../services/api/errorUtils.js';
 import { sendNotification } from '../services/notifier.js';
 import { OAuthService } from '../services/oauth/index.js';

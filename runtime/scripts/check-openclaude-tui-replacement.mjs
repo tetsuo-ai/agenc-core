@@ -93,7 +93,9 @@ function assertSourceSnapshot() {
     "src/state",
   ];
   const sourceFiles = scopedFiles(donorRoot, dirs);
-  const copiedDirs = dirs.filter((dir) => dir !== "src/ink");
+  const copiedDirs = dirs.filter(
+    (dir) => dir !== "src/ink" && dir !== "src/keybindings",
+  );
   const copiedFiles = scopedFiles(
     copiedRoot,
     copiedDirs.map((dir) => dir.slice("src/".length)),
@@ -101,6 +103,15 @@ function assertSourceSnapshot() {
   const absorbedInkFiles = walk(join(liveTuiRoot, "ink")).map(
     (file) => `src/ink/${file}`,
   );
+  const agencOnlyKeybindingFiles = new Set([
+    "types.ts",
+    "useKeybindings.ts",
+  ]);
+  const absorbedKeybindingFiles = walk(join(liveTuiRoot, "keybindings"))
+    .filter((file) => !file.endsWith(".test.ts"))
+    .filter((file) => !file.endsWith(".test.tsx"))
+    .filter((file) => !agencOnlyKeybindingFiles.has(file))
+    .map((file) => `src/keybindings/${file}`);
   const absorbedStateFiles = [
     ["state/AppState.tsx", "src/state/AppState.tsx"],
     ["state/AppStateStore.ts", "src/state/AppStateStore.ts"],
@@ -151,6 +162,7 @@ function assertSourceSnapshot() {
     .sort();
   const actualFiles = copiedFiles
     .concat(absorbedInkFiles, absorbedStateFiles, absorbedContextFiles)
+    .concat(absorbedKeybindingFiles)
     .sort();
   const missing = expected.filter((file) => !actualFiles.includes(file));
   const extra = actualFiles.filter((file) => !expected.includes(file));
@@ -200,13 +212,13 @@ function assertOldTuiRemoved() {
     if (allowed.has(file)) continue;
     if (isAllowedTest(file)) continue;
     if (file.startsWith("ink/")) continue;
+    if (file.startsWith("keybindings/")) continue;
     fail(`unexpected live TUI file remains: ${file}`);
   }
   for (const dir of [
     "composer",
     "transcript",
     "permissions",
-    "keybindings",
     "screens",
     "components",
   ]) {
@@ -216,6 +228,7 @@ function assertOldTuiRemoved() {
 
 function assertNoDeletedAbsorbImporters() {
   const deletedInkRoot = join(copiedRoot, "ink");
+  const deletedKeybindingsRoot = join(copiedRoot, "keybindings");
   const deletedStateEntrypoints = new Map([
     [join(copiedRoot, "state/AppState"), "AppState"],
     [join(copiedRoot, "state/AppStateStore"), "AppStateStore"],
@@ -233,6 +246,12 @@ function assertNoDeletedAbsorbImporters() {
       const specifier = match[1];
       if (specifier === "src/ink" || specifier.startsWith("src/ink/")) {
         fail(`deleted Ink alias import remains: ${file} -> ${specifier}`);
+      }
+      if (
+        specifier === "src/keybindings" ||
+        specifier.startsWith("src/keybindings/")
+      ) {
+        fail(`deleted keybindings alias import remains: ${file} -> ${specifier}`);
       }
       if (specifier === "src/state/AppState" || specifier === "src/state/AppState.js") {
         fail(`deleted AppState alias import remains: ${file} -> ${specifier}`);
@@ -254,6 +273,12 @@ function assertNoDeletedAbsorbImporters() {
         .replace(/\.(?:js|jsx|ts|tsx|mjs|cjs)$/, "");
       if (resolved === deletedInkRoot || resolved.startsWith(`${deletedInkRoot}/`)) {
         fail(`deleted Ink relative import remains: ${file} -> ${specifier}`);
+      }
+      if (
+        resolved === deletedKeybindingsRoot ||
+        resolved.startsWith(`${deletedKeybindingsRoot}/`)
+      ) {
+        fail(`deleted keybindings relative import remains: ${file} -> ${specifier}`);
       }
       for (const [deletedStateEntrypoint, label] of deletedStateEntrypoints) {
         if (resolved === deletedStateEntrypoint) {

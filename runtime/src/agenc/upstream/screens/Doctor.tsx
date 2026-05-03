@@ -16,7 +16,7 @@ import { ValidationErrorsList } from '../components/ValidationErrorsList.js';
 import { useSettingsErrors } from '../hooks/notifs/useSettingsErrors.js';
 import { useExitOnCtrlCDWithKeybindings } from '../hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Text } from '../../../tui/ink.js';
-import { useKeybindings } from '../keybindings/useKeybinding.js';
+import { useKeybindings } from '../../../tui/keybindings/useKeybinding.js';
 import { useAppState } from '../../../tui/state/AppState.js';
 import { getPluginErrorMessage } from '../types/plugin.js';
 import { getGcsDistTags, getNpmDistTags, type NpmDistTags } from '../utils/autoUpdater.js';

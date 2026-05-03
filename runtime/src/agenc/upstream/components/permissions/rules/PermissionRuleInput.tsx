@@ -6,7 +6,7 @@ import TextInput from '../../../components/TextInput.js';
 import { useExitOnCtrlCDWithKeybindings } from '../../../hooks/useExitOnCtrlCDWithKeybindings.js';
 import { useTerminalSize } from '../../../hooks/useTerminalSize.js';
 import { Box, Newline, Text } from '../../../../../tui/ink.js';
-import { useKeybinding } from '../../../keybindings/useKeybinding.js';
+import { useKeybinding } from '../../../../../tui/keybindings/useKeybinding.js';
 import { BashTool } from '../../../tools/BashTool/BashTool.js';
 import { WebFetchTool } from '../../../tools/WebFetchTool/WebFetchTool.js';
 import type { PermissionBehavior, PermissionRuleValue } from '../../../utils/permissions/PermissionRule.js';

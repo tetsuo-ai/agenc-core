@@ -12,7 +12,7 @@ import { useExitOnCtrlCDWithKeybindings } from '../../../hooks/useExitOnCtrlCDWi
 import { useSearchInput } from '../../../hooks/useSearchInput.js';
 import type { KeyboardEvent } from '../../../../../tui/ink/events/keyboard-event.js';
 import { Box, Text, useTerminalFocus } from '../../../../../tui/ink.js';
-import { useKeybinding } from '../../../keybindings/useKeybinding.js';
+import { useKeybinding } from '../../../../../tui/keybindings/useKeybinding.js';
 import { type AutoModeDenial, getAutoModeDenials } from '../../../utils/autoModeDenials.js';
 import type { PermissionBehavior, PermissionRule, PermissionRuleValue } from '../../../utils/permissions/PermissionRule.js';
 import { permissionRuleValueToString } from '../../../utils/permissions/permissionRuleParser.js';

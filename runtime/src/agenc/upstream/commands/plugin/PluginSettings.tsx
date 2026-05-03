@@ -8,7 +8,7 @@ import { Pane } from '../../components/design-system/Pane.js';
 import { Tab, Tabs } from '../../components/design-system/Tabs.js';
 import { useExitOnCtrlCDWithKeybindings } from '../../hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Text } from '../../../../tui/ink.js';
-import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.js';
+import { useKeybinding, useKeybindings } from '../../../../tui/keybindings/useKeybinding.js';
 import { useAppState, useSetAppState } from '../../../../tui/state/AppState.js';
 import type { PluginError } from '../../types/plugin.js';
 import { errorMessage } from '../../utils/errors.js';

@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import type { UUID } from 'crypto';
 import React, { useCallback } from 'react';
 import { Box, Text } from '../../../tui/ink.js';
-import { useKeybinding } from '../keybindings/useKeybinding.js';
+import { useKeybinding } from '../../../tui/keybindings/useKeybinding.js';
 import { getAllBaseTools } from '../tools.js';
 import type { LogOption } from '../types/logs.js';
 import { formatRelativeTimeAgo } from '../utils/format.js';

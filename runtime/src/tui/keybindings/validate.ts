@@ -1,4 +1,3 @@
-import { plural } from '../utils/stringUtils.js'
 import { chordToString, parseChord, parseKeystroke } from './parser.js'
 import {
   getReservedShortcuts,
@@ -9,6 +8,11 @@ import type {
   KeybindingContextName,
   ParsedBinding,
 } from './types.js'
+import { KEYBINDING_CONTEXT_NAMES } from './types.js'
+
+function plural(count: number, singular: string): string {
+  return count === 1 ? singular : `${singular}s`
+}
 
 /**
  * Types of validation issues that can occur with keybindings.
@@ -57,26 +61,8 @@ function isKeybindingBlockArray(arr: unknown): arr is KeybindingBlock[] {
  * Valid context names for keybindings.
  * Must match KeybindingContextName in types.ts
  */
-const VALID_CONTEXTS: KeybindingContextName[] = [
-  'Global',
-  'Chat',
-  'Autocomplete',
-  'Confirmation',
-  'Help',
-  'Transcript',
-  'HistorySearch',
-  'Task',
-  'ThemePicker',
-  'Settings',
-  'Tabs',
-  'Attachments',
-  'Footer',
-  'MessageSelector',
-  'DiffDialog',
-  'ModelPicker',
-  'Select',
-  'Plugin',
-]
+const VALID_CONTEXTS: readonly KeybindingContextName[] =
+  KEYBINDING_CONTEXT_NAMES
 
 /**
  * Type guard to check if a string is a valid context name.
@@ -454,7 +440,7 @@ export function validateBindings(
  * Format a warning for display to the user.
  */
 export function formatWarning(warning: KeybindingWarning): string {
-  const icon = warning.severity === 'error' ? '✗' : '⚠'
+  const icon = warning.severity === 'error' ? '✗' : '!'
   let msg = `${icon} Keybinding ${warning.severity}: ${warning.message}`
 
   if (warning.suggestion) {

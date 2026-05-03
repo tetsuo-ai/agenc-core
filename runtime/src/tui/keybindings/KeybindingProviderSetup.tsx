@@ -8,15 +8,13 @@ import { c as _c } from "react-compiler-runtime";
  * support when the file changes.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useNotifications } from '../context/notifications.js';
-import type { InputEvent } from '../../../tui/ink/events/input-event.js';
+import { useNotifications } from '../../agenc/upstream/context/notifications.js';
+import type { InputEvent } from '../ink/events/input-event.js';
 // ChordInterceptor intentionally uses useInput to intercept all keystrokes before
 // other handlers process them - this is required for chord sequence support
 // eslint-disable-next-line custom-rules/prefer-use-keybindings
-import { type Key, useInput } from '../../../tui/ink.js';
-import { count } from '../utils/array.js';
-import { logForDebugging } from 'src/utils/debug.js';
-import { plural } from '../utils/stringUtils.js';
+import { type Key, useInput } from '../ink.js';
+import { logForDebugging } from '../../utils/debug.js';
 import { KeybindingProvider } from './KeybindingContext.js';
 import { initializeKeybindingWatcher, type KeybindingsLoadResult, loadKeybindingsSyncWithWarnings, subscribeToKeybindingChanges } from './loadUserBindings.js';
 import { resolveKeyWithChordState } from './resolver.js';
@@ -31,6 +29,32 @@ const CHORD_TIMEOUT_MS = 1000;
 type Props = {
   children: React.ReactNode;
 };
+
+function countWarnings(warnings: readonly KeybindingWarning[], severity: KeybindingWarning["severity"]): number {
+  let total = 0;
+  for (const warning of warnings) {
+    if (warning.severity === severity) total++;
+  }
+  return total;
+}
+
+function pluralize(count: number, singular: string): string {
+  return count === 1 ? singular : `${singular}s`;
+}
+
+export function formatKeybindingWarningSummary(warnings: readonly KeybindingWarning[]): string | null {
+  if (warnings.length === 0) return null;
+
+  const errorCount = countWarnings(warnings, "error");
+  const warnCount = countWarnings(warnings, "warning");
+  if (errorCount > 0 && warnCount > 0) {
+    return `Found ${errorCount} keybinding ${pluralize(errorCount, "error")} and ${warnCount} ${pluralize(warnCount, "warning")}`;
+  }
+  if (errorCount > 0) {
+    return `Found ${errorCount} keybinding ${pluralize(errorCount, "error")}`;
+  }
+  return `Found ${warnCount} keybinding ${pluralize(warnCount, "warning")}`;
+}
 
 /**
  * Keybinding provider with default + user bindings and hot-reload support.
@@ -69,18 +93,10 @@ function useKeybindingWarnings(warnings, isReload) {
         removeNotification("keybinding-config-warning");
         return;
       }
-      const errorCount = count(warnings, _temp);
-      const warnCount = count(warnings, _temp2);
-      let message;
-      if (errorCount > 0 && warnCount > 0) {
-        message = `Found ${errorCount} keybinding ${plural(errorCount, "error")} and ${warnCount} ${plural(warnCount, "warning")}`;
-      } else {
-        if (errorCount > 0) {
-          message = `Found ${errorCount} keybinding ${plural(errorCount, "error")}`;
-        } else {
-          message = `Found ${warnCount} keybinding ${plural(warnCount, "warning")}`;
-        }
-      }
+      const errorCount = countWarnings(warnings, "error");
+      const messageBase = formatKeybindingWarningSummary(warnings);
+      if (messageBase === null) return;
+      let message = messageBase;
       message = message + " \xB7 /doctor for details";
       addNotification({
         key: "keybinding-config-warning",
@@ -109,12 +125,6 @@ function useKeybindingWarnings(warnings, isReload) {
     t1 = $[8];
   }
   useEffect(t0, t1);
-}
-function _temp2(w_0) {
-  return w_0.severity === "warning";
-}
-function _temp(w) {
-  return w.severity === "error";
 }
 export function KeybindingSetup({
   children
@@ -223,6 +233,82 @@ type HandlerRegistration = {
   context: KeybindingContextName;
   handler: () => void;
 };
+
+type ChordInputHandlerOptions = {
+  bindings: ParsedBinding[];
+  pendingChordRef: React.RefObject<ParsedKeystroke[] | null>;
+  setPendingChord: (pending: ParsedKeystroke[] | null) => void;
+  activeContexts: Set<KeybindingContextName>;
+  handlerRegistryRef: React.RefObject<Map<string, Set<HandlerRegistration>>>;
+};
+
+export function createChordInputHandler({
+  bindings,
+  pendingChordRef,
+  setPendingChord,
+  activeContexts,
+  handlerRegistryRef
+}: ChordInputHandlerOptions): (input: string, key: Key, event: InputEvent) => void {
+  return (input, key, event) => {
+    if ((key.wheelUp || key.wheelDown) && pendingChordRef.current === null) {
+      return;
+    }
+    const registry = handlerRegistryRef.current;
+    const handlerContexts = new Set<KeybindingContextName>();
+    if (registry) {
+      for (const handlers of registry.values()) {
+        for (const registration of handlers) {
+          handlerContexts.add(registration.context);
+        }
+      }
+    }
+    const contexts = [...handlerContexts, ...activeContexts, "Global"];
+    const wasInChord = pendingChordRef.current !== null;
+    const result = resolveKeyWithChordState(input, key, contexts, bindings, pendingChordRef.current);
+    bb23: switch (result.type) {
+      case "chord_started":
+        {
+          setPendingChord(result.pending);
+          event.stopImmediatePropagation();
+          break bb23;
+        }
+      case "match":
+        {
+          setPendingChord(null);
+          if (wasInChord) {
+            const contextsSet = new Set(contexts);
+            if (registry) {
+              const handlers_0 = registry.get(result.action);
+              if (handlers_0 && handlers_0.size > 0) {
+                for (const registration_0 of handlers_0) {
+                  if (contextsSet.has(registration_0.context)) {
+                    registration_0.handler();
+                    event.stopImmediatePropagation();
+                    break;
+                  }
+                }
+              }
+            }
+          }
+          break bb23;
+        }
+      case "chord_cancelled":
+        {
+          setPendingChord(null);
+          event.stopImmediatePropagation();
+          break bb23;
+        }
+      case "unbound":
+        {
+          setPendingChord(null);
+          event.stopImmediatePropagation();
+          break bb23;
+        }
+      case "none":
+    }
+  };
+}
+
 function ChordInterceptor(t0) {
   const $ = _c(6);
   const {
@@ -234,64 +320,13 @@ function ChordInterceptor(t0) {
   } = t0;
   let t1;
   if ($[0] !== activeContexts || $[1] !== bindings || $[2] !== handlerRegistryRef || $[3] !== pendingChordRef || $[4] !== setPendingChord) {
-    t1 = (input, key, event) => {
-      if ((key.wheelUp || key.wheelDown) && pendingChordRef.current === null) {
-        return;
-      }
-      const registry = handlerRegistryRef.current;
-      const handlerContexts = new Set();
-      if (registry) {
-        for (const handlers of registry.values()) {
-          for (const registration of handlers) {
-            handlerContexts.add(registration.context);
-          }
-        }
-      }
-      const contexts = [...handlerContexts, ...activeContexts, "Global"];
-      const wasInChord = pendingChordRef.current !== null;
-      const result = resolveKeyWithChordState(input, key, contexts, bindings, pendingChordRef.current);
-      bb23: switch (result.type) {
-        case "chord_started":
-          {
-            setPendingChord(result.pending);
-            event.stopImmediatePropagation();
-            break bb23;
-          }
-        case "match":
-          {
-            setPendingChord(null);
-            if (wasInChord) {
-              const contextsSet = new Set(contexts);
-              if (registry) {
-                const handlers_0 = registry.get(result.action);
-                if (handlers_0 && handlers_0.size > 0) {
-                  for (const registration_0 of handlers_0) {
-                    if (contextsSet.has(registration_0.context)) {
-                      registration_0.handler();
-                      event.stopImmediatePropagation();
-                      break;
-                    }
-                  }
-                }
-              }
-            }
-            break bb23;
-          }
-        case "chord_cancelled":
-          {
-            setPendingChord(null);
-            event.stopImmediatePropagation();
-            break bb23;
-          }
-        case "unbound":
-          {
-            setPendingChord(null);
-            event.stopImmediatePropagation();
-            break bb23;
-          }
-        case "none":
-      }
-    };
+    t1 = createChordInputHandler({
+      bindings,
+      pendingChordRef,
+      setPendingChord,
+      activeContexts,
+      handlerRegistryRef
+    });
     $[0] = activeContexts;
     $[1] = bindings;
     $[2] = handlerRegistryRef;

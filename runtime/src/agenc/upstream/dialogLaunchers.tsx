@@ -11,7 +11,7 @@ import type { AssistantSession } from './assistant/sessionDiscovery.js';
 import type { StatsStore } from './context/stats.js';
 import type { Root } from '../../tui/ink.js';
 import { renderAndRun, showSetupDialog } from './interactiveHelpers.js';
-import { KeybindingSetup } from './keybindings/KeybindingProviderSetup.js';
+import { KeybindingSetup } from '../../tui/keybindings/KeybindingProviderSetup.js';
 import type { AppState } from '../../tui/state/AppStateStore.js';
 import type { AgentMemoryScope } from './tools/AgentTool/agentMemory.js';
 import type { TeleportRemoteResponse } from './utils/conversationRecovery.js';

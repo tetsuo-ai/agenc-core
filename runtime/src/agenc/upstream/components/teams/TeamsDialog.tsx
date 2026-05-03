@@ -8,8 +8,8 @@ import { useRegisterOverlay } from '../../context/overlayContext.js';
 import { stringWidth } from '../../../../tui/ink/stringWidth.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw j/k/arrow dialog navigation
 import { Box, Text, useInput } from '../../../../tui/ink.js';
-import { useKeybindings } from '../../keybindings/useKeybinding.js';
-import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
+import { useKeybindings } from '../../../../tui/keybindings/useKeybinding.js';
+import { useShortcutDisplay } from '../../../../tui/keybindings/useShortcutDisplay.js';
 import { type AppState, useAppState, useSetAppState } from '../../../../tui/state/AppState.js';
 import { getEmptyToolPermissionContext } from '../../Tool.js';
 import { AGENT_COLOR_TO_THEME_COLOR } from '../../tools/AgentTool/agentColorManager.js';

@@ -11,7 +11,7 @@ import { WelcomeV2 } from '../../components/LogoV2/WelcomeV2.js';
 import { useManagePlugins } from '../../hooks/useManagePlugins.js';
 import type { Root } from '../../../../tui/ink.js';
 import { Box, Text } from '../../../../tui/ink.js';
-import { KeybindingSetup } from '../../keybindings/KeybindingProviderSetup.js';
+import { KeybindingSetup } from '../../../../tui/keybindings/KeybindingProviderSetup.js';
 import { logEvent } from '../../services/analytics/index.js';
 import { MCPConnectionManager } from '../../services/mcp/MCPConnectionManager.js';
 import { AppStateProvider } from '../../../../tui/state/AppState.js';

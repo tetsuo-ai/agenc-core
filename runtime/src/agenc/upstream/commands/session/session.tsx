@@ -4,7 +4,7 @@ import * as React from 'react';
 import { useEffect, useState } from 'react';
 import { Pane } from '../../components/design-system/Pane.js';
 import { Box, Text } from '../../../../tui/ink.js';
-import { useKeybinding } from '../../keybindings/useKeybinding.js';
+import { useKeybinding } from '../../../../tui/keybindings/useKeybinding.js';
 import { useAppState } from '../../../../tui/state/AppState.js';
 import type { LocalJSXCommandCall } from '../../types/command.js';
 import { logForDebugging } from 'src/utils/debug.js';

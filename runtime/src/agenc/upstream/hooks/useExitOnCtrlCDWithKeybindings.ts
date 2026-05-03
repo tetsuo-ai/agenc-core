@@ -1,4 +1,4 @@
-import { useKeybindings } from '../keybindings/useKeybinding.js'
+import { useKeybindings } from '../../../tui/keybindings/useKeybinding.js'
 import { type ExitState, useExitOnCtrlCD } from './useExitOnCtrlCD.js'
 
 export type { ExitState }

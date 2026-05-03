@@ -12,7 +12,7 @@ import { stringWidth as getStringWidth } from '../../../tui/ink/stringWidth.js';
 import type { Color } from '../../../tui/ink/styles.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw j/k/arrow stats navigation
 import { Ansi, Box, Text, useInput } from '../../../tui/ink.js';
-import { useKeybinding } from '../keybindings/useKeybinding.js';
+import { useKeybinding } from '../../../tui/keybindings/useKeybinding.js';
 import { getGlobalConfig } from '../utils/config.js';
 import { formatDuration, formatNumber } from '../utils/format.js';
 import { generateHeatmap } from '../utils/heatmap.js';

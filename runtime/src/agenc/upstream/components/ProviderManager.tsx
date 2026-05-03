@@ -2,7 +2,7 @@ import figures from 'figures'
 import * as React from 'react'
 import { DEFAULT_CODEX_BASE_URL } from '../services/api/providerConfig.js'
 import { Box, Text } from '../../../tui/ink.js'
-import { useKeybinding } from '../keybindings/useKeybinding.js'
+import { useKeybinding } from '../../../tui/keybindings/useKeybinding.js'
 import { useSetAppState } from '../../../tui/state/AppState.js'
 import type { ProviderProfile } from '../utils/config.js'
 import {

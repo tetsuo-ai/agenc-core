@@ -8,7 +8,7 @@ import { Byline } from '../../components/design-system/Byline.js';
 import { KeyboardShortcutHint } from '../../components/design-system/KeyboardShortcutHint.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- useInput needed for marketplace-specific u/r shortcuts and y/n confirmation not in keybinding schema
 import { Box, Text, useInput } from '../../../../tui/ink.js';
-import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.js';
+import { useKeybinding, useKeybindings } from '../../../../tui/keybindings/useKeybinding.js';
 import type { LoadedPlugin } from '../../types/plugin.js';
 import { count } from '../../utils/array.js';
 import { shouldSkipPluginAutoupdate } from '../../utils/config.js';

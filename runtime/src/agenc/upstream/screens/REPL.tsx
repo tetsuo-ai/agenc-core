@@ -83,9 +83,9 @@ import { prependToShellHistoryCache } from '../utils/suggestions/shellHistoryCom
 import { useApiKeyVerification } from '../hooks/useApiKeyVerification.js';
 import { GlobalKeybindingHandlers } from '../hooks/useGlobalKeybindings.js';
 import { CommandKeybindingHandlers } from '../hooks/useCommandKeybindings.js';
-import { KeybindingSetup } from '../keybindings/KeybindingProviderSetup.js';
-import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
-import { getShortcutDisplay } from '../keybindings/shortcutFormat.js';
+import { KeybindingSetup } from '../../../tui/keybindings/KeybindingProviderSetup.js';
+import { useShortcutDisplay } from '../../../tui/keybindings/useShortcutDisplay.js';
+import { getShortcutDisplay } from '../../../tui/keybindings/shortcutFormat.js';
 import { CancelRequestHandler } from '../hooks/useCancelRequest.js';
 import { useBackgroundTaskNavigation } from '../hooks/useBackgroundTaskNavigation.js';
 import { useSwarmInitialization } from '../hooks/useSwarmInitialization.js';

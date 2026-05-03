@@ -4,7 +4,7 @@ import { App as UpstreamApp } from "../../agenc/upstream/components/App.js";
 import { Messages } from "../../agenc/upstream/components/Messages.js";
 import PromptInput from "../../agenc/upstream/components/PromptInput/PromptInput.js";
 import { PromptOverlayProvider } from "../context/promptOverlayContext.js";
-import { KeybindingSetup } from "../../agenc/upstream/keybindings/KeybindingProviderSetup.js";
+import { KeybindingSetup } from "../keybindings/KeybindingProviderSetup.js";
 import {
   getDefaultAppState,
   useAppState,

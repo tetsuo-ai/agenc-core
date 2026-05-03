@@ -2,7 +2,7 @@ import { APIUserAbortError } from '@anthropic-ai/sdk';
 import React, { type ReactNode, useCallback, useRef, useState } from 'react';
 import { useMainLoopModel } from '../../../../hooks/useMainLoopModel.js';
 import { Box, Text } from '../../../../../../tui/ink.js';
-import { useKeybinding } from '../../../../keybindings/useKeybinding.js';
+import { useKeybinding } from '../../../../../../tui/keybindings/useKeybinding.js';
 import { createAbortController } from '../../../../utils/abortController.js';
 import { editPromptInEditor } from '../../../../utils/promptEditor.js';
 import { ConfigurableShortcutHint } from '../../../ConfigurableShortcutHint.js';

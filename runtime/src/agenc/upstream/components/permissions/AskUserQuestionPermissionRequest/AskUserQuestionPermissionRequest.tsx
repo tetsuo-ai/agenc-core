@@ -5,7 +5,7 @@ import { useSettings } from '../../../hooks/useSettings.js';
 import { useTerminalSize } from '../../../hooks/useTerminalSize.js';
 import { stringWidth } from '../../../../../tui/ink/stringWidth.js';
 import { useTheme } from '../../../../../tui/ink.js';
-import { useKeybindings } from '../../../keybindings/useKeybinding.js';
+import { useKeybindings } from '../../../../../tui/keybindings/useKeybinding.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../services/analytics/index.js';
 import { useAppState } from '../../../../../tui/state/AppState.js';
 import type { Question } from '../../../tools/AskUserQuestionTool/AskUserQuestionTool.js';

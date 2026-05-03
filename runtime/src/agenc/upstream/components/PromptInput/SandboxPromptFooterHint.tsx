@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { Box, Text } from '../../../../tui/ink.js';
-import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
+import { useShortcutDisplay } from '../../../../tui/keybindings/useShortcutDisplay.js';
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js';
 export function SandboxPromptFooterHint() {
   const $ = _c(6);
