@@ -12,6 +12,7 @@ import {
   STATE_DB_MIGRATIONS,
   type SqlMigration,
 } from "./migrations/index.js";
+import { replayAtomicSessionSnapshotWrites } from "./atomic-snapshot-writes.js";
 
 export interface OpenStateDatabaseOptions {
   readonly cwd: string;
@@ -51,6 +52,7 @@ export class StateSqliteDriver {
     configureDatabase(this.logs);
     applyMigrations(this.state, STATE_DB_MIGRATIONS);
     applyMigrations(this.logs, LOGS_DB_MIGRATIONS);
+    replayAtomicSessionSnapshotWrites(this.state, this.projectDir);
   }
 
   prepareState<Params extends unknown[] = unknown[], Row = unknown>(

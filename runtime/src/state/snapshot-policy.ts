@@ -1,4 +1,5 @@
 import type { JsonObject, JsonValue } from "../app-server/protocol/index.js";
+import { writeSessionSnapshotAtomically } from "./atomic-snapshot-writes.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 
 export type SnapshotPolicyTrigger =
@@ -394,30 +395,17 @@ export class AgenCSessionSnapshotPolicy {
       extras: undefined,
       events: [...state.mcpConnectionState.events],
     });
-    this.#driver
-      .prepareState<[string, string, string, string, string]>(
-        `INSERT INTO session_state_snapshots (
-          session_id,
-          snapshot_at,
-          conversation_json,
-          tool_state_json,
-          mcp_connection_state_json
-        ) VALUES (?, ?, ?, ?, ?)`,
-      )
-      .run(
-        state.sessionId,
+    writeSessionSnapshotAtomically(
+      this.#driver,
+      {
+        sessionId: state.sessionId,
         snapshotAt,
-        JSON.stringify(conversation),
-        JSON.stringify(toolState),
-        JSON.stringify(mcpConnectionState),
-      );
-    this.#driver
-      .prepareState<[string, string]>(
-        `UPDATE agent_runs
-         SET last_snapshot_at = ?
-         WHERE current_session_id = ?`,
-      )
-      .run(snapshotAt, state.sessionId);
+        conversationJson: JSON.stringify(conversation),
+        toolStateJson: JSON.stringify(toolState),
+        mcpConnectionStateJson: JSON.stringify(mcpConnectionState),
+      },
+      { updateRunLastSnapshotAt: true, replayOnStartup: true },
+    );
     return {
       sessionId: state.sessionId,
       snapshotAt,

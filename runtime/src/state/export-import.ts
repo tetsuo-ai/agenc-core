@@ -1,4 +1,5 @@
 import type { JsonValue } from "../app-server/protocol/index.js";
+import { writeSessionSnapshotAtomically } from "./atomic-snapshot-writes.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 
 export const AGENC_STATE_EXPORT_FORMAT = "agenc.state.export";
@@ -304,22 +305,23 @@ function insertSnapshots(
   driver: StateSqliteDriver,
   snapshots: readonly AgenCStateExportSessionSnapshot[],
 ): void {
-  const insert = driver.prepareState(
-    `INSERT INTO session_state_snapshots (
-      session_id,
-      snapshot_at,
-      conversation_json,
-      tool_state_json,
-      mcp_connection_state_json
-    ) VALUES (?, ?, ?, ?, ?)`,
-  );
   for (const snapshot of snapshots) {
-    insert.run(
-      snapshot.sessionId,
-      snapshot.snapshotAt,
-      stringifyJsonValue(snapshot.conversation, "conversation"),
-      stringifyJsonValue(snapshot.toolState, "toolState"),
-      stringifyJsonValue(snapshot.mcpConnectionState, "mcpConnectionState"),
+    writeSessionSnapshotAtomically(
+      driver,
+      {
+        sessionId: snapshot.sessionId,
+        snapshotAt: snapshot.snapshotAt,
+        conversationJson: stringifyJsonValue(
+          snapshot.conversation,
+          "conversation",
+        ),
+        toolStateJson: stringifyJsonValue(snapshot.toolState, "toolState"),
+        mcpConnectionStateJson: stringifyJsonValue(
+          snapshot.mcpConnectionState,
+          "mcpConnectionState",
+        ),
+      },
+      { replayOnStartup: false },
     );
   }
 }
