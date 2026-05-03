@@ -137,7 +137,9 @@ async function runStateImport(
     }
     const payload = parseAgenCStateExportPayload(input);
     return await withStateDriver(options, (driver) => {
-      const result = importAgentState(driver, payload);
+      const result = importAgentState(driver, payload, {
+        agencHome: options.agencHome ?? options.env?.AGENC_HOME,
+      });
       io.stdout.write(
         `Imported state for ${result.agentId}: ${result.snapshotCount} snapshot(s), ${result.toolCallCount} tool call(s)\n`,
       );

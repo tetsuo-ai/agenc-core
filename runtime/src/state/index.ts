@@ -14,3 +14,4 @@ export * from "./snapshot-policy.js";
 export * from "./spawn-edges.js";
 export * from "./sqlite-driver.js";
 export * from "./threads.js";
+export * from "./tool-output-rotation.js";

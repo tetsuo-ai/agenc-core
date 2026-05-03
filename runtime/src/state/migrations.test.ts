@@ -15,7 +15,7 @@ const migrationDir = dirname(fileURLToPath(import.meta.url));
 describe("state migration registry", () => {
   it("loads state migrations from numbered migration files in order", () => {
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7,
+      1, 2, 3, 4, 5, 6, 7, 8,
     ]);
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.name)).toEqual([
       "initial_state_schema",
@@ -25,6 +25,7 @@ describe("state migration registry", () => {
       "in_flight_tool_calls_schema",
       "thread_model_provider_columns",
       "session_agent_links_schema",
+      "tool_output_rotation_schema",
     ]);
     expectMigrationVersionsAreUnique(STATE_DB_MIGRATIONS);
   });
@@ -48,6 +49,7 @@ describe("state migration registry", () => {
       "005_in_flight_tool_calls_schema.ts",
       "006_thread_model_provider_columns.ts",
       "007_session_agent_links_schema.ts",
+      "008_tool_output_rotation_schema.ts",
     ]);
   });
 
@@ -70,6 +72,16 @@ describe("state migration registry", () => {
           thread_id TEXT PRIMARY KEY,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
+        );
+        CREATE TABLE in_flight_tool_calls (
+          session_id TEXT NOT NULL,
+          tool_call_id TEXT NOT NULL,
+          tool_name TEXT NOT NULL,
+          args_json TEXT NOT NULL,
+          status TEXT NOT NULL,
+          output_partial TEXT,
+          started_at TEXT NOT NULL,
+          PRIMARY KEY (session_id, tool_call_id)
         );
       `);
 
@@ -114,6 +126,16 @@ describe("state migration registry", () => {
           updated_at TEXT NOT NULL,
           model TEXT,
           model_provider TEXT
+        );
+        CREATE TABLE in_flight_tool_calls (
+          session_id TEXT NOT NULL,
+          tool_call_id TEXT NOT NULL,
+          tool_name TEXT NOT NULL,
+          args_json TEXT NOT NULL,
+          status TEXT NOT NULL,
+          output_partial TEXT,
+          started_at TEXT NOT NULL,
+          PRIMARY KEY (session_id, tool_call_id)
         );
       `);
 

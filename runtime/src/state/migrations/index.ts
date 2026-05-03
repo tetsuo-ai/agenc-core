@@ -6,6 +6,7 @@ import { sessionStateSnapshotsSchemaMigration } from "./004_session_state_snapsh
 import { inFlightToolCallsSchemaMigration } from "./005_in_flight_tool_calls_schema.js";
 import { threadModelProviderColumnsMigration } from "./006_thread_model_provider_columns.js";
 import { sessionAgentLinksSchemaMigration } from "./007_session_agent_links_schema.js";
+import { toolOutputRotationSchemaMigration } from "./008_tool_output_rotation_schema.js";
 import type { SqlMigration } from "./types.js";
 
 /**
@@ -19,6 +20,7 @@ export const STATE_DB_MIGRATIONS: readonly SqlMigration[] = [
   inFlightToolCallsSchemaMigration,
   threadModelProviderColumnsMigration,
   sessionAgentLinksSchemaMigration,
+  toolOutputRotationSchemaMigration,
 ];
 
 export const LOGS_DB_MIGRATIONS: readonly SqlMigration[] = [

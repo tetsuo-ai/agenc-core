@@ -5,6 +5,12 @@ import {
   type AgentRunRetentionPolicy,
 } from "./pruning.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
+import {
+  recordInFlightToolCallCompletion,
+  recordInFlightToolCallProgress,
+  recordInFlightToolCallStart,
+  type ToolOutputRotationPolicy,
+} from "./tool-output-rotation.js";
 
 export type SnapshotPolicyTrigger =
   | "agent_status"
@@ -23,6 +29,8 @@ export interface SnapshotPolicyOptions {
   readonly clearInterval?: (timer: SnapshotPolicyTimer) => void;
   readonly onError?: (error: unknown) => void;
   readonly snapshotRetention?: AgentRunRetentionPolicy;
+  readonly agencHome?: string;
+  readonly outputRotation?: ToolOutputRotationPolicy;
 }
 
 export interface SnapshotPolicyTimer {
@@ -103,6 +111,8 @@ export class AgenCSessionSnapshotPolicy {
   readonly #clearInterval: (timer: SnapshotPolicyTimer) => void;
   readonly #onError: (error: unknown) => void;
   readonly #snapshotRetention: AgentRunRetentionPolicy | undefined;
+  readonly #agencHome: string | undefined;
+  readonly #outputRotation: ToolOutputRotationPolicy | undefined;
   readonly #sessions = new Map<string, SessionSnapshotState>();
   #periodicTimer: SnapshotPolicyTimer | undefined;
   #lastSnapshotMs = 0;
@@ -125,6 +135,8 @@ export class AgenCSessionSnapshotPolicy {
       ((timer) => clearInterval(timer as ReturnType<typeof setInterval>));
     this.#onError = options.onError ?? (() => {});
     this.#snapshotRetention = options.snapshotRetention;
+    this.#agencHome = options.agencHome;
+    this.#outputRotation = options.outputRotation;
   }
 
   startPeriodic(): void {
@@ -237,14 +249,30 @@ export class AgenCSessionSnapshotPolicy {
       const state = this.#session(sessionId);
       const params = eventParams;
       const requestId = stringField(params, "requestId");
+      const eventAgentId = stringField(params, "agentId");
+      const agentId = eventAgentId ?? this.#sessionAgentId(sessionId) ?? sessionId;
+      if (eventAgentId !== undefined) {
+        this.#rememberSessionAgent(sessionId, eventAgentId);
+      }
       if (requestId !== undefined) {
+        const toolName = stringField(params, "toolName") ?? "";
         state.toolState.inFlight[requestId] = {
           requestId,
-          toolName: stringField(params, "toolName") ?? "",
+          toolName,
           input: (params.input as JsonValue | undefined) ?? null,
           eventId: stringField(params, "eventId"),
           status: "running",
         };
+        recordInFlightToolCallStart(this.#driver, {
+          sessionId,
+          agentId,
+          toolCallId: requestId,
+          toolName,
+          args: (params.input as JsonValue | undefined) ?? null,
+          startedAt: this.#now(),
+          agencHome: this.#agencHome,
+          outputRotation: this.#outputRotation,
+        });
       }
       return this.#writeSnapshot(state, "tool_call");
     }
@@ -307,6 +335,11 @@ export class AgenCSessionSnapshotPolicy {
       const state = this.#session(sessionId);
       const payload = asJsonObject(event.payload);
       const callId = stringField(payload, "callId");
+      const eventAgentId = stringField(params, "agentId");
+      const agentId = eventAgentId ?? this.#sessionAgentId(sessionId) ?? sessionId;
+      if (eventAgentId !== undefined) {
+        this.#rememberSessionAgent(sessionId, eventAgentId);
+      }
       if (callId !== undefined) {
         const previous = state.toolState.inFlight[callId];
         const metadata = asJsonObject(payload.metadata);
@@ -314,6 +347,17 @@ export class AgenCSessionSnapshotPolicy {
           stringField(previous ?? {}, "toolName") ??
           stringField(metadata, "toolName") ??
           stringField(payload, "toolName");
+        recordInFlightToolCallCompletion(this.#driver, {
+          sessionId,
+          agentId,
+          toolCallId: callId,
+          ...(toolName !== undefined ? { toolName } : {}),
+          result: (payload.result as JsonValue | undefined) ?? null,
+          isError: booleanField(payload, "isError"),
+          completedAt: this.#now(),
+          agencHome: this.#agencHome,
+          outputRotation: this.#outputRotation,
+        });
         delete state.toolState.inFlight[callId];
         state.toolState.completed[callId] = {
           ...(previous ?? {}),
@@ -321,6 +365,42 @@ export class AgenCSessionSnapshotPolicy {
           ...(toolName !== undefined ? { toolName } : {}),
           status: booleanField(payload, "isError") ? "failed" : "completed",
           result: (payload.result as JsonValue | undefined) ?? null,
+        };
+      }
+      return this.#writeSnapshot(state, "tool_call");
+    }
+    if (type === "tool_progress") {
+      const state = this.#session(sessionId);
+      const payload = asJsonObject(event.payload);
+      const callId = stringField(payload, "callId");
+      const chunk = stringField(payload, "chunk");
+      const eventAgentId = stringField(params, "agentId");
+      const agentId = eventAgentId ?? this.#sessionAgentId(sessionId) ?? sessionId;
+      if (eventAgentId !== undefined) {
+        this.#rememberSessionAgent(sessionId, eventAgentId);
+      }
+      if (callId !== undefined && chunk !== undefined) {
+        const previous = state.toolState.inFlight[callId];
+        const toolName =
+          stringField(previous ?? {}, "toolName") ??
+          stringField(payload, "toolName");
+        const observedAt = this.#now();
+        recordInFlightToolCallProgress(this.#driver, {
+          sessionId,
+          agentId,
+          toolCallId: callId,
+          ...(toolName !== undefined ? { toolName } : {}),
+          chunk,
+          observedAt,
+          agencHome: this.#agencHome,
+          outputRotation: this.#outputRotation,
+        });
+        state.toolState.inFlight[callId] = {
+          ...(previous ?? {}),
+          requestId: callId,
+          ...(toolName !== undefined ? { toolName } : {}),
+          status: "running",
+          lastProgressAt: stringField(event, "acceptedAt") ?? observedAt,
         };
       }
       return this.#writeSnapshot(state, "tool_call");
@@ -385,6 +465,14 @@ export class AgenCSessionSnapshotPolicy {
           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
       )
       .run(sessionId, agentId);
+  }
+
+  #sessionAgentId(sessionId: string): string | undefined {
+    return this.#driver
+      .prepareState<[string], { agent_id: string }>(
+        "SELECT agent_id FROM session_agent_links WHERE session_id = ?",
+      )
+      .get(sessionId)?.agent_id;
   }
 
   #appendConversation(

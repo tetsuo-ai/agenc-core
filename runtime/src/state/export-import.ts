@@ -1,6 +1,11 @@
+import { dirname } from "node:path";
 import type { JsonValue } from "../app-server/protocol/index.js";
 import { writeSessionSnapshotAtomically } from "./atomic-snapshot-writes.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
+import {
+  rotateToolOutputForState,
+  type ToolOutputRotationPolicy,
+} from "./tool-output-rotation.js";
 
 export const AGENC_STATE_EXPORT_FORMAT = "agenc.state.export";
 export const AGENC_STATE_EXPORT_SCHEMA_VERSION = 1;
@@ -50,6 +55,11 @@ export interface AgenCStateImportResult {
   readonly sessionIds: readonly string[];
   readonly snapshotCount: number;
   readonly toolCallCount: number;
+}
+
+export interface AgenCStateImportOptions {
+  readonly agencHome?: string;
+  readonly outputRotation?: ToolOutputRotationPolicy;
 }
 
 interface AgentRunRow {
@@ -130,6 +140,7 @@ export function exportAgentState(
 export function importAgentState(
   driver: StateSqliteDriver,
   payload: AgenCStateExportPayload | unknown,
+  options: AgenCStateImportOptions = {},
 ): AgenCStateImportResult {
   const normalized = normalizeExportPayload(payload);
   const importedSessionIds = sessionIdsForImport(normalized);
@@ -137,6 +148,7 @@ export function importAgentState(
     importedSessionIds,
     existingCurrentSessionId(driver, normalized.agentRun.id),
   );
+  const agencHome = options.agencHome ?? inferAgencHomeFromProjectDir(driver);
   assertSessionIdsOwnedByImportAgent(
     driver,
     normalized.agentRun.id,
@@ -158,7 +170,11 @@ export function importAgentState(
     }
     upsertAgentRun(driver, normalized.agentRun);
     insertSnapshots(driver, normalized.sessionStateSnapshots);
-    insertToolCalls(driver, normalized.inFlightToolCalls);
+    insertToolCalls(driver, normalized.inFlightToolCalls, {
+      agentId: normalized.agentRun.id,
+      agencHome,
+      outputRotation: options.outputRotation,
+    });
   });
 
   return {
@@ -329,6 +345,11 @@ function insertSnapshots(
 function insertToolCalls(
   driver: StateSqliteDriver,
   toolCalls: readonly AgenCStateExportInFlightToolCall[],
+  options: {
+    readonly agentId: string;
+    readonly agencHome?: string;
+    readonly outputRotation?: ToolOutputRotationPolicy;
+  },
 ): void {
   const insert = driver.prepareState(
     `INSERT INTO in_flight_tool_calls (
@@ -338,17 +359,31 @@ function insertToolCalls(
       args_json,
       status,
       output_partial,
+      output_log_path,
+      output_log_bytes,
       started_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   for (const call of toolCalls) {
+    const rotated =
+      call.outputPartial === undefined
+        ? undefined
+        : rotateToolOutputForState({
+            agencHome: options.agencHome,
+            agentId: options.agentId,
+            toolCallId: call.toolCallId,
+            output: call.outputPartial,
+            outputRotation: options.outputRotation,
+          });
     insert.run(
       call.sessionId,
       call.toolCallId,
       call.toolName,
       stringifyJsonValue(call.args, "args"),
       call.status,
-      call.outputPartial ?? null,
+      rotated?.outputPartial ?? null,
+      rotated?.outputLogPath ?? null,
+      rotated?.outputLogBytes ?? 0,
       call.startedAt,
     );
   }
@@ -500,6 +535,10 @@ function assertSessionIdsOwnedByImportAgent(
   throw new AgenCStateExportImportError(
     `state import session id ${conflict.current_session_id} is already owned by agent ${conflict.id}`,
   );
+}
+
+function inferAgencHomeFromProjectDir(driver: StateSqliteDriver): string {
+  return dirname(dirname(driver.projectDir));
 }
 
 function mergeSessionIds(

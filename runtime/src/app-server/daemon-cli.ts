@@ -780,6 +780,7 @@ class AgenCDaemonSnapshotPolicyRegistry {
     if (existing !== undefined) return existing;
     const driver = openStateDatabasePaths(paths);
     const policy = new AgenCSessionSnapshotPolicy(driver, {
+      agencHome: this.#agencHome,
       snapshotRetention: this.#snapshotRetention,
       onError: this.#onError,
     });
@@ -882,6 +883,12 @@ function recoveryToolCallMetadata(call: FailedInFlightToolCall): JsonObject {
     ...(call.args !== undefined ? { args: call.args as JsonValue } : {}),
     ...(call.outputPartial !== undefined
       ? { outputPartial: call.outputPartial }
+      : {}),
+    ...(call.outputLogPath !== undefined
+      ? { outputLogPath: call.outputLogPath }
+      : {}),
+    ...(call.outputLogBytes !== undefined
+      ? { outputLogBytes: call.outputLogBytes }
       : {}),
   };
 }
