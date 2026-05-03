@@ -42,6 +42,8 @@ function extractBridgeTag(content: string, tagName: string): string | null {
  * dispatch target for `pickToolResultDispatch === 'bash-output-view'`.
  */
 const BASH_OUTPUT_TRUNCATION_LIMIT = 8 * 1024;
+const GLOB_TRUNCATION_NOTE =
+  "(Results are truncated. Consider using a more specific path or pattern.)";
 
 function truncateForDisplay(value: string, limit: number): string {
   if (value.length <= limit) return value;
@@ -209,6 +211,7 @@ export function GlobPathsView({
 }): React.ReactElement {
   const pattern = extractBridgeTag(content, "glob-pattern") ?? "";
   const pathsBlock = extractBridgeTag(content, "glob-paths") ?? "";
+  const truncated = extractBridgeTag(content, "glob-truncated") === "true";
   const paths = pathsBlock.length > 0 ? pathsBlock.split("\n") : [];
   if (paths.length === 0) {
     const emptyHeader = pattern.length > 0 ? `Glob: ${pattern}` : null;
@@ -216,6 +219,7 @@ export function GlobPathsView({
       <Box flexDirection="column">
         {emptyHeader !== null ? <Text bold>{emptyHeader}</Text> : null}
         <Text dimColor>(no paths)</Text>
+        {truncated ? <Text dimColor>{GLOB_TRUNCATION_NOTE}</Text> : null}
       </Box>
     );
   }
@@ -237,6 +241,7 @@ export function GlobPathsView({
       {truncatedCount > 0 ? (
         <Text dimColor>{`… ${truncatedCount} more paths truncated`}</Text>
       ) : null}
+      {truncated ? <Text dimColor>{GLOB_TRUNCATION_NOTE}</Text> : null}
     </Box>
   );
 }

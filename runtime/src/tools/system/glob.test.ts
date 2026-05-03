@@ -1,11 +1,11 @@
 /**
- * Tests for the lifted openclaude `Glob` tool.
+ * Tests for the AgenC-owned `Glob` tool.
  *
  * Coverage:
  *   - simple `*.txt` pattern in a tmp dir
  *   - recursive `**\/*.md` pattern
  *   - results sorted by mtime descending
- *   - `maxResults` truncation appends a polite truncation note
+ *   - `maxResults` truncation appends the donor-compatible truncation note
  *   - empty results return polite plain text and not isError
  *   - rejects search paths outside `allowedPaths`
  *   - returns plain text, not JSON-wrapped
@@ -14,11 +14,17 @@
  *   - honors workspace-relative `path` (resolves against allowedPaths[0])
  *   - pattern with no matches returns the polite empty message
  *   - exports `GLOB_TOOL_NAME = "Glob"`
- *   - rejects absolute pattern with a clear instruction
+ *   - accepts absolute patterns inside allowed paths
  *   - rejects empty pattern with a plain-text error
  */
 
-import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  rm,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -120,8 +126,7 @@ describe("Glob tool", () => {
 
     expect(result.isError).toBeUndefined();
     const lines = result.content.split("\n").filter(Boolean);
-    // First line is the "Found N files (X ms)" header; entries follow.
-    const entries = lines.slice(1);
+    const entries = lines;
     const newIdx = entries.findIndex((l) => l.endsWith("new.log"));
     const midIdx = entries.findIndex((l) => l.endsWith("mid.log"));
     const oldIdx = entries.findIndex((l) => l.endsWith("old.log"));
@@ -142,13 +147,30 @@ describe("Glob tool", () => {
 
     expect(result.isError).toBeUndefined();
     expect(result.content).toContain(
-      "(results truncated at 3; refine pattern to see more)",
+      "(Results are truncated. Consider using a more specific path or pattern.)",
     );
-    // Header + 3 entries + truncation note = 5 lines.
+    // 3 entries + truncation note = 4 lines.
     const lines = result.content.split("\n").filter(Boolean);
-    expect(lines.length).toBe(5);
+    expect(lines.length).toBe(4);
     expect(result.metadata?.truncated).toBe(true);
     expect(result.metadata?.numFiles).toBe(3);
+  });
+
+  test("missing ripgrep returns a dependency error instead of a divergent fallback", async () => {
+    await writeFile(join(root, "a.txt"), "alpha\n", "utf8");
+    const tool = createGlobTool({
+      allowedPaths: [root],
+      ripgrepCommand: "agenc-missing-rg-for-test",
+    });
+
+    const result = await tool.execute({
+      pattern: "*.txt",
+      path: root,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("Glob requires ripgrep");
+    expect(result.content).toContain("hidden and ignored-file parity");
   });
 
   test("empty results return polite plain text and not isError", async () => {
@@ -160,7 +182,7 @@ describe("Glob tool", () => {
     });
 
     expect(result.isError).toBeUndefined();
-    expect(result.content).toBe("No files matched the pattern.");
+    expect(result.content).toBe("No files found");
     expect(result.metadata?.numFiles).toBe(0);
     expect(result.metadata?.truncated).toBe(false);
   });
@@ -234,22 +256,42 @@ describe("Glob tool", () => {
     expect(result.content).toBe("pattern must be a non-empty string");
   });
 
-  test("rejects an absolute pattern with a clear instruction", async () => {
+  test("accepts an absolute pattern inside the allowed path", async () => {
     await writeFile(join(root, "a.txt"), "alpha\n", "utf8");
     const tool = createGlobTool({ allowedPaths: [root] });
     const result = await tool.execute({
       pattern: join(root, "*.txt"),
       path: root,
     });
-    expect(result.isError).toBe(true);
-    expect(result.content).toContain("pattern must be relative");
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toBe("a.txt");
   });
 
-  test("filters out files that fall outside the allowed paths after globbing", async () => {
-    // Sanity guard: a recursive glob from `root` should never produce
-    // entries outside `root`, but the post-glob safePath filter is
-    // documented as defence-in-depth. Verify the happy-path result is
-    // still inside `root` for every emitted path.
+  test("primary search includes hidden and ignored files", async () => {
+    await mkdir(join(root, ".hidden-dir"), { recursive: true });
+    await writeFile(join(root, ".gitignore"), "ignored.txt\n", "utf8");
+    await writeFile(join(root, "ignored.txt"), "ignored\n", "utf8");
+    await writeFile(join(root, ".hidden.txt"), "hidden\n", "utf8");
+    await writeFile(join(root, ".hidden-dir", "nested.txt"), "nested\n", "utf8");
+
+    const tool = createGlobTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      pattern: "*.txt",
+      path: root,
+    });
+
+    expect(result.isError).toBeUndefined();
+    const lines = result.content.split("\n").filter(Boolean);
+    expect(lines).toEqual(
+      expect.arrayContaining([
+        "ignored.txt",
+        ".hidden.txt",
+        ".hidden-dir/nested.txt",
+      ]),
+    );
+  });
+
+  test("returns relative paths under allowed root", async () => {
     await mkdir(join(root, "a", "b"), { recursive: true });
     await writeFile(join(root, "x.txt"), "x\n", "utf8");
     await writeFile(join(root, "a", "y.txt"), "y\n", "utf8");
@@ -262,9 +304,10 @@ describe("Glob tool", () => {
     });
 
     expect(result.isError).toBeUndefined();
-    const lines = result.content.split("\n").filter(Boolean).slice(1);
+    const lines = result.content.split("\n").filter(Boolean);
     for (const line of lines) {
-      expect(line.startsWith(root)).toBe(true);
+      expect(line.startsWith(root)).toBe(false);
     }
+    expect(lines).toEqual(expect.arrayContaining(["x.txt", "a/y.txt", "a/b/z.txt"]));
   });
 });

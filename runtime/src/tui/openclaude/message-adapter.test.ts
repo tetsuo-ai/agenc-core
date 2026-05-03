@@ -5,6 +5,7 @@ import {
   formatStructuredToolError,
   formatStructuredToolResult,
 } from "./message-adapter.js";
+import { pickToolResultDispatch } from "../../agenc/adapters/upstream-tool-result-dispatch.js";
 
 describe("AgenC TUI transcript bridge", () => {
   test("maps AgenC user and streaming assistant events into upstream messages", () => {
@@ -378,6 +379,73 @@ describe("AgenC TUI transcript bridge", () => {
     expect(blocks[blocks.length - 1]?.text).toBe(
       "<glob-paths>a\nb</glob-paths>",
     );
+  });
+
+  test("formatStructuredToolResult Glob envelopes plain runtime path text for bridge dispatch", () => {
+    const blocks = formatStructuredToolResult("Glob", "tool_call_completed", {
+      result:
+        "src/foo.ts\nsrc/bar.ts\n(Results are truncated. Consider using a more specific path or pattern.)",
+      metadata: { pattern: "src/**/*.ts" },
+    });
+    const joined = blocks.map((block) => block.text).join("\n");
+
+    expect(blocks[0]?.text).toBe("<glob-pattern>src/**/*.ts</glob-pattern>");
+    expect(blocks[1]?.text).toBe("<glob-paths>src/foo.ts\nsrc/bar.ts</glob-paths>");
+    expect(blocks[2]?.text).toBe("<glob-truncated>true</glob-truncated>");
+    expect(pickToolResultDispatch("Glob", joined)).toBe("glob-paths-view");
+  });
+
+  test("formatStructuredToolResult Glob preserves exact whitespace in plain path text", () => {
+    const blocks = formatStructuredToolResult("Glob", "tool_call_completed", {
+      result: " leading.ts\ntrailing.ts ",
+      metadata: { pattern: "*.ts" },
+    });
+
+    expect(blocks[1]?.text).toBe("<glob-paths> leading.ts\ntrailing.ts </glob-paths>");
+  });
+
+  test("adaptTranscriptEvents bridges completed truncated plain Glob results into structured content blocks", () => {
+    const transcript = adaptTranscriptEvents([
+      {
+        id: "glob-start",
+        msg: {
+          type: "tool_call_started",
+          payload: {
+            callId: "glob-1",
+            toolName: "Glob",
+            args: JSON.stringify({ pattern: "*.ts" }),
+          },
+        },
+      },
+      {
+        id: "glob-end",
+        msg: {
+          type: "tool_call_completed",
+          payload: {
+            callId: "glob-1",
+            result:
+              "a.ts\nb.ts\n(Results are truncated. Consider using a more specific path or pattern.)",
+            metadata: { pattern: "*.ts", truncated: true },
+          },
+        },
+      },
+    ]);
+    const resultMessage = transcript.messages.at(-1);
+    const content = resultMessage?.message.content[0]?.content;
+
+    expect(Array.isArray(content)).toBe(true);
+    expect(content).toContainEqual({
+      type: "text",
+      text: "<glob-pattern>*.ts</glob-pattern>",
+    });
+    expect(content).toContainEqual({
+      type: "text",
+      text: "<glob-paths>a.ts\nb.ts</glob-paths>",
+    });
+    expect(content).toContainEqual({
+      type: "text",
+      text: "<glob-truncated>true</glob-truncated>",
+    });
   });
 
   test("formatStructuredToolResult Edit envelope omits <edit-file> when path is non-string (number/null/object), still emits <edit-diff>", () => {
