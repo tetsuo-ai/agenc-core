@@ -21,13 +21,15 @@
     "runtime/src/tools/apply-patch/tool.ts",
     "runtime/src/tools/apply-patch/index.ts",
     "runtime/src/tools/apply-patch/PARITY.md",
-    "runtime/src/tool-registry.ts"
+    "runtime/src/tool-registry.ts",
+    "runtime/src/agents/run-agent.ts"
   ],
   "testFiles": [
     "runtime/src/tools/apply-patch/parser.test.ts",
     "runtime/src/tools/apply-patch/runtime.test.ts",
     "runtime/src/tools/apply-patch/tool.test.ts",
-    "runtime/src/tool-registry.test.ts"
+    "runtime/src/tool-registry.test.ts",
+    "runtime/src/agents/run-agent.test.ts"
   ],
   "rows": [
     {
@@ -81,7 +83,8 @@
         "JSON input accepts a single input string",
         "raw/freeform callers can be adapted by the registry string-argument map",
         "the Lark grammar is exported exactly for future freeform-capable providers",
-        "permission checks cover every affected patch path before execution"
+        "permission checks cover every affected patch path before execution",
+        "child-agent worktree invocations resolve relative patch paths against the child worktree"
       ],
       "edgeCases": [
         "invalid patch input returns a tool error rather than mutating files",
@@ -89,7 +92,8 @@
       ],
       "tests": [
         "runtime/src/tools/apply-patch/tool.test.ts",
-        "runtime/src/tool-registry.test.ts"
+        "runtime/src/tool-registry.test.ts",
+        "runtime/src/agents/run-agent.test.ts"
       ],
       "status": "required"
     }

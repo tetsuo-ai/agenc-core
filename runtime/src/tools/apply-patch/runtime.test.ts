@@ -79,6 +79,28 @@ describe("apply-patch runtime", () => {
     );
   });
 
+  test("moves updated files and creates destination parents", async () => {
+    const root = await tempRoot();
+    const source = join(root, "source.txt");
+    const destination = join(root, "nested", "destination.txt");
+    await writeFile(source, "line\n", "utf8");
+
+    const result = await applyPatchText(
+      wrapPatch(`*** Update File: source.txt
+*** Move to: nested/destination.txt
+@@
+-line
++line2`),
+      { cwd: root, allowedPaths: [root] },
+    );
+
+    await expect(readFile(destination, "utf8")).resolves.toBe("line2\n");
+    await expect(stat(source)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(result.summary).toBe(
+      "Success. Updated the following files:\nM nested/destination.txt\n",
+    );
+  });
+
   test("matches typographic punctuation with ASCII patch text", async () => {
     const root = await tempRoot();
     const path = join(root, "unicode.py");

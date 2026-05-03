@@ -1,4 +1,10 @@
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 /**
@@ -44,6 +50,7 @@ import {
   SESSION_ALLOWED_ROOTS_ARG,
   SESSION_ID_ARG,
 } from "../tools/system/filesystem.js";
+import { createApplyPatchTool } from "../tools/apply-patch/index.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Helpers
@@ -481,6 +488,60 @@ describe("runAgent", () => {
     expect(parsed.value).toBe("hello");
   });
 
+  it("runs child apply_patch calls relative to the child worktree", async () => {
+    const parentRoot = mkdtempSync(join(tmpdir(), "agenc-parent-patch-"));
+    const worktreeRoot = mkdtempSync(join(tmpdir(), "agenc-child-patch-"));
+    const applyPatchTool = createApplyPatchTool({
+      cwd: parentRoot,
+      allowedPaths: [parentRoot],
+    });
+    const registry = buildFilteredRegistry(
+      {
+        tools: [applyPatchTool],
+        toLLMTools: () => [{
+          type: "function",
+          function: {
+            name: "apply_patch",
+            description: applyPatchTool.description,
+            parameters: applyPatchTool.inputSchema,
+          },
+        }],
+        dispatch: async () => ({ content: "{}" }),
+      },
+      {
+        childConversationId: "child-123",
+        worktree: {
+          path: worktreeRoot,
+          branch: "worktree-child",
+          gitRoot: parentRoot,
+          created: false,
+        },
+      },
+    );
+
+    try {
+      const result = await registry.dispatch({
+        id: "patch-1",
+        name: "apply_patch",
+        arguments: JSON.stringify({
+          input: `*** Begin Patch
+*** Add File: child.txt
++child
+*** End Patch`,
+        }),
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(readFileSync(join(worktreeRoot, "child.txt"), "utf8")).toBe(
+        "child\n",
+      );
+      expect(existsSync(join(parentRoot, "child.txt"))).toBe(false);
+    } finally {
+      rmSync(parentRoot, { recursive: true, force: true });
+      rmSync(worktreeRoot, { recursive: true, force: true });
+    }
+  });
+
   it("filters disabled V2 agent tools from child tool specs and dispatch", async () => {
     const registry = buildFilteredRegistry(
       mkNamedRegistry(["spawn_agent", "system.echo"]),
@@ -507,7 +568,7 @@ describe("runAgent", () => {
     });
   });
 
-  it("filters OpenClaude task and main-thread coordination tools from V2 child agents", async () => {
+  it("filters task and main-thread coordination tools from V2 child agents", async () => {
     const leakedToolNames = [
       "TaskCreate",
       "TaskGet",
