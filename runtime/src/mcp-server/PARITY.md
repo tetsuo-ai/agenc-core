@@ -10,4 +10,5 @@ Primary source anchors:
 This directory owns AgenC's server-side MCP framework:
 - `types.ts` defines transport-neutral JSON-RPC and MCP initialize/list shapes.
 - `framework.ts` owns initialize/ping dispatch, lifecycle state, unsupported-method errors, server-originated request callbacks, notifications, and serialization.
-- `index.ts` exports the subsystem surface for later MS-* transport and tool-registration work.
+- `tools.ts` maps AgenC tools into MCP tool definitions and delegates `tools/call` to the AgenC tool registry.
+- `index.ts` exports the subsystem surface for later MS-* transport and integration work.

@@ -7,7 +7,17 @@ export {
   type McpServerFrameworkSnapshot,
 } from "./framework.js";
 
+export {
+  McpToolRegistry,
+  mcpDefinitionFromAgenCTool,
+  mcpResultFromToolDispatch,
+  mcpToolRegistryFromAgenCTools,
+  registeredToolFromAgenCTool,
+  type McpRegisteredTool,
+} from "./tools.js";
+
 export type {
+  McpCallToolResult,
   McpIncomingMessage,
   McpInitializeParams,
   McpInitializeResult,
@@ -22,6 +32,11 @@ export type {
   McpResponseMessage,
   McpServerCapabilities,
   McpServerInfo,
+  McpToolCallContext,
+  McpToolCallParams,
+  McpToolDefinition,
+  McpToolProvider,
+  McpToolTextContent,
   McpToolsCapability,
 } from "./types.js";
 

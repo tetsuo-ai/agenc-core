@@ -167,6 +167,26 @@ describe("McpServerFramework", () => {
     ]);
   });
 
+  test("sync tools/call path asks callers to use the async dispatcher", () => {
+    const server = new McpServerFramework();
+    server.handleMessage(request(1, "initialize"));
+
+    expect(
+      server.handleMessage(
+        request(2, "tools/call", { name: "sample.echo", arguments: {} }),
+      ),
+    ).toEqual([
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        error: {
+          code: MCP_ERROR_INVALID_REQUEST,
+          message: "tools/call requires the async MCP dispatcher",
+        },
+      },
+    ]);
+  });
+
   test("returns method-not-found for unsupported requests", () => {
     const server = new McpServerFramework();
     server.handleMessage(request(1, "initialize"));
