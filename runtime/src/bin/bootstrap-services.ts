@@ -41,12 +41,12 @@ import type { RolloutStore } from "../session/rollout-store.js";
 import {
   FileThreadStore,
   ThreadNotFoundError,
-} from "../session/thread-store.js";
+} from "../thread-store/index.js";
 import {
   createLiveThread,
   resumeLiveThread,
   type LiveThread,
-} from "../session/live-thread.js";
+} from "../thread-store/index.js";
 import type { RegisteredAgentTask } from "../session/agent-task-lifecycle.js";
 import { BehaviorSubject } from "../utils/behavior-subject.js";
 import {
@@ -652,12 +652,16 @@ export function buildBootstrapSessionServices(
             rolloutPath: binding.rolloutStore.rolloutPath,
             includeArchived: true,
             threadStore: fileThreadStore,
+            model: opts.model,
+            modelProvider: opts.providerName,
           })
         : createLiveThread({
             threadId: binding.session.conversationId,
             rolloutStore: binding.rolloutStore,
             threadStore: fileThreadStore,
             source: "cli_main",
+            model: opts.model,
+            modelProvider: opts.providerName,
             cwd: opts.workspaceRoot,
           });
       (services as { liveThread?: LiveThread }).liveThread = liveThread;
@@ -677,6 +681,7 @@ export function buildBootstrapSessionServices(
       rolloutTrace.flush();
       rolloutTrace.close();
       services.shellSnapshotTx.complete();
+      fileThreadStore.close();
     },
   };
 }

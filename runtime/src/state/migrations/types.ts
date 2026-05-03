@@ -11,8 +11,11 @@
  *     schema migration and are not ported.
  */
 
+import type { SqliteDatabase } from "../sqlite-driver.js";
+
 export interface SqlMigration {
   readonly version: number;
   readonly name: string;
-  readonly sql: string;
+  readonly sql?: string;
+  readonly apply?: (db: SqliteDatabase) => void;
 }

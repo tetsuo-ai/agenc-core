@@ -19,6 +19,11 @@ export interface BackfillResult {
   readonly itemsIndexed: number;
 }
 
+interface RolloutFileEntry {
+  readonly rolloutPath: string;
+  readonly archived: boolean;
+}
+
 export function backfillProjectRollouts(
   options: BackfillProjectRolloutsOptions,
 ): BackfillResult {
@@ -26,10 +31,11 @@ export function backfillProjectRollouts(
   let filesScanned = 0;
   let filesIndexed = 0;
   let itemsIndexed = 0;
-  for (const rolloutPath of listRolloutFiles(options.projectDir)) {
+  for (const entry of listRolloutFiles(options.projectDir)) {
     filesScanned += 1;
     const result = backfillRolloutFile({
-      rolloutPath,
+      rolloutPath: entry.rolloutPath,
+      archived: entry.archived,
       threads,
     });
     filesIndexed += 1;
@@ -40,6 +46,7 @@ export function backfillProjectRollouts(
 
 export function backfillRolloutFile(options: {
   readonly rolloutPath: string;
+  readonly archived?: boolean;
   readonly threads: StateThreadRepository;
 }): { readonly itemsIndexed: number } {
   const raw = readFileSync(options.rolloutPath, "utf8");
@@ -92,15 +99,21 @@ export function backfillRolloutFile(options: {
     byteOffset += lineBytes;
   }
   const now = new Date(stat.mtimeMs).toISOString();
-  options.threads.upsertThread({
+  const archivedAt = options.archived === true ? now : undefined;
+  options.threads.mergeThread({
     threadId,
     createdAt: firstMeta?.payload.timestamp ?? now,
     updatedAt: latestMeta?.payload.timestamp ?? now,
     cwd: latestMeta?.payload.cwd ?? firstMeta?.payload.cwd,
     source: latestMeta?.payload.source ?? firstMeta?.payload.source,
+    model: latestMeta?.payload.model ?? firstMeta?.payload.model,
+    modelProvider:
+      latestMeta?.payload.modelProvider ?? firstMeta?.payload.modelProvider,
     memoryMode: normalizeMemoryMode(latestMeta?.payload.memoryMode),
-    rolloutPath: options.rolloutPath,
-  });
+    ...(archivedAt !== undefined
+      ? { archivedAt, archivedRolloutPath: options.rolloutPath }
+      : { rolloutPath: options.rolloutPath }),
+  }, { replaceArchiveState: true });
   options.threads.replaceRolloutItems({
     threadId,
     sourcePath: options.rolloutPath,
@@ -113,17 +126,24 @@ export function backfillRolloutFile(options: {
   return { itemsIndexed: items.length };
 }
 
-function listRolloutFiles(projectDir: string): string[] {
-  const roots = [join(projectDir, "sessions"), join(projectDir, "archived_sessions")];
-  const result: string[] = [];
-  for (const root of roots) {
+function listRolloutFiles(projectDir: string): RolloutFileEntry[] {
+  const roots = [
+    { root: join(projectDir, "sessions"), archived: false },
+    { root: join(projectDir, "archived_sessions"), archived: true },
+  ];
+  const result: RolloutFileEntry[] = [];
+  for (const { root, archived } of roots) {
     if (!existsSync(root)) continue;
-    collectRolloutFiles(root, result);
+    collectRolloutFiles(root, archived, result);
   }
-  return result.sort();
+  return result.sort((a, b) => a.rolloutPath.localeCompare(b.rolloutPath));
 }
 
-function collectRolloutFiles(dir: string, result: string[]): void {
+function collectRolloutFiles(
+  dir: string,
+  archived: boolean,
+  result: RolloutFileEntry[],
+): void {
   let entries: string[];
   try {
     entries = readdirSync(dir);
@@ -139,9 +159,9 @@ function collectRolloutFiles(dir: string, result: string[]): void {
       continue;
     }
     if (stat.isDirectory()) {
-      collectRolloutFiles(full, result);
+      collectRolloutFiles(full, archived, result);
     } else if (entry.startsWith("rollout-") && entry.endsWith(".jsonl")) {
-      result.push(full);
+      result.push({ rolloutPath: full, archived });
     }
   }
 }

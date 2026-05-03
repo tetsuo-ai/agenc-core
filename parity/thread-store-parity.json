@@ -1,0 +1,35 @@
+{
+  "id": "thread-store",
+  "sourceRoot": "donor-runtime/thread-store",
+  "targetRoot": "runtime/src/thread-store",
+  "rows": [
+    {
+      "id": "store-contract",
+      "source": "src/store.rs",
+      "target": "runtime/src/thread-store/store.ts",
+      "status": "ported",
+      "evidence": "ThreadStore interface and FileThreadStore implementation include create/resume/append/load/read/list/update/archive/unarchive plus path reads."
+    },
+    {
+      "id": "live-thread",
+      "source": "src/live_thread.rs",
+      "target": "runtime/src/thread-store/live-thread.ts",
+      "status": "ported",
+      "evidence": "LiveThread routes lifecycle and persistence methods through a bound ThreadStore."
+    },
+    {
+      "id": "in-memory",
+      "source": "src/in_memory.rs",
+      "target": "runtime/src/thread-store/in-memory.ts",
+      "status": "ported",
+      "evidence": "InMemoryThreadStore implements the same synchronous contract for tests."
+    },
+    {
+      "id": "local-store",
+      "source": "src/local",
+      "target": "runtime/src/thread-store/store.ts",
+      "status": "partial",
+      "evidence": "Filesystem local behavior is mapped onto AgenC rollout files and state SQLite; remote store and rich uncollected metadata remain deferred."
+    }
+  ]
+}

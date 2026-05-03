@@ -49,9 +49,9 @@
  *   |-----------------------------------------------|-----------------------------------------------|
  *   | Shell discovery (`shell::default_user_shell`) | WIRED via `utils/shell-discovery.ts`          |
  *   | Parallel auth + MCP startup (`tokio::join!`)  | WIRED via `Promise.all` in this file          |
- *   | `LiveThread::create/resume`                   | PUNTED — no gut-side thread-store equivalent  |
- *   | `state_db` lookup                             | PUNTED — gut has no state_db subsystem today  |
- *   | Thread-name lookup                            | PUNTED — depends on state_db                  |
+ *   | `LiveThread::create/resume`                   | WIRED in `bin/bootstrap-services.ts`          |
+ *   | `state_db` lookup                             | WIRED for thread-store metadata              |
+ *   | Thread-name lookup                            | WIRED through thread-store metadata          |
  *   | `SessionConfigured` event emit                | WIRED — called from the bootstrap helper      |
  *   | `required_mcp_servers` await (fail-closed)    | WIRED — fails at `manager.start`              |
  *   | Startup prewarm                               | WIRED (best-effort TurnContext construction)  |
@@ -59,8 +59,8 @@
  *   | Network-proxy setup                           | PUNTED — T11 network approval is separate     |
  *   | `guardian_rejections` / telemetry seeds       | PUNTED — initialized in services builder      |
  *
- * PUNTED items either have no gut-side concept (no `LiveThread`, no
- * `state_db`) or live in a different tranche. The WIRED set is
+ * Remaining PUNTED items either live in a different tranche or are
+ * intentionally owned by services bootstrap. The WIRED set is
  * sufficient to make the bootstrap sequencing uniform across the live
  * CLI path and the integration fixtures that drive tests.
  *
