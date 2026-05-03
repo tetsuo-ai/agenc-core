@@ -36,6 +36,21 @@ import {
 } from "../agents/status.js";
 import type { Session } from "../session/session.js";
 import type { ReasoningEffort } from "../session/turn-context.js";
+import {
+  createProvider,
+  readProviderFactoryOptions,
+  readProviderIdentity,
+  type ProviderFactoryOptions,
+} from "../llm/provider.js";
+import {
+  PROVIDER_NATIVE_WEB_SEARCH_TOOL,
+  supportsProviderNativeWebSearch,
+} from "../llm/provider-native-search.js";
+import type {
+  LLMProvider,
+  LLMResponse,
+  LLMWebSearchConfig,
+} from "../llm/types.js";
 import type { Tool, ToolResult } from "../tools/types.js";
 import { safeStringify } from "../tools/types.js";
 import { SESSION_ID_ARG } from "../agents/_deps/filesystem-args.js";
@@ -98,6 +113,7 @@ export interface ModelFacingToolOptions {
     readonly message: string;
   }) => void;
   readonly env?: NodeJS.ProcessEnv;
+  readonly providerFactory?: typeof createProvider;
 }
 
 interface StoredCron {
@@ -111,6 +127,17 @@ interface StoredCron {
 
 interface ToolState {
   readonly crons: readonly StoredCron[];
+}
+
+interface WebSearchFilters {
+  readonly allowedDomains: readonly string[];
+  readonly blockedDomains: readonly string[];
+}
+
+interface WebSearchResultEntry {
+  readonly title: string;
+  readonly url: string;
+  readonly snippet: string;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -163,6 +190,12 @@ function stringArray(value: unknown): readonly string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];
+}
+
+function normalizedStringArray(value: unknown): readonly string[] {
+  return stringArray(value)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
 }
 
 function stateRoot(opts: ModelFacingToolOptions): string {
@@ -264,6 +297,312 @@ async function fetchWithTimeout(url: string, timeoutMs = DEFAULT_TIMEOUT_MS): Pr
     });
   } finally {
     clearTimeout(timer);
+  }
+}
+
+function normalizeDomainFilter(raw: string): string | undefined {
+  const value = raw.trim().toLowerCase().replace(/^\*\./, "");
+  if (value.length === 0) return undefined;
+  try {
+    const url = new URL(value.includes("://") ? value : `https://${value}`);
+    return url.hostname.replace(/^\*\./, "");
+  } catch {
+    return value.split("/")[0]?.replace(/^\*\./, "");
+  }
+}
+
+function webSearchFilters(args: Record<string, unknown>): WebSearchFilters {
+  const allowedDomains = normalizedStringArray(args.allowed_domains)
+    .map(normalizeDomainFilter)
+    .filter((domain): domain is string => domain !== undefined);
+  const blockedDomains = normalizedStringArray(args.blocked_domains)
+    .map(normalizeDomainFilter)
+    .filter((domain): domain is string => domain !== undefined);
+  return { allowedDomains, blockedDomains };
+}
+
+function webSearchConfigFromFilters(
+  filters: WebSearchFilters,
+): LLMWebSearchConfig | undefined {
+  if (
+    filters.allowedDomains.length === 0 &&
+    filters.blockedDomains.length === 0
+  ) {
+    return undefined;
+  }
+  return {
+    ...(filters.allowedDomains.length > 0
+      ? { allowedDomains: filters.allowedDomains }
+      : {}),
+    ...(filters.blockedDomains.length > 0
+      ? { excludedDomains: filters.blockedDomains }
+      : {}),
+  };
+}
+
+function hostnameMatchesDomain(hostname: string, domain: string): boolean {
+  return hostname === domain || hostname.endsWith(`.${domain}`);
+}
+
+function urlMatchesAnyDomain(
+  rawUrl: string,
+  domains: readonly string[],
+): boolean {
+  if (domains.length === 0) return false;
+  try {
+    const hostname = new URL(rawUrl).hostname.toLowerCase();
+    return domains.some((domain) => hostnameMatchesDomain(hostname, domain));
+  } catch {
+    return false;
+  }
+}
+
+function isUsableWebSearchUrl(rawUrl: string): boolean {
+  try {
+    const url = new URL(rawUrl);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function filterWebSearchResults(
+  results: readonly WebSearchResultEntry[],
+  filters: WebSearchFilters,
+): readonly WebSearchResultEntry[] {
+  return results.filter((entry) => {
+    if (
+      filters.allowedDomains.length > 0 &&
+      !urlMatchesAnyDomain(entry.url, filters.allowedDomains)
+    ) {
+      return false;
+    }
+    if (urlMatchesAnyDomain(entry.url, filters.blockedDomains)) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function arrayValue(value: unknown): readonly unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function webSearchResultFromSource(value: unknown): WebSearchResultEntry | undefined {
+  const record = recordValue(value);
+  if (!record) return undefined;
+  const url =
+    stringValue(record.url) ??
+    stringValue(record.uri) ??
+    stringValue(record.link);
+  if (!url || !isUsableWebSearchUrl(url)) return undefined;
+  return {
+    title:
+      stringValue(record.title) ??
+      stringValue(record.name) ??
+      url,
+    url,
+    snippet:
+      stringValue(record.snippet) ??
+      stringValue(record.text) ??
+      stringValue(record.summary) ??
+      stringValue(record.description) ??
+      "",
+  };
+}
+
+function addWebSearchResult(
+  results: Map<string, WebSearchResultEntry>,
+  entry: WebSearchResultEntry,
+): void {
+  const existing = results.get(entry.url);
+  if (!existing) {
+    results.set(entry.url, entry);
+    return;
+  }
+  if (existing.title === existing.url && entry.title !== entry.url) {
+    results.set(entry.url, entry);
+  }
+}
+
+function extractSourceResultsFromRaw(
+  raw: Record<string, unknown> | undefined,
+): readonly WebSearchResultEntry[] {
+  if (!raw) return [];
+  const sourceCandidates: unknown[] = [
+    ...arrayValue(raw.sources),
+    ...arrayValue(recordValue(raw.action)?.sources),
+    ...arrayValue(recordValue(raw.result)?.sources),
+  ];
+  for (const result of arrayValue(raw.results)) {
+    sourceCandidates.push(result);
+    sourceCandidates.push(...arrayValue(recordValue(result)?.sources));
+  }
+  return sourceCandidates
+    .map(webSearchResultFromSource)
+    .filter((entry): entry is WebSearchResultEntry => entry !== undefined);
+}
+
+function extractGrokNativeSourceResults(
+  response: LLMResponse,
+): readonly WebSearchResultEntry[] {
+  const results = new Map<string, WebSearchResultEntry>();
+  for (const call of response.providerEvidence?.serverSideToolCalls ?? []) {
+    if (call.toolType !== PROVIDER_NATIVE_WEB_SEARCH_TOOL) continue;
+    for (const entry of extractSourceResultsFromRaw(call.raw)) {
+      addWebSearchResult(results, entry);
+    }
+  }
+  for (const citation of response.providerEvidence?.citations ?? []) {
+    if (!isUsableWebSearchUrl(citation)) continue;
+    addWebSearchResult(results, {
+      title: citation,
+      url: citation,
+      snippet: "",
+    });
+  }
+  return [...results.values()];
+}
+
+function currentSessionProvider(
+  opts: ModelFacingToolOptions,
+): LLMProvider | undefined {
+  const session = opts.getSession();
+  return (session?.services as { provider?: LLMProvider } | undefined)
+    ?.provider;
+}
+
+function buildGrokNativeWebSearchProvider(
+  opts: ModelFacingToolOptions,
+  filters: WebSearchFilters,
+): LLMProvider | undefined {
+  const currentProvider = currentSessionProvider(opts);
+  if (readProviderIdentity(currentProvider) !== "grok" || !currentProvider) {
+    return undefined;
+  }
+  const factoryOptions = readProviderFactoryOptions(currentProvider);
+  if (
+    !supportsProviderNativeWebSearch({
+      provider: "grok",
+      model: factoryOptions.model,
+      webSearch: true,
+      searchMode: "on",
+    })
+  ) {
+    return undefined;
+  }
+  const webSearchOptions = webSearchConfigFromFilters(filters);
+  const extra: ProviderFactoryOptions["extra"] = {
+    ...(factoryOptions.extra ?? {}),
+    webSearch: true,
+    searchMode: "on",
+    ...(webSearchOptions !== undefined
+      ? { webSearchOptions }
+      : {}),
+  };
+  const providerFactory = opts.providerFactory ?? createProvider;
+  try {
+    return providerFactory("grok", {
+      ...factoryOptions,
+      tools: [],
+      extra,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+function abortSignalFromArgs(
+  args: Record<string, unknown>,
+): AbortSignal | undefined {
+  const signal = (args as { readonly __abortSignal?: unknown }).__abortSignal;
+  return signal instanceof AbortSignal ? signal : undefined;
+}
+
+function hasGrokNativeWebSearchToolUse(response: LLMResponse): boolean {
+  if ((response.usage.webSearchRequests ?? 0) > 0) return true;
+  const evidence = response.providerEvidence;
+  if (
+    evidence?.serverSideToolCalls?.some(
+      (call) =>
+        call.toolType === PROVIDER_NATIVE_WEB_SEARCH_TOOL ||
+        call.type === "web_search_call",
+    ) === true
+  ) {
+    return true;
+  }
+  if (
+    evidence?.serverSideToolUsage?.some(
+      (entry) =>
+        entry.toolType === PROVIDER_NATIVE_WEB_SEARCH_TOOL && entry.count > 0,
+    ) === true
+  ) {
+    return true;
+  }
+  return false;
+}
+
+async function runGrokNativeWebSearch(
+  opts: ModelFacingToolOptions,
+  args: Record<string, unknown>,
+  query: string,
+  maxResults: number,
+  filters: WebSearchFilters,
+): Promise<ToolResult | undefined> {
+  const provider = buildGrokNativeWebSearchProvider(opts, filters);
+  if (!provider) return undefined;
+  try {
+    const response = await provider.chat(
+      [
+        {
+          role: "user",
+          content:
+            `Search the web for this query and return concise findings with source URLs.\n\nQuery: ${query}`,
+        },
+      ],
+      {
+        systemPrompt:
+          "You are AgenC's web search tool. Use the provider-native web search tool and cite source URLs.",
+        maxOutputTokens: 1_200,
+        tools: [],
+        toolRouting: {
+          allowedToolNames: [PROVIDER_NATIVE_WEB_SEARCH_TOOL],
+        },
+        signal: abortSignalFromArgs(args),
+      },
+    );
+    if (
+      response.finishReason === "error" ||
+      !hasGrokNativeWebSearchToolUse(response)
+    ) {
+      return undefined;
+    }
+    const sourceResults = extractGrokNativeSourceResults(response);
+    const results = filterWebSearchResults(sourceResults, filters).slice(
+      0,
+      maxResults,
+    );
+    if (results.length === 0) {
+      return undefined;
+    }
+    const citations = results.map((entry) => entry.url);
+    return json({
+      query,
+      source: "grok_web_search",
+      provider: "grok",
+      results,
+      answer: response.content.trim(),
+      citations,
+      web_search_requests: response.usage.webSearchRequests ?? 0,
+    });
+  } catch {
+    return undefined;
   }
 }
 
@@ -1864,11 +2203,22 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
       execute: async (args) => {
         const query = stringValue(args.query);
         if (!query) return json({ error: "query is required" }, true);
+        const filters = webSearchFilters(args);
         const endpoint = stringValue(opts.env?.AGENC_WEB_SEARCH_ENDPOINT);
         const maxResults = Math.max(
           1,
           Math.min(numberValue(args.max_results) ?? MAX_SEARCH_RESULTS, MAX_SEARCH_RESULTS),
         );
+        const nativeResult = await runGrokNativeWebSearch(
+          opts,
+          args,
+          query,
+          maxResults,
+          filters,
+        );
+        if (nativeResult !== undefined) {
+          return nativeResult;
+        }
         const searchUrl =
           endpoint !== undefined
             ? `${endpoint}${endpoint.includes("?") ? "&" : "?"}q=${encodeURIComponent(query)}`
@@ -1876,7 +2226,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
         const response = await fetchWithTimeout(searchUrl);
         const raw = (await response.json()) as Record<string, unknown>;
         const related = Array.isArray(raw.RelatedTopics) ? raw.RelatedTopics : [];
-        const results = related
+        const results = filterWebSearchResults(related
           .flatMap((entry): Array<Record<string, unknown>> => {
             if (entry && typeof entry === "object" && Array.isArray((entry as Record<string, unknown>).Topics)) {
               return (entry as { Topics: Array<Record<string, unknown>> }).Topics;
@@ -1890,7 +2240,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
             url: stringValue(entry.FirstURL) ?? "",
             snippet: stringValue(entry.Text) ?? "",
           }))
-          .filter((entry) => entry.url.length > 0)
+          .filter((entry) => entry.url.length > 0), filters)
           .slice(0, maxResults);
         return json({
           query,

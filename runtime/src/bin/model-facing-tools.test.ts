@@ -2,6 +2,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ProviderFactoryOptions } from "../llm/provider.js";
+import type { LLMProvider, LLMResponse } from "../llm/types.js";
 import type { Session } from "../session/session.js";
 import { createModelFacingTools } from "./model-facing-tools.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
@@ -123,6 +125,24 @@ function fakeSession(): Session {
     nextInternalSubId: () => "event-1",
     eventLog: { emit: (event: unknown) => event },
   } as unknown as Session;
+}
+
+function withProvider(session: Session, provider: LLMProvider): Session {
+  (session.services as { provider?: LLMProvider }).provider = provider;
+  return session;
+}
+
+function fakeProvider(
+  config: Record<string, unknown>,
+  chat = vi.fn(),
+): LLMProvider {
+  return {
+    name: "grok",
+    config,
+    chat,
+    chatStream: vi.fn(),
+    healthCheck: vi.fn(),
+  } as unknown as LLMProvider;
 }
 
 function codeMode<T>(result: { readonly codeModeResult?: unknown }): T {
@@ -555,6 +575,269 @@ describe("model-facing tools", () => {
       expect(parsed.preapproved).toBe(false);
       expect(parsed.rendered_as).toBe("passthrough");
       expect(parsed.content).toBe("plain body");
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("WebSearch uses Grok provider-native web_search when the active model supports it", async () => {
+    const nativeResponse: LLMResponse = {
+      content: "Use the current docs for this answer.",
+      toolCalls: [],
+      usage: {
+        promptTokens: 10,
+        completionTokens: 12,
+        totalTokens: 22,
+        webSearchRequests: 1,
+      },
+      model: "grok-4-fast",
+      finishReason: "stop",
+      providerEvidence: {
+        serverSideToolCalls: [
+          {
+            type: "web_search_call",
+            toolType: "web_search",
+            raw: {
+              type: "web_search_call",
+              action: {
+                sources: [
+                  {
+                    title: "Current AgenC docs",
+                    url: "https://agenc.tech/current",
+                    snippet: "Current reference",
+                  },
+                  {
+                    title: "Local source",
+                    url: "https://localhost/out",
+                    snippet: "Blocked by filter",
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const nativeChat = vi.fn().mockResolvedValue(nativeResponse);
+    let factoryOptions: ProviderFactoryOptions | undefined;
+    const providerFactory = vi.fn((
+      _provider: string,
+      options: ProviderFactoryOptions,
+    ) => {
+      factoryOptions = options;
+      return fakeProvider({}, nativeChat);
+    });
+    const session = withProvider(
+      fakeSession(),
+      fakeProvider({
+        apiKey: "xai-test",
+        model: "grok-4-fast",
+      }),
+    );
+    const fetchMock = vi.fn();
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    try {
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+        providerFactory: providerFactory as never,
+      });
+      const result = await tools.find((tool) => tool.name === "WebSearch")!.execute({
+        query: "current docs",
+        allowed_domains: ["agenc.tech", "localhost"],
+        blocked_domains: ["localhost"],
+        max_results: 1,
+      });
+
+      expect(result.isError).toBeUndefined();
+      const parsed = JSON.parse(result.content);
+      expect(parsed.source).toBe("grok_web_search");
+      expect(parsed.answer).toBe(nativeResponse.content);
+      expect(parsed.results).toEqual([
+        {
+          title: "Current AgenC docs",
+          url: "https://agenc.tech/current",
+          snippet: "Current reference",
+        },
+      ]);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+    expect(factoryOptions?.tools).toEqual([]);
+    expect(factoryOptions?.extra).toMatchObject({
+      webSearch: true,
+      searchMode: "on",
+      webSearchOptions: {
+        allowedDomains: ["agenc.tech", "localhost"],
+        excludedDomains: ["localhost"],
+      },
+    });
+    expect(nativeChat).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.objectContaining({
+        tools: [],
+        toolRouting: {
+          allowedToolNames: ["web_search"],
+        },
+      }),
+    );
+  });
+
+  it("WebSearch falls back when Grok native web_search returns no source URLs", async () => {
+    const nativeResponse: LLMResponse = {
+      content: "No source URLs were emitted.",
+      toolCalls: [],
+      usage: {
+        promptTokens: 10,
+        completionTokens: 12,
+        totalTokens: 22,
+        webSearchRequests: 1,
+      },
+      model: "grok-4-fast",
+      finishReason: "stop",
+      providerEvidence: {
+        serverSideToolCalls: [
+          {
+            type: "web_search_call",
+            toolType: "web_search",
+          },
+        ],
+      },
+    };
+    const nativeChat = vi.fn().mockResolvedValue(nativeResponse);
+    const providerFactory = vi.fn((
+      _provider: string,
+      _options: ProviderFactoryOptions,
+    ) => fakeProvider({}, nativeChat));
+    const fetchMock = vi.fn().mockResolvedValue({
+      json: async () => ({
+        RelatedTopics: [
+          {
+            Text: "Fallback - source",
+            FirstURL: "https://agenc.tech/fallback",
+          },
+        ],
+      }),
+    });
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    try {
+      const session = withProvider(
+        fakeSession(),
+        fakeProvider({
+          apiKey: "xai-test",
+          model: "grok-4-fast",
+        }),
+      );
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+        env: {
+          AGENC_WEB_SEARCH_ENDPOINT: "http://127.0.0.1/search",
+        } as NodeJS.ProcessEnv,
+        providerFactory: providerFactory as never,
+      });
+      const result = await tools.find((tool) => tool.name === "WebSearch")!.execute({
+        query: "source required",
+      });
+
+      expect(nativeChat).toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalledWith(
+        "http://127.0.0.1/search?q=source%20required",
+        expect.any(Object),
+      );
+      const parsed = JSON.parse(result.content);
+      expect(parsed.source).toBe("http://127.0.0.1/search");
+      expect(parsed.results[0].url).toBe("https://agenc.tech/fallback");
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("WebSearch falls back when the active Grok model lacks native web_search support", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      json: async () => ({
+        Heading: "fallback",
+        RelatedTopics: [
+          {
+            Text: "Allowed - kept",
+            FirstURL: "https://127.0.0.1/page",
+          },
+        ],
+      }),
+    });
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    try {
+      const providerFactory = vi.fn();
+      const session = withProvider(
+        fakeSession(),
+        fakeProvider({
+          apiKey: "xai-test",
+          model: "grok-code-fast-1",
+        }),
+      );
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+        env: {
+          AGENC_WEB_SEARCH_ENDPOINT: "http://127.0.0.1/search",
+        } as NodeJS.ProcessEnv,
+        providerFactory: providerFactory as never,
+      });
+      const result = await tools.find((tool) => tool.name === "WebSearch")!.execute({
+        query: "fallback search",
+      });
+
+      expect(providerFactory).not.toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalledWith(
+        "http://127.0.0.1/search?q=fallback%20search",
+        expect.any(Object),
+      );
+      const parsed = JSON.parse(result.content);
+      expect(parsed.source).toBe("http://127.0.0.1/search");
+      expect(parsed.results[0].url).toBe("https://127.0.0.1/page");
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("WebSearch fallback filters blocked domains", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      json: async () => ({
+        RelatedTopics: [
+          {
+            Text: "Blocked - omit",
+            FirstURL: "https://127.0.0.1/blocked",
+          },
+          {
+            Text: "Kept - include",
+            FirstURL: "https://localhost/kept",
+          },
+        ],
+      }),
+    });
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    try {
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => null,
+        env: {
+          AGENC_WEB_SEARCH_ENDPOINT: "http://127.0.0.1/search",
+        } as NodeJS.ProcessEnv,
+      });
+      const result = await tools.find((tool) => tool.name === "WebSearch")!.execute({
+        query: "filtered search",
+        blocked_domains: ["127.0.0.1"],
+      });
+
+      const parsed = JSON.parse(result.content);
+      expect(parsed.results.map((entry: { url: string }) => entry.url)).toEqual([
+        "https://localhost/kept",
+      ]);
     } finally {
       globalThis.fetch = previousFetch;
     }
