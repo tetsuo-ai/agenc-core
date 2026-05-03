@@ -63,6 +63,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(registeredNames).toContain("Write");
     expect(registeredNames).toContain("Edit");
     expect(registeredNames).toContain("MultiEdit");
+    expect(registeredNames).toContain("Glob");
     expect(registeredNames).toContain("Grep");
     expect(registeredNames).toContain("system.grep");
     expect(registeredNames).toContain("system.glob");
@@ -96,6 +97,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(visibleNames).toContain("Write");
     expect(visibleNames).toContain("Edit");
     expect(visibleNames).toContain("MultiEdit");
+    expect(visibleNames).toContain("Glob");
     expect(visibleNames).toContain("Grep");
     expect(visibleNames).not.toContain("system.grep");
     expect(visibleNames).not.toContain("system.glob");

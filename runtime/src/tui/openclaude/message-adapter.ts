@@ -39,6 +39,8 @@ export interface AdaptedTranscript {
 }
 
 const SYNTHETIC_MODEL = "agenc";
+const GLOB_NO_FILES_TEXT = "No files found";
+const GLOB_TRUNCATION_PREFIX = "(Results are truncated.";
 
 function timestamp(): string {
   return new Date().toISOString();
@@ -115,6 +117,33 @@ function stringResult(value: unknown): string {
     }
   }
   return value === undefined || value === null ? "" : String(value);
+}
+
+function metadataRecord(payload: Record<string, unknown>): Record<string, unknown> {
+  const metadata = payload.metadata;
+  return metadata && typeof metadata === "object"
+    ? metadata as Record<string, unknown>
+    : {};
+}
+
+function plainGlobProjection(result: string): {
+  readonly paths: readonly string[];
+  readonly truncated: boolean;
+} {
+  if (result.trim() === GLOB_NO_FILES_TEXT) {
+    return { paths: [], truncated: false };
+  }
+  const paths: string[] = [];
+  let truncated = false;
+  for (const line of result.split("\n")) {
+    if (line.length === 0) continue;
+    if (line.startsWith(GLOB_TRUNCATION_PREFIX)) {
+      truncated = true;
+      continue;
+    }
+    paths.push(line);
+  }
+  return { paths, truncated };
 }
 
 export function makeUserMessage(content: unknown): any {
@@ -505,6 +534,7 @@ export function formatStructuredToolResult(
         readonly paths?: unknown;
         readonly files?: unknown;
         readonly pattern?: unknown;
+        readonly truncated?: unknown;
       };
       const list = Array.isArray(result)
         ? result
@@ -527,6 +557,35 @@ export function formatStructuredToolResult(
         type: "text",
         text: `<glob-paths>${paths.join("\n")}</glob-paths>`,
       });
+      if (r.truncated === true || metadataRecord(payload).truncated === true) {
+        blocks.push({
+          type: "text",
+          text: "<glob-truncated>true</glob-truncated>",
+        });
+      }
+      return blocks;
+    }
+    if (typeof result === "string" && payload.isError !== true) {
+      const metadata = metadataRecord(payload);
+      const pattern = typeof metadata.pattern === "string" ? metadata.pattern : null;
+      const projection = plainGlobProjection(result);
+      const blocks: { type: "text"; text: string }[] = [];
+      if (pattern !== null) {
+        blocks.push({
+          type: "text",
+          text: `<glob-pattern>${pattern}</glob-pattern>`,
+        });
+      }
+      blocks.push({
+        type: "text",
+        text: `<glob-paths>${projection.paths.join("\n")}</glob-paths>`,
+      });
+      if (projection.truncated || metadata.truncated === true) {
+        blocks.push({
+          type: "text",
+          text: "<glob-truncated>true</glob-truncated>",
+        });
+      }
       return blocks;
     }
   }
