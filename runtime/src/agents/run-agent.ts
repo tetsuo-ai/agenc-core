@@ -614,8 +614,10 @@ function injectChildToolArgs(
     injectedArgs[SESSION_ALLOWED_ROOTS_ARG] = [opts.worktree.path];
   }
   if (
-    (toolName === "system.bash" || toolName === "exec_command") &&
     opts.worktree?.path &&
+    (toolName === "system.bash" ||
+      toolName === "exec_command" ||
+      toolName === "apply_patch") &&
     (typeof injectedArgs.cwd !== "string" || injectedArgs.cwd.length === 0)
   ) {
     injectedArgs.cwd = opts.worktree.path;

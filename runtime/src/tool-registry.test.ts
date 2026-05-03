@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
+import { mkdtemp, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { buildToolRegistry } from "./tool-registry.js";
 import { PermissionModeRegistry } from "./permissions/mode.js";
 import { createEmptyToolPermissionContext } from "./permissions/types.js";
@@ -65,6 +68,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(registeredNames).toContain("MultiEdit");
     expect(registeredNames).toContain("Glob");
     expect(registeredNames).toContain("Grep");
+    expect(registeredNames).toContain("apply_patch");
     expect(registeredNames).toContain("system.grep");
     expect(registeredNames).toContain("system.glob");
     expect(registeredNames).toContain("system.gitStatus");
@@ -99,6 +103,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(visibleNames).toContain("MultiEdit");
     expect(visibleNames).toContain("Glob");
     expect(visibleNames).toContain("Grep");
+    expect(visibleNames).not.toContain("apply_patch");
     expect(visibleNames).not.toContain("system.grep");
     expect(visibleNames).not.toContain("system.glob");
     expect(visibleNames).not.toContain("system.gitStatus");
@@ -147,6 +152,34 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(result.isError).toBeUndefined();
     expect(result.content).toContain("Process exited with code 0");
     expect(result.content).toContain("Output:\nagenc-plain-string");
+  });
+
+  test("apply_patch is deferred but dispatch accepts raw patch strings", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-registry-apply-patch-"));
+    const registry = buildToolRegistry({ workspaceRoot: root });
+    const tool = registry.tools.find((candidate) => candidate.name === "apply_patch");
+
+    expect(tool?.metadata?.deferred).toBe(true);
+    expect(registry.toLLMTools().map((entry) => entry.function.name)).not.toContain(
+      "apply_patch",
+    );
+
+    const result = await registry.dispatch({
+      id: "patch-1",
+      name: "apply_patch",
+      arguments: `*** Begin Patch
+*** Add File: patched.txt
++patched
+*** End Patch`,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toBe(
+      "Success. Updated the following files:\nA patched.txt\n",
+    );
+    await expect(readFile(join(root, "patched.txt"), "utf8")).resolves.toBe(
+      "patched\n",
+    );
   });
 
   test("code mode adds visible exec/wait tools when enabled", () => {
