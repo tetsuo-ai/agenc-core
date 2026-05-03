@@ -238,6 +238,23 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
         renderFileMentionAttachmentsBlock(attachment.files),
       );
     }
+    case "image_mention": {
+      if (attachment.images.length === 0) return null;
+      return {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: renderImageMentionHeader(attachment.images),
+          },
+          ...attachment.images.map((image) => ({
+            type: "image_url" as const,
+            image_url: { url: image.url },
+          })),
+        ],
+        runtimeOnly: { mergeBoundary: "user_context" },
+      };
+    }
     case "skill_listing": {
       return userContextMessage(
         wrapSystemReminder(
@@ -258,6 +275,29 @@ function userContextMessage(text: string): LLMMessage {
 
 function wrapSystemReminder(content: string): string {
   return `<system-reminder>\n${content}\n</system-reminder>`;
+}
+
+function renderImageMentionHeader(
+  images: readonly {
+    readonly path: string;
+    readonly mediaType: string;
+  }[],
+): string {
+  const rows = images
+    .map(
+      (image) =>
+        `<image path="${escapeAttribute(image.path)}" media_type="${escapeAttribute(image.mediaType)}" />`,
+    )
+    .join("\n");
+  return `<attached_images>\n${rows}\n</attached_images>`;
+}
+
+function escapeAttribute(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function formatNumber(value: number): string {

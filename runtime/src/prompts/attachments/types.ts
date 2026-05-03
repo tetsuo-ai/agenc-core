@@ -271,6 +271,18 @@ export interface FileMentionContextAttachment {
   }>;
 }
 
+/** Image content resolved from a user-authored `@path` mention. */
+export interface ImageMentionContextAttachment {
+  readonly kind: "image_mention";
+  readonly images: ReadonlyArray<{
+    readonly raw: string;
+    readonly path: string;
+    readonly resolved: string;
+    readonly mediaType: string;
+    readonly url: string;
+  }>;
+}
+
 /**
  * Available skills listing for the model-facing Skill tool.
  * Source: upstream skill-tool donor `tools/SkillTool/prompt.ts` listing behavior.
@@ -310,6 +322,7 @@ export type Attachment =
   | EditedImageFileAttachment
   | AgentMentionAttachment
   | FileMentionContextAttachment
+  | ImageMentionContextAttachment
   | SkillListingAttachment;
 
 /** All possible `Attachment.kind` values. */

@@ -134,7 +134,7 @@ describe("buildOpenAIResponsesRequest", () => {
             { type: "text", text: "inspect" },
             {
               type: "image_url",
-              image_url: { url: "https://example.com/cat.png" },
+              image_url: { url: "data:image/png;base64,YWJj" },
             },
           ],
         },
@@ -148,7 +148,7 @@ describe("buildOpenAIResponsesRequest", () => {
         role: "user",
         content: [
           { type: "input_text", text: "inspect" },
-          { type: "input_image", image_url: "https://example.com/cat.png" },
+          { type: "input_image", image_url: "data:image/png;base64,YWJj" },
         ],
       },
     ]);
@@ -379,7 +379,7 @@ describe("buildOpenAIResponsesRequest", () => {
             { type: "text", text: "Screenshot captured" },
             {
               type: "image_url",
-              image_url: { url: "https://example.com/cat.png" },
+              image_url: { url: "data:image/png;base64,YWJj" },
             },
           ],
         },
@@ -405,7 +405,7 @@ describe("buildOpenAIResponsesRequest", () => {
         call_id: "call_image",
         output: [
           { type: "input_text", text: "Screenshot captured" },
-          { type: "input_image", image_url: "https://example.com/cat.png" },
+          { type: "input_image", image_url: "data:image/png;base64,YWJj" },
         ],
       },
     ]);

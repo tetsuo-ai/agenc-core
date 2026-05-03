@@ -40,6 +40,37 @@ function parseAudioDataUrl(
   return { data, format };
 }
 
+function parseImageDataUrl(
+  url: string,
+): { readonly data: string; readonly mediaType: string } | null {
+  const match = /^data:(image\/(?:png|jpeg|gif|webp));base64,([\s\S]+)$/iu.exec(
+    url.trim(),
+  );
+  if (!match) return null;
+  const mediaType = (match[1] ?? "").trim().toLowerCase();
+  const data = (match[2] ?? "").replace(/\s+/gu, "");
+  if (!mediaType || !data) return null;
+  return { data, mediaType };
+}
+
+function toAnthropicImageSource(
+  imageUrl: string,
+): Record<string, unknown> | null {
+  const dataImage = parseImageDataUrl(imageUrl);
+  if (dataImage) {
+    return {
+      type: "base64",
+      media_type: dataImage.mediaType,
+      data: dataImage.data,
+    };
+  }
+  if (/^data:image\//iu.test(imageUrl.trim())) return null;
+  return {
+    type: "url",
+    url: imageUrl,
+  };
+}
+
 export function readAudioPayload(
   part: unknown,
 ): { readonly data: string; readonly format: string } | null {
@@ -240,12 +271,13 @@ export function toAnthropicMessageContent(
       (record.image_url as { url?: unknown } | undefined)?.url ?? "",
     );
     if (imageUrl.length > 0) {
+      const source = toAnthropicImageSource(imageUrl);
+      if (source === null) {
+        return { type: "text", text: "[unsupported image]" };
+      }
       return {
         type: "image",
-        source: {
-          type: "url",
-          url: imageUrl,
-        },
+        source,
       };
     }
     return {
@@ -269,12 +301,13 @@ export function toAnthropicToolResultContent(
       (record.image_url as { url?: unknown } | undefined)?.url ?? "",
     );
     if (imageUrl.length > 0) {
+      const source = toAnthropicImageSource(imageUrl);
+      if (source === null) {
+        return { type: "text", text: "[unsupported image]" };
+      }
       return {
         type: "image",
-        source: {
-          type: "url",
-          url: imageUrl,
-        },
+        source,
       };
     }
     return {

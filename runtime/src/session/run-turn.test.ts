@@ -58,6 +58,7 @@ import {
 } from "../llm/errors.js";
 import { FallbackTriggeredError } from "../recovery/api-errors.js";
 import type {
+  LLMContentPart,
   LLMMessage,
   LLMProvider,
   LLMResponse,
@@ -475,6 +476,47 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     }
   });
 
+  test("resolves image file mentions as multimodal context for direct Session.runTurn callers", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-run-turn-image-mention-"));
+    writeFileSync(join(cwd, "cat.png"), Buffer.from("image-bytes"));
+    const seenMessages: LLMMessage[][] = [];
+    const ctx = { ...mkCtx(), cwd };
+    const { session } = mkSession({
+      provider: {
+        ...mkProvider({ content: "hi" }),
+        chatStream: async (
+          messages: LLMMessage[],
+          _onChunk: StreamProgressCallback,
+          _options,
+        ): Promise<LLMResponse> => {
+          seenMessages.push(messages);
+          return {
+            content: "hi",
+            toolCalls: [],
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            model: "test-model",
+            finishReason: "stop",
+          };
+        },
+      },
+      registry: mkRegistry(),
+      sessionConfiguration: { cwd },
+    });
+
+    await drain(session.runTurn("describe @cat.png", { ctx }));
+
+    const imageMessage = seenMessages[0]?.find((message) =>
+      Array.isArray(message.content),
+    );
+    const parts = imageMessage?.content as
+      | Array<{ type?: string; image_url?: { url?: string }; text?: string }>
+      | undefined;
+    expect(parts?.[0]?.text).toContain("<attached_images>");
+    expect(parts?.[1]?.image_url?.url).toBe(
+      "data:image/png;base64,aW1hZ2UtYnl0ZXM=",
+    );
+  });
+
   test("displayUserMessage hides mailbox-merged agent input from transcript", async () => {
     const seenMessages: LLMMessage[][] = [];
     const ctx = mkCtx();
@@ -765,7 +807,9 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
 
     await drain(session.runTurn("Describe it", { ctx }));
 
-    const user = seenMessages.find((message) => message.role === "user");
+    const user = seenMessages.find(
+      (message) => message.role === "user" && Array.isArray(message.content),
+    );
     expect(user?.content).toEqual([
       { type: "text", text: "Describe it" },
       {
@@ -2495,6 +2539,68 @@ describe("runTurn — runAutoCompact dispatcher", () => {
         m.content.includes("POST-COMPACT SUMMARY"),
       ),
     ).toBe(true);
+  });
+
+  test("pre-sampling compact keeps the unsent image turn after compacted history", async () => {
+    const ctx = mkCtx();
+    (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })
+      .autoCompactTokenLimit = 10;
+    const userContent: LLMContentPart[] = [
+      { type: "text", text: "Describe it" },
+      {
+        type: "image_url",
+        image_url: { url: "data:image/png;base64,YWJj" },
+      },
+    ];
+    let seenMessages: LLMMessage[] = [];
+    const { session } = mkSession({
+      provider: {
+        ...mkProvider({ content: "ok" }),
+        chatStream: async (messages) => {
+          seenMessages = messages.map((message) => ({ ...message }));
+          return {
+            content: "ok",
+            toolCalls: [],
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            model: "test-model",
+            finishReason: "stop",
+          };
+        },
+      },
+      registry: mkRegistry(),
+    });
+    (session as unknown as { state: unknown }).state = {
+      unsafePeek: () => ({ history: [], totalTokenUsage: 999 }),
+      with: async (fn: (s: unknown) => unknown) =>
+        fn({ history: [], totalTokenUsage: 999 }),
+    };
+
+    setAutoCompactImplForTests(async () => ({
+      wasCompacted: true,
+      compactionResult: {
+        message: "POST-COMPACT SUMMARY",
+        replacementHistory: [
+          { role: "system", content: "POST-COMPACT SUMMARY" },
+          { role: "assistant", content: "KEPT TAIL" },
+        ],
+        preCompactTokens: 999,
+        postCompactTokens: 100,
+      },
+    }));
+
+    await drain(session.runTurn(userContent, { ctx }));
+
+    expect(
+      seenMessages.some(
+        (message) =>
+          typeof message.content === "string" &&
+          message.content.includes("POST-COMPACT SUMMARY"),
+      ),
+    ).toBe(true);
+    const imageUser = seenMessages.find(
+      (message) => message.role === "user" && Array.isArray(message.content),
+    );
+    expect(imageUser?.content).toEqual(userContent);
   });
 
   test("dispatcher errors emit warning:auto_compact_failed and continue with uncompacted state", async () => {

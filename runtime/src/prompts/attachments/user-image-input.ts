@@ -13,10 +13,10 @@ export type NormalizedUserImageInput = {
   readonly sourcePath?: string;
 };
 
-const IMAGE_FILE_RE = /\.(?:png|jpe?g|gif|webp|bmp|svg)$/iu;
+const IMAGE_FILE_RE = /\.(?:png|jpe?g|gif|webp)$/iu;
 const REMOTE_IMAGE_URL_RE =
-  /^https?:\/\/\S+\.(?:png|jpe?g|gif|webp|bmp|svg)(?:[?#]\S*)?$/iu;
-const DATA_IMAGE_RE = /^data:(image\/[a-z0-9.+-]+);base64,(\S+)$/iu;
+  /^https?:\/\/\S+\.(?:png|jpe?g|gif|webp)(?:[?#]\S*)?$/iu;
+const DATA_IMAGE_RE = /^data:(image\/(?:png|jpeg|gif|webp));base64,(\S+)$/iu;
 
 function stripInputQuotes(value: string): string {
   const trimmed = value.trim();
@@ -39,14 +39,14 @@ export function mediaTypeForImagePath(filePath: string): string {
       return "image/gif";
     case ".webp":
       return "image/webp";
-    case ".bmp":
-      return "image/bmp";
-    case ".svg":
-      return "image/svg+xml";
     case ".png":
     default:
       return "image/png";
   }
+}
+
+export function isSupportedUserImagePath(filePath: string): boolean {
+  return IMAGE_FILE_RE.test(filePath);
 }
 
 function localImageDataUrl(filePath: string, mediaType: string): string | null {

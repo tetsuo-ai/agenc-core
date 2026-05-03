@@ -108,6 +108,34 @@ describe("responses-xai wire shim", () => {
     ]);
   });
 
+  test("maps user data-url images to xAI input_image parts", () => {
+    const built = buildXaiResponsesInputItems([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "inspect" },
+          {
+            type: "image_url",
+            image_url: { url: "data:image/png;base64,YWJj" },
+          },
+        ],
+      },
+    ]);
+
+    expect(built).toEqual({
+      hasImages: true,
+      input: [
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: "inspect" },
+            { type: "input_image", image_url: "data:image/png;base64,YWJj" },
+          ],
+        },
+      ],
+    });
+  });
+
   test("builds flat xAI function tools and documented request controls", () => {
     const tools = toXaiResponsesTools([TEST_TOOL]);
     const request = buildXaiResponsesRequest({

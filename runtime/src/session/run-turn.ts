@@ -432,6 +432,13 @@ function getAutoCompactTokenLimit(ctx: TurnContext): number | undefined {
   );
 }
 
+function messageHasImageContent(message: LLMMessage | undefined): boolean {
+  if (!message || !Array.isArray(message.content)) return false;
+  return message.content.some(
+    (part) => part.type === "image_url" && part.image_url.url.trim().length > 0,
+  );
+}
+
 function isAutoCompactEnabledForNotices(): boolean {
   const raw = process.env.DISABLE_AUTO_COMPACT ??
     process.env.AGENC_DISABLE_AUTO_COMPACT;
@@ -504,12 +511,23 @@ export type AutoCompactImpl = (
 // reached with the expected arguments without spinning up the full
 // AgenC compact subsystem. Clear via
 // `setAutoCompactImplForTests(null)` between tests.
-let autoCompactImplOverride: AutoCompactImpl | null = null;
+type AutoCompactImplOverrideGlobal = typeof globalThis & {
+  __agencRunTurnAutoCompactImplOverride?: AutoCompactImpl | null;
+};
+
+function autoCompactImplOverrideGlobal(): AutoCompactImplOverrideGlobal {
+  return globalThis as AutoCompactImplOverrideGlobal;
+}
+
+function getAutoCompactImplOverride(): AutoCompactImpl | null {
+  return autoCompactImplOverrideGlobal().__agencRunTurnAutoCompactImplOverride ??
+    null;
+}
 
 export function setAutoCompactImplForTests(
   impl: AutoCompactImpl | null,
 ): void {
-  autoCompactImplOverride = impl;
+  autoCompactImplOverrideGlobal().__agencRunTurnAutoCompactImplOverride = impl;
 }
 
 /**
@@ -550,9 +568,15 @@ async function runAutoCompact(
     state && state.messagesForQuery.length > 0
       ? state.messagesForQuery
       : (state?.messages ?? []);
+  const shouldKeepUnsentImageTurn =
+    phase === "pre_turn" &&
+    state !== undefined &&
+    state.messagesForQuery.length === 0 &&
+    messageHasImageContent(state.messages.at(-1));
   const querySource =
     reason === "model_downshift" ? "model_downshift" : "repl_main_thread";
   try {
+    const autoCompactImplOverride = getAutoCompactImplOverride();
     const result = autoCompactImplOverride
       ? await autoCompactImplOverride(
         messages,
@@ -588,11 +612,19 @@ async function runAutoCompact(
         );
       }
       const compacted = buildAgenCPostCompactMessages(cr);
+      const unsentImageTurn = shouldKeepUnsentImageTurn
+        ? state.messages.at(-1)
+        : undefined;
       // Replace both the full history view and the per-iteration
       // projection so `prepareContext` (next phase) sees the same
       // post-compact replacement history the rollout recorded.
-      state.messages = compacted;
+      state.messages = unsentImageTurn
+        ? [...compacted, { ...unsentImageTurn }]
+        : compacted;
       state.messagesForQuery = [...compacted];
+      if (unsentImageTurn) {
+        state.messagesForQuery.push({ ...unsentImageTurn });
+      }
       // Stamp auto-compact tracking so the commit phase emits the
       // boundary marker (runtime/src/phases/commit.ts).
       state.autoCompactTracking = {
