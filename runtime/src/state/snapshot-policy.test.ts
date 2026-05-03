@@ -176,6 +176,14 @@ describe("AgenCSessionSnapshotPolicy", () => {
     );
   });
 
+  it("persists session agent ownership for retention pruning", () => {
+    const policy = new AgenCSessionSnapshotPolicy(driver);
+
+    policy.trackSession("session-linked", "agent-linked");
+
+    expect(sessionAgent("session-linked")).toBe("agent-linked");
+  });
+
   it("keeps tool identity for completion-only tool events", () => {
     const policy = new AgenCSessionSnapshotPolicy(driver, {
       now: clock(["2026-05-01T00:00:00.000Z"]),
@@ -208,6 +216,39 @@ describe("AgenCSessionSnapshotPolicy", () => {
         },
       },
     });
+  });
+
+  it("applies snapshotRetention after writing each snapshot", () => {
+    seedRun("run-retention", "session-retention");
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: clock([
+        "2026-05-01T00:00:00.000Z",
+        "2026-05-01T00:00:01.000Z",
+        "2026-05-01T00:00:02.000Z",
+      ]),
+      snapshotRetention: { snapshot_max_count: 2 },
+    });
+
+    for (const index of [1, 2, 3]) {
+      policy.recordMessageExchange({
+        sessionId: "session-retention",
+        agentId: "run-retention",
+        content: `message-${index}`,
+        messageId: `message-${index}`,
+        streamId: "stream-retention",
+        acceptedAt: `2026-05-01T00:00:0${index}.000Z`,
+      });
+    }
+
+    expect(snapshotCount("session-retention")).toBe(2);
+    expect(latestSnapshot("session-retention").conversation).toEqual([
+      expect.objectContaining({ content: "message-1" }),
+      expect.objectContaining({ content: "message-2" }),
+      expect.objectContaining({ content: "message-3" }),
+    ]);
+    expect(runLastSnapshotAt("run-retention")).toBe(
+      "2026-05-01T00:00:02.000Z",
+    );
   });
 });
 
@@ -286,6 +327,14 @@ function runLastSnapshotAt(runId: string): string | null {
       )
       .get(runId)?.last_snapshot_at ?? null
   );
+}
+
+function sessionAgent(sessionId: string): string | undefined {
+  return driver
+    .prepareState<[string], { agent_id: string }>(
+      "SELECT agent_id FROM session_agent_links WHERE session_id = ?",
+    )
+    .get(sessionId)?.agent_id;
 }
 
 function clock(values: readonly string[]): () => string {

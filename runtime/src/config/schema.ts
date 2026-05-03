@@ -140,6 +140,9 @@ export interface AgentBudgetConfig {
 export interface AgentRunRetentionConfig {
   readonly completed_days?: number;
   readonly failed_days?: number;
+  readonly snapshot_days?: number;
+  readonly snapshot_max_count?: number;
+  readonly snapshot_max_bytes?: number;
 }
 
 export interface AgentConfig {
@@ -594,6 +597,9 @@ export function defaultConfig(): AgenCConfig {
       retention: Object.freeze({
         completed_days: 30,
         failed_days: 90,
+        snapshot_days: 3,
+        snapshot_max_count: 10_000,
+        snapshot_max_bytes: 67_108_864,
       }) as AgentRunRetentionConfig,
     }) as AgentConfig,
     toolBudget: Object.freeze({

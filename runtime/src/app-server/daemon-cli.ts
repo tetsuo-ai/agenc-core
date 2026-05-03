@@ -46,7 +46,11 @@ import {
 } from "../lifecycle/index.js";
 import { createAuthBackend } from "../auth/index.js";
 import type { AuthBackend } from "../auth/backend.js";
-import { loadConfig, type AgenCConfig } from "../config/index.js";
+import {
+  loadConfig,
+  type AgenCConfig,
+  type AgentRunRetentionConfig,
+} from "../config/index.js";
 import {
   recoverDaemonStateOnStartup,
   type DaemonStartupRecoveryReport,
@@ -54,7 +58,10 @@ import {
   type RecoveredAgentRun,
   type RecoveredSessionStateSnapshot,
 } from "../state/recovery.js";
-import { pruneTerminalAgentRuns } from "../state/pruning.js";
+import {
+  pruneSessionStateSnapshots,
+  pruneTerminalAgentRuns,
+} from "../state/pruning.js";
 import { StateSqliteHealthStatsReader } from "../state/health-stats.js";
 import { AgenCSessionSnapshotPolicy } from "../state/snapshot-policy.js";
 import {
@@ -375,6 +382,7 @@ async function runAgenCDaemonForeground(
     snapshotPolicies = new AgenCDaemonSnapshotPolicyRegistry({
       agencHome: authStartup.daemonHome,
       defaultCwd: process.cwd(),
+      snapshotRetention: authStartup.config.agent?.retention,
       periodicIntervalMs: options.snapshotPeriodicIntervalMs,
       onError: (error) =>
         io.stderr.write(
@@ -597,6 +605,7 @@ function recoverAgenCDaemonStartupState(
     const driver = openStateDatabasePaths(pathSet);
     try {
       pruneTerminalAgentRuns(driver, config.agent?.retention);
+      pruneSessionStateSnapshots(driver, config.agent?.retention);
       const report = recoverDaemonStateOnStartup(driver, {
         now: () => recoveredAt,
       });
@@ -631,6 +640,7 @@ function uniqueStateDatabasePaths(
 interface AgenCDaemonSnapshotPolicyRegistryOptions {
   readonly agencHome: string;
   readonly defaultCwd: string;
+  readonly snapshotRetention?: AgentRunRetentionConfig;
   readonly periodicIntervalMs?: number;
   readonly onError: (error: unknown) => void;
 }
@@ -643,6 +653,7 @@ interface AgenCDaemonSnapshotPolicyEntry {
 class AgenCDaemonSnapshotPolicyRegistry {
   readonly #agencHome: string;
   readonly #defaultCwd: string;
+  readonly #snapshotRetention: AgentRunRetentionConfig | undefined;
   readonly #periodicIntervalMs: number;
   readonly #onError: (error: unknown) => void;
   readonly #policies = new Map<string, AgenCDaemonSnapshotPolicyEntry>();
@@ -652,6 +663,7 @@ class AgenCDaemonSnapshotPolicyRegistry {
   constructor(options: AgenCDaemonSnapshotPolicyRegistryOptions) {
     this.#agencHome = options.agencHome;
     this.#defaultCwd = options.defaultCwd;
+    this.#snapshotRetention = options.snapshotRetention;
     this.#periodicIntervalMs = options.periodicIntervalMs ?? 30_000;
     this.#onError = options.onError;
     this.#policyForCwd(this.#defaultCwd);
@@ -662,6 +674,7 @@ class AgenCDaemonSnapshotPolicyRegistry {
       if (run.currentSessionId === undefined) continue;
       const policy = this.#policyForProjectDir(run.projectDir);
       this.#rememberSession(run.currentSessionId, policy.driver.stateDbPath);
+      policy.policy.trackSession(run.currentSessionId, run.id);
       if (run.latestSnapshot !== undefined) {
         policy.policy.hydrateSession({
           sessionId: run.currentSessionId,
@@ -670,8 +683,6 @@ class AgenCDaemonSnapshotPolicyRegistry {
           toolState: run.latestSnapshot.toolState,
           mcpConnectionState: run.latestSnapshot.mcpConnectionState,
         });
-      } else {
-        policy.policy.trackSession(run.currentSessionId);
       }
     }
   }
@@ -714,7 +725,7 @@ class AgenCDaemonSnapshotPolicyRegistry {
   registerSession(session: AgenCDaemonSnapshotSessionRoute): void {
     const entry = this.#policyForRoute(session);
     this.#rememberSession(session.sessionId, entry.driver.stateDbPath);
-    entry.policy.trackSession(session.sessionId);
+    entry.policy.trackSession(session.sessionId, session.agentId);
   }
 
   recordMessageExchange(exchange: AgenCDaemonMessageExchangeSnapshot): void {
@@ -769,6 +780,7 @@ class AgenCDaemonSnapshotPolicyRegistry {
     if (existing !== undefined) return existing;
     const driver = openStateDatabasePaths(paths);
     const policy = new AgenCSessionSnapshotPolicy(driver, {
+      snapshotRetention: this.#snapshotRetention,
       onError: this.#onError,
     });
     const entry = { driver, policy };

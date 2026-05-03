@@ -15,7 +15,7 @@ const migrationDir = dirname(fileURLToPath(import.meta.url));
 describe("state migration registry", () => {
   it("loads state migrations from numbered migration files in order", () => {
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6,
+      1, 2, 3, 4, 5, 6, 7,
     ]);
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.name)).toEqual([
       "initial_state_schema",
@@ -24,6 +24,7 @@ describe("state migration registry", () => {
       "session_state_snapshots_schema",
       "in_flight_tool_calls_schema",
       "thread_model_provider_columns",
+      "session_agent_links_schema",
     ]);
     expectMigrationVersionsAreUnique(STATE_DB_MIGRATIONS);
   });
@@ -46,6 +47,7 @@ describe("state migration registry", () => {
       "004_session_state_snapshots_schema.ts",
       "005_in_flight_tool_calls_schema.ts",
       "006_thread_model_provider_columns.ts",
+      "007_session_agent_links_schema.ts",
     ]);
   });
 

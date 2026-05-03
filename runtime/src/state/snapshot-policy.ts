@@ -1,5 +1,9 @@
 import type { JsonObject, JsonValue } from "../app-server/protocol/index.js";
 import { writeSessionSnapshotAtomically } from "./atomic-snapshot-writes.js";
+import {
+  pruneSessionStateSnapshots,
+  type AgentRunRetentionPolicy,
+} from "./pruning.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 
 export type SnapshotPolicyTrigger =
@@ -18,6 +22,7 @@ export interface SnapshotPolicyOptions {
   ) => SnapshotPolicyTimer;
   readonly clearInterval?: (timer: SnapshotPolicyTimer) => void;
   readonly onError?: (error: unknown) => void;
+  readonly snapshotRetention?: AgentRunRetentionPolicy;
 }
 
 export interface SnapshotPolicyTimer {
@@ -97,6 +102,7 @@ export class AgenCSessionSnapshotPolicy {
   ) => SnapshotPolicyTimer;
   readonly #clearInterval: (timer: SnapshotPolicyTimer) => void;
   readonly #onError: (error: unknown) => void;
+  readonly #snapshotRetention: AgentRunRetentionPolicy | undefined;
   readonly #sessions = new Map<string, SessionSnapshotState>();
   #periodicTimer: SnapshotPolicyTimer | undefined;
   #lastSnapshotMs = 0;
@@ -118,6 +124,7 @@ export class AgenCSessionSnapshotPolicy {
       options.clearInterval ??
       ((timer) => clearInterval(timer as ReturnType<typeof setInterval>));
     this.#onError = options.onError ?? (() => {});
+    this.#snapshotRetention = options.snapshotRetention;
   }
 
   startPeriodic(): void {
@@ -138,8 +145,11 @@ export class AgenCSessionSnapshotPolicy {
     this.#periodicTimer = undefined;
   }
 
-  trackSession(sessionId: string): void {
+  trackSession(sessionId: string, agentId?: string): void {
     this.#session(sessionId);
+    if (agentId !== undefined) {
+      this.#rememberSessionAgent(sessionId, agentId);
+    }
   }
 
   hydrateSession(hydration: SnapshotPolicySessionHydration): void {
@@ -160,6 +170,7 @@ export class AgenCSessionSnapshotPolicy {
   recordMessageExchange(
     exchange: SnapshotPolicyMessageExchange,
   ): SnapshotPolicySnapshotRecord | undefined {
+    this.#rememberSessionAgent(exchange.sessionId, exchange.agentId);
     const state = this.#session(exchange.sessionId);
     const appended = this.#appendConversation(
       state,
@@ -180,6 +191,7 @@ export class AgenCSessionSnapshotPolicy {
   recordAgentStatusTransition(
     transition: SnapshotPolicyAgentStatusTransition,
   ): SnapshotPolicySnapshotRecord | undefined {
+    this.#rememberSessionAgent(transition.sessionId, transition.agentId);
     const state = this.#session(transition.sessionId);
     const latest = latestStatusTransition(
       state.toolState.statusTransitions,
@@ -200,9 +212,12 @@ export class AgenCSessionSnapshotPolicy {
     event: JsonObject,
   ): SnapshotPolicySnapshotRecord | undefined {
     const method = event.method;
+    const eventParams = asJsonObject(event.params);
+    const agentId = stringField(eventParams, "agentId");
+    if (agentId !== undefined) this.#rememberSessionAgent(sessionId, agentId);
     if (method === "event.message_chunk") {
       const state = this.#session(sessionId);
-      const params = asJsonObject(event.params);
+      const params = eventParams;
       const appended = this.#appendConversation(
         state,
         {
@@ -220,7 +235,7 @@ export class AgenCSessionSnapshotPolicy {
     }
     if (method === "event.tool_request") {
       const state = this.#session(sessionId);
-      const params = asJsonObject(event.params);
+      const params = eventParams;
       const requestId = stringField(params, "requestId");
       if (requestId !== undefined) {
         state.toolState.inFlight[requestId] = {
@@ -234,7 +249,7 @@ export class AgenCSessionSnapshotPolicy {
       return this.#writeSnapshot(state, "tool_call");
     }
     if (method === "event.agent_status") {
-      const params = asJsonObject(event.params);
+      const params = eventParams;
       return this.recordAgentStatusTransition({
         sessionId,
         agentId: stringField(params, "agentId") ?? sessionId,
@@ -246,7 +261,7 @@ export class AgenCSessionSnapshotPolicy {
       });
     }
     if (method === "event.session_event") {
-      return this.#recordNestedSessionEvent(sessionId, asJsonObject(event.params));
+      return this.#recordNestedSessionEvent(sessionId, eventParams);
     }
     return undefined;
   }
@@ -357,6 +372,21 @@ export class AgenCSessionSnapshotPolicy {
     return created;
   }
 
+  #rememberSessionAgent(sessionId: string, agentId: string): void {
+    if (sessionId.length === 0 || agentId.length === 0) return;
+    this.#driver
+      .prepareState<[string, string]>(
+        `INSERT INTO session_agent_links (
+          session_id,
+          agent_id
+        ) VALUES (?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+          agent_id = excluded.agent_id,
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
+      )
+      .run(sessionId, agentId);
+  }
+
   #appendConversation(
     state: SessionSnapshotState,
     entry: JsonObject,
@@ -405,6 +435,11 @@ export class AgenCSessionSnapshotPolicy {
         mcpConnectionStateJson: JSON.stringify(mcpConnectionState),
       },
       { updateRunLastSnapshotAt: true, replayOnStartup: true },
+    );
+    pruneSessionStateSnapshots(
+      this.#driver,
+      { ...(this.#snapshotRetention ?? {}), now: () => snapshotAt },
+      state.sessionId,
     );
     return {
       sessionId: state.sessionId,

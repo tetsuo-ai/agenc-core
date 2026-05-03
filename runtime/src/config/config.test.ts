@@ -79,6 +79,9 @@ describe("schema: defaultConfig", () => {
     expect(cfg.agent?.retention).toEqual({
       completed_days: 30,
       failed_days: 90,
+      snapshot_days: 3,
+      snapshot_max_count: 10_000,
+      snapshot_max_bytes: 67_108_864,
     });
     expect(Object.isFrozen(cfg)).toBe(true);
   });
@@ -287,12 +290,18 @@ describe("schema: normalizeRawConfig", () => {
         retention: {
           completed_days: 7,
           failed_days: 30,
+          snapshot_days: 2,
+          snapshot_max_count: 100,
+          snapshot_max_bytes: 1_048_576,
         },
       },
     });
     expect(out.agent?.retention).toEqual({
       completed_days: 7,
       failed_days: 30,
+      snapshot_days: 2,
+      snapshot_max_count: 100,
+      snapshot_max_bytes: 1_048_576,
     });
     expect(out._unknown).toBeUndefined();
     expect(KNOWN_CONFIG_KEYS.includes("agent")).toBe(true);
@@ -1070,6 +1079,9 @@ wall_clock_seconds = 3600
 [agent.retention]
 completed_days = 3
 failed_days = 14
+snapshot_days = 2
+snapshot_max_count = 100
+snapshot_max_bytes = 1048576
       `,
     );
     const out = await loadConfig({ home: dir });
@@ -1077,6 +1089,9 @@ failed_days = 14
     expect(out.config.agent?.retention).toEqual({
       completed_days: 3,
       failed_days: 14,
+      snapshot_days: 2,
+      snapshot_max_count: 100,
+      snapshot_max_bytes: 1_048_576,
     });
     expect(out.config._unknown?.agent).toBeUndefined();
   });
