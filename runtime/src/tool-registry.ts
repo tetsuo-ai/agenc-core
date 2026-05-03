@@ -475,14 +475,19 @@ export function buildToolRegistry(
     webSearch: "WebSearch",
     webSearchNativeTool: "web_search",
   } as const;
+  const modelFacingStringArgumentFieldCandidates = {
+    [modelFacingProviderNativeSurface.webSearch]: "query",
+    NotebookRead: "notebook_path",
+  } as const;
+  const modelFacingToolNames = new Set(
+    registryModelFacingTools.map((tool) => tool.name),
+  );
   const modelFacingStringArgumentFields: Readonly<Record<string, string>> =
-    registryModelFacingTools.some(
-      (tool) => tool.name === modelFacingProviderNativeSurface.webSearch,
-    )
-      ? {
-        [modelFacingProviderNativeSurface.webSearch]: "query",
-      }
-      : {};
+    Object.fromEntries(
+      Object.entries(modelFacingStringArgumentFieldCandidates).filter(
+        ([toolName]) => modelFacingToolNames.has(toolName),
+      ),
+    );
   const baseBuiltinSurfaceGroups: readonly BuiltinToolSurfaceGroup[] = [
     {
       id: "filesystem-compatibility",
