@@ -3,7 +3,7 @@ import * as React from 'react';
 import { useEffect, useState } from 'react';
 import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutHint.js';
 import { Byline } from '../../components/design-system/Byline.js';
-import { Box, Text } from '../../ink.js';
+import { Box, Text } from '../../../../tui/ink.js';
 import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.js';
 import type { LoadedPlugin } from '../../types/plugin.js';
 import { count } from '../../utils/array.js';

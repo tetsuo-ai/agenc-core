@@ -1,5 +1,5 @@
 import { c as _c } from "react-compiler-runtime";
-import { Text } from '../ink.js';
+import { Text } from '../../../tui/ink.js';
 export function PressEnterToContinue() {
   const $ = _c(1);
   let t0;

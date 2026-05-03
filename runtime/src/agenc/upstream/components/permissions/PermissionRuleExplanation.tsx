@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import chalk from 'chalk';
 import React from 'react';
-import { Ansi, Box, Text } from '../../ink.js';
+import { Ansi, Box, Text } from '../../../../tui/ink.js';
 import { useAppState } from '../../state/AppState.js';
 import type { PermissionDecision, PermissionDecisionReason } from '../../utils/permissions/PermissionResult.js';
 import { permissionRuleValueToString } from '../../utils/permissions/permissionRuleParser.js';

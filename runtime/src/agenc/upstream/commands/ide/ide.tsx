@@ -7,7 +7,7 @@ import type { CommandResultDisplay, LocalJSXCommandContext } from '../../command
 import { Select } from '../../components/CustomSelect/index.js';
 import { Dialog } from '../../components/design-system/Dialog.js';
 import { IdeAutoConnectDialog, IdeDisableAutoConnectDialog, shouldShowAutoConnectDialog, shouldShowDisableAutoConnectDialog } from '../../components/IdeAutoConnectDialog.js';
-import { Box, Text } from '../../ink.js';
+import { Box, Text } from '../../../../tui/ink.js';
 import { clearServerCache } from '../../services/mcp/client.js';
 import type { ScopedMcpServerConfig } from '../../services/mcp/types.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';

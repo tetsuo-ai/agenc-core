@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import { relative } from 'path';
 import React from 'react';
-import { Box, Text } from '../ink.js';
+import { Box, Text } from '../../../tui/ink.js';
 import { DiagnosticTrackingService } from '../services/diagnosticTracking.js';
 import type { Attachment } from '../utils/attachments.js';
 import { getCwd } from '../utils/cwd.js';

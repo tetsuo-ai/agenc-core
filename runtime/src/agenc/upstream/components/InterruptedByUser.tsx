@@ -1,5 +1,5 @@
 import { c as _c } from "react-compiler-runtime";
-import { Text } from '../ink.js';
+import { Text } from '../../../tui/ink.js';
 export function InterruptedByUser() {
   const $ = _c(1);
   let t0;

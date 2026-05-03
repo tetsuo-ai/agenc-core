@@ -6,7 +6,7 @@ import { useRegisterOverlay } from '../../context/overlayContext.js';
 import { useNotifyAfterTimeout } from '../../hooks/useNotifyAfterTimeout.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw text input for elicitation form
-import { Box, Text, useInput } from '../../ink.js';
+import { Box, Text, useInput } from '../../../../tui/ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import type { ElicitationRequestEvent } from '../../services/mcp/elicitationHandler.js';
 import { openBrowser } from '../../utils/browser.js';

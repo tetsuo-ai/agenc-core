@@ -3,7 +3,7 @@ import { PassThrough } from 'node:stream'
 import { afterEach, expect, mock, test } from 'bun:test'
 import React from 'react'
 
-import { createRoot, Text } from '../ink.js'
+import { createRoot, Text } from '../../../tui/ink.js'
 
 const SYNC_START = '\x1B[?2026h'
 const SYNC_END = '\x1B[?2026l'

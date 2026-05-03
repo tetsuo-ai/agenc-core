@@ -17,7 +17,7 @@ import type { HookEvent } from 'src/entrypoints/agentSdkTypes.js';
 import { useAppState, useAppStateStore } from 'src/state/AppState.js';
 import type { CommandResultDisplay } from '../../commands.js';
 import { useSettingsChange } from '../../hooks/useSettingsChange.js';
-import { Box, Text } from '../../ink.js';
+import { Box, Text } from '../../../../tui/ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import { getHookEventMetadata, getHooksForMatcher, getMatcherMetadata, getSortedMatchersForEvent, groupHooksByEventAndMatcher } from '../../utils/hooks/hooksConfigManager.js';
 import type { IndividualHookConfig } from '../../utils/hooks/hooksSettings.js';

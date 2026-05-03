@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { useEffect, useState } from 'react';
-import { Box, Text } from '../../ink.js';
+import { Box, Text } from '../../../../tui/ink.js';
 import { getDynamicConfig_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js';
 import { logEvent } from '../../services/analytics/index.js';
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js';

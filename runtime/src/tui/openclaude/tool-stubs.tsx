@@ -1,6 +1,6 @@
 import React from "react";
 
-import { Box, Text } from "../../agenc/upstream/ink.js";
+import { Box, Text } from "../ink.js";
 import { AskUserQuestionTool as UpstreamAskUserQuestionTool } from "../../agenc/upstream/tools/AskUserQuestionTool/AskUserQuestionTool.js";
 import {
   pickToolResultDispatch,

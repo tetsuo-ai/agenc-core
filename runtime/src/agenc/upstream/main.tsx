@@ -31,7 +31,7 @@ import { getRemoteSessionUrl } from './constants/product.js';
 import { getSystemContext, getUserContext } from './context.js';
 import { init, initializeTelemetryAfterTrust } from './entrypoints/init.js';
 import { addToHistory } from './history.js';
-import type { Root } from './ink.js';
+import type { Root } from '../../tui/ink.js';
 import { launchRepl } from './replLauncher.js';
 import { hasGrowthBookEnvOverride, initializeGrowthBook, refreshGrowthBookAfterAuthChange } from './services/analytics/growthbook.js';
 import { fetchBootstrapData } from './services/api/bootstrap.js';
@@ -89,7 +89,7 @@ import { getOriginalCwd, setAdditionalDirectoriesForAgenCMd, setIsRemoteMode, se
 import { filterCommandsForRemoteMode, getCommands } from './commands.js';
 import type { StatsStore } from './context/stats.js';
 import { launchAssistantInstallWizard, launchAssistantSessionChooser, launchInvalidSettingsDialog, launchResumeChooser, launchSnapshotUpdateDialog, launchTeleportRepoMismatchDialog, launchTeleportResumeWrapper } from './dialogLaunchers.js';
-import { SHOW_CURSOR } from './ink/termio/dec.js';
+import { SHOW_CURSOR } from '../../tui/ink/termio/dec.js';
 import { exitWithError, exitWithMessage, getRenderContext, renderAndRun, showSetupScreens } from './interactiveHelpers.js';
 import { initBuiltinPlugins } from './plugins/bundled/index.js';
 /* eslint-enable @typescript-eslint/no-require-imports */
@@ -2219,7 +2219,7 @@ async function run(): Promise<CommanderCommand> {
       }
       const {
         createRoot
-      } = await import('./ink.js');
+      } = await import('../../tui/ink.js');
       root = await createRoot(ctx.renderOptions);
 
       // Log startup time now, before any blocking dialog renders. Logging
@@ -4254,7 +4254,7 @@ async function run(): Promise<CommanderCommand> {
       setupTokenHandler
     }, {
       createRoot
-    }] = await Promise.all([import('./cli/handlers/util.js'), import('./ink.js')]);
+    }] = await Promise.all([import('./cli/handlers/util.js'), import('../../tui/ink.js')]);
     const root = await createRoot(getBaseRenderOptions(false));
     await setupTokenHandler(root);
   });
@@ -4333,7 +4333,7 @@ async function run(): Promise<CommanderCommand> {
       doctorHandler
     }, {
       createRoot
-    }] = await Promise.all([import('./cli/handlers/util.js'), import('./ink.js')]);
+    }] = await Promise.all([import('./cli/handlers/util.js'), import('../../tui/ink.js')]);
     const root = await createRoot(getBaseRenderOptions(false));
     await doctorHandler(root);
   });

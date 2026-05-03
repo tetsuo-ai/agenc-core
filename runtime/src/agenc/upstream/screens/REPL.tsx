@@ -9,16 +9,16 @@ import { dirname, join } from 'path';
 import { tmpdir } from 'os';
 import figures from 'figures';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- / n N Esc [ v are bare letters in transcript modal context, same class as g/G/j/k in ScrollKeybindingHandler
-import { useInput } from '../ink.js';
+import { useInput } from '../../../tui/ink.js';
 import { useSearchInput } from '../hooks/useSearchInput.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
-import { useSearchHighlight } from '../ink/hooks/use-search-highlight.js';
+import { useSearchHighlight } from '../../../tui/ink/hooks/use-search-highlight.js';
 import type { JumpHandle } from '../components/VirtualMessageList.js';
 import { renderMessagesToPlainText } from '../utils/exportRenderer.js';
 import { openFileInExternalEditor } from '../utils/editor.js';
 import { writeFile } from 'fs/promises';
-import { Box, Text, useStdin, useTheme, useTerminalFocus, useTerminalTitle, useTabStatus } from '../ink.js';
-import type { TabStatusKind } from '../ink/hooks/use-tab-status.js';
+import { Box, Text, useStdin, useTheme, useTerminalFocus, useTerminalTitle, useTabStatus } from '../../../tui/ink.js';
+import type { TabStatusKind } from '../../../tui/ink/hooks/use-tab-status.js';
 import { CostThresholdDialog } from '../components/CostThresholdDialog.js';
 import { IdleReturnDialog } from '../components/IdleReturnDialog.js';
 import * as React from 'react';
@@ -26,8 +26,8 @@ import { useEffect, useMemo, useRef, useState, useCallback, useDeferredValue, us
 import { useNotifications } from '../context/notifications.js';
 import { sendNotification } from '../services/notifier.js';
 import { startPreventSleep, stopPreventSleep } from '../services/preventSleep.js';
-import { useTerminalNotification } from '../ink/useTerminalNotification.js';
-import { hasCursorUpViewportYankBug } from '../ink/terminal.js';
+import { useTerminalNotification } from '../../../tui/ink/useTerminalNotification.js';
+import { hasCursorUpViewportYankBug } from '../../../tui/ink/terminal.js';
 import { createFileStateCacheWithSizeLimit, mergeFileStateCaches, READ_FILE_STATE_CACHE_SIZE } from '../utils/fileStateCache.js';
 import { updateLastInteractionTime, getLastInteractionTime, getOriginalCwd, getProjectRoot, getSessionId, switchSession, setCostStateForRestore, getTurnHookDurationMs, getTurnHookCount, resetTurnHookDuration, getTurnToolDurationMs, getTurnToolCount, resetTurnToolDuration, getTurnClassifierDurationMs, getTurnClassifierCount, resetTurnClassifierDuration } from '../bootstrap/state.js';
 import { asSessionId, asAgentId } from '../types/ids.js';
@@ -289,11 +289,11 @@ import { REMOTE_SAFE_COMMANDS } from '../commands.js';
 import type { RemoteMessageContent } from '../utils/teleport/api.js';
 import { FullscreenLayout, useUnseenDivider, computeUnseenDivider } from '../components/FullscreenLayout.js';
 import { isFullscreenEnvEnabled, maybeGetTmuxMouseHint, isMouseTrackingEnabled } from '../utils/fullscreen.js';
-import { AlternateScreen } from '../ink/components/AlternateScreen.js';
+import { AlternateScreen } from '../../../tui/ink/components/AlternateScreen.js';
 import { ScrollKeybindingHandler } from '../components/ScrollKeybindingHandler.js';
 import { useMessageActions, MessageActionsKeybindings, MessageActionsBar, type MessageActionsState, type MessageActionsNav, type MessageActionCaps } from '../components/messageActions.js';
-import { setClipboard } from '../ink/termio/osc.js';
-import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js';
+import { setClipboard } from '../../../tui/ink/termio/osc.js';
+import type { ScrollBoxHandle } from '../../../tui/ink/components/ScrollBox.js';
 import { createAttachmentMessage, getQueuedCommandAttachments } from '../utils/attachments.js';
 
 // Stable empty array for hooks that accept MCPServerConnection[] — avoids

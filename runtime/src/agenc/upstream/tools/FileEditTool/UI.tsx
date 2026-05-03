@@ -9,7 +9,7 @@ import { extractTag } from 'src/utils/messages.js';
 import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErrorMessage.js';
 import { FileEditToolUpdatedMessage } from '../../components/FileEditToolUpdatedMessage.js';
 import { FilePathLink } from '../../components/FilePathLink.js';
-import { Text } from '../../ink.js';
+import { Text } from '../../../../tui/ink.js';
 import type { Tools } from '../../Tool.js';
 import type { Message, ProgressMessage } from '../../types/message.js';
 import { adjustHunkLineNumbers, CONTEXT_LINES } from '../../utils/diff.js';

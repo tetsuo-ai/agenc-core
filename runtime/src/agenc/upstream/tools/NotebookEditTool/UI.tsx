@@ -9,7 +9,7 @@ import { FilePathLink } from '../../components/FilePathLink.js';
 import { HighlightedCode } from '../../components/HighlightedCode.js';
 import { MessageResponse } from '../../components/MessageResponse.js';
 import { NotebookEditToolUseRejectedMessage } from '../../components/NotebookEditToolUseRejectedMessage.js';
-import { Box, Text } from '../../ink.js';
+import { Box, Text } from '../../../../tui/ink.js';
 import type { Tools } from '../../Tool.js';
 import { getDisplayPath } from '../../utils/file.js';
 import type { inputSchema, Output } from './NotebookEditTool.js';

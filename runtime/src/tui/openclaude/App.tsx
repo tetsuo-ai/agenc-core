@@ -15,7 +15,7 @@ import {
   useApp,
   useTerminalFocus,
   useTerminalTitle,
-} from "../../agenc/upstream/ink.js";
+} from "../ink.js";
 import type { LLMMessage } from "../../llm/types.js";
 import type { ToolPermissionContext } from "../../permissions/types.js";
 import { createBridgeTools } from "./tool-stubs.js";

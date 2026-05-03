@@ -1,11 +1,11 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { type PropsWithChildren } from 'react';
-import Box from '../../ink/components/Box.js';
-import type { DOMElement } from '../../ink/dom.js';
-import type { ClickEvent } from '../../ink/events/click-event.js';
-import type { FocusEvent } from '../../ink/events/focus-event.js';
-import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
-import type { Color, Styles } from '../../ink/styles.js';
+import Box from '../../../../tui/ink/components/Box.js';
+import type { DOMElement } from '../../../../tui/ink/dom.js';
+import type { ClickEvent } from '../../../../tui/ink/events/click-event.js';
+import type { FocusEvent } from '../../../../tui/ink/events/focus-event.js';
+import type { KeyboardEvent } from '../../../../tui/ink/events/keyboard-event.js';
+import type { Color, Styles } from '../../../../tui/ink/styles.js';
 import { getTheme, type Theme } from '../../utils/theme.js';
 import { useTheme } from './ThemeProvider.js';
 

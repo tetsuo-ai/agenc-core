@@ -7,11 +7,11 @@ import React, { Suspense, use, useCallback, useEffect, useMemo, useState } from 
 import stripAnsi from 'strip-ansi';
 import type { CommandResultDisplay } from '../commands.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
-import { applyColor } from '../ink/colorize.js';
-import { stringWidth as getStringWidth } from '../ink/stringWidth.js';
-import type { Color } from '../ink/styles.js';
+import { applyColor } from '../../../tui/ink/colorize.js';
+import { stringWidth as getStringWidth } from '../../../tui/ink/stringWidth.js';
+import type { Color } from '../../../tui/ink/styles.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw j/k/arrow stats navigation
-import { Ansi, Box, Text, useInput } from '../ink.js';
+import { Ansi, Box, Text, useInput } from '../../../tui/ink.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
 import { getGlobalConfig } from '../utils/config.js';
 import { formatDuration, formatNumber } from '../utils/format.js';

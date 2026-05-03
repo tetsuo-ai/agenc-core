@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
-import Text from '../../ink/components/Text.js';
+import Text from '../../../../tui/ink/components/Text.js';
 type Props = {
   /** The key or chord to display (e.g., "ctrl+o", "Enter", "↑/↓") */
   shortcut: string;

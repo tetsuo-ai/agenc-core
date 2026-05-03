@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { useState } from 'react';
-import { Box, Text } from 'src/ink.js';
+import { Box, Text } from '../../../../tui/ink.js';
 import { formatAPIError } from 'src/services/api/errorUtils.js';
 import type { SystemAPIErrorMessage } from 'src/types/message.js';
 import { useInterval } from 'usehooks-ts';

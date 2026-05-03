@@ -1,7 +1,7 @@
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { useMemo } from 'react';
-import { Box, Text } from 'src/ink.js';
+import { Box, Text } from '../../../../tui/ink.js';
 import { useAppState } from 'src/state/AppState.js';
 import type { AppState } from 'src/state/AppState.js';
 import { STATUS_TAG, SUMMARY_TAG, TASK_NOTIFICATION_TAG } from '../../constants/xml.js';

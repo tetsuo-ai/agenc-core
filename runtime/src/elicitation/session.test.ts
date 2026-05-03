@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("../agenc/upstream/ink.js", () => ({
+vi.mock("../tui/ink.js", () => ({
   Box: () => null,
   Text: () => null,
 }));

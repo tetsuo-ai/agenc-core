@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
-import { Box } from '../../ink.js';
+import { Box } from '../../../../tui/ink.js';
 import type { Theme } from '../../utils/theme.js';
 import { PermissionRequestTitle } from './PermissionRequestTitle.js';
 import type { WorkerBadgeProps } from './WorkerBadge.js';

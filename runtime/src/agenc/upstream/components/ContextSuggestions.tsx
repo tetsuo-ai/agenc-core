@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
-import { Box, Text } from '../ink.js';
+import { Box, Text } from '../../../tui/ink.js';
 import type { ContextSuggestion } from '../utils/contextSuggestions.js';
 import { formatTokens } from '../utils/format.js';
 import { StatusIcon } from './design-system/StatusIcon.js';

@@ -5,7 +5,7 @@ import { feature } from 'bun:bundle';
 /* eslint-disable @typescript-eslint/no-require-imports */
 const coordinatorModule = feature('COORDINATOR_MODE') ? require('../../coordinator/coordinatorMode.js') as typeof import('../../coordinator/coordinatorMode.js') : undefined;
 /* eslint-enable @typescript-eslint/no-require-imports */
-import { Box, Text, Link } from '../../ink.js';
+import { Box, Text, Link } from '../../../../tui/ink.js';
 import * as React from 'react';
 import figures from 'figures';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
@@ -36,8 +36,8 @@ import { VoiceWarmupHint } from './VoiceIndicator.js';
 import { useVoiceEnabled } from '../../hooks/useVoiceEnabled.js';
 import { useVoiceState } from '../../context/voice.js';
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
-import { isXtermJs } from '../../ink/terminal.js';
-import { useHasSelection, useSelection } from '../../ink/hooks/use-selection.js';
+import { isXtermJs } from '../../../../tui/ink/terminal.js';
+import { useHasSelection, useSelection } from '../../../../tui/ink/hooks/use-selection.js';
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js';
 import { getPlatform } from '../../utils/platform.js';
 import { PrBadge } from '../PrBadge.js';

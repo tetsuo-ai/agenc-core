@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import partition from 'lodash-es/partition.js';
 import React, { useCallback } from 'react';
 import { logEvent } from 'src/services/analytics/index.js';
-import { Box, Text } from '../ink.js';
+import { Box, Text } from '../../../tui/ink.js';
 import { getSettings_DEPRECATED, updateSettingsForSource } from '../utils/settings/settings.js';
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js';
 import { SelectMulti } from './CustomSelect/SelectMulti.js';

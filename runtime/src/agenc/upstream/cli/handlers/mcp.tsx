@@ -8,7 +8,7 @@ import pMap from 'p-map';
 import { cwd } from 'process';
 import React from 'react';
 import { MCPServerDesktopImportDialog } from '../../components/MCPServerDesktopImportDialog.js';
-import { render } from '../../ink.js';
+import { render } from '../../../../tui/ink.js';
 import { KeybindingSetup } from '../../keybindings/KeybindingProviderSetup.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import {

@@ -1,8 +1,8 @@
 import { c as _c } from "react-compiler-runtime";
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { feature } from 'bun:bundle';
-import { Box, Text, useTheme, useThemeSetting, useTerminalFocus } from '../../ink.js';
-import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
+import { Box, Text, useTheme, useThemeSetting, useTerminalFocus } from '../../../../tui/ink.js';
+import type { KeyboardEvent } from '../../../../tui/ink/events/keyboard-event.js';
 import * as React from 'react';
 import { useState, useCallback } from 'react';
 import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.js';

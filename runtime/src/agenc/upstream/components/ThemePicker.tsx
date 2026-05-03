@@ -3,7 +3,7 @@ import type { StructuredPatchHunk } from 'diff';
 import * as React from 'react';
 import { useExitOnCtrlCDWithKeybindings } from '../hooks/useExitOnCtrlCDWithKeybindings.js'
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
-import { Box, Text, usePreviewTheme, useTheme, useThemeSetting } from '../ink.js';
+import { Box, Text, usePreviewTheme, useTheme, useThemeSetting } from '../../../tui/ink.js';
 import { useRegisterKeybindingContext } from '../keybindings/KeybindingContext.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';

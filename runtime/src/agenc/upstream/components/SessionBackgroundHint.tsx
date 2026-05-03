@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { useCallback, useState } from 'react';
 import { useDoublePress } from '../hooks/useDoublePress.js';
-import { Box, Text } from '../ink.js';
+import { Box, Text } from '../../../tui/ink.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
 import { useAppState, useAppStateStore, useSetAppState } from '../state/AppState.js';

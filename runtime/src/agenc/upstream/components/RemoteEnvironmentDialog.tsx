@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import figures from 'figures';
 import * as React from 'react';
 import { useEffect, useState } from 'react';
-import { Text } from '../ink.js';
+import { Text } from '../../../tui/ink.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
 import { toError } from '../utils/errors.js';
 import { logError } from '../utils/log.js';

@@ -6,7 +6,7 @@ import { Byline } from '../../components/design-system/Byline.js';
 import { KeyboardShortcutHint } from '../../components/design-system/KeyboardShortcutHint.js';
 import { Spinner } from '../../components/Spinner.js';
 import TextInput from '../../components/TextInput.js';
-import { Box, Text } from '../../ink.js';
+import { Box, Text } from '../../../../tui/ink.js';
 import { toError } from '../../utils/errors.js';
 import { logError } from '../../utils/log.js';
 import { clearAllCaches } from '../../utils/plugins/cacheUtils.js';

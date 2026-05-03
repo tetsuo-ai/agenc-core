@@ -8,8 +8,8 @@ import type { Command } from './commands.js';
 import { createStatsStore, type StatsStore } from './context/stats.js';
 import { getSystemContext } from './context.js';
 import { initializeTelemetryAfterTrust } from './entrypoints/init.js';
-import { isSynchronizedOutputSupported } from './ink/terminal.js';
-import type { RenderOptions, Root, TextProps } from './ink.js';
+import { isSynchronizedOutputSupported } from '../../tui/ink/terminal.js';
+import type { RenderOptions, Root, TextProps } from '../../tui/ink.js';
 import { KeybindingSetup } from './keybindings/KeybindingProviderSetup.js';
 import { startDeferredPrefetches } from './main.js';
 import { checkGate_CACHED_OR_BLOCKING, initializeGrowthBook, resetGrowthBook } from './services/analytics/growthbook.js';
@@ -70,7 +70,7 @@ export async function exitWithMessage(root: Root, message: string, options?: {
 }): Promise<never> {
   const {
     Text
-  } = await import('./ink.js');
+  } = await import('../../tui/ink.js');
   const color = options?.color;
   const exitCode = options?.exitCode ?? 1;
   root.render(color ? <Text color={color}>{message}</Text> : <Text>{message}</Text>);

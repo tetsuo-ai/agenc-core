@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
-import { Box, Text, type TextProps } from '../../ink.js';
+import { Box, Text, type TextProps } from '../../../../tui/ink.js';
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { useState } from 'react';
@@ -20,7 +20,7 @@ import type { SystemMessage, SystemStopHookSummaryMessage, SystemBridgeStatusMes
 import { SystemAPIErrorMessage } from './SystemAPIErrorMessage.js';
 import { formatDuration, formatNumber, formatSecondsShort } from '../../utils/format.js';
 import { getGlobalConfig } from '../../utils/config.js';
-import Link from '../../ink/components/Link.js';
+import Link from '../../../../tui/ink/components/Link.js';
 import ThemedText from '../design-system/ThemedText.js';
 import { CtrlOToExpand } from '../CtrlOToExpand.js';
 import { useAppStateStore } from '../../state/AppState.js';

@@ -1,4 +1,4 @@
-import type { Key } from '../ink.js'
+import type { Key } from '../../../tui/ink.js'
 import { getKeyName, matchesBinding } from './match.js'
 import { chordToString } from './parser.js'
 import type {

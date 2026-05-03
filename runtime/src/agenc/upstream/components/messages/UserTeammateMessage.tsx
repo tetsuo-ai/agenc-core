@@ -3,7 +3,7 @@ import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import figures from 'figures';
 import * as React from 'react';
 import { TEAMMATE_MESSAGE_TAG } from '../../constants/xml.js';
-import { Ansi, Box, Text, type TextProps } from '../../ink.js';
+import { Ansi, Box, Text, type TextProps } from '../../../../tui/ink.js';
 import { toInkColor } from '../../utils/ink.js';
 import { jsonParse } from '../../utils/slowOperations.js';
 import { isShutdownApproved } from '../../utils/teammateMailbox.js';

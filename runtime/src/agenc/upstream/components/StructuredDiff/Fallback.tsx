@@ -3,8 +3,8 @@ import { diffWordsWithSpace, type StructuredPatchHunk } from 'diff';
 import * as React from 'react';
 import { useMemo } from 'react';
 import type { ThemeName } from 'src/utils/theme.js';
-import { stringWidth } from '../../ink/stringWidth.js';
-import { Box, NoSelect, Text, useTheme, wrapText } from '../../ink.js';
+import { stringWidth } from '../../../../tui/ink/stringWidth.js';
+import { Box, NoSelect, Text, useTheme, wrapText } from '../../../../tui/ink.js';
 
 /*
  * StructuredDiffFallback Component: Word-Level Diff Highlighting Example

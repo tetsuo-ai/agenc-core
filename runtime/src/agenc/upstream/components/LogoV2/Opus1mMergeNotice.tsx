@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import { useEffect, useState } from 'react';
 import { UP_ARROW } from '../../constants/figures.js';
-import { Box, Text } from '../../ink.js';
+import { Box, Text } from '../../../../tui/ink.js';
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js';
 import { isOpus1mMergeEnabled } from '../../utils/model/model.js';
 import { AnimatedAsterisk } from './AnimatedAsterisk.js';

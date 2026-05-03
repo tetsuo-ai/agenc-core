@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { BLACK_CIRCLE } from '../constants/figures.js';
 import { useBlink } from '../hooks/useBlink.js';
-import { Box, Text } from '../ink.js';
+import { Box, Text } from '../../../tui/ink.js';
 type Props = {
   isError: boolean;
   isUnresolved: boolean;

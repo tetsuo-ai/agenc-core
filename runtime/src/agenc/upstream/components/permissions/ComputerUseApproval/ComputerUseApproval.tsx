@@ -5,7 +5,7 @@ import { DEFAULT_GRANT_FLAGS } from '@ant/computer-use-mcp/types';
 import figures from 'figures';
 import * as React from 'react';
 import { useMemo, useState } from 'react';
-import { Box, Text } from '../../../ink.js';
+import { Box, Text } from '../../../../../tui/ink.js';
 import { execFileNoThrow } from '../../../utils/execFileNoThrow.js';
 import { plural } from '../../../utils/stringUtils.js';
 import type { OptionWithDescription } from '../../CustomSelect/select.js';

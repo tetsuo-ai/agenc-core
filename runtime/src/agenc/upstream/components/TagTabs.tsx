@@ -1,6 +1,6 @@
 import React from 'react';
-import { stringWidth } from '../ink/stringWidth.js';
-import { Box, Text } from '../ink.js';
+import { stringWidth } from '../../../tui/ink/stringWidth.js';
+import { Box, Text } from '../../../tui/ink.js';
 import { truncateToWidth } from '../utils/format.js';
 
 // Constants for width calculations - derived from actual rendered strings

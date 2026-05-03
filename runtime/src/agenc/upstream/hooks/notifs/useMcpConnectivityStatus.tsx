@@ -4,7 +4,7 @@ import { logError } from '../../utils/log.js';
 import { useEffect } from 'react';
 import { useNotifications } from 'src/context/notifications.js';
 import { getIsRemoteMode } from '../../bootstrap/state.js';
-import { Text } from '../../ink.js';
+import { Text } from '../../../../tui/ink.js';
 import { hasAgenCAiMcpEverConnected } from '../../services/mcp/claudeai.js';
 import type { MCPServerConnection } from '../../services/mcp/types.js';
 type Props = {

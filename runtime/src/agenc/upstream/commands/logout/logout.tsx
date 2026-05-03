@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { clearTrustedDeviceTokenCache } from '../../bridge/trustedDevice.js';
-import { Text } from '../../ink.js';
+import { Text } from '../../../../tui/ink.js';
 import { refreshGrowthBookAfterAuthChange } from '../../services/analytics/growthbook.js';
 import { getGroveNoticeConfig, getGroveSettings } from '../../services/api/grove.js';
 import { clearPolicyLimitsCache } from '../../services/policyLimits/index.js';

@@ -15,7 +15,7 @@ import { SandboxDoctorSection } from '../components/sandbox/SandboxDoctorSection
 import { ValidationErrorsList } from '../components/ValidationErrorsList.js';
 import { useSettingsErrors } from '../hooks/notifs/useSettingsErrors.js';
 import { useExitOnCtrlCDWithKeybindings } from '../hooks/useExitOnCtrlCDWithKeybindings.js';
-import { Box, Text } from '../ink.js';
+import { Box, Text } from '../../../tui/ink.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
 import { useAppState } from '../state/AppState.js';
 import { getPluginErrorMessage } from '../types/plugin.js';

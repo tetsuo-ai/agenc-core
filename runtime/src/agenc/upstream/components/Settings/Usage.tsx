@@ -5,7 +5,7 @@ import { extraUsage as extraUsageCommand } from 'src/commands/extra-usage/index.
 import { formatCost } from 'src/cost-tracker.js';
 import { getSubscriptionType } from 'src/utils/auth.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
-import { Box, Text } from '../../ink.js';
+import { Box, Text } from '../../../../tui/ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import { type ExtraUsage, fetchUtilization, type RateLimit, type Utilization } from '../../services/api/usage.js';
 import { formatResetText } from '../../utils/format.js';

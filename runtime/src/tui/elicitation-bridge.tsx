@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { Box, Text } from "../agenc/upstream/ink.js";
+import { Box, Text } from "./ink.js";
 import type {
   McpElicitationRequestEvent,
   McpElicitationResponse,

@@ -15,7 +15,7 @@ import { Dialog } from '../../components/design-system/Dialog.js'
 import { LoadingState } from '../../components/design-system/LoadingState.js'
 import { useCodexOAuthFlow } from '../../components/useCodexOAuthFlow.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
-import { Box, Text } from '../../ink.js'
+import { Box, Text } from '../../../../tui/ink.js'
 import {
   type CodexOAuthTokens,
 } from '../../services/api/codexOAuth.js'

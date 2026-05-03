@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import { extname } from 'path';
 import React, { Suspense, use, useMemo } from 'react';
-import { Ansi, Text } from '../../ink.js';
+import { Ansi, Text } from '../../../../tui/ink.js';
 import { getCliHighlightPromise } from '../../utils/cliHighlight.js';
 import { logForDebugging } from 'src/utils/debug.js';
 import { convertLeadingTabsToSpaces } from '../../utils/file.js';

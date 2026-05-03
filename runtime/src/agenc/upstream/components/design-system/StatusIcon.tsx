@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import React from 'react';
-import { Text } from '../../ink.js';
+import { Text } from '../../../../tui/ink.js';
 type Status = 'success' | 'error' | 'warning' | 'info' | 'pending' | 'loading';
 type Props = {
   /**

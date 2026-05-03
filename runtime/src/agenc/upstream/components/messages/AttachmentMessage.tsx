@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import React, { useMemo } from 'react';
-import { Ansi, Box, Text } from '../../ink.js';
+import { Ansi, Box, Text } from '../../../../tui/ink.js';
 import type { Attachment } from 'src/utils/attachments.js';
 import type { NullRenderingAttachmentType } from './nullRenderingAttachments.js';
 import { useAppState } from '../../state/AppState.js';

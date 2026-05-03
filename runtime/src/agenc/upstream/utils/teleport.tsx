@@ -10,7 +10,7 @@ import { z } from 'zod/v4';
 import { getTeleportErrors, TeleportError, type TeleportLocalErrorType } from '../components/TeleportError.js';
 import { getOauthConfig } from '../constants/oauth.js';
 import type { SDKMessage } from '../entrypoints/agentSdkTypes.js';
-import type { Root } from '../ink.js';
+import type { Root } from '../../../tui/ink.js';
 import { KeybindingSetup } from '../keybindings/KeybindingProviderSetup.js';
 import { queryHaiku } from '../services/api/claude.js';
 import { getSessionLogsViaOAuth, getTeleportEvents } from '../services/api/sessionIngress.js';

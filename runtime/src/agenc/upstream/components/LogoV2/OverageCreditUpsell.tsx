@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { useState } from 'react';
-import { Text } from '../../ink.js';
+import { Text } from '../../../../tui/ink.js';
 import { logEvent } from '../../services/analytics/index.js';
 import { formatGrantAmount, getCachedOverageCreditGrant, refreshOverageCreditGrantCache } from '../../services/api/overageCreditGrant.js';
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js';

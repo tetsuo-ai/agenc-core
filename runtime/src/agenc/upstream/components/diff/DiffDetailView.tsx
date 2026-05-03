@@ -3,7 +3,7 @@ import type { StructuredPatchHunk } from 'diff';
 import { resolve } from 'path';
 import React, { useMemo } from 'react';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
-import { Box, Text } from '../../ink.js';
+import { Box, Text } from '../../../../tui/ink.js';
 import { getCwd } from '../../utils/cwd.js';
 import { readFileSafe } from '../../utils/file.js';
 import { Divider } from '../design-system/Divider.js';

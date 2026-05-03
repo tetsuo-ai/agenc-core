@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import React, { useState } from 'react';
-import { Box, Text, useInput } from '../../../ink.js';
+import { Box, Text, useInput } from '../../../../../tui/ink.js';
 import { useAppState } from '../../../state/AppState.js';
 import type { Question, QuestionOption } from '../../../tools/AskUserQuestionTool/AskUserQuestionTool.js';
 import type { PastedContent } from '../../../utils/config.js';

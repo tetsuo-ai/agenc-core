@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Text } from '../ink.js';
+import { Text } from '../../../tui/ink.js';
 import { isAgenCAISubscriber } from '../utils/auth.js';
 import { isChromeExtensionInstalled, shouldEnableAgenCInChrome } from '../utils/claudeInChrome/setup.js';
 import { isRunningOnHomespace } from '../utils/envUtils.js';

@@ -3,9 +3,9 @@ import { useCallback, useEffect, useState } from 'react';
 import type { CommandResultDisplay } from '../../commands.js';
 import { TEARDROP_ASTERISK } from '../../constants/figures.js';
 import { useExitOnCtrlCDWithKeybindings } from '../../hooks/useExitOnCtrlCDWithKeybindings.js';
-import { setClipboard } from '../../ink/termio/osc.js';
+import { setClipboard } from '../../../../tui/ink/termio/osc.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- enter to copy link
-import { Box, Link, Text, useInput } from '../../ink.js';
+import { Box, Link, Text, useInput } from '../../../../tui/ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import { logEvent } from '../../services/analytics/index.js';
 import { fetchReferralRedemptions, formatCreditAmount, getCachedOrFetchPassesEligibility } from '../../services/api/referral.js';

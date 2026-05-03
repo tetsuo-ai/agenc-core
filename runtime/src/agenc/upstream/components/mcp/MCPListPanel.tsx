@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import React, { useCallback, useState } from 'react';
 import type { CommandResultDisplay } from '../../commands.js';
-import { Box, color, Link, Text, useTheme } from '../../ink.js';
+import { Box, color, Link, Text, useTheme } from '../../../../tui/ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import type { ConfigScope } from '../../services/mcp/types.js';
 import { describeMcpConfigFilePath } from '../../services/mcp/utils.js';

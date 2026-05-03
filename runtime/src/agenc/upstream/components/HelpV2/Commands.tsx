@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { useMemo } from 'react';
 import { type Command, formatDescriptionWithSource } from '../../commands.js';
-import { Box, Text } from '../../ink.js';
+import { Box, Text } from '../../../../tui/ink.js';
 import { truncate } from '../../utils/format.js';
 import { Select } from '../CustomSelect/select.js';
 import { useTabHeaderFocus } from '../design-system/Tabs.js';

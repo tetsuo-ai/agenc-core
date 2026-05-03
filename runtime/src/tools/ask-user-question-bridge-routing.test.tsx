@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 
-vi.mock("../agenc/upstream/ink.js", () => {
+vi.mock("../tui/ink.js", () => {
   function Box(_props: { readonly children?: unknown }) {
     return null;
   }

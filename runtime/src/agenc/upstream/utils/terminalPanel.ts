@@ -17,7 +17,7 @@
 
 import { spawn, spawnSync } from 'child_process'
 import { getSessionId } from '../bootstrap/state.js'
-import instances from '../ink/instances.js'
+import instances from '../../../tui/ink/instances.js'
 import { registerCleanup } from './cleanupRegistry.js'
 import { pwd } from './cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'

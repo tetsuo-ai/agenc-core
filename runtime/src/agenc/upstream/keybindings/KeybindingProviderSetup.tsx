@@ -9,11 +9,11 @@ import { c as _c } from "react-compiler-runtime";
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNotifications } from '../context/notifications.js';
-import type { InputEvent } from '../ink/events/input-event.js';
+import type { InputEvent } from '../../../tui/ink/events/input-event.js';
 // ChordInterceptor intentionally uses useInput to intercept all keystrokes before
 // other handlers process them - this is required for chord sequence support
 // eslint-disable-next-line custom-rules/prefer-use-keybindings
-import { type Key, useInput } from '../ink.js';
+import { type Key, useInput } from '../../../tui/ink.js';
 import { count } from '../utils/array.js';
 import { logForDebugging } from 'src/utils/debug.js';
 import { plural } from '../utils/stringUtils.js';

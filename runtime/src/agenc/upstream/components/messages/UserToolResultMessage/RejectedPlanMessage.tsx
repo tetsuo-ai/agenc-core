@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { Markdown } from 'src/components/Markdown.js';
 import { MessageResponse } from 'src/components/MessageResponse.js';
-import { Box, Text } from '../../../ink.js';
+import { Box, Text } from '../../../../../tui/ink.js';
 type Props = {
   plan: string;
 };
