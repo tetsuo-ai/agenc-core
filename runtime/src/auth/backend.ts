@@ -67,6 +67,12 @@ export interface AuthInferredAgencModel extends AuthJsonObject {
   readonly model: string;
   readonly subscriptionTier?: AuthSubscriptionTier;
   readonly reason?: string;
+  // Optional URL the daemon should use for AgenC-native model inference
+  // when present. Lets the backend route per-tier or per-region (e.g.
+  // free-tier users → us.agenc.tech) without daemon-side configuration
+  // changes. Daemon implementations may ignore this field; if absent or
+  // unhandled, the daemon falls back to its existing default URL.
+  readonly endpointUrl?: string;
 }
 
 export interface AuthBackend {
