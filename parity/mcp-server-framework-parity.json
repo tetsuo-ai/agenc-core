@@ -14,13 +14,15 @@
     "runtime/src/mcp-server/framework.ts",
     "runtime/src/mcp-server/tools.ts",
     "runtime/src/mcp-server/stdio.ts",
+    "runtime/src/mcp-server/http-sse.ts",
     "runtime/src/mcp-server/index.ts",
     "runtime/src/mcp-server/PARITY.md"
   ],
   "testFiles": [
     "runtime/src/mcp-server/framework.test.ts",
     "runtime/src/mcp-server/tools.test.ts",
-    "runtime/src/mcp-server/stdio.test.ts"
+    "runtime/src/mcp-server/stdio.test.ts",
+    "runtime/src/mcp-server/http-sse.test.ts"
   ],
   "rows": [
     {
@@ -99,6 +101,33 @@
       ],
       "tests": [
         "runtime/src/mcp-server/stdio.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "http-sse-transport",
+      "source": "mcp-server/src/lib.rs",
+      "target": "runtime/src/mcp-server/http-sse.ts",
+      "requiredBehaviors": [
+        "HTTP POST dispatches JSON-RPC bodies through the MCP server framework",
+        "HTTP sessions preserve initialize state across requests via the MCP session header",
+        "Streamable HTTP validates Origin, Accept, Content-Type, and protocol-version headers",
+        "request-bound POST SSE can carry server requests plus the final JSON-RPC response",
+        "multiple simultaneous SSE streams for one session remain independently addressable",
+        "legacy SSE exposes an event stream plus a POST message endpoint",
+        "GET SSE streams carry server requests and notifications without ordinary JSON-RPC responses"
+      ],
+      "edgeCases": [
+        "invalid JSON bodies return framework parse-error payloads instead of crashing the transport",
+        "streamable HTTP sessions are created only by initialize requests",
+        "invalid initialize requests and malformed JSON-RPC shapes do not persist session state",
+        "notifications with no framework response return HTTP 202",
+        "missing or unknown SSE session ids return client errors",
+        "streamable SSE disconnects preserve initialized session state until DELETE",
+        "server-originated requests can be sent over an open SSE stream and resolved by later client responses"
+      ],
+      "tests": [
+        "runtime/src/mcp-server/http-sse.test.ts"
       ],
       "status": "required"
     },

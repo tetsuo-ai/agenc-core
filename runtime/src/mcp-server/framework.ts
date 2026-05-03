@@ -5,7 +5,7 @@
  * The donor server wires this processor directly to stdio. AgenC keeps
  * MS-01 pure: transports feed parsed JSON-RPC messages into this class,
  * MS-02 attaches provider-backed tool registration, MS-03 owns stdio, and
- * later MS-* items own HTTP/SSE and permission integration.
+ * MS-04 owns HTTP/SSE. Later MS-* items own permission integration.
  */
 
 import {

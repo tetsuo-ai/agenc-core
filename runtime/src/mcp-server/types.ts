@@ -5,7 +5,7 @@
  *
  * Shape differences:
  *   - AgenC keeps the framework transport-neutral; stdio and HTTP/SSE
- *     adapters are later MS-* items.
+ *     adapters live alongside this core without changing its JSON-RPC shapes.
  *   - Tool registration is provider-backed so later transport work can
  *     attach the same registry without changing the JSON-RPC core.
  */
