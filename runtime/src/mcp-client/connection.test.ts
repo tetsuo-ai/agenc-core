@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { MCPServerConfig } from "./types.js";
+import type { MCPElicitationHandlers, MCPServerConfig } from "./types.js";
 
 // Mock the SSE and HTTP transport modules so we can assert dispatch
 // without touching the real SDK.
@@ -90,6 +90,22 @@ describe("createMCPConnection", () => {
     expect(stdioTransportCalls).toHaveLength(1);
     expect(mockCreateSse).not.toHaveBeenCalled();
     expect(mockCreateHttp).not.toHaveBeenCalled();
+  });
+
+  it("advertises MCP elicitation without claiming form default application", async () => {
+    const handlers: MCPElicitationHandlers = {
+      handleRequest: vi.fn(),
+    };
+
+    await createMCPConnection(
+      baseStdioConfig({ transport: "stdio" }),
+      undefined,
+      handlers,
+    );
+
+    expect(stdioClientCalls[0]?.caps).toEqual({
+      capabilities: { elicitation: { form: {}, url: {} } },
+    });
   });
 
   it("throws when stdio transport is missing a command", async () => {

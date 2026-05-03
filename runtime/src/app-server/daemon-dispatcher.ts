@@ -47,6 +47,7 @@ import {
   type CommandExecStartParams,
   type CommandExecTerminateParams,
   type CommandExecWriteParams,
+  type ElicitationRespondParams,
   type FuzzyFileSearchParams,
   type InitializeParams,
   type JsonObject,
@@ -66,6 +67,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "cancelTool"
     | "createAgent"
     | "denyTool"
+    | "respondToElicitation"
     | "getAgentLogs"
     | "listAgents"
     | "stopAgent"
@@ -98,6 +100,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "cancelTool"
     | "createAgent"
     | "denyTool"
+    | "respondToElicitation"
     | "getAgentLogs"
     | "listAgents"
     | "stopAgent"
@@ -354,6 +357,13 @@ export class AgenCDaemonJsonRpcDispatcher {
         return successResponse(
           id,
           await this.#agentManager.cancelTool(validateToolCancelParams(params)),
+        );
+      case "elicitation.respond":
+        return successResponse(
+          id,
+          await this.#agentManager.respondToElicitation(
+            validateElicitationRespondParams(params),
+          ),
         );
       case "health.ping":
         return successResponse(id, this.#health.ping());
@@ -910,6 +920,39 @@ function validateToolCancelParams(params: JsonObject): ToolCancelParams {
   validateRequiredString(validated, "tool.cancel", "sessionId");
   validateRequiredString(validated, "tool.cancel", "requestId");
   return validated as ToolCancelParams;
+}
+
+function validateElicitationRespondParams(
+  params: JsonObject,
+): ElicitationRespondParams {
+  const validated = validateObjectShape(params, {
+    methodName: "elicitation.respond",
+    stringFields: ["sessionId", "kind", "serverName"],
+    objectFields: ["response"],
+    valueFields: ["requestId"],
+  });
+  validateRequiredString(validated, "elicitation.respond", "sessionId");
+  if (
+    typeof validated.requestId !== "string" &&
+    typeof validated.requestId !== "number"
+  ) {
+    throw invalidParams("elicitation.respond requires requestId");
+  }
+  if (
+    validated.kind !== "request_user_input" &&
+    validated.kind !== "mcp"
+  ) {
+    throw invalidParams(
+      "elicitation.respond param 'kind' must be request_user_input or mcp",
+    );
+  }
+  if (validated.kind === "mcp") {
+    validateRequiredString(validated, "elicitation.respond", "serverName");
+  }
+  if (!isPlainJsonObject(validated.response)) {
+    throw invalidParams("elicitation.respond requires response");
+  }
+  return validated as ElicitationRespondParams;
 }
 
 function validateRequiredString(

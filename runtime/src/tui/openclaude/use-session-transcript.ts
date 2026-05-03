@@ -3,7 +3,7 @@ import { useEffect, useMemo, useReducer } from "react";
 import type { LLMMessage } from "../../llm/types.js";
 import type { Event } from "../../session/event-log.js";
 import { adaptTranscriptEvents } from "./message-adapter.js";
-import type { OpenClaudeBridgeSession } from "./session-types.js";
+import type { AgenCBridgeSession } from "../session-types.js";
 
 type TranscriptEvent = Event | {
   readonly type: string;
@@ -54,14 +54,14 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
   }
 }
 
-function initialEvents(session: OpenClaudeBridgeSession): readonly TranscriptEvent[] {
+function initialEvents(session: AgenCBridgeSession): readonly TranscriptEvent[] {
   const fromGetter = session.getInitialTranscriptEvents?.();
   const fromProperty = session.initialTranscriptEvents;
   return [...((fromGetter ?? fromProperty ?? []) as readonly TranscriptEvent[])];
 }
 
 export function useSessionTranscript(
-  session: OpenClaudeBridgeSession,
+  session: AgenCBridgeSession,
   startupMessages: readonly LLMMessage[] = [],
 ) {
   const [state, dispatch] = useReducer(reducer, { events: [], keys: new Set() });

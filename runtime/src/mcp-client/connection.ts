@@ -9,11 +9,12 @@
  * @module
  */
 
-import type { MCPServerConfig } from "./types.js";
+import type { MCPElicitationHandlers, MCPServerConfig } from "./types.js";
 import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
 import { createSseMCPConnection } from "./transports/sse.js";
 import { createHttpMCPConnection } from "./transports/http.js";
+import { configureMcpElicitationClient } from "../elicitation/mcp.js";
 
 /**
  * Create an MCP client connection to an external server.
@@ -28,6 +29,7 @@ import { createHttpMCPConnection } from "./transports/http.js";
 export async function createMCPConnection(
   config: MCPServerConfig,
   logger: Logger = silentLogger,
+  elicitationHandlers?: MCPElicitationHandlers,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const transportKind = config.transport ?? "stdio";
@@ -45,8 +47,8 @@ export async function createMCPConnection(
       ...(config.timeout !== undefined ? { timeout: config.timeout } : {}),
     };
     return transportKind === "sse"
-      ? createSseMCPConnection(remoteConfig, logger)
-      : createHttpMCPConnection(remoteConfig, logger);
+      ? createSseMCPConnection(remoteConfig, logger, elicitationHandlers)
+      : createHttpMCPConnection(remoteConfig, logger, elicitationHandlers);
   }
 
   if (transportKind !== "stdio") {
@@ -88,7 +90,16 @@ export async function createMCPConnection(
 
   const client = new Client(
     { name: `agenc-runtime`, version: "0.2.0" },
-    { capabilities: {} },
+    {
+      capabilities: elicitationHandlers === undefined
+        ? {}
+        : { elicitation: { form: {}, url: {} } },
+    },
+  );
+  await configureMcpElicitationClient(
+    client,
+    config.name,
+    elicitationHandlers,
   );
 
   logger.info(`Connecting to MCP server "${config.name}"...`, {

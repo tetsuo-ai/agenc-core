@@ -47,9 +47,11 @@ const mockCreatePromptBridge = vi.mocked(createPromptBridge);
 
 function stubManager() {
   const setCallObserver = vi.fn();
+  const setElicitationHandlers = vi.fn();
   return {
-    manager: { setCallObserver } as unknown as MCPManager,
+    manager: { setCallObserver, setElicitationHandlers } as unknown as MCPManager,
     setCallObserver,
+    setElicitationHandlers,
   };
 }
 
@@ -134,15 +136,50 @@ beforeEach(() => {
 
 describe("mcp-startup.attachMcpManagerToSession", () => {
   it("installs a call observer on the manager", () => {
-    const { manager, setCallObserver } = stubManager();
+    const { manager, setCallObserver, setElicitationHandlers } = stubManager();
     const { session } = stubSession();
 
     attachMcpManagerToSession(manager, session);
 
     expect(setCallObserver).toHaveBeenCalledOnce();
+    expect(setElicitationHandlers).toHaveBeenCalledOnce();
     const observer = setCallObserver.mock.calls[0]![0]!;
     expect(typeof observer.onBegin).toBe("function");
     expect(typeof observer.onEnd).toBe("function");
+  });
+
+  it("passes session granular MCP elicitation policy into handlers", async () => {
+    const { manager, setElicitationHandlers } = stubManager();
+    const { session } = stubSession();
+    (session as unknown as {
+      services: { granularApprovalConfig: { mcp_elicitations: boolean } };
+      sessionConfiguration: { approvalPolicy: { value: "granular" } };
+      requestMcpElicitation: ReturnType<typeof vi.fn>;
+    }).services = {
+      granularApprovalConfig: { mcp_elicitations: false },
+    };
+    (session as unknown as {
+      sessionConfiguration: { approvalPolicy: { value: "granular" } };
+    }).sessionConfiguration = {
+      approvalPolicy: { value: "granular" },
+    };
+    (session as unknown as {
+      requestMcpElicitation: ReturnType<typeof vi.fn>;
+    }).requestMcpElicitation = vi.fn();
+
+    attachMcpManagerToSession(manager, session);
+    const handlers = setElicitationHandlers.mock.calls[0]?.[0];
+    await expect(
+      handlers?.handleRequest({
+        serverName: "srv",
+        requestId: "mcp-1",
+        request: {
+          mode: "form",
+          message: "Confirm",
+          requestedSchema: { type: "object", properties: {} },
+        },
+      }),
+    ).resolves.toEqual({ action: "decline" });
   });
 
   it("must run before manager.start() so the first bridge captures the observer", async () => {

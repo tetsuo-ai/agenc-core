@@ -519,6 +519,153 @@ describe("AgenC delegate background-agent runner", () => {
     ]);
   });
 
+  it("forwards session elicitation waits as typed daemon notifications", async () => {
+    const shutdown = vi.fn(async () => {});
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    let sessionEventListener:
+      | ((event: {
+          readonly id: string;
+          readonly msg: {
+            readonly type: string;
+            readonly payload: JsonObject;
+          };
+        }) => void)
+      | undefined;
+    const session = {
+      conversationId: "parent-session",
+      permissionModeRegistry,
+      services: {},
+      eventLog: {
+        subscribe: vi.fn((listener) => {
+          sessionEventListener = listener;
+          return vi.fn();
+        }),
+      },
+    };
+    const control = { shutdown: vi.fn(async () => {}) };
+    const thread = {
+      threadId: "agent_live",
+      agentPath: "/root/agent_live",
+      join: vi.fn(() => new Promise(() => {})),
+    } as unknown as AgentThread;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        shutdown,
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      delegateFn: vi.fn(async () => ({
+        kind: "async_launched",
+        thread,
+      })) as unknown as AgenCDelegateFunction,
+      now: () => "2026-05-01T12:00:00.500Z",
+    });
+    const emitted: unknown[] = [];
+
+    await runner.startAgent({
+      objective: "compile the daemon",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("agent_live", {
+      sessionId: "session_1",
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+    sessionEventListener?.({
+      id: "input_1",
+      msg: {
+        type: "request_user_input",
+        payload: {
+          callId: "call_1",
+          turnId: "turn_1",
+          questions: [
+            {
+              id: "choice",
+              header: "Choice",
+              question: "Proceed?",
+              isOther: true,
+              isSecret: false,
+              options: [
+                { label: "Yes", description: "Continue." },
+                { label: "No", description: "Stop." },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    sessionEventListener?.({
+      id: "mcp_1",
+      msg: {
+        type: "mcp_elicitation_request",
+        payload: {
+          serverName: "srv",
+          requestId: "mcp_1",
+          turnId: "turn_1",
+          request: {
+            mode: "form",
+            message: "Need details",
+            requestedSchema: { type: "object", properties: {} },
+          },
+        },
+      },
+    });
+    await Promise.resolve();
+
+    expect(emitted).toEqual([
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.user_input_request",
+        params: {
+          sessionId: "session_1",
+          agentId: "agent_live",
+          eventId: "input_1",
+          requestId: "call_1",
+          callId: "call_1",
+          turnId: "turn_1",
+          questions: [
+            {
+              id: "choice",
+              header: "Choice",
+              question: "Proceed?",
+              isOther: true,
+              isSecret: false,
+              options: [
+                { label: "Yes", description: "Continue." },
+                { label: "No", description: "Stop." },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.mcp_elicitation_request",
+        params: {
+          sessionId: "session_1",
+          agentId: "agent_live",
+          eventId: "mcp_1",
+          requestId: "mcp_1",
+          serverName: "srv",
+          turnId: "turn_1",
+          request: {
+            mode: "form",
+            message: "Need details",
+            requestedSchema: { type: "object", properties: {} },
+          },
+        },
+      },
+    ]);
+  });
+
   it("bridges background tool approvals through daemon session decisions", async () => {
     const shutdown = vi.fn(async () => {});
     const permissionModeRegistry = {

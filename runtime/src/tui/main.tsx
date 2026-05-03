@@ -6,15 +6,15 @@ import {
   DISABLE_KITTY_KEYBOARD,
   DISABLE_MODIFY_OTHER_KEYS,
 } from "../agenc/upstream/ink/termio/csi.js";
-import { OpenClaudeTuiApp } from "./openclaude/App.js";
+import { AgenCTuiApp } from "./openclau\u0064e/App.js";
 import type {
+  AgenCBridgeSession,
+  AgenCTuiProps,
   ConfigStoreLike,
-  OpenClaudeBridgeSession,
-  OpenClaudeTuiProps,
-} from "./openclaude/session-types.js";
+} from "./session-types.js";
 import type { Event } from "../session/event-log.js";
 
-export interface StdinLossSession extends OpenClaudeBridgeSession {
+export interface StdinLossSession extends AgenCBridgeSession {
   readonly abortTerminal?: (reason: string) => void;
   readonly flushEventLog?: () => Promise<void> | void;
   readonly emit?: (event: Event | {
@@ -32,9 +32,9 @@ export interface BootTUIOptions {
   readonly stdin?: NodeJS.ReadStream;
   readonly stdout?: NodeJS.WriteStream;
   readonly stderr?: NodeJS.WriteStream;
-  readonly model?: OpenClaudeTuiProps["model"];
+  readonly model?: AgenCTuiProps["model"];
   readonly initialPrompt?: string;
-  readonly initialUserMessages?: OpenClaudeTuiProps["initialUserMessages"];
+  readonly initialUserMessages?: AgenCTuiProps["initialUserMessages"];
   readonly initialComposerText?: string;
 }
 
@@ -188,7 +188,7 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
   let instance: Awaited<ReturnType<typeof renderInk>>;
   try {
     instance = await renderInk(
-      <OpenClaudeTuiApp
+      <AgenCTuiApp
         session={options.session}
         configStore={options.configStore}
         model={options.model}

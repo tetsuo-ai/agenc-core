@@ -32,6 +32,10 @@ import type { ToolPermissionContext } from "../permissions/types.js";
 import { ABORT, DENIED, type ReviewDecision } from "../permissions/review-decision.js";
 import { isFinal } from "../agents/status.js";
 import type { AgentStatus as ThreadAgentStatus } from "../agents/status.js";
+import {
+  respondToSessionElicitation,
+  type SessionElicitationResponseParams,
+} from "../elicitation/respond.js";
 import type {
   AgenCDaemonSessionNotification,
   AgentStatus as DaemonAgentStatus,
@@ -90,6 +94,9 @@ export interface AgenCBackgroundAgentToolCancelParams {
   readonly reason?: string;
 }
 
+export type AgenCBackgroundAgentElicitationResponseParams =
+  SessionElicitationResponseParams;
+
 export interface AgenCBackgroundAgentRunner {
   startAgent(
     params: AgenCBackgroundAgentStartParams,
@@ -114,6 +121,10 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentToolCancelParams,
   ): Promise<boolean>;
+  respondToElicitation?(
+    agentId: string,
+    params: AgenCBackgroundAgentElicitationResponseParams,
+  ): Promise<boolean>;
 }
 
 export type AgenCDelegateFunction = (opts: DelegateOpts) => Promise<DelegateOutcome>;
@@ -130,6 +141,7 @@ interface ActiveBackgroundAgent {
   lastActiveAt: string;
   unsubscribeStatus?: () => void;
   uninstallApprovalBridge?: () => void;
+  unsubscribeElicitationEvents?: () => void;
   sessionBinding?: AgenCBackgroundAgentSessionEventBinding;
   bufferedEvents: BackgroundAgentDaemonEvent[];
   activeToolCallIds: Set<string>;
@@ -246,6 +258,8 @@ export class AgenCDelegateBackgroundAgentRunner
       this.#pendingActiveToolCallIds.delete(outcome.thread.threadId);
       this.#trackAgentStatus(active);
       this.#active.set(outcome.thread.threadId, active);
+      active.unsubscribeElicitationEvents =
+        this.#installDaemonElicitationEventBridge(active);
       this.#cleanupWhenComplete(outcome.thread.threadId, outcome.thread);
       return {
         agentId: outcome.thread.threadId,
@@ -301,6 +315,7 @@ export class AgenCDelegateBackgroundAgentRunner
     this.#pendingActiveToolCallIds.delete(agentId);
     active.unsubscribeStatus?.();
     active.uninstallApprovalBridge?.();
+    active.unsubscribeElicitationEvents?.();
   }
 
   async attachAgentSessionEvents(
@@ -387,6 +402,22 @@ export class AgenCDelegateBackgroundAgentRunner
     return true;
   }
 
+  async respondToElicitation(
+    agentId: string,
+    params: AgenCBackgroundAgentElicitationResponseParams,
+  ): Promise<boolean> {
+    const active = this.#active.get(agentId);
+    if (active === undefined) return false;
+    const resolved = await respondToSessionElicitation(
+      active.bootstrap.session,
+      params,
+    );
+    if (resolved) {
+      active.lastActiveAt = this.#now();
+    }
+    return resolved;
+  }
+
   #installDaemonApprovalBridge(session: LocalRuntimeBootstrap["session"]): () => void {
     const services = (session as { services?: {
       approvalResolver?: ApprovalResolver;
@@ -406,6 +437,27 @@ export class AgenCDelegateBackgroundAgentRunner
         }
       }
     };
+  }
+
+  #installDaemonElicitationEventBridge(active: ActiveBackgroundAgent): () => void {
+    const eventLog = (active.bootstrap.session as {
+      eventLog?: {
+        subscribe?: (listener: (event: {
+          readonly id?: unknown;
+          readonly msg?: {
+            readonly type?: unknown;
+            readonly payload?: unknown;
+          };
+        }) => void) => () => void;
+      };
+    }).eventLog;
+    if (typeof eventLog?.subscribe !== "function") return () => {};
+    return eventLog.subscribe((event) => {
+      const daemonEvent = daemonEventFromSessionElicitationEvent(event);
+      if (daemonEvent === null) return;
+      active.lastActiveAt = this.#now();
+      void this.#emitOrBufferEvent(active, daemonEvent);
+    });
   }
 
   async #requestDaemonToolDecision(ctx: ApprovalCtx): Promise<ReviewDecision> {
@@ -482,6 +534,7 @@ export class AgenCDelegateBackgroundAgentRunner
         this.#pendingActiveToolCallIds.delete(agentId);
         active.unsubscribeStatus?.();
         active.uninstallApprovalBridge?.();
+        active.unsubscribeElicitationEvents?.();
         await active.bootstrap.shutdown().catch(() => {});
       });
   }
@@ -652,6 +705,48 @@ function notificationFromDaemonEvent(
     };
   }
   if (
+    event.type === "request_user_input" &&
+    isJsonObject(payload) &&
+    typeof payload.callId === "string" &&
+    typeof payload.turnId === "string" &&
+    Array.isArray(payload.questions)
+  ) {
+    return {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.user_input_request",
+      params: {
+        ...base,
+        requestId: typeof payload.requestId === "string"
+          ? payload.requestId
+          : payload.callId,
+        callId: payload.callId,
+        turnId: payload.turnId,
+        questions: jsonObjectArray(payload.questions),
+      },
+    };
+  }
+  if (
+    event.type === "mcp_elicitation_request" &&
+    isJsonObject(payload) &&
+    typeof payload.serverName === "string" &&
+    (typeof payload.requestId === "string" ||
+      typeof payload.requestId === "number") &&
+    typeof payload.turnId === "string" &&
+    isJsonObject(payload.request)
+  ) {
+    return {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.mcp_elicitation_request",
+      params: {
+        ...base,
+        requestId: payload.requestId,
+        serverName: payload.serverName,
+        turnId: payload.turnId,
+        request: payload.request,
+      },
+    };
+  }
+  if (
     (event.type === "turn_started" ||
       event.type === "turn_complete" ||
       event.type === "error") &&
@@ -731,6 +826,82 @@ function toolRequestInputFromPayload(payload: JsonObject): JsonValue | undefined
   } catch {
     return payload.args;
   }
+}
+
+function daemonEventFromSessionElicitationEvent(event: {
+  readonly id?: unknown;
+  readonly msg?: {
+    readonly type?: unknown;
+    readonly payload?: unknown;
+  };
+}): BackgroundAgentDaemonEvent | null {
+  const type = event.msg?.type;
+  const payload = event.msg?.payload;
+  const id = typeof event.id === "string" && event.id.length > 0
+    ? event.id
+    : typeof type === "string"
+      ? type
+      : "elicitation";
+  if (
+    type === "request_user_input" &&
+    isJsonObject(payload) &&
+    typeof payload.callId === "string" &&
+    typeof payload.turnId === "string" &&
+    Array.isArray(payload.questions)
+  ) {
+    return {
+      id,
+      type,
+      payload: {
+        callId: payload.callId,
+        requestId: typeof payload.requestId === "string"
+          ? payload.requestId
+          : payload.callId,
+        turnId: payload.turnId,
+        questions: jsonObjectArray(payload.questions),
+      },
+    };
+  }
+  if (
+    type === "mcp_elicitation_request" &&
+    isJsonObject(payload) &&
+    typeof payload.serverName === "string" &&
+    (typeof payload.requestId === "string" ||
+      typeof payload.requestId === "number") &&
+    typeof payload.turnId === "string" &&
+    isJsonObject(payload.request)
+  ) {
+    return {
+      id,
+      type,
+      payload: {
+        serverName: payload.serverName,
+        requestId: payload.requestId,
+        turnId: payload.turnId,
+        request: payload.request,
+      },
+    };
+  }
+  if (
+    type === "mcp_elicitation_complete" &&
+    isJsonObject(payload) &&
+    typeof payload.serverName === "string" &&
+    typeof payload.elicitationId === "string"
+  ) {
+    return {
+      id,
+      type,
+      payload: {
+        serverName: payload.serverName,
+        elicitationId: payload.elicitationId,
+      },
+    };
+  }
+  return null;
+}
+
+function jsonObjectArray(value: readonly unknown[]): JsonObject[] {
+  return value.filter(isJsonObject);
 }
 
 function isJsonObject(value: unknown): value is JsonObject {

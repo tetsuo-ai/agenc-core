@@ -25,6 +25,7 @@
     "tool.approve",
     "tool.deny",
     "tool.cancel",
+    "elicitation.respond",
     "permission.list",
     "fs.fuzzy_search",
     "commandExec.start",
@@ -43,6 +44,8 @@
     "event.message_chunk",
     "event.tool_request",
     "event.permission_request",
+    "event.user_input_request",
+    "event.mcp_elicitation_request",
     "event.agent_status",
     "event.session_event"
   ],
@@ -432,6 +435,31 @@
         }
       },
       "required": ["sessionId", "requestId"]
+    },
+    "ElicitationRespondParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requestId": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["request_user_input", "mcp"]
+        },
+        "serverName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "response": {
+          "$ref": "#/definitions/JsonObject"
+        }
+      },
+      "required": ["sessionId", "requestId", "kind", "response"]
     },
     "PermissionListParams": {
       "type": "object",
@@ -859,6 +887,100 @@
       },
       "required": ["sessionId", "eventId", "requestId", "permissions"]
     },
+    "EventUserInputRequestParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "acceptedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "callId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turnId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "questions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "items": {
+            "$ref": "#/definitions/JsonObject"
+          }
+        }
+      },
+      "required": ["sessionId", "eventId", "requestId", "callId", "turnId", "questions"]
+    },
+    "EventMcpElicitationRequestParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "acceptedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        },
+        "requestId": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "serverName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turnId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request": {
+          "$ref": "#/definitions/JsonObject"
+        }
+      },
+      "required": ["sessionId", "eventId", "requestId", "serverName", "turnId", "request"]
+    },
     "EventAgentStatusParams": {
       "type": "object",
       "additionalProperties": false,
@@ -1016,6 +1138,9 @@
           "$ref": "#/definitions/ToolCancelRequest"
         },
         {
+          "$ref": "#/definitions/ElicitationRespondRequest"
+        },
+        {
           "$ref": "#/definitions/PermissionListRequest"
         },
         {
@@ -1066,6 +1191,12 @@
         },
         {
           "$ref": "#/definitions/EventPermissionRequestNotification"
+        },
+        {
+          "$ref": "#/definitions/EventUserInputRequestNotification"
+        },
+        {
+          "$ref": "#/definitions/EventMcpElicitationRequestNotification"
         },
         {
           "$ref": "#/definitions/EventAgentStatusNotification"
@@ -1135,6 +1266,38 @@
         },
         "params": {
           "$ref": "#/definitions/EventPermissionRequestParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "EventUserInputRequestNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "event.user_input_request"
+        },
+        "params": {
+          "$ref": "#/definitions/EventUserInputRequestParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "EventMcpElicitationRequestNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "event.mcp_elicitation_request"
+        },
+        "params": {
+          "$ref": "#/definitions/EventMcpElicitationRequestParams"
         }
       },
       "required": ["jsonrpc", "method", "params"]
@@ -1490,6 +1653,25 @@
         },
         "params": {
           "$ref": "#/definitions/ToolCancelParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "ElicitationRespondRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "elicitation.respond"
+        },
+        "params": {
+          "$ref": "#/definitions/ElicitationRespondParams"
         }
       },
       "required": ["jsonrpc", "id", "method", "params"]

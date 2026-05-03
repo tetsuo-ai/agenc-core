@@ -27,6 +27,8 @@ import type {
   AgentStatus,
   AgentSummary,
   AgentToolOutputLog,
+  ElicitationRespondParams,
+  ElicitationRespondResult,
   JsonObject,
   JsonValue,
   MessageContent,
@@ -866,6 +868,28 @@ export class AgenCDaemonAgentManager {
     return { requestId: params.requestId, decision: "cancelled" };
   }
 
+  async respondToElicitation(
+    params: ElicitationRespondParams,
+  ): Promise<ElicitationRespondResult> {
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowElicitationResponse: true },
+    );
+    const resolved = await this.#runner!.respondToElicitation!(agentId, {
+      requestId: params.requestId,
+      kind: params.kind,
+      ...(params.serverName !== undefined ? { serverName: params.serverName } : {}),
+      response: params.response,
+    });
+    if (!resolved) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        `AgenC daemon elicitation request is not pending: ${String(params.requestId)}`,
+      );
+    }
+    return { requestId: params.requestId, resolved };
+  }
+
   async streamAgentMessage(params: {
     readonly sessionId: string;
     readonly content: MessageContent;
@@ -1001,7 +1025,10 @@ export class AgenCDaemonAgentManager {
 
   async #resolveActiveAgentIdForSession(
     sessionId: string,
-    options: { readonly allowCancelTool?: boolean } = {},
+    options: {
+      readonly allowCancelTool?: boolean;
+      readonly allowElicitationResponse?: boolean;
+    } = {},
   ): Promise<string> {
     if (this.#sessionManager === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
@@ -1009,16 +1036,17 @@ export class AgenCDaemonAgentManager {
         "tool decision requires a daemon session manager",
       );
     }
-    if (
-      this.#runner?.resolveToolDecision === undefined &&
-      !(
-        options.allowCancelTool === true &&
-        this.#runner?.cancelTool !== undefined
-      )
-    ) {
+    const hasToolDecisionRunner = this.#runner?.resolveToolDecision !== undefined;
+    const hasCancelRunner =
+      options.allowCancelTool === true &&
+      this.#runner?.cancelTool !== undefined;
+    const hasElicitationRunner =
+      options.allowElicitationResponse === true &&
+      this.#runner?.respondToElicitation !== undefined;
+    if (!hasToolDecisionRunner && !hasCancelRunner && !hasElicitationRunner) {
       throw new AgenCDaemonAgentLifecycleError(
         "BACKGROUND_RUNNER_UNAVAILABLE",
-        "tool decision requires a background runner",
+        "session request requires a background runner",
       );
     }
 

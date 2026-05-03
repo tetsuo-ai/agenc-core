@@ -9,14 +9,23 @@ import type {
   AgentAttachParams,
   AgenCDaemonMethod,
   AgenCDaemonResultByMethod,
+  ElicitationRespondParams,
   JsonObject,
   JsonValue,
   MessageContentBlock,
   MessageStreamParams,
+  RequestId,
   SessionAttachParams,
 } from "../app-server/protocol/index.js";
 import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
 import { reviewDecisionIsAllow, type ReviewDecision } from "../permissions/review-decision.js";
+import type {
+  McpElicitationRequestEvent,
+  McpElicitationResponse,
+  RequestUserInputEvent,
+  RequestUserInputResponse,
+} from "../elicitation/types.js";
+import { isMcpUrlCompletionResponse } from "../elicitation/url-completion.js";
 
 export const AGENC_DAEMON_RECONNECTING_MESSAGE =
   "daemon disconnected, reconnecting";
@@ -36,6 +45,18 @@ export interface AgenCTuiBridgeSession {
   readonly conversationId: string;
   readonly services: {
     approvalResolver?: ApprovalResolver;
+    requestUserInputResolver?: {
+      request(
+        event: RequestUserInputEvent,
+        signal?: AbortSignal,
+      ): Promise<RequestUserInputResponse | null>;
+    };
+    mcpElicitationResolver?: {
+      request(
+        event: McpElicitationRequestEvent,
+        signal?: AbortSignal,
+      ): Promise<McpElicitationResponse | null>;
+    };
     readonly [key: string]: unknown;
   };
   readonly initialTranscriptEvents?: readonly unknown[];
@@ -66,6 +87,15 @@ export type AgenCDaemonBackedTuiSession<
     opts?: { readonly displayUserMessage?: string | null },
   ): Promise<void>;
   enqueueIdleInput(input: unknown): number;
+  respondToUserInput(
+    requestId: RequestId,
+    response: ElicitationRespondParams["response"],
+  ): Promise<AgenCDaemonResultByMethod["elicitation.respond"]>;
+  respondToMcpElicitation(
+    serverName: string,
+    requestId: RequestId,
+    response: ElicitationRespondParams["response"],
+  ): Promise<AgenCDaemonResultByMethod["elicitation.respond"]>;
 };
 
 export interface AgenCDaemonTuiClient {
@@ -139,7 +169,28 @@ export function createDaemonTuiSession<
   const { baseSession, client, sessionId, clientId } = options;
   const conversationId = options.conversationId ?? sessionId;
   const queuedInputs: MessageContentBlock[] = [];
+  const eventSubscribers = new Set<(event: unknown) => void>();
   let queuedInputCount = 0;
+  let unsubscribeDaemonEvents: (() => void) | null = null;
+  const broadcastDaemonEvent = (event: unknown): void => {
+    for (const subscriber of [...eventSubscribers]) {
+      subscriber(event);
+    }
+  };
+  const ensureDaemonEventsSubscribed = (): void => {
+    if (unsubscribeDaemonEvents !== null) return;
+    unsubscribeDaemonEvents = subscribeToDaemonEvents(
+      client,
+      sessionId,
+      baseSession,
+      broadcastDaemonEvent,
+    );
+  };
+  const maybeStopDaemonEvents = (): void => {
+    if (eventSubscribers.size > 0 || unsubscribeDaemonEvents === null) return;
+    unsubscribeDaemonEvents();
+    unsubscribeDaemonEvents = null;
+  };
   return {
     ...baseSession,
     conversationId,
@@ -173,8 +224,29 @@ export function createDaemonTuiSession<
       }
       return queuedInputCount;
     },
-    subscribeToEvents: (cb) =>
-      subscribeToDaemonEvents(client, sessionId, baseSession, cb),
+    respondToUserInput: async (requestId, response) =>
+      client.request("elicitation.respond", {
+        sessionId,
+        requestId,
+        kind: "request_user_input",
+        response,
+      } satisfies ElicitationRespondParams),
+    respondToMcpElicitation: async (serverName, requestId, response) =>
+      client.request("elicitation.respond", {
+        sessionId,
+        requestId,
+        kind: "mcp",
+        serverName,
+        response,
+      } satisfies ElicitationRespondParams),
+    subscribeToEvents: (cb) => {
+      eventSubscribers.add(cb);
+      ensureDaemonEventsSubscribed();
+      return () => {
+        eventSubscribers.delete(cb);
+        maybeStopDaemonEvents();
+      };
+    },
     getInitialTranscriptEvents: () => [
       ...baseInitialTranscriptEvents(baseSession),
       ...connectionNoticeEvents(client.getConnectionState?.() ?? null),
@@ -223,6 +295,7 @@ function subscribeToDaemonEvents(
       const transcriptEvent = toTranscriptEvent(event);
       cb(transcriptEvent);
       void maybeBridgeDaemonApproval(client, sessionId, session, transcriptEvent);
+      void maybeBridgeDaemonElicitation(client, sessionId, session, transcriptEvent);
     },
   );
   const unsubscribeConnection = client.subscribeToConnectionState?.((state) => {
@@ -265,6 +338,75 @@ async function maybeBridgeDaemonApproval(
     requestId: payload.callId,
     reason: decision.kind,
   });
+}
+
+async function maybeBridgeDaemonElicitation(
+  client: AgenCDaemonTuiClient,
+  sessionId: string,
+  session: AgenCTuiBridgeSession,
+  event: unknown,
+): Promise<void> {
+  if (!isJsonObject(event) || typeof event.type !== "string") return;
+  const payload = event.payload;
+  if (!isJsonObject(payload)) return;
+  if (
+    event.type === "request_user_input" &&
+    typeof payload.callId === "string" &&
+    typeof payload.turnId === "string" &&
+    Array.isArray(payload.questions)
+  ) {
+    const resolver = session.services.requestUserInputResolver;
+    if (resolver === undefined) return;
+    let response: RequestUserInputResponse | null;
+    try {
+      response = await resolver.request({
+        requestId: typeof payload.requestId === "string"
+          ? payload.requestId
+          : payload.callId,
+        callId: payload.callId,
+        turnId: payload.turnId,
+        questions: jsonObjectArray(payload.questions) as RequestUserInputEvent["questions"],
+      });
+    } catch {
+      response = null;
+    }
+    await client.request("elicitation.respond", {
+      sessionId,
+      requestId: typeof payload.requestId === "string"
+        ? payload.requestId
+        : payload.callId,
+      kind: "request_user_input",
+      response: (response ?? { action: "cancel" }) as unknown as JsonObject,
+    } satisfies ElicitationRespondParams);
+    return;
+  }
+  if (
+    event.type === "mcp_elicitation_request" &&
+    typeof payload.serverName === "string" &&
+    (typeof payload.requestId === "string" ||
+      typeof payload.requestId === "number") &&
+    typeof payload.turnId === "string" &&
+    isJsonObject(payload.request)
+  ) {
+    const resolver = session.services.mcpElicitationResolver;
+    if (resolver === undefined) return;
+    const response = await resolver
+      .request({
+        serverName: payload.serverName,
+        requestId: payload.requestId,
+        turnId: payload.turnId,
+        request: payload.request as McpElicitationRequestEvent["request"],
+      })
+      .catch((): McpElicitationResponse => ({ action: "cancel" }));
+    if (isMcpUrlCompletionResponse(response)) return;
+    await client.request("elicitation.respond", {
+      sessionId,
+      requestId: payload.requestId,
+      kind: "mcp",
+      serverName: payload.serverName,
+      response: (response ?? { action: "cancel" }) as unknown as JsonObject,
+    } satisfies ElicitationRespondParams);
+  }
 }
 
 function buildDaemonApprovalCtx(
@@ -356,6 +498,43 @@ function toTranscriptEvent(event: JsonObject): JsonObject {
       },
     };
   }
+  if (
+    method === "event.user_input_request" &&
+    typeof params.requestId === "string" &&
+    typeof params.callId === "string" &&
+    typeof params.turnId === "string" &&
+    Array.isArray(params.questions)
+  ) {
+    return {
+      id: stringParam(params.eventId, params.requestId),
+      type: "request_user_input",
+      payload: {
+        requestId: params.requestId,
+        callId: params.callId,
+        turnId: params.turnId,
+        questions: jsonObjectArray(params.questions),
+      },
+    };
+  }
+  if (
+    method === "event.mcp_elicitation_request" &&
+    (typeof params.requestId === "string" ||
+      typeof params.requestId === "number") &&
+    typeof params.serverName === "string" &&
+    typeof params.turnId === "string" &&
+    isJsonObject(params.request)
+  ) {
+    return {
+      id: stringParam(params.eventId, String(params.requestId)),
+      type: "mcp_elicitation_request",
+      payload: {
+        requestId: params.requestId,
+        serverName: params.serverName,
+        turnId: params.turnId,
+        request: params.request,
+      },
+    };
+  }
   if (method === "event.agent_status") {
     return transcriptEventFromAgentStatus(params);
   }
@@ -401,6 +580,10 @@ function stringParam(value: JsonValue | undefined, fallback: string): string {
   return typeof value === "string" && value.length > 0 ? value : fallback;
 }
 
+function jsonObjectArray(value: readonly unknown[]): JsonObject[] {
+  return value.filter(isJsonObject);
+}
+
 function connectionNoticeEvents(
   state: AgenCDaemonConnectionState | null,
 ): readonly JsonObject[] {
@@ -417,6 +600,6 @@ function connectionNoticeEvents(
   ];
 }
 
-function isJsonObject(value: JsonValue | undefined): value is JsonObject {
+function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

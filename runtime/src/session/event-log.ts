@@ -26,6 +26,11 @@ import type {
   FileSystemSandboxPolicy,
   TruncationPolicy,
 } from "./turn-context.js";
+import type {
+  McpElicitationCompleteEvent,
+  McpElicitationRequestEvent,
+  RequestUserInputEvent,
+} from "../elicitation/types.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Schema version — I-49
@@ -534,6 +539,18 @@ export type EventMsg =
       readonly payload: RequestPermissionsEvent;
     }
   | {
+      readonly type: "request_user_input";
+      readonly payload: RequestUserInputEvent;
+    }
+  | {
+      readonly type: "mcp_elicitation_request";
+      readonly payload: McpElicitationRequestEvent;
+    }
+  | {
+      readonly type: "mcp_elicitation_complete";
+      readonly payload: McpElicitationCompleteEvent;
+    }
+  | {
       readonly type: "context_compacted";
       readonly payload: ContextCompactedEvent;
     }
@@ -718,6 +735,9 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "tool_call_completed",
     "tool_progress",
     "request_permissions",
+    "request_user_input",
+    "mcp_elicitation_request",
+    "mcp_elicitation_complete",
     "context_compacted",
     "turn_complete",
     "turn_aborted",

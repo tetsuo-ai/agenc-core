@@ -8,6 +8,7 @@
  */
 
 import type {
+  MCPElicitationHandlers,
   MCPReconnectResult,
   MCPServerConfig,
   MCPToolBridge,
@@ -108,6 +109,7 @@ export class MCPManager {
    * owner sets this to a shim that calls `session.emit(...)`.
    */
   private callObserver: MCPCallObserver | undefined;
+  private elicitationHandlers: MCPElicitationHandlers | undefined;
 
   constructor(configs: MCPServerConfig[], logger: Logger = silentLogger) {
     this.configs = configs;
@@ -122,6 +124,12 @@ export class MCPManager {
    */
   setCallObserver(observer: MCPCallObserver | undefined): void {
     this.callObserver = observer;
+  }
+
+  setElicitationHandlers(
+    handlers: MCPElicitationHandlers | undefined,
+  ): void {
+    this.elicitationHandlers = handlers;
   }
 
   /**
@@ -319,7 +327,7 @@ export class MCPManager {
   }
 
   /**
-   * Port of codex runtime `Session::resolve_mcp_tool_info` (session.rs). Given
+   * Port of donor runtime `Session::resolve_mcp_tool_info` (session.rs). Given
    * a tool name the model emitted, either return `{ serverName,
    * toolName }` when the tool is MCP-backed, or `undefined`.
    *
@@ -519,7 +527,11 @@ export class MCPManager {
     config: MCPServerConfig,
     startupGate?: StartupGate,
   ): Promise<MCPToolBridge> {
-    const client = await createMCPConnection(config, this.logger);
+    const client = await createMCPConnection(
+      config,
+      this.logger,
+      this.elicitationHandlers,
+    );
     try {
       if (startupGate?.isCancelled()) {
         throw new Error(

@@ -9,7 +9,7 @@
  *
  * @module
  */
-import type { OpenClaudeBridgeSession } from "../../tui/openclaude/session-types.js";
+import type { AgenCBridgeSession } from "../../tui/session-types.js";
 
 export interface PendingProviderSwitchSpec {
   readonly provider: string;
@@ -24,7 +24,7 @@ export interface PendingProviderSwitchSpec {
  * runtime alone and only update local UI state).
  */
 export function buildPendingProviderSwitch(
-  session: Pick<OpenClaudeBridgeSession, "sessionConfiguration">,
+  session: Pick<AgenCBridgeSession, "sessionConfiguration">,
   nextModel: string,
 ): PendingProviderSwitchSpec | null {
   const provider = session.sessionConfiguration?.provider?.slug;

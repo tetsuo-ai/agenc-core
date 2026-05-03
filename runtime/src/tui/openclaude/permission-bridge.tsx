@@ -9,7 +9,7 @@ import {
   buildToolUseConfirmQueue,
   type PendingRequest,
 } from "../../agenc/adapters/permission-bridge-projection.js";
-import type { OpenClaudeBridgeSession } from "./session-types.js";
+import type { AgenCBridgeSession } from "../session-types.js";
 
 export { buildToolUseConfirmQueue, type PendingRequest };
 
@@ -60,7 +60,7 @@ function deriveInput(ctx: ApprovalCtx): Record<string, unknown> {
 }
 
 export function usePermissionBridge(
-  session: OpenClaudeBridgeSession,
+  session: AgenCBridgeSession,
   setModel: (next: string) => void,
   setExpandedView: (next: "none" | "tasks") => void,
 ) {
@@ -108,7 +108,7 @@ export function usePermissionBridge(
   return requests;
 }
 
-export function OpenClaudePermissionOverlay({
+export function AgenCPermissionOverlay({
   request,
   tools,
 }: {

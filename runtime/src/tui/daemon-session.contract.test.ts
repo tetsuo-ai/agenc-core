@@ -1,4 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("../agenc/upstream/ink.js", () => ({
+  Box: () => null,
+  Text: () => null,
+}));
+
 import {
   AGENC_DAEMON_RECONNECTING_MESSAGE,
   attachDaemonAgentTuiSession,
@@ -8,6 +14,10 @@ import {
   type AgenCDaemonTuiClient,
   type AgenCTuiBridgeSession,
 } from "./daemon-session.js";
+import {
+  installElicitationResolvers,
+  subscribeToMcpUrlCompletions,
+} from "./elicitation-bridge.js";
 import type {
   AgenCDaemonMethod,
   AgenCDaemonResultByMethod,
@@ -93,6 +103,11 @@ function createClient(): AgenCDaemonTuiClient & {
   };
 }
 
+const flush = (): Promise<void> =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, 0);
+  });
+
 describe("AgenC TUI daemon session adapter", () => {
   it("attaches the TUI to an agent before subscribing to its daemon session", async () => {
     const client = createClient();
@@ -174,6 +189,155 @@ describe("AgenC TUI daemon session adapter", () => {
         content: "run tests",
       },
     });
+  });
+
+  it("exposes daemon elicitation response helpers to the TUI", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    await session.respondToUserInput("call_1", {
+      answers: { choice: { answers: ["Yes"] } },
+    });
+    await session.respondToMcpElicitation("srv", "mcp_1", {
+      action: "accept",
+      content: { ok: true },
+    });
+
+    expect(client.requests).toEqual([
+      {
+        method: "elicitation.respond",
+        params: {
+          sessionId: "session_1",
+          requestId: "call_1",
+          kind: "request_user_input",
+          response: {
+            answers: { choice: { answers: ["Yes"] } },
+          },
+        },
+      },
+      {
+        method: "elicitation.respond",
+        params: {
+          sessionId: "session_1",
+          requestId: "mcp_1",
+          kind: "mcp",
+          serverName: "srv",
+          response: {
+            action: "accept",
+            content: { ok: true },
+          },
+        },
+      },
+    ]);
+  });
+
+  it("bridges typed daemon elicitations through TUI resolvers", async () => {
+    const client = createClient();
+    const received: JsonObject[] = [];
+    const session = createDaemonTuiSession({
+      baseSession: {
+        ...createBaseSession(),
+        services: {
+          ...createBaseSession().services,
+          requestUserInputResolver: {
+            request: async (event) => {
+              expect(event.requestId).toBe("call_1");
+              expect(event.callId).toBe("call_1");
+              expect(event.turnId).toBe("turn_1");
+              return { answers: { choice: { answers: ["Yes"] } } };
+            },
+          },
+          mcpElicitationResolver: {
+            request: async (event) => {
+              expect(event.serverName).toBe("srv");
+              expect(event.requestId).toBe("mcp_1");
+              return { action: "accept", content: { ok: true } };
+            },
+          },
+        },
+      },
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    const unsubscribe = session.subscribeToEvents((event) => {
+      received.push(event as JsonObject);
+    });
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.user_input_request",
+      params: {
+        sessionId: "session_1",
+        eventId: "input_1",
+        requestId: "call_1",
+        callId: "call_1",
+        turnId: "turn_1",
+        questions: [
+          {
+            id: "choice",
+            header: "Choice",
+            question: "Proceed?",
+            isOther: true,
+            isSecret: false,
+            options: [
+              { label: "Yes", description: "Continue." },
+              { label: "No", description: "Stop." },
+            ],
+          },
+        ],
+      },
+    });
+    await flush();
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.mcp_elicitation_request",
+      params: {
+        sessionId: "session_1",
+        eventId: "mcp_1",
+        requestId: "mcp_1",
+        serverName: "srv",
+        turnId: "turn_1",
+        request: {
+          mode: "form",
+          message: "Need details",
+          requestedSchema: { type: "object", properties: {} },
+        },
+      },
+    });
+    await flush();
+    unsubscribe();
+
+    expect(received.map((event) => event.type)).toEqual([
+      "request_user_input",
+      "mcp_elicitation_request",
+    ]);
+    expect(client.requests).toEqual([
+      {
+        method: "elicitation.respond",
+        params: {
+          sessionId: "session_1",
+          requestId: "call_1",
+          kind: "request_user_input",
+          response: { answers: { choice: { answers: ["Yes"] } } },
+        },
+      },
+      {
+        method: "elicitation.respond",
+        params: {
+          sessionId: "session_1",
+          requestId: "mcp_1",
+          kind: "mcp",
+          serverName: "srv",
+          response: { action: "accept", content: { ok: true } },
+        },
+      },
+    ]);
   });
 
   it("flushes queued TUI idle input through an empty submit", async () => {
@@ -565,6 +729,316 @@ describe("AgenC TUI daemon session adapter", () => {
         payload: {
           message: AGENC_DAEMON_RECONNECTING_MESSAGE,
           status: "disconnected",
+        },
+      },
+    ]);
+  });
+
+  it("clears daemon-backed MCP URL prompts from completion notifications without duplicate responses", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const prompts: unknown[] = [];
+    const controller = installElicitationResolvers(session, (pending) => {
+      prompts.push(pending);
+    });
+    const unsubscribe = subscribeToMcpUrlCompletions(session, controller);
+
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.mcp_elicitation_request",
+      params: {
+        sessionId: "session_1",
+        eventId: "url_1",
+        requestId: "url_1",
+        serverName: "srv",
+        turnId: "turn_1",
+        request: {
+          mode: "url",
+          message: "Authorize",
+          elicitationId: "url_1",
+          url: "https://127.0.0.1/auth",
+        },
+      },
+    });
+    await flush();
+    expect((prompts.at(-1) as { readonly kind?: unknown } | undefined)?.kind)
+      .toBe("mcp-url");
+    expect(client.requests).toEqual([]);
+
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.session_event",
+      params: {
+        sessionId: "session_1",
+        event: {
+          id: "complete_1",
+          type: "mcp_elicitation_complete",
+          payload: { serverName: "srv", elicitationId: "url_1" },
+        },
+      },
+    });
+    await flush();
+
+    expect(prompts.at(-1)).toBeNull();
+    expect(client.requests).toEqual([]);
+    unsubscribe();
+    controller.cleanup();
+  });
+
+  it("sends daemon-backed MCP URL responses for explicit TUI submissions", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const controller = installElicitationResolvers(session, () => {});
+    const unsubscribe = subscribeToMcpUrlCompletions(session, controller);
+
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.mcp_elicitation_request",
+      params: {
+        sessionId: "session_1",
+        eventId: "url_1",
+        requestId: "url_1",
+        serverName: "srv",
+        turnId: "turn_1",
+        request: {
+          mode: "url",
+          message: "Authorize",
+          elicitationId: "url_1",
+          url: "https://127.0.0.1/auth",
+        },
+      },
+    });
+    await flush();
+
+    expect(controller.submit("")).toBe(true);
+    await flush();
+
+    expect(client.requests).toEqual([
+      {
+        method: "elicitation.respond",
+        params: {
+          sessionId: "session_1",
+          requestId: "url_1",
+          kind: "mcp",
+          serverName: "srv",
+          response: { action: "accept" },
+        },
+      },
+    ]);
+    unsubscribe();
+    controller.cleanup();
+  });
+
+  it("bridges daemon elicitations once with multiple event subscribers", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const prompts: unknown[] = [];
+    const controller = installElicitationResolvers(session, (pending) => {
+      prompts.push(pending);
+    });
+    const completionUnsubscribe = subscribeToMcpUrlCompletions(session, controller);
+    const transcriptEvents: unknown[] = [];
+    const transcriptUnsubscribe = session.subscribeToEvents((event) => {
+      transcriptEvents.push(event);
+    });
+
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.user_input_request",
+      params: {
+        sessionId: "session_1",
+        eventId: "input_1",
+        requestId: "call_1",
+        callId: "call_1",
+        turnId: "turn_1",
+        questions: [
+          {
+            id: "choice",
+            header: "Choice",
+            question: "Proceed?",
+            isOther: true,
+            isSecret: false,
+            options: [
+              { label: "Yes", description: "Continue." },
+              { label: "No", description: "Stop." },
+            ],
+          },
+        ],
+      },
+    });
+    await flush();
+
+    expect(prompts.filter((prompt) =>
+      (prompt as { readonly kind?: unknown } | null)?.kind === "user"
+    )).toHaveLength(1);
+    expect(controller.submit("Yes")).toBe(true);
+    await flush();
+    expect(client.requests).toEqual([
+      {
+        method: "elicitation.respond",
+        params: {
+          sessionId: "session_1",
+          requestId: "call_1",
+          kind: "request_user_input",
+          response: { answers: { choice: { answers: ["Yes"] } } },
+        },
+      },
+    ]);
+
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.mcp_elicitation_request",
+      params: {
+        sessionId: "session_1",
+        eventId: "url_1",
+        requestId: "url_1",
+        serverName: "srv",
+        turnId: "turn_1",
+        request: {
+          mode: "url",
+          message: "Authorize",
+          elicitationId: "url_1",
+          url: "https://127.0.0.1/auth",
+        },
+      },
+    });
+    await flush();
+
+    expect(prompts.filter((prompt) =>
+      (prompt as { readonly kind?: unknown } | null)?.kind === "mcp-url"
+    )).toHaveLength(1);
+
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.session_event",
+      params: {
+        sessionId: "session_1",
+        event: {
+          id: "complete_1",
+          type: "mcp_elicitation_complete",
+          payload: { serverName: "srv", elicitationId: "url_1" },
+        },
+      },
+    });
+    await flush();
+
+    expect(prompts.at(-1)).toBeNull();
+    expect(client.requests).toHaveLength(1);
+    expect(transcriptEvents.map((event) =>
+      (event as { readonly type?: unknown }).type
+    )).toEqual([
+      "request_user_input",
+      "mcp_elicitation_request",
+      "mcp_elicitation_complete",
+    ]);
+
+    transcriptUnsubscribe();
+    completionUnsubscribe();
+    controller.cleanup();
+  });
+
+  it("bridges null user-input resolver results as cancellation", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: {
+        ...createBaseSession(),
+        services: {
+          ...createBaseSession().services,
+          requestUserInputResolver: {
+            request: async () => null,
+          },
+        },
+      },
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    session.subscribeToEvents(() => {});
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.user_input_request",
+      params: {
+        sessionId: "session_1",
+        eventId: "input_1",
+        requestId: "call_1",
+        callId: "call_1",
+        turnId: "turn_1",
+        questions: [],
+      },
+    });
+    await flush();
+
+    expect(client.requests).toEqual([
+      {
+        method: "elicitation.respond",
+        params: {
+          sessionId: "session_1",
+          requestId: "call_1",
+          kind: "request_user_input",
+          response: { action: "cancel" },
+        },
+      },
+    ]);
+  });
+
+  it("bridges thrown user-input resolver results as cancellation", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: {
+        ...createBaseSession(),
+        services: {
+          ...createBaseSession().services,
+          requestUserInputResolver: {
+            request: async () => {
+              throw new Error("cancelled");
+            },
+          },
+        },
+      },
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    session.subscribeToEvents(() => {});
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.user_input_request",
+      params: {
+        sessionId: "session_1",
+        eventId: "input_1",
+        requestId: "call_1",
+        callId: "call_1",
+        turnId: "turn_1",
+        questions: [],
+      },
+    });
+    await flush();
+
+    expect(client.requests).toEqual([
+      {
+        method: "elicitation.respond",
+        params: {
+          sessionId: "session_1",
+          requestId: "call_1",
+          kind: "request_user_input",
+          response: { action: "cancel" },
         },
       },
     ]);
