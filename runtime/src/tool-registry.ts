@@ -471,6 +471,18 @@ export function buildToolRegistry(
       : {}),
   });
   const registryModelFacingTools = readToolList(options.modelFacingTools);
+  const modelFacingProviderNativeSurface = {
+    webSearch: "WebSearch",
+    webSearchNativeTool: "web_search",
+  } as const;
+  const modelFacingStringArgumentFields: Readonly<Record<string, string>> =
+    registryModelFacingTools.some(
+      (tool) => tool.name === modelFacingProviderNativeSurface.webSearch,
+    )
+      ? {
+        [modelFacingProviderNativeSurface.webSearch]: "query",
+      }
+      : {};
   const baseBuiltinSurfaceGroups: readonly BuiltinToolSurfaceGroup[] = [
     {
       id: "filesystem-compatibility",
@@ -536,6 +548,7 @@ export function buildToolRegistry(
       visibleByDefault: registryModelFacingTools
         .filter((tool) => tool.metadata?.deferred !== true)
         .map((tool) => tool.name),
+      stringArgumentFields: modelFacingStringArgumentFields,
     },
   ];
   const rawDefaultBuiltinTools = buildBuiltinToolSurface(
