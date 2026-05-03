@@ -9,6 +9,8 @@
 import { promises as fs } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 
+import { isSupportedUserImagePath } from "./attachments/user-image-input.js";
+
 export type MentionValidationResult =
   | { ok: true; resolved: string }
   | { ok: false; reason: "outside_workspace" | "unreadable" };
@@ -205,6 +207,23 @@ async function buildRealAllowedRoots(
   return out;
 }
 
+export async function resolveAllowedFileMentionRealPath(
+  resolvedPath: string,
+  cwd: string,
+  allowedRoots?: readonly string[],
+): Promise<string | null> {
+  let realTarget: string;
+  try {
+    realTarget = await fs.realpath(resolvedPath);
+  } catch {
+    return null;
+  }
+  const realAllowedRoots = await buildRealAllowedRoots(cwd, allowedRoots);
+  return realAllowedRoots.some((root) => isInsideRoot(root, realTarget))
+    ? realTarget
+    : null;
+}
+
 function relativePromptPath(cwd: string, resolvedPath: string): string {
   const cwdResolved = resolve(cwd);
   const rel = relative(cwdResolved, resolvedPath);
@@ -358,6 +377,11 @@ export async function expandFileMentions(
 
     if (!realAllowedRoots.some((root) => isInsideRoot(root, realTarget))) {
       rejected.push({ raw: mention.raw, resolved, reason: "outside_workspace" });
+      continue;
+    }
+
+    if (isSupportedUserImagePath(resolved)) {
+      seenResolved.add(resolved);
       continue;
     }
 

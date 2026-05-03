@@ -12,18 +12,90 @@
  *     per-turn attachment pipeline so every `Session.runTurn()` caller
  *     gets the same model-visible file context.
  *
- * Cross-cuts deliberately NOT carried:
- *   - PDF and image-specific attachment variants are owned by TL-17/TL-18.
- *
  * @module
  */
 
-import { expandFileMentions } from "../file-mentions.js";
+import { stat } from "node:fs/promises";
+
+import {
+  expandFileMentions,
+  resolveAllowedFileMentionRealPath,
+  scanMentions,
+} from "../file-mentions.js";
+import {
+  isSupportedUserImagePath,
+  normalizeUserImageInput,
+} from "./user-image-input.js";
 import type { AttachmentProducer } from "./orchestrator.js";
-import type { FileMentionContextAttachment } from "./types.js";
+import type {
+  FileMentionContextAttachment,
+  ImageMentionContextAttachment,
+} from "./types.js";
+
+export const IMAGE_MENTION_MAX_FILES = 10;
+export const IMAGE_MENTION_MAX_FILE_BYTES = 5 * 1024 * 1024;
+export const IMAGE_MENTION_MAX_TOTAL_BYTES = 20 * 1024 * 1024;
 
 function alreadyContainsFileMentionContext(input: string): boolean {
-  return input.includes("<attached_files>") && input.includes("</attached_files>");
+  return (
+    input.includes("<attached_files>") && input.includes("</attached_files>")
+  );
+}
+
+function userMessageForMentionScan(input: string): string {
+  if (!alreadyContainsFileMentionContext(input)) return input;
+  const match = /<user_message>\n([\s\S]*?)\n<\/user_message>/iu.exec(input);
+  return match?.[1] ?? input;
+}
+
+async function collectImageMentionAttachment(
+  input: string,
+  opts: Parameters<AttachmentProducer>[0],
+): Promise<ImageMentionContextAttachment | null> {
+  const mentions = scanMentions(input, opts.cwd, opts.fileMentionAllowedRoots);
+  if (mentions.length === 0) return null;
+  const seen = new Set<string>();
+  const images: Array<ImageMentionContextAttachment["images"][number]> = [];
+  let totalImageBytes = 0;
+
+  for (const mention of mentions) {
+    if (images.length >= IMAGE_MENTION_MAX_FILES) break;
+    if (!mention.validation.ok) continue;
+    const resolved = mention.validation.resolved;
+    if (seen.has(resolved) || !isSupportedUserImagePath(resolved)) continue;
+    if (
+      (await resolveAllowedFileMentionRealPath(
+        resolved,
+        opts.cwd,
+        opts.fileMentionAllowedRoots,
+      )) === null
+    ) {
+      continue;
+    }
+    const fileStat = await stat(resolved).catch(() => null);
+    if (
+      fileStat === null ||
+      !fileStat.isFile() ||
+      fileStat.size <= 0 ||
+      fileStat.size > IMAGE_MENTION_MAX_FILE_BYTES ||
+      totalImageBytes + fileStat.size > IMAGE_MENTION_MAX_TOTAL_BYTES
+    ) {
+      continue;
+    }
+    const image = normalizeUserImageInput(resolved, opts.cwd);
+    if (image === null || image.mediaType === undefined) continue;
+    seen.add(resolved);
+    totalImageBytes += fileStat.size;
+    images.push({
+      raw: mention.raw,
+      path: mention.raw,
+      resolved,
+      mediaType: image.mediaType,
+      url: image.content,
+    });
+  }
+
+  return images.length > 0 ? { kind: "image_mention", images } : null;
 }
 
 export const fileMentionsProducer: AttachmentProducer = async (opts) => {
@@ -31,21 +103,24 @@ export const fileMentionsProducer: AttachmentProducer = async (opts) => {
   if (opts.signal.aborted || input === null || !input.includes("@")) {
     return [];
   }
-  if (alreadyContainsFileMentionContext(input)) {
-    return [];
+  const mentionInput = userMessageForMentionScan(input);
+
+  const out: Array<FileMentionContextAttachment | ImageMentionContextAttachment> =
+    [];
+  if (!alreadyContainsFileMentionContext(input)) {
+    const expansion = await expandFileMentions(input, {
+      cwd: opts.cwd,
+      allowedRoots: opts.fileMentionAllowedRoots,
+    });
+    if (expansion.attachments.length > 0) {
+      out.push({
+        kind: "file_mention",
+        files: expansion.attachments,
+      });
+    }
   }
 
-  const expansion = await expandFileMentions(input, {
-    cwd: opts.cwd,
-    allowedRoots: opts.fileMentionAllowedRoots,
-  });
-  if (expansion.attachments.length === 0) {
-    return [];
-  }
-
-  const attachment: FileMentionContextAttachment = {
-    kind: "file_mention",
-    files: expansion.attachments,
-  };
-  return [attachment];
+  const imageAttachment = await collectImageMentionAttachment(mentionInput, opts);
+  if (imageAttachment !== null) out.push(imageAttachment);
+  return out;
 };

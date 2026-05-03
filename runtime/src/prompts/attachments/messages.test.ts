@@ -343,6 +343,38 @@ describe("attachmentsToMessages", () => {
     expect(out[0]?.content).not.toContain("<user_message>");
   });
 
+  test("renders image_mention attachments as multimodal user context", () => {
+    const out = attachmentsToMessages([
+      {
+        kind: "image_mention",
+        images: [
+          {
+            raw: "cat.png",
+            path: "cat.png",
+            resolved: "/repo/cat.png",
+            mediaType: "image/png",
+            url: "data:image/png;base64,aW1hZ2U=",
+          },
+        ],
+      },
+    ]);
+
+    expect(out).toHaveLength(1);
+    expect(out[0]?.role).toBe("user");
+    expect(out[0]?.runtimeOnly?.mergeBoundary).toBe("user_context");
+    expect(Array.isArray(out[0]?.content)).toBe(true);
+    const parts = out[0]?.content as Array<Record<string, unknown>>;
+    expect(parts[0]).toMatchObject({ type: "text" });
+    expect(parts[0]).toHaveProperty(
+      "text",
+      '<attached_images>\n<image path="cat.png" media_type="image/png" />\n</attached_images>',
+    );
+    expect(parts[1]).toMatchObject({
+      type: "image_url",
+      image_url: { url: "data:image/png;base64,aW1hZ2U=" },
+    });
+  });
+
   test("uses AgenC branding and does not leak legacy-branded memory names", () => {
     const planFilePath = "/home/u/.agenc/plans/active.md";
     const rendered = attachmentsToMessages([

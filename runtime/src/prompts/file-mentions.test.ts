@@ -75,6 +75,17 @@ describe("file @mentions", () => {
     expect(expanded.prompt).toContain("<user_message>\nexplain @src/app.ts");
   });
 
+  test("expandFileMentions leaves image paths for the image attachment pipeline", async () => {
+    const cwd = makeWorkspace();
+    writeFileSync(join(cwd, "cat.png"), Buffer.from("image-bytes"));
+
+    const expanded = await expandFileMentions("describe @cat.png", { cwd });
+
+    expect(expanded.attachments).toEqual([]);
+    expect(expanded.rejected).toEqual([]);
+    expect(expanded.prompt).toBe("describe @cat.png");
+  });
+
   test("expandFileMentions rejects paths outside allowed roots", async () => {
     const cwd = makeWorkspace();
     const outside = makeWorkspace();

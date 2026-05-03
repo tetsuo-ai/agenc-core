@@ -181,6 +181,61 @@ describe("buildAnthropicMessagesRequest", () => {
     ]);
   });
 
+  test("serializes data-url tool result images as Anthropic base64 content", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "claude-sonnet-4.5",
+      messages: [
+        { role: "user", content: "inspect" },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            {
+              id: "call_image",
+              name: "view_image",
+              arguments: "{\"path\":\"/tmp/cat.png\"}",
+            },
+          ],
+        },
+        {
+          role: "tool",
+          toolCallId: "call_image",
+          toolName: "view_image",
+          content: [
+            { type: "text", text: "Screenshot captured" },
+            {
+              type: "image_url",
+              image_url: { url: "data:image/png;base64,YWJj" },
+            },
+          ],
+        },
+      ],
+      tools: [],
+    });
+
+    expect(request.messages[2]).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "call_image",
+          cache_control: { type: "ephemeral" },
+          content: [
+            { type: "text", text: "Screenshot captured" },
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: "image/png",
+                data: "YWJj",
+              },
+            },
+          ],
+        },
+      ],
+    });
+  });
+
   test("serializes user images as Anthropic image blocks and preserves cache_control breakpoints", () => {
     const request = buildAnthropicMessagesRequest({
       model: "claude-sonnet-4.5",
@@ -226,6 +281,79 @@ describe("buildAnthropicMessagesRequest", () => {
               url: "http://localhost/cat.png",
             },
           },
+          {
+            type: "text",
+            text: "Describe the image",
+            cache_control: { type: "ephemeral" },
+          },
+        ],
+      },
+    ]);
+  });
+
+  test("serializes data-url user images as Anthropic base64 image blocks", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "claude-sonnet-4.5",
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image_url",
+              image_url: { url: "data:image/png;base64,YWJj" },
+            },
+            { type: "text", text: "Describe the image" },
+          ],
+        },
+      ],
+      tools: [],
+    });
+
+    expect(request.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: "image/png",
+              data: "YWJj",
+            },
+          },
+          {
+            type: "text",
+            text: "Describe the image",
+            cache_control: { type: "ephemeral" },
+          },
+        ],
+      },
+    ]);
+  });
+
+  test("does not send unsupported data-url image formats as Anthropic images", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "claude-sonnet-4.5",
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image_url",
+              image_url: { url: "data:image/bmp;base64,YWJj" },
+            },
+            { type: "text", text: "Describe the image" },
+          ],
+        },
+      ],
+      tools: [],
+    });
+
+    expect(request.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "[unsupported image]" },
           {
             type: "text",
             text: "Describe the image",

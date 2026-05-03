@@ -23,6 +23,10 @@ import {
   type GetAttachmentsOptions,
   getAttachments,
 } from "./orchestrator.js";
+import {
+  IMAGE_MENTION_MAX_FILE_BYTES,
+  IMAGE_MENTION_MAX_FILES,
+} from "./file-mentions.js";
 
 function makeOpts(
   partial?: Partial<GetAttachmentsOptions>,
@@ -81,19 +85,103 @@ describe("attachments orchestrator — live producer registry", () => {
     ).toBe(true);
   });
 
-  test("file mentions skip prompts that were already expanded by the submit path", async () => {
+  test("image file mentions resolve to multimodal image context through the live pipeline", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-image-mention-pipeline-"));
+    writeFileSync(join(cwd, "cat.png"), Buffer.from("image-bytes"));
+
+    const out = await getAttachments(
+      makeOpts({
+        cwd,
+        userInput: "describe @cat.png",
+      }),
+    );
+
+    expect(out.some((a) => a.kind === "image_mention")).toBe(true);
+    const messages = attachmentsToMessages(out);
+    const imageMessage = messages.find((message) =>
+      Array.isArray(message.content),
+    );
+    const parts = imageMessage?.content as
+      | Array<{ type?: string; image_url?: { url?: string }; text?: string }>
+      | undefined;
+    expect(parts?.[0]?.text).toContain("<attached_images>");
+    expect(parts?.[1]?.image_url?.url).toBe(
+      "data:image/png;base64,aW1hZ2UtYnl0ZXM=",
+    );
+  });
+
+  test("image file mentions enforce the per-turn count limit", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-image-mention-count-"));
+    const names = Array.from(
+      { length: IMAGE_MENTION_MAX_FILES + 1 },
+      (_, index) => `img-${index}.png`,
+    );
+    for (const name of names) {
+      writeFileSync(join(cwd, name), Buffer.from(name));
+    }
+
+    const out = await getAttachments(
+      makeOpts({
+        cwd,
+        userInput: names.map((name) => `@${name}`).join(" "),
+      }),
+    );
+
+    const imageAttachment = out.find((a) => a.kind === "image_mention");
+    expect(imageAttachment?.kind).toBe("image_mention");
+    if (imageAttachment?.kind !== "image_mention") {
+      throw new Error("expected image_mention attachment");
+    }
+    expect(imageAttachment.images).toHaveLength(IMAGE_MENTION_MAX_FILES);
+  });
+
+  test("image file mentions skip images over the per-file byte limit", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-image-mention-size-"));
+    writeFileSync(
+      join(cwd, "large.png"),
+      Buffer.alloc(IMAGE_MENTION_MAX_FILE_BYTES + 1, 1),
+    );
+
+    const out = await getAttachments(
+      makeOpts({
+        cwd,
+        userInput: "describe @large.png",
+      }),
+    );
+
+    expect(out.some((a) => a.kind === "image_mention")).toBe(false);
+  });
+
+  test("image file mentions reject formats unsupported by provider image blocks", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-image-mention-format-"));
+    writeFileSync(join(cwd, "vector.svg"), "<svg />\n");
+    writeFileSync(join(cwd, "bitmap.bmp"), Buffer.from("bmp"));
+
+    const out = await getAttachments(
+      makeOpts({
+        cwd,
+        userInput: "inspect @vector.svg @bitmap.bmp",
+      }),
+    );
+
+    expect(out.some((a) => a.kind === "image_mention")).toBe(false);
+  });
+
+  test("file mentions skip text reattachment but still attach images after submit-path expansion", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-file-mention-expanded-"));
     writeFileSync(join(cwd, "note.txt"), "already handled\n");
+    writeFileSync(join(cwd, "cat.png"), Buffer.from("image-bytes"));
 
     const out = await getAttachments(
       makeOpts({
         cwd,
         userInput:
-          '<attached_files>\n<file path="note.txt">already handled</file>\n</attached_files>\n\n<user_message>read @note.txt</user_message>',
+          '<attached_files>\n<file path="note.txt">already handled</file>\n</attached_files>\n\n<user_message>read @note.txt @cat.png</user_message>',
       }),
     );
 
     expect(out.some((a) => a.kind === "file_mention")).toBe(false);
+    expect(out.some((a) => a.kind === "image_mention")).toBe(true);
   });
 
   test("date_change fires once per local day, then suppresses on the next call", async () => {
