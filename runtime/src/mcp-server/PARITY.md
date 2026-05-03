@@ -12,4 +12,5 @@ This directory owns AgenC's server-side MCP framework:
 - `framework.ts` owns initialize/ping dispatch, lifecycle state, unsupported-method errors, server-originated request callbacks, notifications, and serialization.
 - `tools.ts` maps AgenC tools into MCP tool definitions and delegates `tools/call` to the AgenC tool registry.
 - `stdio.ts` owns server-side newline-delimited JSON-RPC over stdin/stdout streams.
+- `http-sse.ts` owns server-side HTTP POST and SSE framing for remote MCP clients.
 - `index.ts` exports the subsystem surface for later MS-* transport and integration work.

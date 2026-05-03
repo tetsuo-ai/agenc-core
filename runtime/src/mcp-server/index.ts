@@ -23,6 +23,14 @@ export {
   type McpStdioServerTransportOptions,
 } from "./stdio.js";
 
+export {
+  McpHttpSseServerTransport,
+  createMcpHttpSseNodeServer,
+  encodeSseEvent,
+  type McpHttpSseServerTransportOptions,
+  type McpHttpSseSessionSnapshot,
+} from "./http-sse.js";
+
 export type {
   McpCallToolResult,
   McpIncomingMessage,
