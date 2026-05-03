@@ -233,47 +233,45 @@ function specForTool(tool: Tool): ConfiguredToolSpec {
   };
 }
 
-const STRING_ARGUMENT_TOOL_FIELDS: Readonly<Record<string, string>> = {
-  exec_command: "cmd",
-  "system.bash": "command",
-  [FILE_READ_TOOL_NAME]: "file_path",
-  [FILE_WRITE_TOOL_NAME]: "file_path",
-  [FILE_EDIT_TOOL_NAME]: "file_path",
-  [FILE_MULTI_EDIT_TOOL_NAME]: "file_path",
-  "system.listDir": "path",
-  "system.stat": "path",
-  "system.mkdir": "path",
-  "system.delete": "path",
-  [GLOB_TOOL_NAME]: "pattern",
-  exec: "code",
-};
+interface BuiltinToolSurfaceGroup {
+  readonly id: string;
+  readonly tools: readonly Tool[];
+  readonly visibleByDefault?: readonly string[];
+  readonly stringArgumentFields?: Readonly<Record<string, string>>;
+}
 
-const DEFAULT_VISIBLE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
-  "exec_command",
-  "write_stdin",
-  // AgenC-owned file/search tools, lifted into AgenC and now
-  // first-class visible.
-  FILE_READ_TOOL_NAME,
-  FILE_EDIT_TOOL_NAME,
-  FILE_MULTI_EDIT_TOOL_NAME,
-  FILE_WRITE_TOOL_NAME,
-  GLOB_TOOL_NAME,
-  GREP_TOOL_NAME,
-  // `TodoWrite` is the AgenC port; the legacy runtime `update_plan`
-  // is intentionally not shipped — `/plan` itself is AgenC-owned
-  // (see `runtime/src/commands/plan.ts:4`), so the matching checklist
-  // tool is `TodoWrite`.
-  "TodoWrite",
-  "EnterPlanMode",
-  "ExitPlanMode",
-  "AskUserQuestion",
-  "system.searchTools",
-  "exec",
-  "wait",
-]);
+interface BuiltinToolSurface {
+  readonly tools: readonly Tool[];
+  readonly visibleToolNames: ReadonlySet<string>;
+  readonly stringArgumentFields: Readonly<Record<string, string>>;
+}
 
-function agencPrimarySurface(tool: Tool): Tool {
-  if (DEFAULT_VISIBLE_BUILTIN_TOOLS.has(tool.name)) return tool;
+function buildBuiltinToolSurface(
+  groups: readonly BuiltinToolSurfaceGroup[],
+): BuiltinToolSurface {
+  const visibleToolNames = new Set<string>();
+  const stringArgumentFields: Record<string, string> = {};
+  const tools: Tool[] = [];
+  for (const group of groups) {
+    const groupToolNames = new Set(group.tools.map((tool) => tool.name));
+    for (const name of group.visibleByDefault ?? []) {
+      if (groupToolNames.has(name)) visibleToolNames.add(name);
+    }
+    for (const [toolName, field] of Object.entries(
+      group.stringArgumentFields ?? {},
+    )) {
+      if (groupToolNames.has(toolName)) stringArgumentFields[toolName] = field;
+    }
+    tools.push(...group.tools);
+  }
+  return { tools, visibleToolNames, stringArgumentFields };
+}
+
+function applyBuiltinVisibility(
+  tool: Tool,
+  visibleToolNames: ReadonlySet<string>,
+): Tool {
+  if (visibleToolNames.has(tool.name)) return tool;
   if (tool.metadata?.source && tool.metadata.source !== "builtin") return tool;
   if (tool.metadata?.deferred === true) return tool;
   return withMetadata(tool, { deferred: true });
@@ -281,6 +279,7 @@ function agencPrimarySurface(tool: Tool): Tool {
 
 function parseToolCallArguments(
   toolCall: LLMToolCall,
+  stringArgumentFields: Readonly<Record<string, string>>,
 ): Record<string, unknown> {
   const raw = toolCall.arguments ?? "";
   if (!raw || raw.trim().length === 0) {
@@ -292,12 +291,12 @@ function parseToolCallArguments(
       return parsed as Record<string, unknown>;
     }
     if (typeof parsed === "string") {
-      const field = STRING_ARGUMENT_TOOL_FIELDS[toolCall.name];
+      const field = stringArgumentFields[toolCall.name];
       return field ? { [field]: parsed } : {};
     }
     return {};
   } catch {
-    const field = STRING_ARGUMENT_TOOL_FIELDS[toolCall.name];
+    const field = stringArgumentFields[toolCall.name];
     if (field && raw.trim().length > 0) {
       return { [field]: raw };
     }
@@ -339,6 +338,13 @@ export interface BuildToolRegistryOptions {
   /** Optional discoverable tools. These are cataloged and visible unless
    * their own metadata marks them deferred. */
   readonly discoverableTools?: ToolListInput;
+  /**
+   * Product/model-facing tools owned by the registry surface. Bootstrap
+   * wires WebFetch, agent, task, skill, notebook, and workflow tools here
+   * so `tool-registry.ts` remains the single place that combines the
+   * runtime-visible tool catalog.
+   */
+  readonly modelFacingTools?: ToolListInput;
   readonly unavailableCalledTools?: readonly string[];
   readonly parallelMcpServerNames?: ReadonlySet<string>;
   /**
@@ -385,21 +391,21 @@ export function buildToolRegistry(
     }
   };
 
-  const rawDefaultBuiltinTools: Tool[] = [
-    ...createFilesystemTools({
-      allowedPaths: [options.workspaceRoot],
-      allowDelete: options.allowBashDelete ?? false,
-    }),
-    ...createCodingTools({
-      allowedPaths: [options.workspaceRoot],
-      persistenceRootDir: options.workspaceRoot,
-      codeIntelligenceTools: options.codeIntelligenceTools ?? true,
-      getToolCatalog: () =>
-        buildRouter()
-          .getSpecs()
-          .map((spec) => catalogEntryForTool(spec.tool, spec)),
-      onDiscoverTools: markDiscovered,
-    }),
+  const filesystemCompatibilityTools = createFilesystemTools({
+    allowedPaths: [options.workspaceRoot],
+    allowDelete: options.allowBashDelete ?? false,
+  });
+  const codingTools = createCodingTools({
+    allowedPaths: [options.workspaceRoot],
+    persistenceRootDir: options.workspaceRoot,
+    codeIntelligenceTools: options.codeIntelligenceTools ?? true,
+    getToolCatalog: () =>
+      buildRouter()
+        .getSpecs()
+        .map((spec) => catalogEntryForTool(spec.tool, spec)),
+    onDiscoverTools: markDiscovered,
+  });
+  const shellTools = [
     createExecCommandTool({
       cwd: options.workspaceRoot,
       allowedPaths: [options.workspaceRoot],
@@ -419,7 +425,8 @@ export function buildToolRegistry(
         ? { execObserver: options.bashExecObserver }
         : {}),
     }),
-    // AgenC-owned file/search tools (lifted, now AgenC-owned).
+  ] as const;
+  const firstClassFileTools = [
     createFileReadTool({
       allowedPaths: [options.workspaceRoot],
     }),
@@ -439,6 +446,8 @@ export function buildToolRegistry(
     createGrepTool({
       allowedPaths: [options.workspaceRoot],
     }),
+  ] as const;
+  const interactionTools = [
     createAskUserQuestionTool(),
     createSleepTool(),
     createMonitorTool({
@@ -447,12 +456,83 @@ export function buildToolRegistry(
     }),
     createEnterWorktreeTool({ cwd: options.workspaceRoot }),
     createExitWorktreeTool({ cwd: options.workspaceRoot }),
-    ...createPlanningTools({
-      ...(options.workflowController !== undefined
-        ? { workflowController: options.workflowController }
-        : {}),
-    }),
+  ] as const;
+  const planningTools = createPlanningTools({
+    ...(options.workflowController !== undefined
+      ? { workflowController: options.workflowController }
+      : {}),
+  });
+  const registryModelFacingTools = readToolList(options.modelFacingTools);
+  const baseBuiltinSurfaceGroups: readonly BuiltinToolSurfaceGroup[] = [
+    {
+      id: "filesystem-compatibility",
+      tools: filesystemCompatibilityTools,
+      stringArgumentFields: {
+        "system.listDir": "path",
+        "system.stat": "path",
+        "system.mkdir": "path",
+        "system.delete": "path",
+      },
+    },
+    {
+      id: "coding",
+      tools: codingTools,
+      visibleByDefault: ["system.searchTools"],
+      stringArgumentFields: {
+        "system.grep": "pattern",
+        "system.glob": "pattern",
+      },
+    },
+    {
+      id: "shell",
+      tools: shellTools,
+      visibleByDefault: ["exec_command", "write_stdin"],
+      stringArgumentFields: {
+        exec_command: "cmd",
+        "system.bash": "command",
+      },
+    },
+    {
+      id: "first-class-files",
+      tools: firstClassFileTools,
+      visibleByDefault: [
+        FILE_READ_TOOL_NAME,
+        FILE_EDIT_TOOL_NAME,
+        FILE_MULTI_EDIT_TOOL_NAME,
+        FILE_WRITE_TOOL_NAME,
+        GLOB_TOOL_NAME,
+        GREP_TOOL_NAME,
+      ],
+      stringArgumentFields: {
+        [FILE_READ_TOOL_NAME]: "file_path",
+        [FILE_WRITE_TOOL_NAME]: "file_path",
+        [FILE_EDIT_TOOL_NAME]: "file_path",
+        [FILE_MULTI_EDIT_TOOL_NAME]: "file_path",
+        [GLOB_TOOL_NAME]: "pattern",
+        [GREP_TOOL_NAME]: "pattern",
+      },
+    },
+    {
+      id: "interaction",
+      tools: interactionTools,
+      visibleByDefault: ["AskUserQuestion"],
+    },
+    {
+      id: "planning",
+      tools: planningTools,
+      visibleByDefault: ["TodoWrite", "EnterPlanMode", "ExitPlanMode"],
+    },
+    {
+      id: "model-facing",
+      tools: registryModelFacingTools,
+      visibleByDefault: registryModelFacingTools
+        .filter((tool) => tool.metadata?.deferred !== true)
+        .map((tool) => tool.name),
+    },
   ];
+  const rawDefaultBuiltinTools = buildBuiltinToolSurface(
+    baseBuiltinSurfaceGroups,
+  ).tools;
   const codeModeTools: readonly Tool[] =
     options.codeModeService?.enabled() === true
       ? createCodeModeTools({
@@ -461,10 +541,20 @@ export function buildToolRegistry(
           descriptionTools: rawDefaultBuiltinTools,
         })
       : [];
-  const defaultBuiltinTools: Tool[] = [
-    ...rawDefaultBuiltinTools,
-    ...codeModeTools,
-  ].map((tool) => tagTool(agencPrimarySurface(tool)));
+  const builtinSurface = buildBuiltinToolSurface([
+    ...baseBuiltinSurfaceGroups,
+    {
+      id: "code-mode",
+      tools: codeModeTools,
+      visibleByDefault: ["exec", "wait"],
+      stringArgumentFields: {
+        exec: "code",
+      },
+    },
+  ]);
+  const defaultBuiltinTools: Tool[] = builtinSurface.tools.map((tool) =>
+    tagTool(applyBuiltinVisibility(tool, builtinSurface.visibleToolNames)),
+  );
   const extraTools: Tool[] = (options.extraTools ?? []).map((tool) =>
     tagTool(tool),
   );
@@ -568,7 +658,10 @@ export function buildToolRegistry(
         };
       }
       try {
-        const args = parseToolCallArguments(toolCall);
+        const args = parseToolCallArguments(
+          toolCall,
+          builtinSurface.stringArgumentFields,
+        );
         Object.defineProperty(args, "__callId", {
           value: toolCall.id,
           enumerable: false,
