@@ -16,6 +16,13 @@ export {
   type McpRegisteredTool,
 } from "./tools.js";
 
+export {
+  McpStdioServerTransport,
+  encodeMcpJsonLine,
+  writeMcpJsonLine,
+  type McpStdioServerTransportOptions,
+} from "./stdio.js";
+
 export type {
   McpCallToolResult,
   McpIncomingMessage,

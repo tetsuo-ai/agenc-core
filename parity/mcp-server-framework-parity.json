@@ -13,12 +13,14 @@
     "runtime/src/mcp-server/types.ts",
     "runtime/src/mcp-server/framework.ts",
     "runtime/src/mcp-server/tools.ts",
+    "runtime/src/mcp-server/stdio.ts",
     "runtime/src/mcp-server/index.ts",
     "runtime/src/mcp-server/PARITY.md"
   ],
   "testFiles": [
     "runtime/src/mcp-server/framework.test.ts",
-    "runtime/src/mcp-server/tools.test.ts"
+    "runtime/src/mcp-server/tools.test.ts",
+    "runtime/src/mcp-server/stdio.test.ts"
   ],
   "rows": [
     {
@@ -76,6 +78,27 @@
       ],
       "tests": [
         "runtime/src/mcp-server/tools.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "stdio-transport",
+      "source": "mcp-server/src/lib.rs",
+      "target": "runtime/src/mcp-server/stdio.ts",
+      "requiredBehaviors": [
+        "stdin is read as newline-delimited JSON-RPC messages",
+        "each input line is dispatched through the MCP server framework",
+        "each outgoing JSON-RPC message is serialized as one stdout line",
+        "initial pre-initialize input is ordered while post-initialize client responses can progress during async request handling"
+      ],
+      "edgeCases": [
+        "malformed JSON lines produce framework parse-error responses and do not stop later valid messages",
+        "embedded newlines inside JSON strings stay escaped inside a single output frame",
+        "closing the input stream waits for active line processing before notifying close",
+        "client responses arriving during an in-flight tool call can resolve server-originated callbacks"
+      ],
+      "tests": [
+        "runtime/src/mcp-server/stdio.test.ts"
       ],
       "status": "required"
     },
