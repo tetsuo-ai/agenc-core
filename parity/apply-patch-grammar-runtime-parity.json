@@ -1,0 +1,97 @@
+{
+  "contractName": "apply-patch-grammar-runtime-parity",
+  "scope": "AgenC apply-patch parser, runtime primitive, and model-facing tool wrapper parity with the donor apply-patch subsystem.",
+  "sourceRoot": "donor-runtime-snapshot",
+  "targetRoot": "..",
+  "sourceCommit": "35aaa5d9fcb606fb6f27dd5747ecab3f4ba0c07e",
+  "sourceCommitDescribe": "35aaa5d9fc Bound websocket request sends with idle timeout (#20751)",
+  "sourceFiles": [
+    "apply-patch/src/lib.rs",
+    "apply-patch/src/parser.rs",
+    "apply-patch/src/seek_sequence.rs",
+    "core/src/apply_patch.rs",
+    "tools/src/apply_patch_tool.rs",
+    "tools/src/tool_apply_patch.lark"
+  ],
+  "targetFiles": [
+    "runtime/src/tools/apply-patch/types.ts",
+    "runtime/src/tools/apply-patch/parser.ts",
+    "runtime/src/tools/apply-patch/seek-sequence.ts",
+    "runtime/src/tools/apply-patch/runtime.ts",
+    "runtime/src/tools/apply-patch/tool.ts",
+    "runtime/src/tools/apply-patch/index.ts",
+    "runtime/src/tools/apply-patch/PARITY.md",
+    "runtime/src/tool-registry.ts"
+  ],
+  "testFiles": [
+    "runtime/src/tools/apply-patch/parser.test.ts",
+    "runtime/src/tools/apply-patch/runtime.test.ts",
+    "runtime/src/tools/apply-patch/tool.test.ts",
+    "runtime/src/tool-registry.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "patch-grammar",
+      "source": "apply-patch/src/parser.rs",
+      "target": "runtime/src/tools/apply-patch/parser.ts",
+      "requiredBehaviors": [
+        "strict mode requires the begin and end patch markers",
+        "lenient mode unwraps EOF heredoc payloads before parsing",
+        "add, delete, update, move, context, and end-of-file chunks parse into ordered hunk data",
+        "invalid hunks report donor-shaped line-numbered parse errors"
+      ],
+      "edgeCases": [
+        "first update chunk may omit an explicit @@ marker",
+        "empty update hunks are rejected",
+        "empty lines inside update chunks are treated as unchanged lines"
+      ],
+      "tests": [
+        "runtime/src/tools/apply-patch/parser.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "patch-runtime",
+      "source": "apply-patch/src/lib.rs",
+      "target": "runtime/src/tools/apply-patch/runtime.ts",
+      "requiredBehaviors": [
+        "add hunks create missing parent directories and write full contents",
+        "delete hunks remove files and reject directory targets",
+        "update hunks locate expected old lines after optional context markers and write newline-terminated contents",
+        "move hunks write the destination and remove the source",
+        "success summaries list added, modified, then deleted paths"
+      ],
+      "edgeCases": [
+        "interleaved update chunks apply in descending replacement order",
+        "end-of-file additions prefer the file ending",
+        "trailing empty old-line sentinels are retried without the sentinel",
+        "ASCII patch text can match common typographic punctuation in source files"
+      ],
+      "tests": [
+        "runtime/src/tools/apply-patch/runtime.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "tool-surface",
+      "source": "tools/src/apply_patch_tool.rs",
+      "target": "runtime/src/tools/apply-patch/tool.ts",
+      "requiredBehaviors": [
+        "the tool is named apply_patch",
+        "JSON input accepts a single input string",
+        "raw/freeform callers can be adapted by the registry string-argument map",
+        "the Lark grammar is exported exactly for future freeform-capable providers",
+        "permission checks cover every affected patch path before execution"
+      ],
+      "edgeCases": [
+        "invalid patch input returns a tool error rather than mutating files",
+        "paths outside allowed roots are rejected by the runtime"
+      ],
+      "tests": [
+        "runtime/src/tools/apply-patch/tool.test.ts",
+        "runtime/src/tool-registry.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

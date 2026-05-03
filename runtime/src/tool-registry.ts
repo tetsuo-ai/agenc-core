@@ -66,6 +66,10 @@ import {
   type CodeModeService,
 } from "./tools/code-mode/index.js";
 import {
+  APPLY_PATCH_TOOL_NAME,
+  createApplyPatchTool,
+} from "./tools/apply-patch/index.js";
+import {
   defaultConcurrencyClassFor,
   isBashTool,
   isReadOnlyFilesystemTool,
@@ -462,6 +466,10 @@ export function buildToolRegistry(
     createGrepTool({
       allowedPaths: [options.workspaceRoot],
     }),
+    createApplyPatchTool({
+      cwd: options.workspaceRoot,
+      allowedPaths: [options.workspaceRoot],
+    }),
   ] as const;
   const firstClassFileSurface = {
     "read": FILE_READ_TOOL_NAME,
@@ -551,6 +559,7 @@ export function buildToolRegistry(
         [firstClassFileSurface.multiEdit]: "file_path",
         [firstClassFileSurface.glob]: "pattern",
         [firstClassFileSurface.grep]: "pattern",
+        [APPLY_PATCH_TOOL_NAME]: "input",
       },
     },
     {
