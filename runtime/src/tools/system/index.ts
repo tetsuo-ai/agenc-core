@@ -81,7 +81,9 @@ export {
 
 export {
   createFileEditTool,
+  createFileMultiEditTool,
   FILE_EDIT_TOOL_NAME,
+  FILE_MULTI_EDIT_TOOL_NAME,
   type FileEditToolConfig,
 } from "./file-edit.js";
 
