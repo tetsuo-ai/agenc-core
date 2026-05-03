@@ -192,6 +192,46 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(registry.getDiscoveredToolNames?.().has("FileRead")).toBe(false);
   });
 
+  test("tools_config disables tools before catalog advertisement and dispatch", async () => {
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      toolsConfig: {
+        exec_command: { enabled: false },
+        Write: false,
+      },
+    });
+
+    const registeredNames = registry.tools.map((tool) => tool.name);
+    expect(registeredNames).not.toContain("exec_command");
+    expect(registeredNames).not.toContain("Write");
+
+    const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
+    expect(visibleNames).not.toContain("exec_command");
+    expect(visibleNames).not.toContain("Write");
+
+    const result = await registry.dispatch({
+      id: "disabled-exec",
+      name: "exec_command",
+      arguments: JSON.stringify({ cmd: "printf should-not-run" }),
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("unknown tool: exec_command");
+  });
+
+  test("tools_config tags per-tool default permission mode on registered tools", () => {
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      toolsConfig: {
+        Edit: {
+          default_permission_mode: "never",
+        },
+      },
+    });
+
+    const edit = registry.tools.find((tool) => tool.name === "Edit");
+    expect(edit?.defaultPermissionMode).toBe("never");
+  });
+
   test("searchTools advertisedOnly is derived from the registry visible surface", async () => {
     const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
 

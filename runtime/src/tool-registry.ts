@@ -26,6 +26,7 @@ import type { LLMTool, LLMToolCall } from "./llm/types.js";
 import type { FunctionCallOutputContentItem } from "./tools/context.js";
 import type { Tool, ToolCatalogEntry, ToolMetadata } from "./tools/types.js";
 import { safeStringify } from "./tools/types.js";
+import type { ToolsConfig } from "./config/schema.js";
 import {
   createFilesystemTools,
   createCodingTools,
@@ -77,6 +78,10 @@ import {
   ToolRouter,
   type ConfiguredToolSpec,
 } from "./tools/router.js";
+import {
+  resolvePerToolConfig,
+  toolConfigAllowsTool,
+} from "./tools/config.js";
 
 export interface ToolDispatchResult {
   readonly content: string;
@@ -363,6 +368,12 @@ export interface BuildToolRegistryOptions {
   /** Upstream-style JavaScript code-mode service for exec/wait. */
   readonly codeModeService?: CodeModeService;
   /**
+   * Config-driven tool policy. Boolean entries are enable/disable
+   * shorthands; object entries can set `enabled` and
+   * `default_permission_mode` per tool.
+   */
+  readonly toolsConfig?: ToolsConfig;
+  /**
    * Runtime integration seam: extra tools to register beyond the default
    * coding-profile catalog. The CLI uses this for model-facing tools such
    * as `spawn_agent`.
@@ -564,12 +575,15 @@ export function buildToolRegistry(
   const rawDefaultBuiltinTools = buildBuiltinToolSurface(
     baseBuiltinSurfaceGroups,
   ).tools;
+  const configuredRawDefaultBuiltinTools = configuredTools(
+    rawDefaultBuiltinTools,
+  );
   const codeModeTools: readonly Tool[] =
     options.codeModeService?.enabled() === true
       ? createCodeModeTools({
           service: options.codeModeService,
           getEnabledTools: () => allSpecs().map((spec) => spec.tool),
-          descriptionTools: rawDefaultBuiltinTools,
+          descriptionTools: configuredRawDefaultBuiltinTools,
         })
       : [];
   const builtinSurface = buildBuiltinToolSurface([
@@ -583,11 +597,26 @@ export function buildToolRegistry(
       },
     },
   ]);
-  const defaultBuiltinTools: Tool[] = builtinSurface.tools.map((tool) =>
-    tagTool(applyBuiltinVisibility(tool, builtinSurface.visibleToolNames)),
+  function applyConfiguredTool(tool: Tool): Tool | null {
+    if (!toolConfigAllowsTool(options.toolsConfig, tool.name)) return null;
+    const config = resolvePerToolConfig(options.toolsConfig, tool.name);
+    if (config.defaultPermissionMode === undefined) return tool;
+    return { ...tool, defaultPermissionMode: config.defaultPermissionMode };
+  }
+
+  function configuredTools(tools: readonly Tool[]): Tool[] {
+    return tools
+      .map((tool) => applyConfiguredTool(tool))
+      .filter((tool): tool is Tool => tool !== null);
+  }
+
+  const defaultBuiltinTools: Tool[] = configuredTools(
+    builtinSurface.tools.map((tool) =>
+      tagTool(applyBuiltinVisibility(tool, builtinSurface.visibleToolNames)),
+    ),
   );
-  const extraTools: Tool[] = (options.extraTools ?? []).map((tool) =>
-    tagTool(tool),
+  const extraTools: Tool[] = configuredTools(
+    (options.extraTools ?? []).map((tool) => tagTool(tool)),
   );
   const staticTools: Tool[] = [...defaultBuiltinTools, ...extraTools];
 
@@ -598,39 +627,47 @@ export function buildToolRegistry(
   //   - WebFetch/WebSearch                → SharedRead (network reads)
   //   - bash                              → BackgroundTerminal (subprocess)
   function currentMcpTools(): readonly Tool[] {
-    return (options.mcpToolsProvider?.getTools() ?? []).map((tool) => {
-      const serverId = inferMcpServerId(tool.name);
-      return tagTool(
-        withMetadata(tool, {
-          source: "mcp",
-          family: "mcp",
-          deferred: options.deferMcpTools ?? true,
-        }),
-        serverId ? { serverId } : {},
-      );
-    });
+    return configuredTools(
+      (options.mcpToolsProvider?.getTools() ?? []).map((tool) => {
+        const serverId = inferMcpServerId(tool.name);
+        return tagTool(
+          withMetadata(tool, {
+            source: "mcp",
+            family: "mcp",
+            deferred: options.deferMcpTools ?? true,
+          }),
+          serverId ? { serverId } : {},
+        );
+      }),
+    );
   }
 
   function currentDynamicTools(): readonly Tool[] {
-    return readToolList(options.dynamicTools).map((tool) =>
-      tagTool(withMetadata(tool, { source: tool.metadata?.source ?? "plugin" })),
+    return configuredTools(
+      readToolList(options.dynamicTools).map((tool) =>
+        tagTool(withMetadata(tool, { source: tool.metadata?.source ?? "plugin" })),
+      ),
     );
   }
 
   function currentDeferredTools(): readonly Tool[] {
-    return readToolList(options.deferredTools).map((tool) =>
-      tagTool(
-        withMetadata(tool, {
-          source: tool.metadata?.source ?? "plugin",
-          deferred: true,
-        }),
+    return configuredTools(
+      readToolList(options.deferredTools).map((tool) =>
+        tagTool(
+          withMetadata(tool, {
+            source: tool.metadata?.source ?? "plugin",
+            deferred: true,
+          }),
+        ),
       ),
     );
   }
 
   function currentDiscoverableTools(): readonly Tool[] {
-    return readToolList(options.discoverableTools).map((tool) =>
-      tagTool(withMetadata(tool, { source: tool.metadata?.source ?? "plugin" })),
+    return configuredTools(
+      readToolList(options.discoverableTools).map((tool) =>
+        tagTool(withMetadata(tool, { source: tool.metadata?.source ?? "plugin" })),
+      ),
     );
   }
 
