@@ -253,6 +253,46 @@ describe("buildChatCompletionsRequest", () => {
     ]);
   });
 
+  test("uses extracted PDF text for chat-compatible providers without native PDF input", () => {
+    const request = buildChatCompletionsRequest({
+      model: "qwen-local",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "summarize" },
+            {
+              type: "document",
+              source: {
+                type: "base64",
+                media_type: "application/pdf",
+                data: "JVBERi0xLjQK",
+              },
+              filename: "brief.pdf",
+              fallbackText: "Extracted PDF text",
+              fallbackTextTruncated: false,
+            },
+          ],
+        },
+      ],
+      tools: [],
+    });
+
+    expect(request.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "summarize" },
+          {
+            type: "text",
+            text:
+              '<attached_pdf_text filename="brief.pdf" media_type="application/pdf" truncated="false">\nExtracted PDF text\n</attached_pdf_text>',
+          },
+        ],
+      },
+    ]);
+  });
+
   test("records chat completions endpoint markers in request metrics", () => {
     const response = parseChatCompletionsResponse(
       "gpt-4.1",

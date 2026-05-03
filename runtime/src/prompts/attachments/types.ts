@@ -283,6 +283,23 @@ export interface ImageMentionContextAttachment {
   }>;
 }
 
+/** PDF content resolved from a user-authored `@path` mention. */
+export interface PdfMentionContextAttachment {
+  readonly kind: "pdf_mention";
+  readonly pdfs: ReadonlyArray<{
+    readonly raw: string;
+    readonly path: string;
+    readonly resolved: string;
+    readonly mediaType: "application/pdf";
+    readonly data: string;
+    readonly bytes: number;
+    readonly filename: string;
+    readonly fallbackText?: string;
+    readonly fallbackTextTruncated?: boolean;
+    readonly fallbackTextError?: string;
+  }>;
+}
+
 /**
  * Available skills listing for the model-facing Skill tool.
  * Source: upstream skill-tool donor `tools/SkillTool/prompt.ts` listing behavior.
@@ -323,6 +340,7 @@ export type Attachment =
   | AgentMentionAttachment
   | FileMentionContextAttachment
   | ImageMentionContextAttachment
+  | PdfMentionContextAttachment
   | SkillListingAttachment;
 
 /** All possible `Attachment.kind` values. */

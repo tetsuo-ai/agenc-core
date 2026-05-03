@@ -45,6 +45,11 @@ import {
 } from "../session/rollout-reconstruction.js";
 import type { Session, SessionState } from "../session/session.js";
 
+type RolloutContentPart = Extract<
+  ResponseItem["content"],
+  ReadonlyArray<unknown>
+>[number];
+
 export type ConversationPrewarmState =
   | "not_started"
   | "skipped"
@@ -911,6 +916,42 @@ function cloneLlmHistory(history: ReadonlyArray<ResponseItem>): LLMMessage[] {
   }));
 }
 
+function cloneDocumentPartFromRollout(
+  part: RolloutContentPart,
+): Extract<LLMContentPart, { type: "document" }> | null {
+  if (part.type !== "document") return null;
+  const source =
+    part.source && typeof part.source === "object"
+      ? (part.source as Record<string, unknown>)
+      : null;
+  if (
+    source?.type !== "base64" ||
+    source.media_type !== "application/pdf" ||
+    typeof source.data !== "string"
+  ) {
+    return null;
+  }
+  return {
+    type: "document",
+    source: {
+      type: "base64",
+      media_type: "application/pdf",
+      data: source.data,
+    },
+    ...(typeof part.title === "string" ? { title: part.title } : {}),
+    ...(typeof part.filename === "string" ? { filename: part.filename } : {}),
+    ...(typeof part.fallbackText === "string"
+      ? { fallbackText: part.fallbackText }
+      : {}),
+    ...(typeof part.fallbackTextTruncated === "boolean"
+      ? { fallbackTextTruncated: part.fallbackTextTruncated }
+      : {}),
+    ...(typeof part.fallbackTextError === "string"
+      ? { fallbackTextError: part.fallbackTextError }
+      : {}),
+  };
+}
+
 function cloneLlmContent(content: ResponseItem["content"]): LLMMessage["content"] {
   if (typeof content === "string") return content;
   return content
@@ -919,11 +960,14 @@ function cloneLlmContent(content: ResponseItem["content"]): LLMMessage["content"
         (part.type === "text" && typeof part.text === "string") ||
         (part.type === "image_url" &&
           typeof (part as { image_url?: { url?: unknown } }).image_url?.url ===
-            "string"),
+            "string") ||
+        cloneDocumentPartFromRollout(part) !== null,
     )
-    .map((part) =>
-      part.type === "text"
-        ? { type: "text", text: part.text }
-        : { type: "image_url", image_url: { url: part.image_url.url } },
-    );
+    .map((part) => {
+      if (part.type === "text") return { type: "text", text: part.text };
+      if (part.type === "document") {
+        return cloneDocumentPartFromRollout(part) ?? part;
+      }
+      return { type: "image_url", image_url: { url: part.image_url.url } };
+    });
 }

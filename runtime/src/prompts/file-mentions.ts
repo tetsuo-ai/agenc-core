@@ -10,6 +10,7 @@ import { promises as fs } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 
 import { isSupportedUserImagePath } from "./attachments/user-image-input.js";
+import { isSupportedUserPdfPath } from "./attachments/user-pdf-input.js";
 
 export type MentionValidationResult =
   | { ok: true; resolved: string }
@@ -380,7 +381,10 @@ export async function expandFileMentions(
       continue;
     }
 
-    if (isSupportedUserImagePath(resolved)) {
+    if (
+      isSupportedUserImagePath(resolved) ||
+      isSupportedUserPdfPath(resolved)
+    ) {
       seenResolved.add(resolved);
       continue;
     }

@@ -136,6 +136,77 @@ describe("responses-xai wire shim", () => {
     });
   });
 
+  test("uses extracted PDF text for local PDF attachments in xAI Responses", () => {
+    const built = buildXaiResponsesInputItems([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "summarize" },
+          {
+            type: "document",
+            source: {
+              type: "base64",
+              media_type: "application/pdf",
+              data: "JVBERi0xLjQK",
+              },
+              filename: "brief.pdf",
+              fallbackText: "Extracted PDF text",
+              fallbackTextTruncated: false,
+            },
+          ],
+        },
+    ]);
+
+    expect(built).toEqual({
+      hasImages: false,
+      input: [
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: "summarize" },
+            {
+              type: "input_text",
+              text:
+                '<attached_pdf_text filename="brief.pdf" media_type="application/pdf" truncated="false">\nExtracted PDF text\n</attached_pdf_text>',
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  test("passes xAI file references through as input_file parts", () => {
+    const built = buildXaiResponsesInputItems([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "summarize" },
+          {
+            type: "input_file",
+            file_url: "https://docs.x.ai/assets/api-examples/documents/report.pdf",
+          },
+        ] as unknown as LLMMessage["content"],
+      },
+    ]);
+
+    expect(built).toEqual({
+      hasImages: false,
+      input: [
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: "summarize" },
+            {
+              type: "input_file",
+              file_url:
+                "https://docs.x.ai/assets/api-examples/documents/report.pdf",
+            },
+          ],
+        },
+      ],
+    });
+  });
+
   test("builds flat xAI function tools and documented request controls", () => {
     const tools = toXaiResponsesTools([TEST_TOOL]);
     const request = buildXaiResponsesRequest({

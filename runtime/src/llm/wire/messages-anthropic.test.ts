@@ -331,6 +331,48 @@ describe("buildAnthropicMessagesRequest", () => {
     ]);
   });
 
+  test("serializes user PDFs as Anthropic document blocks", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "claude-sonnet-4.5",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Summarize this PDF" },
+            {
+              type: "document",
+              source: {
+                type: "base64",
+                media_type: "application/pdf",
+                data: "JVBERi0xLjQK",
+              },
+              filename: "brief.pdf",
+            },
+          ],
+        },
+      ],
+      tools: [],
+    });
+
+    expect(request.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Summarize this PDF" },
+          {
+            type: "document",
+            source: {
+              type: "base64",
+              media_type: "application/pdf",
+              data: "JVBERi0xLjQK",
+            },
+            cache_control: { type: "ephemeral" },
+          },
+        ],
+      },
+    ]);
+  });
+
   test("does not send unsupported data-url image formats as Anthropic images", () => {
     const request = buildAnthropicMessagesRequest({
       model: "claude-sonnet-4.5",

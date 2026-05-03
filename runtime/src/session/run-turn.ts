@@ -311,6 +311,7 @@ function userContentHasInput(content: string | LLMContentPart[]): boolean {
   if (typeof content === "string") return content.trim().length > 0;
   return content.some((part) => {
     if (part.type === "text") return part.text.trim().length > 0;
+    if (part.type === "document") return part.source.data.trim().length > 0;
     return part.image_url.url.trim().length > 0;
   });
 }
@@ -320,6 +321,7 @@ function userContentDisplayText(content: string | LLMContentPart[]): string {
   return content
     .map((part) => {
       if (part.type === "text") return part.text;
+      if (part.type === "document") return "[document]";
       return "[image]";
     })
     .filter((part) => part.trim().length > 0)
@@ -349,7 +351,7 @@ function mergePendingInputIntoUserContent(
   }
   const hasMultimodalContent = pending.some(
     (message) => Array.isArray(message.content) &&
-      message.content.some((part) => part.type === "image_url"),
+      message.content.some((part) => part.type !== "text"),
   ) || Array.isArray(userMessage);
   if (!hasMultimodalContent) {
     const parts = [
@@ -375,6 +377,8 @@ function mergePendingInputIntoUserContent(
     for (const part of message.content) {
       if (part.type === "text") {
         appendTextPart(contentParts, part.text);
+      } else if (part.type === "document") {
+        if (part.source.data.trim().length > 0) contentParts.push(part);
       } else if (part.image_url.url.trim().length > 0) {
         contentParts.push(part);
       }

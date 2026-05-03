@@ -9,7 +9,7 @@
  */
 
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 vi.mock("axios", () => {
@@ -115,6 +115,23 @@ function mkCtx(): TurnContext {
       wait: async () => {},
     },
   } as unknown as TurnContext;
+}
+
+function installFakePdfTextExtractor(cwd: string, text: string): () => void {
+  const savedPath = process.env.PATH;
+  const bin = join(cwd, "bin");
+  mkdirSync(bin);
+  const pdftotext = join(bin, "pdftotext");
+  writeFileSync(pdftotext, `#!/bin/sh\ncat <<'EOF'\n${text}\nEOF\n`, "utf8");
+  chmodSync(pdftotext, 0o755);
+  process.env.PATH = `${bin}:${savedPath ?? ""}`;
+  return () => {
+    if (savedPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = savedPath;
+    }
+  };
 }
 
 function mkFeatures(): ManagedFeatures {
@@ -515,6 +532,62 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     expect(parts?.[1]?.image_url?.url).toBe(
       "data:image/png;base64,aW1hZ2UtYnl0ZXM=",
     );
+  });
+
+  test("resolves PDF file mentions as document context for direct Session.runTurn callers", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-run-turn-pdf-mention-"));
+    const pdfBytes = Buffer.from("%PDF-1.4\nbody\n");
+    writeFileSync(join(cwd, "brief.pdf"), pdfBytes);
+    const restorePath = installFakePdfTextExtractor(
+      cwd,
+      "Run turn extracted text",
+    );
+    const seenMessages: LLMMessage[][] = [];
+    const ctx = { ...mkCtx(), cwd };
+    const { session } = mkSession({
+      provider: {
+        ...mkProvider({ content: "hi" }),
+        chatStream: async (
+          messages: LLMMessage[],
+          _onChunk: StreamProgressCallback,
+          _options,
+        ): Promise<LLMResponse> => {
+          seenMessages.push(messages);
+          return {
+            content: "hi",
+            toolCalls: [],
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            model: "test-model",
+            finishReason: "stop",
+          };
+        },
+      },
+      registry: mkRegistry(),
+      sessionConfiguration: { cwd },
+    });
+
+    try {
+      await drain(session.runTurn("summarize @brief.pdf", { ctx }));
+    } finally {
+      restorePath();
+    }
+
+    const pdfMessage = seenMessages[0]?.find((message) =>
+      Array.isArray(message.content),
+    );
+    const parts = pdfMessage?.content as
+      | Array<{
+          type?: string;
+          source?: { media_type?: string; data?: string };
+          fallbackText?: string;
+          text?: string;
+        }>
+      | undefined;
+    expect(parts?.[0]?.text).toContain("<attached_pdfs>");
+    expect(parts?.[1]?.type).toBe("document");
+    expect(parts?.[1]?.source?.media_type).toBe("application/pdf");
+    expect(parts?.[1]?.source?.data).toBe(pdfBytes.toString("base64"));
+    expect(parts?.[1]?.fallbackText).toBe("Run turn extracted text");
   });
 
   test("displayUserMessage hides mailbox-merged agent input from transcript", async () => {

@@ -86,6 +86,17 @@ describe("file @mentions", () => {
     expect(expanded.prompt).toBe("describe @cat.png");
   });
 
+  test("expandFileMentions leaves PDF paths for the PDF attachment pipeline", async () => {
+    const cwd = makeWorkspace();
+    writeFileSync(join(cwd, "brief.pdf"), "%PDF-1.4\nbody\n");
+
+    const expanded = await expandFileMentions("summarize @brief.pdf", { cwd });
+
+    expect(expanded.attachments).toEqual([]);
+    expect(expanded.rejected).toEqual([]);
+    expect(expanded.prompt).toBe("summarize @brief.pdf");
+  });
+
   test("expandFileMentions rejects paths outside allowed roots", async () => {
     const cwd = makeWorkspace();
     const outside = makeWorkspace();

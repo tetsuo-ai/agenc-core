@@ -268,6 +268,16 @@ function normalizeHashContent(content: LLMMessage["content"]): unknown {
     if (part.type === "text") {
       return { type: "text", text: part.text };
     }
+    if (part.type === "document") {
+      return {
+        type: "document",
+        mediaType: part.source.media_type,
+        bytes: part.source.data.length,
+        title: part.title,
+        fallbackText: part.fallbackText,
+        fallbackTextTruncated: part.fallbackTextTruncated,
+      };
+    }
     return {
       type: "image_url",
       url: part.image_url.url,

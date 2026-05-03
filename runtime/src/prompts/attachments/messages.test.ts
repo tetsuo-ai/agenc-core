@@ -375,6 +375,50 @@ describe("attachmentsToMessages", () => {
     });
   });
 
+  test("renders pdf_mention attachments as document user context", () => {
+    const out = attachmentsToMessages([
+      {
+        kind: "pdf_mention",
+        pdfs: [
+          {
+            raw: "brief.pdf",
+            path: "brief.pdf",
+            resolved: "/repo/brief.pdf",
+            mediaType: "application/pdf",
+            data: "JVBERi0xLjQK",
+            bytes: 9,
+            filename: "brief.pdf",
+            fallbackText: "PDF extracted text",
+            fallbackTextTruncated: false,
+          },
+        ],
+      },
+    ]);
+
+    expect(out).toHaveLength(1);
+    expect(out[0]?.role).toBe("user");
+    expect(out[0]?.runtimeOnly?.mergeBoundary).toBe("user_context");
+    expect(Array.isArray(out[0]?.content)).toBe(true);
+    const parts = out[0]?.content as Array<Record<string, unknown>>;
+    expect(parts[0]).toMatchObject({ type: "text" });
+    expect(parts[0]).toHaveProperty(
+      "text",
+      '<attached_pdfs>\n<pdf path="brief.pdf" media_type="application/pdf" bytes="9" />\n</attached_pdfs>',
+    );
+    expect(parts[1]).toMatchObject({
+      type: "document",
+      source: {
+        type: "base64",
+        media_type: "application/pdf",
+        data: "JVBERi0xLjQK",
+      },
+      filename: "brief.pdf",
+      title: "brief.pdf",
+      fallbackText: "PDF extracted text",
+      fallbackTextTruncated: false,
+    });
+  });
+
   test("uses AgenC branding and does not leak legacy-branded memory names", () => {
     const planFilePath = "/home/u/.agenc/plans/active.md";
     const rendered = attachmentsToMessages([

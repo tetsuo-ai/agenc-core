@@ -71,6 +71,112 @@ function toAnthropicImageSource(
   };
 }
 
+export function readDocumentPayload(part: unknown): {
+  readonly data: string;
+  readonly mediaType: string;
+  readonly filename?: string;
+  readonly title?: string;
+  readonly fallbackText?: string;
+  readonly fallbackTextTruncated?: boolean;
+  readonly fallbackTextError?: string;
+  readonly fileId?: string;
+  readonly fileUrl?: string;
+} | null {
+  const record = readContentPartRecord(part);
+  if (!record) return null;
+  if (record.type === "document") {
+    const source = readContentPartRecord(record.source);
+    if (
+      source?.type === "base64" &&
+      typeof source.data === "string" &&
+      source.data.trim().length > 0
+    ) {
+      const mediaType = String(
+        source.media_type ?? source.mediaType ?? "application/pdf",
+      );
+      return {
+        data: source.data.replace(/\s+/gu, ""),
+        mediaType,
+        ...(typeof record.filename === "string" && record.filename.length > 0
+          ? { filename: record.filename }
+          : {}),
+        ...(typeof record.title === "string" && record.title.length > 0
+          ? { title: record.title }
+          : {}),
+        ...(typeof record.fallbackText === "string"
+          ? { fallbackText: record.fallbackText }
+          : {}),
+        ...(typeof record.fallbackTextTruncated === "boolean"
+          ? { fallbackTextTruncated: record.fallbackTextTruncated }
+          : {}),
+        ...(typeof record.fallbackTextError === "string" &&
+        record.fallbackTextError.length > 0
+          ? { fallbackTextError: record.fallbackTextError }
+          : {}),
+      };
+    }
+  }
+  if (record.type === "input_file") {
+    const data =
+      typeof record.file_data === "string" ? record.file_data.trim() : "";
+    const fileId =
+      typeof record.file_id === "string" ? record.file_id.trim() : "";
+    const fileUrl =
+      typeof record.file_url === "string" ? record.file_url.trim() : "";
+    if (data.length === 0 && fileId.length === 0 && fileUrl.length === 0) {
+      return null;
+    }
+    return {
+      data,
+      mediaType: "application/pdf",
+      ...(typeof record.filename === "string" && record.filename.length > 0
+        ? { filename: record.filename }
+        : {}),
+      ...(fileId.length > 0 ? { fileId } : {}),
+      ...(fileUrl.length > 0 ? { fileUrl } : {}),
+    };
+  }
+  return null;
+}
+
+export function documentFallbackText(part: unknown): string {
+  const document = readDocumentPayload(part);
+  if (document === null) return "[document]";
+  const label = document.filename ?? document.title ?? "document.pdf";
+  if (document.fallbackText !== undefined) {
+    return [
+      `<attached_pdf_text filename="${escapeAttribute(label)}" media_type="${escapeAttribute(
+        document.mediaType,
+      )}" truncated="${document.fallbackTextTruncated ? "true" : "false"}">`,
+      escapePdfFallbackText(document.fallbackText),
+      "</attached_pdf_text>",
+    ].join("\n");
+  }
+  if (document.fallbackTextError !== undefined) {
+    return `<attached_pdf_unavailable filename="${escapeAttribute(label)}" media_type="${escapeAttribute(
+      document.mediaType,
+    )}">${escapePdfFallbackText(document.fallbackTextError)}</attached_pdf_unavailable>`;
+  }
+  return `[document: ${document.mediaType}]`;
+}
+
+function escapeAttribute(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function escapePdfFallbackText(value: string): string {
+  return value
+    .replace(/<\/attached_pdf_text>/giu, "<\\/attached_pdf_text>")
+    .replace(
+      /<\/attached_pdf_unavailable>/giu,
+      "<\\/attached_pdf_unavailable>",
+    );
+}
+
 export function readAudioPayload(
   part: unknown,
 ): { readonly data: string; readonly format: string } | null {
@@ -180,6 +286,9 @@ export function messageTextContent(
       if (hasOpaqueAudioReference(part)) {
         return "[audio]";
       }
+      if (readDocumentPayload(part)) {
+        return documentFallbackText(part);
+      }
       return `[${type || "content"}]`;
     })
     .join("\n");
@@ -206,6 +315,9 @@ export function toOpenAIMessageContent(
     }
     if (hasOpaqueAudioReference(part)) {
       return { type: "text", text: "[audio]" };
+    }
+    if (readDocumentPayload(part) || record.type === "document") {
+      return { type: "text", text: documentFallbackText(part) };
     }
     return {
       type: "image_url",
@@ -241,6 +353,9 @@ export function toOpenAIToolMessageContent(
     if (hasOpaqueAudioReference(part)) {
       return { type: "text", text: "[audio]" };
     }
+    if (readDocumentPayload(part) || record.type === "document") {
+      return { type: "text", text: documentFallbackText(part) };
+    }
     return {
       type: "image_url",
       image_url: {
@@ -266,6 +381,20 @@ export function toAnthropicMessageContent(
     const record = readContentPartRecord(part) ?? {};
     if (record.type === "text") {
       return { type: "text", text: String(record.text ?? "") };
+    }
+    const document = readDocumentPayload(part);
+    if (document && document.data.length > 0) {
+      return {
+        type: "document",
+        source: {
+          type: "base64",
+          media_type: document.mediaType,
+          data: document.data,
+        },
+      };
+    }
+    if (document || record.type === "document" || record.type === "input_file") {
+      return { type: "text", text: documentFallbackText(part) };
     }
     const imageUrl = String(
       (record.image_url as { url?: unknown } | undefined)?.url ?? "",
@@ -296,6 +425,20 @@ export function toAnthropicToolResultContent(
     const record = readContentPartRecord(part) ?? {};
     if (record.type === "text") {
       return { type: "text", text: String(record.text ?? "") };
+    }
+    const document = readDocumentPayload(part);
+    if (document && document.data.length > 0) {
+      return {
+        type: "document",
+        source: {
+          type: "base64",
+          media_type: document.mediaType,
+          data: document.data,
+        },
+      };
+    }
+    if (document || record.type === "document" || record.type === "input_file") {
+      return { type: "text", text: documentFallbackText(part) };
     }
     const imageUrl = String(
       (record.image_url as { url?: unknown } | undefined)?.url ?? "",
@@ -352,6 +495,10 @@ export function toResponsesToolOutput(
     }
     if (hasOpaqueAudioReference(part)) {
       parts.push({ type: "input_text", text: "[audio]" });
+      continue;
+    }
+    if (readDocumentPayload(part) || record.type === "document") {
+      parts.push({ type: "input_text", text: documentFallbackText(part) });
       continue;
     }
     hasStructuredPart = true;

@@ -9,7 +9,7 @@
  * preserves the wire shape downstream prompt-build code depends on.
  */
 import { describe, expect, test } from "vitest";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -26,7 +26,9 @@ import {
 import {
   IMAGE_MENTION_MAX_FILE_BYTES,
   IMAGE_MENTION_MAX_FILES,
+  PDF_MENTION_MAX_FILE_BYTES,
 } from "./file-mentions.js";
+import { PDF_TEXT_EXTRACTION_MAX_BYTES } from "./user-pdf-input.js";
 
 function makeOpts(
   partial?: Partial<GetAttachmentsOptions>,
@@ -57,6 +59,23 @@ function humanTurns(count: number): LLMMessage[] {
     role: "user",
     content: `turn ${i + 1}`,
   }));
+}
+
+function installFakePdfTextExtractor(cwd: string, text: string): () => void {
+  const savedPath = process.env.PATH;
+  const bin = join(cwd, "bin");
+  mkdirSync(bin);
+  const pdftotext = join(bin, "pdftotext");
+  writeFileSync(pdftotext, `#!/bin/sh\ncat <<'EOF'\n${text}\nEOF\n`, "utf8");
+  chmodSync(pdftotext, 0o755);
+  process.env.PATH = `${bin}:${savedPath ?? ""}`;
+  return () => {
+    if (savedPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = savedPath;
+    }
+  };
 }
 
 describe("attachments orchestrator — live producer registry", () => {
@@ -108,6 +127,101 @@ describe("attachments orchestrator — live producer registry", () => {
     expect(parts?.[1]?.image_url?.url).toBe(
       "data:image/png;base64,aW1hZ2UtYnl0ZXM=",
     );
+  });
+
+  test("PDF file mentions resolve to document context through the live pipeline", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-pdf-mention-pipeline-"));
+    const pdfBytes = Buffer.from("%PDF-1.4\nbody\n");
+    writeFileSync(join(cwd, "brief.pdf"), pdfBytes);
+    const restorePath = installFakePdfTextExtractor(
+      cwd,
+      "Extracted heading\nExtracted body",
+    );
+
+    let out: Awaited<ReturnType<typeof getAttachments>>;
+    try {
+      out = await getAttachments(
+        makeOpts({
+          cwd,
+          userInput: "summarize @brief.pdf",
+        }),
+      );
+    } finally {
+      restorePath();
+    }
+
+    expect(out.some((a) => a.kind === "pdf_mention")).toBe(true);
+    const attachment = out.find((a) => a.kind === "pdf_mention");
+    expect(attachment?.kind).toBe("pdf_mention");
+    if (attachment?.kind !== "pdf_mention") {
+      throw new Error("expected pdf_mention attachment");
+    }
+    expect(attachment.pdfs[0]?.fallbackText).toContain("Extracted heading");
+    const messages = attachmentsToMessages(out);
+    const pdfMessage = messages.find((message) => Array.isArray(message.content));
+    const parts = pdfMessage?.content as
+      | Array<{
+          type?: string;
+          source?: { media_type?: string; data?: string };
+          fallbackText?: string;
+          text?: string;
+        }>
+      | undefined;
+    expect(parts?.[0]?.text).toContain("<attached_pdfs>");
+    expect(parts?.[0]?.text).toContain('path="brief.pdf"');
+    expect(parts?.[1]?.type).toBe("document");
+    expect(parts?.[1]?.source?.media_type).toBe("application/pdf");
+    expect(parts?.[1]?.source?.data).toBe(pdfBytes.toString("base64"));
+    expect(parts?.[1]?.fallbackText).toContain("Extracted body");
+  });
+
+  test("PDF file mentions skip invalid or oversize PDFs", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-pdf-mention-invalid-"));
+    writeFileSync(join(cwd, "not-a-pdf.pdf"), "plain text\n");
+    writeFileSync(
+      join(cwd, "large.pdf"),
+      Buffer.alloc(PDF_MENTION_MAX_FILE_BYTES + 1, 1),
+    );
+
+    const out = await getAttachments(
+      makeOpts({
+        cwd,
+        userInput: "read @not-a-pdf.pdf @large.pdf",
+      }),
+    );
+
+    expect(out.some((a) => a.kind === "pdf_mention")).toBe(false);
+    expect(out.some((a) => a.kind === "file_mention")).toBe(false);
+  });
+
+  test("PDF file mention text fallback keeps a truncated prefix over the cap", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-pdf-mention-truncated-"));
+    writeFileSync(join(cwd, "long.pdf"), "%PDF-1.4\nbody\n");
+    const longText = "x".repeat(PDF_TEXT_EXTRACTION_MAX_BYTES + 10);
+    const restorePath = installFakePdfTextExtractor(cwd, longText);
+
+    let out: Awaited<ReturnType<typeof getAttachments>>;
+    try {
+      out = await getAttachments(
+        makeOpts({
+          cwd,
+          userInput: "summarize @long.pdf",
+        }),
+      );
+    } finally {
+      restorePath();
+    }
+
+    const attachment = out.find((a) => a.kind === "pdf_mention");
+    expect(attachment?.kind).toBe("pdf_mention");
+    if (attachment?.kind !== "pdf_mention") {
+      throw new Error("expected pdf_mention attachment");
+    }
+    expect(attachment.pdfs[0]?.fallbackText).toBe(
+      "x".repeat(PDF_TEXT_EXTRACTION_MAX_BYTES),
+    );
+    expect(attachment.pdfs[0]?.fallbackTextTruncated).toBe(true);
+    expect(attachment.pdfs[0]?.fallbackTextError).toBeUndefined();
   });
 
   test("image file mentions enforce the per-turn count limit", async () => {

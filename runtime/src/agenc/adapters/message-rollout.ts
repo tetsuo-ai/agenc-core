@@ -94,5 +94,9 @@ function cloneContent(
 ): string | LLMContentPart[] {
   return typeof content === "string"
     ? content
-    : content.map((part) => ({ ...part }));
+    : content.map((part) =>
+        part.type === "document"
+          ? { ...part, source: { ...part.source } }
+          : { ...part },
+      );
 }

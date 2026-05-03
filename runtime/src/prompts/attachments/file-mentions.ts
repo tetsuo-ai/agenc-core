@@ -26,15 +26,23 @@ import {
   isSupportedUserImagePath,
   normalizeUserImageInput,
 } from "./user-image-input.js";
+import {
+  isSupportedUserPdfPath,
+  normalizeUserPdfInput,
+} from "./user-pdf-input.js";
 import type { AttachmentProducer } from "./orchestrator.js";
 import type {
   FileMentionContextAttachment,
   ImageMentionContextAttachment,
+  PdfMentionContextAttachment,
 } from "./types.js";
 
 export const IMAGE_MENTION_MAX_FILES = 10;
 export const IMAGE_MENTION_MAX_FILE_BYTES = 5 * 1024 * 1024;
 export const IMAGE_MENTION_MAX_TOTAL_BYTES = 20 * 1024 * 1024;
+export const PDF_MENTION_MAX_FILES = 5;
+export const PDF_MENTION_MAX_FILE_BYTES = 20 * 1024 * 1024;
+export const PDF_MENTION_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 
 function alreadyContainsFileMentionContext(input: string): boolean {
   return (
@@ -98,6 +106,67 @@ async function collectImageMentionAttachment(
   return images.length > 0 ? { kind: "image_mention", images } : null;
 }
 
+async function collectPdfMentionAttachment(
+  input: string,
+  opts: Parameters<AttachmentProducer>[0],
+): Promise<PdfMentionContextAttachment | null> {
+  const mentions = scanMentions(input, opts.cwd, opts.fileMentionAllowedRoots);
+  if (mentions.length === 0) return null;
+  const seen = new Set<string>();
+  const pdfs: Array<PdfMentionContextAttachment["pdfs"][number]> = [];
+  let totalPdfBytes = 0;
+
+  for (const mention of mentions) {
+    if (pdfs.length >= PDF_MENTION_MAX_FILES) break;
+    if (!mention.validation.ok) continue;
+    const resolved = mention.validation.resolved;
+    if (seen.has(resolved) || !isSupportedUserPdfPath(resolved)) continue;
+    if (
+      (await resolveAllowedFileMentionRealPath(
+        resolved,
+        opts.cwd,
+        opts.fileMentionAllowedRoots,
+      )) === null
+    ) {
+      continue;
+    }
+    const fileStat = await stat(resolved).catch(() => null);
+    if (
+      fileStat === null ||
+      !fileStat.isFile() ||
+      fileStat.size <= 0 ||
+      fileStat.size > PDF_MENTION_MAX_FILE_BYTES ||
+      totalPdfBytes + fileStat.size > PDF_MENTION_MAX_TOTAL_BYTES
+    ) {
+      continue;
+    }
+    const pdf = await normalizeUserPdfInput(resolved);
+    if (pdf === null) continue;
+    seen.add(resolved);
+    totalPdfBytes += fileStat.size;
+    pdfs.push({
+      raw: mention.raw,
+      path: mention.raw,
+      resolved,
+      mediaType: pdf.mediaType,
+      data: pdf.data,
+      bytes: pdf.bytes,
+      filename: pdf.filename,
+      ...(pdf.fallbackText !== undefined
+        ? {
+            fallbackText: pdf.fallbackText,
+            fallbackTextTruncated: pdf.fallbackTextTruncated ?? false,
+          }
+        : {}),
+      ...(pdf.fallbackTextError !== undefined
+        ? { fallbackTextError: pdf.fallbackTextError }
+        : {}),
+    });
+  }
+
+  return pdfs.length > 0 ? { kind: "pdf_mention", pdfs } : null;
+}
+
 export const fileMentionsProducer: AttachmentProducer = async (opts) => {
   const input = opts.userInput;
   if (opts.signal.aborted || input === null || !input.includes("@")) {
@@ -105,8 +174,11 @@ export const fileMentionsProducer: AttachmentProducer = async (opts) => {
   }
   const mentionInput = userMessageForMentionScan(input);
 
-  const out: Array<FileMentionContextAttachment | ImageMentionContextAttachment> =
-    [];
+  const out: Array<
+    | FileMentionContextAttachment
+    | ImageMentionContextAttachment
+    | PdfMentionContextAttachment
+  > = [];
   if (!alreadyContainsFileMentionContext(input)) {
     const expansion = await expandFileMentions(input, {
       cwd: opts.cwd,
@@ -122,5 +194,7 @@ export const fileMentionsProducer: AttachmentProducer = async (opts) => {
 
   const imageAttachment = await collectImageMentionAttachment(mentionInput, opts);
   if (imageAttachment !== null) out.push(imageAttachment);
+  const pdfAttachment = await collectPdfMentionAttachment(mentionInput, opts);
+  if (pdfAttachment !== null) out.push(pdfAttachment);
   return out;
 };
