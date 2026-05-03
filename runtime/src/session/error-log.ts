@@ -31,6 +31,7 @@ import { isDegradedErrno } from "./session-store.js";
 import type { Sidecar } from "./sidecar.js";
 import { StateSqliteDriver } from "../state/sqlite-driver.js";
 import { LogsRepository } from "../state/logs.js";
+import { redactSecretsInValue } from "../secrets/index.js";
 
 export interface ErrorLogEntry {
   readonly timestamp: string;
@@ -272,7 +273,7 @@ export class ErrorLogSidecar implements Sidecar {
         : msg.type === "warning"
           ? "warning"
           : "error";
-    const entry: ErrorLogEntry = {
+    const entry: ErrorLogEntry = redactSecretsInValue({
       timestamp: new Date().toISOString(),
       level,
       cause: payload.cause ?? "unknown",
@@ -282,7 +283,7 @@ export class ErrorLogSidecar implements Sidecar {
       ...(payload.provider ? { provider: payload.provider } : {}),
       ...(payload.server ? { server: payload.server } : {}),
       ...(payload.stack ? { stack: payload.stack } : {}),
-    };
+    }) as ErrorLogEntry;
 
     if (this.degraded.isDegraded) {
       this.degraded.append(entry);
@@ -349,9 +350,10 @@ export class ErrorLogSidecar implements Sidecar {
   ): Promise<boolean> {
     try {
       for (const entry of entries) {
-        const path = this.pathFor(entry);
+        const sanitized = redactSecretsInValue(entry) as ErrorLogEntry;
+        const path = this.pathFor(sanitized);
         mkdirSync(dirname(path), { recursive: true });
-        appendFileSync(path, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+        appendFileSync(path, `${JSON.stringify(sanitized)}\n`, { mode: 0o600 });
       }
       return true;
     } catch (err) {

@@ -2,6 +2,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   rmSync,
   writeFileSync,
@@ -66,6 +67,70 @@ afterEach(() => {
 });
 
 describe("RolloutStore thread-spawn edges", () => {
+  it("redacts secrets from persisted live transcript rows", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-rollout-store-cwd-"));
+    const sessionId = "transcript-secret";
+    const store = openStore({ cwd, sessionId });
+    const rawSecret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456-";
+    const opaqueSecret = "opaque-value-12345";
+
+    try {
+      store.appendRollout(
+        {
+          type: "response_item",
+          payload: {
+            role: "user",
+            content: `Authorization: Bearer abcdefghijklmnop= ${rawSecret}`,
+          },
+        },
+        { durable: true },
+      );
+      store.appendRollout(
+        {
+          type: "compacted",
+          payload: {
+            message: `api_key=${opaqueSecret}`,
+            replacementHistory: [
+              {
+                role: "assistant",
+                content: rawSecret,
+              },
+            ],
+          },
+        },
+        { durable: true },
+      );
+      store.appendRollout(
+        {
+          type: "event_msg",
+          payload: {
+            id: "secret-error",
+            msg: {
+              type: "error",
+              payload: {
+                cause: "provider_failed",
+                message: "Authorization: Bearer abcdefghijklmnop=",
+                stack: `token=${opaqueSecret}`,
+              },
+            },
+          },
+        },
+        { durable: true },
+      );
+
+      const content = readFileSync(store.rolloutPath, "utf8");
+      expect(content).not.toContain(rawSecret);
+      expect(content).not.toContain(opaqueSecret);
+      expect(content).not.toContain("abcdefghijklmnop=");
+      expect(content).toContain("[REDACTED_SECRET]");
+      expect(store.readAll().some((item) => JSON.stringify(item).includes(rawSecret)))
+        .toBe(false);
+    } finally {
+      store.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("persists edge metadata and status across reopen", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-rollout-store-cwd-"));
     const sessionId = "thread-spawn-persist";

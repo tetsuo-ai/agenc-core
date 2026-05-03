@@ -1,4 +1,5 @@
 import type { StateSqliteDriver } from "./sqlite-driver.js";
+import { redactSecretsInValue } from "../secrets/index.js";
 
 export interface IndexedLogEntry {
   readonly timestamp: string;
@@ -14,6 +15,7 @@ export class LogsRepository {
   constructor(private readonly driver: StateSqliteDriver) {}
 
   append(entry: IndexedLogEntry): void {
+    const sanitized = redactSecretsInValue(entry) as IndexedLogEntry;
     this.driver
       .prepareLogs(
         `INSERT INTO logs (
@@ -21,13 +23,13 @@ export class LogsRepository {
         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        entry.timestamp,
-        entry.level,
-        entry.scope ?? null,
-        entry.threadId ?? null,
-        entry.eventType ?? null,
-        entry.message,
-        JSON.stringify(entry.payload ?? {}),
+        sanitized.timestamp,
+        sanitized.level,
+        sanitized.scope ?? null,
+        sanitized.threadId ?? null,
+        sanitized.eventType ?? null,
+        sanitized.message,
+        JSON.stringify(sanitized.payload ?? {}),
       );
   }
 

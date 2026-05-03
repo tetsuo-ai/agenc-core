@@ -16,6 +16,7 @@
 
 import type { Event, EventMsg, SessionMetaLine } from "./event-log.js";
 import type { SessionAgentTask } from "./agent-task-lifecycle.js";
+import { redactSecretsInValue } from "../secrets/index.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Per-variant payloads
@@ -145,7 +146,7 @@ export function serializeRolloutItem(item: RolloutItem): string {
     item.eventVersion === undefined
       ? { ...item, eventVersion: ROLLOUT_ITEM_VERSION }
       : item;
-  return `${JSON.stringify(stamped)}\n`;
+  return `${JSON.stringify(redactSecretsInValue(stamped))}\n`;
 }
 
 /**

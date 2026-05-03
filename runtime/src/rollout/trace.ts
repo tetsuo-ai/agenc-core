@@ -14,6 +14,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { JsonValue } from "../app-server/protocol/index.js";
+import { redactSecretsInValue } from "../secrets/index.js";
 import { AGENC_ROLLOUT_TRACE_DIR } from "./metadata.js";
 
 export const AGENC_ROLLOUT_TRACE_FORMAT = "agenc.rollout.trace";
@@ -179,7 +180,7 @@ export class AgenCRolloutTraceBundle {
     const path = join(PAYLOADS_DIR, `${payloadId}.json`);
     writeFileSync(
       join(this.bundleDir, path),
-      `${JSON.stringify(payload, null, 2)}\n`,
+      `${JSON.stringify(redactSecretsInValue(payload), null, 2)}\n`,
       { encoding: "utf8", mode: 0o600 },
     );
     return { payloadId, kind, path };
@@ -195,7 +196,7 @@ export class AgenCRolloutTraceBundle {
       traceId: this.manifest.traceId,
       rolloutId: this.manifest.rolloutId,
       writtenAt: options.now?.() ?? new Date().toISOString(),
-      payload,
+      payload: redactSecretsInValue(payload) as JsonValue,
     };
     appendFileSync(join(this.bundleDir, TRACE_FILE), `${JSON.stringify(event)}\n`, {
       encoding: "utf8",
