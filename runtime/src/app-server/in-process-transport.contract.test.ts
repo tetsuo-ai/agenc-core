@@ -182,10 +182,7 @@ describe("AgenC in-process app-server transport", () => {
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_1"]),
       createAttachmentId: sequence(["attachment_1"]),
-      now: sequence([
-        "2026-05-01T12:00:00.000Z",
-        "2026-05-01T12:00:01.000Z",
-      ]),
+      now: sequence(["2026-05-01T12:00:00.000Z", "2026-05-01T12:00:01.000Z"]),
     });
     await sessions.createSession({ agentId: "agent_1" });
     const clientMultiplexer = new AgenCDaemonClientMultiplexer({
@@ -213,6 +210,11 @@ describe("AgenC in-process app-server transport", () => {
           decision: "cancelled",
         }),
         stopAgent: async () => ({ agentId: "agent_1", stopped: true }),
+        getAgentLogs: async () => ({
+          agentId: "agent_1",
+          sessions: [],
+          transcript: "agent_id\tagent_1\nNo transcript entries",
+        }),
       },
       clientMultiplexer,
     });

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { AgenCSessionSnapshotPolicy } from "../state/snapshot-policy.js";
 import { RolloutStore } from "../session/rollout-store.js";
+import type { RolloutItem } from "../session/rollout-item.js";
 import { FileThreadStore } from "../thread-store/index.js";
 import {
   openStateDatabases,
@@ -173,14 +174,392 @@ describe("AgenC background agent lifecycle", () => {
     }
   });
 
+  it("reads stored agent rollout history as a plain transcript", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const rollout = openRollout(cwd, "stored-agent-log");
+    const threadStore = new FileThreadStore({ cwd, agencHome: home });
+    try {
+      threadStore.createThread({
+        threadId: "stored-agent-log",
+        rolloutStore: rollout,
+        source: "agent",
+        cwd,
+      });
+      rollout.appendRollout({
+        type: "response_item",
+        payload: { role: "user", content: "build the parser" },
+      });
+      rollout.appendRollout({
+        type: "event_msg",
+        payload: {
+          id: "assistant-delta",
+          msg: {
+            type: "agent_message_delta",
+            payload: { delta: "parser done" },
+          },
+        },
+      });
+      threadStore.shutdownThread("stored-agent-log");
+
+      const recreated = new AgenCDaemonAgentManager({ threadStore });
+      await expect(
+        recreated.getAgentLogs({ agentId: "stored-agent-log" }),
+      ).resolves.toMatchObject({
+        agentId: "stored-agent-log",
+        sessions: [
+          {
+            sessionId: "stored-agent-log",
+            itemCount: 3,
+          },
+        ],
+        transcript: expect.stringContaining("user:\nbuild the parser"),
+      });
+      await expect(
+        recreated.getAgentLogs({ agentId: "stored-agent-log" }),
+      ).resolves.toMatchObject({
+        transcript: expect.stringContaining("assistant:\nparser done"),
+      });
+    } finally {
+      threadStore.close();
+      rollout.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("reads persisted agent logs when source agent id differs from thread id", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const rollout = openRollout(cwd, "thread-distinct-agent-log");
+    const threadStore = new FileThreadStore({ cwd, agencHome: home });
+    try {
+      threadStore.createThread({
+        threadId: "thread-distinct-agent-log",
+        rolloutStore: rollout,
+        source: {
+          kind: "agent",
+          agentId: "agent-distinct-log",
+          objective: "Distinct persisted objective",
+        },
+        cwd,
+      });
+      rollout.appendRollout({
+        type: "response_item",
+        payload: { role: "assistant", content: "distinct agent transcript" },
+      });
+      threadStore.shutdownThread("thread-distinct-agent-log");
+
+      const recreated = new AgenCDaemonAgentManager({ threadStore });
+      await expect(recreated.listAgents()).resolves.toMatchObject({
+        agents: [
+          {
+            agentId: "agent-distinct-log",
+            objective: "Distinct persisted objective",
+            activeSessionIds: ["thread-distinct-agent-log"],
+          },
+        ],
+      });
+      await expect(
+        recreated.getAgentLogs({ agentId: "agent-distinct-log" }),
+      ).resolves.toMatchObject({
+        agentId: "agent-distinct-log",
+        sessions: [
+          {
+            sessionId: "thread-distinct-agent-log",
+          },
+        ],
+        transcript: expect.stringContaining("distinct agent transcript"),
+      });
+    } finally {
+      threadStore.close();
+      rollout.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects logs for existing persisted non-agent thread ids", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const rollout = openRollout(cwd, "non-agent-thread-log");
+    const threadStore = new FileThreadStore({ cwd, agencHome: home });
+    try {
+      threadStore.createThread({
+        threadId: "non-agent-thread-log",
+        rolloutStore: rollout,
+        source: "cli_main",
+        cwd,
+      });
+      rollout.appendRollout({
+        type: "response_item",
+        payload: { role: "assistant", content: "not an agent transcript" },
+      });
+      threadStore.shutdownThread("non-agent-thread-log");
+
+      const recreated = new AgenCDaemonAgentManager({ threadStore });
+      await expect(recreated.listAgents()).resolves.toEqual({ agents: [] });
+      await expect(
+        recreated.getAgentLogs({ agentId: "non-agent-thread-log" }),
+      ).rejects.toMatchObject({
+        code: "AGENT_NOT_FOUND",
+      });
+    } finally {
+      threadStore.close();
+      rollout.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("reads agent rollout history from the agent cwd when daemon cwd differs", async () => {
+    const daemonCwd = mkdtempSync(join(tmpdir(), "agenc-agent-daemon-cwd-"));
+    const agentCwd = mkdtempSync(join(tmpdir(), "agenc-agent-worker-cwd-"));
+    const home = mkdtempSync(join(tmpdir(), "agenc-agent-route-home-"));
+    const previous = process.env.AGENC_HOME;
+    process.env.AGENC_HOME = home;
+    const rollout = openRollout(agentCwd, "session-agent-cwd-log");
+    const daemonThreadStore = new FileThreadStore({
+      cwd: daemonCwd,
+      agencHome: home,
+    });
+    const agentThreadStore = new FileThreadStore({
+      cwd: agentCwd,
+      agencHome: home,
+    });
+    try {
+      agentThreadStore.createThread({
+        threadId: "session-agent-cwd-log",
+        rolloutStore: rollout,
+        source: "agent",
+        cwd: agentCwd,
+      });
+      rollout.appendRollout({
+        type: "response_item",
+        payload: { role: "user", content: "inspect worker project" },
+      });
+      agentThreadStore.shutdownThread("session-agent-cwd-log");
+
+      const routes: unknown[] = [];
+      const recreated = new AgenCDaemonAgentManager({
+        threadStore: daemonThreadStore,
+        threadStoreForAgentLogs: (route) => {
+          routes.push(route);
+          return route.cwd === agentCwd ? agentThreadStore : daemonThreadStore;
+        },
+      });
+      await recreated.restoreAgent({
+        agentId: "agent-cwd-log",
+        objective: "inspect project",
+        cwd: agentCwd,
+        sessionIds: ["session-agent-cwd-log"],
+      });
+
+      await expect(
+        recreated.getAgentLogs({ agentId: "agent-cwd-log" }),
+      ).resolves.toMatchObject({
+        agentId: "agent-cwd-log",
+        sessions: [
+          {
+            sessionId: "session-agent-cwd-log",
+            itemCount: 2,
+          },
+        ],
+        transcript: expect.stringContaining("inspect worker project"),
+      });
+      expect(routes).toEqual([
+        {
+          agentId: "agent-cwd-log",
+          sessionIds: ["agent-cwd-log", "session-agent-cwd-log"],
+          cwd: agentCwd,
+        },
+      ]);
+    } finally {
+      daemonThreadStore.close();
+      agentThreadStore.close();
+      rollout.close();
+      if (previous === undefined) delete process.env.AGENC_HOME;
+      else process.env.AGENC_HOME = previous;
+      rmSync(home, { recursive: true, force: true });
+      rmSync(agentCwd, { recursive: true, force: true });
+      rmSync(daemonCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("includes generic log records for every persisted rollout item and event", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const rollout = openRollout(cwd, "stored-agent-full-log");
+    const threadStore = new FileThreadStore({ cwd, agencHome: home });
+    try {
+      threadStore.createThread({
+        threadId: "stored-agent-full-log",
+        rolloutStore: rollout,
+        source: "agent",
+        cwd,
+      });
+      rollout.appendRollout({
+        type: "event_msg",
+        payload: {
+          id: "turn-started",
+          msg: { type: "turn_started", payload: { turnId: "turn-1" } },
+        },
+      });
+      rollout.appendRollout({
+        type: "event_msg",
+        payload: {
+          id: "token-count",
+          msg: {
+            type: "token_count",
+            payload: {
+              promptTokens: 30,
+              completionTokens: 12,
+              totalTokens: 42,
+              model: "grok-4",
+              provider: "xai",
+            },
+          },
+        },
+      });
+      rollout.appendRollout({
+        type: "event_msg",
+        payload: {
+          id: "permission-request",
+          msg: {
+            type: "request_permissions",
+            payload: {
+              callId: "call-perms",
+              toolName: "Bash",
+              permissions: ["network"],
+            },
+          },
+        },
+      });
+      rollout.appendRollout({
+        type: "turn_context",
+        payload: {
+          turnId: "turn-1",
+          model: "grok-4",
+          provider: "xai",
+        },
+      } as RolloutItem);
+      threadStore.shutdownThread("stored-agent-full-log");
+
+      const recreated = new AgenCDaemonAgentManager({ threadStore });
+      const result = await recreated.getAgentLogs({
+        agentId: "stored-agent-full-log",
+      });
+
+      expect(result.transcript).toContain("rollout:session_meta");
+      expect(result.transcript).toContain("event:turn_started");
+      expect(result.transcript).toContain('"turnId": "turn-1"');
+      expect(result.transcript).toContain("event:token_count");
+      expect(result.transcript).toContain('"totalTokens": 42');
+      expect(result.transcript).toContain("event:request_permissions");
+      expect(result.transcript).toContain('"permissions":');
+      expect(result.transcript).toContain("rollout:turn_context");
+      expect(result.transcript).toContain('"provider": "xai"');
+    } finally {
+      threadStore.close();
+      rollout.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("includes rotated tool-output reader results in agent logs", async () => {
+    const agents = new AgenCDaemonAgentManager({
+      readAgentToolOutputs: ({ sessionIds }) =>
+        sessionIds.includes("session-output")
+          ? [
+              {
+                sessionId: "session-output",
+                toolCallId: "tool-output",
+                toolName: "Bash",
+                status: "completed",
+                output: "abcdef",
+                outputBytes: 6,
+                outputLogPath: "/tmp/agenc/tool-output.log",
+                outputLogBytes: 2,
+              },
+            ]
+          : [],
+    });
+    await agents.restoreAgent({
+      agentId: "agent-output",
+      objective: "inspect output",
+      sessionIds: ["session-output"],
+    });
+
+    await expect(
+      agents.getAgentLogs({ agentId: "agent-output" }),
+    ).resolves.toMatchObject({
+      agentId: "agent-output",
+      toolOutputs: [
+        {
+          sessionId: "session-output",
+          toolCallId: "tool-output",
+          output: "abcdef",
+        },
+      ],
+      transcript: expect.stringContaining("tool_outputs"),
+    });
+  });
+
+  it("retains stopped agent session ids for tool-output log reads", async () => {
+    const outputSessionIds: string[][] = [];
+    const stopAgent = vi.fn(async () => {});
+    const agents = new AgenCDaemonAgentManager({
+      runner: { stopAgent },
+      readAgentToolOutputs: ({ sessionIds }) => {
+        outputSessionIds.push([...sessionIds]);
+        return sessionIds.includes("session-stopped-output")
+          ? [
+              {
+                sessionId: "session-stopped-output",
+                toolCallId: "tool-stopped-output",
+                toolName: "Bash",
+                status: "completed",
+                output: "stopped output",
+                outputBytes: 14,
+              },
+            ]
+          : [];
+      },
+    });
+    await agents.restoreAgent({
+      agentId: "agent-stopped-output",
+      objective: "inspect stopped output",
+      sessionIds: ["session-stopped-output"],
+    });
+
+    await expect(
+      agents.stopAgent({ agentId: "agent-stopped-output" }),
+    ).resolves.toEqual({ agentId: "agent-stopped-output", stopped: true });
+    await expect(
+      agents.getAgentLogs({ agentId: "agent-stopped-output" }),
+    ).resolves.toMatchObject({
+      agentId: "agent-stopped-output",
+      toolOutputs: [
+        {
+          sessionId: "session-stopped-output",
+          toolCallId: "tool-stopped-output",
+          output: "stopped output",
+        },
+      ],
+      transcript: expect.stringContaining("stopped output"),
+    });
+    expect(outputSessionIds.at(-1)).toEqual([
+      "agent-stopped-output",
+      "session-stopped-output",
+    ]);
+  });
+
   it("agent.create launches a running background agent and seeds its session", async () => {
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_1"]),
       createAttachmentId: sequence(["attachment_1"]),
-      now: sequence([
-        "2026-05-01T12:00:01.000Z",
-        "2026-05-01T12:00:02.000Z",
-      ]),
+      now: sequence(["2026-05-01T12:00:01.000Z", "2026-05-01T12:00:02.000Z"]),
     });
     const starts: AgenCBackgroundAgentStartParams[] = [];
     const runner: AgenCBackgroundAgentRunner = {
@@ -357,10 +736,7 @@ describe("AgenC background agent lifecycle", () => {
     };
     const agents = new AgenCDaemonAgentManager({
       defaultCwd: () => "/workspace",
-      now: sequence([
-        "2026-05-01T12:00:00.000Z",
-        "2026-05-01T12:00:02.000Z",
-      ]),
+      now: sequence(["2026-05-01T12:00:00.000Z", "2026-05-01T12:00:02.000Z"]),
       runner,
       sessionManager: sessions,
     });
@@ -629,10 +1005,7 @@ describe("AgenC background agent lifecycle", () => {
   it("keeps final stop state durable while runner shutdown is in flight", async () => {
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_1"]),
-      now: sequence([
-        "2026-05-01T12:00:01.000Z",
-        "2026-05-01T12:00:03.000Z",
-      ]),
+      now: sequence(["2026-05-01T12:00:01.000Z", "2026-05-01T12:00:03.000Z"]),
     });
     const stopStarted = createDeferred();
     const releaseStop = createDeferred();
@@ -658,10 +1031,7 @@ describe("AgenC background agent lifecycle", () => {
     };
     const agents = new AgenCDaemonAgentManager({
       defaultCwd: () => "/workspace",
-      now: sequence([
-        "2026-05-01T12:00:00.000Z",
-        "2026-05-01T12:00:02.000Z",
-      ]),
+      now: sequence(["2026-05-01T12:00:00.000Z", "2026-05-01T12:00:02.000Z"]),
       runner,
       sessionManager: sessions,
     });
@@ -710,10 +1080,7 @@ describe("AgenC background agent lifecycle", () => {
     };
     const agents = new AgenCDaemonAgentManager({
       defaultCwd: () => "/workspace",
-      now: sequence([
-        "2026-05-01T12:00:00.000Z",
-        "2026-05-01T12:00:02.000Z",
-      ]),
+      now: sequence(["2026-05-01T12:00:00.000Z", "2026-05-01T12:00:02.000Z"]),
       runner,
       sessionManager: sessions,
       recordAgentStatusTransition: async (transition) => {
@@ -722,9 +1089,9 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await agents.createAgent({ objective: "fail stop" });
-    await expect(agents.stopAgent({ agentId: "agent_fail_stop" })).rejects.toThrow(
-      "shutdown failed",
-    );
+    await expect(
+      agents.stopAgent({ agentId: "agent_fail_stop" }),
+    ).rejects.toThrow("shutdown failed");
     await expect(agents.getAgent("agent_fail_stop")).resolves.toMatchObject({
       agentId: "agent_fail_stop",
       status: "error",
@@ -780,10 +1147,7 @@ describe("AgenC background agent lifecycle", () => {
     };
     const agents = new AgenCDaemonAgentManager({
       defaultCwd: () => "/workspace",
-      now: sequence([
-        "2026-05-01T12:00:00.000Z",
-        "2026-05-01T12:00:01.000Z",
-      ]),
+      now: sequence(["2026-05-01T12:00:00.000Z", "2026-05-01T12:00:01.000Z"]),
       runner,
     });
 
@@ -1094,22 +1458,24 @@ describe("AgenC background agent lifecycle", () => {
       });
 
       expect(snapshotCount(driver, "session_combined_snapshot")).toBe(2);
-      expect(latestSnapshot(driver, "session_combined_snapshot")).toMatchObject({
-        conversation: [
-          {
-            role: "user",
-            messageId: "message_combined_snapshot",
-          },
-        ],
-        toolState: {
-          statusTransitions: [
+      expect(latestSnapshot(driver, "session_combined_snapshot")).toMatchObject(
+        {
+          conversation: [
             {
-              agentId: "agent_combined_snapshot",
-              status: "running",
+              role: "user",
+              messageId: "message_combined_snapshot",
             },
           ],
+          toolState: {
+            statusTransitions: [
+              {
+                agentId: "agent_combined_snapshot",
+                status: "running",
+              },
+            ],
+          },
         },
-      });
+      );
     } finally {
       driver.close();
       rmSync(home, { recursive: true, force: true });
@@ -1340,15 +1706,13 @@ describe("AgenC background agent lifecycle", () => {
     };
     const agents = new AgenCDaemonAgentManager({
       defaultCwd: () => "/workspace",
-      now: sequence([
-        "2026-05-01T12:00:00.000Z",
-        "2026-05-01T12:00:01.000Z",
-      ]),
+      now: sequence(["2026-05-01T12:00:00.000Z", "2026-05-01T12:00:01.000Z"]),
       runner,
     });
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: agents,
-      initializeAuthenticator: (params) => params.authCookie === "secret-cookie",
+      initializeAuthenticator: (params) =>
+        params.authCookie === "secret-cookie",
     });
     const connection = dispatcher.createConnection();
 
@@ -1497,6 +1861,23 @@ describe("AgenC background agent lifecycle", () => {
     await expect(
       connection.dispatch({
         jsonrpc: JSON_RPC_VERSION,
+        id: "logs",
+        method: "agent.logs",
+        params: { agentId: "agent_rpc" },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "logs",
+      result: {
+        agentId: "agent_rpc",
+        sessions: [],
+        transcript: "agent_id\tagent_rpc\nNo transcript entries",
+      },
+    });
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
         id: 4,
         method: "agent.stop",
         params: { agentId: "agent_rpc" },
@@ -1632,6 +2013,22 @@ describe("AgenC background agent lifecycle", () => {
     await expect(
       connection.dispatch({
         jsonrpc: JSON_RPC_VERSION,
+        id: "bad-logs",
+        method: "agent.logs",
+        params: {},
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "bad-logs",
+      error: {
+        code: -32602,
+        message: "agent.logs requires agentId",
+        data: { code: "INVALID_ARGUMENT" },
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
         id: "bad-stream-content",
         method: "message.stream",
         params: {
@@ -1644,7 +2041,8 @@ describe("AgenC background agent lifecycle", () => {
       id: "bad-stream-content",
       error: {
         code: -32602,
-        message: "message.stream param 'content[0]' must be a text or image_url block",
+        message:
+          "message.stream param 'content[0]' must be a text or image_url block",
         data: { code: "INVALID_ARGUMENT" },
       },
     });
@@ -1660,7 +2058,8 @@ describe("AgenC background agent lifecycle", () => {
       id: 3,
       error: {
         code: -32602,
-        message: "agent.create param 'unattendedAllow' must be an array of strings",
+        message:
+          "agent.create param 'unattendedAllow' must be an array of strings",
         data: { code: "INVALID_ARGUMENT" },
       },
     });
@@ -1771,10 +2170,7 @@ describe("AgenC background agent lifecycle", () => {
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_1"]),
       createAttachmentId: sequence(["attachment_1"]),
-      now: sequence([
-        "2026-05-01T12:00:01.000Z",
-        "2026-05-01T12:00:02.000Z",
-      ]),
+      now: sequence(["2026-05-01T12:00:01.000Z", "2026-05-01T12:00:02.000Z"]),
     });
     const clientMultiplexer = new AgenCDaemonClientMultiplexer({
       sessionManager: sessions,
@@ -1873,11 +2269,19 @@ describe("AgenC background agent lifecycle", () => {
         },
         listAgents: async () => ({ agents: [] }),
         streamAgentMessage: async () => {},
-        approveTool: async () => ({ requestId: "unused", decision: "approved" }),
+        approveTool: async () => ({
+          requestId: "unused",
+          decision: "approved",
+        }),
         denyTool: async () => ({ requestId: "unused", decision: "denied" }),
         cancelTool: async () => ({
           requestId: "unused",
           decision: "cancelled",
+        }),
+        getAgentLogs: async () => ({
+          agentId: "agent_multi",
+          sessions: [],
+          transcript: "agent_id\tagent_multi\nNo transcript entries",
         }),
         attachAgent: async () => ({
           agentId: "agent_multi",
@@ -1901,7 +2305,9 @@ describe("AgenC background agent lifecycle", () => {
       },
       clientMultiplexer,
     });
-    const connection = dispatcher.createConnection({ sendNotification: () => {} });
+    const connection = dispatcher.createConnection({
+      sendNotification: () => {},
+    });
 
     await connection.dispatch({
       jsonrpc: JSON_RPC_VERSION,

@@ -44,7 +44,10 @@ import {
   readAndValidateSchemaVersion,
 } from "../session/session-store.js";
 import {
+  LOGS_DATABASE_FILENAME,
   openStateDatabases,
+  openStateDatabasePaths,
+  STATE_DATABASE_FILENAME,
   type StateSqliteDriver,
 } from "../state/sqlite-driver.js";
 import { StateThreadRepository } from "../state/threads.js";
@@ -323,8 +326,13 @@ export interface FileThreadStoreOpts {
    * The cwd used to resolve the per-project state path
    * (`getProjectDir(cwd, projectRootMarkers)`). Defaults
    * to `process.cwd()` if omitted.
-  */
+   */
   readonly cwd?: string;
+  /**
+   * Direct per-project state path. Used when recovery already knows the
+   * project directory but no original cwd is available.
+   */
+  readonly projectDir?: string;
   readonly agencHome?: string;
   /**
    * Fallback provider id used when old rollout metadata does not include
@@ -362,17 +370,27 @@ export class FileThreadStore implements ThreadStore {
   constructor(opts: FileThreadStoreOpts = {}) {
     const cwd = opts.cwd ?? process.cwd();
     const markers = opts.projectRootMarkers ?? DEFAULT_SESSION_ROOT_MARKERS;
-    const projectDir = getProjectDir(cwd, markers, opts.agencHome);
+    const projectDir =
+      opts.projectDir ?? getProjectDir(cwd, markers, opts.agencHome);
     this.projectDir = projectDir;
     this.registryPath = join(projectDir, REGISTRY_FILENAME);
     this.registryLockPath = `${this.registryPath}.lock`;
     this.archivedSessionsDir = join(projectDir, "archived_sessions");
     this.defaultModelProviderId = opts.defaultModelProviderId ?? "unknown";
-    this.stateDriver = openStateDatabases({
-      cwd,
-      ...(opts.agencHome !== undefined ? { agencHome: opts.agencHome } : {}),
-      projectRootMarkers: markers,
-    });
+    this.stateDriver =
+      opts.projectDir === undefined
+        ? openStateDatabases({
+            cwd,
+            ...(opts.agencHome !== undefined
+              ? { agencHome: opts.agencHome }
+              : {}),
+            projectRootMarkers: markers,
+          })
+        : openStateDatabasePaths({
+            projectDir,
+            stateDbPath: join(projectDir, STATE_DATABASE_FILENAME),
+            logsDbPath: join(projectDir, LOGS_DATABASE_FILENAME),
+          });
     this.threadIndex = new StateThreadRepository(this.stateDriver);
     this.readLegacyThreadsJson();
   }
@@ -563,10 +581,7 @@ export class FileThreadStore implements ThreadStore {
     this.assertOpen();
     const registry = this.readRegistry();
     const entry = registry.get(params.threadId);
-    if (
-      entry?.archivedAt !== undefined &&
-      params.includeArchived !== true
-    ) {
+    if (entry?.archivedAt !== undefined && params.includeArchived !== true) {
       throw new ThreadNotFoundError(params.threadId);
     }
     const live = this.liveRecorders.get(params.threadId);
@@ -649,7 +664,10 @@ export class FileThreadStore implements ThreadStore {
       throw new ThreadNotFoundError(fileThreadId);
     }
     const readablePath = this.readableRolloutPath(entry);
-    if (readablePath === undefined || !sameExistingPath(readablePath, rolloutPath)) {
+    if (
+      readablePath === undefined ||
+      !sameExistingPath(readablePath, rolloutPath)
+    ) {
       throw new ThreadStoreInvalidRequestError(
         `rollout path does not match thread ${fileThreadId}`,
       );
@@ -681,7 +699,8 @@ export class FileThreadStore implements ThreadStore {
     entries.sort((a, b) => {
       const aKey = sortKey === "created_at" ? a.createdAt : a.updatedAt;
       const bKey = sortKey === "created_at" ? b.createdAt : b.updatedAt;
-      const cmp = aKey.localeCompare(bKey) || a.threadId.localeCompare(b.threadId);
+      const cmp =
+        aKey.localeCompare(bKey) || a.threadId.localeCompare(b.threadId);
       return sortDir === "asc" ? cmp : -cmp;
     });
     const start = cursor?.offset ?? 0;
@@ -697,9 +716,7 @@ export class FileThreadStore implements ThreadStore {
     };
   }
 
-  updateThreadMetadata(
-    params: UpdateThreadMetadataParams,
-  ): StoredThread {
+  updateThreadMetadata(params: UpdateThreadMetadataParams): StoredThread {
     this.assertOpen();
     if (params.patch.gitInfo !== undefined) {
       // Match source runtime behaviour: the local store rejects git-info
@@ -826,7 +843,9 @@ export class FileThreadStore implements ThreadStore {
     if (rolloutPath.trim().length === 0) {
       throw new ThreadStoreInvalidRequestError("rollout path is empty");
     }
-    const resolved = isAbsolute(rolloutPath) ? rolloutPath : resolve(rolloutPath);
+    const resolved = isAbsolute(rolloutPath)
+      ? rolloutPath
+      : resolve(rolloutPath);
     if (!isRolloutJsonlPath(resolved)) {
       throw new ThreadStoreInvalidRequestError(
         `rollout path must point to a rollout JSONL file: ${rolloutPath}`,
@@ -883,7 +902,10 @@ export class FileThreadStore implements ThreadStore {
     return undefined;
   }
 
-  private matchesSearch(entry: RegistryEntry, searchTerm: string | undefined): boolean {
+  private matchesSearch(
+    entry: RegistryEntry,
+    searchTerm: string | undefined,
+  ): boolean {
     if (searchTerm === undefined) return true;
     const name = entry.name?.toLocaleLowerCase();
     if (name?.includes(searchTerm)) return true;
@@ -1055,7 +1077,9 @@ export class FileThreadStore implements ThreadStore {
   }
 
   private readRegistry(includeLegacy = true): Map<ThreadId, RegistryEntry> {
-    return this.withRegistryLock(() => this.readRegistryUnlocked(includeLegacy));
+    return this.withRegistryLock(() =>
+      this.readRegistryUnlocked(includeLegacy),
+    );
   }
 
   private updateRegistry(
@@ -1135,15 +1159,20 @@ export class FileThreadStore implements ThreadStore {
       result.set(threadId, entry);
     }
     for (const session of listResumableSessions(this.projectDir)) {
-      result.set(session.sessionId, mergeLegacyEntry(result.get(session.sessionId), {
-        threadId: session.sessionId,
-        createdAt: new Date(session.lastModified).toISOString(),
-        updatedAt: new Date(session.lastModified).toISOString(),
-        rolloutPath: session.rolloutPath,
-      }));
+      result.set(
+        session.sessionId,
+        mergeLegacyEntry(result.get(session.sessionId), {
+          threadId: session.sessionId,
+          createdAt: new Date(session.lastModified).toISOString(),
+          updatedAt: new Date(session.lastModified).toISOString(),
+          rolloutPath: session.rolloutPath,
+        }),
+      );
     }
 
-    for (const rolloutPath of listRolloutFilesRecursive(this.archivedSessionsDir)) {
+    for (const rolloutPath of listRolloutFilesRecursive(
+      this.archivedSessionsDir,
+    )) {
       const imported = entryFromRolloutPath(rolloutPath, true);
       if (imported === undefined) continue;
       result.set(
@@ -1197,8 +1226,8 @@ function toStoredThread(
 ): StoredThread {
   const rolloutPath =
     entry.archivedAt !== undefined
-      ? entry.archivedRolloutPath ?? entry.rolloutPath
-      : entry.rolloutPath ?? entry.archivedRolloutPath;
+      ? (entry.archivedRolloutPath ?? entry.rolloutPath)
+      : (entry.rolloutPath ?? entry.archivedRolloutPath);
   return {
     threadId: entry.threadId,
     createdAt: entry.createdAt,
@@ -1276,7 +1305,9 @@ function normalizeListScope(params: ListThreadsParams): ListScope {
   const modelProviders =
     params.modelProviders === undefined || params.modelProviders.length === 0
       ? undefined
-      : new Set(params.modelProviders.filter((provider) => provider.length > 0));
+      : new Set(
+          params.modelProviders.filter((provider) => provider.length > 0),
+        );
   const cwdFilters =
     params.cwdFilters === undefined
       ? undefined
@@ -1470,7 +1501,9 @@ function canonicalizeJsonValue(value: unknown, seen: WeakSet<object>): unknown {
   }
   if (Array.isArray(value)) {
     if (seen.has(value)) {
-      throw new ThreadStoreInvalidRequestError("thread source contains a cycle");
+      throw new ThreadStoreInvalidRequestError(
+        "thread source contains a cycle",
+      );
     }
     seen.add(value);
     const result = value.map((item) => canonicalizeJsonValue(item, seen));
@@ -1483,7 +1516,9 @@ function canonicalizeJsonValue(value: unknown, seen: WeakSet<object>): unknown {
   );
 }
 
-function serializeThreadSource(source: ThreadSource | undefined): string | undefined {
+function serializeThreadSource(
+  source: ThreadSource | undefined,
+): string | undefined {
   if (source === undefined) return undefined;
   if (typeof source === "string") return source;
   try {
@@ -1539,7 +1574,9 @@ function firstSessionMetaFromRollout(
   );
 }
 
-function readFirstUserMessageFromRollout(rolloutPath: string): string | undefined {
+function readFirstUserMessageFromRollout(
+  rolloutPath: string,
+): string | undefined {
   return readFirstRolloutMatch(rolloutPath, (item) => {
     if (item.type !== "response_item" || item.payload.role !== "user") {
       return undefined;
@@ -1590,7 +1627,9 @@ function parseRolloutLineForMatch<T>(
   }
 }
 
-function textFromResponseContent(content: ResponseItem["content"]): string | undefined {
+function textFromResponseContent(
+  content: ResponseItem["content"],
+): string | undefined {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return undefined;
   const parts = content
@@ -1628,7 +1667,7 @@ function mergeLegacyEntry(
   const merged: RegistryEntry = {
     ...legacy,
     ...existing,
-    ...(existingActivePath ?? legacyActivePath
+    ...((existingActivePath ?? legacyActivePath)
       ? { rolloutPath: existingActivePath ?? legacyActivePath }
       : {}),
     ...(archivedRolloutPath !== undefined ? { archivedRolloutPath } : {}),
@@ -1670,7 +1709,9 @@ function entryFromRolloutPath(
     threadId,
     createdAt,
     updatedAt,
-    ...(archived ? { archivedAt: updatedAt, archivedRolloutPath: rolloutPath } : { rolloutPath }),
+    ...(archived
+      ? { archivedAt: updatedAt, archivedRolloutPath: rolloutPath }
+      : { rolloutPath }),
     ...(meta?.cwd !== undefined ? { cwd: meta.cwd } : {}),
     ...(source !== undefined ? { source } : {}),
     ...(typeof meta?.model === "string" ? { model: meta.model } : {}),

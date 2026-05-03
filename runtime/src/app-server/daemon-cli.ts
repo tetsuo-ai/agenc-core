@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   AgenCDaemonAgentManager,
+  type AgenCDaemonAgentLogThreadStoreRoute,
   type AgenCDaemonAgentSnapshotFlush,
   type AgenCDaemonAgentStatusSnapshot,
   type AgenCDaemonMessageExchangeSnapshot,
@@ -31,6 +32,7 @@ import {
 import {
   JSON_RPC_VERSION,
   type AgentStatus,
+  type AgentToolOutputLog,
   type JsonObject,
   type JsonValue,
   type SessionStatus,
@@ -64,6 +66,7 @@ import {
 } from "../state/pruning.js";
 import { StateSqliteHealthStatsReader } from "../state/health-stats.js";
 import { AgenCSessionSnapshotPolicy } from "../state/snapshot-policy.js";
+import { readRotatedToolOutputLog } from "../state/tool-output-rotation.js";
 import {
   discoverStateDatabasePaths,
   LOGS_DATABASE_FILENAME,
@@ -154,7 +157,10 @@ export function resolveAgenCDaemonCookiePath(
   env: NodeJS.ProcessEnv = process.env,
   userHome = homedir(),
 ): string {
-  return join(resolveAgenCDaemonHome(env, userHome), AGENC_DAEMON_COOKIE_FILENAME);
+  return join(
+    resolveAgenCDaemonHome(env, userHome),
+    AGENC_DAEMON_COOKIE_FILENAME,
+  );
 }
 
 export function resolveAgenCDaemonSnapshotPath(
@@ -439,6 +445,10 @@ async function runAgenCDaemonForeground(
         );
       }
     },
+    threadStoreForAgentLogs: (route) =>
+      snapshotPolicies.threadStoreForAgentLogs(route),
+    readAgentToolOutputs: ({ agentId, sessionIds }) =>
+      snapshotPolicies.readAgentToolOutputs({ agentId, sessionIds }),
     onSnapshotError: (error) =>
       io.stderr.write(
         `agenc: daemon snapshot policy failed: ${formatCleanupError(error)}\n`,
@@ -482,7 +492,9 @@ async function runAgenCDaemonForeground(
     number,
     { readonly send: (message: JsonObject) => Promise<void> }
   >();
-  const connectionFor = (connectionId: number): AgenCDaemonJsonRpcConnection => {
+  const connectionFor = (
+    connectionId: number,
+  ): AgenCDaemonJsonRpcConnection => {
     const current = connections.get(connectionId);
     if (current !== undefined) return current;
     const next = dispatcher.createConnection({
@@ -503,7 +515,9 @@ async function runAgenCDaemonForeground(
       socketConnections.set(context.connectionId, {
         send: (notification) => context.send(notification),
       });
-      await context.send(await connectionFor(context.connectionId).dispatch(message));
+      await context.send(
+        await connectionFor(context.connectionId).dispatch(message),
+      );
     },
     onError: (error) => {
       io.stderr.write(`agenc: daemon socket error: ${error.message}\n`);
@@ -540,19 +554,18 @@ async function runAgenCDaemonForeground(
     const activeConnections = [...connections.values()];
     connections.clear();
     socketConnections.clear();
-    await Promise.all(activeConnections.map((connection) => connection.close()));
+    await Promise.all(
+      activeConnections.map((connection) => connection.close()),
+    );
   });
   cleanup.register("daemon-socket", async () => {
     await socketServer.close();
   });
 
-  const shutdownSignal = installAgenCShutdownSignalHandlers(
-    (event) => {
-      shuttingDown = true;
-      io.stderr.write(`${summarizeAgenCShutdown(event)}\n`);
-    },
-    options.signalProcess ?? process,
-  );
+  const shutdownSignal = installAgenCShutdownSignalHandlers((event) => {
+    shuttingDown = true;
+    io.stderr.write(`${summarizeAgenCShutdown(event)}\n`);
+  }, options.signalProcess ?? process);
   let exitCode = 0;
   let cleanupContext:
     | { readonly reason: "daemon_shutdown" }
@@ -658,6 +671,7 @@ class AgenCDaemonSnapshotPolicyRegistry {
   readonly #onError: (error: unknown) => void;
   readonly #policies = new Map<string, AgenCDaemonSnapshotPolicyEntry>();
   readonly #sessionPolicyKeys = new Map<string, string>();
+  readonly #threadStores = new Map<string, FileThreadStore>();
   #periodicTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(options: AgenCDaemonSnapshotPolicyRegistryOptions) {
@@ -713,8 +727,12 @@ class AgenCDaemonSnapshotPolicyRegistry {
     for (const entry of this.#policies.values()) {
       entry.driver.close();
     }
+    for (const store of this.#threadStores.values()) {
+      store.close();
+    }
     this.#policies.clear();
     this.#sessionPolicyKeys.clear();
+    this.#threadStores.clear();
   }
 
   recordSessionEvent(sessionId: string, event: JsonObject): void {
@@ -734,10 +752,77 @@ class AgenCDaemonSnapshotPolicyRegistry {
     entry.policy.recordMessageExchange(exchange);
   }
 
-  recordAgentStatusTransition(transition: AgenCDaemonAgentStatusSnapshot): void {
+  recordAgentStatusTransition(
+    transition: AgenCDaemonAgentStatusSnapshot,
+  ): void {
     const entry = this.#policyForRoute(transition);
     this.#rememberSession(transition.sessionId, entry.driver.stateDbPath);
     entry.policy.recordAgentStatusTransition(transition);
+  }
+
+  threadStoreForAgentLogs(
+    route: AgenCDaemonAgentLogThreadStoreRoute,
+  ): FileThreadStore {
+    return this.#threadStoreForRoute(route);
+  }
+
+  readAgentToolOutputs(params: {
+    readonly agentId: string;
+    readonly sessionIds: readonly string[];
+  }): readonly AgentToolOutputLog[] {
+    void params.agentId;
+    const outputs: AgentToolOutputLog[] = [];
+    for (const sessionId of params.sessionIds) {
+      const entry = this.#policyForSession(sessionId);
+      const rows = entry.driver
+        .prepareState<
+          [string],
+          {
+            tool_call_id: string;
+            tool_name: string;
+            status: string;
+            output_partial: string | null;
+            output_log_path: string | null;
+            output_log_bytes: number;
+            started_at: string;
+          }
+        >(
+          `SELECT
+             tool_call_id,
+             tool_name,
+             status,
+             output_partial,
+             output_log_path,
+             output_log_bytes,
+             started_at
+           FROM in_flight_tool_calls
+           WHERE session_id = ?
+           ORDER BY started_at ASC, tool_call_id ASC`,
+        )
+        .all(sessionId);
+      for (const row of rows) {
+        const rotated =
+          row.output_log_path === null
+            ? ""
+            : readRotatedToolOutputLog(row.output_log_path);
+        const output = `${row.output_partial ?? ""}${rotated}`;
+        outputs.push({
+          sessionId,
+          toolCallId: row.tool_call_id,
+          toolName: row.tool_name,
+          status: row.status,
+          output,
+          outputBytes: Buffer.byteLength(output, "utf8"),
+          ...(row.output_log_path !== null
+            ? { outputLogPath: row.output_log_path }
+            : {}),
+          ...(row.output_log_bytes > 0
+            ? { outputLogBytes: row.output_log_bytes }
+            : {}),
+        });
+      }
+    }
+    return outputs;
   }
 
   #policyForSession(sessionId: string): AgenCDaemonSnapshotPolicyEntry {
@@ -759,6 +844,30 @@ class AgenCDaemonSnapshotPolicyRegistry {
       return this.#policyForProjectDir(route.stateProjectDir);
     }
     return this.#policyForCwd(route.cwd ?? this.#defaultCwd);
+  }
+
+  #threadStoreForRoute(route: {
+    readonly cwd?: string;
+    readonly stateProjectDir?: string;
+  }): FileThreadStore {
+    const key =
+      route.stateProjectDir !== undefined
+        ? `project:${route.stateProjectDir}`
+        : `cwd:${route.cwd ?? this.#defaultCwd}`;
+    const existing = this.#threadStores.get(key);
+    if (existing !== undefined) return existing;
+    const store =
+      route.stateProjectDir !== undefined
+        ? new FileThreadStore({
+            projectDir: route.stateProjectDir,
+            agencHome: this.#agencHome,
+          })
+        : new FileThreadStore({
+            cwd: route.cwd ?? this.#defaultCwd,
+            agencHome: this.#agencHome,
+          });
+    this.#threadStores.set(key, store);
+    return store;
   }
 
   #policyForCwd(cwd: string): AgenCDaemonSnapshotPolicyEntry {

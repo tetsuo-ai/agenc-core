@@ -14,6 +14,7 @@
     "agent.list",
     "agent.attach",
     "agent.stop",
+    "agent.logs",
     "session.create",
     "session.list",
     "session.attach",
@@ -224,6 +225,17 @@
         },
         "reason": {
           "type": "string"
+        }
+      },
+      "required": ["agentId"]
+    },
+    "AgentLogsParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agentId": {
+          "type": "string",
+          "minLength": 1
         }
       },
       "required": ["agentId"]
@@ -971,6 +983,9 @@
           "$ref": "#/definitions/AgentStopRequest"
         },
         {
+          "$ref": "#/definitions/AgentLogsRequest"
+        },
+        {
           "$ref": "#/definitions/SessionCreateRequest"
         },
         {
@@ -1266,6 +1281,25 @@
         },
         "params": {
           "$ref": "#/definitions/AgentStopParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "AgentLogsRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "agent.logs"
+        },
+        "params": {
+          "$ref": "#/definitions/AgentLogsParams"
         }
       },
       "required": ["jsonrpc", "id", "method", "params"]

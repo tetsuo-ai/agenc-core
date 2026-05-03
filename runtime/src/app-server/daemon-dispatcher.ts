@@ -36,6 +36,7 @@ import {
   type AgentAttachParams,
   type AgentCreateParams,
   type AgentListParams,
+  type AgentLogsParams,
   type AgentStopParams,
   type AgenCDaemonErrorCode,
   type AgenCDaemonErrorObject,
@@ -65,6 +66,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "cancelTool"
     | "createAgent"
     | "denyTool"
+    | "getAgentLogs"
     | "listAgents"
     | "stopAgent"
     | "streamAgentMessage"
@@ -74,7 +76,10 @@ export interface AgenCDaemonDispatcherOptions {
   ) => boolean | Promise<boolean>;
   readonly clientMultiplexer?: Pick<
     AgenCDaemonClientMultiplexer,
-    "attachClientToSession" | "broadcastSessionEvent" | "registerClient" | "removeClient"
+    | "attachClientToSession"
+    | "broadcastSessionEvent"
+    | "registerClient"
+    | "removeClient"
   >;
   readonly createMessageId?: () => string;
   readonly fuzzyFileSearch?: AgenCFuzzyFileSearch;
@@ -93,6 +98,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "cancelTool"
     | "createAgent"
     | "denyTool"
+    | "getAgentLogs"
     | "listAgents"
     | "stopAgent"
     | "streamAgentMessage"
@@ -179,7 +185,11 @@ export class AgenCDaemonJsonRpcDispatcher {
       return errorResponse(id, -32600, "missing daemon request id");
     }
     if (!isAgenCDaemonMethod(message.method)) {
-      return errorResponse(id, -32601, `unknown daemon method: ${message.method}`);
+      return errorResponse(
+        id,
+        -32601,
+        `unknown daemon method: ${message.method}`,
+      );
     }
     const method = message.method;
     try {
@@ -187,9 +197,8 @@ export class AgenCDaemonJsonRpcDispatcher {
       if (method === "initialize") {
         const initializeParams = validateInitializeParams(params);
         if (this.#initializeAuthenticator !== undefined) {
-          const authenticated = await this.#initializeAuthenticator(
-            initializeParams,
-          );
+          const authenticated =
+            await this.#initializeAuthenticator(initializeParams);
           if (!authenticated) {
             return errorResponse(
               id,
@@ -251,7 +260,9 @@ export class AgenCDaemonJsonRpcDispatcher {
       case "agent.create":
         return successResponse(
           id,
-          await this.#agentManager.createAgent(validateAgentCreateParams(params)),
+          await this.#agentManager.createAgent(
+            validateAgentCreateParams(params),
+          ),
         );
       case "agent.list":
         return successResponse(
@@ -264,6 +275,13 @@ export class AgenCDaemonJsonRpcDispatcher {
         return successResponse(
           id,
           await this.#agentManager.stopAgent(validateAgentStopParams(params)),
+        );
+      case "agent.logs":
+        return successResponse(
+          id,
+          await this.#agentManager.getAgentLogs(
+            validateAgentLogsParams(params),
+          ),
         );
       case "message.stream":
         return this.#streamMessage(id, params);
@@ -278,27 +296,36 @@ export class AgenCDaemonJsonRpcDispatcher {
       case "commandExec.start":
         return successResponse(
           id,
-          await this.#commandExec.start(validateCommandExecStartParams(params), {
-            connectionId: connection.cancellationScope,
-            sendNotification: connection.sendNotification,
-            signal,
-          }),
+          await this.#commandExec.start(
+            validateCommandExecStartParams(params),
+            {
+              connectionId: connection.cancellationScope,
+              sendNotification: connection.sendNotification,
+              signal,
+            },
+          ),
         );
       case "commandExec.write":
         return successResponse(
           id,
-          await this.#commandExec.write(validateCommandExecWriteParams(params), {
-            connectionId: connection.cancellationScope,
-            sendNotification: connection.sendNotification,
-          }),
+          await this.#commandExec.write(
+            validateCommandExecWriteParams(params),
+            {
+              connectionId: connection.cancellationScope,
+              sendNotification: connection.sendNotification,
+            },
+          ),
         );
       case "commandExec.resize":
         return successResponse(
           id,
-          await this.#commandExec.resize(validateCommandExecResizeParams(params), {
-            connectionId: connection.cancellationScope,
-            sendNotification: connection.sendNotification,
-          }),
+          await this.#commandExec.resize(
+            validateCommandExecResizeParams(params),
+            {
+              connectionId: connection.cancellationScope,
+              sendNotification: connection.sendNotification,
+            },
+          ),
         );
       case "commandExec.terminate":
         return successResponse(
@@ -314,7 +341,9 @@ export class AgenCDaemonJsonRpcDispatcher {
       case "tool.approve":
         return successResponse(
           id,
-          await this.#agentManager.approveTool(validateToolApproveParams(params)),
+          await this.#agentManager.approveTool(
+            validateToolApproveParams(params),
+          ),
         );
       case "tool.deny":
         return successResponse(
@@ -341,7 +370,7 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           -32601,
           `daemon method is not implemented yet: ${method}`,
-      );
+        );
     }
   }
 
@@ -402,7 +431,7 @@ export class AgenCDaemonJsonRpcDispatcher {
           );
         }
         throw error;
-    });
+      });
     connection.trackClientId(params.clientId);
     await this.#clientMultiplexer.attachClientToSession(
       sessionId,
@@ -657,10 +686,7 @@ function validateAgentListParams(params: JsonObject): AgentListParams {
   if (limit !== undefined && typeof limit !== "number") {
     throw invalidParams("agent.list param 'limit' must be a number");
   }
-  if (
-    limit !== undefined &&
-    (!Number.isInteger(limit) || limit < 1)
-  ) {
+  if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
     throw invalidParams("agent.list param 'limit' must be a positive integer");
   }
   return validated as AgentListParams;
@@ -689,6 +715,15 @@ function validateAgentStopParams(params: JsonObject): AgentStopParams {
   return validated as AgentStopParams;
 }
 
+function validateAgentLogsParams(params: JsonObject): AgentLogsParams {
+  const validated = validateObjectShape(params, {
+    methodName: "agent.logs",
+    stringFields: ["agentId"],
+  });
+  validateRequiredString(validated, "agent.logs", "agentId");
+  return validated as AgentLogsParams;
+}
+
 function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
   const validated = validateObjectShape(params, {
     methodName: "message.stream",
@@ -704,7 +739,9 @@ function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
   }
   const content = validated.content;
   if (typeof content !== "string" && !Array.isArray(content)) {
-    throw invalidParams("message.stream param 'content' must be a string or array");
+    throw invalidParams(
+      "message.stream param 'content' must be a string or array",
+    );
   }
   if (Array.isArray(content)) {
     for (const [index, block] of content.entries()) {
@@ -752,7 +789,9 @@ function validateFuzzyFileSearchParams(
     throw invalidParams("fs.fuzzy_search requires roots");
   }
   if ((roots as readonly string[]).some((root) => root.trim().length === 0)) {
-    throw invalidParams("fs.fuzzy_search param 'roots' must not contain empty paths");
+    throw invalidParams(
+      "fs.fuzzy_search param 'roots' must not contain empty paths",
+    );
   }
   return validated as FuzzyFileSearchParams;
 }
@@ -808,9 +847,9 @@ function validateCommandExecTerminateParams(
   }) as CommandExecTerminateParams;
 }
 
-function displayUserMessageFromMetadata(
-  metadata: JsonObject | undefined,
-): { readonly displayUserMessage?: string | null } {
+function displayUserMessageFromMetadata(metadata: JsonObject | undefined): {
+  readonly displayUserMessage?: string | null;
+} {
   if (metadata === undefined || !("displayUserMessage" in metadata)) return {};
   const value = metadata.displayUserMessage;
   if (value === null || typeof value === "string") {
@@ -846,7 +885,9 @@ function validateToolApproveParams(params: JsonObject): ToolApproveParams {
     validated.scope !== "session" &&
     validated.scope !== "agent"
   ) {
-    throw invalidParams("tool.approve param 'scope' must be once, session, or agent");
+    throw invalidParams(
+      "tool.approve param 'scope' must be once, session, or agent",
+    );
   }
   return validated as ToolApproveParams;
 }
@@ -902,24 +943,35 @@ function validateObjectShape(
   ]);
   for (const [key, value] of Object.entries(params)) {
     if (!allowed.has(key)) {
-      throw invalidParams(`${options.methodName} does not accept param '${key}'`);
+      throw invalidParams(
+        `${options.methodName} does not accept param '${key}'`,
+      );
     }
     if (value === undefined) continue;
     if (options.stringFields?.includes(key) && typeof value !== "string") {
-      throw invalidParams(`${options.methodName} param '${key}' must be a string`);
+      throw invalidParams(
+        `${options.methodName} param '${key}' must be a string`,
+      );
     }
     if (options.numberFields?.includes(key) && typeof value !== "number") {
-      throw invalidParams(`${options.methodName} param '${key}' must be a number`);
+      throw invalidParams(
+        `${options.methodName} param '${key}' must be a number`,
+      );
     }
     if (options.stringArrayFields?.includes(key)) {
-      if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+      if (
+        !Array.isArray(value) ||
+        !value.every((item) => typeof item === "string")
+      ) {
         throw invalidParams(
           `${options.methodName} param '${key}' must be an array of strings`,
         );
       }
     }
     if (options.objectFields?.includes(key) && !isPlainJsonObject(value)) {
-      throw invalidParams(`${options.methodName} param '${key}' must be an object`);
+      throw invalidParams(
+        `${options.methodName} param '${key}' must be an object`,
+      );
     }
   }
   return params;

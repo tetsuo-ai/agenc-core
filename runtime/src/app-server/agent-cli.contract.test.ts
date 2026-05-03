@@ -9,6 +9,7 @@ import {
   formatAgenCAgentAttachResult,
   formatAgenCAgentList,
   formatAgenCAgentCliHelpText,
+  formatAgenCAgentLogsResult,
   formatAgenCAgentStopResult,
   parseAgenCAgentCliArgs,
   resolveAgenCAgentAttachCwd,
@@ -20,7 +21,11 @@ import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import { AgenCUnixSocketServer } from "./transport/unix-socket.js";
-import type { AgentCreateParams, AgentStopParams } from "./protocol/index.js";
+import type {
+  AgentCreateParams,
+  AgentLogsParams,
+  AgentStopParams,
+} from "./protocol/index.js";
 import type {
   AgenCBackgroundAgentMessageParams,
   AgenCBackgroundAgentRunner,
@@ -82,7 +87,9 @@ describe("agenc agent start CLI", () => {
       kind: "error",
       message: "agent attach requires an agent id",
     });
-    expect(parseAgenCAgentCliArgs(["agent", "attach", "agent_1", "extra"])).toEqual({
+    expect(
+      parseAgenCAgentCliArgs(["agent", "attach", "agent_1", "extra"]),
+    ).toEqual({
       kind: "error",
       message: "agent attach accepts exactly one agent id",
     });
@@ -94,9 +101,25 @@ describe("agenc agent start CLI", () => {
       kind: "error",
       message: "agent stop requires an agent id",
     });
-    expect(parseAgenCAgentCliArgs(["agent", "stop", "agent_1", "extra"])).toEqual({
+    expect(
+      parseAgenCAgentCliArgs(["agent", "stop", "agent_1", "extra"]),
+    ).toEqual({
       kind: "error",
       message: "agent stop accepts exactly one agent id",
+    });
+    expect(parseAgenCAgentCliArgs(["agent", "logs", "agent_1"])).toEqual({
+      kind: "logs",
+      agentId: "agent_1",
+    });
+    expect(parseAgenCAgentCliArgs(["agent", "logs"])).toEqual({
+      kind: "error",
+      message: "agent logs requires an agent id",
+    });
+    expect(
+      parseAgenCAgentCliArgs(["agent", "logs", "agent_1", "extra"]),
+    ).toEqual({
+      kind: "error",
+      message: "agent logs accepts exactly one agent id",
     });
     expect(parseAgenCAgentCliArgs(["agent", "start", "build", "it"])).toEqual({
       kind: "start",
@@ -121,13 +144,7 @@ describe("agenc agent start CLI", () => {
       unattendedDeny: ["exec_command"],
     });
     expect(
-      parseAgenCAgentCliArgs([
-        "agent",
-        "start",
-        "fix",
-        "--help",
-        "handling",
-      ]),
+      parseAgenCAgentCliArgs(["agent", "start", "fix", "--help", "handling"]),
     ).toEqual({
       kind: "start",
       objective: "fix --help handling",
@@ -158,6 +175,7 @@ describe("agenc agent start CLI", () => {
     expect(formatAgenCAgentCliHelpText()).toContain("list");
     expect(formatAgenCAgentCliHelpText()).toContain("attach <id>");
     expect(formatAgenCAgentCliHelpText()).toContain("stop <id>");
+    expect(formatAgenCAgentCliHelpText()).toContain("logs <id>");
   });
 
   it("prints only the daemon-returned agent ID", async () => {
@@ -393,30 +411,36 @@ describe("agenc agent start CLI", () => {
         "",
       ].join("\n"),
     );
-    expect(formatAgenCAgentAttachResult({
-      agentId: "agent_2",
-      attachmentId: "attachment_2",
-      sessionIds: [],
-    })).toBe(
-      [
-        "agent_id\tsession_id\tattachment_id",
-        "agent_2\t-\tattachment_2",
-      ].join("\n"),
+    expect(
+      formatAgenCAgentAttachResult({
+        agentId: "agent_2",
+        attachmentId: "attachment_2",
+        sessionIds: [],
+      }),
+    ).toBe(
+      ["agent_id\tsession_id\tattachment_id", "agent_2\t-\tattachment_2"].join(
+        "\n",
+      ),
     );
-    expect(resolveAgenCAgentAttachCwd({
-      agentId: "agent_3",
-      attachmentId: "attachment_3",
-      sessionIds: ["session_remote"],
-      sessions: [
+    expect(
+      resolveAgenCAgentAttachCwd(
         {
-          sessionId: "session_remote",
           agentId: "agent_3",
-          status: "idle",
-          createdAt: "2026-05-01T12:00:00.000Z",
-          cwd: "/daemon/workspace",
+          attachmentId: "attachment_3",
+          sessionIds: ["session_remote"],
+          sessions: [
+            {
+              sessionId: "session_remote",
+              agentId: "agent_3",
+              status: "idle",
+              createdAt: "2026-05-01T12:00:00.000Z",
+              cwd: "/daemon/workspace",
+            },
+          ],
         },
-      ],
-    }, "/local/workspace")).toBe("/daemon/workspace");
+        "/local/workspace",
+      ),
+    ).toBe("/daemon/workspace");
     expect(io.stderrText()).toBe("");
   });
 
@@ -454,10 +478,60 @@ describe("agenc agent start CLI", () => {
     ]);
     expect(io.stdoutText()).toBe("agent_1\tstopped\n");
     expect(io.stderrText()).toBe("");
-    expect(formatAgenCAgentStopResult({
-      agentId: "agent_2",
-      stopped: false,
-    })).toBe("agent_2\talready_stopped");
+    expect(
+      formatAgenCAgentStopResult({
+        agentId: "agent_2",
+        stopped: false,
+      }),
+    ).toBe("agent_2\talready_stopped");
+  });
+
+  it("sends agent.logs and prints the returned transcript", async () => {
+    const io = createIo();
+    const requests: AgentLogsParams[] = [];
+
+    await expect(
+      runAgenCAgentCli(
+        { kind: "logs", agentId: "agent_1" },
+        {
+          ensureDaemonReady: async () => {},
+          io,
+          client: {
+            createAgent: async () => {
+              throw new Error("createAgent should not be called");
+            },
+            listAgents: async () => {
+              throw new Error("listAgents should not be called");
+            },
+            attachAgent: async () => {
+              throw new Error("attachAgent should not be called");
+            },
+            stopAgent: async () => {
+              throw new Error("stopAgent should not be called");
+            },
+            getAgentLogs: async (params) => {
+              requests.push(params);
+              return {
+                agentId: params.agentId,
+                sessions: [],
+                transcript: "agent_id\tagent_1\nassistant:\ndone",
+              };
+            },
+          },
+        },
+      ),
+    ).resolves.toBe(0);
+
+    expect(requests).toEqual([{ agentId: "agent_1" }]);
+    expect(io.stdoutText()).toBe("agent_id\tagent_1\nassistant:\ndone\n");
+    expect(io.stderrText()).toBe("");
+    expect(
+      formatAgenCAgentLogsResult({
+        agentId: "agent_2",
+        sessions: [],
+        transcript: "agent_id\tagent_2",
+      }),
+    ).toBe("agent_id\tagent_2");
   });
 
   it("hands agent attach to the TUI launcher when provided", async () => {
@@ -641,10 +715,7 @@ autostart = false
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: new AgenCDaemonAgentManager({
         defaultCwd: () => "/daemon",
-        now: sequence([
-          "2026-05-01T12:00:00.000Z",
-          "2026-05-01T12:00:04.500Z",
-        ]),
+        now: sequence(["2026-05-01T12:00:00.000Z", "2026-05-01T12:00:04.500Z"]),
         runner,
         sessionManager,
         broadcastSessionEvent: async (sessionId, event) => {
@@ -654,9 +725,13 @@ autostart = false
       clientMultiplexer,
       createMessageId: sequence(["message_socket"]),
       now: sequence(["2026-05-01T12:00:03.500Z"]),
-      initializeAuthenticator: (params) => params.authCookie === "socket-cookie",
+      initializeAuthenticator: (params) =>
+        params.authCookie === "socket-cookie",
     });
-    const connections = new Map<number, ReturnType<typeof dispatcher.createConnection>>();
+    const connections = new Map<
+      number,
+      ReturnType<typeof dispatcher.createConnection>
+    >();
     const server = new AgenCUnixSocketServer({
       socketPath,
       onMessage: async (message, context) => {
@@ -885,15 +960,17 @@ autostart = false
         acceptedAt: "2026-05-01T12:00:03.500Z",
       },
     ]);
-    await expect(sessionManager.getSession("session_1")).resolves.toMatchObject({
-      agentId: "agent_socket",
-      status: "closed",
-      closedAt: "2026-05-01T12:00:04.000Z",
-      metadata: {
-        objective: "background compile",
-        source: "agent.start",
+    await expect(sessionManager.getSession("session_1")).resolves.toMatchObject(
+      {
+        agentId: "agent_socket",
+        status: "closed",
+        closedAt: "2026-05-01T12:00:04.000Z",
+        metadata: {
+          objective: "background compile",
+          source: "agent.start",
+        },
       },
-    });
+    );
   });
 
   it("buffers attach replay notifications until the TUI subscribes", async () => {
@@ -1047,7 +1124,10 @@ autostart = false
       }),
       initializeAuthenticator: (params) => params.authCookie === "reset-cookie",
     });
-    const connections = new Map<number, ReturnType<typeof dispatcher.createConnection>>();
+    const connections = new Map<
+      number,
+      ReturnType<typeof dispatcher.createConnection>
+    >();
     const server = new AgenCUnixSocketServer({
       socketPath,
       onMessage: async (message, context) => {
@@ -1097,6 +1177,8 @@ autostart = false
 
     expect(starts).toHaveLength(1);
     expect(io.stdoutText()).toBe("");
-    expect(io.stderrText()).toContain("Daemon connection closed before response");
+    expect(io.stderrText()).toContain(
+      "Daemon connection closed before response",
+    );
   });
 });

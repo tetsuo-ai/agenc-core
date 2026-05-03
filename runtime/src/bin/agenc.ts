@@ -60,9 +60,7 @@ import {
   createBashExecObserverForSlot,
   type SessionSlot,
 } from "../session/observer-wiring.js";
-import {
-  runSlashCommand,
-} from "./slash.js";
+import { runSlashCommand } from "./slash.js";
 import {
   ConfigStore,
   resolveWorkspace as resolveWorkspaceFromEnv,
@@ -107,18 +105,12 @@ import {
   ensureAgenCDaemonAutostart,
   resolveAgenCDaemonAutostartEnabled,
 } from "../app-server/daemon-autostart.js";
-import {
-  parseAgenCAuthCliArgs,
-  runAgenCAuthCli,
-} from "./auth-cli.js";
+import { parseAgenCAuthCliArgs, runAgenCAuthCli } from "./auth-cli.js";
 import {
   parseAgenCProvidersCliArgs,
   runAgenCProvidersCli,
 } from "./providers-cli.js";
-import {
-  parseAgenCStateCliArgs,
-  runAgenCStateCli,
-} from "./state-cli.js";
+import { parseAgenCStateCliArgs, runAgenCStateCli } from "./state-cli.js";
 
 export {
   bootstrapLocalRuntimeSession,
@@ -145,6 +137,7 @@ export function formatCliHelpText(): string {
     "       agenc agent list",
     "       agenc agent attach <id>",
     "       agenc agent stop <id>",
+    "       agenc agent logs <id>",
     "",
     "Options:",
     "  --help                                   Show this help text",
@@ -272,7 +265,10 @@ class InitAbortedError extends Error {
  * guard finalisers against double-close.
  */
 class InitCleanupStack {
-  private readonly finalisers: Array<{ name: string; run: () => Promise<void> | void }> = [];
+  private readonly finalisers: Array<{
+    name: string;
+    run: () => Promise<void> | void;
+  }> = [];
 
   push(name: string, run: () => Promise<void> | void): void {
     this.finalisers.push({ name, run });
@@ -486,8 +482,7 @@ export async function maybeReloadConfigBetweenTurns(params: {
       type: "warning",
       payload: {
         cause: "config_reloaded",
-        message:
-          `config reloaded (model: ${previous.model ?? "default"} → ${next.model ?? "default"})${mcpRefreshSuffix}`,
+        message: `config reloaded (model: ${previous.model ?? "default"} → ${next.model ?? "default"})${mcpRefreshSuffix}`,
       },
     },
   });
@@ -668,11 +663,18 @@ async function loadSessionMcpServerInstructions(
   session: Session,
   config: AgenCConfig,
 ): Promise<readonly McpServerInstructionsInput[]> {
-  const servers = await session.services.mcpManager.effectiveServers(config, null);
+  const servers = await session.services.mcpManager.effectiveServers(
+    config,
+    null,
+  );
   return Array.from(servers.entries())
     .flatMap(([name, info]) => {
-      const instructions = (info as { readonly instructions?: unknown }).instructions;
-      if (typeof instructions !== "string" || instructions.trim().length === 0) {
+      const instructions = (info as { readonly instructions?: unknown })
+        .instructions;
+      if (
+        typeof instructions !== "string" ||
+        instructions.trim().length === 0
+      ) {
         return [];
       }
       return [{ name, instructions: instructions.trim() }];
@@ -701,8 +703,9 @@ export async function prepareTurnRuntimeInputs(params: {
   const assembledProjectInstructions = assembleTieredInstructions(
     projectInstructionsResult,
   );
-  const projectMemoryWarnings =
-    formatTieredInstructionWarnings(projectInstructionsResult);
+  const projectMemoryWarnings = formatTieredInstructionWarnings(
+    projectInstructionsResult,
+  );
   const warningSink = params.session as unknown as {
     setProjectMemoryWarnings?: (warnings: readonly string[]) => void;
     projectMemoryWarnings?: string[];
@@ -718,7 +721,10 @@ export async function prepareTurnRuntimeInputs(params: {
     memoryPromptText: "",
     allMemories: [],
     enabledToolNames: new Set(params.registry.tools.map((tool) => tool.name)),
-    mcpServers: await loadSessionMcpServerInstructions(params.session, currentConfig),
+    mcpServers: await loadSessionMcpServerInstructions(
+      params.session,
+      currentConfig,
+    ),
   };
 }
 
@@ -820,8 +826,7 @@ function installTuiSessionContract(params: {
           type: "warning",
           payload: {
             cause: "autonomous_keepalive_failed",
-            message:
-              error instanceof Error ? error.message : String(error),
+            message: error instanceof Error ? error.message : String(error),
           },
         },
       });
@@ -830,8 +835,7 @@ function installTuiSessionContract(params: {
 
   params.session.installTurnDriverHooks({
     submit: async (message: string, submitOpts?: SessionSubmitOptions) => {
-      const isAutonomousTick =
-        submitOpts?.source === AUTONOMOUS_SUBMIT_SOURCE;
+      const isAutonomousTick = submitOpts?.source === AUTONOMOUS_SUBMIT_SOURCE;
       if (!isAutonomousTick) autonomousKeepalive.cancel();
       if (
         isAutonomousTick &&
@@ -845,10 +849,9 @@ function installTuiSessionContract(params: {
 
       let completedPromptTurn = false;
       let lastTurnToolNames = new Set<string>();
-      let lastTurnStopReason: Extract<
-        PhaseEvent,
-        { type: "turn_complete" }
-      >["stopReason"] | null = null;
+      let lastTurnStopReason:
+        | Extract<PhaseEvent, { type: "turn_complete" }>["stopReason"]
+        | null = null;
       const runPromptTurn = async (
         prompt: string,
         opts: { readonly displayInput?: string | null } = {},
@@ -876,7 +879,7 @@ function installTuiSessionContract(params: {
           displayInput:
             opts.displayInput !== undefined
               ? opts.displayInput
-              : expanded.displayInput ?? prompt,
+              : (expanded.displayInput ?? prompt),
           agencHome: params.agencHome,
           configStore: params.configStore,
           configReloadLatch,
@@ -893,9 +896,7 @@ function installTuiSessionContract(params: {
         }
         lastTurnToolNames = toolNames;
         completedPromptTurn = true;
-        autonomousKeepalive.setContextBlocked(
-          lastTurnStopReason === "error",
-        );
+        autonomousKeepalive.setContextBlocked(lastTurnStopReason === "error");
       };
 
       const shouldScheduleNextAutonomousTick = (): boolean => {
@@ -1063,7 +1064,9 @@ export async function oneShotCLI(
 
   const throwIfAborted = (step: string) => {
     if (initAbort.signal.aborted) {
-      throw new InitAbortedError(`${step}: ${String(initAbort.signal.reason ?? "aborted")}`);
+      throw new InitAbortedError(
+        `${step}: ${String(initAbort.signal.reason ?? "aborted")}`,
+      );
     }
   };
 
@@ -1089,11 +1092,8 @@ export async function oneShotCLI(
     // one-shot CLI and TUI entry adapters construct their Session
     // through this helper so the entry surface owns less runtime
     // setup directly.
-    const {
-      sessionSlot,
-      delegateSessionHolder,
-      toolRegistryOptions,
-    } = createSharedBootstrapTooling();
+    const { sessionSlot, delegateSessionHolder, toolRegistryOptions } =
+      createSharedBootstrapTooling();
     // The daemon owns the live rollout lock for runtimeSessionId, so
     // attach reuses the id without resuming that rollout locally.
     const {
@@ -1153,7 +1153,8 @@ export async function oneShotCLI(
       try {
         const runResult = await runSlashCommand(resolvedUserMessage, {
           session,
-          cwd: session.sessionConfiguration.cwd ?? workspaceRoot ?? processCwd(),
+          cwd:
+            session.sessionConfiguration.cwd ?? workspaceRoot ?? processCwd(),
           home: resolveUserHome(
             process.env,
             session.sessionConfiguration.cwd ?? workspaceRoot ?? processCwd(),
@@ -1276,7 +1277,10 @@ export async function oneShotCLI(
       });
       return 130;
     }
-    if (error instanceof SessionLockedError || error instanceof SchemaMismatchError) {
+    if (
+      error instanceof SessionLockedError ||
+      error instanceof SchemaMismatchError
+    ) {
       process.stderr.write(`agenc: ${error.message}\n`);
       await cleanup.unwind((name, err) => {
         process.stderr.write(
@@ -1380,8 +1384,7 @@ async function startTuiEarlyInputCapture(): Promise<() => string> {
     const specifier = "../tui/ink/vendored/earlyInput.js";
     const mod = (await import(specifier)) as EarlyInputCapture;
     mod.startCapturingEarlyInput?.();
-    return () =>
-      mod.consumeEarlyInput?.({ restoreRawMode: true }) ?? "";
+    return () => mod.consumeEarlyInput?.({ restoreRawMode: true }) ?? "";
   } catch {
     return () => "";
   }
@@ -1400,11 +1403,8 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
   };
   try {
     validateAgencHome();
-    const {
-      sessionSlot,
-      delegateSessionHolder,
-      toolRegistryOptions,
-    } = createSharedBootstrapTooling();
+    const { sessionSlot, delegateSessionHolder, toolRegistryOptions } =
+      createSharedBootstrapTooling();
     const {
       agencHome,
       configStore,
@@ -1470,12 +1470,8 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
           ...(args.initialPrompt !== undefined
             ? { initialPrompt: args.initialPrompt }
             : {}),
-          ...(initialComposerText.length > 0
-            ? { initialComposerText }
-            : {}),
-          ...(initialUserMessages.length > 0
-            ? { initialUserMessages }
-            : {}),
+          ...(initialComposerText.length > 0 ? { initialComposerText } : {}),
+          ...(initialUserMessages.length > 0 ? { initialUserMessages } : {}),
         });
         activeInkUnmount = handle.unmount;
         await handle.waitUntilExit();
@@ -1493,7 +1489,10 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
     }
   } catch (error) {
     consumeEarlyInput();
-    if (error instanceof SessionLockedError || error instanceof SchemaMismatchError) {
+    if (
+      error instanceof SessionLockedError ||
+      error instanceof SchemaMismatchError
+    ) {
       process.stderr.write(`agenc: ${error.message}\n`);
       return 1;
     }
@@ -1515,9 +1514,9 @@ export async function attachAgentTuiEntry(
   args: AttachAgentTuiEntryArgs,
 ): Promise<number> {
   const env = args.env ?? process.env;
-  let daemonClient:
-    | Awaited<ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>>
-    | null = null;
+  let daemonClient: Awaited<
+    ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
+  > | null = null;
   try {
     validateAgencHome(env);
     daemonClient =
@@ -1535,15 +1534,9 @@ export async function attachAgentTuiEntry(
     }
     const runtimeSessionId =
       attachment.runtimeSessionId ?? attachment.agentId ?? sessionId;
-    const bootstrapCwd = resolveAgenCAgentAttachCwd(
-      attachment,
-      processCwd(),
-    );
-    const {
-      sessionSlot,
-      delegateSessionHolder,
-      toolRegistryOptions,
-    } = createSharedBootstrapTooling();
+    const bootstrapCwd = resolveAgenCAgentAttachCwd(attachment, processCwd());
+    const { sessionSlot, delegateSessionHolder, toolRegistryOptions } =
+      createSharedBootstrapTooling();
     const {
       agencHome,
       configStore,
@@ -1616,7 +1609,10 @@ export async function attachAgentTuiEntry(
       });
     }
   } catch (error) {
-    if (error instanceof SessionLockedError || error instanceof SchemaMismatchError) {
+    if (
+      error instanceof SessionLockedError ||
+      error instanceof SchemaMismatchError
+    ) {
       process.stderr.write(`agenc: ${error.message}\n`);
       return 1;
     }
@@ -1653,7 +1649,9 @@ export async function resumeTUIEntry(args: ResumeTUIArgs): Promise<number> {
 }
 
 /** Continue the newest prior session for the current project. */
-export async function continueTUIEntry(_args: ContinueTUIArgs): Promise<number> {
+export async function continueTUIEntry(
+  _args: ContinueTUIArgs,
+): Promise<number> {
   const workspaceRoot = resolveWorkspaceFromEnv(process.env) ?? processCwd();
   const resolved = resolveLatestSessionId(workspaceRoot);
   if (resolved.kind !== "ok") {
