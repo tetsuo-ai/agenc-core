@@ -300,10 +300,11 @@ export function createFileWriteTool(
         // mtime + content fallback) but uses AgenC's content-compare
         // semantics for parity with `Write` / `Edit`.
         const snapshot = getSessionReadSnapshot(sessionId, absolutePath);
-        if (
-          snapshot?.content != null &&
-          snapshot.viewKind === "full"
-        ) {
+        const snapshotContent =
+          typeof snapshot?.rawContent === "string"
+            ? snapshot.rawContent
+            : snapshot?.content;
+        if (snapshotContent != null && snapshot?.viewKind === "full") {
           let onDisk: string;
           try {
             const buffer = await readFile(absolutePath);
@@ -314,10 +315,10 @@ export function createFileWriteTool(
             return errorResult(
               code
                 ? `${code}: failed to re-read ${filePath} before overwrite`
-                : `failed to re-read ${filePath} before overwrite`,
+              : `failed to re-read ${filePath} before overwrite`,
             );
           }
-          if (onDisk !== snapshot.content) {
+          if (onDisk !== normalizeNewlines(snapshotContent)) {
             return errorResult(FILE_UNEXPECTEDLY_MODIFIED_MESSAGE);
           }
         }

@@ -447,6 +447,14 @@ export function buildToolRegistry(
       allowedPaths: [options.workspaceRoot],
     }),
   ] as const;
+  const firstClassFileSurface = {
+    "read": FILE_READ_TOOL_NAME,
+    "write": FILE_WRITE_TOOL_NAME,
+    "edit": FILE_EDIT_TOOL_NAME,
+    "multiEdit": FILE_MULTI_EDIT_TOOL_NAME,
+    "grep": GREP_TOOL_NAME,
+    "glob": GLOB_TOOL_NAME,
+  } as const;
   const interactionTools = [
     createAskUserQuestionTool(),
     createSleepTool(),
@@ -496,20 +504,20 @@ export function buildToolRegistry(
       id: "first-class-files",
       tools: firstClassFileTools,
       visibleByDefault: [
-        FILE_READ_TOOL_NAME,
-        FILE_EDIT_TOOL_NAME,
-        FILE_MULTI_EDIT_TOOL_NAME,
-        FILE_WRITE_TOOL_NAME,
-        GLOB_TOOL_NAME,
-        GREP_TOOL_NAME,
+        firstClassFileSurface.read,
+        firstClassFileSurface.edit,
+        firstClassFileSurface.multiEdit,
+        firstClassFileSurface.write,
+        firstClassFileSurface.glob,
+        firstClassFileSurface.grep,
       ],
       stringArgumentFields: {
-        [FILE_READ_TOOL_NAME]: "file_path",
-        [FILE_WRITE_TOOL_NAME]: "file_path",
-        [FILE_EDIT_TOOL_NAME]: "file_path",
-        [FILE_MULTI_EDIT_TOOL_NAME]: "file_path",
-        [GLOB_TOOL_NAME]: "pattern",
-        [GREP_TOOL_NAME]: "pattern",
+        [firstClassFileSurface.read]: "file_path",
+        [firstClassFileSurface.write]: "file_path",
+        [firstClassFileSurface.edit]: "file_path",
+        [firstClassFileSurface.multiEdit]: "file_path",
+        [firstClassFileSurface.glob]: "pattern",
+        [firstClassFileSurface.grep]: "pattern",
       },
     },
     {
