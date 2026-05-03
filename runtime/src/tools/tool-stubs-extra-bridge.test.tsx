@@ -1,8 +1,8 @@
 import { describe, expect, test, vi } from "vitest";
 
-// Same upstream/ink stub as the bash and edit bridge tests — see
+// Same AgenC ink stub as the bash and edit bridge tests — see
 // `tool-stubs-bash-bridge.test.tsx` for the rationale.
-vi.mock("../agenc/upstream/ink.js", () => {
+vi.mock("../tui/ink.js", () => {
   function Box(_props: { readonly children?: unknown }) {
     return null;
   }
@@ -19,7 +19,7 @@ import {
   GlobPathsView,
   GrepMatchesView,
   ToolErrorView,
-} from "../tui/openclaude/tool-stubs.js";
+} from "../tui/openclaude/tool-stubs.js"; // branding-scan: allow existing compatibility-island path
 
 interface ChildProps {
   readonly children?: unknown;
@@ -51,6 +51,7 @@ describe("createBridgeTools — pre-seed canonicalization", () => {
   });
 
   test("the pre-seed list does not include the legacy 'Read' name (canonicalization fix)", async () => {
+    // branding-scan: allow existing compatibility-island path
     const mod = await import("../tui/openclaude/tool-stubs.js");
     const tools = mod.createBridgeTools([]);
     const names = tools.map((t: { name: string }) => t.name).sort();
@@ -455,6 +456,7 @@ describe("Tool error cross-cutting dispatch", () => {
 
 describe("formatStructuredToolResult ⇄ per-tool view wire-shape lock", () => {
   test("FileRead envelope produced by formatStructuredToolResult is consumed by FileReadView (no shape drift)", async () => {
+    // branding-scan: allow existing compatibility-island path
     const adapter = await import("../tui/openclaude/message-adapter.js");
     const blocks = adapter.formatStructuredToolResult(
       "FileRead",
@@ -478,6 +480,7 @@ describe("formatStructuredToolResult ⇄ per-tool view wire-shape lock", () => {
   });
 
   test("Write envelope produced by formatStructuredToolResult is consumed by FileWriteView", async () => {
+    // branding-scan: allow existing compatibility-island path
     const adapter = await import("../tui/openclaude/message-adapter.js");
     const blocks = adapter.formatStructuredToolResult(
       "Write",
@@ -492,6 +495,7 @@ describe("formatStructuredToolResult ⇄ per-tool view wire-shape lock", () => {
   });
 
   test("Grep envelope produced by formatStructuredToolResult is consumed by GrepMatchesView", async () => {
+    // branding-scan: allow existing compatibility-island path
     const adapter = await import("../tui/openclaude/message-adapter.js");
     const blocks = adapter.formatStructuredToolResult(
       "Grep",
@@ -511,6 +515,7 @@ describe("formatStructuredToolResult ⇄ per-tool view wire-shape lock", () => {
   });
 
   test("Glob envelope produced by formatStructuredToolResult is consumed by GlobPathsView", async () => {
+    // branding-scan: allow existing compatibility-island path
     const adapter = await import("../tui/openclaude/message-adapter.js");
     const blocks = adapter.formatStructuredToolResult(
       "Glob",
@@ -525,6 +530,7 @@ describe("formatStructuredToolResult ⇄ per-tool view wire-shape lock", () => {
   });
 
   test("formatStructuredToolError envelope is consumed by ToolErrorView", async () => {
+    // branding-scan: allow existing compatibility-island path
     const adapter = await import("../tui/openclaude/message-adapter.js");
     const blocks = adapter.formatStructuredToolError(
       "FileRead",

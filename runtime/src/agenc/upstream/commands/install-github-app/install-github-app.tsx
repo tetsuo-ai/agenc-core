@@ -4,8 +4,8 @@ import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEve
 import { WorkflowMultiselectDialog } from '../../components/WorkflowMultiselectDialog.js';
 import { GITHUB_ACTION_SETUP_DOCS_URL } from '../../constants/github-app.js';
 import { useExitOnCtrlCDWithKeybindings } from '../../hooks/useExitOnCtrlCDWithKeybindings.js';
-import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
-import { Box } from '../../ink.js';
+import type { KeyboardEvent } from '../../../../tui/ink/events/keyboard-event.js';
+import { Box } from '../../../../tui/ink.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
 import { getAnthropicApiKey, isAnthropicAuthEnabled } from '../../utils/auth.js';
 import { openBrowser } from '../../utils/browser.js';

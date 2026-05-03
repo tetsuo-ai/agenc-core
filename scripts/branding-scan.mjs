@@ -63,6 +63,7 @@ const ALLOW_LINE_PATTERNS = [
   // npm package names that legitimately contain these strings
   /["'@][\w-]*claude[\w-]*["']/i, // branding-scan: allow allow-list pattern
   /["']codex[-/][\w@/-]+["']/i, // branding-scan: allow allow-list pattern
+  /^check-openclaude-tui-replacement\.mjs$/i, // branding-scan: allow existing parity-contract filename
 ];
 
 const OVERRIDE_RE = /branding-scan:\s*allow\b/i;
@@ -88,6 +89,38 @@ function gitRoot(start) {
   return result.stdout.trim();
 }
 
+const UPSTREAM_MIRROR_RE = /^runtime\/src\/agenc\/upstream\//;
+
+function changedLinesForPath(root, rel, mode) {
+  const args = mode === "staged"
+    ? ["diff", "--cached", "--unified=0", "--", rel]
+    : ["diff", "--unified=0", "--", rel];
+  const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
+  if (result.status !== 0) return [];
+  const changed = [];
+  for (const line of result.stdout.split("\n")) {
+    if (line.startsWith("+++") || line.startsWith("---")) continue;
+    if (line.startsWith("+") || line.startsWith("-")) {
+      changed.push(line.slice(1).trim());
+    }
+  }
+  return changed;
+}
+
+function isInkImportRewriteLine(line) {
+  if (line === "") return true;
+  return (
+    /(?:^import\b|^export\b|from\s+|import\s*\(|require\s*\()/.test(line) &&
+    /(?:^|[./])ink(?:\.js|\/)/.test(line)
+  );
+}
+
+function isMirrorInkImportRewriteOnly(root, rel, mode) {
+  if (!UPSTREAM_MIRROR_RE.test(rel)) return false;
+  const changed = changedLinesForPath(root, rel, mode);
+  return changed.length > 0 && changed.every(isInkImportRewriteLine);
+}
+
 function listFromGit(mode) {
   const root = gitRoot();
   if (!root) {
@@ -109,6 +142,8 @@ function listFromGit(mode) {
     if (!trimmed) continue;
     const abs = path.resolve(root, trimmed);
     if (!existsSync(abs)) continue;
+    const rel = path.relative(root, abs).replaceAll("\\", "/");
+    if (isMirrorInkImportRewriteOnly(root, rel, mode)) continue;
     out.push(abs);
   }
   return out;

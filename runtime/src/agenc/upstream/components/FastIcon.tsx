@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import chalk from 'chalk';
 import { LIGHTNING_BOLT } from '../constants/figures.js';
-import { Text } from '../ink.js';
+import { Text } from '../../../tui/ink.js';
 import { getGlobalConfig } from '../utils/config.js';
 import { resolveThemeSetting } from '../utils/systemTheme.js';
 import { color } from './design-system/color.js';

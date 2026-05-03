@@ -42,7 +42,7 @@ function hljs(): HLJSApi {
   return cachedHljs!
 }
 
-import { stringWidth } from '../../ink/stringWidth.js'
+import { stringWidth } from '../../../../tui/ink/stringWidth.js'
 import { logError } from '../../utils/log.js'
 
 // ---------------------------------------------------------------------------

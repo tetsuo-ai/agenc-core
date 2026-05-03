@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { expect, test } from 'vitest'
 
 import type { Frame } from './frame.ts'
 import { LogUpdate } from './log-update.ts'

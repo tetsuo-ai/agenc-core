@@ -1,13 +1,13 @@
 import { describe, expect, test, vi } from "vitest";
 
-// Stub upstream/ink before tool-stubs.tsx imports it. The real upstream/ink
+// Stub AgenC ink before tool-stubs.tsx imports it. The real AgenC ink
 // transitively pulls `agenc/upstream/utils/config.ts` which runs a
 // `feature('TEAMMEM') ? require('../memdir/teamMemPaths.js') : null`
 // branch — vitest's source resolver cannot follow the .js → .ts mapping
 // inside a CommonJS require, so importing the real chain crashes the test
 // host. The stubs here keep the dispatch logic exercisable end-to-end
 // without that resolution chain.
-vi.mock("../agenc/upstream/ink.js", () => {
+vi.mock("../tui/ink.js", () => {
   function Box(_props: { readonly children?: unknown }) {
     return null;
   }
@@ -17,6 +17,7 @@ vi.mock("../agenc/upstream/ink.js", () => {
   return { Box, Text };
 });
 
+// branding-scan: allow existing compatibility-island path
 import { createBridgeTool, BashOutputView } from "../tui/openclaude/tool-stubs.js";
 
 describe("createBridgeTool('Bash').renderToolResultMessage — end-to-end dispatch", () => {
@@ -235,7 +236,9 @@ describe("BashOutputView — local renderer fidelity to upstream visual contract
 
 describe("formatStructuredToolResult ⇄ BashOutputView wire-shape lock", () => {
   test("the tags formatStructuredToolResult emits are the exact tags BashOutputView consumes (so a future flip to the upstream UserBashOutputMessage component requires no shape changes)", async () => {
+    // branding-scan: allow existing compatibility-island path
     const adapterModule = await import(
+      // branding-scan: allow existing compatibility-island path
       "../tui/openclaude/message-adapter.js"
     );
     const blocks = adapterModule.formatStructuredToolResult(

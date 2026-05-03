@@ -1,5 +1,5 @@
-import { stringWidth } from '../ink/stringWidth.js'
-import { wrapAnsi } from '../ink/wrapAnsi.js'
+import { stringWidth } from '../../../tui/ink/stringWidth.js'
+import { wrapAnsi } from '../../../tui/ink/wrapAnsi.js'
 import {
   firstGrapheme,
   getGraphemeSegmenter,

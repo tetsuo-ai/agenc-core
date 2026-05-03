@@ -1,29 +1,29 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { join } from 'node:path'
 
 const originalEnv = { ...process.env }
 const originalPlatform = process.platform
 const mockedClipboardPath = join(process.cwd(), 'agenc-clipboard.txt')
 
-const generateTempFilePathMock = mock(() => mockedClipboardPath)
+const generateTempFilePathMock = vi.fn(() => mockedClipboardPath)
 
-const execFileNoThrowMock = mock(
+const execFileNoThrowMock = vi.fn(
   async () => ({ code: 0, stdout: '', stderr: '' }),
 )
 
 function installOscMocks(): void {
-  mock.module('../../utils/execFileNoThrow.js', () => ({
+  vi.doMock('../../../agenc/upstream/utils/execFileNoThrow.js', () => ({
     execFileNoThrow: execFileNoThrowMock,
     execFileNoThrowWithCwd: execFileNoThrowMock,
   }))
 
-  mock.module('../../utils/tempfile.js', () => ({
+  vi.doMock('../../../agenc/upstream/utils/tempfile.js', () => ({
     generateTempFilePath: generateTempFilePathMock,
   }))
 }
 
 async function importFreshOscModule() {
-  return import(`./osc.ts?ts=${Date.now()}-${Math.random()}`)
+  return import('./osc.ts')
 }
 
 async function flushClipboardCopy(): Promise<void> {
@@ -47,6 +47,7 @@ async function waitForExecCall(
 
 describe('Windows clipboard fallback', () => {
   beforeEach(() => {
+    vi.resetModules()
     installOscMocks()
     execFileNoThrowMock.mockClear()
     generateTempFilePathMock.mockClear()
@@ -98,6 +99,7 @@ describe('Windows clipboard fallback', () => {
 
 describe('clipboard path behavior remains stable', () => {
   beforeEach(() => {
+    vi.resetModules()
     installOscMocks()
     execFileNoThrowMock.mockClear()
     process.env = { ...originalEnv }

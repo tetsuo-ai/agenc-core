@@ -2,7 +2,7 @@ import * as React from 'react'
 import { useCallback, useState } from 'react'
 import { Select } from '../../components/CustomSelect/select.js'
 import { Spinner } from '../../components/Spinner.js'
-import { Box, Text } from '../../ink.js'
+import { Box, Text } from '../../../../tui/ink.js'
 import {
   exchangeForCopilotToken,
   openVerificationUri,

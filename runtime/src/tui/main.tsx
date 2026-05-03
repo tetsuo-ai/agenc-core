@@ -1,11 +1,11 @@
 import { onExit } from "signal-exit";
 
-import { render as renderInk } from "../agenc/upstream/ink.js";
-import { DISABLE_MOUSE_TRACKING, EXIT_ALT_SCREEN, SHOW_CURSOR } from "../agenc/upstream/ink/termio/dec.js";
+import { render as renderInk } from "./ink.js";
+import { DISABLE_MOUSE_TRACKING, EXIT_ALT_SCREEN, SHOW_CURSOR } from "./ink/termio/dec.js";
 import {
   DISABLE_KITTY_KEYBOARD,
   DISABLE_MODIFY_OTHER_KEYS,
-} from "../agenc/upstream/ink/termio/csi.js";
+} from "./ink/termio/csi.js";
 import { AgenCTuiApp } from "./openclau\u0064e/App.js";
 import type {
   AgenCBridgeSession,

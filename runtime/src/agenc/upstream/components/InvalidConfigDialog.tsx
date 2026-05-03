@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
-import { Box, render, Text } from '../ink.js';
+import { Box, render, Text } from '../../../tui/ink.js';
 import { KeybindingSetup } from '../keybindings/KeybindingProviderSetup.js';
 import { AppStateProvider } from '../state/AppState.js';
 import type { ConfigParseError } from '../utils/errors.js';

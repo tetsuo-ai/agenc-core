@@ -2,7 +2,7 @@ import { PassThrough } from 'node:stream'
 
 import { afterEach, expect, mock, test } from 'bun:test'
 import React from 'react'
-import { createRoot, Text } from '../ink.js'
+import { createRoot, Text } from '../../../tui/ink.js'
 
 type AuthState = {
   anthropicAuthEnabled: boolean

@@ -1,5 +1,5 @@
-import { type ColorType, colorize } from '../../ink/colorize.js'
-import type { Color } from '../../ink/styles.js'
+import { type ColorType, colorize } from '../../../../tui/ink/colorize.js'
+import type { Color } from '../../../../tui/ink/styles.js'
 import { getTheme, type Theme, type ThemeName } from '../../utils/theme.js'
 
 /**

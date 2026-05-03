@@ -2,9 +2,9 @@ import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import React, { useCallback, useState } from 'react';
 import { Dialog } from '../../components/design-system/Dialog.js';
-import { stringWidth } from '../../ink/stringWidth.js';
+import { stringWidth } from '../../../../tui/ink/stringWidth.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw text input for config dialog
-import { Box, Text, useInput } from '../../ink.js';
+import { Box, Text, useInput } from '../../../../tui/ink.js';
 import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.js';
 import { isEnvTruthy } from '../../utils/envUtils.js';
 import type { PluginOptionSchema, PluginOptionValues } from '../../utils/plugins/pluginOptionsStorage.js';

@@ -5,7 +5,7 @@ import { useShortcutDisplay } from 'src/keybindings/useShortcutDisplay.js';
 import { builtInCommandNames, type Command, type CommandResultDisplay, INTERNAL_ONLY_COMMANDS } from '../../commands.js';
 import { useIsInsideModal } from '../../context/modalContext.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
-import { Box, Link, Text } from '../../ink.js';
+import { Box, Link, Text } from '../../../../tui/ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import { Pane } from '../design-system/Pane.js';
 import { Tab, Tabs } from '../design-system/Tabs.js';

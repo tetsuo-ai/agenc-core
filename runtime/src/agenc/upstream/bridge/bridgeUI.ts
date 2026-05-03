@@ -5,7 +5,7 @@ import {
   BRIDGE_READY_INDICATOR,
   BRIDGE_SPINNER_FRAMES,
 } from '../constants/figures.js'
-import { stringWidth } from '../ink/stringWidth.js'
+import { stringWidth } from '../../../tui/ink/stringWidth.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import {
   buildActiveFooterText,

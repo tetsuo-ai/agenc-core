@@ -4,9 +4,9 @@ import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useNotifications } from '../context/notifications.js';
 import { useIsModalOverlayActive } from '../context/overlayContext.js';
 import { useGetVoiceState, useSetVoiceState, useVoiceState } from '../context/voice.js';
-import { KeyboardEvent } from '../ink/events/keyboard-event.js';
+import { KeyboardEvent } from '../../../tui/ink/events/keyboard-event.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- backward-compat bridge until REPL wires handleKeyDown to <Box onKeyDown>
-import { useInput } from '../ink.js';
+import { useInput } from '../../../tui/ink.js';
 import { useOptionalKeybindingContext } from '../keybindings/KeybindingContext.js';
 import { keystrokesEqual } from '../keybindings/resolver.js';
 import type { ParsedKeystroke } from '../keybindings/types.js';

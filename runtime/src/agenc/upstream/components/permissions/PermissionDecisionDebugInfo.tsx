@@ -3,7 +3,7 @@ import { feature } from 'bun:bundle';
 import chalk from 'chalk';
 import figures from 'figures';
 import React, { useMemo } from 'react';
-import { Ansi, Box, color, Text, useTheme } from '../../ink.js';
+import { Ansi, Box, color, Text, useTheme } from '../../../../tui/ink.js';
 import { useAppState } from '../../state/AppState.js';
 import type { PermissionMode } from '../../utils/permissions/PermissionMode.js';
 import { permissionModeTitle } from '../../utils/permissions/PermissionMode.js';

@@ -1,8 +1,8 @@
 import { describe, expect, test, vi } from "vitest";
 
-// Mirror of the upstream/ink stub used by tool-stubs-bash-bridge.test.tsx
+// Mirror of the AgenC ink stub used by tool-stubs-bash-bridge.test.tsx
 // — see that file for why this is required.
-vi.mock("../agenc/upstream/ink.js", () => {
+vi.mock("../tui/ink.js", () => {
   function Box(_props: { readonly children?: unknown }) {
     return null;
   }
@@ -12,6 +12,7 @@ vi.mock("../agenc/upstream/ink.js", () => {
   return { Box, Text };
 });
 
+// branding-scan: allow existing compatibility-island path
 import { createBridgeTool, EditDiffView } from "../tui/openclaude/tool-stubs.js";
 
 interface ChildProps {
@@ -194,6 +195,7 @@ describe("EditDiffView — local renderer fidelity to upstream visual contract",
 
 describe("formatStructuredToolResult ⇄ EditDiffView wire-shape lock", () => {
   test("the tags formatStructuredToolResult emits for Edit are the exact tags EditDiffView consumes (so a future flip to upstream FileEditToolDiff requires no shape changes here)", async () => {
+    // branding-scan: allow existing compatibility-island path
     const adapter = await import("../tui/openclaude/message-adapter.js");
     const blocks = adapter.formatStructuredToolResult(
       "Edit",

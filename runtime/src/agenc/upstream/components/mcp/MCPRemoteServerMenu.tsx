@@ -5,9 +5,9 @@ import type { CommandResultDisplay } from '../../commands.js';
 import { getOauthConfig } from '../../constants/oauth.js';
 import { useExitOnCtrlCDWithKeybindings } from '../../hooks/useExitOnCtrlCDWithKeybindings.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
-import { setClipboard } from '../../ink/termio/osc.js';
+import { setClipboard } from '../../../../tui/ink/termio/osc.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw j/k/arrow menu navigation
-import { Box, color, Link, Text, useInput, useTheme } from '../../ink.js';
+import { Box, color, Link, Text, useInput, useTheme } from '../../../../tui/ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import { AuthenticationCancelledError, performMCPOAuthFlow, revokeServerTokens } from '../../services/mcp/auth.js';
 import { clearServerCache } from '../../services/mcp/client.js';

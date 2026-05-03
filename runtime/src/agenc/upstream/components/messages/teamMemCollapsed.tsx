@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
-import { Text } from '../../ink.js';
+import { Text } from '../../../../tui/ink.js';
 import type { CollapsedReadSearchGroup } from '../../types/message.js';
 
 /**

@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import { relative } from 'path';
 import * as React from 'react';
 import { Suspense, use, useMemo } from 'react';
-import { Box, NoSelect, Text } from '../../../ink.js';
+import { Box, NoSelect, Text } from '../../../../../tui/ink.js';
 import type { NotebookCellType, NotebookContent } from '../../../types/notebook.js';
 import { intersperse } from '../../../utils/array.js';
 import { getCwd } from '../../../utils/cwd.js';

@@ -14,7 +14,7 @@ import { c as _c } from "react-compiler-runtime";
  * so no manual cleanup or state management is needed.
  */
 import { useContext, useEffect, useLayoutEffect } from 'react';
-import instances from '../ink/instances.js';
+import instances from '../../../tui/ink/instances.js';
 import { AppStoreContext, useAppState } from '../state/AppState.js';
 
 // Non-modal overlays that shouldn't disable TextInput focus

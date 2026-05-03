@@ -13,7 +13,7 @@ import { Markdown } from '../../components/Markdown.js';
 import { Message as MessageComponent } from '../../components/Message.js';
 import { MessageResponse } from '../../components/MessageResponse.js';
 import { ToolUseLoader } from '../../components/ToolUseLoader.js';
-import { Box, Text } from '../../ink.js';
+import { Box, Text } from '../../../../tui/ink.js';
 import { getDumpPromptsPath } from '../../services/api/dumpPrompts.js';
 import { findToolByName, type Tools } from '../../Tool.js';
 import type { Message, ProgressMessage } from '../../types/message.js';

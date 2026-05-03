@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
-import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
-import { Box } from '../../ink.js';
+import type { KeyboardEvent } from '../../../../tui/ink/events/keyboard-event.js';
+import { Box } from '../../../../tui/ink.js';
 import { type OptionWithDescription, Select } from '../CustomSelect/select.js';
 export type TreeNode<T> = {
   id: string | number;

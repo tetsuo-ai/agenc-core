@@ -4,9 +4,9 @@ import { KeyboardShortcutHint } from '../../components/design-system/KeyboardSho
 import { Spinner } from '../../components/Spinner.js';
 import TextInput from '../../components/TextInput.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
-import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
-import { setClipboard } from '../../ink/termio/osc.js';
-import { Box, Link, Text } from '../../ink.js';
+import type { KeyboardEvent } from '../../../../tui/ink/events/keyboard-event.js';
+import { setClipboard } from '../../../../tui/ink/termio/osc.js';
+import { Box, Link, Text } from '../../../../tui/ink.js';
 import { OAuthService } from '../../services/oauth/index.js';
 import { saveOAuthTokensIfNeeded } from '../../utils/auth.js';
 import { logError } from '../../utils/log.js';

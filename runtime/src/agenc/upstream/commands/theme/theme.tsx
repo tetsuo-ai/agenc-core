@@ -3,7 +3,7 @@ import * as React from 'react';
 import type { CommandResultDisplay } from '../../commands.js';
 import { Pane } from '../../components/design-system/Pane.js';
 import { ThemePicker } from '../../components/ThemePicker.js';
-import { useTheme } from '../../ink.js';
+import { useTheme } from '../../../../tui/ink.js';
 import type { LocalJSXCommandCall } from '../../types/command.js';
 type Props = {
   onDone: (result?: string, options?: {

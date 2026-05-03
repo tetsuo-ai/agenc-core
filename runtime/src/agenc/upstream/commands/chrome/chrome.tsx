@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import React, { useState } from 'react';
 import { type OptionWithDescription, Select } from '../../components/CustomSelect/select.js';
 import { Dialog } from '../../components/design-system/Dialog.js';
-import { Box, Text } from '../../ink.js';
+import { Box, Text } from '../../../../tui/ink.js';
 import { useAppState } from '../../state/AppState.js';
 import { isAgenCAISubscriber } from '../../utils/auth.js';
 import { openBrowser } from '../../utils/browser.js';

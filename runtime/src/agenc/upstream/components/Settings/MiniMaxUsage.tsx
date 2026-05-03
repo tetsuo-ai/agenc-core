@@ -2,7 +2,7 @@ import * as React from 'react'
 import { useEffect, useState } from 'react'
 
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
-import { Box, Text } from '../../ink.js'
+import { Box, Text } from '../../../../tui/ink.js'
 import { useKeybinding } from '../../keybindings/useKeybinding.js'
 import {
   buildMiniMaxUsageRows,

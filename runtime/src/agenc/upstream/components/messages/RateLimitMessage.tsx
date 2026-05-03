@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { useEffect, useMemo, useState } from 'react';
 import { extraUsage } from 'src/commands/extra-usage/index.js';
-import { Box, Text } from 'src/ink.js';
+import { Box, Text } from '../../../../tui/ink.js';
 import { useAgenCAiLimits } from 'src/services/claudeAiLimitsHook.js';
 import { shouldProcessMockLimits } from 'src/services/rateLimitMocking.js'; // Used for /mock-limits command
 import { getRateLimitTier, getSubscriptionType, isAgenCAISubscriber } from 'src/utils/auth.js';

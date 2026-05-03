@@ -1,5 +1,5 @@
 import { getDirectConnectServerUrl, getSessionId } from '../bootstrap/state.js'
-import { stringWidth } from '../ink/stringWidth.js'
+import { stringWidth } from '../../../tui/ink/stringWidth.js'
 import type { LogOption } from '../types/logs.js'
 import { getSubscriptionName, isAgenCAISubscriber } from './auth.js'
 import { getCwd } from './cwd.js'

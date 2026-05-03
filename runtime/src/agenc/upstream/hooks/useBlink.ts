@@ -1,4 +1,4 @@
-import { type DOMElement, useAnimationFrame, useTerminalFocus } from '../ink.js'
+import { type DOMElement, useAnimationFrame, useTerminalFocus } from '../../../tui/ink.js'
 
 const BLINK_INTERVAL_MS = 600
 

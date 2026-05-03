@@ -5,7 +5,7 @@ import { KeyboardShortcutHint } from '../../components/design-system/KeyboardSho
 import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErrorMessage.js';
 import { MessageResponse } from '../../components/MessageResponse.js';
 import { ShellProgressMessage } from '../../components/shell/ShellProgressMessage.js';
-import { Box, Text } from '../../ink.js';
+import { Box, Text } from '../../../../tui/ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
 import { useAppStateStore, useSetAppState } from '../../state/AppState.js';

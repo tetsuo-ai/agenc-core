@@ -1,4 +1,4 @@
-import sliceAnsi from '../utils/sliceAnsi.js'
+import sliceAnsi from '../../agenc/upstream/utils/sliceAnsi.js'
 import { stringWidth } from './stringWidth.js'
 import type { Styles } from './styles.js'
 import { wrapAnsi } from './wrapAnsi.js'

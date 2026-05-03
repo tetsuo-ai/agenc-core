@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import React, { useEffect, useState } from 'react';
 import type { CommandResultDisplay } from '../../commands.js';
-import { Box, color, Text, useTheme } from '../../ink.js';
+import { Box, color, Text, useTheme } from '../../../../tui/ink.js';
 import { useMcpReconnect } from '../../services/mcp/MCPConnectionManager.js';
 import { useAppStateStore } from '../../state/AppState.js';
 import { Spinner } from '../Spinner.js';

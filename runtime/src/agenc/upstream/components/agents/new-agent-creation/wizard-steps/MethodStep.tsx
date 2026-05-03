@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { type ReactNode } from 'react';
-import { Box } from '../../../../ink.js';
+import { Box } from '../../../../../../tui/ink.js';
 import { ConfigurableShortcutHint } from '../../../ConfigurableShortcutHint.js';
 import { Select } from '../../../CustomSelect/select.js';
 import { Byline } from '../../../design-system/Byline.js';

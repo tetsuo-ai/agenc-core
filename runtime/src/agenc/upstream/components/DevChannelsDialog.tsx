@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import type { ChannelEntry } from '../bootstrap/state.js';
-import { Box, Text } from '../ink.js';
+import { Box, Text } from '../../../tui/ink.js';
 import { gracefulShutdownSync } from '../utils/gracefulShutdown.js';
 import { Select } from './CustomSelect/index.js';
 import { Dialog } from './design-system/Dialog.js';

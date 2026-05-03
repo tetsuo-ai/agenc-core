@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { useState } from 'react';
 import { useInterval } from 'usehooks-ts';
-import { Text } from '../ink.js';
+import { Text } from '../../../tui/ink.js';
 import { type AutoUpdaterResult, getLatestVersionFromGcs, getMaxVersion, shouldSkipVersion } from '../utils/autoUpdater.js';
 import { isAutoUpdaterDisabled } from '../utils/config.js';
 import { logForDebugging } from 'src/utils/debug.js';

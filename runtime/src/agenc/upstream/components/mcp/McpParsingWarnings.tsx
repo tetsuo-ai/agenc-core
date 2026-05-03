@@ -4,7 +4,7 @@ import { getMcpConfigsByScope } from 'src/services/mcp/config.js';
 import type { ConfigScope } from 'src/services/mcp/types.js';
 import { describeMcpConfigFilePath, getScopeLabel } from 'src/services/mcp/utils.js';
 import type { ValidationError } from 'src/utils/settings/validation.js';
-import { Box, Link, Text } from '../../ink.js';
+import { Box, Link, Text } from '../../../../tui/ink.js';
 function McpConfigErrorSection(t0) {
   const $ = _c(26);
   const {

@@ -1,5 +1,5 @@
 import { c as _c } from "react-compiler-runtime";
-import { Text } from '../../../ink.js';
+import { Text } from '../../../../../tui/ink.js';
 import { MessageResponse } from '../../MessageResponse.js';
 export function RejectedToolUseMessage() {
   const $ = _c(1);

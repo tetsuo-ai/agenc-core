@@ -6,7 +6,7 @@ import type { SettingSource } from 'src/utils/settings/constants.js';
 import type { CommandResultDisplay } from '../../commands.js';
 import { useExitOnCtrlCDWithKeybindings } from '../../hooks/useExitOnCtrlCDWithKeybindings.js';
 import { useMergedTools } from '../../hooks/useMergedTools.js';
-import { Box, Text } from '../../ink.js';
+import { Box, Text } from '../../../../tui/ink.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
 import type { Tools } from '../../Tool.js';
 import { type ResolvedAgent, resolveAgentOverrides } from '../../tools/AgentTool/agentDisplay.js';

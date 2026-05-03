@@ -2,7 +2,7 @@ import React from 'react';
 import { getIsInteractive } from '../../bootstrap/state.js';
 import { ManagedSettingsSecurityDialog } from '../../components/ManagedSettingsSecurityDialog/ManagedSettingsSecurityDialog.js';
 import { extractDangerousSettings, hasDangerousSettings, hasDangerousSettingsChanged } from '../../components/ManagedSettingsSecurityDialog/utils.js';
-import { render } from '../../ink.js';
+import { render } from '../../../../tui/ink.js';
 import { KeybindingSetup } from '../../keybindings/KeybindingProviderSetup.js';
 import { AppStateProvider } from '../../state/AppState.js';
 import { gracefulShutdownSync } from '../../utils/gracefulShutdown.js';

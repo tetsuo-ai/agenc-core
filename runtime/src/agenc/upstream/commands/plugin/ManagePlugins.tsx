@@ -15,7 +15,7 @@ import { SearchBox } from '../../components/SearchBox.js';
 import { useSearchInput } from '../../hooks/useSearchInput.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- useInput needed for raw search mode text input
-import { Box, Text, useInput, useTerminalFocus } from '../../ink.js';
+import { Box, Text, useInput, useTerminalFocus } from '../../../../tui/ink.js';
 import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.js';
 import { getBuiltinPluginDefinition } from '../../plugins/builtinPlugins.js';
 import { useMcpToggleEnabled } from '../../services/mcp/MCPConnectionManager.js';

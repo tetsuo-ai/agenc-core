@@ -4,7 +4,7 @@ import type { CommandResultDisplay } from '../../commands.js';
 import { Dialog } from '../../components/design-system/Dialog.js';
 import { MemoryFileSelector } from '../../components/memory/MemoryFileSelector.js';
 import { getRelativeMemoryPath } from '../../components/memory/MemoryUpdateNotification.js';
-import { Box, Link, Text } from '../../ink.js';
+import { Box, Link, Text } from '../../../../tui/ink.js';
 import type { LocalJSXCommandCall } from '../../types/command.js';
 import { clearMemoryFileCaches, getMemoryFiles } from '../../utils/claudemd.js';
 import { getAgenCConfigHomeDir } from '../../utils/envUtils.js';

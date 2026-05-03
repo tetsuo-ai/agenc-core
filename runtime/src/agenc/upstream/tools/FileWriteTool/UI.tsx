@@ -13,7 +13,7 @@ import { FileEditToolUseRejectedMessage } from '../../components/FileEditToolUse
 import { FilePathLink } from '../../components/FilePathLink.js';
 import { HighlightedCode } from '../../components/HighlightedCode.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
-import { Box, Text } from '../../ink.js';
+import { Box, Text } from '../../../../tui/ink.js';
 import type { ToolProgressData } from '../../Tool.js';
 import type { ProgressMessage } from '../../types/message.js';
 import { getCwd } from '../../utils/cwd.js';

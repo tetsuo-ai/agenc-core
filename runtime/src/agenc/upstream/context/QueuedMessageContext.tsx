@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
-import { Box } from '../ink.js';
+import { Box } from '../../../tui/ink.js';
 type QueuedMessageContextValue = {
   isQueued: boolean;
   isFirst: boolean;

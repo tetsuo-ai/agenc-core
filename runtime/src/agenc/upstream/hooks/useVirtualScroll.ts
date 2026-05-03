@@ -7,8 +7,8 @@ import {
   useRef,
   useSyncExternalStore,
 } from 'react'
-import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js'
-import type { DOMElement } from '../ink/dom.js'
+import type { ScrollBoxHandle } from '../../../tui/ink/components/ScrollBox.js'
+import type { DOMElement } from '../../../tui/ink/dom.js'
 
 /**
  * Estimated height (rows) for items not yet measured. Intentionally LOW:

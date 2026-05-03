@@ -11,9 +11,9 @@ import { getIsRemoteMode } from '../bootstrap/state.js';
 import type { Command } from '../commands.js';
 import { BLACK_CIRCLE } from '../constants/figures.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
-import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js';
-import { useTerminalNotification } from '../ink/useTerminalNotification.js';
-import { Box, Text } from '../ink.js';
+import type { ScrollBoxHandle } from '../../../tui/ink/components/ScrollBox.js';
+import { useTerminalNotification } from '../../../tui/ink/useTerminalNotification.js';
+import { Box, Text } from '../../../tui/ink.js';
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
 import type { Screen } from '../screens/REPL.js';
 import type { Tools } from '../Tool.js';
@@ -249,11 +249,11 @@ type Props = {
   onSearchMatchesChange?: (count: number, current: number) => void;
   /** Paint an existing DOM subtree to fresh Screen, scan. Element comes
    *  from the main tree (all real providers). Message-relative positions. */
-  scanElement?: (el: import('../ink/dom.js').DOMElement) => import('../ink/render-to-screen.js').MatchPosition[];
+  scanElement?: (el: import('../../../tui/ink/dom.js').DOMElement) => import('../../../tui/ink/render-to-screen.js').MatchPosition[];
   /** Position-based CURRENT highlight. positions stable (msg-relative),
    *  rowOffset tracks scroll. null clears. */
   setPositions?: (state: {
-    positions: import('../ink/render-to-screen.js').MatchPosition[];
+    positions: import('../../../tui/ink/render-to-screen.js').MatchPosition[];
     rowOffset: number;
     currentIdx: number;
   } | null) => void;

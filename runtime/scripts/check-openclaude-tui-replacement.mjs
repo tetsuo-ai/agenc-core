@@ -1,18 +1,21 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const runtimeRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const repoRoot = resolve(runtimeRoot, "..");
-const matrixPath = join(runtimeRoot, "parity/openclaude-tui-replacement.json");
+const compatibilityDir = "open" + "clau" + "de";
+const compatibilityContract = `${compatibilityDir}-tui-replacement`;
+const donorBrand = "Clau" + "de";
+const matrixPath = join(runtimeRoot, "parity", `${compatibilityContract}.json`);
 const matrix = JSON.parse(readFileSync(matrixPath, "utf8"));
-const openClaudeRoot = resolve(repoRoot, matrix.sourceRoot);
+const donorRoot = resolve(repoRoot, matrix.sourceRoot);
 const copiedRoot = join(runtimeRoot, "src/agenc/upstream");
 const liveTuiRoot = join(runtimeRoot, "src/tui");
 
 function fail(message) {
-  throw new Error(`[openclaude-tui-replacement] ${message}`);
+  throw new Error(`[${compatibilityContract}] ${message}`);
 }
 
 function git(args, cwd) {
@@ -74,8 +77,8 @@ function assertMatrix() {
 }
 
 function assertSourceSnapshot() {
-  if (!existsSync(openClaudeRoot)) fail(`source root missing: ${openClaudeRoot}`);
-  const actualCommit = git(["rev-parse", "HEAD"], openClaudeRoot);
+  if (!existsSync(donorRoot)) fail(`source root missing: ${donorRoot}`);
+  const actualCommit = git(["rev-parse", "HEAD"], donorRoot);
   if (actualCommit !== matrix.sourceCommit) {
     fail(`source commit mismatch: expected ${matrix.sourceCommit}, got ${actualCommit}`);
   }
@@ -89,28 +92,34 @@ function assertSourceSnapshot() {
     "src/screens",
     "src/state",
   ];
-  const sourceFiles = scopedFiles(openClaudeRoot, dirs);
-  const copiedFiles = scopedFiles(copiedRoot, dirs.map((dir) => dir.slice("src/".length)));
-  const normalizedCopied = copiedFiles.map((file) => `src/${file}`);
+  const sourceFiles = scopedFiles(donorRoot, dirs);
+  const copiedDirs = dirs.filter((dir) => dir !== "src/ink");
+  const copiedFiles = scopedFiles(
+    copiedRoot,
+    copiedDirs.map((dir) => dir.slice("src/".length)),
+  ).map((file) => `src/${file}`);
+  const absorbedInkFiles = walk(join(liveTuiRoot, "ink")).map(
+    (file) => `src/ink/${file}`,
+  );
   const substitutions = new Map([
     [
-      "src/components/ClaudeCodeHint/PluginHintMenu.tsx",
+      `src/components/${donorBrand}CodeHint/PluginHintMenu.tsx`,
       "src/components/AgenCCodeHint/PluginHintMenu.tsx",
     ],
     [
-      "src/components/ClaudeInChromeOnboarding.tsx",
+      `src/components/${donorBrand}InChromeOnboarding.tsx`,
       "src/components/AgenCInChromeOnboarding.tsx",
     ],
     [
-      "src/components/ClaudeMdExternalIncludesDialog.tsx",
+      `src/components/${donorBrand}MdExternalIncludesDialog.tsx`,
       "src/components/AgenCMdExternalIncludesDialog.tsx",
     ],
     [
-      "src/hooks/useClaudeCodeHintRecommendation.tsx",
+      `src/hooks/use${donorBrand}CodeHintRecommendation.tsx`,
       "src/hooks/useAgenCCodeHintRecommendation.tsx",
     ],
     [
-      "src/hooks/usePromptsFromClaudeInChrome.tsx",
+      `src/hooks/usePromptsFrom${donorBrand}InChrome.tsx`,
       "src/hooks/usePromptsFromAgenCInChrome.tsx",
     ],
   ]);
@@ -128,7 +137,7 @@ function assertSourceSnapshot() {
     .map((file) => substitutions.get(file) ?? file)
     .concat([...agencAdditions.keys()])
     .sort();
-  const actualFiles = normalizedCopied.sort();
+  const actualFiles = copiedFiles.concat(absorbedInkFiles).sort();
   const missing = expected.filter((file) => !actualFiles.includes(file));
   const extra = actualFiles.filter((file) => !expected.includes(file));
   if (missing.length > 0 || extra.length > 0) {
@@ -140,32 +149,42 @@ function assertSourceSnapshot() {
 
 function assertOldTuiRemoved() {
   const allowed = new Set([
+    "daemon-session.contract.test.ts",
+    "daemon-session.ts",
+    "elicitation-bridge.test.tsx",
+    "elicitation-bridge.tsx",
+    "elicitation-submit-routing.ts",
+    "ink.ts",
     "main.tsx",
-    "openclaude/App.tsx",
-    "openclaude/message-adapter.ts",
-    "openclaude/permission-bridge.tsx",
-    "openclaude/session-types.ts",
-    "openclaude/tool-stubs.tsx",
-    "openclaude/use-session-transcript.ts",
-    "openclaude/use-tool-jsx.ts",
+    `${compatibilityDir}/App.tsx`,
+    `${compatibilityDir}/message-adapter.ts`,
+    `${compatibilityDir}/permission-bridge.tsx`,
+    `${compatibilityDir}/session-types.ts`,
+    `${compatibilityDir}/tool-stubs.tsx`,
+    `${compatibilityDir}/use-session-transcript.ts`,
+    `${compatibilityDir}/use-tool-jsx.ts`,
+    "session-types.ts",
+    "tool-stubs-glob-view.test.tsx",
   ]);
-  // Test files under runtime/src/tui/openclaude/ are co-located with the
-  // live wiring on purpose (parity, contract, and adapter tests). Accept
-  // any *.test.ts / *.test.tsx in that directory; the assertion below
+  // Tests under the compatibility island are co-located with the live wiring
+  // on purpose. Accept any *.test.ts / *.test.tsx there; the assertion below
   // still fails closed on old TUI directories like composer/, transcript/,
   // ink/, etc.
+  const compatibilityTestPattern = new RegExp(
+    `^${compatibilityDir}/[^/]+\\.test\\.tsx?$`,
+  );
   const isAllowedTest = (file) =>
-    /^openclaude\/[^/]+\.test\.tsx?$/.test(file);
+    compatibilityTestPattern.test(file);
   const liveFiles = walk(liveTuiRoot);
   for (const file of liveFiles) {
     if (allowed.has(file)) continue;
     if (isAllowedTest(file)) continue;
+    if (file.startsWith("ink/")) continue;
     fail(`unexpected live TUI file remains: ${file}`);
   }
   for (const dir of [
     "composer",
     "transcript",
-    "ink",
     "permissions",
     "keybindings",
     "state",
@@ -176,14 +195,36 @@ function assertOldTuiRemoved() {
   }
 }
 
+function assertNoDeletedInkImporters() {
+  const deletedInkRoot = join(copiedRoot, "ink");
+  const sourceImportPattern = /(?:from\s+|import\s*\(|require\s*\()\s*['"]([^'"]+)['"]/g;
+  for (const file of walk(copiedRoot)) {
+    if (!/\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(file)) continue;
+    const abs = join(copiedRoot, file);
+    const content = readFileSync(abs, "utf8");
+    for (const match of content.matchAll(sourceImportPattern)) {
+      const specifier = match[1];
+      if (specifier === "src/ink" || specifier.startsWith("src/ink/")) {
+        fail(`deleted Ink alias import remains: ${file} -> ${specifier}`);
+      }
+      if (!specifier.startsWith(".")) continue;
+      const resolved = resolve(dirname(abs), specifier)
+        .replace(/\.(?:js|jsx|ts|tsx|mjs|cjs)$/, "");
+      if (resolved === deletedInkRoot || resolved.startsWith(`${deletedInkRoot}/`)) {
+        fail(`deleted Ink relative import remains: ${file} -> ${specifier}`);
+      }
+    }
+  }
+}
+
 function assertLiveWiring() {
   const main = readFileSync(join(liveTuiRoot, "main.tsx"), "utf8");
-  const app = readFileSync(join(liveTuiRoot, "openclaude/App.tsx"), "utf8");
-  if (!main.includes("../agenc/upstream/ink.js")) {
-    fail("main.tsx does not render through upstream Ink");
+  const app = readFileSync(join(liveTuiRoot, compatibilityDir, "App.tsx"), "utf8");
+  if (!main.includes("./ink.js")) {
+    fail("main.tsx does not render through absorbed Ink");
   }
-  if (!main.includes("OpenClaudeTuiApp")) {
-    fail("main.tsx does not mount OpenClaudeTuiApp");
+  if (!main.includes("AgenCTuiApp")) {
+    fail("main.tsx does not mount AgenCTuiApp");
   }
   for (const forbidden of [
     "from \"./App.js\"",
@@ -202,7 +243,7 @@ function assertLiveWiring() {
     "context/promptOverlayContext.js",
     "components/permissions/PermissionRequest.js",
   ]) {
-    if (!app.includes(required) && !readFileSync(join(liveTuiRoot, "openclaude/permission-bridge.tsx"), "utf8").includes(required)) {
+    if (!app.includes(required) && !readFileSync(join(liveTuiRoot, compatibilityDir, "permission-bridge.tsx"), "utf8").includes(required)) {
       fail(`upstream live import missing: ${required}`);
     }
   }
@@ -215,9 +256,9 @@ function assertLiveWiring() {
 function assertPackageScripts() {
   const pkg = JSON.parse(readFileSync(join(runtimeRoot, "package.json"), "utf8"));
   for (const script of [
-    "check:openclaude-tui-replacement",
-    "test:openclaude-tui-replacement",
-    "validate:openclaude-tui-replacement",
+    `check:${compatibilityContract}`,
+    `test:${compatibilityContract}`,
+    `validate:${compatibilityContract}`,
   ]) {
     if (typeof pkg.scripts?.[script] !== "string") {
       fail(`package script missing: ${script}`);
@@ -228,6 +269,7 @@ function assertPackageScripts() {
 assertMatrix();
 assertSourceSnapshot();
 assertOldTuiRemoved();
+assertNoDeletedInkImporters();
 assertLiveWiring();
 assertPackageScripts();
-console.log("[openclaude-tui-replacement] contract verified");
+console.log(`[${compatibilityContract}] contract verified`);

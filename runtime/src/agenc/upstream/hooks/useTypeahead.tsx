@@ -1,16 +1,16 @@
 import * as React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNotifications } from 'src/context/notifications.js';
-import { Text } from 'src/ink.js';
+import { Text } from '../../../tui/ink.js';
 import { logEvent } from 'src/services/analytics/index.js';
 import { useDebounceCallback } from 'usehooks-ts';
 import { type Command, getCommandName } from '../commands.js';
 import { getModeFromInput, getValueFromInput } from '../components/PromptInput/inputModes.js';
 import type { SuggestionItem, SuggestionType } from '../components/PromptInput/PromptInputFooterSuggestions.js';
 import { useIsModalOverlayActive, useRegisterOverlay } from '../context/overlayContext.js';
-import { KeyboardEvent } from '../ink/events/keyboard-event.js';
+import { KeyboardEvent } from '../../../tui/ink/events/keyboard-event.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- backward-compat bridge until consumers wire handleKeyDown to <Box onKeyDown>
-import { useInput } from '../ink.js';
+import { useInput } from '../../../tui/ink.js';
 import { useOptionalKeybindingContext, useRegisterKeybindingContext } from '../keybindings/KeybindingContext.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';

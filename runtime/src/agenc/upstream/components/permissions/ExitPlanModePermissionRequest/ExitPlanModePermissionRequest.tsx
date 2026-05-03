@@ -8,8 +8,8 @@ import { useAppState, useAppStateStore, useSetAppState } from 'src/state/AppStat
 import { getSdkBetas, getSessionId, isSessionPersistenceDisabled, setHasExitedPlanMode, setNeedsAutoModeExitAttachment, setNeedsPlanModeExitAttachment } from '../../../bootstrap/state.js';
 import { generateSessionName } from '../../../commands/rename/generateSessionName.js';
 import { launchUltraplan } from '../../../commands/ultraplan.js';
-import type { KeyboardEvent } from '../../../ink/events/keyboard-event.js';
-import { Box, Text } from '../../../ink.js';
+import type { KeyboardEvent } from '../../../../../tui/ink/events/keyboard-event.js';
+import { Box, Text } from '../../../../../tui/ink.js';
 import type { AppState } from '../../../state/AppStateStore.js';
 import { AGENT_TOOL_NAME } from '../../../tools/AgentTool/constants.js';
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../../../tools/ExitPlanModeTool/constants.js';

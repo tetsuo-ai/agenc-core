@@ -3,8 +3,8 @@ import type { Base64ImageSource, ImageBlockParam } from '@anthropic-ai/sdk/resou
 import React, { Suspense, use, useCallback, useMemo, useRef, useState } from 'react';
 import { useSettings } from '../../../hooks/useSettings.js';
 import { useTerminalSize } from '../../../hooks/useTerminalSize.js';
-import { stringWidth } from '../../../ink/stringWidth.js';
-import { useTheme } from '../../../ink.js';
+import { stringWidth } from '../../../../../tui/ink/stringWidth.js';
+import { useTheme } from '../../../../../tui/ink.js';
 import { useKeybindings } from '../../../keybindings/useKeybinding.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../services/analytics/index.js';
 import { useAppState } from '../../../state/AppState.js';

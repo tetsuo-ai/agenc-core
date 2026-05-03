@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react'
-import { KeyboardEvent } from '../ink/events/keyboard-event.js'
+import { KeyboardEvent } from '../../../tui/ink/events/keyboard-event.js'
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- backward-compat bridge until consumers wire handleKeyDown to <Box onKeyDown>
-import { useInput } from '../ink.js'
+import { useInput } from '../../../tui/ink.js'
 import {
   Cursor,
   getLastKill,

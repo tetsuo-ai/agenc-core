@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { MessageResponse } from '../../components/MessageResponse.js';
-import { Text } from '../../ink.js';
+import { Text } from '../../../../tui/ink.js';
 import { truncateToWidth } from '../format.js';
 import type { MCPToolResult } from '../mcpValidation.js';
 type CuToolInput = Record<string, unknown> & {

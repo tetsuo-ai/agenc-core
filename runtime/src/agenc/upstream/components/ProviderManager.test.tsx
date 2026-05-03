@@ -4,7 +4,7 @@ import { afterEach, expect, mock, test } from 'bun:test'
 import React from 'react'
 import stripAnsi from 'strip-ansi'
 
-import { createRoot } from '../ink.js'
+import { createRoot } from '../../../tui/ink.js'
 import { KeybindingSetup } from '../keybindings/KeybindingProviderSetup.js'
 import { AppStateProvider } from '../state/AppState.js'
 

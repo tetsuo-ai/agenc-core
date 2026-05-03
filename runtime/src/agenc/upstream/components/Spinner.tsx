@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
-import { Box, Text } from '../ink.js';
+import { Box, Text } from '../../../tui/ink.js';
 import * as React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { computeGlimmerIndex, computeShimmerSegments, SHIMMER_INTERVAL_MS } from '../bridge/bridgeStatusUtil.js';
@@ -20,7 +20,7 @@ import { useTasksV2 } from '../hooks/useTasksV2.js';
 import type { Task } from '../utils/tasks.js';
 import { useAppState } from '../state/AppState.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
-import { stringWidth } from '../ink/stringWidth.js';
+import { stringWidth } from '../../../tui/ink/stringWidth.js';
 import { getDefaultCharacters, type SpinnerMode } from './Spinner/index.js';
 import { SpinnerAnimationRow } from './Spinner/SpinnerAnimationRow.js';
 import { useSettings } from '../hooks/useSettings.js';
@@ -34,7 +34,7 @@ import { TEARDROP_ASTERISK } from '../constants/figures.js';
 import figures from 'figures';
 import { getCurrentTurnTokenBudget, getTurnOutputTokens } from '../bootstrap/state.js';
 import { TeammateSpinnerTree } from './Spinner/TeammateSpinnerTree.js';
-import { useAnimationFrame } from '../ink.js';
+import { useAnimationFrame } from '../../../tui/ink.js';
 import { getGlobalConfig } from '../utils/config.js';
 export type { SpinnerMode } from './Spinner/index.js';
 const DEFAULT_CHARACTERS = getDefaultCharacters();

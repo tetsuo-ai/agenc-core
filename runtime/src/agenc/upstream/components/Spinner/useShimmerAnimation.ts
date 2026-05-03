@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
-import { stringWidth } from '../../ink/stringWidth.js'
-import { type DOMElement, useAnimationFrame } from '../../ink.js'
+import { stringWidth } from '../../../../tui/ink/stringWidth.js'
+import { type DOMElement, useAnimationFrame } from '../../../../tui/ink.js'
 import type { SpinnerMode } from './types.js'
 
 export function useShimmerAnimation(

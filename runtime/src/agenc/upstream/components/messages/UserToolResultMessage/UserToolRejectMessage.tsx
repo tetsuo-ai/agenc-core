@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { useTerminalSize } from '../../../hooks/useTerminalSize.js';
-import { useTheme } from '../../../ink.js';
+import { useTheme } from '../../../../../tui/ink.js';
 import { filterToolProgressMessages, type Tool, type Tools } from '../../../Tool.js';
 import type { ProgressMessage } from '../../../types/message.js';
 import type { buildMessageLookups } from '../../../utils/messages.js';

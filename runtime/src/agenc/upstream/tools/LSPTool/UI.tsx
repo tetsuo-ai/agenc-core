@@ -4,7 +4,7 @@ import React from 'react';
 import { CtrlOToExpand } from '../../components/CtrlOToExpand.js';
 import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErrorMessage.js';
 import { MessageResponse } from '../../components/MessageResponse.js';
-import { Box, Text } from '../../ink.js';
+import { Box, Text } from '../../../../tui/ink.js';
 import { getDisplayPath } from '../../utils/file.js';
 import { extractTag } from '../../utils/messages.js';
 import type { Input, Output } from './LSPTool.js';

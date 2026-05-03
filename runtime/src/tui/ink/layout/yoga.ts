@@ -11,7 +11,7 @@ import Yoga, {
   PositionType,
   Wrap,
   type Node as YogaNode,
-} from 'src/native-ts/yoga-layout/index.js'
+} from '../../../agenc/upstream/native-ts/yoga-layout/index.js'
 import {
   type LayoutAlign,
   LayoutDisplay,

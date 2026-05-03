@@ -4,7 +4,7 @@ import { afterEach, expect, mock, test } from 'bun:test'
 import React from 'react'
 import stripAnsi from 'strip-ansi'
 
-import { createRoot, render, useApp } from '../../ink.js'
+import { createRoot, render, useApp } from '../../../../tui/ink.js'
 import { AppStateProvider } from '../../state/AppState.js'
 import {
   applySavedProfileToCurrentSession,

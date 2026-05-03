@@ -1,4 +1,4 @@
-import { logForDebugging } from 'src/utils/debug.js'
+import { logForDebugging } from '../../utils/debug.js'
 import { type DOMElement, markDirty } from './dom.js'
 import type { Frame } from './frame.js'
 import { consumeAbsoluteRemovedFlag } from './node-cache.js'

@@ -1,6 +1,6 @@
 import { PassThrough } from 'node:stream'
 
-import { expect, test } from 'bun:test'
+import { expect, test, vi } from 'vitest'
 import React from 'react'
 
 import type { DOMElement, ElementNames } from './dom.ts'
@@ -8,6 +8,14 @@ import instances from './instances.ts'
 import { LayoutEdge } from './layout/node.ts'
 import type { ParsedKey } from './parse-keypress.ts'
 import { createRoot } from './root.ts'
+
+vi.mock('../../agenc/upstream/utils/fullscreen.js', () => ({
+  isMouseClicksDisabled: () => false,
+}))
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
 
 type TestStdin = PassThrough & {
   isTTY: boolean
@@ -54,7 +62,7 @@ async function waitForCondition(
       return
     }
 
-    await Bun.sleep(10)
+    await sleep(10)
   }
 
   throw new Error(errorMessage)
@@ -143,7 +151,7 @@ async function createHarness(): Promise<{
       root.unmount()
       stdin.end()
       stdout.end()
-      await Bun.sleep(25)
+      await sleep(25)
     },
   }
 }
@@ -167,7 +175,7 @@ test('raw ink-box updates keyboard handlers and attributes in place across reren
       ),
     )
 
-    await Bun.sleep(25)
+    await sleep(25)
 
     const firstBox = requireElement(harness.stdout, 'ink-box')
     expect(firstBox.attributes.tabIndex).toBe(0)
@@ -185,7 +193,7 @@ test('raw ink-box updates keyboard handlers and attributes in place across reren
       ),
     )
 
-    await Bun.sleep(25)
+    await sleep(25)
 
     const secondBox = requireElement(harness.stdout, 'ink-box')
     expect(secondBox).toBe(firstBox)
@@ -232,7 +240,7 @@ test('raw ink-text updates textStyles in place across rerenders', async () => {
       ),
     )
 
-    await Bun.sleep(25)
+    await sleep(25)
 
     const firstText = requireElement(harness.stdout, 'ink-text')
     expect(firstText.textStyles).toEqual({ color: 'ansi:red' })
@@ -248,7 +256,7 @@ test('raw ink-text updates textStyles in place across rerenders', async () => {
       ),
     )
 
-    await Bun.sleep(25)
+    await sleep(25)
 
     const secondText = requireElement(harness.stdout, 'ink-text')
     expect(secondText).toBe(firstText)
@@ -276,7 +284,7 @@ test('raw ink-box removes event handler when set to undefined', async () => {
       ),
     )
 
-    await Bun.sleep(25)
+    await sleep(25)
 
     const box = requireElement(harness.stdout, 'ink-box')
     expect(box._eventHandlers?.onKeyDown).toBe(handler)
@@ -293,7 +301,7 @@ test('raw ink-box removes event handler when set to undefined', async () => {
       ),
     )
 
-    await Bun.sleep(25)
+    await sleep(25)
 
     const sameBox = requireElement(harness.stdout, 'ink-box')
     expect(sameBox).toBe(box)
@@ -314,7 +322,7 @@ test('raw ink-box removes event handler when set to undefined', async () => {
       isPasted: false,
     })
 
-    await Bun.sleep(50)
+    await sleep(50)
     expect(calls).toEqual([])
   } finally {
     await harness.dispose()
@@ -335,7 +343,7 @@ test('raw ink-box updates layout style in place across rerenders', async () => {
       ),
     )
 
-    await Bun.sleep(25)
+    await sleep(25)
 
     const box = requireElement(harness.stdout, 'ink-box')
     expect(box.style.flexDirection).toBe('row')
@@ -351,7 +359,7 @@ test('raw ink-box updates layout style in place across rerenders', async () => {
       ),
     )
 
-    await Bun.sleep(25)
+    await sleep(25)
 
     const sameBox = requireElement(harness.stdout, 'ink-box')
     expect(sameBox).toBe(box)

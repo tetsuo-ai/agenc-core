@@ -3,7 +3,7 @@ import * as React from 'react';
 import { useInterval } from 'usehooks-ts';
 import { getIsRemoteMode, getIsScrollDraining } from '../../bootstrap/state.js';
 import { useNotifications } from '../../context/notifications.js';
-import { Text } from '../../ink.js';
+import { Text } from '../../../../tui/ink.js';
 import { getInitializationStatus, getLspServerManager } from '../../services/lsp/manager.js';
 import { useSetAppState } from '../../state/AppState.js';
 import { logForDebugging } from 'src/utils/debug.js';

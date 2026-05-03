@@ -6,7 +6,7 @@ import { useCallback } from 'react';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from 'src/services/analytics/index.js';
 import { sanitizeToolNameForAnalytics } from 'src/services/analytics/metadata.js';
 import type { ToolUseConfirm } from '../components/permissions/PermissionRequest.js';
-import { Text } from '../ink.js';
+import { Text } from '../../../tui/ink.js';
 import type { ToolPermissionContext, Tool as ToolType, ToolUseContext } from '../Tool.js';
 import { consumeSpeculativeClassifierCheck, peekSpeculativeClassifierCheck } from '../tools/BashTool/bashPermissions.js';
 import { BASH_TOOL_NAME } from '../tools/BashTool/toolName.js';

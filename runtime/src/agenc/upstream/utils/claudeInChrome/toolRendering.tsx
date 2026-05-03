@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { MessageResponse } from '../../components/MessageResponse.js';
-import { supportsHyperlinks } from '../../ink/supports-hyperlinks.js';
-import { Link, Text } from '../../ink.js';
+import { supportsHyperlinks } from '../../../../tui/ink/supports-hyperlinks.js';
+import { Link, Text } from '../../../../tui/ink.js';
 import { renderToolResultMessage as renderDefaultMCPToolResultMessage } from '../../tools/MCPTool/UI.js';
 import type { MCPToolResult } from '../../utils/mcpValidation.js';
 import { truncateToWidth } from '../format.js';

@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import React, { useCallback, useState } from 'react';
 import type { Workflow } from '../commands/install-github-app/types.js';
 import type { ExitState } from '../hooks/useExitOnCtrlCDWithKeybindings.js';
-import { Box, Link, Text } from '../ink.js';
+import { Box, Link, Text } from '../../../tui/ink.js';
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js';
 import { SelectMulti } from './CustomSelect/SelectMulti.js';
 import { Byline } from './design-system/Byline.js';
