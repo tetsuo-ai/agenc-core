@@ -1,0 +1,113 @@
+{
+  "contractName": "rust-file-watcher-parity",
+  "scope": "AgenC file-watcher subscription bus mapped from the upstream Rust runtime watcher.",
+  "sourceRoot": "/home/tetsuo/git/codex/codex-rs", "_sourceRootBrandingAllow": "branding-scan: allow upstream source root path",
+  "targetRoot": "..",
+  "sourceCommit": "35aaa5d9fcb606fb6f27dd5747ecab3f4ba0c07e",
+  "sourceCommitDescribe": "35aaa5d9fc Bound websocket request sends with idle timeout (#20751)",
+  "sourceFiles": [
+    "core/src/file_watcher.rs",
+    "core/src/file_watcher_tests.rs"
+  ],
+  "targetFiles": [
+    "runtime/src/file-watcher/index.ts",
+    "runtime/src/file-watcher/PARITY.md"
+  ],
+  "testFiles": [
+    "runtime/src/file-watcher/index.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "coalesced-receiver",
+      "source": "core/src/file_watcher.rs",
+      "target": "runtime/src/file-watcher/index.ts",
+      "requiredBehaviors": [
+        "each subscriber owns a receiver that coalesces changed paths into sorted, duplicate-free batches",
+        "receiver.recv returns null only after all sender handles are closed and pending paths have been flushed",
+        "ThrottledWatchReceiver enforces a minimum interval after each emitted event"
+      ],
+      "edgeCases": [
+        "pending paths are delivered before shutdown closes the receiver",
+        "duplicate changed paths in one burst collapse into one event path"
+      ],
+      "tests": [
+        "runtime/src/file-watcher/index.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "registration-refcounts",
+      "source": "core/src/file_watcher.rs",
+      "target": "runtime/src/file-watcher/index.ts",
+      "requiredBehaviors": [
+        "subscriber registrations dedupe by requested path and recursive scope",
+        "watch paths are reference-counted separately for recursive and nonrecursive registrations",
+        "the effective backend watch mode upgrades to recursive when any recursive registration exists and downgrades when the recursive registration closes"
+      ],
+      "edgeCases": [
+        "closing a WatchRegistration decrements only its registered paths",
+        "closing a subscriber unregisters all of its remaining paths and closes its receiver"
+      ],
+      "tests": [
+        "runtime/src/file-watcher/index.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "missing-path-fallback",
+      "source": "core/src/file_watcher.rs",
+      "target": "runtime/src/file-watcher/index.ts",
+      "requiredBehaviors": [
+        "missing targets initially watch the nearest existing directory ancestor nonrecursively",
+        "fallback watches report the originally requested path when parent create/delete events prove the target appeared or disappeared",
+        "fallback watches move the actual backend watch closer as requested path components are created"
+      ],
+      "edgeCases": [
+        "file prefixes are skipped while walking to the nearest existing directory ancestor",
+        "sibling changes under the fallback parent do not emit requested-path events"
+      ],
+      "tests": [
+        "runtime/src/file-watcher/index.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "event-matching",
+      "source": "core/src/file_watcher.rs",
+      "target": "runtime/src/file-watcher/index.ts",
+      "requiredBehaviors": [
+        "canonical backend paths are mapped back into the subscriber's requested namespace",
+        "recursive watches match descendants while nonrecursive watches only match the watched path and immediate children",
+        "ancestor events can notify child watches when the child currently exists",
+        "non-mutating raw backend events are filtered before subscriber notification"
+      ],
+      "edgeCases": [
+        "events for unmatched subscribers stay pending until those subscribers close",
+        "empty raw event path lists do not notify subscribers"
+      ],
+      "tests": [
+        "runtime/src/file-watcher/index.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "node-backend",
+      "source": "core/src/file_watcher.rs",
+      "target": "runtime/src/file-watcher/index.ts",
+      "requiredBehaviors": [
+        "FileWatcher.create builds a live Node filesystem watcher backend",
+        "FileWatcher.noop builds an inert backend for deterministic synthetic tests",
+        "FileWatcher.close releases live backend watchers and closes all subscriber receivers"
+      ],
+      "edgeCases": [
+        "recursive watch setup falls back to a nonrecursive Node watcher on platforms that do not support recursive fs.watch",
+        "live backend handles are unrefed so they do not keep the process open"
+      ],
+      "tests": [
+        "runtime/src/file-watcher/index.test.ts"
+      ],
+      "status": "required"
+    }
+  ],
+  "generatedAt": "2026-05-03T07:14:34.123Z"
+}
