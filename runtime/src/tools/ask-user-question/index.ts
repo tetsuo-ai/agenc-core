@@ -4,10 +4,13 @@ export {
   clearAskUserQuestionResponsesForTest,
   createAskUserQuestionTool,
   parseAskUserQuestionInput,
+  recordAskUserQuestionPlanInterviewAction,
   recordAskUserQuestionResponse,
+  recordAskUserQuestionUpdatedInput,
   type AskUserQuestion,
   type AskUserQuestionAnnotation,
   type AskUserQuestionInput,
   type AskUserQuestionOption,
   type AskUserQuestionParseResult,
-} from "../ask-user-question/index.js";
+  type AskUserQuestionPlanInterviewAction,
+} from "./tool.js";

@@ -1,0 +1,100 @@
+{
+  "contractName": "ask-user-question-tool-parity",
+  "scope": "AgenC AskUserQuestion model-facing tool port and registry decomposition.",
+  "sourceRoot": "donor-ui-snapshot",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/tools/AskUserQuestionTool/AskUserQuestionTool.tsx",
+    "src/tools/AskUserQuestionTool/prompt.ts",
+    "src/components/permissions/AskUserQuestionPermissionRequest/AskUserQuestionPermissionRequest.tsx",
+    "src/components/permissions/PermissionRequest.tsx"
+  ],
+  "targetFiles": [
+    "runtime/src/tools/ask-user-question/tool.ts",
+    "runtime/src/tools/ask-user-question/index.ts",
+    "runtime/src/tools/ask-user-question/PARITY.md",
+    "runtime/src/tools/system/ask-user-question.ts",
+    "runtime/src/tools/system/index.ts",
+    "runtime/src/agenc/adapters/permission-bridge-projection.ts",
+    "runtime/src/tool-registry.ts"
+  ],
+  "testFiles": [
+    "runtime/src/tools/ask-user-question/tool.test.ts",
+    "runtime/src/permissions/upstream-tool-use-confirm-queue.test.ts",
+    "runtime/src/tools/ask-user-question-bridge-routing.test.tsx",
+    "runtime/src/tool-registry.test.ts",
+    "runtime/src/prompts/system-prompt.test.ts",
+    "runtime/src/planning/plan-instructions.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "question-schema",
+      "source": "src/tools/AskUserQuestionTool/AskUserQuestionTool.tsx",
+      "target": "runtime/src/tools/ask-user-question/tool.ts",
+      "requiredBehaviors": [
+        "the tool is named AskUserQuestion",
+        "input accepts 1-4 questions",
+        "each question requires question text, a short header, and 2-4 options",
+        "each option requires a label and description",
+        "option labels are unique within each question and question texts are unique",
+        "multiSelect is supported per question"
+      ],
+      "edgeCases": [
+        "previews remain optional but do not replace required descriptions",
+        "answers and annotations are not exposed in the model input schema",
+        "malformed question and option payloads return tool errors"
+      ],
+      "tests": [
+        "runtime/src/tools/ask-user-question/tool.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "answer-flow",
+      "source": "src/components/permissions/AskUserQuestionPermissionRequest/AskUserQuestionPermissionRequest.tsx",
+      "target": "runtime/src/agenc/adapters/permission-bridge-projection.ts",
+      "requiredBehaviors": [
+        "the TUI approval projection records onAllow(updatedInput) by tool call id before resolving approval",
+        "the bridge passes the upstream AskUserQuestion tool object so PermissionRequest selects the structured question component",
+        "reject feedback for clarify and finish-plan-interview actions resolves through AskUserQuestion's model-facing continuation result",
+        "normal execution requires the TUI to record answers by call id before the tool returns a model-facing answer result",
+        "recorded answers are consumed once and formatted as question-to-answer pairs",
+        "annotations include selected preview text and user notes in the result text",
+        "special plan-interview actions return explicit continuation guidance"
+      ],
+      "edgeCases": [
+        "missing recorded answers produce a tool error instead of trusting model-supplied answers",
+        "empty call ids do not persist answer state",
+        "recorded answers are removed after consumption",
+        "recorded answers for one call id cannot be consumed by another call id"
+      ],
+      "tests": [
+        "runtime/src/tools/ask-user-question/tool.test.ts",
+        "runtime/src/permissions/upstream-tool-use-confirm-queue.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "registry-surface",
+      "source": "src/tools/AskUserQuestionTool/prompt.ts",
+      "target": "runtime/src/tool-registry.ts",
+      "requiredBehaviors": [
+        "AskUserQuestion remains registered in the built-in interaction surface",
+        "AskUserQuestion remains visible by default",
+        "AskUserQuestion requires user interaction and is read-only",
+        "system tool exports remain compatible through a re-export shim"
+      ],
+      "edgeCases": [
+        "the tool stays distinct from request-user-input elicitation",
+        "plan-mode prompt text continues to reference AskUserQuestion for clarification only"
+      ],
+      "tests": [
+        "runtime/src/tool-registry.test.ts",
+        "runtime/src/prompts/system-prompt.test.ts",
+        "runtime/src/planning/plan-instructions.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

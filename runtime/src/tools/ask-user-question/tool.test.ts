@@ -6,7 +6,7 @@ import {
   parseAskUserQuestionInput,
   recordAskUserQuestionResponse,
   type AskUserQuestionInput,
-} from "./ask-user-question.js";
+} from "./index.js";
 
 const BASE_INPUT: AskUserQuestionInput = {
   questions: [
@@ -42,40 +42,6 @@ describe("AskUserQuestion tool", () => {
     );
   });
 
-  test("normalizes model question options that omit descriptions", () => {
-    const parsed = parseAskUserQuestionInput({
-      questions: [
-        {
-          header: "Priority",
-          question: "Which milestone should come first?",
-          options: [
-            {
-              label: "M1 first",
-              preview: "Complete reader/lexer before parser.",
-            },
-            {
-              label: "M2 first",
-            },
-          ],
-        },
-      ],
-    });
-
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(parsed.input.questions[0]?.options).toEqual([
-      {
-        label: "M1 first",
-        description: "Complete reader/lexer before parser.",
-        preview: "Complete reader/lexer before parser.",
-      },
-      {
-        label: "M2 first",
-        description: "M2 first",
-      },
-    ]);
-  });
-
   test("rejects malformed or ambiguous payloads", () => {
     expect(parseAskUserQuestionInput({ questions: [] })).toEqual({
       ok: false,
@@ -97,6 +63,23 @@ describe("AskUserQuestion tool", () => {
     ).toEqual({
       ok: false,
       error: 'option labels must be unique within question "Pick one"',
+    });
+    expect(
+      parseAskUserQuestionInput({
+        questions: [
+          {
+            header: "Bad",
+            question: "Pick one",
+            options: [
+              { label: "A", description: "first" },
+              { label: "B" },
+            ],
+          },
+        ],
+      }),
+    ).toEqual({
+      ok: false,
+      error: "questions[0].options[1].description is required",
     });
   });
 
@@ -153,5 +136,48 @@ describe("AskUserQuestion tool", () => {
           "Use AgenC picker (Recommended)",
       },
     });
+  });
+
+  test("recorded answers are consumed once", async () => {
+    const tool = createAskUserQuestionTool();
+    recordAskUserQuestionResponse("call-once", {
+      ...BASE_INPUT,
+      answers: {
+        "Which implementation path should AgenC take?":
+          "Use AgenC picker (Recommended)",
+      },
+    });
+
+    const first = await tool.execute({ ...BASE_INPUT, __callId: "call-once" });
+    expect(first.isError).toBeUndefined();
+    await expect(
+      tool.execute({ ...BASE_INPUT, __callId: "call-once" }),
+    ).resolves.toEqual({
+      content: "User did not provide answers.",
+      isError: true,
+    });
+  });
+
+  test("recorded answers are isolated by call id", async () => {
+    const tool = createAskUserQuestionTool();
+    recordAskUserQuestionResponse("expected-call", {
+      ...BASE_INPUT,
+      answers: {
+        "Which implementation path should AgenC take?":
+          "Use AgenC picker (Recommended)",
+      },
+    });
+
+    await expect(
+      tool.execute({ ...BASE_INPUT, __callId: "other-call" }),
+    ).resolves.toEqual({
+      content: "User did not provide answers.",
+      isError: true,
+    });
+    const expected = await tool.execute({
+      ...BASE_INPUT,
+      __callId: "expected-call",
+    });
+    expect(expected.isError).toBeUndefined();
   });
 });

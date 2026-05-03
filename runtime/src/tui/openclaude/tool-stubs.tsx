@@ -1,6 +1,7 @@
 import React from "react";
 
 import { Box, Text } from "../../agenc/upstream/ink.js";
+import { AskUserQuestionTool as UpstreamAskUserQuestionTool } from "../../agenc/upstream/tools/AskUserQuestionTool/AskUserQuestionTool.js";
 import {
   pickToolResultDispatch,
   resultTextForBridgeTool,
@@ -342,6 +343,9 @@ function resultText(value: unknown): string {
 }
 
 export function createBridgeTool(name: string): any {
+  if (name === "AskUserQuestion") {
+    return UpstreamAskUserQuestionTool;
+  }
   return {
     name,
     aliases: [],
@@ -475,6 +479,7 @@ export function createBridgeTool(name: string): any {
  */
 export function createBridgeTools(names: Iterable<string>): readonly any[] {
   const unique = new Set<string>([
+    "AskUserQuestion",
     "Bash",
     "Edit",
     "FileRead",
