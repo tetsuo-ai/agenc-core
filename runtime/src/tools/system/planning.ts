@@ -378,7 +378,10 @@ Remember: DO NOT write or edit any files except the plan file.`,
     },
     async execute(args) {
       const registry = options.workflowController?.getPermissionModeRegistry?.() ?? null;
-      if (registry && registry.current().mode !== "plan") {
+      if (!registry) {
+        return errorResult("permission mode registry is not available for workflow tools");
+      }
+      if (registry.current().mode !== "plan") {
         return errorResult(
           "You are not in plan mode. This tool is only for exiting plan mode after writing a plan. If your plan was already approved, continue with implementation.",
         );
@@ -409,12 +412,10 @@ Remember: DO NOT write or edit any files except the plan file.`,
         approval.applyAllowedPrompts === true
         ? buildPlanPromptPermissionUpdates(allowedPrompts)
         : [];
-      const targetMode = registry
-        ? targetPermissionModeForPlanApproval(
-            approval?.action === "approve" ? approval.mode : undefined,
-            registry.current().prePlanMode,
-          )
-        : "default";
+      const targetMode = targetPermissionModeForPlanApproval(
+        approval?.action === "approve" ? approval.mode : undefined,
+        registry.current().prePlanMode,
+      );
       const result = await updatePermissionMode({
         controller: options.workflowController,
         target: targetMode,
