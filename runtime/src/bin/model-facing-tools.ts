@@ -53,6 +53,7 @@ import type {
 } from "../llm/types.js";
 import type { Tool, ToolResult } from "../tools/types.js";
 import { safeStringify } from "../tools/types.js";
+import { createFileReadTool } from "../tools/system/file-read.js";
 import { SESSION_ID_ARG } from "../agents/_deps/filesystem-args.js";
 import type { UnifiedExecProcessManagerLike } from "../unified-exec/index.js";
 import {
@@ -97,6 +98,7 @@ import { createStructuredOutputTool } from "./structured-output-tool.js";
 import { isPreapprovedHost } from "./web-fetch-preapproved.js";
 import { getRuleByContentsForTool } from "../permissions/rules.js";
 import type {
+  PermissionResult,
   PermissionRuleValue,
   PermissionUpdate,
   ToolPermissionContext,
@@ -2254,6 +2256,106 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
   ];
 }
 
+function createNotebookReadTool(opts: ModelFacingToolOptions): Tool {
+  const fileReadTool = createFileReadTool({ allowedPaths: [opts.workspaceRoot] });
+  const mapNotebookReadInput = (input: unknown): Record<string, unknown> => {
+    const record = input && typeof input === "object" && !Array.isArray(input)
+      ? (input as Record<string, unknown>)
+      : {};
+    return {
+      ...record,
+      file_path: record.notebook_path,
+      cwd: typeof record.cwd === "string" ? record.cwd : opts.workspaceRoot,
+    };
+  };
+  return {
+    name: "NotebookRead",
+    description:
+      "Read Jupyter notebook cells, source, text outputs, errors, and embedded visual outputs from a .ipynb file in the workspace.",
+    metadata: toolMetadata("coding", {
+      keywords: ["notebook", "ipynb", "read", "jupyter"],
+    }),
+    isReadOnly: true,
+    concurrencyClass: { kind: "shared_read" },
+    inputSchema: {
+      type: "object",
+      properties: {
+        notebook_path: {
+          type: "string",
+          description: "Absolute or workspace-relative path to a .ipynb file.",
+        },
+        offset: {
+          type: "number",
+          description: "Optional. Rendered notebook line number to start from (1-indexed).",
+        },
+        limit: {
+          type: "number",
+          description: "Optional. Maximum rendered notebook lines to return.",
+        },
+      },
+      required: ["notebook_path"],
+      additionalProperties: false,
+    },
+    async checkPermissions(input, context) {
+      const decision = await fileReadTool.checkPermissions?.(
+        mapNotebookReadInput(input),
+        context,
+      );
+      if (!decision) {
+        return {
+          behavior: "passthrough" as const,
+          message: "NotebookRead has no path permission hook",
+        };
+      }
+      if (!("updatedInput" in decision) || decision.updatedInput === undefined) {
+        return decision;
+      }
+      const record = input && typeof input === "object" && !Array.isArray(input)
+        ? (input as Record<string, unknown>)
+        : {};
+      const updatedInput = typeof decision.updatedInput === "object" &&
+        !Array.isArray(decision.updatedInput)
+        ? (decision.updatedInput as Record<string, unknown>)
+        : undefined;
+      if (updatedInput === undefined) {
+        return decision;
+      }
+      return {
+        ...decision,
+        updatedInput: {
+          ...record,
+          ...updatedInput,
+          notebook_path: updatedInput.file_path ?? record.notebook_path,
+        },
+      } satisfies PermissionResult<Record<string, unknown>>;
+    },
+    execute: async (args) => {
+      const notebookPath = stringValue(args.notebook_path);
+      if (!notebookPath) {
+        return json({ error: "notebook_path is required" }, true);
+      }
+      let filePath: string;
+      try {
+        filePath = resolveWorkspacePath(opts, notebookPath);
+      } catch (error) {
+        return json(
+          { error: error instanceof Error ? error.message : String(error) },
+          true,
+        );
+      }
+      if (extname(filePath).toLowerCase() !== ".ipynb") {
+        return json({ error: "File must be a Jupyter notebook (.ipynb)" }, true);
+      }
+      return fileReadTool.execute({
+        file_path: filePath,
+        offset: args.offset,
+        limit: args.limit,
+        __agencSessionId: args.__agencSessionId,
+      });
+    },
+  };
+}
+
 function createNotebookEditTool(opts: ModelFacingToolOptions): Tool {
   return {
     name: "NotebookEdit",
@@ -3360,6 +3462,7 @@ export function createModelFacingTools(
     ...createMcpResourceTools(opts),
     createSkillTool(opts),
     ...createWebTools(opts),
+    createNotebookReadTool(opts),
     createNotebookEditTool(opts),
     createLspTool(opts),
     ...createPlanAndMessageTools(opts),

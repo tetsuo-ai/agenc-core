@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderFactoryOptions } from "../llm/provider.js";
 import type { LLMProvider, LLMResponse } from "../llm/types.js";
+import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import type { Session } from "../session/session.js";
 import { createModelFacingTools } from "./model-facing-tools.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
@@ -145,6 +147,19 @@ function fakeProvider(
   } as unknown as LLMProvider;
 }
 
+function fakeEvaluatorContext(): ToolEvaluatorContext {
+  return {
+    getAppState() {
+      return {
+        toolPermissionContext: createEmptyToolPermissionContext(),
+        denialTracking: { consecutiveDenials: 0, totalDenials: 0 },
+        autoModeActive: false,
+      };
+    },
+    session: {},
+  } as ToolEvaluatorContext;
+}
+
 function codeMode<T>(result: { readonly codeModeResult?: unknown }): T {
   expect(result.codeModeResult).toBeDefined();
   return result.codeModeResult as T;
@@ -180,6 +195,7 @@ describe("model-facing tools", () => {
         "ReadMcpResourceTool",
         "ListMcpResources",
         "ReadMcpResource",
+        "NotebookRead",
         "NotebookEdit",
         "LSP",
         "TaskCreate",
@@ -218,6 +234,7 @@ describe("model-facing tools", () => {
         "wait_agent",
         "close_agent",
         "list_agents",
+        "NotebookRead",
       ]),
     );
     expect(allNames).not.toContain("system.agent.delegate");
@@ -1450,6 +1467,148 @@ describe("model-facing tools", () => {
       expect(updated.cells[0].source).toBe("print('new')\n");
     } finally {
       await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("reads notebook cells through NotebookRead", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-notebook-read-ws-"));
+    try {
+      const notebookPath = join(workspace, "demo.ipynb");
+      await writeFile(
+        notebookPath,
+        JSON.stringify({
+          cells: [
+            {
+              cell_type: "markdown",
+              id: "intro",
+              metadata: {},
+              source: ["# Demo\n", "Notebook body\n"],
+            },
+            {
+              cell_type: "code",
+              id: "code-a",
+              metadata: {},
+              source: ["print('hi')\n"],
+              execution_count: 1,
+              outputs: [
+                {
+                  output_type: "stream",
+                  name: "stdout",
+                  text: ["hi\n"],
+                },
+              ],
+            },
+          ],
+          metadata: { language_info: { name: "python" } },
+          nbformat: 4,
+          nbformat_minor: 5,
+        }),
+        "utf8",
+      );
+
+      const tool = createModelFacingTools({
+        workspaceRoot: workspace,
+        getSession: () => null,
+      }).find((candidate) => candidate.name === "NotebookRead")!;
+
+      const result = await tool.execute({
+        notebook_path: notebookPath,
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(result.content).toContain("Notebook:");
+      expect(result.content).toContain("Cell 1 [markdown] id=intro");
+      expect(result.content).toContain("Notebook body");
+      expect(result.content).toContain("Cell 2 [code] id=code-a execution_count=1");
+      expect(result.content).toContain("Output 1 [stream]:");
+      expect(result.content).toContain("hi");
+      expect(result.metadata).toMatchObject({
+        mediaType: "application/x-ipynb+json",
+        cellCount: 2,
+        language: "python",
+      });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("dispatches NotebookRead with a raw string notebook path", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-notebook-dispatch-ws-"));
+    try {
+      await writeFile(
+        join(workspace, "demo.ipynb"),
+        JSON.stringify({
+          cells: [
+            {
+              cell_type: "markdown",
+              id: "intro",
+              metadata: {},
+              source: ["# Dispatch\n"],
+            },
+          ],
+          metadata: {},
+          nbformat: 4,
+          nbformat_minor: 5,
+        }),
+        "utf8",
+      );
+      const registry = buildBootstrapToolRegistry({
+        workspaceRoot: workspace,
+        mcpManager: fakeMcpManager() as never,
+        getSession: () => null,
+        emitWarning: () => {},
+      });
+
+      const result = await registry.dispatch({
+        id: "notebook-read-string",
+        name: "NotebookRead",
+        arguments: "demo.ipynb",
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(result.content).toContain("Cell 1 [markdown] id=intro");
+      expect(result.content).toContain("# Dispatch");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("delegates NotebookRead path permissions to FileRead", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-notebook-perm-ws-"));
+    const outside = await mkdtemp(join(tmpdir(), "agenc-notebook-perm-out-"));
+    try {
+      const notebookPath = join(workspace, "demo.ipynb");
+      const outsidePath = join(outside, "demo.ipynb");
+      const tool = createModelFacingTools({
+        workspaceRoot: workspace,
+        getSession: () => null,
+      }).find((candidate) => candidate.name === "NotebookRead")!;
+      const context = fakeEvaluatorContext();
+
+      const allowed = await tool.checkPermissions?.(
+        { notebook_path: notebookPath },
+        context,
+      );
+      expect(allowed?.behavior).toBe("allow");
+      expect(
+        (allowed as { updatedInput?: Record<string, unknown> } | undefined)
+          ?.updatedInput,
+      ).toMatchObject({
+        file_path: notebookPath,
+        notebook_path: notebookPath,
+      });
+
+      const blocked = await tool.checkPermissions?.(
+        { notebook_path: outsidePath },
+        context,
+      );
+      expect(blocked).toMatchObject({
+        behavior: "ask",
+        blockedPath: outsidePath,
+      });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
     }
   });
 });
