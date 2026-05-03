@@ -3,7 +3,7 @@ import { MCPServerApprovalDialog } from '../components/MCPServerApprovalDialog.j
 import { MCPServerMultiselectDialog } from '../components/MCPServerMultiselectDialog.js';
 import type { Root } from '../../../tui/ink.js';
 import { KeybindingSetup } from '../keybindings/KeybindingProviderSetup.js';
-import { AppStateProvider } from '../state/AppState.js';
+import { AppStateProvider } from '../../../tui/state/AppState.js';
 import { getMcpConfigsByScope } from './mcp/config.js';
 import { getProjectMcpServerStatus } from './mcp/utils.js';
 

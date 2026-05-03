@@ -13,7 +13,7 @@ import { Box, Text } from '../../../tui/ink.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../services/analytics/index.js';
 import type { MCPServerConnection, ScopedMcpServerConfig } from '../services/mcp/types.js';
-import { useAppState, useSetAppState } from '../state/AppState.js';
+import { useAppState, useSetAppState } from '../../../tui/state/AppState.js';
 import type { Tool } from '../Tool.js';
 import type { AgentColorName } from '../tools/AgentTool/agentColorManager.js';
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js';

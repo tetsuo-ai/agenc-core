@@ -1,41 +1,41 @@
-import type { Notification } from 'src/context/notifications.js'
-import type { TodoList } from 'src/utils/todo/types.js'
-import type { BridgePermissionCallbacks } from '../bridge/bridgePermissionCallbacks.js'
-import type { Command } from '../commands.js'
-import type { ChannelPermissionCallbacks } from '../services/mcp/channelPermissions.js'
-import type { ElicitationRequestEvent } from '../services/mcp/elicitationHandler.js'
+import type { Notification } from '../../agenc/upstream/context/notifications.js'
+import type { TodoList } from '../../agenc/upstream/utils/todo/types.js'
+import type { BridgePermissionCallbacks } from '../../agenc/upstream/bridge/bridgePermissionCallbacks.js'
+import type { Command } from '../../agenc/upstream/commands.js'
+import type { ChannelPermissionCallbacks } from '../../agenc/upstream/services/mcp/channelPermissions.js'
+import type { ElicitationRequestEvent } from '../../agenc/upstream/services/mcp/elicitationHandler.js'
 import type {
   MCPServerConnection,
   ServerResource,
-} from '../services/mcp/types.js'
-import { shouldEnablePromptSuggestion } from '../services/PromptSuggestion/promptSuggestion.js'
+} from '../../agenc/upstream/services/mcp/types.js'
+import { shouldEnablePromptSuggestion } from '../../agenc/upstream/services/PromptSuggestion/promptSuggestion.js'
 import {
   getEmptyToolPermissionContext,
   type Tool,
   type ToolPermissionContext,
-} from '../Tool.js'
-import type { TaskState } from '../tasks/types.js'
-import type { AgentColorName } from '../tools/AgentTool/agentColorManager.js'
-import type { AgentDefinitionsResult } from '../tools/AgentTool/loadAgentsDir.js'
-import type { AllowedPrompt } from '../tools/ExitPlanModeTool/ExitPlanModeV2Tool.js'
-import type { AgentId } from '../types/ids.js'
-import type { Message, UserMessage } from '../types/message.js'
-import type { LoadedPlugin, PluginError } from '../types/plugin.js'
-import type { DeepImmutable } from '../types/utils.js'
+} from '../../agenc/upstream/Tool.js'
+import type { TaskState } from '../../agenc/upstream/tasks/types.js'
+import type { AgentColorName } from '../../agenc/upstream/tools/AgentTool/agentColorManager.js'
+import type { AgentDefinitionsResult } from '../../agenc/upstream/tools/AgentTool/loadAgentsDir.js'
+import type { AllowedPrompt } from '../../agenc/upstream/tools/ExitPlanModeTool/ExitPlanModeV2Tool.js'
+import type { AgentId } from '../../agenc/upstream/types/ids.js'
+import type { Message, UserMessage } from '../../agenc/upstream/types/message.js'
+import type { LoadedPlugin, PluginError } from '../../agenc/upstream/types/plugin.js'
+import type { DeepImmutable } from '../../agenc/upstream/types/utils.js'
 import {
   type AttributionState,
   createEmptyAttributionState,
-} from '../utils/commitAttribution.js'
-import type { EffortValue } from '../utils/effort.js'
-import type { FileHistoryState } from '../utils/fileHistory.js'
-import type { REPLHookContext } from '../utils/hooks/postSamplingHooks.js'
-import type { SessionHooksState } from '../utils/hooks/sessionHooks.js'
-import type { ModelSetting } from '../utils/model/model.js'
-import type { DenialTrackingState } from '../utils/permissions/denialTracking.js'
-import type { PermissionMode } from '../utils/permissions/PermissionMode.js'
-import { getInitialSettings } from '../utils/settings/settings.js'
-import type { SettingsJson } from '../utils/settings/types.js'
-import { shouldEnableThinkingByDefault } from '../utils/thinking.js'
+} from '../../agenc/upstream/utils/commitAttribution.js'
+import type { EffortValue } from '../../agenc/upstream/utils/effort.js'
+import type { FileHistoryState } from '../../agenc/upstream/utils/fileHistory.js'
+import type { REPLHookContext } from '../../agenc/upstream/utils/hooks/postSamplingHooks.js'
+import type { SessionHooksState } from '../../agenc/upstream/utils/hooks/sessionHooks.js'
+import type { ModelSetting } from '../../agenc/upstream/utils/model/model.js'
+import type { DenialTrackingState } from '../../agenc/upstream/utils/permissions/denialTracking.js'
+import type { PermissionMode } from '../../agenc/upstream/utils/permissions/PermissionMode.js'
+import { getInitialSettings } from '../../agenc/upstream/utils/settings/settings.js'
+import type { SettingsJson } from '../../agenc/upstream/utils/settings/types.js'
+import { shouldEnableThinkingByDefault } from '../../agenc/upstream/utils/thinking.js'
 import type { Store } from './store.js'
 
 export type CompletionBoundary =
@@ -116,7 +116,7 @@ export type AppState = DeepImmutable<{
   kairosEnabled: boolean
   // Remote session URL for --remote mode (shown in footer indicator)
   remoteSessionUrl: string | undefined
-  // Remote session WS state (`claude assistant` viewer). 'connected' means the
+  // Remote session WS state (remote assistant viewer). 'connected' means the
   // live event stream is open; 'reconnecting' = transient WS drop, backoff
   // in progress; 'disconnected' = permanent close or reconnects exhausted.
   remoteConnectionStatus:
@@ -124,7 +124,7 @@ export type AppState = DeepImmutable<{
     | 'connected'
     | 'reconnecting'
     | 'disconnected'
-  // `claude assistant`: count of background tasks (Agent calls, teammates,
+  // Remote assistant: count of background tasks (Agent calls, teammates,
   // workflows) running inside the REMOTE daemon child. Event-sourced from
   // system/task_started and system/task_notification on the WS. The local
   // AppState.tasks is always empty in viewer mode — the tasks live in a
@@ -134,17 +134,17 @@ export type AppState = DeepImmutable<{
   replBridgeEnabled: boolean
   // Always-on bridge: true when activated via /remote-control command, false when config-driven
   replBridgeExplicit: boolean
-  // Outbound-only mode: forward events to CCR but reject inbound prompts/control
+  // Outbound-only mode: forward events to the remote bridge but reject inbound prompts/control
   replBridgeOutboundOnly: boolean
   // Always-on bridge: env registered + session created (= "Ready")
   replBridgeConnected: boolean
-  // Always-on bridge: ingress WebSocket is open (= "Connected" - user on agenc.ai)
+  // Always-on bridge: ingress WebSocket is open (= "Connected" in the remote portal)
   replBridgeSessionActive: boolean
   // Always-on bridge: poll loop is in error backoff (= "Reconnecting")
   replBridgeReconnecting: boolean
   // Always-on bridge: connect URL for Ready state (?bridge=envId)
   replBridgeConnectUrl: string | undefined
-  // Always-on bridge: session URL on agenc.ai (set when connected)
+  // Always-on bridge: remote portal session URL (set when connected)
   replBridgeSessionUrl: string | undefined
   // Always-on bridge: IDs for debugging (shown in dialog when --verbose)
   replBridgeEnvironmentId: string | undefined
@@ -251,11 +251,10 @@ export type AppState = DeepImmutable<{
   bagelUrl?: string
   // WebBrowser tool: sticky panel visibility toggle
   bagelPanelVisible?: boolean
-  // chicago MCP session state. Types inlined (not imported from
-  // @ant/computer-use-mcp/types) so external typecheck passes without the
-  // ant-scoped dep resolved. Shapes match `AppGrant`/`CuGrantFlags`
-  // structurally — wrapper.tsx assigns via structural compatibility. Only
-  // populated when feature('CHICAGO_MCP') is active.
+  // Computer-use MCP session state. Types are inlined so external typecheck
+  // passes without the optional provider package resolved. Shapes match
+  // `AppGrant`/`CuGrantFlags` structurally — wrapper.tsx assigns via structural
+  // compatibility. Only populated when the computer-use feature is active.
   computerUseMcpState?: {
     // Session-scoped app allowlist. NOT persisted across resume.
     allowedApps?: readonly {
@@ -430,7 +429,7 @@ export type AppState = DeepImmutable<{
   // ultraplanSessionUrl is set by teleportToRemote. Cleared by launchDetached
   // once the URL is set or on failure.
   ultraplanLaunching?: boolean
-  // Active ultraplan CCR session URL. Set while the RemoteAgentTask runs;
+  // Active ultraplan remote session URL. Set while the RemoteAgentTask runs;
   // truthy disables the keyword trigger + rainbow. Cleared when the poll
   // reaches terminal state.
   ultraplanSessionUrl?: string
@@ -440,8 +439,8 @@ export type AppState = DeepImmutable<{
   // Pre-launch permission dialog. Set by /ultraplan (slash or keyword);
   // cleared by UltraplanLaunchDialog on choice.
   ultraplanLaunchPending?: { blurb: string }
-  // Remote-harness side: set via set_permission_mode control_request,
-  // pushed to CCR external_metadata.is_ultraplan_mode by onChangeAppState.
+  // Remote-harness side: set via set_permission_mode control_request, then
+  // pushed to external_metadata.is_ultraplan_mode by onChangeAppState.
   isUltraplanMode?: boolean
   // Always-on bridge: permission callbacks for bidirectional permission checks
   replBridgePermissionCallbacks?: BridgePermissionCallbacks
@@ -458,7 +457,7 @@ export function getDefaultAppState(): AppState {
   // Use lazy require to avoid circular dependency with teammate.ts
   /* eslint-disable @typescript-eslint/no-require-imports */
   const teammateUtils =
-    require('../utils/teammate.js') as typeof import('../utils/teammate.js')
+    require('../../agenc/upstream/utils/teammate.js') as typeof import('../../agenc/upstream/utils/teammate.js')
   /* eslint-enable @typescript-eslint/no-require-imports */
   const initialMode: PermissionMode =
     teammateUtils.isTeammate() && teammateUtils.isPlanModeRequired()

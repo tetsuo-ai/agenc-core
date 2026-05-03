@@ -6,7 +6,7 @@ import {
   logEvent,
 } from '../services/analytics/index.js'
 import { reinitializeLspServerManager } from '../services/lsp/manager.js'
-import { useAppState, useSetAppState } from '../state/AppState.js'
+import { useAppState, useSetAppState } from '../../../tui/state/AppState.js'
 import {
   getPluginCommandsState,
   setPluginCommandsState,

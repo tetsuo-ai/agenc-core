@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import { useEffect } from 'react';
 import { useNotifications } from 'src/context/notifications.js';
-import { useAppState, useSetAppState } from 'src/state/AppState.js';
+import { useAppState, useSetAppState } from '../../../../tui/state/AppState.js';
 import { type CooldownReason, isFastModeEnabled, onCooldownExpired, onCooldownTriggered, onFastModeOverageRejection, onOrgFastModeChanged } from 'src/utils/fastMode.js';
 import { formatDuration } from 'src/utils/format.js';
 import { getIsRemoteMode } from '../../bootstrap/state.js';

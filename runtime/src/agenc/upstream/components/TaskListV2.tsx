@@ -4,7 +4,7 @@ import * as React from 'react';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { stringWidth } from '../../../tui/ink/stringWidth.js';
 import { Box, Text } from '../../../tui/ink.js';
-import { useAppState } from '../state/AppState.js';
+import { useAppState } from '../../../tui/state/AppState.js';
 import { isInProcessTeammateTask } from '../tasks/InProcessTeammateTask/types.js';
 import { AGENT_COLOR_TO_THEME_COLOR, type AgentColorName } from '../tools/AgentTool/agentColorManager.js';
 import { isAgentSwarmsEnabled } from '../utils/agentSwarmsEnabled.js';

@@ -5,7 +5,7 @@ import React, { type ReactNode, useEffect, useMemo, useRef, useState } from 'rea
 import { isCoordinatorMode } from 'src/coordinator/coordinatorMode.js';
 import { useEffectEventCompat } from 'src/hooks/useEffectEventCompat.js';
 import { useTerminalSize } from 'src/hooks/useTerminalSize.js';
-import { useAppState, useSetAppState } from 'src/state/AppState.js';
+import { useAppState, useSetAppState } from '../../../../tui/state/AppState.js';
 import { enterTeammateView, exitTeammateView } from 'src/state/teammateViewHelpers.js';
 import type { ToolUseContext } from 'src/Tool.js';
 import { DreamTask, type DreamTaskState } from 'src/tasks/DreamTask/DreamTask.js';

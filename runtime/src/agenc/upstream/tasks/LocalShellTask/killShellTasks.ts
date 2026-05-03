@@ -2,7 +2,7 @@
 // Extracted so runAgent.ts can kill agent-scoped bash tasks without pulling
 // React/Ink into its module graph (same rationale as guards.ts).
 
-import type { AppState } from '../../state/AppState.js'
+import type { AppState } from '../../../../tui/state/AppState.js'
 import type { AgentId } from '../../types/ids.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from '../../utils/log.js'

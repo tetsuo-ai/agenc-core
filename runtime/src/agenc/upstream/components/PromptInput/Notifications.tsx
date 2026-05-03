@@ -4,7 +4,7 @@ import * as React from 'react';
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { type Notification, useNotifications } from 'src/context/notifications.js';
 import { logEvent } from 'src/services/analytics/index.js';
-import { useAppState } from 'src/state/AppState.js';
+import { useAppState } from '../../../../tui/state/AppState.js';
 import { useVoiceState } from '../../context/voice.js';
 import type { VerificationStatus } from '../../hooks/useApiKeyVerification.js';
 import { useIdeConnectionStatus } from '../../hooks/useIdeConnectionStatus.js';

@@ -4,7 +4,7 @@ import { ManagedSettingsSecurityDialog } from '../../components/ManagedSettingsS
 import { extractDangerousSettings, hasDangerousSettings, hasDangerousSettingsChanged } from '../../components/ManagedSettingsSecurityDialog/utils.js';
 import { render } from '../../../../tui/ink.js';
 import { KeybindingSetup } from '../../keybindings/KeybindingProviderSetup.js';
-import { AppStateProvider } from '../../state/AppState.js';
+import { AppStateProvider } from '../../../../tui/state/AppState.js';
 import { gracefulShutdownSync } from '../../utils/gracefulShutdown.js';
 import { getBaseRenderOptions } from '../../utils/renderOptions.js';
 import type { SettingsJson } from '../../utils/settings/types.js';

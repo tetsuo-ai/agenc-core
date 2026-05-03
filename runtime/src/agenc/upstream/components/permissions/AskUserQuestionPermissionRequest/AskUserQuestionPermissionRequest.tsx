@@ -7,7 +7,7 @@ import { stringWidth } from '../../../../../tui/ink/stringWidth.js';
 import { useTheme } from '../../../../../tui/ink.js';
 import { useKeybindings } from '../../../keybindings/useKeybinding.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../services/analytics/index.js';
-import { useAppState } from '../../../state/AppState.js';
+import { useAppState } from '../../../../../tui/state/AppState.js';
 import type { Question } from '../../../tools/AskUserQuestionTool/AskUserQuestionTool.js';
 import { AskUserQuestionTool } from '../../../tools/AskUserQuestionTool/AskUserQuestionTool.js';
 import { type CliHighlight, getCliHighlightPromise } from '../../../utils/cliHighlight.js';

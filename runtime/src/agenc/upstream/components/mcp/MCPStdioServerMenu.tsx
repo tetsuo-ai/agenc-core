@@ -6,7 +6,7 @@ import { Box, color, Text, useTheme } from '../../../../tui/ink.js';
 import { getMcpConfigByName } from '../../services/mcp/config.js';
 import { useMcpReconnect, useMcpToggleEnabled } from '../../services/mcp/MCPConnectionManager.js';
 import { describeMcpConfigFilePath, filterMcpPromptsByServer } from '../../services/mcp/utils.js';
-import { useAppState } from '../../state/AppState.js';
+import { useAppState } from '../../../../tui/state/AppState.js';
 import { errorMessage } from '../../utils/errors.js';
 import { capitalize } from '../../utils/stringUtils.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';

@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { createContext, useContext, useState, useSyncExternalStore } from 'react';
-import { createStore, type Store } from '../state/store.js';
+import { createStore, type Store } from '../../../tui/state/store.js';
 export type VoiceState = {
   voiceState: 'idle' | 'recording' | 'processing';
   voiceError: string | null;

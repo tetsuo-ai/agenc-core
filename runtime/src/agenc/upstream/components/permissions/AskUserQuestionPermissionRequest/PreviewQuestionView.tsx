@@ -4,7 +4,7 @@ import { useTerminalSize } from '../../../hooks/useTerminalSize.js';
 import type { KeyboardEvent } from '../../../../../tui/ink/events/keyboard-event.js';
 import { Box, Text } from '../../../../../tui/ink.js';
 import { useKeybinding, useKeybindings } from '../../../keybindings/useKeybinding.js';
-import { useAppState } from '../../../state/AppState.js';
+import { useAppState } from '../../../../../tui/state/AppState.js';
 import type { Question } from '../../../tools/AskUserQuestionTool/AskUserQuestionTool.js';
 import { getExternalEditor } from '../../../utils/editor.js';
 import { toIDEDisplayName } from '../../../utils/ide.js';

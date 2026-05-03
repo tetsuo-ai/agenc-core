@@ -4,7 +4,7 @@ import { expect, test } from 'bun:test'
 import React from 'react'
 import stripAnsi from 'strip-ansi'
 
-import { AppStateProvider } from '../state/AppState.js'
+import { AppStateProvider } from '../../../tui/state/AppState.js'
 import { createRoot } from '../../../tui/ink.js'
 import { KeybindingSetup } from '../keybindings/KeybindingProviderSetup.js'
 import { ConsoleOAuthFlow } from './ConsoleOAuthFlow.js'

@@ -15,7 +15,7 @@ import { startDeferredPrefetches } from './main.js';
 import { checkGate_CACHED_OR_BLOCKING, initializeGrowthBook, resetGrowthBook } from './services/analytics/growthbook.js';
 import { isQualifiedForGrove } from './services/api/grove.js';
 import { handleMcpjsonServerApprovals } from './services/mcpServerApproval.js';
-import { AppStateProvider } from './state/AppState.js';
+import { AppStateProvider } from '../../tui/state/AppState.js';
 import { onChangeAppState } from './state/onChangeAppState.js';
 import { normalizeApiKeyForConfig } from './utils/authPortable.js';
 import { getExternalAgenCMdIncludes, getMemoryFiles, shouldShowAgenCMdExternalIncludesWarning } from './utils/claudemd.js';

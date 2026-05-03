@@ -13,7 +13,7 @@ describe('PromptInputQueuedCommands', () => {
       ],
     }))
 
-    mock.module('src/state/AppState.js', () => ({
+    mock.module('../../../../tui/state/AppState.js', () => ({
       useAppState: (
         selector: (state: { viewingAgentTaskId?: string; isBriefOnly: boolean }) => unknown,
       ) => selector({ viewingAgentTaskId: undefined, isBriefOnly: false }),

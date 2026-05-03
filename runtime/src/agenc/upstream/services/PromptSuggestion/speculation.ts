@@ -3,13 +3,13 @@ import { rm } from 'fs'
 import { appendFile, copyFile, mkdir } from 'fs/promises'
 import { dirname, isAbsolute, join, relative } from 'path'
 import { getCwdState } from '../../bootstrap/state.js'
-import type { CompletionBoundary } from '../../state/AppStateStore.js'
+import type { CompletionBoundary } from '../../../../tui/state/AppStateStore.js'
 import {
   type AppState,
   IDLE_SPECULATION_STATE,
   type SpeculationResult,
   type SpeculationState,
-} from '../../state/AppStateStore.js'
+} from '../../../../tui/state/AppStateStore.js'
 import { commandHasAnyCd } from '../../tools/BashTool/bashPermissions.js'
 import { checkReadOnlyConstraints } from '../../tools/BashTool/readOnlyValidation.js'
 import type { SpeculationAcceptMessage } from '../../types/logs.js'

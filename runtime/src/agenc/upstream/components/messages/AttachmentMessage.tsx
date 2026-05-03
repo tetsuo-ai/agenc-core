@@ -4,7 +4,7 @@ import React, { useMemo } from 'react';
 import { Ansi, Box, Text } from '../../../../tui/ink.js';
 import type { Attachment } from 'src/utils/attachments.js';
 import type { NullRenderingAttachmentType } from './nullRenderingAttachments.js';
-import { useAppState } from '../../state/AppState.js';
+import { useAppState } from '../../../../tui/state/AppState.js';
 import { getDisplayPath } from 'src/utils/file.js';
 import { formatFileSize } from 'src/utils/format.js';
 import { MessageResponse } from '../MessageResponse.js';

@@ -10,7 +10,7 @@ import {
   useAppState,
   useAppStateStore,
   useSetAppState,
-} from '../state/AppState.js'
+} from '../../../tui/state/AppState.js'
 import { findToolByName } from '../Tool.js'
 import { isInProcessTeammateTask } from '../tasks/InProcessTeammateTask/types.js'
 import { getAllBaseTools } from '../tools.js'

@@ -15,7 +15,7 @@ import { KeybindingSetup } from '../keybindings/KeybindingProviderSetup.js';
 import { queryHaiku } from '../services/api/claude.js';
 import { getSessionLogsViaOAuth, getTeleportEvents } from '../services/api/sessionIngress.js';
 import { getOrganizationUUID } from '../services/oauth/client.js';
-import { AppStateProvider } from '../state/AppState.js';
+import { AppStateProvider } from '../../../tui/state/AppState.js';
 import type { Message, SystemMessage } from '../types/message.js';
 import type { PermissionMode } from '../types/permissions.js';
 import { checkAndRefreshOAuthTokenIfNeeded, getAgenCAIOAuthTokens } from './auth.js';

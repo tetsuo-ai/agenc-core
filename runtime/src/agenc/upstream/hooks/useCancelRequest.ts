@@ -11,7 +11,7 @@ import {
   useAppState,
   useAppStateStore,
   useSetAppState,
-} from 'src/state/AppState.js'
+} from '../../../tui/state/AppState.js'
 import { isVimModeEnabled } from '../components/PromptInput/utils.js'
 import type { ToolUseConfirm } from '../components/permissions/PermissionRequest.js'
 import type { SpinnerMode } from '../components/Spinner/types.js'

@@ -14,7 +14,7 @@ import { useInput } from '../../../tui/ink.js';
 import { useOptionalKeybindingContext, useRegisterKeybindingContext } from '../keybindings/KeybindingContext.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
-import { useAppState, useAppStateStore } from '../state/AppState.js';
+import { useAppState, useAppStateStore } from '../../../tui/state/AppState.js';
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js';
 import type { InlineGhostText, PromptInputMode } from '../types/textInputTypes.js';
 import { isAgentSwarmsEnabled } from '../utils/agentSwarmsEnabled.js';

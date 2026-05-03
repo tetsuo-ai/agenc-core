@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { Box, Text } from '../../../tui/ink.js'
 import { useMainLoopModel } from '../hooks/useMainLoopModel.js'
-import { useAppState, useSetAppState } from '../state/AppState.js'
+import { useAppState, useSetAppState } from '../../../tui/state/AppState.js'
 import type { EffortLevel } from '../utils/effort.js'
 import {
   getAvailableEffortLevels,

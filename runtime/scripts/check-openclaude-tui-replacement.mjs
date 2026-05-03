@@ -101,6 +101,13 @@ function assertSourceSnapshot() {
   const absorbedInkFiles = walk(join(liveTuiRoot, "ink")).map(
     (file) => `src/ink/${file}`,
   );
+  const absorbedStateFiles = [
+    ["state/AppState.tsx", "src/state/AppState.tsx"],
+    ["state/AppStateStore.ts", "src/state/AppStateStore.ts"],
+    ["state/store.ts", "src/state/store.ts"],
+  ]
+    .filter(([file]) => existsSync(join(liveTuiRoot, file)))
+    .map(([, inventoryPath]) => inventoryPath);
   const substitutions = new Map([
     [
       `src/components/${donorBrand}CodeHint/PluginHintMenu.tsx`,
@@ -137,7 +144,7 @@ function assertSourceSnapshot() {
     .map((file) => substitutions.get(file) ?? file)
     .concat([...agencAdditions.keys()])
     .sort();
-  const actualFiles = copiedFiles.concat(absorbedInkFiles).sort();
+  const actualFiles = copiedFiles.concat(absorbedInkFiles, absorbedStateFiles).sort();
   const missing = expected.filter((file) => !actualFiles.includes(file));
   const extra = actualFiles.filter((file) => !expected.includes(file));
   if (missing.length > 0 || extra.length > 0) {
@@ -164,12 +171,16 @@ function assertOldTuiRemoved() {
     `${compatibilityDir}/use-session-transcript.ts`,
     `${compatibilityDir}/use-tool-jsx.ts`,
     "session-types.ts",
+    "state/AppState.test.tsx",
+    "state/AppState.tsx",
+    "state/AppStateStore.ts",
+    "state/store.ts",
     "tool-stubs-glob-view.test.tsx",
   ]);
   // Tests under the compatibility island are co-located with the live wiring
   // on purpose. Accept any *.test.ts / *.test.tsx there; the assertion below
-  // still fails closed on old TUI directories like composer/, transcript/,
-  // ink/, etc.
+  // still fails closed on old TUI directories like composer/, transcript,
+  // and other non-absorbed surfaces.
   const compatibilityTestPattern = new RegExp(
     `^${compatibilityDir}/[^/]+\\.test\\.tsx?$`,
   );
@@ -187,7 +198,6 @@ function assertOldTuiRemoved() {
     "transcript",
     "permissions",
     "keybindings",
-    "state",
     "screens",
     "components",
   ]) {
@@ -195,8 +205,13 @@ function assertOldTuiRemoved() {
   }
 }
 
-function assertNoDeletedInkImporters() {
+function assertNoDeletedAbsorbImporters() {
   const deletedInkRoot = join(copiedRoot, "ink");
+  const deletedStateEntrypoints = new Map([
+    [join(copiedRoot, "state/AppState"), "AppState"],
+    [join(copiedRoot, "state/AppStateStore"), "AppStateStore"],
+    [join(copiedRoot, "state/store"), "state store"],
+  ]);
   const sourceImportPattern = /(?:from\s+|import\s*\(|require\s*\()\s*['"]([^'"]+)['"]/g;
   for (const file of walk(copiedRoot)) {
     if (!/\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(file)) continue;
@@ -207,11 +222,25 @@ function assertNoDeletedInkImporters() {
       if (specifier === "src/ink" || specifier.startsWith("src/ink/")) {
         fail(`deleted Ink alias import remains: ${file} -> ${specifier}`);
       }
+      if (specifier === "src/state/AppState" || specifier === "src/state/AppState.js") {
+        fail(`deleted AppState alias import remains: ${file} -> ${specifier}`);
+      }
+      if (specifier === "src/state/AppStateStore" || specifier === "src/state/AppStateStore.js") {
+        fail(`deleted AppStateStore alias import remains: ${file} -> ${specifier}`);
+      }
+      if (specifier === "src/state/store" || specifier === "src/state/store.js") {
+        fail(`deleted state store alias import remains: ${file} -> ${specifier}`);
+      }
       if (!specifier.startsWith(".")) continue;
       const resolved = resolve(dirname(abs), specifier)
         .replace(/\.(?:js|jsx|ts|tsx|mjs|cjs)$/, "");
       if (resolved === deletedInkRoot || resolved.startsWith(`${deletedInkRoot}/`)) {
         fail(`deleted Ink relative import remains: ${file} -> ${specifier}`);
+      }
+      for (const [deletedStateEntrypoint, label] of deletedStateEntrypoints) {
+        if (resolved === deletedStateEntrypoint) {
+          fail(`deleted ${label} relative import remains: ${file} -> ${specifier}`);
+        }
       }
     }
   }
@@ -269,7 +298,7 @@ function assertPackageScripts() {
 assertMatrix();
 assertSourceSnapshot();
 assertOldTuiRemoved();
-assertNoDeletedInkImporters();
+assertNoDeletedAbsorbImporters();
 assertLiveWiring();
 assertPackageScripts();
 console.log(`[${compatibilityContract}] contract verified`);

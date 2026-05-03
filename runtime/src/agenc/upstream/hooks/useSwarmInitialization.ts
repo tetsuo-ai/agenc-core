@@ -9,7 +9,7 @@
 
 import { useEffect } from 'react'
 import { getSessionId } from '../bootstrap/state.js'
-import type { AppState } from '../state/AppState.js'
+import type { AppState } from '../../../tui/state/AppState.js'
 import type { Message } from '../types/message.js'
 import { isAgentSwarmsEnabled } from '../utils/agentSwarmsEnabled.js'
 import { initializeTeammateContextFromSession } from '../utils/swarm/reconnection.js'

@@ -2,7 +2,7 @@ import chalk from 'chalk';
 import figures from 'figures';
 import * as React from 'react';
 import { useCallback, useMemo, useState } from 'react';
-import { useSetAppState } from 'src/state/AppState.js';
+import { useSetAppState } from '../../../../tui/state/AppState.js';
 import type { KeyboardEvent } from '../../../../tui/ink/events/keyboard-event.js';
 import { Box, Text } from '../../../../tui/ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';

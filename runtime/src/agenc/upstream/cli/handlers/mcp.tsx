@@ -22,7 +22,7 @@ import { connectToServer, getMcpServerConnectionBatchSize } from '../../services
 import { addMcpConfig, getAllMcpConfigs, getMcpConfigByName, getMcpConfigsByScope, removeMcpConfig } from '../../services/mcp/config.js';
 import type { ConfigScope, ScopedMcpServerConfig } from '../../services/mcp/types.js';
 import { describeMcpConfigFilePath, ensureConfigScope, getScopeLabel } from '../../services/mcp/utils.js';
-import { AppStateProvider } from '../../state/AppState.js';
+import { AppStateProvider } from '../../../../tui/state/AppState.js';
 import { getCurrentProjectConfig, getGlobalConfig, saveCurrentProjectConfig } from '../../utils/config.js';
 import { isFsInaccessible } from '../../utils/errors.js';
 import { gracefulShutdown } from '../../utils/gracefulShutdown.js';

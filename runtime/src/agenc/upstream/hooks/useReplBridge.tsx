@@ -14,7 +14,7 @@ import type { PermissionMode, SDKMessage } from '../entrypoints/agentSdkTypes.js
 import type { SDKControlResponse } from '../entrypoints/sdk/controlTypes.js';
 import { Text } from '../../../tui/ink.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js';
-import { useAppState, useAppStateStore, useSetAppState } from '../state/AppState.js';
+import { useAppState, useAppStateStore, useSetAppState } from '../../../tui/state/AppState.js';
 import type { Message } from '../types/message.js';
 import { getCwd } from '../utils/cwd.js';
 import { logForDebugging } from 'src/utils/debug.js';

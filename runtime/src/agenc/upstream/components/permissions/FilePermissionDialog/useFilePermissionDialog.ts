@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react'
-import { useAppState } from 'src/state/AppState.js'
+import { useAppState } from '../../../../../tui/state/AppState.js'
 import { useKeybindings } from '../../../keybindings/useKeybinding.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,

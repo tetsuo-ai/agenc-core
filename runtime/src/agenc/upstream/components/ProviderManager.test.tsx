@@ -6,7 +6,7 @@ import stripAnsi from 'strip-ansi'
 
 import { createRoot } from '../../../tui/ink.js'
 import { KeybindingSetup } from '../keybindings/KeybindingProviderSetup.js'
-import { AppStateProvider } from '../state/AppState.js'
+import { AppStateProvider } from '../../../tui/state/AppState.js'
 
 const SYNC_START = '\x1B[?2026h'
 const SYNC_END = '\x1B[?2026l'

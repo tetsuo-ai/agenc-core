@@ -20,7 +20,7 @@ import {
   type SessionExternalMetadata,
 } from '../utils/sessionState.js'
 import { updateSettingsForSource } from '../utils/settings/settings.js'
-import type { AppState } from './AppStateStore.js'
+import type { AppState } from '../../../tui/state/AppStateStore.js'
 
 // Inverse of the push below — restore on worker restart.
 export function externalMetadataToAppState(

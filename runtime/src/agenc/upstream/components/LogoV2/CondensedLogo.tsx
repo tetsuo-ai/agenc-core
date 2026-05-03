@@ -5,7 +5,7 @@ import { useMainLoopModel } from '../../hooks/useMainLoopModel.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { stringWidth } from '../../../../tui/ink/stringWidth.js';
 import { Box, Text } from '../../../../tui/ink.js';
-import { useAppState } from '../../state/AppState.js';
+import { useAppState } from '../../../../tui/state/AppState.js';
 import { getEffortSuffix } from '../../utils/effort.js';
 import { truncate } from '../../utils/format.js';
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';

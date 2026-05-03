@@ -5,7 +5,7 @@ import React from 'react'
 import stripAnsi from 'strip-ansi'
 
 import { createRoot, render, useApp } from '../../../../tui/ink.js'
-import { AppStateProvider } from '../../state/AppState.js'
+import { AppStateProvider } from '../../../../tui/state/AppState.js'
 import {
   applySavedProfileToCurrentSession,
   buildCodexOAuthProfileEnv,

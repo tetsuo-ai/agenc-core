@@ -23,7 +23,7 @@ import { getGlobalConfig } from '../../utils/config.js';
 import Link from '../../../../tui/ink/components/Link.js';
 import ThemedText from '../design-system/ThemedText.js';
 import { CtrlOToExpand } from '../CtrlOToExpand.js';
-import { useAppStateStore } from '../../state/AppState.js';
+import { useAppStateStore } from '../../../../tui/state/AppState.js';
 import { isBackgroundTask, type TaskState } from '../../tasks/types.js';
 import { getPillLabel } from '../../tasks/pillLabel.js';
 import { useSelectedMessageBg } from '../messageActions.js';

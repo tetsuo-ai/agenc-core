@@ -23,7 +23,7 @@ import { shouldHideTasksFooter } from '../tasks/taskStatusUtils.js';
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js';
 import { TeamStatus } from '../teams/TeamStatus.js';
 import { isInProcessEnabled } from '../../utils/swarm/backends/registry.js';
-import { useAppState, useAppStateStore } from 'src/state/AppState.js';
+import { useAppState, useAppStateStore } from '../../../../tui/state/AppState.js';
 import { getIsRemoteMode } from '../../bootstrap/state.js';
 import HistorySearchInput from './HistorySearchInput.js';
 import { usePrStatus } from '../../hooks/usePrStatus.js';

@@ -6,7 +6,7 @@ import {
   type AppState,
   useAppState,
   useSetAppState,
-} from '../state/AppState.js'
+} from '../../../tui/state/AppState.js'
 import {
   enterTeammateView,
   exitTeammateView,

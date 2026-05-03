@@ -5,7 +5,7 @@
  * Registers a Stop hook to notify the team leader when the teammate becomes idle.
  */
 
-import type { AppState } from '../../state/AppState.js'
+import type { AppState } from '../../../../tui/state/AppState.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { addFunctionHook } from '../hooks/sessionHooks.js'
 import { applyPermissionUpdate } from '../permissions/PermissionUpdate.js'

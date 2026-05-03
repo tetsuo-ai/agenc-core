@@ -5,7 +5,7 @@ import { useDoublePress } from '../hooks/useDoublePress.js';
 import { Box, Text } from '../../../tui/ink.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
-import { useAppState, useAppStateStore, useSetAppState } from '../state/AppState.js';
+import { useAppState, useAppStateStore, useSetAppState } from '../../../tui/state/AppState.js';
 import { backgroundAll, hasForegroundTasks } from '../tasks/LocalShellTask/LocalShellTask.js';
 import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js';
 import { env } from '../utils/env.js';
