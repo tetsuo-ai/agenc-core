@@ -1,34 +1,31 @@
 /**
- * Planning tool surface — verbatim port of openclaude `TodoWriteTool`
- * (`src/tools/TodoWriteTool/TodoWriteTool.ts`) plus the AgenC
- * `EnterPlanMode` / `ExitPlanMode` workflow tools.
+ * Ports the donor `TodoWriteTool` task-checklist behavior onto AgenC's
+ * planning tool surface, alongside AgenC's `EnterPlanMode` / `ExitPlanMode`
+ * workflow tools.
  *
- * Upstream contract (do not deviate):
+ * Donor contract pinned at 0ca43335375beec6e58711b797d5b0c4bb5019b8:
  *
- *   - Tool name:       `TodoWrite`            (openclaude `TODO_WRITE_TOOL_NAME`)
+ *   - Tool name:       `TodoWrite`
  *   - Schema:          `{ todos: TodoItem[] }` where each item is
  *                      `{ content, status, activeForm }` — all required.
  *   - Tool result:     literal sentence
  *                      `"Todos have been modified successfully. Ensure that
  *                       you continue to use the todo list to track your
  *                       progress. Please proceed with the current tasks if
- *                       applicable"` (openclaude `mapToolResultToToolResultBlockParam`).
+ *                       applicable"`.
  *   - Plan mode:       `TodoWrite` is metadata-only and IS permitted in
  *                      plan mode (AgenC classifier
  *                      `SAFE_YOLO_ALLOWLISTED_TOOLS`).
  *   - Transcript:      tool-call/tool-result cells are suppressed
- *                      (openclaude `renderToolUseMessage()` returns null,
- *                      `renderToolResultMessage` is omitted). The plan
- *                      panel (`PlanProgress.tsx`) is the sole user-visible
- *                      surface, which in AgenC is wired via the
+ *                      in the donor UI. The plan panel is the sole
+ *                      user-visible surface, which in AgenC is wired via the
  *                      `plan_started` / `plan_item_completed` event pair
  *                      emitted by the workflow controller.
  *
- * codex runtime `update_plan` is intentionally NOT shipped here — `/plan` itself
- * is an AgenC port (see `runtime/src/commands/plan.ts:4`) so the
- * matching checklist tool is openclaude `TodoWrite`. Mixing codex runtime and
- * AgenC planning surfaces causes the duplicate-render and
- * raw-JSON-result bugs that surfaced in scrollback.
+ * The runtime `update_plan` compatibility name is intentionally not shipped
+ * here. `/plan` itself is an AgenC command, so the matching checklist tool is
+ * `TodoWrite`. Mixing compatibility planning names with AgenC planning
+ * surfaces causes duplicate-render and raw-JSON-result bugs in scrollback.
  */
 import type { PermissionModeRegistry } from "../../permissions/mode.js";
 import { transitionPermissionMode } from "../../permissions/mode.js";
@@ -85,8 +82,7 @@ export interface PlanningToolOptions {
 }
 
 /**
- * Verbatim openclaude `TodoWriteTool.mapToolResultToToolResultBlockParam`
- * base sentence (`src/tools/TodoWriteTool/TodoWriteTool.ts:105`).
+ * Donor `TodoWriteTool.mapToolResultToToolResultBlockParam` base sentence.
  */
 const TODO_WRITE_RESULT_MESSAGE =
   "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable";
@@ -136,8 +132,7 @@ function normalizeStatus(value: unknown): TodoStatus | undefined {
 }
 
 /**
- * Mirrors openclaude `TodoListSchema` / `TodoItemSchema` validation
- * (`src/utils/todo/types.ts:8-17`):
+ * Mirrors donor `TodoListSchema` / `TodoItemSchema` validation:
  *   - `content`     non-empty string (required)
  *   - `status`      enum `pending|in_progress|completed` (required)
  *   - `activeForm`  non-empty string (required)
@@ -250,14 +245,14 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
   };
 
   /**
-   * Verbatim openclaude `TodoWriteTool` (`TodoWriteTool.ts:31-115`).
+   * Donor `TodoWriteTool` task tracking behavior.
    *
-   * Description string is openclaude `DESCRIPTION` (`prompt.ts:184`).
+   * Description string follows donor `DESCRIPTION`.
    *
    * Tool result content is AgenC
    * `mapToolResultToToolResultBlockParam`'s `base` sentence
-   * (`TodoWriteTool.ts:105`). When the OpenClaude verification-agent
-   * contract is enabled, the close-out nudge below mirrors upstream:
+   * (`TodoWriteTool.ts`). When the AgenC verification-agent
+   * contract is enabled, the close-out nudge below mirrors the donor:
    * finishing 3+ tasks without a verification item reminds the model
    * to spawn the verification agent before final response.
    */
@@ -293,13 +288,14 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
     async execute(args) {
       const todos = parseTodoList(args.todos);
       if ("error" in todos) return errorResult(todos.error);
+      const allDone = todos.length > 0 &&
+        todos.every((todo) => todo.status === "completed");
+      const nextTodos = allDone ? [] : todos;
       state = {
-        todos,
+        todos: nextTodos,
         updatedAt: new Date().toISOString(),
       };
       options.workflowController?.emitPlanUpdated?.(state);
-      const allDone = todos.length > 0 &&
-        todos.every((todo) => todo.status === "completed");
       const verificationNudgeNeeded = allDone &&
         todos.length >= 3 &&
         !todos.some((todo) => /verif/i.test(todo.content));
