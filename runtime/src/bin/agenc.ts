@@ -110,6 +110,7 @@ import {
   resolveAgenCDaemonAutostartEnabled,
 } from "../app-server/daemon-autostart.js";
 import { parseAgenCAuthCliArgs, runAgenCAuthCli } from "./auth-cli.js";
+import { parseAgenCMcpCliArgs, runAgenCMcpCli } from "./mcp-cli.js";
 import {
   parseAgenCProvidersCliArgs,
   runAgenCProvidersCli,
@@ -142,6 +143,7 @@ export function formatCliHelpText(): string {
     "       agenc agent attach <id>",
     "       agenc agent stop <id>",
     "       agenc agent logs <id>",
+    "       agenc mcp serve --transport <stdio|sse>",
     "",
     "Options:",
     "  --help                                   Show this help text",
@@ -1723,6 +1725,10 @@ export async function main(): Promise<number> {
   const authCommand = parseAgenCAuthCliArgs(argv);
   if (authCommand !== null) {
     return runAgenCAuthCli(authCommand);
+  }
+  const mcpCommand = parseAgenCMcpCliArgs(argv);
+  if (mcpCommand !== null) {
+    return runAgenCMcpCli(mcpCommand);
   }
   const providersCommand = parseAgenCProvidersCliArgs(argv);
   if (providersCommand !== null) {
