@@ -582,12 +582,58 @@ function extractMessageText(
   return text.length > 0 ? text : undefined;
 }
 
+function cloneDocumentContentPart(item: object): LLMContentPart | null {
+  const record = item as Record<string, unknown>;
+  if (record.type !== "document") return null;
+  const source =
+    record.source && typeof record.source === "object"
+      ? (record.source as Record<string, unknown>)
+      : null;
+  if (
+    source?.type !== "base64" ||
+    source.media_type !== "application/pdf" ||
+    typeof source.data !== "string" ||
+    source.data.length === 0
+  ) {
+    return null;
+  }
+  return {
+    type: "document",
+    source: {
+      type: "base64",
+      media_type: "application/pdf",
+      data: source.data,
+    },
+    ...(typeof record.title === "string" && record.title.length > 0
+      ? { title: record.title }
+      : {}),
+    ...(typeof record.filename === "string" && record.filename.length > 0
+      ? { filename: record.filename }
+      : {}),
+    ...(typeof record.fallbackText === "string"
+      ? { fallbackText: record.fallbackText }
+      : {}),
+    ...(typeof record.fallbackTextTruncated === "boolean"
+      ? { fallbackTextTruncated: record.fallbackTextTruncated }
+      : {}),
+    ...(typeof record.fallbackTextError === "string" &&
+    record.fallbackTextError.length > 0
+      ? { fallbackTextError: record.fallbackTextError }
+      : {}),
+  };
+}
+
 function cloneContent(content: unknown): LLMMessage["content"] {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
     const parts: LLMContentPart[] = [];
     for (const item of content) {
       if (!item || typeof item !== "object") continue;
+      const document = cloneDocumentContentPart(item);
+      if (document !== null) {
+        parts.push(document);
+        continue;
+      }
       if (
         "type" in item &&
         item.type === "image_url" &&
@@ -617,6 +663,8 @@ function toUpstreamMessageContent(content: unknown): unknown {
   if (!Array.isArray(content)) return [];
   return content.map((item) => {
     if (!item || typeof item !== "object") return { type: "text", text: "" };
+    const document = cloneDocumentContentPart(item);
+    if (document !== null) return document;
     if (
       "type" in item &&
       item.type === "image_url" &&
@@ -645,6 +693,12 @@ function fromUpstreamMessageContent(content: unknown): LLMMessage["content"] {
   let textOnly = true;
   for (const item of content) {
     if (!item || typeof item !== "object") continue;
+    const document = cloneDocumentContentPart(item);
+    if (document !== null) {
+      textOnly = false;
+      parts.push(document);
+      continue;
+    }
     if (
       "type" in item &&
       item.type === "image" &&

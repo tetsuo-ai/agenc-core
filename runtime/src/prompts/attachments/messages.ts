@@ -255,6 +255,38 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
         runtimeOnly: { mergeBoundary: "user_context" },
       };
     }
+    case "pdf_mention": {
+      if (attachment.pdfs.length === 0) return null;
+      return {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: renderPdfMentionHeader(attachment.pdfs),
+          },
+          ...attachment.pdfs.map((pdf) => ({
+            type: "document" as const,
+            source: {
+              type: "base64" as const,
+              media_type: pdf.mediaType,
+              data: pdf.data,
+            },
+            title: pdf.path,
+            filename: pdf.filename,
+            ...(pdf.fallbackText !== undefined
+              ? {
+                  fallbackText: pdf.fallbackText,
+                  fallbackTextTruncated: pdf.fallbackTextTruncated ?? false,
+                }
+              : {}),
+            ...(pdf.fallbackTextError !== undefined
+              ? { fallbackTextError: pdf.fallbackTextError }
+              : {}),
+          })),
+        ],
+        runtimeOnly: { mergeBoundary: "user_context" },
+      };
+    }
     case "skill_listing": {
       return userContextMessage(
         wrapSystemReminder(
@@ -290,6 +322,22 @@ function renderImageMentionHeader(
     )
     .join("\n");
   return `<attached_images>\n${rows}\n</attached_images>`;
+}
+
+function renderPdfMentionHeader(
+  pdfs: readonly {
+    readonly path: string;
+    readonly mediaType: string;
+    readonly bytes: number;
+  }[],
+): string {
+  const rows = pdfs
+    .map(
+      (pdf) =>
+        `<pdf path="${escapeAttribute(pdf.path)}" media_type="${escapeAttribute(pdf.mediaType)}" bytes="${pdf.bytes}" />`,
+    )
+    .join("\n");
+  return `<attached_pdfs>\n${rows}\n</attached_pdfs>`;
 }
 
 function escapeAttribute(value: string): string {

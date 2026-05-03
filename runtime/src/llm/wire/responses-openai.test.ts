@@ -154,6 +154,45 @@ describe("buildOpenAIResponsesRequest", () => {
     ]);
   });
 
+  test("maps user PDFs to input_file parts", () => {
+    const request = buildOpenAIResponsesRequest({
+      model: "gpt-5",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "summarize" },
+            {
+              type: "document",
+              source: {
+                type: "base64",
+                media_type: "application/pdf",
+                data: "JVBERi0xLjQK",
+              },
+              filename: "brief.pdf",
+            },
+          ],
+        },
+      ],
+      tools: [],
+    });
+
+    expect(request.input).toEqual([
+      {
+        type: "message",
+        role: "user",
+        content: [
+          { type: "input_text", text: "summarize" },
+          {
+            type: "input_file",
+            filename: "brief.pdf",
+            file_data: "data:application/pdf;base64,JVBERi0xLjQK",
+          },
+        ],
+      },
+    ]);
+  });
+
   test("preserves inline input_audio parts in responses input messages", () => {
     const request = buildOpenAIResponsesRequest({
       model: "gpt-audio",

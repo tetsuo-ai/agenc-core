@@ -26,6 +26,7 @@ import {
   parseOpenAIToolChoice,
   prepareMessagesForWire,
   readAudioPayload,
+  readDocumentPayload,
   toResponsesToolOutput,
   withEndpointMarkers,
   withSerializedMetrics,
@@ -111,6 +112,29 @@ function toResponsesMessageParts(
       parts.push({ type: textType, text: "[audio]" });
       continue;
     }
+    const document = readDocumentPayload(part);
+    if (role !== "assistant" && document) {
+      if (document.data.length > 0 || document.fileId || document.fileUrl) {
+        parts.push({
+          type: "input_file",
+          ...(document.filename ?? document.title
+            ? { filename: document.filename ?? document.title }
+            : {}),
+          ...(document.data.length > 0
+            ? { file_data: toResponsesFileData(document) }
+            : {}),
+          ...(document.fileId ? { file_id: document.fileId } : {}),
+          ...(document.fileUrl ? { file_url: document.fileUrl } : {}),
+        });
+      } else {
+        parts.push({ type: textType, text: "[document]" });
+      }
+      continue;
+    }
+    if (role !== "assistant" && record.type === "document") {
+      parts.push({ type: textType, text: "[document]" });
+      continue;
+    }
     if (role === "assistant") continue;
     parts.push({
       type: "input_image",
@@ -120,6 +144,14 @@ function toResponsesMessageParts(
     });
   }
   return parts;
+}
+
+function toResponsesFileData(
+  document: NonNullable<ReturnType<typeof readDocumentPayload>>,
+): string {
+  return document.data.startsWith("data:")
+    ? document.data
+    : `data:${document.mediaType};base64,${document.data}`;
 }
 
 function resolveResponsesFinishReason(

@@ -27,7 +27,20 @@ type LLMAssistantPhase = "commentary" | "final_answer";
  */
 export type LLMContentPart =
   | { type: "text"; text: string }
-  | { type: "image_url"; image_url: { url: string } };
+  | { type: "image_url"; image_url: { url: string } }
+  | {
+      type: "document";
+      source: {
+        type: "base64";
+        media_type: "application/pdf";
+        data: string;
+      };
+      title?: string;
+      filename?: string;
+      fallbackText?: string;
+      fallbackTextTruncated?: boolean;
+      fallbackTextError?: string;
+    };
 
 /**
  * A single message in an LLM conversation.

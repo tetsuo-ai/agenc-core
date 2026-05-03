@@ -15,6 +15,7 @@ import type {
   LLMToolChoice,
 } from "../types.js";
 import { buildStructuredOutputTextFormat } from "../structured-output.js";
+import { documentFallbackText, readDocumentPayload } from "./shared.js";
 
 export const XAI_ENCRYPTED_REASONING_INCLUDE =
   "reasoning.encrypted_content";
@@ -325,6 +326,7 @@ function normalizeXaiResponseMessageContent(
   for (const part of content) {
     if (!part || typeof part !== "object") continue;
     const entry = part as Record<string, unknown>;
+    const document = readDocumentPayload(entry);
     if (entry.type === "text") {
       const text = String(entry.text ?? "");
       if (text.length > 0) {
@@ -336,6 +338,31 @@ function normalizeXaiResponseMessageContent(
       if (url.length > 0) {
         parts.push({ type: "input_image", image_url: url });
       }
+    } else if (document) {
+      if (document.fileId || document.fileUrl) {
+        parts.push({
+          type: "input_file",
+          ...(document.fileId ? { file_id: document.fileId } : {}),
+          ...(document.fileUrl ? { file_url: document.fileUrl } : {}),
+        });
+      } else if (document.fallbackText !== undefined) {
+        parts.push({
+          type: "input_text",
+          text: documentFallbackText(entry),
+        });
+      } else if (document.fallbackTextError !== undefined) {
+        parts.push({
+          type: "input_text",
+          text: documentFallbackText(entry),
+        });
+      } else {
+        parts.push({
+          type: "input_text",
+          text: `[document: ${document.mediaType}]`,
+        });
+      }
+    } else if (entry.type === "document") {
+      parts.push({ type: "input_text", text: "[document]" });
     }
   }
   if (parts.length === 0) return undefined;

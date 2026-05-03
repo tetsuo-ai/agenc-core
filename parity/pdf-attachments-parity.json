@@ -1,0 +1,151 @@
+{
+  "contractName": "pdf-attachments-parity",
+  "scope": "Port PDF @mention attachment handling into AgenC's prompt attachment and provider wire layers",
+  "generatedAt": "2026-05-03T00:00:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/openclaude", "sourceRootBrandingScanOverride": "branding-scan: allow upstream source path",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/utils/pdf.ts",
+    "src/utils/pdfUtils.ts",
+    "src/utils/attachments.ts",
+    "src/utils/messages.ts",
+    "src/tools/FileReadTool/FileReadTool.ts",
+    "src/constants/apiLimits.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/prompts/attachments/user-pdf-input.ts",
+    "runtime/src/prompts/attachments/file-mentions.ts",
+    "runtime/src/prompts/file-mentions.ts",
+    "runtime/src/prompts/attachments/types.ts",
+    "runtime/src/prompts/attachments/messages.ts",
+    "runtime/src/llm/types.ts",
+    "runtime/src/llm/wire/shared.ts",
+    "runtime/src/llm/wire/messages-anthropic.ts",
+    "runtime/src/llm/wire/chat-completions.ts",
+    "runtime/src/llm/wire/responses-openai.ts",
+    "runtime/src/llm/wire/responses-xai.ts",
+    "runtime/src/agenc/adapters/runtime-session.ts",
+    "runtime/src/agenc/adapters/message-rollout.ts",
+    "runtime/src/conversation/thread-manager.ts",
+    "runtime/src/session/run-turn.ts"
+  ],
+  "testFiles": [
+    "runtime/src/prompts/file-mentions.test.ts",
+    "runtime/src/prompts/attachments/messages.test.ts",
+    "runtime/src/prompts/attachments/integration.test.ts",
+    "runtime/src/session/run-turn.test.ts",
+    "runtime/src/llm/wire/messages-anthropic.test.ts",
+    "runtime/src/llm/wire/chat-completions.test.ts",
+    "runtime/src/llm/wire/responses-openai.test.ts",
+    "runtime/src/llm/wire/responses-xai.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "pdf-mention-normalization",
+      "source": "PDF extension detection, raw-byte validation, and @mention PDF reference anchors",
+      "target": "runtime/src/prompts/attachments/user-pdf-input.ts + runtime/src/prompts/attachments/file-mentions.ts + runtime/src/prompts/file-mentions.ts",
+      "requiredBehaviors": [
+        "recognize .pdf @mentions separately from text file mentions",
+        "reject empty, invalid-magic, oversize, unreadable, and outside-root PDF paths",
+        "encode accepted PDFs as base64 application/pdf attachment records",
+        "carry best-effort extracted text for providers that cannot consume local PDF bytes natively",
+        "leave PDFs out of text file expansion so binary payloads are not read as UTF-8"
+      ],
+      "edgeCases": [
+        "PDF alongside normal text mentions",
+        "submit-path prompt that already contains attached file context",
+        "invalid .pdf file contents",
+        "per-file and total PDF byte caps"
+      ],
+      "tests": [
+        "runtime/src/prompts/file-mentions.test.ts",
+        "runtime/src/prompts/attachments/integration.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/prompts/file-mentions.test.ts src/prompts/attachments/integration.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "pdf-message-rendering",
+      "source": "Attachment-to-message rendering and supplemental document content anchors",
+      "target": "runtime/src/prompts/attachments/types.ts + runtime/src/prompts/attachments/messages.ts + runtime/src/session/run-turn.ts",
+      "requiredBehaviors": [
+        "render PDF mentions as user-context messages",
+        "include a model-visible attached_pdfs text header with path, media type, and byte count",
+        "append PDF document parts after the text header",
+        "deliver PDF document parts through direct Session.runTurn callers"
+      ],
+      "edgeCases": [
+        "empty PDF attachment arrays",
+        "PDF path XML attribute escaping",
+        "PDF and image attachments emitted in one turn",
+        "runtime transcript display degrades document parts to a stable marker"
+      ],
+      "tests": [
+        "runtime/src/prompts/attachments/messages.test.ts",
+        "runtime/src/prompts/attachments/integration.test.ts",
+        "runtime/src/session/run-turn.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/prompts/attachments/messages.test.ts src/prompts/attachments/integration.test.ts src/session/run-turn.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "provider-wire-pdf-passthrough",
+      "source": "Provider native PDF document block anchors",
+      "target": "runtime/src/llm/types.ts + runtime/src/llm/wire/shared.ts + runtime/src/llm/wire/messages-anthropic.ts + runtime/src/llm/wire/chat-completions.ts + runtime/src/llm/wire/responses-openai.ts + runtime/src/llm/wire/responses-xai.ts",
+      "requiredBehaviors": [
+        "preserve PDF document parts in the runtime LLM content type",
+        "serialize PDFs as Anthropic document blocks",
+        "serialize PDFs as OpenAI Responses input_file parts",
+        "send extracted PDF text through chat-completions/OpenAI-compatible paths",
+        "send extracted PDF text through xAI Responses for local PDFs while preserving file_url/file_id input_file references"
+      ],
+      "edgeCases": [
+        "PDFs mixed with text content",
+        "PDFs crossing cache-control message normalization",
+        "non-native OpenAI-compatible chat paths",
+        "tool result content containing unsupported document parts"
+      ],
+      "tests": [
+        "runtime/src/llm/wire/messages-anthropic.test.ts",
+        "runtime/src/llm/wire/chat-completions.test.ts",
+        "runtime/src/llm/wire/responses-openai.test.ts",
+        "runtime/src/llm/wire/responses-xai.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/wire/messages-anthropic.test.ts src/llm/wire/chat-completions.test.ts src/llm/wire/responses-openai.test.ts src/llm/wire/responses-xai.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "pdf-history-preservation",
+      "source": "Message normalization, compaction, and rollout preservation anchors",
+      "target": "runtime/src/agenc/adapters/runtime-session.ts + runtime/src/agenc/adapters/message-rollout.ts + runtime/src/conversation/thread-manager.ts + runtime/src/session/run-turn.ts",
+      "requiredBehaviors": [
+        "clone PDF document parts without mutating nested source payloads",
+        "convert PDF document parts through the AgenC runtime message adapter",
+        "restore PDF document parts after context preparation or compaction",
+        "avoid treating document payloads as images in transcript metadata"
+      ],
+      "edgeCases": [
+        "document plus text content",
+        "text-only upstream content remains string-collapsible",
+        "image content remains unchanged",
+        "document payloads do not inflate text-only request metrics with base64 bodies"
+      ],
+      "tests": [
+        "runtime/src/session/run-turn.test.ts",
+        "runtime/src/llm/wire/messages-anthropic.test.ts",
+        "runtime/src/llm/wire/responses-openai.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/session/run-turn.test.ts src/llm/wire/messages-anthropic.test.ts src/llm/wire/responses-openai.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}
