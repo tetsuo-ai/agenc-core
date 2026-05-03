@@ -36,7 +36,11 @@ import {
   type ContinueTUIArgs,
   type ResumeTUIArgs,
 } from "./route.js";
-import type { LLMMessage, LLMToolCall } from "../llm/types.js";
+import type {
+  LLMContentPart,
+  LLMMessage,
+  LLMToolCall,
+} from "../llm/types.js";
 import {
   normalizeUserImageInput,
   userImageInputsToContentParts,
@@ -548,7 +552,7 @@ function renderEvent(event: PhaseEvent): void {
 export interface RunSingleTurnOpts {
   readonly session: Session;
   readonly ctx: TurnContext;
-  readonly input: string;
+  readonly input: string | readonly LLMContentPart[];
   readonly agencHome?: string;
   /**
    * Transcript-facing prompt when `input` has model-only attachments injected.
@@ -800,6 +804,17 @@ async function expandPromptFileMentions(params: {
   };
 }
 
+function userInputDisplayText(input: string | readonly LLMContentPart[]): string {
+  if (typeof input === "string") return input;
+  return input
+    .map((part) => {
+      if (part.type === "text") return part.text;
+      return "[image]";
+    })
+    .filter((part) => part.length > 0)
+    .join("\n");
+}
+
 function installTuiSessionContract(params: {
   readonly session: Session;
   readonly configStore: ConfigStore;
@@ -834,7 +849,10 @@ function installTuiSessionContract(params: {
   });
 
   params.session.installTurnDriverHooks({
-    submit: async (message: string, submitOpts?: SessionSubmitOptions) => {
+    submit: async (
+      message: string | readonly LLMContentPart[],
+      submitOpts?: SessionSubmitOptions,
+    ) => {
       const isAutonomousTick = submitOpts?.source === AUTONOMOUS_SUBMIT_SOURCE;
       if (!isAutonomousTick) autonomousKeepalive.cancel();
       if (
@@ -853,14 +871,23 @@ function installTuiSessionContract(params: {
         | Extract<PhaseEvent, { type: "turn_complete" }>["stopReason"]
         | null = null;
       const runPromptTurn = async (
-        prompt: string,
+        prompt: string | readonly LLMContentPart[],
         opts: { readonly displayInput?: string | null } = {},
       ): Promise<void> => {
-        const expanded = await expandPromptFileMentions({
-          session: params.session,
-          configStore: params.configStore,
-          input: prompt,
-        });
+        let input: string | readonly LLMContentPart[];
+        let displayInput: string | undefined;
+        if (typeof prompt === "string") {
+          const expanded = await expandPromptFileMentions({
+            session: params.session,
+            configStore: params.configStore,
+            input: prompt,
+          });
+          input = expanded.input;
+          displayInput = expanded.displayInput ?? prompt;
+        } else {
+          input = prompt;
+          displayInput = userInputDisplayText(prompt);
+        }
         const ctx = params.session.newDefaultTurn();
         // The task-dispatch subsystem (see session/tasks.ts) owns the
         // activeTurn lifecycle now. `runTurnKernel` calls
@@ -875,11 +902,11 @@ function installTuiSessionContract(params: {
         for await (const event of runSingleTurn({
           session: params.session,
           ctx,
-          input: expanded.input,
+          input,
           displayInput:
             opts.displayInput !== undefined
               ? opts.displayInput
-              : (expanded.displayInput ?? prompt),
+              : displayInput,
           agencHome: params.agencHome,
           configStore: params.configStore,
           configReloadLatch,
@@ -930,8 +957,8 @@ function installTuiSessionContract(params: {
         } as unknown as PhaseEvent);
       };
 
-      const trimmed = message.trimStart();
-      if (trimmed.startsWith("/")) {
+      const trimmed = typeof message === "string" ? message.trimStart() : "";
+      if (typeof message === "string" && trimmed.startsWith("/")) {
         // The TUI publishes `session.appStateBridge` from
         // AgenCAppStateProvider so slash commands can refresh React-side
         // state synchronously (e.g., `/model` updates the status bar

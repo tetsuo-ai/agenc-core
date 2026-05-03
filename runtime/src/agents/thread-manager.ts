@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
+import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import type { Session } from "../session/session.js";
-import type { RolloutItem } from "../session/rollout-item.js";
+import type { ResponseItem, RolloutItem } from "../session/rollout-item.js";
 import { parseRolloutLine } from "../session/rollout-item.js";
 import { threadConfigSnapshot } from "../session/turn-context.js";
 import type { InterAgentCommunication } from "./mailbox.js";
@@ -8,7 +9,6 @@ import type { AgentStatus } from "./status.js";
 import { BehaviorSubject } from "./_deps/behavior-subject.js";
 import type { AgentPath, AgentRegistry, ThreadId } from "./registry.js";
 import type { AgentControl, LiveAgent } from "./control.js";
-import type { LLMContentPart } from "../llm/types.js";
 import {
   forkSnapshotRollout,
   type ForkSnapshot,
@@ -39,6 +39,8 @@ export interface ManagedThread {
   appendMessage(message: string): Promise<string>;
   shutdown(reason?: string): Promise<void>;
   totalTokenUsage?(): unknown;
+  conversationHistoryLength?(): number;
+  replaceConversationHistory?(history: ReadonlyArray<ResponseItem>): void;
   configSnapshot?(): Record<string, unknown> | undefined;
   rolloutPath?(): string | undefined;
   ensureRolloutMaterialized?(): Promise<void> | void;
@@ -102,6 +104,20 @@ export interface NewManagedThread {
 }
 
 export type SpawnManagedLiveAgentOptions = Parameters<AgentControl["spawn"]>[0];
+
+export interface ThreadOperationManager {
+  bindAgentControl(control: AgentControl): void;
+  spawnLiveAgent(opts: SpawnManagedLiveAgentOptions): Promise<LiveAgent>;
+  hasThread(threadId: ThreadId): boolean;
+  sendOp(threadId: ThreadId, op: ThreadManagerOp): Promise<string>;
+  appendMessage(threadId: ThreadId, message: string): Promise<string>;
+  removeThread(threadId: ThreadId): ManagedThread | undefined;
+  registerLiveAgent(
+    live: LiveAgent,
+    opts?: { readonly parentThreadId?: ThreadId },
+  ): ManagedThread;
+  getThread(threadId: ThreadId): ManagedThread;
+}
 
 export class ThreadNotManagedError extends Error {
   constructor(threadId: ThreadId) {
@@ -168,6 +184,22 @@ export class AgenCThread implements ManagedThread {
       return this.session.state?.unsafePeek?.().totalTokenUsage;
     }
     return this.live?.tokenUsage;
+  }
+
+  conversationHistoryLength(): number {
+    if (this.session) {
+      return this.session.state?.unsafePeek?.().history?.length ?? 0;
+    }
+    return this.live?.messages.length ?? 0;
+  }
+
+  replaceConversationHistory(history: ReadonlyArray<ResponseItem>): void {
+    if (!this.live) return;
+    this.live.messages.splice(
+      0,
+      this.live.messages.length,
+      ...history.map(responseItemToLlmMessage),
+    );
   }
 
   sourceSession(): Session | undefined {
@@ -258,7 +290,7 @@ export class ThreadManagerState {
   }
 }
 
-export class ThreadManager {
+export class ThreadManager implements ThreadOperationManager {
   readonly state: ThreadManagerState;
 
   constructor(rootOrOpts?: Session | ThreadManagerOpts) {
@@ -527,7 +559,7 @@ async function submitToSession(
 ): Promise<string> {
   switch (op.type) {
     case "user_input":
-      await session.submit(inputPreview(op.input));
+      await session.submit(op.input);
       return session.conversationId;
     case "inter_agent_communication":
       session.mailbox.send({
@@ -561,32 +593,23 @@ async function submitToSession(
   }
 }
 
-function inputPreview(input: string | readonly LLMContentPart[]): string {
-  if (typeof input === "string") return input;
-  return input
-    .map((part) => (part.type === "text" ? part.text : "[image]"))
-    .join("\n");
-}
-
 async function submitToLiveAgent(
   live: LiveAgent,
   op: ThreadManagerOp,
 ): Promise<string> {
   switch (op.type) {
     case "user_input":
-      const preview = typeof op.input === "string"
-        ? op.input
-        : op.input
-            .map((part) => (part.type === "text" ? part.text : "[image]"))
-            .join("\n");
-      live.downInbox.send({
-        author: live.agentPath,
-        recipient: live.agentPath,
-        content: preview,
-        triggerTurn: true,
-        direction: "down",
-        metadata: { kind: "user_input", inputContent: op.input },
-      });
+      {
+        const content = userInputDisplayText(op.input);
+        live.downInbox.send({
+          author: live.agentPath,
+          recipient: live.agentPath,
+          content,
+          triggerTurn: true,
+          direction: "down",
+          metadata: { kind: "user_input", inputContent: op.input },
+        });
+      }
       return live.agentId;
     case "inter_agent_communication":
       live.downInbox.send({
@@ -620,6 +643,32 @@ async function submitToLiveAgent(
     case "refresh_mcp_servers":
       return live.agentId;
   }
+}
+
+function userInputDisplayText(input: string | readonly LLMContentPart[]): string {
+  if (typeof input === "string") return input;
+  return input
+    .map((part) => {
+      if (part.type === "text") return part.text;
+      return "[image]";
+    })
+    .filter((part) => part.length > 0)
+    .join("\n");
+}
+
+function responseItemToLlmMessage(item: ResponseItem): LLMMessage {
+  return {
+    role: item.role,
+    content:
+      typeof item.content === "string"
+        ? item.content
+        : (item.content.map((part) => ({ ...part })) as LLMContentPart[]),
+    ...(item.phase !== undefined
+      ? { phase: item.phase as LLMMessage["phase"] }
+      : {}),
+    ...(item.toolCallId !== undefined ? { toolCallId: item.toolCallId } : {}),
+    ...(item.toolName !== undefined ? { toolName: item.toolName } : {}),
+  };
 }
 
 async function shutdownWithTimeout(

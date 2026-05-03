@@ -17,6 +17,7 @@ import {
 import { defaultConfig, mergeConfigs } from "../config/index.js";
 import type { AuthBackend } from "../auth/backend.js";
 import type { Tool } from "../tools/types.js";
+import type { RolloutItem } from "../session/rollout-item.js";
 import { Session } from "../session/session.js";
 import { SidecarManager } from "../session/sidecar.js";
 import { getCurrentRuntimeSession } from "./_deps/current-session.js";
@@ -345,6 +346,477 @@ describe("bootstrapLocalRuntimeSession", () => {
         signal: boot.session.services.mcpStartupCancellationToken.signal,
       });
     } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("exposes conversation manager snapshots for fresh startup and resume replay", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const conversationId = "conv-conversation-manager";
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let firstShutdown: (() => Promise<void>) | null = null;
+    let resumedShutdown: (() => Promise<void>) | null = null;
+    try {
+      const first = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        conversationId,
+        resumeConversation: false,
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      firstShutdown = first.shutdown;
+
+      const firstManager = first.session.services.conversationThreadManager;
+      expect(firstManager).toBeDefined();
+      expect(first.session.services.threadManager).toBe(firstManager);
+      expect(firstManager!.snapshot(conversationId)).toMatchObject({
+        prewarm: "ready",
+        historyLength: 0,
+      });
+
+      first.rolloutStore.appendRollout({
+        type: "response_item",
+        payload: { role: "user", content: "persisted ask" },
+      } as RolloutItem);
+      first.rolloutStore.flushDurable();
+      await first.shutdown();
+      firstShutdown = null;
+
+      const resumed = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        conversationId,
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      resumedShutdown = resumed.shutdown;
+
+      const resumedManager = resumed.session.services.conversationThreadManager;
+      expect(resumedManager).toBeDefined();
+      expect(resumed.session.services.threadManager).toBe(resumedManager);
+      expect(resumed.initialState.history).toEqual([
+        { role: "user", content: "persisted ask" },
+      ]);
+      const resumedSnapshot = resumedManager!.snapshot(conversationId);
+      expect(resumedSnapshot).toMatchObject({
+        prewarm: "ready",
+        historyLength: 1,
+      });
+      expect(resumedSnapshot.rolloutItemCount).toBeGreaterThanOrEqual(1);
+    } finally {
+      await resumedShutdown?.().catch(() => {
+        /* best effort */
+      });
+      await firstShutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("routes conversation manager submit through a bootstrapped turn driver", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const conversationId = "conv-conversation-submit";
+
+    const providerResponse = {
+      content: "driver reply",
+      toolCalls: [],
+      usage: {
+        promptTokens: 1,
+        completionTokens: 1,
+        totalTokens: 2,
+      },
+      model: "test-model",
+      finishReason: "stop",
+    };
+    const directChatStream = vi.fn(async () => ({
+      ...providerResponse,
+      content: "direct reply",
+    }));
+    const prewarmedChatStream = vi.fn(async () => providerResponse);
+    const disposePrewarm = vi.fn(async () => {});
+    const prewarmStartup = vi.fn(async () => ({
+      chatStream: prewarmedChatStream,
+      dispose: disposePrewarm,
+    }));
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => providerResponse,
+          chatStream: directChatStream,
+          prewarmStartup,
+          healthCheck: async () => true,
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    let bootSession: Session | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        conversationId,
+        resumeConversation: false,
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      shutdown = boot.shutdown;
+      bootSession = boot.session;
+
+      const phaseEvents: Array<{ readonly type: string }> = [];
+      boot.session.installTurnDriverHooks({
+        submit: async (message) => {
+          for await (const event of boot.session.runTurn(message, {
+            ctx: boot.session.newDefaultTurn(),
+            systemPrompt: "",
+          })) {
+            phaseEvents.push(event);
+            boot.session.emitPhaseEvent(event);
+          }
+        },
+      });
+
+      const manager = boot.session.services.conversationThreadManager;
+      expect(manager).toBeDefined();
+      await manager!.submitTurn(conversationId, {
+        type: "user_input",
+        input: "driver prompt",
+      });
+
+      expect(prewarmStartup).toHaveBeenCalledWith({
+        conversationId,
+        threadId: conversationId,
+      });
+      expect(prewarmedChatStream).toHaveBeenCalled();
+      expect(directChatStream).not.toHaveBeenCalled();
+      expect(disposePrewarm).toHaveBeenCalledTimes(1);
+      expect(phaseEvents.some((event) => event.type === "turn_complete")).toBe(
+        true,
+      );
+      const state = boot.session.state.unsafePeek();
+      expect(state.history).toEqual([
+        { role: "user", content: "driver prompt" },
+        { role: "assistant", content: "driver reply" },
+      ]);
+      expect(manager!.snapshot(conversationId).historyLength).toBe(2);
+      expect(
+        boot.rolloutStore
+          .readAll()
+          .some(
+            (item) =>
+              item.type === "response_item" &&
+              item.payload.role === "assistant" &&
+              item.payload.content === "driver reply",
+          ),
+      ).toBe(true);
+    } finally {
+      bootSession?.installTurnDriverHooks(null);
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("disposes an unused provider startup prewarm handle during shutdown", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const disposePrewarm = vi.fn(async () => {});
+    const providerResponse = {
+      content: "ok",
+      toolCalls: [],
+      usage: {
+        promptTokens: 1,
+        completionTokens: 1,
+        totalTokens: 2,
+      },
+      model: "test-model",
+      finishReason: "stop",
+    };
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => providerResponse,
+          chatStream: async () => providerResponse,
+          prewarmStartup: async () => ({
+            chatStream: async () => providerResponse,
+            dispose: disposePrewarm,
+          }),
+          healthCheck: async () => true,
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        conversationId: "conv-unused-prewarm",
+        resumeConversation: false,
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      shutdown = boot.shutdown;
+
+      await boot.shutdown();
+      shutdown = null;
+
+      expect(disposePrewarm).toHaveBeenCalledTimes(1);
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("does not consume a provider startup prewarm handle that resolves after the first turn", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const providerResponse = {
+      content: "direct reply",
+      toolCalls: [],
+      usage: {
+        promptTokens: 1,
+        completionTokens: 1,
+        totalTokens: 2,
+      },
+      model: "test-model",
+      finishReason: "stop",
+    };
+    const directChatStream = vi.fn(async () => providerResponse);
+    const lateChatStream = vi.fn(async () => ({
+      ...providerResponse,
+      content: "late reply",
+    }));
+    const disposeLate = vi.fn(async () => {});
+    let resolvePrewarm!: (handle: {
+      chatStream: typeof lateChatStream;
+      dispose: typeof disposeLate;
+    }) => void;
+    const prewarmStartup = vi.fn(
+      () =>
+        new Promise<{
+          chatStream: typeof lateChatStream;
+          dispose: typeof disposeLate;
+        }>((resolve) => {
+          resolvePrewarm = resolve;
+        }),
+    );
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => providerResponse,
+          chatStream: directChatStream,
+          prewarmStartup,
+          healthCheck: async () => true,
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    let bootSession: Session | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        conversationId: "conv-late-prewarm",
+        resumeConversation: false,
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      shutdown = boot.shutdown;
+      bootSession = boot.session;
+      boot.session.installTurnDriverHooks({
+        submit: async (message) => {
+          for await (const event of boot.session.runTurn(message, {
+            ctx: boot.session.newDefaultTurn(),
+            systemPrompt: "",
+          })) {
+            boot.session.emitPhaseEvent(event);
+          }
+        },
+      });
+
+      const manager = boot.session.services.conversationThreadManager!;
+      await manager.submitTurn("conv-late-prewarm", {
+        type: "user_input",
+        input: "first",
+      });
+      expect(directChatStream).toHaveBeenCalledTimes(1);
+
+      resolvePrewarm({
+        chatStream: lateChatStream,
+        dispose: disposeLate,
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      await manager.submitTurn("conv-late-prewarm", {
+        type: "user_input",
+        input: "second",
+      });
+
+      expect(directChatStream).toHaveBeenCalledTimes(2);
+      expect(lateChatStream).not.toHaveBeenCalled();
+      expect(disposeLate).toHaveBeenCalledTimes(1);
+    } finally {
+      bootSession?.installTurnDriverHooks(null);
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a provider startup prewarm handle useful when it resolves before the first turn", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const providerResponse = {
+      content: "prewarmed reply",
+      toolCalls: [],
+      usage: {
+        promptTokens: 1,
+        completionTokens: 1,
+        totalTokens: 2,
+      },
+      model: "test-model",
+      finishReason: "stop",
+    };
+    const directChatStream = vi.fn(async () => ({
+      ...providerResponse,
+      content: "direct reply",
+    }));
+    const prewarmedChatStream = vi.fn(async () => providerResponse);
+    const disposePrewarm = vi.fn(async () => {});
+    let resolvePrewarm!: (handle: {
+      chatStream: typeof prewarmedChatStream;
+      dispose: typeof disposePrewarm;
+    }) => void;
+    const prewarmStartup = vi.fn(
+      () =>
+        new Promise<{
+          chatStream: typeof prewarmedChatStream;
+          dispose: typeof disposePrewarm;
+        }>((resolve) => {
+          resolvePrewarm = resolve;
+        }),
+    );
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => providerResponse,
+          chatStream: directChatStream,
+          prewarmStartup,
+          healthCheck: async () => true,
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    let bootSession: Session | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        conversationId: "conv-ready-before-turn",
+        resumeConversation: false,
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      shutdown = boot.shutdown;
+      bootSession = boot.session;
+      expect(prewarmStartup).toHaveBeenCalledTimes(1);
+
+      resolvePrewarm({
+        chatStream: prewarmedChatStream,
+        dispose: disposePrewarm,
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      boot.session.installTurnDriverHooks({
+        submit: async (message) => {
+          for await (const event of boot.session.runTurn(message, {
+            ctx: boot.session.newDefaultTurn(),
+            systemPrompt: "",
+          })) {
+            boot.session.emitPhaseEvent(event);
+          }
+        },
+      });
+
+      const manager = boot.session.services.conversationThreadManager!;
+      await manager.submitTurn("conv-ready-before-turn", {
+        type: "user_input",
+        input: "first",
+      });
+
+      expect(prewarmedChatStream).toHaveBeenCalledTimes(1);
+      expect(directChatStream).not.toHaveBeenCalled();
+      expect(disposePrewarm).toHaveBeenCalledTimes(1);
+    } finally {
+      bootSession?.installTurnDriverHooks(null);
       await shutdown?.().catch(() => {
         /* best effort */
       });

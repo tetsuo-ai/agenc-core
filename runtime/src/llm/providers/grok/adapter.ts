@@ -13,6 +13,8 @@ import type {
   LLMProviderTraceEvent,
   LLMToolChoice,
   LLMProvider,
+  LLMProviderStartupPrewarmHandle,
+  LLMProviderStartupPrewarmParams,
   LLMMessage,
   LLMResponse,
   LLMToolCall,
@@ -1503,6 +1505,17 @@ export class GrokProvider implements LLMProvider {
     } catch {
       return false;
     }
+  }
+
+  async prewarmStartup(
+    _params: LLMProviderStartupPrewarmParams,
+  ): Promise<LLMProviderStartupPrewarmHandle> {
+    const client = await this.ensureClient();
+    await (client as any).models.list();
+    return {
+      chatStream: (messages, onChunk, options) =>
+        this.chatStream(messages, onChunk, options),
+    };
   }
 
   async retrieveStoredResponse(responseId: string): Promise<LLMStoredResponse> {
