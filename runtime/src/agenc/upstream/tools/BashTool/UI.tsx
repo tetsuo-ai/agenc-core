@@ -6,8 +6,8 @@ import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErr
 import { MessageResponse } from '../../components/MessageResponse.js';
 import { ShellProgressMessage } from '../../components/shell/ShellProgressMessage.js';
 import { Box, Text } from '../../../../tui/ink.js';
-import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
+import { useKeybinding } from '../../../../tui/keybindings/useKeybinding.js';
+import { useShortcutDisplay } from '../../../../tui/keybindings/useShortcutDisplay.js';
 import { useAppStateStore, useSetAppState } from '../../../../tui/state/AppState.js';
 import type { Tool } from '../../Tool.js';
 import { backgroundAll } from '../../tasks/LocalShellTask/LocalShellTask.js';

@@ -5,7 +5,7 @@ import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErr
 import { FallbackToolUseRejectedMessage } from '../../components/FallbackToolUseRejectedMessage.js';
 import { MessageResponse } from '../../components/MessageResponse.js';
 import { Box, Text } from '../../../../tui/ink.js';
-import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
+import { useShortcutDisplay } from '../../../../tui/keybindings/useShortcutDisplay.js';
 import type { TaskType } from '../../Task.js';
 import type { Tool } from '../../Tool.js';
 import { buildTool, type ToolDef } from '../../Tool.js';

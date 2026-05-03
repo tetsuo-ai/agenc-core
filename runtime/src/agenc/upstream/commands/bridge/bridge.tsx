@@ -12,7 +12,7 @@ import { ListItem } from '../../components/design-system/ListItem.js';
 import { shouldShowRemoteCallout } from '../../components/RemoteCallout.js';
 import { useRegisterOverlay } from '../../context/overlayContext.js';
 import { Box, Text } from '../../../../tui/ink.js';
-import { useKeybindings } from '../../keybindings/useKeybinding.js';
+import { useKeybindings } from '../../../../tui/keybindings/useKeybinding.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { useAppState, useSetAppState } from '../../../../tui/state/AppState.js';
 import type { ToolUseContext } from '../../Tool.js';

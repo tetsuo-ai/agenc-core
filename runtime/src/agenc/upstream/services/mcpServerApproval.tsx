@@ -2,7 +2,7 @@ import React from 'react';
 import { MCPServerApprovalDialog } from '../components/MCPServerApprovalDialog.js';
 import { MCPServerMultiselectDialog } from '../components/MCPServerMultiselectDialog.js';
 import type { Root } from '../../../tui/ink.js';
-import { KeybindingSetup } from '../keybindings/KeybindingProviderSetup.js';
+import { KeybindingSetup } from '../../../tui/keybindings/KeybindingProviderSetup.js';
 import { AppStateProvider } from '../../../tui/state/AppState.js';
 import { getMcpConfigsByScope } from './mcp/config.js';
 import { getProjectMcpServerStatus } from './mcp/utils.js';

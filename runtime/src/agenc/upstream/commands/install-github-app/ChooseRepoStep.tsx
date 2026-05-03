@@ -3,7 +3,7 @@ import React, { useCallback, useState } from 'react';
 import TextInput from '../../components/TextInput.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { Box, Text } from '../../../../tui/ink.js';
-import { useKeybindings } from '../../keybindings/useKeybinding.js';
+import { useKeybindings } from '../../../../tui/keybindings/useKeybinding.js';
 interface ChooseRepoStepProps {
   currentRepo: string | null;
   useCurrentRepo: boolean;

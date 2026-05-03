@@ -4,7 +4,7 @@ import type { DeepImmutable } from 'src/types/utils.js';
 import { useElapsedTime } from '../../hooks/useElapsedTime.js';
 import type { KeyboardEvent } from '../../../../tui/ink/events/keyboard-event.js';
 import { Box, Text, useTheme } from '../../../../tui/ink.js';
-import { useKeybindings } from '../../keybindings/useKeybinding.js';
+import { useKeybindings } from '../../../../tui/keybindings/useKeybinding.js';
 import { getEmptyToolPermissionContext } from '../../Tool.js';
 import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js';
 import { getTools } from '../../tools.js';

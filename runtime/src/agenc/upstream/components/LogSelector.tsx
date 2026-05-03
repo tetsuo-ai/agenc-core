@@ -10,7 +10,7 @@ import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { applyColor } from '../../../tui/ink/colorize.js';
 import type { Color } from '../../../tui/ink/styles.js';
 import { Box, Text, useInput, useTerminalFocus, useTheme } from '../../../tui/ink.js';
-import { useKeybinding } from '../keybindings/useKeybinding.js';
+import { useKeybinding } from '../../../tui/keybindings/useKeybinding.js';
 import { logEvent } from '../services/analytics/index.js';
 import type { LogOption, SerializedMessage } from '../types/logs.js';
 import { formatLogMetadata, truncateToWidth } from '../utils/format.js';

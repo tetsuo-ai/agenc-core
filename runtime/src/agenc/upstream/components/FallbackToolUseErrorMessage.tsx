@@ -5,7 +5,7 @@ import { stripUnderlineAnsi } from 'src/components/shell/OutputLine.js';
 import { extractTag } from 'src/utils/messages.js';
 import { removeSandboxViolationTags } from 'src/utils/sandbox/sandbox-ui-utils.js';
 import { Box, Text } from '../../../tui/ink.js';
-import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
+import { useShortcutDisplay } from '../../../tui/keybindings/useShortcutDisplay.js';
 import { countCharInString } from '../utils/stringUtils.js';
 import { MessageResponse } from './MessageResponse.js';
 const MAX_RENDERED_LINES = 10;

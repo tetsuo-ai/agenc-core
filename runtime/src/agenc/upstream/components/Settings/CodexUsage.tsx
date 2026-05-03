@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { Box, Text } from '../../../../tui/ink.js'
-import { useKeybinding } from '../../keybindings/useKeybinding.js'
+import { useKeybinding } from '../../../../tui/keybindings/useKeybinding.js'
 import {
   buildCodexUsageRows,
   fetchCodexUsage,

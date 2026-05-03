@@ -7,7 +7,7 @@ import { addDirHelpMessage, validateDirectoryForWorkspace } from '../../../comma
 import TextInput from '../../../components/TextInput.js';
 import type { KeyboardEvent } from '../../../../../tui/ink/events/keyboard-event.js';
 import { Box, Text } from '../../../../../tui/ink.js';
-import { useKeybinding } from '../../../keybindings/useKeybinding.js';
+import { useKeybinding } from '../../../../../tui/keybindings/useKeybinding.js';
 import type { ToolPermissionContext } from '../../../Tool.js';
 import { getDirectoryCompletions } from '../../../utils/suggestions/directoryCompletion.js';
 import { ConfigurableShortcutHint } from '../../ConfigurableShortcutHint.js';

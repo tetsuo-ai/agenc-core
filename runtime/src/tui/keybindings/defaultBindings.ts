@@ -1,7 +1,7 @@
 import { feature } from 'bun:bundle'
-import { satisfies } from 'src/utils/semver.js'
-import { isRunningWithBun } from '../utils/bundledMode.js'
-import { getPlatform } from '../utils/platform.js'
+import { satisfies } from '../../agenc/upstream/utils/semver.js'
+import { isRunningWithBun } from '../../agenc/upstream/utils/bundledMode.js'
+import { getPlatform } from '../../agenc/upstream/utils/platform.js'
 import type { KeybindingBlock } from './types.js'
 
 /**
@@ -89,10 +89,7 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
         ? { 'shift+up': 'chat:messageActions' as const }
         : {}),
       // Voice activation (hold-to-talk). Registered so getShortcutDisplay
-      // finds it without hitting the fallback analytics log. To rebind,
-      // add a voice:pushToTalk entry (last wins); to disable, use /voice
-      // — null-unbinding space hits a pre-existing useKeybinding.ts trap
-      // where 'unbound' swallows the event (space dead for typing).
+      // can resolve it from the same config table as other shortcuts.
       ...(feature('VOICE_MODE') ? { space: 'voice:pushToTalk' } : {}),
     },
   },

@@ -1,5 +1,5 @@
 import { feature } from 'bun:bundle'
-import { getShortcutDisplay } from '../keybindings/shortcutFormat.js'
+import { getShortcutDisplay } from '../../../tui/keybindings/shortcutFormat.js'
 import { isExtractModeActive } from '../memdir/paths.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,

@@ -6,7 +6,7 @@ import stripAnsi from 'strip-ansi'
 
 import { AppStateProvider } from '../../../tui/state/AppState.js'
 import { createRoot } from '../../../tui/ink.js'
-import { KeybindingSetup } from '../keybindings/KeybindingProviderSetup.js'
+import { KeybindingSetup } from '../../../tui/keybindings/KeybindingProviderSetup.js'
 import { ConsoleOAuthFlow } from './ConsoleOAuthFlow.js'
 
 const SYNC_START = '\x1B[?2026h'

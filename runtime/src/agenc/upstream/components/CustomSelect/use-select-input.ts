@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { useRegisterOverlay } from '../../context/overlayContext.js'
 import type { InputEvent } from '../../../../tui/ink/events/input-event.js'
 import { useInput } from '../../../../tui/ink.js'
-import { useKeybindings } from '../../keybindings/useKeybinding.js'
+import { useKeybindings } from '../../../../tui/keybindings/useKeybinding.js'
 import {
   normalizeFullWidthDigits,
   normalizeFullWidthSpace,

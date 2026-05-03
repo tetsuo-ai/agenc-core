@@ -5,7 +5,7 @@ import type { CommandResultDisplay, LocalJSXCommandContext } from '../../command
 import { Dialog } from '../../components/design-system/Dialog.js';
 import { FastIcon, getFastIconString } from '../../components/FastIcon.js';
 import { Box, Link, Text } from '../../../../tui/ink.js';
-import { useKeybindings } from '../../keybindings/useKeybinding.js';
+import { useKeybindings } from '../../../../tui/keybindings/useKeybinding.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { type AppState, useAppState, useSetAppState } from '../../../../tui/state/AppState.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';

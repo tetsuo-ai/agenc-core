@@ -4,7 +4,7 @@ import type { ExitState } from '../hooks/useExitOnCtrlCDWithKeybindings.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { setClipboard } from '../../../tui/ink/termio/osc.js';
 import { Box, Text } from '../../../tui/ink.js';
-import { useKeybinding } from '../keybindings/useKeybinding.js';
+import { useKeybinding } from '../../../tui/keybindings/useKeybinding.js';
 import { getCwd } from '../utils/cwd.js';
 import { writeFileSync_DEPRECATED } from '../utils/slowOperations.js';
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js';

@@ -1,16 +1,16 @@
-import { DEFAULT_BINDINGS } from '../../keybindings/defaultBindings.js'
-import { isKeybindingCustomizationEnabled } from '../../keybindings/loadUserBindings.js'
+import { DEFAULT_BINDINGS } from '../../../../tui/keybindings/defaultBindings.js'
+import { isKeybindingCustomizationEnabled } from '../../../../tui/keybindings/loadUserBindings.js'
 import {
   MACOS_RESERVED,
   NON_REBINDABLE,
   TERMINAL_RESERVED,
-} from '../../keybindings/reservedShortcuts.js'
-import type { KeybindingsSchemaType } from '../../keybindings/schema.js'
+} from '../../../../tui/keybindings/reservedShortcuts.js'
+import type { KeybindingsSchemaType } from '../../../../tui/keybindings/schema.js'
 import {
   KEYBINDING_ACTIONS,
   KEYBINDING_CONTEXT_DESCRIPTIONS,
   KEYBINDING_CONTEXTS,
-} from '../../keybindings/schema.js'
+} from '../../../../tui/keybindings/schema.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { registerBundledSkill } from '../bundledSkills.js'
 

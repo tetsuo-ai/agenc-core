@@ -4,7 +4,7 @@ import type { DeepImmutable } from 'src/types/utils.js';
 import { useElapsedTime } from '../../hooks/useElapsedTime.js';
 import type { KeyboardEvent } from '../../../../tui/ink/events/keyboard-event.js';
 import { Box, Text } from '../../../../tui/ink.js';
-import { useKeybindings } from '../../keybindings/useKeybinding.js';
+import { useKeybindings } from '../../../../tui/keybindings/useKeybinding.js';
 import type { DreamTaskState } from '../../tasks/DreamTask/DreamTask.js';
 import { plural } from '../../utils/stringUtils.js';
 import { Byline } from '../design-system/Byline.js';

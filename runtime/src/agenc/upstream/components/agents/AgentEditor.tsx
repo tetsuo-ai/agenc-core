@@ -5,7 +5,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { useSetAppState } from '../../../../tui/state/AppState.js';
 import type { KeyboardEvent } from '../../../../tui/ink/events/keyboard-event.js';
 import { Box, Text } from '../../../../tui/ink.js';
-import { useKeybinding } from '../../keybindings/useKeybinding.js';
+import { useKeybinding } from '../../../../tui/keybindings/useKeybinding.js';
 import type { Tools } from '../../Tool.js';
 import { type AgentColorName, setAgentColor } from '../../tools/AgentTool/agentColorManager.js';
 import { type AgentDefinition, getActiveAgentsFromList, isCustomAgent, isPluginAgent } from '../../tools/AgentTool/loadAgentsDir.js';

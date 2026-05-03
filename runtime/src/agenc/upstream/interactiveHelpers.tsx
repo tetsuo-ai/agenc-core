@@ -10,7 +10,7 @@ import { getSystemContext } from './context.js';
 import { initializeTelemetryAfterTrust } from './entrypoints/init.js';
 import { isSynchronizedOutputSupported } from '../../tui/ink/terminal.js';
 import type { RenderOptions, Root, TextProps } from '../../tui/ink.js';
-import { KeybindingSetup } from './keybindings/KeybindingProviderSetup.js';
+import { KeybindingSetup } from '../../tui/keybindings/KeybindingProviderSetup.js';
 import { startDeferredPrefetches } from './main.js';
 import { checkGate_CACHED_OR_BLOCKING, initializeGrowthBook, resetGrowthBook } from './services/analytics/growthbook.js';
 import { isQualifiedForGrove } from './services/api/grove.js';

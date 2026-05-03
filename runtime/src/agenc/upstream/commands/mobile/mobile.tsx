@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Pane } from '../../components/design-system/Pane.js';
 import type { KeyboardEvent } from '../../../../tui/ink/events/keyboard-event.js';
 import { Box, Text } from '../../../../tui/ink.js';
-import { useKeybinding } from '../../keybindings/useKeybinding.js';
+import { useKeybinding } from '../../../../tui/keybindings/useKeybinding.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
 type Platform = 'ios' | 'android';
 type Props = {

@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import React, { type ReactNode } from 'react';
 import type { KeyboardEvent } from '../../../../../../tui/ink/events/keyboard-event.js';
 import { Box, Text } from '../../../../../../tui/ink.js';
-import { useKeybinding } from '../../../../keybindings/useKeybinding.js';
+import { useKeybinding } from '../../../../../../tui/keybindings/useKeybinding.js';
 import { isAutoMemoryEnabled } from '../../../../memdir/paths.js';
 import type { Tools } from '../../../../Tool.js';
 import { getMemoryScopeDisplay } from '../../../../tools/AgentTool/agentMemory.js';

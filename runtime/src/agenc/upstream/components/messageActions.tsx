@@ -3,7 +3,7 @@ import figures from 'figures';
 import type { RefObject } from 'react';
 import React, { useCallback, useMemo, useRef } from 'react';
 import { Box, Text } from '../../../tui/ink.js';
-import { useKeybindings } from '../keybindings/useKeybinding.js';
+import { useKeybindings } from '../../../tui/keybindings/useKeybinding.js';
 import { logEvent } from '../services/analytics/index.js';
 import type { NormalizedUserMessage, RenderableMessage } from '../types/message.js';
 import { isEmptyMessageText, SYNTHETIC_MESSAGES } from '../utils/messages.js';

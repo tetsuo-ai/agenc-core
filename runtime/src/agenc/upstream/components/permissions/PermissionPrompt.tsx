@@ -1,8 +1,8 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { type ReactNode, useCallback, useMemo, useState } from 'react';
 import { Box, Text } from '../../../../tui/ink.js';
-import type { KeybindingAction } from '../../keybindings/types.js';
-import { useKeybindings } from '../../keybindings/useKeybinding.js';
+import type { KeybindingAction } from '../../../../tui/keybindings/types.js';
+import { useKeybindings } from '../../../../tui/keybindings/useKeybinding.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { useSetAppState } from '../../../../tui/state/AppState.js';
 import { type OptionWithDescription, Select } from '../CustomSelect/select.js';

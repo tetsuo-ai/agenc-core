@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { Suspense, use, useState } from 'react';
 import { Box, Text } from '../../../../tui/ink.js';
-import { useKeybinding } from '../../keybindings/useKeybinding.js';
+import { useKeybinding } from '../../../../tui/keybindings/useKeybinding.js';
 import { logEvent } from '../../services/analytics/index.js';
 import type { Message } from '../../types/message.js';
 import { generatePermissionExplanation, isPermissionExplainerEnabled, type PermissionExplanation as PermissionExplanationType, type RiskLevel } from '../../utils/permissions/permissionExplainer.js';

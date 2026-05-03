@@ -4,7 +4,7 @@ import figures from 'figures';
 import * as React from 'react';
 import { useEffect, useState } from 'react';
 import { Text } from '../../../tui/ink.js';
-import { useKeybinding } from '../keybindings/useKeybinding.js';
+import { useKeybinding } from '../../../tui/keybindings/useKeybinding.js';
 import { toError } from '../utils/errors.js';
 import { logError } from '../utils/log.js';
 import { getSettingSourceName, type SettingSource } from '../utils/settings/constants.js';
