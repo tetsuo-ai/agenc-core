@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect } from "vitest";
 
 import type { ApprovalCtx } from "../tools/orchestrator.js";
 import type { ReviewDecision } from "./review-decision.js";
@@ -9,6 +9,11 @@ import {
   DENIED,
 } from "./review-decision.js";
 import { buildToolUseConfirmQueue } from "../agenc/adapters/permission-bridge-projection.js";
+import {
+  clearAskUserQuestionResponsesForTest,
+  createAskUserQuestionTool,
+  type AskUserQuestionInput,
+} from "../tools/ask-user-question/index.js";
 
 interface PendingRequestLike {
   readonly id: string;
@@ -40,7 +45,31 @@ function makeRequest(
   };
 }
 
+const ASK_USER_QUESTION_INPUT: AskUserQuestionInput = {
+  questions: [
+    {
+      header: "Scope",
+      question: "Which implementation path should AgenC take?",
+      options: [
+        {
+          label: "Use AgenC picker (Recommended)",
+          description: "Use the interactive question bridge.",
+          preview: "Wire onAllow(updatedInput) to the model result.",
+        },
+        {
+          label: "Keep current plan mode",
+          description: "Skip the structured question flow.",
+        },
+      ],
+    },
+  ],
+};
+
 describe("buildToolUseConfirmQueue (TUI multi-approval queue projection)", () => {
+  afterEach(() => {
+    clearAskUserQuestionResponsesForTest();
+  });
+
   it("returns empty when there are no pending requests", () => {
     const got = buildToolUseConfirmQueue([], [{ name: "Bash" }]);
     expect(got).toEqual([]);
@@ -120,6 +149,104 @@ describe("buildToolUseConfirmQueue (TUI multi-approval queue projection)", () =>
     const queue2 = buildToolUseConfirmQueue([r2 as never], [{ name: "Bash" }]);
     (queue2[0] as { onAbort: () => void }).onAbort();
     expect(abortResolved).toBe(ABORT);
+  });
+
+  it("records AskUserQuestion updated input before resolving approval", async () => {
+    let resolved: ReviewDecision | null = null;
+    const request = {
+      ...makeRequest("AskUserQuestion", "ask-call-1", (decision) => {
+        resolved = decision;
+      }),
+      input: ASK_USER_QUESTION_INPUT as unknown as Record<string, unknown>,
+    };
+    const queue = buildToolUseConfirmQueue(
+      [request as never],
+      [{ name: "AskUserQuestion" }],
+    );
+    const updatedInput = {
+      ...ASK_USER_QUESTION_INPUT,
+      answers: {
+        "Which implementation path should AgenC take?":
+          "Use AgenC picker (Recommended)",
+      },
+      annotations: {
+        "Which implementation path should AgenC take?": {
+          preview: "Wire onAllow(updatedInput) to the model result.",
+        },
+      },
+    };
+
+    (queue[0] as { onAllow: (input: unknown, updates: unknown[]) => void }).onAllow(
+      updatedInput,
+      [],
+    );
+
+    expect(resolved).toBe(APPROVED);
+    const result = await createAskUserQuestionTool().execute({
+      ...ASK_USER_QUESTION_INPUT,
+      __callId: "ask-call-1",
+    });
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("User has answered your questions");
+    expect(result.content).toContain(
+      '"Which implementation path should AgenC take?"="Use AgenC picker (Recommended)"',
+    );
+  });
+
+  it("maps AskUserQuestion clarify feedback into a chat continuation result", async () => {
+    let resolved: ReviewDecision | null = null;
+    const request = {
+      ...makeRequest("AskUserQuestion", "ask-chat-1", (decision) => {
+        resolved = decision;
+      }),
+      input: ASK_USER_QUESTION_INPUT as unknown as Record<string, unknown>,
+    };
+    const queue = buildToolUseConfirmQueue(
+      [request as never],
+      [{ name: "AskUserQuestion" }],
+    );
+
+    (queue[0] as { onReject: (feedback?: string) => void }).onReject(
+      "The user wants to clarify these questions.",
+    );
+
+    expect(resolved).toBe(APPROVED);
+    const result = await createAskUserQuestionTool().execute({
+      ...ASK_USER_QUESTION_INPUT,
+      __callId: "ask-chat-1",
+    });
+    expect(result.content).toContain("chat about these questions");
+    expect(result.codeModeResult).toMatchObject({
+      planInterviewAction: "chat_about_this",
+    });
+  });
+
+  it("maps AskUserQuestion finish feedback into a skip-interview result", async () => {
+    let resolved: ReviewDecision | null = null;
+    const request = {
+      ...makeRequest("AskUserQuestion", "ask-finish-1", (decision) => {
+        resolved = decision;
+      }),
+      input: ASK_USER_QUESTION_INPUT as unknown as Record<string, unknown>,
+    };
+    const queue = buildToolUseConfirmQueue(
+      [request as never],
+      [{ name: "AskUserQuestion" }],
+    );
+
+    (queue[0] as { onReject: (feedback?: string) => void }).onReject(
+      "The user has indicated they have provided enough answers for the plan interview.",
+    );
+
+    expect(resolved).toBe(APPROVED);
+    const result = await createAskUserQuestionTool().execute({
+      ...ASK_USER_QUESTION_INPUT,
+      __callId: "ask-finish-1",
+    });
+    expect(result.content).toContain("skipped the planning interview");
+    expect(result.codeModeResult).toMatchObject({
+      planInterviewAction: "skip_plan_interview",
+    });
   });
 
   it("returns empty when the tool registry is empty (no matching tool)", () => {
