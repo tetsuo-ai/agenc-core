@@ -62,6 +62,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(registeredNames).toContain("FileRead");
     expect(registeredNames).toContain("Write");
     expect(registeredNames).toContain("Edit");
+    expect(registeredNames).toContain("MultiEdit");
     expect(registeredNames).toContain("system.grep");
     expect(registeredNames).toContain("system.glob");
     expect(registeredNames).toContain("system.gitStatus");
@@ -75,9 +76,9 @@ describe("tool-registry dynamic and deferred catalog", () => {
     // dropped — the canonical AgenC-compatible names are the only entries.
     expect(registeredNames).not.toContain("workflow.enterPlan");
     expect(registeredNames).not.toContain("workflow.exitPlan");
-    // `update_plan` is the codex runtime-only checklist name. AgenC's `/plan`
+    // `update_plan` is the legacy runtime-only checklist name. AgenC's `/plan`
     // surface is AgenC-owned, so the only checklist tool we
-    // ship is openclaude `TodoWrite`.
+    // ship is `TodoWrite`.
     expect(registeredNames).not.toContain("update_plan");
 
     const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
@@ -93,6 +94,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(visibleNames).toContain("FileRead");
     expect(visibleNames).toContain("Write");
     expect(visibleNames).toContain("Edit");
+    expect(visibleNames).toContain("MultiEdit");
     expect(visibleNames).not.toContain("system.grep");
     expect(visibleNames).not.toContain("system.glob");
     expect(visibleNames).not.toContain("system.gitStatus");
@@ -123,10 +125,24 @@ describe("tool-registry dynamic and deferred catalog", () => {
     });
 
     expect(result.isError).toBeUndefined();
-    // The model-facing content follows codex runtime unified-exec output: status
+    // The model-facing content follows unified-exec output: status
     // headers plus the captured stdout/stderr.
     expect(result.content).toContain("Process exited with code 0");
     expect(result.content).toContain("Output:\nagenc-runtime");
+  });
+
+  test("dispatch wraps plain-string arguments using the consolidated registry surface", async () => {
+    const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
+
+    const result = await registry.dispatch({
+      id: "exec-plain-string",
+      name: "exec_command",
+      arguments: "printf agenc-plain-string",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("Process exited with code 0");
+    expect(result.content).toContain("Output:\nagenc-plain-string");
   });
 
   test("code mode adds visible exec/wait tools when enabled", () => {
@@ -172,6 +188,73 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(registry.getDiscoveredToolNames?.().has("FileRead")).toBe(false);
   });
 
+  test("searchTools advertisedOnly is derived from the registry visible surface", async () => {
+    const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
+
+    const result = await registry.dispatch({
+      id: "search-advertised",
+      name: "system.searchTools",
+      arguments: JSON.stringify({ advertisedOnly: true, maxResults: 200 }),
+    });
+
+    const body = JSON.parse(result.content) as {
+      results: Array<{ name: string; advertised: boolean }>;
+    };
+    const resultNames = body.results.map((entry) => entry.name);
+    expect(resultNames).toContain("exec_command");
+    expect(resultNames).toContain("MultiEdit");
+    expect(resultNames).not.toContain("system.grep");
+    expect(body.results.every((entry) => entry.advertised)).toBe(true);
+  });
+
+  test("model-facing tools are registered through the registry-owned surface", async () => {
+    const visibleProductTool: Tool = {
+      name: "ProductVisible",
+      description: "Visible product tool.",
+      inputSchema: { type: "object" },
+      metadata: {
+        family: "product",
+        source: "builtin",
+        mutating: false,
+        deferred: false,
+      },
+      execute: async () => ({ content: "visible" }),
+    };
+    const deferredProductTool: Tool = {
+      name: "ProductDeferred",
+      description: "Deferred product tool.",
+      inputSchema: { type: "object" },
+      metadata: {
+        family: "product",
+        source: "builtin",
+        mutating: true,
+        deferred: true,
+      },
+      execute: async () => ({ content: "deferred" }),
+    };
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      modelFacingTools: [visibleProductTool, deferredProductTool],
+    });
+
+    const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
+    expect(visibleNames).toContain("ProductVisible");
+    expect(visibleNames).not.toContain("ProductDeferred");
+    expect(registry.tools.map((tool) => tool.name)).toEqual(
+      expect.arrayContaining(["ProductVisible", "ProductDeferred"]),
+    );
+
+    await registry.dispatch({
+      id: "product-search",
+      name: "system.searchTools",
+      arguments: JSON.stringify({ select: "ProductDeferred" }),
+    });
+
+    expect(registry.toLLMTools().map((tool) => tool.function.name)).toContain(
+      "ProductDeferred",
+    );
+  });
+
   test("TodoWrite returns the verbatim AgenC tool_result sentence and emits a plan event without ever writing the plan file", async () => {
     const emittedPlans: unknown[] = [];
     const writtenPlans: string[] = [];
@@ -198,8 +281,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
       }),
     });
     expect(todo.isError).toBeUndefined();
-    // Verbatim openclaude `TodoWriteTool.mapToolResultToToolResultBlockParam`
-    // base sentence (`src/tools/TodoWriteTool/TodoWriteTool.ts:105`).
+    // Preserve the canonical `TodoWrite` result sentence.
     expect(todo.content).toBe(
       "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable",
     );
@@ -239,7 +321,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(emittedPlans).toHaveLength(1);
   });
 
-  test("TodoWrite adds the OpenClaude verification-agent nudge when closing 3+ tasks without verification", async () => {
+  test("TodoWrite adds the verification-agent nudge when closing 3+ tasks without verification", async () => {
     const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
 
     const result = await registry.dispatch({

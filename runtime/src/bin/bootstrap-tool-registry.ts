@@ -17,25 +17,25 @@ export interface BootstrapToolRegistryOptions {
     readonly cause: string;
     readonly message: string;
   }) => void;
-  readonly toolRegistryOptions?: Omit<BuildToolRegistryOptions, "workspaceRoot">;
+  readonly toolRegistryOptions?: Omit<
+    BuildToolRegistryOptions,
+    "workspaceRoot" | "modelFacingTools"
+  >;
 }
 
 export function buildBootstrapToolRegistry(
   options: BootstrapToolRegistryOptions,
 ): ToolRegistry {
-  const extraTools = [
-    ...(options.toolRegistryOptions?.extraTools ?? []),
-    ...createModelFacingTools({
-      workspaceRoot: options.workspaceRoot,
-      ...(options.agencHome !== undefined ? { agencHome: options.agencHome } : {}),
-      getSession: options.getSession,
-      ...(options.toolRegistryOptions?.unifiedExecManager !== undefined
-        ? { unifiedExecManager: options.toolRegistryOptions.unifiedExecManager }
-        : {}),
-      emitWarning: options.emitWarning,
-      env: process.env,
-    }),
-  ];
+  const modelFacingTools = createModelFacingTools({
+    workspaceRoot: options.workspaceRoot,
+    ...(options.agencHome !== undefined ? { agencHome: options.agencHome } : {}),
+    getSession: options.getSession,
+    ...(options.toolRegistryOptions?.unifiedExecManager !== undefined
+      ? { unifiedExecManager: options.toolRegistryOptions.unifiedExecManager }
+      : {}),
+    emitWarning: options.emitWarning,
+    env: process.env,
+  });
   return buildToolRegistry({
     workspaceRoot: options.workspaceRoot,
     mcpToolsProvider: options.mcpManager,
@@ -45,6 +45,7 @@ export function buildBootstrapToolRegistry(
       emitWarning: options.emitWarning,
     }),
     ...(options.toolRegistryOptions ?? {}),
-    extraTools,
+    modelFacingTools,
+    extraTools: options.toolRegistryOptions?.extraTools ?? [],
   });
 }
