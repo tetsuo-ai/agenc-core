@@ -7,6 +7,7 @@ import type { LLMProvider, LLMResponse } from "../llm/types.js";
 import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import type { Session } from "../session/session.js";
+import { backgroundTaskLifecycle } from "../tasks/index.js";
 import { createModelFacingTools } from "./model-facing-tools.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
 import { _clearAgentControlCacheForTesting, _setAgentControlForTesting } from "./delegate-tool.js";
@@ -1152,6 +1153,69 @@ describe("model-facing tools", () => {
 
     expect(byName.has("TaskOutput")).toBe(true);
     expect(join).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets TaskOutput and TaskStop use the spawn_agent returned task_name", async () => {
+    const session = fakeSession();
+    const abortController = new AbortController();
+    const live = {
+      agentId: "thread-handle-1",
+      agentPath: "/root/task_handle",
+      nickname: "TaskHandle",
+      role: { name: "worker" },
+      abortController,
+      status: {
+        value: {
+          status: "running" as const,
+          turnId: "turn-handle-1",
+          startedAtMs: 1,
+        },
+      },
+    };
+    delegateMock.mockResolvedValue({
+      kind: "async_launched",
+      thread: {
+        live,
+        join: vi.fn(() => new Promise(() => {})),
+      },
+    });
+
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    });
+    const byName = new Map(tools.map((tool) => [tool.name, tool]));
+
+    const spawned = await byName.get("spawn_agent")!.execute({
+      message: "inspect handle",
+      task_name: "task_handle",
+      fork_turns: "none",
+    });
+    const handle = (JSON.parse(spawned.content) as { task_name: string })
+      .task_name;
+    expect(handle).toBe("/root/task_handle");
+    backgroundTaskLifecycle.appendOutput("thread-handle-1", "alias output");
+
+    const output = await byName.get("TaskOutput")!.execute({
+      task_id: handle,
+      block: false,
+    });
+    expect(output.isError).toBeUndefined();
+    expect(output.content).toContain(
+      "<retrieval_status>not_ready</retrieval_status>",
+    );
+    expect(output.content).toContain("<task_id>thread-handle-1</task_id>");
+    expect(output.content).toContain("<status>running</status>");
+    expect(output.content).toContain("<output>\nalias output\n</output>");
+
+    const stopped = await byName.get("TaskStop")!.execute({
+      task_id: handle,
+    });
+    expect(stopped.isError).toBeUndefined();
+    expect(stopped.content).toBe(
+      "Successfully stopped task: thread-handle-1 (inspect handle)",
+    );
+    expect(abortController.signal.aborted).toBe(true);
   });
 
   it("hides spawn_agent nickname metadata when configured", async () => {

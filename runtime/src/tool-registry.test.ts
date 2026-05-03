@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { buildToolRegistry } from "./tool-registry.js";
@@ -11,6 +11,7 @@ import {
 } from "./planning/exit-plan-approval.js";
 import type { Tool } from "./tools/types.js";
 import { QuickJsCodeModeService } from "./tools/code-mode/service.js";
+import { createTaskTools } from "./tools/tasks/index.js";
 
 afterEach(() => {
   clearExitPlanModeApprovalsForTest();
@@ -152,6 +153,52 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(result.isError).toBeUndefined();
     expect(result.content).toContain("Process exited with code 0");
     expect(result.content).toContain("Output:\nagenc-plain-string");
+  });
+
+  test("model-facing Task tools keep string id dispatch in the registry", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-registry-task-tools-"));
+    try {
+      const registry = buildToolRegistry({
+        workspaceRoot: root,
+        modelFacingTools: createTaskTools({
+          workspaceRoot: root,
+          agencHome: root,
+          getSession: () => null,
+        }),
+      });
+
+      const registeredNames = registry.tools.map((tool) => tool.name);
+      expect(registeredNames).toEqual(
+        expect.arrayContaining([
+          "TaskCreate",
+          "TaskGet",
+          "TaskList",
+          "TaskOutput",
+          "TaskStop",
+        ]),
+      );
+
+      const created = await registry.dispatch({
+        id: "task-create-1",
+        name: "TaskCreate",
+        arguments: JSON.stringify({
+          subject: "Registry task",
+          description: "Exercise TaskGet string wrapping",
+        }),
+      });
+      expect(created.isError).toBeUndefined();
+
+      const got = await registry.dispatch({
+        id: "task-get-1",
+        name: "TaskGet",
+        arguments: JSON.stringify("1"),
+      });
+
+      expect(got.isError).toBeUndefined();
+      expect(got.content).toContain("Task #1: Registry task");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test("apply_patch is deferred but dispatch accepts raw patch strings", async () => {

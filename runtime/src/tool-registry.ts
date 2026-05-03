@@ -499,9 +499,20 @@ export function buildToolRegistry(
     webSearch: "WebSearch",
     webSearchNativeTool: "web_search",
   } as const;
+  const modelFacingTaskSurface = {
+    taskCreate: "TaskCreate",
+    taskGet: "TaskGet",
+    taskUpdate: "TaskUpdate",
+    taskList: "TaskList",
+    taskOutput: "TaskOutput",
+    taskStop: "TaskStop",
+  } as const;
   const modelFacingStringArgumentFieldCandidates = {
     [modelFacingProviderNativeSurface.webSearch]: "query",
     NotebookRead: "notebook_path",
+    [modelFacingTaskSurface.taskGet]: "taskId",
+    [modelFacingTaskSurface.taskOutput]: "task_id",
+    [modelFacingTaskSurface.taskStop]: "task_id",
   } as const;
   const modelFacingToolNames = new Set(
     registryModelFacingTools.map((tool) => tool.name),

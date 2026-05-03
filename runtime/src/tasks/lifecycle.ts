@@ -71,6 +71,7 @@ export interface RegisterBackgroundTaskInput {
   readonly metadata?: Readonly<Record<string, unknown>>;
   readonly status?: Extract<BackgroundTaskStatus, "pending" | "running">;
   readonly outputUri?: string;
+  readonly aliases?: readonly string[];
   readonly abortController?: AbortController;
   readonly onStop?: (reason: string) => Promise<void> | void;
 }
@@ -163,6 +164,7 @@ function defaultOutputUri(taskId: string): string {
  */
 export class BackgroundTaskLifecycle {
   private readonly tasks = new Map<string, MutableTaskRecord>();
+  private readonly aliases = new Map<string, string>();
   private readonly outputs = new Map<string, OutputBuffer>();
   private readonly notifications: BackgroundTaskNotification[] = [];
 
@@ -170,6 +172,21 @@ export class BackgroundTaskLifecycle {
     const id = input.id ?? generateBackgroundTaskId(input.type);
     if (this.tasks.has(id)) {
       throw new BackgroundTaskError(`task ${id} already exists`, "already_exists");
+    }
+    const aliases = [...new Set(input.aliases ?? [])].filter(
+      (alias) => alias.length > 0 && alias !== id,
+    );
+    for (const alias of aliases) {
+      const existingId = this.resolveTaskId(alias);
+      const existing = this.tasks.get(existingId);
+      if (!existing) continue;
+      if (!isTerminalTaskStatus(existing.status)) {
+        throw new BackgroundTaskError(
+          `task ${alias} already exists`,
+          "already_exists",
+        );
+      }
+      this.deleteTaskRecord(existing.id);
     }
 
     const record: MutableTaskRecord = {
@@ -192,12 +209,15 @@ export class BackgroundTaskLifecycle {
 
     this.tasks.set(id, record);
     this.outputs.set(id, { content: "", totalBytes: 0 });
+    for (const alias of aliases) {
+      this.aliases.set(alias, id);
+    }
     this.pushNotification("started", record, `Task "${record.description}" started`);
     return this.snapshot(record);
   }
 
   get(taskId: string): BackgroundTaskSnapshot | undefined {
-    const record = this.tasks.get(taskId);
+    const record = this.tasks.get(this.resolveTaskId(taskId));
     return record ? this.snapshot(record) : undefined;
   }
 
@@ -211,26 +231,26 @@ export class BackgroundTaskLifecycle {
 
   appendOutput(taskId: string, chunk: string): BackgroundTaskSnapshot {
     const record = this.requireTask(taskId);
-    const output = this.outputs.get(taskId) ?? { content: "", totalBytes: 0 };
+    const output = this.outputs.get(record.id) ?? { content: "", totalBytes: 0 };
     output.content += chunk;
     if (output.content.length > MAX_OUTPUT_CHARS) {
       output.content = output.content.slice(-MAX_OUTPUT_CHARS);
       record.outputOffset = Math.min(record.outputOffset, output.content.length);
     }
     output.totalBytes += Buffer.byteLength(chunk, "utf8");
-    this.outputs.set(taskId, output);
+    this.outputs.set(record.id, output);
     this.pushNotification("progress", record, `Task "${record.description}" produced output`, chunk);
     return this.snapshot(record);
   }
 
   readOutput(taskId: string): string {
-    this.requireTask(taskId);
-    return this.outputs.get(taskId)?.content ?? "";
+    const record = this.requireTask(taskId);
+    return this.outputs.get(record.id)?.content ?? "";
   }
 
   takeOutputDelta(taskId: string): { readonly content: string; readonly newOffset: number } {
     const record = this.requireTask(taskId);
-    const content = this.outputs.get(taskId)?.content ?? "";
+    const content = this.outputs.get(record.id)?.content ?? "";
     const delta = content.slice(record.outputOffset);
     record.outputOffset = content.length;
     return { content: delta, newOffset: record.outputOffset };
@@ -339,8 +359,7 @@ export class BackgroundTaskLifecycle {
       if (!task.notified || !isTerminalTaskStatus(task.status)) {
         continue;
       }
-      this.tasks.delete(taskId);
-      this.outputs.delete(taskId);
+      this.deleteTaskRecord(taskId);
       evicted.push(taskId);
     }
     return evicted;
@@ -387,17 +406,30 @@ export class BackgroundTaskLifecycle {
     const excess = terminal.length - MAX_RETAINED_TERMINAL_TASKS;
     if (excess <= 0) return;
     for (const task of terminal.slice(0, excess)) {
-      this.tasks.delete(task.id);
-      this.outputs.delete(task.id);
+      this.deleteTaskRecord(task.id);
     }
   }
 
   private requireTask(taskId: string): MutableTaskRecord {
-    const record = this.tasks.get(taskId);
+    const record = this.tasks.get(this.resolveTaskId(taskId));
     if (!record) {
       throw new BackgroundTaskError(`task ${taskId} not found`, "not_found");
     }
     return record;
+  }
+
+  private resolveTaskId(taskId: string): string {
+    return this.tasks.has(taskId) ? taskId : this.aliases.get(taskId) ?? taskId;
+  }
+
+  private deleteTaskRecord(taskId: string): void {
+    this.tasks.delete(taskId);
+    this.outputs.delete(taskId);
+    for (const [alias, targetId] of this.aliases) {
+      if (targetId === taskId || alias === taskId) {
+        this.aliases.delete(alias);
+      }
+    }
   }
 
   private snapshot(record: MutableTaskRecord): BackgroundTaskSnapshot {
