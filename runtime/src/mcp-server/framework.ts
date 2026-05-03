@@ -4,8 +4,8 @@
  *
  * The donor server wires this processor directly to stdio. AgenC keeps
  * MS-01 pure: transports feed parsed JSON-RPC messages into this class,
- * and later MS-* items own stdio, HTTP/SSE, tool registration, and
- * permission integration.
+ * MS-02 attaches provider-backed tool registration, and later MS-* items
+ * own stdio, HTTP/SSE, and permission integration.
  */
 
 import {
@@ -29,6 +29,8 @@ import {
   type McpResponseMessage,
   type McpServerCapabilities,
   type McpServerInfo,
+  type McpToolCallParams,
+  type McpToolProvider,
 } from "./types.js";
 
 export interface McpServerFrameworkOptions {
@@ -36,6 +38,7 @@ export interface McpServerFrameworkOptions {
   readonly capabilities?: McpServerCapabilities;
   readonly instructions?: string | null;
   readonly defaultProtocolVersion?: string;
+  readonly toolProvider?: McpToolProvider;
 }
 
 export interface McpServerFrameworkSnapshot {
@@ -52,6 +55,10 @@ type ServerRequestCallback = (message: McpResponseMessage) => void;
 
 type InitializeParseResult =
   | { readonly ok: true; readonly params: McpInitializeParams }
+  | { readonly ok: false; readonly message: string };
+
+type ToolCallParseResult =
+  | { readonly ok: true; readonly params: McpToolCallParams }
   | { readonly ok: false; readonly message: string };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -177,6 +184,27 @@ function requestIdKey(id: McpRequestId): string | null {
   return null;
 }
 
+function parseToolCallParams(params: unknown): ToolCallParseResult {
+  const record = asRecord(params);
+  if (record === null) {
+    return { ok: false, message: "tools/call params must be an object" };
+  }
+  if (typeof record.name !== "string" || record.name.trim().length === 0) {
+    return { ok: false, message: "tools/call name must be a string" };
+  }
+  const args = asRecord(record.arguments);
+  if ("arguments" in record && args === null) {
+    return { ok: false, message: "tools/call arguments must be an object" };
+  }
+  return {
+    ok: true,
+    params: {
+      name: record.name,
+      ...(args !== null ? { arguments: args } : {}),
+    },
+  };
+}
+
 function errorObject(
   code: number,
   message: string,
@@ -208,6 +236,7 @@ export class McpServerFramework {
   private readonly capabilities: McpServerCapabilities;
   private readonly instructions: string | null;
   private readonly defaultProtocolVersion: string;
+  private readonly toolProvider: McpToolProvider | null;
   private initialized = false;
   private initializedNotificationReceived = false;
   private clientInfo: McpInitializeParams["clientInfo"] | null = null;
@@ -227,6 +256,7 @@ export class McpServerFramework {
     this.instructions = options.instructions ?? null;
     this.defaultProtocolVersion =
       options.defaultProtocolVersion ?? DEFAULT_PROTOCOL_VERSION;
+    this.toolProvider = options.toolProvider ?? null;
   }
 
   snapshot(): McpServerFrameworkSnapshot {
@@ -283,7 +313,80 @@ export class McpServerFramework {
     return this.handleMessage(parsed);
   }
 
+  async handleRawMessageAsync(raw: string): Promise<readonly McpOutgoingMessage[]> {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw) as unknown;
+    } catch {
+      return [
+        errorResponse(
+          null,
+          errorObject(MCP_ERROR_PARSE, "invalid JSON-RPC message"),
+        ),
+      ];
+    }
+    return this.handleMessageAsync(parsed);
+  }
+
   handleMessage(message: unknown): readonly McpOutgoingMessage[] {
+    return this.handleMessageCore(
+      message,
+      (request) => this.handleRequest(request),
+    ) as readonly McpOutgoingMessage[];
+  }
+
+  async handleMessageAsync(
+    message: unknown,
+  ): Promise<readonly McpOutgoingMessage[]> {
+    return await this.handleMessageCore(
+      message,
+      (request) => this.handleRequestAsync(request),
+    );
+  }
+
+  private async handleRequestAsync(
+    request: McpJsonRpcRequest,
+  ): Promise<McpOutgoingMessage> {
+    if (request.method !== "tools/call") {
+      return this.handleRequest(request);
+    }
+    if (!this.initialized) {
+      return errorResponse(
+        request.id,
+        errorObject(
+          MCP_ERROR_NOT_INITIALIZED,
+          "initialize must be called before other MCP requests",
+          { method: request.method },
+        ),
+      );
+    }
+    const parsedParams = parseToolCallParams(request.params);
+    if (!parsedParams.ok) {
+      return errorResponse(
+        request.id,
+        errorObject(MCP_ERROR_INVALID_PARAMS, parsedParams.message),
+      );
+    }
+    if (this.toolProvider === null) {
+      return response(request.id, {
+        content: [{ type: "text", text: `Unknown tool '${parsedParams.params.name}'` }],
+        isError: true,
+      });
+    }
+    return response(
+      request.id,
+      await this.toolProvider.callTool(parsedParams.params, {
+        requestId: request.id,
+      }),
+    );
+  }
+
+  private handleMessageCore(
+    message: unknown,
+    handleRequest: (
+      request: McpJsonRpcRequest,
+    ) => McpOutgoingMessage | Promise<McpOutgoingMessage>,
+  ): readonly McpOutgoingMessage[] | Promise<readonly McpOutgoingMessage[]> {
     const record = asRecord(message);
     if (record === null) {
       return [
@@ -317,7 +420,11 @@ export class McpServerFramework {
         ),
       ];
     }
-    return [this.handleRequest(record)];
+    const handled = handleRequest(record);
+    if (handled instanceof Promise) {
+      return handled.then((out) => [out]);
+    }
+    return [handled];
   }
 
   private handleRequest(request: McpJsonRpcRequest): McpOutgoingMessage {
@@ -348,12 +455,19 @@ export class McpServerFramework {
       case "prompts/get":
       case "logging/setLevel":
       case "completion/complete":
-      case "tools/call":
         return errorResponse(
           request.id,
           errorObject(MCP_ERROR_METHOD_NOT_FOUND, `method not found: ${request.method}`, {
             method: request.method,
           }),
+        );
+      case "tools/call":
+        return errorResponse(
+          request.id,
+          errorObject(
+            MCP_ERROR_INVALID_REQUEST,
+            "tools/call requires the async MCP dispatcher",
+          ),
         );
       default:
         return errorResponse(
@@ -399,7 +513,7 @@ export class McpServerFramework {
   }
 
   private handleListTools(): McpListToolsResult {
-    return { tools: [], nextCursor: null };
+    return { tools: this.toolProvider?.listTools() ?? [], nextCursor: null };
   }
 
   private handleNotification(notification: McpJsonRpcNotification): void {

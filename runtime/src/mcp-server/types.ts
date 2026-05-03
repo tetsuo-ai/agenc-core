@@ -6,8 +6,8 @@
  * Shape differences:
  *   - AgenC keeps the framework transport-neutral; stdio and HTTP/SSE
  *     adapters are later MS-* items.
- *   - Tool registration is intentionally absent from MS-01. The default
- *     framework only exposes an empty `tools/list` response.
+ *   - Tool registration is provider-backed so later transport work can
+ *     attach the same registry without changing the JSON-RPC core.
  */
 
 export type McpRequestId = string | number | null;
@@ -87,8 +87,42 @@ export interface McpInitializeResult {
 }
 
 export interface McpListToolsResult {
-  readonly tools: readonly unknown[];
+  readonly tools: readonly McpToolDefinition[];
   readonly nextCursor?: string | null;
+}
+
+export interface McpToolDefinition {
+  readonly name: string;
+  readonly description?: string;
+  readonly inputSchema: Record<string, unknown>;
+}
+
+export interface McpToolTextContent {
+  readonly type: "text";
+  readonly text: string;
+}
+
+export interface McpCallToolResult {
+  readonly content: readonly McpToolTextContent[];
+  readonly structuredContent?: unknown;
+  readonly isError?: boolean;
+}
+
+export interface McpToolCallParams {
+  readonly name: string;
+  readonly arguments?: Readonly<Record<string, unknown>>;
+}
+
+export interface McpToolCallContext {
+  readonly requestId: McpRequestId;
+}
+
+export interface McpToolProvider {
+  listTools(): readonly McpToolDefinition[];
+  callTool(
+    params: McpToolCallParams,
+    context: McpToolCallContext,
+  ): Promise<McpCallToolResult>;
 }
 
 export const MCP_JSON_RPC_VERSION = "2.0" as const;

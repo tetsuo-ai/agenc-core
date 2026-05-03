@@ -1,6 +1,6 @@
 {
   "contractName": "mcp-server-framework-parity",
-  "scope": "AgenC server-side MCP framework core before transports and tool registration.",
+  "scope": "AgenC server-side MCP framework core with tool registration, before transports and permission integration.",
   "sourceRoot": "donor-runtime-snapshot",
   "targetRoot": "..",
   "sourceCommit": "35aaa5d9fcb606fb6f27dd5747ecab3f4ba0c07e",
@@ -12,11 +12,13 @@
   "targetFiles": [
     "runtime/src/mcp-server/types.ts",
     "runtime/src/mcp-server/framework.ts",
+    "runtime/src/mcp-server/tools.ts",
     "runtime/src/mcp-server/index.ts",
     "runtime/src/mcp-server/PARITY.md"
   ],
   "testFiles": [
-    "runtime/src/mcp-server/framework.test.ts"
+    "runtime/src/mcp-server/framework.test.ts",
+    "runtime/src/mcp-server/tools.test.ts"
   ],
   "rows": [
     {
@@ -44,7 +46,7 @@
       "target": "runtime/src/mcp-server/framework.ts",
       "requiredBehaviors": [
         "ping returns an empty result",
-        "tools/list returns an empty list until MS-02 adds registration",
+        "tools/list returns registered tool definitions when a provider is configured and an empty list otherwise",
         "unsupported MCP requests return method-not-found errors",
         "ordinary requests before initialize return an explicit not-initialized error"
       ],
@@ -54,6 +56,26 @@
       ],
       "tests": [
         "runtime/src/mcp-server/framework.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "tool-registration",
+      "source": "mcp-server/src/message_processor.rs",
+      "target": "runtime/src/mcp-server/tools.ts",
+      "requiredBehaviors": [
+        "AgenC tools are surfaced as MCP tool definitions with name, description, and inputSchema",
+        "registerTool stores tool handlers and rejects duplicate names",
+        "tools/list returns the registered tool definitions",
+        "tools/call delegates to the AgenC tool registry dispatch path"
+      ],
+      "edgeCases": [
+        "malformed tools/call params return invalid-params errors",
+        "unknown tool calls return MCP tool results marked as errors",
+        "tool dispatch structured values become MCP structuredContent"
+      ],
+      "tests": [
+        "runtime/src/mcp-server/tools.test.ts"
       ],
       "status": "required"
     },
