@@ -120,7 +120,7 @@ import type {
   SkillHookMatcher,
 } from './settings/types.js'
 import { getHookDisplayText } from './hooks/hooksSettings.js'
-import { logForDebugging } from './debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { firstLineOf } from './stringUtils.js'
 import {

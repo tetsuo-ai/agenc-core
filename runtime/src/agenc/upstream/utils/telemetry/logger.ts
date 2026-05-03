@@ -1,5 +1,5 @@
 import type { DiagLogger } from '@opentelemetry/api'
-import { logForDebugging } from '../debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from '../log.js'
 export class AgenCCodeDiagLogger implements DiagLogger {
   error(message: string, ..._: unknown[]) {

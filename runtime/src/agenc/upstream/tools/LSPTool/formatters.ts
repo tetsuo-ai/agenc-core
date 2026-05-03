@@ -12,7 +12,7 @@ import type {
   SymbolInformation,
   SymbolKind,
 } from 'vscode-languageserver-types'
-import { logForDebugging } from '../../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 import { plural } from '../../utils/stringUtils.js'
 

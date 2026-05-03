@@ -59,7 +59,7 @@ import {
   safeResolvePath,
 } from '../../utils/fsOperations.js'
 import { modelSupportsAutoMode } from '../betas.js'
-import { logForDebugging } from '../debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { gracefulShutdown } from '../gracefulShutdown.js'
 import { getMainLoopModel } from '../model/model.js'
 import {

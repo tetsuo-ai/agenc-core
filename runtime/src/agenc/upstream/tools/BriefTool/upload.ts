@@ -24,7 +24,7 @@ import {
   getBridgeBaseUrlOverride,
 } from '../../bridge/bridgeConfig.js'
 import { getOauthConfig } from '../../constants/oauth.js'
-import { logForDebugging } from '../../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 

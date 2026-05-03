@@ -17,7 +17,7 @@ import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEve
 import { useAppState, useSetAppState } from '../../state/AppState.js';
 import type { ToolUseContext } from '../../Tool.js';
 import type { LocalJSXCommandContext, LocalJSXCommandOnDone } from '../../types/command.js';
-import { logForDebugging } from '../../utils/debug.js';
+import { logForDebugging } from 'src/utils/debug.js';
 type Props = {
   onDone: LocalJSXCommandOnDone;
   name?: string;

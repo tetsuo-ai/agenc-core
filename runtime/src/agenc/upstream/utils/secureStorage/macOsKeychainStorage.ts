@@ -1,5 +1,5 @@
 import { execaSync } from 'execa'
-import { logForDebugging } from '../debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { execFileNoThrow } from '../execFileNoThrow.js'
 import { execSyncWithDefaults_DEPRECATED } from '../execFileNoThrowPortable.js'
 import { jsonParse, jsonStringify } from '../slowOperations.js'

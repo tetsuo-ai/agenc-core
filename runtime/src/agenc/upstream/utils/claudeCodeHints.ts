@@ -15,7 +15,7 @@
  * See docs/agenc-code-hints.md for the vendor-facing spec.
  */
 
-import { logForDebugging } from './debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { createSignal } from './signal.js'
 
 export type AgenCCodeHintType = 'plugin'

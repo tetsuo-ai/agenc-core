@@ -44,7 +44,7 @@ import {
   checkAndRefreshOAuthTokenIfNeeded,
   getAgenCAIOAuthTokens,
 } from '../../utils/auth.js'
-import { logForDebugging } from '../../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { classifyAxiosError } from '../../utils/errors.js'
 import { getGithubRepo } from '../../utils/git.js'
 import {

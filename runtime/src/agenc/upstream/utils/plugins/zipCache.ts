@@ -42,7 +42,7 @@ import {
 } from 'fs/promises'
 import { tmpdir } from 'os'
 import { basename, dirname, join } from 'path'
-import { logForDebugging } from '../debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { parseZipModes, unzipFile } from '../dxt/zip.js'
 import { isEnvTruthy } from '../envUtils.js'
 import { getFsImplementation } from '../fsOperations.js'

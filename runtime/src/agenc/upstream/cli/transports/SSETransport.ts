@@ -1,6 +1,6 @@
 import axios, { type AxiosError } from 'axios'
 import type { StdoutMessage } from 'src/entrypoints/sdk/controlTypes.js'
-import { logForDebugging } from '../../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from '../../utils/diagLogs.js'
 import { errorMessage } from '../../utils/errors.js'
 import { getSessionIngressAuthHeaders } from '../../utils/sessionIngressAuth.js'

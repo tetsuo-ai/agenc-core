@@ -22,7 +22,7 @@ import { checkAndRefreshOAuthTokenIfNeeded, getAgenCAIOAuthTokens } from './auth
 import { checkGithubAppInstalled } from './background/remote/preconditions.js';
 import { deserializeMessages, type TeleportRemoteResponse } from './conversationRecovery.js';
 import { getCwd } from './cwd.js';
-import { logForDebugging } from './debug.js';
+import { logForDebugging } from 'src/utils/debug.js';
 import { detectCurrentRepositoryWithHost, parseGitHubRepository, parseGitRemote } from './detectRepository.js';
 import { isEnvTruthy } from './envUtils.js';
 import { TeleportOperationError, toError } from './errors.js';

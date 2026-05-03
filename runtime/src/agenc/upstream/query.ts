@@ -42,7 +42,7 @@ import {
   PROMPT_TOO_LONG_ERROR_MESSAGE,
   isPromptTooLongMessage,
 } from './services/api/errors.js'
-import { logAntError, logForDebugging } from './utils/debug.js'
+import { logAntError, logForDebugging } from 'src/utils/debug.js'
 import {
   createUserMessage,
   createUserInterruptionMessage,

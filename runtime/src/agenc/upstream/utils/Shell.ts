@@ -12,7 +12,7 @@ import {
 } from '../bootstrap/state.js'
 import { generateTaskId } from '../Task.js'
 import { pwd } from './cwd.js'
-import { logForDebugging } from './debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage, isENOENT } from './errors.js'
 import { getFsImplementation } from './fsOperations.js'
 import { logError } from './log.js'

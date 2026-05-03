@@ -64,7 +64,7 @@ function installCommonMocks(options?: {
       updater({ penguinModeOrgEnabled: options?.cachedEnabled === true }),
   }))
 
-  mock.module('./debug.js', () => ({
+  mock.module('src/utils/debug.js', () => ({
     logForDebugging: () => {},
   }))
 

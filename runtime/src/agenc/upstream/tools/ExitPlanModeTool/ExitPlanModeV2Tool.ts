@@ -18,7 +18,7 @@ import {
 } from '../../Tool.js'
 import { formatAgentId, generateRequestId } from '../../utils/agentId.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
-import { logForDebugging } from '../../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import {
   findInProcessTeammateTaskId,
   setAwaitingPlanApproval,

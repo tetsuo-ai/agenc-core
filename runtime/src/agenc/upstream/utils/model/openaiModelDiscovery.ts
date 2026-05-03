@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { logForDebugging } from '../debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import type { ModelOption } from './modelOptions.js'
 import { getAPIProvider } from './providers.js'
 

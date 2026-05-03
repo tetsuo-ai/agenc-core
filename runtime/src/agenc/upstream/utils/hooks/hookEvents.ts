@@ -8,7 +8,7 @@
 
 import { HOOK_EVENTS } from 'src/entrypoints/sdk/coreTypes.js'
 
-import { logForDebugging } from '../debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 
 /**
  * Hook events that are always emitted regardless of the includeHookEvents

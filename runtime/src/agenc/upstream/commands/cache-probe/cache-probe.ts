@@ -1,7 +1,7 @@
 import { getSessionId } from '../../bootstrap/state.js'
 import { resolveProviderRequest } from '../../services/api/providerConfig.js'
 import type { LocalCommandCall } from '../../types/command.js'
-import { logForDebugging } from '../../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { hydrateGithubModelsTokenFromSecureStorage } from '../../utils/githubModelsCredentials.js'
 import { getMainLoopModel } from '../../utils/model/model.js'

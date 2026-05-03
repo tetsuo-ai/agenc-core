@@ -11,7 +11,7 @@
 
 import { basename, join } from 'path'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
-import { logForDebugging } from '../debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from '../envUtils.js'
 import { isENOENT, toError } from '../errors.js'
 import { getFsImplementation } from '../fsOperations.js'

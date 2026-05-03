@@ -1,6 +1,6 @@
 import { queryHaiku } from '../../services/api/claude.js'
 import type { Message } from '../../types/message.js'
-import { logForDebugging } from '../../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 import { safeParseJSON } from '../../utils/json.js'
 import { extractTextContent } from '../../utils/messages.js'

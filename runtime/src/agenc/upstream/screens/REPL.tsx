@@ -31,7 +31,7 @@ import { hasCursorUpViewportYankBug } from '../ink/terminal.js';
 import { createFileStateCacheWithSizeLimit, mergeFileStateCaches, READ_FILE_STATE_CACHE_SIZE } from '../utils/fileStateCache.js';
 import { updateLastInteractionTime, getLastInteractionTime, getOriginalCwd, getProjectRoot, getSessionId, switchSession, setCostStateForRestore, getTurnHookDurationMs, getTurnHookCount, resetTurnHookDuration, getTurnToolDurationMs, getTurnToolCount, resetTurnToolDuration, getTurnClassifierDurationMs, getTurnClassifierCount, resetTurnClassifierDuration } from '../bootstrap/state.js';
 import { asSessionId, asAgentId } from '../types/ids.js';
-import { logForDebugging } from '../utils/debug.js';
+import { logForDebugging } from 'src/utils/debug.js';
 import { QueryGuard } from '../utils/QueryGuard.js';
 import { isEnvTruthy } from '../utils/envUtils.js';
 import { formatTokens, truncateToWidth } from '../utils/format.js';

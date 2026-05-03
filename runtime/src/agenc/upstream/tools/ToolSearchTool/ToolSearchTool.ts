@@ -12,7 +12,7 @@ import {
   type ToolDef,
   type Tools,
 } from '../../Tool.js'
-import { logForDebugging } from '../../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { escapeRegExp } from '../../utils/stringUtils.js'
 import { isToolSearchEnabledOptimistic } from '../../utils/toolSearch.js'

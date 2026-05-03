@@ -17,7 +17,7 @@ import {
 } from '../services/analytics/index.js'
 import { GREP_TOOL_NAME } from '../tools/GrepTool/prompt.js'
 import { isReplModeEnabled } from '../tools/REPLTool/constants.js'
-import { logForDebugging } from '../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { hasEmbeddedSearchTools } from '../utils/embeddedTools.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
 import { formatFileSize } from '../utils/format.js'

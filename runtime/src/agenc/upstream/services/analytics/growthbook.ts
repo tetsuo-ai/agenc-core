@@ -13,7 +13,7 @@ import {
   getGlobalConfig,
   saveGlobalConfig,
 } from '../../utils/config.js'
-import { logForDebugging } from '../../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { toError } from '../../utils/errors.js'
 import { getAuthHeaders } from '../../utils/http.js'
 import { logError } from '../../utils/log.js'

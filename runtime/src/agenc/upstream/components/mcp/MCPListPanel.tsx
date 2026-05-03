@@ -6,7 +6,7 @@ import { Box, color, Link, Text, useTheme } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import type { ConfigScope } from '../../services/mcp/types.js';
 import { describeMcpConfigFilePath } from '../../services/mcp/utils.js';
-import { isDebugMode } from '../../utils/debug.js';
+import { isDebugMode } from 'src/utils/debug.js';
 import { plural } from '../../utils/stringUtils.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
 import { Byline } from '../design-system/Byline.js';

@@ -1,4 +1,4 @@
-import { logForDebugging } from '../../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { isBareMode } from '../../utils/envUtils.js'
 import { errorMessage } from '../../utils/errors.js'
 import { logError } from '../../utils/log.js'

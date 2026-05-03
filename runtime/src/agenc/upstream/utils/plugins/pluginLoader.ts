@@ -58,7 +58,7 @@ import type {
   PluginLoadResult,
   PluginManifest,
 } from '../../types/plugin.js'
-import { logForDebugging } from '../debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvTruthy } from '../envUtils.js'
 import {
   errorMessage,

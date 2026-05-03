@@ -30,7 +30,7 @@ import {
   readCodexCredentialsAsync,
   refreshCodexAccessTokenIfNeeded,
 } from '../../utils/codexCredentials.js'
-import { logForDebugging } from '../../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { isBareMode, isEnvTruthy } from '../../utils/envUtils.js'
 import { resolveGeminiCredential } from '../../utils/geminiAuth.js'
 import { hydrateGeminiAccessTokenFromSecureStorage } from '../../utils/geminiCredentials.js'

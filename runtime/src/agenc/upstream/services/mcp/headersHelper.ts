@@ -1,6 +1,6 @@
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import { checkHasTrustDialogAccepted } from '../../utils/config.js'
-import { logAntError } from '../../utils/debug.js'
+import { logAntError } from 'src/utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 import { execFileNoThrowWithCwd } from '../../utils/execFileNoThrow.js'
 import { logError, logMCPDebug, logMCPError } from '../../utils/log.js'

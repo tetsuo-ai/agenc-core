@@ -15,7 +15,7 @@ import { startsWithApiErrorPrefix } from '../services/api/errors.js';
 import type { Message } from '../types/message.js';
 import { checkAndRefreshOAuthTokenIfNeeded } from '../utils/auth.js';
 import { openBrowser } from '../utils/browser.js';
-import { logForDebugging } from '../utils/debug.js';
+import { logForDebugging } from 'src/utils/debug.js';
 import { env } from '../utils/env.js';
 import { type GitRepoState, getGitState, getIsGit } from '../utils/git.js';
 import { getAuthHeaders, getUserAgent } from '../utils/http.js';

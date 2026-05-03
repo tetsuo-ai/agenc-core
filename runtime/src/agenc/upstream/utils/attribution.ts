@@ -18,7 +18,7 @@ import {
   isInternalModelRepoCached,
   sanitizeModelName,
 } from './commitAttribution.js'
-import { logForDebugging } from './debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { parseJSONL } from './json.js'
 import { logError } from './log.js'
 import { getAPIProvider } from './model/providers.js'

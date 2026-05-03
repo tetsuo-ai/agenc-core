@@ -6,7 +6,7 @@ import type { SetAppState, Task, TaskContext, TaskStateBase } from '../../Task.j
 import { createTaskStateBase, generateTaskId } from '../../Task.js';
 import { TodoWriteTool } from '../../tools/TodoWriteTool/TodoWriteTool.js';
 import { type BackgroundRemoteSessionPrecondition, checkBackgroundRemoteSessionEligibility } from '../../utils/background/remote/remoteSession.js';
-import { logForDebugging } from '../../utils/debug.js';
+import { logForDebugging } from 'src/utils/debug.js';
 import { logError } from '../../utils/log.js';
 import { enqueuePendingNotification } from '../../utils/messageQueueManager.js';
 import { extractTag, extractTextContent } from '../../utils/messages.js';

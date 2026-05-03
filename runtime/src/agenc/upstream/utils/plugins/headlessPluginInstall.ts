@@ -11,7 +11,7 @@
 
 import { logEvent } from '../../services/analytics/index.js'
 import { registerCleanup } from '../cleanupRegistry.js'
-import { logForDebugging } from '../debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { withDiagnosticsTiming } from '../diagLogs.js'
 import { getFsImplementation } from '../fsOperations.js'
 import { logError } from '../log.js'

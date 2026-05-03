@@ -1,7 +1,7 @@
 import axios from 'axios'
 import { hasProfileScope, isAgenCAISubscriber } from '../../utils/auth.js'
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
-import { logForDebugging } from '../../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 import { getAuthHeaders, withOAuth401Retry } from '../../utils/http.js'
 import { logError } from '../../utils/log.js'

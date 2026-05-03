@@ -8,7 +8,7 @@ import {
   logEvent,
 } from '../services/analytics/index.js'
 import { isPolicyAllowed } from '../services/policyLimits/index.js'
-import { logForDebugging } from './debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { isEnvTruthy } from './envUtils.js'
 import { getErrnoCode } from './errors.js'

@@ -14,7 +14,7 @@ import {
   saveGlobalConfig,
 } from '../../utils/config.js'
 import { getCwd } from '../../utils/cwd.js'
-import { logForDebugging } from '../../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { getErrnoCode } from '../../utils/errors.js'
 import { getFsImplementation } from '../../utils/fsOperations.js'
 import { safeParseJSON } from '../../utils/json.js'

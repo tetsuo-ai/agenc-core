@@ -14,7 +14,7 @@
  */
 
 import { dirname, join } from 'path'
-import { logForDebugging } from '../debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage, isENOENT, toError } from '../errors.js'
 import { getFsImplementation } from '../fsOperations.js'
 import { logError } from '../log.js'

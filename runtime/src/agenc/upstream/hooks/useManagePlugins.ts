@@ -14,7 +14,7 @@ import {
 } from '../state/pluginCommandsStore.js'
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
 import { count } from '../utils/array.js'
-import { logForDebugging } from '../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from '../utils/diagLogs.js'
 import { toError } from '../utils/errors.js'
 import { logError } from '../utils/log.js'

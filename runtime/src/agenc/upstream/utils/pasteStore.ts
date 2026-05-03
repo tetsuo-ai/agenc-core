@@ -1,7 +1,7 @@
 import { createHash } from 'crypto'
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'fs/promises'
 import { join } from 'path'
-import { logForDebugging } from './debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { getAgenCConfigHomeDir } from './envUtils.js'
 import { isENOENT } from './errors.js'
 

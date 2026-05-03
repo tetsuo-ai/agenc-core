@@ -161,7 +161,7 @@ import stickers from './commands/stickers/index.js'
 import advisor from './commands/advisor.js'
 import { logError } from './utils/log.js'
 import { toError } from './utils/errors.js'
-import { logForDebugging } from './utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import {
   getSkillDirCommands,
   clearSkillCaches,

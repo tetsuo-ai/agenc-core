@@ -1,7 +1,7 @@
 import { getMainThreadAgentType } from '../bootstrap/state.js'
 import type { HookResultMessage } from '../types/message.js'
 import { createAttachmentMessage } from './attachments.js'
-import { logForDebugging } from './debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { withDiagnosticsTiming } from './diagLogs.js'
 import { isBareMode } from './envUtils.js'
 import { updateWatchPaths } from './hooks/fileChangedWatcher.js'

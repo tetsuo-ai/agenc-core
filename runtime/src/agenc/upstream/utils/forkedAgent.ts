@@ -25,7 +25,7 @@ import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
 import type { AgentId } from '../types/ids.js'
 import type { Message } from '../types/message.js'
 import { createChildAbortController } from './abortController.js'
-import { logForDebugging } from './debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { cloneFileStateCache } from './fileStateCache.js'
 import type { REPLHookContext } from './hooks/postSamplingHooks.js'
 import {

@@ -27,7 +27,7 @@
  * - query_end: End of query
  */
 
-import { logForDebugging } from './debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvTruthy } from './envUtils.js'
 import { formatMs, formatTimelineLine, getPerformance } from './profilerBase.js'
 

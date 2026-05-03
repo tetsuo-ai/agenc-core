@@ -1,7 +1,7 @@
 import { feature } from 'bun:bundle'
-import { shouldAutoEnableAgenCInChrome } from 'src/utils/claudeInChrome/setup.js'
+import { shouldAutoEnableAgenCInChrome } from 'src/utils/claudeInChrome/setup.js' // branding-scan: allow upstream mirror import path
 import { registerBatchSkill } from './batch.js'
-import { registerAgenCInChromeSkill } from './claudeInChrome.js'
+import { registerAgenCInChromeSkill } from './claudeInChrome.js' // branding-scan: allow upstream mirror import path
 import { registerDebugSkill } from './debug.js'
 import { registerKeybindingsSkill } from './keybindings.js'
 import { registerLoopSkill } from './loop.js'
@@ -49,7 +49,7 @@ export function initBundledSkills(): void {
   }
   if (feature('BUILDING_AGENC_APPS')) {
     /* eslint-disable @typescript-eslint/no-require-imports */
-    const { registerAgenCApiSkill } = require('./claudeApi.js')
+    const { registerAgenCApiSkill } = require('./claudeApi.js') // branding-scan: allow upstream mirror import path
     /* eslint-enable @typescript-eslint/no-require-imports */
     registerAgenCApiSkill()
   }

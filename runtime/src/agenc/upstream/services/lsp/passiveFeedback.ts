@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'url'
 import type { PublishDiagnosticsParams } from 'vscode-languageserver-protocol'
-import { logForDebugging } from '../../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { toError } from '../../utils/errors.js'
 import { logError } from '../../utils/log.js'
 import { jsonStringify } from '../../utils/slowOperations.js'

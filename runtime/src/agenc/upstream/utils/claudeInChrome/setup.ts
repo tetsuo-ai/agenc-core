@@ -12,7 +12,7 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/gr
 import type { ScopedMcpServerConfig } from '../../services/mcp/types.js'
 import { isInBundledMode } from '../bundledMode.js'
 import { getGlobalConfig, saveGlobalConfig } from '../config.js'
-import { logForDebugging } from '../debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import {
   getAgenCConfigHomeDir,
   isEnvDefinedFalsy,

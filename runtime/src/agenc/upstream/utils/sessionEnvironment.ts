@@ -1,7 +1,7 @@
 import { mkdir, readdir, readFile, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { getSessionId } from '../bootstrap/state.js'
-import { logForDebugging } from './debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { getAgenCConfigHomeDir } from './envUtils.js'
 import { errorMessage, getErrnoCode } from './errors.js'
 import { getPlatform } from './platform.js'

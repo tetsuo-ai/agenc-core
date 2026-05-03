@@ -7,7 +7,7 @@
  */
 
 import { getGlobalConfig } from '../../../utils/config.js'
-import { logForDebugging } from '../../../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from '../../../utils/log.js'
 
 export type TeammateMode = 'auto' | 'tmux' | 'in-process'

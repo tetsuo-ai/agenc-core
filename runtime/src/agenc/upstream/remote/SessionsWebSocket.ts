@@ -7,7 +7,7 @@ import type {
   SDKControlRequestInner,
   SDKControlResponse,
 } from '../entrypoints/sdk/controlTypes.js'
-import { logForDebugging } from '../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage } from '../utils/errors.js'
 import { logError } from '../utils/log.js'
 import { getWebSocketTLSOptions } from '../utils/mtls.js'

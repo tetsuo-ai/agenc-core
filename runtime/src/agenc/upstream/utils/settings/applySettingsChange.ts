@@ -1,5 +1,5 @@
 import type { AppState } from '../../state/AppState.js'
-import { logForDebugging } from '../debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { updateHooksConfigSnapshot } from '../hooks/hooksConfigSnapshot.js'
 import {
   createDisabledBypassPermissionsContext,

@@ -67,7 +67,7 @@ import { tokenCountWithEstimation } from '../../utils/tokens.js'
 import { createAbortController } from '../abortController.js'
 import { type AgentContext, runWithAgentContext } from '../agentContext.js'
 import { count } from '../array.js'
-import { logForDebugging } from '../debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { cloneFileStateCache } from '../fileStateCache.js'
 import {
   SUBAGENT_REJECT_MESSAGE,

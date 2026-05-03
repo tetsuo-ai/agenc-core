@@ -14,7 +14,7 @@ import type {
 } from '../services/oauth/types.js'
 import { getCwd } from '../utils/cwd.js'
 import { registerCleanup } from './cleanupRegistry.js'
-import { logForDebugging } from './debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { getGlobalAgenCFile } from './env.js'
 import { getAgenCConfigHomeDir, isEnvTruthy } from './envUtils.js'

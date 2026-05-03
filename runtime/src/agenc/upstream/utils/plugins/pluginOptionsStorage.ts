@@ -14,7 +14,7 @@
 
 import memoize from 'lodash-es/memoize.js'
 import type { LoadedPlugin } from '../../types/plugin.js'
-import { logForDebugging } from '../debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from '../log.js'
 import { getSecureStorage } from '../secureStorage/index.js'
 import {

@@ -26,7 +26,7 @@ import {
 import { parseCommandRaw } from '../../utils/bash/parser.js'
 import { tryParseShellCommand } from '../../utils/bash/shellQuote.js'
 import { getCwd } from '../../utils/cwd.js'
-import { logForDebugging } from '../../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { AbortError } from '../../utils/errors.js'
 import type {

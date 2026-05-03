@@ -13,7 +13,7 @@ import type {
 import { getPlanSlugCache, getSessionId } from '../bootstrap/state.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../tools/ExitPlanModeTool/constants.js'
 import { getCwd } from './cwd.js'
-import { logForDebugging } from './debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { getAgenCConfigHomeDir } from './envUtils.js'
 import { isENOENT } from './errors.js'
 import { getEnvironmentKind } from './filePersistence/outputsScanner.js'

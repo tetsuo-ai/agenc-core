@@ -14,7 +14,7 @@ import type { TaskContext } from '../../Task.js'
 import { updateAgentSummary } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { filterIncompleteToolCalls } from '../../tools/AgentTool/runAgent.js'
 import type { AgentId } from '../../types/ids.js'
-import { logForDebugging } from '../../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import {
   type CacheSafeParams,
   runForkedAgent,

@@ -3,7 +3,7 @@ import { stat } from 'fs/promises'
 import * as platformPath from 'path'
 import { getIsRemoteMode } from '../../bootstrap/state.js'
 import { registerCleanup } from '../cleanupRegistry.js'
-import { logForDebugging } from '../debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage } from '../errors.js'
 import {
   type ConfigChangeSource,

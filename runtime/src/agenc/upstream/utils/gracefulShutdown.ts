@@ -37,7 +37,7 @@ import {
 } from '../services/analytics/index.js'
 import type { AppState } from '../state/AppState.js'
 import { runCleanupFunctions } from './cleanupRegistry.js'
-import { logForDebugging } from './debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { isEnvTruthy } from './envUtils.js'
 import { getCurrentSessionTitle, sessionIdExists } from './sessionStorage.js'

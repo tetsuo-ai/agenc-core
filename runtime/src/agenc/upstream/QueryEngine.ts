@@ -46,7 +46,7 @@ import type { AttributionState } from './utils/commitAttribution.js'
 import { getGlobalConfig } from './utils/config.js'
 import { getCwd } from './utils/cwd.js'
 import { isBareMode, isEnvTruthy } from './utils/envUtils.js'
-import { logForDebugging } from './utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { getFastModeState } from './utils/fastMode.js'
 import {
   type FileHistoryState,

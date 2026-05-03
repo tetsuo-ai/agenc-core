@@ -10,7 +10,7 @@ import {
 } from '../../bootstrap/state.js'
 import { getRemoteManagedSettingsSyncFromCache } from '../../services/remoteManagedSettings/syncCacheState.js'
 import { uniq } from '../array.js'
-import { logForDebugging } from '../debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from '../diagLogs.js'
 import { getAgenCConfigHomeDir, isEnvTruthy } from '../envUtils.js'
 import { getErrnoCode, isENOENT } from '../errors.js'

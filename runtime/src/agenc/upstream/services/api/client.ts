@@ -22,7 +22,7 @@ import {
   getSessionId,
 } from '../../bootstrap/state.js'
 import { getOauthConfig } from '../../constants/oauth.js'
-import { isDebugToStdErr, logForDebugging } from '../../utils/debug.js'
+import { isDebugToStdErr, logForDebugging } from 'src/utils/debug.js'
 import {
   getAWSRegion,
   getVertexRegionForModel,

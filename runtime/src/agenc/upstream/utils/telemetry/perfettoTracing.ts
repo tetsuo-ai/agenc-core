@@ -28,7 +28,7 @@ import { mkdir, writeFile } from 'fs/promises'
 import { dirname, join } from 'path'
 import { getSessionId } from '../../bootstrap/state.js'
 import { registerCleanup } from '../cleanupRegistry.js'
-import { logForDebugging } from '../debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import {
   getAgenCConfigHomeDir,
   isEnvDefinedFalsy,

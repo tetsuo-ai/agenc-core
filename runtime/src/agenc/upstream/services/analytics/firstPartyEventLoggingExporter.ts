@@ -21,7 +21,7 @@ import {
   isAgenCAISubscriber,
 } from '../../utils/auth.js'
 import { checkHasTrustDialogAccepted } from '../../utils/config.js'
-import { logForDebugging } from '../../utils/debug.js'
+import { logForDebugging } from 'src/utils/debug.js'
 import { getAgenCConfigHomeDir } from '../../utils/envUtils.js'
 import { errorMessage, isFsInaccessible, toError } from '../../utils/errors.js'
 import { getAuthHeaders } from '../../utils/http.js'
