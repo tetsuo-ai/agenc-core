@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import {
   parseAgenCStateExportPayload,
 } from "./export-import.js";
 import { openStateDatabases, type StateSqliteDriver } from "./sqlite-driver.js";
+import { readRotatedToolOutputLog } from "./tool-output-rotation.js";
 
 let sourceHome = "";
 let targetHome = "";
@@ -110,6 +111,69 @@ describe("state export/import", () => {
       agentRun: payload.agentRun,
       sessionStateSnapshots: payload.sessionStateSnapshots,
       inFlightToolCalls: payload.inFlightToolCalls,
+    });
+  });
+
+  it("caps oversized imported tool output partials through rotation", () => {
+    seedAgentState(source);
+    const payload = exportAgentState(source, "agent-export");
+    const call = payload.inFlightToolCalls[0];
+    if (call === undefined) throw new Error("tool call missing");
+    const oversized = {
+      ...payload,
+      inFlightToolCalls: [
+        {
+          ...call,
+          outputPartial: "abcdefghij",
+        },
+      ],
+    };
+
+    importAgentState(target, oversized, {
+      agencHome: targetHome,
+      outputRotation: {
+        outputPartialMaxBytes: 4,
+        logMaxBytes: 3,
+        rotatedLogCount: 1,
+      },
+    });
+
+    const row = toolCallOutput(target, "session-export", "tool-export");
+    expect(row.output_partial).toBe("abcd");
+    expect(row.output_log_path).toBeDefined();
+    expect(row.output_log_bytes).toBe(6);
+    if (row.output_log_path === null) throw new Error("output log path missing");
+    expect(readRotatedToolOutputLog(row.output_log_path, {
+      outputPartialMaxBytes: 4,
+      logMaxBytes: 3,
+      rotatedLogCount: 1,
+    })).toBe("efghij");
+    expect(existsSync(`${row.output_log_path}.2`)).toBe(false);
+  });
+
+  it("omits non-portable spilled log paths from state exports", () => {
+    seedAgentState(source);
+    source
+      .prepareState<[string, number, string, string]>(
+        `UPDATE in_flight_tool_calls
+         SET output_log_path = ?,
+             output_log_bytes = ?
+         WHERE session_id = ?
+           AND tool_call_id = ?`,
+      )
+      .run("/tmp/source-machine-tool.log", 42, "session-export", "tool-export");
+
+    const payload = exportAgentState(source, "agent-export");
+    const call = payload.inFlightToolCalls[0];
+    if (call === undefined) throw new Error("tool call missing");
+
+    expect(call).not.toHaveProperty("outputLogPath");
+    expect(call).not.toHaveProperty("outputLogBytes");
+    importAgentState(target, payload, { agencHome: targetHome });
+    expect(toolCallOutput(target, "session-export", "tool-export")).toMatchObject({
+      output_partial: "partial",
+      output_log_path: null,
+      output_log_bytes: 0,
     });
   });
 
@@ -423,4 +487,31 @@ function toolCallStatus(
        WHERE session_id = ? AND tool_call_id = ?`,
     )
     .get(sessionId, toolCallId)?.status;
+}
+
+function toolCallOutput(
+  driver: StateSqliteDriver,
+  sessionId: string,
+  toolCallId: string,
+): {
+  readonly output_partial: string | null;
+  readonly output_log_path: string | null;
+  readonly output_log_bytes: number;
+} {
+  const row = driver
+    .prepareState<
+      [string, string],
+      {
+        output_partial: string | null;
+        output_log_path: string | null;
+        output_log_bytes: number;
+      }
+    >(
+      `SELECT output_partial, output_log_path, output_log_bytes
+       FROM in_flight_tool_calls
+       WHERE session_id = ? AND tool_call_id = ?`,
+    )
+    .get(sessionId, toolCallId);
+  if (row === undefined) throw new Error("tool call missing");
+  return row;
 }

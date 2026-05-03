@@ -79,6 +79,8 @@ describe("openStateDatabases", () => {
         "status",
         "output_partial",
         "started_at",
+        "output_log_path",
+        "output_log_bytes",
       ]);
       expect(toolCallColumns.find((column) => column.name === "session_id"))
         .toMatchObject({ notnull: 1, pk: 1 });

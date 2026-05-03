@@ -1,9 +1,13 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgenCSessionSnapshotPolicy } from "./snapshot-policy.js";
 import { openStateDatabases, type StateSqliteDriver } from "./sqlite-driver.js";
+import {
+  readRotatedToolOutputLog,
+  resolveToolOutputLogPath,
+} from "./tool-output-rotation.js";
 
 let home = "";
 let cwd = "";
@@ -31,7 +35,12 @@ describe("AgenCSessionSnapshotPolicy", () => {
         "2026-05-01T00:00:01.000Z",
         "2026-05-01T00:00:02.000Z",
         "2026-05-01T00:00:03.000Z",
+        "2026-05-01T00:00:04.000Z",
+        "2026-05-01T00:00:05.000Z",
+        "2026-05-01T00:00:06.000Z",
+        "2026-05-01T00:00:07.000Z",
       ]),
+      agencHome: home,
     });
 
     policy.recordMessageExchange({
@@ -101,7 +110,7 @@ describe("AgenCSessionSnapshotPolicy", () => {
         acceptedAt: "2026-05-01T00:00:00.000Z",
       },
     ]);
-    expect(runLastSnapshotAt("run-1")).toBe("2026-05-01T00:00:03.000Z");
+    expect(runLastSnapshotAt("run-1")).toBe("2026-05-01T00:00:05.000Z");
   });
 
   it("periodically flushes tracked sessions and stops the timer", () => {
@@ -216,6 +225,132 @@ describe("AgenCSessionSnapshotPolicy", () => {
         },
       },
     });
+  });
+
+  it("persists capped tool output rows from daemon tool events", () => {
+    seedRun("agent-output", "session-output");
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      agencHome: home,
+      now: clock([
+        "2026-05-01T00:00:00.000Z",
+        "2026-05-01T00:00:01.000Z",
+        "2026-05-01T00:00:02.000Z",
+        "2026-05-01T00:00:03.000Z",
+      ]),
+      outputRotation: {
+        outputPartialMaxBytes: 4,
+        logMaxBytes: 3,
+        rotatedLogCount: 1,
+      },
+    });
+
+    policy.recordSessionEvent("session-output", {
+      method: "event.tool_request",
+      params: {
+        agentId: "agent-output",
+        eventId: "event-tool-output-start",
+        requestId: "tool-output",
+        toolName: "Bash",
+        input: { command: "printf output" },
+      },
+    });
+    policy.recordSessionEvent("session-output", {
+      method: "event.session_event",
+      params: {
+        agentId: "agent-output",
+        event: {
+          type: "tool_call_completed",
+          payload: {
+            callId: "tool-output",
+            result: "abcdefghij",
+            isError: false,
+            metadata: {
+              toolName: "Bash",
+            },
+          },
+        },
+      },
+    });
+
+    const outputLogPath = resolveToolOutputLogPath({
+      agencHome: home,
+      agentId: "agent-output",
+      toolCallId: "tool-output",
+    });
+    expect(inFlightToolOutput("session-output", "tool-output")).toEqual({
+      status: "completed",
+      output_partial: "abcd",
+      output_log_path: outputLogPath,
+      output_log_bytes: 6,
+    });
+    expect(existsSync(outputLogPath)).toBe(true);
+    expect(existsSync(`${outputLogPath}.1`)).toBe(true);
+  });
+
+  it("persists capped running output from tool_progress chunks", () => {
+    seedRun("agent-progress", "session-progress");
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      agencHome: home,
+      now: clock([
+        "2026-05-01T00:00:00.000Z",
+        "2026-05-01T00:00:01.000Z",
+        "2026-05-01T00:00:02.000Z",
+        "2026-05-01T00:00:03.000Z",
+        "2026-05-01T00:00:04.000Z",
+        "2026-05-01T00:00:05.000Z",
+      ]),
+      outputRotation: {
+        outputPartialMaxBytes: 4,
+        logMaxBytes: 3,
+        rotatedLogCount: 1,
+      },
+    });
+
+    policy.recordSessionEvent("session-progress", {
+      method: "event.tool_request",
+      params: {
+        agentId: "agent-progress",
+        eventId: "event-tool-progress-start",
+        requestId: "tool-progress",
+        toolName: "Bash",
+        input: { command: "printf output" },
+      },
+    });
+    for (const chunk of ["abc", "def", "ghij"]) {
+      policy.recordSessionEvent("session-progress", {
+        method: "event.session_event",
+        params: {
+          agentId: "agent-progress",
+          event: {
+            type: "tool_progress",
+            payload: {
+              callId: "tool-progress",
+              toolName: "Bash",
+              chunk,
+            },
+          },
+        },
+      });
+    }
+
+    const outputLogPath = resolveToolOutputLogPath({
+      agencHome: home,
+      agentId: "agent-progress",
+      toolCallId: "tool-progress",
+    });
+    expect(inFlightToolOutput("session-progress", "tool-progress")).toEqual({
+      status: "running",
+      output_partial: "abcd",
+      output_log_path: outputLogPath,
+      output_log_bytes: 6,
+    });
+    expect(readRotatedToolOutputLog(outputLogPath, {
+      outputPartialMaxBytes: 4,
+      logMaxBytes: 3,
+      rotatedLogCount: 1,
+    })).toBe("efghij");
+    expect(existsSync(outputLogPath)).toBe(true);
+    expect(existsSync(`${outputLogPath}.1`)).toBe(true);
   });
 
   it("applies snapshotRetention after writing each snapshot", () => {
@@ -335,6 +470,35 @@ function sessionAgent(sessionId: string): string | undefined {
       "SELECT agent_id FROM session_agent_links WHERE session_id = ?",
     )
     .get(sessionId)?.agent_id;
+}
+
+function inFlightToolOutput(
+  sessionId: string,
+  toolCallId: string,
+): {
+  readonly status: string;
+  readonly output_partial: string | null;
+  readonly output_log_path: string | null;
+  readonly output_log_bytes: number;
+} {
+  const row = driver
+    .prepareState<
+      [string, string],
+      {
+        status: string;
+        output_partial: string | null;
+        output_log_path: string | null;
+        output_log_bytes: number;
+      }
+    >(
+      `SELECT status, output_partial, output_log_path, output_log_bytes
+       FROM in_flight_tool_calls
+       WHERE session_id = ?
+         AND tool_call_id = ?`,
+    )
+    .get(sessionId, toolCallId);
+  if (row === undefined) throw new Error("tool output row missing");
+  return row;
 }
 
 function clock(values: readonly string[]): () => string {

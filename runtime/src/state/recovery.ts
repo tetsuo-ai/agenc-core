@@ -50,6 +50,8 @@ export interface FailedInFlightToolCall {
   readonly statusBefore: string;
   readonly startedAt: string;
   readonly outputPartial?: string;
+  readonly outputLogPath?: string;
+  readonly outputLogBytes?: number;
 }
 
 export type DaemonStartupRecoveryWarningCode =
@@ -98,6 +100,8 @@ interface InFlightToolCallRow {
   readonly args_json: string;
   readonly status: string;
   readonly output_partial: string | null;
+  readonly output_log_path: string | null;
+  readonly output_log_bytes: number;
   readonly started_at: string;
 }
 
@@ -250,6 +254,8 @@ function markStaleToolCallsFailed(
          args_json,
          status,
          output_partial,
+         output_log_path,
+         output_log_bytes,
          started_at
        FROM in_flight_tool_calls
        WHERE status NOT IN (${placeholders(TERMINAL_TOOL_CALL_STATUSES.length)})
@@ -300,6 +306,8 @@ function toFailedToolCall(
     statusBefore: row.status,
     startedAt: row.started_at,
     ...(row.output_partial !== null ? { outputPartial: row.output_partial } : {}),
+    ...(row.output_log_path !== null ? { outputLogPath: row.output_log_path } : {}),
+    ...(row.output_log_bytes > 0 ? { outputLogBytes: row.output_log_bytes } : {}),
   };
 }
 
