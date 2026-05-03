@@ -53,6 +53,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { redactSecretsInValue } from "../secrets/index.js";
 
 // ---------------------------------------------------------------------------
 // Environment + schema constants
@@ -364,7 +365,11 @@ export class TraceWriter {
     const rawPayloadId = `raw_payload:${ordinal}`;
     const relativePath = `${PAYLOADS_DIR_NAME}/${ordinal}.json`;
     const absolutePath = join(this.payloadsDir, `${ordinal}.json`);
-    writeFileSync(absolutePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    writeFileSync(
+      absolutePath,
+      `${JSON.stringify(redactSecretsInValue(value), null, 2)}\n`,
+      "utf8",
+    );
     return { rawPayloadId, kind, path: relativePath };
   }
 
@@ -388,7 +393,7 @@ export class TraceWriter {
       ...(context.agencTurnId !== undefined
         ? { agencTurnId: context.agencTurnId }
         : {}),
-      payload,
+      payload: redactSecretsInValue(payload) as RawTraceEventPayload,
     };
     const line = `${JSON.stringify(event)}\n`;
     writeSync(this.eventLogFd, line);

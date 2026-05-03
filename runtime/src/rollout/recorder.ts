@@ -17,6 +17,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import type { JsonValue } from "../app-server/protocol/index.js";
+import { redactSecrets, redactSecretsInValue } from "../secrets/index.js";
 import {
   AGENC_ROLLOUT_SESSIONS_DIR,
   buildAgenCRolloutFileName,
@@ -97,10 +98,12 @@ export class AgenCRolloutRecorder {
       seq: this.#seq + 1,
       sessionId: this.sessionId,
       writtenAt: options.now?.() ?? new Date().toISOString(),
-      item: sanitizeAgenCRolloutItemForPersistence(
-        item,
-        options.persistenceMode ?? "limited",
-      ),
+      item: redactSecretsInValue(
+        sanitizeAgenCRolloutItemForPersistence(
+          item,
+          options.persistenceMode ?? "limited",
+        ),
+      ) as JsonValue,
     };
     writeSync(fd, `${JSON.stringify(line)}\n`, undefined, "utf8");
     this.#seq = line.seq;
@@ -229,14 +232,14 @@ function sanitizeExecCommandPayload(
     aggregateCommandOutput(sanitized);
   if (aggregatedOutput !== undefined) {
     sanitized.aggregated_output = truncateMiddleChars(
-      aggregatedOutput,
+      redactSecrets(aggregatedOutput),
       PERSISTED_EXEC_AGGREGATED_OUTPUT_MAX_BYTES,
     );
   }
   const aggregatedOutputCamel = readString(sanitized.aggregatedOutput);
   if (aggregatedOutputCamel !== undefined) {
     sanitized.aggregatedOutput = truncateMiddleChars(
-      aggregatedOutputCamel,
+      redactSecrets(aggregatedOutputCamel),
       PERSISTED_EXEC_AGGREGATED_OUTPUT_MAX_BYTES,
     );
   }

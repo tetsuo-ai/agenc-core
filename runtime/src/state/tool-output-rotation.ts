@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { TextDecoder } from "node:util";
 import { getAgencHomeDir } from "../session/session-store.js";
+import { redactSecrets, redactSecretsInValue } from "../secrets/index.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 
 export interface ToolOutputRotationPolicy {
@@ -505,13 +506,13 @@ function utf8Tail(buffer: Buffer, maxBytes: number): Buffer {
 }
 
 function stringifyForSql(value: unknown): string {
-  const serialized = JSON.stringify(value ?? null);
+  const serialized = JSON.stringify(redactSecretsInValue(value ?? null));
   return serialized === undefined ? "null" : serialized;
 }
 
 function stringifyToolOutput(value: unknown): string {
-  if (typeof value === "string") return value;
-  const serialized = JSON.stringify(value);
+  if (typeof value === "string") return redactSecrets(value);
+  const serialized = JSON.stringify(redactSecretsInValue(value));
   return serialized === undefined ? String(value ?? "") : serialized;
 }
 

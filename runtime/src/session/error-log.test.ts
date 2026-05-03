@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { ErrorLogSidecar } from "./error-log.js";
 import type { Event } from "./event-log.js";
+import { StateSqliteReader } from "../state/sqlite-driver.js";
 
 describe("ErrorLogSidecar", () => {
   let project = "";
@@ -185,6 +186,71 @@ describe("ErrorLogSidecar", () => {
     });
     expect(entry).not.toHaveProperty("raw");
     await sidecar.stop();
+  });
+
+  test("redacts secrets from error JSONL partitions and indexed logs", async () => {
+    const sidecar = new ErrorLogSidecar({
+      projectDir: project,
+      sessionId: "sess-secret",
+    });
+    const rawSecret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456-";
+    const opaqueSecret = "opaque-value-12345";
+    await sidecar.start();
+    sidecar.onEvent({
+      id: "secret-error",
+      seq: 1,
+      msg: {
+        type: "error",
+        payload: {
+          cause: "provider_failed",
+          message: "Authorization: Bearer abcdefghijklmnop=",
+          server: rawSecret,
+          provider: rawSecret,
+          stack: `api_key=${opaqueSecret}`,
+        },
+      },
+    } as unknown as Event);
+    sidecar.flushNow();
+
+    const mcpServers = readdirSync(join(project, "errors", "mcp"));
+    expect(mcpServers.join("\n")).not.toContain(rawSecret);
+    const logFile = readdirSync(join(project, "errors", "mcp", mcpServers[0]!))
+      .find((file) => file.endsWith(".jsonl"));
+    expect(logFile).toBeDefined();
+    const jsonl = readFileSync(
+      join(project, "errors", "mcp", mcpServers[0]!, logFile!),
+      "utf8",
+    );
+    expect(jsonl).not.toContain(rawSecret);
+    expect(jsonl).not.toContain(opaqueSecret);
+    expect(jsonl).not.toContain("abcdefghijklmnop=");
+    expect(jsonl).toContain("[REDACTED_SECRET]");
+
+    await sidecar.stop();
+    const reader = new StateSqliteReader({
+      projectDir: project,
+      stateDbPath: join(project, "agenc-state_1.sqlite"),
+      logsDbPath: join(project, "agenc-logs_1.sqlite"),
+    });
+    try {
+      const row = reader.prepareLogs<
+        [],
+        { readonly message: string; readonly payload_json: string }
+      >(
+        `SELECT message, payload_json
+         FROM logs
+         ORDER BY id DESC
+         LIMIT 1`,
+      ).get();
+      expect(row).toBeDefined();
+      const persisted = `${row!.message}\n${row!.payload_json}`;
+      expect(persisted).not.toContain(rawSecret);
+      expect(persisted).not.toContain(opaqueSecret);
+      expect(persisted).not.toContain("abcdefghijklmnop=");
+      expect(persisted).toContain("[REDACTED_SECRET]");
+    } finally {
+      reader.close();
+    }
   });
 
   test("per-MCP-server partition when server field present", async () => {

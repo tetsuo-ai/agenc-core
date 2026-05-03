@@ -31,6 +31,7 @@ import type {
   PreCompactHookInput,
   SessionStartHookInput,
 } from "../llm/hooks/types.js";
+import { redactSecrets } from "../secrets/index.js";
 
 const DEFAULT_HOOK_TIMEOUT_MS = 60_000;
 const MAX_DIAGNOSTICS = 50;
@@ -113,6 +114,12 @@ interface CommandRunResult {
   readonly stderr: string;
   readonly durationMs: number;
   readonly error?: string;
+}
+
+interface HookCommandRunDiagnostic extends HookRunDiagnostic {
+  readonly rawStdout: string;
+  readonly rawStderr: string;
+  readonly rawError?: string;
 }
 
 type HookSpecificOutput = {
@@ -258,7 +265,7 @@ export class ConfiguredHooksRuntime {
         return { kind: "deny", reason: result.stderr || result.stdout };
       }
       if (result.status !== "success") return { kind: "continue" };
-      const specific = parseHookSpecificOutput(result.stdout);
+      const specific = parseHookSpecificOutput(result.rawStdout);
       const decision = specific?.permissionDecision;
       const updatedInput = specific?.updatedInput;
       return {
@@ -269,14 +276,14 @@ export class ConfiguredHooksRuntime {
               hookPermissionResult: {
                 behavior: decision,
                 ...(specific?.permissionDecisionReason !== undefined
-                  ? { message: specific.permissionDecisionReason }
+                  ? { message: redactSecrets(specific.permissionDecisionReason) }
                   : {}),
                 ...(updatedInput !== undefined ? { updatedInput } : {}),
               },
             }
           : {}),
         ...(specific?.additionalContext !== undefined
-          ? { additionalContext: [specific.additionalContext] }
+          ? { additionalContext: [redactSecrets(specific.additionalContext)] }
           : {}),
       };
     };
@@ -304,11 +311,11 @@ export class ConfiguredHooksRuntime {
         };
       }
       if (run.status !== "success") return { kind: "continue" };
-      const specific = parseHookSpecificOutput(run.stdout);
+      const specific = parseHookSpecificOutput(run.rawStdout);
       if (specific?.additionalContext) {
         return {
           kind: "additionalContext",
-          content: [specific.additionalContext],
+          content: [redactSecrets(specific.additionalContext)],
         };
       }
       return { kind: "continue" };
@@ -345,7 +352,7 @@ export class ConfiguredHooksRuntime {
         tool_input: args,
       });
       if (run.status !== "success") return { kind: "pass" };
-      const decision = parsePermissionDecision(run.stdout);
+      const decision = parsePermissionDecision(run.rawStdout);
       if (!decision) return { kind: "pass" };
       return decision;
     };
@@ -353,7 +360,7 @@ export class ConfiguredHooksRuntime {
 
   private createStopHook(hook: IndividualHookConfig): StopHookHandler {
     return {
-      name: hook.command.statusMessage ?? hook.command.command,
+      name: hookCommandLabel(hook),
       run: async (request) => {
         if (this.disabled || !matchesPattern("", hook.matcher)) {
           return allowStopOutcome();
@@ -375,7 +382,7 @@ export class ConfiguredHooksRuntime {
 
   private createStopFailureHook(hook: IndividualHookConfig): StopHookHandler {
     return {
-      name: hook.command.statusMessage ?? hook.command.command,
+      name: hookCommandLabel(hook),
       run: async (request) => {
         const error = classifyStopFailure(request);
         if (this.disabled || !matchesPattern(error, hook.matcher)) {
@@ -407,13 +414,13 @@ export class ConfiguredHooksRuntime {
         input as unknown as Record<string, unknown>,
         signal,
       );
-      const specific = parseHookSpecificOutput(run.stdout);
+      const specific = parseHookSpecificOutput(run.rawStdout);
       return {
         succeeded: run.status === "success",
         output: run.status === "success" ? run.stdout : run.stderr || run.stdout,
-        command: hook.command.statusMessage ?? hook.command.command,
+        command: hookCommandLabel(hook),
         ...(specific?.additionalContext !== undefined
-          ? { additionalContexts: [specific.additionalContext] }
+          ? { additionalContexts: [redactSecrets(specific.additionalContext)] }
           : {}),
       };
     };
@@ -423,7 +430,7 @@ export class ConfiguredHooksRuntime {
     hook: IndividualHookConfig,
     input: Record<string, unknown>,
     signal?: AbortSignal,
-  ): Promise<HookRunDiagnostic> {
+  ): Promise<HookCommandRunDiagnostic> {
     const startedAtUnixMs = Date.now();
     if (this.disabled) {
       const skipped = this.recordDiagnostic(hook, {
@@ -450,25 +457,33 @@ export class ConfiguredHooksRuntime {
     hook: IndividualHookConfig,
     result: CommandRunResult,
     startedAtUnixMs: number,
-  ): HookRunDiagnostic {
+  ): HookCommandRunDiagnostic {
+    const sanitizedResult = sanitizeCommandRunResult(result);
     const diagnostic: HookRunDiagnostic = {
       id: randomUUID(),
       event: hook.event,
       ...(hook.matcher !== undefined ? { matcher: hook.matcher } : {}),
-      command: hook.command.command,
-      status: result.status,
-      ...(result.exitCode !== undefined ? { exitCode: result.exitCode } : {}),
-      durationMs: result.durationMs,
-      stdout: result.stdout,
-      stderr: result.stderr,
-      ...(result.error !== undefined ? { error: result.error } : {}),
+      command: redactSecrets(hook.command.command),
+      status: sanitizedResult.status,
+      ...(sanitizedResult.exitCode !== undefined
+        ? { exitCode: sanitizedResult.exitCode }
+        : {}),
+      durationMs: sanitizedResult.durationMs,
+      stdout: sanitizedResult.stdout,
+      stderr: sanitizedResult.stderr,
+      ...(sanitizedResult.error !== undefined ? { error: sanitizedResult.error } : {}),
       startedAtUnixMs,
     };
     this.diagnostics = [diagnostic, ...this.diagnostics].slice(
       0,
       MAX_DIAGNOSTICS,
     );
-    return diagnostic;
+    return {
+      ...diagnostic,
+      rawStdout: result.stdout,
+      rawStderr: result.stderr,
+      ...(result.error !== undefined ? { rawError: result.error } : {}),
+    };
   }
 }
 
@@ -510,7 +525,20 @@ export function groupHooksByEvent(
 }
 
 export function hookDisplayText(hook: IndividualHookConfig): string {
-  return hook.command.statusMessage ?? hook.command.command;
+  return hookCommandLabel(hook);
+}
+
+function hookCommandLabel(hook: IndividualHookConfig): string {
+  return redactSecrets(hook.command.statusMessage ?? hook.command.command);
+}
+
+function sanitizeCommandRunResult(result: CommandRunResult): CommandRunResult {
+  return {
+    ...result,
+    stdout: redactSecrets(result.stdout),
+    stderr: redactSecrets(result.stderr),
+    ...(result.error !== undefined ? { error: redactSecrets(result.error) } : {}),
+  };
 }
 
 export function matchesPattern(matchQuery: string, matcher?: string): boolean {
@@ -560,7 +588,9 @@ function parsePermissionDecision(
   if (decision.behavior === "deny") {
     return {
       kind: "deny",
-      ...(decision.message !== undefined ? { reason: decision.message } : {}),
+      ...(decision.message !== undefined
+        ? { reason: redactSecrets(decision.message) }
+        : {}),
     };
   }
   return undefined;

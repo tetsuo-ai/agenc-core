@@ -259,6 +259,33 @@ describe("AgenC rollout recorder", () => {
     expect(item.formatted_output).toBe("");
   });
 
+  it("redacts secrets from limited rollout JSONL rows before persistence", () => {
+    const recorder = new AgenCRolloutRecorder({
+      rootDir,
+      sessionId: "session-secret-row",
+      createdAt: "2026-05-02T18:45:30.000Z",
+    });
+    const rawSecret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456-";
+    recorder.append({
+      type: "user_message",
+      apiKey: "opaque-value-12345",
+      text: `Authorization: Bearer abcdefghijklmnop= ${rawSecret}`,
+    });
+    recorder.close();
+
+    const content = readFileSync(recorder.rolloutPath, "utf8");
+    expect(content).not.toContain(rawSecret);
+    expect(content).not.toContain("opaque-value-12345");
+    expect(content).not.toContain("abcdefghijklmnop=");
+
+    const item = readAgenCRolloutLines(recorder.rolloutPath)[0]!.item as Record<
+      string,
+      unknown
+    >;
+    expect(item.apiKey).toBe("[REDACTED_SECRET]");
+    expect(item.text).toContain("Bearer [REDACTED_SECRET]");
+  });
+
   it("sanitizes real event_msg exec output before persistence", () => {
     const recorder = new AgenCRolloutRecorder({
       rootDir,
@@ -722,6 +749,41 @@ describe("AgenC rollout trace bundles", () => {
     expect(readAgenCRolloutTraceReducedState(trace.bundleDir)).toEqual(reduced);
   });
 
+  it("redacts secrets in trace bundle payload files and events", () => {
+    const trace = new AgenCRolloutTraceBundle({
+      rootDir,
+      rolloutId: "rollout-secret-trace",
+      rootSessionId: "session-secret-trace",
+      traceId: "trace-secret-bundle",
+      createdAt: "2026-05-02T22:30:00.000Z",
+    });
+    const rawSecret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456-";
+    const opaqueSecret = "opaque-value-12345";
+    const payload = trace.writePayload("tool_result", {
+      apiKey: opaqueSecret,
+      output: rawSecret,
+    });
+    trace.appendEvent(
+      {
+        type: "tool_call_ended",
+        tool_call_id: "tool-secret",
+        status: "failed",
+        message: "Authorization: Bearer abcdefghijklmnop=",
+        result_payload: payload,
+      },
+      { now: () => "2026-05-02T22:30:01.000Z" },
+    );
+
+    const content = [
+      readFileSync(join(trace.bundleDir, payload.path), "utf8"),
+      readFileSync(join(trace.bundleDir, "trace.jsonl"), "utf8"),
+    ].join("\n");
+    expect(content).not.toContain(rawSecret);
+    expect(content).not.toContain(opaqueSecret);
+    expect(content).not.toContain("abcdefghijklmnop=");
+    expect(content).toContain("[REDACTED_SECRET]");
+  });
+
   it("replays an empty trace log as a running root session", () => {
     const trace = new AgenCRolloutTraceBundle({
       rootDir,
@@ -816,6 +878,50 @@ describe("AgenC rollout trace bundles", () => {
     expect(reduced.rawPayloads["payload-1"]).toMatchObject({
       kind: "protocol_event",
     });
+  });
+
+  it("redacts secrets in existing trace writer payloads and events", () => {
+    const bundleDir = join(rootDir, AGENC_ROLLOUT_TRACE_DIR, "existing-writer-secret");
+    const writer = TraceWriter.create({
+      bundleDir,
+      traceId: "trace-existing-secret",
+      rolloutId: "rollout-existing-secret",
+      rootThreadId: "thread-existing-secret",
+    });
+    const rawSecret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456-";
+    const opaqueSecret = "opaque-value-12345";
+    const resultPayload = writer.writeJsonPayload("tool_result", {
+      apiKey: opaqueSecret,
+      output: rawSecret,
+    });
+    writer.appendWithContext(
+      { threadId: "thread-existing-secret", agencTurnId: "turn-existing-secret" },
+      {
+        type: "tool_dispatch_ended",
+        toolCallId: "tool-existing-secret",
+        status: "failed",
+        resultPayload,
+      },
+    );
+    writer.appendWithContext(
+      { threadId: "thread-existing-secret", agencTurnId: "turn-existing-secret" },
+      {
+        type: "inference_attempt_ended",
+        inferenceAttemptId: "infer-existing-secret",
+        status: "failed",
+        error: "Authorization: Bearer abcdefghijklmnop=",
+      },
+    );
+    writer.close();
+
+    const content = [
+      readFileSync(join(bundleDir, resultPayload.path), "utf8"),
+      readFileSync(join(bundleDir, "trace.jsonl"), "utf8"),
+    ].join("\n");
+    expect(content).not.toContain(rawSecret);
+    expect(content).not.toContain(opaqueSecret);
+    expect(content).not.toContain("abcdefghijklmnop=");
+    expect(content).toContain("[REDACTED_SECRET]");
   });
 
   it("replays bundles emitted by the existing trace writer", () => {
