@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
-import { PermissionRequest } from "../../agenc/upstream/components/permissions/PermissionRequest.js";
+import { PermissionRequest } from "../components/permissions/PermissionRequest.js";
 import type { ApprovalCtx } from "../../tools/orchestrator.js";
 import type { ReviewDecision } from "../../permissions/review-decision.js";
 import { ABORT } from "../../permissions/review-decision.js";

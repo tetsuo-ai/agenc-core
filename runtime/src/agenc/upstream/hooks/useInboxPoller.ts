@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto'
 import { useCallback, useEffect, useRef } from 'react'
 import { useInterval } from 'usehooks-ts'
-import type { ToolUseConfirm } from '../components/permissions/PermissionRequest.js'
+import type { ToolUseConfirm } from '../../../tui/components/permissions/PermissionRequest.js'
 import { TEAMMATE_MESSAGE_TAG } from '../constants/xml.js'
 import { useTerminalNotification } from '../../../tui/ink/useTerminalNotification.js'
 import { sendNotification } from '../services/notifier.js'

@@ -4,7 +4,7 @@ import { Box, Text, useTheme } from '../../../../../tui/ink.js';
 import { FallbackPermissionRequest } from '../FallbackPermissionRequest.js';
 import { FilePermissionDialog } from '../FilePermissionDialog/FilePermissionDialog.js';
 import type { ToolInput } from '../FilePermissionDialog/useFilePermissionDialog.js';
-import type { PermissionRequestProps, ToolUseConfirm } from '../PermissionRequest.js';
+import type { PermissionRequestProps, ToolUseConfirm } from '../../../../../tui/components/permissions/PermissionRequest.js';
 function pathFromToolUse(toolUseConfirm: ToolUseConfirm): string | null {
   const tool = toolUseConfirm.tool;
   if ('getPath' in tool && typeof tool.getPath === 'function') {

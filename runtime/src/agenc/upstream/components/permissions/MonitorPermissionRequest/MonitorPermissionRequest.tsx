@@ -10,7 +10,7 @@ import {
   PermissionPrompt,
   type PermissionPromptOption,
 } from '../PermissionPrompt.js'
-import type { PermissionRequestProps } from '../PermissionRequest.js'
+import type { PermissionRequestProps } from '../../../../../tui/components/permissions/PermissionRequest.js'
 import { PermissionRuleExplanation } from '../PermissionRuleExplanation.js'
 import { logUnaryPermissionEvent } from '../utils.js'
 

@@ -16,7 +16,7 @@ import {
   type CompletionType,
   logUnaryEvent,
 } from '../../../utils/unaryLogging.js'
-import type { ToolUseConfirm } from '../PermissionRequest.js'
+import type { ToolUseConfirm } from '../../../../../tui/components/permissions/PermissionRequest.js'
 import type {
   FileOperationType,
   PermissionOption,

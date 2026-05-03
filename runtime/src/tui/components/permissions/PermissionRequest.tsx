@@ -1,49 +1,62 @@
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import * as React from 'react';
-import { EnterPlanModeTool } from 'src/tools/EnterPlanModeTool/EnterPlanModeTool.js';
-import { ExitPlanModeV2Tool } from 'src/tools/ExitPlanModeTool/ExitPlanModeV2Tool.js';
-import { useNotifyAfterTimeout } from '../../hooks/useNotifyAfterTimeout.js';
-import { useKeybinding } from '../../../../tui/keybindings/useKeybinding.js';
-import type { AnyObject, Tool, ToolUseContext } from '../../Tool.js';
-import { AskUserQuestionTool } from '../../tools/AskUserQuestionTool/AskUserQuestionTool.js';
-import { BashTool } from '../../tools/BashTool/BashTool.js';
-import { FileEditTool } from '../../tools/FileEditTool/FileEditTool.js';
-import { FileReadTool } from '../../tools/FileReadTool/FileReadTool.js';
-import { FileWriteTool } from '../../tools/FileWriteTool/FileWriteTool.js';
-import { GlobTool } from '../../tools/GlobTool/GlobTool.js';
-import { GrepTool } from '../../tools/GrepTool/GrepTool.js';
-import { NotebookEditTool } from '../../tools/NotebookEditTool/NotebookEditTool.js';
-import { PowerShellTool } from '../../tools/PowerShellTool/PowerShellTool.js';
-import { SkillTool } from '../../tools/SkillTool/SkillTool.js';
-import { WebFetchTool } from '../../tools/WebFetchTool/WebFetchTool.js';
-import type { AssistantMessage } from '../../types/message.js';
-import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js';
-import { AskUserQuestionPermissionRequest } from './AskUserQuestionPermissionRequest/AskUserQuestionPermissionRequest.js';
-import { BashPermissionRequest } from './BashPermissionRequest/BashPermissionRequest.js';
-import { EnterPlanModePermissionRequest } from './EnterPlanModePermissionRequest/EnterPlanModePermissionRequest.js';
-import { ExitPlanModePermissionRequest } from './ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.js';
-import { FallbackPermissionRequest } from './FallbackPermissionRequest.js';
-import { FileEditPermissionRequest } from './FileEditPermissionRequest/FileEditPermissionRequest.js';
-import { FilesystemPermissionRequest } from './FilesystemPermissionRequest/FilesystemPermissionRequest.js';
-import { FileWritePermissionRequest } from './FileWritePermissionRequest/FileWritePermissionRequest.js';
-import { NotebookEditPermissionRequest } from './NotebookEditPermissionRequest/NotebookEditPermissionRequest.js';
-import { PowerShellPermissionRequest } from './PowerShellPermissionRequest/PowerShellPermissionRequest.js';
-import { SkillPermissionRequest } from './SkillPermissionRequest/SkillPermissionRequest.js';
-import { WebFetchPermissionRequest } from './WebFetchPermissionRequest/WebFetchPermissionRequest.js';
+import { EnterPlanModeTool } from '../../../agenc/upstream/tools/EnterPlanModeTool/EnterPlanModeTool.js';
+import { ExitPlanModeV2Tool } from '../../../agenc/upstream/tools/ExitPlanModeTool/ExitPlanModeV2Tool.js';
+import { useNotifyAfterTimeout } from '../../../agenc/upstream/hooks/useNotifyAfterTimeout.js';
+import { useKeybinding } from '../../keybindings/useKeybinding.js';
+import type { AnyObject, Tool, ToolUseContext } from '../../../agenc/upstream/Tool.js';
+import { AskUserQuestionTool } from '../../../agenc/upstream/tools/AskUserQuestionTool/AskUserQuestionTool.js';
+import { BashTool } from '../../../agenc/upstream/tools/BashTool/BashTool.js';
+import { FileEditTool } from '../../../agenc/upstream/tools/FileEditTool/FileEditTool.js';
+import { FileReadTool } from '../../../agenc/upstream/tools/FileReadTool/FileReadTool.js';
+import { FileWriteTool } from '../../../agenc/upstream/tools/FileWriteTool/FileWriteTool.js';
+import { GlobTool } from '../../../agenc/upstream/tools/GlobTool/GlobTool.js';
+import { GrepTool } from '../../../agenc/upstream/tools/GrepTool/GrepTool.js';
+import { NotebookEditTool } from '../../../agenc/upstream/tools/NotebookEditTool/NotebookEditTool.js';
+import { PowerShellTool } from '../../../agenc/upstream/tools/PowerShellTool/PowerShellTool.js';
+import { SkillTool } from '../../../agenc/upstream/tools/SkillTool/SkillTool.js';
+import { WebFetchTool } from '../../../agenc/upstream/tools/WebFetchTool/WebFetchTool.js';
+import type { AssistantMessage } from '../../../agenc/upstream/types/message.js';
+import type { PermissionDecision } from '../../../agenc/upstream/utils/permissions/PermissionResult.js';
+import { AskUserQuestionPermissionRequest } from '../../../agenc/upstream/components/permissions/AskUserQuestionPermissionRequest/AskUserQuestionPermissionRequest.js';
+import { BashPermissionRequest } from '../../../agenc/upstream/components/permissions/BashPermissionRequest/BashPermissionRequest.js';
+import { EnterPlanModePermissionRequest } from '../../../agenc/upstream/components/permissions/EnterPlanModePermissionRequest/EnterPlanModePermissionRequest.js';
+import { ExitPlanModePermissionRequest } from '../../../agenc/upstream/components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.js';
+import { FallbackPermissionRequest } from '../../../agenc/upstream/components/permissions/FallbackPermissionRequest.js';
+import { FileEditPermissionRequest } from '../../../agenc/upstream/components/permissions/FileEditPermissionRequest/FileEditPermissionRequest.js';
+import { FilesystemPermissionRequest } from '../../../agenc/upstream/components/permissions/FilesystemPermissionRequest/FilesystemPermissionRequest.js';
+import { FileWritePermissionRequest } from '../../../agenc/upstream/components/permissions/FileWritePermissionRequest/FileWritePermissionRequest.js';
+import { NotebookEditPermissionRequest } from '../../../agenc/upstream/components/permissions/NotebookEditPermissionRequest/NotebookEditPermissionRequest.js';
+import { PowerShellPermissionRequest } from '../../../agenc/upstream/components/permissions/PowerShellPermissionRequest/PowerShellPermissionRequest.js';
+import { SkillPermissionRequest } from '../../../agenc/upstream/components/permissions/SkillPermissionRequest/SkillPermissionRequest.js';
+import { WebFetchPermissionRequest } from '../../../agenc/upstream/components/permissions/WebFetchPermissionRequest/WebFetchPermissionRequest.js';
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-const ReviewArtifactTool = feature('REVIEW_ARTIFACT') ? (require('../../tools/ReviewArtifactTool/ReviewArtifactTool.js') as typeof import('../../tools/ReviewArtifactTool/ReviewArtifactTool.js')).ReviewArtifactTool : null;
-const ReviewArtifactPermissionRequest = feature('REVIEW_ARTIFACT') ? (require('./ReviewArtifactPermissionRequest/ReviewArtifactPermissionRequest.js') as typeof import('./ReviewArtifactPermissionRequest/ReviewArtifactPermissionRequest.js')).ReviewArtifactPermissionRequest : null;
-const WorkflowTool = feature('WORKFLOW_SCRIPTS') ? (require('../../tools/WorkflowTool/WorkflowTool.js') as typeof import('../../tools/WorkflowTool/WorkflowTool.js')).WorkflowTool : null;
-const WorkflowPermissionRequest = feature('WORKFLOW_SCRIPTS') ? (require('../../tools/WorkflowTool/WorkflowPermissionRequest.js') as typeof import('../../tools/WorkflowTool/WorkflowPermissionRequest.js')).WorkflowPermissionRequest : null;
-const MonitorTool = feature('MONITOR_TOOL') ? (require('../../tools/MonitorTool/MonitorTool.js') as typeof import('../../tools/MonitorTool/MonitorTool.js')).MonitorTool : null;
-const MonitorPermissionRequest = feature('MONITOR_TOOL') ? (require('./MonitorPermissionRequest/MonitorPermissionRequest.js') as typeof import('./MonitorPermissionRequest/MonitorPermissionRequest.js')).MonitorPermissionRequest : null;
+function unsupportedPermissionFeature<T>(featureName: string): T {
+  throw new Error(
+    `AgenC build enabled ${featureName}, but that permission UI is not present in this runtime snapshot.`,
+  );
+}
+const ReviewArtifactTool: Tool | null = feature('REVIEW_ARTIFACT')
+  ? unsupportedPermissionFeature('REVIEW_ARTIFACT tool')
+  : null;
+const ReviewArtifactPermissionRequest: React.ComponentType<PermissionRequestProps> | null = feature('REVIEW_ARTIFACT')
+  ? unsupportedPermissionFeature('REVIEW_ARTIFACT permission UI')
+  : null;
+const WorkflowTool: Tool | null = feature('WORKFLOW_SCRIPTS')
+  ? unsupportedPermissionFeature('WORKFLOW_SCRIPTS tool')
+  : null;
+const WorkflowPermissionRequest: React.ComponentType<PermissionRequestProps> | null = feature('WORKFLOW_SCRIPTS')
+  ? unsupportedPermissionFeature('WORKFLOW_SCRIPTS permission UI')
+  : null;
+const MonitorTool = feature('MONITOR_TOOL') ? (require('../../../agenc/upstream/tools/MonitorTool/MonitorTool.js') as typeof import('../../../agenc/upstream/tools/MonitorTool/MonitorTool.js')).MonitorTool : null;
+const MonitorPermissionRequest = feature('MONITOR_TOOL') ? (require('../../../agenc/upstream/components/permissions/MonitorPermissionRequest/MonitorPermissionRequest.js') as typeof import('../../../agenc/upstream/components/permissions/MonitorPermissionRequest/MonitorPermissionRequest.js')).MonitorPermissionRequest : null;
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
 /* eslint-enable @typescript-eslint/no-require-imports */
 import type { z } from 'zod/v4';
-import type { PermissionUpdate } from '../../utils/permissions/PermissionUpdateSchema.js';
-import type { WorkerBadgeProps } from './WorkerBadge.js';
+import type { PermissionUpdate } from '../../../agenc/upstream/utils/permissions/PermissionUpdateSchema.js';
+import type { WorkerBadgeProps } from '../../../agenc/upstream/components/permissions/WorkerBadge.js';
 function permissionComponentForTool(tool: Tool): React.ComponentType<PermissionRequestProps> {
   switch (tool) {
     case FileEditTool:
@@ -133,7 +146,7 @@ function getNotificationMessage(toolUseConfirm: ToolUseConfirm): string {
   if (toolUseConfirm.tool === EnterPlanModeTool) {
     return 'AgenC wants to enter plan mode';
   }
-  if (feature('REVIEW_ARTIFACT') && toolUseConfirm.tool === ReviewArtifactTool) {
+  if (ReviewArtifactTool !== null && toolUseConfirm.tool === ReviewArtifactTool) {
     return 'AgenC needs your approval for a review artifact';
   }
   if (!toolName || toolName.trim() === '') {
@@ -141,6 +154,19 @@ function getNotificationMessage(toolUseConfirm: ToolUseConfirm): string {
   }
   return `AgenC needs your permission to use ${toolName}`;
 }
+
+export const __permissionRequestTest = {
+  permissionComponentForTool,
+  getNotificationMessage,
+  unsupportedFeatureState() {
+    return {
+      reviewArtifactTool: ReviewArtifactTool,
+      reviewArtifactPermissionRequest: ReviewArtifactPermissionRequest,
+      workflowTool: WorkflowTool,
+      workflowPermissionRequest: WorkflowPermissionRequest,
+    };
+  },
+};
 
 // TODO: Move this to Tool.renderPermissionRequest
 export function PermissionRequest(t0) {

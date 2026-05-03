@@ -10,7 +10,7 @@ import { logUnaryEvent } from '../../utils/unaryLogging.js';
 import { type UnaryEvent, usePermissionRequestLogging } from './hooks.js';
 import { PermissionDialog } from './PermissionDialog.js';
 import { PermissionPrompt, type PermissionPromptOption, type ToolAnalyticsContext } from './PermissionPrompt.js';
-import type { PermissionRequestProps } from './PermissionRequest.js';
+import type { PermissionRequestProps } from '../../../../tui/components/permissions/PermissionRequest.js';
 import { PermissionRuleExplanation } from './PermissionRuleExplanation.js';
 type FallbackOptionValue = 'yes' | 'yes-dont-ask-again' | 'no';
 export function FallbackPermissionRequest(t0) {

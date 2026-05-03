@@ -8,7 +8,7 @@ import {
 import { sanitizeToolNameForAnalytics } from '../../../services/analytics/metadata.js'
 import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js'
 import type { CompletionType } from '../../../utils/unaryLogging.js'
-import type { ToolUseConfirm } from '../PermissionRequest.js'
+import type { ToolUseConfirm } from '../../../../../tui/components/permissions/PermissionRequest.js'
 import {
   type FileOperationType,
   getFilePermissionOptions,

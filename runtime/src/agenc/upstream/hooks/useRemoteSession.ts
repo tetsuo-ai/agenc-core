@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 import type { StreamingToolUse } from '../../../llm/types.js'
 import { BoundedUUIDSet } from '../bridge/bridgeMessaging.js'
-import type { ToolUseConfirm } from '../components/permissions/PermissionRequest.js'
+import type { ToolUseConfirm } from '../../../tui/components/permissions/PermissionRequest.js'
 import type { SpinnerMode } from '../components/Spinner/types.js'
 import {
   type RemotePermissionResponse,

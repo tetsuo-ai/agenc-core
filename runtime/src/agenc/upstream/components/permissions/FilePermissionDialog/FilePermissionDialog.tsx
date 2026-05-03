@@ -12,7 +12,7 @@ import { Select } from '../../CustomSelect/index.js';
 import { ShowInIDEPrompt } from '../../ShowInIDEPrompt.js';
 import { usePermissionRequestLogging } from '../hooks.js';
 import { PermissionDialog } from '../PermissionDialog.js';
-import type { ToolUseConfirm } from '../PermissionRequest.js';
+import type { ToolUseConfirm } from '../../../../../tui/components/permissions/PermissionRequest.js';
 import type { WorkerBadgeProps } from '../WorkerBadge.js';
 import type { IDEDiffSupport } from './ideDiffConfig.js';
 import type { FileOperationType, PermissionOption } from './permissionOptions.js';
