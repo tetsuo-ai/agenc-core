@@ -2,18 +2,20 @@ import { readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import Database from "better-sqlite3";
 import {
   LOGS_DB_MIGRATIONS,
   STATE_DB_MIGRATIONS,
   type SqlMigration,
 } from "./migrations/index.js";
+import { applyMigrations } from "./sqlite-driver.js";
 
 const migrationDir = dirname(fileURLToPath(import.meta.url));
 
 describe("state migration registry", () => {
   it("loads state migrations from numbered migration files in order", () => {
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5,
+      1, 2, 3, 4, 5, 6,
     ]);
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.name)).toEqual([
       "initial_state_schema",
@@ -21,6 +23,7 @@ describe("state migration registry", () => {
       "agent_runs_schema",
       "session_state_snapshots_schema",
       "in_flight_tool_calls_schema",
+      "thread_model_provider_columns",
     ]);
     expectMigrationVersionsAreUnique(STATE_DB_MIGRATIONS);
   });
@@ -42,7 +45,88 @@ describe("state migration registry", () => {
       "003_agent_runs_schema.ts",
       "004_session_state_snapshots_schema.ts",
       "005_in_flight_tool_calls_schema.ts",
+      "006_thread_model_provider_columns.ts",
     ]);
+  });
+
+  it("repairs older threads tables missing model/provider columns", () => {
+    const db = new Database(":memory:");
+    try {
+      db.exec(`
+        CREATE TABLE schema_migrations (
+          version INTEGER PRIMARY KEY,
+          name TEXT NOT NULL,
+          applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+        INSERT INTO schema_migrations (version, name) VALUES
+          (1, 'initial_state_schema'),
+          (2, 'csv_agent_jobs_schema'),
+          (3, 'agent_runs_schema'),
+          (4, 'session_state_snapshots_schema'),
+          (5, 'in_flight_tool_calls_schema');
+        CREATE TABLE threads (
+          thread_id TEXT PRIMARY KEY,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      `);
+
+      applyMigrations(db, STATE_DB_MIGRATIONS);
+
+      const columns = db
+        .prepare<[], { name: string }>("PRAGMA table_info(threads)")
+        .all()
+        .map((row) => row.name);
+      expect(columns).toContain("model");
+      expect(columns).toContain("model_provider");
+      expect(
+        db
+          .prepare<[], { version: number }>(
+            "SELECT version FROM schema_migrations WHERE version = 6",
+          )
+          .get()?.version,
+      ).toBe(6);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("records migration 006 when the columns already exist", () => {
+    const db = new Database(":memory:");
+    try {
+      db.exec(`
+        CREATE TABLE schema_migrations (
+          version INTEGER PRIMARY KEY,
+          name TEXT NOT NULL,
+          applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+        INSERT INTO schema_migrations (version, name) VALUES
+          (1, 'initial_state_schema'),
+          (2, 'csv_agent_jobs_schema'),
+          (3, 'agent_runs_schema'),
+          (4, 'session_state_snapshots_schema'),
+          (5, 'in_flight_tool_calls_schema');
+        CREATE TABLE threads (
+          thread_id TEXT PRIMARY KEY,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          model TEXT,
+          model_provider TEXT
+        );
+      `);
+
+      applyMigrations(db, STATE_DB_MIGRATIONS);
+
+      expect(
+        db
+          .prepare<[], { version: number }>(
+            "SELECT version FROM schema_migrations WHERE version = 6",
+          )
+          .get()?.version,
+      ).toBe(6);
+    } finally {
+      db.close();
+    }
   });
 });
 

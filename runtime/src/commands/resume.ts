@@ -17,7 +17,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import type { RolloutItem } from "../session/rollout-item.js";
-import { FileThreadStore } from "../session/thread-store.js";
+import { FileThreadStore } from "../thread-store/index.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -130,33 +130,47 @@ export function listResumableSessions(
   const maxFiles = opts.maxFiles ?? MAX_SCAN_FILES;
   const store = new FileThreadStore({ cwd });
   const entries: RolloutEntry[] = [];
-  for (const thread of store.listThreads({
-    pageSize: maxFiles,
-    sortKey: "updated_at",
-    sortDirection: "desc",
-    archived: false,
-  }).items) {
-    if (entries.length >= limit) break;
-    if (thread.rolloutPath === undefined) continue;
-    let mtimeMs = Date.parse(thread.updatedAt);
-    try {
-      mtimeMs = statSync(thread.rolloutPath).mtimeMs;
-    } catch {
-      if (!Number.isFinite(mtimeMs)) continue;
+  let cursor: string | undefined;
+  let scanned = 0;
+  try {
+    while (entries.length < limit && scanned < maxFiles) {
+      const page = store.listThreads({
+        pageSize: Math.min(500, maxFiles - scanned),
+        sortKey: "updated_at",
+        sortDirection: "desc",
+        archived: false,
+        ...(cursor !== undefined ? { cursor } : {}),
+      });
+      if (page.items.length === 0) break;
+      scanned += page.items.length;
+      for (const thread of page.items) {
+        if (entries.length >= limit) break;
+        if (thread.rolloutPath === undefined) continue;
+        let mtimeMs = Date.parse(thread.updatedAt);
+        try {
+          mtimeMs = statSync(thread.rolloutPath).mtimeMs;
+        } catch {
+          if (!Number.isFinite(mtimeMs)) continue;
+        }
+        const read = store.readThread({
+          threadId: thread.threadId,
+          includeArchived: false,
+          includeHistory: true,
+        });
+        entries.push({
+          filePath: thread.rolloutPath,
+          sessionId: thread.threadId,
+          mtimeMs,
+          firstUserPreview:
+            previewFromHistory(read.history?.items ?? []) ||
+            readFirstUserPreview(thread.rolloutPath),
+        });
+      }
+      if (page.nextCursor === undefined) break;
+      cursor = page.nextCursor;
     }
-    const read = store.readThread({
-      threadId: thread.threadId,
-      includeArchived: false,
-      includeHistory: true,
-    });
-    entries.push({
-      filePath: thread.rolloutPath,
-      sessionId: thread.threadId,
-      mtimeMs,
-      firstUserPreview:
-        previewFromHistory(read.history?.items ?? []) ||
-        readFirstUserPreview(thread.rolloutPath),
-    });
+  } finally {
+    store.close();
   }
 
   entries.sort((a, b) => b.mtimeMs - a.mtimeMs);

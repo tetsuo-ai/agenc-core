@@ -226,7 +226,8 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     for (const migration of migrations) {
       if (applied.has(migration.version)) continue;
       try {
-        db.exec(migration.sql);
+        if (migration.sql !== undefined) db.exec(migration.sql);
+        migration.apply?.(db);
         insert.run(migration.version, migration.name);
       } catch (cause) {
         throw new StateMigrationError(

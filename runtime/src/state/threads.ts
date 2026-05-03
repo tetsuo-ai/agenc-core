@@ -1,10 +1,12 @@
 import type { ThreadId } from "../agents/registry.js";
-import type { ThreadSource } from "../session/thread-store.js";
+import type { ThreadSource } from "../thread-store/types.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 
 export interface IndexedThreadRecord {
   readonly threadId: ThreadId;
   readonly name?: string;
+  readonly model?: string;
+  readonly modelProvider?: string;
   readonly memoryMode?: "enabled" | "disabled";
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -48,10 +50,12 @@ export class StateThreadRepository {
           cwd,
           source_json,
           forked_from_id,
+          model,
+          model_provider,
           memory_mode,
           rollout_path,
           archived_rollout_path
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(thread_id) DO UPDATE SET
           name = excluded.name,
           created_at = excluded.created_at,
@@ -60,6 +64,8 @@ export class StateThreadRepository {
           cwd = excluded.cwd,
           source_json = excluded.source_json,
           forked_from_id = excluded.forked_from_id,
+          model = excluded.model,
+          model_provider = excluded.model_provider,
           memory_mode = excluded.memory_mode,
           rollout_path = excluded.rollout_path,
           archived_rollout_path = excluded.archived_rollout_path`,
@@ -73,10 +79,58 @@ export class StateThreadRepository {
         record.cwd ?? null,
         record.source === undefined ? null : JSON.stringify(record.source),
         record.forkedFromId ?? null,
+        record.model ?? null,
+        record.modelProvider ?? null,
         record.memoryMode ?? null,
         record.rolloutPath ?? null,
         record.archivedRolloutPath ?? null,
       );
+  }
+
+  mergeThread(
+    record: IndexedThreadRecord,
+    opts: { readonly replaceArchiveState?: boolean } = {},
+  ): void {
+    const existing = this.getThread(record.threadId);
+    const replaceArchiveState = opts.replaceArchiveState === true;
+    const name = record.name ?? existing?.name;
+    const model = record.model ?? existing?.model;
+    const modelProvider = record.modelProvider ?? existing?.modelProvider;
+    const memoryMode = record.memoryMode ?? existing?.memoryMode;
+    const cwd = record.cwd ?? existing?.cwd;
+    const source = record.source ?? existing?.source;
+    const forkedFromId = record.forkedFromId ?? existing?.forkedFromId;
+    const merged: IndexedThreadRecord = {
+      threadId: record.threadId,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+      ...(name !== undefined ? { name } : {}),
+      ...(model !== undefined ? { model } : {}),
+      ...(modelProvider !== undefined ? { modelProvider } : {}),
+      ...(memoryMode !== undefined ? { memoryMode } : {}),
+      ...(!replaceArchiveState && existing?.archivedAt !== undefined
+        ? { archivedAt: existing.archivedAt }
+        : {}),
+      ...(record.archivedAt !== undefined
+        ? { archivedAt: record.archivedAt }
+        : {}),
+      ...(cwd !== undefined ? { cwd } : {}),
+      ...(source !== undefined ? { source } : {}),
+      ...(forkedFromId !== undefined ? { forkedFromId } : {}),
+      ...(!replaceArchiveState && existing?.rolloutPath !== undefined
+        ? { rolloutPath: existing.rolloutPath }
+        : {}),
+      ...(record.rolloutPath !== undefined
+        ? { rolloutPath: record.rolloutPath }
+        : {}),
+      ...(!replaceArchiveState && existing?.archivedRolloutPath !== undefined
+        ? { archivedRolloutPath: existing.archivedRolloutPath }
+        : {}),
+      ...(record.archivedRolloutPath !== undefined
+        ? { archivedRolloutPath: record.archivedRolloutPath }
+        : {}),
+    };
+    this.upsertThread(merged);
   }
 
   getThread(threadId: ThreadId): IndexedThreadRecord | undefined {
@@ -206,6 +260,8 @@ function rowToThread(row: ThreadRow): IndexedThreadRecord {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     ...(row.name !== null ? { name: row.name } : {}),
+    ...(row.model !== null ? { model: row.model } : {}),
+    ...(row.model_provider !== null ? { modelProvider: row.model_provider } : {}),
     ...(row.archived_at !== null ? { archivedAt: row.archived_at } : {}),
     ...(row.cwd !== null ? { cwd: row.cwd } : {}),
     ...(row.source_json !== null ? { source: parseSource(row.source_json) } : {}),

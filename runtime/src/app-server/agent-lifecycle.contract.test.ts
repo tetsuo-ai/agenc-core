@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { AgenCSessionSnapshotPolicy } from "../state/snapshot-policy.js";
+import { RolloutStore } from "../session/rollout-store.js";
+import { FileThreadStore } from "../thread-store/index.js";
 import {
   openStateDatabases,
   type StateSqliteDriver,
@@ -32,6 +34,43 @@ function sequence(values: readonly string[]): () => string {
     index += 1;
     return value;
   };
+}
+
+function createThreadStoreTestDirs(): {
+  readonly cwd: string;
+  readonly home: string;
+  readonly restoreEnv: () => void;
+} {
+  const cwd = mkdtempSync(join(tmpdir(), "agenc-agent-lifecycle-cwd-"));
+  const home = mkdtempSync(join(tmpdir(), "agenc-agent-lifecycle-home-"));
+  const previous = process.env.AGENC_HOME;
+  process.env.AGENC_HOME = home;
+  return {
+    cwd,
+    home,
+    restoreEnv: () => {
+      if (previous === undefined) delete process.env.AGENC_HOME;
+      else process.env.AGENC_HOME = previous;
+    },
+  };
+}
+
+function openRollout(cwd: string, sessionId: string): RolloutStore {
+  const rollout = new RolloutStore({
+    cwd,
+    sessionId,
+    agencVersion: "0.2.0",
+  });
+  rollout.open({
+    sessionId,
+    timestamp: "2026-05-01T12:30:00.000Z",
+    cwd,
+    originator: "agent-lifecycle-test",
+    agencVersion: "0.2.0",
+    model: "grok-4",
+    modelProvider: "xai",
+  });
+  return rollout;
 }
 
 function createDeferred<T = void>(): {
@@ -87,6 +126,53 @@ function latestSnapshot(
 }
 
 describe("AgenC background agent lifecycle", () => {
+  it("lists stored on-disk agent threads after manager recreation", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const rollout = openRollout(cwd, "stored-agent");
+    const threadStore = new FileThreadStore({ cwd, agencHome: home });
+    try {
+      threadStore.createThread({
+        threadId: "stored-agent",
+        rolloutStore: rollout,
+        source: "agent",
+        cwd,
+        model: "grok-4",
+        modelProvider: "xai",
+      });
+      threadStore.updateThreadMetadata({
+        threadId: "stored-agent",
+        includeArchived: false,
+        patch: { name: "Recovered objective" },
+      });
+      threadStore.shutdownThread("stored-agent");
+
+      const recreated = new AgenCDaemonAgentManager({ threadStore });
+      await expect(recreated.listAgents()).resolves.toMatchObject({
+        agents: [
+          {
+            agentId: "stored-agent",
+            objective: "Recovered objective",
+            status: "idle",
+            cwd,
+            activeSessionIds: ["stored-agent"],
+            metadata: {
+              source: "agent",
+              model: "grok-4",
+              modelProvider: "xai",
+              recovered: true,
+            },
+          },
+        ],
+      });
+    } finally {
+      threadStore.close();
+      rollout.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("agent.create launches a running background agent and seeds its session", async () => {
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_1"]),

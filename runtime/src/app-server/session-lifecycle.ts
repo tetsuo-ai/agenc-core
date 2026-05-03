@@ -14,7 +14,13 @@
 import { randomUUID } from "node:crypto";
 import { AsyncLock } from "../utils/async-lock.js";
 import type {
+  StoredThread,
+  ThreadSource,
+  ThreadStore,
+} from "../thread-store/index.js";
+import type {
   JsonObject,
+  JsonValue,
   SessionAttachParams,
   SessionAttachResult,
   SessionCreateParams,
@@ -59,6 +65,7 @@ export interface AgenCSessionLifecycleOptions {
   readonly createAttachmentId?: () => string;
   readonly now?: () => string;
   readonly defaultAgentId?: string;
+  readonly threadStore?: ThreadStore;
 }
 
 export interface AgenCSessionRestoreRecord {
@@ -102,6 +109,7 @@ export class AgenCDaemonSessionManager {
   readonly #createAttachmentId: () => string;
   readonly #now: () => string;
   readonly #defaultAgentId: string;
+  readonly #threadStore: ThreadStore | undefined;
 
   constructor(options: AgenCSessionLifecycleOptions = {}) {
     this.#createSessionId =
@@ -111,6 +119,7 @@ export class AgenCDaemonSessionManager {
     this.#now = options.now ?? (() => new Date().toISOString());
     this.#defaultAgentId =
       options.defaultAgentId ?? DEFAULT_AGENC_DAEMON_AGENT_ID;
+    this.#threadStore = options.threadStore;
   }
 
   async createSession(
@@ -183,9 +192,14 @@ export class AgenCDaemonSessionManager {
       const cursor = parseCursor(params.cursor);
       const limit = normalizeLimit(params.limit);
       const agentId = nonEmptyString(params.agentId);
-      const matchingSessions = [...state.sessions.values()].filter(
-        (session) => agentId === undefined || session.agentId === agentId,
-      );
+      const matchingSessions = [
+        ...[...state.sessions.values()]
+          .filter(
+            (session) => agentId === undefined || session.agentId === agentId,
+          )
+          .map(toSessionSummary),
+        ...this.#listPersistedSessions(state, agentId),
+      ];
       const page = matchingSessions.slice(cursor, cursor + limit);
       const nextCursor =
         cursor + limit < matchingSessions.length
@@ -193,7 +207,7 @@ export class AgenCDaemonSessionManager {
           : undefined;
 
       return {
-        sessions: page.map(toSessionSummary),
+        sessions: page,
         ...(nextCursor !== undefined ? { nextCursor } : {}),
       };
     });
@@ -223,6 +237,35 @@ export class AgenCDaemonSessionManager {
         total: active + closed,
       };
     });
+  }
+
+  #listPersistedSessions(
+    state: SessionLifecycleState,
+    agentId: string | undefined,
+  ): SessionSummary[] {
+    if (this.#threadStore === undefined) return [];
+    const result: SessionSummary[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = this.#threadStore.listThreads({
+        pageSize: 500,
+        archived: false,
+        useStateDbOnly: true,
+        ...(cursor !== undefined ? { cursor } : {}),
+      });
+      for (const thread of page.items) {
+        if (state.sessions.has(thread.threadId)) continue;
+        const summary = storedThreadToSessionSummary(
+          thread,
+          this.#defaultAgentId,
+        );
+        if (agentId === undefined || summary.agentId === agentId) {
+          result.push(summary);
+        }
+      }
+      cursor = page.nextCursor;
+    } while (cursor !== undefined);
+    return result;
   }
 
   async attachSession(
@@ -392,6 +435,62 @@ function findAttachmentByClientId(
   return [...session.attachments.values()].find(
     (attachment) => attachment.clientId === clientId,
   );
+}
+
+function storedThreadToSessionSummary(
+  thread: StoredThread,
+  defaultAgentId: string,
+): SessionSummary {
+  const metadata: JsonObject = {
+    source:
+      thread.source === undefined ? undefined : threadSourceToJson(thread.source),
+    model: thread.model,
+    modelProvider: thread.modelProvider,
+    rolloutPath: thread.rolloutPath,
+    recovered: true,
+  };
+  return {
+    sessionId: thread.threadId,
+    agentId: agentIdForThreadSource(thread.source) ?? defaultAgentId,
+    status: "waiting",
+    createdAt: thread.createdAt,
+    ...(thread.cwd !== undefined ? { cwd: thread.cwd } : {}),
+    metadata,
+  };
+}
+
+function agentIdForThreadSource(
+  source: ThreadSource | undefined,
+): string | undefined {
+  if (source === "agent" || source === "agent_thread") return undefined;
+  if (source === undefined || typeof source === "string") return undefined;
+  const direct = stringField(source, "agentId") ?? stringField(source, "agent_id");
+  if (direct !== undefined) return direct;
+  const nested = source["source"];
+  if (isRecord(nested)) {
+    return (
+      stringField(nested, "agentId") ??
+      stringField(nested, "agent_id") ??
+      stringField(nested, "parentThreadId")
+    );
+  }
+  return undefined;
+}
+
+function threadSourceToJson(source: ThreadSource): JsonValue {
+  return typeof source === "string" ? source : (source as JsonObject);
+}
+
+function stringField(
+  record: Readonly<Record<string, unknown>>,
+  key: string,
+): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function parseCursor(cursor: string | undefined): number {

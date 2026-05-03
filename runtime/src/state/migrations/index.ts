@@ -4,6 +4,7 @@ import { csvAgentJobsSchemaMigration } from "./002_csv_agent_jobs_schema.js";
 import { agentRunsSchemaMigration } from "./003_agent_runs_schema.js";
 import { sessionStateSnapshotsSchemaMigration } from "./004_session_state_snapshots_schema.js";
 import { inFlightToolCallsSchemaMigration } from "./005_in_flight_tool_calls_schema.js";
+import { threadModelProviderColumnsMigration } from "./006_thread_model_provider_columns.js";
 import type { SqlMigration } from "./types.js";
 
 /**
@@ -15,6 +16,7 @@ export const STATE_DB_MIGRATIONS: readonly SqlMigration[] = [
   agentRunsSchemaMigration,
   sessionStateSnapshotsSchemaMigration,
   inFlightToolCallsSchemaMigration,
+  threadModelProviderColumnsMigration,
 ];
 
 export const LOGS_DB_MIGRATIONS: readonly SqlMigration[] = [

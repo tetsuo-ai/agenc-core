@@ -66,6 +66,7 @@ import {
   type StateDatabasePaths,
   type StateSqliteDriver,
 } from "../state/sqlite-driver.js";
+import { FileThreadStore } from "../thread-store/index.js";
 
 export const AGENC_DAEMON_PID_FILENAME = "daemon.pid";
 export const AGENC_DAEMON_SOCKET_FILENAME = "daemon.sock";
@@ -351,7 +352,11 @@ async function runAgenCDaemonForeground(
     );
     return 1;
   }
-  const sessionManager = new AgenCDaemonSessionManager();
+  const threadStore = new FileThreadStore({
+    cwd: process.cwd(),
+    agencHome: authStartup.daemonHome,
+  });
+  const sessionManager = new AgenCDaemonSessionManager({ threadStore });
   const clientMultiplexer = new AgenCDaemonClientMultiplexer({
     sessionManager,
   });
@@ -385,6 +390,7 @@ async function runAgenCDaemonForeground(
   const agentManager = new AgenCDaemonAgentManager({
     runner,
     sessionManager,
+    threadStore,
     defaultCwd: () => process.cwd(),
     snapshotFlush: (snapshot) =>
       writeAgenCDaemonSnapshot(snapshotPath, snapshot),
@@ -518,6 +524,9 @@ async function runAgenCDaemonForeground(
   });
   cleanup.register("daemon-command-exec", async () => {
     await commandExec.closeAll("daemon_shutdown");
+  });
+  cleanup.register("daemon-thread-store", async () => {
+    threadStore.close();
   });
   cleanup.register("daemon-connections", async () => {
     const activeConnections = [...connections.values()];

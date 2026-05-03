@@ -102,7 +102,7 @@ import {
   type TurnContextItem,
 } from "./event-log.js";
 import type { RolloutStore } from "./rollout-store.js";
-import type { LiveThread } from "./live-thread.js";
+import type { LiveThread } from "../thread-store/live-thread.js";
 import type { RolloutTraceRecorder } from "./rollout-trace.js";
 import type { AppendOptions } from "./session-store.js";
 import {

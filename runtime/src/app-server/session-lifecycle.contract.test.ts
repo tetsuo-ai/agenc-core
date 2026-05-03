@@ -1,7 +1,13 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { RolloutStore } from "../session/rollout-store.js";
+import { FileThreadStore } from "../thread-store/index.js";
 import {
   AgenCDaemonSessionManager,
   AgenCSessionLifecycleError,
+  DEFAULT_AGENC_DAEMON_AGENT_ID,
 } from "./session-lifecycle.js";
 
 function sequence(values: readonly string[]): () => string {
@@ -203,4 +209,82 @@ describe("AgenC daemon session lifecycle", () => {
       sessions: [{ sessionId: "session_1", status: "idle" }],
     });
   });
+
+  it("lists stored on-disk threads after manager recreation", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const rollout = openRollout(cwd, "stored-session");
+    const threadStore = new FileThreadStore({ cwd, agencHome: home });
+    try {
+      threadStore.createThread({
+        threadId: "stored-session",
+        rolloutStore: rollout,
+        source: "cli_main",
+        cwd,
+        model: "grok-4",
+        modelProvider: "xai",
+      });
+      threadStore.shutdownThread("stored-session");
+
+      const recreated = new AgenCDaemonSessionManager({ threadStore });
+      await expect(recreated.listSessions()).resolves.toMatchObject({
+        sessions: [
+          {
+            sessionId: "stored-session",
+            agentId: DEFAULT_AGENC_DAEMON_AGENT_ID,
+            status: "waiting",
+            cwd,
+            metadata: {
+              source: "cli_main",
+              model: "grok-4",
+              modelProvider: "xai",
+              recovered: true,
+            },
+          },
+        ],
+      });
+    } finally {
+      threadStore.close();
+      rollout.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });
+
+function createThreadStoreTestDirs(): {
+  readonly cwd: string;
+  readonly home: string;
+  readonly restoreEnv: () => void;
+} {
+  const cwd = mkdtempSync(join(tmpdir(), "agenc-session-lifecycle-cwd-"));
+  const home = mkdtempSync(join(tmpdir(), "agenc-session-lifecycle-home-"));
+  const previous = process.env.AGENC_HOME;
+  process.env.AGENC_HOME = home;
+  return {
+    cwd,
+    home,
+    restoreEnv: () => {
+      if (previous === undefined) delete process.env.AGENC_HOME;
+      else process.env.AGENC_HOME = previous;
+    },
+  };
+}
+
+function openRollout(cwd: string, sessionId: string): RolloutStore {
+  const rollout = new RolloutStore({
+    cwd,
+    sessionId,
+    agencVersion: "0.2.0",
+  });
+  rollout.open({
+    sessionId,
+    timestamp: "2026-05-01T10:30:00.000Z",
+    cwd,
+    originator: "session-lifecycle-test",
+    agencVersion: "0.2.0",
+    model: "grok-4",
+    modelProvider: "xai",
+  });
+  return rollout;
+}
