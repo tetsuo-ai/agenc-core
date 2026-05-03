@@ -1,5 +1,5 @@
 /**
- * `Edit` — first-class string-replacement editor.
+ * `Edit` / `MultiEdit` — first-class string-replacement editors.
  *
  * Lifted from the upstream file-edit tool and
  * adapted to the AgenC tool contract. Behavior summary:
@@ -23,6 +23,9 @@
  *   - `old_string === new_string` is rejected with the verbatim
  *     AgenC error.
  *   - `.ipynb` files are rejected with a notebook-tool hint.
+ *   - MultiEdit validates every operation against the in-memory result
+ *     of previous operations, then writes once so failed batches leave
+ *     the file untouched.
  *
  * Errors are returned as plain text in `ToolResult.content` with
  * `isError: true` — no JSON envelope, matching the AgenC-style envelope
@@ -55,6 +58,7 @@ import {
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
 
 export const FILE_EDIT_TOOL_NAME = "Edit";
+export const FILE_MULTI_EDIT_TOOL_NAME = "MultiEdit";
 
 const FILE_UNEXPECTEDLY_MODIFIED_ERROR =
   "File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.";
@@ -72,6 +76,16 @@ Usage:
 - Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
 - The edit will FAIL if \`old_string\` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use \`replace_all\` to change every instance of \`old_string\`.
 - Use \`replace_all\` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.`;
+
+const FILE_MULTI_EDIT_DESCRIPTION = `Performs multiple exact string replacements in a single file.
+
+Usage:
+- Use this tool when you need to make several coordinated edits to the same file.
+- You must use your \`Read\` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
+- Each edit is applied in order to the result of the previous edit.
+- The file is only written after every edit validates successfully. If any edit fails, the file is left unchanged.
+- The edit will FAIL if any \`old_string\` is not unique in the file at the time that edit is applied. Either provide more surrounding context or set \`replace_all\` to true for that edit.
+- Use \`replace_all\` for replacing and renaming strings across the file.`;
 
 // V8/Bun string length cap. 1 GiB stat-size guard prevents OOM on
 // gigabyte files. Lifted from the upstream file-edit guard.
@@ -158,11 +172,28 @@ interface EditArgs extends ToolExecutionInjectedArgs {
   readonly cwd?: unknown;
 }
 
+interface MultiEditArgs extends ToolExecutionInjectedArgs {
+  readonly file_path?: unknown;
+  readonly edits?: unknown;
+  readonly cwd?: unknown;
+}
+
 interface ResolvedEditInputs {
   readonly file_path: string;
   readonly old_string: string;
   readonly new_string: string;
   readonly replace_all: boolean;
+}
+
+interface ResolvedMultiEdit {
+  readonly old_string: string;
+  readonly new_string: string;
+  readonly replace_all: boolean;
+}
+
+interface ResolvedMultiEditInputs {
+  readonly file_path: string;
+  readonly edits: readonly ResolvedMultiEdit[];
 }
 
 function validateInputs(
@@ -186,6 +217,50 @@ function validateInputs(
     new_string: newString,
     replace_all: args.replace_all === true,
   };
+}
+
+function validateMultiEditInputs(
+  args: MultiEditArgs,
+): ResolvedMultiEditInputs | { error: string } {
+  const filePath = asNonEmptyString(args.file_path);
+  if (!filePath) {
+    return { error: "file_path must be a non-empty string" };
+  }
+  if (!Array.isArray(args.edits) || args.edits.length === 0) {
+    return { error: "edits must be a non-empty array" };
+  }
+
+  const edits: ResolvedMultiEdit[] = [];
+  for (let i = 0; i < args.edits.length; i += 1) {
+    const edit = args.edits[i];
+    if (edit === null || typeof edit !== "object" || Array.isArray(edit)) {
+      return { error: `edits[${i}] must be an object` };
+    }
+    const rawEdit = edit as Record<string, unknown>;
+    const oldString = asString(rawEdit.old_string);
+    if (oldString === undefined) {
+      return { error: `edits[${i}].old_string must be a string` };
+    }
+    const newString = asString(rawEdit.new_string);
+    if (newString === undefined) {
+      return { error: `edits[${i}].new_string must be a string` };
+    }
+    if (
+      rawEdit.replace_all !== undefined &&
+      typeof rawEdit.replace_all !== "boolean"
+    ) {
+      return {
+        error: `edits[${i}].replace_all must be a boolean when provided`,
+      };
+    }
+    edits.push({
+      old_string: oldString,
+      new_string: newString,
+      replace_all: rawEdit.replace_all === true,
+    });
+  }
+
+  return { file_path: filePath, edits };
 }
 
 interface FileSnapshot {
@@ -274,6 +349,45 @@ function applyEdit(
   return fileContent.replace(oldString, newString);
 }
 
+function applyValidatedEdit(
+  fileContent: string,
+  oldString: string,
+  newString: string,
+  replaceAll: boolean,
+): { updated: string; replacements: number } | { error: string } {
+  const actualOldString = findActualString(fileContent, oldString);
+  if (actualOldString === null) {
+    return {
+      error: `String to replace not found in file.\nString: ${oldString}`,
+    };
+  }
+
+  let matches = 0;
+  let from = 0;
+  while (true) {
+    const idx = fileContent.indexOf(actualOldString, from);
+    if (idx < 0) break;
+    matches += 1;
+    from = idx + actualOldString.length;
+    if (!replaceAll && matches > 1) break;
+  }
+  if (matches === 0) {
+    return {
+      error: `String to replace not found in file.\nString: ${oldString}`,
+    };
+  }
+  if (!replaceAll && matches > 1) {
+    return {
+      error: `Found ${matches} matches of the string to replace, but replace_all is false. To replace all occurrences, set replace_all to true. To replace only one occurrence, please provide more context to uniquely identify the instance.\nString: ${oldString}`,
+    };
+  }
+
+  return {
+    updated: applyEdit(fileContent, actualOldString, newString, replaceAll),
+    replacements: matches,
+  };
+}
+
 /**
  * Format a successful-edit result line. Mirrors the upstream
  * tool-result mapper,
@@ -283,6 +397,16 @@ function successText(filePath: string, replaceAll: boolean): string {
   return replaceAll
     ? `The file ${filePath} has been updated. All occurrences were successfully replaced.`
     : `The file ${filePath} has been updated successfully.`;
+}
+
+function multiEditSuccessText(
+  filePath: string,
+  edits: number,
+  replacements: number,
+): string {
+  const editLabel = edits === 1 ? "edit" : "edits";
+  const replacementLabel = replacements === 1 ? "replacement" : "replacements";
+  return `The file ${filePath} has been updated successfully. ${edits} ${editLabel} applied with ${replacements} ${replacementLabel}.`;
 }
 
 export function createFileEditTool(config: FileEditToolConfig): Tool {
@@ -342,9 +466,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         path: filePath,
         cwd,
         context: context.getAppState().toolPermissionContext,
-        operationType: asNonEmptyString(args.old_string) === undefined
-          ? "create"
-          : "write",
+        operationType: asString(args.old_string) === "" ? "create" : "write",
         extraWorkingDirectories: config.allowedPaths,
       });
     },
@@ -520,50 +642,15 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         }
       }
 
-      // Quote/typography normalization. After this pass, `actualOldString`
-      // is the literal substring present in the file (possibly with
-      // smart quotes / Unicode dashes) that corresponds to the model's
-      // ASCII `old_string`.
-      const actualOldString = findActualString(snapshot.content, old_string);
-      if (actualOldString === null) {
-        return errorResult(
-          `String to replace not found in file.\nString: ${old_string}`,
-        );
-      }
-
-      // Match counting with early-out for non-replace_all calls. Mirrors
-      // AgenC FileEditTool.ts:329-343.
-      let matches = 0;
-      let from = 0;
-      while (true) {
-        const idx = snapshot.content.indexOf(actualOldString, from);
-        if (idx < 0) break;
-        matches += 1;
-        from = idx + actualOldString.length;
-        if (!replace_all && matches > 1) break;
-      }
-      if (matches === 0) {
-        // findActualString found a match but indexOf says no — this is
-        // unreachable in practice but the defensive check matches the
-        // AgenC error wording so a model that hits the path gets
-        // the same recovery hint.
-        return errorResult(
-          `String to replace not found in file.\nString: ${old_string}`,
-        );
-      }
-      if (!replace_all && matches > 1) {
-        return errorResult(
-          `Found ${matches} matches of the string to replace, but replace_all is false. To replace all occurrences, set replace_all to true. To replace only one occurrence, please provide more context to uniquely identify the instance.\nString: ${old_string}`,
-        );
-      }
-
-      // Compute new content and write.
-      const updated = applyEdit(
+      const applied = applyValidatedEdit(
         snapshot.content,
-        actualOldString,
+        old_string,
         new_string,
         replace_all,
       );
+      if ("error" in applied) return errorResult(applied.error);
+      const { updated, replacements: matches } = applied;
+
       try {
         await writeFile(absoluteFilePath, updated, "utf8");
       } catch (err) {
@@ -586,6 +673,271 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
           beforeText: snapshot.content,
           afterText: updated,
           replacements: matches,
+        }),
+      };
+    },
+  };
+}
+
+export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
+  return {
+    name: FILE_MULTI_EDIT_TOOL_NAME,
+    description: FILE_MULTI_EDIT_DESCRIPTION,
+    metadata: {
+      family: "filesystem",
+      source: "builtin",
+      keywords: ["multi-edit", "batch", "edit", "replace", "string", "patch"],
+      preferredProfiles: ["coding"],
+      hiddenByDefault: false,
+      mutating: true,
+      deferred: false,
+    },
+    requiresApproval: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        file_path: {
+          type: "string",
+          description:
+            "Absolute or workspace-relative path to the file to edit.",
+        },
+        edits: {
+          type: "array",
+          minItems: 1,
+          description:
+            "Ordered list of exact string replacements to apply to the file.",
+          items: {
+            type: "object",
+            properties: {
+              old_string: {
+                type: "string",
+                description:
+                  "The exact text to replace. Must match a unique substring of the current in-memory file unless replace_all is true.",
+              },
+              new_string: {
+                type: "string",
+                description: "The replacement text.",
+              },
+              replace_all: {
+                type: "boolean",
+                description:
+                  "Optional. When true, replace every occurrence of old_string for this edit. Defaults to false.",
+              },
+            },
+            required: ["old_string", "new_string"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["file_path", "edits"],
+      additionalProperties: false,
+    },
+    checkPermissions(input, context) {
+      const args = input as MultiEditArgs;
+      const filePath = asNonEmptyString(args.file_path);
+      if (!filePath) {
+        return {
+          behavior: "ask",
+          message: "file_path must be a non-empty string",
+        };
+      }
+      const cwd =
+        asNonEmptyString(args.cwd) ?? config.allowedPaths[0] ?? process.cwd();
+      const firstEdit = Array.isArray(args.edits) ? args.edits[0] : undefined;
+      const firstOldString =
+        firstEdit !== null &&
+        typeof firstEdit === "object" &&
+        !Array.isArray(firstEdit)
+          ? asString((firstEdit as Record<string, unknown>).old_string)
+          : undefined;
+      return checkToolPathPermission({
+        toolName: FILE_MULTI_EDIT_TOOL_NAME,
+        input: input as Record<string, unknown>,
+        path: filePath,
+        cwd,
+        context: context.getAppState().toolPermissionContext,
+        operationType: firstOldString === "" ? "create" : "write",
+        extraWorkingDirectories: config.allowedPaths,
+      });
+    },
+    async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
+      const args = rawArgs as MultiEditArgs;
+      const validated = validateMultiEditInputs(args);
+      if ("error" in validated) return errorResult(validated.error);
+      const { file_path, edits } = validated;
+
+      const firstEdit = edits[0];
+      if (firstEdit === undefined) {
+        return errorResult("edits must be a non-empty array");
+      }
+
+      for (const [i, edit] of edits.entries()) {
+        if (edit.old_string === edit.new_string) {
+          return errorResult(
+            `No changes to make: edits[${i}].old_string and edits[${i}].new_string are exactly the same.`,
+          );
+        }
+      }
+
+      const candidatePath = isAbsolute(file_path)
+        ? file_path
+        : resolve(
+            asNonEmptyString(rawArgs.cwd) ?? config.allowedPaths[0] ?? process.cwd(),
+            file_path,
+          );
+      const safe = await safePathAllowingSessionPlanFile(
+        candidatePath,
+        config.allowedPaths,
+        rawArgs,
+      );
+      if (!safe.safe) {
+        return errorResult(`Access denied: ${safe.reason}`);
+      }
+      const absoluteFilePath = safe.resolved;
+
+      if (absoluteFilePath.endsWith(".ipynb")) {
+        return errorResult(
+          "File is a Jupyter Notebook. Use a notebook-specific tool to edit Jupyter notebooks.",
+        );
+      }
+
+      let snapshot: FileSnapshot;
+      try {
+        snapshot = await readFileSnapshot(absoluteFilePath);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return errorResult(`Failed to read file: ${message}`);
+      }
+
+      if (snapshot.exists && snapshot.size > MAX_EDIT_FILE_SIZE) {
+        return errorResult(
+          `File is too large to edit (${snapshot.size} bytes). Maximum editable file size is ${MAX_EDIT_FILE_SIZE} bytes.`,
+        );
+      }
+
+      if (!snapshot.exists && edits.length === 1 && firstEdit.old_string === "") {
+        try {
+          await writeFileCreatingParents(absoluteFilePath, firstEdit.new_string);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return errorResult(`Failed to create file: ${message}`);
+        }
+        await snapshotPostWrite(
+          resolveSessionId(rawArgs),
+          absoluteFilePath,
+          firstEdit.new_string,
+        );
+        return {
+          content: `Created file ${file_path}.`,
+          metadata: buildFileMutationMetadata({
+            filePath: file_path,
+            operation: "create",
+            beforeText: "",
+            afterText: firstEdit.new_string,
+          }),
+        };
+      }
+
+      if (!snapshot.exists) {
+        return errorResult(
+          `File does not exist: ${file_path}. To create a new file, pass a single edit with an empty old_string.`,
+        );
+      }
+
+      const emptyOldStringIndex = edits.findIndex((edit) => edit.old_string === "");
+      if (emptyOldStringIndex >= 0) {
+        if (edits.length > 1) {
+          return errorResult(
+            `edits[${emptyOldStringIndex}].old_string cannot be empty in a multi-edit batch.`,
+          );
+        }
+        if (snapshot.content.trim() !== "") {
+          return errorResult("Cannot create new file - file already exists.");
+        }
+        try {
+          await writeFile(absoluteFilePath, firstEdit.new_string, "utf8");
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return errorResult(`Failed to write file: ${message}`);
+        }
+        await snapshotPostWrite(
+          resolveSessionId(rawArgs),
+          absoluteFilePath,
+          firstEdit.new_string,
+        );
+        return {
+          content: multiEditSuccessText(file_path, 1, 1),
+          metadata: buildFileMutationMetadata({
+            filePath: file_path,
+            operation: "edit",
+            beforeText: snapshot.content,
+            afterText: firstEdit.new_string,
+            replacements: 1,
+          }),
+        };
+      }
+
+      const sessionId = resolveSessionId(rawArgs);
+      if (sessionId !== undefined) {
+        if (!hasSessionRead(sessionId, absoluteFilePath)) {
+          return errorResult(READ_BEFORE_WRITE_ERROR);
+        }
+      }
+
+      if (sessionId !== undefined) {
+        const recordedSnapshot = getSessionReadSnapshot(
+          sessionId,
+          absoluteFilePath,
+        );
+        const recordedTs = recordedSnapshot?.timestamp;
+        if (
+          typeof recordedTs === "number" &&
+          Number.isFinite(recordedTs) &&
+          snapshot.mtimeMs > recordedTs
+        ) {
+          const isFullContentMatch =
+            recordedSnapshot?.viewKind === "full" &&
+            typeof recordedSnapshot.content === "string" &&
+            recordedSnapshot.content === snapshot.content;
+          if (!isFullContentMatch) {
+            return errorResult(FILE_UNEXPECTEDLY_MODIFIED_ERROR);
+          }
+        }
+      }
+
+      let updated = snapshot.content;
+      let replacements = 0;
+      for (const [i, edit] of edits.entries()) {
+        const applied = applyValidatedEdit(
+          updated,
+          edit.old_string,
+          edit.new_string,
+          edit.replace_all,
+        );
+        if ("error" in applied) {
+          return errorResult(`Edit ${i + 1} failed: ${applied.error}`);
+        }
+        updated = applied.updated;
+        replacements += applied.replacements;
+      }
+
+      try {
+        await writeFile(absoluteFilePath, updated, "utf8");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return errorResult(`Failed to write file: ${message}`);
+      }
+
+      await snapshotPostWrite(sessionId, absoluteFilePath, updated);
+
+      return {
+        content: multiEditSuccessText(file_path, edits.length, replacements),
+        metadata: buildFileMutationMetadata({
+          filePath: file_path,
+          operation: "edit",
+          beforeText: snapshot.content,
+          afterText: updated,
+          replacements,
         }),
       };
     },

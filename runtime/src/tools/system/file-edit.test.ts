@@ -1,5 +1,5 @@
 /**
- * Tests for the lifted openclaude `Edit` tool.
+ * Tests for the AgenC `Edit` and `MultiEdit` tools.
  *
  * Coverage:
  *   - successful edit on a previously-read file
@@ -23,7 +23,9 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import {
   createFileEditTool,
+  createFileMultiEditTool,
   FILE_EDIT_TOOL_NAME,
+  FILE_MULTI_EDIT_TOOL_NAME,
   findActualString,
 } from "./file-edit.js";
 import {
@@ -60,6 +62,23 @@ describe("Edit tool", () => {
     const tool = createFileEditTool({ allowedPaths: [root] });
     expect(tool.name).toBe("Edit");
     expect(tool.metadata?.mutating).toBe(true);
+  });
+
+  test("exposes the AgenC multi-edit tool name", () => {
+    expect(FILE_MULTI_EDIT_TOOL_NAME).toBe("MultiEdit");
+    const tool = createFileMultiEditTool({ allowedPaths: [root] });
+    expect(tool.name).toBe("MultiEdit");
+    expect(tool.metadata?.mutating).toBe(true);
+    expect(tool.requiresApproval).toBe(true);
+    expect(tool.inputSchema).toMatchObject({
+      properties: {
+        edits: {
+          type: "array",
+          minItems: 1,
+        },
+      },
+      required: ["file_path", "edits"],
+    });
   });
 
   test("successful edit on a previously-read file", async () => {
@@ -464,5 +483,167 @@ describe("Edit tool", () => {
 
     expect(result.isError).toBeUndefined();
     await expect(readFile(file, "utf8")).resolves.toBe("rel-after\n");
+  });
+
+  test("MultiEdit applies ordered edits against the in-memory result", async () => {
+    const file = join(root, "ordered.txt");
+    await writeFile(file, "one two\n", "utf8");
+    const fileStats = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: "one two\n",
+      timestamp: fileStats.mtimeMs,
+      viewKind: "full",
+    });
+
+    const tool = createFileMultiEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      edits: [
+        { old_string: "one", new_string: "three" },
+        { old_string: "three two", new_string: "done" },
+      ],
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("2 edits applied");
+    expect(result.metadata).toMatchObject({
+      ui: {
+        kind: "file_mutation",
+        filePath: file,
+        operation: "edit",
+        replacements: 2,
+      },
+    });
+    await expect(readFile(file, "utf8")).resolves.toBe("done\n");
+    expect(getSessionReadSnapshot(SESSION_ID, file)?.content).toBe("done\n");
+  });
+
+  test("MultiEdit leaves the file untouched when a later edit fails", async () => {
+    const file = join(root, "atomic.txt");
+    const original = "alpha beta gamma\n";
+    await writeFile(file, original, "utf8");
+    const fileStats = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: original,
+      timestamp: fileStats.mtimeMs,
+      viewKind: "full",
+    });
+
+    const tool = createFileMultiEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      edits: [
+        { old_string: "alpha", new_string: "omega" },
+        { old_string: "missing", new_string: "value" },
+      ],
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("Edit 2 failed");
+    await expect(readFile(file, "utf8")).resolves.toBe(original);
+  });
+
+  test("MultiEdit supports replace_all per edit", async () => {
+    const file = join(root, "replace-all.txt");
+    await writeFile(file, "foo bar foo\n", "utf8");
+    const fileStats = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: "foo bar foo\n",
+      timestamp: fileStats.mtimeMs,
+      viewKind: "full",
+    });
+
+    const tool = createFileMultiEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      edits: [
+        { old_string: "foo", new_string: "qux", replace_all: true },
+        { old_string: "bar", new_string: "baz" },
+      ],
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("3 replacements");
+    expect(result.metadata).toMatchObject({
+      ui: {
+        replacements: 3,
+      },
+    });
+    await expect(readFile(file, "utf8")).resolves.toBe("qux baz qux\n");
+  });
+
+  test("MultiEdit rejects unread files in sessions", async () => {
+    const file = join(root, "unread-multi.txt");
+    await writeFile(file, "before\n", "utf8");
+    const tool = createFileMultiEditTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      file_path: file,
+      edits: [{ old_string: "before", new_string: "after" }],
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toBe(
+      "File has not been read yet. Read it first before writing to it.",
+    );
+    await expect(readFile(file, "utf8")).resolves.toBe("before\n");
+  });
+
+  test("MultiEdit rejects files modified since read", async () => {
+    const file = join(root, "stale-multi.txt");
+    await writeFile(file, "v1\n", "utf8");
+    const initial = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: "v1\n",
+      timestamp: initial.mtimeMs,
+      viewKind: "full",
+    });
+    await writeFile(file, "v2\n", "utf8");
+    const newStats = await stat(file);
+    await utimes(file, newStats.atime, new Date(initial.mtimeMs + 5_000));
+
+    const tool = createFileMultiEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      edits: [{ old_string: "v2", new_string: "v3" }],
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toBe(
+      "File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.",
+    );
+    await expect(readFile(file, "utf8")).resolves.toBe("v2\n");
+  });
+
+  test("MultiEdit validates edit arrays", async () => {
+    const tool = createFileMultiEditTool({ allowedPaths: [root] });
+
+    await expect(
+      tool.execute({
+        file_path: join(root, "bad.txt"),
+        edits: [],
+        [SESSION_ID_ARG]: SESSION_ID,
+      }),
+    ).resolves.toMatchObject({
+      isError: true,
+      content: "edits must be a non-empty array",
+    });
+
+    await expect(
+      tool.execute({
+        file_path: join(root, "bad.txt"),
+        edits: [{ old_string: "x", new_string: "x" }],
+        [SESSION_ID_ARG]: SESSION_ID,
+      }),
+    ).resolves.toMatchObject({
+      isError: true,
+      content:
+        "No changes to make: edits[0].old_string and edits[0].new_string are exactly the same.",
+    });
   });
 });

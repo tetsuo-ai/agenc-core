@@ -10,7 +10,7 @@
  *
  * Build once per session. The registry is intentionally flat — every
  * surviving tool registers into one router-backed list with no grouping.
- * The provider-visible catalog is request scoped: codex runtime-primary tools
+ * The provider-visible catalog is request scoped: runtime-primary tools
  * are visible by default, while compatibility built-ins, MCP, and
  * explicitly deferred tools become visible after discovery.
  *
@@ -37,11 +37,13 @@ import {
   // These are the canonical file-content and search surface.
   createFileReadTool,
   createFileEditTool,
+  createFileMultiEditTool,
   createFileWriteTool,
   createGlobTool,
   createGrepTool,
   FILE_READ_TOOL_NAME,
   FILE_EDIT_TOOL_NAME,
+  FILE_MULTI_EDIT_TOOL_NAME,
   FILE_WRITE_TOOL_NAME,
   GLOB_TOOL_NAME,
   GREP_TOOL_NAME,
@@ -237,6 +239,7 @@ const STRING_ARGUMENT_TOOL_FIELDS: Readonly<Record<string, string>> = {
   [FILE_READ_TOOL_NAME]: "file_path",
   [FILE_WRITE_TOOL_NAME]: "file_path",
   [FILE_EDIT_TOOL_NAME]: "file_path",
+  [FILE_MULTI_EDIT_TOOL_NAME]: "file_path",
   "system.listDir": "path",
   "system.stat": "path",
   "system.mkdir": "path",
@@ -252,13 +255,14 @@ const DEFAULT_VISIBLE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // first-class visible.
   FILE_READ_TOOL_NAME,
   FILE_EDIT_TOOL_NAME,
+  FILE_MULTI_EDIT_TOOL_NAME,
   FILE_WRITE_TOOL_NAME,
   GLOB_TOOL_NAME,
   GREP_TOOL_NAME,
-  // `TodoWrite` is the AgenC port; codex runtime `update_plan`
+  // `TodoWrite` is the AgenC port; the legacy runtime `update_plan`
   // is intentionally not shipped — `/plan` itself is AgenC-owned
   // (see `runtime/src/commands/plan.ts:4`), so the matching checklist
-  // tool is openclaude `TodoWrite`.
+  // tool is `TodoWrite`.
   "TodoWrite",
   "EnterPlanMode",
   "ExitPlanMode",
@@ -322,7 +326,7 @@ export interface BuildToolRegistryOptions {
   readonly mcpToolsProvider?: ToolListProvider;
   /**
    * Hide MCP tool schemas until `system.searchTools` discovers them.
-   * This mirrors codex runtime's deferred MCP catalog path and prevents large
+   * This mirrors the deferred MCP catalog path and prevents large
    * MCP installs from bloating every request by default.
    */
   readonly deferMcpTools?: boolean;
@@ -340,7 +344,7 @@ export interface BuildToolRegistryOptions {
   /**
    * Include AgenC-owned structured git/symbol/repo-inventory tools in
    * the catalog. Defaults to true, but those tools stay deferred so the
-   * default model-visible prompt remains codex runtime-small.
+   * default model-visible prompt remains small.
    */
   readonly codeIntelligenceTools?: boolean;
   /** Live plan-mode bridge for EnterPlanMode/ExitPlanMode. */
@@ -349,8 +353,8 @@ export interface BuildToolRegistryOptions {
   readonly codeModeService?: CodeModeService;
   /**
    * Runtime integration seam: extra tools to register beyond the default
-   * coding-profile catalog. The CLI uses this for Codex-style model-facing
-   * tools such as `spawn_agent`.
+   * coding-profile catalog. The CLI uses this for model-facing tools such
+   * as `spawn_agent`.
    */
   readonly extraTools?: ReadonlyArray<Tool>;
 }
@@ -420,6 +424,10 @@ export function buildToolRegistry(
       allowedPaths: [options.workspaceRoot],
     }),
     createFileEditTool({
+      allowedPaths: [options.workspaceRoot],
+    }),
+    // MultiEdit is the multi-edit batch editor for one-file rewrite sets.
+    createFileMultiEditTool({
       allowedPaths: [options.workspaceRoot],
     }),
     createFileWriteTool({
