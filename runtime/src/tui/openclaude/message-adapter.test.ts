@@ -53,6 +53,53 @@ describe("AgenC TUI transcript bridge", () => {
     });
   });
 
+  test("renders elicitation request events instead of dropping pending prompts", () => {
+    const transcript = adaptTranscriptEvents([
+      {
+        id: "input",
+        msg: {
+          type: "request_user_input",
+          payload: {
+            callId: "call_1",
+            turnId: "turn_1",
+            questions: [
+              {
+                id: "choice",
+                header: "Choice",
+                question: "Proceed?",
+                options: [
+                  { label: "Yes", description: "Continue." },
+                  { label: "No", description: "Stop." },
+                ],
+              },
+            ],
+          },
+        },
+      },
+      {
+        id: "mcp",
+        msg: {
+          type: "mcp_elicitation_request",
+          payload: {
+            serverName: "srv",
+            requestId: "mcp_1",
+            turnId: "turn_1",
+            request: {
+              mode: "form",
+              message: "Need details",
+              requestedSchema: { type: "object", properties: {} },
+            },
+          },
+        },
+      },
+    ]);
+
+    expect(transcript.messages.map((message) => message.content)).toEqual([
+      "Input requested: Proceed?",
+      "MCP elicitation requested: Need details",
+    ]);
+  });
+
   test("finalizes streamed text at turn completion", () => {
     const transcript = adaptTranscriptEvents([
       {

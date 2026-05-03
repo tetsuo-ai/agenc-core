@@ -52,6 +52,7 @@ export const AGENC_DAEMON_METHODS = [
   "tool.approve",
   "tool.deny",
   "tool.cancel",
+  "elicitation.respond",
   "permission.list",
   "fs.fuzzy_search",
   "commandExec.start",
@@ -73,6 +74,8 @@ export const AGENC_DAEMON_NOTIFICATION_METHODS = [
   "event.message_chunk",
   "event.tool_request",
   "event.permission_request",
+  "event.user_input_request",
+  "event.mcp_elicitation_request",
   "event.agent_status",
   "event.session_event",
 ] as const;
@@ -235,6 +238,13 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     result: "object",
     description: "Cancel a pending tool or permission request.",
   },
+  "elicitation.respond": {
+    method: "elicitation.respond",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Resolve a pending user-input or MCP elicitation request.",
+  },
   "permission.list": {
     method: "permission.list",
     direction: "client-to-server",
@@ -347,6 +357,20 @@ export const AGENC_DAEMON_NOTIFICATION_SPECS = defineNotificationSpecs({
     params: "required",
     description:
       "Ask an attached client to resolve a pending permission request.",
+  },
+  "event.user_input_request": {
+    method: "event.user_input_request",
+    direction: "server-to-client",
+    params: "required",
+    description:
+      "Ask an attached client to resolve a pending user-input request.",
+  },
+  "event.mcp_elicitation_request": {
+    method: "event.mcp_elicitation_request",
+    direction: "server-to-client",
+    params: "required",
+    description:
+      "Ask an attached client to resolve a pending MCP elicitation request.",
   },
   "event.agent_status": {
     method: "event.agent_status",
@@ -488,6 +512,14 @@ export interface ToolCancelParams extends JsonObject {
   readonly reason?: string;
 }
 
+export interface ElicitationRespondParams extends JsonObject {
+  readonly sessionId: string;
+  readonly requestId: RequestId;
+  readonly kind: "request_user_input" | "mcp";
+  readonly serverName?: string;
+  readonly response: JsonObject;
+}
+
 export interface PermissionListParams extends JsonObject {
   readonly agentId?: string;
   readonly sessionId?: string;
@@ -590,6 +622,20 @@ export interface EventPermissionRequestParams extends AgenCEventBaseParams {
   readonly reason?: string;
 }
 
+export interface EventUserInputRequestParams extends AgenCEventBaseParams {
+  readonly requestId: string;
+  readonly callId: string;
+  readonly turnId: string;
+  readonly questions: readonly JsonObject[];
+}
+
+export interface EventMcpElicitationRequestParams extends AgenCEventBaseParams {
+  readonly requestId: RequestId;
+  readonly serverName: string;
+  readonly turnId: string;
+  readonly request: JsonObject;
+}
+
 export interface EventAgentStatusParams extends AgenCEventBaseParams {
   readonly agentId: string;
   readonly status: AgentStatus;
@@ -615,6 +661,8 @@ export interface AgenCDaemonNotificationParamsByMethod {
   readonly "event.message_chunk": EventMessageChunkParams;
   readonly "event.tool_request": EventToolRequestParams;
   readonly "event.permission_request": EventPermissionRequestParams;
+  readonly "event.user_input_request": EventUserInputRequestParams;
+  readonly "event.mcp_elicitation_request": EventMcpElicitationRequestParams;
   readonly "event.agent_status": EventAgentStatusParams;
   readonly "event.session_event": EventSessionEventParams;
 }
@@ -635,6 +683,14 @@ export type AgenCDaemonNotification =
   | AgenCDaemonNotificationWithParams<
       "event.permission_request",
       EventPermissionRequestParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "event.user_input_request",
+      EventUserInputRequestParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "event.mcp_elicitation_request",
+      EventMcpElicitationRequestParams
     >
   | AgenCDaemonNotificationWithParams<
       "event.agent_status",
@@ -692,6 +748,10 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"tool.approve", ToolApproveParams>
   | AgenCDaemonRequestWithParams<"tool.deny", ToolDenyParams>
   | AgenCDaemonRequestWithParams<"tool.cancel", ToolCancelParams>
+  | AgenCDaemonRequestWithParams<
+      "elicitation.respond",
+      ElicitationRespondParams
+    >
   | AgenCDaemonRequestWithParams<"permission.list", PermissionListParams>
   | AgenCDaemonRequestWithParams<"fs.fuzzy_search", FuzzyFileSearchParams>
   | AgenCDaemonRequestWithParams<"commandExec.start", CommandExecStartParams>
@@ -839,6 +899,11 @@ export interface ToolDecisionResult extends JsonObject {
   readonly decision: "approved" | "denied" | "cancelled";
 }
 
+export interface ElicitationRespondResult extends JsonObject {
+  readonly requestId: RequestId;
+  readonly resolved: boolean;
+}
+
 export interface PermissionGrant extends JsonObject {
   readonly permissionId: string;
   readonly subject: string;
@@ -949,6 +1014,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "tool.approve": ToolDecisionResult;
   readonly "tool.deny": ToolDecisionResult;
   readonly "tool.cancel": ToolDecisionResult;
+  readonly "elicitation.respond": ElicitationRespondResult;
   readonly "permission.list": PermissionListResult;
   readonly "fs.fuzzy_search": FuzzyFileSearchResponse;
   readonly "commandExec.start": CommandExecResponse;

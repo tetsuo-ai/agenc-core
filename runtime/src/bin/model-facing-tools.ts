@@ -96,6 +96,7 @@ import {
 } from "./task-store.js";
 import { createStructuredOutputTool } from "./structured-output-tool.js";
 import { isPreapprovedHost } from "./web-fetch-preapproved.js";
+import { createRequestUserInputTool } from "../elicitation/request-user-input.js";
 import { getRuleByContentsForTool } from "../permissions/rules.js";
 import type {
   PermissionResult,
@@ -3465,6 +3466,7 @@ export function createModelFacingTools(
     createNotebookReadTool(opts),
     createNotebookEditTool(opts),
     createLspTool(opts),
+    createRequestUserInputTool(opts),
     ...createPlanAndMessageTools(opts),
     ...createTaskTools(opts),
     ...createBackgroundTaskTools(),

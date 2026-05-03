@@ -22,17 +22,22 @@ import { createBridgeTools } from "./tool-stubs.js";
 import { useSessionTranscript } from "./use-session-transcript.js";
 import { useToolJSX } from "./use-tool-jsx.js";
 import {
-  OpenClaudePermissionOverlay as PermissionOverlay, // branding-scan: allow upstream-compat exported component name
+  AgenCPermissionOverlay as PermissionOverlay,
   buildToolUseConfirmQueue,
   usePermissionBridge,
 } from "./permission-bridge.js";
+import {
+  ElicitationOverlay,
+  useElicitationBridge,
+} from "../elicitation-bridge.js";
+import { submitViaElicitationBridge } from "../elicitation-submit-routing.js";
 import { loadUpstreamCommandList } from "../../agenc/adapters/upstream-commands.js";
 import { loadUpstreamAgentList } from "../../agenc/adapters/upstream-agent-list.js";
 import { buildPendingProviderSwitch } from "../../agenc/adapters/upstream-model-switch.js";
 import { pastedContentsToLLMMessage } from "../../agenc/adapters/upstream-attachments.js";
 import type { Command } from "../../agenc/upstream/commands.js";
 import type { AgentDefinition } from "../../agenc/upstream/tools/AgentTool/loadAgentsDir.js";
-import type { OpenClaudeTuiProps as AgenCTuiProps } from "./session-types.js"; // branding-scan: allow upstream-compat exported prop type
+import type { AgenCTuiProps } from "../session-types.js";
 
 function initialPermissionContext(
   props: AgenCTuiProps,
@@ -213,6 +218,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     setModel,
     setExpandedView,
   );
+  const elicitation = useElicitationBridge(props.session);
   const toolNames = useMemo(() => {
     const names = new Set(transcript.toolNames);
     const firstPermission = permissionRequests[0];
@@ -271,7 +277,10 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   );
   const title = useMemo(() => terminalTitle(props), [props]);
   const titleIsAnimating =
-    transcript.isStreaming && permissionRequests.length === 0 && toolJSX === null;
+    transcript.isStreaming &&
+    permissionRequests.length === 0 &&
+    elicitation.prompt === null &&
+    toolJSX === null;
 
   return (
     <Box flexDirection="column" width="100%">
@@ -301,6 +310,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
         request={permissionRequests[0]}
         tools={tools}
       />
+      <ElicitationOverlay prompt={elicitation.prompt} />
       <PromptInput
         debug={false}
         ideSelection={undefined}
@@ -331,12 +341,9 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
         setShowBashesDialog={setShowBashesDialog}
         onExit={exit}
         getToolUseContext={getToolUseContext}
-        onSubmit={async (value, helpers) => {
-          await submit(value);
-          helpers.clearBuffer();
-          helpers.resetHistory();
-          helpers.setCursorOffset(0);
-        }}
+        onSubmit={(value, helpers) =>
+          submitViaElicitationBridge(elicitation, submit, value, helpers)
+        }
         isSearchingHistory={isSearchingHistory}
         setIsSearchingHistory={setIsSearchingHistory}
         helpOpen={helpOpen}
@@ -346,7 +353,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   );
 }
 
-export function OpenClaudeTuiApp( // branding-scan: allow upstream-compat exported app name
+export function AgenCTuiApp(
   props: AgenCTuiProps,
 ): React.ReactElement {
   const initial = useMemo(() => initialState(props), []);

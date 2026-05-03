@@ -324,6 +324,35 @@ function formatAgentStatus(status: unknown): string {
   return stringResult(status);
 }
 
+function formatElicitationSummary(type: string, payload: Record<string, unknown>): string {
+  if (type === "request_user_input") {
+    const questions = Array.isArray(payload.questions)
+      ? payload.questions
+          .map((question) =>
+            question &&
+            typeof question === "object" &&
+            typeof (question as { question?: unknown }).question === "string"
+              ? (question as { question: string }).question
+              : null,
+          )
+          .filter((question): question is string => question !== null)
+      : [];
+    return questions.length > 0
+      ? `Input requested: ${questions.join(" ")}`
+      : "Input requested";
+  }
+  if (type === "mcp_elicitation_request") {
+    const request = payload.request;
+    if (request && typeof request === "object") {
+      const message = (request as { message?: unknown }).message;
+      return typeof message === "string"
+        ? `MCP elicitation requested: ${message}`
+        : "MCP elicitation requested";
+    }
+  }
+  return "Elicitation requested";
+}
+
 /**
  * Tool-result content formatter. Replaces the previous fallback of
  * always running everything through `stringResult` so that callers
@@ -680,6 +709,10 @@ export function adaptTranscriptEvents(
         break;
       case "user_message":
         out.push(makeUserMessage(payload.displayText ?? payload.message));
+        break;
+      case "request_user_input":
+      case "mcp_elicitation_request":
+        out.push(makeSystemMessage(formatElicitationSummary(event.type, payload), "info"));
         break;
       case "assistant_text":
         if (typeof payload.content === "string") {

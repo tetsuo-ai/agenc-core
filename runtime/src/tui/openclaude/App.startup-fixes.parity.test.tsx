@@ -1,24 +1,30 @@
 import fs from "node:fs";
 import path from "node:path";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
+
+import { submitViaElicitationBridge } from "../elicitation-submit-routing.js";
 
 const APP_SOURCE_PATH = path.resolve(import.meta.dirname, "App.tsx");
 const SESSION_TYPES_PATH = path.resolve(
   import.meta.dirname,
-  "session-types.ts",
+  "../session-types.ts",
+);
+const ELICITATION_BRIDGE_PATH = path.resolve(
+  import.meta.dirname,
+  "../elicitation-bridge.tsx",
 );
 
 function readSource(p: string): string {
   return fs.readFileSync(p, "utf8");
 }
 
-describe("openclaude-app-startup-fixes / conversation-id-from-session", () => {
-  test("session-types.ts exposes readonly conversationId: string on OpenClaudeBridgeSession", () => {
+describe("AgenC App conversation id", () => {
+  test("session-types.ts exposes readonly conversationId: string on AgenCBridgeSession", () => {
     const source = readSource(SESSION_TYPES_PATH);
     const interfaceMatch = source.match(
-      /export\s+interface\s+OpenClaudeBridgeSession\s*\{([\s\S]*?)\n\}/,
+      /export\s+interface\s+AgenCBridgeSession\s*\{([\s\S]*?)\n\}/,
     );
-    expect(interfaceMatch, "OpenClaudeBridgeSession interface declaration not found").not.toBeNull();
+    expect(interfaceMatch, "AgenCBridgeSession interface declaration not found").not.toBeNull();
     const body = interfaceMatch![1]!;
     expect(body).toMatch(/readonly\s+conversationId\s*:\s*string\s*;/);
   });
@@ -37,7 +43,7 @@ describe("openclaude-app-startup-fixes / conversation-id-from-session", () => {
   });
 });
 
-describe("openclaude-app-startup-fixes / initial-submit-startup-messages", () => {
+describe("AgenC App initial submit startup messages", () => {
   function extractUseInitialSubmit(source: string): string {
     const start = source.indexOf("function useInitialSubmit");
     expect(start, "useInitialSubmit declaration not found").toBeGreaterThan(-1);
@@ -79,5 +85,70 @@ describe("openclaude-app-startup-fixes / initial-submit-startup-messages", () =>
     const source = readSource(APP_SOURCE_PATH);
     const body = extractUseInitialSubmit(source);
     expect(body).toMatch(/\bsubmit\(\s*initialPrompt\s*\)/);
+  });
+});
+
+describe("AgenC App elicitation bridge", () => {
+  test("App.tsx installs the elicitation bridge and routes submit through it first", () => {
+    const source = readSource(APP_SOURCE_PATH);
+    expect(source).toMatch(/useElicitationBridge\(props\.session\)/);
+    expect(source).toMatch(/<ElicitationOverlay\s+prompt=\{elicitation\.prompt\}\s*\/>/);
+    expect(source).toMatch(
+      /submitViaElicitationBridge\(elicitation,\s*submit,\s*value,\s*helpers\)/,
+    );
+  });
+
+  test("submit routing consumes elicitation prompts before normal session submit", async () => {
+    const helpers = {
+      clearBuffer: vi.fn(),
+      resetHistory: vi.fn(),
+      setCursorOffset: vi.fn(),
+    };
+    const submit = vi.fn();
+    const elicitation = {
+      submit: vi.fn().mockReturnValue(true),
+    };
+
+    await submitViaElicitationBridge(elicitation, submit, "answer", helpers);
+
+    expect(elicitation.submit).toHaveBeenCalledWith("answer");
+    expect(submit).not.toHaveBeenCalled();
+    expect(helpers.clearBuffer).toHaveBeenCalledOnce();
+    expect(helpers.resetHistory).toHaveBeenCalledOnce();
+    expect(helpers.setCursorOffset).toHaveBeenCalledWith(0);
+  });
+
+  test("submit routing falls back to normal session submit when no prompt is active", async () => {
+    const helpers = {
+      clearBuffer: vi.fn(),
+      resetHistory: vi.fn(),
+      setCursorOffset: vi.fn(),
+    };
+    const submit = vi.fn().mockResolvedValue(undefined);
+    const elicitation = {
+      submit: vi.fn().mockReturnValue(false),
+    };
+
+    await submitViaElicitationBridge(elicitation, submit, "run", helpers);
+
+    expect(elicitation.submit).toHaveBeenCalledWith("run");
+    expect(submit).toHaveBeenCalledWith("run");
+    expect(helpers.clearBuffer).toHaveBeenCalledOnce();
+    expect(helpers.resetHistory).toHaveBeenCalledOnce();
+    expect(helpers.setCursorOffset).toHaveBeenCalledWith(0);
+  });
+
+  test("session-types.ts exposes production elicitation resolvers", () => {
+    const source = readSource(SESSION_TYPES_PATH);
+    expect(source).toContain("requestUserInputResolver");
+    expect(source).toContain("mcpElicitationResolver");
+  });
+
+  test("elicitation bridge resolves user input and MCP prompts through submit", () => {
+    const source = readSource(ELICITATION_BRIDGE_PATH);
+    expect(source).toContain("session.services.requestUserInputResolver");
+    expect(source).toContain("session.services.mcpElicitationResolver");
+    expect(source).toContain("settlePendingOnSubmit");
+    expect(source).toContain("ElicitationOverlay");
   });
 });

@@ -11,6 +11,8 @@
 
 import type { Logger } from "../_deps/logger.js";
 import { silentLogger } from "../_deps/logger.js";
+import type { MCPElicitationHandlers } from "../types.js";
+import { configureMcpElicitationClient } from "../../elicitation/mcp.js";
 
 export interface MCPServerHttpConfig {
   readonly name: string;
@@ -26,6 +28,7 @@ export interface MCPServerHttpConfig {
 export async function createHttpMCPConnection(
   config: MCPServerHttpConfig,
   logger: Logger = silentLogger,
+  elicitationHandlers?: MCPElicitationHandlers,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
@@ -48,7 +51,16 @@ export async function createHttpMCPConnection(
 
   const client = new Client(
     { name: "agenc-runtime", version: "0.2.0" },
-    { capabilities: {} },
+    {
+      capabilities: elicitationHandlers === undefined
+        ? {}
+        : { elicitation: { form: {}, url: {} } },
+    },
+  );
+  await configureMcpElicitationClient(
+    client,
+    config.name,
+    elicitationHandlers,
   );
 
   logger.info(`Connecting to MCP HTTP server "${config.name}"...`, {

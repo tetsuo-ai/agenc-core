@@ -19,6 +19,8 @@
 
 import type { Logger } from "../_deps/logger.js";
 import { silentLogger } from "../_deps/logger.js";
+import type { MCPElicitationHandlers } from "../types.js";
+import { configureMcpElicitationClient } from "../../elicitation/mcp.js";
 
 export interface MCPServerSseConfig {
   readonly name: string;
@@ -37,6 +39,7 @@ export interface MCPServerSseConfig {
 export async function createSseMCPConnection(
   config: MCPServerSseConfig,
   logger: Logger = silentLogger,
+  elicitationHandlers?: MCPElicitationHandlers,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
@@ -59,7 +62,16 @@ export async function createSseMCPConnection(
 
   const client = new Client(
     { name: "agenc-runtime", version: "0.2.0" },
-    { capabilities: {} },
+    {
+      capabilities: elicitationHandlers === undefined
+        ? {}
+        : { elicitation: { form: {}, url: {} } },
+    },
+  );
+  await configureMcpElicitationClient(
+    client,
+    config.name,
+    elicitationHandlers,
   );
 
   logger.info(`Connecting to MCP SSE server "${config.name}"...`, {

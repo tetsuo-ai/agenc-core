@@ -30,6 +30,8 @@ import type {
 import type { Session } from "./session.js";
 import type { SessionServices } from "./session.js";
 import { createMCPCallObserverForSession } from "./observer-wiring.js";
+import { createSessionMcpElicitationHandlers } from "../elicitation/mcp.js";
+import type { McpGranularElicitationPolicy } from "../elicitation/mcp.js";
 
 export interface McpStartupCancellationToken {
   readonly signal: AbortSignal;
@@ -349,6 +351,15 @@ export function attachMcpManagerToSession(
   const observer = createMCPCallObserverForSession(session);
   try {
     manager.setCallObserver(observer);
+    const elicitationManager = manager as MCPManager & {
+      setElicitationHandlers?: MCPManager["setElicitationHandlers"];
+    };
+    elicitationManager.setElicitationHandlers?.(
+      createSessionMcpElicitationHandlers(
+        session,
+        granularElicitationPolicyForSession(session),
+      ),
+    );
   } catch (err) {
     // Surface the failure through the session's event log so ops
     // can see that MCP telemetry is missing rather than silently
@@ -365,6 +376,22 @@ export function attachMcpManagerToSession(
     });
     throw err;
   }
+}
+
+function granularElicitationPolicyForSession(
+  session: Session,
+): McpGranularElicitationPolicy | undefined {
+  const granular = (session as {
+    services?: {
+      granularApprovalConfig?: {
+        readonly mcp_elicitations?: unknown;
+      };
+    };
+  }).services?.granularApprovalConfig;
+  if (granular === undefined) return undefined;
+  return {
+    allowsMcpElicitations: () => granular.mcp_elicitations === true,
+  };
 }
 
 /**

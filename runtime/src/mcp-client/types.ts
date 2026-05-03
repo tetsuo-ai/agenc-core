@@ -63,3 +63,18 @@ export interface MCPReconnectResult {
   readonly toolCount: number;
   readonly error?: string;
 }
+
+export interface MCPElicitationHandlers {
+  handleRequest(params: {
+    readonly serverName: string;
+    readonly requestId: string | number;
+    readonly request: unknown;
+    readonly contextMeta?: unknown;
+    readonly signal?: AbortSignal;
+  }): Promise<unknown>;
+  handleComplete?(params: {
+    readonly serverName: string;
+    readonly elicitationId: string;
+    readonly notification: unknown;
+  }): Promise<void> | void;
+}

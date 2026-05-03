@@ -56,6 +56,7 @@ const expectedMethods = [
   "tool.approve",
   "tool.deny",
   "tool.cancel",
+  "elicitation.respond",
   "permission.list",
   "fs.fuzzy_search",
   "commandExec.start",
@@ -75,6 +76,8 @@ const expectedNotifications = [
   "event.message_chunk",
   "event.tool_request",
   "event.permission_request",
+  "event.user_input_request",
+  "event.mcp_elicitation_request",
   "event.agent_status",
   "event.session_event",
 ] as const;
@@ -315,6 +318,17 @@ describe("AgenC daemon protocol surface", () => {
       },
       {
         jsonrpc: JSON_RPC_VERSION,
+        id: "respond-elicitation",
+        method: "elicitation.respond",
+        params: {
+          sessionId: "session_1",
+          requestId: "turn_1",
+          kind: "request_user_input",
+          response: { answers: { choice: { answers: ["Yes"] } } },
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
         id: 15,
         method: "permission.list",
         params: { sessionId: "session_1" },
@@ -497,6 +511,46 @@ describe("AgenC daemon protocol surface", () => {
           turnId: "turn_1",
           permissions: ["tool.use"],
           input: { command: "pwd" },
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.user_input_request",
+        params: {
+          sessionId: "session_1",
+          eventId: "input_1",
+          requestId: "turn_1",
+          callId: "call_1",
+          turnId: "turn_1",
+          questions: [
+            {
+              id: "choice",
+              header: "Choice",
+              question: "Proceed?",
+              isOther: true,
+              isSecret: false,
+              options: [
+                { label: "Yes", description: "Continue." },
+                { label: "No", description: "Stop." },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.mcp_elicitation_request",
+        params: {
+          sessionId: "session_1",
+          eventId: "mcp_1",
+          requestId: "mcp_1",
+          serverName: "srv",
+          turnId: "turn_1",
+          request: {
+            mode: "form",
+            message: "Need details",
+            requestedSchema: { type: "object", properties: {} },
+          },
         },
       },
       {

@@ -127,6 +127,15 @@ import type { UnifiedExecProcessManagerLike } from "../unified-exec/index.js";
 import type { CodeModeService } from "../tools/code-mode/types.js";
 import type { AgentStatus as RuntimeAgentStatus } from "../agents/status.js";
 import type { SessionStartSource as HookSessionStartSource } from "../llm/hooks/types.js";
+import type {
+  McpElicitationRequestEvent,
+  McpElicitationRequest,
+  McpElicitationResponse,
+  McpRequestId,
+  RequestUserInputArgs,
+  RequestUserInputEvent,
+  RequestUserInputResponse,
+} from "../elicitation/types.js";
 import {
   createActiveTurnState,
   createDoneHandle,
@@ -341,6 +350,61 @@ export class SimpleMailbox<T extends { seq: number }> implements Mailbox<T> {
   get isClosed(): boolean {
     return this.closed;
   }
+}
+
+function uniqueSignals(
+  signals: readonly (AbortSignal | undefined)[],
+): AbortSignal[] {
+  return Array.from(
+    new Set(signals.filter((signal): signal is AbortSignal => signal !== undefined)),
+  );
+}
+
+function waitForAbortSignal(
+  signals: readonly (AbortSignal | undefined)[],
+): {
+  readonly aborted: boolean;
+  readonly promise: Promise<null>;
+  readonly cleanup: () => void;
+} {
+  const liveSignals = uniqueSignals(signals);
+  if (liveSignals.some((signal) => signal.aborted)) {
+    return {
+      aborted: true,
+      promise: Promise.resolve(null),
+      cleanup: () => {},
+    };
+  }
+  if (liveSignals.length === 0) {
+    return {
+      aborted: false,
+      promise: new Promise<null>(() => {}),
+      cleanup: () => {},
+    };
+  }
+  let cleanup = (): void => {};
+  const promise = new Promise<null>((resolve) => {
+    const onAbort = (): void => {
+      cleanup();
+      resolve(null);
+    };
+    cleanup = () => {
+      for (const signal of liveSignals) {
+        signal.removeEventListener("abort", onAbort);
+      }
+    };
+    for (const signal of liveSignals) {
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
+  return { aborted: false, promise, cleanup };
+}
+
+function mcpElicitationPendingKey(
+  serverName: string,
+  requestId: McpRequestId,
+): string {
+  return `${serverName}\u0000${String(requestId)}`;
 }
 
 /** agenc runtime `RealtimeConversationManager`. T-future (realtime voice). */
@@ -640,6 +704,18 @@ export interface SessionServices {
   readonly querySource?: QuerySource;
   readonly permissionRequestHooks?: ReadonlyArray<PermissionRequestHook>;
   readonly approvalResolver?: ApprovalResolver;
+  requestUserInputResolver?: {
+    request(
+      event: RequestUserInputEvent,
+      signal?: AbortSignal,
+    ): Promise<RequestUserInputResponse | null>;
+  };
+  mcpElicitationResolver?: {
+    request(
+      event: McpElicitationRequestEvent,
+      signal?: AbortSignal,
+    ): Promise<McpElicitationResponse | null>;
+  };
   /**
    * T11 W3-A: authoritative permission-mode registry. Commands (`/permissions`,
    * `/plan`) and the evaluator both read from the same registry instance so
@@ -1078,6 +1154,8 @@ export class Session {
    *  When present, every emitted event is appended; durable events
    *  (I-4) force an immediate fsync. */
   rolloutStore: RolloutStore | null = null;
+
+  private outOfBandElicitationPauseCount = 0;
 
   private rolloutPersistenceSuspendDepth = 0;
 
@@ -2314,6 +2392,243 @@ export class Session {
     const current = this.activeTurn.unsafePeek();
     if (current === null) return undefined;
     return current.turnState.with(fn);
+  }
+
+  async requestUserInput(
+    callId: string,
+    args: RequestUserInputArgs,
+    signal?: AbortSignal,
+  ): Promise<RequestUserInputResponse | null> {
+    const current = this.activeTurn.unsafePeek();
+    if (current === null) return null;
+    const turnId = current.turnId;
+    const requestId = callId;
+    const event: RequestUserInputEvent = {
+      requestId,
+      callId,
+      turnId,
+      questions: args.questions,
+    };
+    const directResolver = this.services.requestUserInputResolver;
+    if (directResolver !== undefined) {
+      const abortWaiter = waitForAbortSignal([
+        signal,
+        current.abortController.signal,
+        this.abortController.signal,
+      ]);
+      if (abortWaiter.aborted) {
+        abortWaiter.cleanup();
+        return null;
+      }
+      const resolverAbort = new AbortController();
+      const abortPromise = abortWaiter.promise.then((result) => {
+        resolverAbort.abort("elicitation_cancelled");
+        return result;
+      });
+      this.emit({
+        id: this.nextInternalSubId(),
+        msg: {
+          type: "request_user_input",
+          payload: event,
+        },
+      });
+      try {
+        return await Promise.race([
+          directResolver.request(event, resolverAbort.signal),
+          abortPromise,
+        ]);
+      } finally {
+        resolverAbort.abort("elicitation_settled");
+        abortWaiter.cleanup();
+      }
+    }
+    let resolveResponse:
+      | ((response: RequestUserInputResponse | null) => void)
+      | undefined;
+    const responsePromise = new Promise<RequestUserInputResponse | null>((resolve) => {
+      resolveResponse = resolve;
+    });
+    await current.turnState.with((ts) => {
+      ts.pendingUserInput.set(
+        requestId,
+        (response) => resolveResponse?.(response as RequestUserInputResponse | null),
+      );
+    });
+    const abortWaiter = waitForAbortSignal([
+      signal,
+      current.abortController.signal,
+      this.abortController.signal,
+    ]);
+    const cleanup = async (): Promise<void> => {
+      abortWaiter.cleanup();
+      await current.turnState.with((ts) => {
+        ts.pendingUserInput.delete(requestId);
+      });
+    };
+    if (abortWaiter.aborted) {
+      await cleanup();
+      return null;
+    }
+    this.emit({
+      id: this.nextInternalSubId(),
+      msg: {
+        type: "request_user_input",
+        payload: event,
+      },
+    });
+    try {
+      return await Promise.race([responsePromise, abortWaiter.promise]);
+    } finally {
+      await cleanup();
+    }
+  }
+
+  async notifyUserInputResponse(
+    requestId: string,
+    response: RequestUserInputResponse | null,
+  ): Promise<boolean> {
+    const resolver = await this.withActiveTurnState((ts) => {
+      const pending = ts.pendingUserInput.get(requestId);
+      if (pending !== undefined) {
+        ts.pendingUserInput.delete(requestId);
+      }
+      return pending;
+    });
+    if (resolver === undefined) return false;
+    resolver(response);
+    return true;
+  }
+
+  async requestMcpElicitation(
+    serverName: string,
+    requestId: McpRequestId,
+    request: McpElicitationRequest,
+    signal?: AbortSignal,
+  ): Promise<McpElicitationResponse | null> {
+    const current = this.activeTurn.unsafePeek();
+    if (current === null) return null;
+    const turnId = current.turnId;
+    const key = mcpElicitationPendingKey(serverName, requestId);
+    const event: McpElicitationRequestEvent = {
+      turnId,
+      serverName,
+      requestId,
+      request,
+    };
+    const directResolver = this.services.mcpElicitationResolver;
+    if (directResolver !== undefined) {
+      const abortWaiter = waitForAbortSignal([
+        signal,
+        current.abortController.signal,
+        this.abortController.signal,
+      ]);
+      const releasePause = this.beginOutOfBandElicitationPause();
+      if (abortWaiter.aborted) {
+        abortWaiter.cleanup();
+        releasePause();
+        return null;
+      }
+      const resolverAbort = new AbortController();
+      const abortPromise = abortWaiter.promise.then((result) => {
+        resolverAbort.abort("elicitation_cancelled");
+        return result;
+      });
+      this.emit({
+        id: this.nextInternalSubId(),
+        msg: {
+          type: "mcp_elicitation_request",
+          payload: event,
+        },
+      });
+      try {
+        return await Promise.race([
+          directResolver.request(event, resolverAbort.signal),
+          abortPromise,
+        ]);
+      } finally {
+        resolverAbort.abort("elicitation_settled");
+        abortWaiter.cleanup();
+        releasePause();
+      }
+    }
+    let resolveResponse:
+      | ((response: McpElicitationResponse) => void)
+      | undefined;
+    const responsePromise = new Promise<McpElicitationResponse>((resolve) => {
+      resolveResponse = resolve;
+    });
+    await current.turnState.with((ts) => {
+      ts.pendingElicitations.set(
+        key,
+        (response) => resolveResponse?.(response as McpElicitationResponse),
+      );
+    });
+    const releasePause = this.beginOutOfBandElicitationPause();
+    const abortWaiter = waitForAbortSignal([
+      signal,
+      current.abortController.signal,
+      this.abortController.signal,
+    ]);
+    const cleanup = async (): Promise<void> => {
+      abortWaiter.cleanup();
+      releasePause();
+      await current.turnState.with((ts) => {
+        ts.pendingElicitations.delete(key);
+      });
+    };
+    if (abortWaiter.aborted) {
+      await cleanup();
+      return null;
+    }
+    this.emit({
+      id: this.nextInternalSubId(),
+      msg: {
+        type: "mcp_elicitation_request",
+        payload: event,
+      },
+    });
+    try {
+      return await Promise.race([responsePromise, abortWaiter.promise]);
+    } finally {
+      await cleanup();
+    }
+  }
+
+  async notifyMcpElicitationResponse(
+    serverName: string,
+    requestId: McpRequestId,
+    response: McpElicitationResponse,
+  ): Promise<boolean> {
+    const key = mcpElicitationPendingKey(serverName, requestId);
+    const resolver = await this.withActiveTurnState((ts) => {
+      const pending = ts.pendingElicitations.get(key);
+      if (pending !== undefined) {
+        ts.pendingElicitations.delete(key);
+      }
+      return pending;
+    });
+    if (resolver === undefined) return false;
+    resolver(response);
+    return true;
+  }
+
+  private beginOutOfBandElicitationPause(): () => void {
+    this.outOfBandElicitationPauseCount += 1;
+    if (this.outOfBandElicitationPauseCount === 1) {
+      this.outOfBandElicitationPaused.next(true);
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.outOfBandElicitationPauseCount = Math.max(
+        0,
+        this.outOfBandElicitationPauseCount - 1,
+      );
+      if (this.outOfBandElicitationPauseCount === 0) {
+        this.outOfBandElicitationPaused.next(false);
+      }
+    };
   }
 
   /**
