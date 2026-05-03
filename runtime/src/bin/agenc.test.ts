@@ -45,7 +45,7 @@ import {
   type ConfigReloadLatch,
 } from "./agenc.js";
 import { ConfigStore, defaultConfig } from "../config/index.js";
-import * as configUtils from "./_deps/config-init.js";
+import * as configUtils from "../config/upstream-init.js";
 import {
   assembleSystemPrompt,
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
@@ -2172,7 +2172,7 @@ describe("main() full-IIFE smoke", () => {
     try {
       const code = await bootTUIEntry({
         initialPrompt: "describe this",
-        startupImages: ["https://example.com/cat.png"],
+        startupImages: ["http://127.0.0.1/cat.png"],
       });
       expect(code).toBe(0);
       expect(bootTUISpy).toHaveBeenCalledWith(
@@ -2184,7 +2184,7 @@ describe("main() full-IIFE smoke", () => {
               content: [
                 {
                   type: "image_url",
-                  image_url: { url: "https://example.com/cat.png" },
+                  image_url: { url: "http://127.0.0.1/cat.png" },
                 },
               ],
             },

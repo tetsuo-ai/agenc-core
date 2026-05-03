@@ -90,7 +90,7 @@ import {
   type McpServerInstructionsInput,
 } from "../prompts/system-prompt.js";
 import { clearSystemPromptSections } from "../prompts/sections.js";
-import { enableConfigs } from "./_deps/config-init.js";
+import { enableConfigs } from "../config/upstream-init.js";
 import {
   resolveLatestSessionId,
   resolveResumeSessionId,

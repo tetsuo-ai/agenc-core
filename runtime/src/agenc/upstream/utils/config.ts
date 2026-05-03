@@ -7,6 +7,10 @@ import { basename, dirname, join, resolve } from 'path'
 import { getOriginalCwd, getSessionTrustAccepted } from '../bootstrap/state.js'
 import { getAutoMemEntrypoint } from '../memdir/paths.js'
 import { logEvent } from '../services/analytics/index.js'
+import {
+  assertConfigReadsEnabled,
+  enableConfigs as enableConfigReads,
+} from '../../../config/upstream-init.js'
 import type { McpServerConfig } from '../services/mcp/types.js'
 import type {
   BillingType,
@@ -15,7 +19,6 @@ import type {
 import { getCwd } from '../utils/cwd.js'
 import { registerCleanup } from './cleanupRegistry.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { getGlobalAgenCFile } from './env.js'
 import { getAgenCConfigHomeDir, isEnvTruthy } from './envUtils.js'
 import { ConfigParseError, getErrnoCode } from './errors.js'
@@ -45,11 +48,6 @@ const ccrAutoConnect = feature('CCR_AUTO_CONNECT')
 import type { ImageDimensions } from './imageResizer.js'
 import type { ModelOption } from './model/modelOptions.js'
 import { jsonParse, jsonStringify } from './slowOperations.js'
-
-// Flag to track if config reading is allowed. Keep this above feature-gated
-// top-level requires because some copied modules can re-enter getGlobalConfig()
-// during module initialization.
-var configReadingAllowed = false
 
 // Re-entrancy guard: prevents getConfig → logEvent → getGlobalConfig → getConfig
 // infinite recursion when the config file is corrupted. logEvent's sampling check
@@ -137,7 +135,7 @@ export type ProjectConfig = {
     sessionId: string
     hookBased?: boolean
   }
-  /** Spawn mode for `claude remote-control` multi-session. Set by first-run dialog or `w` toggle. */
+  /** Spawn mode for `agenc remote-control` multi-session. Set by first-run dialog or `w` toggle. */
   remoteControlSpawnMode?: 'same-dir' | 'worktree'
 }
 
@@ -231,11 +229,12 @@ export type GlobalConfig = {
   // @deprecated - Migrated to ~/.agenc/cache/changelog.md. Keep for migration support.
   cachedChangelog?: string
   mcpServers?: Record<string, McpServerConfig>
-  // agenc.ai MCP connectors that have successfully connected at least once.
+  // AgenC MCP connectors that have successfully connected at least once.
   // Used to gate "connector unavailable" / "needs auth" startup notifications:
   // a connector the user has actually used is worth flagging when it breaks,
   // but an org-configured connector that's been needs-auth since day one is
   // something the user has demonstrably ignored and shouldn't nag about.
+  // branding-scan: allow persisted legacy config key
   claudeAiMcpEverConnected?: string[]
   preferredNotifChannel: NotificationChannel
   /**
@@ -426,6 +425,7 @@ export type GlobalConfig = {
   agentPushNotifEnabled?: boolean
 
   // AgenC usage tracking
+  // branding-scan: allow persisted legacy config key
   claudeCodeFirstTokenDate?: string // ISO timestamp of the user's first AgenC OAuth token
 
   // Model switch callout tracking (internal-only)
@@ -530,6 +530,7 @@ export type GlobalConfig = {
 
   // AgenC in Chrome settings
   hasCompletedAgenCInChromeOnboarding?: boolean // Whether AgenC in Chrome onboarding has been shown
+  // branding-scan: allow persisted legacy config key
   claudeInChromeDefaultEnabled?: boolean // Whether AgenC in Chrome is enabled by default (undefined means platform default)
   cachedChromeExtensionInstalled?: boolean // Cached result of whether Chrome extension is installed
 
@@ -547,6 +548,7 @@ export type GlobalConfig = {
   // AgenC hint protocol state (<agenc-code-hint /> tags from CLIs/SDKs).
   // Nested by hint type so future types (docs, mcp, ...) slot in without new
   // top-level keys.
+  // branding-scan: allow persisted legacy config key
   claudeCodeHints?: {
     // Plugin IDs the user has already been prompted for. Show-once semantics:
     // recorded regardless of yes/no response, never re-prompted. Capped at
@@ -613,9 +615,9 @@ export type GlobalConfig = {
   // Keyed by provider profile id.
   openaiAdditionalModelOptionsCacheByProfile?: Record<string, ModelOption[]>
 
-  // Disk cache for /api/claude_code/organizations/metrics_enabled.
+  // Disk cache for the organization metrics-enabled endpoint.
   // Org-level settings change rarely; persisting across processes avoids a
-  // cold API call on every `claude -p` invocation.
+  // cold API call on every `agenc -p` invocation.
   metricsStatusCache?: {
     enabled: boolean
     timestamp: number
@@ -1401,27 +1403,7 @@ function saveConfigWithLock<A extends object>(
 }
 
 export function enableConfigs(): void {
-  if (configReadingAllowed) {
-    // Ensure this is idempotent
-    return
-  }
-
-  const startTime = Date.now()
-  logForDiagnosticsNoPII('info', 'enable_configs_started')
-
-  // Any reads to configuration before this flag is set show an console warning
-  // to prevent us from adding config reading during module initialization
-  configReadingAllowed = true
-  // We only check the global config because currently all the configs share a file
-  getConfig(
-    getGlobalAgenCFile(),
-    createDefaultGlobalConfig,
-    true /* throw on invalid */,
-  )
-
-  logForDiagnosticsNoPII('info', 'enable_configs_completed', {
-    duration_ms: Date.now() - startTime,
-  })
+  enableConfigReads()
 }
 
 /**
@@ -1493,9 +1475,7 @@ function getConfig<A>(
   throwOnInvalid?: boolean,
 ): A {
   // Log a warning if config is accessed before it's allowed
-  if (!configReadingAllowed && process.env.NODE_ENV !== 'test') {
-    throw new Error('Config accessed before allowed.')
-  }
+  assertConfigReadsEnabled()
 
   const fs = getFsImplementation()
 
