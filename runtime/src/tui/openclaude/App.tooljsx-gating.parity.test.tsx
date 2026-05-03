@@ -73,19 +73,19 @@ describe("R3 toolJSX gating reaches Messages.tsx:595 animation gate", () => {
     expect(source).not.toMatch(/<Messages\b[\s\S]{0,2000}toolJSX\s*=\s*\{\s*null\s*\}/);
   });
 
-  test("B3.2 App.tsx renders OpenClaudePermissionOverlay unconditionally on permissionRequests[0] (dialog still mounts when toolJSX is set)", () => {
+  test("B3.2 App.tsx renders the permission overlay unconditionally on permissionRequests[0] (dialog still mounts when toolJSX is set)", () => {
     const source = readSource();
     expect(source).toMatch(
-      /<OpenClaudePermissionOverlay\b[\s\S]{0,200}request\s*=\s*\{\s*permissionRequests\[0\]\s*\}/,
+      /<PermissionOverlay\b[\s\S]{0,200}request\s*=\s*\{\s*permissionRequests\[0\]\s*\}/,
     );
     // The overlay must NOT be wrapped in a `toolJSX === null && (...)` or `!toolJSX && (...)` gate,
     // because that would block dialogs when a tool is rendering its own UI surface
     // (counter to REPL.tsx:2061-2062 'show unless blocked by toolJSX').
     expect(source).not.toMatch(
-      /\{\s*!toolJSX\s*&&\s*<OpenClaudePermissionOverlay\b/,
+      /\{\s*!toolJSX\s*&&\s*<PermissionOverlay\b/,
     );
     expect(source).not.toMatch(
-      /\{\s*toolJSX\s*===\s*null\s*&&\s*<OpenClaudePermissionOverlay\b/,
+      /\{\s*toolJSX\s*===\s*null\s*&&\s*<PermissionOverlay\b/,
     );
   });
 
