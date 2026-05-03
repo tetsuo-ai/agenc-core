@@ -22,7 +22,7 @@ import { createBridgeTools } from "./tool-stubs.js";
 import { useSessionTranscript } from "./use-session-transcript.js";
 import { useToolJSX } from "./use-tool-jsx.js";
 import {
-  OpenClaudePermissionOverlay,
+  OpenClaudePermissionOverlay as PermissionOverlay, // branding-scan: allow upstream-compat exported component name
   buildToolUseConfirmQueue,
   usePermissionBridge,
 } from "./permission-bridge.js";
@@ -32,15 +32,15 @@ import { buildPendingProviderSwitch } from "../../agenc/adapters/upstream-model-
 import { pastedContentsToLLMMessage } from "../../agenc/adapters/upstream-attachments.js";
 import type { Command } from "../../agenc/upstream/commands.js";
 import type { AgentDefinition } from "../../agenc/upstream/tools/AgentTool/loadAgentsDir.js";
-import type { OpenClaudeTuiProps } from "./session-types.js";
+import type { OpenClaudeTuiProps as AgenCTuiProps } from "./session-types.js"; // branding-scan: allow upstream-compat exported prop type
 
 function initialPermissionContext(
-  props: OpenClaudeTuiProps,
+  props: AgenCTuiProps,
 ): ToolPermissionContext {
   return props.session.services.permissionModeRegistry.current();
 }
 
-function startupModel(props: OpenClaudeTuiProps): string | null {
+function startupModel(props: AgenCTuiProps): string | null {
   return (
     props.model ??
     props.session.sessionConfiguration?.collaborationMode?.model ??
@@ -48,7 +48,7 @@ function startupModel(props: OpenClaudeTuiProps): string | null {
   );
 }
 
-function initialState(props: OpenClaudeTuiProps): any {
+function initialState(props: AgenCTuiProps): any {
   return {
     ...getDefaultAppState(),
     mainLoopModel: startupModel(props),
@@ -57,7 +57,7 @@ function initialState(props: OpenClaudeTuiProps): any {
   };
 }
 
-function useSyncedPermissionContext(session: OpenClaudeTuiProps["session"]) {
+function useSyncedPermissionContext(session: AgenCTuiProps["session"]) {
   const toolPermissionContext = useAppState((s) => s.toolPermissionContext);
   const setAppState = useSetAppState();
   useEffect(() => {
@@ -87,7 +87,7 @@ function useSyncedPermissionContext(session: OpenClaudeTuiProps["session"]) {
 }
 
 function useInitialSubmit(
-  session: OpenClaudeTuiProps["session"],
+  session: AgenCTuiProps["session"],
   submit: (input: string) => Promise<void>,
   initialPrompt: string | undefined,
   initialUserMessages: readonly LLMMessage[] | undefined,
@@ -166,7 +166,7 @@ function terminalTitle(props: Parameters<typeof startupModel>[0]): string {
   return "AgenC";
 }
 
-function OpenClaudeShell(props: OpenClaudeTuiProps): React.ReactElement {
+function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const { exit } = useApp();
   const [input, setInput] = useState(props.initialComposerText ?? "");
   const [mode, setMode] = useState<any>("prompt");
@@ -287,7 +287,7 @@ function OpenClaudeShell(props: OpenClaudeTuiProps): React.ReactElement {
         isMessageSelectorVisible={false}
         conversationId={props.session.conversationId}
         screen={"prompt" as any}
-        streamingToolUses={transcript.streamingToolUses as never[]}
+        streamingToolUses={transcript.streamingToolUses}
         isLoading={transcript.isStreaming}
         streamingText={transcript.streamingText}
         hidePastThinking={false}
@@ -297,7 +297,7 @@ function OpenClaudeShell(props: OpenClaudeTuiProps): React.ReactElement {
           {toolJSX.jsx}
         </Box>
       ) : null}
-      <OpenClaudePermissionOverlay
+      <PermissionOverlay
         request={permissionRequests[0]}
         tools={tools}
       />
@@ -346,8 +346,8 @@ function OpenClaudeShell(props: OpenClaudeTuiProps): React.ReactElement {
   );
 }
 
-export function OpenClaudeTuiApp(
-  props: OpenClaudeTuiProps,
+export function OpenClaudeTuiApp( // branding-scan: allow upstream-compat exported app name
+  props: AgenCTuiProps,
 ): React.ReactElement {
   const initial = useMemo(() => initialState(props), []);
   return (
@@ -357,7 +357,7 @@ export function OpenClaudeTuiApp(
     >
       <PromptOverlayProvider>
         <KeybindingSetup>
-          <OpenClaudeShell {...props} />
+          <AgenCTuiShell {...props} />
         </KeybindingSetup>
       </PromptOverlayProvider>
     </UpstreamApp>

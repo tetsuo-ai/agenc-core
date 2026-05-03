@@ -95,6 +95,27 @@ export interface LLMToolCall {
   arguments: string;
 }
 
+export type LLMStreamingToolUseCaller =
+  | { readonly type: "direct" }
+  | {
+      readonly type: "code_execution_20250825" | "code_execution_20260120";
+      readonly tool_id: string;
+    };
+
+export interface LLMStreamingToolUseContentBlock {
+  readonly type: "tool_use";
+  readonly id: string;
+  readonly name: string;
+  readonly input: unknown;
+  readonly caller?: LLMStreamingToolUseCaller;
+}
+
+export interface StreamingToolUse {
+  readonly index: number;
+  readonly contentBlock: LLMStreamingToolUseContentBlock;
+  readonly unparsedToolInput: string;
+}
+
 export interface ToolCallValidationFailure {
   readonly code:
     | "invalid_shape"

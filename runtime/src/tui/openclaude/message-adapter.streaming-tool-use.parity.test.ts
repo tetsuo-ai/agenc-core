@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 
+import type { StreamingToolUse } from "../../llm/types.js";
 import { adaptTranscriptEvents } from "./message-adapter.js";
-import type { StreamingToolUse } from "../../agenc/upstream/utils/messages.js";
 
 type Evt = { id: string; msg: { type: string; payload?: Record<string, unknown> } };
 

@@ -2,8 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 
+import type { StreamingToolUse } from "../../llm/types.js";
 import { adaptTranscriptEvents, type AdaptedTranscript } from "./message-adapter.js";
-import type { StreamingToolUse } from "../../agenc/upstream/utils/messages.js";
 
 const APP_SOURCE_PATH = path.resolve(
   import.meta.dirname,
@@ -104,13 +104,16 @@ describe("R1 streamingToolUses prop wiring (App.tsx + transcript)", () => {
 
   test("E1.5 App.tsx wires streamingToolUses from transcript.streamingToolUses", () => {
     const source = readSource(APP_SOURCE_PATH);
-    expect(source).toMatch(/streamingToolUses\s*=\s*\{\s*transcript\.streamingToolUses[^}]*\}/);
+    expect(source).toMatch(/streamingToolUses\s*=\s*\{\s*transcript\.streamingToolUses\s*\}/);
+    expect(source).not.toMatch(
+      /streamingToolUses\s*=\s*\{\s*transcript\.streamingToolUses\s+as\s+never\[\]\s*\}/,
+    );
   });
 
-  test("E1.6 message-adapter.ts imports StreamingToolUse from runtime/src/agenc/upstream/utils/messages so the AgenC transcript field type matches the upstream <Messages> consumer prop type", () => {
+  test("E1.6 message-adapter.ts imports StreamingToolUse from runtime/src/llm/types so the AgenC transcript field type is owned by the LLM surface", () => {
     const source = readSource(MESSAGE_ADAPTER_SOURCE_PATH);
     expect(source).toMatch(
-      /import\s+type\s*\{\s*StreamingToolUse\s*\}\s+from\s+["']\.\.\/\.\.\/agenc\/upstream\/utils\/messages\.js["']/,
+      /import\s+type\s*\{[^}]*StreamingToolUse[^}]*\}\s+from\s+["']\.\.\/\.\.\/llm\/types\.js["']/,
     );
   });
 });

@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
 
-import type { LLMMessage } from "../../llm/types.js";
+import type { LLMMessage, StreamingToolUse } from "../../llm/types.js";
 import type { Event } from "../../session/event-log.js";
-import type { StreamingToolUse } from "../../agenc/upstream/utils/messages.js";
 
 /**
  * Hardcoded copy of `FILE_EDIT_TOOL_NAME` from
@@ -28,7 +27,7 @@ export interface AdaptedTranscript {
   readonly currentTurnId: string | null;
   /**
    * Mid-stream tool input accumulator that mirrors the upstream
-   * OpenClaude `streamingToolUses` state from `screens/REPL.tsx:853`.
+   * `streamingToolUses` state from `screens/REPL.tsx:853`.
    * Each entry tracks an `input_json_delta`-driven tool-use block
    * whose JSON arguments are still arriving. Consumed by the upstream
    * `<Messages>` component (`components/Messages.tsx:222`) to render

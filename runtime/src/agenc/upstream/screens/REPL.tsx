@@ -70,7 +70,7 @@ import { SpinnerWithVerb, BriefIdleStatus, type SpinnerMode } from '../component
 import { getSystemPrompt } from '../constants/prompts.js';
 import { buildEffectiveSystemPrompt } from '../utils/systemPrompt.js';
 import { getSystemContext, getUserContext } from '../context.js';
-import { getMemoryFiles } from '../utils/claudemd.js';
+import { getMemoryFiles } from '../utils/claudemd.js'; // branding-scan: allow upstream mirror import path
 import { startBackgroundHousekeeping } from '../utils/backgroundHousekeeping.js';
 import { getTotalCost, saveCurrentSessionCosts, resetCostState, getStoredSessionCosts } from '../cost-tracker.js';
 import { useCostSummary } from '../costHook.js';
@@ -132,7 +132,8 @@ import { getGlobalConfig, saveGlobalConfig, getGlobalConfigWriteCount } from '..
 import { hasConsoleBillingAccess } from '../utils/billing.js';
 import { logEvent, type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from 'src/services/analytics/index.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js';
-import { textForResubmit, handleMessageFromStream, type StreamingToolUse, type StreamingThinking, isCompactBoundaryMessage, getMessagesAfterCompactBoundary, getContentText, createUserMessage, createAssistantMessage, createTurnDurationMessage, createAgentsKilledMessage, createApiMetricsMessage, createSystemMessage, createCommandInputMessage, formatCommandInputTags } from '../utils/messages.js';
+import type { StreamingToolUse } from '../../../llm/types.js';
+import { textForResubmit, handleMessageFromStream, type StreamingThinking, isCompactBoundaryMessage, getMessagesAfterCompactBoundary, getContentText, createUserMessage, createAssistantMessage, createTurnDurationMessage, createAgentsKilledMessage, createApiMetricsMessage, createSystemMessage, createCommandInputMessage, formatCommandInputTags } from '../utils/messages.js';
 import { getCurrentTurnCacheMetrics, resetCurrentTurn } from '../services/api/cacheStatsTracker.js';
 import { formatCacheMetricsCompact, formatCacheMetricsFull } from '../services/api/cacheMetrics.js';
 import { generateSessionTitle } from '../utils/sessionTitle.js';
@@ -568,9 +569,9 @@ export type Props = {
   taskListId?: string;
   // Remote session config for --remote mode (uses CCR as execution engine)
   remoteSessionConfig?: RemoteSessionConfig;
-  // Direct connect config for `claude connect` mode (connects to a claude server)
+  // Direct-connect config (connects to a remote agent server).
   directConnectConfig?: DirectConnectConfig;
-  // SSH session for `claude ssh` mode (local REPL, remote tools over ssh)
+  // SSH session config for local UI with remote tools over ssh.
   sshSession?: SSHSession;
   // Thinking configuration to use when thinking is enabled
   thinkingConfig: ThinkingConfig;
@@ -1159,7 +1160,7 @@ export function REPL({
   const sessionStatus: TabStatusKind = isWaitingForApproval || isShowingLocalJSXCommand ? 'waiting' : isLoading ? 'busy' : 'idle';
   const waitingFor = sessionStatus !== 'waiting' ? undefined : toolUseConfirmQueue.length > 0 ? `approve ${toolUseConfirmQueue[0]!.tool.name}` : pendingWorkerRequest ? 'worker request' : pendingSandboxRequest ? 'sandbox request' : isShowingLocalJSXCommand ? 'dialog open' : 'input needed';
 
-  // Push status to the PID file for `claude ps`. Fire-and-forget; ps falls
+  // Push status to the PID file. Fire-and-forget; process listing falls
   // back to transcript-tail derivation when this is missing/stale.
   useEffect(() => {
     if (feature('BG_SESSIONS')) {
@@ -1411,7 +1412,7 @@ export function REPL({
     setInProgressToolUseIDs
   });
 
-  // Direct connect hook - manages WebSocket to a claude server for `claude connect` mode
+  // Direct-connect hook: manages the WebSocket to a remote agent server.
   const directConnect = useDirectConnect({
     config: directConnectConfig,
     setMessages,
@@ -1420,7 +1421,7 @@ export function REPL({
     tools: combinedInitialTools
   });
 
-  // SSH session hook - manages ssh child process for `claude ssh` mode.
+  // SSH session hook: manages the ssh child process.
   // Same callback shape as useDirectConnect; only the transport under the
   // hood differs (ChildProcess stdin/stdout vs WebSocket).
   const sshRemote = useSSHSession({
@@ -1951,7 +1952,7 @@ export function REPL({
       // Skipped for in-session /branch: the existing ref is already correct
       // (branch preserves tool_use_ids), so there's no need to reconstruct.
       // createFork() does write content-replacement entries to the forked
-      // JSONL with the fork's sessionId, so `claude -r {forkId}` also works.
+      // JSONL with the fork's sessionId, so resume-by-fork-id also works.
       if (contentReplacementStateRef.current && entrypoint !== 'fork') {
         contentReplacementStateRef.current = reconstructContentReplacementState(messages, log.contentReplacements ?? []);
       }
@@ -3651,7 +3652,7 @@ export function REPL({
     helpers.clearBuffer();
   }, [setAppState, setInputValue, getToolUseContext, canUseTool, mainLoopModel, addNotification]);
 
-  // Handlers for auto-run /issue or /good-claude (defined after onSubmit)
+  // Handlers for auto-run issue and quality commands (defined after onSubmit).
   const handleAutoRunIssue = useCallback(() => {
     const command = autoRunIssueReason ? getAutoRunCommand(autoRunIssueReason) : '/issue';
     setAutoRunIssueReason(null); // Clear the state

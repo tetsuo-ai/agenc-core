@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react'
+import type { StreamingToolUse } from '../../../llm/types.js'
 import { BoundedUUIDSet } from '../bridge/bridgeMessaging.js'
 import type { ToolUseConfirm } from '../components/permissions/PermissionRequest.js'
 import type { SpinnerMode } from '../components/Spinner/types.js'
@@ -27,7 +28,6 @@ import {
   createSystemMessage,
   extractTextContent,
   handleMessageFromStream,
-  type StreamingToolUse,
 } from '../utils/messages.js'
 import { generateSessionTitle } from '../utils/sessionTitle.js'
 import type { RemoteMessageContent } from '../utils/teleport/api.js'
