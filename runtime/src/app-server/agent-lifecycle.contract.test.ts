@@ -945,6 +945,7 @@ describe("AgenC background agent lifecycle", () => {
     });
     const statusSnapshots: unknown[] = [];
     const messageSnapshots: unknown[] = [];
+    const sessionRoutes: unknown[] = [];
     const runner: AgenCBackgroundAgentRunner = {
       startAgent: async () => ({
         agentId: "agent_snapshot_policy",
@@ -962,6 +963,9 @@ describe("AgenC background agent lifecycle", () => {
       },
       recordMessageExchange: async (exchange) => {
         messageSnapshots.push(exchange);
+      },
+      registerSnapshotSession: async (session) => {
+        sessionRoutes.push(session);
       },
     });
 
@@ -992,6 +996,13 @@ describe("AgenC background agent lifecycle", () => {
         messageId: "message_snapshot",
         streamId: "stream_snapshot",
         acceptedAt: "2026-05-01T12:00:01.000Z",
+      },
+    ]);
+    expect(sessionRoutes).toEqual([
+      {
+        sessionId: "session_snapshot",
+        agentId: "agent_snapshot_policy",
+        cwd,
       },
     ]);
   });
