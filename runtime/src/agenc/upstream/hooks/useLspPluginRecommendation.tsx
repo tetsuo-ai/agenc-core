@@ -15,7 +15,7 @@ import { extname, join } from 'path';
 import * as React from 'react';
 import { hasShownLspRecommendationThisSession, setLspRecommendationShownThisSession } from '../bootstrap/state.js';
 import { useNotifications } from '../context/notifications.js';
-import { useAppState } from '../state/AppState.js';
+import { useAppState } from '../../../tui/state/AppState.js';
 import { saveGlobalConfig } from '../utils/config.js';
 import { logForDebugging } from 'src/utils/debug.js';
 import { logError } from '../utils/log.js';

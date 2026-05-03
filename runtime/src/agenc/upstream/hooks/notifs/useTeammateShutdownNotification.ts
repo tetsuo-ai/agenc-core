@@ -4,7 +4,7 @@ import {
   type Notification,
   useNotifications,
 } from '../../context/notifications.js'
-import { useAppState } from '../../state/AppState.js'
+import { useAppState } from '../../../../tui/state/AppState.js'
 import { isInProcessTeammateTask } from '../../tasks/InProcessTeammateTask/types.js'
 
 function parseCount(notif: Notification): number {

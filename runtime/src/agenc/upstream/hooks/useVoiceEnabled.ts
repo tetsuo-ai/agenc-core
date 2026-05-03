@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { useAppState } from '../state/AppState.js'
+import { useAppState } from '../../../tui/state/AppState.js'
 import {
   hasVoiceAuth,
   isVoiceGrowthBookEnabled,

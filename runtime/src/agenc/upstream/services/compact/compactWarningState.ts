@@ -1,4 +1,4 @@
-import { createStore } from '../../state/store.js'
+import { createStore } from '../../../../tui/state/store.js'
 
 /**
  * Tracks whether the "context left until autocompact" warning should be suppressed.

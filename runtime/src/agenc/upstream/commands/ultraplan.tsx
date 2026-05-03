@@ -5,7 +5,7 @@ import { DIAMOND_OPEN } from '../constants/figures.js';
 import { getRemoteSessionUrl } from '../constants/product.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../services/analytics/index.js';
-import type { AppState } from '../state/AppStateStore.js';
+import type { AppState } from '../../../tui/state/AppStateStore.js';
 import { checkRemoteAgentEligibility, formatPreconditionError, RemoteAgentTask, type RemoteAgentTaskState, registerRemoteAgentTask } from '../tasks/RemoteAgentTask/RemoteAgentTask.js';
 import type { LocalJSXCommandCall } from '../types/command.js';
 import { logForDebugging } from 'src/utils/debug.js';

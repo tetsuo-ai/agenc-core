@@ -4,7 +4,7 @@ import {
   logEvent,
 } from '../../services/analytics/index.js'
 import { sanitizeToolNameForAnalytics } from '../../services/analytics/metadata.js'
-import { useSetAppState } from '../../state/AppState.js'
+import { useSetAppState } from '../../../../tui/state/AppState.js'
 import type { ToolUseConfirm } from './PermissionRequest.js'
 import { logUnaryPermissionEvent } from './utils.js'
 

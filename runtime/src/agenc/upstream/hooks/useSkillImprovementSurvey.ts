@@ -5,7 +5,7 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_PII_TAGGED,
   logEvent,
 } from '../services/analytics/index.js'
-import { useAppState, useSetAppState } from '../state/AppState.js'
+import { useAppState, useSetAppState } from '../../../tui/state/AppState.js'
 import type { Message } from '../types/message.js'
 import type { SkillUpdate } from '../utils/hooks/skillImprovement.js'
 import { applySkillImprovement } from '../utils/hooks/skillImprovement.js'

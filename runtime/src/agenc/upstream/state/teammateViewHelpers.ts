@@ -6,7 +6,7 @@ import type { LocalAgentTaskState } from '../tasks/LocalAgentTask/LocalAgentTask
 // BackgroundTasksDialog. Keep in sync with PANEL_GRACE_MS there.
 const PANEL_GRACE_MS = 30_000
 
-import type { AppState } from './AppState.js'
+import type { AppState } from '../../../tui/state/AppState.js'
 
 // Inline type check instead of importing isLocalAgentTask — breaks the
 // teammateViewHelpers → LocalAgentTask runtime edge that creates a cycle

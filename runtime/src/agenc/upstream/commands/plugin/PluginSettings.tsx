@@ -9,7 +9,7 @@ import { Tab, Tabs } from '../../components/design-system/Tabs.js';
 import { useExitOnCtrlCDWithKeybindings } from '../../hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Text } from '../../../../tui/ink.js';
 import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.js';
-import { useAppState, useSetAppState } from '../../state/AppState.js';
+import { useAppState, useSetAppState } from '../../../../tui/state/AppState.js';
 import type { PluginError } from '../../types/plugin.js';
 import { errorMessage } from '../../utils/errors.js';
 import { clearAllCaches } from '../../utils/plugins/cacheUtils.js';

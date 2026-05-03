@@ -2,7 +2,7 @@ import { feature } from 'bun:bundle';
 import { stat } from 'fs/promises';
 import { OUTPUT_FILE_TAG, STATUS_TAG, SUMMARY_TAG, TASK_ID_TAG, TASK_NOTIFICATION_TAG, TOOL_USE_ID_TAG } from '../../constants/xml.js';
 import { abortSpeculation } from '../../services/PromptSuggestion/speculation.js';
-import type { AppState } from '../../state/AppState.js';
+import type { AppState } from '../../../../tui/state/AppState.js';
 import type { LocalShellSpawnInput, SetAppState, Task, TaskContext, TaskHandle } from '../../Task.js';
 import { createTaskStateBase } from '../../Task.js';
 import type { AgentId } from '../../types/ids.js';

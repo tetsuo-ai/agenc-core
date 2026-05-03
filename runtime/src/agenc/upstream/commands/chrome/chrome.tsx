@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import { type OptionWithDescription, Select } from '../../components/CustomSelect/select.js';
 import { Dialog } from '../../components/design-system/Dialog.js';
 import { Box, Text } from '../../../../tui/ink.js';
-import { useAppState } from '../../state/AppState.js';
+import { useAppState } from '../../../../tui/state/AppState.js';
 import { isAgenCAISubscriber } from '../../utils/auth.js';
 import { openBrowser } from '../../utils/browser.js';
 import { AGENC_IN_CHROME_MCP_SERVER_NAME, openInChrome } from '../../utils/claudeInChrome/common.js';

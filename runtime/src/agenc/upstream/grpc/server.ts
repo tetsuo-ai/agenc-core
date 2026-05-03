@@ -4,8 +4,8 @@ import path from 'path'
 import { randomUUID } from 'crypto'
 import { QueryEngine } from '../QueryEngine.js'
 import { getTools } from '../tools.js'
-import { getDefaultAppState } from '../state/AppStateStore.js'
-import { AppState } from '../state/AppState.js'
+import { getDefaultAppState } from '../../../tui/state/AppStateStore.js'
+import { AppState } from '../../../tui/state/AppState.js'
 import { FileStateCache, READ_FILE_STATE_CACHE_SIZE } from '../utils/fileStateCache.js'
 
 const PROTO_PATH = path.resolve(import.meta.dirname, '../proto/agenc.proto')

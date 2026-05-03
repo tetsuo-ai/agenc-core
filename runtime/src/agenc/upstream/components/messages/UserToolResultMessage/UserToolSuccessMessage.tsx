@@ -3,7 +3,7 @@ import figures from 'figures';
 import * as React from 'react';
 import { SentryErrorBoundary } from 'src/components/SentryErrorBoundary.js';
 import { Box, Text, useTheme } from '../../../../../tui/ink.js';
-import { useAppState } from '../../../state/AppState.js';
+import { useAppState } from '../../../../../tui/state/AppState.js';
 import { filterToolProgressMessages, type Tool, type Tools } from '../../../Tool.js';
 import type { NormalizedUserMessage, ProgressMessage } from '../../../types/message.js';
 import { deleteClassifierApproval, getClassifierApproval, getYoloClassifierApproval } from '../../../utils/classifierApprovals.js';

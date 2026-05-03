@@ -7,8 +7,8 @@ import { Box, Text, usePreviewTheme, useTheme, useThemeSetting } from '../../../
 import { useRegisterKeybindingContext } from '../keybindings/KeybindingContext.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
-import { useAppState, useSetAppState } from '../state/AppState.js';
-import type { AppState } from '../state/AppStateStore.js';
+import { useAppState, useSetAppState } from '../../../tui/state/AppState.js';
+import type { AppState } from '../../../tui/state/AppStateStore.js';
 import { gracefulShutdown } from '../utils/gracefulShutdown.js';
 import { updateSettingsForSource } from '../utils/settings/settings.js';
 import type { ThemeSetting } from '../utils/theme.js';

@@ -5,7 +5,7 @@ import {
   logEvent,
 } from '../services/analytics/index.js'
 import { abortSpeculation } from '../services/PromptSuggestion/speculation.js'
-import { useAppState, useSetAppState } from '../state/AppState.js'
+import { useAppState, useSetAppState } from '../../../tui/state/AppState.js'
 
 type Props = {
   inputValue: string

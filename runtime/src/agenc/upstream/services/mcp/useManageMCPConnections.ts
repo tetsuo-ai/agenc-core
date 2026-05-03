@@ -49,7 +49,7 @@ import {
   isMcpServerDisabled,
   setMcpServerEnabled,
 } from 'src/services/mcp/config.js'
-import type { AppState } from 'src/state/AppState.js'
+import type { AppState } from '../../../../tui/state/AppState.js'
 import type { PluginError } from 'src/types/plugin.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { getAllowedChannels } from '../../bootstrap/state.js'
@@ -58,7 +58,7 @@ import {
   useAppState,
   useAppStateStore,
   useSetAppState,
-} from '../../state/AppState.js'
+} from '../../../../tui/state/AppState.js'
 import { errorMessage } from '../../utils/errors.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { logMCPDebug, logMCPError } from '../../utils/log.js'

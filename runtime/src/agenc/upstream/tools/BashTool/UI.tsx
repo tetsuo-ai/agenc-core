@@ -8,7 +8,7 @@ import { ShellProgressMessage } from '../../components/shell/ShellProgressMessag
 import { Box, Text } from '../../../../tui/ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
-import { useAppStateStore, useSetAppState } from '../../state/AppState.js';
+import { useAppStateStore, useSetAppState } from '../../../../tui/state/AppState.js';
 import type { Tool } from '../../Tool.js';
 import { backgroundAll } from '../../tasks/LocalShellTask/LocalShellTask.js';
 import type { ProgressMessage } from '../../types/message.js';

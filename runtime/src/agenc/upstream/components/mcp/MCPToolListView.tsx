@@ -3,7 +3,7 @@ import React from 'react';
 import { Text } from '../../../../tui/ink.js';
 import { extractMcpToolDisplayName, getMcpDisplayName } from '../../services/mcp/mcpStringUtils.js';
 import { filterToolsByServer } from '../../services/mcp/utils.js';
-import { useAppState } from '../../state/AppState.js';
+import { useAppState } from '../../../../tui/state/AppState.js';
 import type { Tool } from '../../Tool.js';
 import { plural } from '../../utils/stringUtils.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';

@@ -16,8 +16,8 @@ import {
   convertSDKMessage,
   isSessionEndMessage,
 } from '../remote/sdkMessageAdapter.js'
-import { useSetAppState } from '../state/AppState.js'
-import type { AppState } from '../state/AppStateStore.js'
+import { useSetAppState } from '../../../tui/state/AppState.js'
+import type { AppState } from '../../../tui/state/AppStateStore.js'
 import type { Tool } from '../Tool.js'
 import { findToolByName } from '../Tool.js'
 import type { Message as MessageType } from '../types/message.js'

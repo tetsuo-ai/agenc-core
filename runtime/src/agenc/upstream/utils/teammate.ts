@@ -22,7 +22,7 @@ export {
   type TeammateContext,
 } from './teammateContext.js'
 
-import type { AppState } from '../state/AppState.js'
+import type { AppState } from '../../../tui/state/AppState.js'
 import { isEnvTruthy } from './envUtils.js'
 import { getTeammateContext } from './teammateContext.js'
 

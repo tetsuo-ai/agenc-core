@@ -1,5 +1,5 @@
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
-import type { AppState } from '../../state/AppState.js'
+import type { AppState } from '../../../../tui/state/AppState.js'
 import type { Message } from '../../types/message.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { count } from '../../utils/array.js'

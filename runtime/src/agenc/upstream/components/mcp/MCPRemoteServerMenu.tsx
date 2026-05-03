@@ -13,7 +13,7 @@ import { AuthenticationCancelledError, performMCPOAuthFlow, revokeServerTokens }
 import { clearServerCache } from '../../services/mcp/client.js';
 import { useMcpReconnect, useMcpToggleEnabled } from '../../services/mcp/MCPConnectionManager.js';
 import { describeMcpConfigFilePath, excludeCommandsByServer, excludeResourcesByServer, excludeToolsByServer, filterMcpPromptsByServer } from '../../services/mcp/utils.js';
-import { useAppState, useSetAppState } from '../../state/AppState.js';
+import { useAppState, useSetAppState } from '../../../../tui/state/AppState.js';
 import { getOauthAccountInfo } from '../../utils/auth.js';
 import { openBrowser } from '../../utils/browser.js';
 import { errorMessage } from '../../utils/errors.js';

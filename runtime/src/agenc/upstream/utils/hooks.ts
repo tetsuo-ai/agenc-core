@@ -161,7 +161,7 @@ import {
   type SessionDerivedHookMatcher,
   type FunctionHook,
 } from './hooks/sessionHooks.js'
-import type { AppState } from '../state/AppState.js'
+import type { AppState } from '../../../tui/state/AppState.js'
 import { jsonStringify, jsonParse } from './slowOperations.js'
 import { isEnvTruthy } from './envUtils.js'
 import { errorMessage, getErrnoCode } from './errors.js'

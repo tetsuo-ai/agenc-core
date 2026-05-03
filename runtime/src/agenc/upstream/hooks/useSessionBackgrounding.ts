@@ -8,7 +8,7 @@
  */
 
 import { useCallback, useEffect, useRef } from 'react'
-import { useAppState, useSetAppState } from '../state/AppState.js'
+import { useAppState, useSetAppState } from '../../../tui/state/AppState.js'
 import type { Message } from '../types/message.js'
 
 type UseSessionBackgroundingProps = {

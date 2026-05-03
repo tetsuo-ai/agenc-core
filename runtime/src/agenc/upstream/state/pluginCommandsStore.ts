@@ -1,5 +1,5 @@
 import type { Command } from '../commands.js'
-import { createStore } from './store.js'
+import { createStore } from '../../../tui/state/store.js'
 
 const pluginCommandsStore = createStore<Command[]>([])
 

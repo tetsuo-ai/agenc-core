@@ -5,7 +5,7 @@ import {
   useAppState,
   useAppStateStore,
   useSetAppState,
-} from 'src/state/AppState.js'
+} from '../../../../tui/state/AppState.js'
 import type { ToolPermissionContext } from 'src/Tool.js'
 import { getIsRemoteMode } from '../../bootstrap/state.js'
 import {

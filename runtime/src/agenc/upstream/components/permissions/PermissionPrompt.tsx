@@ -4,7 +4,7 @@ import { Box, Text } from '../../../../tui/ink.js';
 import type { KeybindingAction } from '../../keybindings/types.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
-import { useSetAppState } from '../../state/AppState.js';
+import { useSetAppState } from '../../../../tui/state/AppState.js';
 import { type OptionWithDescription, Select } from '../CustomSelect/select.js';
 export type FeedbackType = 'accept' | 'reject';
 export type PermissionPromptOption<T extends string> = {

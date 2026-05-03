@@ -9,7 +9,7 @@ import {
   getDefaultAppState,
   useAppState,
   useSetAppState,
-} from "../../agenc/upstream/state/AppState.js";
+} from "../state/AppState.js";
 import {
   Box,
   useApp,

@@ -12,7 +12,7 @@ import {
   getSessionBypassPermissionsMode,
   getSessionId,
 } from '../../bootstrap/state.js'
-import type { AppState } from '../../state/AppState.js'
+import type { AppState } from '../../../../tui/state/AppState.js'
 import { createTaskStateBase, generateTaskId } from '../../Task.js'
 import type { ToolUseContext } from '../../Tool.js'
 import type { InProcessTeammateTaskState } from '../../tasks/InProcessTeammateTask/types.js'

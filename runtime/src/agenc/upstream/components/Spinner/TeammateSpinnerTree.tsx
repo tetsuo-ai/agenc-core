@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import * as React from 'react';
 import { Box, Text, type TextProps } from '../../../../tui/ink.js';
-import { useAppState } from '../../state/AppState.js';
+import { useAppState } from '../../../../tui/state/AppState.js';
 import { getRunningTeammatesSorted } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js';
 import { formatNumber } from '../../utils/format.js';
 import { TeammateSpinnerLine } from './TeammateSpinnerLine.js';

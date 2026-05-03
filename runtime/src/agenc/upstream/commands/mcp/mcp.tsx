@@ -3,7 +3,7 @@ import React, { useEffect, useRef } from 'react';
 import { MCPSettings } from '../../components/mcp/index.js';
 import { MCPReconnect } from '../../components/mcp/MCPReconnect.js';
 import { useMcpToggleEnabled } from '../../services/mcp/MCPConnectionManager.js';
-import { useAppState } from '../../state/AppState.js';
+import { useAppState } from '../../../../tui/state/AppState.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
 import { PluginSettings } from '../plugin/PluginSettings.js';
 

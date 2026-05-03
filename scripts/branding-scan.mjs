@@ -107,18 +107,18 @@ function changedLinesForPath(root, rel, mode) {
   return changed;
 }
 
-function isInkImportRewriteLine(line) {
+function isAbsorbImportRewriteLine(line) {
   if (line === "") return true;
   return (
     /(?:^import\b|^export\b|from\s+|import\s*\(|require\s*\()/.test(line) &&
-    /(?:^|[./])ink(?:\.js|\/)/.test(line)
+    /(?:^|[./])(?:ink(?:\.js|\/)|(?:tui\/)?state\/(?:AppState|AppStateStore|store)(?:\.js)?)/.test(line)
   );
 }
 
-function isMirrorInkImportRewriteOnly(root, rel, mode) {
+function isMirrorAbsorbImportRewriteOnly(root, rel, mode) {
   if (!UPSTREAM_MIRROR_RE.test(rel)) return false;
   const changed = changedLinesForPath(root, rel, mode);
-  return changed.length > 0 && changed.every(isInkImportRewriteLine);
+  return changed.length > 0 && changed.every(isAbsorbImportRewriteLine);
 }
 
 function listFromGit(mode) {
@@ -143,7 +143,7 @@ function listFromGit(mode) {
     const abs = path.resolve(root, trimmed);
     if (!existsSync(abs)) continue;
     const rel = path.relative(root, abs).replaceAll("\\", "/");
-    if (isMirrorInkImportRewriteOnly(root, rel, mode)) continue;
+    if (isMirrorAbsorbImportRewriteOnly(root, rel, mode)) continue;
     out.push(abs);
   }
   return out;

@@ -6,7 +6,7 @@ import stripAnsi from 'strip-ansi'
 
 import { createRoot, Text, useTheme } from '../../../tui/ink.js'
 import { KeybindingSetup } from '../keybindings/KeybindingProviderSetup.js'
-import { AppStateProvider } from '../state/AppState.js'
+import { AppStateProvider } from '../../../tui/state/AppState.js'
 import { ThemeProvider } from './design-system/ThemeProvider.js'
 
 mock.module('./StructuredDiff.js', () => ({

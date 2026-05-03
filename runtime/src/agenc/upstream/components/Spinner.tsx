@@ -18,7 +18,7 @@ import { MessageResponse } from './MessageResponse.js';
 import { TaskListV2 } from './TaskListV2.js';
 import { useTasksV2 } from '../hooks/useTasksV2.js';
 import type { Task } from '../utils/tasks.js';
-import { useAppState } from '../state/AppState.js';
+import { useAppState } from '../../../tui/state/AppState.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { stringWidth } from '../../../tui/ink/stringWidth.js';
 import { getDefaultCharacters, type SpinnerMode } from './Spinner/index.js';

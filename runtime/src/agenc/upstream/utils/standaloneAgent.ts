@@ -7,7 +7,7 @@
  * precedence.
  */
 
-import type { AppState } from '../state/AppState.js'
+import type { AppState } from '../../../tui/state/AppState.js'
 import { getTeamName } from './teammate.js'
 
 /**

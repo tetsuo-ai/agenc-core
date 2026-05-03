@@ -22,7 +22,7 @@ import { useMcpToggleEnabled } from '../../services/mcp/MCPConnectionManager.js'
 import type { MCPServerConnection, McpAgenCAIProxyServerConfig, McpHTTPServerConfig, McpSSEServerConfig, McpStdioServerConfig } from '../../services/mcp/types.js';
 import { filterToolsByServer } from '../../services/mcp/utils.js';
 import { disablePluginOp, enablePluginOp, getPluginInstallationFromV2, isInstallableScope, isPluginEnabledAtProjectScope, uninstallPluginOp, updatePluginOp } from '../../services/plugins/pluginOperations.js';
-import { useAppState } from '../../state/AppState.js';
+import { useAppState } from '../../../../tui/state/AppState.js';
 import type { Tool } from '../../Tool.js';
 import type { LoadedPlugin, PluginError } from '../../types/plugin.js';
 import { count } from '../../utils/array.js';
