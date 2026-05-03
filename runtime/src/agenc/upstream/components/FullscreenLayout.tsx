@@ -3,7 +3,7 @@ import figures from 'figures';
 import React, { createContext, type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { fileURLToPath } from 'url';
 import { ModalContext } from '../context/modalContext.js';
-import { PromptOverlayProvider, usePromptOverlay, usePromptOverlayDialog } from '../context/promptOverlayContext.js';
+import { PromptOverlayProvider, usePromptOverlay, usePromptOverlayDialog } from '../../../tui/context/promptOverlayContext.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import ScrollBox, { type ScrollBoxHandle } from '../../../tui/ink/components/ScrollBox.js';
 import instances from '../../../tui/ink/instances.js';

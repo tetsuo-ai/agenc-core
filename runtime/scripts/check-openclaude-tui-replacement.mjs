@@ -108,6 +108,11 @@ function assertSourceSnapshot() {
   ]
     .filter(([file]) => existsSync(join(liveTuiRoot, file)))
     .map(([, inventoryPath]) => inventoryPath);
+  const absorbedContextFiles = [
+    ["context/promptOverlayContext.tsx", "src/context/promptOverlayContext.tsx"],
+  ]
+    .filter(([file]) => existsSync(join(liveTuiRoot, file)))
+    .map(([, inventoryPath]) => inventoryPath);
   const substitutions = new Map([
     [
       `src/components/${donorBrand}CodeHint/PluginHintMenu.tsx`,
@@ -144,7 +149,9 @@ function assertSourceSnapshot() {
     .map((file) => substitutions.get(file) ?? file)
     .concat([...agencAdditions.keys()])
     .sort();
-  const actualFiles = copiedFiles.concat(absorbedInkFiles, absorbedStateFiles).sort();
+  const actualFiles = copiedFiles
+    .concat(absorbedInkFiles, absorbedStateFiles, absorbedContextFiles)
+    .sort();
   const missing = expected.filter((file) => !actualFiles.includes(file));
   const extra = actualFiles.filter((file) => !expected.includes(file));
   if (missing.length > 0 || extra.length > 0) {
@@ -163,6 +170,8 @@ function assertOldTuiRemoved() {
     "elicitation-submit-routing.ts",
     "ink.ts",
     "main.tsx",
+    "context/promptOverlayContext.test.tsx",
+    "context/promptOverlayContext.tsx",
     `${compatibilityDir}/App.tsx`,
     `${compatibilityDir}/message-adapter.ts`,
     `${compatibilityDir}/permission-bridge.tsx`,
@@ -212,6 +221,9 @@ function assertNoDeletedAbsorbImporters() {
     [join(copiedRoot, "state/AppStateStore"), "AppStateStore"],
     [join(copiedRoot, "state/store"), "state store"],
   ]);
+  const deletedContextEntrypoints = new Map([
+    [join(copiedRoot, "context/promptOverlayContext"), "prompt overlay context"],
+  ]);
   const sourceImportPattern = /(?:from\s+|import\s*\(|require\s*\()\s*['"]([^'"]+)['"]/g;
   for (const file of walk(copiedRoot)) {
     if (!/\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(file)) continue;
@@ -231,6 +243,12 @@ function assertNoDeletedAbsorbImporters() {
       if (specifier === "src/state/store" || specifier === "src/state/store.js") {
         fail(`deleted state store alias import remains: ${file} -> ${specifier}`);
       }
+      if (
+        specifier === "src/context/promptOverlayContext" ||
+        specifier === "src/context/promptOverlayContext.js"
+      ) {
+        fail(`deleted prompt overlay context alias import remains: ${file} -> ${specifier}`);
+      }
       if (!specifier.startsWith(".")) continue;
       const resolved = resolve(dirname(abs), specifier)
         .replace(/\.(?:js|jsx|ts|tsx|mjs|cjs)$/, "");
@@ -239,6 +257,11 @@ function assertNoDeletedAbsorbImporters() {
       }
       for (const [deletedStateEntrypoint, label] of deletedStateEntrypoints) {
         if (resolved === deletedStateEntrypoint) {
+          fail(`deleted ${label} relative import remains: ${file} -> ${specifier}`);
+        }
+      }
+      for (const [deletedContextEntrypoint, label] of deletedContextEntrypoints) {
+        if (resolved === deletedContextEntrypoint) {
           fail(`deleted ${label} relative import remains: ${file} -> ${specifier}`);
         }
       }
