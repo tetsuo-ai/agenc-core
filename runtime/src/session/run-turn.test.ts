@@ -9,6 +9,9 @@
  */
 
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 vi.mock("axios", () => {
   const axiosLike = {
     create: vi.fn(() => axiosLike),
@@ -425,6 +428,51 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       (message) => message.role === "user",
     )?.content;
     expect(firstUserContent).toBe("expanded model-visible prompt");
+  });
+
+  test("resolves file mentions through per-turn attachments for direct Session.runTurn callers", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-run-turn-file-mention-"));
+    mkdirSync(join(cwd, "src"));
+    writeFileSync(join(cwd, "src", "app.ts"), "export const answer = 42;\n");
+    const seenMessages: LLMMessage[][] = [];
+    const ctx = { ...mkCtx(), cwd };
+    const { session, events } = mkSession({
+      provider: {
+        ...mkProvider({ content: "hi" }),
+        chatStream: async (
+          messages: LLMMessage[],
+          _onChunk: StreamProgressCallback,
+          _options,
+        ): Promise<LLMResponse> => {
+          seenMessages.push(messages);
+          return {
+            content: "hi",
+            toolCalls: [],
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            model: "test-model",
+            finishReason: "stop",
+          };
+        },
+      },
+      registry: mkRegistry(),
+      sessionConfiguration: { cwd },
+    });
+
+    await drain(session.runTurn("explain @src/app.ts", { ctx }));
+
+    const rendered = seenMessages[0]
+      ?.map((message) =>
+        typeof message.content === "string" ? message.content : "",
+      )
+      .join("\n");
+    expect(rendered).toContain("<attached_files>");
+    expect(rendered).toContain('path="src/app.ts"');
+    expect(rendered).toContain("export const answer = 42;");
+
+    const userMsg = events.find((e) => e.msg.type === "user_message");
+    if (userMsg?.msg.type === "user_message") {
+      expect(userMsg.msg.payload.message).toBe("explain @src/app.ts");
+    }
   });
 
   test("displayUserMessage hides mailbox-merged agent input from transcript", async () => {

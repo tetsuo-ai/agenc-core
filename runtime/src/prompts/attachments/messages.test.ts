@@ -316,6 +316,33 @@ describe("attachmentsToMessages", () => {
     );
   });
 
+  test("renders file_mention attachments as attached file context", () => {
+    const out = attachmentsToMessages([
+      {
+        kind: "file_mention",
+        files: [
+          {
+            raw: "src/app.ts",
+            path: "src/app.ts",
+            resolved: "/repo/src/app.ts",
+            bytes: 25,
+            lineCount: 1,
+            truncated: false,
+            content: "export const answer = 42;",
+          },
+        ],
+      },
+    ]);
+
+    expect(out).toHaveLength(1);
+    expect(out[0]?.role).toBe("user");
+    expect(out[0]?.runtimeOnly?.mergeBoundary).toBe("user_context");
+    expect(out[0]?.content).toContain("<attached_files>");
+    expect(out[0]?.content).toContain('path="src/app.ts"');
+    expect(out[0]?.content).toContain("export const answer = 42;");
+    expect(out[0]?.content).not.toContain("<user_message>");
+  });
+
   test("uses AgenC branding and does not leak legacy-branded memory names", () => {
     const planFilePath = "/home/u/.agenc/plans/active.md";
     const rendered = attachmentsToMessages([

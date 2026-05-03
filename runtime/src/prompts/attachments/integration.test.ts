@@ -9,6 +9,9 @@
  * preserves the wire shape downstream prompt-build code depends on.
  */
 import { describe, expect, test } from "vitest";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type { LLMMessage } from "../../llm/types.js";
 import {
@@ -53,6 +56,46 @@ function humanTurns(count: number): LLMMessage[] {
 }
 
 describe("attachments orchestrator — live producer registry", () => {
+  test("file mentions resolve to attached file context through the live pipeline", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-file-mention-pipeline-"));
+    mkdirSync(join(cwd, "src"));
+    writeFileSync(join(cwd, "src", "app.ts"), "export const answer = 42;\n");
+
+    const out = await getAttachments(
+      makeOpts({
+        cwd,
+        userInput: "explain @src/app.ts",
+      }),
+    );
+
+    expect(out.some((a) => a.kind === "file_mention")).toBe(true);
+    const messages = attachmentsToMessages(out);
+    expect(
+      messages.some(
+        (message) =>
+          typeof message.content === "string" &&
+          message.content.includes("<attached_files>") &&
+          message.content.includes('path="src/app.ts"') &&
+          message.content.includes("export const answer = 42;"),
+      ),
+    ).toBe(true);
+  });
+
+  test("file mentions skip prompts that were already expanded by the submit path", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-file-mention-expanded-"));
+    writeFileSync(join(cwd, "note.txt"), "already handled\n");
+
+    const out = await getAttachments(
+      makeOpts({
+        cwd,
+        userInput:
+          '<attached_files>\n<file path="note.txt">already handled</file>\n</attached_files>\n\n<user_message>read @note.txt</user_message>',
+      }),
+    );
+
+    expect(out.some((a) => a.kind === "file_mention")).toBe(false);
+  });
+
   test("date_change fires once per local day, then suppresses on the next call", async () => {
     const sessionKey = {};
     const trackingState = getAttachmentTrackingState(sessionKey);

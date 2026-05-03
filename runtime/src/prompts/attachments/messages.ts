@@ -1,7 +1,7 @@
 /**
  * Attachment-to-LLMMessage conversion.
  *
- * Hand-port of openclaude `createAttachmentMessage()`
+ * Hand-port of the upstream attachment-message helper
  * (`src/utils/attachments.ts:3221`) plus the model-facing attachment
  * normalization in `src/utils/messages.ts::normalizeAttachmentForAPI`.
  *
@@ -21,6 +21,7 @@
  */
 
 import type { LLMMessage } from "../../llm/types.js";
+import { renderFileMentionAttachmentsBlock } from "../file-mentions.js";
 import type { Attachment } from "./types.js";
 
 /**
@@ -229,6 +230,12 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
         wrapSystemReminder(
           `The user has expressed a desire to invoke the agent "${attachment.agentType}". Please invoke the agent appropriately, passing in the required context to it. `,
         ),
+      );
+    }
+    case "file_mention": {
+      if (attachment.files.length === 0) return null;
+      return userContextMessage(
+        renderFileMentionAttachmentsBlock(attachment.files),
       );
     }
     case "skill_listing": {
