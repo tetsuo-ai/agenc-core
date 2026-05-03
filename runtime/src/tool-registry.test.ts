@@ -291,6 +291,13 @@ describe("tool-registry dynamic and deferred catalog", () => {
       "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable",
     );
     expect(emittedPlans).toHaveLength(1);
+    expect(emittedPlans[0]).toMatchObject({
+      todos: [
+        { content: "Ship parity", status: "in_progress", activeForm: "Shipping parity" },
+        { content: "Run tests", status: "pending", activeForm: "Running tests" },
+      ],
+      updatedAt: expect.any(String),
+    });
 
     // AgenC's TodoWrite is in-memory only. Persisting to the plan
     // file would overwrite the user-authored plan.
@@ -327,7 +334,15 @@ describe("tool-registry dynamic and deferred catalog", () => {
   });
 
   test("TodoWrite adds the verification-agent nudge when closing 3+ tasks without verification", async () => {
-    const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
+    const emittedPlans: unknown[] = [];
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      workflowController: {
+        emitPlanUpdated: (state) => {
+          emittedPlans.push(state);
+        },
+      },
+    });
 
     const result = await registry.dispatch({
       id: "todo-verification-nudge",
@@ -344,6 +359,11 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(result.isError).toBeUndefined();
     expect(result.content).toContain('spawn the sentinel agent (agent_type="sentinel")');
     expect(result.metadata).toMatchObject({ verificationNudgeNeeded: true });
+    expect(emittedPlans).toHaveLength(1);
+    expect(emittedPlans[0]).toMatchObject({
+      todos: [],
+      updatedAt: expect.any(String),
+    });
   });
 
   test("TodoWrite schema requires content/status/activeForm and rejects extras (AgenC behavior)", () => {
