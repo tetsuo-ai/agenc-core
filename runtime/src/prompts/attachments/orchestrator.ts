@@ -1,9 +1,10 @@
 /**
  * Per-turn attachments orchestrator.
  *
- * Hand-port of openclaude `src/utils/attachments.ts:744-1004`
- * (`getAttachments()`). Runs every registered producer in parallel each
- * turn, collects their outputs, returns a flat `Attachment[]`. Producers
+ * Hand-port of the upstream attachment orchestrator
+ * (`src/utils/attachments.ts:744-1004`, `getAttachments()`). Runs every
+ * registered producer in parallel each turn, collects their outputs, and
+ * returns a flat `Attachment[]`. Producers
  * are pure functions of `(opts, trackingState)` and are responsible for
  * their own gating (turn-counting, hash diffing, mode checks).
  *
@@ -36,11 +37,12 @@ import { planModeProducer } from "./plan-mode.js";
 import { verifyPlanReminderProducer } from "./verify-plan-reminder.js";
 import { changedFilesProducer } from "./changed-files.js";
 import { agentMentionsProducer } from "./agent-mentions.js";
+import { fileMentionsProducer } from "./file-mentions.js";
 import { skillListingProducer } from "./skill-listing.js";
 import type { Attachment } from "./types.js";
 
 /**
- * Inputs every producer receives. Mirrors openclaude's
+ * Inputs every producer receives. Mirrors the upstream donor's
  * `getAttachments(input, toolUseContext, ...)` parameter set, adapted to
  * AgenC types.
  */
@@ -79,6 +81,11 @@ export interface GetAttachmentsOptions {
   readonly permissionContext: ToolPermissionContext;
   /** Workspace cwd; used for AGENC.md walk + file-mention resolution. */
   readonly cwd: string;
+  /**
+   * Additional roots allowed for `@path` file mention rendering. When
+   * omitted, file mentions are limited to `cwd`.
+   */
+  readonly fileMentionAllowedRoots?: readonly string[];
   /** Subagent depth (0 for the main thread). Some producers are main-only. */
   readonly subagentDepth: number;
   /** Cancellation signal threaded from the turn loop. */
@@ -146,6 +153,7 @@ const PRODUCERS: readonly AttachmentProducer[] = [
   // Phase 5 — Memory + file injections:
   changedFilesProducer,
   agentMentionsProducer,
+  fileMentionsProducer,
   skillListingProducer,
 ];
 

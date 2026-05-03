@@ -14,6 +14,11 @@
  * are visible by default, while compatibility built-ins, MCP, and
  * explicitly deferred tools become visible after discovery.
  *
+ * Prompt attachment surfaces, including File mention rendering for
+ * `@path`, are catalog-adjacent but are not provider-visible tools.
+ * They are resolved in `runtime/src/prompts/attachments/` before the
+ * request reaches this registry's provider tool payload.
+ *
  * @module
  */
 

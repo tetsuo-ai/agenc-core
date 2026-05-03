@@ -154,7 +154,7 @@ async function resolvePendingProviderStartupPrewarm(
   let timeout: number | NodeJS.Timeout | undefined;
   let onAbort: (() => void) | undefined;
   const timeoutPromise = new Promise<undefined>((resolve) => {
-    timeout = setTimeout(resolve, remainingMs);
+    timeout = setTimeout(() => resolve(undefined), remainingMs);
     (timeout as { unref?: () => void }).unref?.();
   });
   const abortPromise =

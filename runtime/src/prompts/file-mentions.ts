@@ -252,8 +252,7 @@ function escapeTagBody(value: string): string {
     .replace(/<\/file>/gi, "<\\/file>");
 }
 
-function buildExpandedPrompt(
-  userMessage: string,
+export function renderFileMentionAttachmentsBlock(
   attachments: readonly FileMentionAttachment[],
 ): string {
   const attachedFiles = attachments
@@ -268,10 +267,15 @@ function buildExpandedPrompt(
     })
     .join("\n\n");
 
+  return ["<attached_files>", attachedFiles, "</attached_files>"].join("\n");
+}
+
+function buildExpandedPrompt(
+  userMessage: string,
+  attachments: readonly FileMentionAttachment[],
+): string {
   return [
-    "<attached_files>",
-    attachedFiles,
-    "</attached_files>",
+    renderFileMentionAttachmentsBlock(attachments),
     "",
     "<user_message>",
     escapeTagBody(userMessage),

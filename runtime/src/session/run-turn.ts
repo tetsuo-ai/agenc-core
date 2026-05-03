@@ -67,6 +67,7 @@ import { executeTools } from "../phases/execute-tools.js";
 import { postSampleRecovery } from "../phases/post-sample-recovery.js";
 import { getAttachments } from "../prompts/attachments/orchestrator.js";
 import { attachmentsToMessages } from "../prompts/attachments/messages.js";
+import { extractMentionAllowedRoots } from "../prompts/file-mentions.js";
 import {
   buildAgenCCompactedRolloutItem,
   buildAgenCPostCompactMessages,
@@ -1001,6 +1002,9 @@ async function tryRunSamplingRequest(
   // request through the existing build path. Producer registry lives
   // in `runtime/src/prompts/attachments/orchestrator.ts`.
   const agencHome = session.services.configStore?.agencHome;
+  const fileMentionAllowedRoots = extractMentionAllowedRoots(
+    session.services.configStore?.current(),
+  );
   const attachments = await getAttachments({
     sessionKey: session,
     userInput: extractLastUserText(state.messagesForQuery),
@@ -1016,6 +1020,7 @@ async function tryRunSamplingRequest(
     ...(typeof agencHome === "string" && agencHome.length > 0
       ? { agencHome }
       : {}),
+    ...(fileMentionAllowedRoots !== undefined ? { fileMentionAllowedRoots } : {}),
     skillsManager: session.services.skillsManager,
     contextWindowTokens: ctx.modelInfo.contextWindow,
   });
