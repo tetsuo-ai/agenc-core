@@ -137,6 +137,29 @@ describe("Write tool", () => {
     await expect(readFile(target, "utf8")).resolves.toBe("alpha\ngamma\n");
   });
 
+  test("overwrite staleness check compares rawContent when read content is rendered", async () => {
+    const target = join(root, "rendered-read.txt");
+    const original = "alpha\nbeta\n";
+    await writeFile(target, original, "utf8");
+    const fileStats = await stat(target);
+    recordSessionRead(sessionId, target, {
+      content: "rendered view that is not raw disk content",
+      rawContent: original,
+      timestamp: fileStats.mtimeMs - 1,
+      viewKind: "full",
+    });
+
+    const tool = createFileWriteTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: target,
+      content: "alpha\ngamma\n",
+      __agencSessionId: sessionId,
+    });
+
+    expect(result.isError).toBeUndefined();
+    await expect(readFile(target, "utf8")).resolves.toBe("alpha\ngamma\n");
+  });
+
   test("rejects overwrite of an existing file that was not read in the session", async () => {
     const target = join(root, "untouched.txt");
     await writeFile(target, "alpha\nbeta\n", "utf8");

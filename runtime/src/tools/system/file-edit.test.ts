@@ -206,6 +206,30 @@ describe("Edit tool", () => {
     );
   });
 
+  test("edit staleness check compares rawContent when read content is rendered", async () => {
+    const file = join(root, "rendered-read.txt");
+    await writeFile(file, "v1\n", "utf8");
+    const initial = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: "rendered view that is not raw disk content",
+      rawContent: "v1\n",
+      timestamp: initial.mtimeMs,
+      viewKind: "full",
+    });
+    await utimes(file, initial.atime, new Date(initial.mtimeMs + 5_000));
+
+    const tool = createFileEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      old_string: "v1",
+      new_string: "v2",
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBeUndefined();
+    await expect(readFile(file, "utf8")).resolves.toBe("v2\n");
+  });
+
   test("rejects multi-match edit when replace_all is false", async () => {
     const file = join(root, "many.txt");
     await writeFile(file, "foo\nbar\nfoo\n", "utf8");

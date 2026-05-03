@@ -298,6 +298,18 @@ async function readFileSnapshot(absolutePath: string): Promise<FileSnapshot> {
   }
 }
 
+function comparableSessionContent(
+  snapshot: ReturnType<typeof getSessionReadSnapshot>,
+): string | undefined {
+  const content =
+    typeof snapshot?.rawContent === "string"
+      ? snapshot.rawContent
+      : snapshot?.content;
+  return typeof content === "string"
+    ? content.replaceAll("\r\n", "\n")
+    : undefined;
+}
+
 async function writeFileCreatingParents(
   absolutePath: string,
   content: string,
@@ -632,10 +644,10 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
           // FileEditTool.ts:296-300: when the recorded full content
           // matches the current file content, treat the mtime bump
           // as a benign touch.
+          const recordedContent = comparableSessionContent(recordedSnapshot);
           const isFullContentMatch =
             recordedSnapshot?.viewKind === "full" &&
-            typeof recordedSnapshot.content === "string" &&
-            recordedSnapshot.content === snapshot.content;
+            recordedContent === snapshot.content;
           if (!isFullContentMatch) {
             return errorResult(FILE_UNEXPECTEDLY_MODIFIED_ERROR);
           }
@@ -895,10 +907,10 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
           Number.isFinite(recordedTs) &&
           snapshot.mtimeMs > recordedTs
         ) {
+          const recordedContent = comparableSessionContent(recordedSnapshot);
           const isFullContentMatch =
             recordedSnapshot?.viewKind === "full" &&
-            typeof recordedSnapshot.content === "string" &&
-            recordedSnapshot.content === snapshot.content;
+            recordedContent === snapshot.content;
           if (!isFullContentMatch) {
             return errorResult(FILE_UNEXPECTEDLY_MODIFIED_ERROR);
           }

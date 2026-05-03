@@ -20,6 +20,8 @@
  *   - Binary files that aren't images or PDFs return an actionable
  *     error directing the model to use a different tool, instead of
  *     leaking unprintable bytes into the conversation.
+ *   - Notebook files (`.ipynb`) are parsed into a stable, line-numbered
+ *     view of cells, source, text outputs, errors, and embedded images.
  *   - `offset` / `limit` produce a partial line view. Partial reads
  *     are recorded with `viewKind: "partial"` in the session-read
  *     tracker so `Edit`/`Write`'s read-before-write gate still rejects
@@ -36,8 +38,10 @@
  */
 
 import { execFile } from "node:child_process";
-import { readFile, stat } from "node:fs/promises";
-import { extname, isAbsolute, resolve } from "node:path";
+import { createReadStream } from "node:fs";
+import { open, readFile, stat } from "node:fs/promises";
+import { dirname, extname, isAbsolute, resolve } from "node:path";
+import { createInterface } from "node:readline";
 
 import type {
   Tool,
@@ -50,6 +54,7 @@ import {
   recordSessionRead,
   resolveSessionId,
   safePathAllowingSessionPlanFile,
+  SESSION_ALLOWED_ROOTS_ARG,
 } from "./filesystem.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
 import { roughTokenCountEstimationForFileType } from "../../llm/token-estimation.js";
@@ -83,10 +88,14 @@ const DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 /** Default output cap for PDF files in bytes. */
 const DEFAULT_MAX_PDF_BYTES = 32 * 1024 * 1024;
 
+/** Default raw JSON cap for notebook reads before parsing. */
+const DEFAULT_MAX_NOTEBOOK_BYTES = 16 * 1024 * 1024;
+
 /** Upstream PDF safety limits. */
 const PDF_LARGE_PAGE_THRESHOLD = 10;
 const PDF_MAX_PAGES_PER_REQUEST = 20;
 const PDF_SUBPROCESS_TIMEOUT_MS = 120_000;
+const NOTEBOOK_LARGE_OUTPUT_THRESHOLD = 10_000;
 
 /** Default upper line count when no explicit `limit` is supplied. */
 const DEFAULT_LINE_LIMIT = 2000;
@@ -139,6 +148,7 @@ const BINARY_EXTENSIONS: ReadonlySet<string> = new Set([
 ]);
 
 const PDF_EXTENSION = ".pdf";
+const NOTEBOOK_EXTENSION = ".ipynb";
 
 // ─────────────────────────────────────────────────────────────────────
 // Description (model-facing)
@@ -146,9 +156,8 @@ const PDF_EXTENSION = ".pdf";
 
 /**
  * AgenC file-read prompt template.
- * Image / PDF mentions are kept so the model knows the tool's capability
- * surface; the ipynb branch is dropped (AgenC does not currently parse
- * notebooks here).
+ * Image / PDF / notebook mentions are kept so the model knows the
+ * tool's capability surface.
  */
 const FILE_READ_DESCRIPTION = `Reads a file from the local filesystem. You can access any file directly by using this tool.
 Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
@@ -160,6 +169,7 @@ Usage:
 - Results are returned using cat -n format, with line numbers starting at 1
 - This tool allows AgenC to read images (eg PNG, JPG, etc). When reading an image file the contents are presented visually because AgenC can inspect multimodal inputs.
 - This tool can read PDF files (.pdf). For large PDFs (more than 10 pages), you MUST provide the pages parameter to read specific page ranges (e.g., pages: "1-5"). Reading a large PDF without the pages parameter will fail. Maximum 20 pages per request.
+- This tool can read Jupyter notebook files (.ipynb) and returns cells with their source, text outputs, errors, and embedded visual outputs.
 - This tool can only read files, not directories. To list files in a directory, use the registered shell tool.
 - You will regularly be asked to read screenshots. If the user provides a path to a screenshot, ALWAYS use this tool to view the file at the path. This tool will work with all temporary file paths.
 - If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
@@ -185,6 +195,8 @@ export interface FileReadToolConfig {
   readonly maxImageBytes?: number;
   /** Raw byte cap for PDF reads (default: 32 MB). */
   readonly maxPdfBytes?: number;
+  /** Raw byte cap for notebook reads before parsing (default: 16 MB). */
+  readonly maxNotebookBytes?: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -196,16 +208,23 @@ function errorResult(message: string): ToolResult {
   return { content: message, isError: true };
 }
 
-/** Coerce optional finite numbers (model may emit ints as strings). */
-function asPositiveInt(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value) && value >= 1) {
-    return Math.trunc(value);
+/** Coerce optional positive integers (model may emit ints as strings). */
+function parsePositiveIntArg(
+  value: unknown,
+  name: string,
+): { value: number | undefined } | { err: ToolResult } {
+  if (value === undefined) return { value: undefined };
+  if (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 1
+  ) {
+    return { value };
   }
-  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
-    const parsed = Number.parseInt(value.trim(), 10);
-    if (parsed >= 1) return parsed;
+  if (typeof value === "string" && /^[1-9]\d*$/.test(value.trim())) {
+    return { value: Number.parseInt(value.trim(), 10) };
   }
-  return undefined;
+  return { err: errorResult(`${name} must be a positive integer`) };
 }
 
 /** 5-line file-size formatter. */
@@ -292,6 +311,64 @@ function sliceLines(text: string, offset: number, limit: number | undefined): Sl
   };
 }
 
+async function readInitialBytes(
+  filePath: string,
+  maxBytes: number,
+): Promise<Buffer> {
+  const handle = await open(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(maxBytes);
+    const { bytesRead } = await handle.read(buffer, 0, maxBytes, 0);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+async function sliceTextFileByLineStream(
+  filePath: string,
+  offset: number,
+  limit: number | undefined,
+): Promise<SliceResult> {
+  const startLine = Math.max(1, offset);
+  const effectiveLimit = limit ?? DEFAULT_LINE_LIMIT;
+  const selected: string[] = [];
+  let totalLines = 0;
+
+  const input = createReadStream(filePath, { encoding: "utf8" });
+  const reader = createInterface({ input, crlfDelay: Infinity });
+  try {
+    for await (const line of reader) {
+      totalLines += 1;
+      if (
+        totalLines >= startLine &&
+        selected.length < effectiveLimit
+      ) {
+        selected.push(line);
+      }
+      if (selected.length >= effectiveLimit) {
+        break;
+      }
+    }
+  } finally {
+    reader.close();
+    input.destroy();
+  }
+
+  const endLine =
+    selected.length > 0
+      ? startLine + selected.length - 1
+      : Math.max(startLine, Math.min(totalLines, startLine + effectiveLimit - 1));
+  return {
+    content: selected.join("\n"),
+    startLine,
+    endLine,
+    totalLines,
+    numLines: selected.length,
+    isPartial: true,
+  };
+}
+
 interface CommandResult {
   readonly exitCode: number | null;
   readonly stdout: string;
@@ -339,34 +416,29 @@ function parsePDFPageRange(
   }
 
   const trimmed = pages.trim();
-  if (trimmed.endsWith("-")) {
-    const firstPage = Number.parseInt(trimmed.slice(0, -1), 10);
-    if (!Number.isFinite(firstPage) || firstPage < 1) {
-      return { err: `Invalid PDF page range: ${trimmed}` };
-    }
+  const openEnded = /^([1-9]\d*)-$/.exec(trimmed);
+  if (openEnded) {
+    const firstPage = Number.parseInt(openEnded[1]!, 10);
     return { firstPage, lastPage: Infinity };
   }
 
-  const dash = trimmed.indexOf("-");
-  if (dash === -1) {
-    const page = Number.parseInt(trimmed, 10);
-    if (!Number.isFinite(page) || page < 1) {
-      return { err: `Invalid PDF page range: ${trimmed}` };
-    }
+  const singlePage = /^([1-9]\d*)$/.exec(trimmed);
+  if (singlePage) {
+    const page = Number.parseInt(singlePage[1]!, 10);
     return { firstPage: page, lastPage: page };
   }
 
-  const firstPage = Number.parseInt(trimmed.slice(0, dash), 10);
-  const lastPage = Number.parseInt(trimmed.slice(dash + 1), 10);
-  if (
-    !Number.isFinite(firstPage) ||
-    !Number.isFinite(lastPage) ||
-    firstPage < 1 ||
-    lastPage < firstPage
-  ) {
-    return { err: `Invalid PDF page range: ${trimmed}` };
+  const closedRange = /^([1-9]\d*)-([1-9]\d*)$/.exec(trimmed);
+  if (closedRange) {
+    const firstPage = Number.parseInt(closedRange[1]!, 10);
+    const lastPage = Number.parseInt(closedRange[2]!, 10);
+    if (lastPage < firstPage) {
+      return { err: `Invalid PDF page range: ${trimmed}` };
+    }
+    return { firstPage, lastPage };
   }
-  return { firstPage, lastPage };
+
+  return { err: `Invalid PDF page range: ${trimmed}` };
 }
 
 function pageRangeLength(range: { firstPage: number; lastPage: number }): number {
@@ -382,7 +454,6 @@ async function getPDFPageCount(filePath: string): Promise<number | null> {
   const count = Number.parseInt(match[1]!, 10);
   return Number.isFinite(count) && count > 0 ? count : null;
 }
-
 // ─────────────────────────────────────────────────────────────────────
 // Path resolution
 // ─────────────────────────────────────────────────────────────────────
@@ -439,22 +510,38 @@ async function readTextFile(
   if (!fileStats.isFile()) {
     return errorResult("Path is not a regular file");
   }
-  if (fileStats.size > opts.maxTextBytes) {
+  const explicitWindow = opts.offset > 1 || opts.limit !== undefined;
+  if (!explicitWindow && fileStats.size > opts.maxTextBytes) {
     return errorResult(
       `File size ${formatBytes(fileStats.size)} exceeds the text-read limit of ${formatBytes(
         opts.maxTextBytes,
       )}. Use offset and limit to read a slice, or a different tool for large binary blobs.`,
     );
   }
-  const buffer = await readFile(resolvedPath.canonical);
-  if (isBinaryContent(buffer)) {
+  const shouldStreamWindow = explicitWindow && fileStats.size > opts.maxTextBytes;
+  const binarySample = shouldStreamWindow
+    ? await readInitialBytes(resolvedPath.canonical, 8192)
+    : await readFile(resolvedPath.canonical);
+  if (isBinaryContent(binarySample)) {
     return errorResult(
       "This tool cannot read binary files. The file contains non-text bytes. Use a different tool (e.g. a hex viewer or shell tooling) for binary file analysis.",
     );
   }
 
-  const text = buffer.toString("utf-8");
-  const sliced = sliceLines(text, opts.offset, opts.limit);
+  const text = shouldStreamWindow
+    ? undefined
+    : binarySample.toString("utf-8");
+  const sliced = shouldStreamWindow
+    ? await sliceTextFileByLineStream(resolvedPath.canonical, opts.offset, opts.limit)
+    : sliceLines(text ?? "", opts.offset, opts.limit);
+  const slicedBytes = Buffer.byteLength(sliced.content, "utf8");
+  if (slicedBytes > opts.maxTextBytes) {
+    return errorResult(
+      `File slice (${formatBytes(slicedBytes)}) exceeds the text-read limit of ${formatBytes(
+        opts.maxTextBytes,
+      )}. Use a smaller offset and limit window.`,
+    );
+  }
 
   // Token cap — match AgenC's MaxFileReadTokenExceededError
   // verbatim so any model-side recovery prompt still triggers.
@@ -485,7 +572,7 @@ async function readTextFile(
     // attachment producer to compute exact diffs on later mutation.
     // Partial reads intentionally skip rawContent — without the full file
     // there is nothing to diff against.
-    ...(sliced.isPartial ? {} : { rawContent: text }),
+    ...(sliced.isPartial || text === undefined ? {} : { rawContent: text }),
   });
 
   if (sliced.content.length === 0) {
@@ -527,6 +614,309 @@ async function readTextFile(
   };
 }
 
+interface NotebookReadOpts extends TextReadOpts {
+  readonly maxImageBytes: number;
+  readonly maxNotebookBytes: number;
+}
+
+interface NotebookImageOutput {
+  readonly lineNumber: number;
+  readonly mime: string;
+  readonly base64: string;
+}
+
+interface NotebookRenderResult {
+  readonly text: string;
+  readonly images: readonly NotebookImageOutput[];
+  readonly cellCount: number;
+  readonly language: string;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function joinNotebookText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value
+      .map((part) => (typeof part === "string" ? part : String(part ?? "")))
+      .join("");
+  }
+  return "";
+}
+
+function truncateNotebookOutput(text: string): string {
+  if (text.length <= NOTEBOOK_LARGE_OUTPUT_THRESHOLD) return text;
+  return `${text.slice(0, NOTEBOOK_LARGE_OUTPUT_THRESHOLD)}\n[output truncated]`;
+}
+
+function extractNotebookTextOutput(output: Record<string, unknown>): string {
+  const outputType = output.output_type;
+  if (outputType === "stream") {
+    return truncateNotebookOutput(joinNotebookText(output.text));
+  }
+  if (outputType === "execute_result" || outputType === "display_data") {
+    const data = asRecord(output.data);
+    if (!data) return "";
+    return truncateNotebookOutput(joinNotebookText(data["text/plain"]));
+  }
+  if (outputType === "error") {
+    const ename = typeof output.ename === "string" ? output.ename : "Error";
+    const evalue = typeof output.evalue === "string" ? output.evalue : "";
+    const traceback = joinNotebookText(output.traceback);
+    return truncateNotebookOutput(
+      [evalue.length > 0 ? `${ename}: ${evalue}` : ename, traceback]
+        .filter((part) => part.length > 0)
+        .join("\n"),
+    );
+  }
+  return "";
+}
+
+function extractNotebookImageOutput(
+  output: Record<string, unknown>,
+): { readonly mime: string; readonly base64: string } | null {
+  const data = asRecord(output.data);
+  if (!data) return null;
+  const png = joinNotebookText(data["image/png"]);
+  if (png.length > 0) {
+    return { mime: "image/png", base64: png.replace(/\s/g, "") };
+  }
+  const jpeg = joinNotebookText(data["image/jpeg"]);
+  if (jpeg.length > 0) {
+    return { mime: "image/jpeg", base64: jpeg.replace(/\s/g, "") };
+  }
+  return null;
+}
+
+function pushNotebookMultiline(lines: string[], text: string): void {
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const split = normalized.length === 0 ? [""] : normalized.split("\n");
+  for (const line of split) lines.push(line);
+}
+
+function renderNotebook(
+  rawText: string,
+  displayPath: string,
+  maxImageBytes: number,
+): { ok: NotebookRenderResult } | { err: ToolResult } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return { err: errorResult(`Invalid notebook JSON: ${detail}`) };
+  }
+
+  const notebook = asRecord(parsed);
+  const cells = Array.isArray(notebook?.cells) ? notebook.cells : null;
+  if (!notebook || !cells) {
+    return { err: errorResult("Invalid notebook: expected a cells array") };
+  }
+
+  const metadata = asRecord(notebook.metadata);
+  const languageInfo = asRecord(metadata?.language_info);
+  const language =
+    typeof languageInfo?.name === "string" && languageInfo.name.length > 0
+      ? languageInfo.name
+      : "python";
+  const lines = [
+    `Notebook: ${displayPath}`,
+    `Language: ${language}`,
+    `Cells: ${cells.length}`,
+    "",
+  ];
+  const images: NotebookImageOutput[] = [];
+
+  if (cells.length === 0) {
+    lines.push("No cells.");
+  }
+
+  cells.forEach((rawCell, cellIndex) => {
+    const cell = asRecord(rawCell) ?? {};
+    const cellType =
+      typeof cell.cell_type === "string" && cell.cell_type.length > 0
+        ? cell.cell_type
+        : "unknown";
+    const cellId =
+      typeof cell.id === "string" && cell.id.length > 0
+        ? ` id=${cell.id}`
+        : "";
+    const executionCount =
+      typeof cell.execution_count === "number"
+        ? ` execution_count=${cell.execution_count}`
+        : "";
+
+    if (cellIndex > 0) lines.push("");
+    lines.push(`Cell ${cellIndex + 1} [${cellType}]${cellId}${executionCount}`);
+    lines.push("Source:");
+    pushNotebookMultiline(lines, joinNotebookText(cell.source));
+
+    if (cellType !== "code") return;
+    const outputs = Array.isArray(cell.outputs) ? cell.outputs : [];
+    if (outputs.length === 0) {
+      lines.push("Outputs: none");
+      return;
+    }
+
+    const processedOutputs = outputs.map((rawOutput) => asRecord(rawOutput) ?? {});
+    const totalTextOutputSize = processedOutputs.reduce(
+      (total, output) => total + extractNotebookTextOutput(output).length,
+      0,
+    );
+    const omitTextOutputs = totalTextOutputSize > NOTEBOOK_LARGE_OUTPUT_THRESHOLD;
+    if (omitTextOutputs) {
+      lines.push(
+        `Text outputs are too large to include. Use a shell command with jq to inspect cells[${cellIndex}].outputs.`,
+      );
+    }
+
+    processedOutputs.forEach((output, outputIndex) => {
+      const outputType =
+        typeof output.output_type === "string" && output.output_type.length > 0
+          ? output.output_type
+          : "unknown";
+      lines.push(`Output ${outputIndex + 1} [${outputType}]:`);
+      const text = extractNotebookTextOutput(output);
+      if (!omitTextOutputs && text.length > 0) pushNotebookMultiline(lines, text);
+      const image = extractNotebookImageOutput(output);
+      if (image) {
+        const imageBytes = Buffer.byteLength(image.base64, "base64");
+        if (imageBytes > maxImageBytes) {
+          lines.push(
+            `Image output ${outputIndex + 1} [${image.mime}] exceeds the image-read limit of ${formatBytes(maxImageBytes)}.`,
+          );
+        } else {
+          const lineNumber = lines.length + 1;
+          lines.push(
+            `Image output ${outputIndex + 1} [${image.mime}]: embedded image output`,
+          );
+          images.push({
+            lineNumber,
+            mime: image.mime,
+            base64: image.base64,
+          });
+        }
+      }
+      if ((!omitTextOutputs && text.length === 0) && !image) {
+        lines.push("(empty output)");
+      }
+    });
+  });
+
+  return {
+    ok: {
+      text: lines.join("\n"),
+      images,
+      cellCount: cells.length,
+      language,
+    },
+  };
+}
+
+async function readNotebookFile(
+  resolvedPath: ResolvedPath,
+  opts: NotebookReadOpts,
+  sessionId: string | undefined,
+): Promise<ToolResult> {
+  const fileStats = await stat(resolvedPath.canonical);
+  if (!fileStats.isFile()) {
+    return errorResult("Path is not a regular file");
+  }
+  if (fileStats.size > opts.maxNotebookBytes) {
+    return errorResult(
+      `Notebook size ${formatBytes(fileStats.size)} exceeds the notebook-read limit of ${formatBytes(
+        opts.maxNotebookBytes,
+      )}. Use a shell command with jq to inspect specific cells without loading the whole notebook.`,
+    );
+  }
+
+  const rawText = await readFile(resolvedPath.canonical, "utf8");
+  const rendered = renderNotebook(rawText, opts.displayPath, opts.maxImageBytes);
+  if ("err" in rendered) return rendered.err;
+
+  const sliced = sliceLines(rendered.ok.text, opts.offset, opts.limit);
+  const slicedBytes = Buffer.byteLength(sliced.content, "utf8");
+  if (slicedBytes > opts.maxTextBytes) {
+    return errorResult(
+      `Notebook content (${formatBytes(slicedBytes)}) exceeds the text-read limit of ${formatBytes(
+        opts.maxTextBytes,
+      )}. Use offset and limit to read a smaller slice.`,
+    );
+  }
+
+  const estimated = estimateTokens(sliced.content, NOTEBOOK_EXTENSION);
+  if (estimated > opts.maxTokens) {
+    return errorResult(
+      `Notebook content (${estimated} tokens) exceeds maximum allowed tokens (${opts.maxTokens}). Use offset and limit parameters to read specific portions of the notebook.`,
+    );
+  }
+
+  recordSessionRead(sessionId, resolvedPath.canonical, {
+    content: sliced.content,
+    timestamp:
+      typeof fileStats.mtimeMs === "number" && Number.isFinite(fileStats.mtimeMs)
+        ? fileStats.mtimeMs
+        : Date.now(),
+    viewKind: sliced.isPartial ? "partial" : "full",
+    ...(sliced.isPartial ? { readOffset: sliced.startLine } : {}),
+    ...(sliced.isPartial && opts.limit !== undefined
+      ? { readLimit: opts.limit }
+      : {}),
+    ...(sliced.isPartial ? {} : { rawContent: rawText }),
+  });
+
+  if (sliced.content.length === 0) {
+    return {
+      content: `<system-reminder>Warning: the notebook exists but is shorter than the provided offset (${sliced.startLine}). The rendered notebook has ${sliced.totalLines} lines.</system-reminder>`,
+      metadata: {
+        filePath: opts.displayPath,
+        mediaType: "application/x-ipynb+json",
+        totalLines: sliced.totalLines,
+        startLine: sliced.startLine,
+        numLines: 0,
+        isPartial: sliced.isPartial,
+        cellCount: rendered.ok.cellCount,
+        language: rendered.ok.language,
+      },
+    };
+  }
+
+  const numbered = formatNumbered(sliced.content, sliced.startLine);
+  const selectedImages = rendered.ok.images.filter(
+    (image) =>
+      image.lineNumber >= sliced.startLine && image.lineNumber <= sliced.endLine,
+  );
+  const contentItems: FunctionCallOutputContentItem[] = selectedImages.length
+    ? [
+        { type: "input_text", text: numbered },
+        ...selectedImages.map((image) => ({
+          type: "input_image" as const,
+          image_url: `data:${image.mime};base64,${image.base64}`,
+        })),
+      ]
+    : [];
+
+  return {
+    content: numbered,
+    ...(contentItems.length > 0 ? { contentItems } : {}),
+    metadata: {
+      filePath: opts.displayPath,
+      mediaType: "application/x-ipynb+json",
+      totalLines: sliced.totalLines,
+      startLine: sliced.startLine,
+      endLine: sliced.endLine,
+      numLines: sliced.numLines,
+      isPartial: sliced.isPartial,
+      cellCount: rendered.ok.cellCount,
+      language: rendered.ok.language,
+    },
+  };
+}
+
 interface ImageReadOpts {
   readonly displayPath: string;
   readonly ext: string;
@@ -538,6 +928,8 @@ interface PDFReadOpts {
   readonly maxPdfBytes: number;
   readonly pages: unknown;
   readonly maxTokens: number;
+  readonly offset: number;
+  readonly limit: number | undefined;
 }
 
 async function readPDFFile(
@@ -619,25 +1011,34 @@ async function readPDFFile(
   }
 
   const text = extracted.stdout.trimEnd();
-  const estimated = estimateTokens(text);
+  const sliced = sliceLines(text, opts.offset, opts.limit);
+  const estimated = estimateTokens(sliced.content);
   if (estimated > opts.maxTokens) {
     return errorResult(
-      `PDF content (${estimated} tokens) exceeds maximum allowed tokens (${opts.maxTokens}). Provide a narrower pages range.`,
+      `PDF content (${estimated} tokens) exceeds maximum allowed tokens (${opts.maxTokens}). Provide a narrower pages range or offset/limit window.`,
     );
   }
 
+  const isPartial = parsedRange !== null || sliced.isPartial;
+
   recordSessionRead(sessionId, resolvedPath.canonical, {
-    content: text,
+    content: sliced.content,
     timestamp:
       typeof fileStats.mtimeMs === "number" && Number.isFinite(fileStats.mtimeMs)
         ? fileStats.mtimeMs
         : Date.now(),
-    viewKind: parsedRange ? "partial" : "full",
-    ...(parsedRange ? { readOffset: selectedRange?.firstPage ?? 1 } : {}),
-    ...(parsedRange && selectedRange && selectedRange.lastPage !== Infinity
+    viewKind: isPartial ? "partial" : "full",
+    ...(sliced.isPartial
+      ? { readOffset: sliced.startLine }
+      : parsedRange
+        ? { readOffset: selectedRange?.firstPage ?? 1 }
+        : {}),
+    ...(sliced.isPartial && opts.limit !== undefined
+      ? { readLimit: opts.limit }
+      : parsedRange && selectedRange && selectedRange.lastPage !== Infinity
       ? { readLimit: pageRangeLength(selectedRange) }
       : {}),
-    ...(parsedRange ? {} : { rawContent: text }),
+    ...(isPartial ? {} : { rawContent: text }),
   });
 
   if (text.length === 0) {
@@ -648,7 +1049,24 @@ async function readPDFFile(
         filePath: opts.displayPath,
         mediaType: "application/pdf",
         totalPages: pageCount,
-        isPartial: parsedRange !== null,
+        totalLines: 0,
+        startLine: sliced.startLine,
+        numLines: 0,
+        isPartial,
+      },
+    };
+  }
+  if (sliced.content.length === 0) {
+    return {
+      content: `<system-reminder>Warning: the PDF exists but is shorter than the provided offset (${sliced.startLine}). The extracted PDF text has ${sliced.totalLines} lines.</system-reminder>`,
+      metadata: {
+        filePath: opts.displayPath,
+        mediaType: "application/pdf",
+        totalPages: pageCount,
+        totalLines: sliced.totalLines,
+        startLine: sliced.startLine,
+        numLines: 0,
+        isPartial,
       },
     };
   }
@@ -663,14 +1081,21 @@ async function readPDFFile(
         : `pages ${selectedRange.firstPage}-${selectedRange.lastPage}`;
 
   return {
-    content: `Read PDF ${opts.displayPath} (${rangeLabel})\n\n${text}`,
+    content: `Read PDF ${opts.displayPath} (${rangeLabel})\n\n${formatNumbered(
+      sliced.content,
+      sliced.startLine,
+    )}`,
     metadata: {
       filePath: opts.displayPath,
       mediaType: "application/pdf",
       sizeBytes: fileStats.size,
       totalPages: pageCount,
+      totalLines: sliced.totalLines,
+      startLine: sliced.startLine,
+      endLine: sliced.endLine,
+      numLines: sliced.numLines,
       pageRange: rangeLabel,
-      isPartial: parsedRange !== null,
+      isPartial,
     },
   };
 }
@@ -757,6 +1182,8 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
   const maxTextBytes = config.maxTextBytes ?? DEFAULT_MAX_TEXT_BYTES;
   const maxImageBytes = config.maxImageBytes ?? DEFAULT_MAX_IMAGE_BYTES;
   const maxPdfBytes = config.maxPdfBytes ?? DEFAULT_MAX_PDF_BYTES;
+  const maxNotebookBytes =
+    config.maxNotebookBytes ?? DEFAULT_MAX_NOTEBOOK_BYTES;
 
   return {
     name: FILE_READ_TOOL_NAME,
@@ -764,7 +1191,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
     metadata: {
       family: "filesystem",
       source: "builtin",
-      keywords: ["read", "file", "image", "view", "cat"],
+      keywords: ["read", "file", "image", "notebook", "view", "cat"],
       preferredProfiles: ["coding", "general", "operator"],
       hiddenByDefault: false,
       mutating: false,
@@ -809,7 +1236,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
         typeof args.cwd === "string" && args.cwd.length > 0
           ? args.cwd
           : config.allowedPaths[0] ?? process.cwd();
-      return checkToolPathPermission({
+      const decision = checkToolPathPermission({
         toolName: FILE_READ_TOOL_NAME,
         input: input as Record<string, unknown>,
         path: filePath,
@@ -818,6 +1245,29 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
         operationType: "read",
         extraWorkingDirectories: config.allowedPaths,
       });
+      if (decision.behavior !== "allow") return decision;
+
+      const currentInput =
+        decision.updatedInput &&
+        typeof decision.updatedInput === "object" &&
+        !Array.isArray(decision.updatedInput)
+          ? (decision.updatedInput as Record<string, unknown>)
+          : (input as Record<string, unknown>);
+      const existingRoots = Array.isArray(currentInput[SESSION_ALLOWED_ROOTS_ARG])
+        ? currentInput[SESSION_ALLOWED_ROOTS_ARG].filter(
+            (entry): entry is string => typeof entry === "string",
+          )
+        : [];
+      const absolutePath = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
+      return {
+        ...decision,
+        updatedInput: {
+          ...currentInput,
+          [SESSION_ALLOWED_ROOTS_ARG]: [
+            ...new Set([...existingRoots, dirname(absolutePath)]),
+          ],
+        },
+      };
     },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const args = rawArgs as FileReadInput;
@@ -825,12 +1275,17 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
       if (filePath.trim().length === 0) {
         return errorResult("file_path must be a non-empty string");
       }
-      const offset = asPositiveInt(args.offset) ?? 1;
-      const limit = asPositiveInt(args.limit);
+      const parsedOffset = parsePositiveIntArg(args.offset, "offset");
+      if ("err" in parsedOffset) return parsedOffset.err;
+      const parsedLimit = parsePositiveIntArg(args.limit, "limit");
+      if ("err" in parsedLimit) return parsedLimit.err;
+      const offset = parsedOffset.value ?? 1;
+      const limit = parsedLimit.value;
 
       const ext = extname(filePath).toLowerCase();
       const isImage = IMAGE_EXTENSIONS.has(ext);
       const isPdf = ext === PDF_EXTENSION;
+      const isNotebook = ext === NOTEBOOK_EXTENSION;
 
       // Pre-flight: any other binary extension is rejected *before* we
       // even resolve the path, so the model gets an actionable error
@@ -863,6 +1318,23 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
               maxPdfBytes,
               pages: args.pages,
               maxTokens,
+              offset,
+              limit,
+            },
+            sessionId,
+          );
+        }
+        if (isNotebook) {
+          return await readNotebookFile(
+            resolved,
+            {
+              maxTextBytes,
+              maxTokens,
+              offset,
+              limit,
+              displayPath: filePath,
+              maxImageBytes,
+              maxNotebookBytes,
             },
             sessionId,
           );
