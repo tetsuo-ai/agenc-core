@@ -55,13 +55,15 @@ describe("BackgroundTaskLifecycle", () => {
       id: "task-1",
       type: "generic",
       description: "collect data",
+      aliases: ["/root/task-output"],
     });
 
     expect(task.status).toBe("running");
     lifecycle.appendOutput(task.id, "alpha");
     lifecycle.appendOutput(task.id, "\nbeta");
 
-    expect(lifecycle.takeOutputDelta(task.id)).toEqual({
+    expect(lifecycle.readOutput("/root/task-output")).toBe("alpha\nbeta");
+    expect(lifecycle.takeOutputDelta("/root/task-output")).toEqual({
       content: "alpha\nbeta",
       newOffset: 10,
     });
@@ -77,7 +79,7 @@ describe("BackgroundTaskLifecycle", () => {
 
     const completed = lifecycle.get(task.id);
     expect(completed?.status).toBe("completed");
-    expect(lifecycle.readOutput(task.id)).toBe("alpha\nbeta\ndone");
+    expect(lifecycle.readOutput("/root/task-output")).toBe("alpha\nbeta\ndone");
 
     const notifications = lifecycle.drainNotifications();
     expect(notifications.map((n) => n.kind)).toEqual([
@@ -183,13 +185,14 @@ describe("registerAgentThreadTask", () => {
     status.set({ status: "running", turnId: "turn-1", startedAtMs: 10 });
 
     expect(lifecycle.get("agent-1")?.status).toBe("running");
+    expect(lifecycle.get("/root/explorer-1")?.id).toBe("agent-1");
     expect(lifecycle.get("agent-1")?.metadata).toMatchObject({
       threadName: "explorer-1",
       agentPath: "/root/explorer-1",
       turnId: "turn-1",
     });
 
-    await lifecycle.stop("agent-1", "TaskStop");
+    await lifecycle.stop("/root/explorer-1", "TaskStop");
     expect(abortController.signal.aborted).toBe(true);
 
     joined.resolve({

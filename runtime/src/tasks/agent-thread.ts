@@ -23,6 +23,7 @@ export interface AgentThreadTaskHandle {
   readonly worktreeBranch?: string;
   readonly live: {
     readonly agentId: string;
+    readonly agentPath?: string;
     readonly abortController?: AbortController;
     readonly status: {
       readonly value: AgentStatus;
@@ -45,18 +46,20 @@ export function registerAgentThreadTask(
 ): BackgroundTaskSnapshot {
   const threadId = thread.threadId ?? thread.live.agentId;
   const description = opts.description ?? thread.taskPrompt;
+  const agentPath = thread.agentPath ?? thread.live.agentPath;
   const task = lifecycle.register({
     id: threadId,
     type: "local_agent",
     description,
     source: "agent_thread",
     toolUseId: opts.toolUseId,
+    ...(agentPath !== undefined ? { aliases: [agentPath] } : {}),
     ...(thread.live.abortController !== undefined
       ? { abortController: thread.live.abortController }
       : {}),
     metadata: {
       threadName: thread.threadName ?? thread.nickname ?? thread.threadId,
-      ...(thread.agentPath !== undefined ? { agentPath: thread.agentPath } : {}),
+      ...(agentPath !== undefined ? { agentPath } : {}),
       ...(thread.worktreePath !== undefined
         ? { worktreePath: thread.worktreePath }
         : {}),
