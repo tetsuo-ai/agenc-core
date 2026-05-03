@@ -57,6 +57,7 @@ import {
 } from "./execute-tools.js";
 import { isPlanMode } from "../session/plan-mode.js";
 import type { Session } from "../session/session.js";
+import { disposeProviderStartupPrewarmHandle } from "../session/startup-prewarm.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { AssistantMessage, ToolUseBlock, TurnState } from "../session/turn-state.js";
 
@@ -412,8 +413,10 @@ export async function streamModel(
   const providerName = session.services.provider.name;
   const streamedToolCalls = new Map<string, LLMToolCall>();
   const streamedToolBlocks = new Map<string, ToolUseBlock>();
+  let receivedProviderChunk = false;
 
   const onChunk = (chunk: LLMStreamChunk): void => {
+    receivedProviderChunk = true;
     // I-11: any chunk resets the idle timer.
     watchdog.kick();
 
@@ -483,20 +486,65 @@ export async function streamModel(
   };
 
   let response: LLMResponse;
+  const providerOptions = buildProviderOptions(request, ctx, scoped.signal);
+  const startupPrewarmHandle =
+    await session.services.startupPrewarm?.consumeProviderHandle({
+      signal: scoped.signal,
+    });
+  let shouldDisposeStartupPrewarmHandle = startupPrewarmHandle !== undefined;
   try {
-    response = await session.services.provider.chatStream(
-      messages,
-      onChunk,
-      buildProviderOptions(request, ctx, scoped.signal),
-    );
+    response =
+      startupPrewarmHandle !== undefined
+        ? await startupPrewarmHandle.chatStream(
+            messages,
+            onChunk,
+            providerOptions,
+          )
+        : await session.services.provider.chatStream(
+            messages,
+            onChunk,
+            providerOptions,
+          );
   } catch (error) {
-    if (scoped.signal.aborted && watchdog.firedAt !== null) {
-      throw new StreamModelError(
-        new Error(`stream_idle: no data for ${watchdog.timeoutMs}ms`),
-      );
+    if (
+      startupPrewarmHandle !== undefined &&
+      !receivedProviderChunk &&
+      !scoped.signal.aborted
+    ) {
+      try {
+        await disposeProviderStartupPrewarmHandle(startupPrewarmHandle);
+        shouldDisposeStartupPrewarmHandle = false;
+      } catch {
+        /* disposal is best-effort before direct provider fallback */
+      }
+      try {
+        response = await session.services.provider.chatStream(
+          messages,
+          onChunk,
+          providerOptions,
+        );
+      } catch (fallbackError) {
+        throw new StreamModelError(fallbackError);
+      }
+    } else {
+      if (scoped.signal.aborted && watchdog.firedAt !== null) {
+        throw new StreamModelError(
+          new Error(`stream_idle: no data for ${watchdog.timeoutMs}ms`),
+        );
+      }
+      throw new StreamModelError(error);
     }
-    throw new StreamModelError(error);
   } finally {
+    if (
+      startupPrewarmHandle !== undefined &&
+      shouldDisposeStartupPrewarmHandle
+    ) {
+      try {
+        await disposeProviderStartupPrewarmHandle(startupPrewarmHandle);
+      } catch {
+        /* provider prewarm handle disposal is best-effort */
+      }
+    }
     watchdog.stop();
     if (signal) signal.removeEventListener("abort", onExternalAbort);
   }

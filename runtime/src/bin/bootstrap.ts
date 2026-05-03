@@ -42,7 +42,6 @@ import {
   readIndexSnapshot,
 } from "../session/session-store.js";
 import { RolloutStore } from "../session/rollout-store.js";
-import { reconstructFromRollout } from "../session/rollout-reconstruction.js";
 import { recordInitialHistoryOnResume } from "../session/agent-task-lifecycle.js";
 import { copyPlanForResume } from "../planning/plan-files.js";
 import {
@@ -58,6 +57,7 @@ import type { EventMsg } from "../session/event-log.js";
 import type { RolloutItem } from "../session/rollout-item.js";
 import { AgentControl } from "../agents/control.js";
 import { ThreadManager } from "../agents/thread-manager.js";
+import { ConversationThreadManager } from "../conversation/thread-manager.js";
 import { AgentRegistry } from "../agents/registry.js";
 import { listAgentRoles } from "../agents/role.js";
 import {
@@ -1139,6 +1139,7 @@ export async function bootstrapLocalRuntimeSession(
       config,
       modelInfo,
       initialTranscriptEvents,
+      enablePrewarm: false,
       // Lazy payload — `rolloutPath`, `initialMessages`, and
       // `historyEntryCount` are populated inside the before-hook when
       // the rollout store mounts and resume-history reconstruction
@@ -1170,18 +1171,34 @@ export async function bootstrapLocalRuntimeSession(
           registry: agentRegistry,
         });
         const threadManager = new ThreadManager({
-          rootSession: s,
           control: agentControl,
           registry: agentRegistry,
         });
-        agentControl.bindThreadManager(threadManager);
+        const conversationThreadManager = new ConversationThreadManager({
+          threadManager,
+        });
+        // `bootstrapSession` runs the canonical startup prewarm after
+        // SessionConfigured; registration only claims the root thread here.
+        await conversationThreadManager.registerConversationRootSession(s, {
+          prewarm: false,
+        });
+        agentControl.bindThreadManager(conversationThreadManager);
         agentControl.registerSessionRoot(conversationId);
         bindSessionAgentControl(s, {
           control: agentControl,
           registry: agentRegistry,
         });
-        (s.services as { threadManager?: ThreadManager }).threadManager =
-          threadManager;
+        (
+          s.services as {
+            threadManager?: ThreadManager;
+            conversationThreadManager?: ConversationThreadManager;
+          }
+        ).threadManager = conversationThreadManager;
+        (
+          s.services as {
+            conversationThreadManager?: ConversationThreadManager;
+          }
+        ).conversationThreadManager = conversationThreadManager;
         agentControlForShutdown = agentControl;
 
         setCurrentRuntimeSession(s);
@@ -1233,20 +1250,18 @@ export async function bootstrapLocalRuntimeSession(
                 "index.json",
               ),
             );
-            const reconstruction = reconstructFromRollout(existingItems, {
-              ...(indexSnapshot ? { indexSnapshot } : {}),
-            });
-            initialState = {
-              ...initialState,
-              history: reconstruction.history,
-              ...(reconstruction.previousTurnSettings !== undefined
-                ? { previousTurnSettings: reconstruction.previousTurnSettings }
-                : {}),
-              ...(reconstruction.referenceContextItem !== undefined
-                ? { referenceContextItem: reconstruction.referenceContextItem }
-                : {}),
-            };
-            await s.state.swap(initialState);
+            const replay = await conversationThreadManager.replayRolloutIntoSession(
+              s,
+              existingItems,
+              {
+                emitSynthesized: true,
+                appendSynthesizedRollout: (item) =>
+                  rolloutStore.appendRollout(item),
+                ...(indexSnapshot ? { indexSnapshot } : {}),
+              },
+            );
+            const reconstruction = replay.reconstruction;
+            initialState = replay.appliedState;
             initialTranscriptEvents = transcriptEventsFromRollout([
               ...existingItems,
               ...reconstruction.synthesizedEvents,
@@ -1258,15 +1273,6 @@ export async function bootstrapLocalRuntimeSession(
               { sessionId: conversationId, agencHome },
               { messages: existingItems },
             );
-            if (reconstruction.synthesizedEvents.length > 0) {
-              for (const synth of reconstruction.synthesizedEvents) {
-                if (synth.type === "event_msg") {
-                  s.emit(synth.payload);
-                } else {
-                  rolloutStore.appendRollout(synth);
-                }
-              }
-            }
             // Port of agenc runtime `Session::record_initial_history` resume
             // branch (session/mod.rs:1150-1236): restore persisted
             // agent task, emit a model-change warning when the
@@ -1414,6 +1420,18 @@ export async function bootstrapLocalRuntimeSession(
         await s.startMcpManager(mcpManager, {
           signal: s.services.mcpStartupCancellationToken.signal,
         });
+
+        const activeConversationManager = (
+          s.services as {
+            conversationThreadManager?: ConversationThreadManager;
+          }
+        ).conversationThreadManager;
+        if (activeConversationManager === undefined) {
+          throw new Error(
+            "bootstrap invariant: conversation thread manager not initialized",
+          );
+        }
+        await activeConversationManager.runStartupPrewarm(s);
       },
     });
 

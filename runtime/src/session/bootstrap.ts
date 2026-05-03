@@ -74,6 +74,7 @@ import {
   recordInitialHistoryOnResume,
   maybePrewarmAgentTaskRegistration,
 } from "./agent-task-lifecycle.js";
+import { scheduleProviderStartupPrewarm } from "./startup-prewarm.js";
 import {
   Session,
   type SessionOpts,
@@ -323,10 +324,9 @@ export function emitSessionConfigured(
  * default TurnContext and pre-warms the provider websocket so the
  * first `submit` isn't bottlenecked on context construction.
  *
- * Gut's prewarm scope is narrower today because the provider
- * websocket-prewarm API is not threaded through `ProviderHttpClient`
- * yet. We still run the TurnContext construction and agent-task
- * registration prewarm so the first submit doesn't pay that cost.
+ * Gut runs the TurnContext construction, the optional provider startup
+ * prewarm hook, and agent-task registration prewarm so the first submit
+ * doesn't pay that cost.
  * Failures are swallowed — the real first submit will re-run the
  * same work and surface any error there.
  *
@@ -347,6 +347,11 @@ export async function runStartupPrewarm(
     session.newDefaultTurn();
   } catch {
     // Non-fatal — the first submit will reconstruct the turn.
+  }
+  try {
+    await scheduleProviderStartupPrewarm(session, session.conversationId);
+  } catch {
+    // Non-fatal — provider/session prewarm is an optimization.
   }
   // Prewarm agent-task registration. Upstream does this in the
   // same broad startup prep block; the gut helper already

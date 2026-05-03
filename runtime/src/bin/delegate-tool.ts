@@ -26,6 +26,7 @@ import {
 } from "../agents/role-presentation.js";
 import { AgentRegistry, type AgentPath } from "../agents/registry.js";
 import { ThreadManager } from "../agents/thread-manager.js";
+import { ConversationThreadManager } from "../conversation/thread-manager.js";
 import type { Session } from "../session/session.js";
 import type { Tool, ToolResult } from "./_deps/tools-types.js";
 import { safeStringify } from "./_deps/tools-types.js";
@@ -126,6 +127,7 @@ export function ensureAgentControl(session: Session): {
   const services = (session.services ?? {}) as unknown as {
     agentControl?: unknown;
     threadManager?: unknown;
+    conversationThreadManager?: unknown;
   };
   const bound = services.agentControl;
   if (bound instanceof AgentControl) {
@@ -141,10 +143,18 @@ export function ensureAgentControl(session: Session): {
       session.config?.agent_max_threads ??
       session.config?.multiAgentV2?.maxConcurrentThreadsPerSession ?? 4,
   });
-  const existingThreadManager =
+  const rawThreadManager =
     services.threadManager instanceof ThreadManager
       ? services.threadManager
       : new ThreadManager({ rootSession: session, registry });
+  const existingThreadManager =
+    services.conversationThreadManager instanceof ConversationThreadManager
+      ? services.conversationThreadManager
+      : services.threadManager instanceof ConversationThreadManager
+        ? services.threadManager
+        : new ConversationThreadManager({ threadManager: rawThreadManager });
+  services.threadManager = existingThreadManager;
+  services.conversationThreadManager = existingThreadManager;
   const control = new AgentControl({
     session,
     registry,

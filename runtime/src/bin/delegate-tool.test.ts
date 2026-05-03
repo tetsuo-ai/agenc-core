@@ -15,10 +15,12 @@ vi.mock("../agents/delegate.js", () => ({
 }));
 
 import type { Session } from "../session/session.js";
-import { buildDelegateTool } from "./delegate-tool.js";
+import { ConversationThreadManager } from "../conversation/thread-manager.js";
+import { buildDelegateTool, ensureAgentControl } from "./delegate-tool.js";
 
 function stubSession(): Session {
   return {
+    conversationId: "root-thread",
     eventLog: {},
     nextInternalSubId: () => "sub-1",
     services: {},
@@ -65,6 +67,19 @@ describe("buildDelegateTool", () => {
         isolation: "worktree",
         worktreeSlug: "agent-fix",
       }),
+    );
+  });
+
+  it("publishes a fallback conversation manager on session services", () => {
+    const session = stubSession();
+
+    ensureAgentControl(session);
+
+    expect(session.services.threadManager).toBeInstanceOf(
+      ConversationThreadManager,
+    );
+    expect(session.services.conversationThreadManager).toBe(
+      session.services.threadManager,
     );
   });
 });

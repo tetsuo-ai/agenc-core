@@ -703,6 +703,20 @@ export type ToolHandler = (
   args: Record<string, unknown>,
 ) => Promise<string>;
 
+export interface LLMProviderStartupPrewarmParams {
+  readonly conversationId: string;
+  readonly threadId: string;
+}
+
+export interface LLMProviderStartupPrewarmHandle {
+  chatStream(
+    messages: LLMMessage[],
+    onChunk: StreamProgressCallback,
+    options?: LLMChatOptions,
+  ): Promise<LLMResponse>;
+  dispose?(): Promise<void> | void;
+}
+
 /**
  * Core LLM provider interface that all adapters implement
  */
@@ -717,6 +731,13 @@ export interface LLMProvider {
   healthCheck(): Promise<boolean>;
   /** Report the effective model/context profile used for prompt budgeting. */
   getExecutionProfile?(): Promise<LLMProviderExecutionProfile>;
+  /** Optional startup hook for providers with session/socket prewarm support. */
+  prewarmStartup?(
+    params: LLMProviderStartupPrewarmParams,
+  ):
+    | Promise<LLMProviderStartupPrewarmHandle | void>
+    | LLMProviderStartupPrewarmHandle
+    | void;
   /** Optional debug/replay hook for fetching a stored provider response by ID. */
   retrieveStoredResponse?(responseId: string): Promise<LLMStoredResponse>;
   /** Optional debug/replay hook for deleting a stored provider response by ID. */

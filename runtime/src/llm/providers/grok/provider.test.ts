@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { LLMProviderError } from "../../errors.js";
 import { createProvider } from "../../provider.js";
@@ -118,5 +118,37 @@ describe("providers/grok entrypoint", () => {
     expect(JSON.stringify(request.params.tools ?? [])).not.toContain(
       "web_search",
     );
+  });
+
+  test("prewarms the production Grok client and returns a reusable stream handle", async () => {
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+      model: "grok-4-fast",
+    });
+    const listModels = vi.fn(async () => []);
+    (provider as unknown as { client: unknown }).client = {
+      models: { list: listModels },
+    };
+    const response = {
+      content: "ok",
+      toolCalls: [],
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      model: "grok-4-fast",
+      finishReason: "stop" as const,
+    };
+    const chatStream = vi.spyOn(provider, "chatStream").mockResolvedValue(response);
+
+    const handle = await provider.prewarmStartup({
+      conversationId: "conv",
+      threadId: "conv",
+    });
+    const streamed = await handle.chatStream(
+      [{ role: "user", content: "hello" }],
+      vi.fn(),
+    );
+
+    expect(listModels).toHaveBeenCalledTimes(1);
+    expect(chatStream).toHaveBeenCalledTimes(1);
+    expect(streamed).toBe(response);
   });
 });

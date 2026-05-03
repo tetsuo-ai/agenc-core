@@ -1730,13 +1730,17 @@ async function* runTurnKernelInner(
     priorMessages: priorFull,
   });
   let persistedMessageCount = priorFull.length;
+  const rolloutPersistenceSuspended = (): boolean =>
+    session.isRolloutPersistenceSuspended?.() === true;
   const persistTurnRolloutBaseline = (): void => {
+    if (rolloutPersistenceSuspended()) return;
     session.rolloutStore?.appendRollout({
       type: "turn_context",
       payload: referenceContextItem,
     });
   };
   const persistNewResponseItems = (): void => {
+    if (rolloutPersistenceSuspended()) return;
     if (!session.rolloutStore) return;
     if (state.messages.length < persistedMessageCount) {
       persistedMessageCount = state.messages.length;

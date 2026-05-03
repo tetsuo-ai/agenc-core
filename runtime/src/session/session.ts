@@ -616,6 +616,8 @@ export interface SessionServices {
    */
   agentControl: AgentControl;
   readonly threadManager?: import("../agents/thread-manager.js").ThreadManager;
+  readonly conversationThreadManager?: import("../conversation/thread-manager.js").ConversationThreadManager;
+  startupPrewarm?: import("./startup-prewarm.js").StartupPrewarmStore;
   readonly networkProxy?: NetworkProxy;
   readonly networkApproval: NetworkApprovalService;
   readonly stateDb?: StateDbContext;
@@ -875,7 +877,7 @@ export interface SessionOpts {
 
 export interface SessionTurnDriverHooks {
   readonly submit: (
-    message: string,
+    message: string | readonly LLMContentPart[],
     opts?: SessionSubmitOptions,
   ) => Promise<void>;
   readonly flushEventLog?: () => Promise<void> | void;
@@ -1076,6 +1078,8 @@ export class Session {
    *  When present, every emitted event is appended; durable events
    *  (I-4) force an immediate fsync. */
   rolloutStore: RolloutStore | null = null;
+
+  private rolloutPersistenceSuspendDepth = 0;
 
   /**
    * TUI-facing PhaseEvent subscribers. The one-shot CLI renders these
@@ -1675,7 +1679,23 @@ export class Session {
     }
   }
 
-  async submit(message: string, opts: SessionSubmitOptions = {}): Promise<void> {
+  isRolloutPersistenceSuspended(): boolean {
+    return this.rolloutPersistenceSuspendDepth > 0;
+  }
+
+  async withRolloutPersistenceSuspended<T>(fn: () => Promise<T>): Promise<T> {
+    this.rolloutPersistenceSuspendDepth += 1;
+    try {
+      return await fn();
+    } finally {
+      this.rolloutPersistenceSuspendDepth -= 1;
+    }
+  }
+
+  async submit(
+    message: string | readonly LLMContentPart[],
+    opts: SessionSubmitOptions = {},
+  ): Promise<void> {
     const hooks = this.turnDriverHooks;
     if (hooks === null) {
       throw new Error("Session submit hook is not installed");
@@ -1739,7 +1759,7 @@ export class Session {
         ? measureToolResultBytes(stamped.msg.payload.result)
         : undefined);
     // T6: persist if store is wired. isDurableEvent triggers I-4 fsync.
-    if (this.rolloutStore) {
+    if (this.rolloutStore && !this.isRolloutPersistenceSuspended()) {
       this.rolloutStore.append(stamped, {
         durable: isDurableEvent(stamped) || appendOpts.durable === true,
         ...(derivedTurnId !== undefined ? { turnId: derivedTurnId } : {}),
@@ -2370,6 +2390,11 @@ export class Session {
     }
 
     this.mailbox.close();
+    try {
+      await this.services.startupPrewarm?.clear();
+    } catch {
+      /* best-effort */
+    }
     const liveThread = (this.services as {
       readonly liveThread?: { shutdown(): void };
     }).liveThread;
