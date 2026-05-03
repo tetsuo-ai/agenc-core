@@ -11,6 +11,7 @@ import type { Logger } from "../utils/logger.js";
 import type { FunctionCallOutputContentItem } from "./context.js";
 import type { PermissionResult } from "../permissions/types.js";
 import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
+import type { PermissionDefaultMode } from "../config/schema.js";
 
 // Lean-rebuild stubs: the Solana protocol types, wallet types, and
 // the full PolicyEngine surface have all been removed. Tools that used
@@ -163,6 +164,12 @@ export interface Tool {
   /** Orchestrator hint: `true` → under `on_request` policy the tool
    *  always requires user approval. */
   readonly requiresApproval?: boolean;
+  /**
+   * Optional per-tool default approval mode from `tools_config`.
+   * Uses the config-file literals (`on-request`, `on-failure`) and is
+   * mapped to the orchestrator's internal approval policy at dispatch.
+   */
+  readonly defaultPermissionMode?: PermissionDefaultMode;
   /**
    * AgenC behavior: tools that must collect interactive user input
    * can force an approval/user-interaction prompt even when the current

@@ -315,6 +315,24 @@ describe("schema: normalizeRawConfig", () => {
     expect(out._unknown).toBeUndefined();
     expect(KNOWN_CONFIG_KEYS.includes("permissions")).toBe(true);
   });
+
+  test("preserves per-tool tools_config entries on the typed path", () => {
+    const out = normalizeRawConfig({
+      tools_config: {
+        exec_command: {
+          enabled: false,
+          default_permission_mode: "never",
+        },
+      },
+    });
+    expect(out.tools_config).toEqual({
+      exec_command: {
+        enabled: false,
+        default_permission_mode: "never",
+      },
+    });
+    expect(out._unknown).toBeUndefined();
+  });
 });
 
 describe("schema: defaultConfig independence", () => {
@@ -847,6 +865,22 @@ view_image = false
   test("parses arrays of strings", () => {
     const out = parseToml(`project_root_markers = ["a", "b", "c"]`);
     expect(out.project_root_markers).toEqual(["a", "b", "c"]);
+  });
+
+  test("parses per-tool tools_config subtables", () => {
+    const out = parseToml(
+      `
+[tools_config.exec_command]
+enabled = false
+default_permission_mode = "never"
+      `,
+    );
+    expect(out.tools_config).toEqual({
+      exec_command: {
+        enabled: false,
+        default_permission_mode: "never",
+      },
+    });
   });
 
   test("parses array-of-tables [[hooks.preToolUse]]", () => {

@@ -941,6 +941,8 @@ export async function bootstrapLocalRuntimeSession(
       ...(options.toolRegistryOptions ?? {}),
       unifiedExecManager,
       codeModeService,
+      toolsConfig:
+        options.toolRegistryOptions?.toolsConfig ?? startup.config.tools_config,
     },
   });
   const provider: LLMProvider = createProvider(

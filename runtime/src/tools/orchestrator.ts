@@ -2,16 +2,16 @@
  * Tool orchestrator — approval → sandbox → attempt → retry decision
  * pipeline.
  *
- * Hand-port of codex runtime `core/src/tools/orchestrator.rs` (447 LOC).
+ * Hand-port of donor runtime `core/src/tools/orchestrator.rs` (447 LOC).
  * Ports the core lifecycle:
  *
  *   1. `defaultExecApprovalRequirement(policy, fs_policy)` — the
- *      codex runtime decision table (sandboxing.rs:185-221): read current
+ *      donor runtime decision table (sandboxing.rs:185-221): read current
  *      approval policy + filesystem sandbox kind to decide
  *      skip / needs_approval / forbidden.
  *   2. **Two-pass sandbox escalation** — first attempt under the
  *      selected sandbox; on a `SandboxDeniedError`, request approval
- *      and retry with sandbox disabled (codex runtime orchestrator.rs:188-373).
+ *      and retry with sandbox disabled (donor runtime orchestrator.rs:188-373).
  *   3. **`requestApproval()`** — consult the registered
  *      `permission-request` hooks first, route auto-reviewed
  *      approvals through the guardian reviewer when configured, then
@@ -28,7 +28,7 @@
  *   I-44 (stale modal decision) — `ApprovalDecision.decisionAtTurnId`
  *        is the turn stamp callers validate against the current turn.
  *
- * Explicitly deferred vs codex runtime:
+ * Explicitly deferred vs donor runtime:
  *   - OTEL `tool_decision` emission: T7 has no otel bridge yet; we
  *     emit a session event via the caller-supplied hook instead of
  *     spawning a SessionTelemetry call at this layer.
@@ -40,6 +40,7 @@
 
 import type { Tool } from "./types.js";
 import type { ToolInvocation, ToolPayload } from "./context.js";
+import type { PermissionDefaultMode } from "../config/schema.js";
 import {
   resolveHookPermissionDecision,
   type PermissionDecisionHook,
@@ -72,11 +73,11 @@ export { SandboxDeniedError };
 // live in the permissions layer (T11 Wave 1 Agent C).
 // ─────────────────────────────────────────────────────────────────────
 
-/** Port of codex runtime `AskForApproval`. */
+/** Port of donor runtime `AskForApproval`. */
 export type ApprovalPolicy = PermissionsApprovalPolicy;
 
 /**
- * Port of codex runtime `SandboxMode`. Includes `external_sandbox` as a fourth
+ * Port of donor runtime `SandboxMode`. Includes `external_sandbox` as a fourth
  * value — the orchestrator receives this from `TurnContext`, but the
  * permissions `SandboxMode` enum is the 3-variant selector. The two
  * keep the overlapping names in sync.
@@ -88,7 +89,7 @@ export type SandboxMode =
   | "external_sandbox";
 
 /**
- * Port of codex runtime `FileSystemSandboxKind`. The permissions layer uses
+ * Port of donor runtime `FileSystemSandboxKind`. The permissions layer uses
  * the 2-variant form (`full_access` / `restricted`). The orchestrator
  * keeps a compatibility layer that distinguishes `external_sandbox`
  * as a third kind for the older call sites. Callers that only need
@@ -99,10 +100,10 @@ export type FileSystemSandboxKind =
   | "unrestricted"
   | "external_sandbox";
 
-/** Port of codex runtime `ExecApprovalRequirement` — per-tool-call. */
+/** Port of donor runtime `ExecApprovalRequirement` — per-tool-call. */
 export type ExecApprovalRequirement = PermissionsExecApprovalRequirement;
 
-/** Port of codex runtime `ReviewDecision`. */
+/** Port of donor runtime `ReviewDecision`. */
 export type ReviewDecision = PermissionsReviewDecision;
 
 // ─────────────────────────────────────────────────────────────────────
@@ -120,7 +121,7 @@ export interface ApprovalDecision {
 // ApprovalCtx — the bundle every decision path receives
 // ─────────────────────────────────────────────────────────────────────
 
-/** Port of codex runtime `ApprovalCtx`. */
+/** Port of donor runtime `ApprovalCtx`. */
 export interface ApprovalCtx {
   readonly invocation: ToolInvocation;
   readonly callId: string;
@@ -132,7 +133,7 @@ export interface ApprovalCtx {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Sandbox-denied error (ports codex runtime `SandboxErr::Denied`).
+// Sandbox-denied error (ports donor runtime `SandboxErr::Denied`).
 // ─────────────────────────────────────────────────────────────────────
 
 /** Classifier used by the retry policy. */
@@ -184,7 +185,7 @@ export interface ClassifyToolOptions {
 }
 
 /**
- * Decide whether a tool call needs approval. codex runtime pattern
+ * Decide whether a tool call needs approval. donor runtime pattern
  * (orchestrator.rs:exec_approval_requirement):
  *
  *   - `never`        → always skip (no approval requested)
@@ -302,11 +303,11 @@ export function classifyToolApproval(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Default approval requirement table (codex runtime sandboxing.rs:185-221)
+// Default approval requirement table (donor runtime sandboxing.rs:185-221)
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Map codex runtime `SandboxMode` → `FileSystemSandboxKind`. This matches the
+ * Map donor runtime `SandboxMode` → `FileSystemSandboxKind`. This matches the
  * kind assignments in protocol/permissions.rs (restricted =
  * `workspace_write` / `read_only`, unrestricted = `danger_full_access`,
  * external_sandbox = `external_sandbox`).
@@ -329,13 +330,13 @@ export function sandboxKindFromMode(mode: SandboxMode): FileSystemSandboxKind {
 }
 
 /**
- * Port of codex runtime `default_exec_approval_requirement`
+ * Port of donor runtime `default_exec_approval_requirement`
  * (sandboxing.rs:185-221). Given the current approval policy + the
  * filesystem sandbox kind, return the skip/needs-approval/forbidden
  * decision the orchestrator will apply when a tool did not override
  * the requirement itself.
  *
- * codex runtime table:
+ * donor runtime table:
  *
  *   | policy          | fs kind       | decision       |
  *   |-----------------|---------------|----------------|
@@ -380,7 +381,7 @@ export interface ApprovalResolver {
 /**
  * Permission-request hook. First-match wins: the first hook to return
  * a decision other than `undefined` short-circuits the resolver path.
- * Ports the precedence of `run_permission_request_hooks` in codex runtime
+ * Ports the precedence of `run_permission_request_hooks` in donor runtime
  * `orchestrator.rs:394-425`.
  */
 export type PermissionRequestHook = (
@@ -499,7 +500,7 @@ async function awaitWithAbort<T>(
 }
 
 /**
- * Run the permission-request pipeline. codex runtime order:
+ * Run the permission-request pipeline. donor runtime order:
  *
  *   1. For each registered `permission-request` hook: await; the
  *      first `Allow | Deny` answer wins. `undefined` means "pass".
@@ -613,14 +614,14 @@ export async function requestApproval(
 /**
  * Translate a `ReviewDecision` into the control-flow intent the
  * orchestrator needs: proceed vs reject vs timeout. Mirrors the
- * match tree at codex runtime `orchestrator.rs:160-183`.
+ * match tree at donor runtime `orchestrator.rs:160-183`.
  */
 export function isApprovalAccepted(decision: ReviewDecision): boolean {
   return reviewDecisionIsAllow(decision);
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Retry decision + default policy (codex runtime `orchestrator.rs::RetryDecision`)
+// Retry decision + default policy (donor runtime `orchestrator.rs::RetryDecision`)
 // ─────────────────────────────────────────────────────────────────────
 
 export type RetryDecision =
@@ -642,7 +643,7 @@ function isTransientError(err: unknown): boolean {
 }
 
 /**
- * Port of codex runtime `orchestrator::default_retry_policy`. Replaces the
+ * Port of donor runtime `orchestrator::default_retry_policy`. Replaces the
  * previous `{kind: "bubble"}` stub with a real classifier:
  *
  *   - `SandboxDeniedError` → `escalate_sandbox` (the lifecycle
@@ -667,7 +668,7 @@ export function defaultRetryPolicy(): RetryDecision {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Attempt loop — codex runtime `orchestrator::attempt_tool_call`
+// Attempt loop — donor runtime `orchestrator::attempt_tool_call`
 // ─────────────────────────────────────────────────────────────────────
 
 export interface AttemptOpts<T> {
@@ -679,7 +680,7 @@ export interface AttemptOpts<T> {
 }
 
 /**
- * Run a tool call with bounded retry. codex runtime pattern: attempt once; on
+ * Run a tool call with bounded retry. donor runtime pattern: attempt once; on
  * failure consult `onFailure`; if it returns `retry` sleep optionally
  * then dispatch again; `escalate_sandbox` bubbles to the caller (the
  * orchestrate-tool-call lifecycle catches it); else bubble the error.
@@ -750,7 +751,7 @@ export interface OrchestrateToolCallOpts<T> {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Tool capability readers — codex runtime `Sandboxable::escalate_on_failure()`
+// Tool capability readers — donor runtime `Sandboxable::escalate_on_failure()`
 // and `Approvable::wants_no_sandbox_approval(policy)`.
 //
 // Tool authors may opt into these via structural fields on the Tool
@@ -763,7 +764,7 @@ export interface OrchestrateToolCallOpts<T> {
 /**
  * Structural extension fields for sandbox-escalation behavior. A Tool
  * may expose either as a plain boolean or a function. Defaults mirror
- * codex runtime: `escalate_on_failure: true`, `wants_no_sandbox_approval` per
+ * donor runtime: `escalate_on_failure: true`, `wants_no_sandbox_approval` per
  * the policy table in `sandboxing.rs:290-298`.
  */
 interface ToolSandboxCapabilities {
@@ -774,7 +775,7 @@ interface ToolSandboxCapabilities {
 }
 
 /**
- * Port of codex runtime `Sandboxable::escalate_on_failure()` (sandboxing.rs:309-311).
+ * Port of donor runtime `Sandboxable::escalate_on_failure()` (sandboxing.rs:309-311).
  * Default `true`. A tool that returns `false` bails with the original
  * `SandboxDeniedError` instead of prompting for approval. Read-only
  * tools can opt out so a sandbox denial does not propose running them
@@ -788,11 +789,11 @@ export function escalateOnFailure(tool: Tool): boolean {
 }
 
 /**
- * Port of codex runtime `Approvable::wants_no_sandbox_approval(policy)`
+ * Port of donor runtime `Approvable::wants_no_sandbox_approval(policy)`
  * (sandboxing.rs:290-298). Decides whether the runtime should ASK for
  * approval to retry without the sandbox after a `SandboxDeniedError`.
  *
- * codex runtime table:
+ * donor runtime table:
  *   - `OnFailure`                         → true
  *   - `UnlessTrusted` (= "untrusted")     → true
  *   - `Never`                             → false
@@ -827,6 +828,33 @@ export function wantsNoSandboxApproval(
       return false;
     }
   }
+}
+
+function mapDefaultPermissionMode(mode: PermissionDefaultMode): ApprovalPolicy {
+  switch (mode) {
+    case "never":
+      return "never";
+    case "on-failure":
+      return "on_failure";
+    case "on-request":
+      return "on_request";
+    case "untrusted":
+      return "untrusted";
+    default: {
+      const _exhaustive: never = mode;
+      void _exhaustive;
+      return "on_request";
+    }
+  }
+}
+
+function effectiveApprovalPolicyForTool(
+  tool: Tool,
+  fallback: ApprovalPolicy,
+): ApprovalPolicy {
+  return tool.defaultPermissionMode !== undefined
+    ? mapDefaultPermissionMode(tool.defaultPermissionMode)
+    : fallback;
 }
 
 export class ApprovalRejectedError extends Error {
@@ -869,7 +897,7 @@ function approvalRejectionMessage(
 }
 
 /**
- * Port of codex runtime `ToolOrchestrator::run` (orchestrator.rs:105-377).
+ * Port of donor runtime `ToolOrchestrator::run` (orchestrator.rs:105-377).
  *
  * Flow:
  *
@@ -885,12 +913,16 @@ function approvalRejectionMessage(
  *   4. If the first attempt (or its retry) throws
  *      `SandboxDeniedError`: request approval, then retry the tool
  *      with `sandbox = "danger_full_access"` (the TS parity for
- *      codex runtime's `SandboxType::None`).
+ *      donor runtime's `SandboxType::None`).
  */
 export async function orchestrateToolCall<T>(
   opts: OrchestrateToolCallOpts<T>,
 ): Promise<T> {
   const approvalSignal = resolveApprovalSignal(opts);
+  const effectiveApprovalPolicy = effectiveApprovalPolicyForTool(
+    opts.tool,
+    opts.approvalPolicy,
+  );
   // Step 1 — approval classification.
   //
   // AgenC behavior (orchestrator.rs:124-127):
@@ -899,14 +931,14 @@ export async function orchestrateToolCall<T>(
   //     .unwrap_or_else(|| default_exec_approval_requirement(policy, fs));
   //
   // The tool-side classifier is the FALLBACK shape. When it returns a
-  // concrete `Skip` or `Forbidden`, codex runtime never upgrades that into
+  // concrete `Skip` or `Forbidden`, donor runtime never upgrades that into
   // `NeedsApproval` by re-running the default table. AgenC previously
   // did exactly that upgrade for `skip` with `bypassSandbox=false`,
   // which could promote a read-only tool under `granular + restricted`
   // to `needs_approval` even though `classifyToolApproval` had already
   // decided to skip. That upgrade is removed — `skip` is now final.
   const toolRequirement = classifyToolApproval(opts.tool, {
-    approvalPolicy: opts.approvalPolicy,
+    approvalPolicy: effectiveApprovalPolicy,
     sandboxMode: opts.sandboxMode,
     ...(opts.payload !== undefined ? { payload: opts.payload } : {}),
     ...(opts.mcpServerTrusted !== undefined
@@ -976,7 +1008,7 @@ export async function orchestrateToolCall<T>(
 
     // AgenC behavior (orchestrator.rs:253-258):
     //   if !tool.escalate_on_failure() {
-    //     return Err(ToolError::codex runtime(codex runtimeErr::Sandbox(SandboxErr::Denied…)));
+    //     return Err(ToolError::Runtime(RuntimeErr::Sandbox(SandboxErr::Denied…)));
     //   }
     // Read-only or otherwise-opting-out tools bail with the original
     // sandbox denial instead of requesting approval to rerun unsandboxed.
@@ -987,11 +1019,11 @@ export async function orchestrateToolCall<T>(
     // AgenC behavior (orchestrator.rs:259-279):
     //   if !tool.wants_no_sandbox_approval(approval_policy) { … }
     // For `AskForApproval::Never` / `AskForApproval::OnRequest` (without
-    // network-approval context, which is not plumbed yet), codex runtime
+    // network-approval context, which is not plumbed yet), donor runtime
     // surfaces the original `SandboxErr::Denied` and never prompts. Only
     // policies that want the approval path continue into the escalation
     // pipeline below.
-    if (!wantsNoSandboxApproval(opts.tool, opts.approvalPolicy, opts.granular)) {
+    if (!wantsNoSandboxApproval(opts.tool, effectiveApprovalPolicy, opts.granular)) {
       throw err;
     }
 
@@ -1026,7 +1058,7 @@ export async function orchestrateToolCall<T>(
       }
     }
 
-    // Retry with sandbox disabled (codex runtime `SandboxType::None`).
+    // Retry with sandbox disabled (donor runtime `SandboxType::None`).
     return await opts.dispatch("danger_full_access");
   }
 }

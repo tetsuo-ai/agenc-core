@@ -103,9 +103,22 @@ export interface ShellEnvironmentPolicy {
 }
 
 export interface ToolsConfig {
-  readonly web_search?: boolean;
-  readonly view_image?: boolean;
+  readonly web_search?: boolean | PerToolConfig;
+  readonly view_image?: boolean | PerToolConfig;
+  readonly enabled_tools?: readonly string[];
+  readonly disabled_tools?: readonly string[];
   readonly [k: string]: unknown;
+}
+
+export interface PerToolConfig {
+  readonly enabled?: boolean;
+  readonly default_permission_mode?: PermissionDefaultMode;
+  readonly defaultPermissionMode?: PermissionDefaultMode;
+  /**
+   * Compatibility with donor/plugin manifests that call this
+   * approval_mode. `auto` means "use the session policy".
+   */
+  readonly approval_mode?: "auto" | "prompt" | "approve";
 }
 
 export interface ProfileOverride {

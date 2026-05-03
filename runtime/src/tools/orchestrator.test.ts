@@ -137,7 +137,7 @@ describe("defaultRetryPolicy + attemptWithRetry", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
-// codex runtime-parity port coverage (T7 orchestrator gap fill)
+// donor runtime-parity port coverage (T7 orchestrator gap fill)
 // ─────────────────────────────────────────────────────────────────────
 
 describe("defaultExecApprovalRequirement (sandboxing behavior)", () => {
@@ -672,6 +672,44 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
     });
     expect(result).toBe("ok");
     expect(ran).toBe(1);
+  });
+
+  test("per-tool default_permission_mode=never skips session approval prompts", async () => {
+    const resolver: ApprovalResolver = {
+      request: vi.fn(async () => ({ kind: "denied" })),
+    };
+    const dispatched = vi.fn(async () => "ok");
+    const result = await orchestrateToolCall<string>({
+      tool: mkTool({ defaultPermissionMode: "never" }),
+      approvalCtx: mkCtx(),
+      approvalPolicy: "untrusted",
+      sandboxMode: "workspace_write",
+      dispatch: dispatched,
+      approvalResolver: resolver,
+    });
+
+    expect(result).toBe("ok");
+    expect(dispatched).toHaveBeenCalledOnce();
+    expect(resolver.request).not.toHaveBeenCalled();
+  });
+
+  test("per-tool default_permission_mode=untrusted prompts even when session skips", async () => {
+    const resolver: ApprovalResolver = {
+      request: vi.fn(async () => ({ kind: "approved" })),
+    };
+    const dispatched = vi.fn(async () => "ok");
+    const result = await orchestrateToolCall<string>({
+      tool: mkTool({ defaultPermissionMode: "untrusted" }),
+      approvalCtx: mkCtx(),
+      approvalPolicy: "never",
+      sandboxMode: "workspace_write",
+      dispatch: dispatched,
+      approvalResolver: resolver,
+    });
+
+    expect(result).toBe("ok");
+    expect(dispatched).toHaveBeenCalledOnce();
+    expect(resolver.request).toHaveBeenCalledOnce();
   });
 
   test("needs_approval path: guardian denial blocks dispatch with guardian rationale", async () => {
