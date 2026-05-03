@@ -495,6 +495,30 @@ describe("tool-registry dynamic and deferred catalog", () => {
     });
   });
 
+  test("ExitPlanMode refuses to write a plan when no live permission registry exists", async () => {
+    let writeCount = 0;
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      workflowController: {
+        getPlanFilePath: () => "/tmp/agenc/plans/plan.md",
+        readPlan: () => "# Existing Plan\n\nDo it.",
+        writePlan: async () => {
+          writeCount += 1;
+        },
+      },
+    });
+
+    const result = await registry.dispatch({
+      id: "exit-no-registry",
+      name: "ExitPlanMode",
+      arguments: JSON.stringify({ plan: "# Edited Plan\n\nDo it better." }),
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("permission mode registry is not available");
+    expect(writeCount).toBe(0);
+  });
+
   test("ExitPlanMode consumes TUI plan approval decisions for requested prompts and target mode", async () => {
     const permissionRegistry = new PermissionModeRegistry(
       createEmptyToolPermissionContext({ mode: "plan", prePlanMode: "default" }),
