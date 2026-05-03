@@ -41,6 +41,7 @@ export const AGENC_DAEMON_METHODS = [
   "agent.list",
   "agent.attach",
   "agent.stop",
+  "agent.logs",
   "session.create",
   "session.list",
   "session.attach",
@@ -98,15 +99,19 @@ export interface AgenCDaemonNotificationSpec<
   readonly description: string;
 }
 
-function defineMethodSpecs<const Spec extends {
-  readonly [Method in AgenCDaemonMethod]: AgenCDaemonMethodSpec<Method>;
-}>(spec: Spec): Spec {
+function defineMethodSpecs<
+  const Spec extends {
+    readonly [Method in AgenCDaemonMethod]: AgenCDaemonMethodSpec<Method>;
+  },
+>(spec: Spec): Spec {
   return spec;
 }
 
-function defineNotificationSpecs<const Spec extends {
-  readonly [Method in AgenCDaemonNotificationMethod]: AgenCDaemonNotificationSpec<Method>;
-}>(spec: Spec): Spec {
+function defineNotificationSpecs<
+  const Spec extends {
+    readonly [Method in AgenCDaemonNotificationMethod]: AgenCDaemonNotificationSpec<Method>;
+  },
+>(spec: Spec): Spec {
   return spec;
 }
 
@@ -152,6 +157,13 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     params: "required",
     result: "object",
     description: "Stop a daemon agent.",
+  },
+  "agent.logs": {
+    method: "agent.logs",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Read the full local log and transcript for a daemon agent.",
   },
   "session.create": {
     method: "session.create",
@@ -320,7 +332,8 @@ export const AGENC_DAEMON_NOTIFICATION_SPECS = defineNotificationSpecs({
     method: "event.message_chunk",
     direction: "server-to-client",
     params: "required",
-    description: "Stream an assistant text chunk for an attached daemon session.",
+    description:
+      "Stream an assistant text chunk for an attached daemon session.",
   },
   "event.tool_request": {
     method: "event.tool_request",
@@ -332,7 +345,8 @@ export const AGENC_DAEMON_NOTIFICATION_SPECS = defineNotificationSpecs({
     method: "event.permission_request",
     direction: "server-to-client",
     params: "required",
-    description: "Ask an attached client to resolve a pending permission request.",
+    description:
+      "Ask an attached client to resolve a pending permission request.",
   },
   "event.agent_status": {
     method: "event.agent_status",
@@ -398,6 +412,10 @@ export interface AgentAttachParams extends JsonObject {
 export interface AgentStopParams extends JsonObject {
   readonly agentId: string;
   readonly reason?: string;
+}
+
+export interface AgentLogsParams extends JsonObject {
+  readonly agentId: string;
 }
 
 export interface SessionCreateParams extends JsonObject {
@@ -602,10 +620,10 @@ export interface AgenCDaemonNotificationParamsByMethod {
 }
 
 export type AgenCDaemonNotification =
-  AgenCDaemonNotificationWithParams<
-    "commandExec.outputDelta",
-    CommandExecOutputDeltaParams
-  >
+  | AgenCDaemonNotificationWithParams<
+      "commandExec.outputDelta",
+      CommandExecOutputDeltaParams
+    >
   | AgenCDaemonNotificationWithParams<
       "event.message_chunk",
       EventMessageChunkParams
@@ -663,14 +681,12 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"agent.list", AgentListParams>
   | AgenCDaemonRequestWithParams<"agent.attach", AgentAttachParams>
   | AgenCDaemonRequestWithParams<"agent.stop", AgentStopParams>
+  | AgenCDaemonRequestWithParams<"agent.logs", AgentLogsParams>
   | AgenCDaemonRequestWithParams<"session.create", SessionCreateParams>
   | AgenCDaemonRequestWithParams<"session.list", SessionListParams>
   | AgenCDaemonRequestWithParams<"session.attach", SessionAttachParams>
   | AgenCDaemonRequestWithParams<"session.detach", SessionDetachParams>
-  | AgenCDaemonRequestWithParams<
-      "session.terminate",
-      SessionTerminateParams
-    >
+  | AgenCDaemonRequestWithParams<"session.terminate", SessionTerminateParams>
   | AgenCDaemonRequestWithParams<"message.send", MessageSendParams>
   | AgenCDaemonRequestWithParams<"message.stream", MessageStreamParams>
   | AgenCDaemonRequestWithParams<"tool.approve", ToolApproveParams>
@@ -739,6 +755,32 @@ export interface AgentAttachResult extends JsonObject {
 export interface AgentStopResult extends JsonObject {
   readonly agentId: string;
   readonly stopped: boolean;
+}
+
+export interface AgentLogSession extends JsonObject {
+  readonly sessionId: string;
+  readonly itemCount: number;
+  readonly transcript: string;
+  readonly rolloutPath?: string;
+  readonly source?: string;
+}
+
+export interface AgentToolOutputLog extends JsonObject {
+  readonly sessionId: string;
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly status: string;
+  readonly output: string;
+  readonly outputBytes: number;
+  readonly outputLogPath?: string;
+  readonly outputLogBytes?: number;
+}
+
+export interface AgentLogsResult extends JsonObject {
+  readonly agentId: string;
+  readonly transcript: string;
+  readonly sessions: readonly AgentLogSession[];
+  readonly toolOutputs?: readonly AgentToolOutputLog[];
 }
 
 export interface InitializeResult extends JsonObject {
@@ -896,6 +938,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "agent.list": AgentListResult;
   readonly "agent.attach": AgentAttachResult;
   readonly "agent.stop": AgentStopResult;
+  readonly "agent.logs": AgentLogsResult;
   readonly "session.create": SessionCreateResult;
   readonly "session.list": SessionListResult;
   readonly "session.attach": SessionAttachResult;

@@ -241,6 +241,11 @@ describe("AgenC daemon cancellation and preemption", () => {
           decision: "cancelled",
         }),
         stopAgent: async () => ({ agentId: "agent_1", stopped: true }),
+        getAgentLogs: async () => ({
+          agentId: "agent_1",
+          sessions: [],
+          transcript: "agent_id\tagent_1\nNo transcript entries",
+        }),
       },
     });
     const connection = dispatcher.createConnection();

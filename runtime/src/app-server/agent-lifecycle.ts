@@ -19,10 +19,14 @@ import type {
   AgentCreateResult,
   AgentListParams,
   AgentListResult,
+  AgentLogSession,
+  AgentLogsParams,
+  AgentLogsResult,
   AgentStopParams,
   AgentStopResult,
   AgentStatus,
   AgentSummary,
+  AgentToolOutputLog,
   JsonObject,
   JsonValue,
   MessageContent,
@@ -39,11 +43,15 @@ import {
   DENIED,
 } from "../permissions/review-decision.js";
 import type { AgenCDaemonSessionManager } from "./session-lifecycle.js";
-import type {
-  StoredThread,
-  ThreadSource,
-  ThreadStore,
+import {
+  ThreadNotFoundError,
+  ThreadStoreInvalidRequestError,
+  type StoredThread,
+  type ThreadSource,
+  type ThreadStore,
 } from "../thread-store/index.js";
+import type { Event } from "../session/event-log.js";
+import type { ResponseItem, RolloutItem } from "../session/rollout-item.js";
 
 export type AgenCDaemonAgentLifecycleErrorCode =
   | "AGENT_NOT_FOUND"
@@ -67,6 +75,12 @@ export interface AgenCDaemonAgentManagerOptions {
   readonly runner?: AgenCBackgroundAgentRunner;
   readonly sessionManager?: AgenCDaemonSessionManager;
   readonly threadStore?: ThreadStore;
+  readonly threadStoreForAgentLogs?: (
+    route: AgenCDaemonAgentLogThreadStoreRoute,
+  ) => ThreadStore | undefined;
+  readonly readAgentToolOutputs?: (
+    params: AgenCDaemonAgentToolOutputReadParams,
+  ) => Promise<readonly AgentToolOutputLog[]> | readonly AgentToolOutputLog[];
   readonly snapshotFlush?: (
     snapshot: AgenCDaemonAgentSnapshotFlush,
   ) => void | Promise<void>;
@@ -84,6 +98,18 @@ export interface AgenCDaemonAgentManagerOptions {
     session: AgenCDaemonSnapshotSessionRoute,
   ) => void | Promise<void>;
   readonly onSnapshotError?: (error: unknown) => void;
+}
+
+export interface AgenCDaemonAgentToolOutputReadParams {
+  readonly agentId: string;
+  readonly sessionIds: readonly string[];
+}
+
+export interface AgenCDaemonAgentLogThreadStoreRoute {
+  readonly agentId: string;
+  readonly sessionIds: readonly string[];
+  readonly cwd?: string;
+  readonly stateProjectDir?: string;
 }
 
 export interface AgenCDaemonMessageExchangeSnapshot {
@@ -153,6 +179,7 @@ interface MutableAgent {
   stateProjectDir?: string;
   metadata?: JsonObject;
   sessionIds: string[];
+  logSessionIds: string[];
   recovered?: boolean;
   runtimeAvailable?: boolean;
 }
@@ -177,6 +204,16 @@ export class AgenCDaemonAgentManager {
   readonly #runner: AgenCBackgroundAgentRunner | undefined;
   readonly #sessionManager: AgenCDaemonSessionManager | undefined;
   readonly #threadStore: ThreadStore | undefined;
+  readonly #threadStoreForAgentLogs:
+    | ((route: AgenCDaemonAgentLogThreadStoreRoute) => ThreadStore | undefined)
+    | undefined;
+  readonly #readAgentToolOutputs:
+    | ((
+        params: AgenCDaemonAgentToolOutputReadParams,
+      ) =>
+        | Promise<readonly AgentToolOutputLog[]>
+        | readonly AgentToolOutputLog[])
+    | undefined;
   readonly #snapshotFlush:
     | ((snapshot: AgenCDaemonAgentSnapshotFlush) => void | Promise<void>)
     | undefined;
@@ -206,6 +243,8 @@ export class AgenCDaemonAgentManager {
     this.#runner = options.runner;
     this.#sessionManager = options.sessionManager;
     this.#threadStore = options.threadStore;
+    this.#threadStoreForAgentLogs = options.threadStoreForAgentLogs;
+    this.#readAgentToolOutputs = options.readAgentToolOutputs;
     this.#snapshotFlush = options.snapshotFlush;
     this.#broadcastSessionEvent = options.broadcastSessionEvent;
     this.#recordMessageExchange = options.recordMessageExchange;
@@ -258,13 +297,16 @@ export class AgenCDaemonAgentManager {
 
       const agent: MutableAgent = {
         agentId: started.agentId,
-        ...(started.agentPath !== undefined ? { agentPath: started.agentPath } : {}),
+        ...(started.agentPath !== undefined
+          ? { agentPath: started.agentPath }
+          : {}),
         objective,
         status: started.status,
         createdAt,
         startedAt: started.startedAt,
         lastActiveAt: started.startedAt,
         sessionIds: [],
+        logSessionIds: [],
         cwd,
         metadata,
       };
@@ -284,10 +326,12 @@ export class AgenCDaemonAgentManager {
             },
           });
           agent.sessionIds.push(session.sessionId);
+          agent.logSessionIds.push(session.sessionId);
           await this.#registerSnapshotSessionRoute(session.sessionId, agent);
           await this.#runner.attachAgentSessionEvents?.(agent.agentId, {
             sessionId: session.sessionId,
-            emit: (event) => this.#broadcastSessionEvent?.(session.sessionId, event),
+            emit: (event) =>
+              this.#broadcastSessionEvent?.(session.sessionId, event),
           });
         }
 
@@ -338,6 +382,7 @@ export class AgenCDaemonAgentManager {
       startedAt,
       lastActiveAt,
       sessionIds: normalizeStringList(record.sessionIds, []),
+      logSessionIds: normalizeStringList(record.sessionIds, []),
       recovered: true,
       runtimeAvailable: false,
     };
@@ -446,8 +491,9 @@ export class AgenCDaemonAgentManager {
           this.#sessionManager!.getSession(sessionId),
         ),
       )
-    ).filter((session): session is SessionSummary =>
-      session !== null && isActiveSession(session),
+    ).filter(
+      (session): session is SessionSummary =>
+        session !== null && isActiveSession(session),
     );
     const session = newestSession(sessions);
     if (session === null) {
@@ -473,8 +519,9 @@ export class AgenCDaemonAgentManager {
           this.#sessionManager!.getSession(sessionId),
         ),
       )
-    ).filter((activeSession): activeSession is SessionSummary =>
-      activeSession !== null && isActiveSession(activeSession),
+    ).filter(
+      (activeSession): activeSession is SessionSummary =>
+        activeSession !== null && isActiveSession(activeSession),
     );
     return {
       agentId: target.agentId,
@@ -494,6 +541,95 @@ export class AgenCDaemonAgentManager {
       const refreshed = state.agents.get(agentId);
       return refreshed === undefined ? null : toAgentSummary(refreshed);
     });
+  }
+
+  async getAgentLogs(params: AgentLogsParams): Promise<AgentLogsResult> {
+    const agentId = normalizeRequiredAgentId(params.agentId, "agent.logs");
+    const target = await this.#state.with(async (state) => {
+      const agent = state.agents.get(agentId);
+      if (agent !== undefined) {
+        await this.#refreshAgentFromRunner(state, agent);
+      }
+      const refreshed = state.agents.get(agentId);
+      if (refreshed !== undefined) {
+        return {
+          sessionIds: logSessionIdsForAgent(refreshed),
+          ...snapshotRouteForAgent(refreshed),
+        };
+      }
+      const persisted = this.#listPersistedAgents(state).find(
+        (agent) => agent.agentId === agentId,
+      );
+      return persisted === undefined
+        ? null
+        : {
+            sessionIds: logSessionIdsForAgent(persisted),
+            ...snapshotRouteForAgent(persisted),
+          };
+    });
+    if (target === null) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "AGENT_NOT_FOUND",
+        `AgenC daemon agent not found: ${agentId}`,
+      );
+    }
+
+    const sessionIds = uniqueNonEmptyStrings([agentId, ...target.sessionIds]);
+    const sessions = this.#readLogSessions({
+      agentId,
+      sessionIds,
+      ...(target.cwd !== undefined ? { cwd: target.cwd } : {}),
+      ...(target.stateProjectDir !== undefined
+        ? { stateProjectDir: target.stateProjectDir }
+        : {}),
+    });
+
+    const toolOutputs =
+      this.#readAgentToolOutputs === undefined
+        ? []
+        : [
+            ...(await this.#readAgentToolOutputs({
+              agentId,
+              sessionIds,
+            })),
+          ];
+    const transcript = formatAgentLogsTranscript(
+      agentId,
+      sessions,
+      toolOutputs,
+    );
+    return {
+      agentId,
+      transcript,
+      sessions,
+      ...(toolOutputs.length > 0 ? { toolOutputs } : {}),
+    };
+  }
+
+  #readLogSessions(
+    route: AgenCDaemonAgentLogThreadStoreRoute,
+  ): AgentLogSession[] {
+    const threadStore =
+      this.#threadStoreForAgentLogs?.(route) ?? this.#threadStore;
+    if (threadStore === undefined) return [];
+    const sessions: AgentLogSession[] = [];
+    const seen = new Set<string>();
+    for (const sessionId of route.sessionIds) {
+      if (seen.has(sessionId)) continue;
+      seen.add(sessionId);
+      try {
+        const thread = threadStore.readThread({
+          threadId: sessionId,
+          includeArchived: true,
+          includeHistory: true,
+        });
+        sessions.push(storedThreadToAgentLogSession(thread));
+      } catch (error) {
+        if (isThreadLogReadMiss(error)) continue;
+        throw error;
+      }
+    }
+    return sessions;
   }
 
   async stopAgent(params: AgentStopParams): Promise<AgentStopResult> {
@@ -571,6 +707,10 @@ export class AgenCDaemonAgentManager {
       if (agent === undefined) return;
       agent.status = "stopped";
       agent.lastActiveAt = stoppedAt;
+      agent.logSessionIds = uniqueNonEmptyStrings([
+        ...agent.logSessionIds,
+        ...agent.sessionIds,
+      ]);
       agent.sessionIds = [];
     });
     await this.#recordAgentStatusSnapshots(
@@ -590,15 +730,16 @@ export class AgenCDaemonAgentManager {
     await this.#waitForActiveCreates();
     const targets = await this.#state.with(async (state) => {
       await this.#refreshAgentsFromRunner(state);
-      return [...state.agents.values()]
-        .filter(isActiveAgent)
-        .map((agent) => ({
-          agentId: agent.agentId,
-          sessionIds: [...agent.sessionIds],
-          route: snapshotRouteForAgent(agent),
-        }));
+      return [...state.agents.values()].filter(isActiveAgent).map((agent) => ({
+        agentId: agent.agentId,
+        sessionIds: [...agent.sessionIds],
+        route: snapshotRouteForAgent(agent),
+      }));
     });
-    const failures: Array<{ readonly agentId: string; readonly error: unknown }> = [];
+    const failures: Array<{
+      readonly agentId: string;
+      readonly error: unknown;
+    }> = [];
     let stopped = 0;
     for (const target of targets) {
       const stopRunner = this.#runner?.stopAgent?.bind(this.#runner);
@@ -618,6 +759,10 @@ export class AgenCDaemonAgentManager {
         if (agent === undefined) return;
         agent.status = finalStatus;
         agent.lastActiveAt = stoppedAt;
+        agent.logSessionIds = uniqueNonEmptyStrings([
+          ...agent.logSessionIds,
+          ...agent.sessionIds,
+        ]);
         agent.sessionIds = [];
       });
       await this.#recordAgentStatusSnapshots(
@@ -656,7 +801,9 @@ export class AgenCDaemonAgentManager {
   }
 
   async approveTool(params: ToolApproveParams): Promise<ToolDecisionResult> {
-    const agentId = await this.#resolveActiveAgentIdForSession(params.sessionId);
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+    );
     const resolved = await this.#runner!.resolveToolDecision!(agentId, {
       requestId: params.requestId,
       decision:
@@ -674,7 +821,9 @@ export class AgenCDaemonAgentManager {
   }
 
   async denyTool(params: ToolDenyParams): Promise<ToolDecisionResult> {
-    const agentId = await this.#resolveActiveAgentIdForSession(params.sessionId);
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+    );
     const resolved = await this.#runner!.resolveToolDecision!(agentId, {
       requestId: params.requestId,
       decision: DENIED,
@@ -689,9 +838,12 @@ export class AgenCDaemonAgentManager {
   }
 
   async cancelTool(params: ToolCancelParams): Promise<ToolDecisionResult> {
-    const agentId = await this.#resolveActiveAgentIdForSession(params.sessionId, {
-      allowCancelTool: true,
-    });
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      {
+        allowCancelTool: true,
+      },
+    );
     let resolved = false;
     if (this.#runner!.cancelTool !== undefined) {
       resolved = await this.#runner!.cancelTool(agentId, {
@@ -859,7 +1011,10 @@ export class AgenCDaemonAgentManager {
     }
     if (
       this.#runner?.resolveToolDecision === undefined &&
-      !(options.allowCancelTool === true && this.#runner?.cancelTool !== undefined)
+      !(
+        options.allowCancelTool === true &&
+        this.#runner?.cancelTool !== undefined
+      )
     ) {
       throw new AgenCDaemonAgentLifecycleError(
         "BACKGROUND_RUNNER_UNAVAILABLE",
@@ -925,7 +1080,9 @@ export class AgenCDaemonAgentManager {
     }
   }
 
-  async #resolveAttachmentTarget(agentId: string): Promise<AgentAttachmentTarget> {
+  async #resolveAttachmentTarget(
+    agentId: string,
+  ): Promise<AgentAttachmentTarget> {
     return this.#state.with(async (state) => {
       const agent = state.agents.get(agentId);
       if (agent !== undefined) {
@@ -1043,6 +1200,10 @@ function snapshotRouteForAgent(agent: MutableAgent): AgenCDaemonSnapshotRoute {
   };
 }
 
+function logSessionIdsForAgent(agent: MutableAgent): string[] {
+  return uniqueNonEmptyStrings([...agent.logSessionIds, ...agent.sessionIds]);
+}
+
 function isActiveAgent(agent: MutableAgent): boolean {
   return (
     agent.status !== "stopping" &&
@@ -1087,7 +1248,9 @@ function storedThreadToAgent(thread: StoredThread): MutableAgent | undefined {
   const agentId = agentIdForThread(thread);
   const metadata: JsonObject = {
     source:
-      thread.source === undefined ? undefined : threadSourceToJson(thread.source),
+      thread.source === undefined
+        ? undefined
+        : threadSourceToJson(thread.source),
     model: thread.model,
     modelProvider: thread.modelProvider,
     rolloutPath: thread.rolloutPath,
@@ -1104,6 +1267,7 @@ function storedThreadToAgent(thread: StoredThread): MutableAgent | undefined {
     startedAt: thread.createdAt,
     lastActiveAt: thread.updatedAt,
     sessionIds: [thread.threadId],
+    logSessionIds: [thread.threadId],
     recovered: true,
     runtimeAvailable: false,
     ...(thread.cwd !== undefined ? { cwd: thread.cwd } : {}),
@@ -1125,7 +1289,8 @@ function isAgentThreadSource(source: ThreadSource | undefined): boolean {
 function agentIdForThread(thread: StoredThread): string {
   if (thread.source !== undefined && typeof thread.source !== "string") {
     const direct =
-      stringField(thread.source, "agentId") ?? stringField(thread.source, "agent_id");
+      stringField(thread.source, "agentId") ??
+      stringField(thread.source, "agent_id");
     if (direct !== undefined) return direct;
   }
   return thread.threadId;
@@ -1179,4 +1344,318 @@ function toAgentSummary(agent: MutableAgent): AgentSummary {
       : {}),
     ...(agent.metadata !== undefined ? { metadata: agent.metadata } : {}),
   };
+}
+
+function storedThreadToAgentLogSession(thread: StoredThread): AgentLogSession {
+  const items = [...(thread.history?.items ?? [])];
+  return {
+    sessionId: thread.threadId,
+    itemCount: items.length,
+    transcript: formatRolloutItemsForAgentLog(items),
+    ...(thread.rolloutPath !== undefined
+      ? { rolloutPath: thread.rolloutPath }
+      : {}),
+    ...(thread.source !== undefined
+      ? { source: formatThreadSourceForLog(thread.source) }
+      : {}),
+  };
+}
+
+function formatAgentLogsTranscript(
+  agentId: string,
+  sessions: readonly AgentLogSession[],
+  toolOutputs: readonly AgentToolOutputLog[],
+): string {
+  if (sessions.length === 0 && toolOutputs.length === 0) {
+    return [`agent_id\t${agentId}`, "No transcript entries"].join("\n");
+  }
+  const sections: string[] = [];
+  for (const session of sessions) {
+    const header = [
+      `agent_id\t${agentId}`,
+      `session_id\t${session.sessionId}`,
+      ...(session.rolloutPath !== undefined
+        ? [`rollout_path\t${session.rolloutPath}`]
+        : []),
+    ];
+    sections.push(
+      [
+        ...header,
+        "",
+        session.transcript.length > 0
+          ? session.transcript
+          : "No transcript entries",
+      ].join("\n"),
+    );
+  }
+  if (toolOutputs.length > 0) {
+    sections.push(formatToolOutputSection(toolOutputs));
+  }
+  return sections.join("\n\n");
+}
+
+function formatRolloutItemsForAgentLog(items: readonly RolloutItem[]): string {
+  const lines: string[] = [];
+  let assistantDelta = "";
+  const flushAssistantDelta = (): void => {
+    if (assistantDelta.length === 0) return;
+    lines.push(formatTranscriptLine("assistant", assistantDelta));
+    assistantDelta = "";
+  };
+
+  for (const item of items) {
+    if (item.type === "event_msg") {
+      const line = formatEventMessageForLog(item.payload, {
+        appendAssistantDelta: (delta) => {
+          assistantDelta += delta;
+        },
+        flushAssistantDelta,
+      });
+      if (line !== null) lines.push(line);
+      continue;
+    }
+    flushAssistantDelta();
+    if (item.type === "response_item") {
+      lines.push(formatResponseItemForLog(item.payload));
+    } else if (item.type === "compacted") {
+      lines.push(
+        formatTranscriptLine(
+          "system",
+          `context compacted${item.payload.message ? `: ${item.payload.message}` : ""}`,
+        ),
+      );
+    } else if (item.type === "unknown") {
+      lines.push(
+        formatTranscriptLine(
+          "unknown",
+          `skipped rollout item ${item.payload.originalType}`,
+        ),
+      );
+    } else {
+      lines.push(formatGenericRolloutItemForLog(item));
+    }
+  }
+  flushAssistantDelta();
+  return lines.join("\n\n");
+}
+
+function formatEventMessageForLog(
+  event: Event,
+  delta: {
+    readonly appendAssistantDelta: (delta: string) => void;
+    readonly flushAssistantDelta: () => void;
+  },
+): string | null {
+  const msg = event.msg;
+  switch (msg.type) {
+    case "agent_message_delta":
+      delta.appendAssistantDelta(msg.payload.delta);
+      return null;
+    case "agent_message":
+      delta.flushAssistantDelta();
+      return formatTranscriptLine("assistant", msg.payload.message);
+    case "user_message":
+      delta.flushAssistantDelta();
+      return formatTranscriptLine(
+        "user",
+        messageContentText(msg.payload.displayText ?? msg.payload.message),
+      );
+    case "turn_complete":
+      delta.flushAssistantDelta();
+      return msg.payload.lastAgentMessage
+        ? formatTranscriptLine("assistant", msg.payload.lastAgentMessage)
+        : formatTranscriptLine("system", `turn complete ${msg.payload.turnId}`);
+    case "turn_aborted":
+      delta.flushAssistantDelta();
+      return formatTranscriptLine(
+        "system",
+        `turn aborted: ${msg.payload.reason}`,
+      );
+    case "tool_call_started":
+      delta.flushAssistantDelta();
+      return formatTranscriptLine(
+        "tool",
+        `${msg.payload.toolName} started (${msg.payload.callId})\n${msg.payload.args}`,
+      );
+    case "tool_call_completed":
+      delta.flushAssistantDelta();
+      return formatTranscriptLine(
+        "tool",
+        `completed (${msg.payload.callId})${msg.payload.isError ? " with error" : ""}\n${msg.payload.result}`,
+      );
+    case "tool_progress":
+      delta.flushAssistantDelta();
+      return formatTranscriptLine(
+        "tool",
+        `${msg.payload.toolName} progress (${msg.payload.callId})\n${msg.payload.chunk}`,
+      );
+    case "exec_command_begin":
+      delta.flushAssistantDelta();
+      return formatTranscriptLine(
+        "exec",
+        `started (${msg.payload.callId})\n${msg.payload.command}`,
+      );
+    case "exec_command_end":
+      delta.flushAssistantDelta();
+      return formatTranscriptLine(
+        "exec",
+        [
+          `completed (${msg.payload.callId}) exit=${String(msg.payload.exitCode)}`,
+          msg.payload.stdout ? `stdout:\n${msg.payload.stdout}` : "",
+          msg.payload.stderr ? `stderr:\n${msg.payload.stderr}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      );
+    case "mcp_tool_call_begin":
+      delta.flushAssistantDelta();
+      return formatTranscriptLine(
+        "tool",
+        `${msg.payload.server}.${msg.payload.toolName} started (${msg.payload.callId})\n${msg.payload.args}`,
+      );
+    case "mcp_tool_call_end":
+      delta.flushAssistantDelta();
+      return formatTranscriptLine(
+        "tool",
+        `completed (${msg.payload.callId})${msg.payload.isError ? " with error" : ""}\n${msg.payload.result}`,
+      );
+    case "warning":
+      delta.flushAssistantDelta();
+      return formatTranscriptLine("warning", msg.payload.message);
+    case "error":
+    case "stream_error":
+      delta.flushAssistantDelta();
+      return formatTranscriptLine("error", msg.payload.message);
+    case "context_compacted":
+      delta.flushAssistantDelta();
+      return formatTranscriptLine(
+        "system",
+        `context compacted${msg.payload.summary ? `: ${msg.payload.summary}` : ""}`,
+      );
+    case "plan_started":
+      delta.flushAssistantDelta();
+      return formatTranscriptLine("plan", msg.payload.title ?? "started");
+    case "plan_delta":
+      delta.flushAssistantDelta();
+      return formatTranscriptLine("plan", msg.payload.delta);
+    case "plan_item_completed":
+      delta.flushAssistantDelta();
+      return formatTranscriptLine(
+        "plan",
+        `completed: ${msg.payload.finalText}`,
+      );
+    case "plan_exited":
+      delta.flushAssistantDelta();
+      return formatTranscriptLine("plan", "exited");
+    default:
+      delta.flushAssistantDelta();
+      return formatGenericEventForLog(event);
+  }
+}
+
+function formatResponseItemForLog(item: ResponseItem): string {
+  return formatTranscriptLine(item.role, messageContentText(item.content));
+}
+
+function formatGenericEventForLog(event: Event): string {
+  return formatTranscriptLine(
+    `event:${event.msg.type}`,
+    stringifyJsonForLog({
+      id: event.id,
+      ...(event.seq !== undefined ? { seq: event.seq } : {}),
+      payload: event.msg.payload,
+    }),
+  );
+}
+
+function formatGenericRolloutItemForLog(item: RolloutItem): string {
+  return formatTranscriptLine(
+    `rollout:${item.type}`,
+    stringifyJsonForLog(
+      item.eventVersion === undefined
+        ? item.payload
+        : {
+            eventVersion: item.eventVersion,
+            payload: item.payload,
+          },
+    ),
+  );
+}
+
+function formatToolOutputSection(
+  toolOutputs: readonly AgentToolOutputLog[],
+): string {
+  return [
+    "tool_outputs",
+    ...toolOutputs.map((output) =>
+      [
+        `session_id\t${output.sessionId}`,
+        `tool_call_id\t${output.toolCallId}`,
+        `tool_name\t${output.toolName}`,
+        `status\t${output.status}`,
+        ...(output.outputLogPath !== undefined
+          ? [`output_log_path\t${output.outputLogPath}`]
+          : []),
+        "",
+        output.output,
+      ].join("\n"),
+    ),
+  ].join("\n\n");
+}
+
+function formatTranscriptLine(role: string, content: string): string {
+  return `${role}:\n${content.trimEnd()}`;
+}
+
+function messageContentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (
+          part !== null &&
+          typeof part === "object" &&
+          typeof (part as { text?: unknown }).text === "string"
+        ) {
+          return (part as { text: string }).text;
+        }
+        return stringifyJsonForLog(part);
+      })
+      .join("\n");
+  }
+  return stringifyJsonForLog(content);
+}
+
+function stringifyJsonForLog(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function formatThreadSourceForLog(source: ThreadSource): string {
+  return typeof source === "string" ? source : (JSON.stringify(source) ?? "");
+}
+
+function uniqueNonEmptyStrings(values: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (trimmed.length === 0 || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    result.push(trimmed);
+  }
+  return result;
+}
+
+function isThreadLogReadMiss(error: unknown): boolean {
+  return (
+    error instanceof ThreadNotFoundError ||
+    error instanceof ThreadStoreInvalidRequestError
+  );
 }

@@ -45,6 +45,7 @@ const expectedMethods = [
   "agent.list",
   "agent.attach",
   "agent.stop",
+  "agent.logs",
   "session.create",
   "session.list",
   "session.attach",
@@ -233,6 +234,12 @@ describe("AgenC daemon protocol surface", () => {
         id: 5,
         method: "agent.stop",
         params: { agentId: "agent_1", reason: "user requested stop" },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: "agent-log",
+        method: "agent.logs",
+        params: { agentId: "agent_1" },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
