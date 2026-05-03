@@ -20,7 +20,7 @@ import { isUltrareviewEnabled } from '../../commands/review/ultrareviewEnabled.j
 import { getNativeCSIuTerminalDisplayName } from '../../commands/terminalSetup/terminalSetup.js';
 import { type Command, hasCommand } from '../../commands.js';
 import { useIsModalOverlayActive } from '../../context/overlayContext.js';
-import { useSetPromptOverlayDialog } from '../../context/promptOverlayContext.js';
+import { useSetPromptOverlayDialog } from '../../../../tui/context/promptOverlayContext.js';
 import { formatImageRef, formatPastedTextRef, getPastedTextRefNumLines, parseReferences } from '../../history.js';
 import type { VerificationStatus } from '../../hooks/useApiKeyVerification.js';
 import { type HistoryMode, useArrowKeyHistory } from '../../hooks/useArrowKeyHistory.js';
