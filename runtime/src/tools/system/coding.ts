@@ -84,6 +84,7 @@ export function createCodingTools(config: CodingToolConfig): readonly Tool[] {
     description:
       "Search path-scoped files for content matches using ripgrep behind a native structured grep surface. Prefer this over raw shell grep/rg for coding workflows.",
     metadata: codingToolMetadata("system.grep"),
+    recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
       properties: {
@@ -310,6 +311,7 @@ export function createCodingTools(config: CodingToolConfig): readonly Tool[] {
     description:
       "Match path-scoped files by glob pattern using ripgrep's file listing surface.",
     metadata: codingToolMetadata("system.glob"),
+    recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
       properties: {

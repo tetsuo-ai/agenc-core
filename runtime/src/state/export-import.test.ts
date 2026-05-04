@@ -77,6 +77,7 @@ describe("state export/import", () => {
           toolName: "FileRead",
           args: { path: "README.md" },
           status: "running",
+          recoveryCategory: "idempotent",
           outputPartial: "partial",
         },
       ],
@@ -290,9 +291,10 @@ function seedAgentState(driver: StateSqliteDriver): void {
         tool_name,
         args_json,
         status,
+        recovery_category,
         output_partial,
         started_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       "session-export",
@@ -300,6 +302,7 @@ function seedAgentState(driver: StateSqliteDriver): void {
       "FileRead",
       JSON.stringify({ path: "README.md" }),
       "running",
+      "idempotent",
       "partial",
       "2026-05-01T00:09:00.000Z",
     );

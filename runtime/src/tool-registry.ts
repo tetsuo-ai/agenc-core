@@ -24,7 +24,12 @@
 
 import type { LLMTool, LLMToolCall } from "./llm/types.js";
 import type { FunctionCallOutputContentItem } from "./tools/context.js";
-import type { Tool, ToolCatalogEntry, ToolMetadata } from "./tools/types.js";
+import type {
+  Tool,
+  ToolCatalogEntry,
+  ToolMetadata,
+  ToolRecoveryCategory,
+} from "./tools/types.js";
 import { safeStringify } from "./tools/types.js";
 import type { ToolsConfig } from "./config/schema.js";
 import {
@@ -160,16 +165,41 @@ function tagTool(tool: Tool, opts: { readonly serverId?: string } = {}): Tool {
     tool.isConcurrencySafe ??
     (() =>
       baseClass.kind === "shared_read" || baseClass.kind === "shared_server");
+  const recoveryCategory = resolveToolRecoveryCategory(tool, isReadOnly);
 
   return {
     ...tool,
     concurrencyClass: baseClass,
     ...(serverId ? { serverId } : {}),
     isReadOnly,
+    recoveryCategory,
     supportsParallelToolCalls,
     requiresApproval,
     isConcurrencySafe,
   };
+}
+
+function resolveToolRecoveryCategory(
+  tool: Tool,
+  _isReadOnly: boolean,
+): ToolRecoveryCategory {
+  const declared = (tool as { readonly recoveryCategory?: unknown })
+    .recoveryCategory;
+  if (isToolRecoveryCategory(declared)) return declared;
+  try {
+    if (tool.requiresUserInteraction?.() === true) return "interactive";
+  } catch {
+    return "side-effecting";
+  }
+  return "side-effecting";
+}
+
+function isToolRecoveryCategory(value: unknown): value is ToolRecoveryCategory {
+  return (
+    value === "idempotent" ||
+    value === "side-effecting" ||
+    value === "interactive"
+  );
 }
 
 type ToolListProvider = {
@@ -267,6 +297,7 @@ function buildBuiltinToolSurface(
   const stringArgumentFields: Record<string, string> = {};
   const tools: Tool[] = [];
   for (const group of groups) {
+    assertBuiltinToolsDeclareRecoveryCategory(group);
     const groupToolNames = new Set(group.tools.map((tool) => tool.name));
     for (const name of group.visibleByDefault ?? []) {
       if (groupToolNames.has(name)) visibleToolNames.add(name);
@@ -279,6 +310,18 @@ function buildBuiltinToolSurface(
     tools.push(...group.tools);
   }
   return { tools, visibleToolNames, stringArgumentFields };
+}
+
+function assertBuiltinToolsDeclareRecoveryCategory(
+  group: BuiltinToolSurfaceGroup,
+): void {
+  const missing = group.tools
+    .filter((tool) => !isToolRecoveryCategory(tool.recoveryCategory))
+    .map((tool) => tool.name);
+  if (missing.length === 0) return;
+  throw new Error(
+    `builtin tool group ${group.id} missing recoveryCategory: ${missing.join(", ")}`,
+  );
 }
 
 function applyBuiltinVisibility(

@@ -202,6 +202,7 @@ export function createTaskBoardTools(opts: TaskToolOptions): readonly Tool[] {
         keywords: ["task", "create", "coordination", "subagent"],
       }),
       concurrencyClass: TASK_CONCURRENCY,
+      recoveryCategory: "side-effecting",
       inputSchema: {
         type: "object",
         properties: {
@@ -256,6 +257,7 @@ export function createTaskBoardTools(opts: TaskToolOptions): readonly Tool[] {
         keywords: ["task", "get", "coordination"],
       }),
       isReadOnly: true,
+      recoveryCategory: "idempotent",
       inputSchema: {
         type: "object",
         properties: {
@@ -294,6 +296,7 @@ export function createTaskBoardTools(opts: TaskToolOptions): readonly Tool[] {
         keywords: ["task", "update", "coordination", "dependencies"],
       }),
       concurrencyClass: TASK_CONCURRENCY,
+      recoveryCategory: "side-effecting",
       inputSchema: {
         type: "object",
         properties: {
@@ -447,6 +450,7 @@ export function createTaskBoardTools(opts: TaskToolOptions): readonly Tool[] {
         keywords: ["task", "list", "coordination", "subagent"],
       }),
       isReadOnly: true,
+      recoveryCategory: "idempotent",
       inputSchema: {
         type: "object",
         properties: {},

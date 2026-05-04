@@ -220,6 +220,7 @@ describe("request_user_input", () => {
     const tool = createRequestUserInputTool({ getSession: () => session });
 
     expect(tool.metadata?.mutating).toBe(true);
+    expect(tool.recoveryCategory).toBe("interactive");
     expect(tool.requiresUserInteraction?.()).toBe(true);
     expect(tool.supportsParallelToolCalls).toBe(false);
     expect(tool.isConcurrencySafe?.({})).toBe(false);

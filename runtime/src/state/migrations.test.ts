@@ -15,7 +15,7 @@ const migrationDir = dirname(fileURLToPath(import.meta.url));
 describe("state migration registry", () => {
   it("loads state migrations from numbered migration files in order", () => {
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
     ]);
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.name)).toEqual([
       "initial_state_schema",
@@ -27,6 +27,7 @@ describe("state migration registry", () => {
       "session_agent_links_schema",
       "tool_output_rotation_schema",
       "agent_run_metadata_schema",
+      "tool_recovery_category_schema",
     ]);
     expectMigrationVersionsAreUnique(STATE_DB_MIGRATIONS);
   });
@@ -52,6 +53,7 @@ describe("state migration registry", () => {
       "007_session_agent_links_schema.ts",
       "008_tool_output_rotation_schema.ts",
       "009_agent_run_metadata_schema.ts",
+      "010_tool_recovery_category_schema.ts",
     ]);
   });
 
@@ -102,6 +104,79 @@ describe("state migration registry", () => {
           )
           .get()?.version,
       ).toBe(9);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("adds tool recovery category to legacy in-flight tool tables idempotently", () => {
+    const db = new Database(":memory:");
+    try {
+      db.exec(`
+        CREATE TABLE schema_migrations (
+          version INTEGER PRIMARY KEY,
+          name TEXT NOT NULL,
+          applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+        INSERT INTO schema_migrations (version, name) VALUES
+          (1, 'initial_state_schema'),
+          (2, 'csv_agent_jobs_schema'),
+          (3, 'agent_runs_schema'),
+          (4, 'session_state_snapshots_schema'),
+          (5, 'in_flight_tool_calls_schema'),
+          (6, 'thread_model_provider_columns'),
+          (7, 'session_agent_links_schema'),
+          (8, 'tool_output_rotation_schema'),
+          (9, 'agent_run_metadata_schema');
+        CREATE TABLE in_flight_tool_calls (
+          session_id TEXT NOT NULL,
+          tool_call_id TEXT NOT NULL,
+          tool_name TEXT NOT NULL,
+          args_json TEXT NOT NULL,
+          status TEXT NOT NULL,
+          output_partial TEXT,
+          started_at TEXT NOT NULL,
+          output_log_path TEXT,
+          output_log_bytes INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (session_id, tool_call_id)
+        );
+      `);
+
+      applyMigrations(db, STATE_DB_MIGRATIONS);
+      applyMigrations(db, STATE_DB_MIGRATIONS);
+
+      const columns = db
+        .prepare<[], { name: string }>("PRAGMA table_info(in_flight_tool_calls)")
+        .all()
+        .map((row) => row.name);
+      expect(columns.filter((name) => name === "recovery_category")).toEqual([
+        "recovery_category",
+      ]);
+      db.prepare(
+        `INSERT INTO in_flight_tool_calls (
+          session_id,
+          tool_call_id,
+          tool_name,
+          args_json,
+          status,
+          output_partial,
+          started_at
+        ) VALUES ('session-1', 'tool-1', 'FileWrite', '{}', 'running', NULL, '2026-05-01T00:00:00.000Z')`,
+      ).run();
+      expect(
+        db
+          .prepare<[], { recovery_category: string }>(
+            "SELECT recovery_category FROM in_flight_tool_calls",
+          )
+          .get()?.recovery_category,
+      ).toBe("side-effecting");
+      expect(
+        db
+          .prepare<[], { version: number }>(
+            "SELECT version FROM schema_migrations WHERE version = 10",
+          )
+          .get()?.version,
+      ).toBe(10);
     } finally {
       db.close();
     }

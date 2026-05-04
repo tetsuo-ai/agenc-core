@@ -1133,6 +1133,7 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
       deferred: false,
     },
     isReadOnly: true,
+    recoveryCategory: "idempotent",
     requiresApproval: false,
     inputSchema: {
       type: "object",

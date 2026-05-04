@@ -61,6 +61,7 @@ export function createStructuredOutputTool(): Tool {
     description: STRUCTURED_OUTPUT_DESCRIPTION,
     metadata: toolMetadata(),
     isReadOnly: true,
+    recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
       additionalProperties: true,
@@ -133,6 +134,7 @@ function buildStructuredOutputToolForSchema(
       description: STRUCTURED_OUTPUT_DESCRIPTION,
       metadata: toolMetadata(),
       isReadOnly: true,
+      recoveryCategory: "idempotent",
       inputSchema: jsonSchema,
       execute: async (args) => {
         if (!validate(args)) {

@@ -623,6 +623,7 @@ export interface EventToolRequestParams extends AgenCEventBaseParams {
   readonly toolName: string;
   readonly turnId?: string;
   readonly input?: JsonValue;
+  readonly recoveryCategory?: "idempotent" | "side-effecting" | "interactive";
 }
 
 export interface EventPermissionRequestParams extends AgenCEventBaseParams {

@@ -76,6 +76,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
     requiresApproval: true,
     concurrencyClass: { kind: "background_terminal" },
     isReadOnly: false,
+    recoveryCategory: "side-effecting",
     supportsParallelToolCalls: false,
     isConcurrencySafe: () => false,
     interruptBehavior: () => "cancel",

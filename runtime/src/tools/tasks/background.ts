@@ -81,6 +81,7 @@ export function createBackgroundTaskTools(
         keywords: ["task", "output", "agent", "background"],
       }),
       isReadOnly: true,
+      recoveryCategory: "idempotent",
       timeoutBehavior: "tool",
       inputSchema: {
         type: "object",
@@ -171,6 +172,7 @@ export function createBackgroundTaskTools(
         keywords: ["task", "stop", "agent", "background"],
       }),
       concurrencyClass: TASK_CONCURRENCY,
+      recoveryCategory: "side-effecting",
       inputSchema: {
         type: "object",
         properties: {

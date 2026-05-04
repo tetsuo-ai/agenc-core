@@ -178,6 +178,23 @@ async function waitForSnapshotCount(
   throw new Error(`timed out waiting for snapshots for ${sessionId}`);
 }
 
+async function waitForRecoveredToolStatus(
+  agencHome: string,
+  cwd: string,
+  toolCallId: string,
+  expectedStatus: string,
+): Promise<string> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 2_000) {
+    const status = readRecoveredToolStatus(agencHome, cwd, toolCallId);
+    if (status === expectedStatus) return status;
+    await delay(10);
+  }
+  throw new Error(
+    `timed out waiting for ${toolCallId} to reach ${expectedStatus}`,
+  );
+}
+
 function readSocketLine(socket: Socket): Promise<string> {
   return new Promise((resolve, reject) => {
     let buffer = "";
@@ -786,14 +803,14 @@ describe("AgenC daemon CLI", () => {
     expect(latestSnapshotToolState(agencHome, otherCwd, "session-other"))
       .toMatchObject({
         lastTrigger: "periodic",
-        pending: ["tool-other"],
+        pending: [],
       });
 
     expect(io.stderrText()).toContain(
       "daemon recovery loaded 2 agent run(s) from state",
     );
     expect(io.stderrText()).toContain(
-      "daemon recovery marked 2 stale in-flight tool call(s) failed",
+      "daemon recovery processed 2 stale in-flight tool call(s): replay=0, poison=2, cancel=0",
     );
     expect(resumedRoots).toHaveLength(2);
     expect(resumedRoots).toEqual(
@@ -836,14 +853,24 @@ describe("AgenC daemon CLI", () => {
           runStatus: "running",
           runnable: true,
           runtimeRestore: "available",
-          toolRecoveryMode: "mark_failed",
+          toolRecoveryMode: "category_policy",
           snapshot: {
             sessionId: "session-restart",
-            toolState: { pending: ["tool-restart"] },
-            failedToolCalls: [
+            toolState: {
+              pending: [],
+              completed: {
+                "tool-restart": {
+                  status: "poisoned",
+                  recoveryAction: "poison",
+                },
+              },
+            },
+            recoveredToolCalls: [
               {
                 toolCallId: "tool-restart",
-                statusAfter: "failed",
+                statusAfter: "poisoned",
+                recoveryCategory: "side-effecting",
+                recoveryAction: "poison",
               },
             ],
           },
@@ -876,10 +903,12 @@ describe("AgenC daemon CLI", () => {
           metadata: {
             recovery: {
               snapshot: {
-                failedToolCalls: [
+                recoveredToolCalls: [
                   {
                     toolCallId: "tool-restart",
-                    statusAfter: "failed",
+                    statusAfter: "poisoned",
+                    recoveryCategory: "side-effecting",
+                    recoveryAction: "poison",
                   },
                 ],
               },
@@ -902,14 +931,385 @@ describe("AgenC daemon CLI", () => {
     signalProcess.emit("SIGTERM");
     await expect(running).resolves.toBe(0);
     expect(readRecoveredToolStatus(agencHome, process.cwd(), "tool-restart")).toBe(
-      "failed",
+      "poisoned",
     );
     expect(readRecoveredToolStatus(agencHome, otherCwd, "tool-other")).toBe(
-      "failed",
+      "poisoned",
     );
     expect(readAgentRunStatus(agencHome, process.cwd(), "run-prune")).toBeUndefined();
 
     await rm(otherCwd, { recursive: true, force: true });
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("foreground daemon replays idempotent recovered tool calls and persists completion", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    seedRecoverableDaemonState(agencHome, {
+      cwd: process.cwd(),
+      runId: "run-replay",
+      sessionId: "session-replay",
+      toolCallId: "tool-replay",
+      toolName: "FileRead",
+      toolArgs: { file_path: "README.md" },
+      recoveryCategory: "idempotent",
+    });
+
+    const live = restoredLiveAgent("run-replay", "/root/run-replay");
+    const dispatch = vi.fn(async () => ({ content: "file text" }));
+    const resumeAgentFromRollout = vi.fn(async () => ({
+      resumedCount: 1,
+      rootLive: live,
+    }));
+    let runParams: Parameters<AgenCRunAgentFunction>[0] | undefined;
+    const runAgentFn = (async function* (
+      params: Parameters<AgenCRunAgentFunction>[0],
+    ) {
+      runParams = params;
+      params.live.status.markRunning("turn-replay");
+      yield { kind: "status", text: "restored" };
+      await new Promise(() => {});
+    }) as AgenCRunAgentFunction;
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: async () => {},
+    };
+    const runner: AgenCBackgroundAgentRunner =
+      new AgenCDelegateBackgroundAgentRunner({
+        bootstrap: (async () => ({
+          session: {
+            conversationId: "daemon-replay",
+            permissionModeRegistry,
+            services: {},
+          },
+          registry: {
+            tools: [{ name: "FileRead", recoveryCategory: "idempotent" }],
+            toLLMTools: () => [],
+            dispatch,
+          },
+          shutdown: async () => {},
+        })) as AgenCBootstrapFunction,
+        ensureAgentControl: (() => ({
+          control: {
+            resumeAgentFromRollout,
+            sendInput: async () => {},
+            shutdown: async () => {},
+          },
+          registry: {},
+        })) as AgenCEnsureAgentControlFunction,
+        runAgentFn,
+        now: () => "2026-05-01T12:00:00.000Z",
+      });
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess, runner, snapshotPeriodicIntervalMs: 10 },
+    );
+    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+    await expect(
+      waitForRecoveredToolStatus(
+        agencHome,
+        process.cwd(),
+        "tool-replay",
+        "completed",
+      ),
+    ).resolves.toBe("completed");
+
+    expect(io.stderrText()).toContain(
+      "daemon recovery processed 1 stale in-flight tool call(s): replay=1, poison=0, cancel=0",
+    );
+    expect(resumeAgentFromRollout).toHaveBeenCalledWith(
+      expect.objectContaining({ rootThreadId: "run-replay" }),
+    );
+    expect(dispatch).toHaveBeenCalledWith({
+      id: "tool-replay",
+      name: "FileRead",
+      arguments: JSON.stringify({ file_path: "README.md" }),
+    });
+    expect(runParams?.initialMessages).toEqual([
+      { role: "assistant", content: "state" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          {
+            id: "tool-replay",
+            name: "FileRead",
+            arguments: JSON.stringify({ file_path: "README.md" }),
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: "file text",
+        toolCallId: "tool-replay",
+        toolName: "FileRead",
+      },
+    ]);
+    expect(latestSnapshotToolState(agencHome, process.cwd(), "session-replay"))
+      .toMatchObject({
+        pending: [],
+        completed: {
+          "tool-replay": {
+            status: "completed",
+            result: "file text",
+            recoveryCategory: "idempotent",
+          },
+        },
+      });
+
+    signalProcess.emit("SIGTERM");
+    await expect(running).resolves.toBe(0);
+    expect(readRecoveredToolStatus(agencHome, process.cwd(), "tool-replay")).toBe(
+      "completed",
+    );
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("foreground daemon poisons replay when current tool registration is not idempotent", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    seedRecoverableDaemonState(agencHome, {
+      cwd: process.cwd(),
+      runId: "run-replay-poison",
+      sessionId: "session-replay-poison",
+      toolCallId: "tool-replay-poison",
+      toolName: "FileWrite",
+      toolArgs: { file_path: "a.txt", content: "x" },
+      recoveryCategory: "idempotent",
+    });
+
+    const live = restoredLiveAgent("run-replay-poison", "/root/run-replay-poison");
+    const dispatch = vi.fn(async () => ({ content: "should not run" }));
+    const resumeAgentFromRollout = vi.fn(async () => ({
+      resumedCount: 1,
+      rootLive: live,
+    }));
+    let runParams: Parameters<AgenCRunAgentFunction>[0] | undefined;
+    const runAgentFn = (async function* (
+      params: Parameters<AgenCRunAgentFunction>[0],
+    ) {
+      runParams = params;
+      params.live.status.markRunning("turn-replay-poison");
+      yield { kind: "status", text: "restored" };
+      await new Promise(() => {});
+    }) as AgenCRunAgentFunction;
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: async () => {},
+    };
+    const runner: AgenCBackgroundAgentRunner =
+      new AgenCDelegateBackgroundAgentRunner({
+        bootstrap: (async () => ({
+          session: {
+            conversationId: "daemon-replay-poison",
+            permissionModeRegistry,
+            services: {},
+          },
+          registry: {
+            tools: [{ name: "FileWrite", recoveryCategory: "side-effecting" }],
+            toLLMTools: () => [],
+            dispatch,
+          },
+          shutdown: async () => {},
+        })) as AgenCBootstrapFunction,
+        ensureAgentControl: (() => ({
+          control: {
+            resumeAgentFromRollout,
+            sendInput: async () => {},
+            shutdown: async () => {},
+          },
+          registry: {},
+        })) as AgenCEnsureAgentControlFunction,
+        runAgentFn,
+        now: () => "2026-05-01T12:00:00.000Z",
+      });
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess, runner, snapshotPeriodicIntervalMs: 10 },
+    );
+    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+    await expect(
+      waitForRecoveredToolStatus(
+        agencHome,
+        process.cwd(),
+        "tool-replay-poison",
+        "poisoned",
+      ),
+    ).resolves.toBe("poisoned");
+
+    expect(io.stderrText()).toContain(
+      "daemon recovery processed 1 stale in-flight tool call(s): replay=1, poison=0, cancel=0",
+    );
+    expect(resumeAgentFromRollout).toHaveBeenCalledWith(
+      expect.objectContaining({ rootThreadId: "run-replay-poison" }),
+    );
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(runParams?.initialMessages).toEqual([
+      { role: "assistant", content: "state" },
+    ]);
+    expect(
+      latestSnapshotToolState(
+        agencHome,
+        process.cwd(),
+        "session-replay-poison",
+      ),
+    ).toMatchObject({
+      pending: [],
+      completed: {
+        "tool-replay-poison": {
+          status: "poisoned",
+          result:
+            "Recovered tool call tool-replay-poison was not replayed because the current tool registration is missing or not idempotent.",
+          recoveryCategory: "side-effecting",
+          recoveryAction: "poison",
+        },
+      },
+    });
+
+    signalProcess.emit("SIGTERM");
+    await expect(running).resolves.toBe(0);
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("foreground daemon exposes poisoned and cancelled recovery details through attach", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+    const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
+    seedRecoverableDaemonState(agencHome, {
+      cwd: process.cwd(),
+      runId: "run-poison",
+      sessionId: "session-poison",
+      toolCallId: "tool-poison",
+      toolName: "Write",
+      toolArgs: { file_path: "a.txt", content: "changed" },
+      recoveryCategory: "side-effecting",
+    });
+    seedRecoverableDaemonState(agencHome, {
+      cwd: process.cwd(),
+      runId: "run-cancel",
+      sessionId: "session-cancel",
+      toolCallId: "tool-cancel",
+      toolName: "AskUserQuestion",
+      toolArgs: { questions: [] },
+      recoveryCategory: "interactive",
+    });
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "unused",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+    };
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess, runner },
+    );
+    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+    expect(io.stderrText()).toContain(
+      "daemon recovery processed 2 stale in-flight tool call(s): replay=0, poison=1, cancel=1",
+    );
+
+    const authCookie = (await readFile(cookiePath, "utf8")).trim();
+    const client = createAgenCJsonLineDaemonRequestClient({
+      socketPath,
+      authCookie,
+      timeoutMs: 1000,
+    });
+    await expect(
+      client.request("agent.attach", {
+        agentId: "run-poison",
+        clientId: "client-poison",
+      }),
+    ).resolves.toMatchObject({
+      agentId: "run-poison",
+      sessionIds: ["session-poison"],
+      sessions: [
+        {
+          sessionId: "session-poison",
+          metadata: {
+            recovery: {
+              snapshot: {
+                toolState: {
+                  pending: [],
+                  completed: {
+                    "tool-poison": {
+                      status: "poisoned",
+                      recoveryCategory: "side-effecting",
+                      recoveryAction: "poison",
+                    },
+                  },
+                },
+                recoveredToolCalls: [
+                  {
+                    toolCallId: "tool-poison",
+                    statusAfter: "poisoned",
+                    recoveryCategory: "side-effecting",
+                    recoveryAction: "poison",
+                  },
+                ],
+              },
+            },
+          },
+        },
+      ],
+    });
+    await expect(
+      client.request("agent.attach", {
+        agentId: "run-cancel",
+        clientId: "client-cancel",
+      }),
+    ).resolves.toMatchObject({
+      agentId: "run-cancel",
+      sessionIds: ["session-cancel"],
+      sessions: [
+        {
+          sessionId: "session-cancel",
+          metadata: {
+            recovery: {
+              snapshot: {
+                toolState: {
+                  pending: [],
+                  completed: {
+                    "tool-cancel": {
+                      status: "recovery_cancelled",
+                      recoveryCategory: "interactive",
+                      recoveryAction: "cancel",
+                    },
+                  },
+                },
+                recoveredToolCalls: [
+                  {
+                    toolCallId: "tool-cancel",
+                    statusAfter: "recovery_cancelled",
+                    recoveryCategory: "interactive",
+                    recoveryAction: "cancel",
+                  },
+                ],
+              },
+            },
+          },
+        },
+      ],
+    });
+
+    signalProcess.emit("SIGTERM");
+    await expect(running).resolves.toBe(0);
+
     await rm(agencHome, { recursive: true, force: true });
   });
 
@@ -1187,6 +1587,9 @@ function seedRecoverableDaemonState(
     readonly runId: string;
     readonly sessionId: string;
     readonly toolCallId: string;
+    readonly toolName?: string;
+    readonly toolArgs?: unknown;
+    readonly recoveryCategory?: string;
     readonly status?: string;
   },
 ): void {
@@ -1247,16 +1650,18 @@ function seedRecoverableDaemonState(
           tool_name,
           args_json,
           status,
+          recovery_category,
           output_partial,
           started_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         params.sessionId,
         params.toolCallId,
-        "FileWrite",
-        JSON.stringify({ path: "a.txt" }),
+        params.toolName ?? "FileWrite",
+        JSON.stringify(params.toolArgs ?? { path: "a.txt" }),
         "running",
+        params.recoveryCategory ?? "side-effecting",
         null,
         "2026-05-01T00:05:00.000Z",
       );

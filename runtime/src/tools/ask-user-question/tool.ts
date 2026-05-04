@@ -356,6 +356,7 @@ export function createAskUserQuestionTool(): Tool {
     supportsParallelToolCalls: false,
     isConcurrencySafe: () => false,
     requiresUserInteraction: () => true,
+    recoveryCategory: "interactive",
     checkPermissions(): PermissionResult {
       return {
         behavior: "ask",

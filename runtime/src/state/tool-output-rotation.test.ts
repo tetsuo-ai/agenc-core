@@ -139,6 +139,24 @@ describe("tool outputRotation persistence", () => {
     expect(existsSync(`${outputLogPath}.1`)).toBe(false);
   });
 
+  it("persists tool recovery category for restart recovery", () => {
+    recordInFlightToolCallStart(driver, {
+      sessionId: "session-recovery",
+      agentId: "agent-recovery",
+      toolCallId: "tool-recovery",
+      toolName: "FileRead",
+      args: { path: "README.md" },
+      startedAt: "2026-05-01T00:00:00.000Z",
+      recoveryCategory: "idempotent",
+      agencHome: home,
+    });
+
+    expect(
+      persistedToolCallRow("session-recovery", "tool-recovery")
+        .recovery_category,
+    ).toBe("idempotent");
+  });
+
   it("redacts secrets from SQL fields and rotated output logs", () => {
     const outputRotation = {
       outputPartialMaxBytes: 24,
@@ -297,6 +315,7 @@ function persistedToolCallRow(
 ): {
   readonly status: string;
   readonly args_json: string;
+  readonly recovery_category: string;
   readonly output_partial: string | null;
   readonly output_log_path: string | null;
   readonly output_log_bytes: number;
@@ -307,12 +326,19 @@ function persistedToolCallRow(
       {
         status: string;
         args_json: string;
+        recovery_category: string;
         output_partial: string | null;
         output_log_path: string | null;
         output_log_bytes: number;
       }
     >(
-      `SELECT status, args_json, output_partial, output_log_path, output_log_bytes
+      `SELECT
+         status,
+         args_json,
+         recovery_category,
+         output_partial,
+         output_log_path,
+         output_log_bytes
        FROM in_flight_tool_calls
        WHERE session_id = ?
          AND tool_call_id = ?`,

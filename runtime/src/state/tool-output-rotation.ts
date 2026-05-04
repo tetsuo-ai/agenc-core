@@ -12,6 +12,7 @@ import { dirname, join } from "node:path";
 import { TextDecoder } from "node:util";
 import { getAgencHomeDir } from "../session/session-store.js";
 import { redactSecrets, redactSecretsInValue } from "../secrets/index.js";
+import type { ToolRecoveryCategory } from "../tools/types.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 
 export interface ToolOutputRotationPolicy {
@@ -33,6 +34,7 @@ export interface InFlightToolCallStartParams {
   readonly toolName: string;
   readonly args: unknown;
   readonly startedAt: string;
+  readonly recoveryCategory?: ToolRecoveryCategory;
   readonly agencHome?: string;
   readonly outputRotation?: ToolOutputRotationPolicy;
 }
@@ -45,6 +47,7 @@ export interface InFlightToolCallCompletionParams {
   readonly result: unknown;
   readonly isError: boolean;
   readonly completedAt: string;
+  readonly recoveryCategory?: ToolRecoveryCategory;
   readonly agencHome?: string;
   readonly outputRotation?: ToolOutputRotationPolicy;
 }
@@ -56,6 +59,7 @@ export interface InFlightToolCallProgressParams {
   readonly toolName?: string;
   readonly chunk: unknown;
   readonly observedAt: string;
+  readonly recoveryCategory?: ToolRecoveryCategory;
   readonly agencHome?: string;
   readonly outputRotation?: ToolOutputRotationPolicy;
 }
@@ -65,6 +69,9 @@ export const DEFAULT_TOOL_OUTPUT_ROTATION_POLICY = Object.freeze({
   logMaxBytes: 1_048_576,
   rotatedLogCount: 4,
 } satisfies Required<ToolOutputRotationPolicy>);
+
+export const DEFAULT_TOOL_RECOVERY_CATEGORY: ToolRecoveryCategory =
+  "side-effecting";
 
 const UTF8_FATAL_DECODER = new TextDecoder("utf-8", { fatal: true });
 
@@ -80,7 +87,7 @@ export function recordInFlightToolCallStart(
   removeRotatedToolOutputLog(outputLogPath, params.outputRotation);
   driver
     .prepareState<
-      [string, string, string, string, string, null, null, number, string]
+      [string, string, string, string, string, null, null, number, string, string]
     >(
       `INSERT INTO in_flight_tool_calls (
         session_id,
@@ -91,8 +98,9 @@ export function recordInFlightToolCallStart(
         output_partial,
         output_log_path,
         output_log_bytes,
-        started_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        started_at,
+        recovery_category
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(session_id, tool_call_id) DO UPDATE SET
         tool_name = excluded.tool_name,
         args_json = excluded.args_json,
@@ -100,7 +108,8 @@ export function recordInFlightToolCallStart(
         output_partial = excluded.output_partial,
         output_log_path = excluded.output_log_path,
         output_log_bytes = excluded.output_log_bytes,
-        started_at = excluded.started_at`,
+        started_at = excluded.started_at,
+        recovery_category = excluded.recovery_category`,
     )
     .run(
       params.sessionId,
@@ -112,7 +121,8 @@ export function recordInFlightToolCallStart(
       null,
       0,
       params.startedAt,
-  );
+      normalizeToolRecoveryCategory(params.recoveryCategory),
+    );
 }
 
 export function recordInFlightToolCallProgress(
@@ -144,6 +154,7 @@ export function recordInFlightToolCallProgress(
       toolName: params.toolName ?? "unknown",
       args: null,
       startedAt: params.observedAt,
+      recoveryCategory: params.recoveryCategory,
       agencHome: params.agencHome,
       outputRotation: params.outputRotation,
     });
@@ -164,11 +175,14 @@ export function recordInFlightToolCallProgress(
     policy,
   });
   driver
-    .prepareState<[string | null, string | null, number, string, string]>(
+    .prepareState<
+      [string | null, string | null, number, string | null, string, string]
+    >(
       `UPDATE in_flight_tool_calls
        SET output_partial = ?,
            output_log_path = ?,
-           output_log_bytes = ?
+           output_log_bytes = ?,
+           recovery_category = COALESCE(?, recovery_category)
        WHERE session_id = ?
          AND tool_call_id = ?`,
     )
@@ -176,6 +190,9 @@ export function recordInFlightToolCallProgress(
       appended.outputPartial,
       appended.outputLogPath ?? null,
       appended.outputLogBytes,
+      params.recoveryCategory !== undefined
+        ? normalizeToolRecoveryCategory(params.recoveryCategory)
+        : null,
       params.sessionId,
       params.toolCallId,
     );
@@ -194,12 +211,15 @@ export function recordInFlightToolCallCompletion(
   });
   const status = params.isError ? "failed" : "completed";
   const update = driver
-    .prepareState<[string, string | null, string | null, number, string, string]>(
+    .prepareState<
+      [string, string | null, string | null, number, string | null, string, string]
+    >(
       `UPDATE in_flight_tool_calls
        SET status = ?,
            output_partial = ?,
            output_log_path = ?,
-           output_log_bytes = ?
+           output_log_bytes = ?,
+           recovery_category = COALESCE(?, recovery_category)
        WHERE session_id = ?
          AND tool_call_id = ?`,
     )
@@ -208,13 +228,16 @@ export function recordInFlightToolCallCompletion(
       rotated.outputPartial,
       rotated.outputLogPath ?? null,
       rotated.outputLogBytes,
+      params.recoveryCategory !== undefined
+        ? normalizeToolRecoveryCategory(params.recoveryCategory)
+        : null,
       params.sessionId,
       params.toolCallId,
     );
   if (update.changes > 0) return;
   driver
     .prepareState<
-      [string, string, string, string, string, string | null, string | null, number, string]
+      [string, string, string, string, string, string | null, string | null, number, string, string]
     >(
       `INSERT INTO in_flight_tool_calls (
         session_id,
@@ -225,8 +248,9 @@ export function recordInFlightToolCallCompletion(
         output_partial,
         output_log_path,
         output_log_bytes,
-        started_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        started_at,
+        recovery_category
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       params.sessionId,
@@ -238,6 +262,7 @@ export function recordInFlightToolCallCompletion(
       rotated.outputLogPath ?? null,
       rotated.outputLogBytes,
       params.completedAt,
+      normalizeToolRecoveryCategory(params.recoveryCategory),
     );
 }
 
@@ -319,6 +344,19 @@ function normalizeOutputRotationPolicy(
       DEFAULT_TOOL_OUTPUT_ROTATION_POLICY.rotatedLogCount,
     ),
   };
+}
+
+export function normalizeToolRecoveryCategory(
+  category: ToolRecoveryCategory | string | undefined,
+): ToolRecoveryCategory {
+  switch (category) {
+    case "idempotent":
+    case "side-effecting":
+    case "interactive":
+      return category;
+    default:
+      return DEFAULT_TOOL_RECOVERY_CATEGORY;
+  }
 }
 
 function retainedOverflowForRotatedLogs(

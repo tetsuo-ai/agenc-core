@@ -435,6 +435,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       deferred: false,
     },
     requiresApproval: true,
+    recoveryCategory: "side-effecting",
     inputSchema: {
       type: "object",
       properties: {
@@ -705,6 +706,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       deferred: false,
     },
     requiresApproval: true,
+    recoveryCategory: "side-effecting",
     inputSchema: {
       type: "object",
       properties: {

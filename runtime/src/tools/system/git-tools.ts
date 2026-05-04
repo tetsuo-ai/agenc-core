@@ -33,6 +33,7 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       deferred: true,
       keywords: ["inventory", "manifest", "language", "worktree"],
     }),
+    recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
       properties: {
@@ -108,6 +109,7 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       deferred: true,
       keywords: ["status", "changed", "dirty", "branch"],
     }),
+    recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
       properties: { path: { type: "string" } },
@@ -141,6 +143,7 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       deferred: true,
       keywords: ["diff", "patch", "staged", "review"],
     }),
+    recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
       properties: {
@@ -191,6 +194,7 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       deferred: true,
       keywords: ["show", "commit", "object", "revision"],
     }),
+    recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
       properties: {
@@ -230,6 +234,7 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       deferred: true,
       keywords: ["branch", "upstream", "ahead", "behind", "head"],
     }),
+    recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
       properties: { path: { type: "string" } },
@@ -265,6 +270,7 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       deferred: true,
       keywords: ["changes", "summary", "staged", "unstaged", "untracked"],
     }),
+    recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
       properties: { path: { type: "string" } },
@@ -298,6 +304,7 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       deferred: true,
       keywords: ["worktree", "list", "branch"],
     }),
+    recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
       properties: { path: { type: "string" } },
@@ -341,6 +348,7 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       keywords: ["worktree", "create", "add", "branch"],
     }),
     requiresApproval: true,
+    recoveryCategory: "side-effecting",
     inputSchema: {
       type: "object",
       properties: {
@@ -400,6 +408,7 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       keywords: ["worktree", "remove", "delete", "force"],
     }),
     requiresApproval: true,
+    recoveryCategory: "side-effecting",
     inputSchema: {
       type: "object",
       properties: {
@@ -465,6 +474,7 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       deferred: true,
       keywords: ["worktree", "status", "dirty", "branch"],
     }),
+    recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
       properties: {

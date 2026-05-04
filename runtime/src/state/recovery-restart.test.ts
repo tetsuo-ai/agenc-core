@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 describe("recoverDaemonStateOnStartup", () => {
-  it("loads recoverable runs from their latest snapshot and fails stale tool calls", () => {
+  it("loads recoverable runs from their latest snapshot and applies stale tool recovery policy", () => {
     insertAgentRun({
       id: "run-1",
       objective: "continue work",
@@ -57,6 +57,22 @@ describe("recoverDaemonStateOnStartup", () => {
     });
     insertToolCall({
       sessionId: "session-1",
+      toolCallId: "tool-3",
+      toolName: "FileRead",
+      args: { path: "c.txt" },
+      status: "running",
+      recoveryCategory: "idempotent",
+    });
+    insertToolCall({
+      sessionId: "session-1",
+      toolCallId: "tool-4",
+      toolName: "AskUserQuestion",
+      args: { question: "Continue?" },
+      status: "running",
+      recoveryCategory: "interactive",
+    });
+    insertToolCall({
+      sessionId: "session-1",
       toolCallId: "tool-2",
       toolName: "FileRead",
       args: { path: "b.txt" },
@@ -79,11 +95,29 @@ describe("recoverDaemonStateOnStartup", () => {
         sessionId: "session-1",
         snapshotAt: "2026-05-01T00:10:00.000Z",
         conversation: [{ role: "assistant", content: "latest" }],
-        toolState: { pending: ["tool-1"] },
+        toolState: {
+          pending: [],
+          inFlight: {
+            "tool-3": {
+              status: "replay_pending",
+              recoveryAction: "replay",
+            },
+          },
+          completed: {
+            "tool-1": {
+              status: "poisoned",
+              recoveryAction: "poison",
+            },
+            "tool-4": {
+              status: "recovery_cancelled",
+              recoveryAction: "cancel",
+            },
+          },
+        },
         mcpConnectionState: { connected: true },
       },
     });
-    expect(report.failedToolCalls).toEqual([
+    expect(report.recoveredToolCalls).toEqual([
       {
         projectDir: driver.projectDir,
         sessionId: "session-1",
@@ -91,13 +125,69 @@ describe("recoverDaemonStateOnStartup", () => {
         toolName: "FileWrite",
         args: { path: "a.txt" },
         statusBefore: "running",
+        statusAfter: "poisoned",
+        recoveryCategory: "side-effecting",
+        recoveryAction: "poison",
         startedAt: "2026-05-01T00:05:00.000Z",
         outputPartial: "partial output",
       },
+      {
+        projectDir: driver.projectDir,
+        sessionId: "session-1",
+        toolCallId: "tool-3",
+        toolName: "FileRead",
+        args: { path: "c.txt" },
+        statusBefore: "running",
+        statusAfter: "replay_pending",
+        recoveryCategory: "idempotent",
+        recoveryAction: "replay",
+        startedAt: "2026-05-01T00:05:00.000Z",
+      },
+      {
+        projectDir: driver.projectDir,
+        sessionId: "session-1",
+        toolCallId: "tool-4",
+        toolName: "AskUserQuestion",
+        args: { question: "Continue?" },
+        statusBefore: "running",
+        statusAfter: "recovery_cancelled",
+        recoveryCategory: "interactive",
+        recoveryAction: "cancel",
+        startedAt: "2026-05-01T00:05:00.000Z",
+      },
     ]);
     expect(report.warnings).toEqual([]);
-    expect(toolCallStatus("session-1", "tool-1")).toBe("failed");
+    expect(toolCallStatus("session-1", "tool-1")).toBe("poisoned");
     expect(toolCallStatus("session-1", "tool-2")).toBe("completed");
+    expect(toolCallStatus("session-1", "tool-3")).toBe("replay_pending");
+    expect(toolCallStatus("session-1", "tool-4")).toBe("recovery_cancelled");
+
+    const secondReport = recoverDaemonStateOnStartup(driver, {
+      now: () => "2026-05-01T00:25:00.000Z",
+    });
+    expect(secondReport.recoveredToolCalls).toEqual([
+      expect.objectContaining({
+        toolCallId: "tool-3",
+        statusBefore: "replay_pending",
+        statusAfter: "replay_pending",
+        recoveryCategory: "idempotent",
+        recoveryAction: "replay",
+      }),
+      expect.objectContaining({
+        toolCallId: "tool-1",
+        statusBefore: "poisoned",
+        statusAfter: "poisoned",
+        recoveryCategory: "side-effecting",
+        recoveryAction: "poison",
+      }),
+      expect.objectContaining({
+        toolCallId: "tool-4",
+        statusBefore: "recovery_cancelled",
+        statusAfter: "recovery_cancelled",
+        recoveryCategory: "interactive",
+        recoveryAction: "cancel",
+      }),
+    ]);
   });
 
   it("keeps daemon startup recovery non-throwing when snapshot JSON is invalid", () => {
@@ -130,6 +220,58 @@ describe("recoverDaemonStateOnStartup", () => {
         sessionId: "session-bad",
       }),
     ]);
+  });
+
+  it("does not surface normally cancelled rows as startup recovery", () => {
+    insertToolCall({
+      sessionId: "session-cancelled",
+      toolCallId: "tool-cancelled",
+      toolName: "AskUserQuestion",
+      args: { question: "Continue?" },
+      status: "cancelled",
+      recoveryCategory: "interactive",
+    });
+
+    const report = recoverDaemonStateOnStartup(driver);
+
+    expect(report.recoveredToolCalls).toEqual([]);
+    expect(toolCallStatus("session-cancelled", "tool-cancelled")).toBe(
+      "cancelled",
+    );
+  });
+
+  it("poisons idempotent recovery rows with malformed arguments", () => {
+    insertToolCall({
+      sessionId: "session-bad-args",
+      toolCallId: "tool-bad-args",
+      toolName: "FileRead",
+      args: null,
+      argsJson: "{",
+      status: "running",
+      recoveryCategory: "idempotent",
+    });
+
+    const report = recoverDaemonStateOnStartup(driver);
+
+    expect(report.recoveredToolCalls).toEqual([
+      expect.objectContaining({
+        toolCallId: "tool-bad-args",
+        statusBefore: "running",
+        statusAfter: "poisoned",
+        recoveryCategory: "idempotent",
+        recoveryAction: "poison",
+      }),
+    ]);
+    expect(report.warnings).toEqual([
+      expect.objectContaining({
+        code: "tool_args_json_invalid",
+        sessionId: "session-bad-args",
+        toolCallId: "tool-bad-args",
+      }),
+    ]);
+    expect(toolCallStatus("session-bad-args", "tool-bad-args")).toBe(
+      "poisoned",
+    );
   });
 });
 
@@ -198,7 +340,9 @@ function insertToolCall(params: {
   readonly toolCallId: string;
   readonly toolName: string;
   readonly args: unknown;
+  readonly argsJson?: string;
   readonly status: string;
+  readonly recoveryCategory?: string;
   readonly outputPartial?: string;
 }): void {
   driver
@@ -209,16 +353,18 @@ function insertToolCall(params: {
         tool_name,
         args_json,
         status,
+        recovery_category,
         output_partial,
         started_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       params.sessionId,
       params.toolCallId,
       params.toolName,
-      JSON.stringify(params.args),
+      params.argsJson ?? JSON.stringify(params.args),
       params.status,
+      params.recoveryCategory ?? "side-effecting",
       params.outputPartial ?? null,
       "2026-05-01T00:05:00.000Z",
     );

@@ -135,7 +135,7 @@ interface SessionReadSnapshot {
    * (`runtime/src/prompts/attachments/changed-files.ts`) to detect
    * mid-session edits and emit `edited_text_file` snippets.
    *
-   * Hand-port of openclaude `FileState.content` semantics — AgenC's
+   * Mirrors the source-file state cache's raw-content semantics: AgenC's
    * `FileStateCache` always stores raw bytes (`fileStateCache.ts:4-15`).
    * AgenC's `content` field carries the formatted display content; this
    * additional field carries the pre-format raw bytes.
@@ -834,6 +834,7 @@ function createListDirTool(allowedPaths: readonly string[]): Tool {
     name: "system.listDir",
     description:
       "List directory contents. Returns entry names, types (file/dir), and sizes. Gated by path allowlist.",
+    recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
       properties: {
@@ -924,6 +925,7 @@ function createStatTool(allowedPaths: readonly string[]): Tool {
     name: "system.stat",
     description:
       "Get file or directory metadata including size, timestamps, and type. Gated by path allowlist.",
+    recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
       properties: {
@@ -971,6 +973,7 @@ function createMkdirTool(allowedPaths: readonly string[]): Tool {
     name: "system.mkdir",
     description:
       "Create a directory. Creates parent directories as needed. Gated by path allowlist.",
+    recoveryCategory: "side-effecting",
     inputSchema: {
       type: "object",
       properties: {
@@ -1010,6 +1013,7 @@ function createDeleteTool(
     name: "system.delete",
     description:
       "Delete a file or directory. Requires explicit opt-in via allowDelete config. Gated by path allowlist.",
+    recoveryCategory: "side-effecting",
     inputSchema: {
       type: "object",
       properties: {
@@ -1079,6 +1083,7 @@ function createMoveTool(allowedPaths: readonly string[]): Tool {
     name: "system.move",
     description:
       "Move or rename a file or directory. Both source and destination must be within allowed paths.",
+    recoveryCategory: "side-effecting",
     inputSchema: {
       type: "object",
       properties: {

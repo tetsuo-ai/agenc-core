@@ -1620,6 +1620,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         keywords: ["agent", "spawn", "delegate", "subagent"],
       }),
       requiresApproval: true,
+      recoveryCategory: "side-effecting",
       inputSchema: spawnAgentSchema,
       execute: spawn,
     },
@@ -1629,6 +1630,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         "Wait for new messages from any agent. Returns when a message is ready or timeout elapses.",
       metadata: toolMetadata("agent", { keywords: ["agent", "wait", "status"] }),
       isReadOnly: true,
+      recoveryCategory: "side-effecting",
       timeoutBehavior: "tool",
       inputSchema: {
         type: "object",
@@ -1650,6 +1652,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         keywords: ["agent", "close", "stop"],
       }),
       requiresApproval: true,
+      recoveryCategory: "side-effecting",
       inputSchema: {
         type: "object",
         properties: {
@@ -1668,6 +1671,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         mutating: true,
         keywords: ["agent", "followup", "task"],
       }),
+      recoveryCategory: "side-effecting",
       inputSchema: {
         type: "object",
         properties: {
@@ -1688,6 +1692,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         mutating: true,
         keywords: ["agent", "message", "mailbox"],
       }),
+      recoveryCategory: "side-effecting",
       inputSchema: {
         type: "object",
         properties: {
@@ -1706,6 +1711,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         "List live agents in the current root thread tree. Optionally filter by task-path prefix.",
       metadata: toolMetadata("agent", { keywords: ["agent", "list", "status"] }),
       isReadOnly: true,
+      recoveryCategory: "idempotent",
       inputSchema: {
         type: "object",
         properties: {
@@ -1724,6 +1730,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         keywords: ["agent", "spawn", "batch", "csv", "job"],
       }),
       requiresApproval: true,
+      recoveryCategory: "side-effecting",
       inputSchema: {
         type: "object",
         properties: {
@@ -1773,6 +1780,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         mutating: true,
         keywords: ["agent", "job", "report", "result"],
       }),
+      recoveryCategory: "side-effecting",
       inputSchema: {
         type: "object",
         properties: {
@@ -1808,6 +1816,7 @@ function createMcpResourceTools(opts: ModelFacingToolOptions): readonly Tool[] {
         keywords: ["mcp", "resource", "list"],
       }),
       isReadOnly: true,
+      recoveryCategory: "idempotent",
       inputSchema: {
         type: "object",
         properties: { server: { type: "string" } },
@@ -1835,6 +1844,7 @@ function createMcpResourceTools(opts: ModelFacingToolOptions): readonly Tool[] {
         keywords: ["mcp", "resource", "read"],
       }),
       isReadOnly: true,
+      recoveryCategory: "idempotent",
       inputSchema: {
         type: "object",
         properties: {
@@ -1881,6 +1891,7 @@ function createSkillTool(opts: ModelFacingToolOptions): Tool {
       keywords: ["skill", "instructions", "capability"],
     }),
     isReadOnly: true,
+    recoveryCategory: "side-effecting",
     inputSchema: {
       type: "object",
       properties: {
@@ -2091,6 +2102,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
       }),
       isReadOnly: true,
       concurrencyClass: { kind: "shared_read" },
+      recoveryCategory: "side-effecting",
       inputSchema: {
         type: "object",
         properties: {
@@ -2161,6 +2173,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
       }),
       isReadOnly: true,
       concurrencyClass: { kind: "shared_read" },
+      recoveryCategory: "side-effecting",
       inputSchema: {
         type: "object",
         properties: {
@@ -2247,6 +2260,7 @@ function createNotebookReadTool(opts: ModelFacingToolOptions): Tool {
     }),
     isReadOnly: true,
     concurrencyClass: { kind: "shared_read" },
+    recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
       properties: {
@@ -2337,6 +2351,7 @@ function createNotebookEditTool(opts: ModelFacingToolOptions): Tool {
       keywords: ["notebook", "ipynb", "edit"],
     }),
     requiresApproval: true,
+    recoveryCategory: "side-effecting",
     inputSchema: {
       type: "object",
       properties: {
@@ -2423,6 +2438,7 @@ function createLspTool(opts: ModelFacingToolOptions): Tool {
       keywords: ["lsp", "diagnostics", "definition", "references"],
     }),
     isReadOnly: true,
+    recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
       properties: {
@@ -2525,6 +2541,7 @@ function createPlanAndMessageTools(opts: ModelFacingToolOptions): readonly Tool[
       keywords: ["brief", "message", "user", "progress"],
     }),
     isReadOnly: true,
+    recoveryCategory: "side-effecting",
     inputSchema: {
       type: "object",
       properties: { message: { type: "string" } },
@@ -2552,6 +2569,7 @@ function createPlanAndMessageTools(opts: ModelFacingToolOptions): readonly Tool[
         keywords: ["plan", "verify", "execution"],
       }),
       isReadOnly: true,
+      recoveryCategory: "idempotent",
       inputSchema: {
         type: "object",
         properties: {
@@ -2602,6 +2620,7 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
         deferred: true,
         keywords: ["cron", "schedule", "workflow"],
       }),
+      recoveryCategory: "side-effecting",
       inputSchema: {
         type: "object",
         properties: {
@@ -2646,6 +2665,7 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
         deferred: true,
         keywords: ["cron", "delete"],
       }),
+      recoveryCategory: "side-effecting",
       inputSchema: {
         type: "object",
         properties: { id: { type: "string" } },
@@ -2669,6 +2689,7 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
         keywords: ["cron", "list"],
       }),
       isReadOnly: true,
+      recoveryCategory: "idempotent",
       inputSchema: {
         type: "object",
         properties: {},
@@ -2686,6 +2707,7 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
         keywords: ["workflow", "run"],
       }),
       requiresApproval: true,
+      recoveryCategory: "side-effecting",
       inputSchema: {
         type: "object",
         properties: {
@@ -2757,6 +2779,7 @@ function createPowerShellTool(opts: ModelFacingToolOptions): readonly Tool[] {
       }),
       requiresApproval: true,
       concurrencyClass: { kind: "background_terminal" },
+      recoveryCategory: "side-effecting",
       inputSchema: {
         type: "object",
         properties: {
@@ -2797,6 +2820,7 @@ function createRemoteTriggerTool(opts: ModelFacingToolOptions): Tool {
       keywords: ["remote", "trigger", "schedule"],
     }),
     isReadOnly: true,
+    recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
       properties: {

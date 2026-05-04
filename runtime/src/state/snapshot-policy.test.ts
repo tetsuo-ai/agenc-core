@@ -57,6 +57,7 @@ describe("AgenCSessionSnapshotPolicy", () => {
         eventId: "event-tool-1",
         requestId: "tool-1",
         toolName: "FileRead",
+        recoveryCategory: "idempotent",
         input: { path: "a.txt" },
       },
     });
@@ -88,6 +89,7 @@ describe("AgenCSessionSnapshotPolicy", () => {
       completed: {
         "tool-1": {
           requestId: "tool-1",
+          recoveryCategory: "idempotent",
           status: "completed",
           result: "ok",
         },
@@ -264,6 +266,70 @@ describe("AgenCSessionSnapshotPolicy", () => {
     });
   });
 
+  it("persists replay poison events as terminal recovery state", () => {
+    seedRun("run-replay-poison", "session-replay-poison");
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: clock([
+        "2026-05-01T00:00:00.000Z",
+        "2026-05-01T00:00:01.000Z",
+      ]),
+      agencHome: home,
+    });
+
+    policy.recordSessionEvent("session-replay-poison", {
+      method: "event.tool_request",
+      params: {
+        agentId: "run-replay-poison",
+        requestId: "tool-replay-poison",
+        toolName: "FileWrite",
+        recoveryCategory: "idempotent",
+        input: { file_path: "a.txt", content: "x" },
+      },
+    });
+    policy.recordSessionEvent("session-replay-poison", {
+      method: "event.session_event",
+      params: {
+        agentId: "run-replay-poison",
+        event: {
+          type: "tool_call_recovery_poisoned",
+          payload: {
+            callId: "tool-replay-poison",
+            result: "current registry says side-effecting",
+            metadata: {
+              toolName: "FileWrite",
+              recoveryCategory: "side-effecting",
+            },
+          },
+        },
+      },
+    });
+
+    expect(latestSnapshot("session-replay-poison").toolState).toMatchObject({
+      inFlight: {},
+      completed: {
+        "tool-replay-poison": {
+          requestId: "tool-replay-poison",
+          toolName: "FileWrite",
+          recoveryCategory: "side-effecting",
+          recoveryAction: "poison",
+          status: "poisoned",
+          result: "current registry says side-effecting",
+        },
+      },
+    });
+    expect(inFlightToolOutput("session-replay-poison", "tool-replay-poison"))
+      .toMatchObject({
+        status: "poisoned",
+        output_partial: "current registry says side-effecting",
+      });
+    expect(
+      inFlightToolRecoveryCategory(
+        "session-replay-poison",
+        "tool-replay-poison",
+      ),
+    ).toBe("side-effecting");
+  });
+
   it("persists capped tool output rows from daemon tool events", () => {
     seedRun("agent-output", "session-output");
     const policy = new AgenCSessionSnapshotPolicy(driver, {
@@ -322,6 +388,9 @@ describe("AgenCSessionSnapshotPolicy", () => {
     });
     expect(existsSync(outputLogPath)).toBe(true);
     expect(existsSync(`${outputLogPath}.1`)).toBe(true);
+    expect(inFlightToolRecoveryCategory("session-output", "tool-output")).toBe(
+      "side-effecting",
+    );
   });
 
   it("persists capped running output from tool_progress chunks", () => {
@@ -547,6 +616,20 @@ function inFlightToolOutput(
     .get(sessionId, toolCallId);
   if (row === undefined) throw new Error("tool output row missing");
   return row;
+}
+
+function inFlightToolRecoveryCategory(
+  sessionId: string,
+  toolCallId: string,
+): string | undefined {
+  return driver
+    .prepareState<[string, string], { recovery_category: string }>(
+      `SELECT recovery_category
+       FROM in_flight_tool_calls
+       WHERE session_id = ?
+         AND tool_call_id = ?`,
+    )
+    .get(sessionId, toolCallId)?.recovery_category;
 }
 
 function clock(values: readonly string[]): () => string {

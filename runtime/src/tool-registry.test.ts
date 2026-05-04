@@ -23,6 +23,7 @@ describe("T7 tool-registry ConcurrencyClass tagging", () => {
     const readFile = registry.tools.find((t) => t.name === "FileRead");
     expect(readFile?.concurrencyClass?.kind).toBe("shared_read");
     expect(readFile?.isReadOnly).toBe(true);
+    expect(readFile?.recoveryCategory).toBe("idempotent");
     expect(readFile?.supportsParallelToolCalls).toBe(true);
   });
 
@@ -31,6 +32,7 @@ describe("T7 tool-registry ConcurrencyClass tagging", () => {
     const writeFile = registry.tools.find((t) => t.name === "Write");
     expect(writeFile?.concurrencyClass?.kind).toBe("exclusive");
     expect(writeFile?.requiresApproval).toBe(true);
+    expect(writeFile?.recoveryCategory).toBe("side-effecting");
     expect(writeFile?.supportsParallelToolCalls).toBe(false);
   });
 
@@ -39,6 +41,7 @@ describe("T7 tool-registry ConcurrencyClass tagging", () => {
     const bash = registry.tools.find((t) => t.name === "system.bash");
     expect(bash?.concurrencyClass?.kind).toBe("background_terminal");
     expect(bash?.requiresApproval).toBe(true);
+    expect(bash?.recoveryCategory).toBe("side-effecting");
   });
 
   test("exec_command gets BackgroundTerminal + requiresApproval=true", () => {
@@ -46,6 +49,7 @@ describe("T7 tool-registry ConcurrencyClass tagging", () => {
     const execCommand = registry.tools.find((t) => t.name === "exec_command");
     expect(execCommand?.concurrencyClass?.kind).toBe("background_terminal");
     expect(execCommand?.requiresApproval).toBe(true);
+    expect(execCommand?.recoveryCategory).toBe("side-effecting");
   });
 
   test("write_stdin gets BackgroundTerminal without a second approval prompt", () => {
@@ -53,6 +57,27 @@ describe("T7 tool-registry ConcurrencyClass tagging", () => {
     const writeStdin = registry.tools.find((t) => t.name === "write_stdin");
     expect(writeStdin?.concurrencyClass?.kind).toBe("background_terminal");
     expect(writeStdin?.requiresApproval).toBe(false);
+    expect(writeStdin?.recoveryCategory).toBe("side-effecting");
+  });
+
+  test("undeclared recovery categories default to side-effecting even for read-only tools", () => {
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      extraTools: [
+        {
+          name: "custom.readOnly",
+          description: "Read-only custom tool without recovery declaration",
+          metadata: { mutating: false },
+          isReadOnly: true,
+          inputSchema: { type: "object", properties: {} },
+          execute: async () => ({ content: "ok" }),
+        } satisfies Tool,
+      ],
+    });
+
+    const custom = registry.tools.find((tool) => tool.name === "custom.readOnly");
+    expect(custom?.isReadOnly).toBe(true);
+    expect(custom?.recoveryCategory).toBe("side-effecting");
   });
 });
 
@@ -121,6 +146,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(askUserQuestion).toBeDefined();
     expect(askUserQuestion?.requiresUserInteraction?.()).toBe(true);
     expect(askUserQuestion?.isReadOnly).toBe(true);
+    expect(askUserQuestion?.recoveryCategory).toBe("interactive");
     expect(askUserQuestion?.supportsParallelToolCalls).toBe(false);
     expect(askUserQuestion?.metadata?.family).toBe("planning");
   });
@@ -341,10 +367,11 @@ describe("tool-registry dynamic and deferred catalog", () => {
         family: "product",
         source: "builtin",
         mutating: false,
-        deferred: false,
-      },
-      execute: async () => ({ content: "visible" }),
-    };
+          deferred: false,
+        },
+        recoveryCategory: "idempotent",
+        execute: async () => ({ content: "visible" }),
+      };
     const deferredProductTool: Tool = {
       name: "ProductDeferred",
       description: "Deferred product tool.",
@@ -353,10 +380,11 @@ describe("tool-registry dynamic and deferred catalog", () => {
         family: "product",
         source: "builtin",
         mutating: true,
-        deferred: true,
-      },
-      execute: async () => ({ content: "deferred" }),
-    };
+          deferred: true,
+        },
+        recoveryCategory: "side-effecting",
+        execute: async () => ({ content: "deferred" }),
+      };
     const registry = buildToolRegistry({
       workspaceRoot: "/tmp",
       modelFacingTools: [visibleProductTool, deferredProductTool],
@@ -377,6 +405,30 @@ describe("tool-registry dynamic and deferred catalog", () => {
 
     expect(registry.toLLMTools().map((tool) => tool.function.name)).toContain(
       "ProductDeferred",
+    );
+  });
+
+  test("builtin model-facing tools must explicitly declare recovery category", () => {
+    const missingRecoveryCategory: Tool = {
+      name: "ProductMissingRecovery",
+      description: "Builtin product tool missing restart recovery policy.",
+      inputSchema: { type: "object" },
+      metadata: {
+        family: "product",
+        source: "builtin",
+        mutating: false,
+        deferred: false,
+      },
+      execute: async () => ({ content: "missing" }),
+    };
+
+    expect(() =>
+      buildToolRegistry({
+        workspaceRoot: "/tmp",
+        modelFacingTools: [missingRecoveryCategory],
+      }),
+    ).toThrow(
+      "builtin tool group model-facing missing recoveryCategory: ProductMissingRecovery",
     );
   });
 

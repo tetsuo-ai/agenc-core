@@ -116,6 +116,7 @@ export function createCodeModeTools(
       keywords: ["javascript", "compose", "tools", "exec", "code mode"],
     },
     supportsParallelToolCalls: false,
+    recoveryCategory: "side-effecting",
     interruptBehavior: () => "cancel",
     execute: (args) =>
       executeCodeMode(opts.service, opts.getEnabledTools(), args),
@@ -157,6 +158,7 @@ export function createCodeModeTools(
     },
     isReadOnly: true,
     supportsParallelToolCalls: false,
+    recoveryCategory: "side-effecting",
     execute: (args) => waitCodeMode(opts.service, args),
   };
 

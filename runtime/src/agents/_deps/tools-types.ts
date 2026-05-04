@@ -15,6 +15,11 @@ export interface ToolResult {
   metadata?: Record<string, unknown>;
 }
 
+export type ToolRecoveryCategory =
+  | "idempotent"
+  | "side-effecting"
+  | "interactive";
+
 // Permissive Tool shape. Any extra metadata fields the parent registry
 // attaches (concurrency class, approval flags, etc.) are forwarded
 // through `Record<string, any>` without coupling to upstream types.

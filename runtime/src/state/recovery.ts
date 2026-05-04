@@ -1,5 +1,7 @@
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 import type { JsonObject } from "../app-server/protocol/index.js";
+import type { ToolRecoveryCategory } from "../tools/types.js";
+import { normalizeToolRecoveryCategory } from "./tool-output-rotation.js";
 
 const RECOVERABLE_AGENT_RUN_STATUSES = [
   "pending",
@@ -14,7 +16,17 @@ const TERMINAL_TOOL_CALL_STATUSES = [
   "completed",
   "failed",
   "cancelled",
+  "poisoned",
+  "recovery_cancelled",
 ] as const;
+
+const RECOVERY_SURFACE_TOOL_CALL_STATUSES = [
+  "poisoned",
+  "replay_pending",
+  "recovery_cancelled",
+] as const;
+
+export type ToolRecoveryAction = "replay" | "poison" | "cancel";
 
 export type AgentRunRecoveryStatus =
   (typeof RECOVERABLE_AGENT_RUN_STATUSES)[number];
@@ -26,7 +38,7 @@ export interface RecoveredSessionStateSnapshot {
   readonly conversation: unknown;
   readonly toolState: unknown;
   readonly mcpConnectionState: unknown;
-  readonly failedToolCalls: readonly FailedInFlightToolCall[];
+  readonly recoveredToolCalls: readonly RecoveredInFlightToolCall[];
 }
 
 export interface RecoveredAgentRun {
@@ -43,13 +55,16 @@ export interface RecoveredAgentRun {
   readonly latestSnapshot?: RecoveredSessionStateSnapshot;
 }
 
-export interface FailedInFlightToolCall {
+export interface RecoveredInFlightToolCall {
   readonly projectDir: string;
   readonly sessionId: string;
   readonly toolCallId: string;
   readonly toolName: string;
   readonly args?: unknown;
   readonly statusBefore: string;
+  readonly statusAfter: string;
+  readonly recoveryCategory: ToolRecoveryCategory;
+  readonly recoveryAction: ToolRecoveryAction;
   readonly startedAt: string;
   readonly outputPartial?: string;
   readonly outputLogPath?: string;
@@ -72,7 +87,7 @@ export interface DaemonStartupRecoveryWarning {
 export interface DaemonStartupRecoveryReport {
   readonly recoveredAt: string;
   readonly recoveredRuns: readonly RecoveredAgentRun[];
-  readonly failedToolCalls: readonly FailedInFlightToolCall[];
+  readonly recoveredToolCalls: readonly RecoveredInFlightToolCall[];
   readonly warnings: readonly DaemonStartupRecoveryWarning[];
 }
 
@@ -102,6 +117,7 @@ interface InFlightToolCallRow {
   readonly tool_name: string;
   readonly args_json: string;
   readonly status: string;
+  readonly recovery_category: string;
   readonly output_partial: string | null;
   readonly output_log_path: string | null;
   readonly output_log_bytes: number;
@@ -115,16 +131,16 @@ export function recoverDaemonStateOnStartup(
   const warnings: DaemonStartupRecoveryWarning[] = [];
   const recoveredAt = options.now?.() ?? new Date().toISOString();
   return driver.transaction(() => {
-    const failedToolCalls = markStaleToolCallsFailed(driver, warnings);
+    const recoveredToolCalls = recoverStaleToolCalls(driver, warnings);
     const recoveredRuns = loadRecoverableAgentRuns(
       driver,
-      failedToolCalls,
+      recoveredToolCalls,
       warnings,
     );
     return {
       recoveredAt,
       recoveredRuns,
-      failedToolCalls,
+      recoveredToolCalls,
       warnings,
     };
   });
@@ -132,7 +148,7 @@ export function recoverDaemonStateOnStartup(
 
 function loadRecoverableAgentRuns(
   driver: StateSqliteDriver,
-  failedToolCalls: readonly FailedInFlightToolCall[],
+  recoveredToolCalls: readonly RecoveredInFlightToolCall[],
   warnings: DaemonStartupRecoveryWarning[],
 ): RecoveredAgentRun[] {
   const runs = driver
@@ -153,14 +169,14 @@ function loadRecoverableAgentRuns(
     )
     .all(...RECOVERABLE_AGENT_RUN_STATUSES);
   return runs.map((row) =>
-    toRecoveredAgentRun(driver, row, failedToolCalls, warnings),
+    toRecoveredAgentRun(driver, row, recoveredToolCalls, warnings),
   );
 }
 
 function toRecoveredAgentRun(
   driver: StateSqliteDriver,
   row: AgentRunRow,
-  failedToolCalls: readonly FailedInFlightToolCall[],
+  recoveredToolCalls: readonly RecoveredInFlightToolCall[],
   warnings: DaemonStartupRecoveryWarning[],
 ): RecoveredAgentRun {
   const currentSessionId = nullableString(row.current_session_id);
@@ -174,7 +190,7 @@ function toRecoveredAgentRun(
           driver,
           row.id,
           currentSessionId,
-          failedToolCalls,
+          recoveredToolCalls,
           warnings,
         );
   return {
@@ -196,7 +212,7 @@ function loadLatestSnapshot(
   driver: StateSqliteDriver,
   runId: string,
   sessionId: string,
-  failedToolCalls: readonly FailedInFlightToolCall[],
+  recoveredToolCalls: readonly RecoveredInFlightToolCall[],
   warnings: DaemonStartupRecoveryWarning[],
 ): RecoveredSessionStateSnapshot | undefined {
   const row = driver
@@ -223,7 +239,7 @@ function loadLatestSnapshot(
     return undefined;
   }
   try {
-    const failedForSession = failedToolCalls.filter(
+    const recoveredForSession = recoveredToolCalls.filter(
       (call) =>
         call.projectDir === driver.projectDir && call.sessionId === sessionId,
     );
@@ -232,9 +248,12 @@ function loadLatestSnapshot(
       sessionId: row.session_id,
       snapshotAt: row.snapshot_at,
       conversation: JSON.parse(row.conversation_json),
-      toolState: JSON.parse(row.tool_state_json),
+      toolState: applyRecoveredToolState(
+        JSON.parse(row.tool_state_json),
+        recoveredForSession,
+      ),
       mcpConnectionState: JSON.parse(row.mcp_connection_state_json),
-      failedToolCalls: failedForSession,
+      recoveredToolCalls: recoveredForSession,
     };
   } catch (error) {
     warnings.push({
@@ -247,10 +266,10 @@ function loadLatestSnapshot(
   }
 }
 
-function markStaleToolCallsFailed(
+function recoverStaleToolCalls(
   driver: StateSqliteDriver,
   warnings: DaemonStartupRecoveryWarning[],
-): FailedInFlightToolCall[] {
+): RecoveredInFlightToolCall[] {
   const rows = driver
     .prepareState<string[], InFlightToolCallRow>(
       `SELECT
@@ -259,6 +278,7 @@ function markStaleToolCallsFailed(
          tool_name,
          args_json,
          status,
+         recovery_category,
          output_partial,
          output_log_path,
          output_log_bytes,
@@ -268,34 +288,83 @@ function markStaleToolCallsFailed(
        ORDER BY started_at ASC, session_id ASC, tool_call_id ASC`,
     )
     .all(...TERMINAL_TOOL_CALL_STATUSES);
-  if (rows.length === 0) return [];
 
-  const markFailed = driver.prepareState<[string, string, ...string[]]>(
-    `UPDATE in_flight_tool_calls
-     SET status = 'failed'
-     WHERE session_id = ?
-       AND tool_call_id = ?
-       AND status NOT IN (${placeholders(TERMINAL_TOOL_CALL_STATUSES.length)})`,
+  const freshlyRecovered = rows.map((row) =>
+    toRecoveredToolCall(driver, row, warnings),
   );
-  for (const row of rows) {
-    markFailed.run(
-      row.session_id,
-      row.tool_call_id,
-      ...TERMINAL_TOOL_CALL_STATUSES,
+  if (freshlyRecovered.length > 0) {
+    const markRecovered = driver.prepareState<
+      [string, string, string, ...string[]]
+    >(
+      `UPDATE in_flight_tool_calls
+       SET status = ?
+       WHERE session_id = ?
+         AND tool_call_id = ?
+         AND status NOT IN (${placeholders(TERMINAL_TOOL_CALL_STATUSES.length)})`,
     );
+    for (const call of freshlyRecovered) {
+      markRecovered.run(
+        call.statusAfter,
+        call.sessionId,
+        call.toolCallId,
+        ...TERMINAL_TOOL_CALL_STATUSES,
+      );
+    }
   }
-  return rows.map((row) => toFailedToolCall(driver, row, warnings));
+  const freshKeys = new Set(
+    rows.map((row) => toolCallKey(row.session_id, row.tool_call_id)),
+  );
+  const surfacedEarlier = loadPreviouslyRecoveredToolCalls(
+    driver,
+    freshKeys,
+    warnings,
+  );
+  return [...freshlyRecovered, ...surfacedEarlier];
 }
 
-function toFailedToolCall(
+function loadPreviouslyRecoveredToolCalls(
+  driver: StateSqliteDriver,
+  excludeKeys: ReadonlySet<string>,
+  warnings: DaemonStartupRecoveryWarning[],
+): RecoveredInFlightToolCall[] {
+  const rows = driver
+    .prepareState<string[], InFlightToolCallRow>(
+      `SELECT
+         session_id,
+         tool_call_id,
+         tool_name,
+         args_json,
+         status,
+         recovery_category,
+         output_partial,
+         output_log_path,
+         output_log_bytes,
+         started_at
+       FROM in_flight_tool_calls
+       WHERE status IN (${placeholders(RECOVERY_SURFACE_TOOL_CALL_STATUSES.length)})
+       ORDER BY started_at ASC, session_id ASC, tool_call_id ASC`,
+    )
+    .all(...RECOVERY_SURFACE_TOOL_CALL_STATUSES);
+  return rows
+    .filter((row) => !excludeKeys.has(toolCallKey(row.session_id, row.tool_call_id)))
+    .map((row) => toRecoveredToolCall(driver, row, warnings));
+}
+
+function toolCallKey(sessionId: string, toolCallId: string): string {
+  return `${sessionId}\0${toolCallId}`;
+}
+
+function toRecoveredToolCall(
   driver: StateSqliteDriver,
   row: InFlightToolCallRow,
   warnings: DaemonStartupRecoveryWarning[],
-): FailedInFlightToolCall {
+): RecoveredInFlightToolCall {
   let args: unknown;
+  let argsJsonInvalid = false;
   try {
     args = JSON.parse(row.args_json);
   } catch (error) {
+    argsJsonInvalid = true;
     warnings.push({
       code: "tool_args_json_invalid",
       sessionId: row.session_id,
@@ -303,6 +372,11 @@ function toFailedToolCall(
       message: `In-flight tool call ${row.tool_call_id} arguments are not valid JSON: ${errorMessage(error)}`,
     });
   }
+  const recoveryCategory = normalizeToolRecoveryCategory(row.recovery_category);
+  const outcome =
+    argsJsonInvalid && recoveryCategory === "idempotent"
+      ? { action: "poison" as const, statusAfter: "poisoned" }
+      : toolRecoveryOutcome(recoveryCategory);
   return {
     projectDir: driver.projectDir,
     sessionId: row.session_id,
@@ -310,11 +384,101 @@ function toFailedToolCall(
     toolName: row.tool_name,
     ...(args !== undefined ? { args } : {}),
     statusBefore: row.status,
+    statusAfter: outcome.statusAfter,
+    recoveryCategory,
+    recoveryAction: outcome.action,
     startedAt: row.started_at,
     ...(row.output_partial !== null ? { outputPartial: row.output_partial } : {}),
     ...(row.output_log_path !== null ? { outputLogPath: row.output_log_path } : {}),
     ...(row.output_log_bytes > 0 ? { outputLogBytes: row.output_log_bytes } : {}),
   };
+}
+
+function toolRecoveryOutcome(
+  recoveryCategory: ToolRecoveryCategory,
+): {
+  readonly action: ToolRecoveryAction;
+  readonly statusAfter: string;
+} {
+  switch (recoveryCategory) {
+    case "idempotent":
+      return { action: "replay", statusAfter: "replay_pending" };
+    case "interactive":
+      return { action: "cancel", statusAfter: "recovery_cancelled" };
+    case "side-effecting":
+      return { action: "poison", statusAfter: "poisoned" };
+  }
+}
+
+function applyRecoveredToolState(
+  toolState: unknown,
+  recoveredToolCalls: readonly RecoveredInFlightToolCall[],
+): unknown {
+  if (
+    toolState === null ||
+    typeof toolState !== "object" ||
+    Array.isArray(toolState) ||
+    recoveredToolCalls.length === 0
+  ) {
+    return toolState;
+  }
+  const state = { ...(toolState as Record<string, unknown>) };
+  const recoveredIds = new Set(
+    recoveredToolCalls.map((call) => call.toolCallId),
+  );
+  const pending = state.pending;
+  if (Array.isArray(pending)) {
+    state.pending = pending.filter(
+      (value) => typeof value !== "string" || !recoveredIds.has(value),
+    );
+  }
+  state.inFlight = reconcileRecoveredToolCallMap(
+    state.inFlight,
+    recoveredToolCalls,
+    "inFlight",
+  );
+  state.completed = reconcileRecoveredToolCallMap(
+    state.completed,
+    recoveredToolCalls.filter((call) => call.recoveryAction !== "replay"),
+    "completed",
+  );
+  return state;
+}
+
+function reconcileRecoveredToolCallMap(
+  value: unknown,
+  recoveredToolCalls: readonly RecoveredInFlightToolCall[],
+  target: "inFlight" | "completed",
+): Record<string, unknown> {
+  const map =
+    value !== null && typeof value === "object" && !Array.isArray(value)
+      ? { ...(value as Record<string, unknown>) }
+      : {};
+  for (const call of recoveredToolCalls) {
+    if (target === "inFlight" && call.recoveryAction !== "replay") {
+      delete map[call.toolCallId];
+      continue;
+    }
+    map[call.toolCallId] = {
+      ...(valueAtKeyAsRecord(map, call.toolCallId) ?? {}),
+      requestId: call.toolCallId,
+      toolName: call.toolName,
+      status: call.statusAfter,
+      recoveryCategory: call.recoveryCategory,
+      recoveryAction: call.recoveryAction,
+    };
+  }
+  return map;
+}
+
+function valueAtKeyAsRecord(
+  map: Record<string, unknown>,
+  key: string,
+): Record<string, unknown> | undefined {
+  const value = map[key];
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
 function placeholders(length: number): string {

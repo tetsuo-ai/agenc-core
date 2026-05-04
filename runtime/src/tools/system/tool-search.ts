@@ -100,6 +100,7 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
       ...codingToolMetadata("system.searchTools", false, ["coding", "general", "operator"]),
       keywords: ["tools", "catalog", "discovery", "select", "deferred"],
     },
+    recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
       properties: {
