@@ -121,9 +121,20 @@ export function isDangerousShellCommand(command: string): boolean {
 }
 
 export function matchedDangerousShellCommandLabel(command: string): string | null {
+  const substitutionLabel = matchedDangerousShellSubstitutionLabel(command);
+  if (substitutionLabel !== null) return substitutionLabel;
+
   for (const entry of DANGEROUS_SHELL_COMMAND_PATTERNS) {
     if (entry.matches?.(command) === true) return entry.label;
     if (entry.pattern?.test(command) === true) return entry.label;
+  }
+  return null;
+}
+
+function matchedDangerousShellSubstitutionLabel(command: string): string | null {
+  for (const substitution of extractShellSubstitutionCommands(command)) {
+    const label = matchedDangerousShellCommandLabel(substitution);
+    if (label !== null) return `dangerous command substitution: ${label}`;
   }
   return null;
 }
@@ -327,6 +338,10 @@ function timeoutCommandIndex(words: readonly string[], startIndex: number): numb
   let index = startIndex;
   while (index < words.length) {
     const word = stripShellQuotes(words[index]!);
+    if (word === "--") {
+      index++;
+      break;
+    }
     if (word === "-k" || word === "--kill-after" || word === "-s" || word === "--signal") {
       index += 2;
       continue;
@@ -337,6 +352,10 @@ function timeoutCommandIndex(words: readonly string[], startIndex: number): numb
       word.startsWith("--kill-after=") ||
       word.startsWith("--signal=")
     ) {
+      index++;
+      continue;
+    }
+    if (word.startsWith("-")) {
       index++;
       continue;
     }
@@ -408,11 +427,22 @@ function shellScriptContainsDanger(
 ): boolean {
   for (let i = shellIndex + 1; i < words.length - 1; i++) {
     const flag = stripShellQuotes(words[i]!);
-    if (flag === "-c" || flag === "-lc") {
-      return isRecursiveForceRemoveOfCriticalPath(stripShellQuotes(words[i + 1]!));
+    if (flag === "--") continue;
+    if (isShellCommandStringFlag(flag)) {
+      let scriptIndex = i + 1;
+      if (stripShellQuotes(words[scriptIndex] ?? "") === "--") {
+        scriptIndex++;
+      }
+      if (scriptIndex >= words.length) return false;
+      return isDangerousShellCommand(stripShellQuotes(words[scriptIndex]!));
     }
   }
   return false;
+}
+
+function isShellCommandStringFlag(flag: string): boolean {
+  if (flag === "-c") return true;
+  return flag.startsWith("-") && !flag.startsWith("--") && flag.slice(1).includes("c");
 }
 
 function rmArgsTargetCriticalPath(args: readonly string[]): boolean {
@@ -496,6 +526,112 @@ function splitShellFragments(command: string): string[] {
   const last = trimmed.slice(start).trim();
   if (last.length > 0) fragments.push(last);
   return fragments;
+}
+
+function extractShellSubstitutionCommands(command: string): string[] {
+  const substitutions: string[] = [];
+  let inDoubleQuotes = false;
+  let i = 0;
+  while (i < command.length) {
+    const char = command[i]!;
+    if (char === '"') {
+      inDoubleQuotes = !inDoubleQuotes;
+      i++;
+      continue;
+    }
+    if (char === "'" && !inDoubleQuotes) {
+      const end = command.indexOf("'", i + 1);
+      i = end === -1 ? command.length : end + 1;
+      continue;
+    }
+    if (char === "\\" && i + 1 < command.length) {
+      i += 2;
+      continue;
+    }
+    if (char === "$" && command[i + 1] === "(") {
+      const end = findCommandSubstitutionEnd(command, i + 1);
+      if (end === -1) {
+        i += 2;
+        continue;
+      }
+      substitutions.push(command.slice(i + 2, end).trim());
+      i = end + 1;
+      continue;
+    }
+    if (char === "`") {
+      const end = findBacktickSubstitutionEnd(command, i + 1);
+      if (end === -1) {
+        i++;
+        continue;
+      }
+      substitutions.push(command.slice(i + 1, end).trim());
+      i = end + 1;
+      continue;
+    }
+    i++;
+  }
+  return substitutions.filter((entry) => entry.length > 0);
+}
+
+function findCommandSubstitutionEnd(command: string, openParenIndex: number): number {
+  let depth = 1;
+  let i = openParenIndex + 1;
+  while (i < command.length) {
+    const char = command[i]!;
+    if (char === "'") {
+      const end = command.indexOf("'", i + 1);
+      i = end === -1 ? command.length : end + 1;
+      continue;
+    }
+    if (char === '"' || char === "`") {
+      const end = char === '"'
+        ? findDoubleQuoteEnd(command, i + 1)
+        : findBacktickSubstitutionEnd(command, i + 1);
+      i = end === -1 ? command.length : end + 1;
+      continue;
+    }
+    if (char === "\\" && i + 1 < command.length) {
+      i += 2;
+      continue;
+    }
+    if (char === "$" && command[i + 1] === "(") {
+      depth++;
+      i += 2;
+      continue;
+    }
+    if (char === ")") {
+      depth--;
+      if (depth === 0) return i;
+    }
+    i++;
+  }
+  return -1;
+}
+
+function findBacktickSubstitutionEnd(command: string, startIndex: number): number {
+  let i = startIndex;
+  while (i < command.length) {
+    if (command[i] === "\\" && i + 1 < command.length) {
+      i += 2;
+      continue;
+    }
+    if (command[i] === "`") return i;
+    i++;
+  }
+  return -1;
+}
+
+function findDoubleQuoteEnd(command: string, startIndex: number): number {
+  let i = startIndex;
+  while (i < command.length) {
+    if (command[i] === "\\" && i + 1 < command.length) {
+      i += 2;
+      continue;
+    }
+    if (command[i] === '"') return i;
+    i++;
+  }
+  return -1;
 }
 
 function stripShellQuotes(word: string): string {

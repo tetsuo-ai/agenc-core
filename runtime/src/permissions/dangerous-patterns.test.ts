@@ -44,8 +44,19 @@ describe("dangerous shell command detection", () => {
     "NODE_ENV=test rm / -fr",
     "env FOO=bar rm --recursive /tmp --force",
     "timeout 10 rm / -rf",
+    "timeout -v 10 rm -rf /",
     "bash -lc 'rm / -rf'",
+    "bash -euc 'rm -rf /'",
+    "bash -c -- 'rm -rf /'",
   ])("flags permuted recursive forced removal: %s", (command) => {
+    expect(isDangerousShellCommand(command)).toBe(true);
+  });
+
+  test.each([
+    "echo $(rm -rf /)",
+    "echo `rm -rf /`",
+    "echo \"$(rm -rf /)\"",
+  ])("flags dangerous executable substitutions: %s", (command) => {
     expect(isDangerousShellCommand(command)).toBe(true);
   });
 
@@ -103,6 +114,7 @@ describe("dangerous shell command detection", () => {
 
   test("does not flag quoted text or non-rm wrapped commands", () => {
     expect(isDangerousShellCommand("echo 'rm -rf /'")).toBe(false);
+    expect(isDangerousShellCommand("echo '$(rm -rf /)'")).toBe(false);
     expect(isDangerousShellCommand("echo rm -rf /")).toBe(false);
     expect(isDangerousShellCommand("timeout 10 echo rm -rf /")).toBe(false);
     expect(isDangerousShellCommand("nice echo rm -rf /")).toBe(false);

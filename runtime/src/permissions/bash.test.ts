@@ -386,6 +386,10 @@ describe("bashToolHasPermission", () => {
     ["rm -rf '${HOME}/*'", "rm -rf critical path"],
     ["git push origin --force main", "git push --force main"],
     ["git push origin -f main", "git push --force main"],
+    ["bash -euc 'rm -rf /'", "rm -rf critical path"],
+    ["bash -c -- 'rm -rf /'", "rm -rf critical path"],
+    ["timeout -v 10 rm -rf /", "rm -rf critical path"],
+    ["echo $(rm -rf /)", "dangerous command substitution"],
   ])(
     "dangerous command form is denied at the permission boundary: %s",
     async (command, label) => {
