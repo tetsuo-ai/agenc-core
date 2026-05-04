@@ -1,10 +1,14 @@
 import figures from 'figures'
-import { describe, expect, it } from 'bun:test'
-import { renderToString } from '../../utils/staticRender.js'
+import { describe, expect, it, vi } from 'vitest'
+import { renderToString } from '../../../agenc/upstream/utils/staticRender.js'
 import {
   PromptInputFooterSuggestions,
   type SuggestionItem,
 } from './PromptInputFooterSuggestions.js'
+
+vi.mock('bun:bundle', () => ({
+  feature: () => false,
+}))
 
 describe('PromptInputFooterSuggestions', () => {
   it('renders a visible marker for the selected suggestion', async () => {

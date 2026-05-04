@@ -15,7 +15,7 @@ import { Select } from '../../CustomSelect/select.js';
 import { Byline } from '../../design-system/Byline.js';
 import { Dialog } from '../../design-system/Dialog.js';
 import { KeyboardShortcutHint } from '../../design-system/KeyboardShortcutHint.js';
-import { PromptInputFooterSuggestions, type SuggestionItem } from '../../PromptInput/PromptInputFooterSuggestions.js';
+import { PromptInputFooterSuggestions, type SuggestionItem } from '../../../../../tui/components/PromptInput/PromptInputFooterSuggestions.js';
 type Props = {
   onAddDirectory: (path: string, remember?: boolean) => void;
   onCancel: () => void;

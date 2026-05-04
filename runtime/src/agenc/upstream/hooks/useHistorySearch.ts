@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   getModeFromInput,
   getValueFromInput,
-} from '../components/PromptInput/inputModes.js'
+} from '../../../tui/components/PromptInput/inputModes.js'
 import { makeHistoryReader } from '../history.js'
 import { KeyboardEvent } from '../../../tui/ink/events/keyboard-event.js'
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- backward-compat bridge until consumers wire handleKeyDown to <Box onKeyDown>

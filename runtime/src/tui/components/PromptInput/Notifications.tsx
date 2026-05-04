@@ -2,35 +2,35 @@ import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
-import { type Notification, useNotifications } from 'src/context/notifications.js';
-import { logEvent } from 'src/services/analytics/index.js';
-import { useAppState } from '../../../../tui/state/AppState.js';
-import { useVoiceState } from '../../context/voice.js';
-import type { VerificationStatus } from '../../hooks/useApiKeyVerification.js';
-import { useIdeConnectionStatus } from '../../hooks/useIdeConnectionStatus.js';
-import type { IDESelection } from '../../hooks/useIdeSelection.js';
-import { useMainLoopModel } from '../../hooks/useMainLoopModel.js';
-import { useVoiceEnabled } from '../../hooks/useVoiceEnabled.js';
-import { Box, Text } from '../../../../tui/ink.js';
-import { useAgenCAiLimits } from '../../services/claudeAiLimitsHook.js';
-import { calculateTokenWarningState } from '../../services/compact/autoCompact.js';
-import type { MCPServerConnection } from '../../services/mcp/types.js';
-import type { Message } from '../../types/message.js';
-import { getApiKeyHelperElapsedMs, getConfiguredApiKeyHelper, getSubscriptionType } from '../../utils/auth.js';
-import type { AutoUpdaterResult } from '../../utils/autoUpdater.js';
-import { getExternalEditor } from '../../utils/editor.js';
-import { isEnvTruthy } from '../../utils/envUtils.js';
-import { formatDuration } from '../../utils/format.js';
-import { setEnvHookNotifier } from '../../utils/hooks/fileChangedWatcher.js';
-import { toIDEDisplayName } from '../../utils/ide.js';
-import { getMessagesAfterCompactBoundary } from '../../utils/messages.js';
-import { tokenCountFromLastAPIResponse } from '../../utils/tokens.js';
-import { AutoUpdaterWrapper } from '../AutoUpdaterWrapper.js';
-import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
-import { IdeStatusIndicator } from '../IdeStatusIndicator.js';
-import { MemoryUsageIndicator } from '../MemoryUsageIndicator.js';
-import { SentryErrorBoundary } from '../SentryErrorBoundary.js';
-import { TokenWarning } from '../TokenWarning.js';
+import { type Notification, useNotifications } from '../../../agenc/upstream/context/notifications.js';
+import { logEvent } from '../../../agenc/upstream/services/analytics/index.js';
+import { useAppState } from '../../state/AppState.js';
+import { useVoiceState } from '../../../agenc/upstream/context/voice.js';
+import type { VerificationStatus } from '../../../agenc/upstream/hooks/useApiKeyVerification.js';
+import { useIdeConnectionStatus } from '../../../agenc/upstream/hooks/useIdeConnectionStatus.js';
+import type { IDESelection } from '../../../agenc/upstream/hooks/useIdeSelection.js';
+import { useMainLoopModel } from '../../../agenc/upstream/hooks/useMainLoopModel.js';
+import { useVoiceEnabled } from '../../../agenc/upstream/hooks/useVoiceEnabled.js';
+import { Box, Text } from '../../ink.js';
+import { useAgenCAiLimits } from './agencAiLimitsHook.js';
+import { calculateTokenWarningState } from '../../../agenc/upstream/services/compact/autoCompact.js';
+import type { MCPServerConnection } from '../../../agenc/upstream/services/mcp/types.js';
+import type { Message } from '../../../agenc/upstream/types/message.js';
+import { getApiKeyHelperElapsedMs, getConfiguredApiKeyHelper, getSubscriptionType } from '../../../agenc/upstream/utils/auth.js';
+import type { AutoUpdaterResult } from '../../../agenc/upstream/utils/autoUpdater.js';
+import { getExternalEditor } from '../../../agenc/upstream/utils/editor.js';
+import { isEnvTruthy } from '../../../agenc/upstream/utils/envUtils.js';
+import { formatDuration } from '../../../agenc/upstream/utils/format.js';
+import { setEnvHookNotifier } from '../../../agenc/upstream/utils/hooks/fileChangedWatcher.js';
+import { toIDEDisplayName } from '../../../agenc/upstream/utils/ide.js';
+import { getMessagesAfterCompactBoundary } from '../../../agenc/upstream/utils/messages.js';
+import { tokenCountFromLastAPIResponse } from '../../../agenc/upstream/utils/tokens.js';
+import { AutoUpdaterWrapper } from '../../../agenc/upstream/components/AutoUpdaterWrapper.js';
+import { ConfigurableShortcutHint } from '../../../agenc/upstream/components/ConfigurableShortcutHint.js';
+import { IdeStatusIndicator } from '../../../agenc/upstream/components/IdeStatusIndicator.js';
+import { MemoryUsageIndicator } from '../../../agenc/upstream/components/MemoryUsageIndicator.js';
+import { SentryErrorBoundary } from '../../../agenc/upstream/components/SentryErrorBoundary.js';
+import { TokenWarning } from '../../../agenc/upstream/components/TokenWarning.js';
 import { SandboxPromptFooterHint } from './SandboxPromptFooterHint.js';
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -99,7 +99,7 @@ export function Notifications(t0) {
     addNotification,
     removeNotification
   } = useNotifications();
-  const claudeAiLimits = useAgenCAiLimits();
+  const agencAiLimits = useAgenCAiLimits();
   let t5;
   let t6;
   if ($[5] !== addNotification) {
@@ -126,7 +126,7 @@ export function Notifications(t0) {
   useEffect(t5, t6);
   const shouldShowIdeSelection = ideStatus === "connected" && (ideSelection?.filePath || ideSelection?.text && ideSelection.lineCount > 0);
   const shouldShowAutoUpdater = !shouldShowIdeSelection || isAutoUpdating || autoUpdaterResult?.status !== "success";
-  const isInOverageMode = claudeAiLimits.isUsingOverage;
+  const isInOverageMode = agencAiLimits.isUsingOverage;
   let t7;
   if ($[8] === Symbol.for("react.memo_cache_sentinel")) {
     t7 = getSubscriptionType();

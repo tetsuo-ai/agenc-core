@@ -1,6 +1,6 @@
 import Fuse from 'fuse.js'
 import { basename } from 'path'
-import type { SuggestionItem } from 'src/components/PromptInput/PromptInputFooterSuggestions.js'
+import type { SuggestionItem } from '../../../tui/components/PromptInput/PromptInputFooterSuggestions.js'
 import { generateFileSuggestions } from 'src/hooks/fileSuggestions.js'
 import type { ServerResource } from 'src/services/mcp/types.js'
 import { getAgentColor } from 'src/tools/AgentTool/agentColorManager.js'

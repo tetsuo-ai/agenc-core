@@ -26,7 +26,7 @@ import { getRuntimeMainLoopModel, type ModelName, renderModelName } from '../uti
 import { getCurrentSessionTitle } from '../utils/sessionStorage.js';
 import { doesMostRecentAssistantMessageExceed200k, getCurrentUsage } from '../utils/tokens.js';
 import { getCurrentWorktreeSession } from '../utils/worktree.js';
-import { isVimModeEnabled } from './PromptInput/utils.js';
+import { isVimModeEnabled } from '../../../tui/components/PromptInput/utils.js';
 export function statusLineShouldDisplay(settings: ReadonlySettings): boolean {
   // Assistant mode: statusline fields (model, permission mode, cwd) reflect the
   // REPL/daemon process, not what the agent child is actually running. Hide it.

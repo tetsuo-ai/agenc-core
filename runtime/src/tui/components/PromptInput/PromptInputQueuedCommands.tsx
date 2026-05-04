@@ -1,17 +1,17 @@
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { useMemo } from 'react';
-import { Box, Text } from '../../../../tui/ink.js';
-import { useAppState } from '../../../../tui/state/AppState.js';
-import type { AppState } from '../../../../tui/state/AppState.js';
-import { STATUS_TAG, SUMMARY_TAG, TASK_NOTIFICATION_TAG } from '../../constants/xml.js';
-import { QueuedMessageProvider } from '../../context/QueuedMessageContext.js';
-import { useCommandQueue } from '../../hooks/useCommandQueue.js';
-import type { QueuedCommand } from '../../types/textInputTypes.js';
-import { isQueuedCommandEditable, isQueuedCommandVisible } from '../../utils/messageQueueManager.js';
-import { createUserMessage, EMPTY_LOOKUPS, normalizeMessages } from '../../utils/messages.js';
-import { jsonParse } from '../../utils/slowOperations.js';
-import { Message } from '../Message.js';
+import { Box, Text } from '../../ink.js';
+import { useAppState } from '../../state/AppState.js';
+import type { AppState } from '../../state/AppState.js';
+import { STATUS_TAG, SUMMARY_TAG, TASK_NOTIFICATION_TAG } from '../../../agenc/upstream/constants/xml.js';
+import { QueuedMessageProvider } from '../../../agenc/upstream/context/QueuedMessageContext.js';
+import { useCommandQueue } from '../../../agenc/upstream/hooks/useCommandQueue.js';
+import type { QueuedCommand } from '../../../agenc/upstream/types/textInputTypes.js';
+import { isQueuedCommandEditable, isQueuedCommandVisible } from '../../../agenc/upstream/utils/messageQueueManager.js';
+import { createUserMessage, EMPTY_LOOKUPS, normalizeMessages } from '../../../agenc/upstream/utils/messages.js';
+import { jsonParse } from '../../../agenc/upstream/utils/slowOperations.js';
+import { Message } from '../../../agenc/upstream/components/Message.js';
 const EMPTY_SET = new Set<string>();
 
 /**

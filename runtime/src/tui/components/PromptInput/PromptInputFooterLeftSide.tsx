@@ -3,49 +3,49 @@ import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 // Dead code elimination: conditional import for COORDINATOR_MODE
 /* eslint-disable @typescript-eslint/no-require-imports */
-const coordinatorModule = feature('COORDINATOR_MODE') ? require('../../coordinator/coordinatorMode.js') as typeof import('../../coordinator/coordinatorMode.js') : undefined;
+const coordinatorModule = feature('COORDINATOR_MODE') ? require('../../../agenc/upstream/coordinator/coordinatorMode.js') as typeof import('../../../agenc/upstream/coordinator/coordinatorMode.js') : undefined;
 /* eslint-enable @typescript-eslint/no-require-imports */
-import { Box, Text, Link } from '../../../../tui/ink.js';
+import { Box, Text, Link } from '../../ink.js';
 import * as React from 'react';
 import figures from 'figures';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import type { VimMode, PromptInputMode } from '../../types/textInputTypes.js';
-import type { ToolPermissionContext } from '../../Tool.js';
+import type { VimMode, PromptInputMode } from '../../../agenc/upstream/types/textInputTypes.js';
+import type { ToolPermissionContext } from '../../../agenc/upstream/Tool.js';
 import { isVimModeEnabled } from './utils.js';
-import { useShortcutDisplay } from '../../../../tui/keybindings/useShortcutDisplay.js';
-import { isDefaultMode, permissionModeSymbol, permissionModeTitle, getModeColor } from '../../utils/permissions/PermissionMode.js';
-import { BackgroundTaskStatus } from '../tasks/BackgroundTaskStatus.js';
-import { isBackgroundTask } from '../../tasks/types.js';
-import { isPanelAgentTask } from '../../tasks/LocalAgentTask/LocalAgentTask.js';
-import { getVisibleAgentTasks } from '../CoordinatorAgentStatus.js';
-import { count } from '../../utils/array.js';
-import { shouldHideTasksFooter } from '../tasks/taskStatusUtils.js';
-import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js';
-import { TeamStatus } from '../teams/TeamStatus.js';
-import { isInProcessEnabled } from '../../utils/swarm/backends/registry.js';
-import { useAppState, useAppStateStore } from '../../../../tui/state/AppState.js';
-import { getIsRemoteMode } from '../../bootstrap/state.js';
+import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
+import { isDefaultMode, permissionModeSymbol, permissionModeTitle, getModeColor } from '../../../agenc/upstream/utils/permissions/PermissionMode.js';
+import { BackgroundTaskStatus } from '../../../agenc/upstream/components/tasks/BackgroundTaskStatus.js';
+import { isBackgroundTask } from '../../../agenc/upstream/tasks/types.js';
+import { isPanelAgentTask } from '../../../agenc/upstream/tasks/LocalAgentTask/LocalAgentTask.js';
+import { getVisibleAgentTasks } from '../../../agenc/upstream/components/CoordinatorAgentStatus.js';
+import { count } from '../../../agenc/upstream/utils/array.js';
+import { shouldHideTasksFooter } from '../../../agenc/upstream/components/tasks/taskStatusUtils.js';
+import { isAgentSwarmsEnabled } from '../../../agenc/upstream/utils/agentSwarmsEnabled.js';
+import { TeamStatus } from '../../../agenc/upstream/components/teams/TeamStatus.js';
+import { isInProcessEnabled } from '../../../agenc/upstream/utils/swarm/backends/registry.js';
+import { useAppState, useAppStateStore } from '../../state/AppState.js';
+import { getIsRemoteMode } from '../../../agenc/upstream/bootstrap/state.js';
 import HistorySearchInput from './HistorySearchInput.js';
-import { usePrStatus } from '../../hooks/usePrStatus.js';
-import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js';
-import { Byline } from '../design-system/Byline.js';
-import { useTerminalSize } from '../../hooks/useTerminalSize.js';
-import { useTasksV2 } from '../../hooks/useTasksV2.js';
-import { formatDuration } from '../../utils/format.js';
+import { usePrStatus } from '../../../agenc/upstream/hooks/usePrStatus.js';
+import { KeyboardShortcutHint } from '../../../agenc/upstream/components/design-system/KeyboardShortcutHint.js';
+import { Byline } from '../../../agenc/upstream/components/design-system/Byline.js';
+import { useTerminalSize } from '../../../agenc/upstream/hooks/useTerminalSize.js';
+import { useTasksV2 } from '../../../agenc/upstream/hooks/useTasksV2.js';
+import { formatDuration } from '../../../agenc/upstream/utils/format.js';
 import { VoiceWarmupHint } from './VoiceIndicator.js';
-import { useVoiceEnabled } from '../../hooks/useVoiceEnabled.js';
-import { useVoiceState } from '../../context/voice.js';
-import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
-import { isXtermJs } from '../../../../tui/ink/terminal.js';
-import { useHasSelection, useSelection } from '../../../../tui/ink/hooks/use-selection.js';
-import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js';
-import { getPlatform } from '../../utils/platform.js';
-import { PrBadge } from '../PrBadge.js';
-
-// Dead code elimination: conditional import for proactive mode
-/* eslint-disable @typescript-eslint/no-require-imports */
-const proactiveModule = feature('PROACTIVE') || feature('KAIROS') ? require('../../proactive/index.js') : null;
-/* eslint-enable @typescript-eslint/no-require-imports */
+import { useVoiceEnabled } from '../../../agenc/upstream/hooks/useVoiceEnabled.js';
+import { useVoiceState } from '../../../agenc/upstream/context/voice.js';
+import { isFullscreenEnvEnabled } from '../../../agenc/upstream/utils/fullscreen.js';
+import { isXtermJs } from '../../ink/terminal.js';
+import { useHasSelection, useSelection } from '../../ink/hooks/use-selection.js';
+import { getGlobalConfig, saveGlobalConfig } from '../../../agenc/upstream/utils/config.js';
+import { getPlatform } from '../../../agenc/upstream/utils/platform.js';
+import { PrBadge } from '../../../agenc/upstream/components/PrBadge.js';
+import {
+  getPromptInputProactiveNextTickAt,
+  isPromptInputProactiveActive,
+  subscribeToPromptInputProactiveChanges,
+} from './proactiveAdapter.js';
 const NO_OP_SUBSCRIBE = (_cb: () => void) => () => {};
 const NULL = () => null;
 const MAX_VOICE_HINT_SHOWS = 3;
@@ -73,7 +73,15 @@ type Props = {
 };
 function ProactiveCountdown() {
   const $ = _c(7);
-  const nextTickAt = useSyncExternalStore(proactiveModule?.subscribeToProactiveChanges ?? NO_OP_SUBSCRIBE, proactiveModule?.getNextTickAt ?? NULL, NULL);
+  const nextTickAt = useSyncExternalStore(
+    (feature('PROACTIVE') || feature('KAIROS'))
+      ? subscribeToPromptInputProactiveChanges
+      : NO_OP_SUBSCRIBE,
+    (feature('PROACTIVE') || feature('KAIROS'))
+      ? getPromptInputProactiveNextTickAt
+      : NULL,
+    NULL,
+  );
   const [remainingSeconds, setRemainingSeconds] = useState(null);
   let t0;
   let t1;
@@ -261,7 +269,7 @@ function ModeIndicator({
   const showSpinnerTree = expandedView === 'teammates';
   const prStatus = usePrStatus(isLoading, isPrStatusEnabled());
   const hasTmuxSession = useAppState(s_4 => "external" === 'ant' && s_4.tungstenActiveSession !== undefined);
-  const nextTickAt = useSyncExternalStore(proactiveModule?.subscribeToProactiveChanges ?? NO_OP_SUBSCRIBE, proactiveModule?.getNextTickAt ?? NULL, NULL);
+  const nextTickAt = useSyncExternalStore((feature('PROACTIVE') || feature('KAIROS')) ? subscribeToPromptInputProactiveChanges : NO_OP_SUBSCRIBE, (feature('PROACTIVE') || feature('KAIROS')) ? getPromptInputProactiveNextTickAt : NULL, NULL);
   // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
   const voiceEnabled = feature('VOICE_MODE') ? useVoiceEnabled() : false;
   const voiceState = feature('VOICE_MODE') ?
@@ -341,7 +349,7 @@ function ModeIndicator({
   const hasInProcessTeammates = !showSpinnerTree && hasBackgroundTasks && Object.values(tasks).some(t_1 => t_1.type === 'in_process_teammate');
   const hasTeammatePills = hasInProcessTeammates || !showSpinnerTree && isViewingTeammate;
 
-  // In remote mode (`claude assistant`, --teleport) the agent runs elsewhere;
+  // In remote mode the agent runs elsewhere;
   // the local permission mode shown here doesn't reflect the agent's state.
   // Rendered before the tasks pill so a long pill label (e.g. ultraplan URL)
   // doesn't push the mode indicator off-screen.
@@ -377,7 +385,7 @@ function ModeIndicator({
     parts.push(<Text dimColor key="esc-return">
         <KeyboardShortcutHint shortcut={escShortcut} action="return to team lead" />
       </Text>);
-  } else if ((feature('PROACTIVE') || feature('KAIROS')) && hasNextTick) {
+  } else if ((feature('PROACTIVE') || feature('KAIROS')) && isPromptInputProactiveActive() && hasNextTick) {
     parts.push(<ProactiveCountdown key="proactive" />);
   } else if (!hasTeammatePills && showHint) {
     parts.push(...hintParts);

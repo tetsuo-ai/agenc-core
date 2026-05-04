@@ -1,17 +1,11 @@
 import { feature } from 'bun:bundle'
 import { useMemo } from 'react'
-import { useCommandQueue } from 'src/hooks/useCommandQueue.js'
-import { useAppState } from '../../../../tui/state/AppState.js'
-import { getGlobalConfig } from 'src/utils/config.js'
-import { getExampleCommandFromCache } from 'src/utils/exampleCommands.js'
-import { isQueuedCommandEditable } from 'src/utils/messageQueueManager.js'
-
-// Dead code elimination: conditional import for proactive mode
-/* eslint-disable @typescript-eslint/no-require-imports */
-const proactiveModule =
-  feature('PROACTIVE') || feature('KAIROS')
-    ? require('../../proactive/index.js')
-    : null
+import { useCommandQueue } from '../../../agenc/upstream/hooks/useCommandQueue.js'
+import { useAppState } from '../../state/AppState.js'
+import { getGlobalConfig } from '../../../agenc/upstream/utils/config.js'
+import { getExampleCommandFromCache } from '../../../agenc/upstream/utils/exampleCommands.js'
+import { isQueuedCommandEditable } from '../../../agenc/upstream/utils/messageQueueManager.js'
+import { isPromptInputProactiveActive } from './proactiveAdapter.js'
 
 type Props = {
   input: string
@@ -60,7 +54,10 @@ export function usePromptInputPlaceholder({
     if (
       submitCount < 1 &&
       promptSuggestionEnabled &&
-      !proactiveModule?.isProactiveActive()
+      !(
+        (feature('PROACTIVE') || feature('KAIROS')) &&
+        isPromptInputProactiveActive()
+      )
     ) {
       return getExampleCommandFromCache()
     }

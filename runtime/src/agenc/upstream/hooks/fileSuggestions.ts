@@ -5,7 +5,7 @@ import {
   AGENC_CONFIG_DIRECTORIES,
   loadMarkdownFilesForSubdir,
 } from 'src/utils/markdownConfigLoader.js'
-import type { SuggestionItem } from '../components/PromptInput/PromptInputFooterSuggestions.js'
+import type { SuggestionItem } from '../../../tui/components/PromptInput/PromptInputFooterSuggestions.js'
 import {
   CHUNK_MS,
   FileIndex,
