@@ -1,1 +1,1 @@
-export { useAgenCAiLimits } from './claudeAiLimitsHook.js' // branding-scan: allow existing upstream rate-limit module filename
+export { useAgenCAiLimits } from './claudeAiLimitsHook.js'; export { getRawUtilization } from './claudeAiLimits.js' // branding-scan: allow existing upstream rate-limit module filenames

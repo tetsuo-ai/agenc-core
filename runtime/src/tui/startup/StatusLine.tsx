@@ -1,32 +1,32 @@
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { memo, useCallback, useEffect, useRef } from 'react';
-import { logEvent } from 'src/services/analytics/index.js';
-import { useAppState, useSetAppState } from '../../../tui/state/AppState.js';
-import type { PermissionMode } from 'src/utils/permissions/PermissionMode.js';
-import { getIsRemoteMode, getKairosActive, getMainThreadAgentType, getOriginalCwd, getSdkBetas, getSessionId } from '../bootstrap/state.js';
-import { DEFAULT_OUTPUT_STYLE_NAME } from '../constants/outputStyles.js';
-import { useNotifications } from '../context/notifications.js';
-import { getTotalAPIDuration, getTotalCost, getTotalDuration, getTotalInputTokens, getTotalLinesAdded, getTotalLinesRemoved, getTotalOutputTokens } from '../cost-tracker.js';
-import { useMainLoopModel } from '../hooks/useMainLoopModel.js';
-import { type ReadonlySettings, useSettings } from '../hooks/useSettings.js';
-import { Ansi, Box, Text } from '../../../tui/ink.js';
-import { getRawUtilization } from '../services/claudeAiLimits.js';
-import type { Message } from '../types/message.js';
-import type { StatusLineCommandInput } from '../types/statusLine.js';
-import type { VimMode } from '../types/textInputTypes.js';
-import { checkHasTrustDialogAccepted } from '../utils/config.js';
-import { calculateContextPercentages, getContextWindowForModel } from '../utils/context.js';
-import { getCwd } from '../utils/cwd.js';
-import { logForDebugging } from 'src/utils/debug.js';
-import { isFullscreenEnvEnabled } from '../utils/fullscreen.js';
-import { createBaseHookInput, executeStatusLineCommand } from '../utils/hooks.js';
-import { getLastAssistantMessage } from '../utils/messages.js';
-import { getRuntimeMainLoopModel, type ModelName, renderModelName } from '../utils/model/model.js';
-import { getCurrentSessionTitle } from '../utils/sessionStorage.js';
-import { doesMostRecentAssistantMessageExceed200k, getCurrentUsage } from '../utils/tokens.js';
-import { getCurrentWorktreeSession } from '../utils/worktree.js';
-import { isVimModeEnabled } from '../../../tui/components/PromptInput/utils.js';
+import { logEvent } from '../../agenc/upstream/services/analytics/index.js';
+import { getRawUtilization } from '../../agenc/upstream/services/agencAiLimitsHook.js';
+import { getIsRemoteMode, getKairosActive, getMainThreadAgentType, getOriginalCwd, getSdkBetas, getSessionId } from '../../agenc/upstream/bootstrap/state.js';
+import { DEFAULT_OUTPUT_STYLE_NAME } from '../../agenc/upstream/constants/outputStyles.js';
+import { useNotifications } from '../../agenc/upstream/context/notifications.js';
+import { getTotalAPIDuration, getTotalCost, getTotalDuration, getTotalInputTokens, getTotalLinesAdded, getTotalLinesRemoved, getTotalOutputTokens } from '../../agenc/upstream/cost-tracker.js';
+import { useMainLoopModel } from '../../agenc/upstream/hooks/useMainLoopModel.js';
+import { type ReadonlySettings, useSettings } from '../../agenc/upstream/hooks/useSettings.js';
+import type { Message } from '../../agenc/upstream/types/message.js';
+import type { StatusLineCommandInput } from '../../agenc/upstream/types/statusLine.js';
+import type { VimMode } from '../../agenc/upstream/types/textInputTypes.js';
+import { checkHasTrustDialogAccepted } from '../../agenc/upstream/utils/config.js';
+import { calculateContextPercentages, getContextWindowForModel } from '../../agenc/upstream/utils/context.js';
+import { getCwd } from '../../agenc/upstream/utils/cwd.js';
+import { isFullscreenEnvEnabled } from '../../agenc/upstream/utils/fullscreen.js';
+import { createBaseHookInput, executeStatusLineCommand } from '../../agenc/upstream/utils/hooks.js';
+import { getLastAssistantMessage } from '../../agenc/upstream/utils/messages.js';
+import { getRuntimeMainLoopModel, type ModelName, renderModelName } from '../../agenc/upstream/utils/model/model.js';
+import type { PermissionMode } from '../../agenc/upstream/utils/permissions/PermissionMode.js';
+import { getCurrentSessionTitle } from '../../agenc/upstream/utils/sessionStorage.js';
+import { doesMostRecentAssistantMessageExceed200k, getCurrentUsage } from '../../agenc/upstream/utils/tokens.js';
+import { getCurrentWorktreeSession } from '../../agenc/upstream/utils/worktree.js';
+import { logForDebugging } from '../../utils/debug.js';
+import { Ansi, Box, Text } from '../ink.js';
+import { useAppState, useSetAppState } from '../state/AppState.js';
+import { isVimModeEnabled } from '../components/PromptInput/utils.js';
 export function statusLineShouldDisplay(settings: ReadonlySettings): boolean {
   // Assistant mode: statusline fields (model, permission mode, cwd) reflect the
   // REPL/daemon process, not what the agent child is actually running. Hide it.
@@ -151,7 +151,7 @@ function StatusLineInner({
   } = useNotifications();
   // AppState-sourced model — same source as API requests. getMainLoopModel()
   // re-reads settings.json on every call, so another session's /model write
-  // would leak into this session's statusline (anthropics/agenc-code#37596).
+  // would leak into this session's statusline (tracked in upstream issue #37596).
   const mainLoopModel = useMainLoopModel();
 
   // Keep latest values in refs for stable callback access
@@ -261,7 +261,7 @@ function StatusLineInner({
   useEffect(() => {
     const statusLine = settings?.statusLine;
     if (statusLine) {
-      logEvent('tengu_status_line_mount', {
+      logEvent('agenc_status_line_mount', {
         command_length: statusLine.command.length,
         padding: statusLine.padding
       });
@@ -273,7 +273,7 @@ function StatusLineInner({
       }
       // executeStatusLineCommand (hooks.ts) returns undefined when trust is
       // blocked — statusLineText stays undefined forever, user sees nothing,
-      // and tengu_status_line_mount above fires anyway so telemetry looks fine.
+      // and agenc_status_line_mount above fires anyway so telemetry looks fine.
       if (!checkHasTrustDialogAccepted()) {
         addNotification({
           key: 'statusline-trust-blocked',

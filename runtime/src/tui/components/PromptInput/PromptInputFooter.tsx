@@ -18,7 +18,7 @@ import type { AutoUpdaterResult } from '../../../agenc/upstream/utils/autoUpdate
 import { isFullscreenEnvEnabled } from '../../../agenc/upstream/utils/fullscreen.js';
 import { isUndercover } from '../../../agenc/upstream/utils/undercover.js';
 import { CoordinatorTaskPanel, useCoordinatorTaskCount } from '../../../agenc/upstream/components/CoordinatorAgentStatus.js';
-import { getLastAssistantMessageId, StatusLine, statusLineShouldDisplay } from '../../../agenc/upstream/components/StatusLine.js';
+import { getLastAssistantMessageId, StatusLine, statusLineShouldDisplay } from '../../startup/StatusLine.js';
 import { Notifications } from './Notifications.js';
 import { PromptInputFooterLeftSide } from './PromptInputFooterLeftSide.js';
 import { PromptInputFooterSuggestions, type SuggestionItem } from './PromptInputFooterSuggestions.js';
