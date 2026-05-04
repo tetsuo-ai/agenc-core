@@ -127,20 +127,44 @@ Ignore unrelated dirty sibling files that do not touch the named item paths.
 
 You are NOT permitted to edit code in this run. Read-only review.
 
+EXHAUSTIVE-PASS REQUIREMENT — load-bearing for the whole pipeline:
+
+This review costs real money, and every NEEDS_REVISION you return triggers a full re-implementation cycle. If you find ONE issue, stop, and return NEEDS_REVISION, the implementer fixes that one issue, re-runs verify, you re-review, find a SECOND issue, return NEEDS_REVISION again — and we burn N round trips when one pass should have surfaced everything. THIS IS THE FAILURE MODE TO AVOID.
+
+Procedure (mandatory — do NOT shortcut):
+
+1. Read EVERY changed file end-to-end before writing any issue. Do not stop reading at the first defect.
+2. Maintain a running list of every issue you encounter as you read. Do not pre-filter for severity. Capture LOW issues even if you would otherwise ignore them — the implementer might as well fix them in this pass.
+3. After the file pass, do a CROSS-CUTTING pass:
+   - Are there APIs/types referenced in one file that don't match the producing file?
+   - Are there tests that don't exercise the actual error paths the new code introduces?
+   - Are there obvious-but-missing test cases (boundary, empty, very-large, unicode, concurrent)?
+   - Did the implementer add new error/state types that callers don't handle?
+   - Are there dead branches the type system should catch but the diff hides under \`as any\` / \`@ts-ignore\` / \`unknown\`?
+4. After cross-cutting, do a SCOPE pass: did the implementer touch files outside the item's stated scope? Did they cite donor sources for items with a Donor: clause?
+5. Only after all 4 passes, write the structured report. The list must contain EVERY issue you found, not just the ones that justify your verdict.
+
+If you would rate the item APPROVED, still list any LOW-severity follow-ups you noticed — the implementer can clean them up before merge in the same pass.
+If you would rate the item NEEDS_REVISION, your list MUST include every issue at every severity, not just one CRITICAL. The implementer reads your full list and fixes everything in one revision pass.
+
 Required output format. Your FINAL line must be exactly one of:
 
   VERDICT: APPROVED
   VERDICT: NEEDS_REVISION
   VERDICT: BLOCKED
 
-Before that line, write a short structured report:
+Before that line, write a structured report:
 - 1-3 sentence summary of the diff
-- numbered list of issues (severity CRITICAL / HIGH / MEDIUM / LOW), each with file path and what to change
-- if APPROVED, you may still list issues but they must all be LOW priority follow-ups
-- if NEEDS_REVISION, list exactly what the agent must fix to pass
+- "Files reviewed:" — explicit list of every changed file path you read in full (the runner will sanity-check this against the actual diff)
+- "Issues:" — numbered list, each with severity (CRITICAL / HIGH / MEDIUM / LOW), file path + line if known, and the specific change needed. Include EVERY issue you found at EVERY severity. If no issues at a severity, write "  CRITICAL: none" / etc.
+- "Cross-cutting:" — issues that span multiple files or aren't tied to one location
+- "Scope check:" — confirm whether the diff stayed inside the item's stated scope
+- "Test coverage gaps:" — specific test cases that should exist but don't
+- if APPROVED, the issues list may be all LOW-severity follow-ups
+- if NEEDS_REVISION, the issues list contains the full set of fixes for one revision pass
 - if BLOCKED, explain why the work cannot proceed without user input
 
-Do not chat. Do not propose unrelated changes. Stick to this item.`;
+Do not chat. Do not propose unrelated changes. Stick to this item, but be exhaustive within it.`;
 
 const tmp = mkdtempSync(path.join(tmpdir(), `agenc-review-${id}-`));
 const outFile = path.join(tmp, "verdict.txt");
