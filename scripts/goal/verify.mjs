@@ -397,6 +397,26 @@ const ITEM_EVIDENCE = {
       },
     ],
   },
+  "T-13": {
+    files: [
+      "runtime/src/tui/slash/slash-command-parsing.ts",
+      "runtime/src/tui/slash/argument-substitution.ts",
+      "runtime/src/tui/slash/shell-quote.ts",
+      "runtime/src/tui/slash/PARITY.md",
+    ],
+    tests: [
+      "runtime/src/tui/slash/slash-command-parsing.test.ts",
+      "runtime/src/tui/slash/argument-substitution.test.ts",
+      "runtime/src/skills/local-loader.test.ts",
+      "runtime/src/commands/dispatcher.test.ts",
+    ],
+    grepPresent: [
+      {
+        pattern: "\\.\\./tui/slash/argument-substitution\\.js",
+        scope: "runtime/src/skills/local-loader.ts",
+      },
+    ],
+  },
   "ST-10": {
     files: [{ globUnder: "runtime/src/rollout", matching: /recorder|session.?index/i, minCount: 1 }],
   },
@@ -900,6 +920,10 @@ async function tuiAbsorbGates(item) {
     await t09ToolTargetGates();
     return;
   }
+  if (id === "T-13") {
+    await t13SlashCommandGates();
+    return;
+  }
   // Same shape as leaf absorb, but for the larger TUI subtrees.
   await leafAbsorbGates(item);
 }
@@ -975,6 +999,32 @@ async function t09ToolTargetGates() {
   }
 
   pass("T-09 scoped tool importers resolved to AgenC-owned paths");
+}
+
+async function t13SlashCommandGates() {
+  const retiredTargets = [
+    "runtime/src/agenc/upstream/utils/slashCommandParsing.ts",
+    "runtime/src/agenc/upstream/utils/argumentSubstitution.ts",
+  ];
+
+  for (const upstream of retiredTargets) {
+    if (existsSync(path.join(root, upstream))) {
+      failGate(`T-13 upstream target still present: ${upstream}`);
+    }
+    pass(`T-13 upstream target deleted (${upstream})`);
+  }
+
+  const retiredImportPattern = String.raw`agenc/upstream/utils/(?:slashCommandParsing|argumentSubstitution)|\.\./(?:utils/)?(?:slashCommandParsing|argumentSubstitution)\.js`;
+  const retiredImportScan = run(
+    "rg",
+    ["--no-messages", "-n", retiredImportPattern, "runtime/src"],
+    { silent: true },
+  );
+  if (retiredImportScan.status === 0 && retiredImportScan.stdout.trim()) {
+    failGate(`T-13 retired slash parser imports remain:\n${retiredImportScan.stdout}`);
+  }
+
+  pass("T-13 slash parser/substitution imports resolved to AgenC-owned paths");
 }
 
 async function foundationalGates(item) {

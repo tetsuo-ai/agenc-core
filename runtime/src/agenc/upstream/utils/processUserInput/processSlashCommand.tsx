@@ -37,7 +37,7 @@ import { parseToolListFromCLI } from '../permissions/permissionSetup.js';
 import { hasPermissionsToUseTool } from '../permissions/permissions.js';
 import { isOfficialMarketplaceName, parsePluginIdentifier } from '../plugins/pluginIdentifier.js';
 import { isRestrictedToPluginOnly, isSourceAdminTrusted } from '../settings/pluginOnlyPolicy.js';
-import { parseSlashCommand } from '../slashCommandParsing.js';
+import { parseSlashCommand } from '../../../../tui/slash/slash-command-parsing.js';
 import { sleep } from '../sleep.js';
 import { recordSkillUsage } from '../suggestions/skillUsageTracking.js';
 import { logOTelEvent, redactIfDisabled } from '../telemetry/events.js';

@@ -6,7 +6,7 @@ import { getPluginErrorMessage } from '../../types/plugin.js'
 import {
   parseArgumentNames,
   substituteArguments,
-} from '../argumentSubstitution.js'
+} from '../../../../tui/slash/argument-substitution.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { EFFORT_LEVELS, parseEffortValue } from '../effort.js'
 import { isBareMode } from '../envUtils.js'

@@ -11,8 +11,8 @@ import {
   discoverSkillRoots,
   formatSkillListingWithinBudget,
   loadLocalSkillsSnapshot,
-  substituteArguments,
 } from "./local-loader.js";
+import { substituteArguments } from "../tui/slash/argument-substitution.js";
 
 function tmpRoot(label: string): string {
   return mkdtempSync(join(tmpdir(), `agenc-${label}-`));
@@ -42,19 +42,16 @@ function writeCommand(root: string, rel: string, body?: string): string {
 }
 
 describe("local skills loader", () => {
-  it("discovers AgenC, Claude-compatible, user, and plugin skill roots", async () => {
+  it("discovers AgenC, agent, user, and plugin skill roots", async () => {
     const agencHome = tmpRoot("skills-home");
     const home = tmpRoot("skills-user");
     const defaultAgencHome = join(home, ".agenc");
-    const defaultClaudeHome = join(home, ".claude");
     const workspaceRoot = tmpRoot("skills-workspace");
 
     writeSkill(join(workspaceRoot, ".agents", "skills"), "project-skill");
     writeSkill(join(workspaceRoot, ".agenc", "skills"), "agenc-project-skill");
-    writeSkill(join(workspaceRoot, ".claude", "skills"), "claude-project-skill");
     writeSkill(join(agencHome, "skills"), "home-skill");
     writeSkill(join(defaultAgencHome, "skills"), "default-home-skill");
-    writeSkill(join(defaultClaudeHome, "skills"), "default-claude-skill");
     writeSkill(join(agencHome, "plugins", "demo", "skills"), "plugin-skill");
 
     const snapshot = await loadLocalSkillsSnapshot({
@@ -66,8 +63,6 @@ describe("local skills loader", () => {
     expect(snapshot.skills.map((skill) => skill.name)).toEqual(
       expect.arrayContaining([
         "agenc-project-skill",
-        "claude-project-skill",
-        "default-claude-skill",
         "default-home-skill",
         "home-skill",
         "plugin-skill",
@@ -101,7 +96,7 @@ describe("local skills loader", () => {
     expect(snapshot.skills.map((skill) => skill.name)).not.toContain("ignored");
   });
 
-  it("parses OpenClaude frontmatter fields and keeps name as display name", async () => {
+  it("parses AgenC frontmatter fields and keeps name as display name", async () => {
     const agencHome = tmpRoot("skills-home");
     const workspaceRoot = tmpRoot("skills-workspace");
     writeSkill(
@@ -112,7 +107,7 @@ name: Repository Docs
 description: Use repository docs
 allowed-tools: Read, Grep
 argument-hint: "<topic>"
-arguments: topic focus
+arguments: topic, focus
 when_to_use: when docs are needed
 version: "1.2.3"
 model: inherit
@@ -200,13 +195,47 @@ Read $topic and $focus.
       .toBe("commands_DEPRECATED");
   });
 
-  it("renders skills with base directory, arguments, and AgenC/Claude placeholders", async () => {
+  it("renders custom command markdown arguments through the loader path", async () => {
+    const agencHome = tmpRoot("skills-home");
+    const workspaceRoot = tmpRoot("skills-workspace");
+    writeCommand(
+      join(workspaceRoot, ".agenc", "commands"),
+      "explain.md",
+      `---
+description: Explain a topic
+arguments: topic target
+---
+Topic=$topic
+First=$0
+Second=$1
+All=$ARGUMENTS
+`,
+    );
+    const services = createLocalSkillsServices({
+      agencHome,
+      workspaceRoot,
+      env: {},
+    });
+
+    const rendered = await services.skillsManager.renderSkill?.({
+      name: "explain",
+      args: '"rendering hooks" docs',
+      sessionId: "session-2",
+    });
+
+    expect(rendered?.content).toContain("Topic=rendering hooks");
+    expect(rendered?.content).toContain("First=rendering hooks");
+    expect(rendered?.content).toContain("Second=docs");
+    expect(rendered?.content).toContain('All="rendering hooks" docs');
+  });
+
+  it("renders skills with base directory, arguments, and AgenC placeholders", async () => {
     const agencHome = tmpRoot("skills-home");
     const workspaceRoot = tmpRoot("skills-workspace");
     writeSkill(
       join(workspaceRoot, ".agenc", "skills"),
       "repo-docs",
-      "---\ndescription: Docs\narguments: topic\n---\nRead $topic in ${AGENC_SKILL_DIR} for ${CLAUDE_SESSION_ID}.\n",
+      "---\ndescription: Docs\narguments: topic\n---\nRead $topic in ${AGENC_SKILL_DIR} for ${AGENC_SESSION_ID}.\n",
     );
     const services = createLocalSkillsServices({
       agencHome,
