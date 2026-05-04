@@ -47,6 +47,7 @@ import {
 import { setRulesForSource } from "../permissions/rules.js";
 import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
+import { permissionGrantsFromToolPermissionContext } from "../permissions/permission-grants.js";
 import { ABORT, DENIED, type ReviewDecision } from "../permissions/review-decision.js";
 import { isFinal } from "../agents/status.js";
 import type { AgentStatus as ThreadAgentStatus } from "../agents/status.js";
@@ -61,6 +62,7 @@ import type {
   JsonObject,
   JsonValue,
   MessageContent,
+  PermissionListResult,
 } from "./protocol/index.js";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
 import { createAgenCDaemonRuntimeAuthBackend } from "./provider-key-vending.js";
@@ -181,6 +183,7 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentElicitationResponseParams,
   ): Promise<boolean>;
+  listPermissions?(agentId: string): Promise<PermissionListResult | null>;
 }
 
 export type AgenCDelegateFunction = (opts: DelegateOpts) => Promise<DelegateOutcome>;
@@ -412,6 +415,16 @@ export class AgenCDelegateBackgroundAgentRunner
       ...(active.budgetHalt !== undefined
         ? { metadata: { budgetHalt: active.budgetHalt } }
         : {}),
+    };
+  }
+
+  async listPermissions(agentId: string): Promise<PermissionListResult | null> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) return null;
+    return {
+      permissions: permissionGrantsFromToolPermissionContext(
+        active.bootstrap.session.permissionModeRegistry.current(),
+      ),
     };
   }
 

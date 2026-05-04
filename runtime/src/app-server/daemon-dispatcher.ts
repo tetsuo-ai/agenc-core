@@ -55,6 +55,7 @@ import {
   type InitializeParams,
   type JsonObject,
   type MessageStreamParams,
+  type PermissionListParams,
   type RequestCancelParams,
   type RequestId,
   type ToolApproveParams,
@@ -91,7 +92,9 @@ export interface AgenCDaemonDispatcherOptions {
     | "listAgents"
     | "stopAgent"
     | "streamAgentMessage"
-  >;
+  > & {
+    readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
+  };
   readonly initializeAuthenticator?: (
     params: InitializeParams,
   ) =>
@@ -132,7 +135,9 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "listAgents"
     | "stopAgent"
     | "streamAgentMessage"
-  >;
+  > & {
+    readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
+  };
   readonly #initializeAuthenticator:
     | ((
         params: InitializeParams,
@@ -411,6 +416,20 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.respondToElicitation(
             validateElicitationRespondParams(params),
+          ),
+        );
+      case "permission.list":
+        if (this.#agentManager.listPermissions === undefined) {
+          return errorResponse(
+            id,
+            -32601,
+            "daemon method is not implemented yet: permission.list",
+          );
+        }
+        return successResponse(
+          id,
+          await this.#agentManager.listPermissions(
+            validatePermissionListParams(params),
           ),
         );
       case "health.ping":
@@ -1107,6 +1126,17 @@ function validateElicitationRespondParams(
     throw invalidParams("elicitation.respond requires response");
   }
   return validated as ElicitationRespondParams;
+}
+
+function validatePermissionListParams(params: JsonObject): PermissionListParams {
+  const validated = validateObjectShape(params, {
+    methodName: "permission.list",
+    stringFields: ["agentId", "sessionId"],
+  });
+  if (validated.agentId !== undefined && validated.sessionId !== undefined) {
+    throw invalidParams("permission.list accepts agentId or sessionId, not both");
+  }
+  return validated as PermissionListParams;
 }
 
 function validateRequiredString(

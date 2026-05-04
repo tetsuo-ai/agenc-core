@@ -32,6 +32,8 @@ import type {
   JsonObject,
   JsonValue,
   MessageContent,
+  PermissionListParams,
+  PermissionListResult,
   SessionSummary,
   ToolApproveParams,
   ToolCancelParams,
@@ -845,6 +847,26 @@ export class AgenCDaemonAgentManager {
     return agents.length;
   }
 
+  async listPermissions(
+    params: PermissionListParams = {},
+  ): Promise<PermissionListResult> {
+    if (this.#runner?.listPermissions === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "permission.list requires a background runner",
+      );
+    }
+    const agentId = await this.#resolvePermissionListAgentId(params);
+    const result = await this.#runner.listPermissions(agentId);
+    if (result === null) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "AGENT_NOT_FOUND",
+        `AgenC daemon agent not found: ${agentId}`,
+      );
+    }
+    return result;
+  }
+
   async approveTool(params: ToolApproveParams): Promise<ToolDecisionResult> {
     const agentId = await this.#resolveActiveAgentIdForSession(
       params.sessionId,
@@ -1096,6 +1118,7 @@ export class AgenCDaemonAgentManager {
     options: {
       readonly allowCancelTool?: boolean;
       readonly allowElicitationResponse?: boolean;
+      readonly allowListPermissions?: boolean;
     } = {},
   ): Promise<string> {
     if (this.#sessionManager === undefined) {
@@ -1111,7 +1134,15 @@ export class AgenCDaemonAgentManager {
     const hasElicitationRunner =
       options.allowElicitationResponse === true &&
       this.#runner?.respondToElicitation !== undefined;
-    if (!hasToolDecisionRunner && !hasCancelRunner && !hasElicitationRunner) {
+    const hasPermissionListRunner =
+      options.allowListPermissions === true &&
+      this.#runner?.listPermissions !== undefined;
+    if (
+      !hasToolDecisionRunner &&
+      !hasCancelRunner &&
+      !hasElicitationRunner &&
+      !hasPermissionListRunner
+    ) {
       throw new AgenCDaemonAgentLifecycleError(
         "BACKGROUND_RUNNER_UNAVAILABLE",
         "session request requires a background runner",
@@ -1145,6 +1176,50 @@ export class AgenCDaemonAgentManager {
       }
     });
     return session.agentId;
+  }
+
+  async #resolvePermissionListAgentId(
+    params: PermissionListParams,
+  ): Promise<string> {
+    const agentId = normalizeNonEmpty(params.agentId);
+    const sessionId = normalizeNonEmpty(params.sessionId);
+    if (agentId !== undefined && sessionId !== undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "permission.list accepts agentId or sessionId, not both",
+      );
+    }
+    if (sessionId !== undefined) {
+      return this.#resolveActiveAgentIdForSession(sessionId, {
+        allowListPermissions: true,
+      });
+    }
+    if (agentId === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "permission.list requires agentId or sessionId",
+      );
+    }
+    await this.#state.with(async (state) => {
+      const agent = state.agents.get(agentId);
+      if (agent !== undefined) {
+        await this.#refreshAgentFromRunner(state, agent);
+      }
+      const refreshed = state.agents.get(agentId);
+      if (refreshed === undefined || !isActiveAgent(refreshed)) {
+        throw new AgenCDaemonAgentLifecycleError(
+          "AGENT_NOT_FOUND",
+          `AgenC daemon agent not found: ${agentId}`,
+        );
+      }
+      if (isRecoveredRuntimeUnavailable(refreshed)) {
+        throw new AgenCDaemonAgentLifecycleError(
+          "BACKGROUND_RUNNER_UNAVAILABLE",
+          `AgenC daemon agent recovered without a live runtime: ${agentId}`,
+        );
+      }
+    });
+    return agentId;
   }
 
   async #refreshAgentFromRunner(
