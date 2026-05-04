@@ -73,7 +73,7 @@ import {
 import type { MemoryEntry } from "../prompts/memory/types.js";
 import type { Session } from "../session/session.js";
 import { getCurrentRuntimeSession } from "./_deps/current-session.js";
-import { PermissionModeRegistry } from "../permissions/mode.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 
 function stubSession() {

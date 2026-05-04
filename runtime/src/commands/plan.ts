@@ -37,7 +37,7 @@ import { spawn } from "node:child_process";
 import {
   PermissionModeRegistry,
   transitionPermissionMode,
-} from "../permissions/mode.js";
+} from "../permissions/permission-mode.js";
 import {
   formatPlanText,
   clearAllPlanSlugs,

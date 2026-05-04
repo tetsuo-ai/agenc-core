@@ -64,7 +64,7 @@ import type { SessionSubmitOptions } from "./autonomous-mode.js";
 import type { CostSidecar } from "./cost.js";
 import type { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
 import type { ToolRegistry } from "./_deps/tool-registry.js";
-import { PermissionModeRegistry } from "../permissions/mode.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { getAttachmentTrackingState } from "./attachment-state.js";
 import {
   createEmptyToolPermissionContext,

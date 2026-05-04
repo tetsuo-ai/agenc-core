@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { buildToolRegistry } from "./tool-registry.js";
-import { PermissionModeRegistry } from "./permissions/mode.js";
+import { PermissionModeRegistry } from "./permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "./permissions/types.js";
 import {
   clearExitPlanModeApprovalsForTest,

@@ -20,7 +20,7 @@ import {
   stripDangerousPermissionsForAutoMode,
   transitionPermissionMode,
   shouldPlanUseAutoMode,
-} from "./mode.js";
+} from "./permission-mode.js";
 import type { PermissionMode, ToolPermissionContext } from "./types.js";
 
 const AUTO_MODE_ENV_KEYS = [

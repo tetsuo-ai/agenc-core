@@ -31,7 +31,7 @@ import {
   type ToolPermissionContext,
 } from "./types.js";
 import { applyPermissionRulesToPermissionContext } from "./rules.js";
-import { __setAutoModeGateResolverForTesting } from "./mode.js";
+import { __setAutoModeGateResolverForTesting } from "./permission-mode.js";
 import { ConfigStore, defaultConfig } from "../config/index.js";
 import { bashToolHasPermission, type BashPermissionInput } from "./bash.js";
 import {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { PermissionModeRegistry } from "../permissions/mode.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import {
   createEmptyToolPermissionContext,
   type PermissionMode,

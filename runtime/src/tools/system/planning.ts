@@ -27,8 +27,8 @@
  * `TodoWrite`. Mixing compatibility planning names with AgenC planning
  * surfaces causes duplicate-render and raw-JSON-result bugs in scrollback.
  */
-import type { PermissionModeRegistry } from "../../permissions/mode.js";
-import { transitionPermissionMode } from "../../permissions/mode.js";
+import type { PermissionModeRegistry } from "../../permissions/permission-mode.js";
+import { transitionPermissionMode } from "../../permissions/permission-mode.js";
 import type {
   PermissionMode,
   PermissionUpdate,

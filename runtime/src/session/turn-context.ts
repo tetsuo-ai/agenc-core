@@ -18,7 +18,7 @@
 
 import type { LLMProvider } from "../llm/types.js";
 import type { PermissionMode } from "../permissions/types.js";
-import type { PermissionModeRegistry } from "../permissions/mode.js";
+import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import type { PendingWorktreeState } from "./pending-worktree.js";
 
 // ─────────────────────────────────────────────────────────────────────

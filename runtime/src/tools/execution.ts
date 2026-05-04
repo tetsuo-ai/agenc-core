@@ -2,7 +2,7 @@
  * Tool execution — the central gate between the model's tool_use
  * blocks and the actual `Tool.execute()` call.
  *
- * 1:1 port of openclaude `services/tools/toolExecution.ts` plus
+ * 1:1 port of donor TS `services/tools/toolExecution.ts` plus
  * `utils/toolErrors.ts:formatError`. AgenC's Tool shape carries a raw
  * JSON Schema (not Zod), so the validator is a richer JSON-schema
  * engine implemented here; the observable tool_result prose matches
@@ -95,7 +95,7 @@ import {
   getSchemaValidationErrorOverride,
 } from "./schema-errors.js";
 import { buildRecoverableToolFailureMetadata } from "./result-metadata.js";
-// Inline copies of openclaude `utils/messages.ts` constants. The full
+// Inline copies of donor TS `utils/messages.ts` constants. The full
 // messages.ts is a heavy port that pulls in `bun:bundle`, analytics,
 // and the entire session service graph; importing two constants from
 // it bricks the whole tools/ test surface. The canonical strings are
@@ -111,7 +111,7 @@ import type {
   ToolEvaluatorContext,
 } from "../permissions/evaluator.js";
 import type { PermissionMode } from "../permissions/types.js";
-import type { PermissionModeRegistry } from "../permissions/mode.js";
+import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import {
   reviewDecisionIsAllow,
   type ReviewDecision,
@@ -125,7 +125,7 @@ export const DEFAULT_TOOL_TIMEOUT_MS = 30_000;
 
 /**
  * I-15: default cap on tool result size in bytes. 400 KB matches
- * openclaude `MAX_TOOL_RESULT_TOKENS=100_000 × BYTES_PER_TOKEN=4`.
+ * donor TS `MAX_TOOL_RESULT_TOKENS=100_000 × BYTES_PER_TOKEN=4`.
  * Per-tool override via `tool.maxResultBytes`.
  */
 export const DEFAULT_MAX_TOOL_RESULT_BYTES = 400_000;
@@ -136,7 +136,7 @@ const TRUNCATION_MARKER_TEMPLATE =
 
 /**
  * Hard cap on formatted error prose before middle-truncation. Mirrors
- * openclaude `formatError`'s 10,000-char cutoff.
+ * donor TS `formatError`'s 10,000-char cutoff.
  */
 const FORMAT_ERROR_MAX_BYTES = 10_000;
 
@@ -510,7 +510,7 @@ export async function requestApprovalWithAbortRace(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Error classification — port of openclaude `classifyToolError`.
+// Error classification — port of donor TS `classifyToolError`.
 // ─────────────────────────────────────────────────────────────────────
 
 export type ToolErrorClass =
@@ -601,7 +601,7 @@ function isShellInterruptError(err: unknown): boolean {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// openclaude `formatError` parity — produces tool_result content.
+// donor TS `formatError` parity — produces tool_result content.
 // ─────────────────────────────────────────────────────────────────────
 
 export function formatError(error: unknown): string {
@@ -1808,7 +1808,7 @@ export async function runToolUse(
     }
   }
 
-  // openclaude `shouldPreventContinuation` parity — when a PreToolUse
+  // donor TS `shouldPreventContinuation` parity — when a PreToolUse
   // hook set `preventContinuation`, emit the attachment now that the
   // tool has actually run successfully.
   if (prePreventContinuation) {

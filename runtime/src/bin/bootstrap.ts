@@ -17,7 +17,7 @@ import {
   shouldProbeCapabilityEntry,
 } from "../llm/capabilities.js";
 import { MCPManager } from "../mcp-client/manager.js";
-import { PermissionModeRegistry } from "../permissions/mode.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { isAutoModeGateEnabled } from "../permissions/classifier.js";
 import { ApprovalStore as RuntimeApprovalStore } from "../permissions/approval-cache.js";
 import {

@@ -37,7 +37,7 @@ import {
 } from "./turn-context.js";
 import { isPlanMode } from "./plan-mode.js";
 import type { TurnContext } from "./turn-context.js";
-import { PermissionModeRegistry } from "../permissions/mode.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import {
   _resetAttachmentTrackingStateForTest,
   getAttachmentTrackingState,

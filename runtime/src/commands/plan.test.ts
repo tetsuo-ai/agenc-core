@@ -19,7 +19,7 @@ import planCommand, {
 import type { SlashCommandContext } from "./types.js";
 import type { Session } from "../session/session.js";
 import type { Event } from "../session/event-log.js";
-import { PermissionModeRegistry } from "../permissions/mode.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 
 interface Harness {

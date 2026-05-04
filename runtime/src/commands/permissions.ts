@@ -53,8 +53,8 @@ import {
 } from "../permissions/types.js";
 import { parseRuleString, serializeRuleValue } from "../permissions/rules.js";
 import { applyPermissionUpdate } from "../permissions/rules.js";
-import { transitionPermissionMode } from "../permissions/mode.js";
-import type { PermissionModeRegistry } from "../permissions/mode.js";
+import { transitionPermissionMode } from "../permissions/permission-mode.js";
+import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import {
   addPermissionRulesToSettings,
   deletePermissionRule,

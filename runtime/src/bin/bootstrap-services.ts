@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { LLMProvider } from "../llm/types.js";
 import { readProviderFactoryOptions } from "../llm/provider.js";
 import type { ReviewDecision } from "../permissions/review-decision.js";
-import { PermissionModeRegistry } from "../permissions/mode.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { ApprovalStore as RuntimeApprovalStore } from "../permissions/approval-cache.js";
 import { NetworkApprovalService as RuntimeNetworkApprovalService } from "../permissions/network-approval.js";
 import { createLocalSkillsServices } from "../skills/local-loader.js";

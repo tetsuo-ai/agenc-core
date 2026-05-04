@@ -31,7 +31,7 @@ import {
   type ToolEvaluatorContext,
 } from "../permissions/evaluator.js";
 import { freshDenialTracking } from "../permissions/denial-tracking.js";
-import { PermissionModeRegistry } from "../permissions/mode.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import {
   createEmptyToolPermissionContext,
   type PermissionMode,

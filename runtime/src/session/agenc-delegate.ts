@@ -46,7 +46,7 @@ import {
 } from "./review.js";
 import type { RunningTask, SpawnTaskOptions } from "./tasks.js";
 import { AsyncQueue, BehaviorSubject } from "./_deps/utils.js";
-import { PermissionModeRegistry } from "../permissions/mode.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import type { ToolRegistry } from "./_deps/tool-registry.js";
 
