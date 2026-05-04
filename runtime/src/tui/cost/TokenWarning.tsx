@@ -2,11 +2,11 @@ import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { useSyncExternalStore } from 'react';
-import { Box, Text } from '../../../tui/ink.js';
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js';
-import { calculateTokenWarningState, getEffectiveContextWindowSize, isAutoCompactEnabled } from '../services/compact/autoCompact.js';
-import { useCompactWarningSuppression } from '../services/compact/compactWarningHook.js';
-import { getUpgradeMessage } from '../utils/model/contextWindowUpgradeCheck.js';
+import { Box, Text } from '../ink.js';
+import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../agenc/upstream/services/analytics/growthbook.js';
+import { calculateTokenWarningState, getEffectiveContextWindowSize, isAutoCompactEnabled } from '../../agenc/upstream/services/compact/autoCompact.js';
+import { useCompactWarningSuppression } from '../../agenc/upstream/services/compact/compactWarningHook.js';
+import { getUpgradeMessage } from '../../agenc/upstream/utils/model/contextWindowUpgradeCheck.js';
 type Props = {
   tokenUsage: number;
   model: string;
@@ -25,7 +25,7 @@ function CollapseLabel(t0) {
   } = t0;
   let t1;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
-    t1 = require("../services/contextCollapse/index.js");
+    t1 = require("../../agenc/upstream/services/contextCollapse/index.js");
     $[0] = t1;
   } else {
     t1 = $[0];
@@ -33,7 +33,7 @@ function CollapseLabel(t0) {
   const {
     getStats,
     subscribe
-  } = t1 as typeof import('../services/contextCollapse/index.js');
+  } = t1 as typeof import('../../agenc/upstream/services/contextCollapse/index.js');
   let t2;
   if ($[1] === Symbol.for("react.memo_cache_sentinel")) {
     t2 = () => {
@@ -128,14 +128,14 @@ export function TokenWarning(t0) {
   let reactiveOnlyMode = false;
   let collapseMode = false;
   if (feature("REACTIVE_COMPACT")) {
-    if (getFeatureValue_CACHED_MAY_BE_STALE("tengu_cobalt_raccoon", false)) {
+    if (getFeatureValue_CACHED_MAY_BE_STALE("agenc_cobalt_raccoon", false)) {
       reactiveOnlyMode = true;
     }
   }
   if (feature("CONTEXT_COLLAPSE")) {
     const {
       isContextCollapseEnabled
-    } = require("../services/contextCollapse/index.js") as typeof import('../services/contextCollapse/index.js');
+    } = require("../../agenc/upstream/services/contextCollapse/index.js") as typeof import('../../agenc/upstream/services/contextCollapse/index.js');
     if (isContextCollapseEnabled()) {
       collapseMode = true;
     }

@@ -185,6 +185,15 @@ function assertSourceSnapshot() {
   ]
     .filter(([file]) => existsSync(join(liveTuiRoot, file)))
     .map(([, inventoryPath]) => inventoryPath);
+  const absorbedCostFiles = [
+    ["cost/Stats.tsx", "src/components/Stats.tsx"],
+    ["cost/TokenWarning.tsx", "src/components/TokenWarning.tsx"],
+    ["cost/MemoryUsageIndicator.tsx", "src/components/MemoryUsageIndicator.tsx"],
+    ["cost/tokenAnalytics.ts", "src/utils/tokenAnalytics.ts"],
+    ["cost/tokenAnalytics.test.ts", "src/utils/tokenAnalytics.test.ts"],
+  ]
+    .filter(([file]) => existsSync(join(liveTuiRoot, file)))
+    .map(([, inventoryPath]) => inventoryPath);
   const substitutions = new Map([
     [
       `src/components/${donorBrand}CodeHint/PluginHintMenu.tsx`,
@@ -268,6 +277,14 @@ function assertSourceSnapshot() {
       "src/utils/transcriptSearch.test.ts",
       "Focused coverage for T-15 transcript-search extraction behavior used by history search.",
     ],
+    [
+      "src/utils/tokenAnalytics.ts",
+      "T-16 absorbs the token analytics helper with the cost/usage TUI cells; this utility is outside the tracked TUI source directories.",
+    ],
+    [
+      "src/utils/tokenAnalytics.test.ts",
+      "Focused coverage for T-16 token usage analytics behavior.",
+    ],
   ]);
   const expected = sourceFiles
     .map((file) => substitutions.get(file) ?? file)
@@ -282,6 +299,7 @@ function assertSourceSnapshot() {
     .concat(absorbedAppFiles)
     .concat(absorbedStartupFiles)
     .concat(absorbedHistoryFiles)
+    .concat(absorbedCostFiles)
     .sort();
   const missing = expected.filter((file) => !actualFiles.includes(file));
   const extra = actualFiles.filter((file) => !expected.includes(file));
@@ -362,6 +380,7 @@ function assertOldTuiRemoved() {
     if (file === "components/Messages.behavior.test.ts") continue;
     if (file === "components/messagesBriefFiltering.ts") continue;
     if (file === "components/App.tsx") continue;
+    if (file.startsWith("cost/")) continue;
     if (file.startsWith("history/")) continue;
     if (file.startsWith("ink/")) continue;
     if (file.startsWith("keybindings/")) continue;
@@ -408,6 +427,12 @@ function assertNoDeletedAbsorbImporters() {
     [join(copiedRoot, "components/HistorySearchDialog"), "HistorySearchDialog"],
     [join(copiedRoot, "screens/ResumeConversation"), "ResumeConversation"],
     [join(copiedRoot, "utils/transcriptSearch"), "transcript search"],
+  ]);
+  const deletedCostEntrypoints = new Map([
+    [join(copiedRoot, "components/Stats"), "Stats component"],
+    [join(copiedRoot, "components/TokenWarning"), "TokenWarning component"],
+    [join(copiedRoot, "components/MemoryUsageIndicator"), "MemoryUsageIndicator component"],
+    [join(copiedRoot, "utils/tokenAnalytics"), "token analytics"],
   ]);
   const sourceImportPattern = /(?:from\s+|import\s*\(|require\s*\()\s*['"]([^'"]+)['"]/g;
   for (const file of walk(copiedRoot)) {
@@ -488,6 +513,18 @@ function assertNoDeletedAbsorbImporters() {
       ) {
         fail(`deleted history/resume alias import remains: ${file} -> ${specifier}`);
       }
+      if (
+        specifier === "src/components/Stats" ||
+        specifier === "src/components/Stats.js" ||
+        specifier === "src/components/TokenWarning" ||
+        specifier === "src/components/TokenWarning.js" ||
+        specifier === "src/components/MemoryUsageIndicator" ||
+        specifier === "src/components/MemoryUsageIndicator.js" ||
+        specifier === "src/utils/tokenAnalytics" ||
+        specifier === "src/utils/tokenAnalytics.js"
+      ) {
+        fail(`deleted cost/usage alias import remains: ${file} -> ${specifier}`);
+      }
       if (!specifier.startsWith(".")) continue;
       const resolved = resolve(dirname(abs), specifier)
         .replace(/\.(?:js|jsx|ts|tsx|mjs|cjs)$/, "");
@@ -534,6 +571,11 @@ function assertNoDeletedAbsorbImporters() {
       }
       for (const [deletedHistoryEntrypoint, label] of deletedHistoryEntrypoints) {
         if (resolved === deletedHistoryEntrypoint) {
+          fail(`deleted ${label} relative import remains: ${file} -> ${specifier}`);
+        }
+      }
+      for (const [deletedCostEntrypoint, label] of deletedCostEntrypoints) {
+        if (resolved === deletedCostEntrypoint) {
           fail(`deleted ${label} relative import remains: ${file} -> ${specifier}`);
         }
       }

@@ -28,9 +28,9 @@ import { tokenCountFromLastAPIResponse } from '../../../agenc/upstream/utils/tok
 import { AutoUpdaterWrapper } from '../../../agenc/upstream/components/AutoUpdaterWrapper.js';
 import { ConfigurableShortcutHint } from '../../../agenc/upstream/components/ConfigurableShortcutHint.js';
 import { IdeStatusIndicator } from '../../../agenc/upstream/components/IdeStatusIndicator.js';
-import { MemoryUsageIndicator } from '../../../agenc/upstream/components/MemoryUsageIndicator.js';
+import { MemoryUsageIndicator } from '../../cost/MemoryUsageIndicator.js';
 import { SentryErrorBoundary } from '../../../agenc/upstream/components/SentryErrorBoundary.js';
-import { TokenWarning } from '../../../agenc/upstream/components/TokenWarning.js';
+import { TokenWarning } from '../../cost/TokenWarning.js';
 import { SandboxPromptFooterHint } from './SandboxPromptFooterHint.js';
 
 /* eslint-disable @typescript-eslint/no-require-imports */
