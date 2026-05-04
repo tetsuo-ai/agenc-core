@@ -3,12 +3,14 @@
   "scope": "AgenC apply-patch parser, runtime primitive, and model-facing tool wrapper parity with the donor apply-patch subsystem.",
   "sourceRoot": "donor-runtime-snapshot",
   "targetRoot": "..",
-  "sourceCommit": "35aaa5d9fcb606fb6f27dd5747ecab3f4ba0c07e",
-  "sourceCommitDescribe": "35aaa5d9fc Bound websocket request sends with idle timeout (#20751)",
+  "sourceCommit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
+  "sourceCommitDescribe": "c8c30d9d75 donor apply-patch snapshot",
   "sourceFiles": [
     "apply-patch/src/lib.rs",
     "apply-patch/src/parser.rs",
     "apply-patch/src/seek_sequence.rs",
+    "apply-patch/tests/fixtures/scenarios/",
+    "apply-patch/tests/suite/scenarios.rs",
     "core/src/apply_patch.rs",
     "tools/src/apply_patch_tool.rs",
     "tools/src/tool_apply_patch.lark"
@@ -21,12 +23,14 @@
     "runtime/src/tools/apply-patch/tool.ts",
     "runtime/src/tools/apply-patch/index.ts",
     "runtime/src/tools/apply-patch/PARITY.md",
+    "runtime/src/tools/apply-patch/__fixtures__/scenarios/",
     "runtime/src/tool-registry.ts",
     "runtime/src/agents/run-agent.ts"
   ],
   "testFiles": [
     "runtime/src/tools/apply-patch/parser.test.ts",
     "runtime/src/tools/apply-patch/runtime.test.ts",
+    "runtime/src/tools/apply-patch/scenarios.test.ts",
     "runtime/src/tools/apply-patch/tool.test.ts",
     "runtime/src/tool-registry.test.ts",
     "runtime/src/agents/run-agent.test.ts"
@@ -94,6 +98,29 @@
         "runtime/src/tools/apply-patch/tool.test.ts",
         "runtime/src/tool-registry.test.ts",
         "runtime/src/agents/run-agent.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "fixture-scenarios",
+      "source": "apply-patch/tests/suite/scenarios.rs + apply-patch/tests/fixtures/scenarios/",
+      "target": "runtime/src/tools/apply-patch/scenarios.test.ts + runtime/src/tools/apply-patch/__fixtures__/scenarios/",
+      "requiredBehaviors": [
+        "every numbered donor scenario directory is copied into the AgenC fixture tree",
+        "the fixture runner seeds a temporary workspace from each scenario input directory",
+        "the runner applies the scenario patch using the AgenC apply-patch primitive",
+        "the runner compares the final filesystem snapshot exactly against the scenario expected directory",
+        "the runner explicitly asserts each scenario's donor pass or reject outcome before comparing final filesystem state"
+      ],
+      "edgeCases": [
+        "both duplicate-numbered 020 scenario directories are present and exercised",
+        "rejecting scenarios leave the input snapshot unchanged when expected",
+        "a partial-success failure keeps earlier file creations before the later failing hunk",
+        "whitespace-padded patch markers and hunk headers are applied",
+        "unicode file contents and end-of-file markers round-trip through byte snapshots"
+      ],
+      "tests": [
+        "runtime/src/tools/apply-patch/scenarios.test.ts"
       ],
       "status": "required"
     }
