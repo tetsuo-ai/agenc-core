@@ -2,7 +2,7 @@ import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import type { AgenCShutdownSignal } from "../lifecycle/index.js";
@@ -13,6 +13,7 @@ import {
 import {
   defaultAgenCDaemonPidPath,
   ensureAgenCDaemonCookie,
+  formatAgenCDaemonCliHelpText,
   parseAgenCDaemonCliArgs,
   readAgenCDaemonPid,
   resolveAgenCDaemonCookiePath,
@@ -270,6 +271,22 @@ describe("AgenC daemon CLI", () => {
       kind: "command",
       action: "start",
     });
+    expect(parseAgenCDaemonCliArgs(["daemon", "start", "--foreground"])).toEqual(
+      {
+        kind: "command",
+        action: "run",
+      },
+    );
+    expect(
+      parseAgenCDaemonCliArgs(["daemon", "start", "--foreground", "--bogus"]),
+    ).toEqual({
+      kind: "error",
+      message: "unknown daemon start option: --bogus",
+    });
+    expect(parseAgenCDaemonCliArgs(["daemon", "start", "--bogus"])).toEqual({
+      kind: "error",
+      message: "unknown daemon start option: --bogus",
+    });
     expect(parseAgenCDaemonCliArgs(["daemon", "restart"])).toEqual({
       kind: "command",
       action: "restart",
@@ -278,6 +295,38 @@ describe("AgenC daemon CLI", () => {
       kind: "error",
       message: "unknown daemon command: bogus",
     });
+  });
+
+  it("documents foreground daemon mode and ships supervisor templates", async () => {
+    const helpText = formatAgenCDaemonCliHelpText();
+    expect(helpText).toContain("agenc daemon start --foreground");
+    expect(helpText).toContain("Run the daemon in the current process");
+
+    const repoRoot = resolve(process.cwd(), "..");
+    const systemd = await readFile(
+      join(repoRoot, "packaging/systemd/agenc-daemon.service"),
+      "utf8",
+    );
+    const launchd = await readFile(
+      join(repoRoot, "packaging/launchd/dev.agenc.daemon.plist"),
+      "utf8",
+    );
+    const windows = await readFile(
+      join(repoRoot, "packaging/windows/agenc-daemon.xml"),
+      "utf8",
+    );
+
+    expect(systemd).toContain(
+      "ExecStart=/usr/bin/env agenc daemon start --foreground",
+    );
+    expect(systemd).toContain("Restart=on-failure");
+    expect(launchd).toContain("<string>dev.agenc.daemon</string>");
+    expect(launchd).toContain("<string>agenc</string>");
+    expect(launchd).toContain("<string>--foreground</string>");
+    expect(windows).toContain("<id>agenc-daemon</id>");
+    expect(windows).toContain(
+      "<arguments>daemon start --foreground</arguments>",
+    );
   });
 
   it("starts once, writes daemon.pid, and reports running status", async () => {
