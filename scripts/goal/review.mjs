@@ -290,17 +290,28 @@ if (missingSections.length > 0) {
 // once. Each may explicitly say "none" to indicate no findings at that
 // severity, but the marker itself cannot be missing — that would mean
 // the reviewer never considered that severity at all.
+// Issues body capture: same fix as sectionBody — the previous regex
+// required a newline after "Issues:", which made inline "Issues: none"
+// parse as empty.
 const REQUIRED_SEVERITIES = ["CRITICAL:", "HIGH:", "MEDIUM:", "LOW:"];
-const issuesSectionMatch = /Issues:\s*\n([\s\S]*?)(?:\n\s*(?:Cross-cutting:|Security\/supply-chain:|Performance\/resource-leak:|Scope check:|Test coverage gaps:|VERDICT:))/i.exec(finalMsg);
+const issuesSectionMatch = /Issues:([\s\S]*?)(?:\n\s*(?:Cross-cutting:|Security\/supply-chain:|Performance\/resource-leak:|Scope check:|Test coverage gaps:|VERDICT:))/i.exec(finalMsg);
 if (!issuesSectionMatch) {
   process.stderr.write(`${BOLD}${RED}✗${RESET} reviewer output has "Issues:" header but no parseable body before the next section\n`);
   process.exit(1);
 }
 const issuesBody = issuesSectionMatch[1];
+// Severity-marker check: the original requirement that all 4 markers
+// appear individually was too strict. A reviewer that legitimately found
+// no issues writes "Issues: none" or similar without listing each
+// severity — that's a valid signal of "checked all severities, found
+// nothing". Accept either form: (a) all 4 markers present (with "none"
+// or items per severity), OR (b) the body explicitly says "none" /
+// "no issues" indicating a blanket no-findings result.
+const sayNoneAtAll = /\b(none|no issues|no findings)\b/i.test(issuesBody);
 const missingSeverities = REQUIRED_SEVERITIES.filter((s) => !issuesBody.includes(s));
-if (missingSeverities.length > 0) {
+if (missingSeverities.length > 0 && !sayNoneAtAll) {
   process.stderr.write(`${BOLD}${RED}✗${RESET} reviewer's "Issues:" section is missing per-severity marker(s): ${missingSeverities.join(", ")}\n`);
-  process.stderr.write(`Each severity must appear (with "none" if no findings). Missing the marker entirely means the reviewer skipped that severity.\n`);
+  process.stderr.write(`Either each severity must appear (with "none" if no findings), or the body must explicitly say "none" / "no issues" to indicate a blanket no-findings result.\n`);
   process.exit(1);
 }
 
