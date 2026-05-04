@@ -361,8 +361,13 @@ const ITEM_EVIDENCE = {
       "runtime/src/tools/AgentTool/constants.ts",
       "runtime/src/tools/AgentTool/prompt.ts",
       "runtime/src/tools/BriefTool/prompt.ts",
+      "runtime/src/tools/AgentTool/PARITY.md",
     ],
-    tests: ["runtime/src/tools/ask-user-question-bridge-routing.test.tsx"],
+    tests: [
+      "runtime/src/tools/ask-user-question-bridge-routing.test.tsx",
+      "runtime/src/tools/ask-user-question/tui-tool.test.tsx",
+      "runtime/src/tools/AgentTool/loadAgentsDir.test.ts",
+    ],
     grepNotPresent: [
       {
         pattern: "agenc/upstream/tools/(AskUserQuestionTool|AgentTool|BriefTool)",
@@ -898,6 +903,9 @@ async function tuiAbsorbGates(item) {
 }
 
 async function t09ToolTargetGates() {
+  // T-09 targets the tool imports pulled by tool-stubs and the TUI-facing
+  // AgentTool definition surfaces. The broader upstream tools mirror still
+  // contains source-only dependencies until the T-11 final sweep.
   const scopes = [
     "runtime/src/tui/bridges/tool-stubs.tsx",
     "runtime/src/tui/components/PromptInput",
