@@ -285,12 +285,23 @@ function parseRuleOrRequestArgs(
   let sessionId: string | null = null;
   let scope: ApprovalScope | undefined;
   let reason: string | undefined;
+  let sawPersist = false;
+  let sawSession = false;
+  let sawScope = false;
+  let sawReason = false;
   const values: string[] = [];
 
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]!;
     const persist = readValueFlag(args, i, "--persist");
     if (persist !== null) {
+      if (sawPersist) {
+        return {
+          kind: "error",
+          message: `permissions ${command} accepts --persist only once`,
+        };
+      }
+      sawPersist = true;
       const target = PERSIST_TARGETS[persist.value];
       if (target === undefined) {
         return {
@@ -304,6 +315,13 @@ function parseRuleOrRequestArgs(
     }
     const session = readValueFlag(args, i, "--session");
     if (session !== null) {
+      if (sawSession) {
+        return {
+          kind: "error",
+          message: `permissions ${command} accepts --session only once`,
+        };
+      }
+      sawSession = true;
       if (session.value.length === 0) {
         return {
           kind: "error",
@@ -322,6 +340,13 @@ function parseRuleOrRequestArgs(
           message: "permissions revoke does not accept --scope",
         };
       }
+      if (sawScope) {
+        return {
+          kind: "error",
+          message: "permissions approve accepts --scope only once",
+        };
+      }
+      sawScope = true;
       if (!isApproveScope(parsedScope.value)) {
         return {
           kind: "error",
@@ -340,6 +365,13 @@ function parseRuleOrRequestArgs(
           message: "permissions approve does not accept --reason",
         };
       }
+      if (sawReason) {
+        return {
+          kind: "error",
+          message: "permissions revoke accepts --reason only once",
+        };
+      }
+      sawReason = true;
       reason = parsedReason.value;
       i = parsedReason.nextIndex;
       continue;
@@ -358,6 +390,12 @@ function parseRuleOrRequestArgs(
     };
   }
   if (sessionId !== null) {
+    if (sawPersist) {
+      return {
+        kind: "error",
+        message: `permissions ${command} cannot combine --session and --persist`,
+      };
+    }
     return {
       kind: "request",
       value,

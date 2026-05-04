@@ -106,6 +106,153 @@ describe("permission CLI parser", () => {
       reason: "outside workspace",
     });
   });
+
+  it("rejects ambiguous and invalid permission arguments", () => {
+    expect(
+      parseAgenCPermissionsCliArgs([
+        "permissions",
+        "approve",
+        "--session",
+        "session_1",
+        "--persist",
+        "project",
+        "Read",
+      ]),
+    ).toEqual({
+      kind: "error",
+      message: "permissions approve cannot combine --session and --persist",
+    });
+    expect(
+      parseAgenCPermissionsCliArgs([
+        "permissions",
+        "revoke",
+        "--session",
+        "session_1",
+        "--persist=user",
+        "Read",
+      ]),
+    ).toEqual({
+      kind: "error",
+      message: "permissions revoke cannot combine --session and --persist",
+    });
+    expect(
+      parseAgenCPermissionsCliArgs([
+        "permissions",
+        "approve",
+        "--persist",
+        "user",
+        "--persist",
+        "project",
+        "Read",
+      ]),
+    ).toEqual({
+      kind: "error",
+      message: "permissions approve accepts --persist only once",
+    });
+    expect(
+      parseAgenCPermissionsCliArgs([
+        "permissions",
+        "approve",
+        "--session",
+        "session_1",
+        "--session",
+        "session_2",
+        "call_1",
+      ]),
+    ).toEqual({
+      kind: "error",
+      message: "permissions approve accepts --session only once",
+    });
+    expect(
+      parseAgenCPermissionsCliArgs([
+        "permissions",
+        "approve",
+        "--session",
+        "session_1",
+        "--scope",
+        "once",
+        "--scope",
+        "session",
+        "call_1",
+      ]),
+    ).toEqual({
+      kind: "error",
+      message: "permissions approve accepts --scope only once",
+    });
+    expect(
+      parseAgenCPermissionsCliArgs([
+        "permissions",
+        "revoke",
+        "--session",
+        "session_1",
+        "--reason",
+        "no",
+        "--reason",
+        "still no",
+        "call_1",
+      ]),
+    ).toEqual({
+      kind: "error",
+      message: "permissions revoke accepts --reason only once",
+    });
+    expect(
+      parseAgenCPermissionsCliArgs(["permissions", "list", "--agent"]),
+    ).toEqual({
+      kind: "error",
+      message: "permissions list --agent requires an id",
+    });
+    expect(
+      parseAgenCPermissionsCliArgs([
+        "permissions",
+        "list",
+        "--agent",
+        "agent_1",
+        "--session",
+        "session_1",
+      ]),
+    ).toEqual({
+      kind: "error",
+      message: "permissions list accepts only one target",
+    });
+    expect(
+      parseAgenCPermissionsCliArgs([
+        "permissions",
+        "approve",
+        "--session",
+        "session_1",
+        "--scope",
+        "forever",
+        "call_1",
+      ]),
+    ).toEqual({
+      kind: "error",
+      message: "permissions approve --scope must be once, session, or agent",
+    });
+    expect(
+      parseAgenCPermissionsCliArgs([
+        "permissions",
+        "approve",
+        "--reason",
+        "no",
+        "Read",
+      ]),
+    ).toEqual({
+      kind: "error",
+      message: "permissions approve does not accept --reason",
+    });
+    expect(
+      parseAgenCPermissionsCliArgs([
+        "permissions",
+        "revoke",
+        "--scope",
+        "session",
+        "Read",
+      ]),
+    ).toEqual({
+      kind: "error",
+      message: "permissions revoke does not accept --scope",
+    });
+  });
 });
 
 describe("permission CLI local rules", () => {
