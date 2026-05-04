@@ -25,6 +25,7 @@ import { load as loadYaml } from "js-yaml";
 import type { AgenCConfig } from "../config/index.js";
 import type { SessionServices } from "../session/session.js";
 import type { SkillLoadOutcome } from "../session/turn-context.js";
+import { substituteArguments } from "../tui/slash/argument-substitution.js";
 
 export type LocalSkillScope =
   | "user"
@@ -220,7 +221,6 @@ function projectDirsUpToHome(
   while (true) {
     dirs.push(join(current, ".agents", subdir));
     dirs.push(join(current, ".agenc", subdir));
-    dirs.push(join(current, ".claude", subdir));
     if (homeResolved !== null && current === homeResolved) break;
     const parent = dirname(current);
     if (parent === current) break;
@@ -256,7 +256,6 @@ export async function discoverSkillRoots(
 ): Promise<readonly SkillRoot[]> {
   const home = options.env?.HOME ?? homedir();
   const defaultAgencHome = home ? join(home, ".agenc") : "";
-  const defaultClaudeHome = home ? join(home, ".claude") : "";
   const agencHome = normalizeExistingCandidate(options.agencHome);
   const workspaceRoot = normalizeExistingCandidate(options.workspaceRoot);
 
@@ -305,16 +304,6 @@ export async function discoverSkillRoots(
       kind: "skills",
     });
   }
-  if (defaultClaudeHome.length > 0) {
-    roots.push({
-      path: join(defaultClaudeHome, "skills"),
-      scope: "user",
-      source: "userSettings",
-      loadedFrom: "skills",
-      kind: "skills",
-    });
-  }
-
   const managedHome = options.env?.AGENC_MANAGED_HOME;
   if (managedHome && managedHome.length > 0) {
     roots.push({
@@ -591,84 +580,6 @@ function descriptionFromMarkdown(raw: string): string | undefined {
     return trimmed.slice(0, 240);
   }
   return undefined;
-}
-
-function parseArguments(args: string): string[] {
-  const out: string[] = [];
-  let current = "";
-  let quote: "'" | "\"" | null = null;
-  let escaped = false;
-
-  for (const char of args) {
-    if (escaped) {
-      current += char;
-      escaped = false;
-      continue;
-    }
-    if (char === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (quote !== null) {
-      if (char === quote) {
-        quote = null;
-      } else {
-        current += char;
-      }
-      continue;
-    }
-    if (char === "'" || char === "\"") {
-      quote = char;
-      continue;
-    }
-    if (/\s/u.test(char)) {
-      if (current.length > 0) {
-        out.push(current);
-        current = "";
-      }
-      continue;
-    }
-    current += char;
-  }
-
-  if (escaped) current += "\\";
-  if (current.length > 0) out.push(current);
-  return out;
-}
-
-export function substituteArguments(
-  content: string,
-  args: string | undefined,
-  appendIfNoPlaceholder = true,
-  argumentNames: readonly string[] = [],
-): string {
-  if (args === undefined || args === null) return content;
-  const parsedArgs = parseArguments(args);
-  const original = content;
-
-  for (let i = 0; i < argumentNames.length; i++) {
-    const name = argumentNames[i];
-    if (!name) continue;
-    content = content.replace(
-      new RegExp(`\\$${escapeRegExp(name)}(?![\\[\\w])`, "g"),
-      parsedArgs[i] ?? "",
-    );
-  }
-
-  content = content.replace(/\$ARGUMENTS\[(\d+)\]/gu, (_match, indexStr: string) => {
-    const index = Number.parseInt(indexStr, 10);
-    return parsedArgs[index] ?? "";
-  });
-  content = content.replace(/\$(\d+)(?!\w)/gu, (_match, indexStr: string) => {
-    const index = Number.parseInt(indexStr, 10);
-    return parsedArgs[index] ?? "";
-  });
-  content = content.replaceAll("$ARGUMENTS", args);
-
-  if (content === original && appendIfNoPlaceholder && args.trim().length > 0) {
-    return `${content}\n\nARGUMENTS: ${args}`;
-  }
-  return content;
 }
 
 function escapeRegExp(value: string): string {
@@ -971,9 +882,7 @@ async function loadSkillContent(
   const skillDir = normalizeDisplayPath(baseDir);
   content = content
     .replace(/\$\{AGENC_SKILL_DIR\}/gu, skillDir)
-    .replace(/\$\{CLAUDE_SKILL_DIR\}/gu, skillDir)
-    .replace(/\$\{AGENC_SESSION_ID\}/gu, sessionId)
-    .replace(/\$\{CLAUDE_SESSION_ID\}/gu, sessionId);
+    .replace(/\$\{AGENC_SESSION_ID\}/gu, sessionId);
   void options;
   return { skill, content };
 }
@@ -1250,7 +1159,7 @@ export async function discoverDynamicSkillDirsForPaths(
   for (const filePath of filePaths) {
     let current = dirname(isAbsolute(filePath) ? filePath : resolve(cwd, filePath));
     while (current.startsWith(`${resolvedCwd}${sep}`)) {
-      for (const rootName of [".agenc", ".agents", ".claude"]) {
+      for (const rootName of [".agenc", ".agents"]) {
         const skillDir = join(current, rootName, "skills");
         if (seen.has(skillDir)) continue;
         seen.add(skillDir);
@@ -1426,8 +1335,8 @@ Always read the existing file first. Merge changes with existing bindings; do no
 
 \`\`\`json
 {
-  "$schema": "https://agenc.dev/schemas/keybindings.json",
-  "$docs": "https://agenc.dev/docs/keybindings",
+  "$schema": "urn:agenc:keybindings:schema",
+  "$docs": "urn:agenc:docs:keybindings",
   "bindings": [
     {
       "context": "Chat",
@@ -1479,7 +1388,7 @@ For create/update requests, collect the cron expression, prompt, timezone, durab
 function buildApiPrompt(args: string): string {
   return `# AgenC API Guidance
 
-Help the user build against codex runtime APIs or the configured model provider APIs.
+Help the user build against AgenC runtime APIs or the configured model provider APIs.
 
 ## User Request
 
@@ -1551,7 +1460,6 @@ const BUNDLED_SKILLS: readonly BundledSkillDefinition[] = [
   },
   {
     name: "agenc-in-browser",
-    aliases: ["claude-in-chrome"],
     description: "Use browser automation to inspect, test, or debug a web UI.",
     argumentHint: "[url or flow]",
     getPrompt: (args) => buildBrowserPrompt(args),
@@ -1565,8 +1473,7 @@ const BUNDLED_SKILLS: readonly BundledSkillDefinition[] = [
   },
   {
     name: "agenc-api",
-    aliases: ["claude-api"],
-    description: "Use codex runtime APIs or configured provider APIs correctly.",
+    description: "Use AgenC runtime APIs or configured provider APIs correctly.",
     argumentHint: "[api task]",
     getPrompt: (args) => buildApiPrompt(args),
   },

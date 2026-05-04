@@ -22,7 +22,7 @@ import type { Command, PromptCommand } from '../types/command.js'
 import {
   parseArgumentNames,
   substituteArguments,
-} from '../utils/argumentSubstitution.js'
+} from '../../../tui/slash/argument-substitution.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import {
   EFFORT_LEVELS,

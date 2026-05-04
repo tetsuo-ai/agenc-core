@@ -1,12 +1,17 @@
 /**
- * Centralized utilities for parsing slash commands
+ * Ports donor `src/utils/slashCommandParsing.ts` into AgenC's TUI
+ * slash-command parsing surface.
+ *
+ * The runtime dispatcher keeps stricter validation for command execution;
+ * this parser intentionally preserves the permissive donor shape used by
+ * TUI input helpers and custom command suggestions.
  */
 
 export type ParsedSlashCommand = {
-  commandName: string
-  args: string
-  isMcp: boolean
-}
+  commandName: string;
+  args: string;
+  isMcp: boolean;
+};
 
 /**
  * Parses a slash command input string into its component parts
@@ -23,38 +28,38 @@ export type ParsedSlashCommand = {
  * // => { commandName: 'mcp:tool (MCP)', args: 'arg1 arg2', isMcp: true }
  */
 export function parseSlashCommand(input: string): ParsedSlashCommand | null {
-  const trimmedInput = input.trim()
+  const trimmedInput = input.trim();
 
   // Check if input starts with '/'
   if (!trimmedInput.startsWith('/')) {
-    return null
+    return null;
   }
 
   // Remove the leading '/' and split by spaces
-  const withoutSlash = trimmedInput.slice(1)
-  const words = withoutSlash.split(' ')
+  const withoutSlash = trimmedInput.slice(1);
+  const words = withoutSlash.split(' ');
 
   if (!words[0]) {
-    return null
+    return null;
   }
 
-  let commandName = words[0]
-  let isMcp = false
-  let argsStartIndex = 1
+  let commandName = words[0];
+  let isMcp = false;
+  let argsStartIndex = 1;
 
   // Check for MCP commands (second word is '(MCP)')
   if (words.length > 1 && words[1] === '(MCP)') {
-    commandName = commandName + ' (MCP)'
-    isMcp = true
-    argsStartIndex = 2
+    commandName = `${commandName} (MCP)`;
+    isMcp = true;
+    argsStartIndex = 2;
   }
 
   // Extract arguments (everything after command name)
-  const args = words.slice(argsStartIndex).join(' ')
+  const args = words.slice(argsStartIndex).join(' ');
 
   return {
     commandName,
     args,
     isMcp,
-  }
+  };
 }
