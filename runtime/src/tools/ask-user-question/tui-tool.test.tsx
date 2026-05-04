@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 
 vi.mock('../../tui/ink.js', () => ({
   Box: ({ children }: { readonly children?: unknown }) => ({
@@ -12,6 +12,10 @@ vi.mock('../../tui/ink.js', () => ({
 }))
 
 import { AskUserQuestionTool } from './tui-tool.js'
+import {
+  setAllowedChannels,
+  setQuestionPreviewFormat,
+} from '../../agenc/upstream/bootstrap/state.js'
 
 const input = {
   questions: [
@@ -27,6 +31,11 @@ const input = {
 }
 
 describe('AskUserQuestion TUI tool adapter', () => {
+  afterEach(() => {
+    setAllowedChannels([])
+    setQuestionPreviewFormat('markdown')
+  })
+
   test('rejects malformed input and output payloads', () => {
     expect(AskUserQuestionTool.inputSchema.safeParse({ questions: [] })).toMatchObject({
       success: false,
@@ -77,6 +86,77 @@ describe('AskUserQuestion TUI tool adapter', () => {
     expect(AskUserQuestionTool.renderToolResultMessage(output)).not.toBeNull()
     expect(AskUserQuestionTool.renderToolUseRejectedMessage()).toMatchObject({
       props: { children: 'User declined to answer questions' },
+    })
+  })
+
+  test('disables interactive questions when channel sessions are active', () => {
+    expect(AskUserQuestionTool.isEnabled()).toBe(true)
+    setAllowedChannels([{ kind: 'server', name: 'slack' }])
+    expect(AskUserQuestionTool.isEnabled()).toBe(false)
+  })
+
+  test('validates HTML previews when HTML preview mode is active', async () => {
+    setQuestionPreviewFormat('html')
+
+    await expect(
+      AskUserQuestionTool.validateInput({
+        questions: [
+          {
+            question: 'Which preview?',
+            header: 'Preview',
+            options: [
+              { label: 'Good', description: 'fragment', preview: '<div>ok</div>' },
+              { label: 'Plain', description: 'no preview' },
+            ],
+          },
+        ],
+      }),
+    ).resolves.toEqual({ result: true })
+
+    await expect(
+      AskUserQuestionTool.validateInput({
+        questions: [
+          {
+            question: 'Which preview?',
+            header: 'Preview',
+            options: [
+              {
+                label: 'Doc',
+                description: 'full document',
+                preview: '<html><body>bad</body></html>',
+              },
+              { label: 'Other', description: 'no preview' },
+            ],
+          },
+        ],
+      }),
+    ).resolves.toMatchObject({
+      result: false,
+      errorCode: 1,
+      message: expect.stringContaining('full document'),
+    })
+
+    await expect(
+      AskUserQuestionTool.validateInput({
+        questions: [
+          {
+            question: 'Which preview?',
+            header: 'Preview',
+            options: [
+              {
+                label: 'Script',
+                description: 'script tag',
+                preview: '<script>alert(1)</script>',
+              },
+              { label: 'Other', description: 'no preview' },
+            ],
+          },
+        ],
+      }),
+    ).resolves.toMatchObject({
+      result: false,
+      errorCode: 1,
+      message: expect.stringContaining('<script> or <style>'),
     })
   })
 })

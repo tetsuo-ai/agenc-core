@@ -1,5 +1,9 @@
 import { Box, Text } from '../../tui/ink.js'
 import {
+  getAllowedChannels,
+  getQuestionPreviewFormat,
+} from '../../agenc/upstream/bootstrap/state.js'
+import {
   ASK_USER_QUESTION_TOOL_NAME,
   parseAskUserQuestionInput,
   type AskUserQuestion,
@@ -88,7 +92,7 @@ export const AskUserQuestionTool = {
     return ''
   },
   isEnabled() {
-    return true
+    return getAllowedChannels().length === 0
   },
   isConcurrencySafe() {
     return true
@@ -98,6 +102,24 @@ export const AskUserQuestionTool = {
   },
   requiresUserInteraction() {
     return true
+  },
+  async validateInput(input: { questions: readonly Question[] }) {
+    if (getQuestionPreviewFormat() !== 'html') {
+      return { result: true as const }
+    }
+    for (const question of input.questions) {
+      for (const option of question.options) {
+        const error = validateHtmlPreview(option.preview)
+        if (error) {
+          return {
+            result: false as const,
+            message: `Option "${option.label}" in question "${question.question}": ${error}`,
+            errorCode: 1,
+          }
+        }
+      }
+    }
+    return { result: true as const }
   },
   toAutoClassifierInput(input: { questions?: readonly Question[] }) {
     return input.questions?.map(q => q.question).join(' | ') ?? ''
@@ -145,4 +167,18 @@ export const AskUserQuestionTool = {
       content: `User has answered your questions: ${formatAnswers(output.answers, output.annotations)}. You can now continue with the user's answers in mind.`,
     }
   },
+}
+
+function validateHtmlPreview(preview: string | undefined): string | null {
+  if (preview === undefined) return null
+  if (/<\s*(html|body|!doctype)\b/i.test(preview)) {
+    return 'preview must be an HTML fragment, not a full document (no <html>, <body>, or <!DOCTYPE>)'
+  }
+  if (/<\s*(script|style)\b/i.test(preview)) {
+    return 'preview must not contain <script> or <style> tags. Use inline styles via the style attribute if needed.'
+  }
+  if (!/<[a-z][^>]*>/i.test(preview)) {
+    return 'preview must contain HTML (previewFormat is set to "html"). Wrap content in a tag like <div> or <pre>.'
+  }
+  return null
 }

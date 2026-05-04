@@ -111,6 +111,16 @@ describe('AgentTool loadAgentsDir adapter', () => {
       memory: 'project',
       isolation: 'worktree',
     })
+    const previousCwd = process.cwd()
+    const cwd = mkdtempSync(join(tmpdir(), 'agenc-agent-memory-'))
+    process.chdir(cwd)
+    try {
+      const prompt = parsed?.getSystemPrompt()
+      expect(prompt).toContain('Be strict.')
+      expect(prompt).toContain('Persistent Agent Memory')
+    } finally {
+      process.chdir(previousCwd)
+    }
 
     expect(parseAgentFromJson('bad', { description: 'missing prompt' })).toBeNull()
     expect(
@@ -209,6 +219,33 @@ Review local changes.
     })
     expect(getAgentColor('local-reviewer')).toBe('blue_FOR_SUBAGENTS_ONLY')
     expect(getAgentColor('plugin-helper')).toBe('red_FOR_SUBAGENTS_ONLY')
+  })
+
+  test('keeps built-ins and reports malformed markdown files', async () => {
+    const dir = tempAgentDir()
+    writeFileSync(
+      join(dir, 'broken.md'),
+      `---
+name: broken
+description: [unterminated
+---
+Broken prompt.
+`,
+    )
+
+    __setMarkdownAgentDirsForTesting([{ dir, source: 'projectSettings' }])
+    __setPluginAgentsLoaderForTesting(async () => [])
+
+    const definitions = await getAgentDefinitionsWithOverrides(process.cwd())
+    expect(definitions.activeAgents.length).toBeGreaterThan(0)
+    expect(definitions.activeAgents.every(agent => agent.source === 'built-in')).toBe(
+      true,
+    )
+    expect(definitions.failedFiles).toEqual([
+      expect.objectContaining({
+        path: join(dir, 'broken.md'),
+      }),
+    ])
   })
 
   test('projects registered AgenC roles into built-in agent definitions', async () => {

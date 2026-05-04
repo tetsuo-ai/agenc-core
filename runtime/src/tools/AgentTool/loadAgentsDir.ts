@@ -14,6 +14,7 @@ import { FILE_EDIT_TOOL_NAME } from '../system/file-edit.js'
 import { FILE_READ_TOOL_NAME } from '../system/file-read.js'
 import { FILE_WRITE_TOOL_NAME } from '../system/file-write.js'
 import { AGENT_COLORS, setAgentColor, type AgentColorName } from './agentColorManager.js'
+import { loadAgentMemoryPrompt } from './agentMemory.js'
 
 export type HooksSettings = Record<string, unknown>
 
@@ -93,9 +94,11 @@ export type AgentDefinition =
 export type AgentDefinitionsResult = {
   activeAgents: AgentDefinition[]
   allAgents: AgentDefinition[]
-  failedFiles?: Array<{ path: string; error: string }>
+  failedFiles?: FailedAgentFile[]
   allowedAgentTypes?: string[]
 }
+
+type FailedAgentFile = { path: string; error: string }
 
 type MarkdownAgentFile = {
   filePath: string
@@ -279,6 +282,15 @@ function addMemoryTools(
   return [...merged]
 }
 
+function systemPromptWithMemory(
+  agentType: string,
+  systemPrompt: string,
+  memory: AgentMemoryScope | undefined,
+): string {
+  if (!memory || !isAutoMemoryEnabled()) return systemPrompt
+  return `${systemPrompt}\n\n${loadAgentMemoryPrompt(agentType, memory)}`
+}
+
 function isAutoMemoryEnabled(): boolean {
   if (process.env.AGENC_DISABLE_AUTO_MEMORY === '1') return false
   if (process.env.AGENC_SIMPLE === '1' || process.env.AGENC_SIMPLE === 'true') {
@@ -369,22 +381,36 @@ function projectAgentDirs(cwd: string): Array<{ dir: string; source: SettingSour
   return dirs
 }
 
-async function loadMarkdownAgentFiles(cwd: string): Promise<MarkdownAgentFile[]> {
+async function loadMarkdownAgentFiles(
+  cwd: string,
+): Promise<{ files: MarkdownAgentFile[]; failedFiles: FailedAgentFile[] }> {
   const files: MarkdownAgentFile[] = []
+  const failedFiles: FailedAgentFile[] = []
   for (const { dir, source } of projectAgentDirs(cwd)) {
-    for (const filePath of collectMarkdownFiles(dir)) {
-      const raw = readFileSync(filePath, 'utf8')
-      const { frontmatter, content } = parseMarkdown(raw)
-      files.push({
-        filePath,
-        baseDir: dir,
-        frontmatter,
-        content,
-        source,
-      })
+    let filePaths: string[]
+    try {
+      filePaths = collectMarkdownFiles(dir)
+    } catch (error) {
+      failedFiles.push({ path: dir, error: errorToMessage(error) })
+      continue
+    }
+    for (const filePath of filePaths) {
+      try {
+        const raw = readFileSync(filePath, 'utf8')
+        const { frontmatter, content } = parseMarkdown(raw)
+        files.push({
+          filePath,
+          baseDir: dir,
+          frontmatter,
+          content,
+          source,
+        })
+      } catch (error) {
+        failedFiles.push({ path: filePath, error: errorToMessage(error) })
+      }
     }
   }
-  return files
+  return { files, failedFiles }
 }
 
 function parseAgentFields(
@@ -417,7 +443,7 @@ function parseAgentFields(
     agentType: name,
     whenToUse: description.replace(/\\n/g, '\n'),
     source,
-    getSystemPrompt: () => systemPrompt,
+    getSystemPrompt: () => systemPromptWithMemory(name, systemPrompt, memory),
     ...(filePath ? { filename: basename(filePath, '.md') } : {}),
     ...(baseDir ? { baseDir } : {}),
     ...(tools !== undefined ? { tools } : {}),
@@ -514,10 +540,10 @@ async function initializeAgentMemorySnapshots(
 }
 
 async function loadPluginAgentsSafe(): Promise<PluginAgentDefinition[]> {
-  if (pluginAgentsLoaderForTesting) {
-    return pluginAgentsLoaderForTesting()
-  }
   try {
+    if (pluginAgentsLoaderForTesting) {
+      return await pluginAgentsLoaderForTesting()
+    }
     const pluginModulePath =
       '../../agenc/upstream/utils/plugins/loadPluginAgents.js'
     const pluginModule = (await import(pluginModulePath)) as {
@@ -547,45 +573,58 @@ async function loadAgentDefinitions(cwd: string): Promise<AgentDefinitionsResult
     }
   }
 
-  const failedFiles: Array<{ path: string; error: string }> = []
-  const markdownFiles = await loadMarkdownAgentFiles(cwd)
-  const customAgents = markdownFiles
-    .map(file => {
-      const agent = parseAgentFromMarkdown(
-        file.filePath,
-        file.baseDir,
-        file.frontmatter,
-        file.content,
-        file.source,
-      )
-      if (!agent && file.frontmatter.name) {
-        failedFiles.push({
-          path: file.filePath,
-          error: getParseError(file.frontmatter),
-        })
+  try {
+    const failedFiles: FailedAgentFile[] = []
+    const markdownResult = await loadMarkdownAgentFiles(cwd)
+    failedFiles.push(...markdownResult.failedFiles)
+    const customAgents = markdownResult.files
+      .map(file => {
+        const agent = parseAgentFromMarkdown(
+          file.filePath,
+          file.baseDir,
+          file.frontmatter,
+          file.content,
+          file.source,
+        )
+        if (!agent && file.frontmatter.name) {
+          failedFiles.push({
+            path: file.filePath,
+            error: getParseError(file.frontmatter),
+          })
+        }
+        return agent
+      })
+      .filter((agent): agent is CustomAgentDefinition => agent !== null)
+
+    const [pluginAgents] = await Promise.all([
+      loadPluginAgentsSafe(),
+      initializeAgentMemorySnapshots(customAgents),
+    ])
+
+    const allAgents = [...builtInAgents, ...pluginAgents, ...customAgents]
+    const activeAgents = getActiveAgentsFromList(allAgents)
+    for (const agent of activeAgents) {
+      if (agent.color) {
+        setAgentColor(agent.agentType, agent.color)
       }
-      return agent
-    })
-    .filter((agent): agent is CustomAgentDefinition => agent !== null)
+    }
 
-  const [pluginAgents] = await Promise.all([
-    loadPluginAgentsSafe(),
-    initializeAgentMemorySnapshots(customAgents),
-  ])
-
-  const allAgents = [...builtInAgents, ...pluginAgents, ...customAgents]
-  const activeAgents = getActiveAgentsFromList(allAgents)
-  for (const agent of activeAgents) {
-    if (agent.color) {
-      setAgentColor(agent.agentType, agent.color)
+    return {
+      activeAgents,
+      allAgents,
+      ...(failedFiles.length > 0 ? { failedFiles } : {}),
+    }
+  } catch (error) {
+    return {
+      activeAgents: builtInAgents,
+      allAgents: builtInAgents,
+      failedFiles: [{ path: 'unknown', error: errorToMessage(error) }],
     }
   }
+}
 
-  return {
-    activeAgents,
-    allAgents,
-    ...(failedFiles.length > 0 ? { failedFiles } : {}),
-  }
+function errorToMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 function getParseError(frontmatter: Record<string, unknown>): string {
