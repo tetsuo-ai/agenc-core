@@ -261,6 +261,7 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
     description:
       "Update the todo list for the current session. To be used proactively and often to track progress and pending tasks. Make sure that at least one task is in_progress at all times. Always provide both content (imperative) and activeForm (present continuous) for each task.",
     metadata: metadata("TodoWrite"),
+    recoveryCategory: "side-effecting",
     inputSchema: {
       type: "object",
       properties: {
@@ -315,6 +316,7 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
     metadata: metadata("EnterPlanMode", { mutating: true }),
     isReadOnly: true,
     requiresApproval: true,
+    recoveryCategory: "side-effecting",
     inputSchema: {
       type: "object",
       properties: {},
@@ -348,6 +350,7 @@ Remember: DO NOT write or edit any files except the plan file.`,
       "Present the current AgenC plan for approval and exit plan mode when accepted.",
     metadata: metadata("ExitPlanMode", { mutating: true }),
     requiresApproval: true,
+    recoveryCategory: "interactive",
     inputSchema: {
       type: "object",
       properties: {

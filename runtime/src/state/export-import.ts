@@ -7,9 +7,11 @@ import {
 import { writeSessionSnapshotAtomically } from "./atomic-snapshot-writes.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 import {
+  normalizeToolRecoveryCategory,
   rotateToolOutputForState,
   type ToolOutputRotationPolicy,
 } from "./tool-output-rotation.js";
+import type { ToolRecoveryCategory } from "../tools/types.js";
 
 export const AGENC_STATE_EXPORT_FORMAT = "agenc.state.export";
 export const AGENC_STATE_EXPORT_SCHEMA_VERSION = 1;
@@ -30,6 +32,7 @@ export interface AgenCStateExportInFlightToolCall {
   readonly toolName: string;
   readonly args: JsonValue;
   readonly status: string;
+  readonly recoveryCategory?: ToolRecoveryCategory;
   readonly outputPartial?: string;
   readonly startedAt: string;
 }
@@ -83,6 +86,7 @@ interface InFlightToolCallRow {
   readonly tool_name: string;
   readonly args_json: string;
   readonly status: string;
+  readonly recovery_category: string;
   readonly output_partial: string | null;
   readonly started_at: string;
 }
@@ -267,6 +271,7 @@ function loadToolCalls(
          tool_name,
          args_json,
          status,
+         recovery_category,
          output_partial,
          started_at
        FROM in_flight_tool_calls
@@ -280,6 +285,7 @@ function loadToolCalls(
       toolName: row.tool_name,
       args: parseJsonField(row.args_json, "args_json"),
       status: row.status,
+      recoveryCategory: normalizeToolRecoveryCategory(row.recovery_category),
       ...(row.output_partial !== null ? { outputPartial: row.output_partial } : {}),
       startedAt: row.started_at,
     }));
@@ -326,11 +332,12 @@ function insertToolCalls(
       tool_name,
       args_json,
       status,
+      recovery_category,
       output_partial,
       output_log_path,
       output_log_bytes,
       started_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   for (const call of toolCalls) {
     const rotated =
@@ -349,6 +356,7 @@ function insertToolCalls(
       call.toolName,
       stringifyJsonValue(call.args, "args"),
       call.status,
+      normalizeToolRecoveryCategory(call.recoveryCategory),
       rotated?.outputPartial ?? null,
       rotated?.outputLogPath ?? null,
       rotated?.outputLogBytes ?? 0,
@@ -427,6 +435,10 @@ function normalizeToolCall(value: unknown): AgenCStateExportInFlightToolCall {
     toolName: expectString(call.toolName, "toolCall.toolName"),
     args: expectJsonValue(call.args, "toolCall.args"),
     status: expectString(call.status, "toolCall.status"),
+    ...optionalToolRecoveryCategory(
+      call.recoveryCategory,
+      "toolCall.recoveryCategory",
+    ),
     ...optionalString(call.outputPartial, "toolCall.outputPartial"),
     startedAt: expectString(call.startedAt, "toolCall.startedAt"),
   };
@@ -548,6 +560,24 @@ function optionalString(
 ): Record<string, string> {
   if (value === undefined) return {};
   return { [label.split(".").at(-1) ?? label]: expectString(value, label) };
+}
+
+function optionalToolRecoveryCategory(
+  value: unknown,
+  label: string,
+): { readonly recoveryCategory?: ToolRecoveryCategory } {
+  if (value === undefined) return {};
+  const category = expectString(value, label);
+  if (
+    category !== "idempotent" &&
+    category !== "side-effecting" &&
+    category !== "interactive"
+  ) {
+    throw new AgenCStateExportImportError(
+      `${label} must be idempotent, side-effecting, or interactive`,
+    );
+  }
+  return { recoveryCategory: category };
 }
 
 function expectJsonValue(value: unknown, label: string): JsonValue {

@@ -38,6 +38,11 @@ export type ToolSource =
   | "skill"
   | "provider_native";
 
+export type ToolRecoveryCategory =
+  | "idempotent"
+  | "side-effecting"
+  | "interactive";
+
 export interface ToolMetadata {
   /** Coarse tool family for discovery/ranking. */
   readonly family?: string;
@@ -176,6 +181,11 @@ export interface Tool {
    * permission mode would otherwise bypass normal approvals.
    */
   readonly requiresUserInteraction?: () => boolean;
+  /**
+   * Daemon restart policy for a tool call left in-flight by a crash.
+   * Missing categories are treated as side-effecting.
+   */
+  readonly recoveryCategory?: ToolRecoveryCategory;
   /**
    * Optional AgenC-style permission hook. The permissions evaluator
    * calls this before the generic mode gate so tools can request asks,

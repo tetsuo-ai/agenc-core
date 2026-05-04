@@ -1,4 +1,5 @@
 import type { JsonObject, JsonValue } from "../app-server/protocol/index.js";
+import type { ToolRecoveryCategory } from "../tools/types.js";
 import { updateAgentRunStatus } from "./agent-runs.js";
 import { writeSessionSnapshotAtomically } from "./atomic-snapshot-writes.js";
 import {
@@ -7,9 +8,11 @@ import {
 } from "./pruning.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 import {
+  normalizeToolRecoveryCategory,
   recordInFlightToolCallCompletion,
   recordInFlightToolCallProgress,
   recordInFlightToolCallStart,
+  rotateToolOutputForState,
   type ToolOutputRotationPolicy,
 } from "./tool-output-rotation.js";
 
@@ -272,6 +275,7 @@ export class AgenCSessionSnapshotPolicy {
           toolName,
           input: (params.input as JsonValue | undefined) ?? null,
           eventId: stringField(params, "eventId"),
+          recoveryCategory: toolRecoveryCategoryField(params, "recoveryCategory"),
           status: "running",
         };
         recordInFlightToolCallStart(this.#driver, {
@@ -281,6 +285,7 @@ export class AgenCSessionSnapshotPolicy {
           toolName,
           args: (params.input as JsonValue | undefined) ?? null,
           startedAt: this.#now(),
+          recoveryCategory: toolRecoveryCategoryField(params, "recoveryCategory"),
           agencHome: this.#agencHome,
           outputRotation: this.#outputRotation,
         });
@@ -369,6 +374,10 @@ export class AgenCSessionSnapshotPolicy {
           result: (payload.result as JsonValue | undefined) ?? null,
           isError: booleanField(payload, "isError"),
           completedAt: this.#now(),
+          recoveryCategory: toolRecoveryCategoryField(
+            previous ?? {},
+            "recoveryCategory",
+          ),
           agencHome: this.#agencHome,
           outputRotation: this.#outputRotation,
         });
@@ -377,7 +386,58 @@ export class AgenCSessionSnapshotPolicy {
           ...(previous ?? {}),
           requestId: callId,
           ...(toolName !== undefined ? { toolName } : {}),
+          ...(toolRecoveryCategoryField(previous ?? {}, "recoveryCategory") !== undefined
+            ? {
+                recoveryCategory: toolRecoveryCategoryField(
+                  previous ?? {},
+                  "recoveryCategory",
+                ),
+              }
+            : {}),
           status: booleanField(payload, "isError") ? "failed" : "completed",
+          result: (payload.result as JsonValue | undefined) ?? null,
+        };
+      }
+      return this.#writeSnapshot(state, "tool_call");
+    }
+    if (type === "tool_call_recovery_poisoned") {
+      const state = this.#session(sessionId);
+      const payload = asJsonObject(event.payload);
+      const callId = stringField(payload, "callId");
+      const eventAgentId = stringField(params, "agentId");
+      const agentId = eventAgentId ?? this.#sessionAgentId(sessionId) ?? sessionId;
+      if (eventAgentId !== undefined) {
+        this.#rememberSessionAgent(sessionId, eventAgentId);
+      }
+      if (callId !== undefined) {
+        const previous = state.toolState.inFlight[callId];
+        const metadata = asJsonObject(payload.metadata);
+        const toolName =
+          stringField(previous ?? {}, "toolName") ??
+          stringField(metadata, "toolName") ??
+          stringField(payload, "toolName");
+        const recoveryCategory =
+          toolRecoveryCategoryField(metadata, "recoveryCategory") ??
+          toolRecoveryCategoryField(previous ?? {}, "recoveryCategory");
+        recordRecoveredToolCallPoisoned(this.#driver, {
+          sessionId,
+          agentId,
+          toolCallId: callId,
+          ...(toolName !== undefined ? { toolName } : {}),
+          result: (payload.result as JsonValue | undefined) ?? null,
+          poisonedAt: this.#now(),
+          ...(recoveryCategory !== undefined ? { recoveryCategory } : {}),
+          agencHome: this.#agencHome,
+          outputRotation: this.#outputRotation,
+        });
+        delete state.toolState.inFlight[callId];
+        state.toolState.completed[callId] = {
+          ...(previous ?? {}),
+          requestId: callId,
+          ...(toolName !== undefined ? { toolName } : {}),
+          ...(recoveryCategory !== undefined ? { recoveryCategory } : {}),
+          recoveryAction: "poison",
+          status: "poisoned",
           result: (payload.result as JsonValue | undefined) ?? null,
         };
       }
@@ -406,6 +466,10 @@ export class AgenCSessionSnapshotPolicy {
           ...(toolName !== undefined ? { toolName } : {}),
           chunk,
           observedAt,
+          recoveryCategory: toolRecoveryCategoryField(
+            previous ?? {},
+            "recoveryCategory",
+          ),
           agencHome: this.#agencHome,
           outputRotation: this.#outputRotation,
         });
@@ -413,6 +477,14 @@ export class AgenCSessionSnapshotPolicy {
           ...(previous ?? {}),
           requestId: callId,
           ...(toolName !== undefined ? { toolName } : {}),
+          ...(toolRecoveryCategoryField(previous ?? {}, "recoveryCategory") !== undefined
+            ? {
+                recoveryCategory: toolRecoveryCategoryField(
+                  previous ?? {},
+                  "recoveryCategory",
+                ),
+              }
+            : {}),
           status: "running",
           lastProgressAt: stringField(event, "acceptedAt") ?? observedAt,
         };
@@ -570,6 +642,86 @@ export class AgenCSessionSnapshotPolicy {
   }
 }
 
+function recordRecoveredToolCallPoisoned(
+  driver: StateSqliteDriver,
+  params: {
+    readonly sessionId: string;
+    readonly agentId?: string;
+    readonly toolCallId: string;
+    readonly toolName?: string;
+    readonly result: JsonValue;
+    readonly poisonedAt: string;
+    readonly recoveryCategory?: ToolRecoveryCategory;
+    readonly agencHome?: string;
+    readonly outputRotation?: ToolOutputRotationPolicy;
+  },
+): void {
+  const rotated = rotateToolOutputForState({
+    agencHome: params.agencHome,
+    agentId: params.agentId ?? params.sessionId,
+    toolCallId: params.toolCallId,
+    output: stringifyRecoveryOutput(params.result),
+    outputRotation: params.outputRotation,
+  });
+  const update = driver
+    .prepareState<
+      [string | null, string | null, number, string | null, string, string]
+    >(
+      `UPDATE in_flight_tool_calls
+       SET status = 'poisoned',
+           output_partial = ?,
+           output_log_path = ?,
+           output_log_bytes = ?,
+           recovery_category = COALESCE(?, recovery_category)
+       WHERE session_id = ?
+         AND tool_call_id = ?`,
+    )
+    .run(
+      rotated.outputPartial,
+      rotated.outputLogPath ?? null,
+      rotated.outputLogBytes,
+      params.recoveryCategory !== undefined
+        ? normalizeToolRecoveryCategory(params.recoveryCategory)
+        : null,
+      params.sessionId,
+      params.toolCallId,
+    );
+  if (update.changes > 0) return;
+  driver
+    .prepareState<
+      [string, string, string, string | null, string | null, number, string, string]
+    >(
+      `INSERT INTO in_flight_tool_calls (
+        session_id,
+        tool_call_id,
+        tool_name,
+        args_json,
+        status,
+        output_partial,
+        output_log_path,
+        output_log_bytes,
+        started_at,
+        recovery_category
+      ) VALUES (?, ?, ?, 'null', 'poisoned', ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      params.sessionId,
+      params.toolCallId,
+      params.toolName ?? "unknown",
+      rotated.outputPartial,
+      rotated.outputLogPath ?? null,
+      rotated.outputLogBytes,
+      params.poisonedAt,
+      normalizeToolRecoveryCategory(params.recoveryCategory),
+    );
+}
+
+function stringifyRecoveryOutput(value: JsonValue): string {
+  if (typeof value === "string") return value;
+  const serialized = JSON.stringify(value);
+  return serialized === undefined ? String(value ?? "") : serialized;
+}
+
 function asJsonObject(value: unknown): JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as JsonObject)
@@ -583,6 +735,18 @@ function stringField(value: JsonObject, key: string): string | undefined {
 
 function booleanField(value: JsonObject, key: string): boolean {
   return value[key] === true;
+}
+
+function toolRecoveryCategoryField(
+  value: JsonObject,
+  key: string,
+): ToolRecoveryCategory | undefined {
+  const field = value[key];
+  return field === "idempotent" ||
+    field === "side-effecting" ||
+    field === "interactive"
+    ? field
+    : undefined;
 }
 
 function latestStatusTransition(

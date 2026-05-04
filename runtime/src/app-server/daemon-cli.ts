@@ -52,6 +52,7 @@ import {
 } from "../lifecycle/index.js";
 import { createAuthBackend } from "../auth/index.js";
 import type { AuthBackend } from "../auth/backend.js";
+import type { ToolRecoveryCategory } from "../tools/types.js";
 import {
   loadConfig,
   type AgenCConfig,
@@ -60,9 +61,10 @@ import {
 import {
   recoverDaemonStateOnStartup,
   type DaemonStartupRecoveryReport,
-  type FailedInFlightToolCall,
+  type RecoveredInFlightToolCall,
   type RecoveredAgentRun,
   type RecoveredSessionStateSnapshot,
+  type ToolRecoveryAction,
 } from "../state/recovery.js";
 import {
   pruneSessionStateSnapshots,
@@ -489,12 +491,6 @@ async function runAgenCDaemonForeground(
         `agenc: daemon snapshot policy failed: ${formatCleanupError(error)}\n`,
       ),
   });
-  await hydrateAgenCDaemonStartupRecovery(
-    sessionManager,
-    agentManager,
-    runner,
-    startupRecovery,
-  );
   try {
     snapshotPolicies.hydrateStartupRecovery(startupRecovery);
     snapshotPolicies.startPeriodic();
@@ -505,6 +501,38 @@ async function runAgenCDaemonForeground(
     );
     return 1;
   }
+  await hydrateAgenCDaemonStartupRecovery(
+    sessionManager,
+    agentManager,
+    runner,
+    startupRecovery,
+    {
+      recordReplayToolResult: (result) =>
+        snapshotPolicies.recordSessionEvent(result.sessionId, {
+          method: "event.session_event",
+          params: {
+            agentId: result.agentId,
+            event: {
+              type:
+                result.terminalStatus === "poisoned"
+                  ? "tool_call_recovery_poisoned"
+                  : "tool_call_completed",
+              payload: {
+                callId: result.callId,
+                result: result.result,
+                isError: result.isError,
+                metadata: {
+                  toolName: result.toolName,
+                  ...(result.recoveryCategory !== undefined
+                    ? { recoveryCategory: result.recoveryCategory }
+                    : {}),
+                },
+              },
+            },
+          },
+        }),
+    },
+  );
   const health = new AgenCDaemonHealthService({
     sessionCounter: sessionManager,
     stateCounter: new StateSqliteHealthStatsReader(
@@ -652,7 +680,7 @@ function recoverAgenCDaemonStartupState(
     resolveStateDatabasePaths({ cwd, agencHome: daemonHome }),
   ]);
   const recoveredRuns: RecoveredAgentRun[] = [];
-  const failedToolCalls: FailedInFlightToolCall[] = [];
+  const recoveredToolCalls: RecoveredInFlightToolCall[] = [];
   const warnings: DaemonStartupRecoveryReport["warnings"][number][] = [];
 
   for (const pathSet of paths) {
@@ -664,7 +692,7 @@ function recoverAgenCDaemonStartupState(
         now: () => recoveredAt,
       });
       recoveredRuns.push(...report.recoveredRuns);
-      failedToolCalls.push(...report.failedToolCalls);
+      recoveredToolCalls.push(...report.recoveredToolCalls);
       warnings.push(...report.warnings);
     } finally {
       driver.close();
@@ -674,7 +702,7 @@ function recoverAgenCDaemonStartupState(
   return {
     recoveredAt,
     recoveredRuns,
-    failedToolCalls,
+    recoveredToolCalls,
     warnings,
   };
 }
@@ -958,9 +986,18 @@ async function hydrateAgenCDaemonStartupRecovery(
   agentManager: AgenCDaemonAgentManager,
   runner: AgenCBackgroundAgentRunner,
   report: DaemonStartupRecoveryReport,
+  options: {
+    readonly recordReplayToolResult?: (
+      result: RecoveredReplayToolResult,
+    ) => void | Promise<void>;
+  } = {},
 ): Promise<void> {
   for (const run of report.recoveredRuns) {
-    const runtimeAvailable = await restoreRecoveredAgentRuntime(runner, run);
+    const runtimeAvailable = await restoreRecoveredAgentRuntime(
+      runner,
+      run,
+      options,
+    );
     const metadata = recoveryMetadataForRun(report, run, runtimeAvailable);
     if (run.currentSessionId !== undefined) {
       await sessionManager.restoreSession({
@@ -989,6 +1026,17 @@ async function hydrateAgenCDaemonStartupRecovery(
   }
 }
 
+interface RecoveredReplayToolResult {
+  readonly agentId: string;
+  readonly sessionId: string;
+  readonly callId: string;
+  readonly toolName: string;
+  readonly result: string;
+  readonly isError: boolean;
+  readonly terminalStatus?: "completed" | "failed" | "poisoned";
+  readonly recoveryCategory?: ToolRecoveryCategory;
+}
+
 function agentStatusForRecoveredRun(_run: RecoveredAgentRun): AgentStatus {
   return "idle";
 }
@@ -1009,7 +1057,7 @@ function recoveryMetadataForRun(
       runStatus: run.status,
       runnable: runtimeAvailable,
       runtimeRestore: runtimeAvailable ? "available" : "unavailable",
-      toolRecoveryMode: "mark_failed",
+      toolRecoveryMode: "category_policy",
       ...(run.createdByClient !== undefined
         ? { createdByClient: run.createdByClient }
         : {}),
@@ -1023,10 +1071,16 @@ function recoveryMetadataForRun(
 async function restoreRecoveredAgentRuntime(
   runner: AgenCBackgroundAgentRunner,
   run: RecoveredAgentRun,
+  options: {
+    readonly recordReplayToolResult?: (
+      result: RecoveredReplayToolResult,
+    ) => void | Promise<void>;
+  } = {},
 ): Promise<boolean> {
   if (!isRecoveredRunRuntimeRestorable(run)) return false;
   if (runner.restoreAgent === undefined) return false;
   const initialMessages = recoveredInitialMessages(run.latestSnapshot);
+  const replayToolCalls = recoveredReplayToolCalls(run.latestSnapshot);
   try {
     return await runner.restoreAgent({
       agentId: run.id,
@@ -1037,6 +1091,16 @@ async function restoreRecoveredAgentRuntime(
       ...optionalMetadataString(run.metadata, "provider"),
       ...optionalMetadataString(run.metadata, "profile"),
       ...(initialMessages !== undefined ? { initialMessages } : {}),
+      ...(replayToolCalls.length > 0 ? { replayToolCalls } : {}),
+      ...(options.recordReplayToolResult !== undefined
+        ? {
+            onReplayToolResult: (result) =>
+              options.recordReplayToolResult?.({
+                agentId: run.id,
+                ...result,
+              }),
+          }
+        : {}),
       metadata: {
         ...(run.metadata ?? {}),
         recovery: true,
@@ -1049,6 +1113,20 @@ async function restoreRecoveredAgentRuntime(
   } catch {
     return false;
   }
+}
+
+function recoveredReplayToolCalls(
+  snapshot: RecoveredSessionStateSnapshot | undefined,
+): Array<{ readonly callId: string; readonly toolName: string; readonly args: JsonValue }> {
+  if (snapshot === undefined) return [];
+  return snapshot.recoveredToolCalls
+    .filter((call) => call.recoveryAction === "replay")
+    .filter((call) => call.args !== undefined)
+    .map((call) => ({
+      callId: call.toolCallId,
+      toolName: call.toolName,
+      args: call.args as JsonValue,
+    }));
 }
 
 function isRecoveredRunRuntimeRestorable(run: RecoveredAgentRun): boolean {
@@ -1080,7 +1158,7 @@ function recoverySnapshotMetadata(
     conversation: snapshot.conversation as JsonValue,
     toolState: snapshot.toolState as JsonValue,
     mcpConnectionState: snapshot.mcpConnectionState as JsonValue,
-    failedToolCalls: snapshot.failedToolCalls.map(recoveryToolCallMetadata),
+    recoveredToolCalls: snapshot.recoveredToolCalls.map(recoveryToolCallMetadata),
   };
 }
 
@@ -1218,14 +1296,16 @@ function recoveredContentParts(value: readonly unknown[]): LLMContentPart[] {
   return parts;
 }
 
-function recoveryToolCallMetadata(call: FailedInFlightToolCall): JsonObject {
+function recoveryToolCallMetadata(call: RecoveredInFlightToolCall): JsonObject {
   return {
     projectDir: call.projectDir,
     sessionId: call.sessionId,
     toolCallId: call.toolCallId,
     toolName: call.toolName,
     statusBefore: call.statusBefore,
-    statusAfter: "failed",
+    statusAfter: call.statusAfter,
+    recoveryCategory: call.recoveryCategory,
+    recoveryAction: call.recoveryAction,
     startedAt: call.startedAt,
     ...(call.args !== undefined ? { args: call.args as JsonValue } : {}),
     ...(call.outputPartial !== undefined
@@ -1249,9 +1329,10 @@ function reportAgenCDaemonStartupRecovery(
       `agenc: daemon recovery loaded ${report.recoveredRuns.length} agent run(s) from state\n`,
     );
   }
-  if (report.failedToolCalls.length > 0) {
+  const summary = summarizeToolRecoveryActions(report.recoveredToolCalls);
+  if (report.recoveredToolCalls.length > 0) {
     io.stderr.write(
-      `agenc: daemon recovery marked ${report.failedToolCalls.length} stale in-flight tool call(s) failed\n`,
+      `agenc: daemon recovery processed ${report.recoveredToolCalls.length} stale in-flight tool call(s): replay=${summary.replay}, poison=${summary.poison}, cancel=${summary.cancel}\n`,
     );
   }
   if (report.warnings.length > 0) {
@@ -1259,6 +1340,18 @@ function reportAgenCDaemonStartupRecovery(
       `agenc: daemon recovery emitted ${report.warnings.length} warning(s)\n`,
     );
   }
+}
+
+function summarizeToolRecoveryActions(
+  calls: readonly RecoveredInFlightToolCall[],
+): Record<ToolRecoveryAction, number> {
+  const summary: Record<ToolRecoveryAction, number> = {
+    replay: 0,
+    poison: 0,
+    cancel: 0,
+  };
+  for (const call of calls) summary[call.recoveryAction] += 1;
+  return summary;
 }
 
 interface AgenCDaemonAuthStartup {

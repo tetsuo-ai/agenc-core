@@ -81,6 +81,7 @@ describe("openStateDatabases", () => {
         "started_at",
         "output_log_path",
         "output_log_bytes",
+        "recovery_category",
       ]);
       expect(toolCallColumns.find((column) => column.name === "session_id"))
         .toMatchObject({ notnull: 1, pk: 1 });

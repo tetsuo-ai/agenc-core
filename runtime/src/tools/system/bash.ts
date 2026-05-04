@@ -405,7 +405,7 @@ function runSpawnedCommand(params: {
 
       // Flatten content to plain text (stdout, then stderr if non-empty)
       // so the model sees the raw command output instead of a JSON
-      // string it has to re-parse. Mirrors openclaude `BashTool`
+      // string it has to re-parse. Mirrors the donor `BashTool`
       // `tool_result.content` shape (plain string, structured flags on
       // the result envelope). Structured fields move to `metadata`
       // where the inner emitEnd observer + ToolResult consumers can
@@ -763,13 +763,13 @@ export function createBashTool(config?: BashToolConfig): Tool {
 
   return {
     name: "system.bash",
-    // Marked deferred: exec_command is the canonical shell tool (codex runtime
-    // parity — codex runtime's `local_shell` + `write_stdin` is what AgenC's
+    // Marked deferred: exec_command is the canonical shell tool (donor runtime
+    // parity — the donor runtime's `local_shell` + `write_stdin` is what AgenC's
     // `exec_command` + `write_stdin` mirrors). system.bash stays
     // available via system.searchTools for callers that genuinely
     // need the direct-mode (command + args) split or the dual-mode
     // semantics, but defaults to off to keep the visible catalog
-    // codex runtime-small and avoid duplicate-tool confusion.
+    // donor runtime-small and avoid duplicate-tool confusion.
     metadata: {
       family: "terminal",
       source: "builtin",
@@ -784,6 +784,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
       '1. **Direct mode** (command + args): Set `command` to a binary (e.g. "git") and `args` to an array of flags/operands. Uses execFile directly.\n' +
       '2. **Shell mode** (command only, no args): Set `command` to a full shell string (e.g. "ls -la | grep foo"). Pipes, redirects, chaining, and backgrounding are supported.\n\n' +
       "NEVER use this tool to bypass verification: no `--no-verify` on commits, no `|| true` wrapping around failing tests, no rewriting a failing test into `exit 0`. If a test fails, read the error and fix the real cause. If a pre-commit or CI hook fails, investigate the cause and create a new commit with the fix — do not skip the hook. If the verification harness itself is genuinely wrong, stop and explain the discrepancy in your reply so the user can review before you modify the harness. Attempts to overwrite a verification harness that just failed in this turn will be refused by the runtime.",
+    recoveryCategory: "side-effecting",
     inputSchema: {
       type: "object",
       properties: {
@@ -1021,7 +1022,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
       // `events-to-messages.ts`'s `toolMessageIndexByCallId` — otherwise
       // the two callId namespaces produce two transcript rows for the
       // same Bash invocation (the streaming row + the completed row).
-      // Mirrors openclaude where bash is a single tool_use_id pair with
+      // Mirrors the donor behavior where bash is a single tool_use_id pair with
       // streaming via `progressMessages` keyed off the same id.
       const execCallId =
         typeof input.__callId === "string" && input.__callId.length > 0

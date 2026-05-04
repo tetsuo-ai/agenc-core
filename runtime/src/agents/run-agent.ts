@@ -27,7 +27,11 @@ import type {
 } from "../llm/types.js";
 import { readProviderIdentity } from "../llm/provider.js";
 import type { ToolRegistry, ToolDispatchResult } from "./_deps/tool-registry.js";
-import { safeStringify, type Tool } from "./_deps/tools-types.js";
+import {
+  safeStringify,
+  type Tool,
+  type ToolRecoveryCategory,
+} from "./_deps/tools-types.js";
 import {
   SESSION_ALLOWED_ROOTS_ARG,
   SESSION_ID_ARG,
@@ -81,6 +85,7 @@ export type RunAgentProgressEvent =
       readonly callId: string;
       readonly toolName: string;
       readonly arguments?: string;
+      readonly recoveryCategory?: ToolRecoveryCategory;
     }
   | {
       readonly kind: "tool_result";
@@ -640,6 +645,19 @@ function wrapToolForChild(
   };
 }
 
+function recoveryCategoryForTool(
+  registry: ToolRegistry,
+  toolName: string,
+): ToolRecoveryCategory | undefined {
+  const category = registry.tools.find((tool) => tool.name === toolName)
+    ?.recoveryCategory;
+  return category === "idempotent" ||
+    category === "side-effecting" ||
+    category === "interactive"
+    ? category
+    : undefined;
+}
+
 function cloneSessionConfiguration(
   parent: Session,
   live: LiveAgent,
@@ -1060,6 +1078,10 @@ export async function* runAgent(
 
         if (event.type === "tool_call") {
           toolCallCount += 1;
+          const recoveryCategory = recoveryCategoryForTool(
+            childSession.services.registry,
+            event.toolCall.name,
+          );
           relayToParentMailbox({
             live,
             parent,
@@ -1077,6 +1099,7 @@ export async function* runAgent(
             callId: event.toolCall.id,
             toolName: event.toolCall.name,
             arguments: event.toolCall.arguments,
+            ...(recoveryCategory !== undefined ? { recoveryCategory } : {}),
           };
           continue;
         }

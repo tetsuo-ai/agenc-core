@@ -184,6 +184,7 @@ export function createFileWriteTool(
       deferred: false,
     },
     requiresApproval: true,
+    recoveryCategory: "side-effecting",
     inputSchema: {
       type: "object",
       properties: {

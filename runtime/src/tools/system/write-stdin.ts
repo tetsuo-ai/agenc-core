@@ -65,6 +65,7 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
     requiresApproval: false,
     concurrencyClass: { kind: "background_terminal" },
     isReadOnly: false,
+    recoveryCategory: "side-effecting",
     supportsParallelToolCalls: false,
     isConcurrencySafe: () => false,
     interruptBehavior: () => "cancel",

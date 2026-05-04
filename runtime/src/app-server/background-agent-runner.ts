@@ -36,6 +36,8 @@ import {
 import type { AuthBackend } from "../auth/backend.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
+import type { ToolRecoveryCategory } from "../tools/types.js";
+import type { ToolRegistry } from "../tool-registry.js";
 import { setRulesForSource } from "../permissions/rules.js";
 import type { PermissionModeRegistry } from "../permissions/mode.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
@@ -84,7 +86,27 @@ export interface AgenCBackgroundAgentRestoreParams {
   readonly profile?: string;
   readonly currentSessionId?: string;
   readonly initialMessages?: ReadonlyArray<LLMMessage>;
+  readonly replayToolCalls?: readonly AgenCBackgroundAgentReplayToolCall[];
+  readonly onReplayToolResult?: (
+    result: AgenCBackgroundAgentReplayToolResult,
+  ) => void | Promise<void>;
   readonly metadata?: JsonObject;
+}
+
+export interface AgenCBackgroundAgentReplayToolCall {
+  readonly callId: string;
+  readonly toolName: string;
+  readonly args: JsonValue;
+}
+
+export interface AgenCBackgroundAgentReplayToolResult {
+  readonly sessionId: string;
+  readonly callId: string;
+  readonly toolName: string;
+  readonly result: string;
+  readonly isError: boolean;
+  readonly terminalStatus?: "completed" | "failed" | "poisoned";
+  readonly recoveryCategory?: ToolRecoveryCategory;
 }
 
 export interface AgenCBackgroundAgentSnapshot {
@@ -359,8 +381,16 @@ export class AgenCDelegateBackgroundAgentRunner
           {
             thread,
             parent: bootstrap!.session,
+            registry: bootstrap!.registry,
             taskPrompt: params.objective,
             initialMessages,
+            replayToolCalls: params.replayToolCalls ?? [],
+            ...(params.currentSessionId !== undefined
+              ? { currentSessionId: params.currentSessionId }
+              : {}),
+            ...(params.onReplayToolResult !== undefined
+              ? { onReplayToolResult: params.onReplayToolResult }
+              : {}),
             ...(params.model !== undefined ? { model: params.model } : {}),
             onProgress: (event, nextThread) =>
               this.#recordProgressEvent(nextThread.threadId, event),
@@ -822,6 +852,9 @@ function notificationFromDaemonEvent(
         requestId: payload.callId,
         toolName: payload.toolName,
         ...(input !== undefined ? { input } : {}),
+        ...(isToolRecoveryCategory(payload.recoveryCategory)
+          ? { recoveryCategory: payload.recoveryCategory }
+          : {}),
       },
     };
   }
@@ -997,8 +1030,14 @@ async function runRestoredAgentToCompletion(
   opts: {
     readonly thread: AgentThread;
     readonly parent: LocalRuntimeBootstrap["session"];
+    readonly registry: ToolRegistry;
     readonly taskPrompt: string;
     readonly initialMessages: ReadonlyArray<LLMMessage>;
+    readonly replayToolCalls: readonly AgenCBackgroundAgentReplayToolCall[];
+    readonly currentSessionId?: string;
+    readonly onReplayToolResult?: (
+      result: AgenCBackgroundAgentReplayToolResult,
+    ) => void | Promise<void>;
     readonly model?: string;
     readonly onProgress?: (
       event: RunAgentProgressEvent,
@@ -1006,10 +1045,15 @@ async function runRestoredAgentToCompletion(
     ) => void | Promise<void>;
   },
 ): Promise<RunAgentResult> {
+  const replayedMessages = await replayRecoveredToolCalls(opts);
+  const initialMessages =
+    replayedMessages.length === 0
+      ? opts.initialMessages
+      : [...opts.initialMessages, ...replayedMessages];
   const iter = runAgentFn({
     live: opts.thread.live,
     parent: opts.parent,
-    initialMessages: opts.initialMessages,
+    initialMessages,
     taskPrompt: opts.taskPrompt,
     ...(opts.model !== undefined ? { model: opts.model } : {}),
   });
@@ -1020,6 +1064,135 @@ async function runRestoredAgentToCompletion(
       return step.value;
     }
     await opts.onProgress?.(step.value, opts.thread);
+  }
+}
+
+async function replayRecoveredToolCalls(opts: {
+  readonly thread: AgentThread;
+  readonly registry: ToolRegistry;
+  readonly initialMessages: ReadonlyArray<LLMMessage>;
+  readonly replayToolCalls: readonly AgenCBackgroundAgentReplayToolCall[];
+  readonly currentSessionId?: string;
+  readonly onReplayToolResult?: (
+    result: AgenCBackgroundAgentReplayToolResult,
+  ) => void | Promise<void>;
+  readonly onProgress?: (
+    event: RunAgentProgressEvent,
+    thread: AgentThread,
+  ) => void | Promise<void>;
+}): Promise<LLMMessage[]> {
+  const messages: LLMMessage[] = [];
+  for (const replay of opts.replayToolCalls) {
+    const args = stringifyReplayToolArguments(replay.args);
+    const registeredTool = opts.registry.tools.find(
+      (tool) => tool.name === replay.toolName,
+    );
+    if (registeredTool?.recoveryCategory !== "idempotent") {
+      if (opts.currentSessionId !== undefined) {
+        await opts.onReplayToolResult?.({
+          sessionId: opts.currentSessionId,
+          callId: replay.callId,
+          toolName: replay.toolName,
+          result: `Recovered tool call ${replay.callId} was not replayed because the current tool registration is missing or not idempotent.`,
+          isError: true,
+          terminalStatus: "poisoned",
+          ...(registeredTool?.recoveryCategory !== undefined
+            ? { recoveryCategory: registeredTool.recoveryCategory }
+            : {}),
+        });
+      }
+      continue;
+    }
+    await opts.onProgress?.(
+      {
+        kind: "tool_call",
+        callId: replay.callId,
+        toolName: replay.toolName,
+        arguments: args,
+        recoveryCategory: "idempotent",
+      },
+      opts.thread,
+    );
+    const result = await dispatchReplayToolCall(opts.registry, {
+      id: replay.callId,
+      name: replay.toolName,
+      arguments: args,
+    });
+    if (opts.currentSessionId !== undefined) {
+      await opts.onReplayToolResult?.({
+        sessionId: opts.currentSessionId,
+        callId: replay.callId,
+        toolName: replay.toolName,
+        result: result.content,
+        isError: result.isError === true,
+        terminalStatus: result.isError === true ? "failed" : "completed",
+        recoveryCategory: "idempotent",
+      });
+    }
+    await opts.onProgress?.(
+      {
+        kind: "tool_result",
+        callId: replay.callId,
+        toolName: replay.toolName,
+        result: result.content,
+        isError: result.isError === true,
+      },
+      opts.thread,
+    );
+    if (
+      !hasAssistantToolCall(
+        [...opts.initialMessages, ...messages],
+        replay.callId,
+      )
+    ) {
+      messages.push({
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          {
+            id: replay.callId,
+            name: replay.toolName,
+            arguments: args,
+          },
+        ],
+      });
+    }
+    messages.push({
+      role: "tool",
+      content: result.content,
+      toolCallId: replay.callId,
+      toolName: replay.toolName,
+    });
+  }
+  return messages;
+}
+
+function hasAssistantToolCall(
+  messages: readonly LLMMessage[],
+  toolCallId: string,
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "assistant" &&
+      message.toolCalls?.some((toolCall) => toolCall.id === toolCallId) === true,
+  );
+}
+
+function stringifyReplayToolArguments(value: JsonValue): string {
+  return JSON.stringify(value);
+}
+
+async function dispatchReplayToolCall(
+  registry: ToolRegistry,
+  toolCall: { readonly id: string; readonly name: string; readonly arguments: string },
+): Promise<{ readonly content: string; readonly isError?: boolean }> {
+  try {
+    return await registry.dispatch(toolCall);
+  } catch (error) {
+    return {
+      content: error instanceof Error ? error.message : String(error),
+      isError: true,
+    };
   }
 }
 
@@ -1209,6 +1382,16 @@ function stringArray(value: unknown): readonly string[] {
     : [];
 }
 
+function isToolRecoveryCategory(
+  value: unknown,
+): value is "idempotent" | "side-effecting" | "interactive" {
+  return (
+    value === "idempotent" ||
+    value === "side-effecting" ||
+    value === "interactive"
+  );
+}
+
 function hasCurrentStatus(
   thread: AgentThread,
 ): thread is AgentThread & { readonly currentStatus: ThreadAgentStatus } {
@@ -1351,6 +1534,9 @@ function eventFromProgress(
           callId: progress.callId,
           toolName: progress.toolName,
           args: progress.arguments ?? "{}",
+          ...(isToolRecoveryCategory(progress.recoveryCategory)
+            ? { recoveryCategory: progress.recoveryCategory }
+            : {}),
         },
       };
     case "tool_result":

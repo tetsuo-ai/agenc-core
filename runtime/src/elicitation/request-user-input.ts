@@ -284,6 +284,7 @@ export function createRequestUserInputTool(
     },
     supportsParallelToolCalls: false,
     requiresUserInteraction: () => true,
+    recoveryCategory: "interactive",
     isConcurrencySafe: () => false,
     interruptBehavior: () => "cancel",
     timeoutBehavior: "tool",

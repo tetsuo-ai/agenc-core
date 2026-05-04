@@ -31,6 +31,7 @@ export function createSymbolTools(config: CodingToolConfig): readonly Tool[] {
       deferred: true,
       keywords: ["symbol", "search", "definition", "code-intel"],
     }),
+    recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
       properties: {
@@ -70,6 +71,7 @@ export function createSymbolTools(config: CodingToolConfig): readonly Tool[] {
       deferred: true,
       keywords: ["symbol", "definition", "goto", "code-intel"],
     }),
+    recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
       properties: {
@@ -112,6 +114,7 @@ export function createSymbolTools(config: CodingToolConfig): readonly Tool[] {
       deferred: true,
       keywords: ["symbol", "references", "usages", "code-intel"],
     }),
+    recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
       properties: {

@@ -372,6 +372,7 @@ export function createGlobTool(
       deferred: false,
     },
     isReadOnly: true,
+    recoveryCategory: "idempotent",
     requiresApproval: false,
     isConcurrencySafe: () => true,
     inputSchema: {

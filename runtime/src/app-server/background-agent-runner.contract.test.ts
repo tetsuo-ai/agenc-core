@@ -28,6 +28,7 @@ import {
   createDaemonTuiSession,
   type AgenCDaemonTuiClient,
 } from "../tui/daemon-session.js";
+import { prepareMessagesForWire } from "../llm/wire/shared.js";
 
 function restoredLiveAgent(
   agentId: string,
@@ -168,6 +169,8 @@ describe("AgenC delegate background-agent runner", () => {
       sendInput,
       shutdown: vi.fn(async () => {}),
     };
+    const dispatch = vi.fn(async () => ({ content: "file text" }));
+    const replayResults: unknown[] = [];
     let runParams: Parameters<AgenCRunAgentFunction>[0] | undefined;
     const runAgentFn = (async function* (
       params: Parameters<AgenCRunAgentFunction>[0],
@@ -180,6 +183,11 @@ describe("AgenC delegate background-agent runner", () => {
     const runner = new AgenCDelegateBackgroundAgentRunner({
       bootstrap: vi.fn(async () => ({
         session,
+        registry: {
+          tools: [{ name: "FileRead", recoveryCategory: "idempotent" }],
+          toLLMTools: () => [],
+          dispatch,
+        },
         shutdown,
       })) as unknown as AgenCBootstrapFunction,
       ensureAgentControl: vi.fn(() => ({
@@ -189,7 +197,21 @@ describe("AgenC delegate background-agent runner", () => {
       runAgentFn,
       now: () => "2026-05-01T12:00:00.500Z",
     });
-    const initialMessages = [{ role: "user" as const, content: "continue" }];
+    const existingAssistantMessage = {
+      role: "assistant" as const,
+      content: "",
+      toolCalls: [
+        {
+          id: "tool-existing",
+          name: "FileRead",
+          arguments: JSON.stringify({ file_path: "already.md" }),
+        },
+      ],
+    };
+    const initialMessages = [
+      { role: "user" as const, content: "continue" },
+      existingAssistantMessage,
+    ];
 
     await expect(
       runner.restoreAgent({
@@ -198,6 +220,21 @@ describe("AgenC delegate background-agent runner", () => {
         cwd: "/workspace",
         currentSessionId: "session-restart",
         initialMessages,
+        replayToolCalls: [
+          {
+            callId: "tool-existing",
+            toolName: "FileRead",
+            args: { file_path: "already.md" },
+          },
+          {
+            callId: "tool-replay",
+            toolName: "FileRead",
+            args: { file_path: "README.md" },
+          },
+        ],
+        onReplayToolResult: (result) => {
+          replayResults.push(result);
+        },
         metadata: {
           agentPath: "/root/restart",
           agentNickname: "restart",
@@ -227,9 +264,115 @@ describe("AgenC delegate background-agent runner", () => {
         }),
       }),
     );
-    await Promise.resolve();
+    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(2));
+    expect(dispatch).toHaveBeenCalledWith({
+      id: "tool-replay",
+      name: "FileRead",
+      arguments: JSON.stringify({ file_path: "README.md" }),
+    });
+    expect(dispatch).toHaveBeenCalledWith({
+      id: "tool-existing",
+      name: "FileRead",
+      arguments: JSON.stringify({ file_path: "already.md" }),
+    });
+    expect(replayResults).toEqual([
+      {
+        sessionId: "session-restart",
+        callId: "tool-existing",
+        toolName: "FileRead",
+        result: "file text",
+        isError: false,
+        terminalStatus: "completed",
+        recoveryCategory: "idempotent",
+      },
+      {
+        sessionId: "session-restart",
+        callId: "tool-replay",
+        toolName: "FileRead",
+        result: "file text",
+        isError: false,
+        terminalStatus: "completed",
+        recoveryCategory: "idempotent",
+      },
+    ]);
+    const replayedEvents: unknown[] = [];
+    await runner.attachAgentSessionEvents("run-restart", {
+      sessionId: "session-restart",
+      emit: (event) => {
+        replayedEvents.push(event);
+      },
+    });
+    expect(replayedEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: "event.tool_request",
+          params: expect.objectContaining({
+            requestId: "tool-replay",
+            toolName: "FileRead",
+            recoveryCategory: "idempotent",
+          }),
+        }),
+        expect.objectContaining({
+          method: "event.session_event",
+          params: expect.objectContaining({
+            event: expect.objectContaining({
+              type: "tool_call_completed",
+              payload: expect.objectContaining({
+                callId: "tool-replay",
+                result: "file text",
+                isError: false,
+              }),
+            }),
+          }),
+        }),
+      ]),
+    );
 
-    expect(runParams?.initialMessages).toEqual(initialMessages);
+    const replayAssistantMessage = {
+      role: "assistant" as const,
+      content: "",
+      toolCalls: [
+        {
+          id: "tool-replay",
+          name: "FileRead",
+          arguments: JSON.stringify({ file_path: "README.md" }),
+        },
+      ],
+    };
+    const replayToolMessage = {
+      role: "tool" as const,
+      content: "file text",
+      toolCallId: "tool-replay",
+      toolName: "FileRead",
+    };
+    const existingToolMessage = {
+      role: "tool" as const,
+      content: "file text",
+      toolCallId: "tool-existing",
+      toolName: "FileRead",
+    };
+    expect(runParams?.initialMessages).toEqual([
+      ...initialMessages,
+      existingToolMessage,
+      replayAssistantMessage,
+      replayToolMessage,
+    ]);
+    expect(
+      runParams?.initialMessages.filter(
+        (message) =>
+          message.role === "assistant" &&
+          message.toolCalls?.some((toolCall) => toolCall.id === "tool-existing"),
+      ),
+    ).toHaveLength(1);
+    const wireMessages = prepareMessagesForWire(runParams?.initialMessages ?? []);
+    expect(wireMessages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining(replayAssistantMessage),
+        expect.objectContaining(replayToolMessage),
+        expect.objectContaining(existingToolMessage),
+      ]),
+    );
+    expect(wireMessages.at(-1)).toMatchObject(replayToolMessage);
     await expect(runner.getAgentSnapshot("run-restart")).resolves.toMatchObject({
       status: "running",
       lastActiveAt: "2026-05-01T12:00:00.500Z",
@@ -245,6 +388,89 @@ describe("AgenC delegate background-agent runner", () => {
       }),
     ).resolves.toBeUndefined();
     expect(sendInput).toHaveBeenCalledWith("run-restart", "follow up");
+  });
+
+  it("poisons recovered replay when the current registry is not idempotent", async () => {
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    const session = {
+      conversationId: "session-registry-mismatch",
+      permissionModeRegistry,
+      services: {},
+    };
+    const live = restoredLiveAgent("run-registry-mismatch", "/root/mismatch");
+    const resumeAgentFromRollout = vi.fn(async () => ({
+      resumedCount: 1,
+      rootLive: live,
+    }));
+    const dispatch = vi.fn(async () => ({ content: "should not run" }));
+    const replayResults: unknown[] = [];
+    let runParams: Parameters<AgenCRunAgentFunction>[0] | undefined;
+    const runAgentFn = (async function* (
+      params: Parameters<AgenCRunAgentFunction>[0],
+    ) {
+      runParams = params;
+      yield { kind: "status", text: "restored" };
+      await new Promise(() => {});
+    }) as AgenCRunAgentFunction;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        registry: {
+          tools: [{ name: "FileWrite", recoveryCategory: "side-effecting" }],
+          toLLMTools: () => [],
+          dispatch,
+        },
+        shutdown: async () => {},
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control: {
+          resumeAgentFromRollout,
+          sendInput: async () => {},
+          shutdown: async () => {},
+        },
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      runAgentFn,
+    });
+    const initialMessages = [{ role: "user" as const, content: "continue" }];
+
+    await expect(
+      runner.restoreAgent({
+        agentId: "run-registry-mismatch",
+        objective: "recover daemon state",
+        currentSessionId: "session-registry-mismatch",
+        initialMessages,
+        replayToolCalls: [
+          {
+            callId: "tool-lie",
+            toolName: "FileWrite",
+            args: { file_path: "a.txt", content: "x" },
+          },
+        ],
+        onReplayToolResult: (result) => {
+          replayResults.push(result);
+        },
+        metadata: { agentPath: "/root/mismatch" },
+      }),
+    ).resolves.toBe(true);
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(replayResults).toEqual([
+      {
+        sessionId: "session-registry-mismatch",
+        callId: "tool-lie",
+        toolName: "FileWrite",
+        result:
+          "Recovered tool call tool-lie was not replayed because the current tool registration is missing or not idempotent.",
+        isError: true,
+        terminalStatus: "poisoned",
+        recoveryCategory: "side-effecting",
+      },
+    ]);
+    expect(runParams?.initialMessages).toEqual(initialMessages);
   });
 
   it("passes the daemon AuthBackend into delegate bootstrap", async () => {

@@ -156,6 +156,7 @@ export function createApplyPatchTool(config: ApplyPatchToolConfig): Tool {
       deferred: true,
     },
     requiresApproval: true,
+    recoveryCategory: "side-effecting",
     inputSchema: {
       type: "object",
       properties: {

@@ -1141,6 +1141,7 @@ async function readImageFile(
 
   // The `FunctionCallOutputContentItem` shape (port of the runtime
   // `FunctionCallOutputContentItem`) accepts `input_image` carrying a
+  // branding-scan: allow real provider API name in data URL compatibility note
   // URL — providers that support the OpenAI Responses API consume data
   // URLs verbatim. The text body remains a brief summary so the runtime
   // envelope is never empty.
@@ -1198,6 +1199,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
       deferred: false,
     },
     isReadOnly: true,
+    recoveryCategory: "idempotent",
     requiresApproval: false,
     inputSchema: {
       type: "object",
