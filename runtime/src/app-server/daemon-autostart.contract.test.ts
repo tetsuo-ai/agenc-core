@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import {
 } from "./daemon-autostart.js";
 import {
   readAgenCDaemonPid,
+  resolveAgenCDaemonCookiePath,
   resolveAgenCDaemonPidPath,
   writeAgenCDaemonPid,
   type AgenCDaemonCliHost,
@@ -122,6 +123,41 @@ describe("AgenC daemon autostart", () => {
     await expect(readAgenCDaemonPid(pidPath)).resolves.toBe(5201);
     expect(readyChecks).toEqual([5201]);
     expect(connectedPids).toEqual([5201]);
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("waits for the daemon cookie before reporting default readiness", async () => {
+    const agencHome = await tempAgencHome();
+    const baseHost = createHost(agencHome);
+    const pidPath = resolveAgenCDaemonPidPath(baseHost.env, baseHost.userHome);
+    const cookiePath = resolveAgenCDaemonCookiePath(
+      baseHost.env,
+      baseHost.userHome,
+    );
+    let sleepCount = 0;
+    const host: AgenCDaemonCliHost = {
+      ...baseHost,
+      sleep: async () => {
+        sleepCount += 1;
+        await writeFile(cookiePath, "ready-cookie\n", { mode: 0o600 });
+      },
+    };
+
+    await expect(
+      ensureAgenCDaemonAutostart({
+        host,
+        pollMs: 1,
+        waitTimeoutMs: 100,
+      }),
+    ).resolves.toEqual({
+      pid: 5201,
+      pidPath,
+      status: "started",
+      ready: true,
+      connected: false,
+    });
+    expect(sleepCount).toBe(1);
 
     await rm(agencHome, { recursive: true, force: true });
   });

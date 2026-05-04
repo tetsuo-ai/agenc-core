@@ -7,8 +7,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -40,6 +39,10 @@ import {
 } from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import { AgenCUnixSocketServer } from "./transport/unix-socket.js";
+import {
+  AgenCDaemonCookieAuthenticator,
+  ensureAgenCDaemonCookie,
+} from "./transport/auth.js";
 import { AgenCDaemonHealthService } from "./health.js";
 import {
   AgenCCleanupRegistry,
@@ -354,6 +357,7 @@ async function runAgenCDaemonForeground(
   const daemonCookie = await ensureAgenCDaemonCookie(
     resolveAgenCDaemonCookiePath(host.env, host.userHome),
   );
+  const cookieAuthenticator = new AgenCDaemonCookieAuthenticator(daemonCookie);
   let startupRecovery: DaemonStartupRecoveryReport;
   try {
     startupRecovery = recoverAgenCDaemonStartupState(
@@ -499,7 +503,8 @@ async function runAgenCDaemonForeground(
     commandExec,
     authBackend: authStartup.authBackend,
     health,
-    initializeAuthenticator: (params) => params.authCookie === daemonCookie,
+    initializeAuthenticator: (params) =>
+      cookieAuthenticator.verifyInitializeParams(params),
   });
   const connections = new Map<number, AgenCDaemonJsonRpcConnection>();
   const socketConnections = new Map<
@@ -529,9 +534,13 @@ async function runAgenCDaemonForeground(
       socketConnections.set(context.connectionId, {
         send: (notification) => context.send(notification),
       });
-      await context.send(
-        await connectionFor(context.connectionId).dispatch(message),
+      const response = await connectionFor(context.connectionId).dispatch(
+        message,
       );
+      await context.send(response);
+      if (isDaemonConnectionAuthenticationFailure(response)) {
+        context.close();
+      }
     },
     onError: (error) => {
       io.stderr.write(`agenc: daemon socket error: ${error.message}\n`);
@@ -1311,25 +1320,6 @@ export async function removeAgenCDaemonPid(
   await rm(pidPath, { force: true });
 }
 
-export async function ensureAgenCDaemonCookie(
-  cookiePath: string,
-): Promise<string> {
-  try {
-    const existing = (await readFile(cookiePath, "utf8")).trim();
-    if (existing.length > 0) {
-      await chmod(cookiePath, 0o600).catch(() => {});
-      return existing;
-    }
-  } catch (error) {
-    if (asNodeError(error).code !== "ENOENT") throw error;
-  }
-
-  const cookie = randomBytes(32).toString("hex");
-  await mkdir(dirname(cookiePath), { recursive: true, mode: 0o700 });
-  await writeFile(cookiePath, `${cookie}\n`, { mode: 0o600 });
-  return cookie;
-}
-
 export async function writeAgenCDaemonSnapshot(
   snapshotPath: string,
   snapshot: AgenCDaemonAgentSnapshotFlush,
@@ -1339,6 +1329,8 @@ export async function writeAgenCDaemonSnapshot(
     mode: 0o600,
   });
 }
+
+export { ensureAgenCDaemonCookie } from "./transport/auth.js";
 
 export function createNodeDaemonCliHost(): AgenCDaemonCliHost {
   const entrypointPath = process.argv[1] ?? "";
@@ -1388,6 +1380,21 @@ function daemonShuttingDownResponse(message: JsonObject): JsonObject {
       message: "AgenC daemon is shutting down",
     },
   };
+}
+
+function isDaemonConnectionAuthenticationFailure(message: JsonObject): boolean {
+  const error = message.error;
+  if (typeof error !== "object" || error === null || Array.isArray(error)) {
+    return false;
+  }
+  const data = (error as { readonly data?: unknown }).data;
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    !Array.isArray(data) &&
+    (data as { readonly code?: unknown }).code ===
+      "CONNECTION_AUTHENTICATION_FAILED"
+  );
 }
 
 function formatCleanupError(error: unknown): string {
