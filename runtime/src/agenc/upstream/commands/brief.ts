@@ -8,7 +8,7 @@ import {
 } from '../services/analytics/index.js'
 import type { ToolUseContext } from '../Tool.js'
 import { isBriefEntitled } from '../tools/BriefTool/BriefTool.js'
-import { BRIEF_TOOL_NAME } from '../tools/BriefTool/prompt.js'
+import { BRIEF_TOOL_NAME } from 'src/tools/BriefTool/prompt.js'
 import type {
   Command,
   LocalJSXCommandContext,

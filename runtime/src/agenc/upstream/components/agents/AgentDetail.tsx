@@ -5,10 +5,10 @@ import type { KeyboardEvent } from '../../../../tui/ink/events/keyboard-event.js
 import { Box, Text } from '../../../../tui/ink.js';
 import { useKeybinding } from '../../../../tui/keybindings/useKeybinding.js';
 import type { Tools } from '../../Tool.js';
-import { getAgentColor } from '../../tools/AgentTool/agentColorManager.js';
+import { getAgentColor } from 'src/tools/AgentTool/agentColorManager.js';
 import { getMemoryScopeDisplay } from '../../tools/AgentTool/agentMemory.js';
 import { resolveAgentTools } from '../../tools/AgentTool/agentToolUtils.js';
-import { type AgentDefinition, isBuiltInAgent } from '../../tools/AgentTool/loadAgentsDir.js';
+import { type AgentDefinition, isBuiltInAgent } from 'src/tools/AgentTool/loadAgentsDir.js';
 import { getAgentModelDisplay } from '../../utils/model/agent.js';
 import { Markdown } from '../Markdown.js';
 import { getActualRelativeAgentFilePath } from './agentFileUtils.js';

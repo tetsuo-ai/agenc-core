@@ -7,7 +7,7 @@ import {
   type AgentDefinition,
   isBuiltInAgent,
   isPluginAgent,
-} from '../../tools/AgentTool/loadAgentsDir.js'
+} from 'src/tools/AgentTool/loadAgentsDir.js'
 import { getCwd } from '../../utils/cwd.js'
 import type { EffortValue } from '../../utils/effort.js'
 import { getAgenCConfigHomeDir } from '../../utils/envUtils.js'

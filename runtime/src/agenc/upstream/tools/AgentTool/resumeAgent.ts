@@ -30,8 +30,8 @@ import { reconstructForSubagentResume } from '../../utils/toolResultStorage.js'
 import { runAsyncAgentLifecycle } from './agentToolUtils.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
 import { FORK_AGENT, isForkSubagentEnabled } from './forkSubagent.js'
-import type { AgentDefinition } from './loadAgentsDir.js'
-import { isBuiltInAgent } from './loadAgentsDir.js'
+import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
+import { isBuiltInAgent } from 'src/tools/AgentTool/loadAgentsDir.js'
 import { runAgent } from './runAgent.js'
 
 export type ResumeAgentResult = {

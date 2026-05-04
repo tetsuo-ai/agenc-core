@@ -13,7 +13,7 @@ import type {
 } from '../../types/message.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { createUserMessage } from '../../utils/messages.js'
-import type { BuiltInAgentDefinition } from './loadAgentsDir.js'
+import type { BuiltInAgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
 
 /**
  * Fork subagent feature gate.

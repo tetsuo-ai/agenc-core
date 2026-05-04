@@ -12,7 +12,7 @@ import { jsonStringify } from '../../../utils/slowOperations.js'
 import type {
   AgentDefinition,
   BuiltInAgentDefinition,
-} from '../loadAgentsDir.js'
+} from 'src/tools/AgentTool/loadAgentsDir.js'
 
 const AGENC_DOCS_MAP_URL =
   'https://code.agenc.com/docs/en/claude_code_docs_map.md'

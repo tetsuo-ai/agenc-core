@@ -120,6 +120,8 @@ const MEMORY_TOOLS = [
 let pluginAgentsLoaderForTesting:
   | (() => Promise<PluginAgentDefinition[]>)
   | undefined
+let pluginAgentCacheClearer: (() => void) | undefined
+let pluginAgentCacheClearerForTesting: (() => void) | undefined
 let markdownDirsForTesting:
   | Array<{ dir: string; source: SettingSource }>
   | undefined
@@ -548,7 +550,9 @@ async function loadPluginAgentsSafe(): Promise<PluginAgentDefinition[]> {
       '../../agenc/upstream/utils/plugins/loadPluginAgents.js'
     const pluginModule = (await import(pluginModulePath)) as {
       loadPluginAgents?: () => Promise<unknown>
+      clearPluginAgentCache?: () => void
     }
+    pluginAgentCacheClearer = pluginModule.clearPluginAgentCache
     const loaded = await pluginModule.loadPluginAgents?.()
     return Array.isArray(loaded)
       ? loaded.filter((agent): agent is PluginAgentDefinition =>
@@ -644,6 +648,19 @@ export const getAgentDefinitionsWithOverrides = memoize(
 
 export function clearAgentDefinitionsCache(): void {
   getAgentDefinitionsWithOverrides.cache.clear?.()
+  if (pluginAgentCacheClearerForTesting) {
+    pluginAgentCacheClearerForTesting()
+    return
+  }
+  if (pluginAgentCacheClearer) {
+    pluginAgentCacheClearer()
+    return
+  }
+  const pluginModulePath =
+    '../../agenc/upstream/utils/plugins/loadPluginAgents.js'
+  void import(pluginModulePath)
+    .then(module => module.clearPluginAgentCache?.())
+    .catch(() => {})
 }
 
 export function __setPluginAgentsLoaderForTesting(
@@ -651,6 +668,12 @@ export function __setPluginAgentsLoaderForTesting(
 ): void {
   pluginAgentsLoaderForTesting = loader
   clearAgentDefinitionsCache()
+}
+
+export function __setPluginAgentCacheClearerForTesting(
+  clearer: (() => void) | undefined,
+): void {
+  pluginAgentCacheClearerForTesting = clearer
 }
 
 export function __setMarkdownAgentDirsForTesting(

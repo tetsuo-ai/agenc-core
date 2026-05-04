@@ -82,7 +82,7 @@ import {
 import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
 import { resolveAgentTools } from './agentToolUtils.js'
-import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
+import { type AgentDefinition, isBuiltInAgent } from 'src/tools/AgentTool/loadAgentsDir.js'
 
 /**
  * Initialize agent-specific MCP servers

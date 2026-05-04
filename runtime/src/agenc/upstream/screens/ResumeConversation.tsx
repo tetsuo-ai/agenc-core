@@ -15,8 +15,8 @@ import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEve
 import type { MCPServerConnection, ScopedMcpServerConfig } from '../services/mcp/types.js';
 import { useAppState, useSetAppState } from '../../../tui/state/AppState.js';
 import type { Tool } from '../Tool.js';
-import type { AgentColorName } from '../tools/AgentTool/agentColorManager.js';
-import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js';
+import type { AgentColorName } from 'src/tools/AgentTool/agentColorManager.js';
+import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js';
 import { asSessionId } from '../types/ids.js';
 import type { LogOption } from '../types/logs.js';
 import type { Message } from '../types/message.js';
@@ -205,7 +205,7 @@ export function ResumeConversation({
           const {
             getAgentDefinitionsWithOverrides,
             getActiveAgentsFromList
-          } = require('../tools/AgentTool/loadAgentsDir.js') as typeof import('../tools/AgentTool/loadAgentsDir.js');
+          } = require('src/tools/AgentTool/loadAgentsDir.js') as typeof import('src/tools/AgentTool/loadAgentsDir.js');
           /* eslint-enable @typescript-eslint/no-require-imports */
           getAgentDefinitionsWithOverrides.cache.clear?.();
           const freshAgentDefs = await getAgentDefinitionsWithOverrides(getOriginalCwd());

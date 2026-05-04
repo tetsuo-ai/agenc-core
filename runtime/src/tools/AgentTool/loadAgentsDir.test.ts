@@ -7,6 +7,7 @@ import { afterEach, describe, expect, test } from 'vitest'
 import { getAgentColor } from './agentColorManager.js'
 import {
   __setMarkdownAgentDirsForTesting,
+  __setPluginAgentCacheClearerForTesting,
   __setPluginAgentsLoaderForTesting,
   clearAgentDefinitionsCache,
   filterAgentsByMcpRequirements,
@@ -38,6 +39,7 @@ function tempAgentDir(): string {
 
 afterEach(() => {
   __setMarkdownAgentDirsForTesting(undefined)
+  __setPluginAgentCacheClearerForTesting(undefined)
   __setPluginAgentsLoaderForTesting(undefined)
   clearAgentDefinitionsCache()
 })
@@ -246,6 +248,17 @@ Broken prompt.
         path: join(dir, 'broken.md'),
       }),
     ])
+  })
+
+  test('clears plugin agent cache with agent definition cache', () => {
+    let cleared = 0
+    __setPluginAgentCacheClearerForTesting(() => {
+      cleared += 1
+    })
+
+    clearAgentDefinitionsCache()
+
+    expect(cleared).toBe(1)
   })
 
   test('projects registered AgenC roles into built-in agent definitions', async () => {

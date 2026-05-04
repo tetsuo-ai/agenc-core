@@ -3,7 +3,7 @@ import { resolveAgentTools } from '../../tools/AgentTool/agentToolUtils.js'
 import type {
   AgentDefinition,
   CustomAgentDefinition,
-} from '../../tools/AgentTool/loadAgentsDir.js'
+} from 'src/tools/AgentTool/loadAgentsDir.js'
 import { getAgentSourceDisplayName } from './utils.js'
 
 export type AgentValidationResult = {

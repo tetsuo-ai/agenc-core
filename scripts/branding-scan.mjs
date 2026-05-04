@@ -114,12 +114,12 @@ function changedLinesForPath(root, rel, mode) {
   return changed;
 }
 
-function isAbsorbImportRewriteLine(line) {
+function isAbsorbImportRewriteLine(line, rel) {
   if (line === "") return true;
   if (!/(?:^import\b|^export\b|from\s+|import\s*\(|require\s*\()/.test(line)) {
     return false;
   }
-  return [
+  const commonAbsorbImportPatterns = [
     /(?:^|[./])ink(?:\.js|\/)/,
     /(?:^|[./])(?:tui\/)?state\/(?:AppState|AppStateStore|store)(?:\.js)?/,
     /(?:^|[./])(?:tui\/)?keybindings\//,
@@ -131,13 +131,29 @@ function isAbsorbImportRewriteLine(line) {
     /(?:^|[./])Messages(?:\.js)?/,
     /(?:^|[./])tui\/components\/App(?:\.js)?/,
     /(?:^|[./])components\/App(?:\.js)?/,
-  ].some((pattern) => pattern.test(line));
+    /(?:^|[./])tools\/AgentTool\/(?:loadAgentsDir|agentColorManager|constants|prompt)(?:\.js)?/,
+    /(?:^|[./])tools\/AskUserQuestionTool\/(?:AskUserQuestionTool|prompt)(?:\.js)?/,
+    /(?:^|[./])tools\/BriefTool\/prompt(?:\.js)?/,
+    /(?:^|[./])AgentTool\/(?:loadAgentsDir|agentColorManager|constants|prompt)(?:\.js)?/,
+    /(?:^|[./])AskUserQuestionTool\/(?:AskUserQuestionTool|prompt)(?:\.js)?/,
+    /(?:^|[./])BriefTool\/prompt(?:\.js)?/,
+  ];
+  if (commonAbsorbImportPatterns.some((pattern) => pattern.test(line))) {
+    return true;
+  }
+  if (/^runtime\/src\/agenc\/upstream\/tools\/AgentTool\//.test(rel)) {
+    return /(?:^|[./])(?:loadAgentsDir|agentColorManager|constants|prompt)(?:\.js)?/.test(line);
+  }
+  if (/^runtime\/src\/agenc\/upstream\/tools\/BriefTool\//.test(rel)) {
+    return /(?:^|[./])prompt(?:\.js)?/.test(line);
+  }
+  return false;
 }
 
 function isMirrorAbsorbImportRewriteOnly(root, rel, mode) {
   if (!UPSTREAM_MIRROR_RE.test(rel)) return false;
   const changed = changedLinesForPath(root, rel, mode);
-  return changed.length > 0 && changed.every(isAbsorbImportRewriteLine);
+  return changed.length > 0 && changed.every((line) => isAbsorbImportRewriteLine(line, rel));
 }
 
 function listFromGit(mode) {

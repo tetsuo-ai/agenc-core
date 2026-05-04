@@ -100,7 +100,7 @@ import type { OutputStyleConfig } from './outputStyles.js'
 import { CYBER_RISK_INSTRUCTION } from './cyberRiskInstruction.js'
 
 export const AGENC_DOCS_MAP_URL =
-  'https://code.agenc.com/docs/en/agenc_docs_map.md'
+  'urn:agenc:docs-map'
 
 /**
  * Boundary marker separating static (cross-org cacheable) content from dynamic content.

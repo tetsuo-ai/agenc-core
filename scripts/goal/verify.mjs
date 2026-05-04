@@ -941,6 +941,39 @@ async function t09ToolTargetGates() {
     failGate(`T-09 scoped importers still reference upstream tool targets:\n${upstreamPathScan.stdout}`);
   }
 
+  const retiredImportPattern =
+    String.raw`['"](?:\.\.?/)+(?:tools/)?(?:AgentTool/(?:loadAgentsDir|agentColorManager|constants|prompt)|AskUserQuestionTool/(?:AskUserQuestionTool|prompt)|BriefTool/prompt)\.js['"]`;
+  const retiredImportScan = run(
+    "rg",
+    ["--no-messages", "-n", retiredImportPattern, "runtime/src/agenc/upstream"],
+    { silent: true },
+  );
+  if (retiredImportScan.status === 0 && retiredImportScan.stdout.trim()) {
+    failGate(`T-09 upstream importers still reference deleted tool targets:\n${retiredImportScan.stdout}`);
+  }
+
+  const retiredAgentToolSiblingPattern =
+    String.raw`['"](?:\.\.?/)+(?:loadAgentsDir|agentColorManager|constants|prompt)\.js['"]`;
+  const retiredAgentToolSiblingScan = run(
+    "rg",
+    ["--no-messages", "-n", retiredAgentToolSiblingPattern, "runtime/src/agenc/upstream/tools/AgentTool"],
+    { silent: true },
+  );
+  if (retiredAgentToolSiblingScan.status === 0 && retiredAgentToolSiblingScan.stdout.trim()) {
+    failGate(`T-09 upstream AgentTool siblings still reference deleted tool targets:\n${retiredAgentToolSiblingScan.stdout}`);
+  }
+
+  const retiredBriefToolSiblingPattern =
+    String.raw`['"](?:\.\.?/)+prompt\.js['"]`;
+  const retiredBriefToolSiblingScan = run(
+    "rg",
+    ["--no-messages", "-n", retiredBriefToolSiblingPattern, "runtime/src/agenc/upstream/tools/BriefTool"],
+    { silent: true },
+  );
+  if (retiredBriefToolSiblingScan.status === 0 && retiredBriefToolSiblingScan.stdout.trim()) {
+    failGate(`T-09 upstream BriefTool siblings still reference deleted tool targets:\n${retiredBriefToolSiblingScan.stdout}`);
+  }
+
   pass("T-09 scoped tool importers resolved to AgenC-owned paths");
 }
 

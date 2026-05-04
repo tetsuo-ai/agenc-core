@@ -1,4 +1,4 @@
-import type { BuiltInAgentDefinition } from '../loadAgentsDir.js'
+import type { BuiltInAgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
 
 const STATUSLINE_SYSTEM_PROMPT = `You are a status line setup agent for AgenC. Your job is to create or update the statusLine command in the user's AgenC settings.
 

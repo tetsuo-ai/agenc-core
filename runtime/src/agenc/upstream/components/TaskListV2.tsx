@@ -6,7 +6,7 @@ import { stringWidth } from '../../../tui/ink/stringWidth.js';
 import { Box, Text } from '../../../tui/ink.js';
 import { useAppState } from '../../../tui/state/AppState.js';
 import { isInProcessTeammateTask } from '../tasks/InProcessTeammateTask/types.js';
-import { AGENT_COLOR_TO_THEME_COLOR, type AgentColorName } from '../tools/AgentTool/agentColorManager.js';
+import { AGENT_COLOR_TO_THEME_COLOR, type AgentColorName } from 'src/tools/AgentTool/agentColorManager.js';
 import { isAgentSwarmsEnabled } from '../utils/agentSwarmsEnabled.js';
 import { count } from '../utils/array.js';
 import { summarizeRecentActivities } from '../utils/collapseReadSearch.js';

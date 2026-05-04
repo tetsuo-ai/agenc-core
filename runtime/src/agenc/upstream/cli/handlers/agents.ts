@@ -14,7 +14,7 @@ import {
 import {
   getActiveAgentsFromList,
   getAgentDefinitionsWithOverrides,
-} from '../../tools/AgentTool/loadAgentsDir.js'
+} from 'src/tools/AgentTool/loadAgentsDir.js'
 import { getCwd } from '../../utils/cwd.js'
 
 function formatAgent(agent: ResolvedAgent): string {

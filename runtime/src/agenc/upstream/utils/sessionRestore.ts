@@ -12,13 +12,13 @@ import {
 import { clearSystemPromptSections } from '../constants/systemPromptSections.js'
 import { restoreCostStateForSession } from '../cost-tracker.js'
 import type { AppState } from '../../../tui/state/AppState.js'
-import type { AgentColorName } from '../tools/AgentTool/agentColorManager.js'
+import type { AgentColorName } from 'src/tools/AgentTool/agentColorManager.js'
 import {
   type AgentDefinition,
   type AgentDefinitionsResult,
   getActiveAgentsFromList,
   getAgentDefinitionsWithOverrides,
-} from '../tools/AgentTool/loadAgentsDir.js'
+} from 'src/tools/AgentTool/loadAgentsDir.js'
 import { TODO_WRITE_TOOL_NAME } from '../tools/TodoWriteTool/constants.js'
 import { asSessionId } from '../types/ids.js'
 import type {
