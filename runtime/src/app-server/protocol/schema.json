@@ -1011,6 +1011,20 @@
         "status": {
           "$ref": "#/definitions/AgentStatus"
         },
+        "runStatus": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "running",
+            "working",
+            "paused",
+            "blocked",
+            "suspended",
+            "completed",
+            "errored",
+            "stopped"
+          ]
+        },
         "turnId": {
           "type": "string",
           "minLength": 1

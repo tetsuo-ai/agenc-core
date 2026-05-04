@@ -113,6 +113,43 @@ describe("AgenCSessionSnapshotPolicy", () => {
     expect(runLastSnapshotAt("run-1")).toBe("2026-05-01T00:00:05.000Z");
   });
 
+  it("updates agent_runs from runner-emitted terminal run statuses", () => {
+    seedRun("run-complete", "session-complete");
+    seedRun("run-error", "session-error");
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: clock([
+        "2026-05-01T00:00:10.000Z",
+        "2026-05-01T00:00:11.000Z",
+      ]),
+    });
+
+    policy.recordSessionEvent("session-complete", {
+      method: "event.agent_status",
+      params: {
+        agentId: "run-complete",
+        status: "idle",
+        runStatus: "completed",
+      },
+    });
+    policy.recordSessionEvent("session-error", {
+      method: "event.agent_status",
+      params: {
+        agentId: "run-error",
+        status: "error",
+        runStatus: "errored",
+      },
+    });
+
+    expect(runStatus("run-complete")).toEqual({
+      status: "completed",
+      last_active_at: "2026-05-01T00:00:10.000Z",
+    });
+    expect(runStatus("run-error")).toEqual({
+      status: "errored",
+      last_active_at: "2026-05-01T00:00:11.000Z",
+    });
+  });
+
   it("periodically flushes tracked sessions and stops the timer", () => {
     const clearInterval = vi.fn();
     let tick: (() => void) | undefined;
@@ -462,6 +499,17 @@ function runLastSnapshotAt(runId: string): string | null {
       )
       .get(runId)?.last_snapshot_at ?? null
   );
+}
+
+function runStatus(runId: string): {
+  readonly status: string;
+  readonly last_active_at: string;
+} | undefined {
+  return driver
+    .prepareState<[string], { status: string; last_active_at: string }>(
+      "SELECT status, last_active_at FROM agent_runs WHERE id = ?",
+    )
+    .get(runId);
 }
 
 function sessionAgent(sessionId: string): string | undefined {

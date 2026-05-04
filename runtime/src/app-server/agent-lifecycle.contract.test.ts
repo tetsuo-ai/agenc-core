@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { AgenCSessionSnapshotPolicy } from "../state/snapshot-policy.js";
+import { upsertAgentRun } from "../state/agent-runs.js";
 import { RolloutStore } from "../session/rollout-store.js";
 import type { RolloutItem } from "../session/rollout-item.js";
 import { FileThreadStore } from "../thread-store/index.js";
@@ -124,6 +125,59 @@ function latestSnapshot(
     conversation: JSON.parse(row.conversation_json),
     toolState: JSON.parse(row.tool_state_json),
   };
+}
+
+function agentRunRow(
+  driver: StateSqliteDriver,
+  agentId: string,
+): {
+  readonly id: string;
+  readonly objective: string;
+  readonly status: string;
+  readonly started_at: string;
+  readonly last_active_at: string;
+  readonly current_session_id: string | null;
+} {
+  const row = driver
+    .prepareState<
+      [string],
+      {
+        id: string;
+        objective: string;
+        status: string;
+        started_at: string;
+        last_active_at: string;
+        current_session_id: string | null;
+      }
+    >(
+      `SELECT
+         id,
+         objective,
+         status,
+         started_at,
+         last_active_at,
+         current_session_id
+       FROM agent_runs
+       WHERE id = ?`,
+    )
+    .get(agentId);
+  if (row === undefined) throw new Error(`missing agent run ${agentId}`);
+  return row;
+}
+
+function agentRunMetadata(
+  driver: StateSqliteDriver,
+  agentId: string,
+): Record<string, unknown> {
+  const row = driver
+    .prepareState<[string], { metadata_json: string | null }>(
+      `SELECT metadata_json
+       FROM agent_runs
+       WHERE id = ?`,
+    )
+    .get(agentId);
+  if (row === undefined) throw new Error(`missing agent run ${agentId}`);
+  return row.metadata_json === null ? {} : JSON.parse(row.metadata_json);
 }
 
 describe("AgenC background agent lifecycle", () => {
@@ -555,6 +609,131 @@ describe("AgenC background agent lifecycle", () => {
     ]);
   });
 
+  it("allows restored agents marked runtime-available to accept messages", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session-runtime-restored",
+      agentId: "agent-runtime-restored",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "continue work",
+    });
+    const submitted: unknown[] = [];
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        submitAgentMessage: async (agentId, params) => {
+          submitted.push({ agentId, params });
+        },
+      },
+    });
+    await agents.restoreAgent({
+      agentId: "agent-runtime-restored",
+      objective: "continue work",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session-runtime-restored"],
+      runtimeAvailable: true,
+    });
+
+    await expect(
+      agents.streamAgentMessage({
+        sessionId: "session-runtime-restored",
+        content: "resume",
+        messageId: "message-runtime-restored",
+        streamId: "stream-runtime-restored",
+        acceptedAt: "2026-05-01T12:06:00.000Z",
+      }),
+    ).resolves.toBeUndefined();
+    expect(submitted).toEqual([
+      {
+        agentId: "agent-runtime-restored",
+        params: expect.objectContaining({
+          sessionId: "session-runtime-restored",
+          content: "resume",
+        }),
+      },
+    ]);
+  });
+
+  it("rebinds restored runtime events so terminal status updates persist", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-agent-restore-events-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-agent-restore-events-cwd-"));
+    mkdirSync(join(cwd, ".git"));
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      const policy = new AgenCSessionSnapshotPolicy(driver, {
+        now: sequence([
+          "2026-05-01T12:05:00.000Z",
+          "2026-05-01T12:05:00.000Z",
+        ]),
+      });
+      upsertAgentRun(driver, {
+        id: "agent-restored-terminal",
+        objective: "recover terminal event",
+        status: "running",
+        startedAt: "2026-05-01T12:00:00.000Z",
+        lastActiveAt: "2026-05-01T12:04:00.000Z",
+        currentSessionId: "session-restored-terminal",
+        metadata: {
+          agentPath: "/root/agent-restored-terminal",
+        },
+      });
+      const runner: AgenCBackgroundAgentRunner = {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        attachAgentSessionEvents: async (_agentId, binding) => {
+          await binding.emit({
+            jsonrpc: JSON_RPC_VERSION,
+            method: "event.agent_status",
+            params: {
+              sessionId: binding.sessionId,
+              eventId: "restored-terminal",
+              agentId: "agent-restored-terminal",
+              status: "idle",
+              runStatus: "completed",
+            },
+          });
+        },
+      };
+      const agents = new AgenCDaemonAgentManager({
+        runner,
+        broadcastSessionEvent: (sessionId, event) => {
+          policy.recordSessionEvent(sessionId, event);
+        },
+      });
+
+      await agents.restoreAgent({
+        agentId: "agent-restored-terminal",
+        objective: "recover terminal event",
+        status: "idle",
+        createdAt: "2026-05-01T12:00:00.000Z",
+        startedAt: "2026-05-01T12:00:00.000Z",
+        lastActiveAt: "2026-05-01T12:04:00.000Z",
+        sessionIds: ["session-restored-terminal"],
+        runtimeAvailable: true,
+      });
+
+      expect(agentRunRow(driver, "agent-restored-terminal")).toMatchObject({
+        status: "completed",
+        last_active_at: "2026-05-01T12:05:00.000Z",
+        current_session_id: "session-restored-terminal",
+      });
+    } finally {
+      driver.close();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("agent.create launches a running background agent and seeds its session", async () => {
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_1"]),
@@ -713,6 +892,209 @@ describe("AgenC background agent lifecycle", () => {
     await expect(sessions.getSession("session_1")).resolves.toMatchObject({
       activeAttachmentIds: ["attachment_1"],
     });
+  });
+
+  it("persists live agent run rows with current session ids and terminal stop state", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-agent-run-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-agent-run-cwd-"));
+    mkdirSync(join(cwd, ".git"));
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      const sessions = new AgenCDaemonSessionManager({
+        createSessionId: sequence(["session_agent_run"]),
+        now: sequence([
+          "2026-05-01T12:00:01.000Z",
+          "2026-05-01T12:00:03.000Z",
+        ]),
+      });
+      const policy = new AgenCSessionSnapshotPolicy(driver);
+      const runner: AgenCBackgroundAgentRunner = {
+        startAgent: async () => ({
+          agentId: "agent_run_live",
+          agentPath: "/root/agent_run_live",
+          startedAt: "2026-05-01T12:00:00.500Z",
+          status: "running",
+        }),
+        stopAgent: async () => {},
+      };
+      const agents = new AgenCDaemonAgentManager({
+        defaultCwd: () => cwd,
+        now: sequence([
+          "2026-05-01T12:00:00.000Z",
+          "2026-05-01T12:00:02.000Z",
+        ]),
+        sessionManager: sessions,
+        runner,
+        recordAgentRun: (run) => {
+          upsertAgentRun(driver, run);
+        },
+        recordAgentStatusTransition: (transition) => {
+          policy.recordAgentStatusTransition(transition);
+        },
+      });
+
+      await agents.createAgent({ objective: "persist me", cwd });
+      expect(agentRunRow(driver, "agent_run_live")).toMatchObject({
+        id: "agent_run_live",
+        objective: "persist me",
+        status: "running",
+        started_at: "2026-05-01T12:00:00.500Z",
+        last_active_at: "2026-05-01T12:00:00.500Z",
+        current_session_id: "session_agent_run",
+      });
+      expect(agentRunMetadata(driver, "agent_run_live")).toMatchObject({
+        agentPath: "/root/agent_run_live",
+      });
+
+      await expect(
+        agents.stopAgent({
+          agentId: "agent_run_live",
+          reason: "operator stop",
+        }),
+      ).resolves.toEqual({ agentId: "agent_run_live", stopped: true });
+      expect(agentRunRow(driver, "agent_run_live")).toMatchObject({
+        status: "stopped",
+        last_active_at: "2026-05-01T12:00:02.000Z",
+        current_session_id: "session_agent_run",
+      });
+    } finally {
+      driver.close();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps replayed terminal runner status from being overwritten by agent.create persistence", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-agent-run-replay-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-agent-run-replay-cwd-"));
+    mkdirSync(join(cwd, ".git"));
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      const sessions = new AgenCDaemonSessionManager({
+        createSessionId: sequence(["session_replayed_terminal"]),
+        now: sequence(["2026-05-01T12:00:01.000Z"]),
+      });
+      const policy = new AgenCSessionSnapshotPolicy(driver, {
+        now: sequence([
+          "2026-05-01T12:00:01.500Z",
+          "2026-05-01T12:00:01.750Z",
+          "2026-05-01T12:00:02.000Z",
+          "2026-05-01T12:00:02.500Z",
+        ]),
+      });
+      const runner: AgenCBackgroundAgentRunner = {
+        startAgent: async () => ({
+          agentId: "agent_replayed_terminal",
+          startedAt: "2026-05-01T12:00:00.500Z",
+          status: "running",
+        }),
+        attachAgentSessionEvents: async (_agentId, binding) => {
+          await binding.emit({
+            jsonrpc: JSON_RPC_VERSION,
+            method: "event.agent_status",
+            params: {
+              sessionId: binding.sessionId,
+              eventId: "terminal-replay",
+              agentId: "agent_replayed_terminal",
+              status: "stopped",
+              runStatus: "completed",
+            },
+          });
+        },
+      };
+      const agents = new AgenCDaemonAgentManager({
+        defaultCwd: () => cwd,
+        now: sequence(["2026-05-01T12:00:00.000Z"]),
+        sessionManager: sessions,
+        runner,
+        broadcastSessionEvent: (sessionId, event) => {
+          policy.recordSessionEvent(sessionId, event);
+        },
+        recordAgentStatusTransition: (transition) => {
+          policy.recordAgentStatusTransition(transition);
+        },
+        recordAgentRun: (run) => {
+          upsertAgentRun(driver, run);
+        },
+      });
+
+      await agents.createAgent({ objective: "persist terminal replay", cwd });
+
+      expect(agentRunRow(driver, "agent_replayed_terminal")).toMatchObject({
+        id: "agent_replayed_terminal",
+        objective: "persist terminal replay",
+        status: "completed",
+        started_at: "2026-05-01T12:00:00.500Z",
+        last_active_at: "2026-05-01T12:00:01.750Z",
+        current_session_id: "session_replayed_terminal",
+      });
+    } finally {
+      driver.close();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("marks inserted agent run errored when agent.create rolls back after attach failure", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-agent-run-rollback-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-agent-run-rollback-cwd-"));
+    mkdirSync(join(cwd, ".git"));
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      const sessions = new AgenCDaemonSessionManager({
+        createSessionId: sequence(["session_rollback"]),
+        now: sequence(["2026-05-01T12:00:01.000Z"]),
+      });
+      const policy = new AgenCSessionSnapshotPolicy(driver, {
+        now: sequence([
+          "2026-05-01T12:00:01.500Z",
+          "2026-05-01T12:00:02.500Z",
+        ]),
+      });
+      const stopAgent = vi.fn(async () => {});
+      const runner: AgenCBackgroundAgentRunner = {
+        startAgent: async () => ({
+          agentId: "agent_rollback",
+          startedAt: "2026-05-01T12:00:00.500Z",
+          status: "running",
+        }),
+        attachAgentSessionEvents: async () => {
+          throw new Error("attach failed");
+        },
+        stopAgent,
+      };
+      const agents = new AgenCDaemonAgentManager({
+        defaultCwd: () => cwd,
+        now: sequence([
+          "2026-05-01T12:00:00.000Z",
+          "2026-05-01T12:00:03.000Z",
+        ]),
+        sessionManager: sessions,
+        runner,
+        recordAgentRun: (run) => {
+          upsertAgentRun(driver, run);
+        },
+        recordAgentStatusTransition: (transition) => {
+          policy.recordAgentStatusTransition(transition);
+        },
+      });
+
+      await expect(
+        agents.createAgent({ objective: "rollback attach failure", cwd }),
+      ).rejects.toThrow("attach failed");
+      expect(stopAgent).toHaveBeenCalledWith(
+        "agent_rollback",
+        "agent.create rollback after lifecycle failure",
+      );
+      expect(agentRunRow(driver, "agent_rollback")).toMatchObject({
+        status: "errored",
+        current_session_id: "session_rollback",
+      });
+    } finally {
+      driver.close();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   it("agent.stop shuts down the runner and persists the stopped summary", async () => {

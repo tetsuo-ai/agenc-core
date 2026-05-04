@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   AgenCDaemonAgentManager,
+  type AgenCDaemonAgentRunSnapshot,
   type AgenCDaemonAgentLogThreadStoreRoute,
   type AgenCDaemonAgentSnapshotFlush,
   type AgenCDaemonAgentStatusSnapshot,
@@ -65,6 +66,7 @@ import {
   pruneTerminalAgentRuns,
 } from "../state/pruning.js";
 import { StateSqliteHealthStatsReader } from "../state/health-stats.js";
+import { upsertAgentRun } from "../state/agent-runs.js";
 import { AgenCSessionSnapshotPolicy } from "../state/snapshot-policy.js";
 import { readRotatedToolOutputLog } from "../state/tool-output-rotation.js";
 import {
@@ -77,6 +79,7 @@ import {
   type StateSqliteDriver,
 } from "../state/sqlite-driver.js";
 import { FileThreadStore } from "../thread-store/index.js";
+import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 
 export const AGENC_DAEMON_PID_FILENAME = "daemon.pid";
 export const AGENC_DAEMON_SOCKET_FILENAME = "daemon.sock";
@@ -436,6 +439,16 @@ async function runAgenCDaemonForeground(
         );
       }
     },
+    recordAgentRun: (run) => {
+      try {
+        snapshotPolicies.recordAgentRun(run);
+      } catch (error) {
+        io.stderr.write(
+          `agenc: daemon snapshot policy failed: ${formatCleanupError(error)}\n`,
+        );
+        throw error;
+      }
+    },
     registerSnapshotSession: (session) => {
       try {
         snapshotPolicies.registerSession(session);
@@ -457,6 +470,7 @@ async function runAgenCDaemonForeground(
   await hydrateAgenCDaemonStartupRecovery(
     sessionManager,
     agentManager,
+    runner,
     startupRecovery,
   );
   try {
@@ -760,6 +774,15 @@ class AgenCDaemonSnapshotPolicyRegistry {
     entry.policy.recordAgentStatusTransition(transition);
   }
 
+  recordAgentRun(run: AgenCDaemonAgentRunSnapshot): void {
+    const entry = this.#policyForRoute(run);
+    upsertAgentRun(entry.driver, run);
+    if (run.currentSessionId !== undefined) {
+      this.#rememberSession(run.currentSessionId, entry.driver.stateDbPath);
+      entry.policy.trackSession(run.currentSessionId, run.id);
+    }
+  }
+
   threadStoreForAgentLogs(
     route: AgenCDaemonAgentLogThreadStoreRoute,
   ): FileThreadStore {
@@ -906,10 +929,12 @@ class AgenCDaemonSnapshotPolicyRegistry {
 async function hydrateAgenCDaemonStartupRecovery(
   sessionManager: AgenCDaemonSessionManager,
   agentManager: AgenCDaemonAgentManager,
+  runner: AgenCBackgroundAgentRunner,
   report: DaemonStartupRecoveryReport,
 ): Promise<void> {
   for (const run of report.recoveredRuns) {
-    const metadata = recoveryMetadataForRun(report, run);
+    const runtimeAvailable = await restoreRecoveredAgentRuntime(runner, run);
+    const metadata = recoveryMetadataForRun(report, run, runtimeAvailable);
     if (run.currentSessionId !== undefined) {
       await sessionManager.restoreSession({
         sessionId: run.currentSessionId,
@@ -929,6 +954,7 @@ async function hydrateAgenCDaemonStartupRecovery(
       lastActiveAt: run.lastActiveAt,
       stateProjectDir: run.projectDir,
       metadata,
+      runtimeAvailable,
       ...(run.currentSessionId !== undefined
         ? { sessionIds: [run.currentSessionId] }
         : {}),
@@ -947,14 +973,15 @@ function sessionStatusForRecoveredRun(_run: RecoveredAgentRun): SessionStatus {
 function recoveryMetadataForRun(
   report: DaemonStartupRecoveryReport,
   run: RecoveredAgentRun,
+  runtimeAvailable: boolean,
 ): JsonObject {
   return {
     recovery: {
       recoveredAt: report.recoveredAt,
       projectDir: run.projectDir,
       runStatus: run.status,
-      runnable: false,
-      runtimeRestore: "unavailable",
+      runnable: runtimeAvailable,
+      runtimeRestore: runtimeAvailable ? "available" : "unavailable",
       toolRecoveryMode: "mark_failed",
       ...(run.createdByClient !== undefined
         ? { createdByClient: run.createdByClient }
@@ -964,6 +991,56 @@ function recoveryMetadataForRun(
         : {}),
     },
   };
+}
+
+async function restoreRecoveredAgentRuntime(
+  runner: AgenCBackgroundAgentRunner,
+  run: RecoveredAgentRun,
+): Promise<boolean> {
+  if (!isRecoveredRunRuntimeRestorable(run)) return false;
+  if (runner.restoreAgent === undefined) return false;
+  const initialMessages = recoveredInitialMessages(run.latestSnapshot);
+  try {
+    return await runner.restoreAgent({
+      agentId: run.id,
+      objective: run.objective,
+      cwd: run.projectDir,
+      currentSessionId: run.currentSessionId,
+      ...optionalMetadataString(run.metadata, "model"),
+      ...optionalMetadataString(run.metadata, "provider"),
+      ...optionalMetadataString(run.metadata, "profile"),
+      ...(initialMessages !== undefined ? { initialMessages } : {}),
+      metadata: {
+        ...(run.metadata ?? {}),
+        recovery: true,
+        runStatus: run.status,
+        ...(run.lastSnapshotAt !== undefined
+          ? { lastSnapshotAt: run.lastSnapshotAt }
+          : {}),
+      },
+    });
+  } catch {
+    return false;
+  }
+}
+
+function isRecoveredRunRuntimeRestorable(run: RecoveredAgentRun): boolean {
+  return (
+    run.currentSessionId !== undefined &&
+    run.latestSnapshot !== undefined &&
+    typeof run.metadata?.agentPath === "string" &&
+    run.metadata.agentPath.trim().length > 0
+  );
+}
+
+function optionalMetadataString(
+  metadata: JsonObject | undefined,
+  key: string,
+): Record<string, string> {
+  const value = metadata?.[key];
+  return typeof value === "string" && value.trim().length > 0
+    ? { [key]: value.trim() }
+    : {};
 }
 
 function recoverySnapshotMetadata(
@@ -978,6 +1055,140 @@ function recoverySnapshotMetadata(
     mcpConnectionState: snapshot.mcpConnectionState as JsonValue,
     failedToolCalls: snapshot.failedToolCalls.map(recoveryToolCallMetadata),
   };
+}
+
+function recoveredInitialMessages(
+  snapshot: RecoveredSessionStateSnapshot | undefined,
+): ReadonlyArray<LLMMessage> | undefined {
+  const conversation = snapshot?.conversation;
+  if (!Array.isArray(conversation)) return undefined;
+  const messages = conversation
+    .map(recoveredMessage)
+    .filter((message): message is LLMMessage => message !== undefined);
+  return messages.length > 0 ? messages : undefined;
+}
+
+function recoveredMessage(value: unknown): LLMMessage | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const candidate = value as {
+    readonly role?: unknown;
+    readonly content?: unknown;
+    readonly phase?: unknown;
+    readonly toolCalls?: unknown;
+    readonly toolCallId?: unknown;
+    readonly toolName?: unknown;
+  };
+  if (
+    candidate.role !== "system" &&
+    candidate.role !== "user" &&
+    candidate.role !== "assistant" &&
+    candidate.role !== "tool"
+  ) {
+    return undefined;
+  }
+  const content =
+    typeof candidate.content === "string"
+      ? candidate.content
+      : Array.isArray(candidate.content)
+        ? recoveredContentParts(candidate.content)
+        : "";
+  return {
+    role: candidate.role,
+    content,
+    ...(candidate.phase === "commentary" ||
+    candidate.phase === "final_answer"
+      ? { phase: candidate.phase }
+      : {}),
+    ...(Array.isArray(candidate.toolCalls)
+      ? { toolCalls: candidate.toolCalls as LLMMessage["toolCalls"] }
+      : {}),
+    ...(typeof candidate.toolCallId === "string"
+      ? { toolCallId: candidate.toolCallId }
+      : {}),
+    ...(typeof candidate.toolName === "string"
+      ? { toolName: candidate.toolName }
+      : {}),
+  };
+}
+
+function recoveredContentParts(value: readonly unknown[]): LLMContentPart[] {
+  const parts: LLMContentPart[] = [];
+  for (const part of value) {
+    if (part === null || typeof part !== "object" || Array.isArray(part)) {
+      continue;
+    }
+    const candidate = part as {
+      readonly type?: unknown;
+      readonly text?: unknown;
+      readonly image_url?: unknown;
+      readonly source?: unknown;
+      readonly title?: unknown;
+      readonly filename?: unknown;
+      readonly fallbackText?: unknown;
+      readonly fallbackTextTruncated?: unknown;
+      readonly fallbackTextError?: unknown;
+    };
+    if (candidate.type === "text" && typeof candidate.text === "string") {
+      parts.push({ type: "text", text: candidate.text });
+      continue;
+    }
+    if (
+      candidate.type === "image_url" &&
+      candidate.image_url !== null &&
+      typeof candidate.image_url === "object" &&
+      !Array.isArray(candidate.image_url)
+    ) {
+      const image = candidate.image_url as { readonly url?: unknown };
+      if (typeof image.url === "string") {
+        parts.push({ type: "image_url", image_url: { url: image.url } });
+      }
+      continue;
+    }
+    if (
+      candidate.type === "document" &&
+      candidate.source !== null &&
+      typeof candidate.source === "object" &&
+      !Array.isArray(candidate.source)
+    ) {
+      const source = candidate.source as {
+        readonly type?: unknown;
+        readonly media_type?: unknown;
+        readonly data?: unknown;
+      };
+      if (
+        source.type === "base64" &&
+        source.media_type === "application/pdf" &&
+        typeof source.data === "string"
+      ) {
+        parts.push({
+          type: "document",
+          source: {
+            type: "base64",
+            media_type: "application/pdf",
+            data: source.data,
+          },
+          ...(typeof candidate.title === "string"
+            ? { title: candidate.title }
+            : {}),
+          ...(typeof candidate.filename === "string"
+            ? { filename: candidate.filename }
+            : {}),
+          ...(typeof candidate.fallbackText === "string"
+            ? { fallbackText: candidate.fallbackText }
+            : {}),
+          ...(typeof candidate.fallbackTextTruncated === "boolean"
+            ? { fallbackTextTruncated: candidate.fallbackTextTruncated }
+            : {}),
+          ...(typeof candidate.fallbackTextError === "string"
+            ? { fallbackTextError: candidate.fallbackTextError }
+            : {}),
+        });
+      }
+    }
+  }
+  return parts;
 }
 
 function recoveryToolCallMetadata(call: FailedInFlightToolCall): JsonObject {

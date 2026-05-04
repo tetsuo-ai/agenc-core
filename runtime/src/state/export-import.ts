@@ -1,5 +1,9 @@
 import { dirname } from "node:path";
 import type { JsonValue } from "../app-server/protocol/index.js";
+import {
+  upsertAgentRun,
+  type AgenCStateAgentRunRecord,
+} from "./agent-runs.js";
 import { writeSessionSnapshotAtomically } from "./atomic-snapshot-writes.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 import {
@@ -10,16 +14,7 @@ import {
 export const AGENC_STATE_EXPORT_FORMAT = "agenc.state.export";
 export const AGENC_STATE_EXPORT_SCHEMA_VERSION = 1;
 
-export interface AgenCStateExportAgentRun {
-  readonly id: string;
-  readonly objective: string;
-  readonly status: string;
-  readonly startedAt: string;
-  readonly lastActiveAt: string;
-  readonly currentSessionId?: string;
-  readonly createdByClient?: string;
-  readonly lastSnapshotAt?: string;
-}
+export type AgenCStateExportAgentRun = AgenCStateAgentRunRecord;
 
 export interface AgenCStateExportSessionSnapshot {
   readonly sessionId: string;
@@ -71,6 +66,7 @@ interface AgentRunRow {
   readonly current_session_id: string | null;
   readonly created_by_client: string | null;
   readonly last_snapshot_at: string | null;
+  readonly metadata_json: string | null;
 }
 
 interface SessionStateSnapshotRow {
@@ -113,7 +109,8 @@ export function exportAgentState(
          last_active_at,
          current_session_id,
          created_by_client,
-         last_snapshot_at
+         last_snapshot_at,
+         metadata_json
        FROM agent_runs
        WHERE id = ?`,
     )
@@ -216,6 +213,14 @@ function agentRunFromRow(row: AgentRunRow): AgenCStateExportAgentRun {
     ...(row.last_snapshot_at !== null
       ? { lastSnapshotAt: row.last_snapshot_at }
       : {}),
+    ...(row.metadata_json !== null
+      ? {
+          metadata: expectJsonObject(
+            parseJsonField(row.metadata_json, "metadata_json"),
+            "metadata_json",
+          ),
+        }
+      : {}),
   };
 }
 
@@ -278,43 +283,6 @@ function loadToolCalls(
       ...(row.output_partial !== null ? { outputPartial: row.output_partial } : {}),
       startedAt: row.started_at,
     }));
-}
-
-function upsertAgentRun(
-  driver: StateSqliteDriver,
-  run: AgenCStateExportAgentRun,
-): void {
-  driver
-    .prepareState(
-      `INSERT INTO agent_runs (
-        id,
-        objective,
-        status,
-        started_at,
-        last_active_at,
-        current_session_id,
-        created_by_client,
-        last_snapshot_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        objective = excluded.objective,
-        status = excluded.status,
-        started_at = excluded.started_at,
-        last_active_at = excluded.last_active_at,
-        current_session_id = excluded.current_session_id,
-        created_by_client = excluded.created_by_client,
-        last_snapshot_at = excluded.last_snapshot_at`,
-    )
-    .run(
-      run.id,
-      run.objective,
-      run.status,
-      run.startedAt,
-      run.lastActiveAt,
-      run.currentSessionId ?? null,
-      run.createdByClient ?? null,
-      run.lastSnapshotAt ?? null,
-    );
 }
 
 function insertSnapshots(
@@ -431,6 +399,9 @@ function normalizeAgentRun(value: unknown): AgenCStateExportAgentRun {
     ...optionalString(run.currentSessionId, "agentRun.currentSessionId"),
     ...optionalString(run.createdByClient, "agentRun.createdByClient"),
     ...optionalString(run.lastSnapshotAt, "agentRun.lastSnapshotAt"),
+    ...(run.metadata !== undefined
+      ? { metadata: expectJsonObject(run.metadata, "agentRun.metadata") }
+      : {}),
   };
 }
 
@@ -587,6 +558,14 @@ function expectJsonValue(value: unknown, label: string): JsonValue {
       `${label} must be JSON-serializable: ${errorMessage(error)}`,
     );
   }
+}
+
+function expectJsonObject(value: unknown, label: string): Record<string, JsonValue> {
+  const json = expectJsonValue(value, label);
+  if (json === null || typeof json !== "object" || Array.isArray(json)) {
+    throw new AgenCStateExportImportError(`${label} must be a JSON object`);
+  }
+  return json as Record<string, JsonValue>;
 }
 
 function stringifyJsonValue(value: JsonValue, label: string): string {

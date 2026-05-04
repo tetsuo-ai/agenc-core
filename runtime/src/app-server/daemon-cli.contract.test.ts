@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgenCShutdownSignal } from "../lifecycle/index.js";
 import { openStateDatabases } from "../state/sqlite-driver.js";
 import {
@@ -22,10 +22,54 @@ import {
   type AgenCDaemonCliHost,
   type AgenCDaemonCliIo,
 } from "./daemon-cli.js";
-import type {
-  AgenCBackgroundAgentRunner,
-  AgenCBackgroundAgentSessionEventBinding,
+import {
+  AgenCDelegateBackgroundAgentRunner,
+  type AgenCBackgroundAgentRunner,
+  type AgenCBackgroundAgentSessionEventBinding,
+  type AgenCBootstrapFunction,
+  type AgenCEnsureAgentControlFunction,
+  type AgenCRunAgentFunction,
 } from "./background-agent-runner.js";
+import { AgentStatusTracker } from "../agents/status.js";
+import { Mailbox } from "../agents/mailbox.js";
+import { resolveAgentRole } from "../agents/role.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import type { LiveAgent } from "../agents/control.js";
+import type { AgentMetadata } from "../agents/registry.js";
+
+type ResumeAgentFromRolloutParams = {
+  readonly rootThreadId: string;
+  readonly parentPath: string;
+  readonly metadata: AgentMetadata;
+};
+
+function restoredLiveAgent(
+  agentId: string,
+  agentPath = `/root/${agentId}`,
+): LiveAgent {
+  const metadata: AgentMetadata = {
+    agentId,
+    agentPath,
+    agentNickname: agentId,
+    agentRole: "default",
+    depth: 1,
+  };
+  return {
+    agentId,
+    agentPath,
+    role: resolveAgentRole(undefined),
+    depth: 1,
+    nickname: agentId,
+    status: new AgentStatusTracker(),
+    upInbox: new Mailbox({ threadId: agentId }),
+    downInbox: new Mailbox({ threadId: `${agentId}-down` }),
+    abortController: new AbortController(),
+    metadata,
+    messages: [],
+    memoryEntries: [],
+    tokenUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+  };
+}
 
 function createIo(): AgenCDaemonCliIo & {
   readonly stdoutText: () => string;
@@ -403,7 +447,7 @@ describe("AgenC daemon CLI", () => {
       expect(initialStats.state).toMatchObject({
         available: true,
         readonly: true,
-        agentRuns: 0,
+        agentRuns: 1,
       });
       const initialSnapshots = initialStats.state?.sessionStateSnapshots ?? 0;
 
@@ -521,10 +565,55 @@ describe("AgenC daemon CLI", () => {
       toolCallId: "tool-other",
       status: "blocked",
     });
+    const resumedRoots: unknown[] = [];
+    const live = restoredLiveAgent("run-restart", "/root/run-restart");
+    const resumeAgentFromRollout = async (
+      params: ResumeAgentFromRolloutParams,
+    ) => {
+      resumedRoots.push(params);
+      return params.rootThreadId === "run-restart"
+        ? { resumedCount: 1, rootLive: live }
+        : { resumedCount: 0, rootLive: null };
+    };
+    const sendInput = vi.fn(async () => {});
+    let runParams: Parameters<AgenCRunAgentFunction>[0] | undefined;
+    const runAgentFn = (async function* (
+      params: Parameters<AgenCRunAgentFunction>[0],
+    ) {
+      runParams = params;
+      params.live.status.markRunning("turn-restart");
+      yield { kind: "status", text: "restored" };
+      await new Promise(() => {});
+    }) as AgenCRunAgentFunction;
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: async () => {},
+    };
+    const runner: AgenCBackgroundAgentRunner =
+      new AgenCDelegateBackgroundAgentRunner({
+        bootstrap: (async () => ({
+          session: {
+            conversationId: "daemon-recovery",
+            permissionModeRegistry,
+            services: {},
+          },
+          shutdown: async () => {},
+        })) as AgenCBootstrapFunction,
+        ensureAgentControl: (() => ({
+          control: {
+            resumeAgentFromRollout,
+            sendInput,
+            shutdown: async () => {},
+          },
+          registry: {},
+        })) as AgenCEnsureAgentControlFunction,
+        runAgentFn,
+        now: () => "2026-05-01T12:00:00.000Z",
+      });
 
     const running = runAgenCDaemonCli(
       { kind: "command", action: "run" },
-      { host, io, signalProcess, snapshotPeriodicIntervalMs: 10 },
+      { host, io, signalProcess, runner, snapshotPeriodicIntervalMs: 10 },
     );
     await expect(waitForPid(pidPath)).resolves.toBe(4100);
     await expect(
@@ -545,6 +634,26 @@ describe("AgenC daemon CLI", () => {
     expect(io.stderrText()).toContain(
       "daemon recovery marked 2 stale in-flight tool call(s) failed",
     );
+    expect(resumedRoots).toHaveLength(2);
+    expect(resumedRoots).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          rootThreadId: "run-restart",
+          metadata: expect.objectContaining({
+            agentId: "run-restart",
+          }),
+        }),
+        expect.objectContaining({
+          rootThreadId: "run-other",
+          metadata: expect.objectContaining({
+            agentId: "run-other",
+          }),
+        }),
+      ]),
+    );
+    expect(runParams?.initialMessages).toEqual([
+      { role: "assistant", content: "state" },
+    ]);
     const authCookie = (await readFile(cookiePath, "utf8")).trim();
     const client = createAgenCJsonLineDaemonRequestClient({
       socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
@@ -559,13 +668,13 @@ describe("AgenC daemon CLI", () => {
     expect(agentList.agents[1]).toMatchObject({
       agentId: "run-restart",
       objective: "recover daemon state",
-      status: "idle",
+      status: "running",
       activeSessionIds: ["session-restart"],
       metadata: {
         recovery: {
           runStatus: "running",
-          runnable: false,
-          runtimeRestore: "unavailable",
+          runnable: true,
+          runtimeRestore: "available",
           toolRecoveryMode: "mark_failed",
           snapshot: {
             sessionId: "session-restart",
@@ -623,9 +732,11 @@ describe("AgenC daemon CLI", () => {
         sessionId: "session-restart",
         content: "continue",
       }),
-    ).rejects.toThrow(
-      "AgenC daemon agent recovered without a live runtime: run-restart",
-    );
+    ).resolves.toMatchObject({
+      messageId: expect.any(String),
+      streamId: expect.any(String),
+    });
+    expect(sendInput).toHaveBeenCalledWith("run-restart", "continue");
 
     signalProcess.emit("SIGTERM");
     await expect(running).resolves.toBe(0);
@@ -638,6 +749,177 @@ describe("AgenC daemon CLI", () => {
     expect(readAgentRunStatus(agencHome, process.cwd(), "run-prune")).toBeUndefined();
 
     await rm(otherCwd, { recursive: true, force: true });
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("recovers an agent.create row left running by a crash-style restart", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+    const firstSignal = createSignalProcess();
+    const createdAgentId = "agent-created-restart";
+    const startRunner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: createdAgentId,
+        agentPath: `/root/${createdAgentId}`,
+        startedAt: "2026-05-01T12:00:00.000Z",
+        status: "running",
+      }),
+      stopAgent: async () => {},
+    };
+
+    const first = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io: createIo(), signalProcess: firstSignal, runner: startRunner },
+    );
+    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+    const firstCookie = (await readFile(cookiePath, "utf8")).trim();
+    const firstClient = createAgenCJsonLineDaemonRequestClient({
+      socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
+      authCookie: firstCookie,
+      timeoutMs: 1000,
+    });
+    const created = await firstClient.request("agent.create", {
+      objective: "survive daemon restart",
+      cwd: process.cwd(),
+      model: "grok-4",
+      provider: "xai",
+      profile: "fast",
+      unattendedAllow: ["FileRead"],
+      unattendedDeny: ["system.bash"],
+    });
+    const sessionId = created.sessionId;
+    if (sessionId === undefined) throw new Error("session id missing");
+    expect(created.agentId).toBe(createdAgentId);
+    expect(readAgentRunStatus(agencHome, process.cwd(), createdAgentId)).toBe(
+      "running",
+    );
+    expect(snapshotCount(agencHome, process.cwd(), sessionId)).toBeGreaterThan(0);
+
+    firstSignal.emit("SIGTERM");
+    await expect(first).resolves.toBe(0);
+    // The harness can only stop gracefully; reset the row to simulate a crash
+    // after proving agent.create produced the running row and session snapshot.
+    markAgentRunRunning(agencHome, process.cwd(), createdAgentId, sessionId);
+
+    const resumedRoots: unknown[] = [];
+    const live = restoredLiveAgent(createdAgentId, `/root/${createdAgentId}`);
+    const resumeAgentFromRollout = async (
+      params: ResumeAgentFromRolloutParams,
+    ) => {
+      resumedRoots.push(params);
+      return params.rootThreadId === createdAgentId
+        ? { resumedCount: 1, rootLive: live }
+        : { resumedCount: 0, rootLive: null };
+    };
+    const sendInput = vi.fn(async () => {});
+    let runParams: Parameters<AgenCRunAgentFunction>[0] | undefined;
+    let restoreBootstrapOptions:
+      | Parameters<AgenCBootstrapFunction>[0]
+      | undefined;
+    const runAgentFn = (async function* (
+      params: Parameters<AgenCRunAgentFunction>[0],
+    ) {
+      runParams = params;
+      params.live.status.markRunning("turn-created-restart");
+      yield { kind: "status", text: "restored" };
+      await new Promise(() => {});
+    }) as AgenCRunAgentFunction;
+    const secondSignal = createSignalProcess();
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    const restoreRunner: AgenCBackgroundAgentRunner =
+      new AgenCDelegateBackgroundAgentRunner({
+        bootstrap: (async (options) => {
+          restoreBootstrapOptions = options;
+          return {
+            session: {
+              conversationId: "daemon-recovery",
+              permissionModeRegistry,
+              services: {},
+            },
+            shutdown: async () => {},
+          };
+        }) as AgenCBootstrapFunction,
+        ensureAgentControl: (() => ({
+          control: {
+            resumeAgentFromRollout,
+            sendInput,
+            shutdown: async () => {},
+          },
+          registry: {},
+        })) as AgenCEnsureAgentControlFunction,
+        runAgentFn,
+        now: () => "2026-05-01T12:01:00.000Z",
+      });
+
+    const second = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      {
+        host,
+        io: createIo(),
+        signalProcess: secondSignal,
+        runner: restoreRunner,
+      },
+    );
+    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+    expect(resumedRoots).toEqual([
+      expect.objectContaining({
+        rootThreadId: createdAgentId,
+        metadata: expect.objectContaining({
+          agentId: createdAgentId,
+        }),
+      }),
+    ]);
+    expect(runParams?.taskPrompt).toBe("survive daemon restart");
+    expect(runParams?.model).toBe("grok-4");
+    expect(restoreBootstrapOptions?.argv).toEqual(
+      expect.arrayContaining([
+        "--provider",
+        "xai",
+        "--model",
+        "grok-4",
+        "--profile",
+        "fast",
+      ]),
+    );
+    expect(permissionModeRegistry.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alwaysAllowRules: expect.objectContaining({
+          session: ["FileRead"],
+        }),
+        alwaysDenyRules: expect.objectContaining({
+          session: ["system.bash"],
+        }),
+      }),
+    );
+
+    const secondCookie = (await readFile(cookiePath, "utf8")).trim();
+    const secondClient = createAgenCJsonLineDaemonRequestClient({
+      socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
+      authCookie: secondCookie,
+      timeoutMs: 1000,
+    });
+    const agentList = await secondClient.request("agent.list", {});
+    const recovered = agentList.agents.find(
+      (agent) => agent.agentId === createdAgentId,
+    );
+    expect(recovered).toMatchObject({
+      agentId: createdAgentId,
+      status: "running",
+      metadata: {
+        recovery: {
+          runnable: true,
+          runtimeRestore: "available",
+        },
+      },
+    });
+
+    secondSignal.emit("SIGTERM");
+    await expect(second).resolves.toBe(0);
     await rm(agencHome, { recursive: true, force: true });
   });
 
@@ -762,8 +1044,9 @@ function seedRecoverableDaemonState(
           last_active_at,
           current_session_id,
           created_by_client,
-          last_snapshot_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          last_snapshot_at,
+          metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         params.runId,
@@ -774,6 +1057,9 @@ function seedRecoverableDaemonState(
         params.sessionId,
         "client-1",
         "2026-05-01T00:06:00.000Z",
+        JSON.stringify({
+          agentPath: `/root/${params.runId.replaceAll("-", "_")}`,
+        }),
       );
     driver
       .prepareState(
@@ -911,6 +1197,30 @@ function readAgentRunStatus(
          WHERE id = ?`,
       )
       .get(runId)?.status;
+  } finally {
+    driver.close();
+  }
+}
+
+function markAgentRunRunning(
+  agencHome: string,
+  cwd: string,
+  runId: string,
+  sessionId: string,
+): void {
+  const driver = openStateDatabases({
+    cwd,
+    agencHome,
+  });
+  try {
+    driver
+      .prepareState<[string, string]>(
+        `UPDATE agent_runs
+         SET status = 'running',
+             current_session_id = ?
+         WHERE id = ?`,
+      )
+      .run(sessionId, runId);
   } finally {
     driver.close();
   }

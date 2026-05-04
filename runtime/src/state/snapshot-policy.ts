@@ -1,4 +1,5 @@
 import type { JsonObject, JsonValue } from "../app-server/protocol/index.js";
+import { updateAgentRunStatus } from "./agent-runs.js";
 import { writeSessionSnapshotAtomically } from "./atomic-snapshot-writes.js";
 import {
   pruneSessionStateSnapshots,
@@ -50,6 +51,7 @@ export interface SnapshotPolicyAgentStatusTransition {
   readonly sessionId: string;
   readonly agentId: string;
   readonly status: string;
+  readonly runStatus?: string;
   readonly transitionAt: string;
   readonly reason?: string;
 }
@@ -204,6 +206,15 @@ export class AgenCSessionSnapshotPolicy {
     transition: SnapshotPolicyAgentStatusTransition,
   ): SnapshotPolicySnapshotRecord | undefined {
     this.#rememberSessionAgent(transition.sessionId, transition.agentId);
+    const runStatus = agentRunStatusForTransition(transition);
+    if (runStatus !== undefined) {
+      updateAgentRunStatus(this.#driver, {
+        id: transition.agentId,
+        status: runStatus,
+        lastActiveAt: transition.transitionAt,
+        currentSessionId: transition.sessionId,
+      });
+    }
     const state = this.#session(transition.sessionId);
     const latest = latestStatusTransition(
       state.toolState.statusTransitions,
@@ -282,6 +293,9 @@ export class AgenCSessionSnapshotPolicy {
         sessionId,
         agentId: stringField(params, "agentId") ?? sessionId,
         status: stringField(params, "status") ?? "idle",
+        ...(stringField(params, "runStatus") !== undefined
+          ? { runStatus: stringField(params, "runStatus") }
+          : {}),
         transitionAt: this.#now(),
         ...(stringField(params, "message") !== undefined
           ? { reason: stringField(params, "message") }
@@ -637,6 +651,33 @@ function normalizeMcpConnectionState(
     status: typeof raw.status === "string" ? raw.status : "unknown",
     events: normalizeJsonObjectArray(raw.events),
   };
+}
+
+function agentRunStatusForTransition(
+  transition: SnapshotPolicyAgentStatusTransition,
+): string | undefined {
+  switch (transition.runStatus) {
+    case "pending":
+    case "running":
+    case "working":
+    case "paused":
+    case "blocked":
+    case "suspended":
+    case "completed":
+    case "errored":
+    case "stopped":
+      return transition.runStatus;
+  }
+  switch (transition.status) {
+    case "running":
+      return "running";
+    case "error":
+      return "errored";
+    case "stopped":
+      return "stopped";
+    default:
+      return undefined;
+  }
 }
 
 function normalizeJsonArray(value: unknown): JsonValue[] {

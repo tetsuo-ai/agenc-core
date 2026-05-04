@@ -20,11 +20,21 @@ import {
 } from "../agents/delegate.js";
 import type { AgentControl } from "../agents/control.js";
 import { MailboxClosedError } from "../agents/mailbox.js";
-import type { AgentPath } from "../agents/registry.js";
-import type { AgentThread } from "../agents/thread.js";
-import type { RunAgentProgressEvent } from "../agents/run-agent.js";
+import {
+  ROOT_AGENT_PATH,
+  joinAgentPath,
+  normalizeAgentNameForPath,
+  type AgentMetadata,
+  type AgentPath,
+} from "../agents/registry.js";
+import { AgentThread as AgenCAgentThread, type AgentThread } from "../agents/thread.js";
+import {
+  runAgent,
+  type RunAgentProgressEvent,
+  type RunAgentResult,
+} from "../agents/run-agent.js";
 import type { AuthBackend } from "../auth/backend.js";
-import type { LLMContentPart } from "../llm/types.js";
+import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
 import { setRulesForSource } from "../permissions/rules.js";
 import type { PermissionModeRegistry } from "../permissions/mode.js";
@@ -38,6 +48,7 @@ import {
 } from "../elicitation/respond.js";
 import type {
   AgenCDaemonSessionNotification,
+  AgentRunStatus,
   AgentStatus as DaemonAgentStatus,
   JsonObject,
   JsonValue,
@@ -62,6 +73,18 @@ export interface AgenCBackgroundAgentStartResult {
   readonly agentPath?: string;
   readonly startedAt: string;
   readonly status: "running";
+}
+
+export interface AgenCBackgroundAgentRestoreParams {
+  readonly agentId: string;
+  readonly objective: string;
+  readonly cwd?: string;
+  readonly model?: string;
+  readonly provider?: string;
+  readonly profile?: string;
+  readonly currentSessionId?: string;
+  readonly initialMessages?: ReadonlyArray<LLMMessage>;
+  readonly metadata?: JsonObject;
 }
 
 export interface AgenCBackgroundAgentSnapshot {
@@ -104,6 +127,9 @@ export interface AgenCBackgroundAgentRunner {
   getAgentSnapshot?(
     agentId: string,
   ): Promise<AgenCBackgroundAgentSnapshot | null>;
+  restoreAgent?(
+    params: AgenCBackgroundAgentRestoreParams,
+  ): Promise<boolean> | boolean;
   stopAgent?(agentId: string, reason?: string): Promise<void>;
   attachAgentSessionEvents?(
     agentId: string,
@@ -128,6 +154,7 @@ export interface AgenCBackgroundAgentRunner {
 }
 
 export type AgenCDelegateFunction = (opts: DelegateOpts) => Promise<DelegateOutcome>;
+export type AgenCRunAgentFunction = typeof runAgent;
 export type AgenCBootstrapFunction = (
   options: BootstrapLocalRuntimeSessionOptions,
 ) => Promise<LocalRuntimeBootstrap>;
@@ -159,6 +186,7 @@ interface BackgroundAgentDaemonEvent {
 export interface AgenCDelegateBackgroundAgentRunnerOptions {
   readonly bootstrap?: AgenCBootstrapFunction;
   readonly delegateFn?: AgenCDelegateFunction;
+  readonly runAgentFn?: AgenCRunAgentFunction;
   readonly ensureAgentControl?: AgenCEnsureAgentControlFunction;
   readonly authBackend?: AuthBackend;
   readonly env?: NodeJS.ProcessEnv;
@@ -171,6 +199,7 @@ export class AgenCDelegateBackgroundAgentRunner
 {
   readonly #bootstrap: AgenCBootstrapFunction;
   readonly #delegate: AgenCDelegateFunction;
+  readonly #runAgent: AgenCRunAgentFunction;
   readonly #ensureAgentControl: AgenCEnsureAgentControlFunction;
   readonly #authBackend: AuthBackend | undefined;
   readonly #env: NodeJS.ProcessEnv | undefined;
@@ -188,6 +217,7 @@ export class AgenCDelegateBackgroundAgentRunner
   constructor(options: AgenCDelegateBackgroundAgentRunnerOptions = {}) {
     this.#bootstrap = options.bootstrap ?? bootstrapLocalRuntimeSession;
     this.#delegate = options.delegateFn ?? delegate;
+    this.#runAgent = options.runAgentFn ?? runAgent;
     this.#ensureAgentControl =
       options.ensureAgentControl ?? ensureAgentControl;
     this.#authBackend =
@@ -288,6 +318,99 @@ export class AgenCDelegateBackgroundAgentRunner
     };
   }
 
+  async restoreAgent(
+    params: AgenCBackgroundAgentRestoreParams,
+  ): Promise<boolean> {
+    if (this.#active.has(params.agentId)) return true;
+    let bootstrap: LocalRuntimeBootstrap | undefined;
+    let uninstallApprovalBridge: (() => void) | undefined;
+    try {
+      bootstrap = await this.#bootstrap({
+        ...(this.#env !== undefined ? { env: this.#env } : {}),
+        ...(this.#authBackend !== undefined
+          ? { authBackend: this.#authBackend }
+          : {}),
+        argv: buildBootstrapArgv(params, this.#argv),
+        ...(params.cwd !== undefined ? { cwd: params.cwd } : {}),
+      });
+      uninstallApprovalBridge =
+        this.#installDaemonApprovalBridge(bootstrap.session);
+      const { control, registry } = this.#ensureAgentControl(bootstrap.session);
+      await applyUnattendedPermissionPolicy(
+        bootstrap.session.permissionModeRegistry,
+        metadataStringList(params.metadata, "unattendedAllow"),
+        metadataStringList(params.metadata, "unattendedDeny"),
+      );
+      const metadata = restoredAgentMetadata(params);
+      const resumed = await control.resumeAgentFromRollout({
+        rootThreadId: params.agentId,
+        parentPath: ROOT_AGENT_PATH,
+        metadata,
+      });
+      const live = resumed.rootLive;
+      if (live === null) {
+        throw new Error(`AgenC daemon agent cannot be restored: ${params.agentId}`);
+      }
+      let thread!: AgentThread;
+      const initialMessages = params.initialMessages ?? [];
+      const joinPromise = Promise.resolve().then(async () =>
+        runRestoredAgentToCompletion(
+          this.#runAgent,
+          {
+            thread,
+            parent: bootstrap!.session,
+            taskPrompt: params.objective,
+            initialMessages,
+            ...(params.model !== undefined ? { model: params.model } : {}),
+            onProgress: (event, nextThread) =>
+              this.#recordProgressEvent(nextThread.threadId, event),
+          },
+        ),
+      );
+      thread = new AgenCAgentThread(
+        {
+          live,
+          initialMessages,
+          ...(params.currentSessionId !== undefined
+            ? { parentSessionId: params.currentSessionId }
+            : {}),
+          taskPrompt: params.objective,
+        },
+        {
+          parent: bootstrap.session,
+          control,
+          registry,
+          parentPath: live.agentPath as AgentPath,
+          joinPromise,
+        },
+      );
+      const restoredAt = this.#now();
+      const active: ActiveBackgroundAgent = {
+        bootstrap,
+        control,
+        thread,
+        status: "running",
+        lastActiveAt: restoredAt,
+        uninstallApprovalBridge,
+        bufferedEvents: this.#pendingEvents.get(params.agentId) ?? [],
+        activeToolCallIds:
+          this.#pendingActiveToolCallIds.get(params.agentId) ?? new Set(),
+      };
+      this.#pendingEvents.delete(params.agentId);
+      this.#pendingActiveToolCallIds.delete(params.agentId);
+      this.#trackAgentStatus(active);
+      this.#active.set(params.agentId, active);
+      active.unsubscribeElicitationEvents =
+        this.#installDaemonElicitationEventBridge(active);
+      this.#cleanupWhenComplete(params.agentId, thread);
+      return true;
+    } catch {
+      uninstallApprovalBridge?.();
+      await bootstrap?.shutdown().catch(() => {});
+      return false;
+    }
+  }
+
   async stopAgent(agentId: string, reason = "daemon_agent_stop"): Promise<void> {
     const active = this.#active.get(agentId);
     if (active === undefined) return;
@@ -323,7 +446,17 @@ export class AgenCDelegateBackgroundAgentRunner
     binding: AgenCBackgroundAgentSessionEventBinding,
   ): Promise<void> {
     const active = this.#active.get(agentId);
-    if (active === undefined) return;
+    if (active === undefined) {
+      const replay = this.#pendingEvents.get(agentId)?.splice(0) ?? [];
+      if (replay.length === 0) return;
+      this.#pendingEvents.delete(agentId);
+      for (const event of replay) {
+        await binding.emit(
+          notificationFromDaemonEvent(binding.sessionId, agentId, event),
+        );
+      }
+      return;
+    }
     active.sessionBinding = binding;
     const replay = active.bufferedEvents.splice(0);
     for (const event of replay) {
@@ -528,8 +661,15 @@ export class AgenCDelegateBackgroundAgentRunner
       .finally(async () => {
         const active = this.#active.get(agentId);
         if (active === undefined || active.thread !== thread) return;
+        const bufferedEvents = active.bufferedEvents.splice(0);
         this.#active.delete(agentId);
-        this.#pendingEvents.delete(agentId);
+        if (bufferedEvents.length > 0) {
+          const pending = this.#pendingEvents.get(agentId) ?? [];
+          pending.push(...bufferedEvents);
+          this.#pendingEvents.set(agentId, pending);
+        } else {
+          this.#pendingEvents.delete(agentId);
+        }
         this.#assistantTextByAgent.delete(agentId);
         this.#pendingActiveToolCallIds.delete(agentId);
         active.unsubscribeStatus?.();
@@ -747,6 +887,30 @@ function notificationFromDaemonEvent(
     };
   }
   if (
+    event.type === "agent_status" &&
+    isJsonObject(payload) &&
+    typeof payload.status === "string"
+  ) {
+    return {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.agent_status",
+      params: {
+        ...base,
+        agentId: base.agentId ?? sessionId,
+        status:
+          payload.status === "error" || payload.status === "stopped"
+            ? payload.status
+            : "idle",
+        ...(agentRunStatusFromPayload(payload.runStatus) !== undefined
+          ? { runStatus: agentRunStatusFromPayload(payload.runStatus) }
+          : {}),
+        ...(typeof payload.message === "string"
+          ? { message: payload.message }
+          : {}),
+      },
+    };
+  }
+  if (
     (event.type === "turn_started" ||
       event.type === "turn_complete" ||
       event.type === "error") &&
@@ -759,6 +923,7 @@ function notificationFromDaemonEvent(
         ...base,
         agentId: base.agentId ?? sessionId,
         status: agentStatusFromEventType(event.type),
+        runStatus: agentRunStatusFromEventType(event.type),
         ...(typeof payload.turnId === "string" ? { turnId: payload.turnId } : {}),
         ...(typeof payload.message === "string"
           ? { message: payload.message }
@@ -812,6 +977,119 @@ function agentStatusFromEventType(type: string): DaemonAgentStatus {
     case "turn_complete":
     default:
       return "idle";
+  }
+}
+
+function agentRunStatusFromEventType(type: string): AgentRunStatus {
+  switch (type) {
+    case "turn_started":
+      return "running";
+    case "error":
+      return "errored";
+    case "turn_complete":
+    default:
+      return "completed";
+  }
+}
+
+async function runRestoredAgentToCompletion(
+  runAgentFn: AgenCRunAgentFunction,
+  opts: {
+    readonly thread: AgentThread;
+    readonly parent: LocalRuntimeBootstrap["session"];
+    readonly taskPrompt: string;
+    readonly initialMessages: ReadonlyArray<LLMMessage>;
+    readonly model?: string;
+    readonly onProgress?: (
+      event: RunAgentProgressEvent,
+      thread: AgentThread,
+    ) => void | Promise<void>;
+  },
+): Promise<RunAgentResult> {
+  const iter = runAgentFn({
+    live: opts.thread.live,
+    parent: opts.parent,
+    initialMessages: opts.initialMessages,
+    taskPrompt: opts.taskPrompt,
+    ...(opts.model !== undefined ? { model: opts.model } : {}),
+  });
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const step = await iter.next();
+    if (step.done) {
+      return step.value;
+    }
+    await opts.onProgress?.(step.value, opts.thread);
+  }
+}
+
+function restoredAgentMetadata(
+  params: AgenCBackgroundAgentRestoreParams,
+): AgentMetadata {
+  const metadata = params.metadata;
+  const agentPath =
+    metadataStringField(metadata, "agentPath") ??
+    metadataStringField(metadata, "agent_path") ??
+    joinAgentPath(ROOT_AGENT_PATH, normalizeAgentNameForPath(params.agentId));
+  return {
+    agentId: params.agentId,
+    agentPath,
+    ...(metadataStringField(metadata, "agentNickname") !== undefined
+      ? { agentNickname: metadataStringField(metadata, "agentNickname") }
+      : {}),
+    ...(metadataStringField(metadata, "agentRole") !== undefined
+      ? { agentRole: metadataStringField(metadata, "agentRole") }
+      : {}),
+    depth: metadataNumberField(metadata, "depth") ?? 1,
+  };
+}
+
+function metadataStringField(
+  value: JsonObject | undefined,
+  key: string,
+): string | undefined {
+  const field = value?.[key];
+  return typeof field === "string" && field.trim().length > 0
+    ? field.trim()
+    : undefined;
+}
+
+function metadataNumberField(
+  value: JsonObject | undefined,
+  key: string,
+): number | undefined {
+  const field = value?.[key];
+  return typeof field === "number" && Number.isFinite(field)
+    ? field
+    : undefined;
+}
+
+function metadataStringList(
+  value: JsonObject | undefined,
+  key: string,
+): readonly string[] {
+  const field = value?.[key];
+  if (!Array.isArray(field)) return [];
+  return field.filter(
+    (entry): entry is string =>
+      typeof entry === "string" && entry.trim().length > 0,
+  );
+}
+
+function agentRunStatusFromPayload(value: unknown): AgentRunStatus | undefined {
+  switch (value) {
+    case "pending":
+    case "running":
+    case "working":
+    case "paused":
+    case "blocked":
+    case "suspended":
+    case "completed":
+    case "errored":
+    case "stopped":
+      return value;
+    default:
+      return undefined;
   }
 }
 
@@ -1009,13 +1287,24 @@ function eventFromThreadStatus(
     case "shutdown":
       return {
         id: `shutdown-${status.endedAtMs}`,
-        type: "turn_aborted",
+        type: "agent_status",
         payload: {
-          reason: "shutdown",
+          status: "stopped",
+          runStatus: "stopped",
+          message: "shutdown",
+        },
+      };
+    case "not_found":
+      return {
+        id: "not-found",
+        type: "agent_status",
+        payload: {
+          status: "stopped",
+          runStatus: "stopped",
+          message: "not_found",
         },
       };
     case "pending_init":
-    case "not_found":
       return null;
   }
 }
@@ -1078,10 +1367,39 @@ function eventFromProgress(
         },
       };
     case "run_error":
+      return {
+        id: `error-${agentId}-${hashStable(progress.error)}`,
+        type: "agent_status",
+        payload: {
+          status: "error",
+          runStatus: "errored",
+          message: progress.error,
+        },
+      };
     case "run_interrupted":
+      return {
+        id: `interrupted-${agentId}-${hashStable(progress.reason)}`,
+        type: "agent_status",
+        payload: {
+          status: "stopped",
+          runStatus: "stopped",
+          message: progress.reason,
+        },
+      };
     case "run_complete":
-      void agentId;
-      return null;
+      return {
+        id: `complete-${agentId}-${hashStable(
+          `${progress.toolCallCount}:${progress.finalMessage ?? ""}`,
+        )}`,
+        type: "agent_status",
+        payload: {
+          status: "idle",
+          runStatus: "completed",
+          ...(progress.finalMessage !== undefined
+            ? { message: progress.finalMessage }
+            : {}),
+        },
+      };
   }
 }
 
@@ -1204,7 +1522,11 @@ function parseJsonObject(raw: string): JsonObject {
 }
 
 function buildBootstrapArgv(
-  params: AgenCBackgroundAgentStartParams,
+  params: {
+    readonly provider?: string;
+    readonly model?: string;
+    readonly profile?: string;
+  },
   baseArgv: readonly string[] | undefined,
 ): readonly string[] {
   const argv = [...(baseArgv ?? process.argv)];
