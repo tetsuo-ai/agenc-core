@@ -1,12 +1,12 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { useEffect, useMemo, useState } from 'react';
-import { extraUsage } from 'src/commands/extra-usage/index.js';
-import { Box, Text } from '../../../../tui/ink.js';
-import { useAgenCAiLimits } from 'src/services/claudeAiLimitsHook.js';
-import { shouldProcessMockLimits } from 'src/services/rateLimitMocking.js'; // Used for /mock-limits command
-import { getRateLimitTier, getSubscriptionType, isAgenCAISubscriber } from 'src/utils/auth.js';
-import { hasAgenCAiBillingAccess } from 'src/utils/billing.js';
-import { MessageResponse } from '../MessageResponse.js';
+import { extraUsage } from '../../../agenc/upstream/commands/extra-usage/index.js';
+import { shouldProcessMockLimits } from '../../../agenc/upstream/services/rateLimitMocking.js'; // Used for /mock-limits command
+import { useAgenCAiLimits } from '../../../agenc/upstream/services/agencAiLimitsHook.js';
+import { getRateLimitTier, getSubscriptionType, isAgenCAISubscriber } from '../../../agenc/upstream/utils/auth.js';
+import { hasAgenCAiBillingAccess } from '../../../agenc/upstream/utils/billing.js';
+import { Box, Text } from '../../ink.js';
+import { MessageResponse } from '../../../agenc/upstream/components/MessageResponse.js';
 type UpsellParams = {
   shouldShowUpsell: boolean;
   isMax20x: boolean;
@@ -72,7 +72,7 @@ export function RateLimitMessage(t0) {
   }
   const rateLimitTier = t2;
   const isTeamOrEnterprise = subscriptionType === "team" || subscriptionType === "enterprise";
-  const isMax20x = rateLimitTier === "default_claude_max_20x";
+  const isMax20x = rateLimitTier === "default_claude_max_20x"; // branding-scan: allow provider-defined rate-limit tier id
   let t3;
   if ($[2] === Symbol.for("react.memo_cache_sentinel")) {
     t3 = shouldProcessMockLimits() || isAgenCAISubscriber();
@@ -83,8 +83,8 @@ export function RateLimitMessage(t0) {
   const shouldShowUpsell = t3;
   const canSeeRateLimitOptionsUpsell = shouldShowUpsell && !isMax20x;
   const [hasOpenedInteractiveMenu, setHasOpenedInteractiveMenu] = useState(false);
-  const claudeAiLimits = useAgenCAiLimits();
-  const isCurrentlyRateLimited = claudeAiLimits.status === "rejected" && claudeAiLimits.resetsAt !== undefined && !claudeAiLimits.isUsingOverage;
+  const agencAiLimits = useAgenCAiLimits();
+  const isCurrentlyRateLimited = agencAiLimits.status === "rejected" && agencAiLimits.resetsAt !== undefined && !agencAiLimits.isUsingOverage;
   const shouldAutoOpenRateLimitOptionsMenu = canSeeRateLimitOptionsUpsell && !hasOpenedInteractiveMenu && isCurrentlyRateLimited && onOpenRateLimitOptions;
   let t4;
   let t5;

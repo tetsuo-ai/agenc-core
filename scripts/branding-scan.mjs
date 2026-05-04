@@ -153,6 +153,9 @@ function isAbsorbImportRewriteLine(line, rel) {
     /(?:^|[./])(?:tui\/)?components\/markdown\/(?:Markdown|MarkdownTable|HighlightedCode|HighlightedCodeFallback)(?:\.js)?/,
     /(?:^|[./])components\/(?:Markdown|MarkdownTable|HighlightedCode)(?:\.js|\/Fallback(?:\.js)?)?/,
     /(?:^|[./])(?:Markdown|MarkdownTable|HighlightedCode)(?:\.js|\/Fallback(?:\.js)?)?/,
+    /(?:^|[./])(?:tui\/)?components\/dialogs\/(?:CostThresholdDialog|RateLimitMessage)(?:\.js)?/,
+    /(?:^|[./])components\/(?:CostThresholdDialog|messages\/RateLimitMessage)(?:\.js)?/,
+    /(?:^|[./])(?:CostThresholdDialog|RateLimitMessage)(?:\.js)?/,
   ];
   if (commonAbsorbImportPatterns.some((pattern) => pattern.test(line))) {
     return true;

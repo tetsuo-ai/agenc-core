@@ -1,8 +1,8 @@
 import React from 'react'
-import { Box, Link, Text } from '../../../tui/ink.js'
-import { Select } from './CustomSelect/index.js'
-import { Dialog } from './design-system/Dialog.js'
-import { getAPIProvider } from '../utils/model/providers.js'
+import { Box, Link, Text } from '../../ink.js'
+import { Select } from '../../../agenc/upstream/components/CustomSelect/index.js'
+import { Dialog } from '../../../agenc/upstream/components/design-system/Dialog.js'
+import { getAPIProvider } from '../../../agenc/upstream/utils/model/providers.js'
 
 type Props = {
   onDone: () => void
@@ -37,7 +37,7 @@ export function CostThresholdDialog({ onDone }: Props): React.ReactNode {
     >
       <Box flexDirection="column">
         <Text>Learn more about how to monitor your spending:</Text>
-        <Link url="https://code.agenc.com/docs/en/costs" />
+        <Link url="https://agenc.tech/docs/costs" />
       </Box>
       <Select
         options={[

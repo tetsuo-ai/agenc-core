@@ -219,6 +219,12 @@ function assertSourceSnapshot() {
   ]
     .filter(([file]) => existsSync(join(liveTuiRoot, file)))
     .map(([, inventoryPath]) => inventoryPath);
+  const absorbedDialogFiles = [
+    ["components/dialogs/CostThresholdDialog.tsx", "src/components/CostThresholdDialog.tsx"],
+    ["components/dialogs/RateLimitMessage.tsx", "src/components/messages/RateLimitMessage.tsx"],
+  ]
+    .filter(([file]) => existsSync(join(liveTuiRoot, file)))
+    .map(([, inventoryPath]) => inventoryPath);
   const substitutions = new Map([
     [
       `src/components/${donorBrand}CodeHint/PluginHintMenu.tsx`,
@@ -335,6 +341,7 @@ function assertSourceSnapshot() {
     .concat(absorbedCostFiles)
     .concat(absorbedSpinnerFiles)
     .concat(absorbedMarkdownFiles)
+    .concat(absorbedDialogFiles)
     .sort();
   const missing = expected.filter((file) => !actualFiles.includes(file));
   const extra = actualFiles.filter((file) => !expected.includes(file));
@@ -411,6 +418,7 @@ function assertOldTuiRemoved() {
     if (file.startsWith("components/PromptInput/")) continue;
     if (file.startsWith("components/spinner/")) continue;
     if (file.startsWith("components/markdown/")) continue;
+    if (file.startsWith("components/dialogs/")) continue;
     if (file === "components/Messages.tsx") continue;
     if (file === "components/messagesOptionalModules.ts") continue;
     if (file === "components/messagesOptionalModules.test.ts") continue;
@@ -458,6 +466,10 @@ function assertNoDeletedAbsorbImporters() {
     [join(copiedRoot, "components/Markdown"), "Markdown"],
     [join(copiedRoot, "components/MarkdownTable"), "MarkdownTable"],
     [join(copiedRoot, "components/HighlightedCode"), "HighlightedCode"],
+  ]);
+  const deletedDialogEntrypoints = new Map([
+    [join(copiedRoot, "components/CostThresholdDialog"), "CostThresholdDialog"],
+    [join(copiedRoot, "components/messages/RateLimitMessage"), "RateLimitMessage"],
   ]);
   const deletedStartupEntrypoints = new Map([
     [join(copiedRoot, "components/StartupScreen"), "StartupScreen"],
@@ -586,6 +598,14 @@ function assertNoDeletedAbsorbImporters() {
       ) {
         fail(`deleted markdown alias import remains: ${file} -> ${specifier}`);
       }
+      if (
+        specifier === "src/components/CostThresholdDialog" ||
+        specifier === "src/components/CostThresholdDialog.js" ||
+        specifier === "src/components/messages/RateLimitMessage" ||
+        specifier === "src/components/messages/RateLimitMessage.js"
+      ) {
+        fail(`deleted cost/limit dialog alias import remains: ${file} -> ${specifier}`);
+      }
       if (!specifier.startsWith(".")) continue;
       const resolved = resolve(dirname(abs), specifier)
         .replace(/\.(?:js|jsx|ts|tsx|mjs|cjs)$/, "");
@@ -636,6 +656,11 @@ function assertNoDeletedAbsorbImporters() {
           resolved === deletedMarkdownEntrypoint ||
           resolved.startsWith(`${deletedMarkdownEntrypoint}/`)
         ) {
+          fail(`deleted ${label} relative import remains: ${file} -> ${specifier}`);
+        }
+      }
+      for (const [deletedDialogEntrypoint, label] of deletedDialogEntrypoints) {
+        if (resolved === deletedDialogEntrypoint) {
           fail(`deleted ${label} relative import remains: ${file} -> ${specifier}`);
         }
       }
