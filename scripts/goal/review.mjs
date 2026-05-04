@@ -19,6 +19,7 @@
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -46,7 +47,23 @@ const id = process.argv[2];
 if (!id) usage();
 
 if (process.env.AGENC_SKIP_REVIEW === "1") {
-  process.stdout.write(`${YELLOW}!${RESET} reviewer skipped via AGENC_SKIP_REVIEW=1\n`);
+  const reason = (process.env.AGENC_SKIP_REVIEW_REASON || "").trim();
+  if (!reason) {
+    process.stderr.write(`${BOLD}${RED}✗${RESET} AGENC_SKIP_REVIEW=1 set but AGENC_SKIP_REVIEW_REASON is empty. ` +
+      `Skipping review without recording why is forbidden.\n`);
+    process.exit(2);
+  }
+  const markerDir = path.join(repoRoot(), ".goal-review-skipped");
+  try { mkdirSync(markerDir, { recursive: true }); } catch {}
+  const marker = {
+    id,
+    skipped_at: new Date().toISOString(),
+    reason,
+    user: process.env.USER || "unknown",
+  };
+  writeFileSync(path.join(markerDir, `${id}.json`), JSON.stringify(marker, null, 2) + "\n", "utf8");
+  process.stdout.write(`${YELLOW}!${RESET} reviewer SKIPPED for ${id} (audit marker written: .goal-review-skipped/${id}.json)\n`);
+  process.stdout.write(`${YELLOW}!${RESET} reason: ${reason}\n`);
   process.exit(0);
 }
 
@@ -74,6 +91,25 @@ Your job: read the diff against main on the current port/${id} branch and judge 
 5. Domain hygiene — no invented domains in code (URN form or omit). The only AgenC-owned domain is agenc.tech.
 6. Scope discipline — did the agent expand beyond the item, or shrink it too aggressively? If the agent narrowed scope due to a missing dependency, did it document the gap clearly?
 7. Architecture — anything in this change that will bite a downstream item?
+
+8. HARD REJECTS (CRITICAL — verify gates should have caught these; if they passed, ALSO flag verify.mjs as broken):
+
+   Before writing the verdict, run \`git diff main...HEAD --name-status\` mentally over the diff in front of you. Reject the item with VERDICT: NEEDS_REVISION if you see ANY of:
+
+   a. New file added under \`runtime/src/agenc/upstream/\`. That tree is frozen scaffolding scheduled for deletion at Z-02. ${'' /* branding-scan: allow rule explainer references the upstream mirror dir */}
+   b. New file matching shim-suffix pattern outside the two legitimate dirs:
+        suffixes: -shim, -adapter, -compat, -legacy, -bridge, -wrapper, -facade,
+                  -proxy, -glue, -forwarder, -passthrough, -stub, -indirect,
+                  -dispatch, -barrel
+        extensions: .ts .tsx .mts .cts .mjs .cjs .js .jsx
+        legitimate dirs: runtime/src/tui/bridges/ , runtime/src/mcp-client/
+   c. New directory whose name is openclaude, codex, claude, OpenClaude, Codex, or Claude in any AgenC-owned tree. ${'' /* branding-scan: allow rule explainer enumerates the banned donor dir names */}
+   d. New directory whose name is a donor-evasion alias: donor, mirror, vendored, external, _oc, _cx, _donor, _mirror, _vendored, _external. (No legitimate AgenC code uses these names.)
+   e. New module whose body is overwhelmingly forwarders — all of \`export * from\`, \`export { foo } from\`, \`export type * from\`, \`export default X\`, single-line wrapper functions, or bare \`import\` + \`export\`. A barrel file or index.ts that only re-exports counts. Threshold: <40 significant lines AND >80% forward-pattern lines.
+   f. Wrapper left at the old location when porting agenc/upstream/X → runtime/src/Y. All callers must be migrated in the same item; the old path must be deleted.
+   g. Net-positive line growth in any existing file under \`runtime/src/agenc/upstream/\`. Only deletions are allowed there.
+
+   If verify.mjs Gates 2/2.5/2.6/3 should have caught any of (a)–(g) and didn't, escalate as a SECOND CRITICAL: "verify-gate hole — pattern <X> must be enforced upstream of the reviewer".
 
 Operating discipline that the implementing agent was bound by:
 ${discipline}
@@ -150,9 +186,14 @@ if (!finalMsg.trim()) {
   process.exit(1);
 }
 
-const verdictMatch = /^VERDICT:\s*(APPROVED|NEEDS_REVISION|BLOCKED)\s*$/m.exec(finalMsg);
+// Verdict must be the last non-empty line — prevents false positives from
+// VERDICT strings quoted in evidence or example blocks earlier in the report.
+const nonEmptyLines = finalMsg.split("\n").map((l) => l.trimEnd()).filter((l) => l.trim().length > 0);
+const lastLine = nonEmptyLines[nonEmptyLines.length - 1] || "";
+const verdictMatch = /^VERDICT:\s*(APPROVED|NEEDS_REVISION|BLOCKED)\s*$/.exec(lastLine);
 if (!verdictMatch) {
-  process.stderr.write(`${BOLD}${RED}✗${RESET} reviewer output missing VERDICT line\n`);
+  process.stderr.write(`${BOLD}${RED}✗${RESET} reviewer output missing valid VERDICT as last non-empty line\n`);
+  process.stderr.write(`(last line was: ${JSON.stringify(lastLine.slice(0, 200))})\n`);
   process.stderr.write(`--- reviewer output ---\n${finalMsg}\n--- end ---\n`);
   process.exit(1);
 }
