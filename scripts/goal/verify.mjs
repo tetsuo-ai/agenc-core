@@ -1836,7 +1836,28 @@ async function providerGates(item) {
     pass("provider runtime backbone present");
     return;
   }
-  pass("(generic provider gate)");
+  // LP-2x items (registry, discovery, models manager) — check the named
+  // subsystem dir exists with at least one test.
+  const lpSubsystems = {
+    "LP-21": "runtime/src/llm/registry",
+    "LP-22": "runtime/src/llm/discovery",
+    "LP-23": "runtime/src/llm/registry",
+    "LP-24": "runtime/src/llm/discovery",
+    "LP-25": "runtime/src/llm/policy",
+  };
+  const sub = lpSubsystems[id];
+  if (sub) {
+    const dir = path.join(root, sub);
+    if (!existsSync(dir)) failGate(`${id}: expected directory ${sub}`);
+    const tests = walkFiles(dir).filter((p) => /\.test\.(ts|tsx)$/.test(p));
+    if (tests.length === 0) failGate(`${id}: no test files in ${sub}`);
+    pass(`${id}: ${sub} present with ${tests.length} test file(s)`);
+    return;
+  }
+  failGate(
+    `LP-* item ${id} has no provider/<name> citation, no LP-0* runtime backbone, and no registered subsystem mapping. ` +
+    `Add a specific branch to providerGates() in scripts/goal/verify.mjs OR add an ITEM_EVIDENCE entry for ${id}.`,
+  );
 }
 
 async function stateGates(item) {
@@ -1868,7 +1889,30 @@ async function toolGates(item) {
     item.title,
   );
   if (!toolNameMatch) {
-    pass("(no specific tool name in title; generic gate)");
+    // Items without a tool-name title (TL-19 registry, TL-20 per-tool config,
+    // TL-21 orchestrator split, TL-22 multi-agent v2, TL-23 elicitation,
+    // TL-24 apply-patch, TL-25 background tasks, TL-26 ask-user-question)
+    // have specific subsystem checks.
+    const subsystemMap = {
+      "TL-19": "runtime/src/tool-registry.ts",
+      "TL-20": "runtime/src/config/schema.ts",
+      "TL-21": "runtime/src/tools/runtimes",
+      "TL-22": "runtime/src/agents/v2",
+      "TL-23": "runtime/src/elicitation",
+      "TL-24": "runtime/src/tools/apply-patch",
+      "TL-25": "runtime/src/tools/tasks",
+      "TL-26": "runtime/src/tools/ask-user-question",
+    };
+    const target = subsystemMap[id];
+    if (!target) {
+      failGate(
+        `TL-* item ${id} has no tool-name in title and no registered subsystem mapping. ` +
+        `Add an entry to subsystemMap in toolGates() in scripts/goal/verify.mjs OR rename the item to include a tool name.`,
+      );
+    }
+    const full = path.join(root, target);
+    if (!existsSync(full)) failGate(`${id}: expected ${target}`);
+    pass(`${id}: ${target} present`);
     return;
   }
   const toolName = toolNameMatch[1];
@@ -1907,6 +1951,30 @@ async function permissionGates(item) {
     if (!found) failGate(`permissions item ${id} expects "${expected}" reference under runtime/src/permissions/`);
     pass(`permissions/${expected} referenced`);
   }
+  // PE-09..PE-15: extended permission features.
+  const extendedMapping = {
+    "PE-09": ["trustDialog|TrustDialog|projectTrust|project_trust", "trust dialog / project trust"],
+    "PE-10": ["hookDispatcher|hook_dispatcher|HookEngine|registerHook", "hook dispatcher"],
+    "PE-11": ["guardian|Guardian|approvalRequest|approval_request", "guardian / approval-request engine"],
+    "PE-12": ["commandCanonicalization|command_canonical|parseCommand|parse_command", "command canonicalizer / parser"],
+    "PE-13": ["requestPermissions|request_permissions|permissionsRpc", "request-permissions RPC"],
+    "PE-14": ["unattended|UnattendedPolicy|unattended_policy", "unattended-policy"],
+    "PE-15": ["hookEvents|hook_events|hookSchedule", "hook event scheduling"],
+  };
+  if (extendedMapping[id]) {
+    const [pattern, label] = extendedMapping[id];
+    const found = grepRepo(pattern, "runtime/src/permissions") ||
+                  grepRepo(pattern, "runtime/src/agents") ||
+                  grepRepo(pattern, "runtime/src/app-server");
+    if (!found) failGate(`permissions item ${id}: ${label} not referenced anywhere in runtime/src/`);
+    pass(`permissions/${id}: ${label} referenced`);
+  }
+  if (!expected && !extendedMapping[id]) {
+    failGate(
+      `permissions item ${id} has no entry in mapping or extendedMapping. ` +
+      `Add the named submodule + grep pattern in permissionGates() in scripts/goal/verify.mjs.`,
+    );
+  }
   const tests = walkFiles(dir).filter((p) => /\.test\.(ts|tsx)$/.test(p));
   if (tests.length === 0) failGate(`no test files in runtime/src/permissions/`);
   pass(`${tests.length} test file(s)`);
@@ -1943,7 +2011,13 @@ async function donorRuntimePortGates(item) {
   }
   // C-04: file-search/git-utils
   if (id === "C-04") {
-    pass("(C-04 generic gate; specific FS-helper paths checked at runtime)");
+    const fileSearch = path.join(root, "runtime/src/file-search");
+    const gitOps = path.join(root, "runtime/src/git");
+    const altGit = path.join(root, "runtime/src/utils/git.ts");
+    if (!existsSync(fileSearch) && !existsSync(gitOps) && !existsSync(altGit)) {
+      failGate("C-04: expected runtime/src/file-search/ or runtime/src/git/ or runtime/src/utils/git.ts");
+    }
+    pass("C-04: file-search / git utilities present");
     return;
   }
   // C-05: code-mode finish
@@ -1953,15 +2027,42 @@ async function donorRuntimePortGates(item) {
     pass("tools/code-mode/ present");
     return;
   }
-  pass("(generic donor-runtime port gate)");
+  // C-06: connectors catalog
+  if (id === "C-06") {
+    const dir = path.join(root, "runtime/src/connectors");
+    const alt = path.join(root, "runtime/src/services/connectors");
+    if (!existsSync(dir) && !existsSync(alt)) {
+      failGate("C-06: expected runtime/src/connectors/ or runtime/src/services/connectors/");
+    }
+    pass("C-06: connectors subsystem present");
+    return;
+  }
+  // C-01a..g: sandbox subsystem items.
+  if (/^C-01[a-g]$/.test(id)) {
+    const sandboxDir = path.join(root, "runtime/src/sandbox");
+    if (!existsSync(sandboxDir)) {
+      failGate(`${id}: runtime/src/sandbox/ does not exist; sandbox subsystem must be created for C-01* items.`);
+    }
+    const tests = walkFiles(sandboxDir).filter((p) => /\.test\.(ts|tsx)$/.test(p));
+    if (tests.length === 0) failGate(`${id}: no test files under runtime/src/sandbox/`);
+    pass(`${id}: sandbox subsystem present with ${tests.length} test file(s)`);
+    return;
+  }
+  failGate(
+    `donor-runtime port item ${id} has no specific gate branch. ` +
+    `Add a branch to donorRuntimePortGates() in scripts/goal/verify.mjs naming the expected runtime/src/ path.`,
+  );
 }
 
 async function serviceGates(item) {
   // S-* and OC-*: service ports under runtime/src/services/.
   const serviceMatch = /services\/([\w-]+)/.exec(item.body) || /services\/([\w-]+)/.exec(item.title);
   if (!serviceMatch) {
-    pass("(no service path in body; generic gate)");
-    return;
+    failGate(
+      `service item ${id} has no \`services/<name>\` reference in body or title. ` +
+      `Either add the path to the row body, or wire a specific branch in serviceGates() in scripts/goal/verify.mjs. ` +
+      `Generic pass-through is forbidden — every service item must name its target subsystem.`,
+    );
   }
   const dir = path.join(root, "runtime/src/services", serviceMatch[1]);
   if (!existsSync(dir)) failGate(`service directory missing: runtime/src/services/${serviceMatch[1]}/`);
@@ -2008,6 +2109,20 @@ async function migrationGates(item) {
     pass("direct-CLI fallback present");
     return;
   }
+  if (id === "MG-02") {
+    // Daemon autostart wrapper.
+    const found = grepRepo("agenc daemon", "runtime/src/bin");
+    if (!found) failGate("MG-02: 'agenc daemon' wrapper not referenced in runtime/src/bin/");
+    pass("MG-02: agenc daemon wrapper present");
+    return;
+  }
+  if (id === "MG-03") {
+    // Migration warning for direct-CLI fallback path users.
+    const found = grepRepo("daemon mode unavailable|daemon-mode unavailable|direct-runtime fallback", "runtime/src");
+    if (!found) failGate("MG-03: direct-runtime-fallback warning not found in runtime/src/");
+    pass("MG-03: fallback warning present");
+    return;
+  }
   if (id === "MG-04") {
     // Direct-CLI removal. The runtime should now be daemon-driven only.
     const f = path.join(root, "runtime/src/app-server-client/index.ts");
@@ -2015,7 +2130,30 @@ async function migrationGates(item) {
     pass("daemon-only CLI client present");
     return;
   }
-  pass("(generic migration gate)");
+  if (id === "MG-05") {
+    // Wrapper update for daemon autostart.
+    const found = grepRepo("daemon.autostart", "runtime/src/config");
+    if (!found) failGate("MG-05: 'daemon.autostart' config flag not referenced under runtime/src/config/");
+    pass("MG-05: daemon.autostart wired");
+    return;
+  }
+  if (id === "MG-06") {
+    // Wrapper hand-off: npm wrapper invokes daemon path.
+    const wrapperRoot = path.resolve(root, "..");
+    const wrapperPkg = path.join(wrapperRoot, "packages/agenc/package.json");
+    if (!existsSync(wrapperPkg)) {
+      // No sibling wrapper checked out at this location — soft-pass with note.
+      process.stdout.write(`${YELLOW}!${RESET} MG-06: sibling wrapper at ${wrapperPkg} not found; cannot verify wrapper hand-off from agenc-core alone.\n`);
+      pass("MG-06: wrapper-hand-off check requires sibling agenc-core wrapper repo");
+      return;
+    }
+    pass("MG-06: sibling wrapper present");
+    return;
+  }
+  failGate(
+    `migration item ${id} has no specific gate branch. ` +
+    `Add a branch to migrationGates() in scripts/goal/verify.mjs.`,
+  );
 }
 
 async function configGates(item) {
@@ -2050,6 +2188,27 @@ async function configGates(item) {
     const cli = grepRepo("agenc config", "runtime/src");
     if (!cli) failGate("'agenc config' CLI surface not found anywhere in runtime/src/");
     pass("agenc config subcommand present");
+    return;
+  }
+  if (id === "CF-12") {
+    // Schema migration / version field.
+    const found = grepRepo("schemaVersion|configVersion|migrate.*config|configMigration", "runtime/src/config");
+    if (!found) failGate("CF-12: schema-version / config-migration not referenced under runtime/src/config/");
+    pass("CF-12: schema migration referenced");
+    return;
+  }
+  if (id === "CF-15") {
+    // Per-agent budget caps schema.
+    const found = grepRepo("token_cap|dollar_cap|wall_clock_seconds|tokenCap|dollarCap|wallClock", "runtime/src/config");
+    if (!found) failGate("CF-15: budget-cap fields not referenced under runtime/src/config/");
+    pass("CF-15: budget caps referenced");
+    return;
+  }
+  if (!flag) {
+    failGate(
+      `config item ${id} has no entry in flagMap and no specific gate branch. ` +
+      `Add an entry to flagMap or a branch in configGates() in scripts/goal/verify.mjs.`,
+    );
   }
 }
 
@@ -2079,7 +2238,38 @@ async function onboardingGates(item) {
     pass("agenc init subcommand present");
     return;
   }
-  pass("(generic onboarding gate)");
+  if (id === "OB-01") {
+    // First-run onboarding flow.
+    const found = grepRepo("first.run|firstRun|first-run|onboarding", "runtime/src");
+    if (!found) failGate("OB-01: first-run/onboarding flow not referenced in runtime/src/");
+    pass("OB-01: onboarding referenced");
+    return;
+  }
+  if (id === "OB-05") {
+    // /login or auth onboarding command.
+    const found = grepRepo("/login|agenc login", "runtime/src");
+    if (!found) failGate("OB-05: login command not referenced");
+    pass("OB-05: login command present");
+    return;
+  }
+  if (id === "OB-07") {
+    // Onboarding-specific prompts.
+    const dir = path.join(root, "runtime/src/prompts");
+    if (!existsSync(dir)) failGate("OB-07: runtime/src/prompts/ missing");
+    pass("OB-07: prompts subsystem present");
+    return;
+  }
+  if (id === "OB-08" || id === "OB-09") {
+    // Progressive onboarding follow-ups.
+    const found = grepRepo("onboarding|first.run|firstRun", "runtime/src");
+    if (!found) failGate(`${id}: onboarding flow not referenced`);
+    pass(`${id}: onboarding referenced`);
+    return;
+  }
+  failGate(
+    `onboarding item ${id} has no specific gate branch. ` +
+    `Add a branch to onboardingGates() in scripts/goal/verify.mjs.`,
+  );
 }
 
 async function updateGates(item) {
@@ -2089,7 +2279,45 @@ async function updateGates(item) {
     pass("agenc update subcommand present");
     return;
   }
-  pass("(generic update gate)");
+  if (id === "UP-02") {
+    // Update notification UI.
+    const found = grepRepo("AutoUpdater|autoUpdater|UpdateNotice|update.notification", "runtime/src");
+    if (!found) failGate("UP-02: AutoUpdater / update notification UI not referenced");
+    pass("UP-02: update notification UI referenced");
+    return;
+  }
+  if (id === "UP-03") {
+    // Update channel config.
+    const found = grepRepo("update.channel|updateChannel", "runtime/src/config");
+    if (!found) failGate("UP-03: update.channel config flag not referenced");
+    pass("UP-03: update.channel referenced");
+    return;
+  }
+  if (id === "UP-04") {
+    // Auto-update opt-in.
+    const found = grepRepo("update.auto|updateAuto|auto.update", "runtime/src/config");
+    if (!found) failGate("UP-04: auto-update config flag not referenced");
+    pass("UP-04: auto-update config referenced");
+    return;
+  }
+  if (id === "UP-05") {
+    // Rollback support.
+    const found = grepRepo("rollback|previous.version", "runtime/src");
+    if (!found) failGate("UP-05: rollback machinery not referenced");
+    pass("UP-05: rollback referenced");
+    return;
+  }
+  if (id === "UP-06") {
+    // Background-update fetch.
+    const found = grepRepo("update.fetch|updateFetch|background.update", "runtime/src");
+    if (!found) failGate("UP-06: background update fetch not referenced");
+    pass("UP-06: background update referenced");
+    return;
+  }
+  failGate(
+    `update item ${id} has no specific gate branch. ` +
+    `Add a branch to updateGates() in scripts/goal/verify.mjs.`,
+  );
 }
 
 async function promptGates(item) {
@@ -2101,23 +2329,141 @@ async function promptGates(item) {
     const found = grepRepo("AGENC\\.md", "runtime/src/prompts");
     if (!found) failGate("AGENC.md inclusion not referenced in runtime/src/prompts/");
     pass("AGENC.md inclusion present");
+    return;
   }
+  if (id === "PR-01") {
+    // Base prompt assembly.
+    const found = grepRepo("buildSystemPrompt|systemPrompt|basePrompt", "runtime/src/prompts");
+    if (!found) failGate("PR-01: base prompt assembly not referenced");
+    pass("PR-01: base prompt assembly referenced");
+    return;
+  }
+  if (id === "PR-03") {
+    // Tool descriptions in prompt.
+    const found = grepRepo("toolDescriptions|tool_descriptions|describeTools", "runtime/src/prompts");
+    if (!found) failGate("PR-03: tool descriptions not referenced");
+    pass("PR-03: tool descriptions referenced");
+    return;
+  }
+  if (id === "PR-04") {
+    // Skill instructions.
+    const found = grepRepo("skillInstructions|skill_instructions", "runtime/src/prompts");
+    if (!found) failGate("PR-04: skill instructions not referenced");
+    pass("PR-04: skill instructions referenced");
+    return;
+  }
+  if (id === "PR-05") {
+    // Permission instructions.
+    const found = grepRepo("permissionsInstructions|permissions_instructions|permissionPrompt", "runtime/src/prompts");
+    if (!found) failGate("PR-05: permissions instructions not referenced");
+    pass("PR-05: permissions instructions referenced");
+    return;
+  }
+  if (id === "PR-06") {
+    // Memory instructions.
+    const found = grepRepo("memoryInstructions|memory_instructions", "runtime/src/prompts");
+    if (!found) failGate("PR-06: memory instructions not referenced");
+    pass("PR-06: memory instructions referenced");
+    return;
+  }
+  if (id === "PR-07") {
+    // Plugin instructions.
+    const found = grepRepo("pluginInstructions|plugin_instructions|availablePlugins", "runtime/src/prompts");
+    if (!found) failGate("PR-07: plugin instructions not referenced");
+    pass("PR-07: plugin instructions referenced");
+    return;
+  }
+  if (id === "PR-08") {
+    // Per-mode prompt variants.
+    const found = grepRepo("planMode|defaultMode|acceptEdits|byMode", "runtime/src/prompts");
+    if (!found) failGate("PR-08: per-mode prompt variant not referenced");
+    pass("PR-08: per-mode prompt variant referenced");
+    return;
+  }
+  failGate(
+    `prompt item ${id} has no specific gate branch. ` +
+    `Add a branch to promptGates() in scripts/goal/verify.mjs.`,
+  );
 }
 
 async function memoryGates(item) {
   // MM-* items: memory subsystem.
+  const dir = path.join(root, "runtime/src/memory");
+  const altDir = path.join(root, "runtime/src/memdir");
+  if (!existsSync(dir) && !existsSync(altDir)) {
+    failGate("MM-*: runtime/src/memory/ or runtime/src/memdir/ missing");
+  }
   if (id === "MM-06") {
     const found = grepRepo("agenc memory", "runtime/src");
     if (!found) failGate("'agenc memory' CLI surface not found");
     pass("agenc memory subcommand present");
     return;
   }
-  pass("(generic memory gate)");
+  if (id === "MM-01") {
+    // Memory loader/registry.
+    const found = grepRepo("loadMemor|MemoryRegistry|loadMemdir|loadMemoryDir", "runtime/src");
+    if (!found) failGate("MM-01: memory-loader surface not found");
+    pass("MM-01: memory loader referenced");
+    return;
+  }
+  if (id === "MM-02") {
+    // AGENC.md inclusion / per-repo memory.
+    const found = grepRepo("AGENC\\.md|agencMd|agencMemory", "runtime/src");
+    if (!found) failGate("MM-02: AGENC.md / agenc-memory surface not found");
+    pass("MM-02: AGENC.md inclusion referenced");
+    return;
+  }
+  if (id === "MM-03") {
+    // Mention syntax / @memory.
+    const found = grepRepo("@memor|mentionSyntax|memoryMention", "runtime/src");
+    if (!found) failGate("MM-03: memory mention syntax not found");
+    pass("MM-03: memory mention referenced");
+    return;
+  }
+  if (id === "MM-04") {
+    // Per-conversation memory persistence.
+    const found = grepRepo("MemoryStore|memoryStore|persistMemory|saveMemory", "runtime/src");
+    if (!found) failGate("MM-04: memory persistence not found");
+    pass("MM-04: memory persistence referenced");
+    return;
+  }
+  if (id === "MM-05") {
+    // Memory hot-reload via FW-01.
+    const found = grepRepo("memoryReload|hot.reload|hotReload", "runtime/src/memory") ||
+                  grepRepo("memoryReload|hot.reload|hotReload", "runtime/src/memdir");
+    if (!found) failGate("MM-05: memory hot-reload not found");
+    pass("MM-05: memory hot-reload referenced");
+    return;
+  }
+  if (id === "MM-07" || id === "MM-08") {
+    const tests = walkFiles(existsSync(dir) ? dir : altDir).filter((p) => /\.test\.(ts|tsx)$/.test(p));
+    if (tests.length === 0) failGate(`${id}: no test files in memory subsystem`);
+    pass(`${id}: ${tests.length} test file(s)`);
+    return;
+  }
+  failGate(
+    `memory item ${id} has no specific gate branch. ` +
+    `Add a branch to memoryGates() in scripts/goal/verify.mjs.`,
+  );
 }
 
 async function webPortalGates(item) {
-  // WP-* lives in a separate repo (agenc-portal). Skip core checks.
-  pass("(WP-* lives in sibling agenc-portal repo; gate limited to shared protocol)");
+  // WP-* lives in a separate repo (agenc-portal). The local contract is a
+  // shared-protocol surface in agenc-core; verify the protocol surface
+  // exists and has any WP-related schema/types.
+  const protocolDir = path.join(root, "runtime/src/app-server-protocol");
+  if (!existsSync(protocolDir)) {
+    failGate("WP-*: runtime/src/app-server-protocol/ missing — required for shared portal protocol surface.");
+  }
+  const found = grepRepo("portal|webPortal|web_portal", "runtime/src/app-server-protocol") ||
+                grepRepo("portal|webPortal|web_portal", "runtime/src/app-server");
+  if (!found) {
+    failGate(
+      `WP-* item ${id}: no portal-related symbols found in runtime/src/app-server-protocol/ or runtime/src/app-server/. ` +
+      `WP-* lives in sibling agenc-portal repo, but the local protocol contract must reference the portal surface.`,
+    );
+  }
+  pass(`WP-*: portal protocol surface referenced (${id})`);
 }
 
 // Generic gate factory: subsystem must exist as a real directory under runtime/src,
@@ -2140,8 +2486,22 @@ function subsystemDirGates(label, dir) {
 }
 
 async function ideExtensionGates(item) {
-  // IDE-* lives in a separate repo. Skip core checks.
-  pass("(IDE-* lives in sibling repo; gate limited to shared protocol)");
+  // IDE-* lives in a separate repo (vscode/jetbrains extensions). The local
+  // contract is the shared protocol surface — verify the protocol exists
+  // and references IDE-relevant symbols.
+  const protocolDir = path.join(root, "runtime/src/app-server-protocol");
+  if (!existsSync(protocolDir)) {
+    failGate("IDE-*: runtime/src/app-server-protocol/ missing — required for IDE protocol surface.");
+  }
+  const found = grepRepo("ide|vscode|jetbrains|lsp|languageServer", "runtime/src/app-server-protocol") ||
+                grepRepo("ide|vscode|jetbrains|lsp|languageServer", "runtime/src/app-server");
+  if (!found) {
+    failGate(
+      `IDE-* item ${id}: no IDE-related symbols (ide/vscode/jetbrains/lsp) found in runtime/src/app-server-protocol/. ` +
+      `The local protocol must reference the IDE surface even when the implementation lives in a sibling repo.`,
+    );
+  }
+  pass(`IDE-*: IDE protocol surface referenced (${id})`);
 }
 
 function grepRepo(pattern, scope = "runtime/src") {
@@ -2324,11 +2684,42 @@ async function cleanupGates(item) {
     }
     pass("Z-06: parity scaffolding removed");
   }
-  // ZC-* items: each ZC item has a deletion target. Generic check: warn if no
-  // specific gate; full enforcement is via the per-item evidence map and the
-  // deliverable assertions in the row body.
+  // ZC-* items: each ZC item has a specific deletion/cleanup target named
+  // in its row body. The body's grep / file-existence assertions are the
+  // contract; we extract them and verify here.
   if (/^ZC-/.test(id)) {
-    process.stdout.write(`${YELLOW}!${RESET} ZC-* items use per-item deliverable assertions; generic gate only.\n`);
+    const zcMap = {
+      "ZC-01": { gone: ["runtime/src/agenc/adapters/prompt-input-fast-mode.tsx", "runtime/src/agenc/adapters/prompt-input-terminal-setup.ts", "runtime/src/agenc/adapters/prompt-input-ultrareview.ts"] },
+      "ZC-02": { gone: ["runtime/src/bin/_deps/session-id-compat.ts"] },
+      "ZC-03": { gone: ["runtime/src/tui/openclaude"] }, // branding-scan: allow donor-named dir that ZC-03 deletes
+      "ZC-04": { gone: ["runtime/src/agenc/adapters"] },
+      "ZC-05": { grepNotPresent: { pattern: "from .*agenc/upstream/", scope: "runtime/src" } },
+      "ZC-10": { gone: ["runtime/src/agenc/upstream"] },
+      "ZC-11": { gone: ["runtime/src/tools/code-mode/response-adapter.ts"] },
+      "ZC-13": { gone: ["runtime/src/tui/bridges"] },
+      "ZC-22": { gone: ["runtime/src/tui/elicitation-bridge.tsx"] },
+      "ZC-26": { grepNotPresent: { pattern: "/home/claude/.agenc/remote", scope: "runtime/src" } }, // branding-scan: allow donor-leak path that ZC-26 is removing
+      "ZC-27": { grepNotPresent: { pattern: "@ts-nocheck", scope: "runtime/src/types" } },
+      "ZC-28": { gone: ["runtime/src/utils/attachments.ts", "runtime/src/utils/teamMemoryOps.ts", "runtime/src/components/FeedbackSurvey/useMemorySurvey.tsx"] },
+    };
+    const expectations = zcMap[id];
+    if (!expectations) {
+      failGate(
+        `${id}: no specific gate. Add a structural assertion (path-gone or grep-not-present) for ${id} ` +
+        `to the zcMap inside cleanupGates() in scripts/goal/verify.mjs.`,
+      );
+    }
+    if (expectations.gone) {
+      for (const p of expectations.gone) {
+        if (existsSync(path.join(root, p))) failGate(`${id}: expected ${p} to be deleted; still exists.`);
+      }
+      pass(`${id}: ${expectations.gone.length} target path(s) confirmed deleted`);
+    }
+    if (expectations.grepNotPresent) {
+      const { pattern, scope } = expectations.grepNotPresent;
+      if (grepRepo(pattern, scope)) failGate(`${id}: pattern "${pattern}" still found in ${scope}; should return zero hits.`);
+      pass(`${id}: no hits for "${pattern}" in ${scope}`);
+    }
   }
 }
 
