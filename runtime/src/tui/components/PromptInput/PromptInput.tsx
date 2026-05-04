@@ -15,10 +15,7 @@ import stripAnsi from 'strip-ansi';
 import { companionReservedColumns } from '../../../agenc/upstream/buddy/CompanionSprite.js';
 import { isBuddyEnabled } from '../../../agenc/upstream/buddy/feature.js';
 import { findBuddyTriggerPositions, useBuddyNotification } from '../../../agenc/upstream/buddy/useBuddyNotification.js';
-import { FastModePicker } from '../../../agenc/upstream/commands/fast/fast.js';
-import { isUltrareviewEnabled } from '../../../agenc/upstream/commands/review/ultrareviewEnabled.js';
-import { getNativeCSIuTerminalDisplayName } from '../../../agenc/upstream/commands/terminalSetup/terminalSetup.js';
-import { type Command, hasCommand } from '../../../agenc/upstream/commands.js';
+import { type Command, hasCommand } from '../../../commands.js';
 import { useIsModalOverlayActive } from '../../../agenc/upstream/context/overlayContext.js';
 import { useSetPromptOverlayDialog } from '../../context/promptOverlayContext.js';
 import { formatImageRef, formatPastedTextRef, getPastedTextRefNumLines, parseReferences } from '../../../agenc/upstream/history.js';
@@ -112,6 +109,7 @@ import { shouldHideTasksFooter } from '../../../agenc/upstream/components/tasks/
 import { TeamsDialog } from '../../../agenc/upstream/components/teams/TeamsDialog.js';
 import VimTextInput from '../../../agenc/upstream/components/VimTextInput.js';
 import { detectModeEntry, getModeFromInput, getValueFromInput } from './inputModes.js';
+import { FastModePicker } from '../../../agenc/adapters/prompt-input-fast-mode.js';
 import { FOOTER_TEMPORARY_STATUS_TIMEOUT, Notifications } from './Notifications.js';
 import PromptInputFooter from './PromptInputFooter.js';
 import type { SuggestionItem } from './PromptInputFooterSuggestions.js';
@@ -122,6 +120,8 @@ import { useMaybeTruncateInput } from './useMaybeTruncateInput.js';
 import { usePromptInputPlaceholder } from './usePromptInputPlaceholder.js';
 import { useShowFastIconHint } from './useShowFastIconHint.js';
 import { useSwarmBanner } from './useSwarmBanner.js';
+import { getNativeCSIuTerminalDisplayName } from '../../../agenc/adapters/prompt-input-terminal-setup.js';
+import { isUltrareviewEnabled } from '../../../agenc/adapters/prompt-input-ultrareview.js';
 import { isNonSpacePrintable, isVimModeEnabled } from './utils.js';
 type Props = {
   debug: boolean;
