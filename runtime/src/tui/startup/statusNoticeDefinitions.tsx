@@ -1,24 +1,24 @@
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
-import { Box, Text } from '../../../tui/ink.js';
+import { Box, Text } from '../ink.js';
 import * as React from 'react';
-import { getLargeMemoryFiles, MAX_MEMORY_CHARACTER_COUNT, type MemoryFileInfo } from './claudemd.js';
 import figures from 'figures';
-import { getCwd } from './cwd.js';
-import { relative } from 'path';
-import { formatNumber } from './format.js';
-import type { getGlobalConfig } from './config.js';
-import { getAnthropicApiKeyWithSource, getApiKeyFromConfigOrMacOSKeychain, getAuthTokenSource, isAgenCAISubscriber } from './auth.js';
-import type { AgentDefinitionsResult } from 'src/tools/AgentTool/loadAgentsDir.js';
-import { getAgentDescriptionsTotalTokens, AGENT_DESCRIPTIONS_THRESHOLD } from './statusNoticeHelpers.js';
-import { isSupportedJetBrainsTerminal, toIDEDisplayName, getTerminalIdeType } from './ide.js';
-import { isJetBrainsPluginInstalledCachedSync } from './jetbrains.js';
+import { formatNumber } from '../../agenc/upstream/utils/format.js';
+import type { getGlobalConfig } from '../../agenc/upstream/utils/config.js';
+import { getAnthropicApiKeyWithSource, getApiKeyFromConfigOrMacOSKeychain, getAuthTokenSource, isAgenCAISubscriber } from '../../agenc/upstream/utils/auth.js';
+import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir.js';
+import { getAgentDescriptionsTotalTokens, AGENT_DESCRIPTIONS_THRESHOLD } from '../../agenc/upstream/utils/statusNoticeHelpers.js';
+import { isSupportedJetBrainsTerminal, toIDEDisplayName, getTerminalIdeType } from '../../agenc/upstream/utils/ide.js';
+import { isJetBrainsPluginInstalledCachedSync } from '../../agenc/upstream/utils/jetbrains.js';
 
 // Types
 export type StatusNoticeType = 'warning' | 'info';
 export type StatusNoticeContext = {
   config: ReturnType<typeof getGlobalConfig>;
   agentDefinitions?: AgentDefinitionsResult;
-  memoryFiles: MemoryFileInfo[];
+  memoryDiagnostics: string[];
+  daemonStatus: {
+    autostartDisabled: boolean;
+  };
 };
 export type StatusNoticeDefinition = {
   id: string;
@@ -26,23 +26,53 @@ export type StatusNoticeDefinition = {
   isActive: (context: StatusNoticeContext) => boolean;
   render: (context: StatusNoticeContext) => React.ReactNode;
 };
+type AuthTokenSource = ReturnType<typeof getAuthTokenSource>['source'];
+
+function getAuthTokenDisplayName(source: AuthTokenSource): string {
+  switch (source) {
+    case 'ANTHROPIC_AUTH_TOKEN':
+    case 'AGENC_OAUTH_TOKEN':
+    case 'AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR':
+    case 'CCR_OAUTH_TOKEN_FILE':
+    case 'apiKeyHelper':
+      return source;
+    case 'none':
+      return 'token auth';
+    default:
+      return 'AgenC account token';
+  }
+}
+
+function getAuthTokenCleanupHint(source: AuthTokenSource): string {
+  switch (source) {
+    case 'ANTHROPIC_AUTH_TOKEN':
+    case 'AGENC_OAUTH_TOKEN':
+      return `Unset the ${source} environment variable, or run agenc /logout.`;
+    case 'AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR':
+      return 'Restart without the inherited OAuth token, or run agenc /logout.';
+    case 'CCR_OAUTH_TOKEN_FILE':
+      return 'Remove the managed OAuth token file, or run agenc /logout.';
+    case 'apiKeyHelper':
+      return 'Unset the apiKeyHelper setting.';
+    case 'none':
+      return 'No token source is active.';
+    default:
+      return 'Run agenc /logout to sign out of the AgenC account.';
+  }
+}
 
 // Individual notice definitions
 const largeMemoryFilesNotice: StatusNoticeDefinition = {
   id: 'large-memory-files',
   type: 'warning',
-  isActive: ctx => getLargeMemoryFiles(ctx.memoryFiles).length > 0,
+  isActive: ctx => ctx.memoryDiagnostics.length > 0,
   render: ctx => {
-    const largeMemoryFiles = getLargeMemoryFiles(ctx.memoryFiles);
     return <>
-        {largeMemoryFiles.map(file => {
-        const displayPath = file.path.startsWith(getCwd()) ? relative(getCwd(), file.path) : file.path;
-        return <Box key={file.path} flexDirection="row">
+        {ctx.memoryDiagnostics.map(diagnostic => {
+        return <Box key={diagnostic} flexDirection="row">
               <Text color="warning">{figures.warning}</Text>
               <Text color="warning">
-                Large <Text bold>{displayPath}</Text> will impact performance (
-                {formatNumber(file.content.length)} chars &gt;{' '}
-                {formatNumber(MAX_MEMORY_CHARACTER_COUNT)})
+                {diagnostic}
                 <Text dimColor> · /memory to edit</Text>
               </Text>
             </Box>;
@@ -50,8 +80,8 @@ const largeMemoryFilesNotice: StatusNoticeDefinition = {
       </>;
   }
 };
-const claudeAiSubscriberExternalTokenNotice: StatusNoticeDefinition = {
-  id: 'claude-ai-external-token',
+const agencAccountExternalTokenNotice: StatusNoticeDefinition = {
+  id: 'agenc-account-external-token',
   type: 'warning',
   isActive: () => {
     const authTokenInfo = getAuthTokenSource();
@@ -64,7 +94,7 @@ const claudeAiSubscriberExternalTokenNotice: StatusNoticeDefinition = {
         <Text color="warning">
           Auth conflict: Using {authTokenInfo.source} instead of AgenC account
           subscription token. Either unset {authTokenInfo.source}, or run
-          `claude /logout`.
+          `agenc /logout`.
         </Text>
       </Box>;
   }
@@ -114,24 +144,23 @@ const bothAuthMethodsNotice: StatusNoticeDefinition = {
       skipRetrievingKeyFromApiKeyHelper: true
     });
     const authTokenInfo = getAuthTokenSource();
+    const authTokenDisplayName = getAuthTokenDisplayName(authTokenInfo.source);
     return <Box flexDirection="column" marginTop={1}>
         <Box flexDirection="row">
           <Text color="warning">{figures.warning}</Text>
           <Text color="warning">
-            Auth conflict: Both a token ({authTokenInfo.source}) and an API key
+            Auth conflict: Both a token ({authTokenDisplayName}) and an API key
             ({apiKeySource}) are set. This may lead to unexpected behavior.
           </Text>
         </Box>
         <Box flexDirection="column" marginLeft={3}>
           <Text color="warning">
-            · Trying to use{' '}
-            {authTokenInfo.source === 'agenc.ai' ? 'agenc.ai' : authTokenInfo.source}
-            ?{' '}
-            {apiKeySource === 'ANTHROPIC_API_KEY' ? 'Unset the ANTHROPIC_API_KEY environment variable, or claude /logout then say "No" to the API key approval before login.' : apiKeySource === 'apiKeyHelper' ? 'Unset the apiKeyHelper setting.' : 'claude /logout'}
+            · Trying to use {authTokenDisplayName}?{' '}
+            {apiKeySource === 'ANTHROPIC_API_KEY' ? 'Unset the ANTHROPIC_API_KEY environment variable, or run agenc /logout then decline API key approval before login.' : apiKeySource === 'apiKeyHelper' ? 'Unset the apiKeyHelper setting.' : 'Run agenc /logout.'}
           </Text>
           <Text color="warning">
             · Trying to use {apiKeySource}?{' '}
-            {authTokenInfo.source === 'agenc.ai' ? 'claude /logout to sign out of agenc.ai.' : `Unset the ${authTokenInfo.source} environment variable.`}
+            {getAuthTokenCleanupHint(authTokenInfo.source)}
           </Text>
         </Box>
       </Box>;
@@ -153,6 +182,21 @@ const largeAgentDescriptionsNotice: StatusNoticeDefinition = {
           {formatNumber(totalTokens)} tokens &gt;{' '}
           {formatNumber(AGENT_DESCRIPTIONS_THRESHOLD)})
           <Text dimColor> · /agents to manage</Text>
+        </Text>
+      </Box>;
+  }
+};
+const daemonAutostartNotice: StatusNoticeDefinition = {
+  id: 'daemon-autostart-disabled',
+  type: 'info',
+  isActive: context => context.daemonStatus.autostartDisabled,
+  render: () => {
+    return <Box flexDirection="row">
+        <Text color="warning">{figures.warning}</Text>
+        <Text color="warning">
+          AgenC daemon autostart is disabled. Background agents and reconnectable
+          sessions require a running daemon.
+          <Text dimColor> · agenc daemon start</Text>
         </Text>
       </Box>;
   }
@@ -181,15 +225,14 @@ const jetbrainsPluginNotice: StatusNoticeDefinition = {
         <Text color="ide">{figures.arrowUp}</Text>
         <Text>
           Install the <Text color="ide">{ideName}</Text> plugin from the
-          JetBrains Marketplace:{' '}
-          <Text bold>https://docs.agenc.com/s/agenc-code-jetbrains</Text>
+          JetBrains Marketplace.
         </Text>
       </Box>;
   }
 };
 
 // All notice definitions
-export const statusNoticeDefinitions: StatusNoticeDefinition[] = [largeMemoryFilesNotice, largeAgentDescriptionsNotice, claudeAiSubscriberExternalTokenNotice, apiKeyConflictNotice, bothAuthMethodsNotice, jetbrainsPluginNotice];
+export const statusNoticeDefinitions: StatusNoticeDefinition[] = [largeMemoryFilesNotice, largeAgentDescriptionsNotice, daemonAutostartNotice, agencAccountExternalTokenNotice, apiKeyConflictNotice, bothAuthMethodsNotice, jetbrainsPluginNotice];
 
 // Helper functions for external use
 export function getActiveNotices(context: StatusNoticeContext): StatusNoticeDefinition[] {

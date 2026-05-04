@@ -397,6 +397,33 @@ const ITEM_EVIDENCE = {
       },
     ],
   },
+  "T-14": {
+    files: [
+      "runtime/src/tui/startup/StartupScreen.ts",
+      "runtime/src/tui/startup/StatusLine.tsx",
+      "runtime/src/tui/startup/StatusNotices.tsx",
+      "runtime/src/tui/startup/statusNoticeDefinitions.tsx",
+      "runtime/src/tui/startup/PARITY.md",
+    ],
+    tests: [
+      "runtime/src/tui/startup/StartupScreen.test.ts",
+      "runtime/src/tui/startup/statusNoticeDefinitions.test.tsx",
+    ],
+    grepPresent: [
+      {
+        pattern: "\\.\\./startup/StatusNotices\\.js",
+        scope: "runtime/src/tui/components/Messages.tsx",
+      },
+      {
+        pattern: "\\.\\./\\.\\./startup/StatusLine\\.js",
+        scope: "runtime/src/tui/components/PromptInput/PromptInputFooter.tsx",
+      },
+      {
+        pattern: "\\.\\./\\.\\./\\.\\./tui/startup/StartupScreen\\.js",
+        scope: "runtime/src/agenc/upstream/entrypoints/cli.tsx",
+      },
+    ],
+  },
   "T-13": {
     files: [
       "runtime/src/tui/slash/slash-command-parsing.ts",
@@ -1092,6 +1119,10 @@ async function tuiAbsorbGates(item) {
     await t13SlashCommandGates();
     return;
   }
+  if (id === "T-14") {
+    await t14StartupStatusGates();
+    return;
+  }
   // Same shape as leaf absorb, but for the larger TUI subtrees.
   await leafAbsorbGates(item);
 }
@@ -1221,6 +1252,35 @@ async function t13SlashCommandGates() {
   }
 
   pass("T-13 slash parser/substitution imports resolved to AgenC-owned paths");
+}
+
+async function t14StartupStatusGates() {
+  const retiredTargets = [
+    "runtime/src/agenc/upstream/components/StartupScreen.ts",
+    "runtime/src/agenc/upstream/components/StartupScreen.test.ts",
+    "runtime/src/agenc/upstream/components/StatusLine.tsx",
+    "runtime/src/agenc/upstream/components/StatusNotices.tsx",
+    "runtime/src/agenc/upstream/utils/statusNoticeDefinitions.tsx",
+  ];
+
+  for (const upstream of retiredTargets) {
+    if (existsSync(path.join(root, upstream))) {
+      failGate(`T-14 upstream target still present: ${upstream}`);
+    }
+    pass(`T-14 upstream target deleted (${upstream})`);
+  }
+
+  const retiredImportPattern = String.raw`agenc/upstream/components/(?:StartupScreen|StatusLine|StatusNotices)|agenc/upstream/utils/statusNoticeDefinitions|components/(?:StartupScreen|StatusLine|StatusNotices)\.js|utils/statusNoticeDefinitions\.js|src/components/(?:StartupScreen|StatusLine|StatusNotices)|src/utils/statusNoticeDefinitions`;
+  const retiredImportScan = run(
+    "rg",
+    ["--no-messages", "-n", retiredImportPattern, "runtime/src"],
+    { silent: true },
+  );
+  if (retiredImportScan.status === 0 && retiredImportScan.stdout.trim()) {
+    failGate(`T-14 retired startup/status imports remain:\n${retiredImportScan.stdout}`);
+  }
+
+  pass("T-14 startup/status imports resolved to AgenC-owned paths");
 }
 
 async function foundationalGates(item) {

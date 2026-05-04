@@ -42,7 +42,7 @@ import { AssistantThinkingMessage } from '../../agenc/upstream/components/messag
 import { isNullRenderingAttachment } from '../../agenc/upstream/components/messages/nullRenderingAttachments.js';
 import { OffscreenFreeze } from '../../agenc/upstream/components/OffscreenFreeze.js';
 import type { ToolUseConfirm } from './permissions/PermissionRequest.js';
-import { StatusNotices } from '../../agenc/upstream/components/StatusNotices.js';
+import { StatusNotices } from '../startup/StatusNotices.js';
 import type { JumpHandle } from '../../agenc/upstream/components/VirtualMessageList.js';
 import {
   getMessagesSendUserFileToolName,

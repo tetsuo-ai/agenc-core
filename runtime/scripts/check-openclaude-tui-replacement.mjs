@@ -165,6 +165,16 @@ function assertSourceSnapshot() {
   ]
     .filter(([file]) => existsSync(join(liveTuiRoot, file)))
     .map(([, inventoryPath]) => inventoryPath);
+  const absorbedStartupFiles = [
+    ["startup/StartupScreen.ts", "src/components/StartupScreen.ts"],
+    ["startup/StartupScreen.test.ts", "src/components/StartupScreen.test.ts"],
+    ["startup/StatusLine.tsx", "src/components/StatusLine.tsx"],
+    ["startup/StatusNotices.tsx", "src/components/StatusNotices.tsx"],
+    ["startup/statusNoticeDefinitions.tsx", "src/utils/statusNoticeDefinitions.tsx"],
+    ["startup/statusNoticeDefinitions.test.tsx", "src/utils/statusNoticeDefinitions.test.tsx"],
+  ]
+    .filter(([file]) => existsSync(join(liveTuiRoot, file)))
+    .map(([, inventoryPath]) => inventoryPath);
   const substitutions = new Map([
     [
       `src/components/${donorBrand}CodeHint/PluginHintMenu.tsx`,
@@ -224,6 +234,14 @@ function assertSourceSnapshot() {
       "src/components/messagesBriefFiltering.ts",
       "T-07 extracts Messages brief-mode filtering into a TUI-owned pure helper so behavior can be tested without mounting the full renderer component graph.",
     ],
+    [
+      "src/utils/statusNoticeDefinitions.tsx",
+      "T-14 absorbs the startup notice-definition utility with StatusNotices because it is a dedicated startup dependency outside the component inventory.",
+    ],
+    [
+      "src/utils/statusNoticeDefinitions.test.tsx",
+      "Focused coverage for the T-14 startup notice-definition behavior and AgenC wording.",
+    ],
   ]);
   const expected = sourceFiles
     .map((file) => substitutions.get(file) ?? file)
@@ -236,6 +254,7 @@ function assertSourceSnapshot() {
     .concat(absorbedPromptInputFiles)
     .concat(absorbedMessagesFiles)
     .concat(absorbedAppFiles)
+    .concat(absorbedStartupFiles)
     .sort();
   const missing = expected.filter((file) => !actualFiles.includes(file));
   const extra = actualFiles.filter((file) => !expected.includes(file));
@@ -287,6 +306,13 @@ function assertOldTuiRemoved() {
     "state/AppState.tsx",
     "state/AppStateStore.ts",
     "state/store.ts",
+    "startup/PARITY.md",
+    "startup/StartupScreen.test.ts",
+    "startup/StartupScreen.ts",
+    "startup/StatusLine.tsx",
+    "startup/StatusNotices.tsx",
+    "startup/statusNoticeDefinitions.test.tsx",
+    "startup/statusNoticeDefinitions.tsx",
     "tool-stubs-glob-view.test.tsx",
   ]);
   // Tests under the compatibility island are co-located with the live wiring
@@ -343,6 +369,12 @@ function assertNoDeletedAbsorbImporters() {
   const deletedPromptInputRoot = join(copiedRoot, "components/PromptInput");
   const deletedMessagesEntrypoint = join(copiedRoot, "components/Messages");
   const deletedAppEntrypoint = join(copiedRoot, "components/App");
+  const deletedStartupEntrypoints = new Map([
+    [join(copiedRoot, "components/StartupScreen"), "StartupScreen"],
+    [join(copiedRoot, "components/StatusLine"), "StatusLine"],
+    [join(copiedRoot, "components/StatusNotices"), "StatusNotices"],
+    [join(copiedRoot, "utils/statusNoticeDefinitions"), "status notice definitions"],
+  ]);
   const sourceImportPattern = /(?:from\s+|import\s*\(|require\s*\()\s*['"]([^'"]+)['"]/g;
   for (const file of walk(copiedRoot)) {
     if (!/\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(file)) continue;
@@ -398,6 +430,18 @@ function assertNoDeletedAbsorbImporters() {
       ) {
         fail(`deleted App alias import remains: ${file} -> ${specifier}`);
       }
+      if (
+        specifier === "src/components/StartupScreen" ||
+        specifier === "src/components/StartupScreen.js" ||
+        specifier === "src/components/StatusLine" ||
+        specifier === "src/components/StatusLine.js" ||
+        specifier === "src/components/StatusNotices" ||
+        specifier === "src/components/StatusNotices.js" ||
+        specifier === "src/utils/statusNoticeDefinitions" ||
+        specifier === "src/utils/statusNoticeDefinitions.js"
+      ) {
+        fail(`deleted startup/status alias import remains: ${file} -> ${specifier}`);
+      }
       if (!specifier.startsWith(".")) continue;
       const resolved = resolve(dirname(abs), specifier)
         .replace(/\.(?:js|jsx|ts|tsx|mjs|cjs)$/, "");
@@ -436,6 +480,11 @@ function assertNoDeletedAbsorbImporters() {
       }
       if (resolved === deletedAppEntrypoint) {
         fail(`deleted App relative import remains: ${file} -> ${specifier}`);
+      }
+      for (const [deletedStartupEntrypoint, label] of deletedStartupEntrypoints) {
+        if (resolved === deletedStartupEntrypoint) {
+          fail(`deleted ${label} relative import remains: ${file} -> ${specifier}`);
+        }
       }
     }
   }

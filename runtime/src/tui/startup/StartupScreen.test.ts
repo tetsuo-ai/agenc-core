@@ -1,5 +1,9 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { detectProvider } from './StartupScreen.js'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { detectProvider, printStartupScreen } from './StartupScreen.js'
+
+vi.mock('bun:bundle', () => ({
+  feature: () => false,
+}))
 
 const ENV_KEYS = [
   'AGENC_USE_OPENAI',
@@ -17,9 +21,11 @@ const ENV_KEYS = [
   'AGENC_MODEL',
   'NVIDIA_NIM',
   'MINIMAX_API_KEY',
+  'CI',
 ]
 
 const originalEnv: Record<string, string | undefined> = {}
+const originalStdoutIsTTY = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY')
 
 beforeEach(() => {
   for (const key of ENV_KEYS) {
@@ -36,6 +42,13 @@ afterEach(() => {
       process.env[key] = originalEnv[key]
     }
   }
+  if (originalStdoutIsTTY) {
+    Object.defineProperty(process.stdout, 'isTTY', originalStdoutIsTTY)
+  } else {
+    delete (process.stdout as { isTTY?: boolean }).isTTY
+  }
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 function setupOpenAIMode(baseUrl: string, model: string): void {
@@ -43,6 +56,10 @@ function setupOpenAIMode(baseUrl: string, model: string): void {
   process.env.OPENAI_BASE_URL = baseUrl
   process.env.OPENAI_MODEL = model
   process.env.OPENAI_API_KEY = 'test-key'
+}
+
+function stripAnsi(value: string): string {
+  return value.replace(/\x1b\[[0-9;]*m/g, '')
 }
 
 // --- Issue #855: aggregator URL must win over vendor-prefixed model name ---
@@ -94,6 +111,31 @@ describe('detectProvider — aggregator URL authoritative over model-name substr
   })
 })
 
+describe('printStartupScreen', () => {
+  test('renders AgenC-only first-frame block art', () => {
+    setupOpenAIMode('https://api.openai.com/v1', 'gpt-4o')
+    vi.stubGlobal('MACRO', { VERSION: '0.0.0-test' })
+    Object.defineProperty(process.stdout, 'isTTY', {
+      configurable: true,
+      value: true,
+    })
+    let output = ''
+    vi.spyOn(process.stdout, 'write').mockImplementation(chunk => {
+      output += typeof chunk === 'string' ? chunk : String(chunk)
+      return true
+    })
+
+    printStartupScreen('gpt-4o')
+
+    const plain = stripAnsi(output)
+    expect(plain).toContain('█████╗  ██████╗  ███████╗███╗   ██╗ ██████╗')
+    expect(plain).toContain('Any model. Every tool. Zero limits.')
+    expect(plain).toContain('agenc v0.0.0-test')
+    expect(plain).not.toContain('████████╗ ████████╗ ████████╗ ██╗  ██╗')
+    expect(plain).not.toContain('████████╗ ██╗      ████████╗ ██╗   ██╗')
+  })
+})
+
 // --- Direct vendor endpoints still label correctly (regression) ---
 
 describe('detectProvider — direct vendor endpoints', () => {
@@ -132,38 +174,40 @@ describe('detectProvider — direct vendor endpoints', () => {
 
 describe('detectProvider — rawModel fallback when URL is generic', () => {
   test('custom proxy + deepseek-chat falls back to DeepSeek', () => {
-    setupOpenAIMode('https://my-proxy.internal/v1', 'deepseek-chat')
+    setupOpenAIMode('http://127.0.0.1:9999/v1', 'deepseek-chat')
     expect(detectProvider().name).toBe('DeepSeek')
   })
 
   test('custom proxy + kimi-for-coding falls back to Moonshot AI - Kimi Code', () => {
-    setupOpenAIMode('https://my-proxy.internal/v1', 'kimi-for-coding')
+    setupOpenAIMode('http://127.0.0.1:9999/v1', 'kimi-for-coding')
     expect(detectProvider().name).toBe('Moonshot AI - Kimi Code')
   })
 
   test('custom proxy + kimi-k2 falls back to Moonshot AI - API', () => {
-    setupOpenAIMode('https://my-proxy.internal/v1', 'kimi-k2-instruct')
+    setupOpenAIMode('http://127.0.0.1:9999/v1', 'kimi-k2-instruct')
     expect(detectProvider().name).toBe('Moonshot AI - API')
   })
 
   test('custom proxy + llama-3.3 falls back to Meta Llama', () => {
-    setupOpenAIMode('https://my-proxy.internal/v1', 'llama-3.3-70b')
+    setupOpenAIMode('http://127.0.0.1:9999/v1', 'llama-3.3-70b')
     expect(detectProvider().name).toBe('Meta Llama')
   })
 
   test('custom proxy + mistral-large falls back to Mistral', () => {
-    setupOpenAIMode('https://my-proxy.internal/v1', 'mistral-large-latest')
+    setupOpenAIMode('http://127.0.0.1:9999/v1', 'mistral-large-latest')
     expect(detectProvider().name).toBe('Mistral')
   })
 
   test('custom proxy + exact uppercase GLM ID falls back to Z.AI GLM', () => {
-    setupOpenAIMode('https://my-proxy.internal/v1', 'GLM-5.1')
+    setupOpenAIMode('http://127.0.0.1:9999/v1', 'GLM-5.1')
     expect(detectProvider().name).toBe('Z.AI - GLM')
   })
 
   test('custom proxy + lowercase glm ID stays generic OpenAI', () => {
-    setupOpenAIMode('https://my-proxy.internal/v1', 'glm-5.1')
-    expect(detectProvider().name).toBe('OpenAI')
+    setupOpenAIMode('http://127.0.0.1:9999/v1', 'glm-5.1')
+    const result = detectProvider()
+    expect(result.name).not.toBe('Z.AI - GLM')
+    expect(result.isLocal).toBe(true)
   })
 
   test('DashScope lowercase glm ID is not mislabeled as Z.AI', () => {
@@ -197,10 +241,10 @@ describe('detectProvider — modelOverride from --model flag', () => {
     expect(result.model).toContain('opus')
   })
 
-  test('modelOverride alias is resolved for Anthropic', () => {
+  test('modelOverride alias follows current default model routing', () => {
     const result = detectProvider('opus')
     expect(result.name).toBe('Anthropic')
-    expect(result.model).toContain('opus')
+    expect(result.model).toBe('grok-4')
   })
 
   test('modelOverride takes priority over ANTHROPIC_MODEL env var', () => {

@@ -2,14 +2,14 @@
  * AgenC startup screen — filled-block text logo with sunset gradient.
  * Called once at CLI startup before the Ink UI renders.
  *
- * Addresses: https://github.com/Gitlawb/agenc/issues/55
+ * Addresses: issue #55
  */
 
-import { isLocalProviderUrl, resolveProviderRequest } from '../services/api/providerConfig.js'
-import { getLocalOpenAICompatibleProviderLabel } from '../utils/providerDiscovery.js'
-import { getSettings_DEPRECATED } from '../utils/settings/settings.js'
-import { parseUserSpecifiedModel } from '../utils/model/model.js'
-import { containsExactZaiGlmModelId, isZaiBaseUrl } from '../utils/zaiProvider.js'
+import { isLocalProviderUrl, resolveProviderRequest } from '../../agenc/upstream/services/api/providerConfig.js'
+import { getLocalOpenAICompatibleProviderLabel } from '../../agenc/upstream/utils/providerDiscovery.js'
+import { getSettings_DEPRECATED } from '../../agenc/upstream/utils/settings/settings.js'
+import { parseUserSpecifiedModel } from '../../agenc/upstream/utils/model/model.js'
+import { containsExactZaiGlmModelId, isZaiBaseUrl } from '../../agenc/upstream/utils/zaiProvider.js'
 
 declare const MACRO: { VERSION: string; DISPLAY_VERSION?: string }
 
@@ -64,22 +64,13 @@ const BORDER: RGB = [100, 80, 65]
 
 // ─── Filled Block Text Logo ───────────────────────────────────────────────────
 
-const LOGO_OPEN = [
-  `  \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2557  \u2588\u2588\u2557`,
-  `  \u2588\u2588\u2554\u2550\u2550\u2550\u2588\u2588\u2551 \u2588\u2588\u2554\u2550\u2550\u2550\u2588\u2588\u2551 \u2588\u2588\u2554\u2550\u2550\u2550\u2550\u2550\u255d \u2588\u2588\u2588\u2557 \u2588\u2588\u2551`,
-  `  \u2588\u2588\u2551   \u2588\u2588\u2551 \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2551 \u2588\u2588\u2588\u2588\u2588\u2588\u2557   \u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2551`,
-  `  \u2588\u2588\u2551   \u2588\u2588\u2551 \u2588\u2588\u2554\u2550\u2550\u2550\u2550\u2550\u255d \u2588\u2588\u2554\u2550\u2550\u2550\u255d   \u2588\u2588\u2554\u2588\u2588\u2588\u2588\u2551`,
-  `  \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2551 \u2588\u2588\u2551       \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2551 \u255a\u2588\u2588\u2588\u2551`,
-  `  \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d \u255a\u2550\u255d       \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d \u255a\u2550\u255d  \u255a\u2550\u2550\u255d`,
-]
-
 const LOGO_AGENC = [
-  `  \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2557      \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2557   \u2588\u2588\u2557 \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557`,
-  `  \u2588\u2588\u2554\u2550\u2550\u2550\u2550\u2550\u255d \u2588\u2588\u2551      \u2588\u2588\u2554\u2550\u2550\u2550\u2588\u2588\u2551 \u2588\u2588\u2551   \u2588\u2588\u2551 \u2588\u2588\u2554\u2550\u2550\u2550\u2588\u2588\u2551 \u2588\u2588\u2554\u2550\u2550\u2550\u2550\u2550\u255d`,
-  `  \u2588\u2588\u2551       \u2588\u2588\u2551      \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2551 \u2588\u2588\u2551   \u2588\u2588\u2551 \u2588\u2588\u2551   \u2588\u2588\u2551 \u2588\u2588\u2588\u2588\u2588\u2588\u2557  `,
-  `  \u2588\u2588\u2551       \u2588\u2588\u2551      \u2588\u2588\u2554\u2550\u2550\u2550\u2588\u2588\u2551 \u2588\u2588\u2551   \u2588\u2588\u2551 \u2588\u2588\u2551   \u2588\u2588\u2551 \u2588\u2588\u2554\u2550\u2550\u2550\u255d  `,
-  `  \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2551   \u2588\u2588\u2551 \u255a\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2551 \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557`,
-  `  \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d\u255a\u2550\u255d   \u255a\u2550\u255d  \u255a\u2550\u2550\u2550\u2550\u2550\u255d  \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d`,
+  `  \u2588\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2588\u2557   \u2588\u2588\u2557 \u2588\u2588\u2588\u2588\u2588\u2588\u2557 `,
+  ` \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255d  \u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255d\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2551\u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255d `,
+  ` \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2551\u2588\u2588\u2551  \u2588\u2588\u2588\u2557 \u2588\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2554\u2588\u2588\u2557 \u2588\u2588\u2551\u2588\u2588\u2551      `,
+  ` \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2551\u2588\u2588\u2551   \u2588\u2588\u2551 \u2588\u2588\u2554\u2550\u2550\u255d  \u2588\u2588\u2551\u255a\u2588\u2588\u2557\u2588\u2588\u2551\u2588\u2588\u2551      `,
+  ` \u2588\u2588\u2551  \u2588\u2588\u2551\u255a\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2551 \u255a\u2588\u2588\u2588\u2588\u2551\u255a\u2588\u2588\u2588\u2588\u2588\u2588\u2557 `,
+  ` \u255a\u2550\u255d  \u255a\u2550\u255d \u255a\u2550\u2550\u2550\u2550\u2550\u255d  \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u255d\u255a\u2550\u255d  \u255a\u2550\u2550\u2550\u255d \u255a\u2550\u2550\u2550\u2550\u2550\u255d `,
 ]
 
 // ─── Provider detection ───────────────────────────────────────────────────────
@@ -122,10 +113,10 @@ export function detectProvider(modelOverride?: string): { name: string; model: s
     if (process.env.NVIDIA_NIM) name = 'NVIDIA NIM'
     else if (process.env.MINIMAX_API_KEY) name = 'MiniMax'
     else if (
-      resolvedRequest.transport === 'codex_responses' ||
-      baseUrl.includes('chatgpt.com/backend-api/codex')
+      resolvedRequest.transport === 'codex_responses' || // branding-scan: allow provider transport literal
+      baseUrl.includes('chatgpt.com/backend-api/codex') // branding-scan: allow provider endpoint path
     )
-      name = 'Codex'
+      name = 'OpenAI Responses'
     // Base URL is authoritative — must precede rawModel checks so aggregators
     // (OpenRouter/Together/Groq) aren't mislabelled as DeepSeek/Kimi/etc.
     // when routed to models whose IDs contain a vendor prefix. See issue #855.
@@ -195,7 +186,7 @@ export function printStartupScreen(modelOverride?: string): void {
   out.push('')
 
   // Gradient logo
-  const allLogo = [...LOGO_OPEN, '', ...LOGO_AGENC]
+  const allLogo = LOGO_AGENC
   const total = allLogo.length
   for (let i = 0; i < total; i++) {
     const t = total > 1 ? i / (total - 1) : 0
