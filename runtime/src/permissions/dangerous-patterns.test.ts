@@ -38,11 +38,26 @@ describe("dangerous shell command detection", () => {
     "rm -r /tmp -f",
     "rm --recursive /tmp --force",
     "rm / -rf --no-preserve-root",
+    "rm -rf $HOME",
+    "rm -rf ${HOME}",
+    "rm -rf '$HOME/*'",
     "NODE_ENV=test rm / -fr",
     "env FOO=bar rm --recursive /tmp --force",
     "timeout 10 rm / -rf",
     "bash -lc 'rm / -rf'",
   ])("flags permuted recursive forced removal: %s", (command) => {
+    expect(isDangerousShellCommand(command)).toBe(true);
+  });
+
+  test.each([
+    "git push origin --force main",
+    "git push origin -f main",
+    "git push -f origin main",
+    "git push origin main --force",
+    "git push --force origin main",
+    "git push origin --force-with-lease master",
+    "git push origin +HEAD:main",
+  ])("flags destructive default branch force push: %s", (command) => {
     expect(isDangerousShellCommand(command)).toBe(true);
   });
 
@@ -74,6 +89,15 @@ describe("dangerous shell command detection", () => {
     "rm -f /",
     "rm -rf ./dist",
   ])("does not flag incomplete or operand-only rm argv: %s", (command) => {
+    expect(isDangerousShellCommand(command)).toBe(false);
+  });
+
+  test.each([
+    "git push origin feature --force",
+    "git push origin main",
+    "git push origin --force release",
+    "echo git push origin --force main",
+  ])("does not flag non-default or non-force git push: %s", (command) => {
     expect(isDangerousShellCommand(command)).toBe(false);
   });
 

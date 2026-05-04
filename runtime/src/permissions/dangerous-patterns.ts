@@ -77,7 +77,7 @@ export interface DangerousShellCommandPattern {
  *
  * This combines the OC interpreter/pattern lists above with the donor runtime
  * exec-policy safety floor: destructive commands such as recursive forced
- * removal of absolute paths must never be hidden by broad allow rules.
+ * removal of critical paths must never be hidden by broad allow rules.
  */
 export const DANGEROUS_SHELL_COMMAND_PATTERNS: readonly DangerousShellCommandPattern[] = [
   {
@@ -98,12 +98,8 @@ export const DANGEROUS_SHELL_COMMAND_PATTERNS: readonly DangerousShellCommandPat
   },
   // Destructive git publish to default branch
   {
-    pattern: /\bgit\s+push\s+(--force|-f)\b[^;&|]*\b(main|master)\b/,
+    matches: isDangerousDefaultBranchForcePush,
     label: "git push --force main",
-  },
-  {
-    pattern: /\bgit\s+push\b[^;&|]*\b(main|master)\b[^;&|]*\s(--force|-f)\b/,
-    label: "git push main --force",
   },
   // Package-registry publishes
   { pattern: /\b(npm|yarn|pnpm|bun)\s+publish\b/, label: "npm publish" },
@@ -165,6 +161,64 @@ function isRecursiveForceRemoveOfCriticalPath(command: string): boolean {
   if (words.length === 0) return false;
 
   return containsRecursiveForceRemove(words);
+}
+
+function isDangerousDefaultBranchForcePush(command: string): boolean {
+  const fragments = splitShellFragments(command);
+  if (fragments.length > 1) {
+    return fragments.some((fragment) =>
+      isDangerousDefaultBranchForcePush(fragment),
+    );
+  }
+
+  const words = splitSimpleShellWords(command);
+  const gitIndex = firstCommandIndex(words, 0);
+  if (gitIndex === null) return false;
+  if (basename(stripShellQuotes(words[gitIndex] ?? "")) !== "git") {
+    return false;
+  }
+
+  const pushIndex = words.findIndex(
+    (word, index) => index > gitIndex && stripShellQuotes(word) === "push",
+  );
+  if (pushIndex === -1) return false;
+
+  return gitPushArgsForceDefaultBranch(words.slice(pushIndex + 1));
+}
+
+function gitPushArgsForceDefaultBranch(args: readonly string[]): boolean {
+  let force = false;
+  let defaultBranch = false;
+
+  for (const raw of args) {
+    const word = stripShellQuotes(raw);
+    force ||= isGitForcePushArg(word);
+    defaultBranch ||= isDefaultBranchPushTarget(word);
+  }
+
+  return force && defaultBranch;
+}
+
+function isGitForcePushArg(word: string): boolean {
+  if (word.startsWith("+")) return true;
+  if (
+    word === "--force" ||
+    word.startsWith("--force=") ||
+    word.startsWith("--force-with-lease") ||
+    word.startsWith("--force-if-includes")
+  ) {
+    return true;
+  }
+  return /^-[^-]*f/.test(word);
+}
+
+function isDefaultBranchPushTarget(word: string): boolean {
+  const ref = word.startsWith("+") ? word.slice(1) : word;
+  const target = ref.includes(":") ? ref.slice(ref.lastIndexOf(":") + 1) : ref;
+  const branch = target.startsWith("refs/heads/")
+    ? target.slice("refs/heads/".length)
+    : target;
+  return branch === "main" || branch === "master";
 }
 
 function containsRecursiveForceRemove(words: readonly string[]): boolean {
@@ -465,5 +519,18 @@ function isEnvironmentAssignment(word: string): boolean {
 }
 
 function isCriticalRemovalTarget(target: string): boolean {
+  if (isHomeShellExpansionTarget(target)) return true;
   return isDangerousRemovalPath(expandTilde(target));
+}
+
+function isHomeShellExpansionTarget(target: string): boolean {
+  const normalized = target.replace(/\\/g, "/");
+  return (
+    normalized === "$HOME" ||
+    normalized === "$HOME/" ||
+    normalized === "$HOME/*" ||
+    normalized === "${HOME}" ||
+    normalized === "${HOME}/" ||
+    normalized === "${HOME}/*"
+  );
 }

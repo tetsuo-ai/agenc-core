@@ -381,6 +381,29 @@ describe("bashToolHasPermission", () => {
     }
   });
 
+  test.each([
+    ["rm -rf \"$HOME\"", "rm -rf critical path"],
+    ["rm -rf '${HOME}/*'", "rm -rf critical path"],
+    ["git push origin --force main", "git push --force main"],
+    ["git push origin -f main", "git push --force main"],
+  ])(
+    "dangerous command form is denied at the permission boundary: %s",
+    async (command, label) => {
+      const ctx = makeCtx({
+        alwaysAllowRules: {
+          userSettings: ["Bash"],
+        },
+      });
+      const evalCtx = makeEvaluatorCtx(ctx);
+      const result = await bashToolHasPermission({ command }, evalCtx);
+      expect(result.behavior).toBe("deny");
+      if (result.behavior === "deny") {
+        expect(result.decisionReason.type).toBe("safetyCheck");
+        expect(result.message).toContain(label);
+      }
+    },
+  );
+
   test("wrapped dangerous command is denied at the permission boundary", async () => {
     const ctx = makeCtx({
       alwaysAllowRules: {
