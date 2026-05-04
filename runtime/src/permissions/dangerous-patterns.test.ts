@@ -33,6 +33,19 @@ describe("dangerous shell command detection", () => {
     expect(isDangerousShellCommand("NODE_ENV=test rm -rf '~'")).toBe(true);
   });
 
+  test.each([
+    "rm / -rf",
+    "rm -r /tmp -f",
+    "rm --recursive /tmp --force",
+    "rm / -rf --no-preserve-root",
+    "NODE_ENV=test rm / -fr",
+    "env FOO=bar rm --recursive /tmp --force",
+    "timeout 10 rm / -rf",
+    "bash -lc 'rm / -rf'",
+  ])("flags permuted recursive forced removal: %s", (command) => {
+    expect(isDangerousShellCommand(command)).toBe(true);
+  });
+
   test("flags wrapper and nested shell removal forms", () => {
     expect(isDangerousShellCommand("nice rm -rf /tmp")).toBe(true);
     expect(isDangerousShellCommand("timeout 10 rm -rf /")).toBe(true);
@@ -52,6 +65,16 @@ describe("dangerous shell command detection", () => {
     expect(isDangerousShellCommand("rm -rf ./dist")).toBe(false);
     expect(isDangerousShellCommand(`rm -rf ${workspaceTmp}`)).toBe(false);
     expect(isDangerousShellCommand("rm -rf ~/cache")).toBe(false);
+  });
+
+  test.each([
+    "rm -- / -rf",
+    "rm /",
+    "rm -r /",
+    "rm -f /",
+    "rm -rf ./dist",
+  ])("does not flag incomplete or operand-only rm argv: %s", (command) => {
+    expect(isDangerousShellCommand(command)).toBe(false);
   });
 
   test("does not flag quoted text or non-rm wrapped commands", () => {

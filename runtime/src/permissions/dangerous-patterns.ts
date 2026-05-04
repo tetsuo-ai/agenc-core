@@ -365,6 +365,7 @@ function rmArgsTargetCriticalPath(args: readonly string[]): boolean {
   let recursive = false;
   let force = false;
   let parsingFlags = true;
+  const operands: string[] = [];
   for (const raw of args) {
     const word = stripShellQuotes(raw);
     if (parsingFlags && word === "--") {
@@ -380,9 +381,9 @@ function rmArgsTargetCriticalPath(args: readonly string[]): boolean {
       }
       continue;
     }
-    if (recursive && force && isCriticalRemovalTarget(word)) return true;
+    operands.push(word);
   }
-  return false;
+  return recursive && force && operands.some(isCriticalRemovalTarget);
 }
 
 function splitSimpleShellWords(command: string): string[] {
