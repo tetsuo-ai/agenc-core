@@ -10,6 +10,11 @@ import {
 
 const MAX_BYTES = 8_000;
 
+/**
+ * AgenC does not currently ship a public runtime changelog endpoint.
+ * Keep this command deterministic by reading the nearest checkout
+ * changelog and returning an explicit fallback when none exists.
+ */
 function candidateChangelogs(cwd: string): string[] {
   const paths: string[] = [];
   let current = cwd;

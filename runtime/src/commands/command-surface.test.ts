@@ -25,8 +25,12 @@ import {
   clearReasoningEffort,
   formatReasoningEffortStatus,
 } from "./effort.js";
+import { formatCacheStats } from "./cache-stats.js";
 import { collectContextFiles } from "./files.js";
 import { loadReleaseNotes } from "./release-notes.js";
+import { formatRuntimeStats } from "./stats.js";
+import { formatUsage } from "./usage.js";
+import { collectDoctorChecks, formatDoctorReport } from "./doctor.js";
 import {
   reloadPluginSurfaces,
   setActivePluginRefresherForTesting,
@@ -44,6 +48,26 @@ import {
 } from "../tools/system/filesystem.js";
 import { PermissionModeRegistry } from "../permissions/mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
+
+interface CacheStatsTrackerForTest {
+  recordRequest(
+    metrics: {
+      readonly read: number;
+      readonly created: number;
+      readonly total: number;
+      readonly hitRate: number | null;
+      readonly supported: boolean;
+    },
+    label: string,
+  ): void;
+  resetSessionCacheStats(): void;
+}
+
+async function loadCacheStatsTrackerForTest(): Promise<CacheStatsTrackerForTest> {
+  const trackerModulePath: string =
+    "../agenc/upstream/services/api/cacheStatsTracker.js";
+  return import(trackerModulePath) as Promise<CacheStatsTrackerForTest>;
+}
 
 function fakeSession(overrides: {
   conversationId?: string;
@@ -387,6 +411,79 @@ describe("absorbed T-10 command behavior", () => {
     await expect(loadReleaseNotes(dir)).resolves.toContain("- one");
   });
 
+  it("returns an explicit release-notes fallback when no local notes exist", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-release-empty-"));
+    await expect(loadReleaseNotes(dir)).resolves.toBe(
+      "No local release notes were found for this checkout.",
+    );
+  });
+
+  it("formats cache stats from tracker-backed request history", async () => {
+    const tracker = await loadCacheStatsTrackerForTest();
+    tracker.resetSessionCacheStats();
+    try {
+      tracker.recordRequest(
+        {
+          read: 1_200,
+          created: 300,
+          total: 2_000,
+          hitRate: 0.6,
+          supported: true,
+        },
+        "grok-4",
+      );
+      tracker.recordRequest(
+        {
+          read: 0,
+          created: 0,
+          total: 0,
+          hitRate: null,
+          supported: false,
+        },
+        "local-provider",
+      );
+      const text = await formatCacheStats();
+      expect(text).toContain("Current turn:");
+      expect(text).toContain("Session total:");
+      expect(text).toContain("read=1.2k");
+      expect(text).toContain("created=300");
+      expect(text).toContain("hit=60%");
+      expect(text).toContain("Recent requests (2):");
+      expect(text).toContain("grok-4");
+      expect(text).toContain("[Cache: N/A]");
+      expect(text).toContain("N/A rows: provider API does not expose cache usage.");
+    } finally {
+      tracker.resetSessionCacheStats();
+    }
+  });
+
+  it("formats usage, stats, and doctor output with concrete runtime values", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-command-output-"));
+    const session = fakeSession({
+      state: {
+        history: [{ id: 1 }, { id: 2 }],
+        totalTokenUsage: {
+          promptTokens: 10,
+          completionTokens: 5,
+          totalTokens: 15,
+          cachedInputTokens: 3,
+        },
+      },
+      budgetTracker: { emitted: 25, remaining: 75 },
+    });
+
+    expect(formatUsage(session)).toContain("total tokens: 15");
+    expect(formatUsage(session)).toContain("budget remaining: 75");
+    expect(formatRuntimeStats(session, dir)).toContain("transcript items: 2");
+    expect(formatRuntimeStats(session, dir)).toContain("registered tools: 2");
+    const doctorReport = formatDoctorReport(
+      collectDoctorChecks(fakeContext(dir, session)),
+    );
+    expect(doctorReport).toContain("AgenC doctor");
+    expect(doctorReport).toContain("provider: xai / grok-4");
+    expect(doctorReport).toContain(`working directory: ${dir}`);
+  });
+
   it("initializes and reports project wiki state", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agenc-wiki-"));
     await expect(handleWikiCommand(dir, "status")).resolves.toContain("not initialized");
@@ -500,20 +597,24 @@ describe("absorbed T-10 command behavior", () => {
       error_count: 0,
     }));
     try {
-      for (const line of [
-        "/cache-stats",
-        "/cost",
-        "/doctor",
-        "/effort high",
-        "/files",
-        "/release-notes",
-        "/reload-plugins",
-        "/stats",
-        "/usage",
-        "/wiki status",
-      ]) {
+      const expectations = new Map([
+        ["/cache-stats", "Cache stats"],
+        ["/cost", "Cost tracking is not enabled"],
+        ["/doctor", "AgenC doctor"],
+        ["/effort high", "Reasoning effort set to high"],
+        ["/files", "No files in context."],
+        ["/release-notes", "- shipped"],
+        ["/reload-plugins", "Reloaded plugin surfaces:"],
+        ["/stats", "registered tools: 2"],
+        ["/usage", "total tokens: 15"],
+        ["/wiki status", "not initialized"],
+      ]);
+      for (const [line, expectedText] of expectations) {
         const outcome = await dispatchLine(line, dir, session);
         expect(outcome.result.kind, line).toBe("text");
+        if (outcome.result.kind === "text") {
+          expect(outcome.result.text, line).toContain(expectedText);
+        }
       }
     } finally {
       restore();
