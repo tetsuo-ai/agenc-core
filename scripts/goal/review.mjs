@@ -307,8 +307,14 @@ if (missingSeverities.length > 0) {
 // Security/supply-chain and Performance/resource-leak sections must each
 // have substantive content — either explicit "none" or at least one
 // bulleted/numbered finding. An empty body means the pass was skipped.
+//
+// Body capture: anything between the section header (which already ends in
+// a colon) and the next terminator section header or the VERDICT line.
+// Accepts both inline content ("Security/supply-chain: none") and
+// multi-line bodies. The previous regex required `\s*\n` after the header,
+// which made inline "none" answers parse as empty.
 function sectionBody(name, terminators) {
-  const re = new RegExp(`${name.replace(/[/.]/g, "\\$&")}\\s*\\n([\\s\\S]*?)(?:\\n\\s*(?:${terminators.map((t) => t.replace(/[/.]/g, "\\$&")).join("|")}|VERDICT:))`, "i");
+  const re = new RegExp(`${name.replace(/[/.]/g, "\\$&")}([\\s\\S]*?)(?:\\n\\s*(?:${terminators.map((t) => t.replace(/[/.]/g, "\\$&")).join("|")}|VERDICT:))`, "i");
   const m = re.exec(finalMsg);
   return m ? m[1].trim() : "";
 }
@@ -334,7 +340,7 @@ for (const { name, terminators } of passSections) {
 // source file is missing from the review's list, the verdict is rejected
 // regardless of whether it was APPROVED — we don't trust hallucinated
 // coverage.
-const filesReviewedSection = /Files reviewed:\s*\n([\s\S]*?)(?:\n\s*(?:Issues:|Cross-cutting:|Security|Performance|Scope check:|Test coverage gaps:|VERDICT:))/i.exec(finalMsg);
+const filesReviewedSection = /Files reviewed:([\s\S]*?)(?:\n\s*(?:Issues:|Cross-cutting:|Security|Performance|Scope check:|Test coverage gaps:|VERDICT:))/i.exec(finalMsg);
 if (!filesReviewedSection) {
   process.stderr.write(`${BOLD}${RED}✗${RESET} reviewer output missing required "Files reviewed:" section\n`);
   process.stderr.write(`The reviewer prompt requires this section. Treating absence as hallucinated coverage.\n`);
