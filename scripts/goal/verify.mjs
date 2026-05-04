@@ -752,15 +752,20 @@ if (toScan.length === 0) {
   pass(`branding clean (${toScan.length} file(s))`);
 }
 
-// --- Gate 2.6: no new upstream/ files; no new shim/adapter/compat/legacy/bridge files ---
+// --- Gate 2.6: no new upstream/ files; no new shim-pattern files; no forwarding-only modules ---
 //
 // Hard rule: this codebase isn't public yet, there is no backwards-compatibility
 // to preserve, and the upstream mirror at runtime/src/agenc/upstream/ exists ONLY
-// as temporary scaffolding that gets deleted at Z-02. Any item that ADDS new
-// files in upstream/ is going the wrong direction. Any item that adds a *-shim,
-// *-adapter, *-compat, *-legacy, or *-bridge file outside the two legitimate
-// locations (runtime/src/tui/bridges/ and runtime/src/mcp-client/) is creating
-// the exact legacy garbage we are cleaning up.
+// as temporary scaffolding that gets deleted at Z-02. Bans:
+//   1. Any new file inside runtime/src/agenc/upstream/ (additions only — growth still
+//      allowed during absorb, but new file paths are forbidden).
+//   2. Any new file matching a shim suffix (shim/adapter/compat/legacy/bridge/wrapper/
+//      facade/proxy/glue/forwarder/passthrough/stub/indirect/dispatch/barrel) across
+//      .ts/.tsx/.mts/.cts/.mjs/.cjs/.js/.jsx outside the two legitimate dirs
+//      (runtime/src/tui/bridges/ and runtime/src/mcp-client/).
+//   3. Any new file under runtime/src/ whose body is overwhelmingly imports +
+//      re-exports + single-line forwarders (catches barrel/index files that the
+//      filename suffix wouldn't flag — wrapper-by-another-name).
 
 header("no new upstream/ files; no new shim/adapter/compat/legacy/bridge files");
 const addedRes = git("diff", "--name-only", "--diff-filter=A", "main...HEAD");
@@ -786,26 +791,68 @@ if (upstreamAdditions.length > 0) {
   );
 }
 
-const SHIM_RE = /(^|\/)[^/]+-(shim|adapter|compat|legacy|bridge)\.(ts|tsx|mjs|cjs|js|jsx)$/;
+// branding-scan: allow regex enumerates banned shim-pattern suffixes for the gate
+const SHIM_RE = /(^|\/)[^/]+-(shim|adapter|compat|legacy|bridge|wrapper|facade|proxy|glue|forwarder|passthrough|stub|indirect|dispatch|barrel)\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/;
 const SHIM_ALLOW_DIRS = [
   "runtime/src/tui/bridges/",
   "runtime/src/mcp-client/",
 ];
 const shimAdditions = [...added].filter((p) => {
   if (!SHIM_RE.test(p)) return false;
-  if (p.endsWith(".test.ts") || p.endsWith(".test.tsx")) return false;
+  if (/\.test\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(p)) return false;
   return !SHIM_ALLOW_DIRS.some((d) => p.startsWith(d));
 });
 if (shimAdditions.length > 0) {
   failGate(
-    `forbidden: this item adds ${shimAdditions.length} new shim/adapter/compat/legacy/bridge file(s) ` +
+    `forbidden: this item adds ${shimAdditions.length} new shim-pattern file(s) ` +
       `outside the two legitimate locations (runtime/src/tui/bridges/, runtime/src/mcp-client/). ` +
+      `Banned suffixes: -shim/-adapter/-compat/-legacy/-bridge/-wrapper/-facade/-proxy/-glue/` +
+      `-forwarder/-passthrough/-stub/-indirect/-dispatch/-barrel across .ts/.tsx/.mts/.cts/.mjs/.cjs/.js/.jsx. ` +
       `This codebase has no backwards-compatibility constraint; do not create wrapper files to keep ` +
       `old import paths alive. Inline the logic at the call site or move to its proper home.\n  ` +
       shimAdditions.map((p) => `- ${p}`).join("\n  "),
   );
 }
-pass("no new upstream/ files, no new shim/adapter/compat/legacy/bridge additions");
+
+// Behavior gate: catch forwarding-only modules whose filename doesn't match SHIM_RE.
+// A new module whose body is >80% imports + re-exports + single-line forwards AND
+// has fewer than 40 significant lines is functionally a shim regardless of name.
+const FORWARD_LINE_RE =
+  /^\s*(import\s|export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[^}]*\}\s*from\b|export\s*\{[^}]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
+const forwardingViolations = [];
+for (const rel of added) {
+  if (!/^runtime\/src\//.test(rel)) continue;
+  if (!/\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(rel)) continue;
+  if (/\.test\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(rel)) continue;
+  if (/\.d\.ts$/.test(rel)) continue;
+  if (rel.startsWith("runtime/src/agenc/upstream/")) continue;
+  let body;
+  try {
+    body = readFileSync(path.join(repoRoot(), rel), "utf8");
+  } catch {
+    continue;
+  }
+  if (body.length > 16000) continue; // big files aren't shims
+  const lines = body.split("\n");
+  const significant = lines
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith("//") && !l.startsWith("*") && !l.startsWith("/*") && l !== "*/");
+  if (significant.length === 0 || significant.length >= 40) continue;
+  const forward = significant.filter((l) => FORWARD_LINE_RE.test(l)).length;
+  const ratio = forward / significant.length;
+  if (ratio > 0.8) {
+    forwardingViolations.push({ path: rel, ratio: ratio.toFixed(2), lines: significant.length, forward });
+  }
+}
+if (forwardingViolations.length > 0) {
+  failGate(
+    `forbidden: this item adds ${forwardingViolations.length} forwarding-only module(s) ` +
+      `(>80% imports + re-exports + single-line forwarders, <40 significant lines). ` +
+      `These are shims by another name. Inline at the call site or move to canonical home.\n  ` +
+      forwardingViolations.map((v) => `- ${v.path} (${v.forward}/${v.lines} forward lines, ratio ${v.ratio})`).join("\n  "),
+  );
+}
+pass("no new upstream/ files, no new shim-pattern additions, no forwarding-only modules");
 
 // --- Gate 2.5: per-item named evidence ----------------------------------
 
