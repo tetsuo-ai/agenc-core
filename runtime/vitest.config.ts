@@ -48,7 +48,10 @@ function resolveRelativeAgenCSource(importer: string, source: string): string | 
 
   const sourceRoot = sourceRootForImporter(absoluteImporter);
   if (sourceRoot === null) return null;
-  return null;
+  const upstreamCandidate = resolve(dirname(absoluteImporter), source);
+  const sourceRelative = relative(sourceRoot, upstreamCandidate);
+  if (sourceRelative === '' || sourceRelative.startsWith('..')) return null;
+  return existingSourceFile(resolve(runtimeSourceRoot, sourceRelative));
 }
 
 export default defineConfig({

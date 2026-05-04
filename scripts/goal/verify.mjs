@@ -906,51 +906,21 @@ async function tuiAbsorbGates(item) {
 
 async function t09ToolTargetGates() {
   const retiredTargets = [
-    {
-      upstream: "runtime/src/agenc/upstream/tools/AgentTool/loadAgentsDir.ts",
-      shim: "../../../../tools/AgentTool/loadAgentsDir.js",
-    },
-    {
-      upstream: "runtime/src/agenc/upstream/tools/AgentTool/agentColorManager.ts",
-      shim: "../../../../tools/AgentTool/agentColorManager.js",
-    },
-    {
-      upstream: "runtime/src/agenc/upstream/tools/AgentTool/constants.ts",
-      shim: "../../../../tools/AgentTool/constants.js",
-    },
-    {
-      upstream: "runtime/src/agenc/upstream/tools/AgentTool/prompt.ts",
-      shim: "../../../../tools/AgentTool/prompt.js",
-    },
-    {
-      upstream: "runtime/src/agenc/upstream/tools/AskUserQuestionTool/AskUserQuestionTool.tsx",
-      shim: "../../../../tools/AskUserQuestionTool/AskUserQuestionTool.js",
-    },
-    {
-      upstream: "runtime/src/agenc/upstream/tools/AskUserQuestionTool/prompt.ts",
-      shim: "../../../../tools/AskUserQuestionTool/prompt.js",
-    },
-    {
-      upstream: "runtime/src/agenc/upstream/tools/BriefTool/prompt.ts",
-      shim: "../../../../tools/BriefTool/prompt.js",
-    },
+    "runtime/src/agenc/upstream/tools/AgentTool/loadAgentsDir.ts",
+    "runtime/src/agenc/upstream/tools/AgentTool/agentColorManager.ts",
+    "runtime/src/agenc/upstream/tools/AgentTool/constants.ts",
+    "runtime/src/agenc/upstream/tools/AgentTool/prompt.ts",
+    "runtime/src/agenc/upstream/tools/AskUserQuestionTool/AskUserQuestionTool.tsx",
+    "runtime/src/agenc/upstream/tools/AskUserQuestionTool/prompt.ts",
+    "runtime/src/agenc/upstream/tools/BriefTool/prompt.ts",
   ];
 
-  for (const target of retiredTargets) {
-    const abs = path.join(root, target.upstream);
-    if (!existsSync(abs)) {
-      pass(`T-09 upstream target deleted (${target.upstream})`);
-      continue;
+  for (const upstream of retiredTargets) {
+    const abs = path.join(root, upstream);
+    if (existsSync(abs)) {
+      failGate(`T-09 upstream target still present: ${upstream}`);
     }
-    const content = await readFileSafe(abs);
-    const normalized = content.trim();
-    const expected = `export * from '${target.shim}'`;
-    if (normalized !== expected) {
-      failGate(
-        `T-09 upstream target is not retired to AgenC-owned shim: ${target.upstream}`,
-      );
-    }
-    pass(`T-09 upstream target retired (${target.upstream})`);
+    pass(`T-09 upstream target deleted (${upstream})`);
   }
 
   const scopes = [
@@ -962,11 +932,15 @@ async function t09ToolTargetGates() {
     "runtime/src/agenc/adapters/upstream-agent-list.ts",
     "runtime/src/tools/ask-user-question-bridge-routing.test.tsx",
   ];
-  const forbidden = "agenc/upstream/tools/(AskUserQuestionTool|AgentTool|BriefTool)";
-  const scan = run("rg", ["--no-messages", "-n", forbidden, ...scopes], { silent: true });
-  if (scan.status === 0 && scan.stdout.trim()) {
-    failGate(`T-09 scoped importers still reference upstream tool targets:\n${scan.stdout}`);
+  const upstreamPathScan = run(
+    "rg",
+    ["--no-messages", "-n", "agenc/upstream/tools/(AskUserQuestionTool|AgentTool|BriefTool)", ...scopes],
+    { silent: true },
+  );
+  if (upstreamPathScan.status === 0 && upstreamPathScan.stdout.trim()) {
+    failGate(`T-09 scoped importers still reference upstream tool targets:\n${upstreamPathScan.stdout}`);
   }
+
   pass("T-09 scoped tool importers resolved to AgenC-owned paths");
 }
 
