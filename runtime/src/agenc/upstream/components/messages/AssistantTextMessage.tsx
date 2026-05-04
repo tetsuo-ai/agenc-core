@@ -12,7 +12,7 @@ import { getDefaultSonnetModel, renderModelName } from '../../utils/model/model.
 import { isMacOsKeychainLocked } from '../../utils/secureStorage/macOsKeychainStorage.js';
 import { CtrlOToExpand } from '../CtrlOToExpand.js';
 import { InterruptedByUser } from '../InterruptedByUser.js';
-import { Markdown } from '../Markdown.js';
+import { Markdown } from '../../../../tui/components/markdown/Markdown.js';
 import { MessageResponse } from '../MessageResponse.js';
 import { MessageActionsSelectedContext } from '../messageActions.js';
 import { RateLimitMessage } from './RateLimitMessage.js';

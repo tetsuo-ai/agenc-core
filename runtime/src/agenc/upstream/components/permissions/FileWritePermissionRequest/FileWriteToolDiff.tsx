@@ -5,7 +5,7 @@ import { useTerminalSize } from '../../../hooks/useTerminalSize.js';
 import { Box, NoSelect, Text } from '../../../../../tui/ink.js';
 import { intersperse } from '../../../utils/array.js';
 import { getPatchForDisplay } from '../../../utils/diff.js';
-import { HighlightedCode } from '../../HighlightedCode.js';
+import { HighlightedCode } from '../../../../../tui/components/markdown/HighlightedCode.js';
 import { StructuredDiff } from '../../StructuredDiff.js';
 type Props = {
   file_path: string;

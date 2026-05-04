@@ -11,7 +11,7 @@ import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErr
 import { FileEditToolUpdatedMessage } from '../../components/FileEditToolUpdatedMessage.js';
 import { FileEditToolUseRejectedMessage } from '../../components/FileEditToolUseRejectedMessage.js';
 import { FilePathLink } from '../../components/FilePathLink.js';
-import { HighlightedCode } from '../../components/HighlightedCode.js';
+import { HighlightedCode } from '../../../../tui/components/markdown/HighlightedCode.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { Box, Text } from '../../../../tui/ink.js';
 import type { ToolProgressData } from '../../Tool.js';

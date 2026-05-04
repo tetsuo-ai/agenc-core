@@ -6,7 +6,7 @@ import type { ThemeName } from 'src/utils/theme.js';
 import type { z } from 'zod/v4';
 import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErrorMessage.js';
 import { FilePathLink } from '../../components/FilePathLink.js';
-import { HighlightedCode } from '../../components/HighlightedCode.js';
+import { HighlightedCode } from '../../../../tui/components/markdown/HighlightedCode.js';
 import { MessageResponse } from '../../components/MessageResponse.js';
 import { NotebookEditToolUseRejectedMessage } from '../../components/NotebookEditToolUseRejectedMessage.js';
 import { Box, Text } from '../../../../tui/ink.js';

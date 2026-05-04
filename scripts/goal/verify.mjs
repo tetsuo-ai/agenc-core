@@ -515,6 +515,32 @@ const ITEM_EVIDENCE = {
       },
     ],
   },
+  "T-18": {
+    files: [
+      "runtime/src/tui/components/markdown/Markdown.tsx",
+      "runtime/src/tui/components/markdown/MarkdownTable.tsx",
+      "runtime/src/tui/components/markdown/HighlightedCode.tsx",
+      "runtime/src/tui/components/markdown/HighlightedCodeFallback.tsx",
+      "runtime/src/tui/components/markdown/PARITY.md",
+    ],
+    tests: [
+      "runtime/src/tui/components/markdown/markdown-rendering.test.tsx",
+    ],
+    grepPresent: [
+      {
+        pattern: "\\./markdown/Markdown\\.js",
+        scope: "runtime/src/tui/components/Messages.tsx",
+      },
+      {
+        pattern: "tui/components/markdown/Markdown\\.js",
+        scope: "runtime/src/agenc/upstream/tools/AgentTool/UI.tsx",
+      },
+      {
+        pattern: "tui/components/markdown/HighlightedCode\\.js",
+        scope: "runtime/src/agenc/upstream/tools/FileWriteTool/UI.tsx",
+      },
+    ],
+  },
   "T-13": {
     files: [
       "runtime/src/tui/slash/slash-command-parsing.ts",
@@ -1240,6 +1266,10 @@ async function tuiAbsorbGates(item) {
     await t17SpinnerGates();
     return;
   }
+  if (id === "T-18") {
+    await t18MarkdownGates();
+    return;
+  }
   // Same shape as leaf absorb, but for the larger TUI subtrees.
   await leafAbsorbGates(item);
 }
@@ -1542,6 +1572,74 @@ async function t17SpinnerGates() {
   }
 
   pass("T-17 spinner/shimmer imports resolved to AgenC-owned paths");
+}
+
+async function t18MarkdownGates() {
+  const retiredTargets = [
+    "runtime/src/agenc/upstream/components/Markdown.tsx",
+    "runtime/src/agenc/upstream/components/MarkdownTable.tsx",
+    "runtime/src/agenc/upstream/components/HighlightedCode.tsx",
+    "runtime/src/agenc/upstream/components/HighlightedCode/Fallback.tsx",
+  ];
+
+  for (const upstream of retiredTargets) {
+    if (existsSync(path.join(root, upstream))) {
+      failGate(`T-18 upstream target still present: ${upstream}`);
+    }
+    pass(`T-18 upstream target deleted (${upstream})`);
+  }
+
+  const oldAbsolutePattern = String.raw`agenc/upstream/components/(?:Markdown|MarkdownTable|HighlightedCode)`;
+  const oldAbsoluteScan = run(
+    "rg",
+    ["--no-messages", "-n", oldAbsolutePattern, "runtime/src"],
+    { silent: true },
+  );
+  if (oldAbsoluteScan.status === 0 && oldAbsoluteScan.stdout.trim()) {
+    failGate(`T-18 retired markdown upstream imports remain:\n${oldAbsoluteScan.stdout}`);
+  }
+
+  const sourceImportPattern = /(?:from\s+|import\s*\(|require\s*\()\s*['"]([^'"]+)['"]/g;
+  const deletedEntrypoints = new Map([
+    [path.join(root, "runtime/src/agenc/upstream/components/Markdown"), "Markdown"],
+    [path.join(root, "runtime/src/agenc/upstream/components/MarkdownTable"), "MarkdownTable"],
+    [path.join(root, "runtime/src/agenc/upstream/components/HighlightedCode"), "HighlightedCode"],
+  ]);
+  const oldImports = [];
+  for (const abs of walkFiles(path.join(root, "runtime/src"))) {
+    if (!/\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(abs)) continue;
+    const rel = path.relative(root, abs);
+    const content = readFileSync(abs, "utf8");
+    for (const match of content.matchAll(sourceImportPattern)) {
+      const specifier = match[1];
+      if (!specifier) continue;
+      if (
+        specifier === "src/components/Markdown" ||
+        specifier === "src/components/Markdown.js" ||
+        specifier === "src/components/MarkdownTable" ||
+        specifier === "src/components/MarkdownTable.js" ||
+        specifier === "src/components/HighlightedCode" ||
+        specifier === "src/components/HighlightedCode.js" ||
+        specifier.startsWith("src/components/HighlightedCode/")
+      ) {
+        oldImports.push(`${rel} -> ${specifier}`);
+        continue;
+      }
+      if (!specifier.startsWith(".")) continue;
+      const resolved = path.resolve(path.dirname(abs), specifier)
+        .replace(/\.(?:js|jsx|ts|tsx|mjs|cjs)$/, "");
+      for (const [deletedEntrypoint, label] of deletedEntrypoints) {
+        if (resolved === deletedEntrypoint || resolved.startsWith(`${deletedEntrypoint}/`)) {
+          oldImports.push(`${rel} -> ${specifier} (${label})`);
+        }
+      }
+    }
+  }
+  if (oldImports.length > 0) {
+    failGate(`T-18 retired markdown import specifiers remain:\n${oldImports.join("\n")}`);
+  }
+
+  pass("T-18 markdown/highlighted-code imports resolved to AgenC-owned paths");
 }
 
 async function foundationalGates(item) {

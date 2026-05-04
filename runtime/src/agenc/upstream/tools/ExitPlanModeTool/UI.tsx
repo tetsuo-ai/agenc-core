@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Markdown } from 'src/components/Markdown.js';
+import { Markdown } from '../../../../tui/components/markdown/Markdown.js';
 import { MessageResponse } from 'src/components/MessageResponse.js';
 import { RejectedPlanMessage } from 'src/components/messages/UserToolResultMessage/RejectedPlanMessage.js';
 import { BLACK_CIRCLE } from 'src/constants/figures.js';

@@ -150,6 +150,9 @@ function isAbsorbImportRewriteLine(line, rel) {
     /(?:^|[./])(?:tui\/)?components\/spinner\/(?:Spinner|FlashingChar|GlimmerMessage|ShimmerChar|SpinnerAnimationRow|SpinnerGlyph|TeammateSpinnerLine|TeammateSpinnerTree|teammateSelectHint|types|useShimmerAnimation|useStalledAnimation|utils)(?:\.js)?/,
     /(?:^|[./])components\/Spinner(?:\/(?:FlashingChar|GlimmerMessage|ShimmerChar|SpinnerAnimationRow|SpinnerGlyph|TeammateSpinnerLine|TeammateSpinnerTree|index|teammateSelectHint|types|useShimmerAnimation|useStalledAnimation|utils))?(?:\.js)?/,
     /(?:^|[./])Spinner(?:\.js|\/(?:FlashingChar|GlimmerMessage|ShimmerChar|SpinnerAnimationRow|SpinnerGlyph|TeammateSpinnerLine|TeammateSpinnerTree|index|teammateSelectHint|types|useShimmerAnimation|useStalledAnimation|utils)(?:\.js)?)/,
+    /(?:^|[./])(?:tui\/)?components\/markdown\/(?:Markdown|MarkdownTable|HighlightedCode|HighlightedCodeFallback)(?:\.js)?/,
+    /(?:^|[./])components\/(?:Markdown|MarkdownTable|HighlightedCode)(?:\.js|\/Fallback(?:\.js)?)?/,
+    /(?:^|[./])(?:Markdown|MarkdownTable|HighlightedCode)(?:\.js|\/Fallback(?:\.js)?)?/,
   ];
   if (commonAbsorbImportPatterns.some((pattern) => pattern.test(line))) {
     return true;
