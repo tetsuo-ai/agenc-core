@@ -5,45 +5,53 @@ import type { UUID } from 'crypto';
 import type { RefObject } from 'react';
 import * as React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { StreamingToolUse } from '../../../llm/types.js';
-import { every } from 'src/utils/set.js';
-import { getIsRemoteMode } from '../bootstrap/state.js';
-import type { Command } from '../commands.js';
-import { BLACK_CIRCLE } from '../constants/figures.js';
-import { useTerminalSize } from '../hooks/useTerminalSize.js';
-import type { ScrollBoxHandle } from '../../../tui/ink/components/ScrollBox.js';
-import { useTerminalNotification } from '../../../tui/ink/useTerminalNotification.js';
-import { Box, Text } from '../../../tui/ink.js';
-import { useShortcutDisplay } from '../../../tui/keybindings/useShortcutDisplay.js';
-import type { Screen } from '../screens/REPL.js';
-import type { Tools } from '../Tool.js';
-import { findToolByName } from '../Tool.js';
-import type { AgentDefinitionsResult } from '../tools/AgentTool/loadAgentsDir.js';
-import type { Message as MessageType, NormalizedMessage, ProgressMessage as ProgressMessageType, RenderableMessage } from '../types/message.js';
-import { type AdvisorBlock, isAdvisorBlock } from '../utils/advisor.js';
-import { collapseBackgroundBashNotifications } from '../utils/collapseBackgroundBashNotifications.js';
-import { collapseHookSummaries } from '../utils/collapseHookSummaries.js';
-import { collapseReadSearchGroups } from '../utils/collapseReadSearch.js';
-import { collapseTeammateShutdowns } from '../utils/collapseTeammateShutdowns.js';
-import { getGlobalConfig } from '../utils/config.js';
-import { isEnvTruthy } from '../utils/envUtils.js';
-import { isFullscreenEnvEnabled } from '../utils/fullscreen.js';
-import { applyGrouping } from '../utils/groupToolUses.js';
-import { buildMessageLookups, createAssistantMessage, deriveUUID, getMessagesAfterCompactBoundary, getToolUseID, getToolUseIDs, hasUnresolvedHooksFromLookup, isNotEmptyMessage, normalizeMessages, reorderMessagesInUI, type StreamingThinking, shouldShowUserMessage } from '../utils/messages.js';
-import { plural } from '../utils/stringUtils.js';
-import { renderableSearchText } from '../utils/transcriptSearch.js';
-import { Divider } from './design-system/Divider.js';
-import type { UnseenDivider } from './FullscreenLayout.js';
-import { LogoV2 } from './LogoV2/LogoV2.js';
-import { StreamingMarkdown } from './Markdown.js';
-import { hasContentAfterIndex, MessageRow } from './MessageRow.js';
-import { InVirtualListContext, type MessageActionsNav, MessageActionsSelectedContext, type MessageActionsState } from './messageActions.js';
-import { AssistantThinkingMessage } from './messages/AssistantThinkingMessage.js';
-import { isNullRenderingAttachment } from './messages/nullRenderingAttachments.js';
-import { OffscreenFreeze } from './OffscreenFreeze.js';
-import type { ToolUseConfirm } from '../../../tui/components/permissions/PermissionRequest.js';
-import { StatusNotices } from './StatusNotices.js';
-import type { JumpHandle } from './VirtualMessageList.js';
+import type { StreamingToolUse } from '../../llm/types.js';
+import { every } from '../../agenc/upstream/utils/set.js';
+import { getIsRemoteMode } from '../../agenc/upstream/bootstrap/state.js';
+import type { Command } from '../../agenc/upstream/commands.js';
+import { BLACK_CIRCLE } from '../../agenc/upstream/constants/figures.js';
+import { useTerminalSize } from '../../agenc/upstream/hooks/useTerminalSize.js';
+import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js';
+import { useTerminalNotification } from '../ink/useTerminalNotification.js';
+import { Box, Text } from '../ink.js';
+import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
+import type { Screen } from '../../agenc/upstream/screens/REPL.js';
+import type { Tools } from '../../agenc/upstream/Tool.js';
+import { findToolByName } from '../../agenc/upstream/Tool.js';
+import type { AgentDefinitionsResult } from '../../agenc/upstream/tools/AgentTool/loadAgentsDir.js';
+import type { Message as MessageType, NormalizedMessage, ProgressMessage as ProgressMessageType, RenderableMessage } from '../../agenc/upstream/types/message.js';
+import { type AdvisorBlock, isAdvisorBlock } from '../../agenc/upstream/utils/advisor.js';
+import { collapseBackgroundBashNotifications } from '../../agenc/upstream/utils/collapseBackgroundBashNotifications.js';
+import { collapseHookSummaries } from '../../agenc/upstream/utils/collapseHookSummaries.js';
+import { collapseReadSearchGroups } from '../../agenc/upstream/utils/collapseReadSearch.js';
+import { collapseTeammateShutdowns } from '../../agenc/upstream/utils/collapseTeammateShutdowns.js';
+import { getGlobalConfig } from '../../agenc/upstream/utils/config.js';
+import { isEnvTruthy } from '../../agenc/upstream/utils/envUtils.js';
+import { isFullscreenEnvEnabled } from '../../agenc/upstream/utils/fullscreen.js';
+import { applyGrouping } from '../../agenc/upstream/utils/groupToolUses.js';
+import { buildMessageLookups, createAssistantMessage, deriveUUID, getMessagesAfterCompactBoundary, getToolUseID, getToolUseIDs, hasUnresolvedHooksFromLookup, isNotEmptyMessage, normalizeMessages, reorderMessagesInUI, type StreamingThinking, shouldShowUserMessage } from '../../agenc/upstream/utils/messages.js';
+import { plural } from '../../agenc/upstream/utils/stringUtils.js';
+import { renderableSearchText } from '../../agenc/upstream/utils/transcriptSearch.js';
+import { Divider } from '../../agenc/upstream/components/design-system/Divider.js';
+import type { UnseenDivider } from '../../agenc/upstream/components/FullscreenLayout.js';
+import { LogoV2 } from '../../agenc/upstream/components/LogoV2/LogoV2.js';
+import { StreamingMarkdown } from '../../agenc/upstream/components/Markdown.js';
+import { hasContentAfterIndex, MessageRow } from '../../agenc/upstream/components/MessageRow.js';
+import { InVirtualListContext, type MessageActionsNav, MessageActionsSelectedContext, type MessageActionsState } from '../../agenc/upstream/components/messageActions.js';
+import { AssistantThinkingMessage } from '../../agenc/upstream/components/messages/AssistantThinkingMessage.js';
+import { isNullRenderingAttachment } from '../../agenc/upstream/components/messages/nullRenderingAttachments.js';
+import { OffscreenFreeze } from '../../agenc/upstream/components/OffscreenFreeze.js';
+import type { ToolUseConfirm } from './permissions/PermissionRequest.js';
+import { StatusNotices } from '../../agenc/upstream/components/StatusNotices.js';
+import type { JumpHandle } from '../../agenc/upstream/components/VirtualMessageList.js';
+import {
+  getMessagesSendUserFileToolName,
+  isMessagesProactiveActive,
+} from './messagesOptionalModules.js';
+import {
+  dropTextInBriefTurns,
+  filterForBriefTool,
+} from './messagesBriefFiltering.js';
 
 // Memoed logo header: this box is the FIRST sibling before all MessageRows
 // in main-screen mode. If it becomes dirty on every Messages re-render,
@@ -76,135 +84,14 @@ const LogoHeader = React.memo(function LogoHeader(t0) {
   return t2;
 });
 
-// Dead code elimination: conditional import for proactive mode
+// Dead code elimination: conditional import for brief mode
 /* eslint-disable @typescript-eslint/no-require-imports */
-const proactiveModule = feature('PROACTIVE') || feature('KAIROS') ? require('../proactive/index.js') : null;
-const BRIEF_TOOL_NAME: string | null = feature('KAIROS') || feature('KAIROS_BRIEF') ? (require('../tools/BriefTool/prompt.js') as typeof import('../tools/BriefTool/prompt.js')).BRIEF_TOOL_NAME : null;
-const SEND_USER_FILE_TOOL_NAME: string | null = feature('KAIROS') ? (require('../tools/SendUserFileTool/prompt.js') as typeof import('../tools/SendUserFileTool/prompt.js')).SEND_USER_FILE_TOOL_NAME : null;
-
+const BRIEF_TOOL_NAME: string | null = feature('KAIROS') || feature('KAIROS_BRIEF') ? (require('../../agenc/upstream/tools/BriefTool/prompt.js') as typeof import('../../agenc/upstream/tools/BriefTool/prompt.js')).BRIEF_TOOL_NAME : null;
 /* eslint-enable @typescript-eslint/no-require-imports */
-import { VirtualMessageList } from './VirtualMessageList.js';
+const SEND_USER_FILE_TOOL_NAME: string | null = feature('KAIROS') ? getMessagesSendUserFileToolName() : null;
 
-/**
- * In brief-only mode, filter messages to show ONLY Brief tool_use blocks,
- * their tool_results, and real user input. All assistant text is dropped —
- * if the model forgets to call Brief, the user sees nothing for that turn.
- * That's on the model to get right; the filter does not second-guess it.
- */
-export function filterForBriefTool<T extends {
-  type: string;
-  subtype?: string;
-  isMeta?: boolean;
-  isApiErrorMessage?: boolean;
-  message?: {
-    content: Array<{
-      type: string;
-      name?: string;
-      tool_use_id?: string;
-    }>;
-  };
-  attachment?: {
-    type: string;
-    isMeta?: boolean;
-    origin?: unknown;
-    commandMode?: string;
-  };
-}>(messages: T[], briefToolNames: string[]): T[] {
-  const nameSet = new Set(briefToolNames);
-  // tool_use always precedes its tool_result in the array, so we can collect
-  // IDs and match against them in a single pass.
-  const briefToolUseIDs = new Set<string>();
-  return messages.filter(msg => {
-    // System messages (attach confirmation, remote errors, compact boundaries)
-    // must stay visible — dropping them leaves the viewer with no feedback.
-    // Exception: api_metrics is per-turn debug noise (TTFT, config writes,
-    // hook timing) that defeats the point of brief mode. Still visible in
-    // transcript mode (ctrl+o) which bypasses this filter.
-    if (msg.type === 'system') return msg.subtype !== 'api_metrics';
-    const block = msg.message?.content[0];
-    if (msg.type === 'assistant') {
-      // API error messages (auth failures, rate limits, etc.) must stay visible
-      if (msg.isApiErrorMessage) return true;
-      // Keep Brief tool_use blocks (renders with standard tool call chrome,
-      // and must be in the list so buildMessageLookups can resolve tool results)
-      if (block?.type === 'tool_use' && block.name && nameSet.has(block.name)) {
-        if ('id' in block) {
-          briefToolUseIDs.add((block as {
-            id: string;
-          }).id);
-        }
-        return true;
-      }
-      return false;
-    }
-    if (msg.type === 'user') {
-      if (block?.type === 'tool_result') {
-        return block.tool_use_id !== undefined && briefToolUseIDs.has(block.tool_use_id);
-      }
-      // Real user input only — drop meta/tick messages.
-      return !msg.isMeta;
-    }
-    if (msg.type === 'attachment') {
-      // Human input drained mid-turn arrives as a queued_command attachment
-      // (query.ts mid-chain drain → getQueuedCommandAttachments). Keep it —
-      // it's what the user typed. commandMode === 'prompt' positively
-      // identifies human-typed input; task-notification callers set
-      // mode: 'task-notification' but not origin/isMeta, so the positive
-      // commandMode check is required to exclude them.
-      const att = msg.attachment;
-      return att?.type === 'queued_command' && att.commandMode === 'prompt' && !att.isMeta && att.origin === undefined;
-    }
-    return false;
-  });
-}
-
-/**
- * Full-transcript companion to filterForBriefTool. When the Brief tool is
- * in use, the model's text output is redundant with the SendUserMessage
- * content it wrote right after — drop the text so only the SendUserMessage
- * block shows. Tool calls and their results stay visible.
- *
- * Per-turn: only drops text in turns that actually called Brief. If the
- * model forgets, text still shows — otherwise the user would see nothing.
- */
-export function dropTextInBriefTurns<T extends {
-  type: string;
-  isMeta?: boolean;
-  message?: {
-    content: Array<{
-      type: string;
-      name?: string;
-    }>;
-  };
-}>(messages: T[], briefToolNames: string[]): T[] {
-  const nameSet = new Set(briefToolNames);
-  // First pass: find which turns (bounded by non-meta user messages) contain
-  // a Brief tool_use. Tag each assistant text block with its turn index.
-  const turnsWithBrief = new Set<number>();
-  const textIndexToTurn: number[] = [];
-  let turn = 0;
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i]!;
-    const block = msg.message?.content[0];
-    if (msg.type === 'user' && block?.type !== 'tool_result' && !msg.isMeta) {
-      turn++;
-      continue;
-    }
-    if (msg.type === 'assistant') {
-      if (block?.type === 'text') {
-        textIndexToTurn[i] = turn;
-      } else if (block?.type === 'tool_use' && block.name && nameSet.has(block.name)) {
-        turnsWithBrief.add(turn);
-      }
-    }
-  }
-  if (turnsWithBrief.size === 0) return messages;
-  // Second pass: drop text blocks whose turn called Brief.
-  return messages.filter((_, i) => {
-    const t = textIndexToTurn[i];
-    return t === undefined || !turnsWithBrief.has(t);
-  });
-}
+import { VirtualMessageList } from '../../agenc/upstream/components/VirtualMessageList.js';
+export { dropTextInBriefTurns, filterForBriefTool } from './messagesBriefFiltering.js';
 type Props = {
   messages: MessageType[];
   tools: Tools;
@@ -249,11 +136,11 @@ type Props = {
   onSearchMatchesChange?: (count: number, current: number) => void;
   /** Paint an existing DOM subtree to fresh Screen, scan. Element comes
    *  from the main tree (all real providers). Message-relative positions. */
-  scanElement?: (el: import('../../../tui/ink/dom.js').DOMElement) => import('../../../tui/ink/render-to-screen.js').MatchPosition[];
+  scanElement?: (el: import('../ink/dom.js').DOMElement) => import('../ink/render-to-screen.js').MatchPosition[];
   /** Position-based CURRENT highlight. positions stable (msg-relative),
    *  rowOffset tracks scroll. null clears. */
   setPositions?: (state: {
-    positions: import('../../../tui/ink/render-to-screen.js').MatchPosition[];
+    positions: import('../ink/render-to-screen.js').MatchPosition[];
     rowOffset: number;
     currentIdx: number;
   } | null) => void;
@@ -601,7 +488,7 @@ const MessagesImpl = ({
     progress
   } = useTerminalNotification();
   const prevProgressState = useRef<string | null>(null);
-  const progressEnabled = getGlobalConfig().terminalProgressBarEnabled && !getIsRemoteMode() && !(proactiveModule?.isProactiveActive() ?? false);
+  const progressEnabled = getGlobalConfig().terminalProgressBarEnabled && !getIsRemoteMode() && !((feature('PROACTIVE') || feature('KAIROS')) && isMessagesProactiveActive());
   useEffect(() => {
     const state = progressEnabled ? hasToolsInProgress ? 'indeterminate' : 'completed' : null;
     if (prevProgressState.current === state) return;

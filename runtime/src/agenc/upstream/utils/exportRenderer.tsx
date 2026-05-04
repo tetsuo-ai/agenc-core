@@ -1,6 +1,6 @@
 import React, { useRef } from 'react';
 import stripAnsi from 'strip-ansi';
-import { Messages } from '../components/Messages.js';
+import { Messages } from '../../../tui/components/Messages.js';
 import { KeybindingProvider } from '../../../tui/keybindings/KeybindingContext.js';
 import { loadKeybindingsSyncWithWarnings } from '../../../tui/keybindings/loadUserBindings.js';
 import type { KeybindingContextName } from '../../../tui/keybindings/types.js';

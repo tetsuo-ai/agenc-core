@@ -9,7 +9,7 @@ import { getDisplayMessageFromCollapsed, getToolSearchOrReadInfo, getToolUseIdsF
 import { type buildMessageLookups, EMPTY_STRING_SET, getProgressMessagesFromLookup, getSiblingToolUseIDsFromLookup, getToolUseID } from '../utils/messages.js';
 import { hasThinkingContent, Message } from './Message.js';
 import { MessageModel } from './MessageModel.js';
-import { shouldRenderStatically } from './Messages.js';
+import { shouldRenderStatically } from '../../../tui/components/Messages.js';
 import { MessageTimestamp } from './MessageTimestamp.js';
 import { OffscreenFreeze } from './OffscreenFreeze.js';
 export type Props = {
