@@ -13,6 +13,7 @@ import {
   AppStateProvider,
   getDefaultAppState,
   useAppState,
+  useAppStateStore,
   useSetAppState,
 } from "../state/AppState.js";
 import {
@@ -216,6 +217,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const [isSearchingHistory, setIsSearchingHistory] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const setAppState = useSetAppState();
+  const appStateStore = useAppStateStore();
   const [toolPermissionContext, setToolPermissionContext] =
     useSyncedPermissionContext(props.session);
   const transcript = useSessionTranscript(
@@ -260,6 +262,8 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     return names;
   }, [permissionRequests, transcript.toolNames]);
   const tools = useMemo(() => createBridgeTools(toolNames), [toolNames]);
+  const commands = useMemo(() => loadUpstreamCommandList(), []);
+  const agents = useMemo(() => loadUpstreamAgentList(), []);
 
   const submit = useCallback(
     async (value: string) => {
@@ -287,20 +291,36 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   );
 
   const getToolUseContext = useCallback(
-    () =>
+    (
+      _messages: unknown[],
+      _newMessages: unknown[],
+      abortController: AbortController,
+    ) =>
       ({
         abortController:
-          props.session.abortController ?? new AbortController(),
+          props.session.abortController ?? abortController ?? new AbortController(),
+        cwd: props.session.cwd ?? props.session.sessionConfiguration?.cwd,
+        getAppState: () => appStateStore.getState(),
         getToolPermissionContext: async () => toolPermissionContext,
-        options: {},
+        options: {
+          commands,
+          isNonInteractiveSession: false,
+        },
+        services: props.session.services,
+        session: props.session,
         tools,
         setToolJSX,
       }) as any,
-    [props.session.abortController, toolPermissionContext, tools, setToolJSX],
+    [
+      appStateStore,
+      commands,
+      props.session,
+      toolPermissionContext,
+      tools,
+      setToolJSX,
+    ],
   );
 
-  const commands = useMemo(() => loadUpstreamCommandList(), []);
-  const agents = useMemo(() => loadUpstreamAgentList(), []);
   const mcpClients = useMemo(
     () => props.session.listMcpClients?.() ?? [],
     [props.session],

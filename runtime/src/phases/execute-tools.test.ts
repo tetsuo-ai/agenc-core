@@ -42,12 +42,17 @@ import {
   executeTools,
   queueStreamingToolCall,
 } from "./execute-tools.js";
+import {
+  StreamingToolExecutor,
+  ToolCallRuntime,
+} from "./_deps/tool-runtime.js";
 
-function mkCtx(): TurnContext {
+function mkCtx(overrides: Record<string, unknown> = {}): TurnContext {
   return {
     subId: "turn-1",
     cwd: "/tmp",
     depth: 0,
+    ...overrides,
   } as unknown as TurnContext;
 }
 
@@ -584,6 +589,570 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     expect(
       errorCauses.some((c) => c.startsWith("permission_denied:")),
     ).toBe(true);
+  });
+
+  test("PreToolUse hookPermissionResult deny short-circuits through the permission path", async () => {
+    let executed = 0;
+    const tool: Tool = {
+      name: "Write",
+      description: "",
+      inputSchema: { type: "object" },
+      execute: async () => {
+        executed += 1;
+        return { content: "should-not-run" };
+      },
+    };
+
+    const preHook: PreToolUseHook = () => ({
+      kind: "continue",
+      hookPermissionResult: {
+        behavior: "deny",
+        message: "hook denied write",
+        hookName: "PreToolUse:test",
+      },
+    });
+    const log = new EventLog();
+    const registry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({ mode: "default" }),
+    );
+    const session = mkSession({
+      log,
+      registry: mkRegistry([tool]),
+      preToolUseHooks: [preHook],
+      permissionModeRegistry: registry,
+      withDenialTracking: true,
+    });
+
+    const state = mkState({
+      toolCalls: [{ id: "c-hook-deny", name: "Write", arguments: "{}" }],
+    });
+
+    await executeTools(state, mkCtx(), session);
+
+    expect(executed).toBe(0);
+    expect(state.messages[0]!.content).toContain("hook denied write");
+  });
+
+  test("PreToolUse hook allow does not override a rule-based deny", async () => {
+    let executed = 0;
+    const tool: Tool = {
+      name: "Write",
+      description: "",
+      inputSchema: { type: "object" },
+      execute: async () => {
+        executed += 1;
+        return { content: "should-not-run" };
+      },
+    };
+
+    const preHook: PreToolUseHook = () => ({
+      kind: "continue",
+      hookPermissionResult: {
+        behavior: "allow",
+        message: "hook allowed write",
+        hookName: "PreToolUse:test",
+      },
+    });
+    const registry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({
+        mode: "default",
+        alwaysDenyRules: { session: ["Write"] },
+      }),
+    );
+    const session = mkSession({
+      log: new EventLog(),
+      registry: mkRegistry([tool]),
+      preToolUseHooks: [preHook],
+      permissionModeRegistry: registry,
+      withDenialTracking: true,
+    });
+
+    const state = mkState({
+      toolCalls: [{ id: "c-hook-rule-deny", name: "Write", arguments: "{}" }],
+    });
+
+    await executeTools(state, mkCtx(), session);
+
+    expect(executed).toBe(0);
+    expect(state.messages[0]!.content).toContain("denied");
+  });
+
+  test("PreToolUse hookPermissionResult ask routes through approval before dispatch", async () => {
+    let executed = 0;
+    const tool: Tool = {
+      name: "Write",
+      description: "",
+      inputSchema: { type: "object" },
+      execute: async () => {
+        executed += 1;
+        return { content: "approved-write" };
+      },
+    };
+    const preHook: PreToolUseHook = () => ({
+      kind: "continue",
+      hookPermissionResult: {
+        behavior: "ask",
+        message: "hook requested review",
+        hookName: "PreToolUse:test",
+      },
+    });
+    let approvals = 0;
+    const session = mkSession({
+      log: new EventLog(),
+      registry: mkRegistry([tool]),
+      preToolUseHooks: [preHook],
+      permissionModeRegistry: new PermissionModeRegistry(
+        createEmptyToolPermissionContext({ mode: "default" }),
+      ),
+      approvalResolver: {
+        request: async () => {
+          approvals += 1;
+          return { kind: "approved" };
+        },
+      },
+      withDenialTracking: true,
+    });
+
+    const state = mkState({
+      toolCalls: [{ id: "c-hook-ask", name: "Write", arguments: "{}" }],
+    });
+
+    await executeTools(state, mkCtx(), session);
+
+    expect(approvals).toBe(1);
+    expect(executed).toBe(1);
+    expect(state.messages[0]!.content).toBe("approved-write");
+  });
+
+  test("router-backed PreToolUse hookPermissionResult deny beats approval-required dispatch", async () => {
+    const order: string[] = [];
+    let executed = 0;
+    const tool: Tool = {
+      name: "Write",
+      description: "",
+      inputSchema: { type: "object" },
+      requiresApproval: true,
+      execute: async () => {
+        order.push("execute");
+        executed += 1;
+        return { content: "should-not-run" };
+      },
+    };
+    const preHook: PreToolUseHook = () => {
+      order.push("hook");
+      return {
+        kind: "continue",
+        hookPermissionResult: {
+          behavior: "deny",
+          message: "hook denied before router approval",
+          hookName: "PreToolUse:test",
+        },
+      };
+    };
+    const session = mkSession({
+      log: new EventLog(),
+      registry: mkRegistry([tool]),
+      preToolUseHooks: [preHook],
+      approvalResolver: {
+        request: async () => {
+          order.push("approval");
+          return { kind: "approved" };
+        },
+      },
+    });
+    const state = mkState({
+      toolCalls: [{ id: "c-router-deny", name: "Write", arguments: "{}" }],
+    });
+
+    await executeTools(
+      state,
+      mkCtx({ approvalPolicy: { value: "on_request" } }),
+      session,
+    );
+
+    expect(order).toEqual(["hook"]);
+    expect(executed).toBe(0);
+    expect(state.messages[0]!.content).toContain(
+      "hook denied before router approval",
+    );
+  });
+
+  test("router-backed PreToolUse hookPermissionResult ask approves rewritten args before dispatch", async () => {
+    const order: string[] = [];
+    let executedArgs: unknown;
+    let approvalArgs: unknown;
+    const tool: Tool = {
+      name: "Write",
+      description: "",
+      inputSchema: { type: "object" },
+      requiresApproval: true,
+      execute: async (args) => {
+        order.push("execute");
+        executedArgs = args;
+        return { content: "approved-write" };
+      },
+    };
+    const preHook: PreToolUseHook = () => {
+      order.push("hook");
+      return {
+        kind: "continue",
+        hookPermissionResult: {
+          behavior: "ask",
+          message: "hook requested review",
+          updatedInput: { path: "rewritten-by-ask" },
+          hookName: "PreToolUse:test",
+        },
+      };
+    };
+    const session = mkSession({
+      log: new EventLog(),
+      registry: mkRegistry([tool]),
+      preToolUseHooks: [preHook],
+      approvalResolver: {
+        request: async (ctx) => {
+          order.push("approval");
+          const payload = ctx.invocation.payload as {
+            readonly arguments?: string;
+          };
+          approvalArgs = JSON.parse(payload.arguments ?? "{}");
+          return { kind: "approved" };
+        },
+      },
+    });
+    const state = mkState({
+      toolCalls: [
+        {
+          id: "c-router-ask",
+          name: "Write",
+          arguments: JSON.stringify({ path: "original" }),
+        },
+      ],
+    });
+
+    await executeTools(
+      state,
+      mkCtx({ approvalPolicy: { value: "on_request" } }),
+      session,
+    );
+
+    expect(order).toEqual(["hook", "approval", "execute"]);
+    expect(approvalArgs).toEqual({ path: "rewritten-by-ask" });
+    expect(executedArgs).toEqual({ path: "rewritten-by-ask" });
+    expect(state.messages[0]!.content).toBe("approved-write");
+  });
+
+  test("router-backed PreToolUse arg rewrite updates untrusted approval prompt", async () => {
+    const order: string[] = [];
+    let executedArgs: unknown;
+    let approvalArgs: unknown;
+    const tool: Tool = {
+      name: "Write",
+      description: "",
+      inputSchema: { type: "object" },
+      requiresApproval: true,
+      execute: async (args) => {
+        order.push("execute");
+        executedArgs = args;
+        return { content: "rewritten-write" };
+      },
+    };
+    const preHook: PreToolUseHook = () => {
+      order.push("hook");
+      return {
+        kind: "continue",
+        args: { path: "rewritten-before-approval" },
+      };
+    };
+    const session = mkSession({
+      log: new EventLog(),
+      registry: mkRegistry([tool]),
+      preToolUseHooks: [preHook],
+      approvalResolver: {
+        request: async (ctx) => {
+          order.push("approval");
+          const payload = ctx.invocation.payload as {
+            readonly arguments?: string;
+          };
+          approvalArgs = JSON.parse(payload.arguments ?? "{}");
+          return { kind: "approved" };
+        },
+      },
+    });
+    const state = mkState({
+      toolCalls: [
+        {
+          id: "c-router-rewrite",
+          name: "Write",
+          arguments: JSON.stringify({ path: "original" }),
+        },
+      ],
+    });
+
+    await executeTools(
+      state,
+      mkCtx({ approvalPolicy: { value: "untrusted" } }),
+      session,
+    );
+
+    expect(order).toEqual(["hook", "approval", "execute"]);
+    expect(approvalArgs).toEqual({ path: "rewritten-before-approval" });
+    expect(executedArgs).toEqual({ path: "rewritten-before-approval" });
+    expect(state.messages[0]!.content).toBe("rewritten-write");
+  });
+
+  test("router-backed PreToolUse hookPermissionResult allow suppresses approval-required prompt", async () => {
+    const order: string[] = [];
+    let approvals = 0;
+    const tool: Tool = {
+      name: "Write",
+      description: "",
+      inputSchema: { type: "object" },
+      requiresApproval: true,
+      execute: async () => {
+        order.push("execute");
+        return { content: "allowed-write" };
+      },
+    };
+    const preHook: PreToolUseHook = () => {
+      order.push("hook");
+      return {
+        kind: "continue",
+        hookPermissionResult: {
+          behavior: "allow",
+          updatedInput: { path: "allowed" },
+          hookName: "PreToolUse:test",
+        },
+      };
+    };
+    const session = mkSession({
+      log: new EventLog(),
+      registry: mkRegistry([tool]),
+      preToolUseHooks: [preHook],
+      approvalResolver: {
+        request: async () => {
+          approvals += 1;
+          order.push("approval");
+          return { kind: "approved" };
+        },
+      },
+    });
+    const state = mkState({
+      toolCalls: [
+        {
+          id: "c-router-allow",
+          name: "Write",
+          arguments: JSON.stringify({ path: "original" }),
+        },
+      ],
+    });
+
+    await executeTools(
+      state,
+      mkCtx({ approvalPolicy: { value: "on_request" } }),
+      session,
+    );
+
+    expect(order).toEqual(["hook", "execute"]);
+    expect(approvals).toBe(0);
+    expect(state.messages[0]!.content).toBe("allowed-write");
+  });
+
+  test("fallback streaming PreToolUse hookPermissionResult allow suppresses approval-required prompt", async () => {
+    const order: string[] = [];
+    let approvals = 0;
+    let executedArgs: unknown;
+    const tool: Tool = {
+      name: "Write",
+      description: "",
+      inputSchema: { type: "object" },
+      requiresApproval: true,
+      execute: async (args) => {
+        order.push("execute");
+        executedArgs = args;
+        return { content: "fallback-allowed-write" };
+      },
+    };
+    const registry = mkRegistry([tool]);
+    const session = mkSession({
+      log: new EventLog(),
+      registry,
+    });
+    const preHook: PreToolUseHook = () => {
+      order.push("hook");
+      return {
+        kind: "continue",
+        hookPermissionResult: {
+          behavior: "allow",
+          updatedInput: { path: "fallback-allowed" },
+          hookName: "PreToolUse:test",
+        },
+      };
+    };
+    const executor = new StreamingToolExecutor({
+      registry,
+      runtime: new ToolCallRuntime(),
+      liveToolDispatch: {
+        router: { registry },
+        options: {
+          session,
+          turn: mkCtx(),
+          preHooks: [preHook],
+          approvalPolicy: "on_request",
+          sandboxMode: "workspace_write",
+          approvalResolver: {
+            request: async () => {
+              approvals += 1;
+              order.push("approval");
+              return { kind: "approved" };
+            },
+          },
+          canUseTool: async () => ({
+            behavior: "ask",
+            message: "would otherwise ask",
+          }),
+          permissionContext: {
+            getAppState: () => ({
+              toolPermissionContext: createEmptyToolPermissionContext({
+                mode: "default",
+              }),
+            }),
+          },
+        },
+      },
+    });
+    const call: LLMToolCall = {
+      id: "c-fallback-allow",
+      name: "Write",
+      arguments: JSON.stringify({ path: "original" }),
+    };
+
+    executor.addTool(
+      { type: "tool_use", id: call.id, name: call.name, input: {} },
+      call,
+    );
+    executor.dispatchPending();
+    for (let i = 0; i < 20 && executor.inflightCount() > 0; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    const completed = [...executor.getCompletedResults()];
+
+    expect(order).toEqual(["hook", "execute"]);
+    expect(approvals).toBe(0);
+    expect(executedArgs).toEqual({ path: "fallback-allowed" });
+    expect(completed[0]!.result.content).toBe("fallback-allowed-write");
+  });
+
+  test("streaming PreToolUse hook ask does not override a rule-based deny", async () => {
+    let approvals = 0;
+    let executed = 0;
+    const tool: Tool = {
+      name: "Write",
+      description: "",
+      inputSchema: { type: "object" },
+      execute: async () => {
+        executed += 1;
+        return { content: "should-not-run" };
+      },
+    };
+    const preHook: PreToolUseHook = () => ({
+      kind: "continue",
+      hookPermissionResult: {
+        behavior: "ask",
+        message: "hook requested review",
+        updatedInput: { redacted: true },
+        hookName: "PreToolUse:test",
+      },
+    });
+    const log = new EventLog();
+    const registry = mkRegistry([tool]);
+    const session = mkSession({
+      log,
+      registry,
+      preToolUseHooks: [preHook],
+      permissionModeRegistry: new PermissionModeRegistry(
+        createEmptyToolPermissionContext({
+          mode: "default",
+          alwaysDenyRules: { session: ["Write"] },
+        }),
+      ),
+      approvalResolver: {
+        request: async () => {
+          approvals += 1;
+          return { kind: "approved" };
+        },
+      },
+      withDenialTracking: true,
+    });
+    const call: LLMToolCall = {
+      id: "c-stream-hook-ask-rule-deny",
+      name: "Write",
+      arguments: JSON.stringify({ original: true }),
+    };
+    const state = mkState({ toolCalls: [call] });
+    const executor = ensureStreamingToolExecutor(state, mkCtx(), session);
+    queueStreamingToolCall(
+      executor,
+      { type: "tool_use", id: call.id, name: call.name, input: {} },
+      call,
+      session,
+    );
+
+    await executeTools(state, mkCtx(), session);
+
+    expect(executed).toBe(0);
+    expect(approvals).toBe(0);
+    expect(state.messages[0]!.content).toContain("denied");
+  });
+
+  test("streaming PreToolUse hook allow threads updated input into dispatch", async () => {
+    let seen: unknown;
+    const tool: Tool = {
+      name: "Write",
+      description: "",
+      inputSchema: { type: "object" },
+      execute: async (args) => {
+        seen = args;
+        return { content: "streaming-updated-input" };
+      },
+    };
+    const preHook: PreToolUseHook = () => ({
+      kind: "continue",
+      hookPermissionResult: {
+        behavior: "allow",
+        updatedInput: { redacted: true },
+        hookName: "PreToolUse:test",
+      },
+    });
+    const log = new EventLog();
+    const registry = mkRegistry([tool]);
+    const session = mkSession({
+      log,
+      registry,
+      preToolUseHooks: [preHook],
+      permissionModeRegistry: new PermissionModeRegistry(
+        createEmptyToolPermissionContext({ mode: "default" }),
+      ),
+      withDenialTracking: true,
+    });
+    const call: LLMToolCall = {
+      id: "c-stream-hook-allow",
+      name: "Write",
+      arguments: JSON.stringify({ original: true }),
+    };
+    const state = mkState({ toolCalls: [call] });
+    const executor = ensureStreamingToolExecutor(state, mkCtx(), session);
+    queueStreamingToolCall(
+      executor,
+      { type: "tool_use", id: call.id, name: call.name, input: {} },
+      call,
+      session,
+    );
+
+    await executeTools(state, mkCtx(), session);
+
+    expect(seen).toEqual(expect.objectContaining({ redacted: true }));
+    expect(seen).not.toEqual(expect.objectContaining({ original: true }));
+    expect(state.messages[0]!.content).toBe("streaming-updated-input");
   });
 
   test("W4 allow rule passes through to tool.execute()", async () => {

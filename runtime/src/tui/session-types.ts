@@ -3,6 +3,7 @@ import type { AgenCConfig } from "../config/index.js";
 import type { Event } from "../session/event-log.js";
 import type { ApprovalResolver } from "../tools/orchestrator.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
+import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
 import type {
   McpElicitationRequestEvent,
   McpElicitationResponse,
@@ -25,6 +26,9 @@ export interface AgenCBridgeSession {
   readonly conversationId: string;
   readonly services: {
     readonly permissionModeRegistry: PermissionModeRegistryLike;
+    readonly hooks?: {
+      readonly userPromptSubmitHooks?: readonly UserPromptSubmitHook[];
+    };
     approvalResolver?: ApprovalResolver;
     requestUserInputResolver?: {
       request(

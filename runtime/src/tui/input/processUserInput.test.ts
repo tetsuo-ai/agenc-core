@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { processUserInput, type ProcessUserInputContext } from "./processUserInput.js";
 
 const mocks = vi.hoisted(() => ({
-  executeUserPromptSubmitHooks: vi.fn(async function* () {}),
   getAttachmentMessages: vi.fn(async function* () {}),
   logEvent: vi.fn(),
   logOTelEvent: vi.fn(),
@@ -38,13 +37,6 @@ vi.mock("../../agenc/upstream/utils/attachments.js", () => ({
     attachment,
   })),
   getAttachmentMessages: mocks.getAttachmentMessages,
-}));
-
-vi.mock("../../agenc/upstream/utils/hooks.js", () => ({
-  executeUserPromptSubmitHooks: mocks.executeUserPromptSubmitHooks,
-  getUserPromptSubmitHookBlockingMessage: vi.fn(
-    (message: string) => message,
-  ),
 }));
 
 vi.mock("../../agenc/upstream/utils/imageStore.js", () => ({
@@ -104,8 +96,11 @@ vi.mock("./processSlashCommand.js", () => ({
   processSlashCommand: mocks.processSlashCommand,
 }));
 
-function context(): ProcessUserInputContext {
-  return {
+function context(
+  overrides: Record<string, unknown> = {},
+): ProcessUserInputContext {
+  const base = {
+    cwd: "/workspace",
     getAppState: () => ({
       toolPermissionContext: { mode: "default" },
       ultraplanLaunching: false,
@@ -116,7 +111,8 @@ function context(): ProcessUserInputContext {
       isNonInteractiveSession: false,
     },
     requestPrompt: vi.fn(),
-  } as unknown as ProcessUserInputContext;
+  };
+  return { ...base, ...overrides } as unknown as ProcessUserInputContext;
 }
 
 describe("processUserInput", () => {
@@ -196,5 +192,106 @@ describe("processUserInput", () => {
     expect(result.shouldQuery).toBe(true);
     expect(JSON.stringify(result.messages)).toContain("/literal text");
     expect(mocks.processSlashCommand).not.toHaveBeenCalled();
+  });
+
+  it("runs configured UserPromptSubmit hooks from production-shaped session services", async () => {
+    const calls: unknown[] = [];
+    const result = await processUserInput({
+      input: "explain the plan",
+      mode: "prompt",
+      setToolJSX: vi.fn(),
+      context: context({
+        session: {
+          services: {
+            hooks: {
+              userPromptSubmitHooks: [
+                (input: unknown) => {
+                  calls.push(input);
+                  return { additionalContexts: ["policy context"] };
+                },
+              ],
+            },
+          },
+        },
+      }),
+      pastedContents: {},
+    });
+
+    expect(result.shouldQuery).toBe(true);
+    expect(calls).toEqual([
+      expect.objectContaining({
+        prompt: "explain the plan",
+        permissionMode: "default",
+        cwd: "/workspace",
+      }),
+    ]);
+    expect(JSON.stringify(result.messages)).toContain("policy context");
+  });
+
+  it("blocks prompt submission when a configured UserPromptSubmit hook rejects it", async () => {
+    const result = await processUserInput({
+      input: "delete everything",
+      mode: "prompt",
+      setToolJSX: vi.fn(),
+      context: context({
+        session: {
+          services: {
+            hooks: {
+              userPromptSubmitHooks: [
+                () => ({
+                  blockingError: { blockingError: "policy denied" },
+                }),
+              ],
+            },
+          },
+        },
+      }),
+      pastedContents: {},
+    });
+
+    expect(result.shouldQuery).toBe(false);
+    expect(JSON.stringify(result.messages)).toContain(
+      "UserPromptSubmit operation blocked by hook",
+    );
+    expect(JSON.stringify(result.messages)).toContain("policy denied");
+  });
+
+  it("emits a warning when a configured UserPromptSubmit hook throws", async () => {
+    const emitted: unknown[] = [];
+    const result = await processUserInput({
+      input: "explain the plan",
+      mode: "prompt",
+      setToolJSX: vi.fn(),
+      context: context({
+        session: {
+          nextInternalSubId: () => "warn-1",
+          emit: (event: unknown) => emitted.push(event),
+          services: {
+            hooks: {
+              userPromptSubmitHooks: [
+                () => {
+                  throw new Error("hook failed");
+                },
+              ],
+            },
+          },
+        },
+      }),
+      pastedContents: {},
+    });
+
+    expect(result.shouldQuery).toBe(true);
+    expect(emitted).toEqual([
+      expect.objectContaining({
+        id: "warn-1",
+        msg: expect.objectContaining({
+          type: "warning",
+          payload: expect.objectContaining({
+            cause: "user_prompt_submit_hook_threw",
+            message: expect.stringContaining("hook failed"),
+          }),
+        }),
+      }),
+    ]);
   });
 });

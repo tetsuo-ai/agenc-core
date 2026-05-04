@@ -117,6 +117,10 @@ import {
   runAgenCProvidersCli,
 } from "./providers-cli.js";
 import { parseAgenCStateCliArgs, runAgenCStateCli } from "./state-cli.js";
+import {
+  executeUserPromptSubmitHooks,
+  getUserPromptSubmitHookBlockingMessage,
+} from "../hooks/user-prompt-submit.js";
 
 export {
   bootstrapLocalRuntimeSession,
@@ -819,6 +823,180 @@ function userInputDisplayText(input: string | readonly LLMContentPart[]): string
     .join("\n");
 }
 
+const MAX_USER_PROMPT_SUBMIT_CONTEXT_LENGTH = 10_000;
+
+function truncateUserPromptSubmitContext(context: string): string {
+  if (context.length <= MAX_USER_PROMPT_SUBMIT_CONTEXT_LENGTH) return context;
+  return `${context.substring(0, MAX_USER_PROMPT_SUBMIT_CONTEXT_LENGTH)}… [output truncated - exceeded ${MAX_USER_PROMPT_SUBMIT_CONTEXT_LENGTH} characters]`;
+}
+
+function appendUserPromptSubmitContexts(
+  input: string | readonly LLMContentPart[],
+  contexts: readonly string[],
+): string | readonly LLMContentPart[] {
+  if (contexts.length === 0) return input;
+  const contextText = contexts
+    .map(
+      (context) =>
+        `<hook_additional_context>\n${truncateUserPromptSubmitContext(context)}\n</hook_additional_context>`,
+    )
+    .join("\n\n");
+  if (typeof input === "string") {
+    return input.trim().length > 0 ? `${input}\n\n${contextText}` : contextText;
+  }
+  const next = [...input];
+  const last = next[next.length - 1];
+  if (last?.type === "text") {
+    next[next.length - 1] = {
+      ...last,
+      text: `${last.text}\n\n${contextText}`,
+    };
+    return next;
+  }
+  next.push({ type: "text", text: contextText });
+  return next;
+}
+
+function emitUserPromptSubmitHookThrown(
+  session: Session,
+  err: unknown,
+  idx: number,
+): void {
+  session.emit({
+    id: session.nextInternalSubId(),
+    msg: {
+      type: "warning",
+      payload: {
+        cause: "user_prompt_submit_hook_threw",
+        message: `UserPromptSubmit hook ${idx} threw: ${err instanceof Error ? err.message : String(err)}`,
+      },
+    },
+  });
+}
+
+async function collectUserPromptSubmitHookOutcome(params: {
+  readonly session: Session;
+  readonly prompt: string;
+}): Promise<{
+  readonly blocked: boolean;
+  readonly additionalContexts: readonly string[];
+  readonly blockMessage?: string;
+}> {
+  const permissionMode = params.session.permissionModeRegistry.current().mode;
+  const additionalContexts: string[] = [];
+  for await (const hookResult of executeUserPromptSubmitHooks(
+    params.prompt,
+    permissionMode,
+    {
+      session: params.session,
+      services: params.session.services,
+      cwd: params.session.sessionConfiguration.cwd ?? process.cwd(),
+      abortController: params.session.abortController,
+    },
+    undefined,
+    (err, idx) => emitUserPromptSubmitHookThrown(params.session, err, idx),
+  )) {
+    if (hookResult.blockingError) {
+      const message = getUserPromptSubmitHookBlockingMessage(
+        hookResult.blockingError,
+      );
+      params.session.emit({
+        id: params.session.nextInternalSubId(),
+        msg: {
+          type: "error",
+          payload: {
+            cause: "user_prompt_submit_hook_blocked",
+            message,
+          },
+        },
+      });
+      return { blocked: true, additionalContexts: [], blockMessage: message };
+    }
+    if (hookResult.preventContinuation) {
+      const message = hookResult.stopReason
+        ? `Operation stopped by hook: ${hookResult.stopReason}`
+        : "Operation stopped by hook";
+      params.session.emit({
+        id: params.session.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "user_prompt_submit_hook_stopped",
+            message,
+          },
+        },
+      });
+      return { blocked: true, additionalContexts: [], blockMessage: message };
+    }
+    if (hookResult.additionalContexts) {
+      additionalContexts.push(...hookResult.additionalContexts);
+    }
+    const attachment = hookResult.message?.attachment;
+    if (
+      attachment?.type === "hook_success" &&
+      typeof attachment.content === "string" &&
+      attachment.content.length > 0
+    ) {
+      additionalContexts.push(attachment.content);
+    }
+  }
+  return {
+    blocked: false,
+    additionalContexts,
+  };
+}
+
+async function prepareSubmittedPromptForTurn(params: {
+  readonly session: Session;
+  readonly configStore: ConfigStore;
+  readonly input: string | readonly LLMContentPart[];
+}): Promise<{
+  readonly blocked: boolean;
+  readonly input: string | readonly LLMContentPart[];
+  readonly displayInput?: string;
+  readonly blockMessage?: string;
+}> {
+  const prompt = userInputDisplayText(params.input);
+  const hookOutcome = await collectUserPromptSubmitHookOutcome({
+    session: params.session,
+    prompt,
+  });
+  if (hookOutcome.blocked) {
+    return {
+      blocked: true,
+      input: params.input,
+      ...(hookOutcome.blockMessage !== undefined
+        ? { blockMessage: hookOutcome.blockMessage }
+        : {}),
+    };
+  }
+
+  if (typeof params.input === "string") {
+    const expanded = await expandPromptFileMentions({
+      session: params.session,
+      configStore: params.configStore,
+      input: params.input,
+    });
+    return {
+      blocked: false,
+      input: appendUserPromptSubmitContexts(
+        expanded.input,
+        hookOutcome.additionalContexts,
+      ),
+      displayInput: expanded.displayInput ?? params.input,
+    };
+  }
+
+  return {
+    blocked: false,
+    input: appendUserPromptSubmitContexts(
+      params.input,
+      hookOutcome.additionalContexts,
+    ),
+    displayInput: prompt,
+  };
+}
+
 function installTuiSessionContract(params: {
   readonly session: Session;
   readonly configStore: ConfigStore;
@@ -826,6 +1004,7 @@ function installTuiSessionContract(params: {
   readonly resolvedProvider: string;
   readonly autonomousModeEnabled: boolean;
   readonly loadTurnInputsFn: () => Promise<PreparedTurnRuntimeInputs>;
+  readonly runSingleTurnFn?: typeof runSingleTurn;
 }): () => void {
   const configReloadLatch: ConfigReloadLatch = { requested: false };
   let sessionRef: Session | null = params.session;
@@ -878,20 +1057,12 @@ function installTuiSessionContract(params: {
         prompt: string | readonly LLMContentPart[],
         opts: { readonly displayInput?: string | null } = {},
       ): Promise<void> => {
-        let input: string | readonly LLMContentPart[];
-        let displayInput: string | undefined;
-        if (typeof prompt === "string") {
-          const expanded = await expandPromptFileMentions({
-            session: params.session,
-            configStore: params.configStore,
-            input: prompt,
-          });
-          input = expanded.input;
-          displayInput = expanded.displayInput ?? prompt;
-        } else {
-          input = prompt;
-          displayInput = userInputDisplayText(prompt);
-        }
+        const preparedPrompt = await prepareSubmittedPromptForTurn({
+          session: params.session,
+          configStore: params.configStore,
+          input: prompt,
+        });
+        if (preparedPrompt.blocked) return;
         const ctx = params.session.newDefaultTurn();
         // The task-dispatch subsystem (see session/tasks.ts) owns the
         // activeTurn lifecycle now. `runTurnKernel` calls
@@ -903,14 +1074,15 @@ function installTuiSessionContract(params: {
         // and the kernel would then abort it as a "replaced" prior
         // turn.
         const toolNames = new Set<string>();
-        for await (const event of runSingleTurn({
+        const driveSingleTurn = params.runSingleTurnFn ?? runSingleTurn;
+        for await (const event of driveSingleTurn({
           session: params.session,
           ctx,
-          input,
+          input: preparedPrompt.input,
           displayInput:
             opts.displayInput !== undefined
               ? opts.displayInput
-              : displayInput,
+              : preparedPrompt.displayInput,
           agencHome: params.agencHome,
           configStore: params.configStore,
           configReloadLatch,
@@ -1046,6 +1218,8 @@ function installTuiSessionContract(params: {
     params.session.installTurnDriverHooks(null);
   };
 }
+
+export const __installTuiSessionContractForTest = installTuiSessionContract;
 
 // ─────────────────────────────────────────────────────────────────────
 // Wave 5-B: shared module-level unmount ref. Signal handlers call this
@@ -1254,22 +1428,28 @@ export async function oneShotCLI(
         registry,
       });
 
-    const expandedPrompt = await expandPromptFileMentions({
-      session,
-      configStore,
-      input: resolvedUserMessage,
-    });
-
     // R1 seam: one LLM turn runs through `runSingleTurn`, which owns
     // the between-turn reload + system-prompt assembly + runTurn loop.
     // A future multi-turn REPL iterates this helper in a while-loop;
     // the single-shot CLI just runs it exactly once.
     try {
+      const preparedPrompt = await prepareSubmittedPromptForTurn({
+        session,
+        configStore,
+        input: resolvedUserMessage,
+      });
+      if (preparedPrompt.blocked) {
+        if (preparedPrompt.blockMessage) {
+          process.stderr.write(`agenc: ${preparedPrompt.blockMessage}\n`);
+        }
+        return 1;
+      }
+
       for await (const event of runSingleTurn({
         session,
         ctx,
-        input: expandedPrompt.input,
-        displayInput: expandedPrompt.displayInput,
+        input: preparedPrompt.input,
+        displayInput: preparedPrompt.displayInput,
         agencHome,
         configStore,
         configReloadLatch,

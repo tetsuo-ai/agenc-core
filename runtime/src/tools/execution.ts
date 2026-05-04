@@ -85,6 +85,7 @@ import {
   type HookAttachmentKind,
   type HookPermissionResult,
   type HookTimingRecord,
+  type MergedHookPermissionDecision,
   type PostToolUseFailureHook,
   type PostToolUseHook,
   type PreToolUseHook,
@@ -110,7 +111,14 @@ import type {
   CanUseToolFn,
   ToolEvaluatorContext,
 } from "../permissions/evaluator.js";
-import type { PermissionMode } from "../permissions/types.js";
+import {
+  getAskRuleForTool,
+  getDenyRuleForTool,
+} from "../permissions/rules.js";
+import type {
+  PermissionMode,
+  ToolPermissionContext,
+} from "../permissions/types.js";
 import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import {
   reviewDecisionIsAllow,
@@ -1062,6 +1070,8 @@ export interface RunToolUseOptions {
   ) => void;
   readonly onProgress?: ToolProgressCallback;
   readonly skipArgValidation?: boolean;
+  readonly preHookPermissionDecision?: MergedHookPermissionDecision;
+  readonly approvalAlreadyResolved?: boolean;
   readonly canUseTool?: CanUseToolFn;
   readonly permissionContext?: ToolEvaluatorContext;
   readonly modeChangeRegistry?: PermissionModeRegistry;
@@ -1359,11 +1369,34 @@ export async function runToolUse(
   // step 4b can opt back into the legacy fallback even though the
   // evaluator path was wired.
   let evaluatorRequestedAsk = false;
-  if (opts.canUseTool && opts.permissionContext) {
-    const merged = await mergeHookPermissionDecision({
-      hookPermissionResult,
-      args,
-    });
+  const canUseTool = opts.canUseTool;
+  const permissionContext = opts.permissionContext;
+  if (canUseTool && permissionContext) {
+    const merged =
+      opts.preHookPermissionDecision ??
+      (await mergeHookPermissionDecision({
+        hookPermissionResult,
+        args,
+        ruleBasedCheck: async (candidateArgs) => {
+          const permissionSnapshot =
+            readToolPermissionContext(permissionContext);
+          if (permissionSnapshot) {
+            if (getDenyRuleForTool(permissionSnapshot, tool.name, candidateArgs)) {
+              return {
+                behavior: "deny",
+                message: `permission denied by rule: ${tool.name}`,
+              };
+            }
+            if (getAskRuleForTool(permissionSnapshot, tool.name, candidateArgs)) {
+              return {
+                behavior: "ask",
+                message: `approval required by rule: ${tool.name}`,
+              };
+            }
+          }
+          return null;
+        },
+      }));
     if (merged && merged.behavior === "deny") {
       emitHookAttachment(
         opts.eventLog,
@@ -1383,7 +1416,12 @@ export async function runToolUse(
         elapsedMs: performance.now() - startedAt,
       });
     }
-    if (merged && merged.behavior === "ask" && !opts.requestApproval) {
+    if (
+      merged &&
+      merged.behavior === "ask" &&
+      !opts.requestApproval &&
+      opts.approvalAlreadyResolved !== true
+    ) {
       if (opts.eventLog) {
         emitErrorEvent(opts.eventLog, subId, {
           cause: "permission_denied:hook_ask_without_prompt",
@@ -1396,7 +1434,16 @@ export async function runToolUse(
         elapsedMs: performance.now() - startedAt,
       });
     }
-    if (merged && merged.behavior === "allow") {
+    if (merged && merged.behavior === "ask") {
+      emitHookAttachment(
+        opts.eventLog,
+        subId,
+        "hook_permission_decision",
+        `${tool.name} ask via ${merged.decisionReason?.type ?? "hook"}${merged.decisionReason?.hookName ? ` (${merged.decisionReason.hookName})` : ""}${merged.message ? `: ${merged.message}` : ""}`,
+      );
+      inputForTool = merged.args;
+      evaluatorRequestedAsk = opts.approvalAlreadyResolved !== true;
+    } else if (merged && merged.behavior === "allow") {
       // Hook allow — skip the evaluator's interactive ask, but rule
       // deny/ask merging already ran via mergeHookPermissionDecision.
       emitHookAttachment(
@@ -1432,7 +1479,12 @@ export async function runToolUse(
           });
         }
         if (permResult.behavior === "ask") {
-          if (!opts.requestApproval) {
+          if (permResult.updatedInput !== undefined) {
+            inputForTool = permResult.updatedInput as Record<string, unknown>;
+          }
+          if (opts.approvalAlreadyResolved === true) {
+            evaluatorRequestedAsk = false;
+          } else if (!opts.requestApproval) {
             const message = permResult.message;
             if (opts.eventLog) {
               emitErrorEvent(opts.eventLog, subId, {
@@ -1446,10 +1498,12 @@ export async function runToolUse(
               elapsedMs: performance.now() - startedAt,
             });
           }
-          // Evaluator returned ask with a prompt wired — fall through to
-          // the legacy approval-modal fallback so the resolver gets the
-          // call and records a decision.
-          evaluatorRequestedAsk = true;
+          if (opts.approvalAlreadyResolved !== true) {
+            // Evaluator returned ask with a prompt wired — fall through to
+            // the legacy approval-modal fallback so the resolver gets the
+            // call and records a decision.
+            evaluatorRequestedAsk = true;
+          }
         } else if (permResult.behavior === "allow") {
           if (permResult.updatedInput !== undefined) {
             inputForTool = permResult.updatedInput as Record<string, unknown>;
@@ -1894,6 +1948,17 @@ function errorOutput(opts: {
     durationMs: opts.elapsedMs,
     ...(opts.metadata !== undefined ? { metadata: opts.metadata } : {}),
   });
+}
+
+export function readToolPermissionContext(
+  permissionContext: ToolEvaluatorContext,
+): ToolPermissionContext | null {
+  const appState = permissionContext.getAppState();
+  const candidate =
+    typeof permissionContext.toolPermissionContext === "function"
+      ? permissionContext.toolPermissionContext(appState)
+      : appState.toolPermissionContext;
+  return typeof candidate === "object" && candidate !== null ? candidate : null;
 }
 
 function extractCommandPreview(

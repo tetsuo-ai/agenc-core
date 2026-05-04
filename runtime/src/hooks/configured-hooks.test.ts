@@ -27,6 +27,7 @@ describe("configured hooks runtime", () => {
       postToolUseHooks: [],
       failureToolUseHooks: [],
       permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
       stopHooks: [],
       stopFailureHooks: [],
     };
@@ -138,6 +139,7 @@ describe("configured hooks runtime", () => {
       postToolUseHooks: [],
       failureToolUseHooks: [],
       permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
       stopHooks: [],
       stopFailureHooks: [],
     };
@@ -231,6 +233,7 @@ describe("configured hooks runtime", () => {
       postToolUseHooks: [],
       failureToolUseHooks: [],
       permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
       stopHooks: [],
       stopFailureHooks: [],
     };
@@ -261,5 +264,332 @@ describe("configured hooks runtime", () => {
     const diagnostic = runtime.latestDiagnostics()[0]!;
     expect(diagnostic.stdout).not.toContain("opaque-value-12345");
     expect(diagnostic.stdout).toContain("[REDACTED_SECRET]");
+  });
+
+  test("wires UserPromptSubmit hooks with prompt and permission mode input", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      UserPromptSubmit: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command:
+                "node -e \"let s=''; process.stdin.on('data', c => s += c); process.stdin.on('end', () => { const x = JSON.parse(s); console.log(JSON.stringify({hookSpecificOutput:{additionalContext:'mode=' + x.permission_mode + ' prompt=' + x.prompt}})); })\"",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(target.userPromptSubmitHooks).toHaveLength(1);
+    const decision = await target.userPromptSubmitHooks[0]!({
+      prompt: "ship PE-06",
+      permissionMode: "plan",
+      cwd: process.cwd(),
+    });
+
+    expect(decision?.additionalContexts).toEqual([
+      "mode=plan prompt=ship PE-06",
+    ]);
+  });
+
+  test("ignores non-matching UserPromptSubmit hooks", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      UserPromptSubmit: [
+        {
+          matcher: "ship",
+          hooks: [{ type: "command", command: "printf should-not-run" }],
+        },
+      ],
+    });
+
+    const decision = await target.userPromptSubmitHooks[0]!({
+      prompt: "skip this",
+      permissionMode: "default",
+      cwd: process.cwd(),
+    });
+
+    expect(decision).toBeUndefined();
+    expect(runtime.latestDiagnostics()).toHaveLength(0);
+  });
+
+  test("ignores malformed UserPromptSubmit hook output", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      UserPromptSubmit: [
+        {
+          hooks: [{ type: "command", command: "printf '{not-json'" }],
+        },
+      ],
+    });
+
+    const decision = await target.userPromptSubmitHooks[0]!({
+      prompt: "ship PE-06",
+      permissionMode: "default",
+      cwd: process.cwd(),
+    });
+
+    expect(decision).toBeUndefined();
+    expect(runtime.latestDiagnostics()[0]?.error).toContain(
+      "could not be parsed",
+    );
+  });
+
+  test("ignores invalid UserPromptSubmit hookSpecificOutput shape", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      UserPromptSubmit: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command:
+                "node -e \"console.log(JSON.stringify({hookSpecificOutput:{additionalContext:{bad:true}}}))\"",
+            },
+          ],
+        },
+      ],
+    });
+
+    const decision = await target.userPromptSubmitHooks[0]!({
+      prompt: "ship PE-06",
+      permissionMode: "default",
+      cwd: process.cwd(),
+    });
+
+    expect(decision).toBeUndefined();
+    expect(runtime.latestDiagnostics()[0]?.error).toContain(
+      "additionalContext must be a string",
+    );
+  });
+
+  test("treats UserPromptSubmit exit code 1 as non-blocking", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      UserPromptSubmit: [
+        {
+          hooks: [{ type: "command", command: "printf no-op; exit 1" }],
+        },
+      ],
+    });
+
+    const decision = await target.userPromptSubmitHooks[0]!({
+      prompt: "ship PE-06",
+      permissionMode: "default",
+      cwd: process.cwd(),
+    });
+
+    expect(decision).toBeUndefined();
+    expect(runtime.latestDiagnostics()[0]?.status).toBe("non_blocking_error");
+  });
+
+  test("ignores invalid PreToolUse permissionDecision output", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      PreToolUse: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command:
+                "node -e \"console.log(JSON.stringify({hookSpecificOutput:{permissionDecision:'block',updatedInput:{redacted:true}}}))\"",
+            },
+          ],
+        },
+      ],
+    });
+
+    const decision = await target.preToolUseHooks[0]!({
+      invocation: { callId: "c-pre" } as never,
+      tool: { name: "Write" } as never,
+      args: { original: true },
+    });
+
+    if (decision.kind !== "continue") {
+      throw new Error(`unexpected PreToolUse decision: ${decision.kind}`);
+    }
+    expect(decision.args).toEqual({ redacted: true });
+    expect(decision.hookPermissionResult).toBeUndefined();
+    expect(runtime.latestDiagnostics()[0]?.error).toContain(
+      "permissionDecision must be allow, deny, or ask",
+    );
+  });
+
+  test("uses permission_mode in default UserPromptSubmit test input", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    runtime.load({
+      UserPromptSubmit: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command:
+                "node -e \"let s=''; process.stdin.on('data', c => s += c); process.stdin.on('end', () => { const x = JSON.parse(s); process.stdout.write(String(x.permission_mode)); })\"",
+            },
+          ],
+        },
+      ],
+    });
+
+    const diag = await runtime.testHook(runtime.listHooks()[0]!);
+
+    expect(diag.stdout).toBe("default");
+  });
+
+  test("removes abort listeners after successful command hooks", async () => {
+    class CountingSignal extends EventTarget {
+      aborted = false;
+      reason: unknown;
+      listenerCount = 0;
+
+      override addEventListener(
+        type: string,
+        callback: EventListenerOrEventListenerObject | null,
+        options?: boolean | AddEventListenerOptions,
+      ): void {
+        if (type === "abort" && callback !== null) this.listenerCount += 1;
+        super.addEventListener(type, callback, options);
+      }
+
+      override removeEventListener(
+        type: string,
+        callback: EventListenerOrEventListenerObject | null,
+        options?: boolean | EventListenerOptions,
+      ): void {
+        if (type === "abort" && callback !== null) this.listenerCount -= 1;
+        super.removeEventListener(type, callback, options);
+      }
+    }
+
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      UserPromptSubmit: [
+        {
+          hooks: [{ type: "command", command: "printf hook-ok" }],
+        },
+      ],
+    });
+    const signal = new CountingSignal();
+
+    await target.userPromptSubmitHooks[0]!({
+      prompt: "ship PE-06",
+      permissionMode: "default",
+      cwd: process.cwd(),
+      signal: signal as AbortSignal,
+    });
+
+    expect(signal.listenerCount).toBe(0);
   });
 });

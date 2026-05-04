@@ -60,6 +60,7 @@ import {
   registerSessionStartHook,
 } from "../llm/hooks/index.js";
 import { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
+import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
 import {
   evaluateStopHooks,
   executeStopFailureHooks,
@@ -339,6 +340,7 @@ function createHooksService(): Hooks & {
   readonly postToolUseHooks: PostToolUseHook[];
   readonly failureToolUseHooks: PostToolUseFailureHook[];
   readonly permissionDecisionHooks: PermissionDecisionHook[];
+  readonly userPromptSubmitHooks: UserPromptSubmitHook[];
   addPreCompactHook(
     hook: Parameters<typeof registerPreCompactHook>[0],
   ): void;
@@ -359,6 +361,7 @@ function createHooksService(): Hooks & {
   const postToolUseHooks: PostToolUseHook[] = [];
   const failureToolUseHooks: PostToolUseFailureHook[] = [];
   const permissionDecisionHooks: PermissionDecisionHook[] = [];
+  const userPromptSubmitHooks: UserPromptSubmitHook[] = [];
   const lifecycleUnregisters: Array<() => void> = [];
 
   return {
@@ -368,6 +371,7 @@ function createHooksService(): Hooks & {
     postToolUseHooks,
     failureToolUseHooks,
     permissionDecisionHooks,
+    userPromptSubmitHooks,
     addPreCompactHook: (hook) => {
       lifecycleUnregisters.push(registerPreCompactHook(hook));
     },
