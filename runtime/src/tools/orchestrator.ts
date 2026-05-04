@@ -736,7 +736,10 @@ export interface OrchestrateToolCallOpts<T> {
   /** Attempt executor — receives the selected sandbox mode. The caller
    *  may gate the actual FS/network constraints internally. Should
    *  throw `SandboxDeniedError` on sandbox denial. */
-  readonly dispatch: (sandbox: SandboxMode) => Promise<T>;
+  readonly dispatch: (
+    sandbox: SandboxMode,
+    context: { readonly approvalResolved: boolean },
+  ) => Promise<T>;
   /** Approval pipeline plumbing. */
   readonly permissionHooks?: ReadonlyArray<PermissionRequestHook>;
   readonly permissionDecisionHooks?: ReadonlyArray<PermissionDecisionHook>;
@@ -998,7 +1001,8 @@ export async function orchestrateToolCall<T>(
 
   try {
     return await attemptWithRetry({
-      dispatch: () => opts.dispatch(firstSandbox),
+      dispatch: () =>
+        opts.dispatch(firstSandbox, { approvalResolved: alreadyApproved }),
       onFailure: defaultToolRetryPolicy,
       ...(opts.maxAttempts !== undefined ? { maxAttempts: opts.maxAttempts } : {}),
       ...(opts.sleep !== undefined ? { sleep: opts.sleep } : {}),
@@ -1059,6 +1063,8 @@ export async function orchestrateToolCall<T>(
     }
 
     // Retry with sandbox disabled (donor runtime `SandboxType::None`).
-    return await opts.dispatch("danger_full_access");
+    return await opts.dispatch("danger_full_access", {
+      approvalResolved: true,
+    });
   }
 }

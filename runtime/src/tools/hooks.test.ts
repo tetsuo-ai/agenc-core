@@ -437,6 +437,16 @@ describe("mergeHookPermissionDecision", () => {
     expect(merged?.message).toBe("please confirm");
   });
 
+  test("unknown runtime hook behavior defers to normal flow", async () => {
+    const merged = await mergeHookPermissionDecision({
+      hookPermissionResult: {
+        behavior: "block",
+      } as unknown as HookPermissionResult,
+      args: { original: true },
+    });
+    expect(merged).toBeNull();
+  });
+
   test("hook allow with no rule check passes through", async () => {
     const hook: HookPermissionResult = { behavior: "allow" };
     const merged = await mergeHookPermissionDecision({
@@ -474,6 +484,31 @@ describe("mergeHookPermissionDecision", () => {
       }),
     });
     expect(merged?.behavior).toBe("deny");
+    expect(merged?.message).toBe("settings rule denies");
+    expect(merged?.decisionReason?.type).toBe("hook_plus_rule_deny");
+    expect(merged?.decisionReason?.hookName).toBe("PreToolUse:x");
+  });
+
+  test("hook ask + rule deny → deny wins", async () => {
+    const hook: HookPermissionResult = {
+      behavior: "ask",
+      message: "please confirm",
+      updatedInput: { redacted: true },
+      hookName: "PreToolUse:x",
+    };
+    const merged = await mergeHookPermissionDecision({
+      hookPermissionResult: hook,
+      args: { original: true },
+      ruleBasedCheck: async (args) => {
+        expect(args).toEqual({ redacted: true });
+        return {
+          behavior: "deny",
+          message: "settings rule denies",
+        };
+      },
+    });
+    expect(merged?.behavior).toBe("deny");
+    expect(merged?.args).toEqual({ redacted: true });
     expect(merged?.message).toBe("settings rule denies");
     expect(merged?.decisionReason?.type).toBe("hook_plus_rule_deny");
     expect(merged?.decisionReason?.hookName).toBe("PreToolUse:x");

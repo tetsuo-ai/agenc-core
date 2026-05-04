@@ -1,7 +1,7 @@
 /**
  * Pre/post tool hooks + MCP output modifier.
  *
- * Subset port of openclaude `services/tools/toolHooks.ts`. AgenC's T6
+ * Subset port of the donor `services/tools/toolHooks.ts`. AgenC's T6
  * surface is a composable chain: each hook function receives
  * `(invocation, args, dispatchResult)` and returns either a
  * pass-through value or a replacement.
@@ -55,6 +55,12 @@ export interface HookTimingRecord {
 
 export type HookPermissionBehavior = "allow" | "deny" | "ask";
 
+function isHookPermissionBehavior(
+  value: unknown,
+): value is HookPermissionBehavior {
+  return value === "allow" || value === "deny" || value === "ask";
+}
+
 export interface HookPermissionResult {
   readonly behavior: HookPermissionBehavior;
   /** Humanized reason surfaced to the model on deny/ask. */
@@ -65,7 +71,7 @@ export interface HookPermissionResult {
    * and the tool's `execute()` both see the rewritten values.
    */
   readonly updatedInput?: Record<string, unknown>;
-  /** openclaude `decisionReason.hookName` passthrough for analytics. */
+  /** Donor `decisionReason.hookName` passthrough for analytics. */
   readonly hookName?: string;
 }
 
@@ -208,7 +214,7 @@ export async function runPreToolUseHooks(
     if (decision.hookPermissionResult && !hookPermissionResult) {
       // First hook that speaks up wins — subsequent hooks can still
       // rewrite args/add context but can't override the permission
-      // decision. Matches openclaude `hookPermissionResult` threading.
+      // decision. Matches donor `hookPermissionResult` threading.
       hookPermissionResult = decision.hookPermissionResult;
       if (decision.hookPermissionResult.updatedInput) {
         args = decision.hookPermissionResult.updatedInput;
@@ -238,7 +244,7 @@ export type PostToolUseDecision =
   | { readonly kind: "continue" }
   | { readonly kind: "rewrite"; readonly result: ToolDispatchResult }
   /**
-   * openclaude `stop` — the turn halts. Surfaces as a
+   * Donor `stop` — the turn halts. Surfaces as a
    * `hook_stopped_continuation` attachment on the live path.
    */
   | {
@@ -246,7 +252,7 @@ export type PostToolUseDecision =
       readonly stopReason?: string;
     }
   /**
-   * openclaude `preventContinuation` — the successful tool result is
+   * Donor `preventContinuation` — the successful tool result is
    * kept, but the turn does not loop back to the model. Live path
    * emits `hook_stopped_continuation`.
    */
@@ -256,7 +262,7 @@ export type PostToolUseDecision =
       readonly result?: ToolDispatchResult;
     }
   /**
-   * openclaude `additionalContext` — inject extra synthesized user
+   * Donor `additionalContext` — inject extra synthesized user
    * messages after the tool_result (e.g. lint/test feedback). Live
    * path emits `hook_additional_context`.
    */
@@ -266,7 +272,7 @@ export type PostToolUseDecision =
       readonly result?: ToolDispatchResult;
     }
   /**
-   * openclaude `hook_blocking_error` — the hook errored while
+   * Donor `hook_blocking_error` — the hook errored while
    * processing the result; surface the error alongside the (possibly
    * unchanged) result. Live path emits `hook_blocking_error`.
    */
@@ -430,7 +436,7 @@ export type PostToolUseFailureHook = (
 ) => Promise<void> | void;
 
 /**
- * Port of openclaude `executePostToolUseFailureHooks`. Fires for every
+ * Port of donor `executePostToolUseFailureHooks`. Fires for every
  * hook in order after a tool throws. Purely observational: exceptions
  * inside a failure hook are swallowed + reported via `onError`, and the
  * original tool error is expected to bubble up from the caller. Returns
@@ -621,7 +627,8 @@ export interface MergedHookPermissionDecision {
  *   - hook `allow` + rule `ask`  → ask wins (dialog required)
  *   - hook `allow` + rule `pass` → allow (hook bypasses prompt)
  *   - hook `deny`                → deny (skip rule check)
- *   - hook `ask`                 → ask (dialog with hook message)
+ *   - hook `ask` + rule `deny`   → deny wins
+ *   - hook `ask` + rule `ask/pass` → ask (dialog required)
  *   - no hook                    → defer to caller's normal flow
  *
  * The caller supplies `ruleBasedCheck` — an async function that
@@ -642,6 +649,7 @@ export async function mergeHookPermissionDecision(opts: {
 }): Promise<MergedHookPermissionDecision | null> {
   const hook = opts.hookPermissionResult;
   if (!hook) return null;
+  if (!isHookPermissionBehavior(hook.behavior)) return null;
 
   const rewrittenArgs = hook.updatedInput ?? opts.args;
 
@@ -656,20 +664,10 @@ export async function mergeHookPermissionDecision(opts: {
     };
   }
 
-  if (hook.behavior === "ask") {
-    return {
-      behavior: "ask",
-      args: rewrittenArgs,
-      ...(hook.message !== undefined ? { message: hook.message } : {}),
-      ...(hook.hookName !== undefined
-        ? { decisionReason: { type: "hook", hookName: hook.hookName } }
-        : { decisionReason: { type: "hook" } }),
-    };
-  }
-
-  // hook.behavior === "allow" — preserve inc-4788 semantics: rule
-  // deny/ask still applies even if the hook green-lit the call.
-  if (opts.ruleBasedCheck) {
+  if (
+    (hook.behavior === "ask" || hook.behavior === "allow") &&
+    opts.ruleBasedCheck
+  ) {
     const rule = await opts.ruleBasedCheck(rewrittenArgs);
     if (rule && rule.behavior === "deny") {
       return {
@@ -703,6 +701,19 @@ export async function mergeHookPermissionDecision(opts: {
     }
   }
 
+  if (hook.behavior === "ask") {
+    return {
+      behavior: "ask",
+      args: rewrittenArgs,
+      ...(hook.message !== undefined ? { message: hook.message } : {}),
+      ...(hook.hookName !== undefined
+        ? { decisionReason: { type: "hook", hookName: hook.hookName } }
+        : { decisionReason: { type: "hook" } }),
+    };
+  }
+
+  // hook.behavior === "allow" — preserve inc-4788 semantics: rule
+  // deny/ask still applies even if the hook green-lit the call.
   return {
     behavior: "allow",
     args: rewrittenArgs,

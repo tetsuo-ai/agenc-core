@@ -41,7 +41,7 @@ import { toArray } from '../../agenc/upstream/utils/generators.js'
 import {
   executeUserPromptSubmitHooks,
   getUserPromptSubmitHookBlockingMessage,
-} from '../../agenc/upstream/utils/hooks.js'
+} from '../../hooks/user-prompt-submit.js'
 import {
   createImageMetadataText,
   maybeResizeAndDownsampleImageBlock,
@@ -184,6 +184,7 @@ export async function processUserInput({
     appState.toolPermissionContext.mode,
     context,
     context.requestPrompt,
+    (err, idx) => emitUserPromptSubmitHookWarning(context, err, idx),
   )) {
     // We only care about the result
     if (hookResult.message?.type === 'progress') {
@@ -267,6 +268,34 @@ export async function processUserInput({
   // so it resolves in the same frame as deferredMessages (no flicker gap).
   // Error paths are handled by handlePromptSubmit's finally block.
   return result
+}
+
+function emitUserPromptSubmitHookWarning(
+  context: ProcessUserInputContext,
+  err: unknown,
+  idx: number,
+): void {
+  const session = (context as { session?: unknown }).session as
+    | {
+        emit?: (event: unknown) => void
+        nextInternalSubId?: () => string
+      }
+    | undefined
+  if (typeof session?.emit !== 'function') return
+  const message = err instanceof Error ? err.message : String(err)
+  session.emit({
+    id:
+      typeof session.nextInternalSubId === 'function'
+        ? session.nextInternalSubId()
+        : `user-prompt-submit-hook-${idx}`,
+    msg: {
+      type: 'warning',
+      payload: {
+        cause: 'user_prompt_submit_hook_threw',
+        message: `UserPromptSubmit hook ${idx} failed: ${message}`,
+      },
+    },
+  })
 }
 
 const MAX_HOOK_OUTPUT_LENGTH = 10000

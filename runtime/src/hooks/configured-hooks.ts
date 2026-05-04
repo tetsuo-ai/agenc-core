@@ -25,6 +25,7 @@ import type {
   StopHookOutcome,
   StopRequest,
 } from "../phases/stop-hooks.js";
+import type { UserPromptSubmitHook } from "./user-prompt-submit.js";
 import type {
   HookResult,
   PostCompactHookInput,
@@ -77,6 +78,7 @@ export interface HookInstallTarget {
   readonly postToolUseHooks: PostToolUseHook[];
   readonly failureToolUseHooks: PostToolUseFailureHook[];
   readonly permissionDecisionHooks: PermissionDecisionHook[];
+  readonly userPromptSubmitHooks: UserPromptSubmitHook[];
   readonly stopHooks: StopHookHandler[];
   readonly stopFailureHooks: StopHookHandler[];
   readonly addPreCompactHook?: (
@@ -134,6 +136,12 @@ type HookSpecificOutput = {
     readonly message?: string;
   };
 };
+
+interface ParsedHookSpecificOutput {
+  readonly explicit: boolean;
+  readonly output?: HookSpecificOutput;
+  readonly invalid?: string;
+}
 
 export class ConfiguredHooksRuntime {
   private config: HooksMap | undefined;
@@ -211,6 +219,7 @@ export class ConfiguredHooksRuntime {
     target.postToolUseHooks.length = 0;
     target.failureToolUseHooks.length = 0;
     target.permissionDecisionHooks.length = 0;
+    target.userPromptSubmitHooks.length = 0;
     target.stopHooks.length = 0;
     target.stopFailureHooks.length = 0;
     target.clearConfiguredLifecycleHooks?.();
@@ -229,6 +238,9 @@ export class ConfiguredHooksRuntime {
           break;
         case "PermissionRequest":
           target.permissionDecisionHooks.push(this.createPermissionHook(hook));
+          break;
+        case "UserPromptSubmit":
+          target.userPromptSubmitHooks.push(this.createUserPromptSubmitHook(hook));
           break;
         case "Stop":
           target.stopHooks.push(this.createStopHook(hook));
@@ -265,7 +277,9 @@ export class ConfiguredHooksRuntime {
         return { kind: "deny", reason: result.stderr || result.stdout };
       }
       if (result.status !== "success") return { kind: "continue" };
-      const specific = parseHookSpecificOutput(result.rawStdout);
+      const parsed = readHookSpecificOutput(result.rawStdout);
+      if (parsed.invalid) this.recordHookOutputIssue(result, parsed.invalid);
+      const specific = parsed.output;
       const decision = specific?.permissionDecision;
       const updatedInput = specific?.updatedInput;
       return {
@@ -355,6 +369,43 @@ export class ConfiguredHooksRuntime {
       const decision = parsePermissionDecision(run.rawStdout);
       if (!decision) return { kind: "pass" };
       return decision;
+    };
+  }
+
+  private createUserPromptSubmitHook(
+    hook: IndividualHookConfig,
+  ): UserPromptSubmitHook {
+    return async ({ prompt, permissionMode, cwd, signal }) => {
+      if (this.disabled || !matchesPattern(prompt, hook.matcher)) {
+        return undefined;
+      }
+      const run = await this.runCommandHook(
+        hook,
+        {
+          hook_event_name: "UserPromptSubmit",
+          prompt,
+          permission_mode: permissionMode,
+          cwd,
+        },
+        signal,
+      );
+      if (run.status === "blocking") {
+        return {
+          blockingError: {
+            blockingError: run.stderr || run.stdout || "Prompt blocked by hook.",
+          },
+        };
+      }
+      if (run.status !== "success") return undefined;
+      const parsed = readHookSpecificOutput(run.rawStdout);
+      if (parsed.invalid) this.recordHookOutputIssue(run, parsed.invalid);
+      const additionalContext = parsed.explicit
+        ? parsed.output?.additionalContext
+        : run.stdout.trim() || undefined;
+      if (additionalContext === undefined) return undefined;
+      return {
+        additionalContexts: [redactSecrets(additionalContext)],
+      };
     };
   }
 
@@ -485,6 +536,23 @@ export class ConfiguredHooksRuntime {
       ...(result.error !== undefined ? { rawError: result.error } : {}),
     };
   }
+
+  private recordHookOutputIssue(
+    run: HookCommandRunDiagnostic,
+    message: string,
+  ): void {
+    this.diagnostics = this.diagnostics.map((diagnostic) => {
+      if (diagnostic.id !== run.id) return diagnostic;
+      const existing = diagnostic.error;
+      return {
+        ...diagnostic,
+        error:
+          existing !== undefined && existing.length > 0
+            ? `${existing}; ${message}`
+            : message,
+      };
+    });
+  }
 }
 
 export function flattenHooks(
@@ -559,16 +627,135 @@ export function matchesPattern(matchQuery: string, matcher?: string): boolean {
 }
 
 function parseHookSpecificOutput(stdout: string): HookSpecificOutput | undefined {
+  return readHookSpecificOutput(stdout).output;
+}
+
+function readHookSpecificOutput(stdout: string): ParsedHookSpecificOutput {
   const raw = stdout.trim();
-  if (!raw.startsWith("{")) return undefined;
+  if (!raw.startsWith("{")) return { explicit: false };
   try {
-    const parsed = JSON.parse(raw) as {
-      hookSpecificOutput?: HookSpecificOutput;
-    } & HookSpecificOutput;
-    return parsed.hookSpecificOutput ?? parsed;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isRecord(parsed)) {
+      return {
+        explicit: true,
+        invalid: "hook output JSON must be an object",
+      };
+    }
+    const rawSpecific =
+      parsed.hookSpecificOutput === undefined
+        ? parsed
+        : isRecord(parsed.hookSpecificOutput)
+          ? parsed.hookSpecificOutput
+          : undefined;
+    if (!rawSpecific) {
+      return {
+        explicit: true,
+        invalid: "hookSpecificOutput must be an object",
+      };
+    }
+    const { output, invalid } = normalizeHookSpecificOutput(rawSpecific);
+    return {
+      explicit: true,
+      output,
+      ...(invalid.length > 0 ? { invalid: invalid.join("; ") } : {}),
+    };
   } catch {
-    return undefined;
+    return {
+      explicit: true,
+      invalid: "hook output JSON could not be parsed",
+    };
   }
+}
+
+function normalizeHookSpecificOutput(
+  raw: Record<string, unknown>,
+): { output: HookSpecificOutput; invalid: string[] } {
+  const invalid: string[] = [];
+  const output: {
+    hookEventName?: string;
+    permissionDecision?: HookPermissionBehavior;
+    permissionDecisionReason?: string;
+    updatedInput?: Record<string, unknown>;
+    additionalContext?: string;
+    decision?: {
+      behavior?: string;
+      updatedInput?: Record<string, unknown>;
+      message?: string;
+    };
+  } = {};
+
+  if (typeof raw.hookEventName === "string") {
+    output.hookEventName = raw.hookEventName;
+  }
+  if (raw.permissionDecision !== undefined) {
+    if (isHookPermissionBehavior(raw.permissionDecision)) {
+      output.permissionDecision = raw.permissionDecision;
+    } else {
+      invalid.push("permissionDecision must be allow, deny, or ask");
+    }
+  }
+  if (raw.permissionDecisionReason !== undefined) {
+    if (typeof raw.permissionDecisionReason === "string") {
+      output.permissionDecisionReason = raw.permissionDecisionReason;
+    } else {
+      invalid.push("permissionDecisionReason must be a string");
+    }
+  }
+  if (raw.updatedInput !== undefined) {
+    if (isRecord(raw.updatedInput)) {
+      output.updatedInput = raw.updatedInput;
+    } else {
+      invalid.push("updatedInput must be an object");
+    }
+  }
+  if (raw.additionalContext !== undefined) {
+    if (typeof raw.additionalContext === "string") {
+      output.additionalContext = raw.additionalContext;
+    } else {
+      invalid.push("additionalContext must be a string");
+    }
+  }
+  if (raw.decision !== undefined) {
+    if (isRecord(raw.decision)) {
+      const decision: {
+        behavior?: string;
+        updatedInput?: Record<string, unknown>;
+        message?: string;
+      } = {};
+      if (typeof raw.decision.behavior === "string") {
+        decision.behavior = raw.decision.behavior;
+      }
+      if (raw.decision.updatedInput !== undefined) {
+        if (isRecord(raw.decision.updatedInput)) {
+          decision.updatedInput = raw.decision.updatedInput;
+        } else {
+          invalid.push("decision.updatedInput must be an object");
+        }
+      }
+      if (raw.decision.message !== undefined) {
+        if (typeof raw.decision.message === "string") {
+          decision.message = raw.decision.message;
+        } else {
+          invalid.push("decision.message must be a string");
+        }
+      }
+      output.decision = decision;
+    } else {
+      invalid.push("decision must be an object");
+    }
+  }
+
+  return { output, invalid };
+}
+
+function isHookPermissionBehavior(
+  value: unknown,
+): value is HookPermissionBehavior {
+  return value === "allow" || value === "deny" || value === "ask";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function parsePermissionDecision(
@@ -615,12 +802,17 @@ async function runShellCommand(opts: {
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let abortListener: (() => void) | null = null;
     const finish = (
       result: Omit<CommandRunResult, "durationMs" | "stdout" | "stderr">,
     ) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      if (abortListener !== null && opts.signal !== undefined) {
+        opts.signal.removeEventListener("abort", abortListener);
+        abortListener = null;
+      }
       resolve({
         ...result,
         stdout,
@@ -632,14 +824,13 @@ async function runShellCommand(opts: {
       child.kill("SIGTERM");
       finish({ status: "timeout", error: "hook timed out" });
     }, opts.timeoutMs);
-    opts.signal?.addEventListener(
-      "abort",
-      () => {
+    if (opts.signal !== undefined) {
+      abortListener = () => {
         child.kill("SIGTERM");
         finish({ status: "skipped", error: "hook aborted" });
-      },
-      { once: true },
-    );
+      };
+      opts.signal.addEventListener("abort", abortListener, { once: true });
+    }
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
@@ -726,6 +917,13 @@ function defaultHookInput(
         tool_name: "Read",
         tool_input: {},
         tool_use_id: "test",
+      };
+    case "UserPromptSubmit":
+      return {
+        hook_event_name: event,
+        prompt: "test",
+        permission_mode: "default",
+        cwd,
       };
     case "SessionStart":
       return { hook_event_name: event, source: "startup", cwd };

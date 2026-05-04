@@ -63,6 +63,7 @@ import type { BudgetTracker } from "../llm/token-budget.js";
 import type { SessionSubmitOptions } from "./autonomous-mode.js";
 import type { CostSidecar } from "./cost.js";
 import type { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
+import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
 import type { ToolRegistry } from "./_deps/tool-registry.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { getAttachmentTrackingState } from "./attachment-state.js";
@@ -494,6 +495,7 @@ export interface AgentIdentityManager {
 /** agenc runtime `Hooks`; implemented by `runtime/src/llm/hooks/`. */
 export interface Hooks {
   startupWarnings(): ReadonlyArray<string>;
+  readonly userPromptSubmitHooks?: readonly UserPromptSubmitHook[];
   executePreCompact(...args: unknown[]): Promise<unknown>;
   executePostCompact(...args: unknown[]): Promise<unknown>;
   executeStop(...args: unknown[]): Promise<unknown>;

@@ -54,6 +54,12 @@ function metadataFor(event: HookEventName): {
         description:
           "Input is JSON with tool_name, tool_input, and tool_use_id. Output JSON with hookSpecificOutput containing a decision to allow or deny.",
       };
+    case "UserPromptSubmit":
+      return {
+        summary: "When a user prompt is submitted",
+        description:
+          "Input is JSON with prompt, cwd, and permission_mode. Exit code 0 can add context. Exit code 2 blocks the prompt before it reaches the model. Other exit codes are diagnostic only.",
+      };
     case "SessionStart":
       return {
         summary: "When a new session is started",

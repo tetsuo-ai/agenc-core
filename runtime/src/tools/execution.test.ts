@@ -1430,6 +1430,53 @@ describe("T6 parity — PreToolUse ordering + inc-4788", () => {
     expect((seen as { orig?: boolean })?.orig).toBeUndefined();
   });
 
+  test("pre-hook ask does not override a rule-based deny", async () => {
+    const { context } = buildEvaluatorContext("default", {
+      alwaysDenyRules: { session: ["Write"] },
+    });
+    let approvals = 0;
+    let executed = 0;
+    const preHook: PreToolUseHook = () => ({
+      kind: "continue",
+      hookPermissionResult: {
+        behavior: "ask",
+        message: "hook requested review",
+        updatedInput: { redacted: true },
+        hookName: "PreToolUse:test",
+      },
+    });
+    const tool: Tool = {
+      name: "Write",
+      description: "",
+      inputSchema: {},
+      execute: async () => {
+        executed += 1;
+        return { content: "should-not-run" };
+      },
+    };
+
+    const out = await runToolUse('{"original":true}', {
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c1", "Write"),
+      preHooks: [preHook],
+      canUseTool: hasPermissionsToUseTool,
+      permissionContext: context,
+      requestApproval: async () => {
+        approvals += 1;
+        return {
+          behavior: "allow" as const,
+          decisionAtTurnId: "t1",
+        };
+      },
+    });
+
+    expect(out.isError).toBe(true);
+    expect(out.content).toContain("denied");
+    expect(executed).toBe(0);
+    expect(approvals).toBe(0);
+  });
+
   test("pre-hook stop → tool_result carries CANCEL_MESSAGE", async () => {
     let executed = 0;
     const preHook: PreToolUseHook = () => ({

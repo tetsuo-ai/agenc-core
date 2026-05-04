@@ -33,7 +33,10 @@
 
 import type { LLMTool, LLMToolCall } from "../llm/types.js";
 import type { ToolDispatchResult, ToolRegistry } from "../tool-registry.js";
-import { emitWarning as emitWarningEvent } from "../session/event-log.js";
+import {
+  emitError as emitErrorEvent,
+  emitWarning as emitWarningEvent,
+} from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { GuardianApprovalReviewer } from "../session/guardian-approval-review.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -67,14 +70,25 @@ import {
   type ApprovalRequestFn,
   type ModalDecision,
   parseToolArgsWithBigInt,
+  readToolPermissionContext,
   type ToolProgressCallback,
 } from "./execution.js";
 import type {
+  HookPermissionResult,
+  MergedHookPermissionDecision,
   PermissionDecisionHook,
   PostToolUseFailureHook,
   PostToolUseHook,
   PreToolUseHook,
 } from "./hooks.js";
+import {
+  mergeHookPermissionDecision,
+  runPreToolUseHooks,
+} from "./hooks.js";
+import {
+  getAskRuleForTool,
+  getDenyRuleForTool,
+} from "../permissions/rules.js";
 import {
   getPlan,
   getPlanFilePath,
@@ -512,9 +526,155 @@ export class ToolRouter {
     };
     const rawArgs = rawPayloadArguments(routed.payload);
     const parsedArgs = parseToolArgsWithBigInt(rawArgs) ?? {};
+    let executionArgs = parsedArgs;
+    let forcedApprovalReason: string | undefined;
+    let preHookPermissionDecision: MergedHookPermissionDecision | undefined;
+    const preHooks = opts.preHooks ?? [];
+    if (preHooks.length > 0) {
+      let hookPermissionResult: HookPermissionResult | undefined;
+      const preDecision = await runPreToolUseHooks(
+        preHooks,
+        { invocation, tool: spec.tool, args: executionArgs },
+        (err, idx) => {
+          opts.onHookError?.("pre", err, idx);
+          emitWarningEvent(
+            opts.session.eventLog,
+            toolCall.id,
+            "hook_error_during_execution",
+            `PreToolUse:${spec.tool.name} threw: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        },
+      );
+      executionArgs = preDecision.args ?? executionArgs;
+      if (preDecision.hookPermissionResult) {
+        hookPermissionResult = preDecision.hookPermissionResult;
+        executionArgs =
+          preDecision.hookPermissionResult.updatedInput ?? executionArgs;
+      }
+      for (const context of preDecision.additionalContexts) {
+        emitWarningEvent(
+          opts.session.eventLog,
+          toolCall.id,
+          "hook_additional_context",
+          `PreToolUse:${spec.tool.name} context: ${context}`,
+        );
+      }
+      if (preDecision.kind === "deny") {
+        const message = preDecision.reason ?? "denied by pre-tool-use hook";
+        emitErrorEvent(opts.session.eventLog, toolCall.id, {
+          cause: "pre_hook_denied",
+          message,
+        });
+        return {
+          content: `<tool_use_error>${message}</tool_use_error>`,
+          isError: true,
+        };
+      }
+      if (preDecision.kind === "skip" && preDecision.synthResult) {
+        return {
+          content: preDecision.synthResult.content,
+          isError: preDecision.synthResult.isError === true,
+        };
+      }
+      if (preDecision.kind === "stop") {
+        const message =
+          preDecision.stopReason ??
+          "The user doesn't want to take this action right now. STOP what you are doing and wait for the user to tell you how to proceed.";
+        emitWarningEvent(
+          opts.session.eventLog,
+          toolCall.id,
+          "hook_stopped_continuation",
+          `PreToolUse:${spec.tool.name} stopped execution${preDecision.stopReason ? `: ${preDecision.stopReason}` : ""}`,
+        );
+        return { content: message, isError: true };
+      }
+
+      const ruleBasedCheck =
+        opts.permissionContext !== null && opts.permissionContext !== undefined
+          ? async (candidateArgs: Record<string, unknown>) => {
+              const permissionSnapshot = readToolPermissionContext(
+                opts.permissionContext!,
+              );
+              if (permissionSnapshot) {
+                if (
+                  getDenyRuleForTool(
+                    permissionSnapshot,
+                    spec.tool.name,
+                    candidateArgs,
+                  )
+                ) {
+                  return {
+                    behavior: "deny" as const,
+                    message: `permission denied by rule: ${spec.tool.name}`,
+                  };
+                }
+                if (
+                  getAskRuleForTool(
+                    permissionSnapshot,
+                    spec.tool.name,
+                    candidateArgs,
+                  )
+                ) {
+                  return {
+                    behavior: "ask" as const,
+                    message: `approval required by rule: ${spec.tool.name}`,
+                  };
+                }
+              }
+              return null;
+            }
+          : undefined;
+      const merged = await mergeHookPermissionDecision({
+        hookPermissionResult,
+        args: executionArgs,
+        ...(ruleBasedCheck !== undefined ? { ruleBasedCheck } : {}),
+      });
+      if (merged) {
+        executionArgs = merged.args;
+        if (merged.behavior === "deny") {
+          const message = merged.message ?? "Permission denied";
+          emitWarningEvent(
+            opts.session.eventLog,
+            toolCall.id,
+            "hook_permission_decision",
+            `${spec.tool.name} deny via ${merged.decisionReason?.type ?? "hook"}${merged.decisionReason?.hookName ? ` (${merged.decisionReason.hookName})` : ""}`,
+          );
+          emitErrorEvent(opts.session.eventLog, toolCall.id, {
+            cause: "permission_denied:hook",
+            message,
+          });
+          return { content: message, isError: true };
+        }
+        preHookPermissionDecision = merged;
+        if (merged.behavior === "ask") {
+          forcedApprovalReason = merged.message ?? "hook requested approval";
+          emitWarningEvent(
+            opts.session.eventLog,
+            toolCall.id,
+            "hook_permission_decision",
+            `${spec.tool.name} ask via ${merged.decisionReason?.type ?? "hook"}${merged.decisionReason?.hookName ? ` (${merged.decisionReason.hookName})` : ""}${merged.message ? `: ${merged.message}` : ""}`,
+          );
+        } else if (merged.behavior === "allow") {
+          emitWarningEvent(
+            opts.session.eventLog,
+            toolCall.id,
+            "hook_permission_decision",
+            `${spec.tool.name} allow via ${merged.decisionReason?.type ?? "hook"}${merged.decisionReason?.hookName ? ` (${merged.decisionReason.hookName})` : ""}`,
+          );
+        }
+      }
+    }
+
+    const executionPayload = buildPayloadForArgs(routed.payload, executionArgs);
+    const executionInvocation: ToolInvocation = {
+      ...invocation,
+      payload: executionPayload,
+    };
+    const executionRawArgs =
+      executionArgs === parsedArgs ? rawArgs : JSON.stringify(executionArgs);
     const approvalArgs = withPlanApprovalPreview(
       toolCall.name,
-      parsedArgs,
+      executionArgs,
       opts,
     );
     const approvalInvocation: ToolInvocation = {
@@ -526,6 +686,9 @@ export class ToolRouter {
       callId: toolCall.id,
       toolName: toolCall.name,
       turnId: opts.turn.subId,
+      ...(forcedApprovalReason !== undefined
+        ? { retryReason: forcedApprovalReason }
+        : {}),
     };
 
     const toolAbortController = new AbortController();
@@ -572,9 +735,14 @@ export class ToolRouter {
       const result = await orchestrateToolCall({
         tool: spec.tool,
         approvalCtx,
-        approvalPolicy: opts.approvalPolicy,
+        approvalPolicy:
+          preHookPermissionDecision?.behavior === "allow"
+            ? "never"
+            : forcedApprovalReason !== undefined
+              ? "untrusted"
+              : opts.approvalPolicy,
         sandboxMode: opts.sandboxMode,
-        payload: routed.payload,
+        payload: executionPayload,
         approvalArgs,
         ...(opts.granular !== undefined ? { granular: opts.granular } : {}),
         ...(opts.permissionHooks !== undefined
@@ -598,11 +766,16 @@ export class ToolRouter {
           );
           void ctx;
         },
-        dispatch: async () =>
-          executeToolDispatch(rawDispatchOptions(rawArgs, {
+        dispatch: async (_sandbox, dispatchContext) =>
+          executeToolDispatch(rawDispatchOptions(executionRawArgs, {
             ...opts,
             tool: spec.tool,
-            invocation,
+            invocation: executionInvocation,
+            preHooks: [],
+            ...(preHookPermissionDecision !== undefined
+              ? { preHookPermissionDecision }
+              : {}),
+            approvalAlreadyResolved: dispatchContext.approvalResolved,
             abortController: toolAbortController,
             subId: toolCall.id,
           })),
@@ -716,6 +889,8 @@ function rawDispatchOptions(
     readonly invocation: ToolInvocation;
     readonly abortController: AbortController;
     readonly subId: string;
+    readonly preHookPermissionDecision?: MergedHookPermissionDecision;
+    readonly approvalAlreadyResolved?: boolean;
   },
 ) {
   return {
@@ -740,6 +915,12 @@ function rawDispatchOptions(
       : {}),
     ...(opts.discoveredToolNames !== undefined
       ? { discoveredToolNames: opts.discoveredToolNames }
+      : {}),
+    ...(opts.preHookPermissionDecision !== undefined
+      ? { preHookPermissionDecision: opts.preHookPermissionDecision }
+      : {}),
+    ...(opts.approvalAlreadyResolved !== undefined
+      ? { approvalAlreadyResolved: opts.approvalAlreadyResolved }
       : {}),
     ...(opts.approvalResolver !== undefined && opts.canUseTool !== undefined
       ? {

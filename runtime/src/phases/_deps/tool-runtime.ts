@@ -38,10 +38,17 @@ import {
   type PlanFileContext,
 } from "../../planning/plan-files.js";
 import { reviewDecisionOpaqueString } from "../../permissions/review-decision.js";
+import {
+  getAskRuleForTool,
+  getDenyRuleForTool,
+} from "../../permissions/rules.js";
+import type { ToolPermissionContext } from "../../permissions/types.js";
 import type { GuardianApprovalReviewer } from "../../session/guardian-approval-review.js";
 import {
+  mergeHookPermissionDecision,
   runPostToolUseHooks,
   runPreToolUseHooks,
+  type HookPermissionResult,
   type PostToolUseHook,
   type PreToolUseHook,
   type PostToolUseFailureHook,
@@ -670,33 +677,12 @@ export class StreamingToolExecutor {
         ({ name: tool.toolCall.name } as { name: string });
       const onHookError = this.liveOptions?.onHookError;
 
-      // ── Permission evaluator ──────────────────────────────────────
-      const canUseTool = this.liveOptions?.canUseTool;
-      const permissionContext = this.liveOptions?.permissionContext;
-      if (canUseTool && permissionContext) {
-        const decision = await canUseTool(
-          toolDef,
-          args,
-          permissionContext,
-        );
-        if (decision.behavior === "deny") {
-          const message =
-            decision.message ?? `permission denied: ${tool.toolCall.name}`;
-          // I-8: emit error event with `permission_denied:<tool>` cause.
-          emitOn(session, "error", {
-            cause: `permission_denied:${tool.toolCall.name}`,
-            message,
-          });
-          tool.result = { content: message, isError: true };
-          return tool;
-        }
-      }
-
       // ── Pre-hooks ─────────────────────────────────────────────────
       const preHooks = this.liveOptions?.preHooks ?? [];
       let effectiveArgs = args;
       let synthFromPre: ToolDispatchResultLike | undefined;
       let denyFromPre: string | undefined;
+      let hookPermissionResult: HookPermissionResult | undefined;
 
       if (preHooks.length > 0) {
         const preResult = await runPreToolUseHooks(
@@ -720,11 +706,88 @@ export class StreamingToolExecutor {
         } else if (preResult.args) {
           effectiveArgs = preResult.args;
         }
+        if (preResult.hookPermissionResult) {
+          hookPermissionResult = preResult.hookPermissionResult;
+          effectiveArgs =
+            preResult.hookPermissionResult.updatedInput ?? effectiveArgs;
+        }
       }
 
       if (denyFromPre !== undefined) {
         tool.result = { content: denyFromPre, isError: true };
         return tool;
+      }
+
+      // ── Permission evaluator ──────────────────────────────────────
+      const canUseTool = this.liveOptions?.canUseTool;
+      const permissionContext = this.liveOptions?.permissionContext;
+      let forcedApprovalReason: string | undefined;
+      let preHookAllowed = false;
+      if (canUseTool && permissionContext) {
+        const merged = await mergeHookPermissionDecision({
+          hookPermissionResult,
+          args: effectiveArgs,
+          ruleBasedCheck: async (candidateArgs) => {
+            const permissionSnapshot =
+              readToolPermissionContext(permissionContext);
+            if (permissionSnapshot) {
+              if (getDenyRuleForTool(permissionSnapshot, toolDef.name, candidateArgs)) {
+                return {
+                  behavior: "deny",
+                  message: `permission denied by rule: ${toolDef.name}`,
+                };
+              }
+              if (getAskRuleForTool(permissionSnapshot, toolDef.name, candidateArgs)) {
+                return {
+                  behavior: "ask",
+                  message: `approval required by rule: ${toolDef.name}`,
+                };
+              }
+            }
+            return null;
+          },
+        });
+        if (merged) {
+          effectiveArgs = merged.args;
+          if (merged.behavior === "deny") {
+            const message =
+              merged.message ?? `permission denied: ${tool.toolCall.name}`;
+            emitOn(session, "error", {
+              cause: `permission_denied:${tool.toolCall.name}`,
+              message,
+            });
+            tool.result = { content: message, isError: true };
+            return tool;
+          }
+          if (merged.behavior === "ask") {
+            forcedApprovalReason =
+              merged.message ?? `approval required: ${tool.toolCall.name}`;
+          } else if (merged.behavior === "allow") {
+            preHookAllowed = true;
+          }
+        } else {
+          const decision = await canUseTool(
+            toolDef,
+            effectiveArgs,
+            permissionContext,
+          );
+          if (decision.behavior === "deny") {
+            const message =
+              decision.message ?? `permission denied: ${tool.toolCall.name}`;
+            emitOn(session, "error", {
+              cause: `permission_denied:${tool.toolCall.name}`,
+              message,
+            });
+            tool.result = { content: message, isError: true };
+            return tool;
+          }
+          if (decision.behavior === "ask") {
+            forcedApprovalReason =
+              decision.message ?? `approval required: ${tool.toolCall.name}`;
+          } else if (decision.updatedInput !== undefined) {
+            effectiveArgs = decision.updatedInput as Record<string, unknown>;
+          }
+        }
       }
 
       // ── Dispatch (or synthetic skip) ──────────────────────────────
@@ -776,9 +839,17 @@ export class StreamingToolExecutor {
               toolName: tool.toolCall.name,
               turnId: resolveTurnId(this.liveOptions),
               signal: this.abortSignal,
+              ...(forcedApprovalReason !== undefined
+                ? { retryReason: forcedApprovalReason }
+                : {}),
             },
             signal: this.abortSignal,
-            approvalPolicy: this.liveOptions?.approvalPolicy ?? "never",
+            approvalPolicy:
+              preHookAllowed
+                ? "never"
+                : forcedApprovalReason !== undefined
+                ? "untrusted"
+                : this.liveOptions?.approvalPolicy ?? "never",
             sandboxMode: this.liveOptions?.sandboxMode ?? "workspace_write",
             payload,
             approvalArgs,
@@ -886,6 +957,27 @@ export class StreamingToolExecutor {
       tool.status = "completed";
     }
   }
+}
+
+function readToolPermissionContext(
+  permissionContext: unknown,
+): ToolPermissionContext | null {
+  if (
+    typeof permissionContext !== "object" ||
+    permissionContext === null ||
+    typeof (permissionContext as { getAppState?: unknown }).getAppState !==
+      "function"
+  ) {
+    return null;
+  }
+  const appState = (permissionContext as { getAppState: () => unknown })
+    .getAppState();
+  if (typeof appState !== "object" || appState === null) return null;
+  const candidate = (appState as { toolPermissionContext?: unknown })
+    .toolPermissionContext;
+  return typeof candidate === "object" && candidate !== null
+    ? (candidate as ToolPermissionContext)
+    : null;
 }
 
 // ─────────────────────────────────────────────────────────────────────
