@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -19,6 +19,18 @@ import {
   type AgentDefinition,
   type PluginAgentDefinition,
 } from './loadAgentsDir.js'
+import { getPrompt } from './prompt.js'
+
+const stateModulePath = '../../agenc/upstream/bootstrap/state.js'
+const allSettingSources = [
+  'userSettings',
+  'projectSettings',
+  'localSettings',
+  'flagSettings',
+  'policySettings',
+] as const
+
+type SettingSourceForTesting = (typeof allSettingSources)[number]
 
 function agent(agentType: string, source: AgentDefinition['source']): AgentDefinition {
   return {
@@ -37,7 +49,26 @@ function tempAgentDir(): string {
   return dir
 }
 
-afterEach(() => {
+async function getAllowedSettingSourcesForTesting(): Promise<
+  SettingSourceForTesting[]
+> {
+  const state = (await import(stateModulePath)) as {
+    getAllowedSettingSources?: () => SettingSourceForTesting[]
+  }
+  return state.getAllowedSettingSources?.() ?? [...allSettingSources]
+}
+
+async function setAllowedSettingSourcesForTesting(
+  sources: SettingSourceForTesting[],
+): Promise<void> {
+  const state = (await import(stateModulePath)) as {
+    setAllowedSettingSources?: (sources: SettingSourceForTesting[]) => void
+  }
+  state.setAllowedSettingSources?.(sources)
+}
+
+afterEach(async () => {
+  await setAllowedSettingSourcesForTesting([...allSettingSources])
   __setMarkdownAgentDirsForTesting(undefined)
   __setPluginAgentCacheClearerForTesting(undefined)
   __setPluginAgentsLoaderForTesting(undefined)
@@ -85,7 +116,7 @@ describe('AgentTool loadAgentsDir adapter', () => {
       model: 'inherit',
       effort: 'high',
       permissionMode: 'plan',
-      mcpServers: ['github', { slack: { type: 'stdio' } }],
+      mcpServers: ['github', { slack: { type: 'stdio', command: 'slack-mcp' } }],
       hooks: { PreToolUse: [] },
       maxTurns: '3',
       skills: ['security'],
@@ -104,7 +135,7 @@ describe('AgentTool loadAgentsDir adapter', () => {
       model: 'inherit',
       effort: 'high',
       permissionMode: 'plan',
-      mcpServers: ['github', { slack: { type: 'stdio' } }],
+      mcpServers: ['github', { slack: { type: 'stdio', command: 'slack-mcp' } }],
       hooks: { PreToolUse: [] },
       maxTurns: 3,
       skills: ['security'],
@@ -144,7 +175,7 @@ describe('AgentTool loadAgentsDir adapter', () => {
         tools: 'Read Grep',
         disallowedTools: ['Write'],
         skills: ['security'],
-        mcpServers: ['github'],
+        mcpServers: ['github', { slack: { type: 'stdio', command: 'slack-mcp' } }],
         hooks: { Stop: [] },
         model: 'gpt-5.4',
         effort: 2,
@@ -167,7 +198,7 @@ describe('AgentTool loadAgentsDir adapter', () => {
       tools: ['Read', 'Grep', 'Write', 'Edit', 'FileRead'],
       disallowedTools: ['Write'],
       skills: ['security'],
-      mcpServers: ['github'],
+      mcpServers: ['github', { slack: { type: 'stdio', command: 'slack-mcp' } }],
       hooks: { Stop: [] },
       model: 'gpt-5.4',
       effort: 2,
@@ -176,6 +207,156 @@ describe('AgentTool loadAgentsDir adapter', () => {
       background: true,
       memory: 'user',
     })
+  })
+
+  test('rejects remote isolation outside internal builds', () => {
+    const previousUserType = process.env.USER_TYPE
+    delete process.env.USER_TYPE
+    try {
+      expect(
+        parseAgentFromJson('remote-json', {
+          description: 'Remote JSON',
+          prompt: 'Run remotely.',
+          isolation: 'remote',
+        }),
+      ).not.toMatchObject({ isolation: 'remote' })
+
+      const parsed = parseAgentFromMarkdown(
+        '/repo/.agenc/agents/remote.md',
+        '/repo/.agenc/agents',
+        {
+          name: 'remote-markdown',
+          description: 'Remote markdown',
+          isolation: 'remote',
+        },
+        'Run remotely.',
+        'projectSettings',
+      )
+      expect(parsed).not.toMatchObject({ isolation: 'remote' })
+    } finally {
+      if (previousUserType === undefined) {
+        delete process.env.USER_TYPE
+      } else {
+        process.env.USER_TYPE = previousUserType
+      }
+    }
+  })
+
+  test('omits invalid hook and MCP server settings', () => {
+    const jsonAgent = parseAgentFromJson('bad-config-json', {
+      description: 'Bad config',
+      prompt: 'Skip invalid config.',
+      hooks: 'not-hooks',
+      mcpServers: [{ broken: { type: 'stdio' } }],
+    })
+    expect(jsonAgent).not.toHaveProperty('hooks')
+    expect(jsonAgent).not.toHaveProperty('mcpServers')
+
+    const markdownAgent = parseAgentFromMarkdown(
+      '/repo/.agenc/agents/bad-config.md',
+      '/repo/.agenc/agents',
+      {
+        name: 'bad-config-markdown',
+        description: 'Bad config',
+        hooks: 'not-hooks',
+        mcpServers: [{ broken: { type: 'stdio' } }],
+      },
+      'Skip invalid config.',
+      'projectSettings',
+    )
+    expect(markdownAgent).not.toHaveProperty('hooks')
+    expect(markdownAgent).not.toHaveProperty('mcpServers')
+  })
+
+  test('loads project agents through the shared markdown config loader', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agenc-agent-shared-loader-'))
+    const projectDir = join(root, '.agenc', 'agents')
+    mkdirSync(projectDir, { recursive: true })
+    writeFileSync(
+      join(projectDir, 'project.md'),
+      `---
+name: project-loader-agent
+description: Project loader agent
+---
+Loaded through shared discovery.
+`,
+    )
+    __setPluginAgentsLoaderForTesting(async () => [])
+
+    const definitions = await getAgentDefinitionsWithOverrides(root)
+    expect(definitions.allAgents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          agentType: 'project-loader-agent',
+          source: 'projectSettings',
+        }),
+      ]),
+    )
+  })
+
+  test('honors shared setting-source gates for project agents', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agenc-agent-source-gate-'))
+    const projectDir = join(root, '.agenc', 'agents')
+    mkdirSync(projectDir, { recursive: true })
+    writeFileSync(
+      join(projectDir, 'project.md'),
+      `---
+name: disabled-project-agent
+description: Project-only agent
+---
+Should be disabled with project settings.
+`,
+    )
+    const previousSources = await getAllowedSettingSourcesForTesting()
+    await setAllowedSettingSourcesForTesting(
+      previousSources.filter(source => source !== 'projectSettings'),
+    )
+    clearAgentDefinitionsCache()
+    __setPluginAgentsLoaderForTesting(async () => [])
+
+    const definitions = await getAgentDefinitionsWithOverrides(root)
+    expect(definitions.allAgents.map(agent => agent.agentType)).not.toContain(
+      'disabled-project-agent',
+    )
+  })
+
+  test('deduplicates symlinked markdown agents through shared discovery', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agenc-agent-symlink-dedupe-'))
+    const config = join(root, 'config')
+    const userDir = join(config, 'agents')
+    const projectDir = join(root, '.agenc', 'agents')
+    mkdirSync(userDir, { recursive: true })
+    mkdirSync(projectDir, { recursive: true })
+    const projectFile = join(projectDir, 'dupe.md')
+    writeFileSync(
+      projectFile,
+      `---
+name: deduped-agent
+description: Deduped agent
+---
+Only load once.
+`,
+    )
+    symlinkSync(projectFile, join(userDir, 'dupe.md'))
+
+    const previousConfigDir = process.env.AGENC_CONFIG_DIR
+    process.env.AGENC_CONFIG_DIR = config
+    clearAgentDefinitionsCache()
+    __setPluginAgentsLoaderForTesting(async () => [])
+    try {
+      const definitions = await getAgentDefinitionsWithOverrides(root)
+      const deduped = definitions.allAgents.filter(
+        agent => agent.agentType === 'deduped-agent',
+      )
+      expect(deduped).toHaveLength(1)
+      expect(deduped[0]?.source).toBe('userSettings')
+    } finally {
+      if (previousConfigDir === undefined) {
+        delete process.env.AGENC_CONFIG_DIR
+      } else {
+        process.env.AGENC_CONFIG_DIR = previousConfigDir
+      }
+    }
   })
 
   test('loads custom markdown and plugin agents with active color propagation', async () => {
@@ -270,5 +451,35 @@ Broken prompt.
     expect(definitions.activeAgents.every(agent => agent.source === 'built-in')).toBe(
       true,
     )
+  })
+
+  test('renders full AgentTool guidance for non-coordinator prompts', async () => {
+    const previousListMode = process.env.AGENC_AGENT_LIST_IN_MESSAGES
+    const previousBackground = process.env.AGENC_DISABLE_BACKGROUND_TASKS
+    process.env.AGENC_AGENT_LIST_IN_MESSAGES = 'false'
+    delete process.env.AGENC_DISABLE_BACKGROUND_TASKS
+    try {
+      const prompt = await getPrompt([
+        {
+          ...agent('reviewer', 'built-in'),
+          tools: ['FileRead'],
+        },
+      ])
+      expect(prompt).toContain('When NOT to use the spawn_agent tool')
+      expect(prompt).toContain('run_in_background parameter')
+      expect(prompt).toContain('Writing the prompt')
+      expect(prompt).toContain('- reviewer: reviewer use (Tools: FileRead)')
+    } finally {
+      if (previousListMode === undefined) {
+        delete process.env.AGENC_AGENT_LIST_IN_MESSAGES
+      } else {
+        process.env.AGENC_AGENT_LIST_IN_MESSAGES = previousListMode
+      }
+      if (previousBackground === undefined) {
+        delete process.env.AGENC_DISABLE_BACKGROUND_TASKS
+      } else {
+        process.env.AGENC_DISABLE_BACKGROUND_TASKS = previousBackground
+      }
+    }
   })
 })

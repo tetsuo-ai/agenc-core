@@ -1,9 +1,18 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import {
+  type Dirent,
+  existsSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 
 import yaml from 'js-yaml'
 import memoize from 'lodash-es/memoize.js'
+import { z } from 'zod/v4'
 
 import { listAgentRoles } from '../../agents/role.js'
 import {
@@ -16,7 +25,7 @@ import { FILE_WRITE_TOOL_NAME } from '../system/file-write.js'
 import { AGENT_COLORS, setAgentColor, type AgentColorName } from './agentColorManager.js'
 import { loadAgentMemoryPrompt } from './agentMemory.js'
 
-export type HooksSettings = Record<string, unknown>
+export type HooksSettings = Partial<Record<string, unknown[]>>
 
 export type SettingSource =
   | 'userSettings'
@@ -25,18 +34,77 @@ export type SettingSource =
   | 'flagSettings'
 
 export type EffortValue =
-  | 'none'
   | 'low'
   | 'medium'
   | 'high'
+  | 'max'
   | 'xhigh'
+  | 'none'
   | number
 
 export type AgentMemoryScope = 'user' | 'project' | 'local'
 
 export type AgentMcpServerSpec =
   | string
-  | { readonly [name: string]: unknown }
+  | { readonly [name: string]: McpServerConfig }
+
+type McpServerConfig = z.infer<ReturnType<typeof McpServerConfigSchema>>
+
+const McpStdioServerConfigSchema = () =>
+  z
+    .object({
+      type: z.literal('stdio').optional(),
+      command: z.string().min(1),
+      args: z.array(z.string()).optional(),
+      env: z.record(z.string(), z.string()).optional(),
+    })
+    .passthrough()
+
+const McpUrlServerConfigSchema = (type: 'sse' | 'http' | 'ws') =>
+  z
+    .object({
+      type: z.literal(type),
+      url: z.string().min(1),
+      headers: z.record(z.string(), z.string()).optional(),
+      headersHelper: z.string().optional(),
+    })
+    .passthrough()
+
+const McpIdeServerConfigSchema = (type: 'sse-ide' | 'ws-ide') =>
+  z
+    .object({
+      type: z.literal(type),
+      url: z.string().min(1),
+      ideName: z.string().min(1),
+      authToken: z.string().optional(),
+      ideRunningInWindows: z.boolean().optional(),
+    })
+    .passthrough()
+
+const McpSdkServerConfigSchema = () =>
+  z
+    .object({
+      type: z.literal('sdk'),
+      name: z.string().min(1),
+    })
+    .passthrough()
+
+const McpServerConfigSchema = () =>
+  z.union([
+    McpStdioServerConfigSchema(),
+    McpUrlServerConfigSchema('sse'),
+    McpUrlServerConfigSchema('http'),
+    McpUrlServerConfigSchema('ws'),
+    McpIdeServerConfigSchema('sse-ide'),
+    McpIdeServerConfigSchema('ws-ide'),
+    McpSdkServerConfigSchema(),
+  ])
+
+const AgentMcpServerSpecSchema = () =>
+  z.union([
+    z.string().min(1),
+    z.record(z.string(), McpServerConfigSchema()),
+  ])
 
 export type BaseAgentDefinition = {
   agentType: string
@@ -108,20 +176,56 @@ type MarkdownAgentFile = {
   source: SettingSource
 }
 
-const EFFORT_LEVELS = ['none', 'low', 'medium', 'high', 'xhigh'] as const
+type SettingSourceWithLocal = SettingSource | 'localSettings'
+type SettingSourceEnabled = (source: SettingSourceWithLocal) => boolean
+
+const settingsConstantsModulePath =
+  '../../agenc/upstream/utils/settings/constants.js'
+const sharedMarkdownLoaderModulePath =
+  '../../agenc/upstream/utils/markdownConfigLoader.js'
 const VALID_MEMORY_SCOPES = ['user', 'project', 'local'] as const
-const VALID_ISOLATION_MODES = ['worktree', 'remote'] as const
 const MEMORY_TOOLS = [
   FILE_WRITE_TOOL_NAME,
   FILE_EDIT_TOOL_NAME,
   FILE_READ_TOOL_NAME,
 ] as const
+const EFFORT_LEVELS = ['none', 'low', 'medium', 'high', 'max', 'xhigh'] as const
+const HOOK_EVENTS = new Set([
+  'PreToolUse',
+  'PostToolUse',
+  'PostToolUseFailure',
+  'Notification',
+  'UserPromptSubmit',
+  'SessionStart',
+  'SessionEnd',
+  'Stop',
+  'StopFailure',
+  'SubagentStart',
+  'SubagentStop',
+  'PreCompact',
+  'PostCompact',
+  'PermissionRequest',
+  'PermissionDenied',
+  'Setup',
+  'TeammateIdle',
+  'TaskCreated',
+  'TaskCompleted',
+  'Elicitation',
+  'ElicitationResult',
+  'ConfigChange',
+  'WorktreeCreate',
+  'WorktreeRemove',
+  'InstructionsLoaded',
+  'CwdChanged',
+  'FileChanged',
+])
 
 let pluginAgentsLoaderForTesting:
   | (() => Promise<PluginAgentDefinition[]>)
   | undefined
 let pluginAgentCacheClearer: (() => void) | undefined
 let pluginAgentCacheClearerForTesting: (() => void) | undefined
+let sharedMarkdownCacheClearer: (() => void) | undefined
 let markdownDirsForTesting:
   | Array<{ dir: string; source: SettingSource }>
   | undefined
@@ -199,21 +303,26 @@ function parseBooleanFlag(value: unknown): boolean | undefined {
   return value === true || value === 'true' ? true : undefined
 }
 
-function parseTools(value: unknown): string[] | undefined {
-  if (value === undefined) return undefined
+function parseToolList(value: unknown): string[] | null {
+  if (value === undefined || value === null) return null
+  if (!value) return []
   const raw = Array.isArray(value) ? value : typeof value === 'string' ? [value] : []
   const parsed = raw
     .filter((tool): tool is string => typeof tool === 'string')
     .flatMap(tool => tool.split(/[,\s]+/))
     .map(tool => tool.trim())
     .filter(Boolean)
-  if (parsed.includes('*')) return undefined
   return parsed
 }
 
-function parseSkills(value: unknown): string[] | undefined {
-  const parsed = parseTools(value)
-  return parsed && parsed.length > 0 ? parsed : undefined
+function parseAgentTools(value: unknown): string[] | undefined {
+  const parsed = parseToolList(value)
+  if (parsed === null) return value === undefined ? undefined : []
+  return parsed.includes('*') ? undefined : parsed
+}
+
+function parseSlashTools(value: unknown): string[] {
+  return parseToolList(value) ?? []
 }
 
 function parseEffortValue(value: unknown): EffortValue | undefined {
@@ -227,7 +336,7 @@ function parseEffortValue(value: unknown): EffortValue | undefined {
   return Number.isInteger(numeric) ? numeric : undefined
 }
 
-function parsePositiveInt(value: unknown): number | undefined {
+function parsePositiveIntFromFrontmatter(value: unknown): number | undefined {
   const numeric =
     typeof value === 'number'
       ? value
@@ -252,23 +361,32 @@ function parseMemoryScope(value: unknown): AgentMemoryScope | undefined {
 }
 
 function parseIsolation(value: unknown): 'worktree' | 'remote' | undefined {
+  const valid = process.env.USER_TYPE === 'ant' ? ['worktree', 'remote'] : ['worktree']
   return typeof value === 'string' &&
-    (VALID_ISOLATION_MODES as readonly string[]).includes(value)
+    valid.includes(value)
     ? (value as 'worktree' | 'remote')
     : undefined
 }
 
 function parseHooks(value: unknown): HooksSettings | undefined {
-  return isRecord(value) ? value : undefined
+  if (value === undefined) return undefined
+  if (!isRecord(value)) return undefined
+  const parsed: HooksSettings = {}
+  for (const [event, matchers] of Object.entries(value)) {
+    if (!HOOK_EVENTS.has(event) || !Array.isArray(matchers)) return undefined
+    parsed[event] = matchers
+  }
+  return parsed
 }
 
 function parseMcpServers(value: unknown): AgentMcpServerSpec[] | undefined {
   if (!Array.isArray(value)) return undefined
-  const parsed = value.filter((item): item is AgentMcpServerSpec => {
-    if (typeof item === 'string') return item.trim().length > 0
-    if (!isRecord(item)) return false
-    return Object.values(item).every(v => isRecord(v))
-  })
+  const parsed = value
+    .map(item => {
+      const result = AgentMcpServerSpecSchema().safeParse(item)
+      return result.success ? result.data : null
+    })
+    .filter((item): item is AgentMcpServerSpec => item !== null)
   return parsed.length > 0 ? parsed : undefined
 }
 
@@ -348,29 +466,90 @@ function parseMarkdown(raw: string): {
   }
 }
 
-function collectMarkdownFiles(dir: string): string[] {
-  if (!existsSync(dir)) return []
+function fileIdentity(filePath: string): string | null {
+  try {
+    const stats = statSync(filePath, { bigint: true })
+    if (stats.dev === 0n && stats.ino === 0n) return null
+    return `${stats.dev}:${stats.ino}`
+  } catch {
+    try {
+      return realpathSync(filePath)
+    } catch {
+      return null
+    }
+  }
+}
+
+function collectMarkdownFiles(dir: string, visitedDirs = new Set<string>()): string[] {
+  let dirStats: ReturnType<typeof statSync>
+  try {
+    dirStats = statSync(dir, { bigint: true })
+  } catch {
+    return []
+  }
+  if (!dirStats.isDirectory()) return []
+  const dirKey =
+    dirStats.dev === 0n && dirStats.ino === 0n
+      ? realpathSync(dir)
+      : `${dirStats.dev}:${dirStats.ino}`
+  if (visitedDirs.has(dirKey)) return []
+  visitedDirs.add(dirKey)
+
   const out: string[] = []
-  const entries = readdirSync(dir, { withFileTypes: true })
+  let entries: Dirent<string>[]
+  try {
+    entries = readdirSync(dir, { encoding: 'utf8', withFileTypes: true })
+  } catch {
+    return []
+  }
   for (const entry of entries) {
     const fullPath = join(dir, entry.name)
-    if (entry.isDirectory()) {
-      out.push(...collectMarkdownFiles(fullPath))
-    } else if (entry.isFile() && entry.name.endsWith('.md')) {
-      out.push(fullPath)
+    try {
+      const entryStats = entry.isSymbolicLink()
+        ? statSync(fullPath)
+        : lstatSync(fullPath)
+      if (entryStats.isDirectory()) {
+        out.push(...collectMarkdownFiles(fullPath, visitedDirs))
+      } else if (entryStats.isFile() && entry.name.endsWith('.md')) {
+        out.push(fullPath)
+      }
+    } catch {
+      continue
     }
   }
   return out.sort()
 }
 
-function projectAgentDirs(cwd: string): Array<{ dir: string; source: SettingSource }> {
+async function getSettingSourceEnabled(): Promise<SettingSourceEnabled> {
+  try {
+    const module = (await import(settingsConstantsModulePath)) as {
+      isSettingSourceEnabled?: SettingSourceEnabled
+    }
+    if (typeof module.isSettingSourceEnabled === 'function') {
+      return source => module.isSettingSourceEnabled?.(source) ?? true
+    }
+  } catch {
+    // Fall back to allowing sources when the shared settings module is absent.
+  }
+  return () => true
+}
+
+function projectAgentDirs(
+  cwd: string,
+  isSettingSourceEnabled: SettingSourceEnabled,
+): Array<{ dir: string; source: SettingSource }> {
   if (markdownDirsForTesting) return markdownDirsForTesting
   const dirs: Array<{ dir: string; source: SettingSource }> = []
   const managed = process.env.AGENC_MANAGED_AGENTS_DIR
   if (managed) {
     dirs.push({ dir: managed, source: 'policySettings' })
   }
-  dirs.push({ dir: join(homedir(), '.agenc', 'agents'), source: 'userSettings' })
+  if (isSettingSourceEnabled('userSettings')) {
+    const userRoot = process.env.AGENC_CONFIG_DIR ?? join(homedir(), '.agenc')
+    dirs.push({ dir: join(userRoot, 'agents'), source: 'userSettings' })
+  }
+
+  if (!isSettingSourceEnabled('projectSettings')) return dirs
 
   let current = resolve(cwd)
   const home = resolve(homedir())
@@ -383,12 +562,45 @@ function projectAgentDirs(cwd: string): Array<{ dir: string; source: SettingSour
   return dirs
 }
 
+async function loadSharedMarkdownAgentFiles(
+  cwd: string,
+): Promise<MarkdownAgentFile[] | null> {
+  try {
+    const module = (await import(sharedMarkdownLoaderModulePath)) as {
+      loadMarkdownFilesForSubdir: {
+        (subdir: string, cwd: string): Promise<MarkdownAgentFile[]>
+        cache: { clear?: () => void }
+      }
+    }
+    sharedMarkdownCacheClearer = module.loadMarkdownFilesForSubdir.cache.clear?.bind(
+      module.loadMarkdownFilesForSubdir.cache,
+    )
+    const files = await module.loadMarkdownFilesForSubdir('agents', cwd)
+    return files.map(file => ({
+      filePath: file.filePath,
+      baseDir: file.baseDir,
+      frontmatter: file.frontmatter,
+      content: file.content,
+      source: file.source as SettingSource,
+    }))
+  } catch {
+    return null
+  }
+}
+
 async function loadMarkdownAgentFiles(
   cwd: string,
 ): Promise<{ files: MarkdownAgentFile[]; failedFiles: FailedAgentFile[] }> {
+  if (!markdownDirsForTesting) {
+    const sharedFiles = await loadSharedMarkdownAgentFiles(cwd)
+    if (sharedFiles) return { files: sharedFiles, failedFiles: [] }
+  }
+
   const files: MarkdownAgentFile[] = []
   const failedFiles: FailedAgentFile[] = []
-  for (const { dir, source } of projectAgentDirs(cwd)) {
+  const seenFileIds = new Set<string>()
+  const isSettingSourceEnabled = await getSettingSourceEnabled()
+  for (const { dir, source } of projectAgentDirs(cwd, isSettingSourceEnabled)) {
     let filePaths: string[]
     try {
       filePaths = collectMarkdownFiles(dir)
@@ -398,6 +610,9 @@ async function loadMarkdownAgentFiles(
     }
     for (const filePath of filePaths) {
       try {
+        const identity = fileIdentity(filePath)
+        if (identity && seenFileIds.has(identity)) continue
+        if (identity) seenFileIds.add(identity)
         const raw = readFileSync(filePath, 'utf8')
         const { frontmatter, content } = parseMarkdown(raw)
         files.push({
@@ -425,9 +640,12 @@ function parseAgentFields(
   baseDir?: string,
 ): CustomAgentDefinition {
   const memory = parseMemoryScope(raw.memory)
-  const tools = addMemoryTools(parseTools(raw.tools), memory)
-  const disallowedTools = parseTools(raw.disallowedTools)
-  const skills = parseSkills(raw.skills)
+  const tools = addMemoryTools(parseAgentTools(raw.tools), memory)
+  const disallowedTools =
+    raw.disallowedTools !== undefined
+      ? parseAgentTools(raw.disallowedTools)
+      : undefined
+  const skills = parseSlashTools(raw.skills)
   const color = AGENT_COLORS.includes(raw.color as AgentColorName)
     ? (raw.color as AgentColorName)
     : undefined
@@ -436,7 +654,7 @@ function parseAgentFields(
   const permissionMode = parsePermissionMode(raw.permissionMode)
   const mcpServers = parseMcpServers(raw.mcpServers)
   const hooks = parseHooks(raw.hooks)
-  const maxTurns = parsePositiveInt(raw.maxTurns)
+  const maxTurns = parsePositiveIntFromFrontmatter(raw.maxTurns)
   const initialPrompt = nonEmptyString(raw.initialPrompt)
   const background = parseBooleanFlag(raw.background)
   const isolation = parseIsolation(raw.isolation)
@@ -648,6 +866,7 @@ export const getAgentDefinitionsWithOverrides = memoize(
 
 export function clearAgentDefinitionsCache(): void {
   getAgentDefinitionsWithOverrides.cache.clear?.()
+  sharedMarkdownCacheClearer?.()
   if (pluginAgentCacheClearerForTesting) {
     pluginAgentCacheClearerForTesting()
     return
