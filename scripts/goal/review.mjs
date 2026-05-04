@@ -170,8 +170,10 @@ Before that line, write a structured report:
 - "Files reviewed:" — explicit list of every changed file path you read in full. The runner WILL grep-verify this list against \`git diff main...HEAD --name-only\`; if your list omits a changed source file, the run is rejected.
 - "Issues:" — numbered list, each with severity (CRITICAL / HIGH / MEDIUM / LOW), file path + line if known, and the specific change needed. Include EVERY issue you found at EVERY severity. If no issues at a severity, write "  CRITICAL: none" / etc.
 - "Cross-cutting:" — issues that span multiple files or aren't tied to one location
-- "Security/supply-chain:" — findings from pass 4 (or "none")
-- "Performance/resource-leak:" — findings from pass 5 (or "none")
+- "Security/supply-chain:" — findings from pass 4. If no findings, write exactly:
+  "Security/supply-chain: none".
+- "Performance/resource-leak:" — findings from pass 5. If no findings, write exactly:
+  "Performance/resource-leak: none".
 - "Scope check:" — confirm whether the diff stayed inside the item's stated scope
 - "Test coverage gaps:" — specific test cases that should exist but don't
 - if APPROVED, the issues list may be all LOW-severity follow-ups
@@ -336,7 +338,12 @@ const passSections = [
 for (const { name, terminators } of passSections) {
   const body = sectionBody(name, terminators);
   const hasItem = /(^|\n)\s*[-*•\d]/.test(body);
-  const sayNone = /\bnone\b/i.test(body);
+  const sayNone =
+    /\bnone\b/i.test(body) ||
+    /\bno\s+(?:new\s+)?(?:findings?|issues?|npm dependencies|dependencies|shell invocation|command injection surface|leaks?|resource leaks?)\b/i.test(
+      body,
+    ) ||
+    /\bno[\s\S]{0,80}\b(?:found|findings?|issues?|leaks?)\b/i.test(body);
   if (!hasItem && !sayNone) {
     process.stderr.write(`${BOLD}${RED}✗${RESET} reviewer's "${name}" section is empty — must say "none" or list at least one finding.\n`);
     process.stderr.write(`An empty pass section means the reviewer did not actually perform the pass.\n`);
