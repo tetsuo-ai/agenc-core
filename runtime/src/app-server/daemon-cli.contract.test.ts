@@ -1327,6 +1327,7 @@ describe("AgenC daemon CLI", () => {
         startedAt: "2026-05-01T12:00:00.000Z",
         status: "running",
       }),
+      submitAgentMessage: vi.fn(async () => {}),
       stopAgent: async () => {},
     };
 
@@ -1357,6 +1358,16 @@ describe("AgenC daemon CLI", () => {
       "running",
     );
     expect(snapshotCount(agencHome, process.cwd(), sessionId)).toBeGreaterThan(0);
+    await expect(
+      firstClient.request("message.stream", {
+        sessionId,
+        content: "state before restart",
+      }),
+    ).resolves.toMatchObject({
+      messageId: expect.any(String),
+      streamId: expect.any(String),
+    });
+    expect(snapshotCount(agencHome, process.cwd(), sessionId)).toBeGreaterThan(1);
 
     firstSignal.emit("SIGTERM");
     await expect(first).resolves.toBe(0);
@@ -1437,6 +1448,9 @@ describe("AgenC daemon CLI", () => {
     ]);
     expect(runParams?.taskPrompt).toBe("survive daemon restart");
     expect(runParams?.model).toBe("grok-4");
+    expect(runParams?.initialMessages).toEqual([
+      { role: "user", content: "state before restart" },
+    ]);
     expect(restoreBootstrapOptions?.argv).toEqual(
       expect.arrayContaining([
         "--provider",
