@@ -89,6 +89,8 @@ describe("dangerous shell command detection", () => {
     "xargs rm -rf /",
     "find . -exec rm -rf / \\;",
     "find . -exec sh -c \"rm -rf /\" \\;",
+    "find / -exec rm -rf {} +",
+    "find ~ -exec rm -rf {} +",
   ])("flags execution wrapper dangerous forms: %s", (command) => {
     expect(isDangerousShellCommand(command)).toBe(true);
   });
@@ -151,8 +153,13 @@ describe("dangerous shell command detection", () => {
     "git commit -m push --force main",
     "git log --grep push --force main",
     "echo git push origin --force main",
-  ])("does not flag non-default or non-force git push: %s", (command) => {
+    "rm -f ./dist/file",
+  ])("does not flag safe git push or non-critical rm forms: %s", (command) => {
     expect(isDangerousShellCommand(command)).toBe(false);
+  });
+
+  test("flags ANSI-C quoted shell command strings", () => {
+    expect(isDangerousShellCommand("bash -lc $'rm -rf /'")).toBe(true);
   });
 
   test("does not flag quoted text or non-rm wrapped commands", () => {

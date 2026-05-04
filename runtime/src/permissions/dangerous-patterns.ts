@@ -85,8 +85,8 @@ export const DANGEROUS_SHELL_COMMAND_PATTERNS: readonly DangerousShellCommandPat
     label: "rm -rf critical path",
   },
   {
-    matches: isForceRemoveWithoutRecursive,
-    label: "rm -f",
+    matches: isForceRemoveOfCriticalPath,
+    label: "rm -f critical path",
   },
   {
     matches: evalContainsDangerousCommand,
@@ -95,6 +95,10 @@ export const DANGEROUS_SHELL_COMMAND_PATTERNS: readonly DangerousShellCommandPat
   {
     matches: xargsContainsDangerousCommand,
     label: "xargs dangerous command",
+  },
+  {
+    matches: shellCommandStringContainsDangerousCommand,
+    label: "shell dangerous command",
   },
   {
     matches: findExecContainsDangerousCommand,
@@ -200,16 +204,16 @@ function isRecursiveForceRemoveOfCriticalPath(command: string): boolean {
   return containsRecursiveForceRemove(words);
 }
 
-function isForceRemoveWithoutRecursive(command: string): boolean {
+function isForceRemoveOfCriticalPath(command: string): boolean {
   const fragments = splitShellFragments(command);
   if (fragments.length > 1) {
-    return fragments.some((fragment) => isForceRemoveWithoutRecursive(fragment));
+    return fragments.some((fragment) => isForceRemoveOfCriticalPath(fragment));
   }
 
   const words = splitSimpleShellWords(command);
   if (words.length === 0) return false;
 
-  return containsForceRemoveWithoutRecursive(words);
+  return containsForceRemoveOfCriticalPath(words);
 }
 
 function isDangerousDefaultBranchForcePush(command: string): boolean {
@@ -310,6 +314,24 @@ function xargsContainsDangerousCommand(command: string): boolean {
   return isDangerousShellCommand(nested.join(" "));
 }
 
+function shellCommandStringContainsDangerousCommand(command: string): boolean {
+  const fragments = splitShellFragments(command);
+  if (fragments.length > 1) {
+    return fragments.some((fragment) =>
+      shellCommandStringContainsDangerousCommand(fragment),
+    );
+  }
+
+  const words = splitSimpleShellWords(command);
+  const shellIndex = firstCommandIndex(words, 0);
+  if (shellIndex === null) return false;
+  const shell = basename(stripShellQuotes(words[shellIndex] ?? ""));
+  return (
+    SHELL_SCRIPT_COMMANDS.has(shell) &&
+    shellScriptContainsDanger(words, shellIndex, isDangerousShellCommand)
+  );
+}
+
 function findExecContainsDangerousCommand(command: string): boolean {
   const fragments = splitShellFragments(command);
   if (fragments.length > 1) {
@@ -322,6 +344,7 @@ function findExecContainsDangerousCommand(command: string): boolean {
   if (basename(stripShellQuotes(words[findIndex] ?? "")) !== "find") {
     return false;
   }
+  const criticalRoot = findCommandHasCriticalRoot(words, findIndex + 1);
 
   for (let i = findIndex + 1; i < words.length; i++) {
     const word = stripShellQuotes(words[i]!);
@@ -335,12 +358,39 @@ function findExecContainsDangerousCommand(command: string): boolean {
     }
     if (
       execWords.length > 0 &&
-      isDangerousShellCommand(formatShellWords(execWords))
+      (isDangerousShellCommand(formatShellWords(execWords)) ||
+        (criticalRoot && findExecRemovesMatchedPath(execWords)))
     ) {
       return true;
     }
   }
   return false;
+}
+
+function findCommandHasCriticalRoot(
+  words: readonly string[],
+  startIndex: number,
+): boolean {
+  for (let i = startIndex; i < words.length; i++) {
+    const word = stripShellQuotes(words[i]!);
+    if (word === "--") continue;
+    if (word.startsWith("-") || word === "(" || word === "!" || word === "not") {
+      return false;
+    }
+    if (isCriticalRemovalTarget(word)) return true;
+  }
+  return false;
+}
+
+function findExecRemovesMatchedPath(execWords: readonly string[]): boolean {
+  if (execWords.length === 0) return false;
+  const command = basename(stripShellQuotes(execWords[0] ?? ""));
+  if (command !== "rm") return false;
+  const args = execWords.slice(1);
+  return (
+    rmArgsHaveRecursiveAndForce(args) &&
+    args.some((arg) => stripShellQuotes(arg) === "{}")
+  );
 }
 
 function downloadPipeToShell(command: string): boolean {
@@ -421,11 +471,11 @@ function containsRecursiveForceRemove(words: readonly string[]): boolean {
   return commandAtIndexContainsRecursiveForceRemove(words, commandIndex);
 }
 
-function containsForceRemoveWithoutRecursive(words: readonly string[]): boolean {
+function containsForceRemoveOfCriticalPath(words: readonly string[]): boolean {
   const commandIndex = firstCommandIndex(words, 0);
   if (commandIndex === null) return false;
 
-  return commandAtIndexContainsForceRemoveWithoutRecursive(words, commandIndex);
+  return commandAtIndexContainsForceRemoveOfCriticalPath(words, commandIndex);
 }
 
 function commandAtIndexContainsRecursiveForceRemove(
@@ -436,7 +486,14 @@ function commandAtIndexContainsRecursiveForceRemove(
   if (command === "rm") {
     return rmArgsTargetCriticalPath(words.slice(commandIndex + 1));
   }
-  if (SHELL_SCRIPT_COMMANDS.has(command) && shellScriptContainsDanger(words, commandIndex)) {
+  if (
+    SHELL_SCRIPT_COMMANDS.has(command) &&
+    shellScriptContainsDanger(
+      words,
+      commandIndex,
+      isRecursiveForceRemoveOfCriticalPath,
+    )
+  ) {
     return true;
   }
   if (!RM_WRAPPER_COMMANDS.has(command)) return false;
@@ -447,15 +504,18 @@ function commandAtIndexContainsRecursiveForceRemove(
     : commandAtIndexContainsRecursiveForceRemove(words, nestedCommandIndex);
 }
 
-function commandAtIndexContainsForceRemoveWithoutRecursive(
+function commandAtIndexContainsForceRemoveOfCriticalPath(
   words: readonly string[],
   commandIndex: number,
 ): boolean {
   const command = basename(stripShellQuotes(words[commandIndex] ?? ""));
   if (command === "rm") {
-    return rmArgsForceWithoutRecursive(words.slice(commandIndex + 1));
+    return rmArgsForceCriticalPath(words.slice(commandIndex + 1));
   }
-  if (SHELL_SCRIPT_COMMANDS.has(command) && shellScriptContainsDanger(words, commandIndex)) {
+  if (
+    SHELL_SCRIPT_COMMANDS.has(command) &&
+    shellScriptContainsDanger(words, commandIndex, isForceRemoveOfCriticalPath)
+  ) {
     return true;
   }
   if (!RM_WRAPPER_COMMANDS.has(command)) return false;
@@ -463,7 +523,7 @@ function commandAtIndexContainsForceRemoveWithoutRecursive(
   const nestedCommandIndex = commandIndexAfterWrapper(words, commandIndex, command);
   return nestedCommandIndex === null
     ? false
-    : commandAtIndexContainsForceRemoveWithoutRecursive(words, nestedCommandIndex);
+    : commandAtIndexContainsForceRemoveOfCriticalPath(words, nestedCommandIndex);
 }
 
 function firstCommandIndex(
@@ -681,6 +741,7 @@ function execCommandIndex(words: readonly string[], startIndex: number): number 
 function shellScriptContainsDanger(
   words: readonly string[],
   shellIndex: number,
+  matchesDanger: (script: string) => boolean,
 ): boolean {
   for (let i = shellIndex + 1; i < words.length - 1; i++) {
     const flag = stripShellQuotes(words[i]!);
@@ -691,7 +752,7 @@ function shellScriptContainsDanger(
         scriptIndex++;
       }
       if (scriptIndex >= words.length) return false;
-      return isDangerousShellCommand(stripShellQuotes(words[scriptIndex]!));
+      return matchesDanger(stripShellQuotes(words[scriptIndex]!));
     }
   }
   return false;
@@ -727,25 +788,29 @@ function rmArgsTargetCriticalPath(args: readonly string[]): boolean {
   return recursive && force && operands.some(isCriticalRemovalTarget);
 }
 
-function rmArgsForceWithoutRecursive(args: readonly string[]): boolean {
+function rmArgsForceCriticalPath(args: readonly string[]): boolean {
   let recursive = false;
   let force = false;
   let parsingFlags = true;
+  const operands: string[] = [];
   for (const raw of args) {
     const word = stripShellQuotes(raw);
     if (parsingFlags && word === "--") {
       parsingFlags = false;
       continue;
     }
-    if (!parsingFlags || !word.startsWith("-") || word === "-") continue;
-    if (word === "--recursive") recursive = true;
-    if (word === "--force") force = true;
-    if (!word.startsWith("--")) {
-      recursive ||= /[rR]/.test(word);
-      force ||= /[fF]/.test(word);
+    if (parsingFlags && word.startsWith("-") && word !== "-") {
+      if (word === "--recursive") recursive = true;
+      if (word === "--force") force = true;
+      if (!word.startsWith("--")) {
+        recursive ||= /[rR]/.test(word);
+        force ||= /[fF]/.test(word);
+      }
+      continue;
     }
+    operands.push(word);
   }
-  return force && !recursive;
+  return force && !recursive && operands.some(isCriticalRemovalTarget);
 }
 
 function rmArgsHaveRecursiveAndForce(args: readonly string[]): boolean {
@@ -796,6 +861,16 @@ function splitSimpleShellWords(command: string): string[] {
     }
 
     inToken = true;
+    if (char === "$" && command[i + 1] === "'") {
+      const end = command.indexOf("'", i + 2);
+      if (end === -1) {
+        buffer += command.slice(i + 2);
+        break;
+      }
+      buffer += decodeAnsiCString(command.slice(i + 2, end));
+      i = end + 1;
+      continue;
+    }
     if (char === "'") {
       const end = command.indexOf("'", i + 1);
       if (end === -1) {
@@ -848,6 +923,16 @@ function appendDoubleQuotedShellWord(
     i++;
   }
   return command.length;
+}
+
+function decodeAnsiCString(value: string): string {
+  return value
+    .replace(/\\n/g, "\n")
+    .replace(/\\t/g, "\t")
+    .replace(/\\r/g, "\r")
+    .replace(/\\'/g, "'")
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, "\\");
 }
 
 function splitShellFragments(command: string): string[] {
@@ -1144,7 +1229,13 @@ function isEnvironmentAssignment(word: string): boolean {
 function isCriticalRemovalTarget(target: string): boolean {
   if (isHomeShellExpansionTarget(target)) return true;
   if (containsShellExpansion(target)) return true;
+  if (isSystemRemovalTarget(target)) return true;
   return isDangerousRemovalPath(expandTilde(target));
+}
+
+function isSystemRemovalTarget(target: string): boolean {
+  const normalized = target.replace(/\\/g, "/");
+  return /^\/(etc|usr|bin|sbin|boot|dev)(\/|$)/.test(normalized);
 }
 
 function containsShellExpansion(target: string): boolean {

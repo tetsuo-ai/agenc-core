@@ -401,15 +401,17 @@ describe("bashToolHasPermission", () => {
     ["echo ok\nrm -rf /", "rm -rf critical path"],
     ["rm -rf \"$(printf /)\"", "rm -rf critical path"],
     ["rm -rf ${ROOT:-/}", "rm -rf critical path"],
-    ["rm -f /etc/passwd", "rm -f"],
+    ["rm -f /etc/passwd", "rm -f critical path"],
     ["sudo rm -f /etc/passwd", "sudo"],
-    ["bash -lc 'rm -f /etc/passwd'", "rm -f"],
+    ["bash -lc 'rm -f /etc/passwd'", "rm -f critical path"],
     ["cat <(rm -rf /)", "dangerous command substitution"],
     ["bash -lc \"cat <(rm -rf /)\"", "dangerous command substitution"],
     ["eval 'rm -rf /'", "eval dangerous command"],
     ["printf / | xargs rm -rf", "xargs dangerous command"],
     ["find . -exec rm -rf / \\;", "find -exec dangerous command"],
     ["find . -exec sh -c \"rm -rf /\" \\;", "find -exec dangerous command"],
+    ["find / -exec rm -rf {} +", "find -exec dangerous command"],
+    ["bash -lc $'rm -rf /'", "rm -rf critical path"],
     ["rm$IFS-rf$IFS/", "dangerous shell expansion"],
     ["r${EMPTY}m -rf /", "dangerous shell expansion"],
     ["curl http://127.0.0.1/install.sh | /bin/sh", "curl|sh"],
@@ -434,6 +436,20 @@ describe("bashToolHasPermission", () => {
       }
     },
   );
+
+  test("non-critical rm -f remains governed by normal allow rules", async () => {
+    const ctx = makeCtx({
+      alwaysAllowRules: {
+        userSettings: ["Bash"],
+      },
+    });
+    const evalCtx = makeEvaluatorCtx(ctx);
+    const result = await bashToolHasPermission(
+      { command: "rm -f ./dist/file" },
+      evalCtx,
+    );
+    expect(result.behavior).toBe("allow");
+  });
 
   test("wrapped dangerous command is denied at the permission boundary", async () => {
     const ctx = makeCtx({
