@@ -13,6 +13,7 @@ export const compactCommand: SlashCommand = {
   name: "compact",
   description: "Compact the current conversation",
   immediate: true,
+  supportsNonInteractive: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
       await ensureNoActiveTurn(ctx);
@@ -38,6 +39,7 @@ export const contextCommand: SlashCommand = {
   name: "context",
   description: "Show current context usage",
   immediate: true,
+  supportsNonInteractive: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
       const turnContext = ctx.session.newDefaultTurnWithSubId(

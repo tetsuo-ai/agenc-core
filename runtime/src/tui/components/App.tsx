@@ -40,7 +40,7 @@ import { loadUpstreamCommandList } from "../../agenc/adapters/upstream-commands.
 import { loadUpstreamAgentList } from "../../agenc/adapters/upstream-agent-list.js";
 import { buildPendingProviderSwitch } from "../../agenc/adapters/upstream-model-switch.js";
 import { pastedContentsToLLMMessage } from "../../agenc/adapters/upstream-attachments.js";
-import type { Command } from "../../agenc/upstream/commands.js";
+import type { Command } from "../../commands.js";
 import type { AgentDefinition } from "../../tools/AgentTool/loadAgentsDir.js";
 import type { AgenCTuiProps } from "../session-types.js";
 
@@ -250,6 +250,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     props.session,
     setModel,
     setExpandedView,
+    setAppState,
   );
   const elicitation = useElicitationBridge(props.session);
   const toolNames = useMemo(() => {

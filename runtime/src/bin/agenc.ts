@@ -65,6 +65,7 @@ import {
   type SessionSlot,
 } from "../session/observer-wiring.js";
 import { runSlashCommand } from "./slash.js";
+import type { SlashCommandAppStateBridge } from "../commands/types.js";
 import {
   ConfigStore,
   resolveWorkspace as resolveWorkspaceFromEnv,
@@ -966,9 +967,7 @@ function installTuiSessionContract(params: {
         // state synchronously (e.g., `/model` updates the status bar
         // immediately without waiting for the next turn boundary).
         const appStateBridge = (
-          params.session as Session & {
-            appStateBridge?: { setModel?: (next: string) => void };
-          }
+          params.session as Session & { appStateBridge?: SlashCommandAppStateBridge }
         ).appStateBridge;
         const slash = await runSlashCommand(message, {
           session: params.session,

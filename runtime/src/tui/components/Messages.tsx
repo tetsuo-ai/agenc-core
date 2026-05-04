@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { StreamingToolUse } from '../../llm/types.js';
 import { every } from '../../agenc/upstream/utils/set.js';
 import { getIsRemoteMode } from '../../agenc/upstream/bootstrap/state.js';
-import type { Command } from '../../agenc/upstream/commands.js';
+import type { Command } from '../../commands.js';
 import { BLACK_CIRCLE } from '../../agenc/upstream/constants/figures.js';
 import { useTerminalSize } from '../../agenc/upstream/hooks/useTerminalSize.js';
 import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js';

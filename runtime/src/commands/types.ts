@@ -29,6 +29,8 @@ import type { ConfigStore } from "../config/store.js";
 export interface SlashCommandAppStateBridge {
   /** Update the model slug shown in the status bar. */
   readonly setModel?: (model: string) => void;
+  /** Update the live TUI app state for commands that refresh runtime surfaces. */
+  readonly setAppState?: (updater: (prev: unknown) => unknown) => void;
 }
 
 /**
@@ -71,8 +73,12 @@ export interface SlashCommand {
   readonly name: string;
   readonly aliases?: readonly string[];
   readonly description: string;
+  /** Defaults to true. Only set when a command is conditionally visible. */
+  readonly isEnabled?: () => boolean;
   /** Bypass the turn loop (default false). */
   readonly immediate?: boolean;
+  /** True when this local command can safely execute in non-interactive mode. */
+  readonly supportsNonInteractive?: boolean;
   /** False for internal-only commands (default true). */
   readonly userInvocable?: boolean;
   /** Mask `argsRaw` in transcripts (default false). */

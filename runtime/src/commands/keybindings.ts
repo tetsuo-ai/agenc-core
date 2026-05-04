@@ -25,8 +25,8 @@ import {
 } from "./types.js";
 
 export const DEFAULT_KEYBINDINGS = {
-  $schema: "https://agenc.dev/schemas/keybindings.json",
-  $docs: "https://agenc.dev/docs/keybindings",
+  $schema: "urn:agenc:schema:keybindings",
+  $docs: "urn:agenc:docs:keybindings",
   bindings: [
     {
       context: "Global",
@@ -170,6 +170,7 @@ export async function runKeybindings(
 export const keybindingsCommand: SlashCommand = {
   name: "keybindings",
   description: "Edit keybindings.json in $EDITOR",
+  supportsNonInteractive: false,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(() => runKeybindings(agencHomeFromCtx(ctx), ctx.argsRaw)),
 };

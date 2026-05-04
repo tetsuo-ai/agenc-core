@@ -1,7 +1,7 @@
 import {
   hasUsedBackslashReturn,
   isShiftEnterKeyBindingInstalled,
-} from '../../../agenc/upstream/commands/terminalSetup/terminalSetup.js'
+} from '../../../agenc/adapters/prompt-input-terminal-setup.js'
 import type { Key } from '../../ink.js'
 import { getGlobalConfig } from '../../../agenc/upstream/utils/config.js'
 import { env } from '../../../agenc/upstream/utils/env.js'

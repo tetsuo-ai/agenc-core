@@ -1,7 +1,7 @@
 import type { Notification } from '../../agenc/upstream/context/notifications.js'
 import type { TodoList } from '../../agenc/upstream/utils/todo/types.js'
 import type { BridgePermissionCallbacks } from '../../agenc/upstream/bridge/bridgePermissionCallbacks.js'
-import type { Command } from '../../agenc/upstream/commands.js'
+import type { Command } from '../../commands.js'
 import type { ChannelPermissionCallbacks } from '../../agenc/upstream/services/mcp/channelPermissions.js'
 import type { ElicitationRequestEvent } from '../../agenc/upstream/services/mcp/elicitationHandler.js'
 import type {

@@ -118,6 +118,7 @@ export const clearCommand: SlashCommand = {
   aliases: ["reset", "new"],
   description: "Clear session history and caches",
   immediate: true,
+  supportsNonInteractive: false,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
       if (hasActiveTurn(ctx.session)) {

@@ -460,6 +460,24 @@ describe("dispatchSlashCommand", () => {
     }
   });
 
+  it("rejects disabled commands before execute runs", async () => {
+    const execute = vi.fn(async () => ({ kind: "text", text: "nope" } as const));
+    registry.register(
+      cmd("gated", execute, { isEnabled: () => false }),
+    );
+    const out = await dispatchSlashCommand(
+      { name: "gated", argsRaw: "", isMcp: false },
+      stubCtx(),
+      registry,
+    );
+    expect(out.result.kind).toBe("error");
+    if (out.result.kind === "error") {
+      expect(out.result.message).toContain("disabled");
+    }
+    expect(execute).not.toHaveBeenCalled();
+    expect(out.trace.resultKind).toBe("error");
+  });
+
   it("masks sensitive args in the emitted trace", async () => {
     registry.register(
       cmd(
