@@ -13,7 +13,7 @@ vi.mock("../tui/ink.js", () => {
 });
 
 // branding-scan: allow existing compatibility-island path
-import { createBridgeTool, EditDiffView } from "../tui/openclaude/tool-stubs.js";
+import { createBridgeTool, EditDiffView } from "../tui/bridges/tool-stubs.js";
 
 interface ChildProps {
   readonly children?: unknown;
@@ -196,7 +196,7 @@ describe("EditDiffView — local renderer fidelity to upstream visual contract",
 describe("formatStructuredToolResult ⇄ EditDiffView wire-shape lock", () => {
   test("the tags formatStructuredToolResult emits for Edit are the exact tags EditDiffView consumes (so a future flip to upstream FileEditToolDiff requires no shape changes here)", async () => {
     // branding-scan: allow existing compatibility-island path
-    const adapter = await import("../tui/openclaude/message-adapter.js");
+    const adapter = await import("../tui/bridges/message-adapter.js");
     const blocks = adapter.formatStructuredToolResult(
       "Edit",
       "tool_call_completed",

@@ -9,25 +9,25 @@
   "behaviorsAudited": [
     {
       "behavior": "The toolJSX state value is passed verbatim into <Messages toolJSX={toolJSX}> so the upstream-mirrored animation gate at runtime/src/agenc/upstream/components/Messages.tsx:595 (canAnimate = (!toolJSX || !!toolJSX.shouldContinueAnimation) && !toolUseConfirmQueue.length && !isMessageSelectorVisible) actually receives the live toolJSX value (R2 wiring is the load-bearing change; this row asserts the gate is reachable)",
-      "implementedAt": "runtime/src/tui/openclaude/App.tsx:263",
+      "implementedAt": "runtime/src/tui/components/App.tsx:263",
       "assertedAt": "App.tooljsx-gating.parity.test.tsx:B3.1 App.tsx passes the live toolJSX state variable to <Messages>, not a literal null or normalized copy",
       "ok": true
     },
     {
       "behavior": "Permission overlay rendering condition is unchanged (renders when permissionRequests[0] is truthy) - upstream parity here is 'dialog still renders when toolJSX is set' which AgenC already does, NOT a new gate",
-      "implementedAt": "runtime/src/tui/openclaude/App.tsx:279-282 (sibling JSX, not nested inside the toolJSX !== null branch); permission-bridge.tsx:118-121 (overlay only checks `request`, never `toolJSX`)",
+      "implementedAt": "runtime/src/tui/components/App.tsx:279-282 (sibling JSX, not nested inside the toolJSX !== null branch); permission-bridge.tsx:118-121 (overlay only checks `request`, never `toolJSX`)",
       "assertedAt": "App.tooljsx-gating.parity.test.tsx:B3.2 App.tsx renders OpenClaudePermissionOverlay unconditionally on permissionRequests[0] (dialog still mounts when toolJSX is set)",
       "ok": true
     },
     {
       "behavior": "isMessageSelectorVisible passed to <Messages> is false (parity with AgenC's no-message-selector host) so the Messages animation gate's third clause never blocks animation due to a missing AgenC feature",
-      "implementedAt": "runtime/src/tui/openclaude/App.tsx:266",
+      "implementedAt": "runtime/src/tui/components/App.tsx:266",
       "assertedAt": "App.tooljsx-gating.parity.test.tsx:B3.3 App.tsx passes isMessageSelectorVisible={false} to <Messages> so the third canAnimate clause never spuriously blocks animation",
       "ok": true
     },
     {
       "behavior": "toolUseConfirmQueue array passed to <Messages> reflects the live confirm queue from buildToolUseConfirmQueue(permissionRequests, tools) so the animation gate's second clause respects pending confirmations",
-      "implementedAt": "runtime/src/tui/openclaude/App.tsx:248-251 (useMemo derivation), App.tsx:264 (prop wiring)",
+      "implementedAt": "runtime/src/tui/components/App.tsx:248-251 (useMemo derivation), App.tsx:264 (prop wiring)",
       "assertedAt": "App.tooljsx-gating.parity.test.tsx:B3.4 App.tsx passes the live buildToolUseConfirmQueue result to <Messages> so the queue-blocks clause respects pending confirmations",
       "ok": true
     }
@@ -71,7 +71,7 @@
   "unverifiedAssumptions": [],
   "approvedDivergenceReview": {
     "acceptable": true,
-    "rationale": "Verified the approved divergence is consistent with the current AgenC host architecture: a `grep` for SpinnerWithVerb / showSpinner / idleTimer / idleNotification in runtime/src/tui/openclaude/App.tsx returns zero matches, confirming the AgenC host renders neither the upstream `<SpinnerWithVerb>` (REPL.tsx:4653) nor the upstream idle-notification timer (REPL.tsx:4005), and does not implement the upstream `showSpinner` gate (REPL.tsx:1704). PromptInput owns its own spinner-adjacent UI internally. Adding host-level streaming-status surfaces would require new state plumbing (apiMetricsRef, responseLengthRef, streamMode, hasRunningTeammates, pendingWorkerRequest, command-queue length) that does not exist in AgenC today and is outside the streaming-tool-use parity scope. The toolJSX-driven animation gate is correctly preserved through the upstream-mirrored Messages.tsx:595, which IS the load-bearing parity surface for this row, and the permission overlay still mounts on permissionRequests[0] independent of toolJSX (mirroring REPL.tsx:2061-2062 'show unless blocked by toolJSX'). Deferring the host spinner / idle timer to a separate future contract is the correct scoping choice.",
+    "rationale": "Verified the approved divergence is consistent with the current AgenC host architecture: a `grep` for SpinnerWithVerb / showSpinner / idleTimer / idleNotification in runtime/src/tui/components/App.tsx returns zero matches, confirming the AgenC host renders neither the upstream `<SpinnerWithVerb>` (REPL.tsx:4653) nor the upstream idle-notification timer (REPL.tsx:4005), and does not implement the upstream `showSpinner` gate (REPL.tsx:1704). PromptInput owns its own spinner-adjacent UI internally. Adding host-level streaming-status surfaces would require new state plumbing (apiMetricsRef, responseLengthRef, streamMode, hasRunningTeammates, pendingWorkerRequest, command-queue length) that does not exist in AgenC today and is outside the streaming-tool-use parity scope. The toolJSX-driven animation gate is correctly preserved through the upstream-mirrored Messages.tsx:595, which IS the load-bearing parity surface for this row, and the permission overlay still mounts on permissionRequests[0] independent of toolJSX (mirroring REPL.tsx:2061-2062 'show unless blocked by toolJSX'). Deferring the host spinner / idle timer to a separate future contract is the correct scoping choice.",
     "scopedSurfaces": [
       "host-level <SpinnerWithVerb> at REPL.tsx:4653",
       "showSpinner gate at REPL.tsx:1704",
@@ -79,5 +79,5 @@
       "apiMetricsRef / responseLengthRef / streamMode plumbing"
     ]
   },
-  "summary": "R3 implementation correctly wires the live toolJSX state variable, the live buildToolUseConfirmQueue(permissionRequests, tools) result, and isMessageSelectorVisible={false} into <Messages> at runtime/src/tui/openclaude/App.tsx:258-273, ensuring the upstream-mirrored canAnimate gate at runtime/src/agenc/upstream/components/Messages.tsx:595 receives all three of its inputs verbatim. The OpenClaudePermissionOverlay is rendered at sibling-JSX level (App.tsx:279), gated only on permissionRequests[0] and never wrapped in any toolJSX-derived condition, matching upstream REPL.tsx:2061-2062 'permission/interactive dialogs show unless blocked by toolJSX' (and AgenC has no toolJSX-blocking case for this overlay because the divergence approves dropping host-level dialog focus arbitration). The five canAnimate truth-table tests (E3.1 through E3.5) cover all four logical input combinations that produce true/false outcomes (null/null/false=true, set+continue/null/false=true, set+blocking/null/false=false, null/queue/false=false, null/null/selector=false) and exhaustively exercise each gate clause. The four source-regex tests (B3.1 through B3.4) lock in the exact prop wiring against literal-null regressions, accidental wrappings of the permission overlay in toolJSX gates, missing isMessageSelectorVisible={false}, and a missing buildToolUseConfirmQueue derivation. The approvedDivergence (no host SpinnerWithVerb or idle timer) is verifiable from App.tsx source and is correctly limited to host-level streaming-status surfaces that are outside the streaming-tool-use parity scope. All 9 tests in App.tooljsx-gating.parity.test.tsx pass."
+  "summary": "R3 implementation correctly wires the live toolJSX state variable, the live buildToolUseConfirmQueue(permissionRequests, tools) result, and isMessageSelectorVisible={false} into <Messages> at runtime/src/tui/components/App.tsx:258-273, ensuring the upstream-mirrored canAnimate gate at runtime/src/agenc/upstream/components/Messages.tsx:595 receives all three of its inputs verbatim. The OpenClaudePermissionOverlay is rendered at sibling-JSX level (App.tsx:279), gated only on permissionRequests[0] and never wrapped in any toolJSX-derived condition, matching upstream REPL.tsx:2061-2062 'permission/interactive dialogs show unless blocked by toolJSX' (and AgenC has no toolJSX-blocking case for this overlay because the divergence approves dropping host-level dialog focus arbitration). The five canAnimate truth-table tests (E3.1 through E3.5) cover all four logical input combinations that produce true/false outcomes (null/null/false=true, set+continue/null/false=true, set+blocking/null/false=false, null/queue/false=false, null/null/selector=false) and exhaustively exercise each gate clause. The four source-regex tests (B3.1 through B3.4) lock in the exact prop wiring against literal-null regressions, accidental wrappings of the permission overlay in toolJSX gates, missing isMessageSelectorVisible={false}, and a missing buildToolUseConfirmQueue derivation. The approvedDivergence (no host SpinnerWithVerb or idle timer) is verifiable from App.tsx source and is correctly limited to host-level streaming-status surfaces that are outside the streaming-tool-use parity scope. All 9 tests in App.tooljsx-gating.parity.test.tsx pass."
 }

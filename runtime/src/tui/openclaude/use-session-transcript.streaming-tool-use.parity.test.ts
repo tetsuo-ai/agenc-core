@@ -2,11 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 
-import { adaptTranscriptEvents } from "./message-adapter.js";
+import { adaptTranscriptEvents } from "../bridges/message-adapter.js";
 
 const HOOK_SOURCE_PATH = path.resolve(
   import.meta.dirname,
-  "use-session-transcript.ts",
+  "../bridges/use-session-transcript.ts",
 );
 
 function readSource(): string {

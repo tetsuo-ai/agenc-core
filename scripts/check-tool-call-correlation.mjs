@@ -17,8 +17,8 @@ import { spawnSync } from "node:child_process";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const MATRIX_PATH = path.join(REPO_ROOT, "parity/tool-call-correlation.json");
-const TARGET_REL = "runtime/src/tui/openclaude/message-adapter.ts";
-const TEST_REL = "runtime/src/tui/openclaude/message-adapter.contract.test.ts";
+const TARGET_REL = "runtime/src/tui/bridges/message-adapter.ts";
+const TEST_REL = "runtime/src/tui/openclaude/message-adapter.contract.test.ts"; // branding-scan: allow grandfathered compatibility test path
 
 const REQUIRED_ROW_IDS = [
   "tool-call-begin-callid-required",

@@ -4,7 +4,7 @@ import {
   adaptTranscriptEvents,
   formatStructuredToolError,
   formatStructuredToolResult,
-} from "./message-adapter.js";
+} from "../bridges/message-adapter.js";
 import { pickToolResultDispatch } from "../../agenc/adapters/upstream-tool-result-dispatch.js";
 
 describe("AgenC TUI transcript bridge", () => {

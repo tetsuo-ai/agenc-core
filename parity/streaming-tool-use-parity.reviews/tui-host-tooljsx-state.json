@@ -9,31 +9,31 @@
   "behaviorsAudited": [
     {
       "behavior": "App.tsx no longer hardcodes toolJSX={null}; declares useState<ToolJSXState | null>(null) where ToolJSXState matches REPL.tsx:1036 shape ({jsx: React.ReactNode | null, shouldHidePromptInput: boolean, shouldContinueAnimation?: true, showSpinner?: boolean, isLocalJSXCommand?: boolean, isImmediate?: boolean})",
-      "implementedAt": "runtime/src/tui/openclaude/use-tool-jsx.ts:14-21 (ToolJSXState type) and runtime/src/tui/openclaude/use-tool-jsx.ts:86 (useState<ToolJSXState | null>(null)); consumed by runtime/src/tui/openclaude/App.tsx:167 (const [toolJSX, setToolJSX] = useToolJSX())",
+      "implementedAt": "runtime/src/tui/bridges/use-tool-jsx.ts:14-21 (ToolJSXState type) and runtime/src/tui/bridges/use-tool-jsx.ts:86 (useState<ToolJSXState | null>(null)); consumed by runtime/src/tui/components/App.tsx:167 (const [toolJSX, setToolJSX] = useToolJSX())",
       "assertedAt": "App.tooljsx-state.parity.test.tsx:E2.7 'App.tsx no longer hardcodes toolJSX={null} on <Messages>; the prop is wired to a state variable'",
       "ok": true
     },
     {
       "behavior": "App.tsx ports the upstream localJSXCommandRef + setToolJSX wrapper from REPL.tsx:1055-1104 so local-JSX commands persist across normal tool updates and only clear on explicit clearLocalJSX:true",
-      "implementedAt": "runtime/src/tui/openclaude/use-tool-jsx.ts:48-74 (applyToolJSXUpdate pure function with all 5 branches) and runtime/src/tui/openclaude/use-tool-jsx.ts:82-101 (useToolJSX hook with useRef<ToolJSXState | null>(null) at line 87 and setToolJSX wrapper at lines 89-98)",
+      "implementedAt": "runtime/src/tui/bridges/use-tool-jsx.ts:48-74 (applyToolJSXUpdate pure function with all 5 branches) and runtime/src/tui/bridges/use-tool-jsx.ts:82-101 (useToolJSX hook with useRef<ToolJSXState | null>(null) at line 87 and setToolJSX wrapper at lines 89-98)",
       "assertedAt": "App.tooljsx-state.parity.test.tsx tests E2.1 (local-set), E2.2 (local-active+skip), E2.3 (local-active+clearLocalJSX), E2.4 (no-local+clearLocalJSX), E2.5 (no-local+normal), E2.6 (null,null), E2.6b (null,localRef)",
       "ok": true
     },
     {
       "behavior": "The wrapped setToolJSX is exposed to tools through the existing getToolUseContext callback so AgenC tools that render their own UI surfaces can call it",
-      "implementedAt": "runtime/src/tui/openclaude/App.tsx:229-240 (getToolUseContext callback returns object containing setToolJSX at line 237; closure dependency at line 239 includes setToolJSX)",
+      "implementedAt": "runtime/src/tui/components/App.tsx:229-240 (getToolUseContext callback returns object containing setToolJSX at line 237; closure dependency at line 239 includes setToolJSX)",
       "assertedAt": "App.tooljsx-state.parity.test.tsx:B2.3 'setToolJSX is exposed via getToolUseContext so AgenC tools can call it'",
       "ok": true
     },
     {
       "behavior": "When toolJSX !== null, App.tsx renders <Box flexDirection=\"column\" width=\"100%\">{toolJSX.jsx}</Box> as a sibling block, mirroring REPL.tsx:4469-4470",
-      "implementedAt": "runtime/src/tui/openclaude/App.tsx:274-278 (`{toolJSX !== null ? (<Box flexDirection=\"column\" width=\"100%\">{toolJSX.jsx}</Box>) : null}`); rendered as sibling beside <Messages> at App.tsx:258-273",
+      "implementedAt": "runtime/src/tui/components/App.tsx:274-278 (`{toolJSX !== null ? (<Box flexDirection=\"column\" width=\"100%\">{toolJSX.jsx}</Box>) : null}`); rendered as sibling beside <Messages> at App.tsx:258-273",
       "assertedAt": "App.tooljsx-state.parity.test.tsx:E2.8 'App.tsx renders toolJSX.jsx as a sibling Box (matches REPL.tsx:4469-4470)'",
       "ok": true
     },
     {
       "behavior": "The current toolJSX value is passed verbatim to <Messages toolJSX={...}>, not a normalized copy",
-      "implementedAt": "runtime/src/tui/openclaude/App.tsx:263 (`toolJSX={toolJSX as any}` — `as any` is a TypeScript cast only; no runtime transformation, no spread, no defensive copy)",
+      "implementedAt": "runtime/src/tui/components/App.tsx:263 (`toolJSX={toolJSX as any}` — `as any` is a TypeScript cast only; no runtime transformation, no spread, no defensive copy)",
       "assertedAt": "App.tooljsx-state.parity.test.tsx:E2.7 (regex /toolJSX\\s*=\\s*\\{\\s*toolJSX[^}]*\\}/ requires the prop to bind directly to the toolJSX state variable)",
       "ok": true
     }

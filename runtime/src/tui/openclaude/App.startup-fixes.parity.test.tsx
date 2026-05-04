@@ -4,7 +4,7 @@ import { describe, expect, test, vi } from "vitest";
 
 import { submitViaElicitationBridge } from "../elicitation-submit-routing.js";
 
-const APP_SOURCE_PATH = path.resolve(import.meta.dirname, "App.tsx");
+const APP_SOURCE_PATH = path.resolve(import.meta.dirname, "../components/App.tsx");
 const SESSION_TYPES_PATH = path.resolve(
   import.meta.dirname,
   "../session-types.ts",

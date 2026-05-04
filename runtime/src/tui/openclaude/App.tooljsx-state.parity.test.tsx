@@ -6,9 +6,9 @@ import {
   applyToolJSXUpdate,
   type ToolJSXArgs,
   type ToolJSXState,
-} from "./use-tool-jsx.js";
+} from "../bridges/use-tool-jsx.js";
 
-const APP_SOURCE_PATH = path.resolve(import.meta.dirname, "App.tsx");
+const APP_SOURCE_PATH = path.resolve(import.meta.dirname, "../components/App.tsx");
 
 function readSource(): string {
   return fs.readFileSync(APP_SOURCE_PATH, "utf8");

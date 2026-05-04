@@ -9,19 +9,19 @@
   "behaviorsAudited": [
     {
       "behavior": "App.tsx no longer hardcodes streamingToolUses={[]}; reads the array from transcript.streamingToolUses (sourced via use-session-transcript.ts) and passes it to <Messages>",
-      "implementedAt": "runtime/src/tui/openclaude/App.tsx:266",
+      "implementedAt": "runtime/src/tui/components/App.tsx:266",
       "assertedAt": "App.streaming-tool-use.parity.test.tsx:E1.4 + E1.5 (no-hardcode regex + transcript.streamingToolUses regex match)",
       "ok": true
     },
     {
       "behavior": "Initial render with no in-flight tools passes an empty array, matching upstream REPL.tsx:853 initial state",
-      "implementedAt": "runtime/src/tui/openclaude/message-adapter.ts:589 (init []) and :811 (return)",
+      "implementedAt": "runtime/src/tui/bridges/message-adapter.ts:589 (init []) and :811 (return)",
       "assertedAt": "App.streaming-tool-use.parity.test.tsx:B1.1 (field exposed) + B1.2/E1.1 (empty events => empty array)",
       "ok": true
     },
     {
       "behavior": "Array identity is stable across re-renders when contents are unchanged (no new reference per render), matching the memoization Messages.tsx:732+ relies on",
-      "implementedAt": "runtime/src/tui/openclaude/use-session-transcript.ts:88-91 (useMemo on [state.events, startupMessages])",
+      "implementedAt": "runtime/src/tui/bridges/use-session-transcript.ts:88-91 (useMemo on [state.events, startupMessages])",
       "assertedAt": null,
       "ok": true
     }

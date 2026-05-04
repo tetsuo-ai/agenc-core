@@ -1,11 +1,16 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { App as UpstreamApp } from "../../agenc/upstream/components/App.js";
-import { Messages } from "../components/Messages.js";
-import PromptInput from "../components/PromptInput/PromptInput.js";
+import { FpsMetricsProvider } from "../../agenc/upstream/context/fpsMetrics.js";
+import { StatsProvider, type StatsStore } from "../../agenc/upstream/context/stats.js";
+import { onChangeAppState } from "../../agenc/upstream/state/onChangeAppState.js";
+import type { FpsMetrics } from "../../agenc/upstream/utils/fpsTracker.js";
+import { Messages } from "./Messages.js";
+import PromptInput from "./PromptInput/PromptInput.js";
 import { PromptOverlayProvider } from "../context/promptOverlayContext.js";
 import { KeybindingSetup } from "../keybindings/KeybindingProviderSetup.js";
 import {
+  type AppState,
+  AppStateProvider,
   getDefaultAppState,
   useAppState,
   useSetAppState,
@@ -18,14 +23,14 @@ import {
 } from "../ink.js";
 import type { LLMMessage } from "../../llm/types.js";
 import type { ToolPermissionContext } from "../../permissions/types.js";
-import { createBridgeTools } from "./tool-stubs.js";
-import { useSessionTranscript } from "./use-session-transcript.js";
-import { useToolJSX } from "./use-tool-jsx.js";
+import { createBridgeTools } from "../bridges/tool-stubs.js";
+import { useSessionTranscript } from "../bridges/use-session-transcript.js";
+import { useToolJSX } from "../bridges/use-tool-jsx.js";
 import {
   AgenCPermissionOverlay as PermissionOverlay,
   buildToolUseConfirmQueue,
   usePermissionBridge,
-} from "./permission-bridge.js";
+} from "../bridges/permission-bridge.js";
 import {
   ElicitationOverlay,
   useElicitationBridge,
@@ -38,6 +43,34 @@ import { pastedContentsToLLMMessage } from "../../agenc/adapters/upstream-attach
 import type { Command } from "../../agenc/upstream/commands.js";
 import type { AgentDefinition } from "../../agenc/upstream/tools/AgentTool/loadAgentsDir.js";
 import type { AgenCTuiProps } from "../session-types.js";
+
+type AppProviderProps = {
+  getFpsMetrics: () => FpsMetrics | undefined;
+  stats?: StatsStore;
+  initialState: AppState;
+  children: ReactNode;
+};
+
+/**
+ * Top-level wrapper for interactive sessions.
+ * Provides FPS metrics, stats context, and app state to the component tree.
+ */
+export function App({
+  getFpsMetrics,
+  stats,
+  initialState,
+  children,
+}: AppProviderProps): React.ReactElement {
+  return (
+    <FpsMetricsProvider getFpsMetrics={getFpsMetrics}>
+      <StatsProvider store={stats}>
+        <AppStateProvider initialState={initialState} onChangeAppState={onChangeAppState}>
+          {children}
+        </AppStateProvider>
+      </StatsProvider>
+    </FpsMetricsProvider>
+  );
+}
 
 function initialPermissionContext(
   props: AgenCTuiProps,
@@ -358,7 +391,7 @@ export function AgenCTuiApp(
 ): React.ReactElement {
   const initial = useMemo(() => initialState(props), []);
   return (
-    <UpstreamApp
+    <App
       initialState={initial}
       getFpsMetrics={() => undefined}
     >
@@ -367,6 +400,6 @@ export function AgenCTuiApp(
           <AgenCTuiShell {...props} />
         </KeybindingSetup>
       </PromptOverlayProvider>
-    </UpstreamApp>
+    </App>
   );
 }

@@ -160,6 +160,11 @@ function assertSourceSnapshot() {
   ]
     .filter(([file]) => existsSync(join(liveTuiRoot, file)))
     .map(([, inventoryPath]) => inventoryPath);
+  const absorbedAppFiles = [
+    ["components/App.tsx", "src/components/App.tsx"],
+  ]
+    .filter(([file]) => existsSync(join(liveTuiRoot, file)))
+    .map(([, inventoryPath]) => inventoryPath);
   const substitutions = new Map([
     [
       `src/components/${donorBrand}CodeHint/PluginHintMenu.tsx`,
@@ -230,6 +235,7 @@ function assertSourceSnapshot() {
     .concat(absorbedPermissionFiles)
     .concat(absorbedPromptInputFiles)
     .concat(absorbedMessagesFiles)
+    .concat(absorbedAppFiles)
     .sort();
   const missing = expected.filter((file) => !actualFiles.includes(file));
   const extra = actualFiles.filter((file) => !expected.includes(file));
@@ -251,14 +257,17 @@ function assertOldTuiRemoved() {
     "main.tsx",
     "context/promptOverlayContext.test.tsx",
     "context/promptOverlayContext.tsx",
+    // App imports these helpers directly, so they live under a neutral
+    // bridge path rather than the compatibility test directory.
+    "bridges/message-adapter.ts",
+    "bridges/permission-bridge.tsx",
+    "bridges/tool-stubs.tsx",
+    "bridges/use-session-transcript.ts",
+    "bridges/use-tool-jsx.ts",
+    "components/App.render.test.tsx",
     "components/permissions/PermissionRequest.tsx",
     `${compatibilityDir}/App.tsx`,
-    `${compatibilityDir}/message-adapter.ts`,
-    `${compatibilityDir}/permission-bridge.tsx`,
     `${compatibilityDir}/session-types.ts`,
-    `${compatibilityDir}/tool-stubs.tsx`,
-    `${compatibilityDir}/use-session-transcript.ts`,
-    `${compatibilityDir}/use-tool-jsx.ts`,
     "session-types.ts",
     "state/AppState.test.tsx",
     "state/AppState.tsx",
@@ -285,6 +294,7 @@ function assertOldTuiRemoved() {
     if (file === "components/messagesOptionalModules.test.ts") continue;
     if (file === "components/Messages.behavior.test.ts") continue;
     if (file === "components/messagesBriefFiltering.ts") continue;
+    if (file === "components/App.tsx") continue;
     if (file.startsWith("ink/")) continue;
     if (file.startsWith("keybindings/")) continue;
     fail(`unexpected live TUI file remains: ${file}`);
@@ -318,6 +328,7 @@ function assertNoDeletedAbsorbImporters() {
   ]);
   const deletedPromptInputRoot = join(copiedRoot, "components/PromptInput");
   const deletedMessagesEntrypoint = join(copiedRoot, "components/Messages");
+  const deletedAppEntrypoint = join(copiedRoot, "components/App");
   const sourceImportPattern = /(?:from\s+|import\s*\(|require\s*\()\s*['"]([^'"]+)['"]/g;
   for (const file of walk(copiedRoot)) {
     if (!/\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(file)) continue;
@@ -367,6 +378,12 @@ function assertNoDeletedAbsorbImporters() {
       ) {
         fail(`deleted Messages alias import remains: ${file} -> ${specifier}`);
       }
+      if (
+        specifier === "src/components/App" ||
+        specifier === "src/components/App.js"
+      ) {
+        fail(`deleted App alias import remains: ${file} -> ${specifier}`);
+      }
       if (!specifier.startsWith(".")) continue;
       const resolved = resolve(dirname(abs), specifier)
         .replace(/\.(?:js|jsx|ts|tsx|mjs|cjs)$/, "");
@@ -403,13 +420,16 @@ function assertNoDeletedAbsorbImporters() {
       if (resolved === deletedMessagesEntrypoint) {
         fail(`deleted Messages relative import remains: ${file} -> ${specifier}`);
       }
+      if (resolved === deletedAppEntrypoint) {
+        fail(`deleted App relative import remains: ${file} -> ${specifier}`);
+      }
     }
   }
 }
 
 function assertLiveWiring() {
   const main = readFileSync(join(liveTuiRoot, "main.tsx"), "utf8");
-  const app = readFileSync(join(liveTuiRoot, compatibilityDir, "App.tsx"), "utf8");
+  const app = readFileSync(join(liveTuiRoot, "components/App.tsx"), "utf8");
   if (!main.includes("./ink.js")) {
     fail("main.tsx does not render through absorbed Ink");
   }
@@ -419,6 +439,7 @@ function assertLiveWiring() {
   for (const forbidden of [
     "from \"./App.js\"",
     "from './App.js'",
+    `${compatibilityDir}/App`,
     "tui/composer",
     "tui/transcript",
   ]) {
@@ -426,15 +447,19 @@ function assertLiveWiring() {
       fail(`forbidden old TUI import remains: ${forbidden}`);
     }
   }
-  for (const required of [
-    "components/Messages.js",
-    "components/PromptInput/PromptInput.js",
-    "keybindings/KeybindingProviderSetup.js",
-    "context/promptOverlayContext.js",
-    "components/permissions/PermissionRequest.js",
+  const permissionBridge = readFileSync(
+    join(liveTuiRoot, "bridges/permission-bridge.tsx"),
+    "utf8",
+  );
+  for (const [label, required] of [
+    ["Messages", ["./Messages.js", "components/Messages.js"]],
+    ["PromptInput", ["./PromptInput/PromptInput.js", "components/PromptInput/PromptInput.js"]],
+    ["KeybindingSetup", ["../keybindings/KeybindingProviderSetup.js", "keybindings/KeybindingProviderSetup.js"]],
+    ["PromptOverlay", ["../context/promptOverlayContext.js", "context/promptOverlayContext.js"]],
+    ["PermissionRequest", ["components/permissions/PermissionRequest.js"]],
   ]) {
-    if (!app.includes(required) && !readFileSync(join(liveTuiRoot, compatibilityDir, "permission-bridge.tsx"), "utf8").includes(required)) {
-      fail(`upstream live import missing: ${required}`);
+    if (!required.some((needle) => app.includes(needle) || permissionBridge.includes(needle))) {
+      fail(`upstream live import missing: ${label}`);
     }
   }
   const allLive = walk(liveTuiRoot)

@@ -6,7 +6,7 @@ import {
   DISABLE_KITTY_KEYBOARD,
   DISABLE_MODIFY_OTHER_KEYS,
 } from "./ink/termio/csi.js";
-import { AgenCTuiApp } from "./openclau\u0064e/App.js";
+import { AgenCTuiApp } from "./components/App.js";
 import type {
   AgenCBridgeSession,
   AgenCTuiProps,

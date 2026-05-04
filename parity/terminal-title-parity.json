@@ -10,7 +10,7 @@
     "src/screens/REPL.tsx"
   ],
   "targetFiles": [
-    "runtime/src/tui/openclaude/App.tsx"
+    "runtime/src/tui/components/App.tsx"
   ],
   "testFiles": [
     "runtime/src/tui/openclaude/App.terminal-title.parity.test.tsx"
@@ -19,7 +19,7 @@
     {
       "id": "title-hook-wiring",
       "source": "src/ink/hooks/use-terminal-title.ts",
-      "target": "runtime/src/tui/openclaude/App.tsx",
+      "target": "runtime/src/tui/components/App.tsx",
       "requiredBehaviors": [
         "live TUI shell calls the upstream terminal-title hook from a leaf component",
         "disabled title state passes null through to the hook",
@@ -41,7 +41,7 @@
     {
       "id": "title-animation-leaf",
       "source": "src/screens/REPL.tsx",
-      "target": "runtime/src/tui/openclaude/App.tsx",
+      "target": "runtime/src/tui/components/App.tsx",
       "requiredBehaviors": [
         "terminal title animation uses the upstream two-frame spinner and 960ms interval",
         "animation state is isolated in a leaf component so title ticks do not drive shell state",

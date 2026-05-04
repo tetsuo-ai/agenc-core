@@ -2,11 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 
-import { adaptTranscriptEvents } from "./message-adapter.js";
+import { adaptTranscriptEvents } from "../bridges/message-adapter.js";
 
 const MESSAGE_ADAPTER_PATH = path.resolve(
   import.meta.dirname,
-  "message-adapter.ts",
+  "../bridges/message-adapter.ts",
 );
 const TUI_OPENCLAUDE_DIR = path.resolve(import.meta.dirname);
 const RUNTIME_SRC_DIR = path.resolve(import.meta.dirname, "..", "..");
@@ -65,7 +65,7 @@ describe("R4 runningToolProgress / RunningToolProgress removal from message-adap
     const offenders: string[] = [];
     for (const file of listTsFilesRecursive(RUNTIME_SRC_DIR)) {
       // Ignore anything inside the upstream mirror at runtime/src/agenc/upstream
-      // (that is upstream OpenClaude code; it does not reference our local
+      // (that is donor code; it does not reference our local
       // AgenC field name and is out of this row's scope by definition).
       if (file.includes(`${path.sep}agenc${path.sep}upstream${path.sep}`)) {
         continue;

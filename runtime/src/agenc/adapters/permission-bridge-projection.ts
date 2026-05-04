@@ -23,7 +23,7 @@ import {
   type AskUserQuestionPlanInterviewAction,
 } from "../../tools/ask-user-question/index.js";
 // branding-scan: allow existing TUI adapter directory name
-import { makeToolUseMessage } from "../../tui/openclaude/message-adapter.js";
+import { makeToolUseMessage } from "../../tui/bridges/message-adapter.js";
 
 export interface PendingRequest {
   readonly id: string;

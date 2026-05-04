@@ -3,15 +3,15 @@ import path from "node:path";
 import { describe, expect, test } from "vitest";
 
 import type { StreamingToolUse } from "../../llm/types.js";
-import { adaptTranscriptEvents, type AdaptedTranscript } from "./message-adapter.js";
+import { adaptTranscriptEvents, type AdaptedTranscript } from "../bridges/message-adapter.js";
 
 const APP_SOURCE_PATH = path.resolve(
   import.meta.dirname,
-  "App.tsx",
+  "../components/App.tsx",
 );
 const MESSAGE_ADAPTER_SOURCE_PATH = path.resolve(
   import.meta.dirname,
-  "message-adapter.ts",
+  "../bridges/message-adapter.ts",
 );
 
 function readSource(p: string): string {

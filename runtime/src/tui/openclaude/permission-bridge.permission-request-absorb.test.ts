@@ -181,7 +181,7 @@ function toolUseConfirmFor(tool: Tool, input: Record<string, unknown> = {}): Too
 describe("PermissionRequest absorb wiring", () => {
   test("routes the live overlay through the absorbed TUI component", () => {
     const bridge = readRuntime(
-      ["src", "tui", "open" + "clau" + "de", "permission-bridge.tsx"].join("/"),
+      ["src", "tui", "bridges", "permission-bridge.tsx"].join("/"),
     );
 
     expect(bridge).toContain(

@@ -7,8 +7,8 @@
   "rows": [
     {
       "id": "tool-call-begin-callid-required",
-      "source": "runtime/src/tui/openclaude/message-adapter.ts",
-      "target": "runtime/src/tui/openclaude/message-adapter.ts",
+      "source": "runtime/src/tui/bridges/message-adapter.ts",
+      "target": "runtime/src/tui/bridges/message-adapter.ts",
       "requiredBehaviors": [
         "When event type is tool_call_started, mcp_tool_call_begin, or exec_command_begin and payload.callId is not a string, the branch must NOT call randomUUID and must NOT push a tool-use message; it must return early like the tool_progress branch does.",
         "When payload.callId is a string, behavior is unchanged: pushToolUse runs with the provided callId and runningToolNames stores the resolved toolName.",
@@ -24,8 +24,8 @@
     },
     {
       "id": "tool-call-end-callid-required",
-      "source": "runtime/src/tui/openclaude/message-adapter.ts",
-      "target": "runtime/src/tui/openclaude/message-adapter.ts",
+      "source": "runtime/src/tui/bridges/message-adapter.ts",
+      "target": "runtime/src/tui/bridges/message-adapter.ts",
       "requiredBehaviors": [
         "When event type is tool_call_completed, mcp_tool_call_end, or exec_command_end and payload.callId is not a string, the branch must NOT call randomUUID and must NOT push a tool-result message; it must return early.",
         "When payload.callId is a string, behavior is unchanged: pushToolResult runs with the provided callId, runningToolNames.delete(callId) and runningToolProgress.delete(callId) still execute.",
@@ -41,8 +41,8 @@
     },
     {
       "id": "collab-spawn-begin-callid-required",
-      "source": "runtime/src/tui/openclaude/message-adapter.ts",
-      "target": "runtime/src/tui/openclaude/message-adapter.ts",
+      "source": "runtime/src/tui/bridges/message-adapter.ts",
+      "target": "runtime/src/tui/bridges/message-adapter.ts",
       "requiredBehaviors": [
         "When event type is collab_agent_spawn_begin and payload.callId is not a string, the branch must NOT call randomUUID and must NOT push a Task tool-use message; it must return early.",
         "When payload.callId is a string, behavior is unchanged: pushToolUse runs with the provided callId and the Task input includes description/prompt/subagent_type/model derived from the payload."
@@ -57,8 +57,8 @@
     },
     {
       "id": "collab-end-callid-required",
-      "source": "runtime/src/tui/openclaude/message-adapter.ts",
-      "target": "runtime/src/tui/openclaude/message-adapter.ts",
+      "source": "runtime/src/tui/bridges/message-adapter.ts",
+      "target": "runtime/src/tui/bridges/message-adapter.ts",
       "requiredBehaviors": [
         "When event type is collab_agent_spawn_end, collab_agent_interaction_end, collab_waiting_end, collab_close_end, or collab_resume_end and payload.callId is not a string, the branch must NOT call randomUUID and must NOT push a tool-result message; it must return early.",
         "When payload.callId is a string, behavior is unchanged: pushToolResult runs with the provided callId and the formatted agent status.",
@@ -74,10 +74,10 @@
     }
   ],
   "sourceFiles": [
-    "runtime/src/tui/openclaude/message-adapter.ts"
+    "runtime/src/tui/bridges/message-adapter.ts"
   ],
   "targetFiles": [
-    "runtime/src/tui/openclaude/message-adapter.ts"
+    "runtime/src/tui/bridges/message-adapter.ts"
   ],
   "testFiles": [
     "runtime/src/tui/openclaude/message-adapter.contract.test.ts"

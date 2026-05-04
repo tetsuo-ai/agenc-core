@@ -9,31 +9,31 @@
   "behaviorsAudited": [
     {
       "behavior": "RunningToolProgressIndicator function and its <Text> rendering (App.tsx:111-146) are removed",
-      "implementedAt": "runtime/src/tui/openclaude/App.tsx:1-297 (no definition present)",
+      "implementedAt": "runtime/src/tui/components/App.tsx:1-297 (no definition present)",
       "assertedAt": "App.no-runningtoolprogress.parity.test.tsx:B4.1 the RunningToolProgressIndicator function definition is gone",
       "ok": true
     },
     {
       "behavior": "<RunningToolProgressIndicator progress={transcript.runningToolProgress} /> JSX is removed from App.tsx render output",
-      "implementedAt": "runtime/src/tui/openclaude/App.tsx:208-277 (render block contains no such JSX)",
+      "implementedAt": "runtime/src/tui/components/App.tsx:208-277 (render block contains no such JSX)",
       "assertedAt": "App.no-runningtoolprogress.parity.test.tsx:B4.2 the <RunningToolProgressIndicator ... /> JSX usage is gone",
       "ok": true
     },
     {
       "behavior": "Imports of RunningToolProgress type from message-adapter are removed from App.tsx",
-      "implementedAt": "runtime/src/tui/openclaude/App.tsx:1-30 (no RunningToolProgress import; only typed imports of LLMMessage, ToolPermissionContext, Command, AgentDefinition, OpenClaudeTuiProps)",
+      "implementedAt": "runtime/src/tui/components/App.tsx:1-30 (no RunningToolProgress import; only typed imports of LLMMessage, ToolPermissionContext, Command, AgentDefinition, OpenClaudeTuiProps)",
       "assertedAt": "App.no-runningtoolprogress.parity.test.tsx:B4.3 App.tsx no longer imports RunningToolProgress from message-adapter",
       "ok": true
     },
     {
       "behavior": "runningToolProgress field is removed from OpenClaudeBridgeSession transcript shape and from message-adapter.ts (lines 42, 576, 706-734, 797)",
-      "implementedAt": "runtime/src/tui/openclaude/message-adapter.ts:22-40 (AdaptedTranscript no longer declares runningToolProgress); :564-768 (adaptTranscriptEvents has no runningToolProgress Map, no tool_progress case populating it, and the return object at :759-767 omits the key)",
+      "implementedAt": "runtime/src/tui/bridges/message-adapter.ts:22-40 (AdaptedTranscript no longer declares runningToolProgress); :564-768 (adaptTranscriptEvents has no runningToolProgress Map, no tool_progress case populating it, and the return object at :759-767 omits the key)",
       "assertedAt": "message-adapter.no-runningtoolprogress.parity.test.ts:B4.4 AdaptedTranscript no longer declares the runningToolProgress field; B4.4 adaptTranscriptEvents no longer constructs a runningToolProgress Map or includes it in the return object; B4.4 the runtime adaptTranscriptEvents return value lacks the runningToolProgress key entirely",
       "ok": true
     },
     {
       "behavior": "RunningToolProgress type export is removed from message-adapter.ts; the row-reviewer subagent verifies via grep that no live caller outside dead-code paths references it before approving the row",
-      "implementedAt": "runtime/src/tui/openclaude/message-adapter.ts:1-768 (no `export interface RunningToolProgress` and no `export type RunningToolProgress` present); reviewer grep across runtime/src excluding agenc/upstream and *.test.ts(x) returned zero references",
+      "implementedAt": "runtime/src/tui/bridges/message-adapter.ts:1-768 (no `export interface RunningToolProgress` and no `export type RunningToolProgress` present); reviewer grep across runtime/src excluding agenc/upstream and *.test.ts(x) returned zero references",
       "assertedAt": "message-adapter.no-runningtoolprogress.parity.test.ts:B4.4 RunningToolProgress interface is no longer exported from message-adapter.ts; E4.2 no other file under runtime/src references runningToolProgress; E4.4 RunningToolProgress symbol absence is asserted across the full bridge directory",
       "ok": true
     }

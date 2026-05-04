@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 
-const APP_SOURCE_PATH = path.resolve(import.meta.dirname, "App.tsx");
+const APP_SOURCE_PATH = path.resolve(import.meta.dirname, "../components/App.tsx");
 
 function readSource(): string {
   return fs.readFileSync(APP_SOURCE_PATH, "utf8");
@@ -48,7 +48,7 @@ describe("terminal title parity", () => {
   test("title animation is suppressed while waiting for permission or local JSX", () => {
     const source = readSource();
     expect(source).toMatch(
-      /transcript\.isStreaming\s*&&\s*permissionRequests\.length\s*===\s*0\s*&&\s*toolJSX\s*===\s*null/,
+      /transcript\.isStreaming\s*&&\s*permissionRequests\.length\s*===\s*0\s*&&\s*elicitation\.prompt\s*===\s*null\s*&&\s*toolJSX\s*===\s*null/,
     );
   });
 
