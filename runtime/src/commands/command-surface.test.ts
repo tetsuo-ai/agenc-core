@@ -37,8 +37,13 @@ import {
   parseSlashCommand,
   type DispatchOutcome,
 } from "./dispatcher.js";
+import {
+  clearSessionReadState,
+  recordSessionRead,
+} from "../tools/system/filesystem.js";
 
 function fakeSession(overrides: {
+  conversationId?: string;
   state?: Record<string, unknown>;
   services?: Record<string, unknown>;
   budgetTracker?: Record<string, unknown>;
@@ -60,7 +65,7 @@ function fakeSession(overrides: {
     ...overrides.services,
   };
   return {
-    conversationId: "session-1",
+    conversationId: overrides.conversationId ?? "session-1",
     state: {
       unsafePeek: () => state,
       with: async (fn: (value: typeof state) => void) => fn(state),
@@ -235,16 +240,30 @@ describe("absorbed T-10 command behavior", () => {
     expect(formatReasoningEffortStatus(session)).toContain("model default");
   });
 
-  it("collects file references from session history", () => {
+  it("lists files from tracked read state instead of path-like history text", () => {
+    const conversationId = "files-read-state";
+    clearSessionReadState(conversationId);
+    recordSessionRead(conversationId, "/tmp/project/src/tracked.ts", {
+      content: "tracked",
+      timestamp: Date.now(),
+      viewKind: "full",
+    });
     const session = fakeSession({
+      conversationId,
       state: {
         history: [
-          { type: "file", path: "/tmp/project/src/index.ts" },
-          { content: [{ type: "text", text: "plain text" }] },
+          { type: "file", path: "/tmp/project/src/not-tracked.ts" },
+          { content: [{ type: "text", text: "also mention ./not-real.ts" }] },
         ],
       },
     });
-    expect(collectContextFiles(session)).toEqual(["/tmp/project/src/index.ts"]);
+    try {
+      expect(collectContextFiles(session)).toEqual([
+        "/tmp/project/src/tracked.ts",
+      ]);
+    } finally {
+      clearSessionReadState(conversationId);
+    }
   });
 
   it("loads local release notes from the checkout", async () => {
@@ -302,6 +321,40 @@ describe("absorbed T-10 command behavior", () => {
       expect(clearSkillCaches).toHaveBeenCalled();
       expect(refreshActivePlugins).toHaveBeenCalledOnce();
       expect(refreshFromConfig).toHaveBeenCalledOnce();
+    } finally {
+      restore();
+    }
+  });
+
+  it("passes live AppState updates through reload plugin refresh", async () => {
+    const refreshActivePlugins = vi.fn(async (ctx: SlashCommandContext) => {
+      ctx.appState?.setAppState?.((prev) => ({
+        ...(prev as Record<string, unknown>),
+        pluginReconnectKey: 1,
+      }));
+      return {
+        enabled_count: 0,
+        disabled_count: 0,
+        command_count: 0,
+        agent_count: 0,
+        hook_count: 0,
+        mcp_count: 0,
+        lsp_count: 0,
+        error_count: 0,
+      };
+    });
+    const restore = setActivePluginRefresherForTesting(refreshActivePlugins);
+    let appState: Record<string, unknown> = { pluginReconnectKey: 0 };
+    try {
+      await reloadPluginSurfaces({
+        ...fakeContext("/tmp"),
+        appState: {
+          setAppState: (updater) => {
+            appState = updater(appState) as Record<string, unknown>;
+          },
+        },
+      });
+      expect(appState.pluginReconnectKey).toBe(1);
     } finally {
       restore();
     }

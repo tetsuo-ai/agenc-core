@@ -68,6 +68,7 @@ export interface AgenCBridgeSession {
   appStateBridge?: {
     setModel?: (next: string) => void;
     setExpandedView?: (next: "none" | "tasks") => void;
+    setAppState?: (updater: (prev: unknown) => unknown) => void;
   };
   setPendingProviderSwitch?(
     pending: { provider: string; model: string; profile?: string } | null,

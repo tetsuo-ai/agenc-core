@@ -10,6 +10,8 @@ import {
   type PendingRequest,
 } from "../../agenc/adapters/permission-bridge-projection.js";
 import type { AgenCBridgeSession } from "../session-types.js";
+import type { AppState } from "../state/AppState.js";
+import { createSessionAppStateBridge } from "./app-state-bridge.js";
 
 export { buildToolUseConfirmQueue, type PendingRequest };
 
@@ -63,6 +65,7 @@ export function usePermissionBridge(
   session: AgenCBridgeSession,
   setModel: (next: string) => void,
   setExpandedView: (next: "none" | "tasks") => void,
+  setAppState: (updater: (prev: AppState) => AppState) => void,
 ) {
   const [requests, setRequests] = useState<readonly PendingRequest[]>([]);
 
@@ -98,12 +101,16 @@ export function usePermissionBridge(
         });
       },
     };
-    session.appStateBridge = { setModel, setExpandedView };
+    session.appStateBridge = createSessionAppStateBridge(
+      setModel,
+      setExpandedView,
+      setAppState,
+    );
     return () => {
       session.services.approvalResolver = previousResolver;
       session.appStateBridge = previousBridge;
     };
-  }, [session, setExpandedView, setModel]);
+  }, [session, setAppState, setExpandedView, setModel]);
 
   return requests;
 }

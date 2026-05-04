@@ -250,6 +250,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     props.session,
     setModel,
     setExpandedView,
+    setAppState,
   );
   const elicitation = useElicitationBridge(props.session);
   const toolNames = useMemo(() => {
