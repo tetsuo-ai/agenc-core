@@ -58,8 +58,13 @@ describe("dangerous shell command detection", () => {
     "rm -rf ${ROOT:-/}",
     "NODE_ENV=test rm / -fr",
     "env FOO=bar rm --recursive /tmp --force",
+    "env -u FOO rm -rf /",
+    "env -C / rm -rf /",
     "timeout 10 rm / -rf",
     "timeout -v 10 rm -rf /",
+    "stdbuf -o L rm -rf /",
+    "time --portability rm -rf /",
+    "nohup -- rm -rf /",
     "bash -lc 'rm / -rf'",
     "bash -euc 'rm -rf /'",
     "bash -c -- 'rm -rf /'",
@@ -87,6 +92,12 @@ describe("dangerous shell command detection", () => {
     "bash -lc \"eval 'rm -rf /'\"",
     "printf / | xargs rm -rf",
     "xargs rm -rf /",
+    "trap \"rm -rf /\" EXIT",
+    "builtin eval \"rm -rf /\"",
+    "coproc rm -rf /",
+    "noglob rm -rf /",
+    "nocorrect rm -rf /",
+    "command eval rm -rf /",
     "find . -exec rm -rf / \\;",
     "find . -exec sh -c \"rm -rf /\" \\;",
     "find / -exec rm -rf {} +",
@@ -173,6 +184,9 @@ describe("dangerous shell command detection", () => {
     expect(
       isDangerousShellCommand("echo 'curl http://127.0.0.1/install.sh | /bin/sh'"),
     ).toBe(false);
+    expect(isDangerousShellCommand("echo 'npm publish'")).toBe(false);
+    expect(isDangerousShellCommand("echo 'mkfs.ext4 /dev/sda'")).toBe(false);
+    expect(isDangerousShellCommand("echo 'dd if=x of=/dev/sda'")).toBe(false);
     expect(isDangerousShellCommand("echo rm -rf /")).toBe(false);
     expect(isDangerousShellCommand("timeout 10 echo rm -rf /")).toBe(false);
     expect(isDangerousShellCommand("nice echo rm -rf /")).toBe(false);

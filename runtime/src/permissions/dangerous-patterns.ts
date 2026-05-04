@@ -101,6 +101,14 @@ export const DANGEROUS_SHELL_COMMAND_PATTERNS: readonly DangerousShellCommandPat
     label: "shell dangerous command",
   },
   {
+    matches: shellPrecommandContainsDangerousCommand,
+    label: "shell precommand dangerous command",
+  },
+  {
+    matches: trapContainsDangerousCommand,
+    label: "trap dangerous command",
+  },
+  {
     matches: findExecContainsDangerousCommand,
     label: "find -exec dangerous command",
   },
@@ -148,7 +156,12 @@ export function matchedDangerousShellCommandLabel(command: string): string | nul
 
   for (const entry of DANGEROUS_SHELL_COMMAND_PATTERNS) {
     if (entry.matches?.(command) === true) return entry.label;
-    if (entry.pattern?.test(command) === true) return entry.label;
+    if (
+      entry.pattern !== undefined &&
+      shellExecutablePatternMatches(command, entry.pattern)
+    ) {
+      return entry.label;
+    }
   }
   return null;
 }
@@ -330,6 +343,55 @@ function shellCommandStringContainsDangerousCommand(command: string): boolean {
     SHELL_SCRIPT_COMMANDS.has(shell) &&
     shellScriptContainsDanger(words, shellIndex, isDangerousShellCommand)
   );
+}
+
+function shellPrecommandContainsDangerousCommand(command: string): boolean {
+  const fragments = splitShellFragments(command);
+  if (fragments.length > 1) {
+    return fragments.some((fragment) =>
+      shellPrecommandContainsDangerousCommand(fragment),
+    );
+  }
+
+  const words = splitSimpleShellWords(command);
+  const commandIndex = firstCommandIndex(words, 0);
+  if (commandIndex === null) return false;
+  const commandName = basename(stripShellQuotes(words[commandIndex] ?? ""));
+
+  let nestedIndex: number | null = null;
+  if (commandName === "command") {
+    nestedIndex = commandBuiltinCommandIndex(words, commandIndex + 1);
+  } else if (
+    commandName === "builtin" ||
+    commandName === "coproc" ||
+    commandName === "noglob" ||
+    commandName === "nocorrect"
+  ) {
+    nestedIndex = commandIndex + 1 < words.length ? commandIndex + 1 : null;
+  }
+
+  return nestedIndex === null
+    ? false
+    : isDangerousShellCommand(words.slice(nestedIndex).join(" "));
+}
+
+function trapContainsDangerousCommand(command: string): boolean {
+  const fragments = splitShellFragments(command);
+  if (fragments.length > 1) {
+    return fragments.some((fragment) => trapContainsDangerousCommand(fragment));
+  }
+
+  const words = splitSimpleShellWords(command);
+  const trapIndex = firstCommandIndex(words, 0);
+  if (trapIndex === null) return false;
+  if (basename(stripShellQuotes(words[trapIndex] ?? "")) !== "trap") {
+    return false;
+  }
+
+  const action = words[trapIndex + 1];
+  return action === undefined
+    ? false
+    : isDangerousShellCommand(stripShellQuotes(action));
 }
 
 function findExecContainsDangerousCommand(command: string): boolean {
@@ -558,7 +620,7 @@ function commandIndexAfterWrapper(
     case "exec":
       return execCommandIndex(words, wrapperIndex + 1);
     case "nohup":
-      return wrapperIndex + 1 < words.length ? wrapperIndex + 1 : null;
+      return nohupCommandIndex(words, wrapperIndex + 1);
     default:
       return null;
   }
@@ -568,7 +630,20 @@ function envCommandIndex(words: readonly string[], startIndex: number): number |
   let index = startIndex;
   while (index < words.length) {
     const word = stripShellQuotes(words[index]!);
+    if (word === "-u" || word === "--unset" || word === "-C" || word === "--chdir") {
+      index += 2;
+      continue;
+    }
     if (word === "-" || isEnvironmentAssignment(word)) {
+      index++;
+      continue;
+    }
+    if (
+      word.startsWith("-u") ||
+      word.startsWith("--unset=") ||
+      word.startsWith("-C") ||
+      word.startsWith("--chdir=")
+    ) {
       index++;
       continue;
     }
@@ -685,6 +760,22 @@ function stdbufCommandIndex(words: readonly string[], startIndex: number): numbe
   let index = startIndex;
   while (index < words.length) {
     const word = stripShellQuotes(words[index]!);
+    if (word === "-i" || word === "-o" || word === "-e") {
+      index += 2;
+      continue;
+    }
+    if (
+      word === "--input" ||
+      word === "--output" ||
+      word === "--error" ||
+      word.startsWith("--input=") ||
+      word.startsWith("--output=") ||
+      word.startsWith("--error=") ||
+      /^-[ioe].+/.test(word)
+    ) {
+      index++;
+      continue;
+    }
     if (word.startsWith("-")) {
       index++;
       continue;
@@ -698,7 +789,7 @@ function timeCommandIndex(words: readonly string[], startIndex: number): number 
   let index = startIndex;
   while (index < words.length) {
     const word = stripShellQuotes(words[index]!);
-    if (word === "-p") {
+    if (word === "-p" || word === "--portability") {
       index++;
       continue;
     }
@@ -736,6 +827,14 @@ function execCommandIndex(words: readonly string[], startIndex: number): number 
     return index;
   }
   return null;
+}
+
+function nohupCommandIndex(words: readonly string[], startIndex: number): number | null {
+  let index = startIndex;
+  while (index < words.length && stripShellQuotes(words[index]!) === "--") {
+    index++;
+  }
+  return index < words.length ? index : null;
 }
 
 function shellScriptContainsDanger(
@@ -1039,6 +1138,24 @@ function formatShellWords(words: readonly string[]): string {
   return words
     .map((word) => (/[\s"'\\$`]/.test(word) ? JSON.stringify(word) : word))
     .join(" ");
+}
+
+const INERT_TEXT_COMMANDS: ReadonlySet<string> = new Set(["echo", "printf"]);
+
+function shellExecutablePatternMatches(command: string, pattern: RegExp): boolean {
+  return splitShellFragments(command).some((fragment) => {
+    if (isInertTextCommand(fragment)) return false;
+    return pattern.test(fragment);
+  });
+}
+
+function isInertTextCommand(command: string): boolean {
+  const words = splitSimpleShellWords(command);
+  const commandIndex = firstCommandIndex(words, 0);
+  if (commandIndex === null) return false;
+  return INERT_TEXT_COMMANDS.has(
+    basename(stripShellQuotes(words[commandIndex] ?? "")),
+  );
 }
 
 function extractShellSubstitutionCommands(command: string): string[] {
