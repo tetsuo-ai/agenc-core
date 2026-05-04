@@ -45,6 +45,16 @@ import copyCommand from "./copy.js";
 import mcpCommand from "./mcp.js";
 import skillsCommand from "./skills.js";
 import memoryCommand from "./memory/index.js";
+import cacheStatsCommand from "./cache-stats.js";
+import costCommand from "./cost.js";
+import doctorCommand from "./doctor.js";
+import effortCommand from "./effort.js";
+import filesCommand from "./files.js";
+import releaseNotesCommand from "./release-notes.js";
+import reloadPluginsCommand from "./reload-plugins.js";
+import statsCommand from "./stats.js";
+import usageCommand from "./usage.js";
+import wikiCommand from "./wiki.js";
 import { enterWorktree } from "./enter-worktree.js";
 import { exitWorktree } from "./exit-worktree.js";
 import {
@@ -275,6 +285,16 @@ export function buildDefaultRegistry(): CommandRegistry {
     mcpCommand,
     memoryCommand,
     skillsCommand,
+    cacheStatsCommand,
+    costCommand,
+    doctorCommand,
+    effortCommand,
+    filesCommand,
+    releaseNotesCommand,
+    reloadPluginsCommand,
+    statsCommand,
+    usageCommand,
+    wikiCommand,
     planCommand,
     resumeCommand,
     forkCommand,

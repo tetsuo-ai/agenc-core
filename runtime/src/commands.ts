@@ -96,6 +96,13 @@ export type CommandBase = {
   userInvocable?: boolean;
   loadedFrom?: string;
   kind?: string;
+  source?: string;
+  pluginInfo?: {
+    pluginManifest?: {
+      name?: string;
+    };
+  };
+  availability?: readonly string[];
   immediate?: boolean;
   isSensitive?: boolean;
   userFacingName?: () => string;
@@ -133,13 +140,42 @@ export function isCommandEnabled(cmd: CommandBase): boolean {
   return cmd.isEnabled?.() ?? true;
 }
 
+let projectedCommandCache: Command[] | null = null;
+const commandProviders = new Set<
+  (cwd: string) => Promise<readonly Command[]> | readonly Command[]
+>();
+
+function builtInCommands(): readonly Command[] {
+  projectedCommandCache ??= buildDefaultRegistry().list().map(projectSlashCommand);
+  return projectedCommandCache;
+}
+
+export function registerCommandProvider(
+  provider: (cwd: string) => Promise<readonly Command[]> | readonly Command[],
+): () => void {
+  commandProviders.add(provider);
+  return () => {
+    commandProviders.delete(provider);
+  };
+}
+
 export function getCommandsSync(): Command[] {
-  return buildDefaultRegistry().list().map(projectSlashCommand);
+  return [...builtInCommands()];
 }
 
 export async function getCommands(cwd: string): Promise<Command[]> {
-  void cwd;
-  return getCommandsSync();
+  const dynamicCommands = await Promise.all(
+    [...commandProviders].map(async provider => [...(await provider(cwd))]),
+  );
+  const commands = [...dynamicCommands.flat(), ...builtInCommands()];
+  const seen = new Set<string>();
+  return commands.filter(command => {
+    if (!isCommandEnabled(command)) return false;
+    const key = command.name.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export function findCommand(
@@ -190,35 +226,82 @@ export const builtInCommandNames = new Set(
 );
 
 const commandByName = (name: string): Command | undefined =>
-  getCommandsSync().find(command => command.name === name);
+  builtInCommands().find(command => command.name === name);
 
 export const INTERNAL_ONLY_COMMANDS: Command[] = [];
 
-export const REMOTE_SAFE_COMMANDS: Set<Command> = new Set(
-  [
-    "exit",
-    "clear",
-    "help",
-    "plan",
-    "keybindings",
-    "copy",
-    "status",
-  ]
-    .map(commandByName)
-    .filter((command): command is Command => command !== undefined),
+const REMOTE_SAFE_COMMAND_NAMES = new Set([
+  "exit",
+  "clear",
+  "help",
+  "plan",
+  "keybindings",
+  "copy",
+  "status",
+  "cost",
+  "usage",
+]);
+
+const BRIDGE_SAFE_COMMAND_NAMES = new Set([
+  "compact",
+  "clear",
+  "cost",
+  "release-notes",
+  "files",
+]);
+
+function commandsForNames(names: ReadonlySet<string>): Set<Command> {
+  return new Set(
+    [...names]
+      .map(commandByName)
+      .filter((command): command is Command => command !== undefined),
+  );
+}
+
+export const REMOTE_SAFE_COMMANDS: Set<Command> = commandsForNames(
+  REMOTE_SAFE_COMMAND_NAMES,
 );
 
+export const BRIDGE_SAFE_COMMANDS: Set<Command> = commandsForNames(
+  BRIDGE_SAFE_COMMAND_NAMES,
+);
+
+function commandMatchesNameSet(
+  command: Command,
+  names: ReadonlySet<string>,
+): boolean {
+  return (
+    names.has(command.name) ||
+    names.has(getCommandName(command)) ||
+    (command.aliases ?? []).some(alias => names.has(alias))
+  );
+}
+
 export function filterCommandsForRemoteMode(commands: Command[]): Command[] {
-  return commands.filter(command => REMOTE_SAFE_COMMANDS.has(command));
+  return commands.filter(command =>
+    commandMatchesNameSet(command, REMOTE_SAFE_COMMAND_NAMES),
+  );
 }
 
 export function isBridgeSafeCommand(cmd: Command): boolean {
-  return cmd.type === "prompt" || REMOTE_SAFE_COMMANDS.has(cmd);
+  if (cmd.type === "local-jsx") return false;
+  if (cmd.type === "prompt") return true;
+  return commandMatchesNameSet(cmd, BRIDGE_SAFE_COMMAND_NAMES);
 }
 
 export async function getSkillToolCommands(cwd: string): Promise<Command[]> {
-  void cwd;
-  return [];
+  const allCommands = await getCommands(cwd);
+  return allCommands.filter(
+    command =>
+      command.type === "prompt" &&
+      !command.disableModelInvocation &&
+      command.source !== "builtin" &&
+      (command.loadedFrom === "bundled" ||
+        command.loadedFrom === "skills" ||
+        command.loadedFrom === "commands_DEPRECATED" ||
+        command.hasUserSpecifiedDescription ||
+        command.whenToUse),
+  );
 }
 
 getSkillToolCommands.cache = {
@@ -226,8 +309,21 @@ getSkillToolCommands.cache = {
 };
 
 export async function getSlashCommandToolSkills(cwd: string): Promise<Command[]> {
-  void cwd;
-  return [];
+  try {
+    const allCommands = await getCommands(cwd);
+    return allCommands.filter(
+      command =>
+        command.type === "prompt" &&
+        command.source !== "builtin" &&
+        (command.hasUserSpecifiedDescription || command.whenToUse) &&
+        (command.loadedFrom === "skills" ||
+          command.loadedFrom === "plugin" ||
+          command.loadedFrom === "bundled" ||
+          command.disableModelInvocation),
+    );
+  } catch {
+    return [];
+  }
 }
 
 getSlashCommandToolSkills.cache = {
@@ -237,7 +333,12 @@ getSlashCommandToolSkills.cache = {
 export function getMcpSkillCommands(
   mcpCommands: readonly Command[],
 ): readonly Command[] {
-  return mcpCommands.filter(command => command.type === "prompt");
+  return mcpCommands.filter(
+    command =>
+      command.type === "prompt" &&
+      command.loadedFrom === "mcp" &&
+      !command.disableModelInvocation,
+  );
 }
 
 export function clearCommandMemoizationCaches(): void {
@@ -250,5 +351,17 @@ export function clearCommandsCache(): void {
 }
 
 export function formatDescriptionWithSource(cmd: Command): string {
-  return cmd.description ?? "";
+  if (cmd.type !== "prompt") return cmd.description ?? "";
+  if (cmd.kind === "workflow") return `${cmd.description ?? ""} (workflow)`;
+  if (cmd.source === "plugin") {
+    const pluginName = cmd.pluginInfo?.pluginManifest?.name;
+    return pluginName
+      ? `(${pluginName}) ${cmd.description ?? ""}`
+      : `${cmd.description ?? ""} (plugin)`;
+  }
+  if (cmd.source === "bundled") return `${cmd.description ?? ""} (bundled)`;
+  if (!cmd.source || cmd.source === "builtin" || cmd.source === "mcp") {
+    return cmd.description ?? "";
+  }
+  return `${cmd.description ?? ""} (${cmd.source})`;
 }
