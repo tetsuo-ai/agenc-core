@@ -81,6 +81,10 @@ export interface DangerousShellCommandPattern {
  */
 export const DANGEROUS_SHELL_COMMAND_PATTERNS: readonly DangerousShellCommandPattern[] = [
   {
+    matches: shellExecutesDownloadedContent,
+    label: "downloaded shell execution",
+  },
+  {
     matches: isRecursiveForceRemove,
     label: "rm -rf",
   },
@@ -95,6 +99,10 @@ export const DANGEROUS_SHELL_COMMAND_PATTERNS: readonly DangerousShellCommandPat
   {
     matches: xargsContainsDangerousCommand,
     label: "xargs dangerous command",
+  },
+  {
+    matches: envSplitStringContainsDangerousCommand,
+    label: "env split-string dangerous command",
   },
   {
     matches: shellCommandStringContainsDangerousCommand,
@@ -138,7 +146,7 @@ export const DANGEROUS_SHELL_COMMAND_PATTERNS: readonly DangerousShellCommandPat
   { pattern: /(^|[;&|]\s*)(su|doas|pkexec)\b(\s|$)/, label: "su/doas/pkexec" },
   // chmod / chown on system paths
   {
-    pattern: /\b(chmod|chown)\s+[^;&|]*(\/etc\/|\/usr\/|\/bin\/|\/sbin\/|\/boot\/)/,
+    matches: chmodChownSystemPath,
     label: "chmod/chown on system path",
   },
 ];
@@ -164,6 +172,10 @@ export function matchedDangerousShellCommandLabel(command: string): string | nul
     }
   }
   return null;
+}
+
+export function hasShellConstructRequiringAsk(command: string): boolean {
+  return shellCommandHasShellConstruct(command, 0);
 }
 
 function matchedDangerousShellSubstitutionLabel(command: string): string | null {
@@ -304,6 +316,11 @@ function evalContainsDangerousCommand(command: string): boolean {
 }
 
 function xargsContainsDangerousCommand(command: string): boolean {
+  const pipeSegments = splitShellPipeSegments(command);
+  if (pipeSegments.length > 1) {
+    return pipeSegments.some((segment) => xargsContainsDangerousCommand(segment));
+  }
+
   const fragments = splitShellFragments(command);
   if (fragments.length > 1) {
     return fragments.some((fragment) => xargsContainsDangerousCommand(fragment));
@@ -318,13 +335,135 @@ function xargsContainsDangerousCommand(command: string): boolean {
 
   const commandIndex = xargsCommandIndex(words, xargsIndex + 1);
   if (commandIndex === null) return false;
+  const replacementTokens = xargsReplacementTokens(
+    words,
+    xargsIndex + 1,
+    commandIndex,
+  );
 
   const nested = words.slice(commandIndex);
   const nestedCommand = basename(stripShellQuotes(nested[0] ?? ""));
   if (nestedCommand === "rm" && rmArgsHaveRecursiveAndForce(nested.slice(1))) {
     return true;
   }
+  if (
+    nestedCommand === "rm" &&
+    rmArgsHaveRecursiveAndForceFlags(nested.slice(1)) &&
+    xargsStdinCanSupplyRmTarget(nested.slice(1), replacementTokens)
+  ) {
+    return true;
+  }
+  if (
+    replacementTokens.length > 0 &&
+    commandAtIndexRemovesPlaceholder(nested, 0, replacementTokens)
+  ) {
+    return true;
+  }
+  if (xargsShellCommandRemovesSuppliedArgs(nested, replacementTokens)) {
+    return true;
+  }
   return isDangerousShellCommand(nested.join(" "));
+}
+
+function xargsStdinCanSupplyRmTarget(
+  rmRawArgs: readonly string[],
+  replacementTokens: readonly string[],
+): boolean {
+  if (replacementTokens.length === 0) return true;
+  const parsed = rmArgs(rmRawArgs);
+  return parsed.targets.some((target) =>
+    replacementTokens.some((token) => token.length > 0 && target.includes(token)),
+  );
+}
+
+function xargsReplacementTokens(
+  words: readonly string[],
+  startIndex: number,
+  commandIndex: number,
+): readonly string[] {
+  const out: string[] = [];
+  for (let i = startIndex; i < commandIndex; i++) {
+    const word = stripShellQuotes(words[i]!);
+    if (word === "--") break;
+    if (word === "-I") {
+      if (i + 1 < commandIndex) out.push(stripShellQuotes(words[i + 1]!));
+      i++;
+      continue;
+    }
+    if (word.startsWith("-I") && word.length > 2) {
+      out.push(word.slice(2));
+      continue;
+    }
+    if (word === "-i" || word === "--replace") {
+      out.push("{}");
+      continue;
+    }
+    if (word.startsWith("-i") && word.length > 2) {
+      out.push(word.slice(2));
+      continue;
+    }
+    if (word.startsWith("--replace=")) {
+      out.push(word.slice("--replace=".length));
+    }
+  }
+  return out;
+}
+
+const SHELL_POSITIONAL_TARGETS: readonly string[] = [
+  "$@",
+  "${@}",
+  "$*",
+  "${*}",
+  "$0",
+  "${0}",
+  "$1",
+  "${1}",
+  "$2",
+  "${2}",
+  "$3",
+  "${3}",
+];
+
+function xargsShellCommandRemovesSuppliedArgs(
+  nestedWords: readonly string[],
+  replacementTokens: readonly string[],
+): boolean {
+  const command = basename(stripShellQuotes(nestedWords[0] ?? ""));
+  if (!SHELL_SCRIPT_COMMANDS.has(command)) return false;
+
+  const scriptIndex = shellCommandStringIndex(nestedWords, 0);
+  if (scriptIndex === null) return false;
+  const trailingArgs = nestedWords.slice(scriptIndex + 1);
+  const xargsCanSupplyPositionals = replacementTokens.length === 0 ||
+    trailingArgs.some((arg) =>
+      replacementTokens.some((token) =>
+        token.length > 0 && stripShellQuotes(arg).includes(token),
+      ),
+    );
+  if (!xargsCanSupplyPositionals) return false;
+
+  return shellScriptRemovesPlaceholder(
+    stripShellQuotes(nestedWords[scriptIndex]!),
+    SHELL_POSITIONAL_TARGETS,
+  );
+}
+
+function envSplitStringContainsDangerousCommand(command: string): boolean {
+  const fragments = splitShellFragments(command);
+  if (fragments.length > 1) {
+    return fragments.some((fragment) =>
+      envSplitStringContainsDangerousCommand(fragment),
+    );
+  }
+
+  const words = splitSimpleShellWords(command);
+  const commandIndex = firstCommandIndex(words, 0);
+  if (commandIndex === null) return false;
+  if (basename(stripShellQuotes(words[commandIndex] ?? "")) !== "env") {
+    return false;
+  }
+  const splitCommand = envSplitStringCommand(words, commandIndex + 1);
+  return splitCommand === null ? false : isDangerousShellCommand(splitCommand);
 }
 
 function shellCommandStringContainsDangerousCommand(command: string): boolean {
@@ -410,6 +549,7 @@ function findExecContainsDangerousCommand(command: string): boolean {
 
   for (let i = findIndex + 1; i < words.length; i++) {
     const word = stripShellQuotes(words[i]!);
+    if (criticalRoot && word === "-delete") return true;
     if (word !== "-exec" && word !== "-execdir") continue;
 
     const execWords: string[] = [];
@@ -421,7 +561,8 @@ function findExecContainsDangerousCommand(command: string): boolean {
     if (
       execWords.length > 0 &&
       (isDangerousShellCommand(formatShellWords(execWords)) ||
-        (criticalRoot && findExecRemovesMatchedPath(execWords)))
+        (criticalRoot && findExecRemovesMatchedPath(execWords)) ||
+        (criticalRoot && commandAtIndexRemovesPlaceholder(execWords, 0, ["{}"])))
     ) {
       return true;
     }
@@ -433,15 +574,34 @@ function findCommandHasCriticalRoot(
   words: readonly string[],
   startIndex: number,
 ): boolean {
+  let sawPath = false;
   for (let i = startIndex; i < words.length; i++) {
     const word = stripShellQuotes(words[i]!);
-    if (word === "--") continue;
-    if (word.startsWith("-") || word === "(" || word === "!" || word === "not") {
+    if (!sawPath && word === "--") continue;
+    if (!sawPath && isFindPrePathOption(word)) {
+      if (word === "-D" || word === "-O") i++;
+      continue;
+    }
+    if (word === "(" || word === "!" || word === "not") {
       return false;
     }
+    if (word.startsWith("-")) return false;
+    sawPath = true;
     if (isCriticalRemovalTarget(word)) return true;
   }
   return false;
+}
+
+function isFindPrePathOption(word: string): boolean {
+  return (
+    word === "-H" ||
+    word === "-L" ||
+    word === "-P" ||
+    word === "-D" ||
+    word.startsWith("-D") ||
+    word === "-O" ||
+    /^-O\d+$/.test(word)
+  );
 }
 
 function findExecRemovesMatchedPath(execWords: readonly string[]): boolean {
@@ -449,9 +609,11 @@ function findExecRemovesMatchedPath(execWords: readonly string[]): boolean {
   const command = basename(stripShellQuotes(execWords[0] ?? ""));
   if (command !== "rm") return false;
   const args = execWords.slice(1);
+  const parsed = rmArgs(args);
   return (
-    rmArgsHaveRecursiveAndForce(args) &&
-    args.some((arg) => stripShellQuotes(arg) === "{}")
+    parsed.recursive &&
+    parsed.force &&
+    parsed.targets.some((arg) => stripShellQuotes(arg) === "{}")
   );
 }
 
@@ -459,12 +621,156 @@ function downloadPipeToShell(command: string): boolean {
   const fragments = splitShellPipeSegments(command);
   if (fragments.length < 2) return false;
 
-  for (let i = 0; i < fragments.length - 1; i++) {
-    if (!/\b(curl|wget|fetch)\b/.test(fragments[i]!)) continue;
-    if (isShellSinkCommand(fragments[i + 1]!)) return true;
+  let downloaderOutputInPipe = false;
+  for (const fragment of fragments) {
+    if (isDownloadProducerCommand(fragment)) {
+      downloaderOutputInPipe = true;
+      continue;
+    }
+    if (downloaderOutputInPipe && isShellSinkCommand(fragment)) {
+      return true;
+    }
   }
   return false;
 }
+
+function shellExecutesDownloadedContent(command: string): boolean {
+  const fragments = splitShellFragments(command);
+  if (fragments.length > 1) {
+    return fragments.some((fragment) => shellExecutesDownloadedContent(fragment));
+  }
+
+  const words = splitSimpleShellWords(command);
+  let commandIndex = firstCommandIndex(words, 0);
+  while (commandIndex !== null) {
+    const commandName = basename(stripShellQuotes(words[commandIndex] ?? ""));
+    if (commandName === "eval") {
+      return shellTextContainsDownloadSubstitution(
+        words.slice(commandIndex + 1).join(" "),
+      ) || rawEvalUsesDownloadSubstitution(command);
+    }
+    if (SHELL_SCRIPT_COMMANDS.has(commandName)) {
+      if (shellCommandStringContainsDownloadSubstitution(words, commandIndex)) {
+        return true;
+      }
+      if (rawShellCommandStringUsesDownloadSubstitution(command)) return true;
+      return shellInputContainsDownloadSubstitution(command);
+    }
+    if (!RM_WRAPPER_COMMANDS.has(commandName)) return false;
+    commandIndex = commandIndexAfterWrapper(words, commandIndex, commandName);
+  }
+  return false;
+}
+
+function shellCommandStringContainsDownloadSubstitution(
+  words: readonly string[],
+  shellIndex: number,
+): boolean {
+  for (let i = shellIndex + 1; i < words.length - 1; i++) {
+    const flag = stripShellQuotes(words[i]!);
+    if (flag === "--") continue;
+    if (!isShellCommandStringFlag(flag)) continue;
+    let scriptIndex = i + 1;
+    if (stripShellQuotes(words[scriptIndex] ?? "") === "--") {
+      scriptIndex++;
+    }
+    if (scriptIndex >= words.length) return false;
+    return shellTextContainsDownloadSubstitution(stripShellQuotes(words[scriptIndex]!));
+  }
+  return false;
+}
+
+function shellInputContainsDownloadSubstitution(command: string): boolean {
+  return (
+    /<\s*<\s*\(|<\(|<<<\s*/.test(command) &&
+    shellTextContainsDownloadSubstitution(command)
+  );
+}
+
+function rawShellCommandStringUsesDownloadSubstitution(command: string): boolean {
+  return (
+    /(?:^|\s)-[A-Za-z]*c[A-Za-z]*\s+(?:--\s+)?(?:\$\(|`)/.test(command) &&
+    shellTextContainsDownloadSubstitution(command)
+  );
+}
+
+function rawEvalUsesDownloadSubstitution(command: string): boolean {
+  return (
+    /^\s*eval\s+/.test(command) &&
+    shellTextContainsDownloadSubstitution(command)
+  );
+}
+
+function chmodChownSystemPath(command: string): boolean {
+  const fragments = splitShellFragments(command);
+  if (fragments.length > 1) {
+    return fragments.some((fragment) => chmodChownSystemPath(fragment));
+  }
+
+  const words = splitSimpleShellWords(command);
+  let commandIndex = firstCommandIndex(words, 0);
+  while (commandIndex !== null) {
+    const commandName = basename(stripShellQuotes(words[commandIndex] ?? ""));
+    if (commandName === "chmod" || commandName === "chown") {
+      return chmodChownTargetArgs(words.slice(commandIndex + 1))
+        .some((word) => isProtectedChmodChownTarget(stripShellQuotes(word)));
+    }
+    if (!RM_WRAPPER_COMMANDS.has(commandName)) return false;
+    commandIndex = commandIndexAfterWrapper(words, commandIndex, commandName);
+  }
+  return false;
+}
+
+function isProtectedChmodChownTarget(target: string): boolean {
+  const normalized = normalizeRemovalTarget(expandTilde(target));
+  return normalized === "/" || isSystemRemovalTarget(normalized);
+}
+
+function shellTextContainsDownloadSubstitution(script: string): boolean {
+  return extractShellSubstitutionCommands(script).some((substitution) =>
+    pipelineContainsDownloadProducer(substitution),
+  );
+}
+
+function pipelineContainsDownloadProducer(command: string): boolean {
+  return splitShellPipeSegments(command).some((fragment) =>
+    isDownloadProducerCommand(fragment) ||
+    extractShellSubstitutionCommands(fragment).some((substitution) =>
+      pipelineContainsDownloadProducer(substitution),
+    ),
+  );
+}
+
+function chmodChownTargetArgs(args: readonly string[]): readonly string[] {
+  const targets: string[] = [];
+  let parsingOptions = true;
+  for (let i = 0; i < args.length; i++) {
+    const word = stripShellQuotes(args[i]!);
+    if (parsingOptions && word === "--") {
+      parsingOptions = false;
+      continue;
+    }
+    if (parsingOptions && (word === "--reference" || word === "--from")) {
+      i++;
+      continue;
+    }
+    if (
+      parsingOptions &&
+      (word.startsWith("--reference=") || word.startsWith("--from="))
+    ) {
+      continue;
+    }
+    if (parsingOptions && word.startsWith("-") && word !== "-") continue;
+    targets.push(word);
+  }
+  return targets;
+}
+
+const DOWNLOAD_PRODUCER_COMMANDS: ReadonlySet<string> = new Set([
+  "curl",
+  "wget",
+  "fetch",
+]);
 
 const SHELL_PIPE_SINK_COMMANDS: ReadonlySet<string> = new Set([
   ...SHELL_SCRIPT_COMMANDS,
@@ -475,20 +781,36 @@ const SHELL_PIPE_SINK_COMMANDS: ReadonlySet<string> = new Set([
   "node",
 ]);
 
+function isDownloadProducerCommand(command: string): boolean {
+  const words = splitSimpleShellWords(command);
+  let commandIndex = firstCommandIndex(words, 0);
+  while (commandIndex !== null) {
+    const commandName = basename(stripShellQuotes(words[commandIndex] ?? ""));
+    if (DOWNLOAD_PRODUCER_COMMANDS.has(commandName)) return true;
+    if (commandName === "env") {
+      const splitCommand = envSplitStringCommand(words, commandIndex + 1);
+      if (splitCommand !== null) return isDownloadProducerCommand(splitCommand);
+    }
+    if (!RM_WRAPPER_COMMANDS.has(commandName)) return false;
+    commandIndex = commandIndexAfterWrapper(words, commandIndex, commandName);
+  }
+  return false;
+}
+
 function isShellSinkCommand(command: string): boolean {
   const words = splitSimpleShellWords(command);
   let commandIndex = firstCommandIndex(words, 0);
-  if (commandIndex === null) return false;
-
-  const first = basename(stripShellQuotes(words[commandIndex] ?? ""));
-  if (first === "env") {
-    commandIndex = envCommandIndex(words, commandIndex + 1);
-    if (commandIndex === null) return false;
+  while (commandIndex !== null) {
+    const commandName = basename(stripShellQuotes(words[commandIndex] ?? ""));
+    if (SHELL_PIPE_SINK_COMMANDS.has(commandName)) return true;
+    if (commandName === "env") {
+      const splitCommand = envSplitStringCommand(words, commandIndex + 1);
+      if (splitCommand !== null) return isShellSinkCommand(splitCommand);
+    }
+    if (!RM_WRAPPER_COMMANDS.has(commandName)) return false;
+    commandIndex = commandIndexAfterWrapper(words, commandIndex, commandName);
   }
-
-  return SHELL_PIPE_SINK_COMMANDS.has(
-    basename(stripShellQuotes(words[commandIndex] ?? "")),
-  );
+  return false;
 }
 
 function gitPushArgsForceDefaultBranch(args: readonly string[]): boolean {
@@ -588,6 +910,55 @@ function commandAtIndexContainsForceRemove(
     : commandAtIndexContainsForceRemove(words, nestedCommandIndex);
 }
 
+function commandAtIndexRemovesPlaceholder(
+  words: readonly string[],
+  commandIndex: number,
+  placeholders: readonly string[],
+): boolean {
+  const command = basename(stripShellQuotes(words[commandIndex] ?? ""));
+  if (command === "rm") {
+    return rmArgsHaveRecursiveAndForceFlags(words.slice(commandIndex + 1)) &&
+      rmArgs(words.slice(commandIndex + 1)).targets.some((target) =>
+        placeholders.some((placeholder) =>
+          placeholder.length > 0 && stripShellQuotes(target).includes(placeholder),
+        ),
+      );
+  }
+  if (
+    SHELL_SCRIPT_COMMANDS.has(command) &&
+    shellScriptContainsDanger(
+      words,
+      commandIndex,
+      (script) => shellScriptRemovesPlaceholder(script, placeholders),
+    )
+  ) {
+    return true;
+  }
+  if (!RM_WRAPPER_COMMANDS.has(command)) return false;
+
+  const nestedCommandIndex = commandIndexAfterWrapper(words, commandIndex, command);
+  return nestedCommandIndex === null
+    ? false
+    : commandAtIndexRemovesPlaceholder(words, nestedCommandIndex, placeholders);
+}
+
+function shellScriptRemovesPlaceholder(
+  script: string,
+  placeholders: readonly string[],
+): boolean {
+  const fragments = splitShellFragments(script);
+  if (fragments.length > 1) {
+    return fragments.some((fragment) =>
+      shellScriptRemovesPlaceholder(fragment, placeholders),
+    );
+  }
+  const words = splitSimpleShellWords(script);
+  const commandIndex = firstCommandIndex(words, 0);
+  return commandIndex === null
+    ? false
+    : commandAtIndexRemovesPlaceholder(words, commandIndex, placeholders);
+}
+
 function firstCommandIndex(
   words: readonly string[],
   startIndex: number,
@@ -654,6 +1025,68 @@ function envCommandIndex(words: readonly string[], startIndex: number): number |
     return index;
   }
   return null;
+}
+
+function envSplitStringCommand(
+  words: readonly string[],
+  startIndex: number,
+): string | null {
+  let index = startIndex;
+  while (index < words.length) {
+    const word = stripShellQuotes(words[index]!);
+    if (word === "--") return null;
+    if (word === "-S" || word === "--split-string") {
+      return joinedEnvSplitStringCommand(words, index + 1, index + 2);
+    }
+    if (word.startsWith("--split-string=")) {
+      return joinedEnvSplitStringCommand(
+        [word.slice("--split-string=".length), ...words.slice(index + 1)],
+        0,
+        1,
+      );
+    }
+    if (word.startsWith("-S") && word.length > 2) {
+      return joinedEnvSplitStringCommand(
+        [word.slice(2), ...words.slice(index + 1)],
+        0,
+        1,
+      );
+    }
+    if (word === "-u" || word === "--unset" || word === "-C" || word === "--chdir") {
+      index += 2;
+      continue;
+    }
+    if (word === "-" || isEnvironmentAssignment(word)) {
+      index++;
+      continue;
+    }
+    if (
+      word.startsWith("-u") ||
+      word.startsWith("--unset=") ||
+      word.startsWith("-C") ||
+      word.startsWith("--chdir=")
+    ) {
+      index++;
+      continue;
+    }
+    if (word.startsWith("-")) {
+      index++;
+      continue;
+    }
+    return null;
+  }
+  return null;
+}
+
+function joinedEnvSplitStringCommand(
+  words: readonly string[],
+  scriptIndex: number,
+  trailingStartIndex: number,
+): string | null {
+  const script = stripShellQuotes(words[scriptIndex] ?? "");
+  if (script.length === 0) return null;
+  const trailing = words.slice(trailingStartIndex).map(stripShellQuotes);
+  return [script, ...trailing].filter((word) => word.length > 0).join(" ");
 }
 
 function niceCommandIndex(words: readonly string[], startIndex: number): number | null {
@@ -842,6 +1275,16 @@ function shellScriptContainsDanger(
   shellIndex: number,
   matchesDanger: (script: string) => boolean,
 ): boolean {
+  const scriptIndex = shellCommandStringIndex(words, shellIndex);
+  return scriptIndex === null
+    ? false
+    : matchesDanger(stripShellQuotes(words[scriptIndex]!));
+}
+
+function shellCommandStringIndex(
+  words: readonly string[],
+  shellIndex: number,
+): number | null {
   for (let i = shellIndex + 1; i < words.length - 1; i++) {
     const flag = stripShellQuotes(words[i]!);
     if (flag === "--") continue;
@@ -850,11 +1293,11 @@ function shellScriptContainsDanger(
       if (stripShellQuotes(words[scriptIndex] ?? "") === "--") {
         scriptIndex++;
       }
-      if (scriptIndex >= words.length) return false;
-      return matchesDanger(stripShellQuotes(words[scriptIndex]!));
+      if (scriptIndex >= words.length) return null;
+      return scriptIndex;
     }
   }
-  return false;
+  return null;
 }
 
 function isShellCommandStringFlag(flag: string): boolean {
@@ -863,45 +1306,47 @@ function isShellCommandStringFlag(flag: string): boolean {
 }
 
 function rmArgsHaveForceWithoutRecursive(args: readonly string[]): boolean {
-  let recursive = false;
-  let force = false;
-  let parsingFlags = true;
-  for (const raw of args) {
-    const word = stripShellQuotes(raw);
-    if (parsingFlags && word === "--") {
-      parsingFlags = false;
-      continue;
-    }
-    if (!parsingFlags || !word.startsWith("-") || word === "-") continue;
-    if (word === "--recursive") recursive = true;
-    if (word === "--force") force = true;
-    if (!word.startsWith("--")) {
-      recursive ||= /[rR]/.test(word);
-      force ||= /[fF]/.test(word);
-    }
-  }
-  return force && !recursive;
+  const parsed = rmArgs(args);
+  return parsed.force && !parsed.recursive && parsed.targets.length > 0;
 }
 
 function rmArgsHaveRecursiveAndForce(args: readonly string[]): boolean {
+  const parsed = rmArgs(args);
+  return parsed.recursive && parsed.force && parsed.targets.length > 0;
+}
+
+function rmArgsHaveRecursiveAndForceFlags(args: readonly string[]): boolean {
+  const parsed = rmArgs(args);
+  return parsed.recursive && parsed.force;
+}
+
+function rmArgs(args: readonly string[]): {
+  readonly recursive: boolean;
+  readonly force: boolean;
+  readonly targets: readonly string[];
+} {
   let recursive = false;
   let force = false;
   let parsingFlags = true;
+  const targets: string[] = [];
   for (const raw of args) {
     const word = stripShellQuotes(raw);
     if (parsingFlags && word === "--") {
       parsingFlags = false;
       continue;
     }
-    if (!parsingFlags || !word.startsWith("-") || word === "-") continue;
-    if (word === "--recursive") recursive = true;
-    if (word === "--force") force = true;
-    if (!word.startsWith("--")) {
-      recursive ||= /[rR]/.test(word);
-      force ||= /[fF]/.test(word);
+    if (parsingFlags && word.startsWith("-") && word !== "-") {
+      if (word === "--recursive") recursive = true;
+      if (word === "--force") force = true;
+      if (!word.startsWith("--")) {
+        recursive ||= /[rR]/.test(word);
+        force ||= /[fF]/.test(word);
+      }
+      continue;
     }
+    targets.push(word);
   }
-  return recursive && force;
+  return { recursive, force, targets };
 }
 
 function splitSimpleShellWords(command: string): string[] {
@@ -1129,6 +1574,90 @@ function isInertTextCommand(command: string): boolean {
   );
 }
 
+function shellCommandHasShellConstruct(command: string, depth: number): boolean {
+  if (depth > 8) return true;
+  const normalized = normalizeKnownShellExpansions(command);
+  if (containsShellConstructSyntax(normalized)) return true;
+
+  const words = splitSimpleShellWords(normalized);
+  let commandIndex = firstCommandIndex(words, 0);
+  while (commandIndex !== null) {
+    const commandName = basename(stripShellQuotes(words[commandIndex] ?? ""));
+    if (
+      commandName === "env" &&
+      envSplitStringCommand(words, commandIndex + 1) !== null
+    ) {
+      return true;
+    }
+    if (SHELL_SCRIPT_COMMANDS.has(commandName)) {
+      const scriptIndex = shellCommandStringIndex(words, commandIndex);
+      return scriptIndex === null
+        ? shellInputContainsShellConstruct(normalized)
+        : shellCommandHasShellConstruct(
+            stripShellQuotes(words[scriptIndex]!),
+            depth + 1,
+          ) || shellInputContainsShellConstruct(normalized);
+    }
+    if (!RM_WRAPPER_COMMANDS.has(commandName)) return false;
+    commandIndex = commandIndexAfterWrapper(words, commandIndex, commandName);
+  }
+  return false;
+}
+
+function shellInputContainsShellConstruct(command: string): boolean {
+  return /<\s*<\s*\(|<\(|>\(/.test(command);
+}
+
+function containsShellConstructSyntax(command: string): boolean {
+  let inDoubleQuotes = false;
+  let i = 0;
+  while (i < command.length) {
+    const char = command[i]!;
+    if (char === '"') {
+      inDoubleQuotes = !inDoubleQuotes;
+      i++;
+      continue;
+    }
+    if (char === "'" && !inDoubleQuotes) {
+      const end = command.indexOf("'", i + 1);
+      i = end === -1 ? command.length : end + 1;
+      continue;
+    }
+    if (char === "\\" && i + 1 < command.length) {
+      i += 2;
+      continue;
+    }
+    if (char === "`") return true;
+    if (char === "$" && command[i + 1] === "(") return true;
+    if (char === "$" && isShellPositionalParameter(command, i)) return true;
+    if (char === "$" && isShellVariableParameter(command, i)) return true;
+    if ((char === "<" || char === ">") && command[i + 1] === "(") {
+      return true;
+    }
+    if (char === "(" || char === ")") return true;
+    i++;
+  }
+  return false;
+}
+
+function isShellPositionalParameter(command: string, dollarIndex: number): boolean {
+  const next = command[dollarIndex + 1];
+  if (next === "@" || next === "*" || /[0-9]/.test(next ?? "")) return true;
+  if (next !== "{") return false;
+  const close = command.indexOf("}", dollarIndex + 2);
+  if (close === -1) return false;
+  return /^([@*]|\d+)$/.test(command.slice(dollarIndex + 2, close));
+}
+
+function isShellVariableParameter(command: string, dollarIndex: number): boolean {
+  const next = command[dollarIndex + 1];
+  if (next === "{") {
+    const close = command.indexOf("}", dollarIndex + 2);
+    return close !== -1 && close > dollarIndex + 2;
+  }
+  return /^[A-Za-z_]$/.test(next ?? "");
+}
+
 function extractShellSubstitutionCommands(command: string): string[] {
   const substitutions: string[] = [];
   let inDoubleQuotes = false;
@@ -1250,7 +1779,9 @@ function findDoubleQuoteEnd(command: string, startIndex: number): number {
   return -1;
 }
 
-function normalizeKnownShellExpansions(command: string): string {
+function normalizeKnownShellExpansions(command: string, depth = 0): string {
+  if (depth > 8) return command;
+
   let out = "";
   let i = 0;
   while (i < command.length) {
@@ -1268,6 +1799,35 @@ function normalizeKnownShellExpansions(command: string): string {
     if (char === "\\" && i + 1 < command.length) {
       out += command.slice(i, i + 2);
       i += 2;
+      continue;
+    }
+    if (char === "$" && command[i + 1] === "(") {
+      const end = findCommandSubstitutionEnd(command, i + 1);
+      if (end === -1) {
+        out += command.slice(i);
+        break;
+      }
+      const replacement = evaluateKnownCommandSubstitutionOutput(
+        command.slice(i + 2, end),
+        depth + 1,
+      );
+      out += replacement ?? command.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (char === "`") {
+      const end = findBacktickSubstitutionEnd(command, i + 1);
+      if (end === -1) {
+        out += char;
+        i++;
+        continue;
+      }
+      const replacement = evaluateKnownCommandSubstitutionOutput(
+        command.slice(i + 1, end),
+        depth + 1,
+      );
+      out += replacement ?? command.slice(i, end + 1);
+      i = end + 1;
       continue;
     }
     if (command.startsWith("${IFS}", i)) {
@@ -1294,6 +1854,175 @@ function normalizeKnownShellExpansions(command: string): string {
   return out;
 }
 
+function evaluateKnownCommandSubstitutionOutput(
+  script: string,
+  depth: number,
+): string | null {
+  if (depth > 8) return null;
+
+  const normalized = normalizeKnownShellExpansions(script.trim(), depth + 1);
+  const fragments = splitShellFragments(normalized);
+  if (fragments.length !== 1) return null;
+
+  const words = splitSimpleShellWords(fragments[0]!);
+  let commandIndex = firstCommandIndex(words, 0);
+  while (commandIndex !== null) {
+    const commandName = basename(stripShellQuotes(words[commandIndex] ?? ""));
+    if (commandName === "printf") {
+      return renderKnownPrintfOutput(words.slice(commandIndex + 1));
+    }
+    if (commandName === "echo") {
+      return words.slice(commandIndex + 1).map(stripShellQuotes).join(" ");
+    }
+    if (!RM_WRAPPER_COMMANDS.has(commandName)) return null;
+    commandIndex = commandIndexAfterWrapper(words, commandIndex, commandName);
+  }
+  return null;
+}
+
+function renderKnownPrintfOutput(args: readonly string[]): string | null {
+  let index = 0;
+  if (stripShellQuotes(args[index] ?? "") === "--") index++;
+
+  const format = stripShellQuotes(args[index] ?? "");
+  if (format.length === 0) return "";
+
+  const values = args.slice(index + 1).map(stripShellQuotes);
+  const rendered = renderPrintfFormat(format, values);
+  return rendered === null ? null : rendered.replace(/\n+$/g, "");
+}
+
+function renderPrintfFormat(
+  format: string,
+  values: readonly string[],
+): string | null {
+  const first = renderPrintfFormatOnce(format, values, 0);
+  if (first === null) return null;
+  if (first.conversions === 0) return first.text;
+
+  let out = "";
+  let valueIndex = 0;
+  do {
+    const rendered = renderPrintfFormatOnce(format, values, valueIndex);
+    if (rendered === null) return null;
+    out += rendered.text;
+    valueIndex += rendered.consumed;
+  } while (valueIndex < values.length);
+  return out;
+}
+
+function renderPrintfFormatOnce(
+  format: string,
+  values: readonly string[],
+  startValueIndex: number,
+): {
+  readonly text: string;
+  readonly consumed: number;
+  readonly conversions: number;
+} | null {
+  let text = "";
+  let consumed = 0;
+  let conversions = 0;
+  let i = 0;
+
+  while (i < format.length) {
+    const char = format[i]!;
+    if (char === "\\") {
+      const decoded = decodePrintfEscape(format, i);
+      text += decoded.value;
+      i = decoded.nextIndex;
+      continue;
+    }
+    if (char !== "%") {
+      text += char;
+      i++;
+      continue;
+    }
+
+    const spec = format[i + 1];
+    if (spec === "%") {
+      text += "%";
+      i += 2;
+      continue;
+    }
+    if (spec !== "s" && spec !== "b") return null;
+
+    const value = values[startValueIndex + consumed] ?? "";
+    text += spec === "b" ? decodePrintfEscapes(value) : value;
+    consumed++;
+    conversions++;
+    i += 2;
+  }
+
+  return { text, consumed, conversions };
+}
+
+function decodePrintfEscapes(value: string): string {
+  let out = "";
+  let i = 0;
+  while (i < value.length) {
+    if (value[i] !== "\\") {
+      out += value[i]!;
+      i++;
+      continue;
+    }
+    const decoded = decodePrintfEscape(value, i);
+    out += decoded.value;
+    i = decoded.nextIndex;
+  }
+  return out;
+}
+
+function decodePrintfEscape(
+  value: string,
+  slashIndex: number,
+): { readonly value: string; readonly nextIndex: number } {
+  const next = value[slashIndex + 1];
+  if (next === undefined) return { value: "\\", nextIndex: slashIndex + 1 };
+  switch (next) {
+    case "a":
+      return { value: "\x07", nextIndex: slashIndex + 2 };
+    case "b":
+      return { value: "\b", nextIndex: slashIndex + 2 };
+    case "f":
+      return { value: "\f", nextIndex: slashIndex + 2 };
+    case "n":
+      return { value: "\n", nextIndex: slashIndex + 2 };
+    case "r":
+      return { value: "\r", nextIndex: slashIndex + 2 };
+    case "t":
+      return { value: "\t", nextIndex: slashIndex + 2 };
+    case "v":
+      return { value: "\v", nextIndex: slashIndex + 2 };
+    case "\\":
+      return { value: "\\", nextIndex: slashIndex + 2 };
+    case "\"":
+      return { value: "\"", nextIndex: slashIndex + 2 };
+    case "'":
+      return { value: "'", nextIndex: slashIndex + 2 };
+    case "x": {
+      const hex = value.slice(slashIndex + 2, slashIndex + 4);
+      if (!/^[0-9A-Fa-f]{1,2}$/.test(hex)) {
+        return { value: "x", nextIndex: slashIndex + 2 };
+      }
+      return {
+        value: String.fromCharCode(Number.parseInt(hex, 16)),
+        nextIndex: slashIndex + 2 + hex.length,
+      };
+    }
+    default: {
+      const octal = value.slice(slashIndex + 1).match(/^[0-7]{1,3}/)?.[0];
+      if (octal !== undefined) {
+        return {
+          value: String.fromCharCode(Number.parseInt(octal, 8)),
+          nextIndex: slashIndex + 1 + octal.length,
+        };
+      }
+      return { value: next, nextIndex: slashIndex + 2 };
+    }
+  }
+}
+
 function stripShellQuotes(word: string): string {
   if (word.length >= 2) {
     const first = word[0];
@@ -1317,13 +2046,30 @@ function isEnvironmentAssignment(word: string): boolean {
 function isCriticalRemovalTarget(target: string): boolean {
   if (isHomeShellExpansionTarget(target)) return true;
   if (containsShellExpansion(target)) return true;
-  if (isSystemRemovalTarget(target)) return true;
-  return isDangerousRemovalPath(expandTilde(target));
+  const normalizedTarget = normalizeRemovalTarget(expandTilde(target));
+  if (isSystemRemovalTarget(normalizedTarget)) return true;
+  return isDangerousRemovalPath(normalizedTarget);
 }
 
 function isSystemRemovalTarget(target: string): boolean {
   const normalized = target.replace(/\\/g, "/");
   return /^\/(etc|usr|bin|sbin|boot|dev)(\/|$)/.test(normalized);
+}
+
+function normalizeRemovalTarget(target: string): string {
+  const forwardSlashed = target.replace(/\\/g, "/");
+  if (!forwardSlashed.startsWith("/")) return target;
+
+  const segments: string[] = [];
+  for (const segment of forwardSlashed.split("/")) {
+    if (segment.length === 0 || segment === ".") continue;
+    if (segment === "..") {
+      segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+  return `/${segments.join("/")}`;
 }
 
 function containsShellExpansion(target: string): boolean {
