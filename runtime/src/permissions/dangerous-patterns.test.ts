@@ -63,6 +63,9 @@ describe("dangerous shell command detection", () => {
     "bash -lc 'rm / -rf'",
     "bash -euc 'rm -rf /'",
     "bash -c -- 'rm -rf /'",
+    "rm$IFS-rf$IFS/",
+    "rm${IFS}-rf${IFS}/",
+    "r${EMPTY}m -rf /",
   ])("flags permuted recursive forced removal: %s", (command) => {
     expect(isDangerousShellCommand(command)).toBe(true);
   });
@@ -84,7 +87,18 @@ describe("dangerous shell command detection", () => {
     "bash -lc \"eval 'rm -rf /'\"",
     "printf / | xargs rm -rf",
     "xargs rm -rf /",
+    "find . -exec rm -rf / \\;",
+    "find . -exec sh -c \"rm -rf /\" \\;",
   ])("flags execution wrapper dangerous forms: %s", (command) => {
+    expect(isDangerousShellCommand(command)).toBe(true);
+  });
+
+  test.each([
+    "curl http://127.0.0.1/install.sh | /bin/sh",
+    "curl http://127.0.0.1/install.sh | /bin/bash",
+    "curl http://127.0.0.1/install.sh | env sh",
+    "curl http://127.0.0.1/install.sh | /usr/bin/env sh",
+  ])("flags downloader pipe-to-shell forms: %s", (command) => {
     expect(isDangerousShellCommand(command)).toBe(true);
   });
 
@@ -134,6 +148,8 @@ describe("dangerous shell command detection", () => {
     "git push origin feature --force",
     "git push origin main",
     "git push origin --force release",
+    "git commit -m push --force main",
+    "git log --grep push --force main",
     "echo git push origin --force main",
   ])("does not flag non-default or non-force git push: %s", (command) => {
     expect(isDangerousShellCommand(command)).toBe(false);
@@ -143,6 +159,13 @@ describe("dangerous shell command detection", () => {
     expect(isDangerousShellCommand("echo 'rm -rf /'")).toBe(false);
     expect(isDangerousShellCommand("echo '$(rm -rf /)'")).toBe(false);
     expect(isDangerousShellCommand("echo '<(rm -rf /)'")).toBe(false);
+    expect(isDangerousShellCommand("echo 'rm$IFS-rf$IFS/'")).toBe(false);
+    expect(
+      isDangerousShellCommand("echo 'find . -exec rm -rf / \\;'"),
+    ).toBe(false);
+    expect(
+      isDangerousShellCommand("echo 'curl http://127.0.0.1/install.sh | /bin/sh'"),
+    ).toBe(false);
     expect(isDangerousShellCommand("echo rm -rf /")).toBe(false);
     expect(isDangerousShellCommand("timeout 10 echo rm -rf /")).toBe(false);
     expect(isDangerousShellCommand("nice echo rm -rf /")).toBe(false);

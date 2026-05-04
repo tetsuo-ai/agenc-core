@@ -96,6 +96,10 @@ export const DANGEROUS_SHELL_COMMAND_PATTERNS: readonly DangerousShellCommandPat
     matches: xargsContainsDangerousCommand,
     label: "xargs dangerous command",
   },
+  {
+    matches: findExecContainsDangerousCommand,
+    label: "find -exec dangerous command",
+  },
   // Filesystem destruction
   { pattern: /\bmkfs(\.|\s)/, label: "mkfs" },
   { pattern: /\bdd\s+[^|;&]*\bof=\/dev\//, label: "dd of=/dev/..." },
@@ -104,8 +108,7 @@ export const DANGEROUS_SHELL_COMMAND_PATTERNS: readonly DangerousShellCommandPat
   { pattern: /:\s*\(\s*\)\s*\{\s*:\s*\|\s*:/, label: "fork bomb" },
   // Pipe curl/wget to shell
   {
-    pattern:
-      /\b(curl|wget|fetch)\b[^|;&]*\|\s*(sh|bash|zsh|fish|ksh|csh|tcsh|python|python3|perl|ruby|node)\b/,
+    matches: downloadPipeToShell,
     label: "curl|sh",
   },
   // Destructive git publish to default branch
@@ -136,6 +139,9 @@ export function matchedDangerousShellCommandLabel(command: string): string | nul
   const substitutionLabel = matchedDangerousShellSubstitutionLabel(command);
   if (substitutionLabel !== null) return substitutionLabel;
 
+  const expansionLabel = matchedDangerousShellExpansionLabel(command);
+  if (expansionLabel !== null) return expansionLabel;
+
   for (const entry of DANGEROUS_SHELL_COMMAND_PATTERNS) {
     if (entry.matches?.(command) === true) return entry.label;
     if (entry.pattern?.test(command) === true) return entry.label;
@@ -149,6 +155,14 @@ function matchedDangerousShellSubstitutionLabel(command: string): string | null 
     if (label !== null) return `dangerous command substitution: ${label}`;
   }
   return null;
+}
+
+function matchedDangerousShellExpansionLabel(command: string): string | null {
+  const normalized = normalizeKnownShellExpansions(command);
+  if (normalized === command) return null;
+
+  const label = matchedDangerousShellCommandLabel(normalized);
+  return label === null ? null : `dangerous shell expansion: ${label}`;
 }
 
 const RM_WRAPPER_COMMANDS: ReadonlySet<string> = new Set([
@@ -213,12 +227,46 @@ function isDangerousDefaultBranchForcePush(command: string): boolean {
     return false;
   }
 
-  const pushIndex = words.findIndex(
-    (word, index) => index > gitIndex && stripShellQuotes(word) === "push",
-  );
-  if (pushIndex === -1) return false;
+  const pushIndex = gitSubcommandIndex(words, gitIndex + 1);
+  if (pushIndex === null || stripShellQuotes(words[pushIndex]!) !== "push") {
+    return false;
+  }
 
   return gitPushArgsForceDefaultBranch(words.slice(pushIndex + 1));
+}
+
+function gitSubcommandIndex(words: readonly string[], startIndex: number): number | null {
+  let index = startIndex;
+  while (index < words.length) {
+    const word = stripShellQuotes(words[index]!);
+    if (word === "--") return index + 1 < words.length ? index + 1 : null;
+    if (
+      word === "-C" ||
+      word === "-c" ||
+      word === "--git-dir" ||
+      word === "--work-tree" ||
+      word === "--namespace"
+    ) {
+      index += 2;
+      continue;
+    }
+    if (
+      word.startsWith("-C") ||
+      word.startsWith("-c") ||
+      word.startsWith("--git-dir=") ||
+      word.startsWith("--work-tree=") ||
+      word.startsWith("--namespace=")
+    ) {
+      index++;
+      continue;
+    }
+    if (word.startsWith("-")) {
+      index++;
+      continue;
+    }
+    return index;
+  }
+  return null;
 }
 
 function evalContainsDangerousCommand(command: string): boolean {
@@ -260,6 +308,75 @@ function xargsContainsDangerousCommand(command: string): boolean {
     return true;
   }
   return isDangerousShellCommand(nested.join(" "));
+}
+
+function findExecContainsDangerousCommand(command: string): boolean {
+  const fragments = splitShellFragments(command);
+  if (fragments.length > 1) {
+    return fragments.some((fragment) => findExecContainsDangerousCommand(fragment));
+  }
+
+  const words = splitSimpleShellWords(command);
+  const findIndex = firstCommandIndex(words, 0);
+  if (findIndex === null) return false;
+  if (basename(stripShellQuotes(words[findIndex] ?? "")) !== "find") {
+    return false;
+  }
+
+  for (let i = findIndex + 1; i < words.length; i++) {
+    const word = stripShellQuotes(words[i]!);
+    if (word !== "-exec" && word !== "-execdir") continue;
+
+    const execWords: string[] = [];
+    for (let j = i + 1; j < words.length; j++) {
+      const execWord = stripShellQuotes(words[j]!);
+      if (execWord === ";" || execWord === "+") break;
+      execWords.push(execWord);
+    }
+    if (
+      execWords.length > 0 &&
+      isDangerousShellCommand(formatShellWords(execWords))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function downloadPipeToShell(command: string): boolean {
+  const fragments = splitShellPipeSegments(command);
+  if (fragments.length < 2) return false;
+
+  for (let i = 0; i < fragments.length - 1; i++) {
+    if (!/\b(curl|wget|fetch)\b/.test(fragments[i]!)) continue;
+    if (isShellSinkCommand(fragments[i + 1]!)) return true;
+  }
+  return false;
+}
+
+const SHELL_PIPE_SINK_COMMANDS: ReadonlySet<string> = new Set([
+  ...SHELL_SCRIPT_COMMANDS,
+  "python",
+  "python3",
+  "perl",
+  "ruby",
+  "node",
+]);
+
+function isShellSinkCommand(command: string): boolean {
+  const words = splitSimpleShellWords(command);
+  let commandIndex = firstCommandIndex(words, 0);
+  if (commandIndex === null) return false;
+
+  const first = basename(stripShellQuotes(words[commandIndex] ?? ""));
+  if (first === "env") {
+    commandIndex = envCommandIndex(words, commandIndex + 1);
+    if (commandIndex === null) return false;
+  }
+
+  return SHELL_PIPE_SINK_COMMANDS.has(
+    basename(stripShellQuotes(words[commandIndex] ?? "")),
+  );
 }
 
 function gitPushArgsForceDefaultBranch(args: readonly string[]): boolean {
@@ -787,6 +904,58 @@ function splitShellFragments(command: string): string[] {
   return fragments;
 }
 
+function splitShellPipeSegments(command: string): string[] {
+  const trimmed = command.trim();
+  if (trimmed.length === 0) return [];
+
+  const fragments: string[] = [];
+  let start = 0;
+  let i = 0;
+  while (i < trimmed.length) {
+    const char = trimmed[i]!;
+    if (char === "'") {
+      const end = trimmed.indexOf("'", i + 1);
+      i = end === -1 ? trimmed.length : end + 1;
+      continue;
+    }
+    if (char === '"') {
+      let j = i + 1;
+      while (j < trimmed.length) {
+        if (trimmed[j] === "\\") {
+          j += 2;
+          continue;
+        }
+        if (trimmed[j] === '"') break;
+        j++;
+      }
+      i = j < trimmed.length ? j + 1 : trimmed.length;
+      continue;
+    }
+    if (char === "\\" && i + 1 < trimmed.length) {
+      i += 2;
+      continue;
+    }
+    if (char === "|" && trimmed[i + 1] !== "|") {
+      const fragment = trimmed.slice(start, i).trim();
+      if (fragment.length > 0) fragments.push(fragment);
+      i++;
+      start = i;
+      continue;
+    }
+    i++;
+  }
+
+  const last = trimmed.slice(start).trim();
+  if (last.length > 0) fragments.push(last);
+  return fragments;
+}
+
+function formatShellWords(words: readonly string[]): string {
+  return words
+    .map((word) => (/[\s"'\\$`]/.test(word) ? JSON.stringify(word) : word))
+    .join(" ");
+}
+
 function extractShellSubstitutionCommands(command: string): string[] {
   const substitutions: string[] = [];
   let inDoubleQuotes = false;
@@ -906,6 +1075,50 @@ function findDoubleQuoteEnd(command: string, startIndex: number): number {
     i++;
   }
   return -1;
+}
+
+function normalizeKnownShellExpansions(command: string): string {
+  let out = "";
+  let i = 0;
+  while (i < command.length) {
+    const char = command[i]!;
+    if (char === "'") {
+      const end = command.indexOf("'", i + 1);
+      if (end === -1) {
+        out += command.slice(i);
+        break;
+      }
+      out += command.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (char === "\\" && i + 1 < command.length) {
+      out += command.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
+    if (command.startsWith("${IFS}", i)) {
+      out += " ";
+      i += "${IFS}".length;
+      continue;
+    }
+    if (command.startsWith("$IFS", i)) {
+      out += " ";
+      i += "$IFS".length;
+      continue;
+    }
+    if (command.startsWith("${EMPTY}", i)) {
+      i += "${EMPTY}".length;
+      continue;
+    }
+    if (command.startsWith("$EMPTY", i)) {
+      i += "$EMPTY".length;
+      continue;
+    }
+    out += char;
+    i++;
+  }
+  return out;
 }
 
 function stripShellQuotes(word: string): string {
