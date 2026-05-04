@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createSessionAppStateBridge } from "./app-state-bridge.js";
+import { createSessionAppStateBridge } from "../../agenc/adapters/app-state-bridge.js";
 
 describe("TUI app-state slash-command bridge", () => {
   it("publishes the live AppState setter alongside model and expanded-view setters", () => {

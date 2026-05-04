@@ -112,6 +112,7 @@ export const reloadPluginsCommand: SlashCommand = {
   name: "reload-plugins",
   description: "Reload plugin and skill command surfaces",
   immediate: true,
+  supportsNonInteractive: false,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => ({
       kind: "text",

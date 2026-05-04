@@ -27,7 +27,9 @@ export function formatContextFiles(files: readonly string[], cwd: string): strin
 export const filesCommand: SlashCommand = {
   name: "files",
   description: "List files currently referenced in session context",
+  isEnabled: () => process.env.USER_TYPE === "ant",
   immediate: true,
+  supportsNonInteractive: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => ({
       kind: "text",

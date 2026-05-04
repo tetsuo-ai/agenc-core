@@ -1,5 +1,5 @@
-import type { AgenCBridgeSession } from "../session-types.js";
-import type { AppState } from "../state/AppState.js";
+import type { AgenCBridgeSession } from "../../tui/session-types.js";
+import type { AppState } from "../../tui/state/AppState.js";
 
 export function createSessionAppStateBridge(
   setModel: (next: string) => void,

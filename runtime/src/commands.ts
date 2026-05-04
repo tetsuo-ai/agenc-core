@@ -188,7 +188,9 @@ function localResultFromSlashResult(result: SlashCommandResult): LocalCommandRes
     case "skip":
       return { type: "skip" };
     case "prompt":
-      return { type: "text", value: result.content };
+      throw new Error(
+        "This slash command produced a follow-up prompt, which the legacy local-command adapter cannot submit.",
+      );
     case "exit":
       return { type: "text", value: `Exit requested with code ${result.code}.` };
     case "error":
@@ -202,9 +204,10 @@ export function projectSlashCommand(cmd: SlashCommand): Command {
     name: cmd.name,
     description: cmd.description,
     aliases: cmd.aliases ? [...cmd.aliases] : undefined,
+    isEnabled: cmd.isEnabled,
     immediate: cmd.immediate,
     userInvocable: cmd.userInvocable,
-    supportsNonInteractive: true,
+    supportsNonInteractive: cmd.supportsNonInteractive ?? false,
     load: async () => {
       const { dispatchSlashCommand } = await import("./commands/dispatcher.js");
       return {

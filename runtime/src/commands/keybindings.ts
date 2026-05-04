@@ -170,6 +170,7 @@ export async function runKeybindings(
 export const keybindingsCommand: SlashCommand = {
   name: "keybindings",
   description: "Edit keybindings.json in $EDITOR",
+  supportsNonInteractive: false,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(() => runKeybindings(agencHomeFromCtx(ctx), ctx.argsRaw)),
 };

@@ -64,6 +64,7 @@ export const cacheStatsCommand: SlashCommand = {
   name: "cache-stats",
   description: "Show session token cache counters",
   immediate: true,
+  supportsNonInteractive: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => ({ kind: "text", text: formatCacheStats(ctx.session) })),
 };

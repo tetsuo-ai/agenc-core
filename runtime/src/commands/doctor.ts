@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import type { Session } from "../session/session.js";
+import { isEnvTruthy } from "../utils/envUtils.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -72,6 +73,7 @@ export function formatDoctorReport(checks: readonly DoctorCheck[]): string {
 export const doctorCommand: SlashCommand = {
   name: "doctor",
   description: "Diagnose the AgenC runtime environment",
+  isEnabled: () => !isEnvTruthy(process.env.DISABLE_DOCTOR_COMMAND),
   immediate: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => ({

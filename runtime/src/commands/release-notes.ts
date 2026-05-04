@@ -38,6 +38,7 @@ export const releaseNotesCommand: SlashCommand = {
   name: "release-notes",
   description: "View local AgenC release notes",
   immediate: true,
+  supportsNonInteractive: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => ({ kind: "text", text: await loadReleaseNotes(ctx.cwd) })),
 };

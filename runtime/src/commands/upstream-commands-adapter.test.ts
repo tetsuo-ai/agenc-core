@@ -1,7 +1,13 @@
 import { describe, it, expect } from "vitest";
 
 import { buildDefaultRegistry } from "./registry.js";
+import type * as RuntimeCommands from "../commands.js";
 import { loadUpstreamCommandList } from "../agenc/adapters/upstream-commands.js";
+
+async function importLegacyCommandShim(): Promise<typeof RuntimeCommands> {
+  const legacyPrefix = "../agenc/upstream/";
+  return import(legacyPrefix + "commands.js") as Promise<typeof RuntimeCommands>;
+}
 
 describe("loadUpstreamCommandList (TUI slash-command wiring)", () => {
   it("returns exactly the user-invocable subset of the registry", () => {
@@ -72,5 +78,31 @@ describe("loadUpstreamCommandList (TUI slash-command wiring)", () => {
       .map((cmd) => cmd.name);
     const projectedNames = loadUpstreamCommandList().map((cmd) => cmd.name);
     expect(projectedNames).toEqual(registryNames);
+  });
+
+  it("legacy command-module shim re-exports the tested runtime command surface", async () => {
+    const previousUserType = process.env.USER_TYPE;
+    try {
+      delete process.env.USER_TYPE;
+      const shim = await importLegacyCommandShim();
+      expect(shim.builtInCommandNames().has("help")).toBe(true);
+      expect(typeof shim.clearCommandMemoizationCaches).toBe("function");
+
+      const commands = shim.getCommandsSync();
+      const reloadPlugins = commands.find((cmd) => cmd.name === "reload-plugins");
+      const files = commands.find((cmd) => cmd.name === "files");
+      expect(reloadPlugins?.supportsNonInteractive).toBe(false);
+      expect(files?.supportsNonInteractive).toBe(true);
+      expect(files?.isEnabled?.()).toBe(false);
+      expect(
+        shim.filterCommandsForRemoteMode(commands).map((cmd) => cmd.name),
+      ).not.toContain("reload-plugins");
+    } finally {
+      if (previousUserType === undefined) {
+        delete process.env.USER_TYPE;
+      } else {
+        process.env.USER_TYPE = previousUserType;
+      }
+    }
   });
 });

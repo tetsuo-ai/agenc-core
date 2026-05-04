@@ -18,6 +18,7 @@ export const costCommand: SlashCommand = {
   name: "cost",
   description: "Show the current session cost summary",
   immediate: true,
+  supportsNonInteractive: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => ({ kind: "text", text: formatCostSummary(ctx.session) })),
 };

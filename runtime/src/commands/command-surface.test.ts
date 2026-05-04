@@ -42,6 +42,8 @@ import {
   clearSessionReadState,
   recordSessionRead,
 } from "../tools/system/filesystem.js";
+import { PermissionModeRegistry } from "../permissions/mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 
 function fakeSession(overrides: {
   conversationId?: string;
@@ -71,6 +73,8 @@ function fakeSession(overrides: {
       unsafePeek: () => state,
       with: async (fn: (value: typeof state) => void) => fn(state),
     },
+    nextInternalSubId: () => "sub-1",
+    emit: vi.fn(),
     services,
     budgetTracker: overrides.budgetTracker ?? { emitted: 10, remaining: 90 },
   } as never;
@@ -174,6 +178,57 @@ describe("AgenC command surface compatibility", () => {
       type: "text",
       value: "Cost tracking is not enabled for this session.",
     });
+  });
+
+  it("preserves non-interactive and enablement metadata on projected built-ins", async () => {
+    const previousUserType = process.env.USER_TYPE;
+    try {
+      delete process.env.USER_TYPE;
+      const commands = getCommandsSync();
+      const reloadPlugins = commands.find(command => command.name === "reload-plugins");
+      const files = commands.find(command => command.name === "files");
+      const keybindings = commands.find(command => command.name === "keybindings");
+      expect(reloadPlugins?.type).toBe("local");
+      expect(reloadPlugins?.supportsNonInteractive).toBe(false);
+      expect(files?.supportsNonInteractive).toBe(true);
+      expect(files?.isEnabled?.()).toBe(false);
+      expect(keybindings?.supportsNonInteractive).toBe(false);
+
+      await expect(getCommands("/tmp")).resolves.not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: "files" })]),
+      );
+      process.env.USER_TYPE = "ant";
+      await expect(getCommands("/tmp")).resolves.toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: "files" })]),
+      );
+    } finally {
+      if (previousUserType === undefined) {
+        delete process.env.USER_TYPE;
+      } else {
+        process.env.USER_TYPE = previousUserType;
+      }
+    }
+  });
+
+  it("does not mis-map prompt results through the legacy local adapter", async () => {
+    const registry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({ mode: "default" }),
+    );
+    const session = fakeSession({
+      services: { permissionModeRegistry: registry },
+    });
+    const plan = getCommandsSync().find(command => command.name === "plan");
+    expect(plan?.type).toBe("local");
+    const loaded = await (plan as Extract<Command, { type: "local" }>).load();
+    await expect(
+      loaded.call("design the cache", {
+        session,
+        cwd: "/tmp/project",
+        home: "/tmp",
+        agencHome: "/tmp/agenc",
+      }),
+    ).rejects.toThrow(/follow-up prompt/);
+    expect(registry.current().mode).toBe("plan");
   });
 
   it("uses bridge-safe names for local commands and allows prompt commands", () => {

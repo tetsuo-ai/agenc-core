@@ -35,6 +35,7 @@ export async function runFork(
 export const forkCommand: SlashCommand = {
   name: "fork",
   description: "Fork the current session as a sibling thread",
+  supportsNonInteractive: false,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(() => runFork(ctx)),
 };
