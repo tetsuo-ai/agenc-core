@@ -90,6 +90,11 @@ import {
   getDenyRuleForTool,
 } from "../permissions/rules.js";
 import {
+  recordPermissionAuditEvent,
+  type PermissionAuditErrorHandler,
+  type PermissionAuditLogger,
+} from "../permissions/permission-audit-log.js";
+import {
   getPlan,
   getPlanFilePath,
   type PlanFileContext,
@@ -155,6 +160,10 @@ export interface LiveToolDispatchOptions {
   readonly permissionDecisionHooks?: ReadonlyArray<PermissionDecisionHook>;
   readonly guardianApprovalReviewer?: GuardianApprovalReviewer;
   readonly approvalResolver?: ApprovalResolver;
+  readonly permissionAuditLogger?: PermissionAuditLogger;
+  readonly onPermissionAuditError?: PermissionAuditErrorHandler;
+  readonly toolAllowlist?: ReadonlySet<string>;
+  readonly toolDenylist?: ReadonlySet<string>;
   readonly preHooks?: ReadonlyArray<PreToolUseHook>;
   readonly postHooks?: ReadonlyArray<PostToolUseHook>;
   readonly failureHooks?: ReadonlyArray<PostToolUseFailureHook>;
@@ -561,6 +570,13 @@ export class ToolRouter {
       }
       if (preDecision.kind === "deny") {
         const message = preDecision.reason ?? "denied by pre-tool-use hook";
+        await recordToolPolicyAudit(opts, {
+          decision: "denied",
+          source: "pre-tool-use-hook",
+          reasonCode: "pre_hook_denied",
+          toolName: spec.tool.name,
+          callId: toolCall.id,
+        });
         emitErrorEvent(opts.session.eventLog, toolCall.id, {
           cause: "pre_hook_denied",
           message,
@@ -633,6 +649,16 @@ export class ToolRouter {
         executionArgs = merged.args;
         if (merged.behavior === "deny") {
           const message = merged.message ?? "Permission denied";
+          await recordToolPolicyAudit(opts, {
+            decision: "denied",
+            source: "pre-tool-use-hook",
+            reasonCode:
+              merged.decisionReason?.type === "hook_plus_rule_deny"
+                ? "rule_denied"
+                : "hook_denied",
+            toolName: spec.tool.name,
+            callId: toolCall.id,
+          });
           emitWarningEvent(
             opts.session.eventLog,
             toolCall.id,
@@ -756,6 +782,18 @@ export class ToolRouter {
           : {}),
         ...(opts.approvalResolver !== undefined
           ? { approvalResolver: opts.approvalResolver }
+          : {}),
+        ...(opts.permissionAuditLogger !== undefined
+          ? { permissionAuditLogger: opts.permissionAuditLogger }
+          : {}),
+        ...(opts.onPermissionAuditError !== undefined
+          ? { onPermissionAuditError: opts.onPermissionAuditError }
+          : {}),
+        ...(opts.toolAllowlist !== undefined
+          ? { toolAllowlist: opts.toolAllowlist }
+          : {}),
+        ...(opts.toolDenylist !== undefined
+          ? { toolDenylist: opts.toolDenylist }
           : {}),
         onNoApprovalResolver: (ctx) => {
           emitWarningEvent(
@@ -922,6 +960,12 @@ function rawDispatchOptions(
     ...(opts.approvalAlreadyResolved !== undefined
       ? { approvalAlreadyResolved: opts.approvalAlreadyResolved }
       : {}),
+    ...(opts.permissionAuditLogger !== undefined
+      ? { permissionAuditLogger: opts.permissionAuditLogger }
+      : {}),
+    ...(opts.onPermissionAuditError !== undefined
+      ? { onPermissionAuditError: opts.onPermissionAuditError }
+      : {}),
     ...(opts.approvalResolver !== undefined && opts.canUseTool !== undefined
       ? {
           requestApproval: approvalRequestFromResolver(
@@ -960,6 +1004,38 @@ function approvalRequestFromResolver(
       reviewDecision,
     };
   };
+}
+
+async function recordToolPolicyAudit(
+  opts: LiveToolDispatchOptions,
+  event: {
+    readonly decision: "approved" | "denied";
+    readonly source: string;
+    readonly reasonCode: string;
+    readonly toolName: string;
+    readonly callId: string;
+  },
+): Promise<void> {
+  await recordPermissionAuditEvent(
+    opts.permissionAuditLogger,
+    {
+      eventKind: "policy_outcome",
+      decision: event.decision,
+      source: event.source,
+      subjectType: "tool_execution",
+      toolName: event.toolName,
+      callId: event.callId,
+      sessionId: readSessionId(opts.session),
+      reasonCode: event.reasonCode,
+    },
+    opts.onPermissionAuditError,
+  );
+}
+
+function readSessionId(session: Session): string | undefined {
+  const value = (session as unknown as { readonly conversationId?: unknown })
+    .conversationId;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function toolDispatchErrorResult(err: unknown): ToolDispatchResult {

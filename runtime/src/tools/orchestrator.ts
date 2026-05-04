@@ -58,6 +58,12 @@ import {
   reviewDecisionIsAllow,
   type ReviewDecision as PermissionsReviewDecision,
 } from "../permissions/review-decision.js";
+import {
+  recordPermissionAuditEvent,
+  type PermissionAuditDecision,
+  type PermissionAuditErrorHandler,
+  type PermissionAuditLogger,
+} from "../permissions/permission-audit-log.js";
 import { SandboxDeniedError } from "../permissions/sandbox.js";
 import {
   newGuardianReviewId,
@@ -745,6 +751,8 @@ export interface OrchestrateToolCallOpts<T> {
   readonly permissionDecisionHooks?: ReadonlyArray<PermissionDecisionHook>;
   readonly guardianApprovalReviewer?: GuardianApprovalReviewer;
   readonly approvalResolver?: ApprovalResolver;
+  readonly permissionAuditLogger?: PermissionAuditLogger;
+  readonly onPermissionAuditError?: PermissionAuditErrorHandler;
   /** Emitted when approval falls through to default-deny. */
   readonly onNoApprovalResolver?: (ctx: ApprovalCtx) => void;
   /** Transient retry budget (defaults to 2 = one retry). */
@@ -955,12 +963,17 @@ export async function orchestrateToolCall<T>(
   const requirement = toolRequirement;
 
   if (requirement.kind === "forbidden") {
+    await recordApprovalRequirementOutcome(opts, requirement, effectiveApprovalPolicy);
     throw new ApprovalRejectedError(requirement.reason, { kind: "denied" });
   }
 
   let alreadyApproved = false;
   const bypassSandbox =
     toolRequirement.kind === "skip" ? toolRequirement.bypassSandbox : false;
+
+  if (requirement.kind === "skip") {
+    await recordApprovalRequirementOutcome(opts, requirement, effectiveApprovalPolicy);
+  }
 
   if (requirement.kind === "needs_approval") {
     const approvalCtx: ApprovalCtx = {
@@ -984,6 +997,9 @@ export async function orchestrateToolCall<T>(
       ...(opts.onNoApprovalResolver !== undefined
         ? { onNoResolver: opts.onNoApprovalResolver }
         : {}),
+    });
+    await recordApprovalPolicyOutcome(opts, approvalCtx, approval, {
+      stage: "initial_approval",
     });
     if (!isApprovalAccepted(approval.decision)) {
       throw new ApprovalRejectedError(
@@ -1017,6 +1033,7 @@ export async function orchestrateToolCall<T>(
     // Read-only or otherwise-opting-out tools bail with the original
     // sandbox denial instead of requesting approval to rerun unsandboxed.
     if (!escalateOnFailure(opts.tool)) {
+      await recordSandboxPolicyOutcome(opts, "sandbox_escalation_disabled");
       throw err;
     }
 
@@ -1028,6 +1045,7 @@ export async function orchestrateToolCall<T>(
     // policies that want the approval path continue into the escalation
     // pipeline below.
     if (!wantsNoSandboxApproval(opts.tool, effectiveApprovalPolicy, opts.granular)) {
+      await recordSandboxPolicyOutcome(opts, "sandbox_escalation_not_allowed");
       throw err;
     }
 
@@ -1054,6 +1072,9 @@ export async function orchestrateToolCall<T>(
           ? { onNoResolver: opts.onNoApprovalResolver }
           : {}),
       });
+      await recordApprovalPolicyOutcome(opts, escalationCtx, approval, {
+        stage: "sandbox_escalation",
+      });
       if (!isApprovalAccepted(approval.decision)) {
         throw new ApprovalRejectedError(
           approvalRejectionMessage(approval),
@@ -1067,4 +1088,171 @@ export async function orchestrateToolCall<T>(
       approvalResolved: true,
     });
   }
+}
+
+type TerminalApprovalRequirement =
+  | Extract<ExecApprovalRequirement, { readonly kind: "skip" }>
+  | Extract<ExecApprovalRequirement, { readonly kind: "forbidden" }>;
+
+async function recordApprovalRequirementOutcome(
+  opts: OrchestrateToolCallOpts<unknown>,
+  requirement: TerminalApprovalRequirement,
+  effectiveApprovalPolicy: ApprovalPolicy,
+): Promise<void> {
+  await recordPermissionAuditEvent(
+    opts.permissionAuditLogger,
+    {
+      eventKind: "policy_outcome",
+      decision: requirement.kind === "skip" ? "approved" : "denied",
+      source: "approval-classifier",
+      subjectType: "tool_execution",
+      toolName: opts.approvalCtx.toolName,
+      callId: opts.approvalCtx.callId,
+      sessionId: readAuditSessionId(opts.approvalCtx.invocation),
+      reasonCode: approvalRequirementReasonCode(
+        opts,
+        requirement,
+        effectiveApprovalPolicy,
+      ),
+      metadata: {
+        approvalSource: "classifier",
+        approvalStage: "approval_classification",
+        policySource: effectiveApprovalPolicy,
+      },
+    },
+    opts.onPermissionAuditError,
+  );
+}
+
+async function recordSandboxPolicyOutcome(
+  opts: OrchestrateToolCallOpts<unknown>,
+  reasonCode: "sandbox_escalation_disabled" | "sandbox_escalation_not_allowed",
+): Promise<void> {
+  await recordPermissionAuditEvent(
+    opts.permissionAuditLogger,
+    {
+      eventKind: "policy_outcome",
+      decision: "denied",
+      source: "sandbox-policy",
+      subjectType: "tool_execution",
+      toolName: opts.approvalCtx.toolName,
+      callId: opts.approvalCtx.callId,
+      sessionId: readAuditSessionId(opts.approvalCtx.invocation),
+      reasonCode,
+      metadata: {
+        approvalSource: "classifier",
+        approvalStage: "sandbox_escalation",
+      },
+    },
+    opts.onPermissionAuditError,
+  );
+}
+
+function approvalRequirementReasonCode(
+  opts: OrchestrateToolCallOpts<unknown>,
+  requirement: TerminalApprovalRequirement,
+  effectiveApprovalPolicy: ApprovalPolicy,
+): string {
+  if (requirement.kind === "forbidden") {
+    if (opts.toolDenylist?.has(opts.tool.name)) return "tool_denylisted";
+    if (
+      effectiveApprovalPolicy === "granular" &&
+      opts.granular !== undefined &&
+      !opts.granular.sandbox_approval
+    ) {
+      return "sandbox_approval_forbidden";
+    }
+    return "approval_forbidden";
+  }
+
+  if (opts.toolAllowlist?.has(opts.tool.name)) return "tool_allowlisted";
+  if (opts.tool.defaultPermissionMode !== undefined) {
+    return `default_permission_${opts.tool.defaultPermissionMode.replace(/-/g, "_")}_skipped`;
+  }
+  if (opts.payload?.kind === "tool_search") return "tool_search_skipped";
+  if (
+    opts.payload?.kind === "mcp" &&
+    opts.mcpServerTrusted?.(opts.payload.server) === true
+  ) {
+    return "trusted_mcp_skipped";
+  }
+  if (requirement.bypassSandbox) return "policy_never_sandbox_bypass";
+  switch (effectiveApprovalPolicy) {
+    case "never":
+      return "policy_never_skipped";
+    case "on_failure":
+      return "policy_on_failure_first_attempt";
+    case "on_request":
+      return "policy_on_request_skipped";
+    case "granular":
+      return "granular_read_only_or_unrestricted_skipped";
+    case "untrusted":
+      return "approval_skipped";
+    default: {
+      const _exhaustive: never = effectiveApprovalPolicy;
+      void _exhaustive;
+      return "approval_skipped";
+    }
+  }
+}
+
+async function recordApprovalPolicyOutcome(
+  opts: OrchestrateToolCallOpts<unknown>,
+  ctx: ApprovalCtx,
+  result: RequestApprovalResult,
+  metadata: { readonly stage: "initial_approval" | "sandbox_escalation" },
+): Promise<void> {
+  await recordPermissionAuditEvent(
+    opts.permissionAuditLogger,
+    {
+      eventKind: "policy_outcome",
+      decision: auditDecisionFromReviewDecision(result.decision),
+      source: `approval-${result.source}`,
+      subjectType: "tool_execution",
+      toolName: ctx.toolName,
+      callId: ctx.callId,
+      sessionId: readAuditSessionId(ctx.invocation),
+      reasonCode: approvalReasonCode(result),
+      metadata: {
+        approvalSource: result.source,
+        approvalStage: metadata.stage,
+      },
+    },
+    opts.onPermissionAuditError,
+  );
+}
+
+function auditDecisionFromReviewDecision(
+  decision: ReviewDecision,
+): PermissionAuditDecision {
+  return reviewDecisionIsAllow(decision) ? "approved" : "denied";
+}
+
+function approvalReasonCode(result: RequestApprovalResult): string {
+  if (reviewDecisionIsAllow(result.decision)) {
+    return `approved_${result.source}`;
+  }
+  if (result.source === "default_deny") return "default_deny";
+  if (result.source === "aborted") return "aborted";
+  if (result.decision.kind === "timed_out") return "timed_out";
+  if (result.decision.kind === "abort") return "aborted";
+  return `denied_${result.source}`;
+}
+
+function readAuditSessionId(
+  invocation: ToolInvocation,
+): string | undefined {
+  if (
+    typeof invocation !== "object" ||
+    invocation === null ||
+    !("session" in invocation)
+  ) {
+    return undefined;
+  }
+  const value = (
+    (invocation as { readonly session?: unknown }).session as
+      | { readonly conversationId?: unknown }
+      | undefined
+  )?.conversationId;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }

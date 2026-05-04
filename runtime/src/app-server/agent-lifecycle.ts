@@ -46,6 +46,11 @@ import {
   APPROVED_FOR_SESSION,
   DENIED,
 } from "../permissions/review-decision.js";
+import {
+  recordPermissionAuditEvent,
+  type PermissionAuditErrorHandler,
+  type PermissionAuditLogger,
+} from "../permissions/permission-audit-log.js";
 import type { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import {
   ThreadNotFoundError,
@@ -106,6 +111,8 @@ export interface AgenCDaemonAgentManagerOptions {
     session: AgenCDaemonSnapshotSessionRoute,
   ) => void | Promise<void>;
   readonly onSnapshotError?: (error: unknown) => void;
+  readonly permissionAuditLogger?: PermissionAuditLogger;
+  readonly onPermissionAuditError?: PermissionAuditErrorHandler;
 }
 
 export interface AgenCDaemonAgentToolOutputReadParams {
@@ -250,6 +257,8 @@ export class AgenCDaemonAgentManager {
     | ((session: AgenCDaemonSnapshotSessionRoute) => void | Promise<void>)
     | undefined;
   readonly #onSnapshotError: (error: unknown) => void;
+  readonly #permissionAuditLogger: PermissionAuditLogger | undefined;
+  readonly #onPermissionAuditError: PermissionAuditErrorHandler | undefined;
   #shuttingDown = false;
   #activeCreates = 0;
   readonly #createWaiters = new Set<() => void>();
@@ -272,6 +281,8 @@ export class AgenCDaemonAgentManager {
     this.#recordAgentRun = options.recordAgentRun;
     this.#registerSnapshotSession = options.registerSnapshotSession;
     this.#onSnapshotError = options.onSnapshotError ?? (() => {});
+    this.#permissionAuditLogger = options.permissionAuditLogger;
+    this.#onPermissionAuditError = options.onPermissionAuditError;
   }
 
   async createAgent(params: AgentCreateParams): Promise<AgentCreateResult> {
@@ -884,6 +895,17 @@ export class AgenCDaemonAgentManager {
         `AgenC daemon tool request is not pending: ${params.requestId}`,
       );
     }
+    await this.#recordToolDecisionAudit({
+      decision: "approved",
+      sessionId: params.sessionId,
+      agentId,
+      requestId: params.requestId,
+      ...(params.scope !== undefined ? { scope: params.scope } : {}),
+      reasonCode:
+        params.scope === "session" || params.scope === "agent"
+          ? "rpc_approved_for_scope"
+          : "rpc_approved_once",
+    });
     return { requestId: params.requestId, decision: "approved" };
   }
 
@@ -901,6 +923,13 @@ export class AgenCDaemonAgentManager {
         `AgenC daemon tool request is not pending: ${params.requestId}`,
       );
     }
+    await this.#recordToolDecisionAudit({
+      decision: "denied",
+      sessionId: params.sessionId,
+      agentId,
+      requestId: params.requestId,
+      reasonCode: "rpc_denied",
+    });
     return { requestId: params.requestId, decision: "denied" };
   }
 
@@ -1176,6 +1205,31 @@ export class AgenCDaemonAgentManager {
       }
     });
     return session.agentId;
+  }
+
+  async #recordToolDecisionAudit(params: {
+    readonly decision: "approved" | "denied";
+    readonly sessionId: string;
+    readonly agentId: string;
+    readonly requestId: string;
+    readonly reasonCode: string;
+    readonly scope?: string;
+  }): Promise<void> {
+    await recordPermissionAuditEvent(
+      this.#permissionAuditLogger,
+      {
+        eventKind: "user_decision",
+        decision: params.decision,
+        source: "daemon-rpc",
+        subjectType: "tool_request",
+        sessionId: params.sessionId,
+        agentId: params.agentId,
+        requestId: params.requestId,
+        reasonCode: params.reasonCode,
+        ...(params.scope !== undefined ? { scope: params.scope } : {}),
+      },
+      this.#onPermissionAuditError,
+    );
   }
 
   async #resolvePermissionListAgentId(

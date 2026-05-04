@@ -674,11 +674,54 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
     expect(ran).toBe(1);
   });
 
+  test("needs_approval path records sanitized policy audit", async () => {
+    const auditLogger = vi.fn(async () => {});
+    const result = await orchestrateToolCall<string>({
+      tool: mkTool(),
+      approvalCtx: {
+        invocation: {
+          session: { conversationId: "session_1" },
+        } as ApprovalCtx["invocation"],
+        callId: "call_audit",
+        toolName: "Write",
+        turnId: "turn_audit",
+      },
+      approvalPolicy: "untrusted",
+      sandboxMode: "workspace_write",
+      approvalArgs: {
+        command: "echo api_key=abcdefghijklmnopqrstuvwxyz123456",
+      },
+      dispatch: async () => "ok",
+      approvalResolver: {
+        request: async () => ({ kind: "approved" }),
+      },
+      permissionAuditLogger: auditLogger,
+    });
+
+    expect(result).toBe("ok");
+    expect(auditLogger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventKind: "policy_outcome",
+        decision: "approved",
+        source: "approval-resolver",
+        subjectType: "tool_execution",
+        toolName: "Write",
+        callId: "call_audit",
+        sessionId: "session_1",
+        reasonCode: "approved_resolver",
+      }),
+    );
+    expect(JSON.stringify(auditLogger.mock.calls)).not.toContain(
+      "abcdefghijklmnopqrstuvwxyz123456",
+    );
+  });
+
   test("per-tool default_permission_mode=never skips session approval prompts", async () => {
     const resolver: ApprovalResolver = {
       request: vi.fn(async () => ({ kind: "denied" })),
     };
     const dispatched = vi.fn(async () => "ok");
+    const auditLogger = vi.fn(async () => {});
     const result = await orchestrateToolCall<string>({
       tool: mkTool({ defaultPermissionMode: "never" }),
       approvalCtx: mkCtx(),
@@ -686,11 +729,23 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
       sandboxMode: "workspace_write",
       dispatch: dispatched,
       approvalResolver: resolver,
+      permissionAuditLogger: auditLogger,
     });
 
     expect(result).toBe("ok");
     expect(dispatched).toHaveBeenCalledOnce();
     expect(resolver.request).not.toHaveBeenCalled();
+    expect(auditLogger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventKind: "policy_outcome",
+        decision: "approved",
+        source: "approval-classifier",
+        subjectType: "tool_execution",
+        toolName: "test.cmd",
+        callId: "c-1",
+        reasonCode: "default_permission_never_skipped",
+      }),
+    );
   });
 
   test("per-tool default_permission_mode=untrusted prompts even when session skips", async () => {
@@ -786,6 +841,7 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
 
   test("forbidden classification → ApprovalRejectedError, no dispatch", async () => {
     const dispatched = vi.fn();
+    const auditLogger = vi.fn(async () => {});
     await expect(
       orchestrateToolCall<string>({
         tool: mkTool(),
@@ -794,9 +850,21 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
         sandboxMode: "workspace_write",
         dispatch: dispatched,
         toolDenylist: new Set(["test.cmd"]),
+        permissionAuditLogger: auditLogger,
       }),
     ).rejects.toBeInstanceOf(ApprovalRejectedError);
     expect(dispatched).not.toHaveBeenCalled();
+    expect(auditLogger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventKind: "policy_outcome",
+        decision: "denied",
+        source: "approval-classifier",
+        subjectType: "tool_execution",
+        toolName: "test.cmd",
+        callId: "c-1",
+        reasonCode: "tool_denylisted",
+      }),
+    );
   });
 
   test("sandbox-denied under on_request policy: bails with original error, no approval (orchestrator behavior + sandboxing.rs:290-298)", async () => {

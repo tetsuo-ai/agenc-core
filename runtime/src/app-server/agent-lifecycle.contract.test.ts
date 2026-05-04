@@ -2643,6 +2643,7 @@ describe("AgenC background agent lifecycle", () => {
       now: sequence(["2026-05-01T12:00:00.000Z"]),
     });
     const decisions: unknown[] = [];
+    const auditLogger = vi.fn(async () => {});
     const runner: AgenCBackgroundAgentRunner = {
       startAgent: async () => ({
         agentId: "agent_approve",
@@ -2657,6 +2658,7 @@ describe("AgenC background agent lifecycle", () => {
     const agents = new AgenCDaemonAgentManager({
       sessionManager: sessions,
       runner,
+      permissionAuditLogger: auditLogger,
     });
     await agents.createAgent({ objective: "wait for approval" });
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
@@ -2719,6 +2721,63 @@ describe("AgenC background agent lifecycle", () => {
         },
       },
     ]);
+    expect(auditLogger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventKind: "user_decision",
+        decision: "approved",
+        source: "daemon-rpc",
+        subjectType: "tool_request",
+        sessionId: "session_1",
+        agentId: "agent_approve",
+        requestId: "call_1",
+        scope: "session",
+        reasonCode: "rpc_approved_for_scope",
+      }),
+    );
+    expect(auditLogger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventKind: "user_decision",
+        decision: "denied",
+        source: "daemon-rpc",
+        subjectType: "tool_request",
+        sessionId: "session_1",
+        agentId: "agent_approve",
+        requestId: "call_2",
+        reasonCode: "rpc_denied",
+      }),
+    );
+  });
+
+  it("keeps daemon tool decisions successful when audit logging fails", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_1"]),
+      now: sequence(["2026-05-01T12:00:00.000Z"]),
+    });
+    const onPermissionAuditError = vi.fn();
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({
+          agentId: "agent_audit_failure",
+          startedAt: "2026-05-01T12:00:00.500Z",
+          status: "running",
+        }),
+        resolveToolDecision: async () => true,
+      },
+      permissionAuditLogger: async () => {
+        throw new Error("audit unavailable");
+      },
+      onPermissionAuditError,
+    });
+    await agents.createAgent({ objective: "wait for approval" });
+
+    await expect(
+      agents.approveTool({
+        sessionId: "session_1",
+        requestId: "call_1",
+      }),
+    ).resolves.toEqual({ requestId: "call_1", decision: "approved" });
+    expect(onPermissionAuditError).toHaveBeenCalledOnce();
   });
 
   it("routes daemon permission.list through the active background runner", async () => {

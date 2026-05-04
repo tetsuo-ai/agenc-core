@@ -39,6 +39,11 @@ import {
 } from "../../planning/plan-files.js";
 import { reviewDecisionOpaqueString } from "../../permissions/review-decision.js";
 import {
+  recordPermissionAuditEvent,
+  type PermissionAuditErrorHandler,
+  type PermissionAuditLogger,
+} from "../../permissions/permission-audit-log.js";
+import {
   getAskRuleForTool,
   getDenyRuleForTool,
 } from "../../permissions/rules.js";
@@ -250,6 +255,8 @@ interface LiveDispatchOptions {
   readonly permissionDecisionHooks?: ReadonlyArray<PermissionDecisionHook>;
   readonly guardianApprovalReviewer?: GuardianApprovalReviewer;
   readonly approvalResolver?: ApprovalResolver;
+  readonly permissionAuditLogger?: PermissionAuditLogger;
+  readonly onPermissionAuditError?: PermissionAuditErrorHandler;
   readonly agencHome?: string;
   readonly onHookError?: (phase: string, err: unknown, idx: number) => void;
   readonly tracker?: unknown;
@@ -714,6 +721,13 @@ export class StreamingToolExecutor {
       }
 
       if (denyFromPre !== undefined) {
+        await recordToolRuntimePolicyAudit(this.liveOptions, {
+          decision: "denied",
+          source: "pre-tool-use-hook",
+          reasonCode: "pre_hook_denied",
+          toolName: toolDef.name,
+          callId: tool.toolCall.id,
+        });
         tool.result = { content: denyFromPre, isError: true };
         return tool;
       }
@@ -752,6 +766,16 @@ export class StreamingToolExecutor {
           if (merged.behavior === "deny") {
             const message =
               merged.message ?? `permission denied: ${tool.toolCall.name}`;
+            await recordToolRuntimePolicyAudit(this.liveOptions, {
+              decision: "denied",
+              source: "pre-tool-use-hook",
+              reasonCode:
+                merged.decisionReason?.type === "hook_plus_rule_deny"
+                  ? "rule_denied"
+                  : "hook_denied",
+              toolName: toolDef.name,
+              callId: tool.toolCall.id,
+            });
             emitOn(session, "error", {
               cause: `permission_denied:${tool.toolCall.name}`,
               message,
@@ -764,6 +788,13 @@ export class StreamingToolExecutor {
               merged.message ?? `approval required: ${tool.toolCall.name}`;
           } else if (merged.behavior === "allow") {
             preHookAllowed = true;
+            await recordToolRuntimePolicyAudit(this.liveOptions, {
+              decision: "approved",
+              source: "pre-tool-use-hook",
+              reasonCode: "hook_allowed",
+              toolName: toolDef.name,
+              callId: tool.toolCall.id,
+            });
           }
         } else {
           const decision = await canUseTool(
@@ -774,6 +805,16 @@ export class StreamingToolExecutor {
           if (decision.behavior === "deny") {
             const message =
               decision.message ?? `permission denied: ${tool.toolCall.name}`;
+            await recordToolRuntimePolicyAudit(this.liveOptions, {
+              decision: "denied",
+              source: "permission-evaluator",
+              reasonCode:
+                decision.decisionReason?.type === "rule"
+                  ? "rule_denied"
+                  : "evaluator_denied",
+              toolName: toolDef.name,
+              callId: tool.toolCall.id,
+            });
             emitOn(session, "error", {
               cause: `permission_denied:${tool.toolCall.name}`,
               message,
@@ -785,7 +826,30 @@ export class StreamingToolExecutor {
             forcedApprovalReason =
               decision.message ?? `approval required: ${tool.toolCall.name}`;
           } else if (decision.updatedInput !== undefined) {
+            if (decision.behavior === "allow") {
+              await recordToolRuntimePolicyAudit(this.liveOptions, {
+                decision: "approved",
+                source: "permission-evaluator",
+                reasonCode:
+                  decision.decisionReason?.type === "rule"
+                    ? "rule_allowed"
+                    : "evaluator_allowed",
+                toolName: toolDef.name,
+                callId: tool.toolCall.id,
+              });
+            }
             effectiveArgs = decision.updatedInput as Record<string, unknown>;
+          } else if (decision.behavior === "allow") {
+            await recordToolRuntimePolicyAudit(this.liveOptions, {
+              decision: "approved",
+              source: "permission-evaluator",
+              reasonCode:
+                decision.decisionReason?.type === "rule"
+                  ? "rule_allowed"
+                  : "evaluator_allowed",
+              toolName: toolDef.name,
+              callId: tool.toolCall.id,
+            });
           }
         }
       }
@@ -870,6 +934,12 @@ export class StreamingToolExecutor {
               : {}),
             ...(this.liveOptions?.approvalResolver !== undefined
               ? { approvalResolver: this.liveOptions.approvalResolver }
+              : {}),
+            ...(this.liveOptions?.permissionAuditLogger !== undefined
+              ? { permissionAuditLogger: this.liveOptions.permissionAuditLogger }
+              : {}),
+            ...(this.liveOptions?.onPermissionAuditError !== undefined
+              ? { onPermissionAuditError: this.liveOptions.onPermissionAuditError }
               : {}),
             onNoApprovalResolver: (ctx) => {
               emitOn(session, "error", {
@@ -978,6 +1048,38 @@ function readToolPermissionContext(
   return typeof candidate === "object" && candidate !== null
     ? (candidate as ToolPermissionContext)
     : null;
+}
+
+async function recordToolRuntimePolicyAudit(
+  options: LiveDispatchOptions | undefined,
+  event: {
+    readonly decision: "approved" | "denied";
+    readonly source: string;
+    readonly reasonCode: string;
+    readonly toolName: string;
+    readonly callId: string;
+  },
+): Promise<void> {
+  await recordPermissionAuditEvent(
+    options?.permissionAuditLogger,
+    {
+      eventKind: "policy_outcome",
+      decision: event.decision,
+      source: event.source,
+      subjectType: "tool_execution",
+      toolName: event.toolName,
+      callId: event.callId,
+      sessionId: readRuntimeSessionId(options?.session),
+      reasonCode: event.reasonCode,
+    },
+    options?.onPermissionAuditError,
+  );
+}
+
+function readRuntimeSessionId(session: SessionLike | undefined): string | undefined {
+  const value = (session as { readonly conversationId?: unknown } | undefined)
+    ?.conversationId;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 // ─────────────────────────────────────────────────────────────────────

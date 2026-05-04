@@ -28,6 +28,12 @@ import {
   type DiskEnv,
 } from "./settings.js";
 import {
+  createPermissionAuditFileLogger,
+  recordPermissionAuditEvent,
+  type PermissionAuditErrorHandler,
+  type PermissionAuditLogger,
+} from "./permission-audit-log.js";
+import {
   type EditablePermissionRuleSource,
   type PermissionRule,
 } from "./types.js";
@@ -87,6 +93,8 @@ export interface AgenCPermissionsCliOptions {
   readonly home?: string;
   readonly io?: AgenCPermissionsCliIo;
   readonly ensureDaemonReady?: () => Promise<void>;
+  readonly permissionAuditLogger?: PermissionAuditLogger;
+  readonly onPermissionAuditError?: PermissionAuditErrorHandler;
 }
 
 const PERSIST_TARGETS: Readonly<Record<string, EditablePermissionRuleSource>> =
@@ -453,6 +461,20 @@ async function runPermissionRuleApproval(
     if (!applied) {
       throw new Error("permission rules are managed by policy");
     }
+    await recordPermissionAuditEvent(
+      permissionAuditLoggerFromOptions(options),
+      {
+        eventKind: "rule_change",
+        decision: "approved",
+        source: "permissions-cli",
+        subjectType: "rule",
+        rule: serializeRuleValue(ruleValue),
+        destination: command.destination,
+        reasonCode: "local_rule_approved",
+        metadata: { destination: command.destination },
+      },
+      options.onPermissionAuditError,
+    );
     io.stdout.write(
       `Approved ${serializeRuleValue(ruleValue)} in ${command.destination}\n`,
     );
@@ -486,6 +508,20 @@ async function runPermissionRuleRevoke(
         `permission rule not found in ${command.destination}: ${serializeRuleValue(ruleValue)}`,
       );
     }
+    await recordPermissionAuditEvent(
+      permissionAuditLoggerFromOptions(options),
+      {
+        eventKind: "rule_change",
+        decision: "revoked",
+        source: "permissions-cli",
+        subjectType: "rule",
+        rule: serializeRuleValue(ruleValue),
+        destination: command.destination,
+        reasonCode: "local_rule_revoked",
+        metadata: { destination: command.destination },
+      },
+      options.onPermissionAuditError,
+    );
     io.stdout.write(
       `Revoked ${serializeRuleValue(ruleValue)} from ${command.destination}\n`,
     );
@@ -591,6 +627,27 @@ function diskEnvFromOptions(options: AgenCPermissionsCliOptions): DiskEnv {
   return {
     home: options.home ?? options.env?.HOME,
     cwd: options.cwd ?? processCwd(),
+  };
+}
+
+function permissionAuditLoggerFromOptions(
+  options: AgenCPermissionsCliOptions,
+): PermissionAuditLogger {
+  if (options.permissionAuditLogger !== undefined) {
+    return options.permissionAuditLogger;
+  }
+  return createPermissionAuditFileLogger({
+    env: envForPermissionAudit(options),
+  });
+}
+
+function envForPermissionAudit(
+  options: AgenCPermissionsCliOptions,
+): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    ...(options.env ?? {}),
+    ...(options.home !== undefined ? { HOME: options.home } : {}),
   };
 }
 

@@ -86,6 +86,10 @@ import type {
   ApprovalResolver,
   PermissionRequestHook,
 } from "./_deps/orchestrator-types.js";
+import type {
+  PermissionAuditErrorHandler,
+  PermissionAuditLogger,
+} from "../permissions/permission-audit-log.js";
 import {
   startMcpManagerForSession,
   type McpRefreshResult,
@@ -706,6 +710,8 @@ export interface SessionServices {
   readonly querySource?: QuerySource;
   readonly permissionRequestHooks?: ReadonlyArray<PermissionRequestHook>;
   readonly approvalResolver?: ApprovalResolver;
+  readonly permissionAuditLogger?: PermissionAuditLogger;
+  readonly onPermissionAuditError?: PermissionAuditErrorHandler;
   requestUserInputResolver?: {
     request(
       event: RequestUserInputEvent,

@@ -124,6 +124,11 @@ import {
   reviewDecisionIsAllow,
   type ReviewDecision,
 } from "../permissions/review-decision.js";
+import {
+  recordPermissionAuditEvent,
+  type PermissionAuditErrorHandler,
+  type PermissionAuditLogger,
+} from "../permissions/permission-audit-log.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -1074,6 +1079,8 @@ export interface RunToolUseOptions {
   readonly approvalAlreadyResolved?: boolean;
   readonly canUseTool?: CanUseToolFn;
   readonly permissionContext?: ToolEvaluatorContext;
+  readonly permissionAuditLogger?: PermissionAuditLogger;
+  readonly onPermissionAuditError?: PermissionAuditErrorHandler;
   readonly modeChangeRegistry?: PermissionModeRegistry;
   readonly checkModeStillAllowed?: (
     tool: Tool,
@@ -1322,6 +1329,11 @@ export async function runToolUse(
 
     if (preDecision.kind === "deny") {
       const message = `pre-hook denied ${toolNameDisplay(invocation.toolName)}: ${preDecision.reason ?? ""}`;
+      await recordRunToolPolicyAudit(opts, {
+        decision: "denied",
+        source: "pre-tool-use-hook",
+        reasonCode: "pre_hook_denied",
+      });
       if (opts.eventLog) {
         emitErrorEvent(opts.eventLog, subId, {
           cause: "pre_hook_denied",
@@ -1398,6 +1410,14 @@ export async function runToolUse(
         },
       }));
     if (merged && merged.behavior === "deny") {
+      await recordRunToolPolicyAudit(opts, {
+        decision: "denied",
+        source: "pre-tool-use-hook",
+        reasonCode:
+          merged.decisionReason?.type === "hook_plus_rule_deny"
+            ? "rule_denied"
+            : "hook_denied",
+      });
       emitHookAttachment(
         opts.eventLog,
         subId,
@@ -1420,8 +1440,13 @@ export async function runToolUse(
       merged &&
       merged.behavior === "ask" &&
       !opts.requestApproval &&
-      opts.approvalAlreadyResolved !== true
+        opts.approvalAlreadyResolved !== true
     ) {
+      await recordRunToolPolicyAudit(opts, {
+        decision: "denied",
+        source: "permission-evaluator",
+        reasonCode: "ask_without_prompt",
+      });
       if (opts.eventLog) {
         emitErrorEvent(opts.eventLog, subId, {
           cause: "permission_denied:hook_ask_without_prompt",
@@ -1446,6 +1471,11 @@ export async function runToolUse(
     } else if (merged && merged.behavior === "allow") {
       // Hook allow — skip the evaluator's interactive ask, but rule
       // deny/ask merging already ran via mergeHookPermissionDecision.
+      await recordRunToolPolicyAudit(opts, {
+        decision: "approved",
+        source: "pre-tool-use-hook",
+        reasonCode: "hook_allowed",
+      });
       emitHookAttachment(
         opts.eventLog,
         subId,
@@ -1466,6 +1496,14 @@ export async function runToolUse(
           const reasonMsg = permResult.message;
           const denialReasonType =
             permResult.decisionReason?.type ?? "unknown";
+          await recordRunToolPolicyAudit(opts, {
+            decision: "denied",
+            source: "permission-evaluator",
+            reasonCode:
+              denialReasonType === "rule"
+                ? "rule_denied"
+                : "evaluator_denied",
+          });
           if (opts.eventLog) {
             emitErrorEvent(opts.eventLog, subId, {
               cause: `permission_denied:${denialReasonType}`,
@@ -1486,6 +1524,11 @@ export async function runToolUse(
             evaluatorRequestedAsk = false;
           } else if (!opts.requestApproval) {
             const message = permResult.message;
+            await recordRunToolPolicyAudit(opts, {
+              decision: "denied",
+              source: "permission-evaluator",
+              reasonCode: "ask_without_prompt",
+            });
             if (opts.eventLog) {
               emitErrorEvent(opts.eventLog, subId, {
                 cause: "permission_denied:ask_without_prompt",
@@ -1505,6 +1548,14 @@ export async function runToolUse(
             evaluatorRequestedAsk = true;
           }
         } else if (permResult.behavior === "allow") {
+          await recordRunToolPolicyAudit(opts, {
+            decision: "approved",
+            source: "permission-evaluator",
+            reasonCode:
+              permResult.decisionReason?.type === "rule"
+                ? "rule_allowed"
+                : "evaluator_allowed",
+          });
           if (permResult.updatedInput !== undefined) {
             inputForTool = permResult.updatedInput as Record<string, unknown>;
           }
@@ -1568,6 +1619,13 @@ export async function runToolUse(
             },
           }
         : {}),
+    });
+    await recordRunToolPolicyAudit(opts, {
+      decision: decision.allow ? "approved" : "denied",
+      source: "legacy-approval-modal",
+      reasonCode: decision.allow
+        ? "approved_resolver"
+        : legacyApprovalDenyReasonCode(decision.cause),
     });
     if (!decision.allow) {
       const cause = decision.cause;
@@ -1948,6 +2006,54 @@ function errorOutput(opts: {
     durationMs: opts.elapsedMs,
     ...(opts.metadata !== undefined ? { metadata: opts.metadata } : {}),
   });
+}
+
+async function recordRunToolPolicyAudit(
+  opts: RunToolUseOptions,
+  event: {
+    readonly decision: "approved" | "denied";
+    readonly source: string;
+    readonly reasonCode: string;
+  },
+): Promise<void> {
+  await recordPermissionAuditEvent(
+    opts.permissionAuditLogger,
+    {
+      eventKind: "policy_outcome",
+      decision: event.decision,
+      source: event.source,
+      subjectType: "tool_execution",
+      toolName: opts.tool.name,
+      callId: opts.invocation.callId,
+      sessionId: readAuditSessionId(opts.invocation),
+      reasonCode: event.reasonCode,
+    },
+    opts.onPermissionAuditError,
+  );
+}
+
+function legacyApprovalDenyReasonCode(cause: string): string {
+  if (cause.includes("abort")) return "aborted";
+  if (cause === "stale_modal_decision") return "stale_modal_decision";
+  return "denied_resolver";
+}
+
+function readAuditSessionId(
+  invocation: ToolInvocation,
+): string | undefined {
+  if (
+    typeof invocation !== "object" ||
+    invocation === null ||
+    !("session" in invocation)
+  ) {
+    return undefined;
+  }
+  const value = (
+    (invocation as { readonly session?: unknown }).session as
+      | { readonly conversationId?: unknown }
+      | undefined
+  )?.conversationId;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 export function readToolPermissionContext(
