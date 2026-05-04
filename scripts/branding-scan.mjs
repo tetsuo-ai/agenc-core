@@ -259,6 +259,27 @@ async function scanFile(filePath) {
       });
     }
   }
+  // Directory-path check: flag any directory in the path that is donor-named.
+  // The only allowed donor-named locations are the upstream mirror (which
+  // gets deleted at Z-02) and the parity tracking dirs (port artifacts, also
+  // scheduled for cleanup). Everywhere else is a leak.
+  const dirComponents = path.dirname(rel).split("/").filter(Boolean);
+  for (const comp of dirComponents) {
+    if (/^(?:openclaude|codex|claude|OpenClaude|Codex|Claude)$/i.test(comp)) { // branding-scan: allow regex enumerates the banned dir names
+      const inUpstreamMirror = rel.startsWith("runtime/src/agenc/upstream/");
+      const inParityArtifacts = rel.startsWith("parity/") || rel.startsWith("runtime/parity/") || rel.startsWith("docs/plan/");
+      if (inUpstreamMirror || inParityArtifacts) continue;
+      findings.push({
+        file: filePath,
+        line: 0,
+        column: 0,
+        rule: "donor-named directory in AgenC-owned path",
+        matchedText: comp + "/",
+        context: rel,
+      });
+      break;
+    }
+  }
   return findings;
 }
 

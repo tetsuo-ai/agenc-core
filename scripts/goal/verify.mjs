@@ -752,6 +752,61 @@ if (toScan.length === 0) {
   pass(`branding clean (${toScan.length} file(s))`);
 }
 
+// --- Gate 2.6: no new upstream/ files; no new shim/adapter/compat/legacy/bridge files ---
+//
+// Hard rule: this codebase isn't public yet, there is no backwards-compatibility
+// to preserve, and the upstream mirror at runtime/src/agenc/upstream/ exists ONLY
+// as temporary scaffolding that gets deleted at Z-02. Any item that ADDS new
+// files in upstream/ is going the wrong direction. Any item that adds a *-shim,
+// *-adapter, *-compat, *-legacy, or *-bridge file outside the two legitimate
+// locations (runtime/src/tui/bridges/ and runtime/src/mcp-client/) is creating
+// the exact legacy garbage we are cleaning up.
+
+header("no new upstream/ files; no new shim/adapter/compat/legacy/bridge files");
+const addedRes = git("diff", "--name-only", "--diff-filter=A", "main...HEAD");
+const addedStagedRes = git("diff", "--name-only", "--diff-filter=A", "--cached");
+const addedWtRes = git("ls-files", "--others", "--exclude-standard");
+const added = new Set(
+  [addedRes.stdout, addedStagedRes.stdout, addedWtRes.stdout]
+    .join("\n")
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
+
+const upstreamAdditions = [...added].filter((p) =>
+  /^runtime\/src\/agenc\/upstream\//.test(p),
+);
+if (upstreamAdditions.length > 0) {
+  failGate(
+    `forbidden: this item adds ${upstreamAdditions.length} file(s) inside runtime/src/agenc/upstream/. ` +
+      `That tree is temporary scaffolding scheduled for deletion at Z-02. Do not add to it. ` +
+      `Move the new logic to its proper AgenC-owned destination instead.\n  ` +
+      upstreamAdditions.map((p) => `- ${p}`).join("\n  "),
+  );
+}
+
+const SHIM_RE = /(^|\/)[^/]+-(shim|adapter|compat|legacy|bridge)\.(ts|tsx|mjs|cjs|js|jsx)$/;
+const SHIM_ALLOW_DIRS = [
+  "runtime/src/tui/bridges/",
+  "runtime/src/mcp-client/",
+];
+const shimAdditions = [...added].filter((p) => {
+  if (!SHIM_RE.test(p)) return false;
+  if (p.endsWith(".test.ts") || p.endsWith(".test.tsx")) return false;
+  return !SHIM_ALLOW_DIRS.some((d) => p.startsWith(d));
+});
+if (shimAdditions.length > 0) {
+  failGate(
+    `forbidden: this item adds ${shimAdditions.length} new shim/adapter/compat/legacy/bridge file(s) ` +
+      `outside the two legitimate locations (runtime/src/tui/bridges/, runtime/src/mcp-client/). ` +
+      `This codebase has no backwards-compatibility constraint; do not create wrapper files to keep ` +
+      `old import paths alive. Inline the logic at the call site or move to its proper home.\n  ` +
+      shimAdditions.map((p) => `- ${p}`).join("\n  "),
+  );
+}
+pass("no new upstream/ files, no new shim/adapter/compat/legacy/bridge additions");
+
 // --- Gate 2.5: per-item named evidence ----------------------------------
 
 header(`item evidence for ${id}`);
