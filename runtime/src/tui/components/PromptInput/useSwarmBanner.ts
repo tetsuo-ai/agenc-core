@@ -1,30 +1,30 @@
 import * as React from 'react'
-import { useAppState, useAppStateStore } from '../../../../tui/state/AppState.js'
+import { useAppState, useAppStateStore } from '../../state/AppState.js'
 import {
   getActiveAgentForInput,
   getViewedTeammateTask,
-} from '../../state/selectors.js'
+} from '../../../agenc/upstream/state/selectors.js'
 import {
   AGENT_COLOR_TO_THEME_COLOR,
   AGENT_COLORS,
   type AgentColorName,
   getAgentColor,
-} from '../../tools/AgentTool/agentColorManager.js'
-import { getStandaloneAgentName } from '../../utils/standaloneAgent.js'
-import { isInsideTmux } from '../../utils/swarm/backends/detection.js'
+} from '../../../agenc/upstream/tools/AgentTool/agentColorManager.js'
+import { getStandaloneAgentName } from '../../../agenc/upstream/utils/standaloneAgent.js'
+import { isInsideTmux } from '../../../agenc/upstream/utils/swarm/backends/detection.js'
 import {
   getCachedDetectionResult,
   isInProcessEnabled,
-} from '../../utils/swarm/backends/registry.js'
-import { getSwarmSocketName } from '../../utils/swarm/constants.js'
+} from '../../../agenc/upstream/utils/swarm/backends/registry.js'
+import { getSwarmSocketName } from '../../../agenc/upstream/utils/swarm/constants.js'
 import {
   getAgentName,
   getTeammateColor,
   getTeamName,
   isTeammate,
-} from '../../utils/teammate.js'
-import { isInProcessTeammate } from '../../utils/teammateContext.js'
-import type { Theme } from '../../utils/theme.js'
+} from '../../../agenc/upstream/utils/teammate.js'
+import { isInProcessTeammate } from '../../../agenc/upstream/utils/teammateContext.js'
+import type { Theme } from '../../../agenc/upstream/utils/theme.js'
 
 type SwarmBannerInfo = {
   text: string

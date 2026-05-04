@@ -5,8 +5,8 @@ import { Text } from '../../../tui/ink.js';
 import { logEvent } from 'src/services/analytics/index.js';
 import { useDebounceCallback } from 'usehooks-ts';
 import { type Command, getCommandName } from '../commands.js';
-import { getModeFromInput, getValueFromInput } from '../components/PromptInput/inputModes.js';
-import type { SuggestionItem, SuggestionType } from '../components/PromptInput/PromptInputFooterSuggestions.js';
+import { getModeFromInput, getValueFromInput } from '../../../tui/components/PromptInput/inputModes.js';
+import type { SuggestionItem, SuggestionType } from '../../../tui/components/PromptInput/PromptInputFooterSuggestions.js';
 import { useIsModalOverlayActive, useRegisterOverlay } from '../context/overlayContext.js';
 import { KeyboardEvent } from '../../../tui/ink/events/keyboard-event.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- backward-compat bridge until consumers wire handleKeyDown to <Box onKeyDown>

@@ -1,8 +1,8 @@
 import React, { useCallback, useRef, useState } from 'react';
-import { getModeFromInput } from 'src/components/PromptInput/inputModes.js';
+import { getModeFromInput } from '../../../tui/components/PromptInput/inputModes.js';
 import { useNotifications } from 'src/context/notifications.js';
 import { ConfigurableShortcutHint } from '../components/ConfigurableShortcutHint.js';
-import { FOOTER_TEMPORARY_STATUS_TIMEOUT } from '../components/PromptInput/Notifications.js';
+import { FOOTER_TEMPORARY_STATUS_TIMEOUT } from '../../../tui/components/PromptInput/Notifications.js';
 import { getHistory } from '../history.js';
 import { Text } from '../../../tui/ink.js';
 import type { PromptInputMode } from '../types/textInputTypes.js';

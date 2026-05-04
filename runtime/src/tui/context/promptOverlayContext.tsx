@@ -20,9 +20,8 @@ import { c as _c } from "react-compiler-runtime";
  * their own writes — the setter contexts are stable.
  */
 import React, { createContext, type ReactNode, useContext, useEffect, useState } from 'react';
-// PromptInput's suggestion row component is still being absorbed separately.
-// Keep the shared shape aligned until that component moves into TUI ownership.
-import type { SuggestionItem } from '../../agenc/upstream/components/PromptInput/PromptInputFooterSuggestions.js';
+// Keep the overlay shape aligned with PromptInput's suggestion row.
+import type { SuggestionItem } from '../components/PromptInput/PromptInputFooterSuggestions.js';
 export type PromptOverlayData = {
   suggestions: SuggestionItem[];
   selectedSuggestion: number;
