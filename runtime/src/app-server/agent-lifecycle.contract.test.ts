@@ -2721,6 +2721,125 @@ describe("AgenC background agent lifecycle", () => {
     ]);
   });
 
+  it("routes daemon permission.list through the active background runner", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_1"]),
+      now: sequence(["2026-05-01T12:00:00.000Z"]),
+    });
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent_permissions",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      listPermissions: async (agentId) => ({
+        permissions: [
+          {
+            permissionId: `mode:${agentId}`,
+            subject: "permission-mode",
+            action: "default",
+            scope: "session",
+          },
+        ],
+      }),
+    };
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner,
+    });
+    await agents.createAgent({ objective: "list permissions" });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: agents,
+    });
+    const connection = dispatcher.createConnection();
+
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "init",
+      method: "initialize",
+      params: { protocolVersion: "1.0.0", clientName: "contract-test" },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "permissions",
+        method: "permission.list",
+        params: { sessionId: "session_1" },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "permissions",
+      result: {
+        permissions: [
+          {
+            permissionId: "mode:agent_permissions",
+            subject: "permission-mode",
+            action: "default",
+            scope: "session",
+          },
+        ],
+      },
+    });
+  });
+
+  it("returns daemon permission.list resolution errors for missing agents and sessions", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.500Z",
+          status: "running",
+        }),
+        listPermissions: async () => ({ permissions: [] }),
+      },
+    });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: agents,
+    });
+    const connection = dispatcher.createConnection();
+
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "init",
+      method: "initialize",
+      params: { protocolVersion: "1.0.0", clientName: "contract-test" },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "missing-agent",
+        method: "permission.list",
+        params: { agentId: "agent_missing" },
+      }),
+    ).resolves.toMatchObject({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "missing-agent",
+      error: {
+        code: -32602,
+        message: "AgenC daemon agent not found: agent_missing",
+        data: { code: "AGENT_NOT_FOUND" },
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "missing-session",
+        method: "permission.list",
+        params: { sessionId: "session_missing" },
+      }),
+    ).resolves.toMatchObject({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "missing-session",
+      error: {
+        code: -32602,
+        message: "AgenC daemon session not found or closed: session_missing",
+        data: { code: "AGENT_NOT_FOUND" },
+      },
+    });
+  });
+
   it("rejects duplicate attach client ids instead of retaining a stale socket", async () => {
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_1"]),
