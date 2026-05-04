@@ -9,7 +9,7 @@
 // IDs follow the conventions in PORT_CHECKLIST.md (e.g. F-01, A-00b,
 // LP-10, T-08, F-03e). We accept any [A-Z]+(-[A-Za-z0-9]+)+ shape.
 
-import { readFile, writeFile } from "node:fs/promises";
+import { open, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
@@ -157,28 +157,69 @@ export function checkDependencies(item, allItems) {
   return blockers;
 }
 
+// Cooperative file-lock for setItemStatus. Two concurrent prep.mjs (or
+// complete.mjs) runs would otherwise both read PORT_CHECKLIST.md, both
+// modify their target line, and both write back — last writer silently
+// wins, dropping the other's status flip. We acquire an exclusive lock
+// file (atomic O_EXCL create) before the read-modify-write, retry up to
+// 30 seconds, and always release on completion or error.
+async function withChecklistLock(fn) {
+  const lockPath = checklistPath() + ".lock";
+  const startMs = Date.now();
+  const TIMEOUT_MS = 30_000;
+  const POLL_MS = 100;
+  let handle;
+  for (;;) {
+    try {
+      handle = await open(lockPath, "wx");
+      await handle.writeFile(JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() }));
+      break;
+    } catch (err) {
+      if (err && err.code === "EEXIST") {
+        if (Date.now() - startMs > TIMEOUT_MS) {
+          throw new Error(
+            `Timed out (${TIMEOUT_MS}ms) waiting for checklist lock at ${lockPath}. ` +
+            `Another prep/complete may be running. If you're sure no other process is active, remove the lock manually.`,
+          );
+        }
+        await new Promise((r) => setTimeout(r, POLL_MS));
+        continue;
+      }
+      throw err;
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    try { await handle.close(); } catch {}
+    try { await unlink(lockPath); } catch {}
+  }
+}
+
 export async function setItemStatus(id, newStatus) {
   if (![STATUS_OPEN, STATUS_IN_PROGRESS, STATUS_DONE, STATUS_DECISION, STATUS_SKIPPED].includes(newStatus)) {
     throw new Error(`Invalid status token: ${newStatus}`);
   }
-  const { file, content, lines } = await readChecklist();
-  let replaced = false;
-  for (let i = 0; i < lines.length; i += 1) {
-    const m = ITEM_RE.exec(lines[i]);
-    if (m && m[2] === id) {
-      lines[i] = lines[i].replace(/^- \[.\]/, `- ${newStatus}`);
-      replaced = true;
-      break;
+  return withChecklistLock(async () => {
+    const { file, content, lines } = await readChecklist();
+    let replaced = false;
+    for (let i = 0; i < lines.length; i += 1) {
+      const m = ITEM_RE.exec(lines[i]);
+      if (m && m[2] === id) {
+        lines[i] = lines[i].replace(/^- \[.\]/, `- ${newStatus}`);
+        replaced = true;
+        break;
+      }
     }
-  }
-  if (!replaced) {
-    throw new Error(`Item ${id} not found when updating status`);
-  }
-  const next = lines.join("\n");
-  if (next !== content) {
-    await writeFile(file, next, "utf8");
-  }
-  return { file, changed: next !== content };
+    if (!replaced) {
+      throw new Error(`Item ${id} not found when updating status`);
+    }
+    const next = lines.join("\n");
+    if (next !== content) {
+      await writeFile(file, next, "utf8");
+    }
+    return { file, changed: next !== content };
+  });
 }
 
 export const STATUS = {

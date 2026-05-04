@@ -23,7 +23,7 @@
 // The goal is "done" if and only if this script exits 0.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { findItem, repoRoot, markerDir, markerPath, setItemStatus, STATUS, fail } from "./checklist-utils.mjs";
@@ -47,6 +47,29 @@ const { item } = await findItem(id);
 
 if (item.statusToken === STATUS.DONE) {
   fail(`Item ${id} is already marked done. Refusing to re-run.`);
+}
+
+// Atomicity recovery: refuse to start if any in-flight journal exists from
+// a previously-killed complete.mjs run. The user must inspect the journal
+// and either complete or roll back the half-finished work before any new
+// item can be completed.
+{
+  const dir = markerDir();
+  if (existsSync(dir)) {
+    const inFlight = readdirSync(dir).filter((f) => f.startsWith("IN-FLIGHT-") && f.endsWith(".json"));
+    if (inFlight.length > 0) {
+      const journalContents = inFlight.map((f) => {
+        try { return `--- ${f} ---\n${readFileSync(path.join(dir, f), "utf8")}`; }
+        catch { return `--- ${f} (could not read) ---`; }
+      }).join("\n\n");
+      fail(
+        `Refusing to start: ${inFlight.length} in-flight journal(s) from previous complete.mjs run(s):\n\n${journalContents}\n\n` +
+        `A previous complete.mjs was killed mid-flight (between merge and checklist-flip). Inspect the journal, ` +
+        `decide whether the merge happened, then either complete the work manually (flip checklist + delete journal) ` +
+        `or roll back (git reset to preMergeHead + delete journal).`,
+      );
+    }
+  }
 }
 
 function header(name) {
@@ -131,28 +154,36 @@ ok("reviewer APPROVED");
 // ---- step 5: switch to main + merge ------------------------------------
 
 header(`step 5 — local merge ${expected} → main (--no-ff)`);
-const checkoutMain = run("git", ["checkout", "main"]);
-if (checkoutMain.status !== 0) abort("git checkout main failed");
 
+// Atomicity: write an in-flight journal BEFORE the merge so that if the
+// process is killed between merge and checklist-flip, recovery on next
+// run can detect the half-completed state. The journal includes the
+// expected end state so a re-run can complete it or surface manual fix.
 const dir = markerDir();
 if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-writeFileSync(markerPath(id), JSON.stringify({
+const journalPath = path.join(dir, `IN-FLIGHT-${id}.json`);
+const preMergeHead = run("git", ["rev-parse", "HEAD"], { silent: true }).stdout.trim();
+writeFileSync(journalPath, JSON.stringify({
   itemId: id,
   title: item.title,
   phase: item.phase,
-  pendingMerge: true,
   branch: expected,
   startedAt: new Date().toISOString(),
+  preMergeHead,
+  expectedEndState: "checklist=[x] + branch deleted + marker written",
+  recovery: "If this file exists at next complete.mjs invocation, the previous run was killed mid-flight. Either: (a) inspect git log to see if the merge happened; if yes, manually flip the checklist row to [x] and delete this file, or (b) git reset --hard <preMergeHead>, delete this file, and re-run complete.mjs.",
 }, null, 2) + "\n");
+
+const checkoutMain = run("git", ["checkout", "main"]);
+if (checkoutMain.status !== 0) {
+  try { unlinkSync(journalPath); } catch {}
+  abort("git checkout main failed");
+}
 
 const mergeMsg = `Merge branch '${expected}'`;
 const mergeRes = run("git", ["merge", "--no-ff", expected, "-m", mergeMsg]);
 if (mergeRes.status !== 0) {
-  try {
-    unlinkSync(markerPath(id));
-  } catch {
-    // Best effort cleanup; the merge failure above is the useful error.
-  }
+  try { unlinkSync(journalPath); } catch {}
   abort(`git merge --no-ff ${expected} failed`);
 }
 ok("merged into main");
@@ -188,6 +219,18 @@ if (flip.changed) {
   // The checklist is local-only (excluded from git); no commit needed.
 } else {
   process.stderr.write(`${DIM}(no change to PORT_CHECKLIST.md row)${RESET}\n`);
+}
+
+// ---- step 9: clear in-flight journal -----------------------------------
+//
+// All steps succeeded. Remove the journal so a future complete.mjs run
+// doesn't think this item is half-completed.
+try {
+  unlinkSync(journalPath);
+} catch {
+  // If the journal can't be removed, log it but don't abort — the work
+  // is done; the journal is just for recovery.
+  process.stderr.write(`${YELLOW}!${RESET} could not remove in-flight journal ${journalPath}; remove manually.\n`);
 }
 
 process.stdout.write(`\n${BOLD}${GREEN}✓ ${id} complete${RESET} — ${item.title}\n`);

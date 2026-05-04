@@ -46,6 +46,26 @@ const FORBIDDEN = [
   { name: "codex (identifier)", re: /\bcodex\w*/g }, // branding-scan: allow pattern
   { name: "OpenClaude", re: /\bOpenClaude\w*/gi }, // branding-scan: allow pattern
   { name: ".openclaude/ path", re: /\.openclaude\//g }, // branding-scan: allow pattern
+  // Competitor / donor-organization names. Real product/org names that
+  // should never appear as bare identifiers in AgenC user-facing strings
+  // or module names. Real provider/model identifiers and lowercase npm
+  // package names ARE allowed via ALLOW_LINE_PATTERNS / per-line override
+  // comments.
+  { name: "Anthropic (identifier)", re: /\bAnthropic\b/g }, // branding-scan: allow pattern
+  { name: "OpenAI (identifier)", re: /\bOpenAI\b/g }, // branding-scan: allow pattern
+  { name: "Cursor (identifier)", re: /\bCursor\b/g }, // branding-scan: allow pattern
+  { name: "Cline (identifier)", re: /\bCline\b/g }, // branding-scan: allow pattern
+  { name: "Aider (identifier)", re: /\bAider\b/g }, // branding-scan: allow pattern
+  { name: "Devin (identifier)", re: /\bDevin\b/g }, // branding-scan: allow pattern
+  { name: "Replit (identifier)", re: /\bReplit\b/g }, // branding-scan: allow pattern
+  // Cyrillic homoglyph evasion: a token that mixes Cyrillic with Latin
+  // letters is either an accidental unicode-paste artifact or a deliberate
+  // evasion. Either way it's a bug.
+  { name: "Latin/Cyrillic homoglyph token", re: /\b\w*[А-Яа-я]+\w*\b/g }, // branding-scan: allow pattern
+  // Full-width Latin used to spoof identifiers (e.g. F-U-L-L-W-I-D-T-H
+  // C-l-a-u-d-e). Anything 3+ full-width Latin chars in a row in source
+  // code is suspicious.
+  { name: "Full-width Latin in identifier", re: /[Ａ-Ｚａ-ｚ]{3,}/g }, // branding-scan: allow pattern
 ];
 
 // Lines or substrings that legitimately contain a forbidden token. The
