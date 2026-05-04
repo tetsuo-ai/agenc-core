@@ -1,5 +1,9 @@
-import { isEnvTruthy } from '../upstream/utils/envUtils.js'
+import { getFeatureValue_CACHED_MAY_BE_STALE } from '../upstream/services/analytics/growthbook.js'
 
 export function isUltrareviewEnabled(): boolean {
-  return isEnvTruthy(process.env.AGENC_ULTRAREVIEW)
+  const config = getFeatureValue_CACHED_MAY_BE_STALE<Record<
+    string,
+    unknown
+  > | null>('tengu_review_bughunter_config', null)
+  return config?.enabled === true
 }

@@ -1,7 +1,7 @@
 import * as React from 'react'
 
 import { Box, Text, useInput } from '../../tui/ink.js'
-import { useAppState, useSetAppState } from '../../tui/state/AppState.js'
+import { useAppState, useSetAppState, type AppState } from '../../tui/state/AppState.js'
 import {
   clearFastModeCooldown,
   FAST_MODE_MODEL_DISPLAY,
@@ -9,17 +9,21 @@ import {
   getFastModeRuntimeState,
   isFastModeSupportedByModel,
 } from '../upstream/utils/fastMode.js'
+import { updateSettingsForSource } from '../upstream/utils/settings/settings.js'
 
 type Props = {
-  onDone: (result?: string) => void
+  onDone: (result?: string, options?: { display?: 'system' | 'user' | 'skip' }) => void
   unavailableReason: string | null
 }
 
 function applyFastMode(
   enable: boolean,
-  setAppState: ReturnType<typeof useSetAppState>,
+  setAppState: (updater: (prev: AppState) => AppState) => void,
 ): void {
   clearFastModeCooldown()
+  updateSettingsForSource('userSettings', {
+    fastMode: enable ? true : undefined,
+  })
   setAppState(prev => {
     if (!enable) {
       return { ...prev, fastMode: false }
@@ -63,8 +67,15 @@ export function FastModePicker({
   }, [enabled, isUnavailable, model, onDone, setAppState])
 
   const cancel = React.useCallback(() => {
-    onDone(initialFastMode ? 'Kept Fast mode ON' : 'Kept Fast mode OFF')
-  }, [initialFastMode, onDone])
+    if (isUnavailable && initialFastMode) {
+      applyFastMode(false, setAppState)
+      onDone('Fast mode OFF', { display: 'system' })
+      return
+    }
+    onDone(initialFastMode ? 'Kept Fast mode ON' : 'Kept Fast mode OFF', {
+      display: 'system',
+    })
+  }, [initialFastMode, isUnavailable, onDone, setAppState])
 
   useInput((input, key) => {
     if (key.escape) {

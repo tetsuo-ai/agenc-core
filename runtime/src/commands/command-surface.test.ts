@@ -240,6 +240,40 @@ describe("AgenC command surface compatibility", () => {
     ]);
   });
 
+  it("discovers bundled and plugin skills without compatibility providers", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-plugin-skills-"));
+    const pluginSkillDir = join(
+      dir,
+      ".agents",
+      "plugins",
+      "ops",
+      "skills",
+      "plugin-demo",
+    );
+    await mkdir(pluginSkillDir, { recursive: true });
+    await writeFile(
+      join(pluginSkillDir, "SKILL.md"),
+      [
+        "---",
+        "description: Demo plugin skill",
+        "when_to_use: Use for plugin command tests",
+        "---",
+        "Plugin demo skill.",
+      ].join("\n"),
+      "utf8",
+    );
+
+    clearCommandMemoizationCaches();
+    const commands = await getCommands(dir);
+    expect(commands.find(command => command.name === "debug")?.loadedFrom)
+      .toBe("bundled");
+    expect(commands.find(command => command.name === "plugin-demo")).toMatchObject({
+      type: "prompt",
+      loadedFrom: "plugin",
+      description: "Demo plugin skill",
+    });
+  });
+
   it("filters MCP skill commands to model-invocable MCP prompts", () => {
     const active = promptCommand({ name: "mcp-active", source: "mcp", loadedFrom: "mcp" });
     const disabled = promptCommand({

@@ -331,6 +331,62 @@ async function loadLocalSkillCommands(cwd: string): Promise<readonly Command[]> 
   }
 }
 
+function commandArray(value: unknown): Command[] {
+  return Array.isArray(value) ? (value as Command[]) : [];
+}
+
+async function callCommandSource(
+  modulePath: string,
+  exportName: string,
+  ...args: readonly unknown[]
+): Promise<Command[]> {
+  try {
+    const loaded = await import(modulePath) as Record<string, unknown>;
+    const fn = loaded[exportName];
+    if (typeof fn !== "function") return [];
+    return commandArray(await fn(...args));
+  } catch {
+    return [];
+  }
+}
+
+async function loadProductionCommandSources(cwd: string): Promise<readonly Command[]> {
+  const skillsModulePath = "./agenc/upstream/skills/loadSkillsDir.js";
+  const bundledSkillsModulePath = "./agenc/upstream/skills/bundledSkills.js";
+  const builtinPluginsModulePath = "./agenc/upstream/plugins/builtinPlugins.js";
+  const pluginCommandsModulePath = "./agenc/upstream/utils/plugins/loadPluginCommands.js";
+  const workflowCommandsModulePath =
+    "./agenc/upstream/tools/WorkflowTool/createWorkflowCommand.js";
+
+  const [
+    skillDirCommands,
+    dynamicSkills,
+    bundledSkills,
+    builtinPluginSkills,
+    pluginCommands,
+    pluginSkills,
+    workflowCommands,
+  ] = await Promise.all([
+    callCommandSource(skillsModulePath, "getSkillDirCommands", cwd),
+    callCommandSource(skillsModulePath, "getDynamicSkills"),
+    callCommandSource(bundledSkillsModulePath, "getBundledSkills"),
+    callCommandSource(builtinPluginsModulePath, "getBuiltinPluginSkillCommands"),
+    callCommandSource(pluginCommandsModulePath, "getPluginCommands"),
+    callCommandSource(pluginCommandsModulePath, "getPluginSkills"),
+    callCommandSource(workflowCommandsModulePath, "getWorkflowCommands", cwd),
+  ]);
+
+  return [
+    ...bundledSkills,
+    ...builtinPluginSkills,
+    ...skillDirCommands,
+    ...dynamicSkills,
+    ...workflowCommands,
+    ...pluginCommands,
+    ...pluginSkills,
+  ];
+}
+
 export function getCommandsSync(): Command[] {
   return [...builtInCommands()];
 }
@@ -339,6 +395,7 @@ export async function getCommands(cwd: string): Promise<Command[]> {
   const dynamicCommands = await Promise.all(
     [
       loadLocalSkillCommands(cwd),
+      loadProductionCommandSources(cwd),
       ...[...commandProviders].map(async provider => [...(await provider(cwd))]),
     ],
   );
@@ -525,6 +582,16 @@ export function clearCommandMemoizationCaches(): void {
     services.skillsManager.clearSkillCaches?.();
   }
   localSkillServicesByRoot.clear();
+  const skillsModulePath: string = "./agenc/upstream/skills/loadSkillsDir.js";
+  const pluginCommandsModulePath: string =
+    "./agenc/upstream/utils/plugins/loadPluginCommands.js";
+  void import(skillsModulePath).then(module => {
+    module.clearSkillCaches?.();
+  }).catch(() => undefined);
+  void import(pluginCommandsModulePath).then(module => {
+    module.clearPluginCommandCache?.();
+    module.clearPluginSkillsCache?.();
+  }).catch(() => undefined);
   getSkillToolCommands.cache.clear();
   getSlashCommandToolSkills.cache.clear();
 }
