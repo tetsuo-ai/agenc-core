@@ -541,6 +541,25 @@ const ITEM_EVIDENCE = {
       },
     ],
   },
+  "T-20": {
+    files: [
+      "runtime/src/tui/components/dialogs/CostThresholdDialog.tsx",
+      "runtime/src/tui/components/dialogs/RateLimitMessage.tsx",
+    ],
+    tests: [
+      "runtime/src/tui/components/dialogs/cost-limit-dialogs.test.tsx",
+    ],
+    grepPresent: [
+      {
+        pattern: "tui/components/dialogs/CostThresholdDialog\\.js",
+        scope: "runtime/src/agenc/upstream/screens/REPL.tsx",
+      },
+      {
+        pattern: "tui/components/dialogs/RateLimitMessage\\.js",
+        scope: "runtime/src/agenc/upstream/components/messages/AssistantTextMessage.tsx",
+      },
+    ],
+  },
   "T-13": {
     files: [
       "runtime/src/tui/slash/slash-command-parsing.ts",
@@ -1270,6 +1289,10 @@ async function tuiAbsorbGates(item) {
     await t18MarkdownGates();
     return;
   }
+  if (id === "T-20") {
+    await t20CostLimitDialogGates();
+    return;
+  }
   // Same shape as leaf absorb, but for the larger TUI subtrees.
   await leafAbsorbGates(item);
 }
@@ -1640,6 +1663,68 @@ async function t18MarkdownGates() {
   }
 
   pass("T-18 markdown/highlighted-code imports resolved to AgenC-owned paths");
+}
+
+async function t20CostLimitDialogGates() {
+  const retiredTargets = [
+    "runtime/src/agenc/upstream/components/CostThresholdDialog.tsx",
+    "runtime/src/agenc/upstream/components/messages/RateLimitMessage.tsx",
+  ];
+
+  for (const upstream of retiredTargets) {
+    if (existsSync(path.join(root, upstream))) {
+      failGate(`T-20 upstream target still present: ${upstream}`);
+    }
+    pass(`T-20 upstream target deleted (${upstream})`);
+  }
+
+  const oldAbsolutePattern = String.raw`agenc/upstream/components/(?:CostThresholdDialog|messages/RateLimitMessage)`;
+  const oldAbsoluteScan = run(
+    "rg",
+    ["--no-messages", "-n", oldAbsolutePattern, "runtime/src"],
+    { silent: true },
+  );
+  if (oldAbsoluteScan.status === 0 && oldAbsoluteScan.stdout.trim()) {
+    failGate(`T-20 retired cost/limit dialog upstream imports remain:\n${oldAbsoluteScan.stdout}`);
+  }
+
+  const sourceImportPattern = /(?:from\s+|import\s*\(|require\s*\()\s*['"]([^'"]+)['"]/g;
+  const deletedEntrypoints = new Map([
+    [path.join(root, "runtime/src/agenc/upstream/components/CostThresholdDialog"), "CostThresholdDialog"],
+    [path.join(root, "runtime/src/agenc/upstream/components/messages/RateLimitMessage"), "RateLimitMessage"],
+  ]);
+  const oldImports = [];
+  for (const abs of walkFiles(path.join(root, "runtime/src"))) {
+    if (!/\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(abs)) continue;
+    const rel = path.relative(root, abs);
+    const content = readFileSync(abs, "utf8");
+    for (const match of content.matchAll(sourceImportPattern)) {
+      const specifier = match[1];
+      if (!specifier) continue;
+      if (
+        specifier === "src/components/CostThresholdDialog" ||
+        specifier === "src/components/CostThresholdDialog.js" ||
+        specifier === "src/components/messages/RateLimitMessage" ||
+        specifier === "src/components/messages/RateLimitMessage.js"
+      ) {
+        oldImports.push(`${rel} -> ${specifier}`);
+        continue;
+      }
+      if (!specifier.startsWith(".")) continue;
+      const resolved = path.resolve(path.dirname(abs), specifier)
+        .replace(/\.(?:js|jsx|ts|tsx|mjs|cjs)$/, "");
+      for (const [deletedEntrypoint, label] of deletedEntrypoints) {
+        if (resolved === deletedEntrypoint) {
+          oldImports.push(`${rel} -> ${specifier} (${label})`);
+        }
+      }
+    }
+  }
+  if (oldImports.length > 0) {
+    failGate(`T-20 retired cost/limit dialog import specifiers remain:\n${oldImports.join("\n")}`);
+  }
+
+  pass("T-20 cost/limit dialog imports resolved to AgenC-owned paths");
 }
 
 async function foundationalGates(item) {
