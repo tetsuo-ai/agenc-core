@@ -9,6 +9,7 @@
 // IDs follow the conventions in PORT_CHECKLIST.md (e.g. F-01, A-00b,
 // LP-10, T-08, F-03e). We accept any [A-Z]+(-[A-Za-z0-9]+)+ shape.
 
+import { spawnSync } from "node:child_process";
 import { open, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -25,10 +26,30 @@ const PHASE_HEADING_RE = /^##\s/;
 const DEPENDS_RE = /\*\*Depends:\*\*\s*([^.]+)\./i;
 const DONE_RE = /\*\*Done(?:\s*criteria)?:\*\*\s*(.+?)(?:\.\s*\*\*Depends|\.\s*$|$)/is;
 
-export function checklistPath() {
-  // Resolve relative to repo root (script lives in scripts/goal/).
+// Resolve the MAIN checkout root (the worktree that owns the .git directory).
+// All shared state — PORT_CHECKLIST.md, .goal-completed/ markers, the
+// checklist lock file — must live here so multiple worktrees stay coherent.
+// Cached on first call.
+let _mainRoot;
+export function mainCheckoutRoot() {
+  if (_mainRoot) return _mainRoot;
   const here = path.dirname(new URL(import.meta.url).pathname);
-  return path.resolve(here, "../../PORT_CHECKLIST.md");
+  // git rev-parse --git-common-dir returns the SHARED .git directory
+  // regardless of which worktree we're called from (in main: ./.git;
+  // in a worktree: /path/to/main/.git).
+  const r = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
+    cwd: here, encoding: "utf8",
+  });
+  if (r.status !== 0) {
+    throw new Error(`Cannot resolve main checkout: git rev-parse --git-common-dir failed: ${r.stderr || r.stdout}`);
+  }
+  const gitDir = r.stdout.trim();
+  _mainRoot = path.dirname(gitDir);
+  return _mainRoot;
+}
+
+export function checklistPath() {
+  return path.join(mainCheckoutRoot(), "PORT_CHECKLIST.md");
 }
 
 export async function readChecklist() {
@@ -230,13 +251,25 @@ export const STATUS = {
   SKIPPED: STATUS_SKIPPED,
 };
 
+// repoRoot() returns the script's own checkout root — i.e., the worktree
+// where the script is currently executing. For shared state (markers,
+// checklist, lock), use mainCheckoutRoot() instead.
 export function repoRoot() {
   const here = path.dirname(new URL(import.meta.url).pathname);
   return path.resolve(here, "../..");
 }
 
 export function markerDir() {
-  return path.join(repoRoot(), ".goal-completed");
+  return path.join(mainCheckoutRoot(), ".goal-completed");
+}
+
+// Where per-item worktrees live. One subdir per item ID.
+export function worktreeBase() {
+  return "/tmp/agenc-core-wt";
+}
+
+export function worktreePath(id) {
+  return path.join(worktreeBase(), id);
 }
 
 export function markerPath(id) {

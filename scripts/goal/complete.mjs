@@ -26,12 +26,13 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import { findItem, repoRoot, markerDir, markerPath, setItemStatus, STATUS, fail } from "./checklist-utils.mjs";
+import { findItem, repoRoot, mainCheckoutRoot, worktreePath, markerDir, markerPath, setItemStatus, STATUS, fail } from "./checklist-utils.mjs";
 
 const RESET = "\x1b[0m";
 const BOLD = "\x1b[1m";
 const GREEN = "\x1b[32m";
 const RED = "\x1b[31m";
+const YELLOW = "\x1b[33m";
 const DIM = "\x1b[2m";
 
 function usage() {
@@ -43,6 +44,9 @@ const id = process.argv[2];
 if (!id) usage();
 
 const root = repoRoot();
+const mainRoot = mainCheckoutRoot();
+const isWorktree = root !== mainRoot;
+const expectedWorktreePath = worktreePath(id);
 const { item } = await findItem(id);
 
 if (item.statusToken === STATUS.DONE) {
@@ -153,44 +157,80 @@ ok("reviewer APPROVED");
 
 // ---- step 5: switch to main + merge ------------------------------------
 
-header(`step 5 — local merge ${expected} → main (--no-ff)`);
+header(`step 5 — local merge ${expected} → main (--no-ff)${isWorktree ? ` (from worktree)` : ""}`);
+if (isWorktree) {
+  process.stdout.write(`${DIM}worktree: ${root}${RESET}\n`);
+  process.stdout.write(`${DIM}main:     ${mainRoot}${RESET}\n`);
+}
 
 // Atomicity: write an in-flight journal BEFORE the merge so that if the
 // process is killed between merge and checklist-flip, recovery on next
 // run can detect the half-completed state. The journal includes the
 // expected end state so a re-run can complete it or surface manual fix.
+//
+// The journal lives in mainRoot/.goal-completed (not the worktree's local
+// copy), so any future complete.mjs run from any worktree sees it.
 const dir = markerDir();
 if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 const journalPath = path.join(dir, `IN-FLIGHT-${id}.json`);
-const preMergeHead = run("git", ["rev-parse", "HEAD"], { silent: true }).stdout.trim();
+const preMergeHead = spawnSync("git", ["-C", mainRoot, "rev-parse", "HEAD"], {
+  encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+}).stdout.trim();
 writeFileSync(journalPath, JSON.stringify({
   itemId: id,
   title: item.title,
   phase: item.phase,
   branch: expected,
+  worktree: isWorktree ? root : null,
+  mainCheckout: mainRoot,
   startedAt: new Date().toISOString(),
   preMergeHead,
-  expectedEndState: "checklist=[x] + branch deleted + marker written",
-  recovery: "If this file exists at next complete.mjs invocation, the previous run was killed mid-flight. Either: (a) inspect git log to see if the merge happened; if yes, manually flip the checklist row to [x] and delete this file, or (b) git reset --hard <preMergeHead>, delete this file, and re-run complete.mjs.",
+  expectedEndState: "checklist=[x] + branch deleted + worktree removed + marker written",
+  recovery: "If this file exists at next complete.mjs invocation, the previous run was killed mid-flight. Either: (a) inspect git log to see if the merge happened; if yes, manually flip the checklist row to [x] and delete this file, or (b) git reset --hard <preMergeHead> in the main checkout, delete this file, and re-run complete.mjs.",
 }, null, 2) + "\n");
 
-const checkoutMain = run("git", ["checkout", "main"]);
+// Checkout main + merge — ALWAYS performed in the main checkout via `git -C`,
+// regardless of whether complete.mjs was launched from the main checkout or
+// from a per-item worktree. This keeps the merge target consistent across
+// parallel sessions.
+const checkoutMain = run("git", ["-C", mainRoot, "checkout", "main"]);
 if (checkoutMain.status !== 0) {
   try { unlinkSync(journalPath); } catch {}
-  abort("git checkout main failed");
+  abort("git checkout main failed (in main checkout)");
 }
 
 const mergeMsg = `Merge branch '${expected}'`;
-const mergeRes = run("git", ["merge", "--no-ff", expected, "-m", mergeMsg]);
+const mergeRes = run("git", ["-C", mainRoot, "merge", "--no-ff", expected, "-m", mergeMsg]);
 if (mergeRes.status !== 0) {
   try { unlinkSync(journalPath); } catch {}
-  abort(`git merge --no-ff ${expected} failed`);
+  abort(`git merge --no-ff ${expected} failed (in main checkout)`);
 }
 ok("merged into main");
 
+// ---- step 5b: remove worktree (if any) ---------------------------------
+//
+// Must happen BEFORE branch delete: `git branch -d` refuses to delete a
+// branch that is currently checked out anywhere — including in this
+// worktree. Once the worktree is gone, the branch can be deleted from
+// the main checkout.
+if (isWorktree && existsSync(expectedWorktreePath)) {
+  // chdir to mainRoot first so we're not inside the directory we're about
+  // to remove (script files are already loaded into Node memory; cwd is
+  // the only thing that pins this worktree's tree).
+  try { process.chdir(mainRoot); } catch (e) {
+    process.stderr.write(`${BOLD}${RED}!${RESET} could not chdir to ${mainRoot} before worktree removal: ${e?.message || e}\n`);
+  }
+  const wtRemove = run("git", ["-C", mainRoot, "worktree", "remove", "--force", expectedWorktreePath]);
+  if (wtRemove.status !== 0) {
+    process.stderr.write(`${BOLD}${RED}!${RESET} could not remove worktree ${expectedWorktreePath}; run \`git worktree remove --force ${expectedWorktreePath}\` manually.\n`);
+  } else {
+    ok(`worktree removed: ${expectedWorktreePath}`);
+  }
+}
+
 // ---- step 6: delete feature branch -------------------------------------
 
-const deleteRes = run("git", ["branch", "-d", expected]);
+const deleteRes = run("git", ["-C", mainRoot, "branch", "-d", expected]);
 if (deleteRes.status !== 0) {
   process.stderr.write(`${BOLD}${RED}!${RESET} could not delete branch ${expected}; check manually.\n`);
 } else {
@@ -205,7 +245,7 @@ const markerData = {
   title: item.title,
   phase: item.phase,
   completedAt: new Date().toISOString(),
-  mergedHead: run("git", ["rev-parse", "HEAD"], { silent: true }).stdout.trim(),
+  mergedHead: spawnSync("git", ["-C", mainRoot, "rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).stdout.trim(),
 };
 writeFileSync(markerPath(id), JSON.stringify(markerData, null, 2) + "\n");
 ok(`marker written: .goal-completed/${id}.json`);
