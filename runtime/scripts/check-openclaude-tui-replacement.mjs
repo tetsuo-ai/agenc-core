@@ -211,6 +211,14 @@ function assertSourceSnapshot() {
   ]
     .filter(([file]) => existsSync(join(liveTuiRoot, file)))
     .map(([, inventoryPath]) => inventoryPath);
+  const absorbedMarkdownFiles = [
+    ["components/markdown/Markdown.tsx", "src/components/Markdown.tsx"],
+    ["components/markdown/MarkdownTable.tsx", "src/components/MarkdownTable.tsx"],
+    ["components/markdown/HighlightedCode.tsx", "src/components/HighlightedCode.tsx"],
+    ["components/markdown/HighlightedCodeFallback.tsx", "src/components/HighlightedCode/Fallback.tsx"],
+  ]
+    .filter(([file]) => existsSync(join(liveTuiRoot, file)))
+    .map(([, inventoryPath]) => inventoryPath);
   const substitutions = new Map([
     [
       `src/components/${donorBrand}CodeHint/PluginHintMenu.tsx`,
@@ -326,6 +334,7 @@ function assertSourceSnapshot() {
     .concat(absorbedHistoryFiles)
     .concat(absorbedCostFiles)
     .concat(absorbedSpinnerFiles)
+    .concat(absorbedMarkdownFiles)
     .sort();
   const missing = expected.filter((file) => !actualFiles.includes(file));
   const extra = actualFiles.filter((file) => !expected.includes(file));
@@ -401,6 +410,7 @@ function assertOldTuiRemoved() {
     if (isAllowedTest(file)) continue;
     if (file.startsWith("components/PromptInput/")) continue;
     if (file.startsWith("components/spinner/")) continue;
+    if (file.startsWith("components/markdown/")) continue;
     if (file === "components/Messages.tsx") continue;
     if (file === "components/messagesOptionalModules.ts") continue;
     if (file === "components/messagesOptionalModules.test.ts") continue;
@@ -444,6 +454,11 @@ function assertNoDeletedAbsorbImporters() {
   const deletedMessagesEntrypoint = join(copiedRoot, "components/Messages");
   const deletedAppEntrypoint = join(copiedRoot, "components/App");
   const deletedSpinnerRoot = join(copiedRoot, "components/Spinner");
+  const deletedMarkdownEntrypoints = new Map([
+    [join(copiedRoot, "components/Markdown"), "Markdown"],
+    [join(copiedRoot, "components/MarkdownTable"), "MarkdownTable"],
+    [join(copiedRoot, "components/HighlightedCode"), "HighlightedCode"],
+  ]);
   const deletedStartupEntrypoints = new Map([
     [join(copiedRoot, "components/StartupScreen"), "StartupScreen"],
     [join(copiedRoot, "components/StatusLine"), "StatusLine"],
@@ -560,6 +575,17 @@ function assertNoDeletedAbsorbImporters() {
       ) {
         fail(`deleted spinner alias import remains: ${file} -> ${specifier}`);
       }
+      if (
+        specifier === "src/components/Markdown" ||
+        specifier === "src/components/Markdown.js" ||
+        specifier === "src/components/MarkdownTable" ||
+        specifier === "src/components/MarkdownTable.js" ||
+        specifier === "src/components/HighlightedCode" ||
+        specifier === "src/components/HighlightedCode.js" ||
+        specifier.startsWith("src/components/HighlightedCode/")
+      ) {
+        fail(`deleted markdown alias import remains: ${file} -> ${specifier}`);
+      }
       if (!specifier.startsWith(".")) continue;
       const resolved = resolve(dirname(abs), specifier)
         .replace(/\.(?:js|jsx|ts|tsx|mjs|cjs)$/, "");
@@ -604,6 +630,14 @@ function assertNoDeletedAbsorbImporters() {
         resolved.startsWith(`${deletedSpinnerRoot}/`)
       ) {
         fail(`deleted spinner relative import remains: ${file} -> ${specifier}`);
+      }
+      for (const [deletedMarkdownEntrypoint, label] of deletedMarkdownEntrypoints) {
+        if (
+          resolved === deletedMarkdownEntrypoint ||
+          resolved.startsWith(`${deletedMarkdownEntrypoint}/`)
+        ) {
+          fail(`deleted ${label} relative import remains: ${file} -> ${specifier}`);
+        }
       }
       for (const [deletedStartupEntrypoint, label] of deletedStartupEntrypoints) {
         if (resolved === deletedStartupEntrypoint) {

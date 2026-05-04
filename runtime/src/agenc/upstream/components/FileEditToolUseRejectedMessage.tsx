@@ -5,7 +5,7 @@ import * as React from 'react';
 import { useTerminalSize } from 'src/hooks/useTerminalSize.js';
 import { getCwd } from 'src/utils/cwd.js';
 import { Box, Text } from '../../../tui/ink.js';
-import { HighlightedCode } from './HighlightedCode.js';
+import { HighlightedCode } from '../../../tui/components/markdown/HighlightedCode.js';
 import { MessageResponse } from './MessageResponse.js';
 import { StructuredDiffList } from './StructuredDiffList.js';
 const MAX_LINES_TO_RENDER = 10;

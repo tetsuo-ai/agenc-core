@@ -3,7 +3,7 @@ import type { ThinkingBlock, ThinkingBlockParam } from '@anthropic-ai/sdk/resour
 import React from 'react';
 import { Box, Text } from '../../../../tui/ink.js';
 import { CtrlOToExpand } from '../CtrlOToExpand.js';
-import { Markdown } from '../Markdown.js';
+import { Markdown } from '../../../../tui/components/markdown/Markdown.js';
 type Props = {
   // Accept either full ThinkingBlock/ThinkingBlockParam or a minimal shape with just type and thinking
   param: ThinkingBlock | ThinkingBlockParam | {

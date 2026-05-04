@@ -9,7 +9,7 @@ import type { z } from 'zod/v4';
 import { AgentProgressLine } from '../../components/AgentProgressLine.js';
 import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErrorMessage.js';
 import { FallbackToolUseRejectedMessage } from '../../components/FallbackToolUseRejectedMessage.js';
-import { Markdown } from '../../components/Markdown.js';
+import { Markdown } from '../../../../tui/components/markdown/Markdown.js';
 import { Message as MessageComponent } from '../../components/Message.js';
 import { MessageResponse } from '../../components/MessageResponse.js';
 import { ToolUseLoader } from '../../components/ToolUseLoader.js';

@@ -35,7 +35,7 @@ import { renderableSearchText } from '../history/transcriptSearch.js';
 import { Divider } from '../../agenc/upstream/components/design-system/Divider.js';
 import type { UnseenDivider } from '../../agenc/upstream/components/FullscreenLayout.js';
 import { LogoV2 } from '../../agenc/upstream/components/LogoV2/LogoV2.js';
-import { StreamingMarkdown } from '../../agenc/upstream/components/Markdown.js';
+import { StreamingMarkdown } from './markdown/Markdown.js';
 import { hasContentAfterIndex, MessageRow } from '../../agenc/upstream/components/MessageRow.js';
 import { InVirtualListContext, type MessageActionsNav, MessageActionsSelectedContext, type MessageActionsState } from '../../agenc/upstream/components/messageActions.js';
 import { AssistantThinkingMessage } from '../../agenc/upstream/components/messages/AssistantThinkingMessage.js';

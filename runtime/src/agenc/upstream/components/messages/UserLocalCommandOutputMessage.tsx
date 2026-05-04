@@ -4,7 +4,7 @@ import { DIAMOND_FILLED, DIAMOND_OPEN } from '../../constants/figures.js';
 import { NO_CONTENT_MESSAGE } from '../../constants/messages.js';
 import { Box, Text } from '../../../../tui/ink.js';
 import { extractTag } from '../../utils/messages.js';
-import { Markdown } from '../Markdown.js';
+import { Markdown } from '../../../../tui/components/markdown/Markdown.js';
 import FullWidthRow from '../design-system/FullWidthRow.js';
 import { MessageResponse } from '../MessageResponse.js';
 type Props = {
