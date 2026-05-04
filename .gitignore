@@ -77,7 +77,11 @@ Thumbs.db
 node_modules/
 
 # Build artifacts (all packages)
+dist/
 **/dist/
+runtime/dist/
+web/dist/
+mcp/dist/
 !patches/**/dist/
 
 # Logs
@@ -87,6 +91,10 @@ logs/
 .codebase-index-cache.pkl
 *.pkl
 /ansi_girl.png
+
+# Stray "undefined/" dirs from misconfigured AGENC_FILESYSTEM_HISTORY_ROOT
+undefined/
+**/undefined/
 
 # Stray root media (never commit at root)
 /image
