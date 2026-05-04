@@ -41,6 +41,7 @@
     "src/commands/memory/memory.tsx",
     "src/tools/AgentTool/agentMemory.ts",
     "src/tools/AgentTool/agentMemorySnapshot.ts",
+    "src/tools/AskUserQuestionTool/AskUserQuestionTool.tsx",
     "src/tools/ask-user-question/tui-tool.tsx",
     "src/utils/attachments.ts",
     "src/utils/memoryFileDetection.ts",

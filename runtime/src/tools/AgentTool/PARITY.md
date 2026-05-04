@@ -1,7 +1,7 @@
-# T-09 AgentTool Adapter Scope
+# T-09 AgentTool Tool Target Absorb
 
-T-09 removes the live TUI surfaces from `runtime/src/agenc/upstream/tools/AgentTool/loadAgentsDir.ts` and `agentColorManager.ts` by providing AgenC-owned adapter files under `runtime/src/tools/AgentTool/`.
+T-09 retires the live upstream tool targets pulled by the TUI bridge and AgentTool loader graph. The upstream mirror files for `loadAgentsDir`, `agentColorManager`, `constants`, `prompt`, `AskUserQuestionTool`, and `BriefTool/prompt` are now shims to AgenC-owned files under `runtime/src/tools/`.
 
-This is not the full delegation tool implementation. Full sub-agent spawning remains tracked by `TL-12 AgentTool (delegation)`. The local `loadAgentsDir.ts` adapter intentionally projects AgenC's role registry into the upstream-shaped `AgentDefinition` catalog that the TUI needs for the agent picker and status surfaces.
+The local loader keeps the upstream-shaped `AgentDefinition` contract for TUI and prompt surfaces while using AgenC's role registry for built-ins. It also preserves custom markdown agents, plugin agents, source precedence, MCP requirements, rich frontmatter and JSON metadata, memory snapshot initialization, and active-agent color initialization.
 
-The upstream mirror files are still retained for source-only upstream components that have not yet been absorbed. They are no longer imported by the T-09 scoped TUI files; the final no-upstream sweep is tracked by `T-11`.
+Full sub-agent execution remains tracked by `TL-12 AgentTool (delegation)`. T-09 owns the loader and prompt metadata graph, not the runtime process that executes a spawned agent.
