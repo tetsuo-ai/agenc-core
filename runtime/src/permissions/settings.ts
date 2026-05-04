@@ -41,6 +41,7 @@ import type { ConfigStore } from "../config/store.js";
 import type { AgenCConfig } from "../config/schema.js";
 import { findProjectRootSync } from "../session/session-store.js";
 import { readTextFile } from "./_deps/file-read.js";
+import { applyToolApprovalConfigToPermissionContext } from "./tool-approval.js";
 import {
   applyPermissionRulesToPermissionContext,
   applyPermissionUpdate,
@@ -582,7 +583,7 @@ export function parseBaseToolsFromCLI(
 export interface InitialPermissionModeInput {
   /** Raw CLI `--permission-mode` value, if present. */
   readonly permissionModeCli?: string;
-  /** `--dangerously-bypass-approvals-and-sandbox` flag (codex runtime alias
+  /** `--dangerously-bypass-approvals-and-sandbox` flag (runtime alias
    * for `--dangerously-skip-permissions`). */
   readonly dangerouslySkipPermissions?: boolean;
   /** Resolved `policySettings` blob (for disableBypassPermissionsMode). */
@@ -792,6 +793,15 @@ export async function initializeToolPermissionContext(
   // Then pull disk rules.
   const diskRules = await loadAllPermissionRulesFromDisk(opts.env);
   ctx = applyPermissionRulesToPermissionContext(ctx, diskRules);
+
+  // Apply the config snapshot's permissions overlay after disk rules. The
+  // ConfigStore block is transient for this session, so it uses the
+  // session source instead of pretending to be an on-disk settings file.
+  ctx = applyToolApprovalConfigToPermissionContext(
+    ctx,
+    opts.env?.configStore?.current().permissions,
+    "session",
+  );
 
   // Add --add-dir directories.
   if (opts.addDirs && opts.addDirs.length > 0) {

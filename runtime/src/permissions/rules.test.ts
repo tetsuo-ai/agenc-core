@@ -7,6 +7,7 @@ import {
   convertRulesToUpdates,
   escapeRuleContent,
   filterDeniedAgents,
+  findMatchingContentRule,
   getAllowRules,
   getAskRuleForTool,
   getAskRules,
@@ -15,6 +16,7 @@ import {
   getDenyRules,
   getRuleByContentsForTool,
   isPermissionUpdateDestination,
+  matchContentRule,
   matchRule,
   parseRuleString,
   serializeRuleValue,
@@ -284,6 +286,46 @@ describe("getRuleByContentsForTool", () => {
     };
     const ctx = buildCtxWithRules([whole]);
     expect(getRuleByContentsForTool(ctx, "Bash", "allow").size).toBe(0);
+  });
+});
+
+describe("matchContentRule / findMatchingContentRule", () => {
+  test("matches prefix-colon rules against command text and prefixes", () => {
+    expect(matchContentRule("git:*", "git status")).toBe(true);
+    expect(matchContentRule("git:*", "git")).toBe(true);
+    expect(
+      matchContentRule("git commit:*", "git commit -m msg", {
+        prefix: "git commit",
+      }),
+    ).toBe(true);
+    expect(matchContentRule("git:*", "npm test")).toBe(false);
+  });
+
+  test("matches wildcard patterns and escaped literal stars", () => {
+    expect(matchContentRule("git * status", "git origin status")).toBe(true);
+    expect(matchContentRule("echo \\*", "echo *")).toBe(true);
+    expect(matchContentRule("echo \\*", "echo hi")).toBe(false);
+  });
+
+  test("returns the first matching rule from a content-rule map", () => {
+    const a: PermissionRule = {
+      source: "session",
+      ruleBehavior: "allow",
+      ruleValue: { toolName: "Bash", ruleContent: "git:*" },
+    };
+    const b: PermissionRule = {
+      source: "session",
+      ruleBehavior: "allow",
+      ruleValue: { toolName: "Bash", ruleContent: "npm:*" },
+    };
+    const match = findMatchingContentRule(
+      new Map([
+        ["git:*", a],
+        ["npm:*", b],
+      ]),
+      "npm test",
+    );
+    expect(match).toBe(b);
   });
 });
 

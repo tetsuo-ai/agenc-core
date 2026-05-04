@@ -307,6 +307,120 @@ export function getRuleByContentsForTool(
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Content-rule matching
+// ─────────────────────────────────────────────────────────────────────
+
+const ESCAPED_STAR_PLACEHOLDER = "\x00ESCAPED_STAR\x00";
+const ESCAPED_BACKSLASH_PLACEHOLDER = "\x00ESCAPED_BACKSLASH\x00";
+const ESCAPED_STAR_PLACEHOLDER_RE = new RegExp(
+  ESCAPED_STAR_PLACEHOLDER,
+  "g",
+);
+const ESCAPED_BACKSLASH_PLACEHOLDER_RE = new RegExp(
+  ESCAPED_BACKSLASH_PLACEHOLDER,
+  "g",
+);
+
+export interface ContentRuleMatchHints {
+  readonly prefix?: string | null;
+  readonly firstWord?: string | null;
+}
+
+function hasContentWildcards(pattern: string): boolean {
+  if (pattern.endsWith(":*")) return false;
+  for (let i = 0; i < pattern.length; i += 1) {
+    if (pattern[i] !== "*") continue;
+    let backslashCount = 0;
+    let j = i - 1;
+    while (j >= 0 && pattern[j] === "\\") {
+      backslashCount += 1;
+      j -= 1;
+    }
+    if (backslashCount % 2 === 0) return true;
+  }
+  return false;
+}
+
+function matchWildcardContentPattern(
+  pattern: string,
+  candidate: string,
+): boolean {
+  let processed = "";
+  let i = 0;
+  while (i < pattern.length) {
+    const char = pattern[i]!;
+    if (char === "\\" && i + 1 < pattern.length) {
+      const nextChar = pattern[i + 1]!;
+      if (nextChar === "*") {
+        processed += ESCAPED_STAR_PLACEHOLDER;
+        i += 2;
+        continue;
+      }
+      if (nextChar === "\\") {
+        processed += ESCAPED_BACKSLASH_PLACEHOLDER;
+        i += 2;
+        continue;
+      }
+    }
+    processed += char;
+    i += 1;
+  }
+
+  const escaped = processed.replace(/[.+?^${}()|[\]\\'"]/g, "\\$&");
+  let regexPattern = escaped
+    .replace(/\*/g, ".*")
+    .replace(ESCAPED_STAR_PLACEHOLDER_RE, "\\*")
+    .replace(ESCAPED_BACKSLASH_PLACEHOLDER_RE, "\\\\");
+
+  const unescapedStarCount = (processed.match(/\*/g) ?? []).length;
+  if (regexPattern.endsWith(" .*") && unescapedStarCount === 1) {
+    regexPattern = `${regexPattern.slice(0, -3)}( .*)?`;
+  }
+
+  return new RegExp(`^${regexPattern}$`, "s").test(candidate);
+}
+
+export function matchContentRule(
+  ruleContent: string | undefined,
+  candidate: string,
+  hints: ContentRuleMatchHints = {},
+): boolean {
+  if (ruleContent === undefined) return true;
+
+  if (ruleContent.endsWith(":*")) {
+    const rulePrefix = ruleContent.slice(0, -2);
+    if (rulePrefix === "") return false;
+    return (
+      candidate === rulePrefix ||
+      candidate.startsWith(`${rulePrefix} `) ||
+      hints.prefix === rulePrefix ||
+      hints.firstWord === rulePrefix
+    );
+  }
+
+  if (
+    hasContentWildcards(ruleContent) ||
+    ruleContent.includes("\\*") ||
+    ruleContent.includes("\\\\")
+  ) {
+    return matchWildcardContentPattern(ruleContent, candidate);
+  }
+
+  return ruleContent === candidate;
+}
+
+export function findMatchingContentRule(
+  rules: ReadonlyMap<string, PermissionRule>,
+  candidate: string,
+  hints: ContentRuleMatchHints = {},
+): PermissionRule | null {
+  for (const [content, rule] of rules) {
+    if (matchContentRule(content, candidate, hints)) return rule;
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // spawn_agent(agentType) helpers
 // ─────────────────────────────────────────────────────────────────────
 
