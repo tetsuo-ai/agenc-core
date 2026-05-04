@@ -1140,6 +1140,11 @@ const itemGates = {
   WP: webPortalGates,
   IDE: ideExtensionGates,
   Z: cleanupGates,
+  ZC: cleanupGates,
+  FW: subsystemDirGates("file-watcher", "runtime/src/file-watcher/"),
+  RT: subsystemDirGates("conversation runtime", "runtime/src/conversation/"),
+  SE: subsystemDirGates("secrets sanitizer", "runtime/src/secrets/"),
+  SK: subsystemDirGates("skills loader", "runtime/src/skills/"),
   D: () => failGate("D-* items are decisions, not work items. Mark them in PORT_CHECKLIST.md directly."),
 };
 
@@ -2081,6 +2086,25 @@ async function webPortalGates(item) {
   pass("(WP-* lives in sibling agenc-portal repo; gate limited to shared protocol)");
 }
 
+// Generic gate factory: subsystem must exist as a real directory under runtime/src,
+// have at least one production module, and at least one test file. Used for FW/RT/SE/SK
+// prefixes that previously had no gate at all.
+function subsystemDirGates(label, dir) {
+  return async function gate(item) {
+    const full = path.join(root, dir);
+    if (!existsSync(full)) {
+      failGate(`${label}: directory ${dir} does not exist; create it as part of this item.`);
+      return;
+    }
+    const allFiles = walkFiles(full);
+    const productionTs = allFiles.filter((p) => /\.(ts|tsx|mjs|cjs|js|jsx)$/.test(p) && !/\.test\./.test(p) && !/\.d\.ts$/.test(p));
+    const testTs = allFiles.filter((p) => /\.test\.(ts|tsx|mjs|cjs|js|jsx)$/.test(p));
+    if (productionTs.length === 0) failGate(`${label}: no production source files in ${dir}.`);
+    if (testTs.length === 0) failGate(`${label}: no test files in ${dir}.`);
+    pass(`${label}: ${productionTs.length} source / ${testTs.length} test file(s) in ${dir}`);
+  };
+}
+
 async function ideExtensionGates(item) {
   // IDE-* lives in a separate repo. Skip core checks.
   pass("(IDE-* lives in sibling repo; gate limited to shared protocol)");
@@ -2216,6 +2240,61 @@ async function cleanupGates(item) {
       failGate("runtime/src/agenc/upstream/ still exists; delete it");
     }
     pass("agenc/upstream/ removed");
+  }
+  if (id === "Z-03") {
+    // Z-03 deletes the upstream-* adapters under runtime/src/agenc/adapters/.
+    const adaptersDir = path.join(root, "runtime/src/agenc/adapters");
+    if (existsSync(adaptersDir)) {
+      const remaining = readdirSync(adaptersDir).filter((f) => /^upstream-/.test(f));
+      if (remaining.length > 0) {
+        failGate(`upstream-* adapters still in runtime/src/agenc/adapters/:\n  ${remaining.join("\n  ")}`);
+      }
+    }
+    pass("no upstream-* adapters remain");
+  }
+  if (id === "Z-04") {
+    // Z-04 tightens runtime/tsconfig.json — strict typecheck must pass without the agenc/** exclude.
+    const tsconfigPath = path.join(root, "runtime/tsconfig.json");
+    const tsconfig = readFileSync(tsconfigPath, "utf8");
+    if (/"src\/agenc\/\*\*\/?\*?"/.test(tsconfig)) {
+      failGate("runtime/tsconfig.json still excludes src/agenc/**/* — Z-04 must remove that exclude.");
+    }
+    pass("tsconfig has no src/agenc/** exclude");
+  }
+  if (id === "Z-05") {
+    // Z-05 final branding sweep — branding-scan must come back clean over the whole runtime/src tree.
+    const allTsRes = run("bash", ["-c", "find runtime/src -type f \\( -name '*.ts' -o -name '*.tsx' \\) | head -2000"], { silent: true });
+    const files = (allTsRes.stdout || "").split("\n").map((s) => s.trim()).filter(Boolean);
+    if (files.length === 0) failGate("Z-05: no TS files found to scan");
+    const r = run("node", [path.join(root, "scripts/branding-scan.mjs"), ...files]);
+    if (r.status !== 0) failGate("Z-05: branding-scan reported findings on full runtime/src sweep");
+    pass(`Z-05: branding clean across ${files.length} files`);
+  }
+  if (id === "Z-06") {
+    // Z-06 removes parity scaffolding (MATRIX files, port-tracking artifacts)
+    // from inside the AgenC repo. The skill itself is the implementer's
+    // personal toolchain and is out of scope.
+    const parityDir = path.join(root, "parity");
+    if (existsSync(parityDir)) {
+      const remaining = readdirSync(parityDir);
+      if (remaining.length > 0) {
+        failGate(`Z-06: parity/ still contains ${remaining.length} file(s); delete the dir.`);
+      }
+    }
+    const runtimeParityDir = path.join(root, "runtime/parity");
+    if (existsSync(runtimeParityDir)) {
+      const remaining = readdirSync(runtimeParityDir);
+      if (remaining.length > 0) {
+        failGate(`Z-06: runtime/parity/ still contains ${remaining.length} file(s); delete the dir.`);
+      }
+    }
+    pass("Z-06: parity scaffolding removed");
+  }
+  // ZC-* items: each ZC item has a deletion target. Generic check: warn if no
+  // specific gate; full enforcement is via the per-item evidence map and the
+  // deliverable assertions in the row body.
+  if (/^ZC-/.test(id)) {
+    process.stdout.write(`${YELLOW}!${RESET} ZC-* items use per-item deliverable assertions; generic gate only.\n`);
   }
 }
 

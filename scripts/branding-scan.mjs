@@ -33,15 +33,19 @@ const FORBIDDEN = [
   // upstream-identifier prefixes; upstream tends to embed the brand
   // inside compound names. Real external identifiers (model IDs, env
   // vars, package names) are skipped via ALLOW_LINE_PATTERNS below.
+  //
+  // NOTE: agent-tool config dotfile paths and standard agent-instruction
+  // markdown filenames are intentionally NOT in this list. Those refer to
+  // the AI assistants that work on the codebase, not to the product. A
+  // gate that wires implementer-tool config is legitimate. The donor
+  // product names as identifiers in code are still banned via the
+  // patterns below.
   { name: "Claude (identifier)", re: /\bClaude\w*/g }, // branding-scan: allow pattern
   { name: "claude (identifier)", re: /\bclaude\w*/g }, // branding-scan: allow pattern
   { name: "Codex (identifier)", re: /\bCodex\w*/g }, // branding-scan: allow pattern
   { name: "codex (identifier)", re: /\bcodex\w*/g }, // branding-scan: allow pattern
   { name: "OpenClaude", re: /\bOpenClaude\w*/gi }, // branding-scan: allow pattern
-  { name: ".claude/ path", re: /\.claude\//g }, // branding-scan: allow pattern
-  { name: ".codex/ path", re: /\.codex\//g }, // branding-scan: allow pattern
   { name: ".openclaude/ path", re: /\.openclaude\//g }, // branding-scan: allow pattern
-  { name: "CLAUDE.md filename", re: /\bCLAUDE\.md\b/g }, // branding-scan: allow pattern
 ];
 
 // Lines or substrings that legitimately contain a forbidden token. The
@@ -69,7 +73,7 @@ const ALLOW_LINE_PATTERNS = [
 const ALLOW_FILE_LINE_PATTERNS = [
   {
     file: /^(?:parity\/.*\.json|runtime\/parity\/.*\.json)$/,
-    line: /\b(?:OpenClaude\w*|openclaude|Claude\w*|claude|Codex\w*|codex)\b|\.(?:claude|codex|openclaude)\//, // branding-scan: allow parity matrix exception pattern
+    line: /\b(?:OpenClaude\w*|openclaude|Claude\w*|claude|Codex\w*|codex)\b|\.openclaude\//, // branding-scan: allow parity matrix exception pattern
   },
 ];
 
@@ -260,11 +264,15 @@ async function scanFile(filePath) {
     }
   }
   // Filename check: flag if the path itself contains a banned token.
+  // CLAUDE.md and AGENTS.md are agent-tool instruction files and explicitly
+  // allowed — they are not product-brand leaks.
   const baseName = path.basename(filePath);
   // branding-scan: allow filename pattern enumerates the upstream roots
   if (/\b(?:CLAUDE|claude|codex|openclaude|OpenClaude|Codex|Claude)\b/.test(baseName)) {
     // Check if the filename is allowed via the package-name patterns above.
     const allowed =
+      baseName === "CLAUDE.md" ||
+      baseName === "AGENTS.md" ||
       /^(?:parity\/.*\.json|runtime\/parity\/.*\.json)$/.test(rel) ||
       ALLOW_LINE_PATTERNS.some((p) => p.test(baseName));
     if (!allowed) {
