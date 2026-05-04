@@ -67,6 +67,14 @@ describe("splitCommand", () => {
     expect(splitCommand("ls; pwd; whoami")).toEqual(["ls", "pwd", "whoami"]);
   });
 
+  test("splits on newlines", () => {
+    expect(splitCommand("echo ok\npwd\rwhoami")).toEqual([
+      "echo ok",
+      "pwd",
+      "whoami",
+    ]);
+  });
+
   test("splits on & background", () => {
     expect(splitCommand("server & client")).toEqual(["server", "client"]);
   });
@@ -390,6 +398,9 @@ describe("bashToolHasPermission", () => {
     ["bash -c -- 'rm -rf /'", "rm -rf critical path"],
     ["timeout -v 10 rm -rf /", "rm -rf critical path"],
     ["echo $(rm -rf /)", "dangerous command substitution"],
+    ["echo ok\nrm -rf /", "rm -rf critical path"],
+    ["rm -rf \"$(printf /)\"", "rm -rf critical path"],
+    ["rm -rf ${ROOT:-/}", "rm -rf critical path"],
     ["r\\m -rf /", "rm -rf critical path"],
     ["\"r\"m -rf /", "rm -rf critical path"],
     ["r''m -rf /", "rm -rf critical path"],

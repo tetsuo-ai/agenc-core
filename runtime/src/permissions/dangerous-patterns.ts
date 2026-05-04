@@ -587,7 +587,7 @@ function splitShellFragments(command: string): string[] {
     const opLen =
       two === "&&" || two === "||"
         ? 2
-        : char === ";" || char === "|" || char === "&"
+        : char === ";" || char === "|" || char === "&" || char === "\n" || char === "\r"
           ? 1
           : 0;
     if (opLen > 0) {
@@ -733,7 +733,12 @@ function isEnvironmentAssignment(word: string): boolean {
 
 function isCriticalRemovalTarget(target: string): boolean {
   if (isHomeShellExpansionTarget(target)) return true;
+  if (containsShellExpansion(target)) return true;
   return isDangerousRemovalPath(expandTilde(target));
+}
+
+function containsShellExpansion(target: string): boolean {
+  return target.includes("$") || target.includes("`");
 }
 
 function isHomeShellExpansionTarget(target: string): boolean {

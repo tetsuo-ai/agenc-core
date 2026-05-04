@@ -45,6 +45,8 @@ describe("dangerous shell command detection", () => {
     "rm -rf $HOME",
     "rm -rf ${HOME}",
     "rm -rf '$HOME/*'",
+    "rm -rf \"$(printf /)\"",
+    "rm -rf ${ROOT:-/}",
     "NODE_ENV=test rm / -fr",
     "env FOO=bar rm --recursive /tmp --force",
     "timeout 10 rm / -rf",
@@ -57,6 +59,7 @@ describe("dangerous shell command detection", () => {
   });
 
   test.each([
+    "echo ok\nrm -rf /",
     "echo $(rm -rf /)",
     "echo `rm -rf /`",
     "echo \"$(rm -rf /)\"",

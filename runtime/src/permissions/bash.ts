@@ -441,7 +441,7 @@ export function splitCommand(command: string): readonly string[] {
     let opLen = 0;
     if (two === "&&" || two === "||") {
       opLen = 2;
-    } else if (c === ";" || c === "|" || c === "&") {
+    } else if (c === ";" || c === "|" || c === "&" || c === "\n" || c === "\r") {
       // `&` ambiguous with `&&` — handled above.
       opLen = 1;
     }
