@@ -34,10 +34,16 @@ import {
   type RunAgentResult,
 } from "../agents/run-agent.js";
 import type { AuthBackend } from "../auth/backend.js";
+import type { AgentBudgetConfig } from "../config/schema.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
 import type { ToolRegistry } from "../tool-registry.js";
+import {
+  computeUsdCost,
+  DEFAULT_MODEL_COSTS,
+  type ModelUsage,
+} from "../session/cost.js";
 import { setRulesForSource } from "../permissions/rules.js";
 import type { PermissionModeRegistry } from "../permissions/mode.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
@@ -84,6 +90,7 @@ export interface AgenCBackgroundAgentRestoreParams {
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
+  readonly startedAt?: string;
   readonly currentSessionId?: string;
   readonly initialMessages?: ReadonlyArray<LLMMessage>;
   readonly replayToolCalls?: readonly AgenCBackgroundAgentReplayToolCall[];
@@ -112,6 +119,7 @@ export interface AgenCBackgroundAgentReplayToolResult {
 export interface AgenCBackgroundAgentSnapshot {
   readonly status: DaemonAgentStatus;
   readonly lastActiveAt: string;
+  readonly metadata?: JsonObject;
 }
 
 export interface AgenCBackgroundAgentSessionEventBinding {
@@ -188,6 +196,10 @@ interface ActiveBackgroundAgent {
   readonly thread: AgentThread;
   status: DaemonAgentStatus;
   lastActiveAt: string;
+  budget?: ActiveAgentBudget;
+  budgetHalt?: JsonObject;
+  budgetHaltInProgress?: boolean;
+  budgetTimer?: AgenCAgentBudgetTimer;
   unsubscribeStatus?: () => void;
   uninstallApprovalBridge?: () => void;
   unsubscribeElicitationEvents?: () => void;
@@ -205,15 +217,52 @@ interface BackgroundAgentDaemonEvent {
   readonly acceptedAt?: string;
 }
 
+interface ActiveAgentBudget {
+  readonly tokenCap?: number;
+  readonly dollarCap?: number;
+  readonly wallClockSeconds?: number;
+  readonly startedAt: string;
+  readonly startedAtMs: number;
+  readonly model?: string;
+  readonly provider?: string;
+  readonly priorUsage: AgentBudgetUsage;
+}
+
+interface AgentBudgetHalt {
+  readonly kind: "token_cap" | "dollar_cap" | "wall_clock_seconds";
+  readonly reason: string;
+  readonly marker: JsonObject;
+}
+
+interface AgentBudgetUsage {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly totalTokens: number;
+  readonly costUsd: number;
+}
+
+const MAX_AGENT_BUDGET_TIMER_MS = 2_147_483_647;
+
+export interface AgenCAgentBudgetTimer {
+  readonly unref?: () => void;
+}
+
 export interface AgenCDelegateBackgroundAgentRunnerOptions {
   readonly bootstrap?: AgenCBootstrapFunction;
   readonly delegateFn?: AgenCDelegateFunction;
   readonly runAgentFn?: AgenCRunAgentFunction;
   readonly ensureAgentControl?: AgenCEnsureAgentControlFunction;
   readonly authBackend?: AuthBackend;
+  readonly agentBudget?: AgentBudgetConfig;
   readonly env?: NodeJS.ProcessEnv;
   readonly argv?: readonly string[];
   readonly now?: () => string;
+  readonly budgetNowMs?: () => number;
+  readonly setBudgetTimer?: (
+    callback: () => void,
+    delayMs: number,
+  ) => AgenCAgentBudgetTimer;
+  readonly clearBudgetTimer?: (timer: AgenCAgentBudgetTimer) => void;
 }
 
 export class AgenCDelegateBackgroundAgentRunner
@@ -224,9 +273,16 @@ export class AgenCDelegateBackgroundAgentRunner
   readonly #runAgent: AgenCRunAgentFunction;
   readonly #ensureAgentControl: AgenCEnsureAgentControlFunction;
   readonly #authBackend: AuthBackend | undefined;
+  readonly #agentBudget: AgentBudgetConfig | undefined;
   readonly #env: NodeJS.ProcessEnv | undefined;
   readonly #argv: readonly string[] | undefined;
   readonly #now: () => string;
+  readonly #budgetNowMs: () => number;
+  readonly #setBudgetTimer: (
+    callback: () => void,
+    delayMs: number,
+  ) => AgenCAgentBudgetTimer;
+  readonly #clearBudgetTimer: (timer: AgenCAgentBudgetTimer) => void;
   readonly #active = new Map<string, ActiveBackgroundAgent>();
   readonly #pendingEvents = new Map<string, BackgroundAgentDaemonEvent[]>();
   readonly #pendingActiveToolCallIds = new Map<string, Set<string>>();
@@ -246,9 +302,17 @@ export class AgenCDelegateBackgroundAgentRunner
       options.authBackend === undefined
         ? undefined
         : createAgenCDaemonRuntimeAuthBackend(options.authBackend);
+    this.#agentBudget = options.agentBudget;
     this.#env = options.env;
     this.#argv = options.argv;
     this.#now = options.now ?? (() => new Date().toISOString());
+    this.#budgetNowMs = options.budgetNowMs ?? (() => Date.now());
+    this.#setBudgetTimer =
+      options.setBudgetTimer ??
+      ((callback, delayMs) => setTimeout(callback, delayMs));
+    this.#clearBudgetTimer =
+      options.clearBudgetTimer ??
+      ((timer) => clearTimeout(timer as ReturnType<typeof setTimeout>));
   }
 
   async startAgent(
@@ -306,12 +370,20 @@ export class AgenCDelegateBackgroundAgentRunner
           this.#pendingActiveToolCallIds.get(outcome.thread.threadId) ??
           new Set(),
       };
+      this.#installAgentBudget(active, {
+        startedAt,
+        ...(params.model !== undefined ? { model: params.model } : {}),
+        ...(params.provider !== undefined ? { provider: params.provider } : {}),
+        ...(params.metadata !== undefined ? { metadata: params.metadata } : {}),
+      });
       this.#pendingEvents.delete(outcome.thread.threadId);
       this.#pendingActiveToolCallIds.delete(outcome.thread.threadId);
       this.#trackAgentStatus(active);
       this.#active.set(outcome.thread.threadId, active);
       active.unsubscribeElicitationEvents =
         this.#installDaemonElicitationEventBridge(active);
+      this.#scheduleAgentBudgetTimer(active);
+      void this.#enforceAgentBudget(active);
       this.#cleanupWhenComplete(outcome.thread.threadId, outcome.thread);
       return {
         agentId: outcome.thread.threadId,
@@ -337,6 +409,9 @@ export class AgenCDelegateBackgroundAgentRunner
     return {
       status: active.status,
       lastActiveAt: active.lastActiveAt,
+      ...(active.budgetHalt !== undefined
+        ? { metadata: { budgetHalt: active.budgetHalt } }
+        : {}),
     };
   }
 
@@ -415,6 +490,7 @@ export class AgenCDelegateBackgroundAgentRunner
         },
       );
       const restoredAt = this.#now();
+      const startedAt = params.startedAt ?? restoredAt;
       const active: ActiveBackgroundAgent = {
         bootstrap,
         control,
@@ -426,12 +502,20 @@ export class AgenCDelegateBackgroundAgentRunner
         activeToolCallIds:
           this.#pendingActiveToolCallIds.get(params.agentId) ?? new Set(),
       };
+      this.#installAgentBudget(active, {
+        startedAt,
+        ...(params.model !== undefined ? { model: params.model } : {}),
+        ...(params.provider !== undefined ? { provider: params.provider } : {}),
+        ...(params.metadata !== undefined ? { metadata: params.metadata } : {}),
+      });
       this.#pendingEvents.delete(params.agentId);
       this.#pendingActiveToolCallIds.delete(params.agentId);
       this.#trackAgentStatus(active);
       this.#active.set(params.agentId, active);
       active.unsubscribeElicitationEvents =
         this.#installDaemonElicitationEventBridge(active);
+      this.#scheduleAgentBudgetTimer(active);
+      void this.#enforceAgentBudget(active);
       this.#cleanupWhenComplete(params.agentId, thread);
       return true;
     } catch {
@@ -446,6 +530,7 @@ export class AgenCDelegateBackgroundAgentRunner
     if (active === undefined) return;
     active.status = "stopping";
     active.lastActiveAt = this.#now();
+    this.#clearAgentBudgetTimer(active);
     let stopError: unknown;
     try {
       await active.control.shutdown(agentId, reason);
@@ -499,7 +584,7 @@ export class AgenCDelegateBackgroundAgentRunner
     params: AgenCBackgroundAgentMessageParams,
   ): Promise<void> {
     const active = this.#active.get(agentId);
-    if (active === undefined) {
+    if (active === undefined || !isRunnableActiveAgent(active)) {
       throw new Error(`AgenC daemon agent not running: ${agentId}`);
     }
     const input = messageContentToAgentInput(params.content);
@@ -534,6 +619,8 @@ export class AgenCDelegateBackgroundAgentRunner
     agentId: string,
     params: AgenCBackgroundAgentToolDecisionParams,
   ): Promise<boolean> {
+    const active = this.#active.get(agentId);
+    if (active !== undefined && !isRunnableActiveAgent(active)) return false;
     const pendingForAgent = this.#pendingToolDecisions.get(agentId);
     const resolve = pendingForAgent?.get(params.requestId);
     if (resolve === undefined) return false;
@@ -549,11 +636,12 @@ export class AgenCDelegateBackgroundAgentRunner
     agentId: string,
     params: AgenCBackgroundAgentToolCancelParams,
   ): Promise<boolean> {
+    const active = this.#active.get(agentId);
+    if (active !== undefined && !isRunnableActiveAgent(active)) return false;
     const pendingResolved = await this.resolveToolDecision(agentId, {
       requestId: params.requestId,
       decision: ABORT,
     });
-    const active = this.#active.get(agentId);
     if (active === undefined) return pendingResolved;
     const activeToolMatched = active.activeToolCallIds.has(params.requestId);
     if (!pendingResolved && !activeToolMatched) return false;
@@ -570,7 +658,7 @@ export class AgenCDelegateBackgroundAgentRunner
     params: AgenCBackgroundAgentElicitationResponseParams,
   ): Promise<boolean> {
     const active = this.#active.get(agentId);
-    if (active === undefined) return false;
+    if (active === undefined || !isRunnableActiveAgent(active)) return false;
     const resolved = await respondToSessionElicitation(
       active.bootstrap.session,
       params,
@@ -662,6 +750,7 @@ export class AgenCDelegateBackgroundAgentRunner
     if (!hasStatusSubscription(active.thread)) return;
     let sawInitialStatus = false;
     active.unsubscribeStatus = active.thread.onStatusChange((status) => {
+      if (active.budgetHalt !== undefined) return;
       active.status = mapThreadStatus(status);
       if (status.status === "running") {
         this.#assistantTextByAgent.set(active.thread.threadId, "");
@@ -676,9 +765,23 @@ export class AgenCDelegateBackgroundAgentRunner
       }
       if (sawInitialStatus) {
         active.lastActiveAt = this.#now();
-        void this.#emitOrBufferEvent(active, eventFromThreadStatus(status));
+        void this.#emitOrBufferEvent(
+          active,
+          withAgentBudgetUsage(
+            active,
+            eventFromThreadStatus(status),
+            this.#budgetNowMs(),
+          ),
+        );
       } else {
-        void this.#emitOrBufferEvent(active, eventFromThreadStatus(status));
+        void this.#emitOrBufferEvent(
+          active,
+          withAgentBudgetUsage(
+            active,
+            eventFromThreadStatus(status),
+            this.#budgetNowMs(),
+          ),
+        );
       }
       sawInitialStatus = true;
     });
@@ -705,6 +808,7 @@ export class AgenCDelegateBackgroundAgentRunner
         active.unsubscribeStatus?.();
         active.uninstallApprovalBridge?.();
         active.unsubscribeElicitationEvents?.();
+        this.#clearAgentBudgetTimer(active);
         await active.bootstrap.shutdown().catch(() => {});
       });
   }
@@ -730,16 +834,143 @@ export class AgenCDelegateBackgroundAgentRunner
     progress: RunAgentProgressEvent,
   ): Promise<void> {
     this.#trackActiveToolCall(agentId, progress);
+    const active = this.#active.get(agentId);
+    if (active !== undefined && (await this.#enforceAgentBudget(active))) {
+      return;
+    }
     const event = this.#eventFromProgress(agentId, progress);
     if (event === null) return;
-    const active = this.#active.get(agentId);
     if (active === undefined) {
       const pending = this.#pendingEvents.get(agentId) ?? [];
       pending.push(event);
       this.#pendingEvents.set(agentId, pending);
       return;
     }
-    await this.#emitOrBufferEvent(active, event);
+    await this.#emitOrBufferEvent(
+      active,
+      withAgentBudgetUsage(active, event, this.#budgetNowMs()),
+    );
+  }
+
+  #installAgentBudget(
+    active: ActiveBackgroundAgent,
+    params: {
+      readonly startedAt: string;
+      readonly model?: string;
+      readonly provider?: string;
+      readonly metadata?: JsonObject;
+    },
+  ): void {
+    const budget = normalizeAgentBudget(this.#agentBudget);
+    if (budget === undefined) return;
+    const startedAtMs = parseBudgetTimestamp(params.startedAt) ?? this.#budgetNowMs();
+    active.budget = {
+      ...budget,
+      startedAt: params.startedAt,
+      startedAtMs,
+      ...(params.model !== undefined ? { model: params.model } : {}),
+      ...(params.provider !== undefined ? { provider: params.provider } : {}),
+      priorUsage: budgetUsageFromMetadata(params.metadata),
+    };
+  }
+
+  #scheduleAgentBudgetTimer(active: ActiveBackgroundAgent): void {
+    this.#clearAgentBudgetTimer(active);
+    const budget = active.budget;
+    if (budget?.wallClockSeconds === undefined) return;
+    const deadlineMs = budget.startedAtMs + budget.wallClockSeconds * 1000;
+    const remainingMs = deadlineMs - this.#budgetNowMs();
+    const delayMs = Math.max(
+      0,
+      Math.min(remainingMs, MAX_AGENT_BUDGET_TIMER_MS),
+    );
+    const timer = this.#setBudgetTimer(() => {
+      if (this.#active.get(active.thread.threadId) !== active) return;
+      if (active.budgetHalt !== undefined) return;
+      if (this.#budgetNowMs() < deadlineMs) {
+        this.#scheduleAgentBudgetTimer(active);
+        return;
+      }
+      void this.#haltAgentForBudget(
+        active.thread.threadId,
+        budgetHaltForActiveAgent(active, this.#budgetNowMs()) ??
+          wallClockBudgetHalt(active, this.#budgetNowMs()),
+      );
+    }, delayMs);
+    active.budgetTimer = timer;
+    timer.unref?.();
+  }
+
+  #clearAgentBudgetTimer(active: ActiveBackgroundAgent): void {
+    if (active.budgetTimer === undefined) return;
+    this.#clearBudgetTimer(active.budgetTimer);
+    delete active.budgetTimer;
+  }
+
+  async #enforceAgentBudget(active: ActiveBackgroundAgent): Promise<boolean> {
+    const halt = budgetHaltForActiveAgent(active, this.#budgetNowMs());
+    if (halt === null) return false;
+    await this.#haltAgentForBudget(active.thread.threadId, halt);
+    return true;
+  }
+
+  async #haltAgentForBudget(
+    agentId: string,
+    halt: AgentBudgetHalt,
+  ): Promise<void> {
+    const active = this.#active.get(agentId);
+    if (active === undefined) return;
+    if (active.budgetHalt !== undefined || active.budgetHaltInProgress === true) {
+      return;
+    }
+    active.budgetHalt = halt.marker;
+    active.budgetHaltInProgress = true;
+    active.status = "stopped";
+    active.lastActiveAt = this.#now();
+    this.#clearAgentBudgetTimer(active);
+    let emitError: unknown;
+    try {
+      await this.#emitOrBufferEvent(active, {
+        id: `agent-budget-${agentId}-${halt.kind}`,
+        type: "agent_status",
+        payload: {
+          status: "stopped",
+          runStatus: "stopped",
+          message: halt.reason,
+          budgetHalt: halt.marker,
+          budgetUsage: budgetUsageMarker(active, this.#budgetNowMs()),
+        },
+      });
+    } catch (error) {
+      emitError = error;
+    }
+    try {
+      await active.control.shutdown(agentId, halt.reason);
+      await active.bootstrap.shutdown();
+    } catch (error) {
+      active.status = "error";
+      active.lastActiveAt = this.#now();
+      try {
+        await this.#emitOrBufferEvent(active, {
+          id: `agent-budget-error-${agentId}-${hashStable(String(error))}`,
+          type: "agent_status",
+          payload: {
+            status: "error",
+            runStatus: "errored",
+            message: error instanceof Error ? error.message : String(error),
+            budgetHalt: halt.marker,
+            budgetUsage: budgetUsageMarker(active, this.#budgetNowMs()),
+          },
+        });
+      } catch {
+        // The shutdown path must not depend on notification delivery.
+      }
+    } finally {
+      active.budgetHaltInProgress = false;
+    }
+    if (emitError !== undefined) {
+      active.lastActiveAt = this.#now();
+    }
   }
 
   #trackActiveToolCall(
@@ -812,6 +1043,288 @@ export class AgenCDelegateBackgroundAgentRunner
       notificationFromDaemonEvent(binding.sessionId, active.thread.threadId, event),
     );
   }
+}
+
+function normalizeAgentBudget(
+  config: AgentBudgetConfig | undefined,
+):
+  | Omit<
+      ActiveAgentBudget,
+      "startedAt" | "startedAtMs" | "model" | "provider" | "priorUsage"
+    >
+  | undefined {
+  if (config === undefined) return undefined;
+  const tokenCap = normalizeBudgetCap(config.token_cap);
+  const dollarCap = normalizeBudgetCap(config.dollar_cap);
+  const wallClockSeconds = normalizeBudgetCap(config.wall_clock_seconds);
+  if (
+    tokenCap === undefined &&
+    dollarCap === undefined &&
+    wallClockSeconds === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    ...(tokenCap !== undefined ? { tokenCap } : {}),
+    ...(dollarCap !== undefined ? { dollarCap } : {}),
+    ...(wallClockSeconds !== undefined ? { wallClockSeconds } : {}),
+  };
+}
+
+function normalizeBudgetCap(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+function parseBudgetTimestamp(value: string): number | undefined {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function budgetUsageFromMetadata(metadata: JsonObject | undefined): AgentBudgetUsage {
+  const raw = metadata?.budgetUsage;
+  if (!isJsonObject(raw)) {
+    return { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 };
+  }
+  return {
+    inputTokens: finiteNumber(raw.inputTokens),
+    outputTokens: finiteNumber(raw.outputTokens),
+    totalTokens: finiteNumber(raw.totalTokens),
+    costUsd: finiteNumber(raw.costUsd),
+  };
+}
+
+function budgetHaltForActiveAgent(
+  active: ActiveBackgroundAgent,
+  nowMs: number,
+): AgentBudgetHalt | null {
+  const budget = active.budget;
+  if (budget === undefined) return null;
+  const usage = budgetUsageForActiveAgent(active);
+  const totalTokens = usage.totalTokens;
+  if (budget.tokenCap !== undefined && totalTokens >= budget.tokenCap) {
+    const reason = `agent budget token_cap reached: ${totalTokens} tokens >= ${budget.tokenCap}`;
+    return {
+      kind: "token_cap",
+      reason,
+      marker: budgetHaltMarker(
+        "token_cap",
+        budget.tokenCap,
+        totalTokens,
+        active,
+        nowMs,
+        reason,
+      ),
+    };
+  }
+  const costUsd = usage.costUsd;
+  if (budget.dollarCap !== undefined && costUsd >= budget.dollarCap) {
+    const reason = `agent budget dollar_cap reached: $${formatBudgetDollars(costUsd)} >= $${formatBudgetDollars(budget.dollarCap)}`;
+    return {
+      kind: "dollar_cap",
+      reason,
+      marker: budgetHaltMarker(
+        "dollar_cap",
+        budget.dollarCap,
+        costUsd,
+        active,
+        nowMs,
+        reason,
+      ),
+    };
+  }
+  if (budget.wallClockSeconds !== undefined) {
+    const elapsedSeconds = elapsedBudgetSeconds(active, nowMs);
+    if (elapsedSeconds >= budget.wallClockSeconds) {
+      return wallClockBudgetHalt(active, nowMs);
+    }
+  }
+  return null;
+}
+
+function wallClockBudgetHalt(
+  active: ActiveBackgroundAgent,
+  nowMs: number,
+): AgentBudgetHalt {
+  const cap = active.budget?.wallClockSeconds ?? 0;
+  const elapsedSeconds = elapsedBudgetSeconds(active, nowMs);
+  const reason = `agent budget wall_clock_seconds reached: ${formatBudgetSeconds(elapsedSeconds)}s >= ${formatBudgetSeconds(cap)}s`;
+  return {
+    kind: "wall_clock_seconds",
+    reason,
+    marker: budgetHaltMarker(
+      "wall_clock_seconds",
+      cap,
+      elapsedSeconds,
+      active,
+      nowMs,
+      reason,
+    ),
+  };
+}
+
+function elapsedBudgetSeconds(
+  active: ActiveBackgroundAgent,
+  nowMs: number,
+): number {
+  const startedAtMs = active.budget?.startedAtMs ?? nowMs;
+  return Math.max(0, (nowMs - startedAtMs) / 1000);
+}
+
+function budgetUsageForActiveAgent(active: ActiveBackgroundAgent): AgentBudgetUsage {
+  const prior = active.budget?.priorUsage ?? {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    costUsd: 0,
+  };
+  const live = active.thread.live.tokenUsage;
+  return {
+    inputTokens: prior.inputTokens + finiteNumber(live.inputTokens),
+    outputTokens: prior.outputTokens + finiteNumber(live.outputTokens),
+    totalTokens: prior.totalTokens + finiteNumber(live.totalTokens),
+    costUsd: prior.costUsd + agentCostUsd(active),
+  };
+}
+
+function agentCostUsd(active: ActiveBackgroundAgent): number {
+  const tokenUsage = active.thread.live.tokenUsage;
+  const model = budgetModel(active);
+  const provider = budgetProvider(active);
+  // LiveAgent currently exposes aggregate input/output token counters.
+  // The budget marker records this basis so dollar caps are auditable
+  // without pretending cached/reasoning/search dimensions were observed.
+  const usage: ModelUsage = {
+    model,
+    ...(provider !== undefined ? { provider } : {}),
+    inputTokens: finiteNumber(tokenUsage.inputTokens),
+    outputTokens: finiteNumber(tokenUsage.outputTokens),
+    cachedInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    reasoningOutputTokens: 0,
+    webSearchRequests: 0,
+    totalTokens: finiteNumber(tokenUsage.totalTokens),
+    turns: 0,
+  };
+  return computeUsdCost(usage, DEFAULT_MODEL_COSTS);
+}
+
+function budgetModel(active: ActiveBackgroundAgent): string {
+  return (
+    active.budget?.model ??
+    stringRecordField(active.thread.live.configSnapshot, "model") ??
+    "agenc"
+  );
+}
+
+function budgetProvider(active: ActiveBackgroundAgent): string | undefined {
+  return (
+    active.budget?.provider ??
+    stringRecordField(active.thread.live.configSnapshot, "provider") ??
+    stringRecordField(active.thread.live.configSnapshot, "model_provider")
+  );
+}
+
+function stringRecordField(
+  record: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : undefined;
+}
+
+function budgetHaltMarker(
+  kind: AgentBudgetHalt["kind"],
+  cap: number,
+  observed: number,
+  active: ActiveBackgroundAgent,
+  nowMs: number,
+  reason: string,
+): JsonObject {
+  const usage = budgetUsageForActiveAgent(active);
+  const model = budgetModel(active);
+  const provider = budgetProvider(active);
+  return {
+    kind,
+    cap,
+    observed,
+    reason,
+    code:
+      kind === "token_cap"
+        ? `token_cap:${usage.totalTokens}`
+        : kind === "dollar_cap"
+          ? `dollar_cap:${formatBudgetDollars(observed)}`
+          : `wall_clock_seconds:${formatBudgetSeconds(observed)}`,
+    haltedAt: new Date(nowMs).toISOString(),
+    startedAt: active.budget?.startedAt,
+    tokens: {
+      input: usage.inputTokens,
+      output: usage.outputTokens,
+      total: usage.totalTokens,
+    },
+    costUsd: usage.costUsd,
+    costBasis: "input_output_token_usage",
+    wallClockSeconds: elapsedBudgetSeconds(active, nowMs),
+    model,
+    ...(provider !== undefined ? { provider } : {}),
+  };
+}
+
+function budgetUsageMarker(
+  active: ActiveBackgroundAgent,
+  nowMs: number,
+): JsonObject | undefined {
+  if (active.budget === undefined) return undefined;
+  const usage = budgetUsageForActiveAgent(active);
+  const model = budgetModel(active);
+  const provider = budgetProvider(active);
+  return {
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    totalTokens: usage.totalTokens,
+    costUsd: usage.costUsd,
+    costBasis: "input_output_token_usage",
+    wallClockSeconds: elapsedBudgetSeconds(active, nowMs),
+    updatedAt: new Date(nowMs).toISOString(),
+    model,
+    ...(provider !== undefined ? { provider } : {}),
+  };
+}
+
+function withAgentBudgetUsage(
+  active: ActiveBackgroundAgent,
+  event: BackgroundAgentDaemonEvent | null,
+  nowMs: number,
+): BackgroundAgentDaemonEvent | null {
+  if (event === null || event.type !== "agent_status") return event;
+  const budgetUsage = budgetUsageMarker(active, nowMs);
+  if (budgetUsage === undefined) return event;
+  return {
+    ...event,
+    payload: {
+      ...(event.payload ?? {}),
+      budgetUsage,
+    },
+  };
+}
+
+function finiteNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function formatBudgetDollars(value: number): string {
+  return value.toFixed(value >= 1 ? 2 : 6).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function formatBudgetSeconds(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(3);
+}
+
+function isRunnableActiveAgent(active: ActiveBackgroundAgent): boolean {
+  return active.budgetHalt === undefined;
 }
 
 function notificationFromDaemonEvent(
@@ -940,6 +1453,12 @@ function notificationFromDaemonEvent(
         ...(typeof payload.message === "string"
           ? { message: payload.message }
           : {}),
+        ...(isJsonObject(payload.budgetHalt)
+          ? { budgetHalt: payload.budgetHalt }
+          : {}),
+        ...(isJsonObject(payload.budgetUsage)
+          ? { budgetUsage: payload.budgetUsage }
+          : {}),
       },
     };
   }
@@ -963,6 +1482,12 @@ function notificationFromDaemonEvent(
           : typeof payload.lastAgentMessage === "string"
             ? { message: payload.lastAgentMessage }
             : {}),
+        ...(isJsonObject(payload.budgetHalt)
+          ? { budgetHalt: payload.budgetHalt }
+          : {}),
+        ...(isJsonObject(payload.budgetUsage)
+          ? { budgetUsage: payload.budgetUsage }
+          : {}),
       },
     };
   }
@@ -1552,6 +2077,8 @@ function eventFromProgress(
           },
         },
       };
+    case "usage_update":
+      return null;
     case "run_error":
       return {
         id: `error-${agentId}-${hashStable(progress.error)}`,

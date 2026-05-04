@@ -1921,6 +1921,87 @@ describe("AgenC background agent lifecycle", () => {
     ]);
   });
 
+  it("persists runner snapshot metadata during status refresh", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-agent-budget-refresh-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-agent-budget-refresh-cwd-"));
+    mkdirSync(join(cwd, ".git"));
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      const sessions = new AgenCDaemonSessionManager({
+        createSessionId: sequence(["session_budget_refresh"]),
+        now: sequence(["2026-05-01T12:00:00.000Z"]),
+      });
+      const policy = new AgenCSessionSnapshotPolicy(driver, {
+        now: sequence([
+          "2026-05-01T12:00:00.500Z",
+          "2026-05-01T12:00:02.000Z",
+        ]),
+      });
+      const budgetHalt = {
+        kind: "token_cap",
+        cap: 10,
+        observed: 12,
+        reason: "agent budget token_cap reached: 12 tokens >= 10",
+      };
+      let currentSnapshot: AgenCBackgroundAgentSnapshot = {
+        status: "running",
+        lastActiveAt: "2026-05-01T12:00:00.500Z",
+      };
+      const runner: AgenCBackgroundAgentRunner = {
+        startAgent: async () => ({
+          agentId: "agent_budget_refresh",
+          startedAt: "2026-05-01T12:00:00.500Z",
+          status: "running",
+        }),
+        getAgentSnapshot: async () => currentSnapshot,
+      };
+      const agents = new AgenCDaemonAgentManager({
+        defaultCwd: () => cwd,
+        now: sequence(["2026-05-01T12:00:00.000Z"]),
+        sessionManager: sessions,
+        runner,
+        recordAgentRun: (run) => {
+          upsertAgentRun(driver, run);
+        },
+        recordAgentStatusTransition: (transition) => {
+          policy.recordAgentStatusTransition(transition);
+        },
+      });
+
+      await agents.createAgent({ objective: "watch budget status" });
+      currentSnapshot = {
+        status: "stopped",
+        lastActiveAt: "2026-05-01T12:00:02.000Z",
+        metadata: { budgetHalt },
+      };
+      await expect(agents.listAgents()).resolves.toEqual({ agents: [] });
+
+      expect(agentRunRow(driver, "agent_budget_refresh")).toMatchObject({
+        status: "stopped",
+        last_active_at: "2026-05-01T12:00:02.000Z",
+        current_session_id: "session_budget_refresh",
+      });
+      expect(agentRunMetadata(driver, "agent_budget_refresh")).toMatchObject({
+        budgetHalt,
+      });
+      expect(latestSnapshot(driver, "session_budget_refresh").toolState)
+        .toMatchObject({
+          statusTransitions: [
+            { agentId: "agent_budget_refresh", status: "running" },
+            {
+              agentId: "agent_budget_refresh",
+              status: "stopped",
+              metadataPatch: { budgetHalt },
+            },
+          ],
+        });
+    } finally {
+      driver.close();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not fail create or message delivery when snapshot hooks fail", async () => {
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_snapshot_error"]),

@@ -138,6 +138,7 @@ export interface AgenCDaemonAgentStatusSnapshot {
   readonly runStatus?: string;
   readonly transitionAt: string;
   readonly reason?: string;
+  readonly metadataPatch?: JsonObject;
 }
 
 export interface AgenCDaemonAgentRunSnapshot
@@ -1020,6 +1021,7 @@ export class AgenCDaemonAgentManager {
     transitionAt: string,
     reason?: string,
     route: AgenCDaemonSnapshotRoute = {},
+    metadataPatch?: JsonObject,
   ): Promise<void> {
     if (this.#recordAgentStatusTransition === undefined) return;
     for (const sessionId of sessionIds) {
@@ -1031,6 +1033,7 @@ export class AgenCDaemonAgentManager {
           status,
           transitionAt,
           ...(reason !== undefined ? { reason } : {}),
+          ...(metadataPatch !== undefined ? { metadataPatch } : {}),
         });
       } catch (error) {
         this.#onSnapshotError(error);
@@ -1169,6 +1172,7 @@ export class AgenCDaemonAgentManager {
         agent.lastActiveAt,
         undefined,
         snapshotRouteForAgent(agent),
+        snapshot.metadata,
       );
     }
   }
@@ -1282,6 +1286,12 @@ function applyAgentSnapshot(
 ): void {
   agent.status = snapshot.status;
   agent.lastActiveAt = snapshot.lastActiveAt;
+  if (snapshot.metadata !== undefined) {
+    agent.metadata = {
+      ...(agent.metadata ?? {}),
+      ...snapshot.metadata,
+    };
+  }
 }
 
 function agentRunMetadata(agent: MutableAgent): JsonObject {

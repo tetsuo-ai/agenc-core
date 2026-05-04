@@ -18,6 +18,7 @@ export interface AgenCStateAgentRunStatusUpdate {
   readonly status: string;
   readonly lastActiveAt: string;
   readonly currentSessionId?: string;
+  readonly metadataPatch?: JsonObject;
 }
 
 export function upsertAgentRun(
@@ -64,6 +65,33 @@ export function updateAgentRunStatus(
   driver: StateSqliteDriver,
   update: AgenCStateAgentRunStatusUpdate,
 ): void {
+  const metadataJson =
+    update.metadataPatch === undefined
+      ? undefined
+      : mergedAgentRunMetadataJson(driver, update.id, update.metadataPatch);
+  if (metadataJson !== undefined) {
+    driver
+      .prepareState<[string, string, string | null, string | null, string, string]>(
+        `UPDATE agent_runs
+         SET status = ?,
+             last_active_at = ?,
+             current_session_id = CASE
+               WHEN ? IS NULL THEN current_session_id
+               ELSE ?
+             END,
+             metadata_json = ?
+         WHERE id = ?`,
+      )
+      .run(
+        update.status,
+        update.lastActiveAt,
+        update.currentSessionId ?? null,
+        update.currentSessionId ?? null,
+        metadataJson,
+        update.id,
+      );
+    return;
+  }
   driver
     .prepareState<[string, string, string | null, string | null, string]>(
       `UPDATE agent_runs
@@ -82,4 +110,34 @@ export function updateAgentRunStatus(
       update.currentSessionId ?? null,
       update.id,
     );
+}
+
+function mergedAgentRunMetadataJson(
+  driver: StateSqliteDriver,
+  runId: string,
+  patch: JsonObject,
+): string {
+  const row = driver
+    .prepareState<[string], { metadata_json: string | null }>(
+      "SELECT metadata_json FROM agent_runs WHERE id = ?",
+    )
+    .get(runId);
+  const existing = parseJsonObject(row?.metadata_json);
+  return JSON.stringify({ ...existing, ...patch });
+}
+
+function parseJsonObject(value: string | null | undefined): JsonObject {
+  if (value === null || value === undefined || value.trim().length === 0) {
+    return {};
+  }
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return isJsonObject(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
