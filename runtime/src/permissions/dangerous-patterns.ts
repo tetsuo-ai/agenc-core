@@ -75,9 +75,9 @@ export interface DangerousShellCommandPattern {
 /**
  * Hard-deny shell command patterns used by the permission evaluator.
  *
- * This combines the OC interpreter/pattern lists above with the donor runtime
- * exec-policy safety floor: destructive commands such as recursive forced
- * removal of critical paths must never be hidden by broad allow rules.
+ * This combines the upstream interpreter/pattern lists above with the donor
+ * runtime exec-policy safety floor: destructive commands such as recursive
+ * forced removal of critical paths must never be hidden by broad allow rules.
  */
 export const DANGEROUS_SHELL_COMMAND_PATTERNS: readonly DangerousShellCommandPattern[] = [
   {
@@ -87,6 +87,14 @@ export const DANGEROUS_SHELL_COMMAND_PATTERNS: readonly DangerousShellCommandPat
   {
     matches: isForceRemoveWithoutRecursive,
     label: "rm -f",
+  },
+  {
+    matches: evalContainsDangerousCommand,
+    label: "eval dangerous command",
+  },
+  {
+    matches: xargsContainsDangerousCommand,
+    label: "xargs dangerous command",
   },
   // Filesystem destruction
   { pattern: /\bmkfs(\.|\s)/, label: "mkfs" },
@@ -211,6 +219,47 @@ function isDangerousDefaultBranchForcePush(command: string): boolean {
   if (pushIndex === -1) return false;
 
   return gitPushArgsForceDefaultBranch(words.slice(pushIndex + 1));
+}
+
+function evalContainsDangerousCommand(command: string): boolean {
+  const fragments = splitShellFragments(command);
+  if (fragments.length > 1) {
+    return fragments.some((fragment) => evalContainsDangerousCommand(fragment));
+  }
+
+  const words = splitSimpleShellWords(command);
+  const evalIndex = firstCommandIndex(words, 0);
+  if (evalIndex === null) return false;
+  if (basename(stripShellQuotes(words[evalIndex] ?? "")) !== "eval") {
+    return false;
+  }
+
+  const script = words.slice(evalIndex + 1).join(" ");
+  return script.length > 0 && isDangerousShellCommand(script);
+}
+
+function xargsContainsDangerousCommand(command: string): boolean {
+  const fragments = splitShellFragments(command);
+  if (fragments.length > 1) {
+    return fragments.some((fragment) => xargsContainsDangerousCommand(fragment));
+  }
+
+  const words = splitSimpleShellWords(command);
+  const xargsIndex = firstCommandIndex(words, 0);
+  if (xargsIndex === null) return false;
+  if (basename(stripShellQuotes(words[xargsIndex] ?? "")) !== "xargs") {
+    return false;
+  }
+
+  const commandIndex = xargsCommandIndex(words, xargsIndex + 1);
+  if (commandIndex === null) return false;
+
+  const nested = words.slice(commandIndex);
+  const nestedCommand = basename(stripShellQuotes(nested[0] ?? ""));
+  if (nestedCommand === "rm" && rmArgsHaveRecursiveAndForce(nested.slice(1))) {
+    return true;
+  }
+  return isDangerousShellCommand(nested.join(" "));
 }
 
 function gitPushArgsForceDefaultBranch(args: readonly string[]): boolean {
@@ -406,6 +455,55 @@ function timeoutCommandIndex(words: readonly string[], startIndex: number): numb
   return index + 1 < words.length ? index + 1 : null;
 }
 
+const XARGS_OPTIONS_WITH_VALUE: ReadonlySet<string> = new Set([
+  "-E",
+  "-e",
+  "-I",
+  "-i",
+  "-L",
+  "-n",
+  "-P",
+  "-s",
+  "-d",
+  "--eof",
+  "--replace",
+  "--max-lines",
+  "--max-args",
+  "--max-procs",
+  "--max-chars",
+  "--delimiter",
+]);
+
+function xargsCommandIndex(words: readonly string[], startIndex: number): number | null {
+  let index = startIndex;
+  while (index < words.length) {
+    const word = stripShellQuotes(words[index]!);
+    if (word === "--") {
+      index++;
+      break;
+    }
+    if (XARGS_OPTIONS_WITH_VALUE.has(word)) {
+      index += 2;
+      continue;
+    }
+    if (
+      [...XARGS_OPTIONS_WITH_VALUE].some((option) =>
+        word.startsWith(`${option}=`),
+      ) ||
+      /^-[EIiLlnPsde].+/.test(word)
+    ) {
+      index++;
+      continue;
+    }
+    if (word.startsWith("-")) {
+      index++;
+      continue;
+    }
+    return index;
+  }
+  return index < words.length ? index : null;
+}
+
 function stdbufCommandIndex(words: readonly string[], startIndex: number): number | null {
   let index = startIndex;
   while (index < words.length) {
@@ -531,6 +629,27 @@ function rmArgsForceWithoutRecursive(args: readonly string[]): boolean {
     }
   }
   return force && !recursive;
+}
+
+function rmArgsHaveRecursiveAndForce(args: readonly string[]): boolean {
+  let recursive = false;
+  let force = false;
+  let parsingFlags = true;
+  for (const raw of args) {
+    const word = stripShellQuotes(raw);
+    if (parsingFlags && word === "--") {
+      parsingFlags = false;
+      continue;
+    }
+    if (!parsingFlags || !word.startsWith("-") || word === "-") continue;
+    if (word === "--recursive") recursive = true;
+    if (word === "--force") force = true;
+    if (!word.startsWith("--")) {
+      recursive ||= /[rR]/.test(word);
+      force ||= /[fF]/.test(word);
+    }
+  }
+  return recursive && force;
 }
 
 function splitSimpleShellWords(command: string): string[] {
@@ -698,6 +817,16 @@ function extractShellSubstitutionCommands(command: string): string[] {
       i = end + 1;
       continue;
     }
+    if ((char === "<" || char === ">") && command[i + 1] === "(") {
+      const end = findCommandSubstitutionEnd(command, i + 1);
+      if (end === -1) {
+        i += 2;
+        continue;
+      }
+      substitutions.push(command.slice(i + 2, end).trim());
+      i = end + 1;
+      continue;
+    }
     if (char === "`") {
       const end = findBacktickSubstitutionEnd(command, i + 1);
       if (end === -1) {
@@ -735,6 +864,11 @@ function findCommandSubstitutionEnd(command: string, openParenIndex: number): nu
       continue;
     }
     if (char === "$" && command[i + 1] === "(") {
+      depth++;
+      i += 2;
+      continue;
+    }
+    if ((char === "<" || char === ">") && command[i + 1] === "(") {
       depth++;
       i += 2;
       continue;

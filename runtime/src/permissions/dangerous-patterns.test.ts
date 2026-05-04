@@ -72,7 +72,19 @@ describe("dangerous shell command detection", () => {
     "echo $(rm -rf /)",
     "echo `rm -rf /`",
     "echo \"$(rm -rf /)\"",
+    "cat <(rm -rf /)",
+    "cat >(rm -rf /)",
+    "bash -lc \"cat <(rm -rf /)\"",
   ])("flags dangerous executable substitutions: %s", (command) => {
+    expect(isDangerousShellCommand(command)).toBe(true);
+  });
+
+  test.each([
+    "eval 'rm -rf /'",
+    "bash -lc \"eval 'rm -rf /'\"",
+    "printf / | xargs rm -rf",
+    "xargs rm -rf /",
+  ])("flags execution wrapper dangerous forms: %s", (command) => {
     expect(isDangerousShellCommand(command)).toBe(true);
   });
 
@@ -130,6 +142,7 @@ describe("dangerous shell command detection", () => {
   test("does not flag quoted text or non-rm wrapped commands", () => {
     expect(isDangerousShellCommand("echo 'rm -rf /'")).toBe(false);
     expect(isDangerousShellCommand("echo '$(rm -rf /)'")).toBe(false);
+    expect(isDangerousShellCommand("echo '<(rm -rf /)'")).toBe(false);
     expect(isDangerousShellCommand("echo rm -rf /")).toBe(false);
     expect(isDangerousShellCommand("timeout 10 echo rm -rf /")).toBe(false);
     expect(isDangerousShellCommand("nice echo rm -rf /")).toBe(false);
