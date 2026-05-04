@@ -144,6 +144,9 @@ function isAbsorbImportRewriteLine(line, rel) {
     /(?:^|[./])components\/HistorySearchDialog(?:\.js)?/,
     /(?:^|[./])screens\/ResumeConversation(?:\.js)?/,
     /(?:^|[./])utils\/transcriptSearch(?:\.js)?/,
+    /(?:^|[./])(?:tui\/)?cost\/(?:Stats|TokenWarning|MemoryUsageIndicator|tokenAnalytics)(?:\.js)?/,
+    /(?:^|[./])components\/(?:Stats|TokenWarning|MemoryUsageIndicator)(?:\.js)?/,
+    /(?:^|[./])utils\/tokenAnalytics(?:\.js)?/,
   ];
   if (commonAbsorbImportPatterns.some((pattern) => pattern.test(line))) {
     return true;

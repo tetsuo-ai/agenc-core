@@ -1,11 +1,7 @@
 /**
- * Token Analytics - Historical token usage tracking and analysis
- * 
- * Tracks token usage patterns over time for cost optimization
- * and capacity planning.
+ * Historical token usage tracking and analysis for cost optimization and
+ * capacity planning.
  */
-
-import type { BetaUsage as Usage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 
 export interface TokenUsageEntry {
   timestamp: number
@@ -31,8 +27,8 @@ export interface TokenAnalytics {
 }
 
 /**
- * Historical Token Analytics Tracker
- * 
+ * Historical token analytics tracker.
+ *
  * Tracks token usage patterns over time for analytics,
  * cost optimization, and capacity planning.
  */

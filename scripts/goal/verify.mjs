@@ -459,6 +459,28 @@ const ITEM_EVIDENCE = {
       },
     ],
   },
+  "T-16": {
+    files: [
+      "runtime/src/tui/cost/Stats.tsx",
+      "runtime/src/tui/cost/TokenWarning.tsx",
+      "runtime/src/tui/cost/MemoryUsageIndicator.tsx",
+      "runtime/src/tui/cost/tokenAnalytics.ts",
+      "runtime/src/tui/cost/PARITY.md",
+    ],
+    tests: [
+      "runtime/src/tui/cost/tokenAnalytics.test.ts",
+    ],
+    grepPresent: [
+      {
+        pattern: "\\.\\./\\.\\./cost/TokenWarning\\.js",
+        scope: "runtime/src/tui/components/PromptInput/Notifications.tsx",
+      },
+      {
+        pattern: "\\.\\./\\.\\./cost/MemoryUsageIndicator\\.js",
+        scope: "runtime/src/tui/components/PromptInput/Notifications.tsx",
+      },
+    ],
+  },
   "T-13": {
     files: [
       "runtime/src/tui/slash/slash-command-parsing.ts",
@@ -1162,6 +1184,10 @@ async function tuiAbsorbGates(item) {
     await t15HistoryResumeGates();
     return;
   }
+  if (id === "T-16") {
+    await t16CostUsageGates();
+    return;
+  }
   // Same shape as leaf absorb, but for the larger TUI subtrees.
   await leafAbsorbGates(item);
 }
@@ -1358,6 +1384,45 @@ async function t15HistoryResumeGates() {
   }
 
   pass("T-15 history/resume imports resolved to AgenC-owned paths");
+}
+
+async function t16CostUsageGates() {
+  const retiredTargets = [
+    "runtime/src/agenc/upstream/components/Stats.tsx",
+    "runtime/src/agenc/upstream/components/TokenWarning.tsx",
+    "runtime/src/agenc/upstream/components/MemoryUsageIndicator.tsx",
+    "runtime/src/agenc/upstream/utils/tokenAnalytics.ts",
+    "runtime/src/agenc/upstream/utils/tokenAnalytics.test.ts",
+  ];
+
+  for (const upstream of retiredTargets) {
+    if (existsSync(path.join(root, upstream))) {
+      failGate(`T-16 upstream target still present: ${upstream}`);
+    }
+    pass(`T-16 upstream target deleted (${upstream})`);
+  }
+
+  const oldAbsolutePattern = String.raw`agenc/upstream/(?:components/(?:Stats|TokenWarning|MemoryUsageIndicator)|utils/tokenAnalytics)`;
+  const oldAbsoluteScan = run(
+    "rg",
+    ["--no-messages", "-n", oldAbsolutePattern, "runtime/src"],
+    { silent: true },
+  );
+  if (oldAbsoluteScan.status === 0 && oldAbsoluteScan.stdout.trim()) {
+    failGate(`T-16 retired cost/usage upstream imports remain:\n${oldAbsoluteScan.stdout}`);
+  }
+
+  const oldRelativePattern = String.raw`['"](?:\.\.?/)+(?:components/)?(?:Stats|TokenWarning|MemoryUsageIndicator)\.js['"]|['"](?:\.\.?/)+(?:utils/)?tokenAnalytics\.js['"]|src/(?:components/(?:Stats|TokenWarning|MemoryUsageIndicator)|utils/tokenAnalytics)(?:\.js)?`;
+  const oldRelativeScan = run(
+    "rg",
+    ["--no-messages", "-n", oldRelativePattern, "runtime/src/agenc/upstream"],
+    { silent: true },
+  );
+  if (oldRelativeScan.status === 0 && oldRelativeScan.stdout.trim()) {
+    failGate(`T-16 retired cost/usage relative imports remain:\n${oldRelativeScan.stdout}`);
+  }
+
+  pass("T-16 cost/usage imports resolved to AgenC-owned paths");
 }
 
 async function foundationalGates(item) {
