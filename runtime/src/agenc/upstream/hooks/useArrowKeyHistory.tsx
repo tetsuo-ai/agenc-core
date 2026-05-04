@@ -3,7 +3,7 @@ import { getModeFromInput } from '../../../tui/components/PromptInput/inputModes
 import { useNotifications } from 'src/context/notifications.js';
 import { ConfigurableShortcutHint } from '../components/ConfigurableShortcutHint.js';
 import { FOOTER_TEMPORARY_STATUS_TIMEOUT } from '../../../tui/components/PromptInput/Notifications.js';
-import { getHistory } from '../history.js';
+import { getHistory } from '../../../tui/history/history.js';
 import { Text } from '../../../tui/ink.js';
 import type { PromptInputMode } from '../types/textInputTypes.js';
 import type { HistoryEntry, PastedContent } from '../utils/config.js';

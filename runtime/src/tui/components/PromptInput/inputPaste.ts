@@ -1,4 +1,4 @@
-import { getPastedTextRefNumLines } from '../../../agenc/upstream/history.js'
+import { getPastedTextRefNumLines } from '../../history/history.js'
 import type { PastedContent } from '../../../agenc/upstream/utils/config.js'
 
 const TRUNCATION_THRESHOLD = 10000 // Characters before we truncate

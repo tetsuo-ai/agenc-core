@@ -20,7 +20,7 @@ import type { ValidationError } from './utils/settings/validation.js';
 
 // Type-only access to ResumeConversation's Props via the module type.
 // No runtime cost - erased at compile time.
-type ResumeConversationProps = React.ComponentProps<typeof import('./screens/ResumeConversation.js').ResumeConversation>;
+type ResumeConversationProps = React.ComponentProps<typeof import('../../tui/history/ResumeConversation.js').ResumeConversation>;
 
 /**
  * Site ~3173: SnapshotUpdateDialog (agent memory snapshot update prompt).
@@ -123,7 +123,7 @@ export async function launchResumeChooser(root: Root, appProps: {
     ResumeConversation
   }, {
     App
-  }] = await Promise.all([worktreePathsPromise, import('./screens/ResumeConversation.js'), import('../../tui/components/App.js')]);
+  }] = await Promise.all([worktreePathsPromise, import('../../tui/history/ResumeConversation.js'), import('../../tui/components/App.js')]);
   await renderAndRun(root, <App getFpsMetrics={appProps.getFpsMetrics} stats={appProps.stats} initialState={appProps.initialState}>
       <KeybindingSetup>
         <ResumeConversation {...resumeProps} worktreePaths={worktreePaths} />

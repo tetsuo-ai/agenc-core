@@ -31,7 +31,7 @@ import { isFullscreenEnvEnabled } from '../../agenc/upstream/utils/fullscreen.js
 import { applyGrouping } from '../../agenc/upstream/utils/groupToolUses.js';
 import { buildMessageLookups, createAssistantMessage, deriveUUID, getMessagesAfterCompactBoundary, getToolUseID, getToolUseIDs, hasUnresolvedHooksFromLookup, isNotEmptyMessage, normalizeMessages, reorderMessagesInUI, type StreamingThinking, shouldShowUserMessage } from '../../agenc/upstream/utils/messages.js';
 import { plural } from '../../agenc/upstream/utils/stringUtils.js';
-import { renderableSearchText } from '../../agenc/upstream/utils/transcriptSearch.js';
+import { renderableSearchText } from '../history/transcriptSearch.js';
 import { Divider } from '../../agenc/upstream/components/design-system/Divider.js';
 import type { UnseenDivider } from '../../agenc/upstream/components/FullscreenLayout.js';
 import { LogoV2 } from '../../agenc/upstream/components/LogoV2/LogoV2.js';

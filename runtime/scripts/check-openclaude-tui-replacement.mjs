@@ -175,6 +175,16 @@ function assertSourceSnapshot() {
   ]
     .filter(([file]) => existsSync(join(liveTuiRoot, file)))
     .map(([, inventoryPath]) => inventoryPath);
+  const absorbedHistoryFiles = [
+    ["history/history.ts", "src/history.ts"],
+    ["history/history.test.ts", "src/history.test.ts"],
+    ["history/HistorySearchDialog.tsx", "src/components/HistorySearchDialog.tsx"],
+    ["history/ResumeConversation.tsx", "src/screens/ResumeConversation.tsx"],
+    ["history/transcriptSearch.ts", "src/utils/transcriptSearch.ts"],
+    ["history/transcriptSearch.test.ts", "src/utils/transcriptSearch.test.ts"],
+  ]
+    .filter(([file]) => existsSync(join(liveTuiRoot, file)))
+    .map(([, inventoryPath]) => inventoryPath);
   const substitutions = new Map([
     [
       `src/components/${donorBrand}CodeHint/PluginHintMenu.tsx`,
@@ -242,6 +252,22 @@ function assertSourceSnapshot() {
       "src/utils/statusNoticeDefinitions.test.tsx",
       "Focused coverage for the T-14 startup notice-definition behavior and AgenC wording.",
     ],
+    [
+      "src/history.ts",
+      "T-15 absorbs the prompt history storage and paste-reference helpers with the history/resume TUI cluster; this top-level donor file is outside the tracked TUI source directories.",
+    ],
+    [
+      "src/history.test.ts",
+      "Focused coverage for T-15 paste-reference parsing and expansion behavior in the absorbed history helper.",
+    ],
+    [
+      "src/utils/transcriptSearch.ts",
+      "T-15 absorbs transcript-search text extraction with the history/resume TUI cluster; this utility is outside the tracked TUI source directories.",
+    ],
+    [
+      "src/utils/transcriptSearch.test.ts",
+      "Focused coverage for T-15 transcript-search extraction behavior used by history search.",
+    ],
   ]);
   const expected = sourceFiles
     .map((file) => substitutions.get(file) ?? file)
@@ -255,6 +281,7 @@ function assertSourceSnapshot() {
     .concat(absorbedMessagesFiles)
     .concat(absorbedAppFiles)
     .concat(absorbedStartupFiles)
+    .concat(absorbedHistoryFiles)
     .sort();
   const missing = expected.filter((file) => !actualFiles.includes(file));
   const extra = actualFiles.filter((file) => !expected.includes(file));
@@ -335,6 +362,7 @@ function assertOldTuiRemoved() {
     if (file === "components/Messages.behavior.test.ts") continue;
     if (file === "components/messagesBriefFiltering.ts") continue;
     if (file === "components/App.tsx") continue;
+    if (file.startsWith("history/")) continue;
     if (file.startsWith("ink/")) continue;
     if (file.startsWith("keybindings/")) continue;
     fail(`unexpected live TUI file remains: ${file}`);
@@ -374,6 +402,12 @@ function assertNoDeletedAbsorbImporters() {
     [join(copiedRoot, "components/StatusLine"), "StatusLine"],
     [join(copiedRoot, "components/StatusNotices"), "StatusNotices"],
     [join(copiedRoot, "utils/statusNoticeDefinitions"), "status notice definitions"],
+  ]);
+  const deletedHistoryEntrypoints = new Map([
+    [join(copiedRoot, "history"), "history"],
+    [join(copiedRoot, "components/HistorySearchDialog"), "HistorySearchDialog"],
+    [join(copiedRoot, "screens/ResumeConversation"), "ResumeConversation"],
+    [join(copiedRoot, "utils/transcriptSearch"), "transcript search"],
   ]);
   const sourceImportPattern = /(?:from\s+|import\s*\(|require\s*\()\s*['"]([^'"]+)['"]/g;
   for (const file of walk(copiedRoot)) {
@@ -442,6 +476,18 @@ function assertNoDeletedAbsorbImporters() {
       ) {
         fail(`deleted startup/status alias import remains: ${file} -> ${specifier}`);
       }
+      if (
+        specifier === "src/history" ||
+        specifier === "src/history.js" ||
+        specifier === "src/components/HistorySearchDialog" ||
+        specifier === "src/components/HistorySearchDialog.js" ||
+        specifier === "src/screens/ResumeConversation" ||
+        specifier === "src/screens/ResumeConversation.js" ||
+        specifier === "src/utils/transcriptSearch" ||
+        specifier === "src/utils/transcriptSearch.js"
+      ) {
+        fail(`deleted history/resume alias import remains: ${file} -> ${specifier}`);
+      }
       if (!specifier.startsWith(".")) continue;
       const resolved = resolve(dirname(abs), specifier)
         .replace(/\.(?:js|jsx|ts|tsx|mjs|cjs)$/, "");
@@ -483,6 +529,11 @@ function assertNoDeletedAbsorbImporters() {
       }
       for (const [deletedStartupEntrypoint, label] of deletedStartupEntrypoints) {
         if (resolved === deletedStartupEntrypoint) {
+          fail(`deleted ${label} relative import remains: ${file} -> ${specifier}`);
+        }
+      }
+      for (const [deletedHistoryEntrypoint, label] of deletedHistoryEntrypoints) {
+        if (resolved === deletedHistoryEntrypoint) {
           fail(`deleted ${label} relative import remains: ${file} -> ${specifier}`);
         }
       }
