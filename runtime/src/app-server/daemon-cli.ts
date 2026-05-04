@@ -182,12 +182,14 @@ export function resolveAgenCDaemonSnapshotPath(
 export function formatAgenCDaemonCliHelpText(): string {
   return [
     "Usage: agenc daemon <start|stop|status|restart>",
+    "       agenc daemon start --foreground",
     "",
     "Commands:",
-    "  start     Start the local AgenC daemon",
-    "  stop      Stop the local AgenC daemon",
-    "  status    Show local AgenC daemon status",
-    "  restart   Stop and start the local AgenC daemon",
+    "  start                 Start the local AgenC daemon",
+    "  start --foreground    Run the daemon in the current process",
+    "  stop                  Stop the local AgenC daemon",
+    "  status                Show local AgenC daemon status",
+    "  restart               Stop and start the local AgenC daemon",
   ].join("\n");
 }
 
@@ -206,6 +208,22 @@ export function parseAgenCDaemonCliArgs(
     action === "restart" ||
     action === "run"
   ) {
+    const extra = argv.slice(2);
+    if (action === "start" && extra[0] === "--foreground") {
+      if (extra.length === 1) {
+        return { kind: "command", action: "run" };
+      }
+      return {
+        kind: "error",
+        message: `unknown daemon start option: ${extra[1]}`,
+      };
+    }
+    if (extra.length > 0) {
+      return {
+        kind: "error",
+        message: `unknown daemon ${action} option: ${extra[0]}`,
+      };
+    }
     return { kind: "command", action };
   }
   return {
@@ -1341,11 +1359,15 @@ export function createNodeDaemonCliHost(): AgenCDaemonCliHost {
     execPath: process.execPath,
     pid: process.pid,
     spawnDetachedDaemon: (env) => {
-      const child = spawn(process.execPath, [entrypointPath, "daemon", "run"], {
-        detached: true,
-        env,
-        stdio: "ignore",
-      });
+      const child = spawn(
+        process.execPath,
+        [entrypointPath, "daemon", "start", "--foreground"],
+        {
+          detached: true,
+          env,
+          stdio: "ignore",
+        },
+      );
       child.unref();
       if (child.pid === undefined) {
         throw new Error("AgenC daemon child process did not expose a pid");

@@ -1821,6 +1821,59 @@ async function foundationalGates(item) {
     pass(`${tests.length} contract test(s) present`);
     return;
   }
+  if (id === "F-08") {
+    const requiredFiles = [
+      "packaging/systemd/agenc-daemon.service",
+      "packaging/launchd/dev.agenc.daemon.plist",
+      "packaging/windows/agenc-daemon.xml",
+    ];
+    for (const rel of requiredFiles) {
+      if (!existsSync(path.join(root, rel))) {
+        failGate(`process supervision artifact missing: ${rel}`);
+      }
+    }
+
+    const daemonCli = await readFileSafe(
+      path.join(root, "runtime/src/app-server/daemon-cli.ts"),
+    );
+    const daemonCliTest = await readFileSafe(
+      path.join(root, "runtime/src/app-server/daemon-cli.contract.test.ts"),
+    );
+    const systemd = await readFileSafe(
+      path.join(root, "packaging/systemd/agenc-daemon.service"),
+    );
+    const launchd = await readFileSafe(
+      path.join(root, "packaging/launchd/dev.agenc.daemon.plist"),
+    );
+    const windows = await readFileSafe(
+      path.join(root, "packaging/windows/agenc-daemon.xml"),
+    );
+
+    if (!daemonCli.includes("start --foreground")) {
+      failGate("daemon CLI help does not expose start --foreground");
+    }
+    if (!daemonCli.includes('return { kind: "command", action: "run" };')) {
+      failGate(
+        "daemon CLI does not route start --foreground to foreground run mode",
+      );
+    }
+    if (!systemd.includes("agenc daemon start --foreground")) {
+      failGate("systemd unit does not run agenc daemon start --foreground");
+    }
+    if (!launchd.includes("<string>--foreground</string>")) {
+      failGate("launchd plist does not pass --foreground");
+    }
+    if (!windows.includes("<arguments>daemon start --foreground</arguments>")) {
+      failGate(
+        "Windows service template does not pass daemon start --foreground",
+      );
+    }
+    if (!daemonCliTest.includes("ships supervisor templates")) {
+      failGate("daemon CLI contract test does not cover supervisor templates");
+    }
+    pass("process supervision artifacts and foreground daemon mode present");
+    return;
+  }
   failGate(
     `item ${id} has no specific gate branch in foundationalGates; add one or remove the item`,
   );
