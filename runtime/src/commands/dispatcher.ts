@@ -214,6 +214,26 @@ export async function dispatchSlashCommand(
     };
   }
 
+  if (command.isEnabled?.() === false) {
+    const message = `/${command.name} is disabled in this environment`;
+    return {
+      result: { kind: "error", message },
+      immediate: false,
+      command,
+      trace: {
+        name: command.name,
+        aliasUsed: parsed.name,
+        argsRaw: command.sensitive === true
+          ? maskSensitiveArgs(parsed.argsRaw)
+          : parsed.argsRaw,
+        sensitive: command.sensitive === true,
+        immediate: command.immediate === true,
+        isMcp: parsed.isMcp,
+        resultKind: "error",
+      },
+    };
+  }
+
   // Build the per-invocation context: preserve the caller's ctx but
   // bind argsRaw from the parsed value.
   const invocationCtx: SlashCommandContext = {

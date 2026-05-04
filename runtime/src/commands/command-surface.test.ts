@@ -34,6 +34,7 @@ import { collectDoctorChecks, formatDoctorReport } from "./doctor.js";
 import {
   reloadPluginSurfaces,
   setActivePluginRefresherForTesting,
+  setRemoteSettingsSyncForTesting,
 } from "./reload-plugins.js";
 import { handleWikiCommand } from "./wiki.js";
 import type { SlashCommandContext } from "./types.js";
@@ -48,6 +49,7 @@ import {
 } from "../tools/system/filesystem.js";
 import { PermissionModeRegistry } from "../permissions/mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import { createSessionAppStateBridge } from "../agenc/adapters/app-state-bridge.js";
 
 interface CacheStatsTrackerForTest {
   recordRequest(
@@ -225,6 +227,55 @@ describe("AgenC command surface compatibility", () => {
       await expect(getCommands("/tmp")).resolves.toEqual(
         expect.arrayContaining([expect.objectContaining({ name: "files" })]),
       );
+    } finally {
+      if (previousUserType === undefined) {
+        delete process.env.USER_TYPE;
+      } else {
+        process.env.USER_TYPE = previousUserType;
+      }
+    }
+  });
+
+  it("publishes the live AppState setter alongside model and expanded-view setters", () => {
+    const setModel = vi.fn();
+    const setExpandedView = vi.fn();
+    let state = { value: 1 } as never;
+    const setAppState = vi.fn((updater: (prev: never) => never) => {
+      state = updater(state);
+    });
+
+    const bridge = createSessionAppStateBridge(
+      setModel,
+      setExpandedView,
+      setAppState,
+    );
+
+    bridge.setModel?.("grok-4");
+    bridge.setExpandedView?.("tasks");
+    bridge.setAppState?.((prev) => ({
+      ...(prev as Record<string, unknown>),
+      value: 2,
+    }));
+
+    expect(setModel).toHaveBeenCalledWith("grok-4");
+    expect(setExpandedView).toHaveBeenCalledWith("tasks");
+    expect(setAppState).toHaveBeenCalledOnce();
+    expect(state).toEqual({ value: 2 });
+  });
+
+  it("rejects disabled commands through the runtime dispatcher", async () => {
+    const previousUserType = process.env.USER_TYPE;
+    try {
+      delete process.env.USER_TYPE;
+      const outcome = await dispatchLine("/files", "/tmp/project");
+      expect(outcome.result.kind).toBe("error");
+      if (outcome.result.kind === "error") {
+        expect(outcome.result.message).toContain("disabled");
+      }
+      process.env.USER_TYPE = "ant";
+      await expect(dispatchLine("/files", "/tmp/project")).resolves.toMatchObject({
+        result: { kind: "text", text: "No files in context." },
+      });
     } finally {
       if (previousUserType === undefined) {
         delete process.env.USER_TYPE;
@@ -572,6 +623,52 @@ describe("absorbed T-10 command behavior", () => {
     }
   });
 
+  it("redownloads remote user settings before refreshing plugin surfaces", async () => {
+    const order: string[] = [];
+    const redownloadUserSettings = vi.fn(async () => {
+      order.push("settings");
+      return true;
+    });
+    const notifySettingsChange = vi.fn(() => {
+      order.push("notify");
+    });
+    const refreshActivePlugins = vi.fn(async () => {
+      order.push("plugins");
+      return {
+        enabled_count: 0,
+        disabled_count: 0,
+        command_count: 0,
+        agent_count: 0,
+        hook_count: 0,
+        mcp_count: 0,
+        lsp_count: 0,
+        error_count: 0,
+      };
+    });
+    const previousRemote = process.env.AGENC_REMOTE;
+    const restoreSync = setRemoteSettingsSyncForTesting({
+      redownloadUserSettings,
+      notifySettingsChange,
+    });
+    const restoreRefresh = setActivePluginRefresherForTesting(refreshActivePlugins);
+    try {
+      process.env.AGENC_REMOTE = "1";
+      await reloadPluginSurfaces(fakeContext("/tmp"));
+      expect(redownloadUserSettings).toHaveBeenCalledOnce();
+      expect(notifySettingsChange).toHaveBeenCalledWith("userSettings");
+      expect(refreshActivePlugins).toHaveBeenCalledOnce();
+      expect(order).toEqual(["settings", "notify", "plugins"]);
+    } finally {
+      restoreRefresh();
+      restoreSync();
+      if (previousRemote === undefined) {
+        delete process.env.AGENC_REMOTE;
+      } else {
+        process.env.AGENC_REMOTE = previousRemote;
+      }
+    }
+  });
+
   it("dispatches the absorbed command batch through the runtime dispatcher", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agenc-dispatch-"));
     await writeFile(join(dir, "CHANGELOG.md"), "# Changes\n\n- shipped\n", "utf8");
@@ -596,7 +693,9 @@ describe("absorbed T-10 command behavior", () => {
       lsp_count: 0,
       error_count: 0,
     }));
+    const previousUserType = process.env.USER_TYPE;
     try {
+      process.env.USER_TYPE = "ant";
       const expectations = new Map([
         ["/cache-stats", "Cache stats"],
         ["/cost", "Cost tracking is not enabled"],
@@ -617,6 +716,11 @@ describe("absorbed T-10 command behavior", () => {
         }
       }
     } finally {
+      if (previousUserType === undefined) {
+        delete process.env.USER_TYPE;
+      } else {
+        process.env.USER_TYPE = previousUserType;
+      }
       restore();
     }
   });

@@ -11,12 +11,22 @@ async function importLegacyCommandShim(): Promise<typeof RuntimeCommands> {
 
 describe("loadUpstreamCommandList (TUI slash-command wiring)", () => {
   it("returns exactly the user-invocable subset of the registry", () => {
+    const previousUserType = process.env.USER_TYPE;
+    delete process.env.USER_TYPE;
     const expected = buildDefaultRegistry()
       .list()
-      .filter((cmd) => cmd.userInvocable !== false).length;
-    const list = loadUpstreamCommandList();
-    expect(list.length).toBe(expected);
-    expect(list.length).toBeGreaterThanOrEqual(18);
+      .filter((cmd) => cmd.userInvocable !== false && (cmd.isEnabled?.() ?? true)).length;
+    try {
+      const list = loadUpstreamCommandList();
+      expect(list.length).toBe(expected);
+      expect(list.length).toBeGreaterThanOrEqual(18);
+    } finally {
+      if (previousUserType === undefined) {
+        delete process.env.USER_TYPE;
+      } else {
+        process.env.USER_TYPE = previousUserType;
+      }
+    }
   });
 
   it("every entry carries name, description, and the upstream local-type discriminator", () => {
@@ -34,7 +44,7 @@ describe("loadUpstreamCommandList (TUI slash-command wiring)", () => {
     const registry = buildDefaultRegistry();
     const expected = registry
       .list()
-      .filter((cmd) => cmd.userInvocable !== false)
+      .filter((cmd) => cmd.userInvocable !== false && (cmd.isEnabled?.() ?? true))
       .map((cmd) => cmd.name)
       .sort();
     const got = loadUpstreamCommandList()
@@ -48,6 +58,7 @@ describe("loadUpstreamCommandList (TUI slash-command wiring)", () => {
     const registry = buildDefaultRegistry();
     for (const cmd of registry.list()) {
       if (cmd.userInvocable === false) continue;
+      if (cmd.isEnabled?.() === false) continue;
       const projected = list.find((p) => p.name === cmd.name);
       expect(projected).toBeDefined();
       if (cmd.aliases && cmd.aliases.length > 0) {
@@ -74,10 +85,26 @@ describe("loadUpstreamCommandList (TUI slash-command wiring)", () => {
   it("registration order from buildDefaultRegistry is preserved", () => {
     const registryNames = buildDefaultRegistry()
       .list()
-      .filter((cmd) => cmd.userInvocable !== false)
+      .filter((cmd) => cmd.userInvocable !== false && (cmd.isEnabled?.() ?? true))
       .map((cmd) => cmd.name);
     const projectedNames = loadUpstreamCommandList().map((cmd) => cmd.name);
     expect(projectedNames).toEqual(registryNames);
+  });
+
+  it("omits disabled commands from the TUI command list", () => {
+    const previousUserType = process.env.USER_TYPE;
+    try {
+      delete process.env.USER_TYPE;
+      expect(loadUpstreamCommandList().map((cmd) => cmd.name)).not.toContain("files");
+      process.env.USER_TYPE = "ant";
+      expect(loadUpstreamCommandList().map((cmd) => cmd.name)).toContain("files");
+    } finally {
+      if (previousUserType === undefined) {
+        delete process.env.USER_TYPE;
+      } else {
+        process.env.USER_TYPE = previousUserType;
+      }
+    }
   });
 
   it("legacy command-module shim re-exports the tested runtime command surface", async () => {

@@ -17,12 +17,18 @@
  *
  * @module
  */
-import { getCommandsSync, type Command } from "../../commands.js";
+import {
+  getCommandsSync,
+  isCommandEnabled,
+  type Command,
+} from "../../commands.js";
 
 /**
  * Project the AgenC registry into the command-list shape consumed by
  * the TUI. Runtime execution stays in `commands/dispatcher.ts`.
  */
 export function loadUpstreamCommandList(): readonly Command[] {
-  return getCommandsSync().filter(cmd => cmd.userInvocable !== false);
+  return getCommandsSync().filter(
+    cmd => cmd.userInvocable !== false && isCommandEnabled(cmd),
+  );
 }

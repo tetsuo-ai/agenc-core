@@ -22,6 +22,13 @@ export type ActivePluginRefresher = (
 
 let activePluginRefresherForTesting: ActivePluginRefresher | undefined;
 
+export interface RemoteSettingsSync {
+  readonly redownloadUserSettings: () => Promise<boolean>;
+  readonly notifySettingsChange: (source: "userSettings") => void;
+}
+
+let remoteSettingsSyncForTesting: RemoteSettingsSync | undefined;
+
 export function setActivePluginRefresherForTesting(
   refresher: ActivePluginRefresher | undefined,
 ): () => void {
@@ -29,6 +36,16 @@ export function setActivePluginRefresherForTesting(
   activePluginRefresherForTesting = refresher;
   return () => {
     activePluginRefresherForTesting = previous;
+  };
+}
+
+export function setRemoteSettingsSyncForTesting(
+  sync: RemoteSettingsSync | undefined,
+): () => void {
+  const previous = remoteSettingsSyncForTesting;
+  remoteSettingsSyncForTesting = sync;
+  return () => {
+    remoteSettingsSyncForTesting = previous;
   };
 }
 
@@ -50,6 +67,48 @@ async function clearRuntimeCommandCaches(ctx: SlashCommandContext): Promise<void
   ctx.session.services.skillsManager.clearSkillCaches?.();
   const commands = await import("../commands.js");
   commands.clearCommandMemoizationCaches();
+}
+
+function isEnvTruthy(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  return !["", "0", "false", "no", "off"].includes(value.trim().toLowerCase());
+}
+
+async function loadRemoteSettingsSync(): Promise<RemoteSettingsSync | null> {
+  if (remoteSettingsSyncForTesting) return remoteSettingsSyncForTesting;
+  const settingsSyncModulePath: string =
+    "../agenc/upstream/services/settingsSync/index.js";
+  const settingsChangeModulePath: string =
+    "../agenc/upstream/utils/settings/changeDetector.js";
+  try {
+    const [settingsSync, changeDetector] = await Promise.all([
+      import(settingsSyncModulePath) as Promise<{
+        redownloadUserSettings?: () => Promise<boolean>;
+      }>,
+      import(settingsChangeModulePath) as Promise<{
+        settingsChangeDetector?: {
+          notifyChange?: (source: "userSettings") => void;
+        };
+      }>,
+    ]);
+    if (typeof settingsSync.redownloadUserSettings !== "function") return null;
+    return {
+      redownloadUserSettings: settingsSync.redownloadUserSettings,
+      notifySettingsChange: source =>
+        changeDetector.settingsChangeDetector?.notifyChange?.(source),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function refreshRemoteUserSettingsIfNeeded(): Promise<boolean> {
+  if (!isEnvTruthy(process.env.AGENC_REMOTE)) return false;
+  const sync = await loadRemoteSettingsSync();
+  if (!sync) return false;
+  const applied = await sync.redownloadUserSettings().catch(() => false);
+  if (applied) sync.notifySettingsChange("userSettings");
+  return applied;
 }
 
 async function defaultActivePluginRefresher(
@@ -96,6 +155,7 @@ export function formatPluginRefreshSummary(
 export async function reloadPluginSurfaces(
   ctx: SlashCommandContext,
 ): Promise<string> {
+  await refreshRemoteUserSettingsIfNeeded();
   await clearRuntimeCommandCaches(ctx);
   const result = await (activePluginRefresherForTesting ?? defaultActivePluginRefresher)(ctx);
 
