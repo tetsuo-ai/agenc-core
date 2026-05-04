@@ -171,6 +171,11 @@ const result = spawnSync("codex", reviewArgs, {
   encoding: "utf8",
   input: reviewerInstructions,
   stdio: ["pipe", "pipe", "pipe"],
+  // Reviewer transcripts can be large (full diff + reasoning + per-file
+  // analysis). Default 1MB stderr buffer kills the subprocess before
+  // verdict.txt is written, leading to misleading "missing VERDICT line"
+  // errors. 256MB is enough for any plausible review.
+  maxBuffer: 256 * 1024 * 1024,
 });
 
 if (result.status !== 0) {
