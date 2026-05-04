@@ -424,6 +424,41 @@ const ITEM_EVIDENCE = {
       },
     ],
   },
+  "T-15": {
+    files: [
+      "runtime/src/tui/history/history.ts",
+      "runtime/src/tui/history/HistorySearchDialog.tsx",
+      "runtime/src/tui/history/ResumeConversation.tsx",
+      "runtime/src/tui/history/transcriptSearch.ts",
+      "runtime/src/tui/history/PARITY.md",
+    ],
+    tests: [
+      "runtime/src/tui/history/history.test.ts",
+      "runtime/src/tui/history/transcriptSearch.test.ts",
+    ],
+    grepPresent: [
+      {
+        pattern: "\\.\\./history/transcriptSearch\\.js",
+        scope: "runtime/src/tui/components/Messages.tsx",
+      },
+      {
+        pattern: "\\.\\./\\.\\./history/history\\.js",
+        scope: "runtime/src/tui/components/PromptInput/PromptInput.tsx",
+      },
+      {
+        pattern: "\\.\\./\\.\\./history/HistorySearchDialog\\.js",
+        scope: "runtime/src/tui/components/PromptInput/PromptInput.tsx",
+      },
+      {
+        pattern: "\\.\\./\\.\\./history/history\\.js",
+        scope: "runtime/src/tui/components/PromptInput/inputPaste.ts",
+      },
+      {
+        pattern: "\\.\\./\\.\\./tui/history/ResumeConversation\\.js",
+        scope: "runtime/src/agenc/upstream/dialogLaunchers.tsx",
+      },
+    ],
+  },
   "T-13": {
     files: [
       "runtime/src/tui/slash/slash-command-parsing.ts",
@@ -1123,6 +1158,10 @@ async function tuiAbsorbGates(item) {
     await t14StartupStatusGates();
     return;
   }
+  if (id === "T-15") {
+    await t15HistoryResumeGates();
+    return;
+  }
   // Same shape as leaf absorb, but for the larger TUI subtrees.
   await leafAbsorbGates(item);
 }
@@ -1281,6 +1320,44 @@ async function t14StartupStatusGates() {
   }
 
   pass("T-14 startup/status imports resolved to AgenC-owned paths");
+}
+
+async function t15HistoryResumeGates() {
+  const retiredTargets = [
+    "runtime/src/agenc/upstream/history.ts",
+    "runtime/src/agenc/upstream/components/HistorySearchDialog.tsx",
+    "runtime/src/agenc/upstream/screens/ResumeConversation.tsx",
+    "runtime/src/agenc/upstream/utils/transcriptSearch.ts",
+  ];
+
+  for (const upstream of retiredTargets) {
+    if (existsSync(path.join(root, upstream))) {
+      failGate(`T-15 upstream target still present: ${upstream}`);
+    }
+    pass(`T-15 upstream target deleted (${upstream})`);
+  }
+
+  const oldAbsolutePattern = String.raw`agenc/upstream/(?:history|components/HistorySearchDialog|screens/ResumeConversation|utils/transcriptSearch)`;
+  const oldAbsoluteScan = run(
+    "rg",
+    ["--no-messages", "-n", oldAbsolutePattern, "runtime/src"],
+    { silent: true },
+  );
+  if (oldAbsoluteScan.status === 0 && oldAbsoluteScan.stdout.trim()) {
+    failGate(`T-15 retired history/resume upstream imports remain:\n${oldAbsoluteScan.stdout}`);
+  }
+
+  const oldRelativePattern = String.raw`['"](?:\.\.?/)+(?:history|components/HistorySearchDialog|screens/ResumeConversation|utils/transcriptSearch)\.js['"]|src/(?:history|components/HistorySearchDialog|screens/ResumeConversation|utils/transcriptSearch)(?:\.js)?`;
+  const oldRelativeScan = run(
+    "rg",
+    ["--no-messages", "-n", oldRelativePattern, "runtime/src/agenc/upstream"],
+    { silent: true },
+  );
+  if (oldRelativeScan.status === 0 && oldRelativeScan.stdout.trim()) {
+    failGate(`T-15 retired history/resume relative imports remain:\n${oldRelativeScan.stdout}`);
+  }
+
+  pass("T-15 history/resume imports resolved to AgenC-owned paths");
 }
 
 async function foundationalGates(item) {

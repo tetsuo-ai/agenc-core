@@ -2,7 +2,7 @@ import {
   expandPastedTextRefs,
   formatPastedTextRef,
   getPastedTextRefNumLines,
-} from '../history.js'
+} from '../../../tui/history/history.js'
 import instances from '../../../tui/ink/instances.js'
 import type { PastedContent } from './config.js'
 import { classifyGuiEditor, getExternalEditor } from './editor.js'

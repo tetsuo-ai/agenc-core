@@ -1,15 +1,15 @@
 import * as React from 'react';
 import { useEffect, useMemo, useState } from 'react';
-import { useRegisterOverlay } from '../context/overlayContext.js';
-import { getTimestampedHistory, type TimestampedHistoryEntry } from '../history.js';
-import { useTerminalSize } from '../hooks/useTerminalSize.js';
-import { stringWidth } from '../../../tui/ink/stringWidth.js';
-import { wrapAnsi } from '../../../tui/ink/wrapAnsi.js';
-import { Box, Text } from '../../../tui/ink.js';
-import { logEvent } from '../services/analytics/index.js';
-import type { HistoryEntry } from '../utils/config.js';
-import { formatRelativeTimeAgo, truncateToWidth } from '../utils/format.js';
-import { FuzzyPicker } from './design-system/FuzzyPicker.js';
+import { useRegisterOverlay } from '../../agenc/upstream/context/overlayContext.js';
+import { getTimestampedHistory, type TimestampedHistoryEntry } from './history.js';
+import { useTerminalSize } from '../../agenc/upstream/hooks/useTerminalSize.js';
+import { stringWidth } from '../ink/stringWidth.js';
+import { wrapAnsi } from '../ink/wrapAnsi.js';
+import { Box, Text } from '../ink.js';
+import { logEvent } from '../../agenc/upstream/services/analytics/index.js';
+import type { HistoryEntry } from '../../agenc/upstream/utils/config.js';
+import { formatRelativeTimeAgo, truncateToWidth } from '../../agenc/upstream/utils/format.js';
+import { FuzzyPicker } from '../../agenc/upstream/components/design-system/FuzzyPicker.js';
 type Props = {
   initialQuery?: string;
   onSelect: (entry: HistoryEntry) => void;
@@ -82,7 +82,7 @@ export function HistorySearchDialog({
   const rowWidth = Math.max(20, listWidth - AGE_WIDTH - 1);
   const previewWidth = previewOnRight ? Math.max(20, columns - listWidth - 12) : Math.max(20, columns - 10);
   return <FuzzyPicker title="Search prompts" placeholder="Filter history…" initialQuery={initialQuery} items={filtered} getKey={item_0 => String(item_0.entry.timestamp)} onQueryChange={setQuery} onSelect={item_1 => {
-    logEvent('tengu_history_picker_select', {
+    logEvent('agenc_history_picker_select', {
       result_count: filtered.length,
       query_length: query.length
     });

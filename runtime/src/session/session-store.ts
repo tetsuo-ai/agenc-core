@@ -1611,7 +1611,7 @@ function estimateToolResultTokensFromPayload(payload: unknown): number {
 
 /**
  * Summary of a single resumable session, surfaced by the TUI session
- * picker (`tui/screens/ResumeConversation.tsx`).
+ * picker (`tui/history/ResumeConversation.tsx`).
  *
  * Fields are intentionally minimal: the picker only needs a stable
  * identifier (`sessionId`), a sortable timestamp (`lastModified`), and

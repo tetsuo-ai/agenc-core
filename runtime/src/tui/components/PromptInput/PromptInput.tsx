@@ -18,7 +18,7 @@ import { findBuddyTriggerPositions, useBuddyNotification } from '../../../agenc/
 import { type Command, hasCommand } from '../../../commands.js';
 import { useIsModalOverlayActive } from '../../../agenc/upstream/context/overlayContext.js';
 import { useSetPromptOverlayDialog } from '../../context/promptOverlayContext.js';
-import { formatImageRef, formatPastedTextRef, getPastedTextRefNumLines, parseReferences } from '../../../agenc/upstream/history.js';
+import { formatImageRef, formatPastedTextRef, getPastedTextRefNumLines, parseReferences } from '../../history/history.js';
 import type { VerificationStatus } from '../../../agenc/upstream/hooks/useApiKeyVerification.js';
 import { type HistoryMode, useArrowKeyHistory } from '../../../agenc/upstream/hooks/useArrowKeyHistory.js';
 import { useDoublePress } from '../../../agenc/upstream/hooks/useDoublePress.js';
@@ -99,7 +99,7 @@ import { getVisibleAgentTasks, useCoordinatorTaskCount } from '../../../agenc/up
 import { getEffortNotificationText } from '../../../agenc/upstream/components/EffortIndicator.js';
 import { getFastIconString } from '../../../agenc/upstream/components/FastIcon.js';
 import { GlobalSearchDialog } from '../../../agenc/upstream/components/GlobalSearchDialog.js';
-import { HistorySearchDialog } from '../../../agenc/upstream/components/HistorySearchDialog.js';
+import { HistorySearchDialog } from '../../history/HistorySearchDialog.js';
 import { ModelPicker } from '../../../agenc/upstream/components/ModelPicker.js';
 import { QuickOpenDialog } from '../../../agenc/upstream/components/QuickOpenDialog.js';
 import TextInput from '../../../agenc/upstream/components/TextInput.js';
