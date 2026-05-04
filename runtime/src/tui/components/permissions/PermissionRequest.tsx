@@ -6,7 +6,7 @@ import { ExitPlanModeV2Tool } from '../../../agenc/upstream/tools/ExitPlanModeTo
 import { useNotifyAfterTimeout } from '../../../agenc/upstream/hooks/useNotifyAfterTimeout.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import type { AnyObject, Tool, ToolUseContext } from '../../../agenc/upstream/Tool.js';
-import { AskUserQuestionTool } from '../../../agenc/upstream/tools/AskUserQuestionTool/AskUserQuestionTool.js';
+import { AskUserQuestionTool } from '../../../tools/ask-user-question/tui-tool.js';
 import { BashTool } from '../../../agenc/upstream/tools/BashTool/BashTool.js';
 import { FileEditTool } from '../../../agenc/upstream/tools/FileEditTool/FileEditTool.js';
 import { FileReadTool } from '../../../agenc/upstream/tools/FileReadTool/FileReadTool.js';

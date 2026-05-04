@@ -53,7 +53,7 @@ vi.mock("../../agenc/upstream/hooks/useNotifyAfterTimeout.js", () => ({
 vi.mock("../keybindings/useKeybinding.js", () => ({
   useKeybinding: () => {},
 }));
-vi.mock("../../agenc/upstream/tools/AskUserQuestionTool/AskUserQuestionTool.js", () => ({
+vi.mock("../../tools/ask-user-question/tui-tool.js", () => ({
   AskUserQuestionTool: permissionMocks.AskUserQuestionTool,
 }));
 vi.mock("../../agenc/upstream/tools/BashTool/BashTool.js", () => ({

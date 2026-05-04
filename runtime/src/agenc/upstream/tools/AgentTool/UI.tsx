@@ -28,7 +28,7 @@ import { getMainLoopModel, parseUserSpecifiedModel, renderModelName } from '../.
 import type { Theme, ThemeName } from '../../utils/theme.js';
 import type { outputSchema, Progress, RemoteLaunchedOutput } from './AgentTool.js';
 import { inputSchema } from './AgentTool.js';
-import { getAgentColor } from './agentColorManager.js';
+import { getAgentColor } from 'src/tools/AgentTool/agentColorManager.js';
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js';
 const MAX_PROGRESS_MESSAGES_TO_SHOW = 3;
 

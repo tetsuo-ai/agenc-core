@@ -1,6 +1,3 @@
-import { getAgentColorMap } from '../../bootstrap/state.js'
-import type { Theme } from '../../utils/theme.js'
-
 export type AgentColorName =
   | 'red'
   | 'blue'
@@ -31,16 +28,15 @@ export const AGENT_COLOR_TO_THEME_COLOR = {
   orange: 'orange_FOR_SUBAGENTS_ONLY',
   pink: 'pink_FOR_SUBAGENTS_ONLY',
   cyan: 'cyan_FOR_SUBAGENTS_ONLY',
-} as const satisfies Record<AgentColorName, keyof Theme>
+} as const satisfies Record<AgentColorName, string>
 
-export function getAgentColor(agentType: string): keyof Theme | undefined {
+const agentColorMap = new Map<string, AgentColorName>()
+
+export function getAgentColor(agentType: string): string | undefined {
   if (agentType === 'general-purpose') {
     return undefined
   }
 
-  const agentColorMap = getAgentColorMap()
-
-  // Check if color already assigned
   const existingColor = agentColorMap.get(agentType)
   if (existingColor && AGENT_COLORS.includes(existingColor)) {
     return AGENT_COLOR_TO_THEME_COLOR[existingColor]
@@ -53,8 +49,6 @@ export function setAgentColor(
   agentType: string,
   color: AgentColorName | undefined,
 ): void {
-  const agentColorMap = getAgentColorMap()
-
   if (!color) {
     agentColorMap.delete(agentType)
     return

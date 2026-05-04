@@ -15,11 +15,11 @@ import {
   createBridgeTool,
   createBridgeTools,
 } from "../tui/bridges/tool-stubs.js"; // branding-scan: allow existing TUI adapter directory name
-import { AskUserQuestionTool as UpstreamAskUserQuestionTool } from "../agenc/upstream/tools/AskUserQuestionTool/AskUserQuestionTool.js";
+import { AskUserQuestionTool } from "./ask-user-question/tui-tool.js";
 
 describe("AskUserQuestion bridge routing", () => {
-  test("uses the upstream tool object so PermissionRequest selects the structured question UI", () => {
-    expect(createBridgeTool("AskUserQuestion")).toBe(UpstreamAskUserQuestionTool);
-    expect(createBridgeTools([])).toContain(UpstreamAskUserQuestionTool);
+  test("uses the AgenC tool object so PermissionRequest selects the structured question UI", () => {
+    expect(createBridgeTool("AskUserQuestion")).toBe(AskUserQuestionTool);
+    expect(createBridgeTools([])).toContain(AskUserQuestionTool);
   });
 });

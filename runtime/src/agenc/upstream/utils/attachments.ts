@@ -119,13 +119,13 @@ import {
   getFileModificationTimeAsync,
   isFileWithinReadSizeLimit,
 } from './file.js'
-import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
-import { filterAgentsByMcpRequirements } from '../tools/AgentTool/loadAgentsDir.js'
-import { AGENT_TOOL_NAME } from '../tools/AgentTool/constants.js'
+import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
+import { filterAgentsByMcpRequirements } from 'src/tools/AgentTool/loadAgentsDir.js'
+import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 import {
   formatAgentLine,
   shouldInjectAgentListInMessages,
-} from '../tools/AgentTool/prompt.js'
+} from 'src/tools/AgentTool/prompt.js'
 import { filterDeniedAgents } from './permissions/permissions.js'
 import { getSubscriptionType } from './auth.js'
 import { mcpInfoFromString } from '../services/mcp/mcpStringUtils.js'
@@ -200,7 +200,7 @@ import { feature } from 'bun:bundle'
 const BRIEF_TOOL_NAME: string | null =
   feature('KAIROS') || feature('KAIROS_BRIEF')
     ? (
-        require('../tools/BriefTool/prompt.js') as typeof import('../tools/BriefTool/prompt.js')
+        require('src/tools/BriefTool/prompt.js') as typeof import('src/tools/BriefTool/prompt.js')
       ).BRIEF_TOOL_NAME
     : null
 const sessionTranscriptModule = feature('KAIROS')

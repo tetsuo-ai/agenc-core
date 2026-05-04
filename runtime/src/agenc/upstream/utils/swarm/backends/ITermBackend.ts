@@ -1,4 +1,4 @@
-import type { AgentColorName } from '../../../tools/AgentTool/agentColorManager.js'
+import type { AgentColorName } from 'src/tools/AgentTool/agentColorManager.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { execFileNoThrow } from '../../../utils/execFileNoThrow.js'
 import { IT2_COMMAND, isInITerm2, isIt2CliAvailable } from './detection.js'

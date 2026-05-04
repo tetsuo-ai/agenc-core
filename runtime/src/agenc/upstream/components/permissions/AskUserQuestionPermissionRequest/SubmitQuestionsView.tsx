@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import React from 'react';
 import { Box, Text } from '../../../../../tui/ink.js';
-import type { Question } from '../../../tools/AskUserQuestionTool/AskUserQuestionTool.js';
+import type { Question } from 'src/tools/AskUserQuestionTool/AskUserQuestionTool.js';
 import type { PermissionDecision } from '../../../utils/permissions/PermissionResult.js';
 import { Select } from '../../CustomSelect/index.js';
 import { Divider } from '../../design-system/Divider.js';

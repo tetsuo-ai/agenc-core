@@ -109,7 +109,7 @@ vi.mock("../../agenc/upstream/Tool.js", () => ({
   }),
 }));
 
-vi.mock("../../agenc/upstream/tools/AskUserQuestionTool/AskUserQuestionTool.js", () => ({
+vi.mock("../../tools/ask-user-question/tui-tool.js", () => ({
   AskUserQuestionTool: {
     name: "AskUserQuestion",
     aliases: [],

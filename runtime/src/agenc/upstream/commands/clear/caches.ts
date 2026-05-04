@@ -134,7 +134,7 @@ export function clearSessionCaches(
     ({ clearToolSearchDescriptionCache }) => clearToolSearchDescriptionCache(),
   )
   // Clear agent definitions cache (accumulates per-cwd via EnterWorktreeTool)
-  void import('../../tools/AgentTool/loadAgentsDir.js').then(
+  void import('src/tools/AgentTool/loadAgentsDir.js').then(
     ({ clearAgentDefinitionsCache }) => clearAgentDefinitionsCache(),
   )
   // Clear SkillTool prompt cache (accumulates per project root)

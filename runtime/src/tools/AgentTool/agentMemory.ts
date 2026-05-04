@@ -1,16 +1,11 @@
-import { join, normalize, sep } from 'path'
-import { getProjectRoot } from '../../bootstrap/state.js'
-import {
-  buildMemoryPrompt,
-  ensureMemoryDirExists,
-} from '../../memdir/memdir.js'
-import { getMemoryBaseDir } from '../../memdir/paths.js'
-import { getCwd } from '../../utils/cwd.js'
-import { findCanonicalGitRoot } from '../../utils/git.js'
-import { sanitizePath } from '../../utils/path.js'
+import { existsSync, readFileSync } from 'fs'
+import { mkdir } from 'fs/promises'
+import { dirname, join, normalize, sep } from 'path'
+import { getAgenCConfigHomeDir } from '../../utils/envUtils.js'
 
 // Persistent agent memory scope: 'user' (~/.agenc/agent-memory/), 'project' (.agenc/agent-memory/), or 'local' (.agenc/agent-memory-local/)
 export type AgentMemoryScope = 'user' | 'project' | 'local'
+const MEMORY_ENTRYPOINT = 'MEMORY.md'
 
 /**
  * Sanitize an agent type name for use as a directory name.
@@ -19,6 +14,24 @@ export type AgentMemoryScope = 'user' | 'project' | 'local'
  */
 function sanitizeAgentTypeForPath(agentType: string): string {
   return agentType.replace(/:/g, '-')
+}
+
+function getCwd(): string {
+  return process.cwd()
+}
+
+function findCanonicalGitRoot(start: string): string | undefined {
+  let current = normalize(start)
+  while (true) {
+    if (existsSync(join(current, '.git'))) return current
+    const parent = dirname(current)
+    if (parent === current) return undefined
+    current = parent
+  }
+}
+
+function sanitizeProjectPath(path: string): string {
+  return path.replace(/[^a-zA-Z0-9._-]+/g, '-')
 }
 
 /**
@@ -32,15 +45,17 @@ function getLocalAgentMemoryDir(dirName: string): string {
       join(
         process.env.AGENC_REMOTE_MEMORY_DIR,
         'projects',
-        sanitizePath(
-          findCanonicalGitRoot(getProjectRoot()) ?? getProjectRoot(),
-        ),
+        sanitizeProjectPath(findCanonicalGitRoot(getCwd()) ?? getCwd()),
         'agent-memory-local',
         dirName,
       ) + sep
     )
   }
   return join(getCwd(), '.agenc', 'agent-memory-local', dirName) + sep
+}
+
+function getMemoryBaseDir(): string {
+  return process.env.AGENC_REMOTE_MEMORY_DIR ?? getAgenCConfigHomeDir()
 }
 
 /**
@@ -157,21 +172,32 @@ export function loadAgentMemoryPrompt(
 
   const memoryDir = getAgentMemoryDir(agentType, scope)
 
-  // Fire-and-forget: this runs at agent-spawn time inside a sync
-  // getSystemPrompt() callback (called from React render in AgentDetail.tsx,
-  // so it cannot be async). The spawned agent won't try to Write until after
-  // a full API round-trip, by which time mkdir will have completed. Even if
-  // it hasn't, FileWriteTool does its own mkdir of the parent directory.
-  void ensureMemoryDirExists(memoryDir)
+  void mkdir(memoryDir, { recursive: true }).catch(() => {})
 
   const coworkExtraGuidelines =
     process.env.AGENC_COWORK_MEMORY_EXTRA_GUIDELINES
-  return buildMemoryPrompt({
-    displayName: 'Persistent Agent Memory',
-    memoryDir,
-    extraGuidelines:
-      coworkExtraGuidelines && coworkExtraGuidelines.trim().length > 0
-        ? [scopeNote, coworkExtraGuidelines]
-        : [scopeNote],
-  })
+  const extraGuidelines =
+    coworkExtraGuidelines && coworkExtraGuidelines.trim().length > 0
+      ? [scopeNote, coworkExtraGuidelines]
+      : [scopeNote]
+  const entrypoint = join(memoryDir, MEMORY_ENTRYPOINT)
+  let entrypointContent = ''
+  try {
+    entrypointContent = readFileSync(entrypoint, 'utf8').trim()
+  } catch {
+    entrypointContent = ''
+  }
+
+  return [
+    '# Persistent Agent Memory',
+    '',
+    `Memory directory: ${memoryDir}`,
+    '',
+    ...extraGuidelines,
+    '',
+    `## ${MEMORY_ENTRYPOINT}`,
+    '',
+    entrypointContent ||
+      `Your ${MEMORY_ENTRYPOINT} is currently empty. When you save new memories, they will appear here.`,
+  ].join('\n')
 }

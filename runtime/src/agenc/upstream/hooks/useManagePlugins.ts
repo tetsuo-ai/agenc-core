@@ -12,7 +12,7 @@ import {
   setPluginCommandsState,
   subscribePluginCommands,
 } from '../state/pluginCommandsStore.js'
-import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
+import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
 import { count } from '../utils/array.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from '../utils/diagLogs.js'

@@ -48,8 +48,8 @@ import { getRunningTeammatesSorted } from '../../../agenc/upstream/tasks/InProce
 import type { InProcessTeammateTaskState } from '../../../agenc/upstream/tasks/InProcessTeammateTask/types.js';
 import { isPanelAgentTask, type LocalAgentTaskState } from '../../../agenc/upstream/tasks/LocalAgentTask/LocalAgentTask.js';
 import { isBackgroundTask } from '../../../agenc/upstream/tasks/types.js';
-import { AGENT_COLOR_TO_THEME_COLOR, AGENT_COLORS, type AgentColorName } from '../../../agenc/upstream/tools/AgentTool/agentColorManager.js';
-import type { AgentDefinition } from '../../../agenc/upstream/tools/AgentTool/loadAgentsDir.js';
+import { AGENT_COLOR_TO_THEME_COLOR, AGENT_COLORS, type AgentColorName } from '../../../tools/AgentTool/agentColorManager.js';
+import type { AgentDefinition } from '../../../tools/AgentTool/loadAgentsDir.js';
 import type { Message } from '../../../agenc/upstream/types/message.js';
 import type { PermissionMode } from '../../../agenc/upstream/types/permissions.js';
 import type { BaseTextInputProps, PromptInputMode, VimMode } from '../../../agenc/upstream/types/textInputTypes.js';

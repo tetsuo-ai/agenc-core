@@ -14,7 +14,7 @@ import {
   BRIEF_TOOL_PROMPT,
   DESCRIPTION,
   LEGACY_BRIEF_TOOL_NAME,
-} from './prompt.js'
+} from 'src/tools/BriefTool/prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
 
 const inputSchema = lazySchema(() =>

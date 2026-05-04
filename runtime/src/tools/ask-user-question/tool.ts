@@ -9,12 +9,8 @@
  * Shape differences from the donor tool:
  *   - AgenC exposes a plain JSON-schema Tool instead of the donor buildTool
  *     wrapper and handles TUI answers through a call-id side channel.
- *   - Preview rendering is normalized to markdown/text in the current TUI
- *     bridge; donor HTML preview validation is not live here.
- *
- * Cross-cuts deliberately NOT carried:
- *   - Donor feature-flag channel disabling.
- *   - Donor React/Ink result render components.
+ *   - Donor channel disabling and HTML preview validation live in the
+ *     upstream-shaped TUI adapter that renders the permission request.
  */
 
 import type { PermissionResult } from "../../permissions/types.js";

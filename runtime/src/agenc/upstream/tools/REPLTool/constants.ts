@@ -1,5 +1,5 @@
 import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/envUtils.js'
-import { AGENT_TOOL_NAME } from '../AgentTool/constants.js'
+import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js'
 import { FILE_EDIT_TOOL_NAME } from '../FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'

@@ -41,7 +41,7 @@ import { loadUpstreamAgentList } from "../../agenc/adapters/upstream-agent-list.
 import { buildPendingProviderSwitch } from "../../agenc/adapters/upstream-model-switch.js";
 import { pastedContentsToLLMMessage } from "../../agenc/adapters/upstream-attachments.js";
 import type { Command } from "../../agenc/upstream/commands.js";
-import type { AgentDefinition } from "../../agenc/upstream/tools/AgentTool/loadAgentsDir.js";
+import type { AgentDefinition } from "../../tools/AgentTool/loadAgentsDir.js";
 import type { AgenCTuiProps } from "../session-types.js";
 
 type AppProviderProps = {

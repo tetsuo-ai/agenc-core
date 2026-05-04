@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import React, { type ReactNode } from 'react';
 import { Box } from '../../../../../../tui/ink.js';
 import { useKeybinding } from '../../../../../../tui/keybindings/useKeybinding.js';
-import type { AgentColorName } from '../../../../tools/AgentTool/agentColorManager.js';
+import type { AgentColorName } from 'src/tools/AgentTool/agentColorManager.js';
 import { ConfigurableShortcutHint } from '../../../ConfigurableShortcutHint.js';
 import { Byline } from '../../../design-system/Byline.js';
 import { KeyboardShortcutHint } from '../../../design-system/KeyboardShortcutHint.js';

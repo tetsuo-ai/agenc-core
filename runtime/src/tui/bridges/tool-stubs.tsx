@@ -1,7 +1,7 @@
 import React from "react";
 
 import { Box, Text } from "../ink.js";
-import { AskUserQuestionTool as UpstreamAskUserQuestionTool } from "../../agenc/upstream/tools/AskUserQuestionTool/AskUserQuestionTool.js";
+import { AskUserQuestionTool } from "../../tools/ask-user-question/tui-tool.js";
 import {
   pickToolResultDispatch,
   resultTextForBridgeTool,
@@ -344,7 +344,7 @@ function resultText(value: unknown): string {
 
 export function createBridgeTool(name: string): any {
   if (name === "AskUserQuestion") {
-    return UpstreamAskUserQuestionTool;
+    return AskUserQuestionTool;
   }
   return {
     name,

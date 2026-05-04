@@ -12,7 +12,7 @@ import { useKeybindings } from '../../../../tui/keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../../../../tui/keybindings/useShortcutDisplay.js';
 import { type AppState, useAppState, useSetAppState } from '../../../../tui/state/AppState.js';
 import { getEmptyToolPermissionContext } from '../../Tool.js';
-import { AGENT_COLOR_TO_THEME_COLOR } from '../../tools/AgentTool/agentColorManager.js';
+import { AGENT_COLOR_TO_THEME_COLOR } from 'src/tools/AgentTool/agentColorManager.js';
 import { logForDebugging } from 'src/utils/debug.js';
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js';
 import { truncateToWidth } from '../../utils/format.js';

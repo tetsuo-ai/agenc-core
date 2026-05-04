@@ -7,7 +7,7 @@ import { createTaskStateBase } from '../../Task.js';
 import type { Tools } from '../../Tool.js';
 import { findToolByName } from '../../Tool.js';
 import type { AgentToolResult } from '../../tools/AgentTool/agentToolUtils.js';
-import type { AgentDefinition } from '../../tools/AgentTool/loadAgentsDir.js';
+import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js';
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../../tools/SyntheticOutputTool/SyntheticOutputTool.js';
 import { asAgentId } from '../../types/ids.js';
 import type { Message } from '../../types/message.js';

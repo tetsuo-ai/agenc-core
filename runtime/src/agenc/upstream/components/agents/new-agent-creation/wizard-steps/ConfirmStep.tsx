@@ -6,7 +6,7 @@ import { useKeybinding } from '../../../../../../tui/keybindings/useKeybinding.j
 import { isAutoMemoryEnabled } from '../../../../memdir/paths.js';
 import type { Tools } from '../../../../Tool.js';
 import { getMemoryScopeDisplay } from '../../../../tools/AgentTool/agentMemory.js';
-import type { AgentDefinition } from '../../../../tools/AgentTool/loadAgentsDir.js';
+import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js';
 import { truncateToWidth } from '../../../../utils/format.js';
 import { getAgentModelDisplay } from '../../../../utils/model/agent.js';
 import { ConfigurableShortcutHint } from '../../../ConfigurableShortcutHint.js';

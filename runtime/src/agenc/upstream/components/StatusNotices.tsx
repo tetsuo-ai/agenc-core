@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { Box } from '../../../tui/ink.js';
-import type { AgentDefinitionsResult } from '../tools/AgentTool/loadAgentsDir.js';
+import type { AgentDefinitionsResult } from 'src/tools/AgentTool/loadAgentsDir.js';
 import type { MemoryFileInfo } from '../utils/claudemd.js';
 import { getMemoryFiles } from '../utils/claudemd.js';
 import { getGlobalConfig } from '../utils/config.js';

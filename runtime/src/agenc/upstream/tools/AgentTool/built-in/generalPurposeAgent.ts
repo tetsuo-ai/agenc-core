@@ -1,4 +1,4 @@
-import type { BuiltInAgentDefinition } from '../loadAgentsDir.js'
+import type { BuiltInAgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
 
 const SHARED_PREFIX = `You are an agent for AgenC, an open-source coding agent and CLI. Given the user's message, you should use the tools available to complete the task. Complete the task fully—don't gold-plate, but don't leave it half-done.`
 

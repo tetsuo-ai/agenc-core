@@ -353,6 +353,50 @@ const ITEM_EVIDENCE = {
   "ST-09": {
     grepPresent: [{ pattern: "agenc state export|agenc state import|state\\.export|state\\.import", scope: "runtime/src" }],
   },
+  "T-09": {
+    files: [
+      "runtime/src/tools/ask-user-question/tui-tool.tsx",
+      "runtime/src/tools/AgentTool/loadAgentsDir.ts",
+      "runtime/src/tools/AgentTool/agentColorManager.ts",
+      "runtime/src/tools/AgentTool/constants.ts",
+      "runtime/src/tools/AgentTool/prompt.ts",
+      "runtime/src/tools/BriefTool/prompt.ts",
+      "runtime/src/tools/AskUserQuestionTool/AskUserQuestionTool.tsx",
+      "runtime/src/tools/AskUserQuestionTool/prompt.ts",
+      "runtime/src/tools/AgentTool/PARITY.md",
+    ],
+    tests: [
+      "runtime/src/tools/ask-user-question-bridge-routing.test.tsx",
+      "runtime/src/tools/ask-user-question/tui-tool.test.tsx",
+      "runtime/src/tools/AgentTool/loadAgentsDir.test.ts",
+    ],
+    grepNotPresent: [
+      {
+        pattern: "agenc/upstream/tools/(AskUserQuestionTool|AgentTool|BriefTool)",
+        scope: "runtime/src/tui/bridges/tool-stubs.tsx",
+      },
+      {
+        pattern: "agenc/upstream/tools/(AskUserQuestionTool|AgentTool|BriefTool)",
+        scope: "runtime/src/tui/components/PromptInput",
+      },
+      {
+        pattern: "agenc/upstream/tools/(AskUserQuestionTool|AgentTool|BriefTool)",
+        scope: "runtime/src/tui/components/Messages.tsx",
+      },
+      {
+        pattern: "agenc/upstream/tools/(AskUserQuestionTool|AgentTool|BriefTool)",
+        scope: "runtime/src/tui/components/App.tsx",
+      },
+      {
+        pattern: "agenc/upstream/tools/(AskUserQuestionTool|AgentTool|BriefTool)",
+        scope: "runtime/src/tui/state/AppStateStore.ts",
+      },
+      {
+        pattern: "agenc/upstream/tools/(AskUserQuestionTool|AgentTool|BriefTool)",
+        scope: "runtime/src/agenc/adapters/upstream-agent-list.ts",
+      },
+    ],
+  },
   "ST-10": {
     files: [{ globUnder: "runtime/src/rollout", matching: /recorder|session.?index/i, minCount: 1 }],
   },
@@ -852,8 +896,85 @@ async function leafAbsorbGates(item) {
 }
 
 async function tuiAbsorbGates(item) {
+  if (id === "T-09") {
+    await t09ToolTargetGates();
+    return;
+  }
   // Same shape as leaf absorb, but for the larger TUI subtrees.
   await leafAbsorbGates(item);
+}
+
+async function t09ToolTargetGates() {
+  const retiredTargets = [
+    "runtime/src/agenc/upstream/tools/AgentTool/loadAgentsDir.ts",
+    "runtime/src/agenc/upstream/tools/AgentTool/agentColorManager.ts",
+    "runtime/src/agenc/upstream/tools/AgentTool/constants.ts",
+    "runtime/src/agenc/upstream/tools/AgentTool/prompt.ts",
+    "runtime/src/agenc/upstream/tools/AskUserQuestionTool/AskUserQuestionTool.tsx",
+    "runtime/src/agenc/upstream/tools/AskUserQuestionTool/prompt.ts",
+    "runtime/src/agenc/upstream/tools/BriefTool/prompt.ts",
+  ];
+
+  for (const upstream of retiredTargets) {
+    const abs = path.join(root, upstream);
+    if (existsSync(abs)) {
+      failGate(`T-09 upstream target still present: ${upstream}`);
+    }
+    pass(`T-09 upstream target deleted (${upstream})`);
+  }
+
+  const scopes = [
+    "runtime/src/tui/bridges/tool-stubs.tsx",
+    "runtime/src/tui/components/PromptInput",
+    "runtime/src/tui/components/Messages.tsx",
+    "runtime/src/tui/components/App.tsx",
+    "runtime/src/tui/state/AppStateStore.ts",
+    "runtime/src/agenc/adapters/upstream-agent-list.ts",
+    "runtime/src/tools/ask-user-question-bridge-routing.test.tsx",
+  ];
+  const upstreamPathScan = run(
+    "rg",
+    ["--no-messages", "-n", "agenc/upstream/tools/(AskUserQuestionTool|AgentTool|BriefTool)", ...scopes],
+    { silent: true },
+  );
+  if (upstreamPathScan.status === 0 && upstreamPathScan.stdout.trim()) {
+    failGate(`T-09 scoped importers still reference upstream tool targets:\n${upstreamPathScan.stdout}`);
+  }
+
+  const retiredImportPattern =
+    String.raw`['"](?:\.\.?/)+(?:tools/)?(?:AgentTool/(?:loadAgentsDir|agentColorManager|constants|prompt)|AskUserQuestionTool/(?:AskUserQuestionTool|prompt)|BriefTool/prompt)\.js['"]`;
+  const retiredImportScan = run(
+    "rg",
+    ["--no-messages", "-n", retiredImportPattern, "runtime/src/agenc/upstream"],
+    { silent: true },
+  );
+  if (retiredImportScan.status === 0 && retiredImportScan.stdout.trim()) {
+    failGate(`T-09 upstream importers still reference deleted tool targets:\n${retiredImportScan.stdout}`);
+  }
+
+  const retiredAgentToolSiblingPattern =
+    String.raw`['"](?:\.\.?/)+(?:loadAgentsDir|agentColorManager|constants|prompt)\.js['"]`;
+  const retiredAgentToolSiblingScan = run(
+    "rg",
+    ["--no-messages", "-n", retiredAgentToolSiblingPattern, "runtime/src/agenc/upstream/tools/AgentTool"],
+    { silent: true },
+  );
+  if (retiredAgentToolSiblingScan.status === 0 && retiredAgentToolSiblingScan.stdout.trim()) {
+    failGate(`T-09 upstream AgentTool siblings still reference deleted tool targets:\n${retiredAgentToolSiblingScan.stdout}`);
+  }
+
+  const retiredBriefToolSiblingPattern =
+    String.raw`['"](?:\.\.?/)+prompt\.js['"]`;
+  const retiredBriefToolSiblingScan = run(
+    "rg",
+    ["--no-messages", "-n", retiredBriefToolSiblingPattern, "runtime/src/agenc/upstream/tools/BriefTool"],
+    { silent: true },
+  );
+  if (retiredBriefToolSiblingScan.status === 0 && retiredBriefToolSiblingScan.stdout.trim()) {
+    failGate(`T-09 upstream BriefTool siblings still reference deleted tool targets:\n${retiredBriefToolSiblingScan.stdout}`);
+  }
+
+  pass("T-09 scoped tool importers resolved to AgenC-owned paths");
 }
 
 async function foundationalGates(item) {

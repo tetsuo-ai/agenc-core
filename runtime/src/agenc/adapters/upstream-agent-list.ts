@@ -15,7 +15,7 @@
  *
  * @module
  */
-import type { AgentDefinition } from "../upstream/tools/AgentTool/loadAgentsDir.js";
+import type { AgentDefinition } from "../../tools/AgentTool/loadAgentsDir.js";
 import type { AgentRole } from "../../agents/role.js";
 import { listAgentRoles } from "../../agents/role.js";
 
