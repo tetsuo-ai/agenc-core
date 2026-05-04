@@ -522,7 +522,7 @@ async function runAgenCDaemonForeground(
     authBackend: authStartup.authBackend,
     health,
     initializeAuthenticator: (params) =>
-      cookieAuthenticator.verifyInitializeParams(params),
+      cookieAuthenticator.authenticateInitializeParams(params),
   });
   const connections = new Map<number, AgenCDaemonJsonRpcConnection>();
   const socketConnections = new Map<

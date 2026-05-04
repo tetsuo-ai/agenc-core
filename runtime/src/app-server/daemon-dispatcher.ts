@@ -28,7 +28,10 @@ import {
   createAgenCDaemonAuthHandlers,
   type AgenCDaemonAuthHandlers,
 } from "./auth.js";
-import type { AuthBackend } from "../auth/backend.js";
+import type {
+  AuthBackend,
+  AuthDaemonSocketIdentity,
+} from "../auth/backend.js";
 import {
   AGENC_DAEMON_PROTOCOL_VERSION,
   isAgenCDaemonMethod,
@@ -91,7 +94,9 @@ export interface AgenCDaemonDispatcherOptions {
   >;
   readonly initializeAuthenticator?: (
     params: InitializeParams,
-  ) => boolean | Promise<boolean>;
+  ) =>
+    | AgenCDaemonInitializeAuthResult
+    | Promise<AgenCDaemonInitializeAuthResult>;
   readonly clientMultiplexer?: Pick<
     AgenCDaemonClientMultiplexer,
     | "attachClientToSession"
@@ -108,6 +113,12 @@ export interface AgenCDaemonDispatcherOptions {
   readonly now?: () => string;
 }
 
+export type AgenCDaemonInitializeAuthResult =
+  | boolean
+  | AuthDaemonSocketIdentity
+  | null
+  | undefined;
+
 export class AgenCDaemonJsonRpcDispatcher {
   readonly #agentManager: Pick<
     AgenCDaemonAgentManager,
@@ -123,7 +134,11 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "streamAgentMessage"
   >;
   readonly #initializeAuthenticator:
-    | ((params: InitializeParams) => boolean | Promise<boolean>)
+    | ((
+        params: InitializeParams,
+      ) =>
+        | AgenCDaemonInitializeAuthResult
+        | Promise<AgenCDaemonInitializeAuthResult>)
     | undefined;
   readonly #clientMultiplexer:
     | Pick<
@@ -229,9 +244,9 @@ export class AgenCDaemonJsonRpcDispatcher {
           });
         }
         if (this.#initializeAuthenticator !== undefined) {
-          const authenticated =
+          const authResult =
             await this.#initializeAuthenticator(initializeParams);
-          if (!authenticated) {
+          if (!authResult) {
             return errorResponse(
               id,
               -32000,
@@ -239,6 +254,9 @@ export class AgenCDaemonJsonRpcDispatcher {
               { code: "CONNECTION_AUTHENTICATION_FAILED" },
             );
           }
+          connection.markDaemonSocketIdentity(
+            authResult === true ? undefined : authResult,
+          );
         }
         connection.markInitialized(negotiated.state);
         return successResponse(id, {
@@ -404,7 +422,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       case "auth.login":
       case "auth.whoami":
       case "auth.logout":
-        return this.#dispatchAuthMethod(id, method);
+        return this.#dispatchAuthMethod(id, method, connection);
       default:
         return errorResponse(
           id,
@@ -417,6 +435,7 @@ export class AgenCDaemonJsonRpcDispatcher {
   async #dispatchAuthMethod(
     id: RequestId,
     method: "auth.login" | "auth.whoami" | "auth.logout",
+    connection: AgenCDaemonJsonRpcConnection,
   ): Promise<AgenCDaemonResponse> {
     if (this.#authHandlers === undefined) {
       return errorResponse(
@@ -426,7 +445,12 @@ export class AgenCDaemonJsonRpcDispatcher {
         { code: "AUTH_BACKEND_NOT_CONFIGURED" },
       );
     }
-    return successResponse(id, await this.#authHandlers[method]());
+    return successResponse(
+      id,
+      await this.#authHandlers[method]({
+        daemonConnection: connection.daemonSocketIdentity,
+      }),
+    );
   }
 
   async #attachAgent(
@@ -518,6 +542,7 @@ export class AgenCDaemonJsonRpcConnection {
   readonly #clientIds = new Set<string>();
   readonly #inFlightRequests = new Map<string, AbortController>();
   #initializeState: AgenCDaemonConnectionInitializeState | undefined;
+  #daemonSocketIdentity: AuthDaemonSocketIdentity | undefined;
 
   constructor(
     dispatcher: AgenCDaemonJsonRpcDispatcher,
@@ -543,6 +568,16 @@ export class AgenCDaemonJsonRpcConnection {
 
   markInitialized(state: AgenCDaemonConnectionInitializeState): void {
     this.#initializeState = state;
+  }
+
+  markDaemonSocketIdentity(
+    identity: AuthDaemonSocketIdentity | undefined,
+  ): void {
+    this.#daemonSocketIdentity = identity;
+  }
+
+  get daemonSocketIdentity(): AuthDaemonSocketIdentity | undefined {
+    return this.#daemonSocketIdentity;
   }
 
   get sendNotification():

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { AuthBackend } from "../auth/backend.js";
+import type {
+  AuthBackend,
+  AuthDaemonSocketIdentity,
+} from "../auth/backend.js";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
@@ -79,6 +82,57 @@ describe("AgenC daemon AuthBackend integration", () => {
     });
 
     expect(calls).toEqual(["login", "whoami", "logout"]);
+  });
+
+  it("passes verified daemon socket identity into auth.whoami", async () => {
+    const daemonConnection: AuthDaemonSocketIdentity = {
+      transport: "daemon",
+      verifiedBy: "cookie",
+      cookie: "verified",
+      peerUid: null,
+    };
+    const calls: unknown[] = [];
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+      initializeAuthenticator: () => daemonConnection,
+      authBackend: {
+        ...makeAuthBackend([]),
+        whoami: (params) => {
+          calls.push(params);
+          return {
+            authenticated: true,
+            provider: "local",
+            identity: {
+              accountId: "local",
+            },
+          };
+        },
+      },
+    });
+    const connection = dispatcher.createConnection();
+
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "init",
+      method: "initialize",
+      params: { protocol: { version: "1.0.0" }, authCookie: "socket-cookie" },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "whoami",
+        method: "auth.whoami",
+      }),
+    ).resolves.toMatchObject({
+      result: {
+        authenticated: true,
+        identity: {
+          accountId: "local",
+          daemon: daemonConnection,
+        },
+      },
+    });
+    expect(calls).toEqual([{ daemonConnection }]);
   });
 
   it("fails auth methods explicitly when no AuthBackend is configured", async () => {
