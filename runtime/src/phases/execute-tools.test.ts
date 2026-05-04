@@ -12,7 +12,7 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EventLog } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -104,6 +104,8 @@ interface MkSessionOpts {
       | { readonly kind: "abort" }
     >;
   };
+  readonly permissionAuditLogger?: (event: unknown) => Promise<void> | void;
+  readonly onPermissionAuditError?: (error: unknown, event: unknown) => void;
   readonly permissionModeRegistry?: PermissionModeRegistry;
   readonly mcpManager?: {
     resolveMcpToolInfo?: (
@@ -136,6 +138,12 @@ function mkSession(opts: MkSessionOpts): Session {
   }
   if (opts.approvalResolver) {
     servicesRecord["approvalResolver"] = opts.approvalResolver;
+  }
+  if (opts.permissionAuditLogger) {
+    servicesRecord["permissionAuditLogger"] = opts.permissionAuditLogger;
+  }
+  if (opts.onPermissionAuditError) {
+    servicesRecord["onPermissionAuditError"] = opts.onPermissionAuditError;
   }
   const baseSession: Record<string, unknown> = {
     conversationId: "conv-1",
@@ -422,6 +430,55 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     await executeTools(state, mkCtx(), session);
 
     expect(progressEvents).toEqual(["line-1", "line-2"]);
+  });
+
+  test("permission audit logger failures chain the session service handler", async () => {
+    const tool: Tool = {
+      name: "audit-tool",
+      description: "audit path",
+      inputSchema: { type: "object" },
+      execute: async () => ({ content: "done" }),
+    };
+    const log = new EventLog();
+    const warnings: string[] = [];
+    log.subscribe((ev) => {
+      const msg = ev.msg as { type: string; payload?: { cause?: string } };
+      if (msg.type === "warning" && msg.payload?.cause) {
+        warnings.push(msg.payload.cause);
+      }
+    });
+    const auditLogger = vi.fn(async () => {
+      throw new Error("disk full");
+    });
+    const auditErrorHandler = vi.fn();
+    const session = mkSession({
+      log,
+      registry: mkRegistry([tool]),
+      permissionAuditLogger: auditLogger,
+      onPermissionAuditError: auditErrorHandler,
+    });
+    const state = mkState({
+      toolCalls: [
+        {
+          id: "c-audit",
+          name: "audit-tool",
+          arguments: "{}",
+        },
+      ],
+    });
+
+    await executeTools(state, mkCtx(), session);
+
+    expect(state.messages[0]?.content).toBe("done");
+    expect(auditLogger).toHaveBeenCalledOnce();
+    expect(auditErrorHandler).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        eventKind: "policy_outcome",
+        reasonCode: "policy_never_skipped",
+      }),
+    );
+    expect(warnings).toContain("permission_audit_log_failed");
   });
 
   test("live path validates normalized args before exec_command can run", async () => {

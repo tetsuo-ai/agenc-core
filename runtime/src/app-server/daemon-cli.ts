@@ -53,6 +53,7 @@ import {
 import { createAuthBackend } from "../auth/index.js";
 import type { AuthBackend } from "../auth/backend.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
+import { createPermissionAuditFileLogger } from "../permissions/permission-audit-log.js";
 import {
   loadConfig,
   type AgenCConfig,
@@ -490,6 +491,13 @@ async function runAgenCDaemonForeground(
     onSnapshotError: (error) =>
       io.stderr.write(
         `agenc: daemon snapshot policy failed: ${formatCleanupError(error)}\n`,
+      ),
+    permissionAuditLogger: createPermissionAuditFileLogger({
+      agencHome: authStartup.daemonHome,
+    }),
+    onPermissionAuditError: (error) =>
+      io.stderr.write(
+        `agenc: permission audit log failed: ${formatCleanupError(error)}\n`,
       ),
   });
   try {

@@ -58,6 +58,7 @@ import type { ToolDispatchResult } from "./_deps/tool-registry.js";
 import { emitError as emitErrorEvent } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { GuardianApprovalReviewer } from "../session/guardian-approval-review.js";
+import type { PermissionAuditEventInput } from "../permissions/permission-audit-log.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { ToolUseBlock, TurnState, UserMessage } from "../session/turn-state.js";
 import {
@@ -332,6 +333,35 @@ export function ensureStreamingToolExecutor(
         ...(orchestratorPolicy.approvalResolver !== undefined
           ? { approvalResolver: orchestratorPolicy.approvalResolver }
           : {}),
+        ...(session.services.permissionAuditLogger !== undefined
+          ? { permissionAuditLogger: session.services.permissionAuditLogger }
+          : {}),
+        onPermissionAuditError: (error: unknown, event: PermissionAuditEventInput) => {
+          try {
+            session.services.onPermissionAuditError?.(error, event);
+          } catch (handlerError) {
+            session.emit({
+              id: session.nextInternalSubId(),
+              msg: {
+                type: "warning",
+                payload: {
+                  cause: "permission_audit_error_handler_failed",
+                  message: `permission audit error handler failed:${handlerError instanceof Error ? handlerError.message : String(handlerError)}`,
+                },
+              },
+            });
+          }
+          session.emit({
+            id: session.nextInternalSubId(),
+            msg: {
+              type: "warning",
+              payload: {
+                cause: "permission_audit_log_failed",
+                message: `permission audit log failed for ${event.eventKind}:${error instanceof Error ? error.message : String(error)}`,
+              },
+            },
+          });
+        },
         ...(preHooks.length > 0 ? { preHooks } : {}),
         ...(postHooks.length > 0 ? { postHooks } : {}),
         ...(failureHooks.length > 0 ? { failureHooks } : {}),

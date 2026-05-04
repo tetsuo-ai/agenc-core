@@ -902,6 +902,7 @@ describe("runToolUse — hook invocation", () => {
   test("pre-hook deny short-circuits without executing tool", async () => {
     let executed = 0;
     const preHook: PreToolUseHook = () => ({ kind: "deny", reason: "nope" });
+    const auditLogger = vi.fn(async () => {});
     const tool: Tool = {
       name: "h-deny",
       description: "",
@@ -916,10 +917,22 @@ describe("runToolUse — hook invocation", () => {
       tool,
       invocation: makeInvocation("c1", "h-deny"),
       preHooks: [preHook],
+      permissionAuditLogger: auditLogger,
     });
     expect(out.isError).toBe(true);
     expect(out.content).toContain("nope");
     expect(executed).toBe(0);
+    expect(auditLogger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventKind: "policy_outcome",
+        decision: "denied",
+        source: "pre-tool-use-hook",
+        subjectType: "tool_execution",
+        toolName: "h-deny",
+        callId: "c1",
+        reasonCode: "pre_hook_denied",
+      }),
+    );
   });
 });
 
@@ -1053,6 +1066,45 @@ describe("T11 W3-B — permission evaluator integration", () => {
     expect(executed).toBe(0);
     expect(errorCauses.some((c) => c.startsWith("permission_denied:"))).toBe(
       true,
+    );
+  });
+
+  test("permission evaluator outcomes write bounded audit records without raw args", async () => {
+    const { context } = buildEvaluatorContext("bypassPermissions");
+    const auditLogger = vi.fn(async () => {});
+    const tool: Tool = {
+      name: "Write",
+      description: "",
+      inputSchema: {},
+      execute: async () => ({ content: "wrote" }),
+    };
+
+    const out = await runToolUse(
+      '{"command":"echo api_key=abcdefghijklmnopqrstuvwxyz123456"}',
+      {
+        currentTurnId: "t1",
+        tool,
+        invocation: makeInvocation("c1", "Write"),
+        canUseTool: hasPermissionsToUseTool,
+        permissionContext: context,
+        permissionAuditLogger: auditLogger,
+      },
+    );
+
+    expect(out.isError).toBe(false);
+    expect(auditLogger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventKind: "policy_outcome",
+        decision: "approved",
+        source: "permission-evaluator",
+        subjectType: "tool_execution",
+        toolName: "Write",
+        callId: "c1",
+        reasonCode: "evaluator_allowed",
+      }),
+    );
+    expect(JSON.stringify(auditLogger.mock.calls)).not.toContain(
+      "abcdefghijklmnopqrstuvwxyz123456",
     );
   });
 

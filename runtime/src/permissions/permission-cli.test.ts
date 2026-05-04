@@ -260,10 +260,11 @@ describe("permission CLI local rules", () => {
     const tmp = await mkdtemp(join(tmpdir(), "agenc-permission-cli-"));
     try {
       const io = createIo();
+      const auditLogger = vi.fn(async () => {});
       await expect(
         runAgenCPermissionsCli(
           { kind: "approveRule", rule: "Read", destination: "userSettings" },
-          { home: tmp, cwd: tmp, io },
+          { home: tmp, cwd: tmp, io, permissionAuditLogger: auditLogger },
         ),
       ).resolves.toBe(0);
       expect(io.stdoutText()).toBe("Approved Read in userSettings\n");
@@ -287,13 +288,61 @@ describe("permission CLI local rules", () => {
       await expect(
         runAgenCPermissionsCli(
           { kind: "revokeRule", rule: "Read", destination: "userSettings" },
-          { home: tmp, cwd: tmp, io: revokeIo },
+          { home: tmp, cwd: tmp, io: revokeIo, permissionAuditLogger: auditLogger },
         ),
       ).resolves.toBe(0);
       expect(revokeIo.stdoutText()).toBe("Revoked Read from userSettings\n");
       expect(JSON.parse(await readFile(settingsPath, "utf8"))).toMatchObject({
         permissions: { allow: [] },
       });
+      expect(auditLogger).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventKind: "rule_change",
+          decision: "approved",
+          source: "permissions-cli",
+          subjectType: "rule",
+          rule: "Read",
+          destination: "userSettings",
+          reasonCode: "local_rule_approved",
+        }),
+      );
+      expect(auditLogger).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventKind: "rule_change",
+          decision: "revoked",
+          source: "permissions-cli",
+          subjectType: "rule",
+          rule: "Read",
+          destination: "userSettings",
+          reasonCode: "local_rule_revoked",
+        }),
+      );
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("tolerates local permission audit logger failures", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "agenc-permission-cli-audit-"));
+    try {
+      const io = createIo();
+      const onPermissionAuditError = vi.fn();
+      await expect(
+        runAgenCPermissionsCli(
+          { kind: "approveRule", rule: "Read", destination: "userSettings" },
+          {
+            home: tmp,
+            cwd: tmp,
+            io,
+            permissionAuditLogger: async () => {
+              throw new Error("audit unavailable");
+            },
+            onPermissionAuditError,
+          },
+        ),
+      ).resolves.toBe(0);
+      expect(io.stdoutText()).toBe("Approved Read in userSettings\n");
+      expect(onPermissionAuditError).toHaveBeenCalledOnce();
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
@@ -407,6 +456,37 @@ describe("permission CLI daemon requests", () => {
     });
     expect(io.stdoutText()).toContain("call_1\tapproved");
     expect(io.stdoutText()).toContain("call_2\trevoked");
+  });
+
+  it("does not duplicate audit events for targeted daemon request decisions", async () => {
+    const io = createIo();
+    const auditLogger = vi.fn(async () => {});
+    const client: AgenCPermissionsCliDaemonClient = {
+      listPermissions: vi.fn(),
+      approveTool: vi.fn(async (params) => ({
+        requestId: params.requestId,
+        decision: "approved",
+      })),
+      revokeTool: vi.fn(),
+    };
+
+    await expect(
+      runAgenCPermissionsCli(
+        {
+          kind: "approveRequest",
+          sessionId: "session_1",
+          requestId: "call_1",
+        },
+        {
+          client,
+          ensureDaemonReady: async () => {},
+          io,
+          permissionAuditLogger: auditLogger,
+        },
+      ),
+    ).resolves.toBe(0);
+
+    expect(auditLogger).not.toHaveBeenCalled();
   });
 });
 

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { LLMProvider } from "../llm/types.js";
 import { readProviderFactoryOptions } from "../llm/provider.js";
 import type { ReviewDecision } from "../permissions/review-decision.js";
+import { createPermissionAuditFileLogger } from "../permissions/permission-audit-log.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { ApprovalStore as RuntimeApprovalStore } from "../permissions/approval-cache.js";
 import { NetworkApprovalService as RuntimeNetworkApprovalService } from "../permissions/network-approval.js";
@@ -632,6 +633,9 @@ export function buildBootstrapSessionServices(
     codeModeService,
     provider: opts.provider,
     registry: opts.registry,
+    permissionAuditLogger: createPermissionAuditFileLogger({
+      agencHome: opts.agencHome,
+    }),
     permissionModeRegistry: opts.permissionModeRegistry,
     configStore: opts.configStore,
   };

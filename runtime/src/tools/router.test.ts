@@ -167,7 +167,7 @@ describe("ToolRouter", () => {
   });
 
   test("toolSupportsParallel hard-false for non-Function/Freeform spec variants (router behavior)", () => {
-    // codex runtime `ToolSpec::Namespace | ToolSpec::ToolSearch |
+    // Donor runtime `ToolSpec::Namespace | ToolSpec::ToolSearch |
     // ToolSpec::LocalShell | ToolSpec::ImageGeneration |
     // ToolSpec::WebSearch` are hard-coded non-parallel regardless of
     // the `supports_parallel_tool_calls` flag.
@@ -483,6 +483,175 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
         callId: "call-list-dir",
         toolName: "system.listDir",
         turnId: "turn-approval-1",
+      }),
+    );
+  });
+
+  test("dispatchModelToolCall audits terminal pre-hook denials once", async () => {
+    const router = new ToolRouter([
+      {
+        tool: {
+          name: "Write",
+          description: "",
+          inputSchema: {},
+          execute: async () => ({ content: "should-not-run" }),
+        },
+        supportsParallelToolCalls: false,
+      },
+    ]);
+    const auditLogger = vi.fn(async () => {});
+
+    const result = await router.dispatchModelToolCall(
+      {
+        id: "call-denied",
+        name: "Write",
+        arguments: '{"command":"echo api_key=abcdefghijklmnopqrstuvwxyz123456"}',
+      },
+      {
+        session: {
+          conversationId: "session_router",
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: { subId: "turn-denied" } as never,
+        tracker: {
+          appendFileDiff: () => {},
+          snapshot: () => [],
+          clear: () => {},
+        },
+        approvalPolicy: "never",
+        sandboxMode: "workspace_write",
+        preHooks: [() => ({ kind: "deny", reason: "blocked" })],
+        permissionAuditLogger: auditLogger,
+      },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(auditLogger).toHaveBeenCalledTimes(1);
+    expect(auditLogger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventKind: "policy_outcome",
+        decision: "denied",
+        source: "pre-tool-use-hook",
+        subjectType: "tool_execution",
+        toolName: "Write",
+        callId: "call-denied",
+        sessionId: "session_router",
+        reasonCode: "pre_hook_denied",
+      }),
+    );
+    expect(JSON.stringify(auditLogger.mock.calls)).not.toContain(
+      "abcdefghijklmnopqrstuvwxyz123456",
+    );
+  });
+
+  test("dispatchModelToolCall audits classifier approval skips", async () => {
+    const execute = vi.fn(async () => ({ content: "ok" }));
+    const router = new ToolRouter([
+      {
+        tool: {
+          name: "Write",
+          description: "",
+          inputSchema: {},
+          execute,
+        },
+        supportsParallelToolCalls: false,
+      },
+    ]);
+    const auditLogger = vi.fn(async () => {});
+
+    const result = await router.dispatchModelToolCall(
+      {
+        id: "call-auto-approved",
+        name: "Write",
+        arguments: "{}",
+      },
+      {
+        session: {
+          conversationId: "session_router",
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: { subId: "turn-auto-approved" } as never,
+        tracker: {
+          appendFileDiff: () => {},
+          snapshot: () => [],
+          clear: () => {},
+        },
+        approvalPolicy: "never",
+        sandboxMode: "workspace_write",
+        permissionAuditLogger: auditLogger,
+      },
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(auditLogger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventKind: "policy_outcome",
+        decision: "approved",
+        source: "approval-classifier",
+        subjectType: "tool_execution",
+        toolName: "Write",
+        callId: "call-auto-approved",
+        sessionId: "session_router",
+        reasonCode: "policy_never_skipped",
+      }),
+    );
+  });
+
+  test("dispatchModelToolCall audits forbidden classifier denials", async () => {
+    const execute = vi.fn(async () => ({ content: "should-not-run" }));
+    const router = new ToolRouter([
+      {
+        tool: {
+          name: "Write",
+          description: "",
+          inputSchema: {},
+          execute,
+        },
+        supportsParallelToolCalls: false,
+      },
+    ]);
+    const auditLogger = vi.fn(async () => {});
+
+    const result = await router.dispatchModelToolCall(
+      {
+        id: "call-forbidden",
+        name: "Write",
+        arguments: "{}",
+      },
+      {
+        session: {
+          conversationId: "session_router",
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: { subId: "turn-forbidden" } as never,
+        tracker: {
+          appendFileDiff: () => {},
+          snapshot: () => [],
+          clear: () => {},
+        },
+        approvalPolicy: "never",
+        sandboxMode: "workspace_write",
+        permissionAuditLogger: auditLogger,
+        toolDenylist: new Set(["Write"]),
+      },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    expect(auditLogger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventKind: "policy_outcome",
+        decision: "denied",
+        source: "approval-classifier",
+        subjectType: "tool_execution",
+        toolName: "Write",
+        callId: "call-forbidden",
+        sessionId: "session_router",
+        reasonCode: "tool_denylisted",
       }),
     );
   });
