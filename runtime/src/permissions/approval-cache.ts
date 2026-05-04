@@ -1,12 +1,13 @@
 /**
- * ApprovalStore + canonical shell approval keys.
+ * ApprovalStore, session approval rules, and canonical shell approval keys.
  *
- * Hand-port of codex runtime `core/src/tools/sandboxing.rs:40-116`
- * (`ApprovalStore`, `with_cached_approval`) and a subset of codex runtime
- * `core/src/command_canonicalization.rs` (T11 Wave 1, Agent C).
+ * Ports donor runtime `core/src/tools/sandboxing.rs:40-116`
+ * (`ApprovalStore`, `with_cached_approval`), the session-destination rule
+ * behavior from `src/utils/permissions/PermissionUpdate.ts`, and a subset of
+ * donor runtime `core/src/command_canonicalization.rs`.
  *
  * Purpose
- * ───────
+ * -------
  * When the user answers an approval prompt with
  * `approved_for_session`, the runtime remembers that decision so the
  * next semantically-equivalent request doesn't re-prompt. For shell
@@ -17,9 +18,11 @@
  *
  * Scope of this file:
  *   - `ApprovalStore<K>` — serializable-key → `ReviewDecision` map,
- *     with a `withCachedApproval` wrapper that encodes the codex runtime
+ *     with a `withCachedApproval` wrapper that encodes the donor runtime
  *     multi-key semantics.
- *   - `canonicalizeCommandForApproval` — subset of codex runtime's
+ *   - `SessionApprovalCache` — session-destination allow-rule cache for
+ *     which tools/patterns were approved in the current session.
+ *   - `canonicalizeCommandForApproval` — subset of donor runtime's
  *     canonicalizer: collapses `bash -lc` / `bash -c` / `/bin/bash`
  *     wrappers to a stable argv and trims whitespace around the
  *     script text.
@@ -30,6 +33,16 @@
  */
 
 import type { ReviewDecision } from "./review-decision.js";
+import {
+  applyPermissionUpdate,
+  parseRuleString,
+  serializeRuleValue,
+} from "./rules.js";
+import type {
+  PermissionRuleValue,
+  PermissionUpdate,
+  ToolPermissionContext,
+} from "./types.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Serializable key helper — stable JSON for Map lookup.
@@ -59,7 +72,7 @@ function stableReplacer(_key: string, value: unknown): unknown {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// ApprovalStore — codex runtime `tools/sandboxing.rs:40-62`
+// ApprovalStore — donor runtime `tools/sandboxing.rs:40-62`
 // ─────────────────────────────────────────────────────────────────────
 
 export interface WithCachedApprovalOpts<K> {
@@ -109,11 +122,11 @@ export class ApprovalStore<K> {
   }
 
   /**
-   * Port of codex runtime `with_cached_approval` (tools/sandboxing.rs:70-116).
+   * Port of donor runtime `with_cached_approval` (tools/sandboxing.rs:70-116).
    *
    * Behaviour:
    *   - Empty `keys` → skip the cache entirely; call `fetchDecision`.
-   *     (Matches codex runtime `if keys.is_empty()` branch.)
+   *     (Matches donor runtime `if keys.is_empty()` branch.)
    *   - All keys already `approved_for_session` → return
    *     `approved_for_session` without fetching.
    *   - Otherwise fetch; if the fresh decision is
@@ -145,7 +158,172 @@ export class ApprovalStore<K> {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// canonicalizeCommandForApproval — subset of codex runtime
+// SessionApprovalCache — session destination allow rules
+// ─────────────────────────────────────────────────────────────────────
+
+export interface SessionApprovalCacheSnapshot {
+  readonly rules: readonly PermissionRuleValue[];
+  readonly ruleStrings: readonly string[];
+}
+
+/**
+ * Session-scoped cache of tool/pattern allow rules.
+ *
+ * "Approved for this session" is represented by adding allow rules to the
+ * `session` destination. This wrapper keeps that source explicit and
+ * deduped so UI, daemon, and tool dispatch code can share one representation.
+ */
+export class SessionApprovalCache {
+  private readonly ruleStrings: Set<string> = new Set();
+
+  constructor(initialRules?: readonly (PermissionRuleValue | string)[]) {
+    if (initialRules) {
+      for (const rule of initialRules) this.addRule(rule);
+    }
+  }
+
+  /**
+   * Record a whole-tool session approval, e.g. `Read`.
+   *
+   * Returns a `PermissionUpdate` only when this cache changed.
+   */
+  approveTool(toolName: string): PermissionUpdate | null {
+    return this.approveRule({ toolName });
+  }
+
+  /**
+   * Record a content-qualified approval, e.g. `Bash(git status)`.
+   *
+   * Empty pattern content collapses to a whole-tool approval, matching
+   * `serializeRuleValue`.
+   */
+  approvePattern(
+    toolName: string,
+    ruleContent: string,
+  ): PermissionUpdate | null {
+    return this.approveRule({ toolName, ruleContent });
+  }
+
+  /**
+   * Record any allow rule in the session cache.
+   *
+   * Returns `null` for duplicates so callers can skip unnecessary context
+   * updates and persistence work.
+   */
+  approveRule(rule: PermissionRuleValue | string): PermissionUpdate | null {
+    const normalized = normalizeRule(rule);
+    if (!this.addRule(normalized)) return null;
+    return sessionAllowUpdate([normalized]);
+  }
+
+  hasRule(rule: PermissionRuleValue | string): boolean {
+    return this.ruleStrings.has(normalizeRuleString(rule));
+  }
+
+  hasTool(toolName: string): boolean {
+    return this.hasRule({ toolName });
+  }
+
+  hasPattern(toolName: string, ruleContent: string): boolean {
+    return this.hasRule({ toolName, ruleContent });
+  }
+
+  deleteRule(rule: PermissionRuleValue | string): boolean {
+    return this.ruleStrings.delete(normalizeRuleString(rule));
+  }
+
+  clear(): void {
+    this.ruleStrings.clear();
+  }
+
+  size(): number {
+    return this.ruleStrings.size;
+  }
+
+  snapshot(): SessionApprovalCacheSnapshot {
+    const ruleStrings = [...this.ruleStrings].sort();
+    return Object.freeze({
+      ruleStrings: Object.freeze(ruleStrings),
+      rules: Object.freeze(ruleStrings.map((rule) => normalizeRule(rule))),
+    });
+  }
+
+  toPermissionUpdate(): PermissionUpdate | null {
+    const { rules } = this.snapshot();
+    if (rules.length === 0) return null;
+    return sessionAllowUpdate(rules);
+  }
+
+  mergeIntoContext(ctx: ToolPermissionContext): ToolPermissionContext {
+    return mergeSessionApprovalsIntoContext(ctx, this.snapshot().rules);
+  }
+
+  private addRule(rule: PermissionRuleValue | string): boolean {
+    const key = normalizeRuleString(rule);
+    const sizeBefore = this.ruleStrings.size;
+    this.ruleStrings.add(key);
+    return this.ruleStrings.size !== sizeBefore;
+  }
+}
+
+export function createSessionApprovalCacheFromContext(
+  ctx: ToolPermissionContext,
+): SessionApprovalCache {
+  return new SessionApprovalCache(ctx.alwaysAllowRules.session ?? []);
+}
+
+export function hasSessionApproval(
+  ctx: ToolPermissionContext,
+  rule: PermissionRuleValue | string,
+): boolean {
+  return createSessionApprovalCacheFromContext(ctx).hasRule(rule);
+}
+
+export function mergeSessionApprovalsIntoContext(
+  ctx: ToolPermissionContext,
+  rules: readonly (PermissionRuleValue | string)[],
+): ToolPermissionContext {
+  const merged = new SessionApprovalCache(ctx.alwaysAllowRules.session ?? []);
+  for (const rule of rules) merged.approveRule(rule);
+  const { rules: mergedRules } = merged.snapshot();
+  if (mergedRules.length === 0) return ctx;
+  return applyPermissionUpdate(ctx, {
+    type: "replaceRules",
+    destination: "session",
+    behavior: "allow",
+    rules: mergedRules,
+  });
+}
+
+function sessionAllowUpdate(
+  rules: readonly PermissionRuleValue[],
+): PermissionUpdate {
+  return {
+    type: "addRules",
+    destination: "session",
+    behavior: "allow",
+    rules,
+  };
+}
+
+function normalizeRule(rule: PermissionRuleValue | string): PermissionRuleValue {
+  if (typeof rule !== "string") {
+    return Object.freeze(
+      rule.ruleContent !== undefined && rule.ruleContent.length > 0
+        ? { toolName: rule.toolName, ruleContent: rule.ruleContent }
+        : { toolName: rule.toolName },
+    );
+  }
+  const parsed = parseRuleString(rule);
+  return parsed ?? Object.freeze({ toolName: rule });
+}
+
+function normalizeRuleString(rule: PermissionRuleValue | string): string {
+  return serializeRuleValue(normalizeRule(rule));
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// canonicalizeCommandForApproval — subset of donor runtime
 // `command_canonicalization.rs`.
 // ─────────────────────────────────────────────────────────────────────
 
@@ -156,7 +334,7 @@ const BASH_WRAPPER_NAMES: ReadonlySet<string> = new Set([
 ]);
 const BASH_WRAPPER_FLAGS: ReadonlySet<string> = new Set(["-lc", "-c"]);
 
-/** Canonical marker codex runtime uses to tag shell scripts that cannot be
+/** Canonical marker the donor runtime uses to tag shell scripts that cannot be
  *  cleanly tokenized (heredocs, pipes, etc.). */
 const CANONICAL_BASH_SCRIPT_PREFIX = "__agenc_shell_script__";
 
@@ -164,7 +342,7 @@ const CANONICAL_BASH_SCRIPT_PREFIX = "__agenc_shell_script__";
  * Collapse argv-invariant differences between equivalent shell
  * wrappers so the approval cache can hit across them.
  *
- * codex runtime does full bash tokenization to split `bash -lc "cargo test"`
+ * The donor runtime does full bash tokenization to split `bash -lc "cargo test"`
  * into `["cargo", "test"]`. AgenC Wave 1 handles the common cases:
  *
  *   1. `bash -lc "X"`, `bash -c "X"`, `/bin/bash -lc "X"`,
@@ -233,7 +411,7 @@ function basenameNoExt(p: string): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// ShellApprovalKey — codex runtime `tools/runtimes/shell.rs:131-213`
+// ShellApprovalKey — donor runtime `tools/runtimes/shell.rs:131-213`
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -263,7 +441,7 @@ export interface BuildShellApprovalKeyOptions {
 /**
  * Build a `ShellApprovalKey` with the argv already canonicalized and
  * the permission lists sorted (so `["net","fs"]` and `["fs","net"]`
- * collide in the cache). codex runtime uses `Hash` + `Eq` derives + a sorted
+ * collide in the cache). The donor runtime uses `Hash` + `Eq` derives + a sorted
  * permissions struct to guarantee this — we replicate the sort
  * explicitly since JS doesn't normalize array order.
  */

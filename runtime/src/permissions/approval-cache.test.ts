@@ -4,9 +4,14 @@ import {
   buildShellApprovalKey,
   canonicalizeCommandForApproval,
   canonicalJsonKey,
+  createSessionApprovalCacheFromContext,
+  hasSessionApproval,
+  mergeSessionApprovalsIntoContext,
+  SessionApprovalCache,
   type ShellApprovalKey,
 } from "./approval-cache.js";
 import type { ReviewDecision } from "./review-decision.js";
+import { createEmptyToolPermissionContext } from "./types.js";
 
 describe("canonicalJsonKey — stable serialization", () => {
   test("object key order does not matter", () => {
@@ -111,6 +116,132 @@ describe("ApprovalStore<K>", () => {
     store.clear();
     expect(store.size()).toBe(0);
     expect(store.get("a")).toBeUndefined();
+  });
+});
+
+describe("SessionApprovalCache", () => {
+  test("records whole-tool approvals as session allow-rule updates", () => {
+    const cache = new SessionApprovalCache();
+
+    const update = cache.approveTool("Read");
+
+    expect(update).toEqual({
+      type: "addRules",
+      destination: "session",
+      behavior: "allow",
+      rules: [{ toolName: "Read" }],
+    });
+    expect(cache.hasTool("Read")).toBe(true);
+    expect(cache.snapshot().ruleStrings).toEqual(["Read"]);
+  });
+
+  test("records content-qualified patterns and dedupes equivalent strings", () => {
+    const cache = new SessionApprovalCache();
+
+    const first = cache.approvePattern("Bash", "git status");
+    const duplicate = cache.approveRule("Bash(git status)");
+
+    expect(first?.rules).toEqual([
+      { toolName: "Bash", ruleContent: "git status" },
+    ]);
+    expect(duplicate).toBeNull();
+    expect(cache.hasPattern("Bash", "git status")).toBe(true);
+    expect(cache.size()).toBe(1);
+  });
+
+  test("hydrates from context session rules", () => {
+    const ctx = createEmptyToolPermissionContext({
+      alwaysAllowRules: { session: ["Read", "Bash(git status)"] },
+    });
+
+    const cache = createSessionApprovalCacheFromContext(ctx);
+
+    expect(cache.hasTool("Read")).toBe(true);
+    expect(cache.hasPattern("Bash", "git status")).toBe(true);
+    expect(cache.snapshot().ruleStrings).toEqual([
+      "Bash(git status)",
+      "Read",
+    ]);
+  });
+
+  test("normalizes equivalent whole-tool encodings from context", () => {
+    const ctx = createEmptyToolPermissionContext({
+      alwaysAllowRules: { session: ["Bash()", "Read(*)"] },
+    });
+
+    const cache = createSessionApprovalCacheFromContext(ctx);
+
+    expect(cache.snapshot().ruleStrings).toEqual(["Bash", "Read"]);
+    expect(hasSessionApproval(ctx, "Bash")).toBe(true);
+    expect(hasSessionApproval(ctx, { toolName: "Read" })).toBe(true);
+  });
+
+  test("normalizes escaped pattern content from context", () => {
+    const ctx = createEmptyToolPermissionContext({
+      alwaysAllowRules: { session: ["Bash(echo \\(hi\\))"] },
+    });
+
+    const cache = createSessionApprovalCacheFromContext(ctx);
+
+    expect(cache.hasPattern("Bash", "echo (hi)")).toBe(true);
+    expect(
+      hasSessionApproval(ctx, {
+        toolName: "Bash",
+        ruleContent: "echo (hi)",
+      }),
+    ).toBe(true);
+  });
+
+  test("keeps malformed rule strings stable instead of over-normalizing", () => {
+    const malformed = "Bash(git status";
+    const ctx = createEmptyToolPermissionContext({
+      alwaysAllowRules: { session: [malformed] },
+    });
+
+    const cache = createSessionApprovalCacheFromContext(ctx);
+
+    expect(cache.hasRule(malformed)).toBe(true);
+    expect(hasSessionApproval(ctx, malformed)).toBe(true);
+    expect(
+      hasSessionApproval(ctx, {
+        toolName: "Bash",
+        ruleContent: "git status",
+      }),
+    ).toBe(false);
+  });
+
+  test("merges cache entries into alwaysAllowRules.session without duplicates", () => {
+    const ctx = createEmptyToolPermissionContext({
+      alwaysAllowRules: { session: ["Read"] },
+    });
+    const cache = new SessionApprovalCache([
+      "Read",
+      { toolName: "Bash", ruleContent: "git status" },
+    ]);
+
+    const next = cache.mergeIntoContext(ctx);
+
+    expect(next.alwaysAllowRules.session).toEqual([
+      "Bash(git status)",
+      "Read",
+    ]);
+    expect(hasSessionApproval(next, "Read")).toBe(true);
+    expect(
+      hasSessionApproval(next, {
+        toolName: "Bash",
+        ruleContent: "git status",
+      }),
+    ).toBe(true);
+  });
+
+  test("standalone merge helper preserves unrelated session rules", () => {
+    const ctx = createEmptyToolPermissionContext({
+      alwaysAllowRules: { session: ["Write"] },
+    });
+
+    const next = mergeSessionApprovalsIntoContext(ctx, ["Read"]);
+
+    expect(next.alwaysAllowRules.session).toEqual(["Read", "Write"]);
   });
 });
 
