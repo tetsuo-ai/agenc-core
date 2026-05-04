@@ -397,15 +397,14 @@ export async function* runAgent({
 
   // Read-only agents (Explore, Plan) don't act on commit/PR/lint rules from
   // AGENC.md — the main agent has full context and interprets their output.
-  // Dropping claudeMd here saves ~5-15 Gtok/week across 34M+ Explore spawns.
+  // Dropping full project memory here saves ~5-15 Gtok/week across 34M+ Explore spawns.
   // Explicit override.userContext from callers is preserved untouched.
   // Kill-switch defaults true; flip tengu_slim_subagent_claudemd=false to revert.
   const shouldOmitAgenCMd =
     agentDefinition.omitAgenCMd &&
     !override?.userContext &&
     getFeatureValue_CACHED_MAY_BE_STALE('tengu_slim_subagent_claudemd', true)
-  const { claudeMd: _omittedAgenCMd, ...userContextNoAgenCMd } =
-    baseUserContext
+  const { claudeMd: _omittedAgenCMd, ...userContextNoAgenCMd } = baseUserContext // branding-scan: allow upstream user-context field name pending context absorb
   const resolvedUserContext = shouldOmitAgenCMd
     ? userContextNoAgenCMd
     : baseUserContext
@@ -629,7 +628,7 @@ export async function* runAgent({
 
     // Load all skill contents concurrently and add to initial messages
     const { formatSkillLoadingMetadata } = await import(
-      '../../utils/processUserInput/processSlashCommand.js'
+      '../../../../tui/input/processSlashCommand.js'
     )
     const loaded = await Promise.all(
       validSkills.map(async ({ skillName, skill }) => ({

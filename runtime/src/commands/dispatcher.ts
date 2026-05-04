@@ -19,7 +19,7 @@
  *
  * Port notes: parse + unknown-command fallback logic is ported from
  * agenc `src/utils/slashCommandParsing.ts` and the selection path
- * in `src/utils/processUserInput/processSlashCommand.tsx`. React/JSX,
+ * in `runtime/src/tui/input/processSlashCommand.tsx`. React/JSX,
  * MCP settle polling, plugin marketplace, and fork-agent paths are
  * intentionally dropped — AgenC uses raw-text command execution.
  *

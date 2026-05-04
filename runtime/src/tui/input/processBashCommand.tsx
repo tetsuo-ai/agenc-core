@@ -1,18 +1,18 @@
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources';
 import { randomUUID } from 'crypto';
 import * as React from 'react';
-import { BashModeProgress } from 'src/components/BashModeProgress.js';
-import type { SetToolJSXFn } from 'src/Tool.js';
-import { BashTool } from 'src/tools/BashTool/BashTool.js';
-import type { AttachmentMessage, SystemMessage, UserMessage } from 'src/types/message.js';
-import type { ShellProgress } from 'src/types/tools.js';
-import { logEvent } from '../../services/analytics/index.js';
-import { errorMessage, ShellError } from '../errors.js';
-import { createSyntheticUserCaveatMessage, createUserInterruptionMessage, createUserMessage, prepareUserContent } from '../messages.js';
-import { resolveDefaultShell } from '../shell/resolveDefaultShell.js';
-import { isPowerShellToolEnabled } from '../shell/shellToolUtils.js';
-import { processToolResultBlock } from '../toolResultStorage.js';
-import { escapeXml } from '../xml.js';
+import { BashModeProgress } from '../../agenc/upstream/components/BashModeProgress.js';
+import type { SetToolJSXFn } from '../../agenc/upstream/Tool.js';
+import { BashTool } from '../../agenc/upstream/tools/BashTool/BashTool.js';
+import type { AttachmentMessage, SystemMessage, UserMessage } from '../../agenc/upstream/types/message.js';
+import type { ShellProgress } from '../../agenc/upstream/types/tools.js';
+import { logEvent } from '../../agenc/upstream/services/analytics/index.js';
+import { errorMessage, ShellError } from '../../agenc/upstream/utils/errors.js';
+import { createSyntheticUserCaveatMessage, createUserInterruptionMessage, createUserMessage, prepareUserContent } from '../../agenc/upstream/utils/messages.js';
+import { resolveDefaultShell } from '../../agenc/upstream/utils/shell/resolveDefaultShell.js';
+import { isPowerShellToolEnabled } from '../../agenc/upstream/utils/shell/shellToolUtils.js';
+import { processToolResultBlock } from '../../agenc/upstream/utils/toolResultStorage.js';
+import { escapeXml } from '../../agenc/upstream/utils/xml.js';
 import type { ProcessUserInputContext } from './processUserInput.js';
 export async function processBashCommand(inputString: string, precedingInputBlocks: ContentBlockParam[], attachmentMessages: AttachmentMessage[], context: ProcessUserInputContext, setToolJSX: SetToolJSXFn): Promise<{
   messages: (UserMessage | AttachmentMessage | SystemMessage)[];
@@ -24,7 +24,7 @@ export async function processBashCommand(inputString: string, precedingInputBloc
   // tool-list visibility. Computed up front so telemetry records the
   // actual shell, not the raw setting.
   const usePowerShell = isPowerShellToolEnabled() && resolveDefaultShell() === 'powershell';
-  logEvent('tengu_input_bash', {
+  logEvent('agenc_input_bash', {
     powershell: usePowerShell
   });
   const userMessage = createUserMessage({
@@ -72,11 +72,11 @@ export async function processBashCommand(inputString: string, precedingInputBloc
     // returns false regardless (unsupported platform).
     // Lazy-require PowerShellTool so its ~300KB chunk only loads when the
     // user has actually selected the powershell default shell.
-    type PSMod = typeof import('src/tools/PowerShellTool/PowerShellTool.js');
+    type PSMod = typeof import('../../agenc/upstream/tools/PowerShellTool/PowerShellTool.js');
     let PowerShellTool: PSMod['PowerShellTool'] | null = null;
     if (usePowerShell) {
       /* eslint-disable @typescript-eslint/no-require-imports */
-      PowerShellTool = (require('src/tools/PowerShellTool/PowerShellTool.js') as PSMod).PowerShellTool;
+      PowerShellTool = (require('../../agenc/upstream/tools/PowerShellTool/PowerShellTool.js') as PSMod).PowerShellTool;
       /* eslint-enable @typescript-eslint/no-require-imports */
     }
     const shellTool = PowerShellTool ?? BashTool;

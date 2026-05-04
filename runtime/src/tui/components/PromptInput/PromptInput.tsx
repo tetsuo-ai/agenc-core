@@ -75,7 +75,7 @@ import { setAutoModeActive } from '../../../agenc/upstream/utils/permissions/aut
 import { cyclePermissionMode, getNextPermissionMode } from '../../../agenc/upstream/utils/permissions/getNextPermissionMode.js';
 import { transitionPermissionMode } from '../../../agenc/upstream/utils/permissions/permissionSetup.js';
 import { getPlatform } from '../../../agenc/upstream/utils/platform.js';
-import type { ProcessUserInputContext } from '../../../agenc/upstream/utils/processUserInput/processUserInput.js';
+import type { ProcessUserInputContext } from '../../input/processUserInput.js';
 import { editPromptInEditor } from '../../../agenc/upstream/utils/promptEditor.js';
 import { hasAutoModeOptIn } from '../../../agenc/upstream/utils/settings/settings.js';
 import { findBtwTriggerPositions } from '../../../agenc/upstream/utils/sideQuestion.js';

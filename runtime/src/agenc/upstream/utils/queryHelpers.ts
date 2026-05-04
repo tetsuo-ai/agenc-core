@@ -33,7 +33,7 @@ import type {
   inputSchema as permissionToolInputSchema,
   outputSchema as permissionToolOutputSchema,
 } from './permissions/PermissionPromptToolResultSchema.js'
-import type { ProcessUserInputContext } from './processUserInput/processUserInput.js'
+import type { ProcessUserInputContext } from '../../../tui/input/processUserInput.js'
 import { recordTranscript } from './sessionStorage.js'
 
 export type PermissionPromptTool = Tool<
@@ -82,7 +82,7 @@ export function isResultSuccessful(
 
   // Carve-out: API completed (message_delta set stop_reason) but yielded
   // no assistant content — last(messages) is still this turn's prompt.
-  // claude.ts:2026 recognizes end_turn-with-zero-content-blocks as
+  // The API stream adapter recognizes end_turn-with-zero-content-blocks as
   // legitimate and passes through without throwing. Observed on
   // task_notification drain turns: model returns stop_reason=end_turn,
   // outputTokens=4, textContentLength=0 — it saw the subagent result

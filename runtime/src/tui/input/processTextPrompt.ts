@@ -1,20 +1,20 @@
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources'
 import { randomUUID } from 'crypto'
-import { setPromptId } from 'src/bootstrap/state.js'
+import { setPromptId } from '../../agenc/upstream/bootstrap/state.js'
 import type {
   AttachmentMessage,
   SystemMessage,
   UserMessage,
-} from 'src/types/message.js'
-import { logEvent } from '../../services/analytics/index.js'
-import type { PermissionMode } from '../../types/permissions.js'
-import { createUserMessage } from '../messages.js'
-import { logOTelEvent, redactIfDisabled } from '../telemetry/events.js'
-import { startInteractionSpan } from '../telemetry/sessionTracing.js'
+} from '../../agenc/upstream/types/message.js'
+import { logEvent } from '../../agenc/upstream/services/analytics/index.js'
+import type { PermissionMode } from '../../agenc/upstream/types/permissions.js'
+import { createUserMessage } from '../../agenc/upstream/utils/messages.js'
+import { logOTelEvent, redactIfDisabled } from '../../agenc/upstream/utils/telemetry/events.js'
+import { startInteractionSpan } from '../../agenc/upstream/utils/telemetry/sessionTracing.js'
 import {
   matchesKeepGoingKeyword,
   matchesNegativeKeyword,
-} from '../userPromptKeywords.js'
+} from '../../agenc/upstream/utils/userPromptKeywords.js'
 
 export function processTextPrompt(
   input: string | Array<ContentBlockParam>,
@@ -58,7 +58,7 @@ export function processTextPrompt(
 
   const isNegative = matchesNegativeKeyword(userPromptText)
   const isKeepGoing = matchesKeepGoingKeyword(userPromptText)
-  logEvent('tengu_input_prompt', {
+  logEvent('agenc_input_prompt', {
     is_negative: isNegative,
     is_keep_going: isKeepGoing,
   })
