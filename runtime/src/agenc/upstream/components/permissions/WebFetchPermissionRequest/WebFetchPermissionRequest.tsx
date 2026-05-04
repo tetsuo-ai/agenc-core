@@ -6,7 +6,7 @@ import { shouldShowAlwaysAllowOptions } from '../../../utils/permissions/permiss
 import { type OptionWithDescription, Select } from '../../CustomSelect/select.js';
 import { type UnaryEvent, usePermissionRequestLogging } from '../hooks.js';
 import { PermissionDialog } from '../PermissionDialog.js';
-import type { PermissionRequestProps } from '../PermissionRequest.js';
+import type { PermissionRequestProps } from '../../../../../tui/components/permissions/PermissionRequest.js';
 import { PermissionRuleExplanation } from '../PermissionRuleExplanation.js';
 import { logUnaryPermissionEvent } from '../utils.js';
 function inputToPermissionRuleContent(input: {

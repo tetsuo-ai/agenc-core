@@ -12,7 +12,7 @@ import { logUnaryEvent } from '../../../utils/unaryLogging.js';
 import { type UnaryEvent, usePermissionRequestLogging } from '../hooks.js';
 import { PermissionDialog } from '../PermissionDialog.js';
 import { PermissionPrompt, type PermissionPromptOption, type ToolAnalyticsContext } from '../PermissionPrompt.js';
-import type { PermissionRequestProps } from '../PermissionRequest.js';
+import type { PermissionRequestProps } from '../../../../../tui/components/permissions/PermissionRequest.js';
 import { PermissionRuleExplanation } from '../PermissionRuleExplanation.js';
 type SkillOptionValue = 'yes' | 'yes-exact' | 'yes-prefix' | 'no';
 export function SkillPermissionRequest(props) {

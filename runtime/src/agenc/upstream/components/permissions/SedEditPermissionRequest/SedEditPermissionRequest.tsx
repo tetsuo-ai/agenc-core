@@ -10,7 +10,7 @@ import { Text } from '../../../../../tui/ink.js';
 import { BashTool } from '../../../tools/BashTool/BashTool.js';
 import { applySedSubstitution, type SedEditInfo } from '../../../tools/BashTool/sedEditParser.js';
 import { FilePermissionDialog } from '../FilePermissionDialog/FilePermissionDialog.js';
-import type { PermissionRequestProps } from '../PermissionRequest.js';
+import type { PermissionRequestProps } from '../../../../../tui/components/permissions/PermissionRequest.js';
 type SedEditPermissionRequestProps = PermissionRequestProps & {
   sedInfo: SedEditInfo;
 };

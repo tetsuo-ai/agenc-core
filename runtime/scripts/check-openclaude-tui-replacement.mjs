@@ -124,6 +124,14 @@ function assertSourceSnapshot() {
   ]
     .filter(([file]) => existsSync(join(liveTuiRoot, file)))
     .map(([, inventoryPath]) => inventoryPath);
+  const absorbedPermissionFiles = [
+    [
+      "components/permissions/PermissionRequest.tsx",
+      "src/components/permissions/PermissionRequest.tsx",
+    ],
+  ]
+    .filter(([file]) => existsSync(join(liveTuiRoot, file)))
+    .map(([, inventoryPath]) => inventoryPath);
   const substitutions = new Map([
     [
       `src/components/${donorBrand}CodeHint/PluginHintMenu.tsx`,
@@ -163,6 +171,7 @@ function assertSourceSnapshot() {
   const actualFiles = copiedFiles
     .concat(absorbedInkFiles, absorbedStateFiles, absorbedContextFiles)
     .concat(absorbedKeybindingFiles)
+    .concat(absorbedPermissionFiles)
     .sort();
   const missing = expected.filter((file) => !actualFiles.includes(file));
   const extra = actualFiles.filter((file) => !expected.includes(file));
@@ -184,6 +193,7 @@ function assertOldTuiRemoved() {
     "main.tsx",
     "context/promptOverlayContext.test.tsx",
     "context/promptOverlayContext.tsx",
+    "components/permissions/PermissionRequest.tsx",
     `${compatibilityDir}/App.tsx`,
     `${compatibilityDir}/message-adapter.ts`,
     `${compatibilityDir}/permission-bridge.tsx`,
@@ -220,7 +230,6 @@ function assertOldTuiRemoved() {
     "transcript",
     "permissions",
     "screens",
-    "components",
   ]) {
     if (existsSync(join(liveTuiRoot, dir))) fail(`old TUI directory remains: ${dir}`);
   }
@@ -236,6 +245,12 @@ function assertNoDeletedAbsorbImporters() {
   ]);
   const deletedContextEntrypoints = new Map([
     [join(copiedRoot, "context/promptOverlayContext"), "prompt overlay context"],
+  ]);
+  const deletedPermissionEntrypoints = new Map([
+    [
+      join(copiedRoot, "components/permissions/PermissionRequest"),
+      "PermissionRequest component",
+    ],
   ]);
   const sourceImportPattern = /(?:from\s+|import\s*\(|require\s*\()\s*['"]([^'"]+)['"]/g;
   for (const file of walk(copiedRoot)) {
@@ -268,6 +283,12 @@ function assertNoDeletedAbsorbImporters() {
       ) {
         fail(`deleted prompt overlay context alias import remains: ${file} -> ${specifier}`);
       }
+      if (
+        specifier === "src/components/permissions/PermissionRequest" ||
+        specifier === "src/components/permissions/PermissionRequest.js"
+      ) {
+        fail(`deleted PermissionRequest alias import remains: ${file} -> ${specifier}`);
+      }
       if (!specifier.startsWith(".")) continue;
       const resolved = resolve(dirname(abs), specifier)
         .replace(/\.(?:js|jsx|ts|tsx|mjs|cjs)$/, "");
@@ -287,6 +308,11 @@ function assertNoDeletedAbsorbImporters() {
       }
       for (const [deletedContextEntrypoint, label] of deletedContextEntrypoints) {
         if (resolved === deletedContextEntrypoint) {
+          fail(`deleted ${label} relative import remains: ${file} -> ${specifier}`);
+        }
+      }
+      for (const [deletedPermissionEntrypoint, label] of deletedPermissionEntrypoints) {
+        if (resolved === deletedPermissionEntrypoint) {
           fail(`deleted ${label} relative import remains: ${file} -> ${specifier}`);
         }
       }

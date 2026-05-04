@@ -19,7 +19,7 @@ import { logError } from '../../../utils/log.js';
 import { applyMarkdown } from '../../../utils/markdown.js';
 import { isPlanModeInterviewPhaseEnabled } from '../../../utils/planModeV2.js';
 import { getPlanFilePath } from '../../../utils/plans.js';
-import type { PermissionRequestProps } from '../PermissionRequest.js';
+import type { PermissionRequestProps } from '../../../../../tui/components/permissions/PermissionRequest.js';
 import { QuestionView } from './QuestionView.js';
 import { SubmitQuestionsView } from './SubmitQuestionsView.js';
 import { useMultipleChoiceState } from './use-multiple-choice-state.js';
