@@ -10,7 +10,7 @@
 // Gates run, in order:
 //   1. Branch shape: current branch must be port/<item-id>.
 //   2. Branding scan over staged + working-tree changes against main.
-//   3. Item-specific gates by ID prefix (no remaining importers, etc.).
+//   3. Upstream/import-shape gates and item-specific gates by ID prefix.
 //   4. Typecheck (npm run typecheck) — slow; skip with --skip-typecheck for
 //      iteration but never skip for completion.
 //   5. agenc-tui-validate — rebuild + PTY startup of agenc and agenc --yolo.
@@ -227,6 +227,16 @@ const ITEM_EVIDENCE = {
       { pattern: "agent\\.budget", scope: "runtime/src" },
       { pattern: "token_cap|dollar_cap|wall_clock_seconds", scope: "runtime/src" },
     ],
+  },
+  "F-06j": {
+    files: ["scripts/check-upstream-import-growth.mjs"],
+    grepPresent: [
+      {
+        pattern: "check-upstream-import-growth",
+        scope: "scripts/goal/verify.mjs",
+      },
+    ],
+    tests: ["scripts/check-upstream-import-growth.test.mjs"],
   },
   "F-07": {
     files: [{ globUnder: "runtime/src/lifecycle", matching: /\.tsx?$/, minCount: 1 }],
@@ -1059,6 +1069,19 @@ if (upstreamGrowth.length > 0) {
         .map((row) => `- ${row.file} (+${row.added}/-${row.deleted})`)
         .join("\n  "),
   );
+}
+
+const upstreamImportGrowthScript = path.join(
+  root,
+  "scripts",
+  "check-upstream-import-growth.mjs",
+);
+if (!existsSync(upstreamImportGrowthScript)) {
+  failGate(`upstream-import growth script missing at ${upstreamImportGrowthScript}`);
+}
+const upstreamImportGrowthRes = run("node", [upstreamImportGrowthScript]);
+if (upstreamImportGrowthRes.status !== 0) {
+  failGate("upstream-import growth check failed");
 }
 
 // branding-scan: allow regex enumerates banned shim-pattern suffixes for the gate
