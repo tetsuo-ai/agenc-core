@@ -42,3 +42,17 @@ export {
   type AgenCInProcessDaemonTransportOptions,
   type StartAgenCInProcessDaemonTransportOptions,
 } from "./app-server/transport/in-process.js";
+export {
+  AGENC_WEBSOCKET_DEFAULT_HOST,
+  AGENC_WEBSOCKET_DEFAULT_MAX_PAYLOAD_BYTES,
+  AGENC_WEBSOCKET_DEFAULT_PATH,
+  AGENC_WEBSOCKET_HEALTH_PATH,
+  AGENC_WEBSOCKET_READY_PATH,
+  AgenCWebSocketServer,
+  encodeJsonPayload,
+  parseJsonObjectPayload,
+  rejectBrowserOriginHeaders,
+  type AgenCWebSocketListenAddress,
+  type AgenCWebSocketMessageContext,
+  type AgenCWebSocketServerOptions,
+} from "./app-server/transport/websocket.js";
