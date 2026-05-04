@@ -139,6 +139,27 @@ function assertSourceSnapshot() {
         (file) => `src/components/PromptInput/${file}`,
       )
     : [];
+  const absorbedMessagesFiles = [
+    ["components/Messages.tsx", "src/components/Messages.tsx"],
+    [
+      "components/messagesOptionalModules.ts",
+      "src/components/messagesOptionalModules.ts",
+    ],
+    [
+      "components/messagesOptionalModules.test.ts",
+      "src/components/messagesOptionalModules.test.ts",
+    ],
+    [
+      "components/Messages.behavior.test.ts",
+      "src/components/Messages.behavior.test.ts",
+    ],
+    [
+      "components/messagesBriefFiltering.ts",
+      "src/components/messagesBriefFiltering.ts",
+    ],
+  ]
+    .filter(([file]) => existsSync(join(liveTuiRoot, file)))
+    .map(([, inventoryPath]) => inventoryPath);
   const substitutions = new Map([
     [
       `src/components/${donorBrand}CodeHint/PluginHintMenu.tsx`,
@@ -182,6 +203,22 @@ function assertSourceSnapshot() {
       "src/components/PromptInput/proactiveAdapter.test.ts",
       "Focused coverage for the T-06 proactive adapter fallback when the optional proactive module is absent.",
     ],
+    [
+      "src/components/messagesOptionalModules.ts",
+      "T-07 keeps optional proactive/Kairos Messages behavior behind an AgenC-owned no-throw adapter because the optional upstream proactive and file-delivery modules are absent from this runtime snapshot.",
+    ],
+    [
+      "src/components/messagesOptionalModules.test.ts",
+      "Focused coverage for the T-07 optional module adapter fallbacks used by Messages.",
+    ],
+    [
+      "src/components/Messages.behavior.test.ts",
+      "Focused coverage for T-07 brief-mode filtering and brief-turn text dropping behavior exported by Messages.",
+    ],
+    [
+      "src/components/messagesBriefFiltering.ts",
+      "T-07 extracts Messages brief-mode filtering into a TUI-owned pure helper so behavior can be tested without mounting the full renderer component graph.",
+    ],
   ]);
   const expected = sourceFiles
     .map((file) => substitutions.get(file) ?? file)
@@ -192,6 +229,7 @@ function assertSourceSnapshot() {
     .concat(absorbedKeybindingFiles)
     .concat(absorbedPermissionFiles)
     .concat(absorbedPromptInputFiles)
+    .concat(absorbedMessagesFiles)
     .sort();
   const missing = expected.filter((file) => !actualFiles.includes(file));
   const extra = actualFiles.filter((file) => !expected.includes(file));
@@ -242,6 +280,11 @@ function assertOldTuiRemoved() {
     if (allowed.has(file)) continue;
     if (isAllowedTest(file)) continue;
     if (file.startsWith("components/PromptInput/")) continue;
+    if (file === "components/Messages.tsx") continue;
+    if (file === "components/messagesOptionalModules.ts") continue;
+    if (file === "components/messagesOptionalModules.test.ts") continue;
+    if (file === "components/Messages.behavior.test.ts") continue;
+    if (file === "components/messagesBriefFiltering.ts") continue;
     if (file.startsWith("ink/")) continue;
     if (file.startsWith("keybindings/")) continue;
     fail(`unexpected live TUI file remains: ${file}`);
@@ -274,6 +317,7 @@ function assertNoDeletedAbsorbImporters() {
     ],
   ]);
   const deletedPromptInputRoot = join(copiedRoot, "components/PromptInput");
+  const deletedMessagesEntrypoint = join(copiedRoot, "components/Messages");
   const sourceImportPattern = /(?:from\s+|import\s*\(|require\s*\()\s*['"]([^'"]+)['"]/g;
   for (const file of walk(copiedRoot)) {
     if (!/\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(file)) continue;
@@ -317,6 +361,12 @@ function assertNoDeletedAbsorbImporters() {
       ) {
         fail(`deleted PromptInput alias import remains: ${file} -> ${specifier}`);
       }
+      if (
+        specifier === "src/components/Messages" ||
+        specifier === "src/components/Messages.js"
+      ) {
+        fail(`deleted Messages alias import remains: ${file} -> ${specifier}`);
+      }
       if (!specifier.startsWith(".")) continue;
       const resolved = resolve(dirname(abs), specifier)
         .replace(/\.(?:js|jsx|ts|tsx|mjs|cjs)$/, "");
@@ -349,6 +399,9 @@ function assertNoDeletedAbsorbImporters() {
         resolved.startsWith(`${deletedPromptInputRoot}/`)
       ) {
         fail(`deleted PromptInput relative import remains: ${file} -> ${specifier}`);
+      }
+      if (resolved === deletedMessagesEntrypoint) {
+        fail(`deleted Messages relative import remains: ${file} -> ${specifier}`);
       }
     }
   }

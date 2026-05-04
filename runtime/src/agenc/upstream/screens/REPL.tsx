@@ -154,7 +154,7 @@ import { mergeAndFilterTools } from '../utils/toolPool.js';
 import { useMergedCommands } from '../hooks/useMergedCommands.js';
 import { useSkillsChange } from '../hooks/useSkillsChange.js';
 import { useManagePlugins } from '../hooks/useManagePlugins.js';
-import { Messages } from '../components/Messages.js';
+import { Messages } from '../../../tui/components/Messages.js';
 import { TaskListV2 } from '../components/TaskListV2.js';
 import { TeammateViewHeader } from '../components/TeammateViewHeader.js';
 import { useTasksV2WithCollapseEffect } from '../hooks/useTasksV2.js';

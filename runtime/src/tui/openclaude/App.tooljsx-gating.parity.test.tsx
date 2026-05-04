@@ -12,7 +12,7 @@ function readSource(): string {
 
 /**
  * Mirrors the upstream animation gate from
- * `runtime/src/agenc/upstream/components/Messages.tsx:595`:
+ * `runtime/src/tui/components/Messages.tsx`:
  *
  *   const canAnimate =
  *     (!toolJSX || !!toolJSX.shouldContinueAnimation)
@@ -35,7 +35,7 @@ function canAnimate(
   );
 }
 
-describe("R3 toolJSX gating reaches Messages.tsx:595 animation gate", () => {
+describe("R3 toolJSX gating reaches the Messages animation gate", () => {
   test("E3.1 toolJSX=null AND empty toolUseConfirmQueue AND !isMessageSelectorVisible -> canAnimate=true", () => {
     expect(canAnimate(null, [], false)).toBe(true);
   });
