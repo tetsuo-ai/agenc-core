@@ -389,13 +389,13 @@ describe("bashToolHasPermission", () => {
     });
     const evalCtx = makeEvaluatorCtx(ctx);
     const result = await bashToolHasPermission(
-      { command: "bash -lc 'rm -rf /important/data'" },
+      { command: "bash -lc 'rm -rf /'" },
       evalCtx,
     );
     expect(result.behavior).toBe("deny");
     if (result.behavior === "deny") {
       expect(result.decisionReason.type).toBe("safetyCheck");
-      expect(result.message).toContain("rm -rf absolute path");
+      expect(result.message).toContain("rm -rf critical path");
     }
   });
 
@@ -407,7 +407,7 @@ describe("bashToolHasPermission", () => {
     });
     const evalCtx = makeEvaluatorCtx(ctx);
     const result = await bashToolHasPermission(
-      { command: "bash -lc 'cd /tmp; rm -rf /important/data'" },
+      { command: "bash -lc 'cd /tmp; rm -rf /'" },
       evalCtx,
     );
     expect(result.behavior).toBe("deny");

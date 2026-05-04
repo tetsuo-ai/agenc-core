@@ -7,6 +7,8 @@
  * permission setup code instead of an inline subset.
  */
 
+import { expandTilde, isDangerousRemovalPath } from "./path-validation.js";
+
 /**
  * Cross-platform code-execution entry points present on both Unix and Windows.
  * Shared to prevent the Bash and PowerShell lists drifting apart on
@@ -79,8 +81,8 @@ export interface DangerousShellCommandPattern {
  */
 export const DANGEROUS_SHELL_COMMAND_PATTERNS: readonly DangerousShellCommandPattern[] = [
   {
-    matches: isRecursiveForceRemoveOfAbsolutePath,
-    label: "rm -rf absolute path",
+    matches: isRecursiveForceRemoveOfCriticalPath,
+    label: "rm -rf critical path",
   },
   // Filesystem destruction
   { pattern: /\bmkfs(\.|\s)/, label: "mkfs" },
@@ -151,11 +153,11 @@ const SHELL_SCRIPT_COMMANDS: ReadonlySet<string> = new Set([
   "tcsh",
 ]);
 
-function isRecursiveForceRemoveOfAbsolutePath(command: string): boolean {
+function isRecursiveForceRemoveOfCriticalPath(command: string): boolean {
   const fragments = splitShellFragments(command);
   if (fragments.length > 1) {
     return fragments.some((fragment) =>
-      isRecursiveForceRemoveOfAbsolutePath(fragment),
+      isRecursiveForceRemoveOfCriticalPath(fragment),
     );
   }
 
@@ -166,40 +168,184 @@ function isRecursiveForceRemoveOfAbsolutePath(command: string): boolean {
 }
 
 function containsRecursiveForceRemove(words: readonly string[]): boolean {
-  let commandIndex = 0;
-  while (
-    commandIndex < words.length &&
-    /^[A-Za-z_]\w*=/.test(words[commandIndex]!)
-  ) {
-    commandIndex++;
-  }
-  if (basename(stripShellQuotes(words[commandIndex] ?? "")) !== "rm") {
-    return containsWrappedRecursiveForceRemove(words, commandIndex);
-  }
+  const commandIndex = firstCommandIndex(words, 0);
+  if (commandIndex === null) return false;
 
-  return rmArgsTargetAbsolutePath(words.slice(commandIndex + 1));
+  return commandAtIndexContainsRecursiveForceRemove(words, commandIndex);
 }
 
-function containsWrappedRecursiveForceRemove(
+function commandAtIndexContainsRecursiveForceRemove(
   words: readonly string[],
   commandIndex: number,
 ): boolean {
   const command = basename(stripShellQuotes(words[commandIndex] ?? ""));
+  if (command === "rm") {
+    return rmArgsTargetCriticalPath(words.slice(commandIndex + 1));
+  }
   if (SHELL_SCRIPT_COMMANDS.has(command) && shellScriptContainsDanger(words, commandIndex)) {
     return true;
   }
   if (!RM_WRAPPER_COMMANDS.has(command)) return false;
 
-  for (let i = commandIndex + 1; i < words.length; i++) {
-    const candidate = basename(stripShellQuotes(words[i]!));
-    if (candidate === "rm" && rmArgsTargetAbsolutePath(words.slice(i + 1))) {
-      return true;
-    }
-    if (SHELL_SCRIPT_COMMANDS.has(candidate) && shellScriptContainsDanger(words, i)) {
-      return true;
-    }
+  const nestedCommandIndex = commandIndexAfterWrapper(words, commandIndex, command);
+  return nestedCommandIndex === null
+    ? false
+    : commandAtIndexContainsRecursiveForceRemove(words, nestedCommandIndex);
+}
+
+function firstCommandIndex(
+  words: readonly string[],
+  startIndex: number,
+): number | null {
+  let index = startIndex;
+  while (index < words.length && isEnvironmentAssignment(words[index]!)) {
+    index++;
   }
-  return false;
+  return index < words.length ? index : null;
+}
+
+function commandIndexAfterWrapper(
+  words: readonly string[],
+  wrapperIndex: number,
+  wrapper: string,
+): number | null {
+  switch (wrapper) {
+    case "env":
+      return envCommandIndex(words, wrapperIndex + 1);
+    case "nice":
+      return niceCommandIndex(words, wrapperIndex + 1);
+    case "timeout":
+      return timeoutCommandIndex(words, wrapperIndex + 1);
+    case "stdbuf":
+      return stdbufCommandIndex(words, wrapperIndex + 1);
+    case "time":
+      return timeCommandIndex(words, wrapperIndex + 1);
+    case "command":
+      return commandBuiltinCommandIndex(words, wrapperIndex + 1);
+    case "exec":
+      return execCommandIndex(words, wrapperIndex + 1);
+    case "nohup":
+      return wrapperIndex + 1 < words.length ? wrapperIndex + 1 : null;
+    default:
+      return null;
+  }
+}
+
+function envCommandIndex(words: readonly string[], startIndex: number): number | null {
+  let index = startIndex;
+  while (index < words.length) {
+    const word = stripShellQuotes(words[index]!);
+    if (word === "-" || isEnvironmentAssignment(word)) {
+      index++;
+      continue;
+    }
+    if (word.startsWith("-")) {
+      index++;
+      continue;
+    }
+    return index;
+  }
+  return null;
+}
+
+function niceCommandIndex(words: readonly string[], startIndex: number): number | null {
+  let index = startIndex;
+  while (index < words.length) {
+    const word = stripShellQuotes(words[index]!);
+    if (word === "-n" || word === "--adjustment") {
+      index += 2;
+      continue;
+    }
+    if (word.startsWith("--adjustment=") || /^-\d+$/.test(word)) {
+      index++;
+      continue;
+    }
+    if (word.startsWith("-")) {
+      index++;
+      continue;
+    }
+    return index;
+  }
+  return null;
+}
+
+function timeoutCommandIndex(words: readonly string[], startIndex: number): number | null {
+  let index = startIndex;
+  while (index < words.length) {
+    const word = stripShellQuotes(words[index]!);
+    if (word === "-k" || word === "--kill-after" || word === "-s" || word === "--signal") {
+      index += 2;
+      continue;
+    }
+    if (
+      word === "--foreground" ||
+      word === "--preserve-status" ||
+      word.startsWith("--kill-after=") ||
+      word.startsWith("--signal=")
+    ) {
+      index++;
+      continue;
+    }
+    break;
+  }
+  return index + 1 < words.length ? index + 1 : null;
+}
+
+function stdbufCommandIndex(words: readonly string[], startIndex: number): number | null {
+  let index = startIndex;
+  while (index < words.length) {
+    const word = stripShellQuotes(words[index]!);
+    if (word.startsWith("-")) {
+      index++;
+      continue;
+    }
+    return index;
+  }
+  return null;
+}
+
+function timeCommandIndex(words: readonly string[], startIndex: number): number | null {
+  let index = startIndex;
+  while (index < words.length) {
+    const word = stripShellQuotes(words[index]!);
+    if (word === "-p") {
+      index++;
+      continue;
+    }
+    return index;
+  }
+  return null;
+}
+
+function commandBuiltinCommandIndex(
+  words: readonly string[],
+  startIndex: number,
+): number | null {
+  let index = startIndex;
+  while (index < words.length) {
+    const word = stripShellQuotes(words[index]!);
+    if (!word.startsWith("-") || word === "-") return index;
+    if (/[vV]/.test(word)) return null;
+    index++;
+  }
+  return null;
+}
+
+function execCommandIndex(words: readonly string[], startIndex: number): number | null {
+  let index = startIndex;
+  while (index < words.length) {
+    const word = stripShellQuotes(words[index]!);
+    if (word === "-a") {
+      index += 2;
+      continue;
+    }
+    if (word.startsWith("-")) {
+      index++;
+      continue;
+    }
+    return index;
+  }
+  return null;
 }
 
 function shellScriptContainsDanger(
@@ -209,13 +355,13 @@ function shellScriptContainsDanger(
   for (let i = shellIndex + 1; i < words.length - 1; i++) {
     const flag = stripShellQuotes(words[i]!);
     if (flag === "-c" || flag === "-lc") {
-      return isRecursiveForceRemoveOfAbsolutePath(stripShellQuotes(words[i + 1]!));
+      return isRecursiveForceRemoveOfCriticalPath(stripShellQuotes(words[i + 1]!));
     }
   }
   return false;
 }
 
-function rmArgsTargetAbsolutePath(args: readonly string[]): boolean {
+function rmArgsTargetCriticalPath(args: readonly string[]): boolean {
   let recursive = false;
   let force = false;
   let parsingFlags = true;
@@ -234,7 +380,7 @@ function rmArgsTargetAbsolutePath(args: readonly string[]): boolean {
       }
       continue;
     }
-    if (recursive && force && isAbsoluteOrHomeTarget(word)) return true;
+    if (recursive && force && isCriticalRemovalTarget(word)) return true;
   }
   return false;
 }
@@ -313,6 +459,10 @@ function basename(path: string): string {
   return idx >= 0 ? path.slice(idx + 1) : path;
 }
 
-function isAbsoluteOrHomeTarget(target: string): boolean {
-  return target === "~" || target.startsWith("~/") || target.startsWith("/");
+function isEnvironmentAssignment(word: string): boolean {
+  return /^[A-Za-z_]\w*=/.test(stripShellQuotes(word));
+}
+
+function isCriticalRemovalTarget(target: string): boolean {
+  return isDangerousRemovalPath(expandTilde(target));
 }
