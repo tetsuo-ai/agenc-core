@@ -195,6 +195,7 @@ describe("AgenC daemon protocol surface", () => {
         method: "initialize",
         params: {
           protocolVersion: "1.0.0",
+          protocol: { version: "1.0.0" },
           clientName: "contract-test",
           capabilities: {},
         },
@@ -416,8 +417,55 @@ describe("AgenC daemon protocol surface", () => {
     }
   });
 
+  it("publishes nested protocol version metadata for initialize", () => {
+    const schema = readProtocolSchema() as ProtocolSchema & {
+      readonly definitions: ProtocolSchema["definitions"] & {
+        readonly DaemonProtocolInfo: {
+          readonly additionalProperties: false;
+          readonly properties: {
+            readonly version: { readonly type: "string"; readonly minLength: 1 };
+          };
+          readonly required: readonly string[];
+        };
+        readonly InitializeParams: {
+          readonly anyOf: readonly {
+            readonly required: readonly string[];
+          }[];
+          readonly properties: {
+            readonly protocol: { readonly $ref: string };
+          };
+        };
+      };
+    };
+
+    expect(schema.definitions.InitializeParams.properties.protocol).toEqual({
+      $ref: "#/definitions/DaemonProtocolInfo",
+    });
+    expect(schema.definitions.InitializeParams.anyOf).toEqual([
+      { required: ["protocol"] },
+      { required: ["protocolVersion"] },
+    ]);
+    expect(schema.definitions.DaemonProtocolInfo).toEqual({
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        version: { type: "string", minLength: 1 },
+      },
+      required: ["version"],
+    });
+  });
+
   it("rejects unlisted methods and malformed payloads outside the F-03a surface", () => {
     const validate = compileRequestValidator(readProtocolSchema());
+
+    expect(
+      validate({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "missing-initialize-protocol",
+        method: "initialize",
+        params: {},
+      }),
+    ).toBe(false);
 
     expect(
       validate({

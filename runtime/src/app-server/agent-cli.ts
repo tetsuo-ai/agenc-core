@@ -21,6 +21,7 @@ import {
   resolveAgenCDaemonSocketPath,
 } from "./daemon-cli.js";
 import {
+  AGENC_DAEMON_PROTOCOL_VERSION,
   JSON_RPC_VERSION,
   type AgentAttachParams,
   type AgentAttachResult,
@@ -302,7 +303,8 @@ export async function createConnectedAgenCJsonLineDaemonTuiClient(
   const authCookie = await (options.authCookie ?? readDaemonCookie(cookiePath));
   const client = await connectPersistentDaemonClient(socketPath, timeoutMs);
   await client.request("initialize", {
-    protocolVersion: "1.0.0",
+    protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+    protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
     clientName: "agenc-agent-tui",
     authCookie,
     capabilities: {},
@@ -792,7 +794,8 @@ async function requestDaemon<Method extends AgenCDaemonMethod>(
       id: 1,
       method: "initialize",
       params: {
-        protocolVersion: "1.0.0",
+        protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+        protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
         clientName: "agenc-agent-cli",
         authCookie: resolvedAuthCookie,
         capabilities: {},

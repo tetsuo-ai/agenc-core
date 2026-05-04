@@ -84,7 +84,11 @@ describe("AgenC in-process app-server transport", () => {
     });
 
     await expect(transport.initialize()).resolves.toMatchObject({
-      result: { type: "initialized", protocolVersion: "1.0.0" },
+      result: {
+        type: "initialized",
+        protocolVersion: "1.0.0",
+        protocol: { version: "1.0.0" },
+      },
     });
     expect(transport.initialized).toBe(true);
 
@@ -143,6 +147,7 @@ describe("AgenC in-process app-server transport", () => {
       dispatcher: accepted,
       initialize: {
         protocolVersion: "1.0.0",
+        protocol: { version: "1.0.0" },
         clientName: "embedded-test",
         authCookie: "expected",
       },
@@ -170,6 +175,7 @@ describe("AgenC in-process app-server transport", () => {
         dispatcher: rejected,
         initialize: {
           protocolVersion: "1.0.0",
+          protocol: { version: "1.0.0" },
           clientName: "embedded-test",
           authCookie: "wrong",
         },
@@ -259,13 +265,19 @@ describe("AgenC in-process app-server transport", () => {
       jsonrpc: JSON_RPC_VERSION,
       id: 1,
       method: "initialize",
-      params: { protocolVersion: "1.0.0", clientName: "sdk-shape-test" },
+      params: {
+        protocolVersion: "1.0.0",
+        clientName: "sdk-shape-test",
+      },
     } satisfies AgenCDaemonRequest;
 
     await expect(transport.request(request)).resolves.toMatchObject({
       jsonrpc: JSON_RPC_VERSION,
       id: 1,
-      result: { type: "initialized" },
+      result: {
+        type: "initialized",
+        protocol: { version: "1.0.0" },
+      },
     });
     await transport.close();
   });
@@ -288,11 +300,13 @@ describe("AgenC in-process app-server transport", () => {
     await expect(
       sdkClient.initialize({
         protocolVersion: "1.0.0",
+        protocol: { version: "1.0.0" },
         clientName: "sdk-public-import-test",
       }),
     ).resolves.toMatchObject({
       type: "initialized",
       protocolVersion: "1.0.0",
+      protocol: { version: "1.0.0" },
     });
     await transport.close();
   });

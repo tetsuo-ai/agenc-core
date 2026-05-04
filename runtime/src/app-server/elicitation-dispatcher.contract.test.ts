@@ -20,7 +20,7 @@ describe("daemon elicitation response dispatch", () => {
       jsonrpc: JSON_RPC_VERSION,
       id: "init",
       method: "initialize",
-      params: {},
+      params: { protocol: { version: "1.0.0" } },
     });
 
     await expect(
@@ -61,7 +61,7 @@ describe("daemon elicitation response dispatch", () => {
       jsonrpc: JSON_RPC_VERSION,
       id: "init",
       method: "initialize",
-      params: {},
+      params: { protocol: { version: "1.0.0" } },
     });
 
     await expect(

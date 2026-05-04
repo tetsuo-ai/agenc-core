@@ -2117,10 +2117,69 @@ describe("AgenC background agent lifecycle", () => {
     await expect(
       connection.dispatch({
         jsonrpc: JSON_RPC_VERSION,
+        id: "missing-protocol",
+        method: "initialize",
+        params: {},
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "missing-protocol",
+      error: {
+        code: -32602,
+        message: "initialize requires protocol.version or protocolVersion",
+        data: { code: "INVALID_ARGUMENT" },
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "mismatched-protocol",
+        method: "initialize",
+        params: {
+          protocolVersion: "1.0.0",
+          protocol: { version: "1.1.0" },
+        },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "mismatched-protocol",
+      error: {
+        code: -32602,
+        message: "initialize protocolVersion must match protocol.version",
+        data: { code: "INVALID_ARGUMENT" },
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "future-protocol",
+        method: "initialize",
+        params: {
+          protocol: { version: "1.1.0" },
+          clientName: "contract-test",
+        },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "future-protocol",
+      error: {
+        code: -32000,
+        message: "Unsupported protocol version",
+        data: {
+          code: "PROTOCOL_VERSION_UNSUPPORTED",
+          clientVersion: "1.1.0",
+          serverVersion: "1.0.0",
+        },
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
         id: "auth",
         method: "initialize",
         params: {
           protocolVersion: "1.0.0",
+          protocol: { version: "1.0.0" },
           clientName: "contract-test",
           authCookie: "wrong-cookie",
           capabilities: {},
@@ -2148,7 +2207,7 @@ describe("AgenC background agent lifecycle", () => {
       id: 1,
       error: {
         code: -32000,
-        message: "daemon connection must initialize before requests",
+        message: "Not initialized",
         data: { code: "CONNECTION_NOT_INITIALIZED" },
       },
     });
@@ -2160,9 +2219,10 @@ describe("AgenC background agent lifecycle", () => {
         method: "initialize",
         params: {
           protocolVersion: "1.0.0",
+          protocol: { version: "1.0.0" },
           clientName: "contract-test",
           authCookie: "secret-cookie",
-          capabilities: {},
+          capabilities: { experimentalApi: true },
         },
       }),
     ).resolves.toMatchObject({
@@ -2171,6 +2231,38 @@ describe("AgenC background agent lifecycle", () => {
       result: {
         type: "initialized",
         protocolVersion: "1.0.0",
+        protocol: { version: "1.0.0" },
+        capabilities: {},
+      },
+    });
+    expect(connection.initializeState).toEqual({
+      protocol: { version: "1.0.0" },
+      clientProtocol: { version: "1.0.0" },
+      serverProtocol: { version: "1.0.0" },
+      clientCapabilities: { experimentalApi: true },
+      serverCapabilities: {},
+    });
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "dupe-init",
+        method: "initialize",
+        params: {
+          protocolVersion: "1.0.0",
+          protocol: { version: "1.0.0" },
+          clientName: "contract-test",
+          authCookie: "secret-cookie",
+          capabilities: {},
+        },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "dupe-init",
+      error: {
+        code: -32000,
+        message: "Already initialized",
+        data: { code: "CONNECTION_ALREADY_INITIALIZED" },
       },
     });
 
