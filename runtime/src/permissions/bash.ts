@@ -46,6 +46,10 @@ import {
   toolAlwaysAllowedRule,
   getRuleByContentsForTool,
 } from "./rules.js";
+import {
+  isDangerousShellCommand,
+  matchedDangerousShellCommandLabel,
+} from "./dangerous-patterns.js";
 import type { ToolEvaluatorContext } from "./evaluator.js";
 import type {
   PermissionDecisionReason,
@@ -236,51 +240,6 @@ const EXCLUDED_SANDBOX_COMMANDS: ReadonlySet<string> = new Set([
   "scp",
   "rsync",
 ]);
-
-/**
- * Inline dangerous-pattern list. Each entry is applied with `.test`
- * against the full command string. Matching any pattern forces a
- * deny with `decisionReason: { type: "safetyCheck", classifierApprovable: false }`.
- *
- * Curated to the ~15 patterns AgenC must always block. NOT a replacement
- * for the full security gate (AgenC's `bashCommandIsSafeAsync`
- * runs ~30 pattern classes); this is the hard-deny floor.
- */
-const DANGEROUS_COMMAND_PATTERNS: ReadonlyArray<{
-  readonly pattern: RegExp;
-  readonly label: string;
-}> = [
-  // rm -rf on root or home
-  { pattern: /\brm\s+(-[rRfF]+\s+)+(\/|\/\*|~|~\/)/, label: "rm -rf /" },
-  { pattern: /\brm\s+-[rRfF]+\s+--no-preserve-root/, label: "rm --no-preserve-root" },
-  // Filesystem destruction
-  { pattern: /\bmkfs(\.|\s)/, label: "mkfs" },
-  { pattern: /\bdd\s+[^|;&]*\bof=\/dev\//, label: "dd of=/dev/…" },
-  { pattern: /\b(shred|wipe)\s+[-\/]/, label: "shred/wipe" },
-  // Fork bomb
-  { pattern: /:\s*\(\s*\)\s*\{\s*:\s*\|\s*:/, label: "fork bomb" },
-  // Pipe curl/wget to shell
-  {
-    pattern: /\b(curl|wget|fetch)\b[^|;&]*\|\s*(sh|bash|zsh|fish|ksh|csh|tcsh|python|python3|perl|ruby|node)\b/,
-    label: "curl|sh",
-  },
-  // Destructive git publish to default branch
-  { pattern: /\bgit\s+push\s+(--force|-f)\b[^;&|]*\b(main|master)\b/, label: "git push --force main" },
-  { pattern: /\bgit\s+push\b[^;&|]*\b(main|master)\b[^;&|]*\s(--force|-f)\b/, label: "git push main --force" },
-  // Package-registry publishes
-  { pattern: /\b(npm|yarn|pnpm|bun)\s+publish\b/, label: "npm publish" },
-  { pattern: /\bcargo\s+publish\b/, label: "cargo publish" },
-  { pattern: /\bgem\s+push\b/, label: "gem push" },
-  { pattern: /\btwine\s+upload\b/, label: "twine upload" },
-  // Privilege escalation (top-level, not bare references in docs)
-  { pattern: /(^|[;&|]\s*)sudo\b/, label: "sudo" },
-  { pattern: /(^|[;&|]\s*)(su|doas|pkexec)\b(\s|$)/, label: "su/doas/pkexec" },
-  // chmod / chown on system paths
-  {
-    pattern: /\b(chmod|chown)\s+[^;&|]*(\/etc\/|\/usr\/|\/bin\/|\/sbin\/|\/boot\/)/,
-    label: "chmod/chown on system path",
-  },
-];
 
 // ─────────────────────────────────────────────────────────────────────
 // Input + result types
@@ -610,17 +569,11 @@ function getFirstCommandToken(segment: string): string | null {
  * Called against both the original command and each subcommand.
  */
 export function isDangerousCommand(command: string): boolean {
-  for (const { pattern } of DANGEROUS_COMMAND_PATTERNS) {
-    if (pattern.test(command)) return true;
-  }
-  return false;
+  return isDangerousShellCommand(command);
 }
 
 export function matchedDangerousLabel(command: string): string | null {
-  for (const { pattern, label } of DANGEROUS_COMMAND_PATTERNS) {
-    if (pattern.test(command)) return label;
-  }
-  return null;
+  return matchedDangerousShellCommandLabel(command);
 }
 
 // ─────────────────────────────────────────────────────────────────────

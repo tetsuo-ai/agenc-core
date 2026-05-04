@@ -381,6 +381,41 @@ describe("bashToolHasPermission", () => {
     }
   });
 
+  test("wrapped dangerous command is denied at the permission boundary", async () => {
+    const ctx = makeCtx({
+      alwaysAllowRules: {
+        userSettings: ["Bash"],
+      },
+    });
+    const evalCtx = makeEvaluatorCtx(ctx);
+    const result = await bashToolHasPermission(
+      { command: "bash -lc 'rm -rf /important/data'" },
+      evalCtx,
+    );
+    expect(result.behavior).toBe("deny");
+    if (result.behavior === "deny") {
+      expect(result.decisionReason.type).toBe("safetyCheck");
+      expect(result.message).toContain("rm -rf absolute path");
+    }
+  });
+
+  test("compound nested dangerous command is denied at the permission boundary", async () => {
+    const ctx = makeCtx({
+      alwaysAllowRules: {
+        userSettings: ["Bash"],
+      },
+    });
+    const evalCtx = makeEvaluatorCtx(ctx);
+    const result = await bashToolHasPermission(
+      { command: "bash -lc 'cd /tmp; rm -rf /important/data'" },
+      evalCtx,
+    );
+    expect(result.behavior).toBe("deny");
+    if (result.behavior === "deny") {
+      expect(result.decisionReason.type).toBe("safetyCheck");
+    }
+  });
+
   test("unparseable shell construct falls back to ask", async () => {
     const evalCtx = makeEvaluatorCtx(makeCtx());
     const result = await bashToolHasPermission(
