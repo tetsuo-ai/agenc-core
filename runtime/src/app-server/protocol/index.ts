@@ -411,8 +411,20 @@ export interface AgentCreateParams extends JsonObject {
   readonly metadata?: JsonObject;
 }
 
+export interface DaemonProtocolInfo extends JsonObject {
+  readonly version: string;
+}
+
 export interface InitializeParams extends JsonObject {
+  /**
+   * Legacy flat version field. Accepted when `protocol` is omitted, and must
+   * match `protocol.version` when both are sent.
+   */
   readonly protocolVersion?: string;
+  /**
+   * Canonical protocol metadata for the initialize handshake.
+   */
+  readonly protocol?: DaemonProtocolInfo;
   readonly clientName?: string;
   readonly authCookie?: string;
   readonly capabilities?: JsonObject;
@@ -856,7 +868,14 @@ export interface AgentLogsResult extends JsonObject {
 
 export interface InitializeResult extends JsonObject {
   readonly type: "initialized";
+  /**
+   * Legacy mirror of `protocol.version` for older daemon clients.
+   */
   readonly protocolVersion: string;
+  /**
+   * Negotiated server protocol metadata for the connection.
+   */
+  readonly protocol: DaemonProtocolInfo;
   readonly capabilities: JsonObject;
 }
 

@@ -119,6 +119,7 @@ export async function startAgenCInProcessDaemonTransport(
 export function defaultInProcessInitializeParams(): InitializeParams {
   return {
     protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+    protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
     clientName: "agenc-in-process",
     capabilities: {},
   };

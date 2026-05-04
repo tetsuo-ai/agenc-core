@@ -79,6 +79,17 @@
       "type": "object",
       "additionalProperties": true
     },
+    "DaemonProtocolInfo": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["version"]
+    },
     "AgentStatus": {
       "type": "string",
       "enum": ["idle", "running", "stopping", "stopped", "error"]
@@ -123,6 +134,9 @@
           "type": "string",
           "minLength": 1
         },
+        "protocol": {
+          "$ref": "#/definitions/DaemonProtocolInfo"
+        },
         "clientName": {
           "type": "string",
           "minLength": 1
@@ -134,7 +148,15 @@
         "capabilities": {
           "$ref": "#/definitions/JsonObject"
         }
-      }
+      },
+      "anyOf": [
+        {
+          "required": ["protocol"]
+        },
+        {
+          "required": ["protocolVersion"]
+        }
+      ]
     },
     "RequestCancelParams": {
       "type": "object",

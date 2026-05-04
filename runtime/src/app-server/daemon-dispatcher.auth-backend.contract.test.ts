@@ -47,7 +47,7 @@ describe("AgenC daemon AuthBackend integration", () => {
         jsonrpc: JSON_RPC_VERSION,
         id: "init",
         method: "initialize",
-        params: {},
+        params: { protocol: { version: "1.0.0" } },
       }),
     ).resolves.toMatchObject({ result: { type: "initialized" } });
     await expect(
@@ -90,7 +90,7 @@ describe("AgenC daemon AuthBackend integration", () => {
       jsonrpc: JSON_RPC_VERSION,
       id: "init",
       method: "initialize",
-      params: {},
+      params: { protocol: { version: "1.0.0" } },
     });
 
     await expect(

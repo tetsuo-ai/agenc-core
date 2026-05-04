@@ -59,6 +59,22 @@ import {
   type ToolDenyParams,
 } from "./protocol/index.js";
 
+export interface AgenCDaemonConnectionInitializeState {
+  readonly protocol: {
+    readonly version: string;
+  };
+  readonly clientProtocol: {
+    readonly version: string;
+  };
+  readonly serverProtocol: {
+    readonly version: string;
+  };
+  readonly clientCapabilities: JsonObject;
+  readonly serverCapabilities: JsonObject;
+}
+
+const AGENC_DAEMON_SERVER_CAPABILITIES = Object.freeze({}) as JsonObject;
+
 export interface AgenCDaemonDispatcherOptions {
   readonly agentManager: Pick<
     AgenCDaemonAgentManager,
@@ -199,6 +215,19 @@ export class AgenCDaemonJsonRpcDispatcher {
       const params = objectParams(message.params);
       if (method === "initialize") {
         const initializeParams = validateInitializeParams(params);
+        if (connection.initialized) {
+          return errorResponse(id, -32000, "Already initialized", {
+            code: "CONNECTION_ALREADY_INITIALIZED",
+          });
+        }
+        const negotiated = negotiateInitializeProtocol(initializeParams);
+        if (!negotiated.supported) {
+          return errorResponse(id, -32000, "Unsupported protocol version", {
+            code: "PROTOCOL_VERSION_UNSUPPORTED",
+            clientVersion: negotiated.clientVersion,
+            serverVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+          });
+        }
         if (this.#initializeAuthenticator !== undefined) {
           const authenticated =
             await this.#initializeAuthenticator(initializeParams);
@@ -211,18 +240,19 @@ export class AgenCDaemonJsonRpcDispatcher {
             );
           }
         }
-        connection.markInitialized();
+        connection.markInitialized(negotiated.state);
         return successResponse(id, {
           type: "initialized",
-          protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
-          capabilities: {},
+          protocolVersion: negotiated.state.serverProtocol.version,
+          protocol: negotiated.state.protocol,
+          capabilities: negotiated.state.serverCapabilities,
         });
       }
       if (!connection.initialized) {
         return errorResponse(
           id,
           -32000,
-          "daemon connection must initialize before requests",
+          "Not initialized",
           { code: "CONNECTION_NOT_INITIALIZED" },
         );
       }
@@ -487,7 +517,7 @@ export class AgenCDaemonJsonRpcConnection {
   readonly #cancellationScope: string;
   readonly #clientIds = new Set<string>();
   readonly #inFlightRequests = new Map<string, AbortController>();
-  #initialized = false;
+  #initializeState: AgenCDaemonConnectionInitializeState | undefined;
 
   constructor(
     dispatcher: AgenCDaemonJsonRpcDispatcher,
@@ -500,15 +530,19 @@ export class AgenCDaemonJsonRpcConnection {
   }
 
   get initialized(): boolean {
-    return this.#initialized;
+    return this.#initializeState !== undefined;
+  }
+
+  get initializeState(): AgenCDaemonConnectionInitializeState | undefined {
+    return this.#initializeState;
   }
 
   get cancellationScope(): string {
     return this.#cancellationScope;
   }
 
-  markInitialized(): void {
-    this.#initialized = true;
+  markInitialized(state: AgenCDaemonConnectionInitializeState): void {
+    this.#initializeState = state;
   }
 
   get sendNotification():
@@ -645,11 +679,96 @@ function objectParams(params: unknown): JsonObject {
 }
 
 function validateInitializeParams(params: JsonObject): InitializeParams {
-  return validateObjectShape(params, {
+  const validated = validateObjectShape(params, {
     methodName: "initialize",
     stringFields: ["protocolVersion", "clientName", "authCookie"],
-    objectFields: ["capabilities"],
-  }) as InitializeParams;
+    objectFields: ["protocol", "capabilities"],
+  });
+  if (validated.protocol !== undefined) {
+    const protocol = validateObjectShape(validated.protocol as JsonObject, {
+      methodName: "initialize.protocol",
+      stringFields: ["version"],
+    });
+    validateRequiredString(protocol, "initialize.protocol", "version");
+  }
+  const protocolVersion = validated.protocolVersion;
+  const nestedVersion =
+    validated.protocol === undefined
+      ? undefined
+      : ((validated.protocol as JsonObject).version as unknown);
+  if (protocolVersion === undefined && nestedVersion === undefined) {
+    throw invalidParams(
+      "initialize requires protocol.version or protocolVersion",
+    );
+  }
+  if (
+    protocolVersion !== undefined &&
+    nestedVersion !== undefined &&
+    protocolVersion !== nestedVersion
+  ) {
+    throw invalidParams(
+      "initialize protocolVersion must match protocol.version",
+    );
+  }
+  return validated as InitializeParams;
+}
+
+function negotiateInitializeProtocol(
+  params: InitializeParams,
+):
+  | {
+      readonly supported: true;
+      readonly state: AgenCDaemonConnectionInitializeState;
+    }
+  | { readonly supported: false; readonly clientVersion: string } {
+  const clientVersion = params.protocol?.version ?? params.protocolVersion;
+  if (clientVersion === undefined) {
+    throw invalidParams(
+      "initialize requires protocol.version or protocolVersion",
+    );
+  }
+  if (
+    !isCompatibleProtocolVersion(clientVersion, AGENC_DAEMON_PROTOCOL_VERSION)
+  ) {
+    return { supported: false, clientVersion };
+  }
+  return {
+    supported: true,
+    state: {
+      protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
+      clientProtocol: { version: clientVersion },
+      serverProtocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
+      clientCapabilities: cloneJsonObject(params.capabilities),
+      serverCapabilities: AGENC_DAEMON_SERVER_CAPABILITIES,
+    },
+  };
+}
+
+function isCompatibleProtocolVersion(
+  clientVersion: string,
+  serverVersion: string,
+): boolean {
+  const client = parseProtocolVersion(clientVersion);
+  const server = parseProtocolVersion(serverVersion);
+  if (client === undefined || server === undefined) return false;
+  if (client.major !== server.major) return false;
+  return client.minor <= server.minor;
+}
+
+function parseProtocolVersion(
+  version: string,
+): { readonly major: number; readonly minor: number } | undefined {
+  const match = /^(\d+)\.(\d+)(?:\.\d+)?$/.exec(version);
+  if (match === null) return undefined;
+  return {
+    major: Number.parseInt(match[1]!, 10),
+    minor: Number.parseInt(match[2]!, 10),
+  };
+}
+
+function cloneJsonObject(value: JsonObject | undefined): JsonObject {
+  if (value === undefined) return {};
+  return { ...value };
 }
 
 function validateRequestCancelParams(params: JsonObject): RequestCancelParams {
