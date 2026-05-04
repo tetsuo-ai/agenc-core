@@ -21,7 +21,7 @@ describe("AuthBackend contract", () => {
         calls.push(`logout:${sessionId ?? ""}`);
         return { authenticated: false };
       },
-      whoami: ({ sessionId } = {}) => {
+      whoami: ({ sessionId, daemonConnection } = {}) => {
         calls.push(`whoami:${sessionId ?? ""}`);
         return {
           authenticated: true,
@@ -29,6 +29,7 @@ describe("AuthBackend contract", () => {
           identity: {
             accountId: sessionId ?? "local-user",
             plan: "free",
+            ...(daemonConnection ? { daemon: daemonConnection } : {}),
           },
         };
       },
@@ -69,6 +70,29 @@ describe("AuthBackend contract", () => {
       identity: { accountId: "session-1", plan: "free" },
     });
     await expect(
+      asPromise(
+        backend.whoami({
+          sessionId: "session-1",
+          daemonConnection: {
+            transport: "daemon",
+            verifiedBy: "cookie",
+            cookie: "verified",
+            peerUid: null,
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      authenticated: true,
+      identity: {
+        daemon: {
+          transport: "daemon",
+          verifiedBy: "cookie",
+          cookie: "verified",
+          peerUid: null,
+        },
+      },
+    });
+    await expect(
       asPromise(backend.vendKey("grok", "session-1")),
     ).resolves.toEqual({
       provider: "grok",
@@ -97,6 +121,7 @@ describe("AuthBackend contract", () => {
     });
     expect(calls).toEqual([
       "login:session-1",
+      "whoami:session-1",
       "whoami:session-1",
       "vendKey:grok:session-1",
       "inferAgencModel:agenc-small",

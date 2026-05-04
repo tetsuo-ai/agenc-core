@@ -17,10 +17,27 @@ export interface AuthIdentity extends AuthJsonObject {
   readonly email?: string;
   readonly displayName?: string;
   readonly plan?: string;
+  readonly daemon?: AuthDaemonSocketIdentity;
 }
 
 export interface AuthSessionRef extends AuthJsonObject {
   readonly sessionId?: AuthSessionId;
+}
+
+export interface AuthDaemonSocketIdentity extends AuthJsonObject {
+  readonly transport: "daemon";
+  readonly verifiedBy: "cookie" | "peerUid";
+  /**
+   * Never contains the daemon cookie secret. "verified" means the connection
+   * presented the private cookie during initialize.
+   */
+  readonly cookie?: "verified";
+  /**
+   * Populated when the transport can expose peer credentials. Node's public
+   * Unix-socket API does not expose SO_PEERCRED, so cookie-authenticated
+   * connections carry null until a native peer credential source lands.
+   */
+  readonly peerUid?: number | null;
 }
 
 export interface AuthLoginParams extends AuthSessionRef {
@@ -29,7 +46,9 @@ export interface AuthLoginParams extends AuthSessionRef {
 
 export interface AuthLogoutParams extends AuthSessionRef {}
 
-export interface AuthWhoamiParams extends AuthSessionRef {}
+export interface AuthWhoamiParams extends AuthSessionRef {
+  readonly daemonConnection?: AuthDaemonSocketIdentity;
+}
 
 export interface AuthLoginResult extends AuthJsonObject {
   readonly authenticated: true;

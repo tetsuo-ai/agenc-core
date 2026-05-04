@@ -31,6 +31,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { InitializeParams } from "../protocol/index.js";
+import type { AuthDaemonSocketIdentity } from "../../auth/backend.js";
 
 export const AGENC_DAEMON_COOKIE_BYTES = 32;
 export const AGENC_DAEMON_COOKIE_HEX_LENGTH =
@@ -56,6 +57,23 @@ export class AgenCDaemonCookieAuthenticator {
   verifyInitializeParams(params: Pick<InitializeParams, "authCookie">): boolean {
     return this.verifyCookie(params.authCookie);
   }
+
+  authenticateInitializeParams(
+    params: Pick<InitializeParams, "authCookie">,
+  ): AuthDaemonSocketIdentity | null {
+    return this.verifyInitializeParams(params)
+      ? createAgenCDaemonCookieIdentity()
+      : null;
+  }
+}
+
+export function createAgenCDaemonCookieIdentity(): AuthDaemonSocketIdentity {
+  return {
+    transport: "daemon",
+    verifiedBy: "cookie",
+    cookie: "verified",
+    peerUid: null,
+  };
 }
 
 export async function ensureAgenCDaemonCookie(

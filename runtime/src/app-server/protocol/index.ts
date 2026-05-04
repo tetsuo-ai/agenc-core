@@ -1008,6 +1008,14 @@ export interface AuthIdentity extends JsonObject {
   readonly email?: string;
   readonly displayName?: string;
   readonly plan?: string;
+  readonly daemon?: AuthDaemonSocketIdentity;
+}
+
+export interface AuthDaemonSocketIdentity extends JsonObject {
+  readonly transport: "daemon";
+  readonly verifiedBy: "cookie" | "peerUid";
+  readonly cookie?: "verified";
+  readonly peerUid?: number | null;
 }
 
 export interface AuthWhoamiResult extends JsonObject {

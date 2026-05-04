@@ -40,13 +40,19 @@ describe("AgenC daemon auth surface", () => {
 
   it("routes auth methods through the supplied backend shape", async () => {
     const calls: string[] = [];
+    const daemonConnection = {
+      transport: "daemon",
+      verifiedBy: "cookie",
+      cookie: "verified",
+      peerUid: null,
+    } as const;
     const backend: Pick<AuthBackend, "login" | "whoami" | "logout"> = {
       login: () => {
         calls.push("login");
         return { authenticated: true, provider: "local" };
       },
-      whoami: () => {
-        calls.push("whoami");
+      whoami: (params = {}) => {
+        calls.push(`whoami:${params.daemonConnection?.cookie ?? ""}`);
         return { authenticated: true, provider: "local" };
       },
       logout: () => {
@@ -60,13 +66,18 @@ describe("AgenC daemon auth surface", () => {
       authenticated: true,
       provider: "local",
     });
-    await expect(handlers["auth.whoami"]()).resolves.toEqual({
+    await expect(
+      handlers["auth.whoami"]({ daemonConnection }),
+    ).resolves.toEqual({
       authenticated: true,
       provider: "local",
+      identity: {
+        daemon: daemonConnection,
+      },
     });
     await expect(handlers["auth.logout"]()).resolves.toEqual({
       authenticated: false,
     });
-    expect(calls).toEqual(["login", "whoami", "logout"]);
+    expect(calls).toEqual(["login", "whoami:verified", "logout"]);
   });
 });

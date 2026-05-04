@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest";
 import {
   AgenCDaemonCookieAuthenticator,
   AGENC_DAEMON_COOKIE_HEX_LENGTH,
+  createAgenCDaemonCookieIdentity,
   ensureAgenCDaemonCookie,
   normalizeAgenCDaemonCookie,
   verifyAgenCDaemonCookie,
@@ -137,8 +138,16 @@ describe("AgenC daemon transport authentication", () => {
       authenticator.verifyInitializeParams({ authCookie: "socket-cookie" }),
     ).toBe(true);
     expect(
+      authenticator.authenticateInitializeParams({
+        authCookie: "socket-cookie",
+      }),
+    ).toEqual(createAgenCDaemonCookieIdentity());
+    expect(
       authenticator.verifyInitializeParams({ authCookie: "wrong-cookie" }),
     ).toBe(false);
+    expect(
+      authenticator.authenticateInitializeParams({ authCookie: "wrong-cookie" }),
+    ).toBeNull();
   });
 
   it("rejects empty expected cookies", () => {

@@ -518,6 +518,14 @@ describe("AgenC daemon CLI", () => {
     });
     await expect(client.request("auth.whoami")).resolves.toEqual({
       authenticated: false,
+      identity: {
+        daemon: {
+          transport: "daemon",
+          verifiedBy: "cookie",
+          cookie: "verified",
+          peerUid: null,
+        },
+      },
     });
     await expect(client.request("auth.login")).resolves.toMatchObject({
       authenticated: true,
@@ -529,6 +537,14 @@ describe("AgenC daemon CLI", () => {
     await expect(client.request("auth.whoami")).resolves.toMatchObject({
       authenticated: true,
       provider: "local",
+      identity: {
+        daemon: {
+          transport: "daemon",
+          verifiedBy: "cookie",
+          cookie: "verified",
+          peerUid: null,
+        },
+      },
     });
 
     signalProcess.emit("SIGTERM");
