@@ -95,6 +95,12 @@ const ALLOW_FILE_LINE_PATTERNS = [
     file: /^(?:parity\/.*\.json|runtime\/parity\/.*\.json)$/,
     line: /\b(?:OpenClaude\w*|openclaude|Claude\w*|claude|Codex\w*|codex)\b|\.openclaude\//, // branding-scan: allow parity matrix exception pattern
   },
+  {
+    // .gitignore must literally name the external assistant/IDE config
+    // dirs and files it is keeping out of the repo.
+    file: /(^|\/)\.gitignore$/,
+    line: /\b(?:OpenClaude\w*|openclaude|Claude\w*|claude|Codex\w*|codex|Cursor)\b|\.openclaude\//, // branding-scan: allow gitignore exception pattern
+  },
 ];
 
 const OVERRIDE_RE = /branding-scan:\s*allow\b/i;
