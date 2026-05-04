@@ -1,4 +1,6 @@
+import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -173,6 +175,44 @@ async function waitForSnapshotCount(
     await delay(10);
   }
   throw new Error(`timed out waiting for snapshots for ${sessionId}`);
+}
+
+function readSocketLine(socket: Socket): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let buffer = "";
+    const cleanup = () => {
+      socket.off("data", onData);
+      socket.off("close", onClose);
+      socket.off("error", onError);
+    };
+    const onData = (chunk: Buffer) => {
+      buffer += chunk.toString("utf8");
+      const newlineIndex = buffer.indexOf("\n");
+      if (newlineIndex === -1) return;
+      const line = buffer.slice(0, newlineIndex);
+      cleanup();
+      resolve(line);
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error("daemon socket closed before a full line was read"));
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    socket.on("data", onData);
+    socket.once("close", onClose);
+    socket.once("error", onError);
+  });
+}
+
+async function waitForSocketClose(socket: Socket): Promise<"closed" | "open"> {
+  if (socket.closed || socket.destroyed) return "closed";
+  return Promise.race([
+    once(socket, "close").then(() => "closed" as const),
+    delay(500).then(() => "open" as const),
+  ]);
 }
 
 describe("AgenC daemon CLI", () => {
@@ -366,6 +406,62 @@ describe("AgenC daemon CLI", () => {
     await expect(waitForPid(pidPath)).resolves.toBe(4100);
 
     const authCookie = (await readFile(cookiePath, "utf8")).trim();
+    const rejectedClient = createAgenCJsonLineDaemonRequestClient({
+      socketPath,
+      authCookie: "wrong-daemon-cookie",
+      timeoutMs: 1000,
+    });
+    await expect(rejectedClient.request("auth.whoami")).rejects.toThrow(
+      "daemon connection authentication failed",
+    );
+    const rejectedSocket = createConnection(socketPath);
+    await once(rejectedSocket, "connect");
+    rejectedSocket.write(
+      `${JSON.stringify({
+        jsonrpc: "2.0",
+        id: "bad-init",
+        method: "initialize",
+        params: {
+          protocolVersion: "1.0.0",
+          clientName: "agenc-auth-test",
+          authCookie: "wrong-daemon-cookie",
+          capabilities: {},
+        },
+      })}\n`,
+    );
+    const rejectedLine = JSON.parse(await readSocketLine(rejectedSocket)) as {
+      readonly error?: { readonly data?: { readonly code?: string } };
+    };
+    expect(rejectedLine.error?.data?.code).toBe(
+      "CONNECTION_AUTHENTICATION_FAILED",
+    );
+    await expect(waitForSocketClose(rejectedSocket)).resolves.toBe("closed");
+    const missingCookieSocket = createConnection(socketPath);
+    await once(missingCookieSocket, "connect");
+    missingCookieSocket.write(
+      `${JSON.stringify({
+        jsonrpc: "2.0",
+        id: "missing-cookie-init",
+        method: "initialize",
+        params: {
+          protocolVersion: "1.0.0",
+          clientName: "agenc-auth-test",
+          capabilities: {},
+        },
+      })}\n`,
+    );
+    const missingCookieLine = JSON.parse(
+      await readSocketLine(missingCookieSocket),
+    ) as {
+      readonly error?: { readonly data?: { readonly code?: string } };
+    };
+    expect(missingCookieLine.error?.data?.code).toBe(
+      "CONNECTION_AUTHENTICATION_FAILED",
+    );
+    await expect(waitForSocketClose(missingCookieSocket)).resolves.toBe(
+      "closed",
+    );
+
     const client = createAgenCJsonLineDaemonRequestClient({
       socketPath,
       authCookie,

@@ -5,9 +5,11 @@
  * if needed, wait until it is ready, then hand control to a connector hook.
  */
 
+import { readFile } from "node:fs/promises";
 import {
   createNodeDaemonCliHost,
   readAgenCDaemonPid,
+  resolveAgenCDaemonCookiePath,
   resolveAgenCDaemonPidPath,
   runAgenCDaemonCli,
   resolveAgenCDaemonHome,
@@ -122,13 +124,28 @@ async function waitForAgenCDaemonReady(
   const isReady =
     options.isReady ??
     ((readyTarget: AgenCDaemonConnectionTarget) =>
-      host.isPidRunning(readyTarget.pid));
+      isAgenCDaemonPidAndCookieReady(readyTarget, host));
 
   while (Date.now() - startedAt < timeoutMs) {
     if (await Promise.resolve(isReady(target))) return true;
     await host.sleep(pollMs);
   }
   return Promise.resolve(isReady(target));
+}
+
+async function isAgenCDaemonPidAndCookieReady(
+  target: AgenCDaemonConnectionTarget,
+  host: AgenCDaemonCliHost,
+): Promise<boolean> {
+  if (!host.isPidRunning(target.pid)) return false;
+  const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+  try {
+    return (await readFile(cookiePath, "utf8")).trim().length > 0;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 function silentIo(): AgenCDaemonCliIo {

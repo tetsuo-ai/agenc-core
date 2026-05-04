@@ -1,3 +1,4 @@
+export * from "./auth.js";
 export * from "./in-process.js";
 export * from "./stdio.js";
 export * from "./unix-socket.js";

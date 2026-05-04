@@ -1,0 +1,96 @@
+{
+  "contractName": "app-server-daemon-socket-auth",
+  "scope": "AgenC daemon socket authentication for local clients using a private shared-cookie initialize gate when portable Unix peer credentials are unavailable in Node.",
+  "sourceRoot": "/home/tetsuo/git/codex/codex-rs", "_sourceRootBrandingAllow": "branding-scan: allow donor source root path",
+  "targetRoot": "..",
+  "sourceCommit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
+  "sourceFiles": [
+    "app-server/tests/suite/auth.rs",
+    "app-server-transport/src/transport/auth.rs",
+    "app-server-transport/src/transport/unix_socket.rs"
+  ],
+  "targetFiles": [
+    "runtime/src/app-server/transport/auth.ts",
+    "runtime/src/app-server/transport/index.ts",
+    "runtime/src/app-server/daemon-cli.ts"
+  ],
+  "testFiles": [
+    "runtime/src/app-server/transport-auth.contract.test.ts",
+    "runtime/src/app-server/daemon-cli.contract.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "private-cookie-file",
+      "source": "app-server-transport/src/transport/auth.rs",
+      "target": "runtime/src/app-server/transport/auth.ts",
+      "requiredBehaviors": [
+        "create a daemon cookie when none exists",
+        "reuse an existing non-empty daemon cookie",
+        "write daemon cookie files with private permissions",
+        "repair permissive existing cookie-file permissions before reuse"
+      ],
+      "edgeCases": [
+        "missing cookie file",
+        "existing cookie with trailing newline",
+        "existing cookie with loose file permissions"
+      ],
+      "tests": [
+        "runtime/src/app-server/transport-auth.contract.test.ts",
+        "runtime/src/app-server/daemon-cli.contract.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/app-server/transport-auth.contract.test.ts src/app-server/daemon-cli.contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "initialize-cookie-verification",
+      "source": "app-server-transport/src/transport/auth.rs + app-server/tests/suite/auth.rs",
+      "target": "runtime/src/app-server/transport/auth.ts + runtime/src/app-server/daemon-cli.ts",
+      "requiredBehaviors": [
+        "normalize cookie values before comparison",
+        "verify matching initialize cookies",
+        "reject missing, empty, wrong, and length-mismatched initialize cookies",
+        "use Node's constant-time equality primitive for same-length cookie comparisons",
+        "route foreground daemon initialize authentication through the shared verifier"
+      ],
+      "edgeCases": [
+        "wrong cookie cannot reach daemon auth methods",
+        "wrong cookie closes the persistent daemon socket after the initialize failure",
+        "missing initialize cookie fails before follow-up requests",
+        "empty expected daemon cookie is rejected at startup"
+      ],
+      "tests": [
+        "runtime/src/app-server/transport-auth.contract.test.ts",
+        "runtime/src/app-server/daemon-cli.contract.test.ts"
+      ],
+      "commands": [
+        "node scripts/goal/verify.mjs F-03p --skip-typecheck --skip-validate"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "peer-credential-boundary",
+      "source": "app-server-transport/src/transport/unix_socket.rs",
+      "target": "runtime/src/app-server/transport/auth.ts",
+      "requiredBehaviors": [
+        "document that AgenC uses the D-14 shared-cookie route instead of a non-portable Node peer-credential probe",
+        "keep Unix socket file and directory permissions private",
+        "do not invent an undocumented native peer-credential binding"
+      ],
+      "edgeCases": [
+        "Windows has no Unix socket transport",
+        "Unix socket file remains mode 0600",
+        "daemon cookie remains mode 0600"
+      ],
+      "tests": [
+        "runtime/src/app-server/unix-socket-transport.contract.test.ts",
+        "runtime/src/app-server/transport-auth.contract.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/app-server/unix-socket-transport.contract.test.ts src/app-server/transport-auth.contract.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}
