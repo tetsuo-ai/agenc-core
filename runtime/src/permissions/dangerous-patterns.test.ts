@@ -34,6 +34,15 @@ describe("dangerous shell command detection", () => {
   });
 
   test.each([
+    "rm -f /",
+    "rm -f /etc/passwd",
+    "sudo rm -f /etc/passwd",
+    "bash -lc 'rm -f /etc/passwd'",
+  ])("flags donor-parity force removal: %s", (command) => {
+    expect(isDangerousShellCommand(command)).toBe(true);
+  });
+
+  test.each([
     "rm / -rf",
     "r\\m -rf /",
     "\"r\"m -rf /",
@@ -104,7 +113,6 @@ describe("dangerous shell command detection", () => {
     "rm -- / -rf",
     "rm /",
     "rm -r /",
-    "rm -f /",
     "rm -rf ./dist",
   ])("does not flag incomplete or operand-only rm argv: %s", (command) => {
     expect(isDangerousShellCommand(command)).toBe(false);
