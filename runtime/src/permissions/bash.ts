@@ -41,6 +41,7 @@
  */
 
 import {
+  findMatchingContentRule,
   getAskRuleForTool,
   getDenyRuleForTool,
   toolAlwaysAllowedRule,
@@ -55,7 +56,6 @@ import type { ToolEvaluatorContext } from "./evaluator.js";
 import type {
   PermissionDecisionReason,
   PermissionResult,
-  PermissionRule,
   ToolPermissionContext,
 } from "./types.js";
 
@@ -68,17 +68,6 @@ export type { ToolEvaluatorContext } from "./evaluator.js";
 export const MAX_SUBCOMMANDS_FOR_SECURITY_CHECK = 50;
 
 export const BASH_TOOL_NAME = "Bash";
-
-const ESCAPED_STAR_PLACEHOLDER = "\x00ESCAPED_STAR\x00";
-const ESCAPED_BACKSLASH_PLACEHOLDER = "\x00ESCAPED_BACKSLASH\x00";
-const ESCAPED_STAR_PLACEHOLDER_RE = new RegExp(
-  ESCAPED_STAR_PLACEHOLDER,
-  "g",
-);
-const ESCAPED_BACKSLASH_PLACEHOLDER_RE = new RegExp(
-  ESCAPED_BACKSLASH_PLACEHOLDER,
-  "g",
-);
 
 /**
  * Env-var assignment pattern. Matches AgenC's `ENV_VAR_ASSIGN_RE`.
@@ -578,110 +567,6 @@ export function matchedDangerousLabel(command: string): string | null {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Rule lookup helpers (content-qualified)
-// ─────────────────────────────────────────────────────────────────────
-
-/**
- * Match `Bash(prefix:*)` style content rules. AgenC wildcard
- * matching is implemented in `shared/permissions` and supports a
- * superset we don't need yet: exact match, `prefix:*`, and bare
- * `Bash` (whole-tool). This helper covers all three.
- */
-function matchBashContentRule(
-  ruleContent: string | undefined,
-  command: string,
-  prefix: string | null,
-  firstWord: string | null,
-): boolean {
-  if (ruleContent === undefined) return true; // whole-tool
-  const rc = ruleContent;
-
-  // `prefix:*` — prefix rule
-  if (rc.endsWith(":*")) {
-    const rulePrefix = rc.slice(0, -2);
-    if (rulePrefix === "") return false;
-    if (command === rulePrefix) return true;
-    if (command.startsWith(rulePrefix + " ")) return true;
-    if (prefix === rulePrefix) return true;
-    if (firstWord === rulePrefix) return true;
-    return false;
-  }
-  if (hasWildcards(rc) || rc.includes("\\*") || rc.includes("\\\\")) {
-    return matchWildcardPattern(rc, command);
-  }
-  // Exact match
-  return rc === command;
-}
-
-function hasWildcards(pattern: string): boolean {
-  if (pattern.endsWith(":*")) return false;
-  for (let i = 0; i < pattern.length; i++) {
-    if (pattern[i] !== "*") continue;
-    let backslashCount = 0;
-    let j = i - 1;
-    while (j >= 0 && pattern[j] === "\\") {
-      backslashCount++;
-      j--;
-    }
-    if (backslashCount % 2 === 0) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function matchWildcardPattern(
-  pattern: string,
-  command: string,
-): boolean {
-  let processed = "";
-  let i = 0;
-  while (i < pattern.length) {
-    const char = pattern[i]!;
-    if (char === "\\" && i + 1 < pattern.length) {
-      const nextChar = pattern[i + 1]!;
-      if (nextChar === "*") {
-        processed += ESCAPED_STAR_PLACEHOLDER;
-        i += 2;
-        continue;
-      }
-      if (nextChar === "\\") {
-        processed += ESCAPED_BACKSLASH_PLACEHOLDER;
-        i += 2;
-        continue;
-      }
-    }
-    processed += char;
-    i++;
-  }
-
-  const escaped = processed.replace(/[.+?^${}()|[\]\\'"]/g, "\\$&");
-  let regexPattern = escaped
-    .replace(/\*/g, ".*")
-    .replace(ESCAPED_STAR_PLACEHOLDER_RE, "\\*")
-    .replace(ESCAPED_BACKSLASH_PLACEHOLDER_RE, "\\\\");
-
-  const unescapedStarCount = (processed.match(/\*/g) ?? []).length;
-  if (regexPattern.endsWith(" .*") && unescapedStarCount === 1) {
-    regexPattern = `${regexPattern.slice(0, -3)}( .*)?`;
-  }
-
-  return new RegExp(`^${regexPattern}$`, "s").test(command);
-}
-
-function findMatchingContentRule(
-  rules: ReadonlyMap<string, PermissionRule>,
-  command: string,
-  prefix: string | null,
-  firstWord: string | null,
-): PermissionRule | null {
-  for (const [content, rule] of rules) {
-    if (matchBashContentRule(content, command, prefix, firstWord)) return rule;
-  }
-  return null;
-}
-
-// ─────────────────────────────────────────────────────────────────────
 // Per-subcommand evaluation
 // ─────────────────────────────────────────────────────────────────────
 
@@ -715,7 +600,10 @@ function evaluateSubcommand(
   const firstWord = getFirstWordPrefix(subcommand);
 
   const denyRules = getRuleByContentsForTool(ctx, BASH_TOOL_NAME, "deny");
-  const denyMatch = findMatchingContentRule(denyRules, subcommand, prefix, firstWord);
+  const denyMatch = findMatchingContentRule(denyRules, subcommand, {
+    prefix,
+    firstWord,
+  });
   if (denyMatch !== null) {
     return {
       behavior: "deny",
@@ -733,7 +621,10 @@ function evaluateSubcommand(
   }
 
   const askRules = getRuleByContentsForTool(ctx, BASH_TOOL_NAME, "ask");
-  const askMatch = findMatchingContentRule(askRules, subcommand, prefix, firstWord);
+  const askMatch = findMatchingContentRule(askRules, subcommand, {
+    prefix,
+    firstWord,
+  });
   if (askMatch !== null) {
     return {
       behavior: "ask",
@@ -751,7 +642,10 @@ function evaluateSubcommand(
   }
 
   const allowRules = getRuleByContentsForTool(ctx, BASH_TOOL_NAME, "allow");
-  const allowMatch = findMatchingContentRule(allowRules, subcommand, prefix, firstWord);
+  const allowMatch = findMatchingContentRule(allowRules, subcommand, {
+    prefix,
+    firstWord,
+  });
   if (allowMatch !== null) {
     return {
       behavior: "allow",

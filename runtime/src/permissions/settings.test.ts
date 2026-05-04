@@ -27,9 +27,21 @@ import {
 import {
   createEmptyToolPermissionContext,
   type PermissionRule,
+  type PermissionResult,
+  type ToolPermissionContext,
 } from "./types.js";
 import { applyPermissionRulesToPermissionContext } from "./rules.js";
 import { __setAutoModeGateResolverForTesting } from "./mode.js";
+import { ConfigStore, defaultConfig } from "../config/index.js";
+import { bashToolHasPermission, type BashPermissionInput } from "./bash.js";
+import {
+  attachContextDefaults,
+  hasPermissionsToUseTool,
+  type AppStateSnapshot,
+  type ToolEvaluatorContext,
+} from "./evaluator.js";
+import { freshDenialTracking } from "./denial-tracking.js";
+import type { Session } from "../session/session.js";
 
 function mkTmp(): string {
   return mkdtempSync(join(tmpdir(), "agenc-perm-settings-"));
@@ -37,6 +49,24 @@ function mkTmp(): string {
 
 function writeSettings(path: string, json: unknown) {
   mkdirSync(join(path, ".agenc"), { recursive: true });
+}
+
+function makeEvaluatorContext(
+  toolPermissionContext: ToolPermissionContext,
+): ToolEvaluatorContext {
+  const state: AppStateSnapshot = {
+    toolPermissionContext,
+    denialTracking: freshDenialTracking(),
+    autoModeActive: toolPermissionContext.autoModeActive === true,
+  };
+  return attachContextDefaults({
+    getAppState: () => state,
+    session: {
+      state: {
+        unsafePeek: () => ({ history: [] }),
+      },
+    } as unknown as Session,
+  } as ToolEvaluatorContext);
 }
 
 describe("getSettingsFilePathForSource", () => {
@@ -666,6 +696,92 @@ describe("initializeToolPermissionContext", () => {
     expect(toolPermissionContext.alwaysAllowRules.cliArg).toEqual([
       "Bash(git:*)",
     ]);
+  });
+
+  test("applies ConfigStore permissions as session approval rules", async () => {
+    const store = new ConfigStore({
+      env: {},
+      base: {
+        ...defaultConfig(),
+        permissions: {
+          allow: ["Read"],
+          ask: ["Bash(npm publish *)"],
+          deny: ["Write"],
+          additionalDirectories: [cwd],
+        },
+      },
+    });
+
+    const { toolPermissionContext } = await initializeToolPermissionContext({
+      env: {
+        home,
+        cwd,
+        managedSettingsPath: join(home, "no-policy.json"),
+        configStore: store,
+      },
+    });
+
+    expect(toolPermissionContext.alwaysAllowRules.session).toEqual(["Read"]);
+    expect(toolPermissionContext.alwaysAskRules.session).toEqual([
+      "Bash(npm publish *)",
+    ]);
+    expect(toolPermissionContext.alwaysDenyRules.session).toEqual(["Write"]);
+    expect(toolPermissionContext.additionalWorkingDirectories.has(cwd)).toBe(
+      true,
+    );
+  });
+
+  test("ConfigStore approval rules affect production tool decisions", async () => {
+    const store = new ConfigStore({
+      env: {},
+      base: {
+        ...defaultConfig(),
+        permissions: {
+          allow: ["Bash(git:*)"],
+          ask: ["Bash(echo publish:*)"],
+          deny: ["Bash(git push:*)"],
+        },
+      },
+    });
+
+    const { toolPermissionContext } = await initializeToolPermissionContext({
+      env: {
+        home,
+        cwd,
+        managedSettingsPath: join(home, "no-policy.json"),
+        configStore: store,
+      },
+    });
+    const evalCtx = makeEvaluatorContext(toolPermissionContext);
+    const bashTool = {
+      name: "Bash",
+      checkPermissions: (
+        input: unknown,
+        context: ToolEvaluatorContext,
+      ): Promise<PermissionResult> =>
+        bashToolHasPermission(input as BashPermissionInput, context),
+    };
+
+    const allowed = await hasPermissionsToUseTool(
+      bashTool,
+      { command: "git status --short" },
+      evalCtx,
+    );
+    expect(allowed.behavior).toBe("allow");
+
+    const prompted = await hasPermissionsToUseTool(
+      bashTool,
+      { command: "echo publish package" },
+      evalCtx,
+    );
+    expect(prompted.behavior).toBe("ask");
+
+    const denied = await hasPermissionsToUseTool(
+      bashTool,
+      { command: "git push origin main" },
+      evalCtx,
+    );
+    expect(denied.behavior).toBe("deny");
   });
 
   test("applies --add-dir directories that exist", async () => {
