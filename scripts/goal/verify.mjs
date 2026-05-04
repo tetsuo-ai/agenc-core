@@ -944,16 +944,33 @@ const candidates = new Set(
     .filter(Boolean),
 );
 const SCANNABLE = (p) =>
-  /\.(ts|tsx|mjs|cjs|js|jsx|md|json|sh|toml)$/.test(p) &&
+  /\.(ts|tsx|mts|cts|mjs|cjs|js|jsx|md|mdx|json|jsonc|yaml|yml|sh|bash|zsh|toml|html|css|scss|svg|env|conf|ini|py|rb|go|rs|java|kt|swift|dockerfile)$/i.test(p) &&
   !/node_modules\//.test(p) &&
   !/\bdist\//.test(p) &&
   !/\bbuild\//.test(p) &&
   // Exempt the upstream mirror itself; it gets removed in Phase 6.
   !/^runtime\/src\/agenc\/upstream\//.test(p);
-const toScan = [...candidates].filter(SCANNABLE).map((p) => path.join(root, p)).filter(existsSync);
+// Files that aren't in the SCANNABLE extension list but DO carry text we
+// must scan: extensionless config and Dockerfile/Makefile and similar.
+const SCANNABLE_BASENAME = (basename) =>
+  /^(Dockerfile|Makefile|Jenkinsfile|Procfile|\.env(\..*)?|\.gitignore|\.npmignore|\.dockerignore)$/.test(basename);
+const toScan = [...candidates]
+  .filter((p) => SCANNABLE(p) || SCANNABLE_BASENAME(path.basename(p)))
+  .map((p) => path.join(root, p))
+  .filter(existsSync);
 
-if (toScan.length === 0) {
-  pass("no scannable changes");
+if (toScan.length === 0 && candidates.size === 0) {
+  pass("no changes vs main");
+} else if (toScan.length === 0) {
+  // There ARE changes, just none in scannable file types. List what was
+  // skipped so the user can verify the file extensions are intentionally
+  // exempt (e.g. binary assets) and not a hole.
+  const skipped = [...candidates].filter((p) => !SCANNABLE(p) && !SCANNABLE_BASENAME(path.basename(p)));
+  process.stdout.write(`${YELLOW}!${RESET} branding scan: ${skipped.length} changed file(s) outside SCANNABLE extension list:\n`);
+  for (const p of skipped.slice(0, 20)) process.stdout.write(`  - ${p}\n`);
+  if (skipped.length > 20) process.stdout.write(`  ... +${skipped.length - 20} more\n`);
+  process.stdout.write(`${YELLOW}!${RESET} If any of these contain user-visible text, add their extension to SCANNABLE in verify.mjs.\n`);
+  pass(`no scannable changes (${skipped.length} non-source file(s) excluded — review the list above)`);
 } else {
   const r = run("node", [scanScript, ...toScan], { silent: false });
   if (r.status !== 0) failGate(`branding scan reported findings (${toScan.length} file(s) scanned)`);
@@ -1150,7 +1167,16 @@ const itemGates = {
 
 const gateFn = itemGates[prefix];
 if (!gateFn) {
-  process.stdout.write(`${YELLOW}!${RESET} no item-specific gate registered for prefix "${prefix}". Generic gates only.\n`);
+  // An unknown prefix is either a typo (silent miss) or a new item family
+  // someone added without wiring a gate. Either way, falling through with
+  // only the generic gates is silently weakening the harness. Fail loudly
+  // so the wiring is added or the typo is fixed.
+  failGate(
+    `no item-specific gate registered for prefix "${prefix}". ` +
+    `Either the item ID is a typo, or a new item family was added without ` +
+    `wiring a gate function. Add an entry to itemGates in scripts/goal/verify.mjs ` +
+    `or correct the item ID.`,
+  );
 } else {
   await gateFn(item);
 }
@@ -1173,9 +1199,17 @@ if (skipTypecheck) {
     const baselinePath = path.join(root, ".typecheck-baseline.json");
     const baseline = readBaselineSafe(baselinePath);
     if (baseline === null) {
-      // First run on this branch — establish the baseline locally.
-      writeBaseline(baselinePath, errCount);
-      pass(`baseline established: ${errCount} error(s) (saved to .typecheck-baseline.json)`);
+      // No baseline file. Refuse to auto-establish — auto-establish on
+      // first-branch-run would silently bless every inherited error and
+      // every new error the branch adds. The baseline must be set
+      // explicitly by a human, ideally committed at the repo root.
+      failGate(
+        `.typecheck-baseline.json missing. Refusing to auto-establish a baseline ` +
+        `because that would silently bless inherited and newly-added TS errors. ` +
+        `Set the baseline explicitly: \`echo '{"errorCount":${errCount}}' > .typecheck-baseline.json\` ` +
+        `(if the current count is acceptable), then re-run verify. Long term: tighten the baseline ` +
+        `toward 0 in dedicated cleanup items, never via implicit drift.`,
+      );
     } else if (errCount > baseline) {
       failGate(`typecheck added ${errCount - baseline} new error(s) (baseline ${baseline} → now ${errCount})`);
     } else {

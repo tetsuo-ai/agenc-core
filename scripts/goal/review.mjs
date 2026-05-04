@@ -141,8 +141,20 @@ Procedure (mandatory — do NOT shortcut):
    - Are there obvious-but-missing test cases (boundary, empty, very-large, unicode, concurrent)?
    - Did the implementer add new error/state types that callers don't handle?
    - Are there dead branches the type system should catch but the diff hides under \`as any\` / \`@ts-ignore\` / \`unknown\`?
-4. After cross-cutting, do a SCOPE pass: did the implementer touch files outside the item's stated scope? Did they cite donor sources for items with a Donor: clause?
-5. Only after all 4 passes, write the structured report. The list must contain EVERY issue you found, not just the ones that justify your verdict.
+4. After cross-cutting, do a SECURITY/SUPPLY-CHAIN pass:
+   - Command injection: any \`spawnSync\`, \`exec\`, \`shell: true\`, child-process call passing user-influenced args without an array form?
+   - Path traversal: any file-system path built from user input without normalization/jail check?
+   - Eval surfaces: \`eval\`, \`Function(...)\`, \`vm.runIn*\`, dynamic \`require\`/\`import\` of attacker-influenced specifiers?
+   - Secrets in code/logs: hardcoded API keys, tokens, passwords; \`console.log\` of auth headers, env vars, or rollout payloads without going through the secrets sanitizer?
+   - Prototype pollution: \`Object.assign\` / spread into untrusted objects, \`__proto__\` access?
+   - Unsanitized HTML/MDX/JSON rendered to TUI without escape?
+   - New npm dependencies added: do they look real (well-known publisher, recent maintenance)? Or typosquats? Are licenses compatible (MIT/Apache/ISC/BSD)?
+5. After security, do a PERFORMANCE/RESOURCE-LEAK pass:
+   - Sync I/O on the event loop, catastrophic regex backtracking, O(n²) loops on user data, missing pagination on disk reads?
+   - File handles, child processes, AbortControllers, timers, listeners cleaned up on error?
+   - Memory: are large structures bounded? Caches with eviction? Mailboxes/queues with backpressure?
+6. After performance, do a SCOPE pass: did the implementer touch files outside the item's stated scope? Did they cite donor sources for items with a Donor: clause?
+7. Only after all 6 passes, write the structured report. The list must contain EVERY issue you found, not just the ones that justify your verdict.
 
 If you would rate the item APPROVED, still list any LOW-severity follow-ups you noticed — the implementer can clean them up before merge in the same pass.
 If you would rate the item NEEDS_REVISION, your list MUST include every issue at every severity, not just one CRITICAL. The implementer reads your full list and fixes everything in one revision pass.
@@ -155,9 +167,11 @@ Required output format. Your FINAL line must be exactly one of:
 
 Before that line, write a structured report:
 - 1-3 sentence summary of the diff
-- "Files reviewed:" — explicit list of every changed file path you read in full (the runner will sanity-check this against the actual diff)
+- "Files reviewed:" — explicit list of every changed file path you read in full. The runner WILL grep-verify this list against \`git diff main...HEAD --name-only\`; if your list omits a changed source file, the run is rejected.
 - "Issues:" — numbered list, each with severity (CRITICAL / HIGH / MEDIUM / LOW), file path + line if known, and the specific change needed. Include EVERY issue you found at EVERY severity. If no issues at a severity, write "  CRITICAL: none" / etc.
 - "Cross-cutting:" — issues that span multiple files or aren't tied to one location
+- "Security/supply-chain:" — findings from pass 4 (or "none")
+- "Performance/resource-leak:" — findings from pass 5 (or "none")
 - "Scope check:" — confirm whether the diff stayed inside the item's stated scope
 - "Test coverage gaps:" — specific test cases that should exist but don't
 - if APPROVED, the issues list may be all LOW-severity follow-ups
@@ -228,6 +242,53 @@ if (!verdictMatch) {
 }
 
 const verdict = verdictMatch[1];
+
+// "Files reviewed:" sanity check — verify the reviewer actually claimed to
+// read the changed source files. The reviewer prompt requires a
+// "Files reviewed:" section listing every file the reviewer read in full;
+// here we cross-check that list against the actual diff. If a changed
+// source file is missing from the review's list, the verdict is rejected
+// regardless of whether it was APPROVED — we don't trust hallucinated
+// coverage.
+const filesReviewedSection = /Files reviewed:\s*\n([\s\S]*?)(?:\n\s*(?:Issues:|Cross-cutting:|Security|Performance|Scope check:|Test coverage gaps:|VERDICT:))/i.exec(finalMsg);
+if (!filesReviewedSection) {
+  process.stderr.write(`${BOLD}${RED}✗${RESET} reviewer output missing required "Files reviewed:" section\n`);
+  process.stderr.write(`The reviewer prompt requires this section. Treating absence as hallucinated coverage.\n`);
+  process.stderr.write(`--- reviewer output ---\n${finalMsg}\n--- end ---\n`);
+  process.exit(1);
+}
+const filesReviewedRaw = filesReviewedSection[1];
+const filesReviewedClaim = new Set(
+  filesReviewedRaw
+    .split("\n")
+    .map((l) => l.trim().replace(/^[-*•\d.\s)]+/, "").replace(/^`|`$/g, "").trim())
+    .filter((l) => l.length > 0 && !/^none$/i.test(l) && /[/.]/.test(l)),
+);
+
+const diffNamesRes = spawnSync("git", ["diff", "--name-only", "main...HEAD"], {
+  cwd: root, encoding: "utf8",
+});
+const actualChanged = (diffNamesRes.stdout || "")
+  .split("\n").map((s) => s.trim()).filter(Boolean)
+  .filter((p) => /\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(p))
+  .filter((p) => !p.startsWith("runtime/src/agenc/upstream/"));
+
+const missingFromReview = actualChanged.filter((p) => {
+  // Match if the claim contains the path or its basename.
+  const basename = path.basename(p);
+  for (const claim of filesReviewedClaim) {
+    if (claim === p || claim.endsWith(p) || claim.endsWith(basename)) return false;
+  }
+  return true;
+});
+
+if (missingFromReview.length > 0) {
+  process.stderr.write(`${BOLD}${RED}✗${RESET} reviewer's "Files reviewed:" list is missing ${missingFromReview.length} changed source file(s):\n`);
+  for (const p of missingFromReview.slice(0, 30)) process.stderr.write(`  - ${p}\n`);
+  if (missingFromReview.length > 30) process.stderr.write(`  ... +${missingFromReview.length - 30} more\n`);
+  process.stderr.write(`Reviewer must explicitly claim to have read every changed source file. Verdict rejected as untrusted.\n`);
+  process.exit(1);
+}
 
 process.stdout.write(`\n${DIM}--- reviewer report ---${RESET}\n`);
 process.stdout.write(finalMsg.trim() + "\n");
