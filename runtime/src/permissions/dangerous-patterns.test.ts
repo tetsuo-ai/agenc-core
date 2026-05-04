@@ -26,7 +26,7 @@ describe("dangerous-patterns upstream parity", () => {
 });
 
 describe("dangerous shell command detection", () => {
-  test("flags recursive forced removal of critical paths", () => {
+  test("flags recursive forced removal commands", () => {
     expect(isDangerousShellCommand("rm -rf /")).toBe(true);
     expect(isDangerousShellCommand("rm -fr -- '/*'")).toBe(true);
     expect(isDangerousShellCommand("rm --recursive --force /tmp")).toBe(true);
@@ -35,6 +35,7 @@ describe("dangerous shell command detection", () => {
 
   test.each([
     "rm -f /",
+    "rm -f /important/data",
     "rm -f /etc/passwd",
     "sudo rm -f /etc/passwd",
     "bash -lc 'rm -f /etc/passwd'",
@@ -49,6 +50,8 @@ describe("dangerous shell command detection", () => {
     "r''m -rf /",
     "rm -r''f /",
     "rm -r /tmp -f",
+    "rm -rf /tmp/nonexistent",
+    "rm -rf /important/data",
     "rm --recursive /tmp --force",
     "rm / -rf --no-preserve-root",
     "rm -rf $HOME",
@@ -140,19 +143,10 @@ describe("dangerous shell command detection", () => {
     ).toBe(true);
   });
 
-  test("does not flag relative or non-critical absolute cleanup", () => {
-    const workspaceTmp = `${process.cwd().replace(/\\/g, "/")}/tmp`;
-
-    expect(isDangerousShellCommand("rm -rf ./dist")).toBe(false);
-    expect(isDangerousShellCommand(`rm -rf ${workspaceTmp}`)).toBe(false);
-    expect(isDangerousShellCommand("rm -rf ~/cache")).toBe(false);
-  });
-
   test.each([
     "rm -- / -rf",
     "rm /",
     "rm -r /",
-    "rm -rf ./dist",
   ])("does not flag incomplete or operand-only rm argv: %s", (command) => {
     expect(isDangerousShellCommand(command)).toBe(false);
   });
@@ -164,8 +158,7 @@ describe("dangerous shell command detection", () => {
     "git commit -m push --force main",
     "git log --grep push --force main",
     "echo git push origin --force main",
-    "rm -f ./dist/file",
-  ])("does not flag safe git push or non-critical rm forms: %s", (command) => {
+  ])("does not flag safe git push forms: %s", (command) => {
     expect(isDangerousShellCommand(command)).toBe(false);
   });
 
@@ -195,7 +188,7 @@ describe("dangerous shell command detection", () => {
 
   test("returns the matched safety label", () => {
     expect(matchedDangerousShellCommandLabel("rm -rf /")).toBe(
-      "rm -rf critical path",
+      "rm -rf",
     );
     expect(matchedDangerousShellCommandLabel("git status")).toBeNull();
   });

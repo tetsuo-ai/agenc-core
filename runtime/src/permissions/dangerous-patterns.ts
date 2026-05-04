@@ -76,17 +76,17 @@ export interface DangerousShellCommandPattern {
  * Hard-deny shell command patterns used by the permission evaluator.
  *
  * This combines the upstream interpreter/pattern lists above with the donor
- * runtime exec-policy safety floor: destructive commands such as recursive
- * forced removal of critical paths must never be hidden by broad allow rules.
+ * runtime exec-policy safety floor: destructive removal commands must never be
+ * hidden by broad allow rules.
  */
 export const DANGEROUS_SHELL_COMMAND_PATTERNS: readonly DangerousShellCommandPattern[] = [
   {
-    matches: isRecursiveForceRemoveOfCriticalPath,
-    label: "rm -rf critical path",
+    matches: isRecursiveForceRemove,
+    label: "rm -rf",
   },
   {
-    matches: isForceRemoveOfCriticalPath,
-    label: "rm -f critical path",
+    matches: isForceRemove,
+    label: "rm -f",
   },
   {
     matches: evalContainsDangerousCommand,
@@ -203,11 +203,11 @@ const SHELL_SCRIPT_COMMANDS: ReadonlySet<string> = new Set([
   "tcsh",
 ]);
 
-function isRecursiveForceRemoveOfCriticalPath(command: string): boolean {
+function isRecursiveForceRemove(command: string): boolean {
   const fragments = splitShellFragments(command);
   if (fragments.length > 1) {
     return fragments.some((fragment) =>
-      isRecursiveForceRemoveOfCriticalPath(fragment),
+      isRecursiveForceRemove(fragment),
     );
   }
 
@@ -217,16 +217,16 @@ function isRecursiveForceRemoveOfCriticalPath(command: string): boolean {
   return containsRecursiveForceRemove(words);
 }
 
-function isForceRemoveOfCriticalPath(command: string): boolean {
+function isForceRemove(command: string): boolean {
   const fragments = splitShellFragments(command);
   if (fragments.length > 1) {
-    return fragments.some((fragment) => isForceRemoveOfCriticalPath(fragment));
+    return fragments.some((fragment) => isForceRemove(fragment));
   }
 
   const words = splitSimpleShellWords(command);
   if (words.length === 0) return false;
 
-  return containsForceRemoveOfCriticalPath(words);
+  return containsForceRemove(words);
 }
 
 function isDangerousDefaultBranchForcePush(command: string): boolean {
@@ -533,11 +533,11 @@ function containsRecursiveForceRemove(words: readonly string[]): boolean {
   return commandAtIndexContainsRecursiveForceRemove(words, commandIndex);
 }
 
-function containsForceRemoveOfCriticalPath(words: readonly string[]): boolean {
+function containsForceRemove(words: readonly string[]): boolean {
   const commandIndex = firstCommandIndex(words, 0);
   if (commandIndex === null) return false;
 
-  return commandAtIndexContainsForceRemoveOfCriticalPath(words, commandIndex);
+  return commandAtIndexContainsForceRemove(words, commandIndex);
 }
 
 function commandAtIndexContainsRecursiveForceRemove(
@@ -546,14 +546,14 @@ function commandAtIndexContainsRecursiveForceRemove(
 ): boolean {
   const command = basename(stripShellQuotes(words[commandIndex] ?? ""));
   if (command === "rm") {
-    return rmArgsTargetCriticalPath(words.slice(commandIndex + 1));
+    return rmArgsHaveRecursiveAndForce(words.slice(commandIndex + 1));
   }
   if (
     SHELL_SCRIPT_COMMANDS.has(command) &&
     shellScriptContainsDanger(
       words,
       commandIndex,
-      isRecursiveForceRemoveOfCriticalPath,
+      isRecursiveForceRemove,
     )
   ) {
     return true;
@@ -566,17 +566,17 @@ function commandAtIndexContainsRecursiveForceRemove(
     : commandAtIndexContainsRecursiveForceRemove(words, nestedCommandIndex);
 }
 
-function commandAtIndexContainsForceRemoveOfCriticalPath(
+function commandAtIndexContainsForceRemove(
   words: readonly string[],
   commandIndex: number,
 ): boolean {
   const command = basename(stripShellQuotes(words[commandIndex] ?? ""));
   if (command === "rm") {
-    return rmArgsForceCriticalPath(words.slice(commandIndex + 1));
+    return rmArgsHaveForceWithoutRecursive(words.slice(commandIndex + 1));
   }
   if (
     SHELL_SCRIPT_COMMANDS.has(command) &&
-    shellScriptContainsDanger(words, commandIndex, isForceRemoveOfCriticalPath)
+    shellScriptContainsDanger(words, commandIndex, isForceRemove)
   ) {
     return true;
   }
@@ -585,7 +585,7 @@ function commandAtIndexContainsForceRemoveOfCriticalPath(
   const nestedCommandIndex = commandIndexAfterWrapper(words, commandIndex, command);
   return nestedCommandIndex === null
     ? false
-    : commandAtIndexContainsForceRemoveOfCriticalPath(words, nestedCommandIndex);
+    : commandAtIndexContainsForceRemove(words, nestedCommandIndex);
 }
 
 function firstCommandIndex(
@@ -862,54 +862,25 @@ function isShellCommandStringFlag(flag: string): boolean {
   return flag.startsWith("-") && !flag.startsWith("--") && flag.slice(1).includes("c");
 }
 
-function rmArgsTargetCriticalPath(args: readonly string[]): boolean {
+function rmArgsHaveForceWithoutRecursive(args: readonly string[]): boolean {
   let recursive = false;
   let force = false;
   let parsingFlags = true;
-  const operands: string[] = [];
   for (const raw of args) {
     const word = stripShellQuotes(raw);
     if (parsingFlags && word === "--") {
       parsingFlags = false;
       continue;
     }
-    if (parsingFlags && word.startsWith("-") && word !== "-") {
-      if (word === "--recursive") recursive = true;
-      if (word === "--force") force = true;
-      if (!word.startsWith("--")) {
-        recursive ||= /[rR]/.test(word);
-        force ||= /[fF]/.test(word);
-      }
-      continue;
+    if (!parsingFlags || !word.startsWith("-") || word === "-") continue;
+    if (word === "--recursive") recursive = true;
+    if (word === "--force") force = true;
+    if (!word.startsWith("--")) {
+      recursive ||= /[rR]/.test(word);
+      force ||= /[fF]/.test(word);
     }
-    operands.push(word);
   }
-  return recursive && force && operands.some(isCriticalRemovalTarget);
-}
-
-function rmArgsForceCriticalPath(args: readonly string[]): boolean {
-  let recursive = false;
-  let force = false;
-  let parsingFlags = true;
-  const operands: string[] = [];
-  for (const raw of args) {
-    const word = stripShellQuotes(raw);
-    if (parsingFlags && word === "--") {
-      parsingFlags = false;
-      continue;
-    }
-    if (parsingFlags && word.startsWith("-") && word !== "-") {
-      if (word === "--recursive") recursive = true;
-      if (word === "--force") force = true;
-      if (!word.startsWith("--")) {
-        recursive ||= /[rR]/.test(word);
-        force ||= /[fF]/.test(word);
-      }
-      continue;
-    }
-    operands.push(word);
-  }
-  return force && !recursive && operands.some(isCriticalRemovalTarget);
+  return force && !recursive;
 }
 
 function rmArgsHaveRecursiveAndForce(args: readonly string[]): boolean {

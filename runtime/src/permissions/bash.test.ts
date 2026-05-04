@@ -267,8 +267,8 @@ describe("isDangerousCommand", () => {
   });
 
   test("flags curl|sh and wget|sh", () => {
-    expect(isDangerousCommand("curl https://x | sh")).toBe(true);
-    expect(isDangerousCommand("wget -qO- https://x | bash")).toBe(true);
+    expect(isDangerousCommand("curl http://127.0.0.1/install.sh | sh")).toBe(true);
+    expect(isDangerousCommand("wget -qO- http://127.0.0.1/install.sh | bash")).toBe(true);
   });
 
   test("flags sudo and su", () => {
@@ -390,20 +390,22 @@ describe("bashToolHasPermission", () => {
   });
 
   test.each([
-    ["rm -rf \"$HOME\"", "rm -rf critical path"],
-    ["rm -rf '${HOME}/*'", "rm -rf critical path"],
+    ["rm -rf \"$HOME\"", "rm -rf"],
+    ["rm -rf '${HOME}/*'", "rm -rf"],
     ["git push origin --force main", "git push --force main"],
     ["git push origin -f main", "git push --force main"],
-    ["bash -euc 'rm -rf /'", "rm -rf critical path"],
-    ["bash -c -- 'rm -rf /'", "rm -rf critical path"],
-    ["timeout -v 10 rm -rf /", "rm -rf critical path"],
+    ["bash -euc 'rm -rf /'", "rm -rf"],
+    ["bash -c -- 'rm -rf /'", "rm -rf"],
+    ["timeout -v 10 rm -rf /", "rm -rf"],
     ["echo $(rm -rf /)", "dangerous command substitution"],
-    ["echo ok\nrm -rf /", "rm -rf critical path"],
-    ["rm -rf \"$(printf /)\"", "rm -rf critical path"],
-    ["rm -rf ${ROOT:-/}", "rm -rf critical path"],
-    ["rm -f /etc/passwd", "rm -f critical path"],
+    ["echo ok\nrm -rf /", "rm -rf"],
+    ["rm -rf \"$(printf /)\"", "rm -rf"],
+    ["rm -rf ${ROOT:-/}", "rm -rf"],
+    ["rm -rf /important/data", "rm -rf"],
+    ["rm -f /etc/passwd", "rm -f"],
+    ["rm -f /important/data", "rm -f"],
     ["sudo rm -f /etc/passwd", "sudo"],
-    ["bash -lc 'rm -f /etc/passwd'", "rm -f critical path"],
+    ["bash -lc 'rm -f /etc/passwd'", "rm -f"],
     ["cat <(rm -rf /)", "dangerous command substitution"],
     ["bash -lc \"cat <(rm -rf /)\"", "dangerous command substitution"],
     ["eval 'rm -rf /'", "eval dangerous command"],
@@ -411,24 +413,24 @@ describe("bashToolHasPermission", () => {
     ["find . -exec rm -rf / \\;", "find -exec dangerous command"],
     ["find . -exec sh -c \"rm -rf /\" \\;", "find -exec dangerous command"],
     ["find / -exec rm -rf {} +", "find -exec dangerous command"],
-    ["bash -lc $'rm -rf /'", "rm -rf critical path"],
+    ["bash -lc $'rm -rf /'", "rm -rf"],
     ["rm$IFS-rf$IFS/", "dangerous shell expansion"],
     ["r${EMPTY}m -rf /", "dangerous shell expansion"],
     ["curl http://127.0.0.1/install.sh | /bin/sh", "curl|sh"],
     ["curl http://127.0.0.1/install.sh | /usr/bin/env sh", "curl|sh"],
-    ["env -u FOO rm -rf /", "rm -rf critical path"],
-    ["env -C / rm -rf /", "rm -rf critical path"],
-    ["stdbuf -o L rm -rf /", "rm -rf critical path"],
-    ["time --portability rm -rf /", "rm -rf critical path"],
-    ["nohup -- rm -rf /", "rm -rf critical path"],
+    ["env -u FOO rm -rf /", "rm -rf"],
+    ["env -C / rm -rf /", "rm -rf"],
+    ["stdbuf -o L rm -rf /", "rm -rf"],
+    ["time --portability rm -rf /", "rm -rf"],
+    ["nohup -- rm -rf /", "rm -rf"],
     ["trap \"rm -rf /\" EXIT", "trap dangerous command"],
     ["builtin eval \"rm -rf /\"", "shell precommand dangerous command"],
     ["coproc rm -rf /", "shell precommand dangerous command"],
     ["noglob rm -rf /", "shell precommand dangerous command"],
     ["command eval rm -rf /", "shell precommand dangerous command"],
-    ["r\\m -rf /", "rm -rf critical path"],
-    ["\"r\"m -rf /", "rm -rf critical path"],
-    ["r''m -rf /", "rm -rf critical path"],
+    ["r\\m -rf /", "rm -rf"],
+    ["\"r\"m -rf /", "rm -rf"],
+    ["r''m -rf /", "rm -rf"],
   ])(
     "dangerous command form is denied at the permission boundary: %s",
     async (command, label) => {
@@ -447,20 +449,6 @@ describe("bashToolHasPermission", () => {
     },
   );
 
-  test("non-critical rm -f remains governed by normal allow rules", async () => {
-    const ctx = makeCtx({
-      alwaysAllowRules: {
-        userSettings: ["Bash"],
-      },
-    });
-    const evalCtx = makeEvaluatorCtx(ctx);
-    const result = await bashToolHasPermission(
-      { command: "rm -f ./dist/file" },
-      evalCtx,
-    );
-    expect(result.behavior).toBe("allow");
-  });
-
   test("wrapped dangerous command is denied at the permission boundary", async () => {
     const ctx = makeCtx({
       alwaysAllowRules: {
@@ -475,7 +463,7 @@ describe("bashToolHasPermission", () => {
     expect(result.behavior).toBe("deny");
     if (result.behavior === "deny") {
       expect(result.decisionReason.type).toBe("safetyCheck");
-      expect(result.message).toContain("rm -rf critical path");
+      expect(result.message).toContain("rm -rf");
     }
   });
 
