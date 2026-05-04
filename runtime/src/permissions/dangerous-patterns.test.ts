@@ -35,6 +35,10 @@ describe("dangerous shell command detection", () => {
 
   test.each([
     "rm / -rf",
+    "r\\m -rf /",
+    "\"r\"m -rf /",
+    "r''m -rf /",
+    "rm -r''f /",
     "rm -r /tmp -f",
     "rm --recursive /tmp --force",
     "rm / -rf --no-preserve-root",

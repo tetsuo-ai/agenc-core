@@ -390,6 +390,9 @@ describe("bashToolHasPermission", () => {
     ["bash -c -- 'rm -rf /'", "rm -rf critical path"],
     ["timeout -v 10 rm -rf /", "rm -rf critical path"],
     ["echo $(rm -rf /)", "dangerous command substitution"],
+    ["r\\m -rf /", "rm -rf critical path"],
+    ["\"r\"m -rf /", "rm -rf critical path"],
+    ["r''m -rf /", "rm -rf critical path"],
   ])(
     "dangerous command form is denied at the permission boundary: %s",
     async (command, label) => {

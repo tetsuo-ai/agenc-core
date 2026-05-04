@@ -471,7 +471,84 @@ function rmArgsTargetCriticalPath(args: readonly string[]): boolean {
 }
 
 function splitSimpleShellWords(command: string): string[] {
-  return command.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+  const tokens: string[] = [];
+  let buffer = "";
+  let inToken = false;
+  let i = 0;
+
+  const flushToken = (): void => {
+    if (!inToken) return;
+    tokens.push(buffer);
+    buffer = "";
+    inToken = false;
+  };
+
+  while (i < command.length) {
+    const char = command[i]!;
+    if (/\s/.test(char)) {
+      flushToken();
+      i++;
+      continue;
+    }
+    if ("|&;><()".includes(char)) {
+      flushToken();
+      i++;
+      continue;
+    }
+
+    inToken = true;
+    if (char === "'") {
+      const end = command.indexOf("'", i + 1);
+      if (end === -1) {
+        buffer += command.slice(i + 1);
+        break;
+      }
+      buffer += command.slice(i + 1, end);
+      i = end + 1;
+      continue;
+    }
+    if (char === '"') {
+      i = appendDoubleQuotedShellWord(command, i + 1, (value) => {
+        buffer += value;
+      });
+      continue;
+    }
+    if (char === "\\") {
+      if (i + 1 >= command.length) break;
+      buffer += command[i + 1]!;
+      i += 2;
+      continue;
+    }
+
+    buffer += char;
+    i++;
+  }
+
+  flushToken();
+  return tokens;
+}
+
+function appendDoubleQuotedShellWord(
+  command: string,
+  startIndex: number,
+  append: (value: string) => void,
+): number {
+  let i = startIndex;
+  while (i < command.length) {
+    const char = command[i]!;
+    if (char === '"') return i + 1;
+    if (char === "\\" && i + 1 < command.length) {
+      const next = command[i + 1]!;
+      if (next === '"' || next === "\\" || next === "$" || next === "`") {
+        append(next);
+        i += 2;
+        continue;
+      }
+    }
+    append(char);
+    i++;
+  }
+  return command.length;
 }
 
 function splitShellFragments(command: string): string[] {
