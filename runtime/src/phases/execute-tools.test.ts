@@ -24,7 +24,7 @@ import type {
   PostToolUseHook,
   PreToolUseHook,
 } from "../tools/hooks.js";
-import { PermissionModeRegistry } from "../permissions/mode.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,

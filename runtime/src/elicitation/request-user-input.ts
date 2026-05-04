@@ -21,7 +21,7 @@ import type {
   SessionConfiguration,
 } from "../session/turn-context.js";
 import type { PermissionMode } from "../permissions/types.js";
-import type { PermissionModeRegistry } from "../permissions/mode.js";
+import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import {
   REQUEST_USER_INPUT_TOOL_NAME,
   type RequestUserInputArgs,

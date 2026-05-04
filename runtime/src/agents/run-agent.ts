@@ -38,7 +38,7 @@ import {
 } from "./_deps/filesystem-args.js";
 import { Session as ChildSession, type Session } from "../session/session.js";
 import { RolloutStore } from "../session/rollout-store.js";
-import { PermissionModeRegistry } from "../permissions/mode.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import {
   threadConfigSnapshot,
   type ReasoningEffort,

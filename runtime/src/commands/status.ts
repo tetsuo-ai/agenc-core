@@ -10,7 +10,7 @@
 
 import { monotonicMs } from "../utils/monotonic.js";
 import type { Session } from "../session/session.js";
-import type { PermissionModeRegistry } from "../permissions/mode.js";
+import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import {
   safeExecute,
   type SlashCommand,

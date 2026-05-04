@@ -8,7 +8,7 @@ import permissionsCommand, {
   exportRules,
   parseRuleArgs,
 } from "./permissions.js";
-import { PermissionModeRegistry } from "../permissions/mode.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import {
   applyPermissionUpdate,
 } from "../permissions/rules.js";

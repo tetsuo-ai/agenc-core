@@ -45,7 +45,7 @@ import {
   type ModelUsage,
 } from "../session/cost.js";
 import { setRulesForSource } from "../permissions/rules.js";
-import type { PermissionModeRegistry } from "../permissions/mode.js";
+import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import { ABORT, DENIED, type ReviewDecision } from "../permissions/review-decision.js";
 import { isFinal } from "../agents/status.js";

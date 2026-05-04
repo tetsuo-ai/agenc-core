@@ -71,7 +71,7 @@ import { StreamModelError } from "../phases/stream-model.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import type { Tool } from "../tools/types.js";
 import { BudgetTracker } from "../llm/token-budget.js";
-import { PermissionModeRegistry } from "../permissions/mode.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 
 function mkCtx(): TurnContext {

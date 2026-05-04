@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import statusCommand, { collectStatus, formatStatus } from "./status.js";
 import type { Session } from "../session/session.js";
-import { PermissionModeRegistry } from "../permissions/mode.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 
 interface StubBudget {

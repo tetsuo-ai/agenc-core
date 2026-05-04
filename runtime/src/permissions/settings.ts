@@ -65,7 +65,7 @@ import {
   type PermissionRuleValue,
   type ToolPermissionContext,
 } from "./types.js";
-import { isAutoModeGateEnabled } from "./mode.js";
+import { isAutoModeGateEnabled } from "./permission-mode.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Re-exports so callers can `import { SETTING_SOURCES, EDITABLE_SOURCES } from "./permissions/settings"`
