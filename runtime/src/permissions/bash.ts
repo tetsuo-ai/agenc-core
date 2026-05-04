@@ -47,6 +47,7 @@ import {
   getRuleByContentsForTool,
 } from "./rules.js";
 import {
+  hasShellConstructRequiringAsk,
   isDangerousShellCommand,
   matchedDangerousShellCommandLabel,
 } from "./dangerous-patterns.js";
@@ -699,6 +700,14 @@ function evaluateSubcommand(
         reason: dangerLabel,
         classifierApprovable: false,
       },
+    };
+  }
+
+  if (hasShellConstructRequiringAsk(subcommand)) {
+    return {
+      behavior: "ask",
+      message: `Bash command contains shell constructs this runtime cannot verify; confirm intent for \`${subcommand}\`.`,
+      decisionReason: { type: "other", reason: "bash_parse_unavailable" },
     };
   }
 
