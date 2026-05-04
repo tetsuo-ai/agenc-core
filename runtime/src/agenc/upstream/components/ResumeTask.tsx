@@ -12,7 +12,7 @@ import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js';
 import { Select } from './CustomSelect/index.js';
 import { Byline } from './design-system/Byline.js';
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js';
-import { Spinner } from './Spinner.js';
+import { Spinner } from '../../../tui/components/spinner/Spinner.js';
 import { TeleportError } from './TeleportError.js';
 type Props = {
   onSelect: (session: CodeSession) => void;

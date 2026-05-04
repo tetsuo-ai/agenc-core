@@ -194,6 +194,23 @@ function assertSourceSnapshot() {
   ]
     .filter(([file]) => existsSync(join(liveTuiRoot, file)))
     .map(([, inventoryPath]) => inventoryPath);
+  const absorbedSpinnerFiles = [
+    ["components/spinner/Spinner.tsx", "src/components/Spinner.tsx"],
+    ["components/spinner/FlashingChar.tsx", "src/components/Spinner/FlashingChar.tsx"],
+    ["components/spinner/GlimmerMessage.tsx", "src/components/Spinner/GlimmerMessage.tsx"],
+    ["components/spinner/ShimmerChar.tsx", "src/components/Spinner/ShimmerChar.tsx"],
+    ["components/spinner/SpinnerAnimationRow.tsx", "src/components/Spinner/SpinnerAnimationRow.tsx"],
+    ["components/spinner/SpinnerGlyph.tsx", "src/components/Spinner/SpinnerGlyph.tsx"],
+    ["components/spinner/TeammateSpinnerLine.tsx", "src/components/Spinner/TeammateSpinnerLine.tsx"],
+    ["components/spinner/TeammateSpinnerTree.tsx", "src/components/Spinner/TeammateSpinnerTree.tsx"],
+    ["components/spinner/teammateSelectHint.ts", "src/components/Spinner/teammateSelectHint.ts"],
+    ["components/spinner/types.ts", "src/components/Spinner/types.ts"],
+    ["components/spinner/useShimmerAnimation.ts", "src/components/Spinner/useShimmerAnimation.ts"],
+    ["components/spinner/useStalledAnimation.ts", "src/components/Spinner/useStalledAnimation.ts"],
+    ["components/spinner/utils.ts", "src/components/Spinner/utils.ts"],
+  ]
+    .filter(([file]) => existsSync(join(liveTuiRoot, file)))
+    .map(([, inventoryPath]) => inventoryPath);
   const substitutions = new Map([
     [
       `src/components/${donorBrand}CodeHint/PluginHintMenu.tsx`,
@@ -214,6 +231,10 @@ function assertSourceSnapshot() {
     [
       `src/hooks/usePromptsFrom${donorBrand}InChrome.tsx`,
       "src/hooks/usePromptsFromAgenCInChrome.tsx",
+    ],
+    [
+      "src/components/Spinner/index.ts",
+      "src/components/Spinner.tsx",
     ],
   ]);
   // AgenC-only additions to the copied upstream tree. Each entry must
@@ -285,6 +306,10 @@ function assertSourceSnapshot() {
       "src/utils/tokenAnalytics.test.ts",
       "Focused coverage for T-16 token usage analytics behavior.",
     ],
+    [
+      "src/components/Spinner/types.ts",
+      "T-17 defines the spinner mode and RGB color type surface locally because the donor spinner cluster imports this module but the published source snapshot omits it.",
+    ],
   ]);
   const expected = sourceFiles
     .map((file) => substitutions.get(file) ?? file)
@@ -300,6 +325,7 @@ function assertSourceSnapshot() {
     .concat(absorbedStartupFiles)
     .concat(absorbedHistoryFiles)
     .concat(absorbedCostFiles)
+    .concat(absorbedSpinnerFiles)
     .sort();
   const missing = expected.filter((file) => !actualFiles.includes(file));
   const extra = actualFiles.filter((file) => !expected.includes(file));
@@ -374,6 +400,7 @@ function assertOldTuiRemoved() {
     if (allowed.has(file)) continue;
     if (isAllowedTest(file)) continue;
     if (file.startsWith("components/PromptInput/")) continue;
+    if (file.startsWith("components/spinner/")) continue;
     if (file === "components/Messages.tsx") continue;
     if (file === "components/messagesOptionalModules.ts") continue;
     if (file === "components/messagesOptionalModules.test.ts") continue;
@@ -416,6 +443,7 @@ function assertNoDeletedAbsorbImporters() {
   const deletedPromptInputRoot = join(copiedRoot, "components/PromptInput");
   const deletedMessagesEntrypoint = join(copiedRoot, "components/Messages");
   const deletedAppEntrypoint = join(copiedRoot, "components/App");
+  const deletedSpinnerRoot = join(copiedRoot, "components/Spinner");
   const deletedStartupEntrypoints = new Map([
     [join(copiedRoot, "components/StartupScreen"), "StartupScreen"],
     [join(copiedRoot, "components/StatusLine"), "StatusLine"],
@@ -525,6 +553,13 @@ function assertNoDeletedAbsorbImporters() {
       ) {
         fail(`deleted cost/usage alias import remains: ${file} -> ${specifier}`);
       }
+      if (
+        specifier === "src/components/Spinner" ||
+        specifier === "src/components/Spinner.js" ||
+        specifier.startsWith("src/components/Spinner/")
+      ) {
+        fail(`deleted spinner alias import remains: ${file} -> ${specifier}`);
+      }
       if (!specifier.startsWith(".")) continue;
       const resolved = resolve(dirname(abs), specifier)
         .replace(/\.(?:js|jsx|ts|tsx|mjs|cjs)$/, "");
@@ -563,6 +598,12 @@ function assertNoDeletedAbsorbImporters() {
       }
       if (resolved === deletedAppEntrypoint) {
         fail(`deleted App relative import remains: ${file} -> ${specifier}`);
+      }
+      if (
+        resolved === deletedSpinnerRoot ||
+        resolved.startsWith(`${deletedSpinnerRoot}/`)
+      ) {
+        fail(`deleted spinner relative import remains: ${file} -> ${specifier}`);
       }
       for (const [deletedStartupEntrypoint, label] of deletedStartupEntrypoints) {
         if (resolved === deletedStartupEntrypoint) {

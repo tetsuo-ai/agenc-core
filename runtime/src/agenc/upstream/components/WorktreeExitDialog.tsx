@@ -9,7 +9,7 @@ import { setCwd } from '../utils/Shell.js';
 import { cleanupWorktree, getCurrentWorktreeSession, keepWorktree, killTmuxSession } from '../utils/worktree.js';
 import { Select } from './CustomSelect/select.js';
 import { Dialog } from './design-system/Dialog.js';
-import { Spinner } from './Spinner.js';
+import { Spinner } from '../../../tui/components/spinner/Spinner.js';
 
 // Inline require breaks the cycle this file would otherwise close:
 // sessionStorage → commands → exit → ExitFlow → here. All call sites

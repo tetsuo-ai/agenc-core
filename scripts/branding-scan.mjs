@@ -147,6 +147,9 @@ function isAbsorbImportRewriteLine(line, rel) {
     /(?:^|[./])(?:tui\/)?cost\/(?:Stats|TokenWarning|MemoryUsageIndicator|tokenAnalytics)(?:\.js)?/,
     /(?:^|[./])components\/(?:Stats|TokenWarning|MemoryUsageIndicator)(?:\.js)?/,
     /(?:^|[./])utils\/tokenAnalytics(?:\.js)?/,
+    /(?:^|[./])(?:tui\/)?components\/spinner\/(?:Spinner|FlashingChar|GlimmerMessage|ShimmerChar|SpinnerAnimationRow|SpinnerGlyph|TeammateSpinnerLine|TeammateSpinnerTree|teammateSelectHint|types|useShimmerAnimation|useStalledAnimation|utils)(?:\.js)?/,
+    /(?:^|[./])components\/Spinner(?:\/(?:FlashingChar|GlimmerMessage|ShimmerChar|SpinnerAnimationRow|SpinnerGlyph|TeammateSpinnerLine|TeammateSpinnerTree|index|teammateSelectHint|types|useShimmerAnimation|useStalledAnimation|utils))?(?:\.js)?/,
+    /(?:^|[./])Spinner(?:\.js|\/(?:FlashingChar|GlimmerMessage|ShimmerChar|SpinnerAnimationRow|SpinnerGlyph|TeammateSpinnerLine|TeammateSpinnerTree|index|teammateSelectHint|types|useShimmerAnimation|useStalledAnimation|utils)(?:\.js)?)/,
   ];
   if (commonAbsorbImportPatterns.some((pattern) => pattern.test(line))) {
     return true;

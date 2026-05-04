@@ -481,6 +481,40 @@ const ITEM_EVIDENCE = {
       },
     ],
   },
+  "T-17": {
+    files: [
+      "runtime/src/tui/components/spinner/Spinner.tsx",
+      "runtime/src/tui/components/spinner/SpinnerAnimationRow.tsx",
+      "runtime/src/tui/components/spinner/SpinnerGlyph.tsx",
+      "runtime/src/tui/components/spinner/ShimmerChar.tsx",
+      "runtime/src/tui/components/spinner/useShimmerAnimation.ts",
+      "runtime/src/tui/components/spinner/useStalledAnimation.ts",
+      "runtime/src/tui/components/spinner/utils.ts",
+      "runtime/src/tui/components/spinner/types.ts",
+      "runtime/src/tui/components/spinner/PARITY.md",
+    ],
+    tests: [
+      "runtime/src/tui/components/spinner/spinner-primitives.test.tsx",
+    ],
+    grepPresent: [
+      {
+        pattern: "\\.\\./components/spinner/Spinner\\.js",
+        scope: "runtime/src/tui/cost/Stats.tsx",
+      },
+      {
+        pattern: "\\.\\./components/spinner/Spinner\\.js",
+        scope: "runtime/src/tui/history/ResumeConversation.tsx",
+      },
+      {
+        pattern: "\\.\\./spinner/ShimmerChar\\.js",
+        scope: "runtime/src/tui/components/PromptInput/ShimmeredInput.tsx",
+      },
+      {
+        pattern: "\\.\\./spinner/utils\\.js",
+        scope: "runtime/src/tui/components/PromptInput/VoiceIndicator.tsx",
+      },
+    ],
+  },
   "T-13": {
     files: [
       "runtime/src/tui/slash/slash-command-parsing.ts",
@@ -1117,9 +1151,23 @@ if (skipValidate) {
     (p) => existsSync(p),
   );
   if (skillRunner) {
-    const r = run("node", [skillRunner]);
+    const changedAgainstMain = git("diff", "--name-only", "main...HEAD")
+      .stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const forceFullTuiValidate = changedAgainstMain.some((file) =>
+      file.startsWith("runtime/src/tui/") ||
+      file.startsWith("runtime/src/agenc/upstream/") ||
+      file.startsWith("runtime/src/permissions/mode-display.ts") ||
+      file.startsWith("runtime/src/permissions/mode.ts") ||
+      file.startsWith("runtime/src/bin/agenc.ts") ||
+      file.startsWith("runtime/src/bin/main.ts")
+    );
+    const runnerArgs = forceFullTuiValidate ? [skillRunner, "--full"] : [skillRunner];
+    const r = run("node", runnerArgs);
     if (r.status !== 0) failGate("agenc-tui-validate failed");
-    pass(`agenc-tui-validate passed (${path.basename(skillRunner)})`);
+    pass(`agenc-tui-validate passed (${path.basename(skillRunner)}${forceFullTuiValidate ? " --full" : ""})`);
   } else {
     process.stdout.write(
       `${YELLOW}!${RESET} agenc-tui-validate skill runner not found under ${skillBase}; falling back to inline build check.\n`,
@@ -1186,6 +1234,10 @@ async function tuiAbsorbGates(item) {
   }
   if (id === "T-16") {
     await t16CostUsageGates();
+    return;
+  }
+  if (id === "T-17") {
+    await t17SpinnerGates();
     return;
   }
   // Same shape as leaf absorb, but for the larger TUI subtrees.
@@ -1423,6 +1475,73 @@ async function t16CostUsageGates() {
   }
 
   pass("T-16 cost/usage imports resolved to AgenC-owned paths");
+}
+
+async function t17SpinnerGates() {
+  const retiredTargets = [
+    "runtime/src/agenc/upstream/components/Spinner.tsx",
+    "runtime/src/agenc/upstream/components/Spinner/FlashingChar.tsx",
+    "runtime/src/agenc/upstream/components/Spinner/GlimmerMessage.tsx",
+    "runtime/src/agenc/upstream/components/Spinner/ShimmerChar.tsx",
+    "runtime/src/agenc/upstream/components/Spinner/SpinnerAnimationRow.tsx",
+    "runtime/src/agenc/upstream/components/Spinner/SpinnerGlyph.tsx",
+    "runtime/src/agenc/upstream/components/Spinner/TeammateSpinnerLine.tsx",
+    "runtime/src/agenc/upstream/components/Spinner/TeammateSpinnerTree.tsx",
+    "runtime/src/agenc/upstream/components/Spinner/index.ts",
+    "runtime/src/agenc/upstream/components/Spinner/teammateSelectHint.ts",
+    "runtime/src/agenc/upstream/components/Spinner/useShimmerAnimation.ts",
+    "runtime/src/agenc/upstream/components/Spinner/useStalledAnimation.ts",
+    "runtime/src/agenc/upstream/components/Spinner/utils.ts",
+  ];
+
+  for (const upstream of retiredTargets) {
+    if (existsSync(path.join(root, upstream))) {
+      failGate(`T-17 upstream target still present: ${upstream}`);
+    }
+    pass(`T-17 upstream target deleted (${upstream})`);
+  }
+
+  if (existsSync(path.join(root, "runtime/src/tui/components/spinner/index.ts"))) {
+    failGate("T-17 must not preserve the donor Spinner index barrel");
+  }
+
+  const oldAbsolutePattern = String.raw`agenc/upstream/components/Spinner`;
+  const oldAbsoluteScan = run(
+    "rg",
+    ["--no-messages", "-n", oldAbsolutePattern, "runtime/src"],
+    { silent: true },
+  );
+  if (oldAbsoluteScan.status === 0 && oldAbsoluteScan.stdout.trim()) {
+    failGate(`T-17 retired spinner upstream imports remain:\n${oldAbsoluteScan.stdout}`);
+  }
+
+  const sourceImportPattern = /(?:from\s+|import\s*\(|require\s*\()\s*['"]([^'"]+)['"]/g;
+  const deletedSpinnerRoot = path.join(root, "runtime/src/agenc/upstream/components/Spinner");
+  const oldImports = [];
+  for (const abs of walkFiles(path.join(root, "runtime/src"))) {
+    if (!/\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(abs)) continue;
+    const rel = path.relative(root, abs);
+    const content = readFileSync(abs, "utf8");
+    for (const match of content.matchAll(sourceImportPattern)) {
+      const specifier = match[1];
+      if (!specifier) continue;
+      if (specifier === "src/components/Spinner" || specifier.startsWith("src/components/Spinner/")) {
+        oldImports.push(`${rel} -> ${specifier}`);
+        continue;
+      }
+      if (!specifier.startsWith(".")) continue;
+      const resolved = path.resolve(path.dirname(abs), specifier)
+        .replace(/\.(?:js|jsx|ts|tsx|mjs|cjs)$/, "");
+      if (resolved === deletedSpinnerRoot || resolved.startsWith(`${deletedSpinnerRoot}/`)) {
+        oldImports.push(`${rel} -> ${specifier}`);
+      }
+    }
+  }
+  if (oldImports.length > 0) {
+    failGate(`T-17 retired spinner import specifiers remain:\n${oldImports.join("\n")}`);
+  }
+
+  pass("T-17 spinner/shimmer imports resolved to AgenC-owned paths");
 }
 
 async function foundationalGates(item) {

@@ -5,8 +5,8 @@ import { useKeybinding } from '../../../../tui/keybindings/useKeybinding.js';
 import { logEvent } from '../../services/analytics/index.js';
 import type { Message } from '../../types/message.js';
 import { generatePermissionExplanation, isPermissionExplainerEnabled, type PermissionExplanation as PermissionExplanationType, type RiskLevel } from '../../utils/permissions/permissionExplainer.js';
-import { ShimmerChar } from '../Spinner/ShimmerChar.js';
-import { useShimmerAnimation } from '../Spinner/useShimmerAnimation.js';
+import { ShimmerChar } from '../../../../tui/components/spinner/ShimmerChar.js';
+import { useShimmerAnimation } from '../../../../tui/components/spinner/useShimmerAnimation.js';
 const LOADING_MESSAGE = 'Loading explanation…';
 function ShimmerLoadingText() {
   const $ = _c(7);

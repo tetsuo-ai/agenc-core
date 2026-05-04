@@ -23,7 +23,7 @@ import { resolveThemeSetting } from '../../agenc/upstream/utils/systemTheme.js';
 import { getTheme, themeColorToAnsi } from '../../agenc/upstream/utils/theme.js';
 import { Pane } from '../../agenc/upstream/components/design-system/Pane.js';
 import { Tab, Tabs, useTabHeaderFocus } from '../../agenc/upstream/components/design-system/Tabs.js';
-import { Spinner } from '../../agenc/upstream/components/Spinner.js';
+import { Spinner } from '../components/spinner/Spinner.js';
 function formatPeakDay(dateStr: string): string {
   const date = new Date(dateStr);
   return date.toLocaleDateString('en-US', {

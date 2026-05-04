@@ -7,7 +7,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { CommandResultDisplay } from '../../commands.js';
 import { Select } from '../../components/CustomSelect/select.js';
 import { Dialog } from '../../components/design-system/Dialog.js';
-import { Spinner } from '../../components/Spinner.js';
+import { Spinner } from '../../../../tui/components/spinner/Spinner.js';
 import instances from '../../../../tui/ink/instances.js';
 import { Box, Text } from '../../../../tui/ink.js';
 import { enablePluginOp } from '../../services/plugins/pluginOperations.js';

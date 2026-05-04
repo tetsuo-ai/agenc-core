@@ -72,7 +72,7 @@ export type {
   WebSearchProgress,
 }
 
-import type { SpinnerMode } from './components/Spinner.js'
+import type { SpinnerMode } from '../../tui/components/spinner/Spinner.js'
 import type { QuerySource } from './constants/querySource.js'
 import type { SDKStatus } from './entrypoints/agentSdkTypes.js'
 import type { AppState } from '../../tui/state/AppState.js'

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useInterval } from 'usehooks-ts';
 import type { CommandResultDisplay } from '../../commands.js';
 import { Markdown } from '../../components/Markdown.js';
-import { SpinnerGlyph } from '../../components/Spinner/SpinnerGlyph.js';
+import { SpinnerGlyph } from '../../../../tui/components/spinner/SpinnerGlyph.js';
 import { DOWN_ARROW, UP_ARROW } from '../../constants/figures.js';
 import { getSystemPrompt } from '../../constants/prompts.js';
 import { useModalOrTerminalSize } from '../../context/modalContext.js';

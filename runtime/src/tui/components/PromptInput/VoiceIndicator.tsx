@@ -3,7 +3,7 @@ import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { useSettings } from '../../../agenc/upstream/hooks/useSettings.js';
 import { Box, Text, useAnimationFrame } from '../../ink.js';
-import { interpolateColor, toRGBColor } from '../../../agenc/upstream/components/Spinner/utils.js';
+import { interpolateColor, toRGBColor } from '../spinner/utils.js';
 type Props = {
   voiceState: 'idle' | 'recording' | 'processing';
 };

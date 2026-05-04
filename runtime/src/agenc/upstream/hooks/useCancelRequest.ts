@@ -14,7 +14,7 @@ import {
 } from '../../../tui/state/AppState.js'
 import { isVimModeEnabled } from '../../../tui/components/PromptInput/utils.js'
 import type { ToolUseConfirm } from '../../../tui/components/permissions/PermissionRequest.js'
-import type { SpinnerMode } from '../components/Spinner/types.js'
+import type { SpinnerMode } from '../../../tui/components/spinner/types.js'
 import { useNotifications } from '../context/notifications.js'
 import { useIsOverlayActive } from '../context/overlayContext.js'
 import { useCommandQueue } from '../hooks/useCommandQueue.js'

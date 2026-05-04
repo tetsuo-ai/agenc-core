@@ -7,7 +7,7 @@ import { type TeleportSource, useTeleportResume } from '../hooks/useTeleportResu
 import { Box, Text } from '../../../tui/ink.js';
 import { useKeybinding } from '../../../tui/keybindings/useKeybinding.js';
 import { ResumeTask } from './ResumeTask.js';
-import { Spinner } from './Spinner.js';
+import { Spinner } from '../../../tui/components/spinner/Spinner.js';
 interface TeleportResumeWrapperProps {
   onComplete: (result: TeleportRemoteResponse) => void;
   onCancel: () => void;

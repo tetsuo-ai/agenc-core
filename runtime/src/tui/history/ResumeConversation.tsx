@@ -6,7 +6,7 @@ import { useTerminalSize } from '../../agenc/upstream/hooks/useTerminalSize.js';
 import { getOriginalCwd, switchSession } from '../../agenc/upstream/bootstrap/state.js';
 import type { Command } from '../../agenc/upstream/commands.js';
 import { LogSelector } from '../../agenc/upstream/components/LogSelector.js';
-import { Spinner } from '../../agenc/upstream/components/Spinner.js';
+import { Spinner } from '../components/spinner/Spinner.js';
 import { restoreCostStateForSession } from '../../agenc/upstream/cost-tracker.js';
 import { setClipboard } from '../ink/termio/osc.js';
 import { Box, Text } from '../ink.js';

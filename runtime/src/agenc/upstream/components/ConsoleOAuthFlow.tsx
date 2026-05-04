@@ -15,7 +15,7 @@ import { getSettings_DEPRECATED } from '../utils/settings/settings.js';
 import { ProviderManager } from './ProviderManager.js';
 import { Select } from './CustomSelect/select.js';
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js';
-import { Spinner } from './Spinner.js';
+import { Spinner } from '../../../tui/components/spinner/Spinner.js';
 import TextInput from './TextInput.js';
 export type ConsoleOAuthFlowResult = {
   type: 'oauth';
