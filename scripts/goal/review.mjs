@@ -198,8 +198,26 @@ const reviewArgs = [
   "-o",
   outFile,
 ];
+// Allowlist of acceptable reviewer models. The reviewer pass is the
+// last quality gate before merge; substituting a weak model (mini /
+// haiku / turbo / older variants) silently degrades the entire harness.
+// branding-scan: allow allow-list contains real frontier provider model IDs
+const REVIEWER_MODEL_ALLOWLIST = [
+  "gpt-5.5",
+  // branding-scan: allow real OpenAI codex-family model identifier
+  "gpt-5.5-codex",
+  "claude-opus-4-7",
+  "claude-sonnet-4-7",
+  "claude-opus-4-6",
+  "claude-sonnet-4-6",
+];
 if (process.env.AGENC_REVIEW_MODEL) {
-  reviewArgs.push("-m", process.env.AGENC_REVIEW_MODEL);
+  const requested = process.env.AGENC_REVIEW_MODEL.trim();
+  if (!REVIEWER_MODEL_ALLOWLIST.includes(requested)) {
+    process.stderr.write(`${BOLD}${RED}✗${RESET} model ${requested} not in allowlist; reviewer requires one of [${REVIEWER_MODEL_ALLOWLIST.join(", ")}]\n`);
+    process.exit(2);
+  }
+  reviewArgs.push("-m", requested);
 }
 reviewArgs.push("-");
 
@@ -243,6 +261,72 @@ if (!verdictMatch) {
 
 const verdict = verdictMatch[1];
 
+// Structural section verification — the reviewer prompt asks for six
+// passes (cross-cutting, security/supply-chain, performance/resource-leak,
+// scope, test coverage) and a per-severity issue breakdown. Without
+// checking that these sections actually appear, the reviewer can write
+// "Security: none" implicitly by skipping the pass entirely. Require
+// every section header to be present case-sensitively. For the per-pass
+// findings sections, also require non-empty content (either an explicit
+// "none" line or at least one bulleted/numbered item).
+const REQUIRED_SECTIONS = [
+  "Files reviewed:",
+  "Issues:",
+  "Cross-cutting:",
+  "Security/supply-chain:",
+  "Performance/resource-leak:",
+  "Scope check:",
+  "Test coverage gaps:",
+];
+const missingSections = REQUIRED_SECTIONS.filter((s) => !finalMsg.includes(s));
+if (missingSections.length > 0) {
+  process.stderr.write(`${BOLD}${RED}✗${RESET} reviewer output missing required section header(s): ${missingSections.join(", ")}\n`);
+  process.stderr.write(`Each pass in the reviewer prompt must produce a labeled section so we can verify it actually ran.\n`);
+  process.stderr.write(`--- reviewer output ---\n${finalMsg}\n--- end ---\n`);
+  process.exit(1);
+}
+
+// Per-severity sub-headers under "Issues:" must each appear at least
+// once. Each may explicitly say "none" to indicate no findings at that
+// severity, but the marker itself cannot be missing — that would mean
+// the reviewer never considered that severity at all.
+const REQUIRED_SEVERITIES = ["CRITICAL:", "HIGH:", "MEDIUM:", "LOW:"];
+const issuesSectionMatch = /Issues:\s*\n([\s\S]*?)(?:\n\s*(?:Cross-cutting:|Security\/supply-chain:|Performance\/resource-leak:|Scope check:|Test coverage gaps:|VERDICT:))/i.exec(finalMsg);
+if (!issuesSectionMatch) {
+  process.stderr.write(`${BOLD}${RED}✗${RESET} reviewer output has "Issues:" header but no parseable body before the next section\n`);
+  process.exit(1);
+}
+const issuesBody = issuesSectionMatch[1];
+const missingSeverities = REQUIRED_SEVERITIES.filter((s) => !issuesBody.includes(s));
+if (missingSeverities.length > 0) {
+  process.stderr.write(`${BOLD}${RED}✗${RESET} reviewer's "Issues:" section is missing per-severity marker(s): ${missingSeverities.join(", ")}\n`);
+  process.stderr.write(`Each severity must appear (with "none" if no findings). Missing the marker entirely means the reviewer skipped that severity.\n`);
+  process.exit(1);
+}
+
+// Security/supply-chain and Performance/resource-leak sections must each
+// have substantive content — either explicit "none" or at least one
+// bulleted/numbered finding. An empty body means the pass was skipped.
+function sectionBody(name, terminators) {
+  const re = new RegExp(`${name.replace(/[/.]/g, "\\$&")}\\s*\\n([\\s\\S]*?)(?:\\n\\s*(?:${terminators.map((t) => t.replace(/[/.]/g, "\\$&")).join("|")}|VERDICT:))`, "i");
+  const m = re.exec(finalMsg);
+  return m ? m[1].trim() : "";
+}
+const passSections = [
+  { name: "Security/supply-chain:", terminators: ["Performance/resource-leak:", "Scope check:", "Test coverage gaps:"] },
+  { name: "Performance/resource-leak:", terminators: ["Scope check:", "Test coverage gaps:"] },
+];
+for (const { name, terminators } of passSections) {
+  const body = sectionBody(name, terminators);
+  const hasItem = /(^|\n)\s*[-*•\d]/.test(body);
+  const sayNone = /\bnone\b/i.test(body);
+  if (!hasItem && !sayNone) {
+    process.stderr.write(`${BOLD}${RED}✗${RESET} reviewer's "${name}" section is empty — must say "none" or list at least one finding.\n`);
+    process.stderr.write(`An empty pass section means the reviewer did not actually perform the pass.\n`);
+    process.exit(1);
+  }
+}
+
 // "Files reviewed:" sanity check — verify the reviewer actually claimed to
 // read the changed source files. The reviewer prompt requires a
 // "Files reviewed:" section listing every file the reviewer read in full;
@@ -273,14 +357,34 @@ const actualChanged = (diffNamesRes.stdout || "")
   .filter((p) => /\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(p))
   .filter((p) => !p.startsWith("runtime/src/agenc/upstream/"));
 
-const missingFromReview = actualChanged.filter((p) => {
-  // Match if the claim contains the path or its basename.
-  const basename = path.basename(p);
-  for (const claim of filesReviewedClaim) {
-    if (claim === p || claim.endsWith(p) || claim.endsWith(basename)) return false;
+// Match each claim against actual changed files. A claim is acceptable
+// only when it uniquely identifies one changed file. A bare basename like
+// "helpers.ts" is rejected as ambiguous when more than one changed file
+// shares that basename — the reviewer must give a more specific path
+// suffix in that case. This prevents one "I read helpers.ts" claim from
+// silently covering tools/foo/helpers.ts AND tools/bar/helpers.ts when
+// the reviewer only opened one.
+const ambiguousClaims = [];
+const claimsCovering = new Map(); // path -> claim that covered it
+for (const claim of filesReviewedClaim) {
+  const matches = actualChanged.filter((p) => claim === p || p.endsWith("/" + claim) || p === claim);
+  if (matches.length > 1) {
+    ambiguousClaims.push({ claim, matches });
+  } else if (matches.length === 1) {
+    claimsCovering.set(matches[0], claim);
   }
-  return true;
-});
+}
+
+if (ambiguousClaims.length > 0) {
+  process.stderr.write(`${BOLD}${RED}✗${RESET} reviewer's "Files reviewed:" list contains ${ambiguousClaims.length} ambiguous claim(s):\n`);
+  for (const { claim, matches } of ambiguousClaims.slice(0, 10)) {
+    process.stderr.write(`  - "${claim}" matches ${matches.length} changed files: ${matches.slice(0, 5).join(", ")}\n`);
+  }
+  process.stderr.write(`Each claim must uniquely identify one changed file. Use a longer path suffix (e.g. "tools/foo/helpers.ts" instead of bare "helpers.ts").\n`);
+  process.exit(1);
+}
+
+const missingFromReview = actualChanged.filter((p) => !claimsCovering.has(p));
 
 if (missingFromReview.length > 0) {
   process.stderr.write(`${BOLD}${RED}✗${RESET} reviewer's "Files reviewed:" list is missing ${missingFromReview.length} changed source file(s):\n`);

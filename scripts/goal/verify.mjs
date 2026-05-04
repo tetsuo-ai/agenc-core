@@ -29,6 +29,14 @@ const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
 const DIM = "\x1b[2m";
 
+// Hard cap on the typecheck baseline. The baseline file
+// (.typecheck-baseline.json) records how many TS errors the project
+// currently tolerates. Without an upper bound, anyone (or future-self)
+// could write `{"errorCount": 99999}` and silently bless inflation. This
+// cap is the project's current high-water-mark; tighten it (never raise)
+// in dedicated cleanup items.
+const MAX_ALLOWED_BASELINE = 22;
+
 // Per-item named-evidence map. Each entry declares the concrete evidence
 // the gate must find before passing. Items not registered here fall back to
 // the per-prefix generic gate registered below.
@@ -1788,7 +1796,11 @@ async function foundationalGates(item) {
       failGate("no *.contract.test.ts files in runtime/src/app-server/");
     }
     pass(`${tests.length} contract test(s) present`);
+    return;
   }
+  failGate(
+    `item ${id} has no specific gate branch in foundationalGates; add one or remove the item`,
+  );
 }
 
 async function authBackendGates(item) {
@@ -1877,10 +1889,16 @@ async function stateGates(item) {
     pass(`schema mentions ${table}`);
     return;
   }
-  // ST-04+: feature items. Require at least one test file added.
-  const tests = walkFiles(dir).filter((p) => /\.test\.(ts|tsx)$/.test(p));
-  if (tests.length === 0) failGate(`no test files in runtime/src/state/`);
-  pass(`${tests.length} test file(s) under state/`);
+  // ST-04..ST-09: feature items. Require at least one test file added.
+  if (/^ST-0[4-9]$/.test(id) || /^ST-1[0-9]$/.test(id)) {
+    const tests = walkFiles(dir).filter((p) => /\.test\.(ts|tsx)$/.test(p));
+    if (tests.length === 0) failGate(`no test files in runtime/src/state/`);
+    pass(`${tests.length} test file(s) under state/`);
+    return;
+  }
+  failGate(
+    `item ${id} has no specific gate branch in stateGates; add one or remove the item`,
+  );
 }
 
 async function toolGates(item) {
@@ -2096,7 +2114,17 @@ async function pluginGates(item) {
     const cliReferenced = grepRepo("agenc plugin", "runtime/src");
     if (!cliReferenced) failGate(`'agenc plugin' subcommand surface not found anywhere in runtime/src/`);
     pass("agenc plugin subcommand present");
+    return;
   }
+  // PK-01..PK-05, PK-07..PK-09: subsystem-shape items satisfied by the
+  // plugins/ directory check above. Recognized via known PK-* IDs.
+  if (/^PK-0[1-9]$/.test(id) || /^PK-1[0-9]$/.test(id)) {
+    pass(`${id}: plugins subsystem check satisfied`);
+    return;
+  }
+  failGate(
+    `item ${id} has no specific gate branch in pluginGates; add one or remove the item`,
+  );
 }
 
 async function migrationGates(item) {
@@ -2605,13 +2633,41 @@ function countTscErrors(output) {
 }
 
 function readBaselineSafe(p) {
+  if (!existsSync(p)) return null;
+  // Validate JSON shape strictly: malformed files must fail the gate, not
+  // be silently treated as "no baseline" (which would then auto-fail
+  // through the missing-baseline path with a misleading message).
+  let raw;
   try {
-    if (!existsSync(p)) return null;
-    const data = JSON.parse(readFileSync(p, "utf8"));
-    return typeof data.errorCount === "number" ? data.errorCount : null;
-  } catch {
-    return null;
+    raw = readFileSync(p, "utf8");
+  } catch (e) {
+    failGate(`could not read .typecheck-baseline.json: ${e.message}`);
   }
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (e) {
+    failGate(`.typecheck-baseline.json is not valid JSON: ${e.message}`);
+  }
+  if (
+    !data ||
+    typeof data !== "object" ||
+    typeof data.errorCount !== "number" ||
+    !Number.isInteger(data.errorCount) ||
+    data.errorCount < 0
+  ) {
+    failGate(
+      `.typecheck-baseline.json is malformed: errorCount must be a non-negative integer, ` +
+      `got ${JSON.stringify(data && data.errorCount)}`,
+    );
+  }
+  if (data.errorCount > MAX_ALLOWED_BASELINE) {
+    failGate(
+      `baseline file claims ${data.errorCount} errors which exceeds the project's ` +
+      `MAX_ALLOWED_BASELINE of ${MAX_ALLOWED_BASELINE} — refusing to silently accept inflation.`,
+    );
+  }
+  return data.errorCount;
 }
 
 function writeBaseline(p, count) {
@@ -2622,6 +2678,14 @@ function writeBaseline(p, count) {
 }
 
 async function cleanupGates(item) {
+  // Recognized cleanup IDs. Anything outside this set must fail rather than
+  // silently no-op through the function with no checks fired.
+  const knownZ = new Set(["Z-01", "Z-02", "Z-03", "Z-04", "Z-05", "Z-06"]);
+  if (!knownZ.has(id) && !/^ZC-/.test(id)) {
+    failGate(
+      `item ${id} has no specific gate branch in cleanupGates; add one or remove the item`,
+    );
+  }
   if (id === "Z-01" || id === "Z-02") {
     const r = run("rg", ["--no-messages", "-l", "agenc/upstream", "runtime/src"]);
     if (r.status === 0 && r.stdout.trim()) {
