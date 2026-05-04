@@ -23,7 +23,7 @@ import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
 import { Select } from '../CustomSelect/index.js';
 import { Byline } from '../design-system/Byline.js';
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js';
-import { Spinner } from '../Spinner.js';
+import { Spinner } from '../../../../tui/components/spinner/Spinner.js';
 import TextInput from '../TextInput.js';
 import { CapabilitiesSection } from './CapabilitiesSection.js';
 import type { AgenCAIServerInfo, HTTPServerInfo, SSEServerInfo } from './types.js';

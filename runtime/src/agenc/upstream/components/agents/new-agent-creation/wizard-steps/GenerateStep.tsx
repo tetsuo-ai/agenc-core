@@ -7,7 +7,7 @@ import { createAbortController } from '../../../../utils/abortController.js';
 import { editPromptInEditor } from '../../../../utils/promptEditor.js';
 import { ConfigurableShortcutHint } from '../../../ConfigurableShortcutHint.js';
 import { Byline } from '../../../design-system/Byline.js';
-import { Spinner } from '../../../Spinner.js';
+import { Spinner } from '../../../../../../tui/components/spinner/Spinner.js';
 import TextInput from '../../../TextInput.js';
 import { useWizard } from '../../../wizard/index.js';
 import { WizardDialogLayout } from '../../../wizard/WizardDialogLayout.js';

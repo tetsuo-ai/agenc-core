@@ -1,42 +1,43 @@
 import { c as _c } from "react-compiler-runtime";
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
-import { Box, Text } from '../../../tui/ink.js';
+import { Box, Text } from '../../ink.js';
 import * as React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { computeGlimmerIndex, computeShimmerSegments, SHIMMER_INTERVAL_MS } from '../bridge/bridgeStatusUtil.js';
+import { computeGlimmerIndex, computeShimmerSegments, SHIMMER_INTERVAL_MS } from '../../../agenc/upstream/bridge/bridgeStatusUtil.js';
 import { feature } from 'bun:bundle';
-import { getKairosActive, getUserMsgOptIn } from '../bootstrap/state.js';
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js';
-import { isEnvTruthy } from '../utils/envUtils.js';
-import { count } from '../utils/array.js';
+import { getKairosActive, getUserMsgOptIn } from '../../../agenc/upstream/bootstrap/state.js';
+import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../agenc/upstream/services/analytics/growthbook.js';
+import { isEnvTruthy } from '../../../agenc/upstream/utils/envUtils.js';
+import { count } from '../../../agenc/upstream/utils/array.js';
 import sample from 'lodash-es/sample.js';
-import { formatDuration, formatNumber, formatSecondsShort } from '../utils/format.js';
-import type { Theme } from 'src/utils/theme.js';
-import { activityManager } from '../utils/activityManager.js';
-import { getSpinnerVerbs } from '../constants/spinnerVerbs.js';
-import { MessageResponse } from './MessageResponse.js';
-import { TaskListV2 } from './TaskListV2.js';
-import { useTasksV2 } from '../hooks/useTasksV2.js';
-import type { Task } from '../utils/tasks.js';
-import { useAppState } from '../../../tui/state/AppState.js';
-import { useTerminalSize } from '../hooks/useTerminalSize.js';
-import { stringWidth } from '../../../tui/ink/stringWidth.js';
-import { getDefaultCharacters, type SpinnerMode } from './Spinner/index.js';
-import { SpinnerAnimationRow } from './Spinner/SpinnerAnimationRow.js';
-import { useSettings } from '../hooks/useSettings.js';
-import { isInProcessTeammateTask } from '../tasks/InProcessTeammateTask/types.js';
-import { isBackgroundTask } from '../tasks/types.js';
-import { getAllInProcessTeammateTasks } from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js';
-import { getEffortSuffix } from '../utils/effort.js';
-import { getMainLoopModel } from '../utils/model/model.js';
-import { getViewedTeammateTask } from '../state/selectors.js';
-import { TEARDROP_ASTERISK } from '../constants/figures.js';
+import { formatDuration, formatNumber, formatSecondsShort } from '../../../agenc/upstream/utils/format.js';
+import type { Theme } from '../../../agenc/upstream/utils/theme.js';
+import { activityManager } from '../../../agenc/upstream/utils/activityManager.js';
+import { getSpinnerVerbs } from '../../../agenc/upstream/constants/spinnerVerbs.js';
+import { MessageResponse } from '../../../agenc/upstream/components/MessageResponse.js';
+import { TaskListV2 } from '../../../agenc/upstream/components/TaskListV2.js';
+import { useTasksV2 } from '../../../agenc/upstream/hooks/useTasksV2.js';
+import type { Task } from '../../../agenc/upstream/utils/tasks.js';
+import { useAppState } from '../../state/AppState.js';
+import { useTerminalSize } from '../../../agenc/upstream/hooks/useTerminalSize.js';
+import { stringWidth } from '../../ink/stringWidth.js';
+import type { SpinnerMode } from './types.js';
+import { getDefaultCharacters } from './utils.js';
+import { SpinnerAnimationRow } from './SpinnerAnimationRow.js';
+import { useSettings } from '../../../agenc/upstream/hooks/useSettings.js';
+import { isInProcessTeammateTask } from '../../../agenc/upstream/tasks/InProcessTeammateTask/types.js';
+import { isBackgroundTask } from '../../../agenc/upstream/tasks/types.js';
+import { getAllInProcessTeammateTasks } from '../../../agenc/upstream/tasks/InProcessTeammateTask/InProcessTeammateTask.js';
+import { getEffortSuffix } from '../../../agenc/upstream/utils/effort.js';
+import { getMainLoopModel } from '../../../agenc/upstream/utils/model/model.js';
+import { getViewedTeammateTask } from '../../../agenc/upstream/state/selectors.js';
+import { TEARDROP_ASTERISK } from '../../../agenc/upstream/constants/figures.js';
 import figures from 'figures';
-import { getCurrentTurnTokenBudget, getTurnOutputTokens } from '../bootstrap/state.js';
-import { TeammateSpinnerTree } from './Spinner/TeammateSpinnerTree.js';
-import { useAnimationFrame } from '../../../tui/ink.js';
-import { getGlobalConfig } from '../utils/config.js';
-export type { SpinnerMode } from './Spinner/index.js';
+import { getCurrentTurnTokenBudget, getTurnOutputTokens } from '../../../agenc/upstream/bootstrap/state.js';
+import { TeammateSpinnerTree } from './TeammateSpinnerTree.js';
+import { useAnimationFrame } from '../../ink.js';
+import { getGlobalConfig } from '../../../agenc/upstream/utils/config.js';
+export type { SpinnerMode } from './types.js';
 const DEFAULT_CHARACTERS = getDefaultCharacters();
 const SPINNER_FRAMES = [...DEFAULT_CHARACTERS, ...[...DEFAULT_CHARACTERS].reverse()];
 type Props = {
@@ -74,7 +75,7 @@ export function SpinnerWithVerb(props: Props): React.ReactNode {
   // Runtime gate mirrors isBriefEnabled() but inlined — importing from
   // BriefTool.ts would leak tool-name strings into external builds. Single
   // spinner instance → hooks stay unconditional (two subs, negligible).
-  if ((feature('KAIROS') || feature('KAIROS_BRIEF')) && (getKairosActive() || getUserMsgOptIn() && (briefEnvEnabled || getFeatureValue_CACHED_MAY_BE_STALE('tengu_kairos_brief', false))) && isBriefOnly && !viewingAgentTaskId) {
+  if ((feature('KAIROS') || feature('KAIROS_BRIEF')) && (getKairosActive() || getUserMsgOptIn() && (briefEnvEnabled || getFeatureValue_CACHED_MAY_BE_STALE('agenc_kairos_brief', false))) && isBriefOnly && !viewingAgentTaskId) {
     return <BriefSpinner mode={props.mode} overrideMessage={props.overrideMessage} />;
   }
   return <SpinnerWithVerbInner {...props} />;
@@ -208,8 +209,8 @@ function SpinnerWithVerbInner({
   // the ref. The tree is only shown when teammates are running; teammate
   // progress updates to s.tasks trigger re-renders that keep this fresh.
   const leaderTokenCount = Math.round(responseLengthRef.current / 4);
-  const defaultColor: keyof Theme = 'claude';
-  const defaultShimmerColor = 'claudeShimmer';
+  const defaultColor: keyof Theme = 'suggestion';
+  const defaultShimmerColor: keyof Theme = 'suggestion';
   const messageColor = overrideColor ?? defaultColor;
   const shimmerColor = overrideShimmerColor ?? defaultShimmerColor;
 

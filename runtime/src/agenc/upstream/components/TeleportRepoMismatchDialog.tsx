@@ -5,7 +5,7 @@ import { getDisplayPath } from '../utils/file.js';
 import { removePathFromRepo, validateRepoAtPath } from '../utils/githubRepoPathMapping.js';
 import { Select } from './CustomSelect/index.js';
 import { Dialog } from './design-system/Dialog.js';
-import { Spinner } from './Spinner.js';
+import { Spinner } from '../../../tui/components/spinner/Spinner.js';
 type Props = {
   targetRepo: string;
   initialPaths: string[];

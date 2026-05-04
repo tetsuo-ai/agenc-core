@@ -26,7 +26,7 @@ import { Divider } from './design-system/Divider.js';
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js';
 import { SearchBox } from './SearchBox.js';
 import { SessionPreview } from './SessionPreview.js';
-import { Spinner } from './Spinner.js';
+import { Spinner } from '../../../tui/components/spinner/Spinner.js';
 import { TagTabs } from './TagTabs.js';
 import TextInput from './TextInput.js';
 import { type TreeNode, TreeSelect } from './ui/TreeSelect.js';

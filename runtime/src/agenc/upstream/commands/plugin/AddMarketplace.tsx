@@ -4,7 +4,7 @@ import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEve
 import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutHint.js';
 import { Byline } from '../../components/design-system/Byline.js';
 import { KeyboardShortcutHint } from '../../components/design-system/KeyboardShortcutHint.js';
-import { Spinner } from '../../components/Spinner.js';
+import { Spinner } from '../../../../tui/components/spinner/Spinner.js';
 import TextInput from '../../components/TextInput.js';
 import { Box, Text } from '../../../../tui/ink.js';
 import { toError } from '../../utils/errors.js';

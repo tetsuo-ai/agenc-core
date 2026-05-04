@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import axios from 'axios';
 import React, { useEffect, useState } from 'react';
 import { logEvent } from 'src/services/analytics/index.js';
-import { Spinner } from '../components/Spinner.js';
+import { Spinner } from '../../../tui/components/spinner/Spinner.js';
 import { getOauthConfig } from '../constants/oauth.js';
 import { useTimeout } from '../hooks/useTimeout.js';
 import { Box, Text } from '../../../tui/ink.js';

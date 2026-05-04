@@ -6,7 +6,7 @@ import type { GitFileStatus } from '../utils/git.js';
 import { getFileStatus, stashToCleanState } from '../utils/git.js';
 import { Select } from './CustomSelect/index.js';
 import { Dialog } from './design-system/Dialog.js';
-import { Spinner } from './Spinner.js';
+import { Spinner } from '../../../tui/components/spinner/Spinner.js';
 type TeleportStashProps = {
   onStashAndContinue: () => void;
   onCancel: () => void;

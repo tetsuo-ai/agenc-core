@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from 'src/services/analytics/index.js';
 import { KeyboardShortcutHint } from '../../components/design-system/KeyboardShortcutHint.js';
-import { Spinner } from '../../components/Spinner.js';
+import { Spinner } from '../../../../tui/components/spinner/Spinner.js';
 import TextInput from '../../components/TextInput.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import type { KeyboardEvent } from '../../../../tui/ink/events/keyboard-event.js';
