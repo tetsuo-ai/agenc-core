@@ -1,7 +1,13 @@
 import type * as React from "react";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { buildDefaultRegistry } from "./commands/registry.js";
 import type { SlashCommand } from "./commands/types.js";
+import {
+  createLocalSkillsServices,
+  type LocalSkillMetadata,
+} from "./skills/local-loader.js";
 
 export type LocalCommandResult =
   | { type: "text"; value: string }
@@ -45,14 +51,18 @@ export type PromptCommand = {
   type: "prompt";
   progressMessage: string;
   contentLength: number;
-  argNames?: string[];
-  allowedTools?: string[];
+  argNames?: readonly string[];
+  allowedTools?: readonly string[];
   model?: string;
   source?: string;
   disableNonInteractive?: boolean;
   disableModelInvocation?: boolean;
   hasUserSpecifiedDescription?: boolean;
   whenToUse?: string;
+  context?: string;
+  agent?: string;
+  effort?: string;
+  shell?: "bash" | "powershell";
   getPromptForCommand?: (
     args: string,
     context: unknown,
@@ -144,6 +154,10 @@ let projectedCommandCache: Command[] | null = null;
 const commandProviders = new Set<
   (cwd: string) => Promise<readonly Command[]> | readonly Command[]
 >();
+const localSkillServicesByRoot = new Map<
+  string,
+  ReturnType<typeof createLocalSkillsServices>
+>();
 
 function builtInCommands(): readonly Command[] {
   projectedCommandCache ??= buildDefaultRegistry().list().map(projectSlashCommand);
@@ -159,13 +173,83 @@ export function registerCommandProvider(
   };
 }
 
+function localSkillsKey(cwd: string): string {
+  const agencHome = process.env.AGENC_HOME ?? join(homedir(), ".agenc");
+  return `${resolve(cwd)}\u0000${resolve(agencHome)}`;
+}
+
+function localSkillServices(cwd: string): ReturnType<typeof createLocalSkillsServices> {
+  const key = localSkillsKey(cwd);
+  let services = localSkillServicesByRoot.get(key);
+  if (!services) {
+    const [workspaceRoot, agencHome] = key.split("\u0000") as [string, string];
+    services = createLocalSkillsServices({ workspaceRoot, agencHome });
+    localSkillServicesByRoot.set(key, services);
+  }
+  return services;
+}
+
+function projectLocalSkill(
+  skill: LocalSkillMetadata,
+  services: ReturnType<typeof createLocalSkillsServices>,
+): Command {
+  return {
+    type: "prompt",
+    name: skill.name,
+    description: skill.description,
+    aliases: skill.aliases ? [...skill.aliases] : undefined,
+    progressMessage: "running",
+    contentLength: skill.contentLength,
+    argNames: skill.argNames,
+    allowedTools: skill.allowedTools,
+    model: skill.model,
+    source: skill.source,
+    loadedFrom: skill.loadedFrom,
+    hasUserSpecifiedDescription: skill.hasUserSpecifiedDescription,
+    disableModelInvocation: skill.disableModelInvocation,
+    userInvocable: skill.userInvocable,
+    argumentHint: skill.argumentHint,
+    whenToUse: skill.whenToUse,
+    version: skill.version,
+    context: skill.context,
+    agent: skill.agent,
+    effort: skill.effort,
+    shell: skill.shell,
+    userFacingName: () => skill.displayName ?? skill.name,
+    getPromptForCommand: async (args, context) => {
+      void context;
+      const rendered = await services.skillsManager.renderSkill?.({
+        name: skill.name,
+        args,
+      });
+      const content = rendered?.content ?? "";
+      return [{ type: "text", text: content }];
+    },
+  };
+}
+
+async function loadLocalSkillCommands(cwd: string): Promise<readonly Command[]> {
+  try {
+    const services = localSkillServices(cwd);
+    const outcome = await services.skillsManager.skillsForConfig({}, null);
+    return (outcome.availableSkills ?? []).map(skill =>
+      projectLocalSkill(skill as LocalSkillMetadata, services),
+    );
+  } catch {
+    return [];
+  }
+}
+
 export function getCommandsSync(): Command[] {
   return [...builtInCommands()];
 }
 
 export async function getCommands(cwd: string): Promise<Command[]> {
   const dynamicCommands = await Promise.all(
-    [...commandProviders].map(async provider => [...(await provider(cwd))]),
+    [
+      loadLocalSkillCommands(cwd),
+      ...[...commandProviders].map(async provider => [...(await provider(cwd))]),
+    ],
   );
   const commands = [...dynamicCommands.flat(), ...builtInCommands()];
   const seen = new Set<string>();
@@ -342,6 +426,10 @@ export function getMcpSkillCommands(
 }
 
 export function clearCommandMemoizationCaches(): void {
+  for (const services of localSkillServicesByRoot.values()) {
+    services.skillsManager.clearSkillCaches?.();
+  }
+  localSkillServicesByRoot.clear();
   getSkillToolCommands.cache.clear();
   getSlashCommandToolSkills.cache.clear();
 }

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -15,15 +15,28 @@ import {
   isBridgeSafeCommand,
   registerCommandProvider,
   REMOTE_SAFE_COMMANDS,
+  clearCommandMemoizationCaches,
   type Command,
 } from "../commands.js";
 import { buildDefaultRegistry } from "./registry.js";
-import { applyReasoningEffort } from "./effort.js";
+import {
+  applyReasoningEffort,
+  clearReasoningEffort,
+  formatReasoningEffortStatus,
+} from "./effort.js";
 import { collectContextFiles } from "./files.js";
 import { loadReleaseNotes } from "./release-notes.js";
-import { reloadPluginSurfaces } from "./reload-plugins.js";
+import {
+  reloadPluginSurfaces,
+  setActivePluginRefresherForTesting,
+} from "./reload-plugins.js";
 import { handleWikiCommand } from "./wiki.js";
 import type { SlashCommandContext } from "./types.js";
+import {
+  dispatchSlashCommand,
+  parseSlashCommand,
+  type DispatchOutcome,
+} from "./dispatcher.js";
 
 function fakeSession(overrides: {
   state?: Record<string, unknown>;
@@ -65,6 +78,16 @@ function fakeContext(cwd: string, session = fakeSession()): SlashCommandContext 
     home: cwd,
     agencHome: join(cwd, ".agenc"),
   };
+}
+
+async function dispatchLine(
+  line: string,
+  cwd: string,
+  session = fakeSession(),
+): Promise<DispatchOutcome> {
+  const parsed = parseSlashCommand(line);
+  expect(parsed).not.toBeNull();
+  return dispatchSlashCommand(parsed!, fakeContext(cwd, session), buildDefaultRegistry());
 }
 
 function promptCommand(overrides: Partial<Command> = {}): Command {
@@ -157,6 +180,35 @@ describe("AgenC command surface compatibility", () => {
     }
   });
 
+  it("discovers project skills through the production local skill loader", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-skills-"));
+    const skillDir = join(dir, ".agenc", "skills", "demo");
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(
+      join(skillDir, "SKILL.md"),
+      [
+        "---",
+        "description: Demo local skill",
+        "argument-hint: <topic>",
+        "---",
+        "Use this local skill for project work.",
+      ].join("\n"),
+      "utf8",
+    );
+
+    clearCommandMemoizationCaches();
+    const commands = await getCommands(dir);
+    const demo = commands.find(command => command.name === "demo");
+    expect(demo?.type).toBe("prompt");
+    expect(demo?.description).toBe("Demo local skill");
+    await expect(demo?.getPromptForCommand?.("testing", {})).resolves.toEqual([
+      expect.objectContaining({
+        type: "text",
+        text: expect.stringContaining("ARGUMENTS: testing"),
+      }),
+    ]);
+  });
+
   it("filters MCP skill commands to model-invocable MCP prompts", () => {
     const active = promptCommand({ name: "mcp-active", source: "mcp", loadedFrom: "mcp" });
     const disabled = promptCommand({
@@ -178,6 +230,9 @@ describe("absorbed T-10 command behavior", () => {
       (session as any).state.unsafePeek().sessionConfiguration.collaborationMode
         .reasoningEffort,
     ).toBe("high");
+    expect(formatReasoningEffortStatus(session)).toContain("high");
+    await expect(clearReasoningEffort(session)).resolves.toContain("model default");
+    expect(formatReasoningEffortStatus(session)).toContain("model default");
   });
 
   it("collects file references from session history", () => {
@@ -201,23 +256,119 @@ describe("absorbed T-10 command behavior", () => {
   it("initializes and reports project wiki state", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agenc-wiki-"));
     await expect(handleWikiCommand(dir, "status")).resolves.toContain("not initialized");
-    await expect(handleWikiCommand(dir, "init")).resolves.toContain("initialized");
-    await expect(readFile(join(dir, ".agenc", "wiki", "README.md"), "utf8"))
-      .resolves.toContain("AgenC Project Wiki");
+    await expect(handleWikiCommand(dir, "init")).resolves.toContain("Created files:");
+    await expect(readFile(join(dir, ".agenc", "wiki", "schema.md"), "utf8"))
+      .resolves.toContain("AgenC Wiki Schema");
+    await expect(handleWikiCommand(dir, "status")).resolves.toContain("Pages: 1");
   });
 
-  it("clears skill caches and refreshes MCP config on reload", async () => {
+  it("ingests local files into wiki sources and updates the index", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-wiki-ingest-"));
+    await writeFile(join(dir, "notes.md"), "# Notes\n\nImportant runtime notes.\n", "utf8");
+
+    await expect(handleWikiCommand(dir, "ingest notes.md")).resolves
+      .toContain("Ingested notes.md");
+    const sources = await readdir(join(dir, ".agenc", "wiki", "sources"));
+    expect(sources).toHaveLength(1);
+    await expect(readFile(join(dir, ".agenc", "wiki", "index.md"), "utf8"))
+      .resolves.toContain("sources/");
+    await expect(readFile(join(dir, ".agenc", "wiki", "log.md"), "utf8"))
+      .resolves.toContain("Ingested `notes.md`");
+  });
+
+  it("clears skill caches, refreshes active plugin surfaces, and refreshes MCP config", async () => {
     const clearSkillCaches = vi.fn();
     const refreshFromConfig = vi.fn(async () => undefined);
+    const refreshActivePlugins = vi.fn(async () => ({
+      enabled_count: 1,
+      disabled_count: 0,
+      command_count: 2,
+      agent_count: 3,
+      hook_count: 4,
+      mcp_count: 5,
+      lsp_count: 6,
+      error_count: 0,
+    }));
+    const restore = setActivePluginRefresherForTesting(refreshActivePlugins);
     const session = fakeSession({
       services: {
         skillsManager: { clearSkillCaches },
         mcpManager: { refreshFromConfig },
       },
     });
-    await expect(reloadPluginSurfaces(fakeContext("/tmp", session))).resolves
-      .toContain("skill caches cleared");
-    expect(clearSkillCaches).toHaveBeenCalledOnce();
-    expect(refreshFromConfig).toHaveBeenCalledOnce();
+    try {
+      await expect(reloadPluginSurfaces(fakeContext("/tmp", session))).resolves
+        .toContain("2 skill commands");
+      expect(clearSkillCaches).toHaveBeenCalled();
+      expect(refreshActivePlugins).toHaveBeenCalledOnce();
+      expect(refreshFromConfig).toHaveBeenCalledOnce();
+    } finally {
+      restore();
+    }
+  });
+
+  it("dispatches the absorbed command batch through the runtime dispatcher", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-dispatch-"));
+    await writeFile(join(dir, "CHANGELOG.md"), "# Changes\n\n- shipped\n", "utf8");
+    const session = fakeSession({
+      state: {
+        history: [{ type: "file", path: join(dir, "src", "index.ts") }],
+        totalTokenUsage: {
+          promptTokens: 10,
+          completionTokens: 5,
+          totalTokens: 15,
+          cachedInputTokens: 3,
+        },
+      },
+    });
+    const restore = setActivePluginRefresherForTesting(async () => ({
+      enabled_count: 0,
+      disabled_count: 0,
+      command_count: 0,
+      agent_count: 0,
+      hook_count: 0,
+      mcp_count: 0,
+      lsp_count: 0,
+      error_count: 0,
+    }));
+    try {
+      for (const line of [
+        "/cache-stats",
+        "/cost",
+        "/doctor",
+        "/effort high",
+        "/files",
+        "/release-notes",
+        "/reload-plugins",
+        "/stats",
+        "/usage",
+        "/wiki status",
+      ]) {
+        const outcome = await dispatchLine(line, dir, session);
+        expect(outcome.result.kind, line).toBe("text");
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  it("returns command help/errors and performs wiki ingest through dispatcher", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-dispatch-wiki-"));
+    await writeFile(join(dir, "source.md"), "# Source\n\nDispatcher ingest.\n", "utf8");
+
+    await expect(dispatchLine("/effort impossible", dir)).resolves.toMatchObject({
+      result: { kind: "error" },
+    });
+    await expect(dispatchLine("/wiki --help", dir)).resolves.toMatchObject({
+      result: { kind: "text", text: expect.stringContaining("Usage: /wiki") },
+    });
+
+    const ingested = await dispatchLine("/wiki ingest source.md", dir);
+    expect(ingested.result).toMatchObject({
+      kind: "text",
+      text: expect.stringContaining("Ingested source.md"),
+    });
+    const sources = await readdir(join(dir, ".agenc", "wiki", "sources"));
+    expect(sources).toHaveLength(1);
   });
 });
