@@ -3,7 +3,7 @@ import type React from "react";
 
 /**
  * Mirrors the upstream `toolJSX` state shape from
- * `openclaude/src/screens/REPL.tsx:1036-1043`.
+ * the donor REPL shell at lines 1036-1043.
  *
  * Tools that render their own UI surface (interactive prompts,
  * confirmation dialogs, slash-command JSX) call `setToolJSX` with a

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 
-const APP_SOURCE_PATH = path.resolve(import.meta.dirname, "App.tsx");
+const APP_SOURCE_PATH = path.resolve(import.meta.dirname, "../components/App.tsx");
 
 function readSource(): string {
   return fs.readFileSync(APP_SOURCE_PATH, "utf8");

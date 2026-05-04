@@ -2,9 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 
-import type { ToolJSXState } from "./use-tool-jsx.js";
+import type { ToolJSXState } from "../bridges/use-tool-jsx.js";
 
-const APP_SOURCE_PATH = path.resolve(import.meta.dirname, "App.tsx");
+const APP_SOURCE_PATH = path.resolve(import.meta.dirname, "../components/App.tsx");
 
 function readSource(): string {
   return fs.readFileSync(APP_SOURCE_PATH, "utf8");

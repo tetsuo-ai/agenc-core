@@ -67,8 +67,8 @@
     "controlFlowTools": "Sleep, Monitor, EnterWorktree, ExitWorktree, AskUserQuestion produce minimal text status. They intentionally route through unknown-tool-generic-fallback to keep the contract focused on tool families with non-trivial structured output."
   },
   "targetFiles": [
-    "runtime/src/tui/openclaude/tool-stubs.tsx",
-    "runtime/src/tui/openclaude/message-adapter.ts",
+    "runtime/src/tui/bridges/tool-stubs.tsx",
+    "runtime/src/tui/bridges/message-adapter.ts",
     "runtime/src/agenc/adapters/upstream-tool-result-dispatch.ts"
   ],
   "testFiles": [
@@ -82,14 +82,14 @@
     {
       "id": "bash-result-dispatch",
       "source": "runtime/src/agenc/upstream/components/messages/UserBashOutputMessage.tsx",
-      "target": "runtime/src/tui/openclaude/tool-stubs.tsx",
+      "target": "runtime/src/tui/bridges/tool-stubs.tsx",
       "sourceFiles": [
         "runtime/src/agenc/upstream/Tool.ts",
         "runtime/src/agenc/upstream/components/messages/UserToolResultMessage/UserToolSuccessMessage.tsx",
         "runtime/src/tools/system/bash.ts"
       ],
       "targetFiles": [
-        "runtime/src/tui/openclaude/message-adapter.ts",
+        "runtime/src/tui/bridges/message-adapter.ts",
         "runtime/src/agenc/adapters/upstream-tool-result-dispatch.ts"
       ],
       "requiredBehaviors": [
@@ -119,12 +119,12 @@
     {
       "id": "edit-result-dispatch",
       "source": "runtime/src/agenc/upstream/components/StructuredDiffList.tsx",
-      "target": "runtime/src/tui/openclaude/tool-stubs.tsx",
+      "target": "runtime/src/tui/bridges/tool-stubs.tsx",
       "sourceFiles": [
         "runtime/src/agenc/upstream/components/FileEditToolDiff.tsx",
         "runtime/src/tools/system/file-edit.ts"
       ],
-      "deviation": "The matrix originally pointed at runtime/src/agenc/upstream/components/FileEditToolDiff.tsx as the source of truth, but FileEditToolDiff requires a live edits[] array and reads the file from disk via loadDiffData. AgenC's tool result payload already carries the computed diff string, so the bridge dispatches to a local EditDiffView (in runtime/src/tui/openclaude/tool-stubs.tsx) that mirrors the StructuredDiffList visual contract — bold file header, '+' lines green, '-' lines red, '@@' hunk header cyan, '---'/'+++' file metadata dimmed. Wire shape (<edit-file>/<edit-diff> envelope) stays upstream-compatible so a future flip to the real FileEditToolDiff is a one-file change once options.input is propagated through the bridge.",
+      "deviation": "The matrix originally pointed at runtime/src/agenc/upstream/components/FileEditToolDiff.tsx as the source of truth, but FileEditToolDiff requires a live edits[] array and reads the file from disk via loadDiffData. AgenC's tool result payload already carries the computed diff string, so the bridge dispatches to a local EditDiffView (in runtime/src/tui/bridges/tool-stubs.tsx) that mirrors the StructuredDiffList visual contract — bold file header, '+' lines green, '-' lines red, '@@' hunk header cyan, '---'/'+++' file metadata dimmed. Wire shape (<edit-file>/<edit-diff> envelope) stays upstream-compatible so a future flip to the real FileEditToolDiff is a one-file change once options.input is propagated through the bridge.",
       "requiredBehaviors": [
         "createBridgeTool('Edit') returns a tool whose renderToolResultMessage dispatches to a local EditDiffView that renders the file path as a bold header and colors '+' lines green, '-' lines red, '@@' hunk headers cyan, '---'/'+++' lines dimmed (visual contract from upstream StructuredDiffList)",
         "The toolResult content shape passed to EditDiffView carries the file path and the diff string in <edit-file>/<edit-diff> tags so the renderer can extract them via extractBridgeTag",
@@ -152,7 +152,7 @@
     {
       "id": "read-result-dispatch",
       "source": "runtime/src/agenc/upstream/tools/FileReadTool/UI.tsx",
-      "target": "runtime/src/tui/openclaude/tool-stubs.tsx",
+      "target": "runtime/src/tui/bridges/tool-stubs.tsx",
       "sourceFiles": [
         "runtime/src/tools/system/file-read.ts"
       ],
@@ -185,7 +185,7 @@
     {
       "id": "write-result-dispatch",
       "source": "runtime/src/agenc/upstream/tools/FileWriteTool/UI.tsx",
-      "target": "runtime/src/tui/openclaude/tool-stubs.tsx",
+      "target": "runtime/src/tui/bridges/tool-stubs.tsx",
       "sourceFiles": [
         "runtime/src/tools/system/file-write.ts"
       ],
@@ -217,7 +217,7 @@
     {
       "id": "grep-result-dispatch",
       "source": "runtime/src/agenc/upstream/tools/GrepTool/UI.tsx",
-      "target": "runtime/src/tui/openclaude/tool-stubs.tsx",
+      "target": "runtime/src/tui/bridges/tool-stubs.tsx",
       "sourceFiles": [
         "runtime/src/tools/system/grep.ts"
       ],
@@ -250,7 +250,7 @@
     {
       "id": "glob-result-dispatch",
       "source": "runtime/src/agenc/upstream/tools/GlobTool/UI.tsx",
-      "target": "runtime/src/tui/openclaude/tool-stubs.tsx",
+      "target": "runtime/src/tui/bridges/tool-stubs.tsx",
       "sourceFiles": [
         "runtime/src/tools/system/glob.ts"
       ],
@@ -283,7 +283,7 @@
     {
       "id": "tool-error-dispatch",
       "source": "runtime/src/agenc/upstream/components/FallbackToolUseErrorMessage.tsx",
-      "target": "runtime/src/tui/openclaude/tool-stubs.tsx",
+      "target": "runtime/src/tui/bridges/tool-stubs.tsx",
       "sourceFiles": [
         "runtime/src/agenc/upstream/components/messages/UserToolResultMessage/UserToolErrorMessage.tsx"
       ],
@@ -316,7 +316,7 @@
     {
       "id": "unknown-tool-generic-fallback",
       "source": "runtime/src/agenc/upstream/Tool.ts",
-      "target": "runtime/src/tui/openclaude/tool-stubs.tsx",
+      "target": "runtime/src/tui/bridges/tool-stubs.tsx",
       "requiredBehaviors": [
         "createBridgeTool(<any unrouted name>) returns a tool whose renderToolResultMessage produces the generic <Box><Text>{joined}</Text></Box> output (no routing to BashOutputView or EditDiffView)",
         "Generic fallback handles string content, object content, and array content via the resultTextForBridgeTool helper",

@@ -9,7 +9,7 @@
     {
       "id": "tui-host-streamingtooluses",
       "source": "src/screens/REPL.tsx",
-      "target": "runtime/src/tui/openclaude/App.tsx",
+      "target": "runtime/src/tui/components/App.tsx",
       "sources": [
         "src/screens/REPL.tsx",
         "src/components/Messages.tsx"
@@ -38,10 +38,10 @@
     {
       "id": "tui-host-tooljsx-state",
       "source": "src/screens/REPL.tsx",
-      "target": "runtime/src/tui/openclaude/App.tsx",
+      "target": "runtime/src/tui/components/App.tsx",
       "targets": [
-        "runtime/src/tui/openclaude/App.tsx",
-        "runtime/src/tui/openclaude/use-tool-jsx.ts"
+        "runtime/src/tui/components/App.tsx",
+        "runtime/src/tui/bridges/use-tool-jsx.ts"
       ],
       "requiredBehaviors": [
         "App.tsx no longer hardcodes toolJSX={null}; declares useState<ToolJSXState | null>(null) where ToolJSXState matches REPL.tsx:1036 shape ({jsx: React.ReactNode | null, shouldHidePromptInput: boolean, shouldContinueAnimation?: true, showSpinner?: boolean, isLocalJSXCommand?: boolean, isImmediate?: boolean})",
@@ -71,7 +71,7 @@
     {
       "id": "tui-host-tooljsx-gating",
       "source": "src/screens/REPL.tsx",
-      "target": "runtime/src/tui/openclaude/App.tsx",
+      "target": "runtime/src/tui/components/App.tsx",
       "requiredBehaviors": [
         "The toolJSX state value is passed verbatim into <Messages toolJSX={toolJSX}> so the upstream-mirrored animation gate at runtime/src/agenc/upstream/components/Messages.tsx:595 (canAnimate = (!toolJSX || !!toolJSX.shouldContinueAnimation) && !toolUseConfirmQueue.length && !isMessageSelectorVisible) actually receives the live toolJSX value (R2 wiring is the load-bearing change; this row asserts the gate is reachable)",
         "Permission overlay rendering condition is unchanged (renders when permissionRequests[0] is truthy) — upstream parity here is 'dialog still renders when toolJSX is set' which AgenC already does, NOT a new gate",
@@ -89,9 +89,9 @@
       "approvedDivergence": {
         "approvedBy": "tetsuo",
         "approvedAt": "2026-04-30T00:00:00.000Z",
-        "reason": "Upstream REPL.tsx renders a host-level <SpinnerWithVerb> at line 4653 gated by REPL.tsx:1704 (showSpinner) and an idle notification timer at REPL.tsx:4005. AgenC's TUI host (runtime/src/tui/openclaude/App.tsx) renders neither of these surfaces today; PromptInput owns its own spinner-adjacent UI internally. Adding a host-level spinner and idle timer with full apiMetricsRef / responseLengthRef / streamMode plumbing is a separate parity concern (a future contract scoped to host-level streaming-status surfaces), and is therefore out of scope for the streaming-tool-use parity contract. The toolJSX-gated animation behavior is preserved through the upstream-mirrored <Messages> component (R2 wires it).",
+        "reason": "Upstream REPL.tsx renders a host-level <SpinnerWithVerb> at line 4653 gated by REPL.tsx:1704 (showSpinner) and an idle notification timer at REPL.tsx:4005. AgenC's TUI host (runtime/src/tui/components/App.tsx) renders neither of these surfaces today; PromptInput owns its own spinner-adjacent UI internally. Adding a host-level spinner and idle timer with full apiMetricsRef / responseLengthRef / streamMode plumbing is a separate parity concern (a future contract scoped to host-level streaming-status surfaces), and is therefore out of scope for the streaming-tool-use parity contract. The toolJSX-gated animation behavior is preserved through the upstream-mirrored <Messages> component (R2 wires it).",
         "sourceBehavior": "Upstream REPL renders <SpinnerWithVerb> with a showSpinner gate that combines toolJSX, toolUseConfirmQueue, promptQueue, and an idle notification timer that only fires when !isLoading && !toolJSX.",
-        "targetBehavior": "AgenC App.tsx does not render a host-level Spinner or run an idle notification timer. The toolJSX-driven animation/dialog-gating behavior is preserved through the upstream-mirrored <Messages> component (animation gate at Messages.tsx:595) and through the OpenClaudePermissionOverlay (which already renders when there is a request, regardless of toolJSX)."
+        "targetBehavior": "AgenC App.tsx does not render a host-level Spinner or run an idle notification timer. The toolJSX-driven animation/dialog-gating behavior is preserved through the upstream-mirrored <Messages> component (animation gate at Messages.tsx:595) and through the permission overlay (which already renders when there is a request, regardless of toolJSX)."
       },
       "tests": [
         "runtime/src/tui/openclaude/App.tooljsx-gating.parity.test.tsx"
@@ -104,7 +104,7 @@
     {
       "id": "tui-remove-runningtoolprogressindicator",
       "source": "src/screens/REPL.tsx",
-      "target": "runtime/src/tui/openclaude/App.tsx",
+      "target": "runtime/src/tui/components/App.tsx",
       "requiredBehaviors": [
         "RunningToolProgressIndicator function and its <Text> rendering (App.tsx:111-146) are removed",
         "<RunningToolProgressIndicator progress={transcript.runningToolProgress} /> JSX is removed from App.tsx render output",
@@ -130,10 +130,10 @@
     {
       "id": "transcript-streaming-tool-use-accumulator",
       "source": "src/utils/messages.ts",
-      "target": "runtime/src/tui/openclaude/message-adapter.ts",
+      "target": "runtime/src/tui/bridges/message-adapter.ts",
       "targets": [
-        "runtime/src/tui/openclaude/message-adapter.ts",
-        "runtime/src/tui/openclaude/use-session-transcript.ts"
+        "runtime/src/tui/bridges/message-adapter.ts",
+        "runtime/src/tui/bridges/use-session-transcript.ts"
       ],
       "requiredBehaviors": [
         "message-adapter.ts builds a streamingToolUses: StreamingToolUse[] from the same input event stream it consumes today, using the upstream contract from messages.ts handleMessageFromStream (content_block_start + input_json_delta cases at messages.ts:3029, 3062-3079)",
@@ -209,10 +209,10 @@
     "src/components/Messages.tsx"
   ],
   "targetFiles": [
-    "runtime/src/tui/openclaude/App.tsx",
-    "runtime/src/tui/openclaude/message-adapter.ts",
-    "runtime/src/tui/openclaude/use-session-transcript.ts",
-    "runtime/src/tui/openclaude/use-tool-jsx.ts",
+    "runtime/src/tui/components/App.tsx",
+    "runtime/src/tui/bridges/message-adapter.ts",
+    "runtime/src/tui/bridges/use-session-transcript.ts",
+    "runtime/src/tui/bridges/use-tool-jsx.ts",
     "runtime/src/llm/providers/anthropic/adapter.ts",
     "runtime/src/llm/types.ts",
     "runtime/src/phases/stream-model.ts",
@@ -239,10 +239,10 @@
       "reason": "TypeScript 'unknown' keyword used in pre-existing type annotations and 'as unknown as' casts across the AgenC TUI bridge, the Anthropic provider, and the shared LLM/session type files. Legitimate TS language feature, not a contract shortcut. The checker's /\\bunknown\\b/i pattern conflates these with the 'unknown' shortcut term.",
       "pattern": "\\bunknown\\b",
       "files": [
-        "runtime/src/tui/openclaude/App.tsx",
-        "runtime/src/tui/openclaude/message-adapter.ts",
-        "runtime/src/tui/openclaude/use-session-transcript.ts",
-        "runtime/src/tui/openclaude/use-tool-jsx.ts",
+        "runtime/src/tui/components/App.tsx",
+        "runtime/src/tui/bridges/message-adapter.ts",
+        "runtime/src/tui/bridges/use-session-transcript.ts",
+        "runtime/src/tui/bridges/use-tool-jsx.ts",
         "runtime/src/tui/openclaude/message-adapter.streaming-tool-use.parity.test.ts",
         "runtime/src/llm/providers/anthropic/adapter.ts",
         "runtime/src/llm/types.ts",
@@ -274,7 +274,7 @@
         "runtime/src/session/event-log.ts",
         "runtime/src/llm/types.ts",
         "runtime/src/llm/providers/anthropic/adapter.ts",
-        "runtime/src/tui/openclaude/message-adapter.ts",
+        "runtime/src/tui/bridges/message-adapter.ts",
         "runtime/src/tui/openclaude/message-adapter.streaming-tool-use.parity.test.ts",
         "runtime/src/tui/openclaude/App.tooljsx-state.parity.test.tsx",
         "runtime/src/phases/stream-model.tool-input-events.parity.test.ts"
@@ -288,7 +288,7 @@
       "reason": "applyToolJSXUpdate (use-tool-jsx.ts) returns a discriminated-union result whose first variant is { skip: true } — an explicit signal mirroring the upstream wrapper's 'keep the local JSX command visible — ignore tool updates' branch at REPL.tsx:1095. Tests reference 'skip' by name. Not a contract shortcut.",
       "pattern": "\\bskip(?:ped)?\\b",
       "files": [
-        "runtime/src/tui/openclaude/use-tool-jsx.ts",
+        "runtime/src/tui/bridges/use-tool-jsx.ts",
         "runtime/src/tui/openclaude/App.tooljsx-state.parity.test.tsx"
       ]
     },
@@ -322,7 +322,7 @@
       "reason": "Pre-existing JSDoc comment in the RunningToolProgressIndicator block (App.tsx ~lines 95-113) contains 'not yet'. The entire comment block is removed by row tui-remove-runningtoolprogressindicator (R4) of this contract; the exception keeps the row checker green for R1/R2/R3 while R4 has not yet shipped.",
       "pattern": "not yet",
       "files": [
-        "runtime/src/tui/openclaude/App.tsx"
+        "runtime/src/tui/components/App.tsx"
       ]
     }
   ]

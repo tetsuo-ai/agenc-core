@@ -29,49 +29,49 @@
     "behaviors": [
       {
         "behavior": "createBridgeTool('Edit') returns a tool whose renderToolResultMessage dispatches to a local EditDiffView that renders the file path as a bold header and colors '+' lines green, '-' lines red, '@@' hunk headers cyan, '---'/'+++' lines dimmed (visual contract from upstream StructuredDiffList)",
-        "implementation": "runtime/src/tui/openclaude/tool-stubs.tsx:67-107 (bold header at line 86, +green at 91-92, -red at 93-94, @@cyan at 95-96, ---/+++ dim at 90); dispatch decision in runtime/src/agenc/adapters/upstream-tool-result-dispatch.ts:40-57 (exact-case 'Edit' + presence of '<edit-diff>' tag → 'edit-diff-view')",
+        "implementation": "runtime/src/tui/bridges/tool-stubs.tsx:67-107 (bold header at line 86, +green at 91-92, -red at 93-94, @@cyan at 95-96, ---/+++ dim at 90); dispatch decision in runtime/src/agenc/adapters/upstream-tool-result-dispatch.ts:40-57 (exact-case 'Edit' + presence of '<edit-diff>' tag → 'edit-diff-view')",
         "test": "runtime/src/tools/tool-stubs-edit-bridge.test.tsx:41-49 (`expect((node as { type: unknown }).type).toBe(EditDiffView)`); visual fidelity asserted at lines 92-117 (bold header for src/foo.ts, green '+new', red '-old', cyan '@@'); +++/--- dim asserted at 119-139"
       },
       {
         "behavior": "The toolResult content shape passed to EditDiffView carries the file path and the diff string in <edit-file>/<edit-diff> tags so the renderer can extract them via extractBridgeTag",
-        "implementation": "runtime/src/tui/openclaude/message-adapter.ts:350-372 emits separate `<edit-file>` and `<edit-diff>` blocks; consumer-side extraction at runtime/src/tui/openclaude/tool-stubs.tsx:72-73",
+        "implementation": "runtime/src/tui/bridges/message-adapter.ts:350-372 emits separate `<edit-file>` and `<edit-diff>` blocks; consumer-side extraction at runtime/src/tui/bridges/tool-stubs.tsx:72-73",
         "test": "runtime/src/tui/openclaude/message-adapter.test.ts:217-229 (length=2, blocks[0]='<edit-file>src/foo.ts</edit-file>', blocks[1]='<edit-diff>...</edit-diff>') and end-to-end at runtime/src/tools/tool-stubs-edit-bridge.test.tsx:195-227"
       },
       {
         "behavior": "If the tool result for Edit lacks the <edit-diff> envelope (e.g. dry-run preview only, or error case), the bridge falls back to the generic <Text> renderer instead of throwing",
-        "implementation": "runtime/src/agenc/adapters/upstream-tool-result-dispatch.ts:50-56 (no '<edit-diff>' tag → 'generic') and runtime/src/tui/openclaude/tool-stubs.tsx:253-257 (generic `<Box flexDirection=\"column\"><Text>{joined}</Text></Box>` fallback); also reinforced at message-adapter.ts:373-375 (no diff field → falls back to stringResult)",
+        "implementation": "runtime/src/agenc/adapters/upstream-tool-result-dispatch.ts:50-56 (no '<edit-diff>' tag → 'generic') and runtime/src/tui/bridges/tool-stubs.tsx:253-257 (generic `<Box flexDirection=\"column\"><Text>{joined}</Text></Box>` fallback); also reinforced at message-adapter.ts:373-375 (no diff field → falls back to stringResult)",
         "test": "runtime/src/tools/upstream-tool-result-dispatch.test.ts:64-67 ('raw error string' on Edit → 'generic'), runtime/src/tools/tool-stubs-edit-bridge.test.tsx:64-72 ('permission denied' → not EditDiffView), and runtime/src/tui/openclaude/message-adapter.test.ts:257-264 (error-path payload `{ result: { error: 'permission denied' } }` → single text block, no '<edit-diff>' tag)"
       },
       {
         "behavior": "message-adapter.ts formatStructuredToolResult for tool_call_completed with toolName='Edit' produces the <edit-file>/<edit-diff> envelope shape that EditDiffView consumes",
-        "implementation": "runtime/src/tui/openclaude/message-adapter.ts:348-372 (gated on toolName === FILE_EDIT_TOOL_NAME and result.diff being a string)",
+        "implementation": "runtime/src/tui/bridges/message-adapter.ts:348-372 (gated on toolName === FILE_EDIT_TOOL_NAME and result.diff being a string)",
         "test": "runtime/src/tui/openclaude/message-adapter.test.ts:217-229 with the exact upstream shape and reinforced by the wire-shape-lock test at runtime/src/tools/tool-stubs-edit-bridge.test.tsx:195-227"
       }
     ],
     "edgeCases": [
       {
         "edgeCase": "Edit result for a new file (no prior content, diff is all '+' lines) renders all additions in green without crashing on a missing '---' header",
-        "implementation": "runtime/src/tui/openclaude/tool-stubs.tsx:91-92 (any line starting with '+' that is not '+++' colors green)",
+        "implementation": "runtime/src/tui/bridges/tool-stubs.tsx:91-92 (any line starting with '+' that is not '+++' colors green)",
         "test": "runtime/src/tools/tool-stubs-edit-bridge.test.tsx:141-149 (three '+' lines → expect three children with color === 'green')"
       },
       {
         "edgeCase": "Edit result for a file deletion (all '-' lines) renders coherently with all deletions in red",
-        "implementation": "runtime/src/tui/openclaude/tool-stubs.tsx:93-94",
+        "implementation": "runtime/src/tui/bridges/tool-stubs.tsx:93-94",
         "test": "runtime/src/tools/tool-stubs-edit-bridge.test.tsx:151-159 (two '-' lines → expect two children with color === 'red')"
       },
       {
         "edgeCase": "Edit result with a multi-hunk diff renders all hunks, not just the first",
-        "implementation": "runtime/src/tui/openclaude/tool-stubs.tsx:83-104 (line-by-line map with no per-hunk truncation)",
+        "implementation": "runtime/src/tui/bridges/tool-stubs.tsx:83-104 (line-by-line map with no per-hunk truncation)",
         "test": "runtime/src/tools/tool-stubs-edit-bridge.test.tsx:161-174 (two `@@` headers → expect exactly two cyan children whose children start with '@@')"
       },
       {
         "edgeCase": "Edit result whose diff string is empty falls back to a (No changes) indicator instead of an empty box",
-        "implementation": "runtime/src/tui/openclaude/tool-stubs.tsx:74-81 (when extracted diff length === 0, render `<Text dimColor>(No changes)</Text>` plus optional bold file header)",
+        "implementation": "runtime/src/tui/bridges/tool-stubs.tsx:74-81 (when extracted diff length === 0, render `<Text dimColor>(No changes)</Text>` plus optional bold file header)",
         "test": "runtime/src/tools/tool-stubs-edit-bridge.test.tsx:176-185 (`<edit-diff></edit-diff>` → child with children === '(No changes)' and dimColor === true)"
       },
       {
         "edgeCase": "Edit result whose path is not a string (number, null, object) — formatStructuredToolResult drops the <edit-file> tag instead of emitting a malformed envelope; the diff body still goes through tagged",
-        "implementation": "runtime/src/tui/openclaude/message-adapter.ts:358-361 (`typeof (result as { readonly path?: unknown }).path === 'string'` guard returns null when path is non-string, so the `<edit-file>` block is not pushed)",
+        "implementation": "runtime/src/tui/bridges/message-adapter.ts:358-361 (`typeof (result as { readonly path?: unknown }).path === 'string'` guard returns null when path is non-string, so the `<edit-file>` block is not pushed)",
         "test": "runtime/src/tui/openclaude/message-adapter.test.ts:239-255 across all three non-string shapes — `path: 123` (numeric, lines 240-244), `path: null` (lines 245-249), `path: { nested: 'obj' }` (object, lines 250-254). For each shape: blocks.length === 1 and blocks[0].text === '<edit-diff>...</edit-diff>' (no <edit-file> tag emitted, diff body intact)"
       },
       {
@@ -86,8 +86,8 @@
       "/home/tetsuo/.claude/skills/implementation-contract/agents/row-reviewer.md",
       "/home/tetsuo/git/agenc-core-tool-result-dispatch/parity/tool-result-renderer-dispatch.json",
       "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/agenc/upstream/components/StructuredDiffList.tsx",
-      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tui/openclaude/tool-stubs.tsx",
-      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tui/openclaude/message-adapter.ts",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tui/bridges/tool-stubs.tsx",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tui/bridges/message-adapter.ts",
       "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/agenc/adapters/upstream-tool-result-dispatch.ts",
       "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tools/upstream-tool-result-dispatch.test.ts",
       "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tools/tool-stubs-edit-bridge.test.tsx",

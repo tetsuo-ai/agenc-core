@@ -14,7 +14,7 @@ vi.mock("../tui/ink.js", () => {
 import {
   createBridgeTool,
   createBridgeTools,
-} from "../tui/openclaude/tool-stubs.js"; // branding-scan: allow existing TUI adapter directory name
+} from "../tui/bridges/tool-stubs.js"; // branding-scan: allow existing TUI adapter directory name
 import { AskUserQuestionTool as UpstreamAskUserQuestionTool } from "../agenc/upstream/tools/AskUserQuestionTool/AskUserQuestionTool.js";
 
 describe("AskUserQuestion bridge routing", () => {

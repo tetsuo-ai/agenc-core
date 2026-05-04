@@ -66,6 +66,13 @@ const ALLOW_LINE_PATTERNS = [
   /^check-openclaude-tui-replacement\.mjs$/i, // branding-scan: allow existing parity-contract filename
 ];
 
+const ALLOW_FILE_LINE_PATTERNS = [
+  {
+    file: /^(?:parity\/.*\.json|runtime\/parity\/.*\.json)$/,
+    line: /\b(?:OpenClaude\w*|openclaude|Claude\w*|claude|Codex\w*|codex)\b|\.(?:claude|codex|openclaude)\//, // branding-scan: allow parity matrix exception pattern
+  },
+];
+
 const OVERRIDE_RE = /branding-scan:\s*allow\b/i;
 
 function parseArgs(argv) {
@@ -109,10 +116,22 @@ function changedLinesForPath(root, rel, mode) {
 
 function isAbsorbImportRewriteLine(line) {
   if (line === "") return true;
-  return (
-    /(?:^import\b|^export\b|from\s+|import\s*\(|require\s*\()/.test(line) &&
-    /(?:^|[./])(?:ink(?:\.js|\/)|(?:tui\/)?state\/(?:AppState|AppStateStore|store)(?:\.js)?|(?:tui\/)?keybindings\/|(?:tui\/)?components\/permissions\/PermissionRequest(?:\.js)?|PermissionRequest(?:\.js)?|(?:tui\/)?components\/PromptInput\/|PromptInput\/|(?:tui\/)?components\/Messages(?:\.js)?|Messages(?:\.js)?)/.test(line)
-  );
+  if (!/(?:^import\b|^export\b|from\s+|import\s*\(|require\s*\()/.test(line)) {
+    return false;
+  }
+  return [
+    /(?:^|[./])ink(?:\.js|\/)/,
+    /(?:^|[./])(?:tui\/)?state\/(?:AppState|AppStateStore|store)(?:\.js)?/,
+    /(?:^|[./])(?:tui\/)?keybindings\//,
+    /(?:^|[./])(?:tui\/)?components\/permissions\/PermissionRequest(?:\.js)?/,
+    /(?:^|[./])PermissionRequest(?:\.js)?/,
+    /(?:^|[./])(?:tui\/)?components\/PromptInput\//,
+    /(?:^|[./])PromptInput\//,
+    /(?:^|[./])(?:tui\/)?components\/Messages(?:\.js)?/,
+    /(?:^|[./])Messages(?:\.js)?/,
+    /(?:^|[./])tui\/components\/App(?:\.js)?/,
+    /(?:^|[./])components\/App(?:\.js)?/,
+  ].some((pattern) => pattern.test(line));
 }
 
 function isMirrorAbsorbImportRewriteOnly(root, rel, mode) {
@@ -154,7 +173,7 @@ function isCommentOnlyLine(line) {
   return trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*");
 }
 
-function isLineAllowed(line, prevLine) {
+function isLineAllowed(line, prevLine, relPath) {
   // Same-line override always counts.
   if (OVERRIDE_RE.test(line)) return true;
   // Previous-line override only counts when the previous line is a
@@ -163,6 +182,9 @@ function isLineAllowed(line, prevLine) {
   if (OVERRIDE_RE.test(prevLine) && isCommentOnlyLine(prevLine)) return true;
   for (const pattern of ALLOW_LINE_PATTERNS) {
     if (pattern.test(line)) return true;
+  }
+  for (const { file, line: linePattern } of ALLOW_FILE_LINE_PATTERNS) {
+    if (file.test(relPath) && linePattern.test(line)) return true;
   }
   return false;
 }
@@ -176,6 +198,8 @@ async function scanFile(filePath) {
   }
   const findings = [];
   const lines = content.split("\n");
+  const root = gitRoot() || process.cwd();
+  const rel = path.relative(root, filePath).replaceAll("\\", "/");
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
     const prevLine = i > 0 ? lines[i - 1] : "";
@@ -188,7 +212,7 @@ async function scanFile(filePath) {
         // just enough context so that ALLOW_LINE_PATTERNS can decide.
         // Cheap heuristic — the patterns are all designed to match
         // line-level context.
-        if (isLineAllowed(line, prevLine)) continue;
+        if (isLineAllowed(line, prevLine, rel)) continue;
         findings.push({
           file: filePath,
           line: i + 1,
@@ -205,7 +229,9 @@ async function scanFile(filePath) {
   // branding-scan: allow filename pattern enumerates the upstream roots
   if (/\b(?:CLAUDE|claude|codex|openclaude|OpenClaude|Codex|Claude)\b/.test(baseName)) {
     // Check if the filename is allowed via the package-name patterns above.
-    const allowed = ALLOW_LINE_PATTERNS.some((p) => p.test(baseName));
+    const allowed =
+      /^(?:parity\/.*\.json|runtime\/parity\/.*\.json)$/.test(rel) ||
+      ALLOW_LINE_PATTERNS.some((p) => p.test(baseName));
     if (!allowed) {
       findings.push({
         file: filePath,

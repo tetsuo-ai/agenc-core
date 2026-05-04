@@ -11,7 +11,7 @@ vi.mock("./ink.js", () => {
 });
 
 // branding-scan: allow compatibility bridge directory path
-import { GlobPathsView } from "./openclaude/tool-stubs.js";
+import { GlobPathsView } from "./bridges/tool-stubs.js";
 
 interface ChildProps {
   readonly children?: unknown;

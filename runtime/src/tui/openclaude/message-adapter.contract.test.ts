@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { adaptTranscriptEvents } from "./message-adapter.js";
+import { adaptTranscriptEvents } from "../bridges/message-adapter.js";
 
 // Contract: begin/end branches in message-adapter must drop events whose
 // payload.callId is not a string, mirroring the pre-existing tool_progress

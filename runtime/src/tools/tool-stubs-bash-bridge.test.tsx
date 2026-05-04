@@ -18,7 +18,7 @@ vi.mock("../tui/ink.js", () => {
 });
 
 // branding-scan: allow existing compatibility-island path
-import { createBridgeTool, BashOutputView } from "../tui/openclaude/tool-stubs.js";
+import { createBridgeTool, BashOutputView } from "../tui/bridges/tool-stubs.js";
 
 describe("createBridgeTool('Bash').renderToolResultMessage — end-to-end dispatch", () => {
   test("Bash content with <bash-stdout> envelope produces a React element whose type is BashOutputView", () => {
@@ -239,7 +239,7 @@ describe("formatStructuredToolResult ⇄ BashOutputView wire-shape lock", () => 
     // branding-scan: allow existing compatibility-island path
     const adapterModule = await import(
       // branding-scan: allow existing compatibility-island path
-      "../tui/openclaude/message-adapter.js"
+      "../tui/bridges/message-adapter.js"
     );
     const blocks = adapterModule.formatStructuredToolResult(
       "Bash",

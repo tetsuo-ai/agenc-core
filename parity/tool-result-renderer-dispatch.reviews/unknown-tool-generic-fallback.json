@@ -41,7 +41,7 @@
   "evidence": {
     "filesRead": [
       "/home/tetsuo/git/agenc-core-tool-result-dispatch/parity/tool-result-renderer-dispatch.json",
-      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tui/openclaude/tool-stubs.tsx",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tui/bridges/tool-stubs.tsx",
       "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/agenc/adapters/upstream-tool-result-dispatch.ts",
       "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tools/upstream-tool-result-dispatch.test.ts",
       "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tools/tool-stubs-bash-bridge.test.tsx",

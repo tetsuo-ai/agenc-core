@@ -28,45 +28,45 @@
     "behaviors": [
       {
         "behavior": "createBridgeTool('Bash') returns a tool whose renderToolResultMessage delegates to the upstream Bash output component (UserBashOutputMessage or its equivalent) when given a Bash tool result content shape",
-        "evidence": "Implemented at runtime/src/tui/openclaude/tool-stubs.tsx:172-198 (renderToolResultMessage routes via pickToolResultDispatch to BashOutputView). Asserted at runtime/src/tools/tool-stubs-bash-bridge.test.tsx:23-31 (`expect((node as { type: unknown }).type).toBe(BashOutputView)`) and again with the structured-content-blocks shape at lines 43-57. The vi.mock of `../agenc/upstream/ink.js` (lines 10-18) correctly intercepts the same module path that tool-stubs.tsx imports (`../../agenc/upstream/ink.js` resolves to the same absolute file), so the dispatch path is genuinely exercised end-to-end."
+        "evidence": "Implemented at runtime/src/tui/bridges/tool-stubs.tsx:172-198 (renderToolResultMessage routes via pickToolResultDispatch to BashOutputView). Asserted at runtime/src/tools/tool-stubs-bash-bridge.test.tsx:23-31 (`expect((node as { type: unknown }).type).toBe(BashOutputView)`) and again with the structured-content-blocks shape at lines 43-57. The vi.mock of `../agenc/upstream/ink.js` (lines 10-18) correctly intercepts the same module path that tool-stubs.tsx imports (`../../agenc/upstream/ink.js` resolves to the same absolute file), so the dispatch path is genuinely exercised end-to-end."
       },
       {
         "behavior": "The toolResult content shape passed to the upstream component carries stdout, stderr, and exit code separately — not joined into one string — so the upstream renderer can color stderr distinctly and surface non-zero exit codes",
-        "evidence": "Implemented at runtime/src/tui/openclaude/message-adapter.ts:316-340 (formatStructuredToolResult emits separate {type:'text'} blocks for `<bash-stdout>`, `<bash-stderr>`, and `[exit_code=…]`). Asserted at runtime/src/tui/openclaude/message-adapter.test.ts:186-197 with explicit length=3 and per-block text equality, and at runtime/src/tools/tool-stubs-bash-bridge.test.tsx:236-269 with the wire-shape-lock test that verifies the same blocks survive into BashOutputView's rendered children."
+        "evidence": "Implemented at runtime/src/tui/bridges/message-adapter.ts:316-340 (formatStructuredToolResult emits separate {type:'text'} blocks for `<bash-stdout>`, `<bash-stderr>`, and `[exit_code=…]`). Asserted at runtime/src/tui/openclaude/message-adapter.test.ts:186-197 with explicit length=3 and per-block text equality, and at runtime/src/tools/tool-stubs-bash-bridge.test.tsx:236-269 with the wire-shape-lock test that verifies the same blocks survive into BashOutputView's rendered children."
       },
       {
         "behavior": "For non-Bash tool names the bridge tool keeps the existing generic <Text> rendering (no regression for unrouted tools)",
-        "evidence": "Implemented at runtime/src/tui/openclaude/tool-stubs.tsx:194-198 (generic `<Box flexDirection=\"column\"><Text>{joined}</Text></Box>` fallback). Asserted at runtime/src/tools/tool-stubs-bash-bridge.test.tsx:69-77 (`expect((node as { type: unknown }).type).not.toBe(BashOutputView)` for `createBridgeTool('XYZUnknown')`)."
+        "evidence": "Implemented at runtime/src/tui/bridges/tool-stubs.tsx:194-198 (generic `<Box flexDirection=\"column\"><Text>{joined}</Text></Box>` fallback). Asserted at runtime/src/tools/tool-stubs-bash-bridge.test.tsx:69-77 (`expect((node as { type: unknown }).type).not.toBe(BashOutputView)` for `createBridgeTool('XYZUnknown')`)."
       },
       {
         "behavior": "message-adapter.ts formatStructuredToolResult for exec_command_end produces a content shape that the bridge Bash tool's renderToolResultMessage can consume",
-        "evidence": "Implemented at runtime/src/tui/openclaude/message-adapter.ts:316-340. Asserted as a wire-shape lock at runtime/src/tools/tool-stubs-bash-bridge.test.tsx:236-269, which feeds formatStructuredToolResult's output into BashOutputView and asserts both that the joined text contains the upstream tags and that the rendered Text children include the extracted stdout (\"out\") and stderr (\"err\")."
+        "evidence": "Implemented at runtime/src/tui/bridges/message-adapter.ts:316-340. Asserted as a wire-shape lock at runtime/src/tools/tool-stubs-bash-bridge.test.tsx:236-269, which feeds formatStructuredToolResult's output into BashOutputView and asserts both that the joined text contains the upstream tags and that the rendered Text children include the extracted stdout (\"out\") and stderr (\"err\")."
       }
     ],
     "edgeCases": [
       {
         "edgeCase": "Bash result with empty stdout AND empty stderr renders the exit-code line and a no-output indicator without crashing",
-        "evidence": "Implemented at runtime/src/tui/openclaude/tool-stubs.tsx:80, 85 (`isSilent` flag drives `<Text dimColor>(No output)</Text>`). Asserted at runtime/src/tools/tool-stubs-bash-bridge.test.tsx:101-119 (walks BashOutputView's children, asserts one of them carries `(No output)` text)."
+        "evidence": "Implemented at runtime/src/tui/bridges/tool-stubs.tsx:80, 85 (`isSilent` flag drives `<Text dimColor>(No output)</Text>`). Asserted at runtime/src/tools/tool-stubs-bash-bridge.test.tsx:101-119 (walks BashOutputView's children, asserts one of them carries `(No output)` text)."
       },
       {
         "edgeCase": "Bash result with non-zero exit code is visually distinct from zero exit code in the rendered output",
-        "evidence": "Implemented at runtime/src/tui/openclaude/tool-stubs.tsx:71-76, 86-90 (`isFailure` controls `color=\"red\"` vs `dimColor`). Asserted at runtime/src/tools/tool-stubs-bash-bridge.test.tsx:121-163 (asserts color=\"red\" + falsy dimColor for exit_code=1, and undefined color + dimColor=true for exit_code=0)."
+        "evidence": "Implemented at runtime/src/tui/bridges/tool-stubs.tsx:71-76, 86-90 (`isFailure` controls `color=\"red\"` vs `dimColor`). Asserted at runtime/src/tools/tool-stubs-bash-bridge.test.tsx:121-163 (asserts color=\"red\" + falsy dimColor for exit_code=1, and undefined color + dimColor=true for exit_code=0)."
       },
       {
         "edgeCase": "Bash result with stderr but empty stdout still shows the stderr block",
-        "evidence": "Implemented at runtime/src/tui/openclaude/tool-stubs.tsx:84 (`{stderr.length > 0 ? <Text color=\"red\">{stderr}</Text> : null}` independent of stdout). Asserted at runtime/src/tools/tool-stubs-bash-bridge.test.tsx:189-215 (Round 3 isolated test: feeds `<bash-stdout></bash-stdout><bash-stderr>oops</bash-stderr>[exit_code=1]`, finds a child with `props.color === 'red'` and `props.children === 'oops'`, AND asserts no `(No output)` indicator appears). Closes the high-severity gap from Round 2."
+        "evidence": "Implemented at runtime/src/tui/bridges/tool-stubs.tsx:84 (`{stderr.length > 0 ? <Text color=\"red\">{stderr}</Text> : null}` independent of stdout). Asserted at runtime/src/tools/tool-stubs-bash-bridge.test.tsx:189-215 (Round 3 isolated test: feeds `<bash-stdout></bash-stdout><bash-stderr>oops</bash-stderr>[exit_code=1]`, finds a child with `props.color === 'red'` and `props.children === 'oops'`, AND asserts no `(No output)` indicator appears). Closes the high-severity gap from Round 2."
       },
       {
         "edgeCase": "Bash result with stdout containing ANSI escape sequences renders without re-interpreting them as terminal control",
-        "evidence": "Implemented at runtime/src/tui/openclaude/tool-stubs.tsx:83 (raw `<Text>{stdout}</Text>` with no preprocessing). Asserted at runtime/src/tools/tool-stubs-bash-bridge.test.tsx:217-233 (`\\x1b[31mred\\x1b[0m text` survives verbatim into a Text child's `props.children`)."
+        "evidence": "Implemented at runtime/src/tui/bridges/tool-stubs.tsx:83 (raw `<Text>{stdout}</Text>` with no preprocessing). Asserted at runtime/src/tools/tool-stubs-bash-bridge.test.tsx:217-233 (`\\x1b[31mred\\x1b[0m text` survives verbatim into a Text child's `props.children`)."
       },
       {
         "edgeCase": "Bash result whose stdout exceeds the runtime maxResultSizeChars is truncated rather than crashing the renderer",
-        "evidence": "Implemented at runtime/src/tui/openclaude/tool-stubs.tsx:44-51, 62-63 (`BASH_OUTPUT_TRUNCATION_LIMIT = 8 * 1024`, `truncateForDisplay` clips and appends `[N chars truncated]`). Asserted at runtime/src/tools/tool-stubs-bash-bridge.test.tsx:165-187 (50,000-char stdout, asserts rendered length < 10,000 and contains `chars truncated`)."
+        "evidence": "Implemented at runtime/src/tui/bridges/tool-stubs.tsx:44-51, 62-63 (`BASH_OUTPUT_TRUNCATION_LIMIT = 8 * 1024`, `truncateForDisplay` clips and appends `[N chars truncated]`). Asserted at runtime/src/tools/tool-stubs-bash-bridge.test.tsx:165-187 (50,000-char stdout, asserts rendered length < 10,000 and contains `chars truncated`)."
       },
       {
         "edgeCase": "renderToolResultMessage receives the legacy single-string content (from a tool that did not go through formatStructuredToolResult) and falls back to the generic Text renderer instead of throwing",
-        "evidence": "Implemented at runtime/src/tui/openclaude/tool-stubs.tsx:184-198 (generic fallback when joinedContent has no `<bash-stdout>` envelope). Asserted at runtime/src/tools/tool-stubs-bash-bridge.test.tsx:33-41 (`createBridgeTool('Bash').renderToolResultMessage('raw legacy string with no envelope', ...)` returns an element whose type is NOT BashOutputView)."
+        "evidence": "Implemented at runtime/src/tui/bridges/tool-stubs.tsx:184-198 (generic fallback when joinedContent has no `<bash-stdout>` envelope). Asserted at runtime/src/tools/tool-stubs-bash-bridge.test.tsx:33-41 (`createBridgeTool('Bash').renderToolResultMessage('raw legacy string with no envelope', ...)` returns an element whose type is NOT BashOutputView)."
       }
     ]
   },
@@ -92,8 +92,8 @@
       "/home/tetsuo/.claude/skills/implementation-contract/agents/row-reviewer.md",
       "/home/tetsuo/git/agenc-core-tool-result-dispatch/parity/tool-result-renderer-dispatch.json",
       "/home/tetsuo/git/agenc-core-tool-result-dispatch/parity/tool-result-renderer-dispatch.reviews/bash-result-dispatch.json",
-      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tui/openclaude/tool-stubs.tsx",
-      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tui/openclaude/message-adapter.ts",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tui/bridges/tool-stubs.tsx",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tui/bridges/message-adapter.ts",
       "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/agenc/adapters/upstream-tool-result-dispatch.ts",
       "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tools/upstream-tool-result-dispatch.test.ts",
       "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tools/tool-stubs-bash-bridge.test.tsx",
