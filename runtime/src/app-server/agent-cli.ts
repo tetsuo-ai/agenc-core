@@ -911,7 +911,11 @@ function sendJsonLineRequest(
         const line = buffer.slice(0, newline);
         buffer = buffer.slice(newline + 1);
         try {
-          const response = JSON.parse(line) as AgenCDaemonResponse;
+          const message = JSON.parse(line) as JsonValue;
+          if (!isJsonObject(message) || !isJsonRpcResponse(message)) {
+            continue;
+          }
+          const response = message as AgenCDaemonResponse;
           responses.push(response);
           if (isErrorResponse(response)) {
             finish(null, responses);
@@ -937,6 +941,14 @@ function sendJsonLineRequest(
       );
     });
   });
+}
+
+function isJsonRpcResponse(message: JsonObject): boolean {
+  return (
+    typeof message.id === "string" ||
+    typeof message.id === "number" ||
+    message.id === null
+  );
 }
 
 function parseAgentStartArgs(args: readonly string[]):

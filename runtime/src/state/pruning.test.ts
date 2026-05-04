@@ -33,6 +33,7 @@ describe("pruneTerminalAgentRuns", () => {
     seedRun("completed-new", "session-completed-new", "completed", "2026-04-20T00:00:00.000Z");
     seedRun("failed-old", "session-failed-old", "failed", "2026-01-01T00:00:00.000Z");
     seedRun("error-old", "session-error-old", "error", "2026-01-02T00:00:00.000Z");
+    seedRun("errored-old", "session-errored-old", "errored", "2026-01-03T00:00:00.000Z");
     seedRun("failed-new", "session-failed-new", "failed", "2026-03-20T00:00:00.000Z");
     seedRun("running-old", "session-running-old", "running", "2026-01-01T00:00:00.000Z");
     seedSessionAgentLink("session-completed-old", "completed-old");
@@ -45,17 +46,18 @@ describe("pruneTerminalAgentRuns", () => {
     });
 
     expect(report).toMatchObject({
-      prunedRuns: 4,
+      prunedRuns: 5,
       prunedCompletedRuns: 2,
-      prunedFailedRuns: 2,
-      prunedSnapshots: 4,
-      prunedToolCalls: 4,
+      prunedFailedRuns: 3,
+      prunedSnapshots: 5,
+      prunedToolCalls: 5,
     });
     expect(report.prunedSessionIds).toEqual([
       "session-completed-old",
       "session-stopped-old",
       "session-failed-old",
       "session-error-old",
+      "session-errored-old",
     ]);
     expect(runIds()).toEqual([
       "completed-new",

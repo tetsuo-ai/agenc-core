@@ -639,6 +639,7 @@ export interface EventMcpElicitationRequestParams extends AgenCEventBaseParams {
 export interface EventAgentStatusParams extends AgenCEventBaseParams {
   readonly agentId: string;
   readonly status: AgentStatus;
+  readonly runStatus?: AgentRunStatus;
   readonly turnId?: string;
   readonly message?: string;
 }
@@ -769,6 +770,16 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithoutParams<"auth.logout">;
 
 export type AgentStatus = "idle" | "running" | "stopping" | "stopped" | "error";
+export type AgentRunStatus =
+  | "pending"
+  | "running"
+  | "working"
+  | "paused"
+  | "blocked"
+  | "suspended"
+  | "completed"
+  | "errored"
+  | "stopped";
 export type SessionStatus = "idle" | "running" | "waiting" | "closed" | "error";
 
 export interface AgentSummary extends JsonObject {

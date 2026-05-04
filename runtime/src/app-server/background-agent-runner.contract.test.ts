@@ -4,9 +4,15 @@ import {
   type AgenCBootstrapFunction,
   type AgenCDelegateFunction,
   type AgenCEnsureAgentControlFunction,
+  type AgenCRunAgentFunction,
 } from "./background-agent-runner.js";
+import { AgentStatusTracker } from "../agents/status.js";
 import type { AgentThread } from "../agents/thread.js";
+import { Mailbox } from "../agents/mailbox.js";
+import { resolveAgentRole } from "../agents/role.js";
 import type { AuthBackend } from "../auth/backend.js";
+import type { LiveAgent } from "../agents/control.js";
+import type { AgentMetadata } from "../agents/registry.js";
 import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,
@@ -22,6 +28,34 @@ import {
   createDaemonTuiSession,
   type AgenCDaemonTuiClient,
 } from "../tui/daemon-session.js";
+
+function restoredLiveAgent(
+  agentId: string,
+  agentPath = `/root/${agentId}`,
+): LiveAgent {
+  const metadata: AgentMetadata = {
+    agentId,
+    agentPath,
+    agentNickname: agentId,
+    agentRole: "default",
+    depth: 1,
+  };
+  return {
+    agentId,
+    agentPath,
+    role: resolveAgentRole(undefined),
+    depth: 1,
+    nickname: agentId,
+    status: new AgentStatusTracker(),
+    upInbox: new Mailbox({ threadId: agentId }),
+    downInbox: new Mailbox({ threadId: `${agentId}-down` }),
+    abortController: new AbortController(),
+    metadata,
+    messages: [],
+    memoryEntries: [],
+    tokenUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+  };
+}
 
 describe("AgenC delegate background-agent runner", () => {
   it("starts agent.create through the async delegate path and keeps it alive", async () => {
@@ -110,6 +144,107 @@ describe("AgenC delegate background-agent runner", () => {
       "exec_command",
     ]);
     expect(shutdown).not.toHaveBeenCalled();
+  });
+
+  it("restores a recovered live agent through the concrete runner", async () => {
+    const shutdown = vi.fn(async () => {});
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    const session = {
+      conversationId: "session-restart",
+      permissionModeRegistry,
+      services: {},
+    };
+    const live = restoredLiveAgent("run-restart", "/root/restart");
+    const resumeAgentFromRollout = vi.fn(async () => ({
+      resumedCount: 1,
+      rootLive: live,
+    }));
+    const sendInput = vi.fn(async () => {});
+    const control = {
+      resumeAgentFromRollout,
+      sendInput,
+      shutdown: vi.fn(async () => {}),
+    };
+    let runParams: Parameters<AgenCRunAgentFunction>[0] | undefined;
+    const runAgentFn = (async function* (
+      params: Parameters<AgenCRunAgentFunction>[0],
+    ) {
+      runParams = params;
+      params.live.status.markRunning("turn-restored");
+      yield { kind: "status", text: "restored" };
+      await new Promise(() => {});
+    }) as AgenCRunAgentFunction;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        shutdown,
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      runAgentFn,
+      now: () => "2026-05-01T12:00:00.500Z",
+    });
+    const initialMessages = [{ role: "user" as const, content: "continue" }];
+
+    await expect(
+      runner.restoreAgent({
+        agentId: "run-restart",
+        objective: "recover daemon state",
+        cwd: "/workspace",
+        currentSessionId: "session-restart",
+        initialMessages,
+        metadata: {
+          agentPath: "/root/restart",
+          agentNickname: "restart",
+          agentRole: "default",
+          unattendedAllow: ["FileRead"],
+          unattendedDeny: ["system.bash"],
+        },
+      }),
+    ).resolves.toBe(true);
+    expect(resumeAgentFromRollout).toHaveBeenCalledWith({
+      rootThreadId: "run-restart",
+      parentPath: "/root",
+      metadata: expect.objectContaining({
+        agentId: "run-restart",
+        agentPath: "/root/restart",
+        agentNickname: "restart",
+      }),
+    });
+    expect(permissionModeRegistry.update).toHaveBeenCalledTimes(1);
+    expect(permissionModeRegistry.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alwaysAllowRules: expect.objectContaining({
+          session: ["FileRead"],
+        }),
+        alwaysDenyRules: expect.objectContaining({
+          session: ["system.bash"],
+        }),
+      }),
+    );
+    await Promise.resolve();
+
+    expect(runParams?.initialMessages).toEqual(initialMessages);
+    await expect(runner.getAgentSnapshot("run-restart")).resolves.toMatchObject({
+      status: "running",
+      lastActiveAt: "2026-05-01T12:00:00.500Z",
+    });
+    await expect(
+      runner.submitAgentMessage("run-restart", {
+        sessionId: "session-restart",
+        content: "follow up",
+        originalContent: "follow up",
+        messageId: "message-restore",
+        streamId: "stream-restore",
+        acceptedAt: "2026-05-01T12:00:01.000Z",
+      }),
+    ).resolves.toBeUndefined();
+    expect(sendInput).toHaveBeenCalledWith("run-restart", "follow up");
   });
 
   it("passes the daemon AuthBackend into delegate bootstrap", async () => {
@@ -287,14 +422,6 @@ describe("AgenC delegate background-agent runner", () => {
         },
         thread,
       );
-      await opts.onProgress?.(
-        {
-          kind: "run_complete",
-          finalMessage: "hello",
-          toolCallCount: 1,
-        },
-        thread,
-      );
       return {
         kind: "async_launched",
         thread,
@@ -403,6 +530,7 @@ describe("AgenC delegate background-agent runner", () => {
           agentId: "agent_live",
           eventId: expect.any(String),
           status: "idle",
+          runStatus: "completed",
           turnId: "turn_1",
           message: "hello",
         },
@@ -429,6 +557,213 @@ describe("AgenC delegate background-agent runner", () => {
         },
       },
     ]);
+  });
+
+  it("emits final interrupted progress as a stopped agent-status event", async () => {
+    const shutdown = vi.fn(async () => {});
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    const session = { conversationId: "parent-session", permissionModeRegistry };
+    const control = { shutdown: vi.fn(async () => {}) };
+    const thread = {
+      threadId: "agent_live",
+      agentPath: "/root/agent_live",
+      join: vi.fn(() => new Promise(() => {})),
+    } as unknown as AgentThread;
+    const delegateFn = vi.fn(async (opts: Parameters<AgenCDelegateFunction>[0]) => {
+      await opts.onProgress?.(
+        {
+          kind: "run_interrupted",
+          reason: "operator interrupted",
+        },
+        thread,
+      );
+      return {
+        kind: "async_launched",
+        thread,
+      };
+    }) as unknown as AgenCDelegateFunction;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        shutdown,
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      delegateFn,
+      now: () => "2026-05-01T12:00:00.500Z",
+    });
+    const emitted: unknown[] = [];
+
+    await runner.startAgent({
+      objective: "compile the daemon",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("agent_live", {
+      sessionId: "session_1",
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+
+    expect(emitted).toContainEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.agent_status",
+      params: {
+        sessionId: "session_1",
+        agentId: "agent_live",
+        eventId: expect.any(String),
+        status: "stopped",
+        runStatus: "stopped",
+        message: "operator interrupted",
+      },
+    });
+  });
+
+  it("emits run completion progress as a completed agent-status event", async () => {
+    const shutdown = vi.fn(async () => {});
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    const session = { conversationId: "parent-session", permissionModeRegistry };
+    const control = { shutdown: vi.fn(async () => {}) };
+    const thread = {
+      threadId: "agent_live",
+      agentPath: "/root/agent_live",
+      join: vi.fn(() => new Promise(() => {})),
+    } as unknown as AgentThread;
+    const delegateFn = vi.fn(async (opts: Parameters<AgenCDelegateFunction>[0]) => {
+      await opts.onProgress?.(
+        {
+          kind: "run_complete",
+          finalMessage: "done",
+          toolCallCount: 0,
+        },
+        thread,
+      );
+      return {
+        kind: "async_launched",
+        thread,
+      };
+    }) as unknown as AgenCDelegateFunction;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        shutdown,
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      delegateFn,
+      now: () => "2026-05-01T12:00:00.500Z",
+    });
+    const emitted: unknown[] = [];
+
+    await runner.startAgent({
+      objective: "compile the daemon",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("agent_live", {
+      sessionId: "session_1",
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+
+    expect(emitted).toContainEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.agent_status",
+      params: {
+        sessionId: "session_1",
+        agentId: "agent_live",
+        eventId: expect.any(String),
+        status: "idle",
+        runStatus: "completed",
+        message: "done",
+      },
+    });
+  });
+
+  it("replays terminal progress when the thread completes before session attach", async () => {
+    const shutdown = vi.fn(async () => {});
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    const session = { conversationId: "parent-session", permissionModeRegistry };
+    const control = { shutdown: vi.fn(async () => {}) };
+    const thread = {
+      threadId: "agent_live",
+      agentPath: "/root/agent_live",
+      join: vi.fn(async () => ({
+        threadId: "agent_live",
+        durationMs: 1,
+        outcome: "completed",
+        finalMessage: "done",
+      })),
+    } as unknown as AgentThread;
+    const delegateFn = vi.fn(async (opts: Parameters<AgenCDelegateFunction>[0]) => {
+      await opts.onProgress?.(
+        {
+          kind: "run_complete",
+          finalMessage: "done",
+          toolCallCount: 0,
+        },
+        thread,
+      );
+      return {
+        kind: "async_launched",
+        thread,
+      };
+    }) as unknown as AgenCDelegateFunction;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        shutdown,
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      delegateFn,
+      now: () => "2026-05-01T12:00:00.500Z",
+    });
+    const emitted: unknown[] = [];
+
+    await runner.startAgent({
+      objective: "compile the daemon",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await runner.attachAgentSessionEvents("agent_live", {
+      sessionId: "session_1",
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+
+    expect(emitted).toContainEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.agent_status",
+      params: {
+        sessionId: "session_1",
+        agentId: "agent_live",
+        eventId: expect.any(String),
+        status: "idle",
+        runStatus: "completed",
+        message: "done",
+      },
+    });
   });
 
   it("feeds runner-emitted tool requests through the TUI adapter with real input", async () => {
@@ -1137,6 +1472,7 @@ describe("AgenC delegate background-agent runner", () => {
           agentId: "agent_live",
           eventId: "turn-1",
           status: "running",
+          runStatus: "running",
           turnId: "turn-1",
         },
       },
@@ -1158,6 +1494,91 @@ describe("AgenC delegate background-agent runner", () => {
         },
       },
     ]);
+  });
+
+  it.each([
+    {
+      status: "shutdown" as const,
+      threadStatus: { status: "shutdown" as const, endedAtMs: 2 },
+      eventId: "shutdown-2",
+      message: "shutdown",
+    },
+    {
+      status: "not_found" as const,
+      threadStatus: { status: "not_found" as const },
+      eventId: "not-found",
+      message: "not_found",
+    },
+  ])("emits %s thread status as a stopped agent-status event", async (item) => {
+    const shutdown = vi.fn(async () => {});
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    const session = { conversationId: "parent-session", permissionModeRegistry };
+    const control = { shutdown: vi.fn(async () => {}) };
+    let currentStatus: AgentStatus = {
+      status: "running",
+      turnId: "turn-1",
+      startedAtMs: 1,
+    };
+    let statusListener: ((status: AgentStatus) => void) | undefined;
+    const thread = {
+      threadId: "agent_live",
+      agentPath: "/root/agent_live",
+      get currentStatus() {
+        return currentStatus;
+      },
+      onStatusChange: vi.fn((listener: (status: AgentStatus) => void) => {
+        statusListener = listener;
+        listener(currentStatus);
+        return vi.fn();
+      }),
+      join: vi.fn(() => new Promise(() => {})),
+    } as unknown as AgentThread;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        shutdown,
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      delegateFn: vi.fn(async () => ({
+        kind: "async_launched",
+        thread,
+      })) as unknown as AgenCDelegateFunction,
+      now: () => "2026-05-01T12:00:00.500Z",
+    });
+    const emitted: unknown[] = [];
+
+    await runner.startAgent({
+      objective: "compile the daemon",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("agent_live", {
+      sessionId: "session_1",
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+    currentStatus = item.threadStatus;
+    statusListener?.(currentStatus);
+
+    expect(emitted).toContainEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.agent_status",
+      params: {
+        sessionId: "session_1",
+        agentId: "agent_live",
+        eventId: item.eventId,
+        status: "stopped",
+        runStatus: "stopped",
+        message: item.message,
+      },
+    });
   });
 
   it("shuts down the bootstrap when delegate rejects the background start", async () => {

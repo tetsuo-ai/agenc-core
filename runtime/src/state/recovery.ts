@@ -1,4 +1,5 @@
 import type { StateSqliteDriver } from "./sqlite-driver.js";
+import type { JsonObject } from "../app-server/protocol/index.js";
 
 const RECOVERABLE_AGENT_RUN_STATUSES = [
   "pending",
@@ -38,6 +39,7 @@ export interface RecoveredAgentRun {
   readonly currentSessionId?: string;
   readonly createdByClient?: string;
   readonly lastSnapshotAt?: string;
+  readonly metadata?: JsonObject;
   readonly latestSnapshot?: RecoveredSessionStateSnapshot;
 }
 
@@ -83,6 +85,7 @@ interface AgentRunRow {
   readonly current_session_id: string | null;
   readonly created_by_client: string | null;
   readonly last_snapshot_at: string | null;
+  readonly metadata_json: string | null;
 }
 
 interface SessionStateSnapshotRow {
@@ -142,7 +145,8 @@ function loadRecoverableAgentRuns(
          last_active_at,
          current_session_id,
          created_by_client,
-         last_snapshot_at
+         last_snapshot_at,
+         metadata_json
        FROM agent_runs
        WHERE status IN (${placeholders(RECOVERABLE_AGENT_RUN_STATUSES.length)})
        ORDER BY last_active_at ASC, id ASC`,
@@ -162,6 +166,7 @@ function toRecoveredAgentRun(
   const currentSessionId = nullableString(row.current_session_id);
   const createdByClient = nullableString(row.created_by_client);
   const lastSnapshotAt = nullableString(row.last_snapshot_at);
+  const metadata = parseJsonObject(row.metadata_json);
   const latestSnapshot =
     currentSessionId === undefined
       ? undefined
@@ -182,6 +187,7 @@ function toRecoveredAgentRun(
     ...(currentSessionId !== undefined ? { currentSessionId } : {}),
     ...(createdByClient !== undefined ? { createdByClient } : {}),
     ...(lastSnapshotAt !== undefined ? { lastSnapshotAt } : {}),
+    ...(metadata !== undefined ? { metadata } : {}),
     ...(latestSnapshot !== undefined ? { latestSnapshot } : {}),
   };
 }
@@ -317,6 +323,23 @@ function placeholders(length: number): string {
 
 function nullableString(value: string | null): string | undefined {
   return value === null || value.length === 0 ? undefined : value;
+}
+
+function parseJsonObject(value: string | null): JsonObject | undefined {
+  if (value === null || value.length === 0) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed)
+    ) {
+      return parsed as JsonObject;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
 }
 
 function errorMessage(error: unknown): string {

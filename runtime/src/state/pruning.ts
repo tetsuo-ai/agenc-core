@@ -1,7 +1,7 @@
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 
 const COMPLETED_AGENT_RUN_STATUSES = ["completed", "stopped"] as const;
-const FAILED_AGENT_RUN_STATUSES = ["failed", "error"] as const;
+const FAILED_AGENT_RUN_STATUSES = ["failed", "error", "errored"] as const;
 const MS_PER_DAY = 86_400_000;
 
 export interface AgentRunRetentionPolicy {
@@ -192,19 +192,19 @@ export function pruneSessionStateSnapshots(
 
 function loadCandidates(
   driver: StateSqliteDriver,
-  statuses: readonly [string, string],
+  statuses: readonly string[],
   cutoff: string,
   category: AgentRunPruneCandidate["category"],
 ): AgentRunPruneCandidate[] {
   return driver
-    .prepareState<[string, string, string], Omit<AgentRunPruneCandidate, "category">>(
+    .prepareState<unknown[], Omit<AgentRunPruneCandidate, "category">>(
       `SELECT id, status, current_session_id
        FROM agent_runs
-       WHERE status IN (?, ?)
+       WHERE status IN (${placeholders(statuses.length)})
          AND last_active_at < ?
        ORDER BY last_active_at ASC, id ASC`,
     )
-    .all(statuses[0], statuses[1], cutoff)
+    .all(...statuses, cutoff)
     .map((row) => ({ ...row, category }));
 }
 
@@ -454,6 +454,10 @@ function cutoffIso(now: string, days: number | undefined): string | undefined {
   const nowMs = Date.parse(now);
   if (!Number.isFinite(nowMs)) return undefined;
   return new Date(nowMs - days * MS_PER_DAY).toISOString();
+}
+
+function placeholders(length: number): string {
+  return Array.from({ length }, () => "?").join(", ");
 }
 
 function emptyReport(): AgentRunPruningReport {

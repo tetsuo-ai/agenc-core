@@ -54,6 +54,7 @@ import {
 } from "../thread-store/index.js";
 import type { Event } from "../session/event-log.js";
 import type { ResponseItem, RolloutItem } from "../session/rollout-item.js";
+import type { AgenCStateAgentRunRecord } from "../state/agent-runs.js";
 
 export type AgenCDaemonAgentLifecycleErrorCode =
   | "AGENT_NOT_FOUND"
@@ -96,6 +97,9 @@ export interface AgenCDaemonAgentManagerOptions {
   readonly recordAgentStatusTransition?: (
     transition: AgenCDaemonAgentStatusSnapshot,
   ) => void | Promise<void>;
+  readonly recordAgentRun?: (
+    run: AgenCDaemonAgentRunSnapshot,
+  ) => void | Promise<void>;
   readonly registerSnapshotSession?: (
     session: AgenCDaemonSnapshotSessionRoute,
   ) => void | Promise<void>;
@@ -131,8 +135,15 @@ export interface AgenCDaemonAgentStatusSnapshot {
   readonly cwd?: string;
   readonly stateProjectDir?: string;
   readonly status: AgentStatus;
+  readonly runStatus?: string;
   readonly transitionAt: string;
   readonly reason?: string;
+}
+
+export interface AgenCDaemonAgentRunSnapshot
+  extends AgenCStateAgentRunRecord {
+  readonly cwd?: string;
+  readonly stateProjectDir?: string;
 }
 
 export interface AgenCDaemonSnapshotSessionRoute {
@@ -159,6 +170,7 @@ export interface AgenCDaemonAgentRestoreRecord {
   readonly stateProjectDir?: string;
   readonly metadata?: JsonObject;
   readonly sessionIds?: readonly string[];
+  readonly runtimeAvailable?: boolean;
 }
 
 export const DEFAULT_UNATTENDED_ALLOWLIST = [
@@ -228,6 +240,9 @@ export class AgenCDaemonAgentManager {
   readonly #recordAgentStatusTransition:
     | ((transition: AgenCDaemonAgentStatusSnapshot) => void | Promise<void>)
     | undefined;
+  readonly #recordAgentRun:
+    | ((run: AgenCDaemonAgentRunSnapshot) => void | Promise<void>)
+    | undefined;
   readonly #registerSnapshotSession:
     | ((session: AgenCDaemonSnapshotSessionRoute) => void | Promise<void>)
     | undefined;
@@ -251,6 +266,7 @@ export class AgenCDaemonAgentManager {
     this.#broadcastSessionEvent = options.broadcastSessionEvent;
     this.#recordMessageExchange = options.recordMessageExchange;
     this.#recordAgentStatusTransition = options.recordAgentStatusTransition;
+    this.#recordAgentRun = options.recordAgentRun;
     this.#registerSnapshotSession = options.registerSnapshotSession;
     this.#onSnapshotError = options.onSnapshotError ?? (() => {});
   }
@@ -275,6 +291,9 @@ export class AgenCDaemonAgentManager {
       const unattendedDeny = normalizeStringList(params.unattendedDeny, []);
       const metadata: JsonObject = {
         ...(params.metadata ?? {}),
+        ...(params.model !== undefined ? { model: params.model } : {}),
+        ...(params.provider !== undefined ? { provider: params.provider } : {}),
+        ...(params.profile !== undefined ? { profile: params.profile } : {}),
         unattendedAllow,
         unattendedDeny,
       };
@@ -330,17 +349,8 @@ export class AgenCDaemonAgentManager {
           agent.sessionIds.push(session.sessionId);
           agent.logSessionIds.push(session.sessionId);
           await this.#registerSnapshotSessionRoute(session.sessionId, agent);
-          await this.#runner.attachAgentSessionEvents?.(agent.agentId, {
-            sessionId: session.sessionId,
-            emit: (event) =>
-              this.#broadcastSessionEvent?.(session.sessionId, event),
-          });
         }
-
-        const result = await this.#state.with((state) => {
-          state.agents.set(agent.agentId, agent);
-          return toAgentCreateResult(agent);
-        });
+        await this.#recordAgentRunSnapshot(agent, { required: true });
         await this.#recordAgentStatusSnapshots(
           agent.sessionIds,
           agent.agentId,
@@ -349,11 +359,32 @@ export class AgenCDaemonAgentManager {
           undefined,
           snapshotRouteForAgent(agent),
         );
+        if (this.#sessionManager !== undefined) {
+          for (const sessionId of agent.sessionIds) {
+            await this.#runner.attachAgentSessionEvents?.(agent.agentId, {
+              sessionId,
+              emit: (event) => this.#broadcastSessionEvent?.(sessionId, event),
+            });
+          }
+        }
+
+        const result = await this.#state.with((state) => {
+          state.agents.set(agent.agentId, agent);
+          return toAgentCreateResult(agent);
+        });
         return result;
       } catch (error) {
         await this.#runner.stopAgent?.(
           agent.agentId,
           "agent.create rollback after lifecycle failure",
+        );
+        await this.#recordAgentStatusSnapshots(
+          agent.sessionIds,
+          agent.agentId,
+          "error",
+          this.#now(),
+          "agent.create rollback after lifecycle failure",
+          snapshotRouteForAgent(agent),
         );
         throw error;
       }
@@ -386,7 +417,7 @@ export class AgenCDaemonAgentManager {
       sessionIds: normalizeStringList(record.sessionIds, []),
       logSessionIds: normalizeStringList(record.sessionIds, []),
       recovered: true,
-      runtimeAvailable: false,
+      runtimeAvailable: record.runtimeAvailable === true,
     };
     if (record.cwd !== undefined) agent.cwd = record.cwd;
     if (record.stateProjectDir !== undefined) {
@@ -394,12 +425,23 @@ export class AgenCDaemonAgentManager {
     }
     if (record.metadata !== undefined) agent.metadata = record.metadata;
 
-    return this.#state.with((state) => {
+    let inserted: MutableAgent | undefined;
+    const summary = await this.#state.with((state) => {
       const existing = state.agents.get(agentId);
       if (existing !== undefined) return toAgentSummary(existing);
       state.agents.set(agentId, agent);
+      inserted = agent;
       return toAgentSummary(agent);
     });
+    if (inserted?.runtimeAvailable === true) {
+      for (const sessionId of inserted.sessionIds) {
+        await this.#runner?.attachAgentSessionEvents?.(inserted.agentId, {
+          sessionId,
+          emit: (event) => this.#broadcastSessionEvent?.(sessionId, event),
+        });
+      }
+    }
+    return summary;
   }
 
   #beginCreate(): () => void {
@@ -996,6 +1038,29 @@ export class AgenCDaemonAgentManager {
     }
   }
 
+  async #recordAgentRunSnapshot(
+    agent: MutableAgent,
+    options: { readonly required?: boolean } = {},
+  ): Promise<void> {
+    if (this.#recordAgentRun === undefined) return;
+    try {
+      const currentSessionId = latestSessionIdForAgentRun(agent);
+      await this.#recordAgentRun({
+        id: agent.agentId,
+        objective: agent.objective,
+        status: "running",
+        startedAt: agent.startedAt,
+        lastActiveAt: agent.lastActiveAt,
+        ...(currentSessionId !== undefined ? { currentSessionId } : {}),
+        metadata: agentRunMetadata(agent),
+        ...snapshotRouteForAgent(agent),
+      });
+    } catch (error) {
+      if (options.required === true) throw error;
+      this.#onSnapshotError(error);
+    }
+  }
+
   async #recordMessageExchangeSnapshot(
     exchange: AgenCDaemonMessageExchangeSnapshot,
   ): Promise<void> {
@@ -1219,6 +1284,13 @@ function applyAgentSnapshot(
   agent.lastActiveAt = snapshot.lastActiveAt;
 }
 
+function agentRunMetadata(agent: MutableAgent): JsonObject {
+  return {
+    ...agent.metadata,
+    ...(agent.agentPath !== undefined ? { agentPath: agent.agentPath } : {}),
+  };
+}
+
 function snapshotRouteForAgent(agent: MutableAgent): AgenCDaemonSnapshotRoute {
   return {
     ...(agent.cwd !== undefined ? { cwd: agent.cwd } : {}),
@@ -1230,6 +1302,10 @@ function snapshotRouteForAgent(agent: MutableAgent): AgenCDaemonSnapshotRoute {
 
 function logSessionIdsForAgent(agent: MutableAgent): string[] {
   return uniqueNonEmptyStrings([...agent.logSessionIds, ...agent.sessionIds]);
+}
+
+function latestSessionIdForAgentRun(agent: MutableAgent): string | undefined {
+  return agent.sessionIds.at(-1) ?? agent.logSessionIds.at(-1);
 }
 
 function isActiveAgent(agent: MutableAgent): boolean {
