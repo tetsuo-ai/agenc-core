@@ -353,6 +353,43 @@ const ITEM_EVIDENCE = {
   "ST-09": {
     grepPresent: [{ pattern: "agenc state export|agenc state import|state\\.export|state\\.import", scope: "runtime/src" }],
   },
+  "T-09": {
+    files: [
+      "runtime/src/tools/ask-user-question/tui-tool.tsx",
+      "runtime/src/tools/AgentTool/loadAgentsDir.ts",
+      "runtime/src/tools/AgentTool/agentColorManager.ts",
+      "runtime/src/tools/AgentTool/constants.ts",
+      "runtime/src/tools/AgentTool/prompt.ts",
+      "runtime/src/tools/BriefTool/prompt.ts",
+    ],
+    tests: ["runtime/src/tools/ask-user-question-bridge-routing.test.tsx"],
+    grepNotPresent: [
+      {
+        pattern: "agenc/upstream/tools/(AskUserQuestionTool|AgentTool|BriefTool)",
+        scope: "runtime/src/tui/bridges/tool-stubs.tsx",
+      },
+      {
+        pattern: "agenc/upstream/tools/(AskUserQuestionTool|AgentTool|BriefTool)",
+        scope: "runtime/src/tui/components/PromptInput",
+      },
+      {
+        pattern: "agenc/upstream/tools/(AskUserQuestionTool|AgentTool|BriefTool)",
+        scope: "runtime/src/tui/components/Messages.tsx",
+      },
+      {
+        pattern: "agenc/upstream/tools/(AskUserQuestionTool|AgentTool|BriefTool)",
+        scope: "runtime/src/tui/components/App.tsx",
+      },
+      {
+        pattern: "agenc/upstream/tools/(AskUserQuestionTool|AgentTool|BriefTool)",
+        scope: "runtime/src/tui/state/AppStateStore.ts",
+      },
+      {
+        pattern: "agenc/upstream/tools/(AskUserQuestionTool|AgentTool|BriefTool)",
+        scope: "runtime/src/agenc/adapters/upstream-agent-list.ts",
+      },
+    ],
+  },
   "ST-10": {
     files: [{ globUnder: "runtime/src/rollout", matching: /recorder|session.?index/i, minCount: 1 }],
   },
@@ -852,8 +889,30 @@ async function leafAbsorbGates(item) {
 }
 
 async function tuiAbsorbGates(item) {
+  if (id === "T-09") {
+    await t09ToolTargetGates();
+    return;
+  }
   // Same shape as leaf absorb, but for the larger TUI subtrees.
   await leafAbsorbGates(item);
+}
+
+async function t09ToolTargetGates() {
+  const scopes = [
+    "runtime/src/tui/bridges/tool-stubs.tsx",
+    "runtime/src/tui/components/PromptInput",
+    "runtime/src/tui/components/Messages.tsx",
+    "runtime/src/tui/components/App.tsx",
+    "runtime/src/tui/state/AppStateStore.ts",
+    "runtime/src/agenc/adapters/upstream-agent-list.ts",
+    "runtime/src/tools/ask-user-question-bridge-routing.test.tsx",
+  ];
+  const forbidden = "agenc/upstream/tools/(AskUserQuestionTool|AgentTool|BriefTool)";
+  const scan = run("rg", ["--no-messages", "-n", forbidden, ...scopes], { silent: true });
+  if (scan.status === 0 && scan.stdout.trim()) {
+    failGate(`T-09 scoped importers still reference upstream tool targets:\n${scan.stdout}`);
+  }
+  pass("T-09 scoped tool targets resolved to AgenC-owned paths");
 }
 
 async function foundationalGates(item) {

@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import * as React from 'react';
 import { Box, Text } from '../../ink.js';
-import { AGENT_COLOR_TO_THEME_COLOR, AGENT_COLORS, type AgentColorName } from '../../../agenc/upstream/tools/AgentTool/agentColorManager.js';
+import { AGENT_COLOR_TO_THEME_COLOR, AGENT_COLORS, type AgentColorName } from '../../../tools/AgentTool/agentColorManager.js';
 import type { PromptInputMode } from '../../../agenc/upstream/types/textInputTypes.js';
 import { getTeammateColor } from '../../../agenc/upstream/utils/teammate.js';
 import type { Theme } from '../../../agenc/upstream/utils/theme.js';

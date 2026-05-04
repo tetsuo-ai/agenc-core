@@ -15,8 +15,8 @@ import {
   type ToolPermissionContext,
 } from '../../agenc/upstream/Tool.js'
 import type { TaskState } from '../../agenc/upstream/tasks/types.js'
-import type { AgentColorName } from '../../agenc/upstream/tools/AgentTool/agentColorManager.js'
-import type { AgentDefinitionsResult } from '../../agenc/upstream/tools/AgentTool/loadAgentsDir.js'
+import type { AgentColorName } from '../../tools/AgentTool/agentColorManager.js'
+import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir.js'
 import type { AllowedPrompt } from '../../agenc/upstream/tools/ExitPlanModeTool/ExitPlanModeV2Tool.js'
 import type { AgentId } from '../../agenc/upstream/types/ids.js'
 import type { Message, UserMessage } from '../../agenc/upstream/types/message.js'

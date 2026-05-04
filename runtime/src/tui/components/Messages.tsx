@@ -18,7 +18,7 @@ import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
 import type { Screen } from '../../agenc/upstream/screens/REPL.js';
 import type { Tools } from '../../agenc/upstream/Tool.js';
 import { findToolByName } from '../../agenc/upstream/Tool.js';
-import type { AgentDefinitionsResult } from '../../agenc/upstream/tools/AgentTool/loadAgentsDir.js';
+import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir.js';
 import type { Message as MessageType, NormalizedMessage, ProgressMessage as ProgressMessageType, RenderableMessage } from '../../agenc/upstream/types/message.js';
 import { type AdvisorBlock, isAdvisorBlock } from '../../agenc/upstream/utils/advisor.js';
 import { collapseBackgroundBashNotifications } from '../../agenc/upstream/utils/collapseBackgroundBashNotifications.js';
@@ -86,7 +86,7 @@ const LogoHeader = React.memo(function LogoHeader(t0) {
 
 // Dead code elimination: conditional import for brief mode
 /* eslint-disable @typescript-eslint/no-require-imports */
-const BRIEF_TOOL_NAME: string | null = feature('KAIROS') || feature('KAIROS_BRIEF') ? (require('../../agenc/upstream/tools/BriefTool/prompt.js') as typeof import('../../agenc/upstream/tools/BriefTool/prompt.js')).BRIEF_TOOL_NAME : null;
+const BRIEF_TOOL_NAME: string | null = feature('KAIROS') || feature('KAIROS_BRIEF') ? (require('../../tools/BriefTool/prompt.js') as typeof import('../../tools/BriefTool/prompt.js')).BRIEF_TOOL_NAME : null;
 /* eslint-enable @typescript-eslint/no-require-imports */
 const SEND_USER_FILE_TOOL_NAME: string | null = feature('KAIROS') ? getMessagesSendUserFileToolName() : null;
 
