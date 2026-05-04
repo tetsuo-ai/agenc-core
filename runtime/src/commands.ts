@@ -3,7 +3,12 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { buildDefaultRegistry } from "./commands/registry.js";
-import type { SlashCommand } from "./commands/types.js";
+import type {
+  SlashCommand,
+  SlashCommandAppStateBridge,
+  SlashCommandContext,
+  SlashCommandResult,
+} from "./commands/types.js";
 import {
   createLocalSkillsServices,
   type LocalSkillMetadata,
@@ -120,11 +125,75 @@ export type CommandBase = {
 
 export type Command = CommandBase & (PromptCommand | LocalCommand | LocalJSXCommand);
 
-function dispatcherLoadError(cmd: SlashCommand): Error {
-  return new Error(
-    `Command load() invoked for AgenC command "${cmd.name}"; ` +
-      "AgenC commands execute through the runtime dispatcher.",
-  );
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function legacyString(
+  legacyContext: LocalJSXCommandContext,
+  key: string,
+): string | undefined {
+  const value = legacyContext[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function legacySlashContext(
+  args: string,
+  legacyContext: LocalJSXCommandContext,
+): SlashCommandContext | null {
+  const session = legacyContext.session;
+  if (!isRecord(session) || !isRecord(session.services)) return null;
+
+  const sessionConfiguration = isRecord(session.sessionConfiguration)
+    ? session.sessionConfiguration
+    : {};
+  const cwd =
+    legacyString(legacyContext, "cwd") ??
+    (typeof sessionConfiguration.cwd === "string"
+      ? sessionConfiguration.cwd
+      : process.cwd());
+  const services = session.services as Record<string, unknown>;
+  const configStore =
+    legacyContext.configStore ?? services.configStore;
+  const setAppState = legacyContext.setAppState;
+  const appState = isRecord(legacyContext.appState)
+    ? (legacyContext.appState as SlashCommandAppStateBridge)
+    : typeof setAppState === "function"
+      ? {
+          setAppState: setAppState as unknown as (
+            updater: (prev: unknown) => unknown,
+          ) => void,
+        }
+      : undefined;
+
+  return {
+    session: session as unknown as SlashCommandContext["session"],
+    argsRaw: args,
+    cwd,
+    home: legacyString(legacyContext, "home") ?? process.env.HOME ?? cwd,
+    ...(legacyString(legacyContext, "agencHome")
+      ? { agencHome: legacyString(legacyContext, "agencHome") }
+      : {}),
+    ...(configStore ? { configStore: configStore as SlashCommandContext["configStore"] } : {}),
+    ...(appState ? { appState } : {}),
+  };
+}
+
+function localResultFromSlashResult(result: SlashCommandResult): LocalCommandResult {
+  switch (result.kind) {
+    case "text":
+      return { type: "text", value: result.text };
+    case "compact":
+      return { type: "compact", displayText: result.text };
+    case "skip":
+      return { type: "skip" };
+    case "prompt":
+      return { type: "text", value: result.content };
+    case "exit":
+      return { type: "text", value: `Exit requested with code ${result.code}.` };
+    case "error":
+      return { type: "text", value: result.message };
+  }
 }
 
 export function projectSlashCommand(cmd: SlashCommand): Command {
@@ -137,7 +206,29 @@ export function projectSlashCommand(cmd: SlashCommand): Command {
     userInvocable: cmd.userInvocable,
     supportsNonInteractive: true,
     load: async () => {
-      throw dispatcherLoadError(cmd);
+      const { dispatchSlashCommand } = await import("./commands/dispatcher.js");
+      return {
+        call: async (
+          args: string,
+          legacyContext: LocalJSXCommandContext,
+        ): Promise<LocalCommandResult> => {
+          const ctx = legacySlashContext(args, legacyContext);
+          if (!ctx) {
+            return {
+              type: "text",
+              value:
+                `/${cmd.name} is handled by the AgenC runtime dispatcher ` +
+                "and requires a live session context.",
+            };
+          }
+          const outcome = await dispatchSlashCommand(
+            { name: cmd.name, argsRaw: args, isMcp: false },
+            ctx,
+            buildDefaultRegistry(),
+          );
+          return localResultFromSlashResult(outcome.result);
+        },
+      };
     },
   };
 }
@@ -302,12 +393,16 @@ export function getCommand(
   return command;
 }
 
-export const builtInCommandNames = new Set(
+const builtInCommandNameSet = new Set(
   getCommandsSync().flatMap(command => [
     command.name,
     ...(command.aliases ?? []),
   ]),
 );
+
+export function builtInCommandNames(): Set<string> {
+  return builtInCommandNameSet;
+}
 
 const commandByName = (name: string): Command | undefined =>
   builtInCommands().find(command => command.name === name);

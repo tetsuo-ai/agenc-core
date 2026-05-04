@@ -16,6 +16,7 @@ import {
   registerCommandProvider,
   REMOTE_SAFE_COMMANDS,
   clearCommandMemoizationCaches,
+  builtInCommandNames,
   type Command,
 } from "../commands.js";
 import { buildDefaultRegistry } from "./registry.js";
@@ -148,6 +149,31 @@ describe("AgenC command surface compatibility", () => {
     expect(files).toBeDefined();
     expect(REMOTE_SAFE_COMMANDS.has(help!)).toBe(true);
     expect(BRIDGE_SAFE_COMMANDS.has(files!)).toBe(true);
+  });
+
+  it("preserves the callable builtInCommandNames shim API for upstream consumers", () => {
+    const names = builtInCommandNames();
+    expect(names).toBeInstanceOf(Set);
+    expect(names.has("help")).toBe(true);
+    expect(names.has("provider")).toBe(true);
+  });
+
+  it("adapts projected built-in load calls through the AgenC dispatcher", async () => {
+    const session = fakeSession();
+    const cost = getCommandsSync().find(command => command.name === "cost");
+    expect(cost?.type).toBe("local");
+    const loaded = await (cost as Extract<Command, { type: "local" }>).load();
+    await expect(
+      loaded.call("", {
+        session,
+        cwd: "/tmp/project",
+        home: "/tmp",
+        agencHome: "/tmp/agenc",
+      }),
+    ).resolves.toEqual({
+      type: "text",
+      value: "Cost tracking is not enabled for this session.",
+    });
   });
 
   it("uses bridge-safe names for local commands and allows prompt commands", () => {

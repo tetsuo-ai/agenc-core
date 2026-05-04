@@ -11,9 +11,9 @@
  * shape so the TUI autocomplete surface lights up with real entries.
  *
  * Execution path: when the user submits a slash command, the AgenC
- * dispatcher (`commands/dispatcher.ts`) runs it. The upstream `load()`
- * execution path is NOT wired and must not be invoked — the adapter
- * installs a `load()` that throws if anyone calls it.
+ * dispatcher (`commands/dispatcher.ts`) runs it. The projected commands
+ * also expose a legacy `load().call()` adapter for remaining upstream
+ * mirror consumers that still execute through processSlashCommand.
  *
  * @module
  */

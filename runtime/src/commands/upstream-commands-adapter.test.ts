@@ -52,15 +52,17 @@ describe("loadUpstreamCommandList (TUI slash-command wiring)", () => {
     }
   });
 
-  it("upstream load() throws — execution must flow through the AgenC dispatcher", async () => {
+  it("upstream load() exposes a non-throwing legacy adapter", async () => {
     const list = loadUpstreamCommandList();
     const sample = list[0];
     expect(sample).toBeDefined();
     expect((sample as { type: string }).type).toBe("local");
     const local = sample as Extract<typeof sample, { type: "local" }>;
-    await expect(local.load()).rejects.toThrow(
-      /AgenC commands execute through the runtime dispatcher/,
-    );
+    const loaded = await local.load();
+    await expect(loaded.call("", {} as never)).resolves.toMatchObject({
+      type: "text",
+      value: expect.stringContaining("requires a live session context"),
+    });
   });
 
   it("registration order from buildDefaultRegistry is preserved", () => {

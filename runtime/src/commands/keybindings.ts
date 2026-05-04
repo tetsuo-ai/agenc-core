@@ -25,8 +25,8 @@ import {
 } from "./types.js";
 
 export const DEFAULT_KEYBINDINGS = {
-  $schema: "https://agenc.dev/schemas/keybindings.json",
-  $docs: "https://agenc.dev/docs/keybindings",
+  $schema: "urn:agenc:schema:keybindings",
+  $docs: "urn:agenc:docs:keybindings",
   bindings: [
     {
       context: "Global",
