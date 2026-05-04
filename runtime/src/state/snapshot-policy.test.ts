@@ -152,6 +152,60 @@ describe("AgenCSessionSnapshotPolicy", () => {
     });
   });
 
+  it("persists budget halt markers from runner-emitted agent status", () => {
+    seedRun("run-budget", "session-budget");
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: clock(["2026-05-01T00:00:12.000Z"]),
+    });
+    const budgetHalt = {
+      kind: "token_cap",
+      cap: 10,
+      observed: 12,
+      reason: "token_cap:12",
+      haltedAt: "2026-05-01T00:00:12.000Z",
+      tokens: { input: 8, output: 4, total: 12 },
+      costUsd: 0.0001,
+      wallClockSeconds: 12,
+      model: "gpt-5.4",
+      provider: "openai",
+    };
+    const budgetUsage = {
+      inputTokens: 8,
+      outputTokens: 4,
+      totalTokens: 12,
+      costUsd: 0.0001,
+      costBasis: "input_output_token_usage",
+    };
+
+    policy.recordSessionEvent("session-budget", {
+      method: "event.agent_status",
+      params: {
+        agentId: "run-budget",
+        status: "stopped",
+        runStatus: "stopped",
+        message: "agent budget token_cap reached",
+        budgetHalt,
+        budgetUsage,
+      },
+    });
+
+    expect(runStatus("run-budget")).toEqual({
+      status: "stopped",
+      last_active_at: "2026-05-01T00:00:12.000Z",
+    });
+    expect(runMetadata("run-budget")).toEqual({ budgetHalt, budgetUsage });
+    expect(latestSnapshot("session-budget").toolState).toMatchObject({
+      statusTransitions: [
+        {
+          agentId: "run-budget",
+          status: "stopped",
+          reason: "agent budget token_cap reached",
+          metadataPatch: { budgetHalt, budgetUsage },
+        },
+      ],
+    });
+  });
+
   it("periodically flushes tracked sessions and stops the timer", () => {
     const clearInterval = vi.fn();
     let tick: (() => void) | undefined;
@@ -579,6 +633,15 @@ function runStatus(runId: string): {
       "SELECT status, last_active_at FROM agent_runs WHERE id = ?",
     )
     .get(runId);
+}
+
+function runMetadata(runId: string): unknown {
+  const value = driver
+    .prepareState<[string], { metadata_json: string | null }>(
+      "SELECT metadata_json FROM agent_runs WHERE id = ?",
+    )
+    .get(runId)?.metadata_json;
+  return value === null || value === undefined ? null : JSON.parse(value);
 }
 
 function sessionAgent(sessionId: string): string | undefined {

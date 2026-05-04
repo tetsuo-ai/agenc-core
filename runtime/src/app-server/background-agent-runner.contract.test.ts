@@ -473,6 +473,751 @@ describe("AgenC delegate background-agent runner", () => {
     expect(runParams?.initialMessages).toEqual(initialMessages);
   });
 
+  it("halts a recovered agent when the configured token cap is reached", async () => {
+    const session = {
+      conversationId: "session-budget-token",
+      permissionModeRegistry: {
+        current: () => createEmptyToolPermissionContext(),
+        update: vi.fn(async () => {}),
+      },
+      services: {},
+    };
+    const live = restoredLiveAgent("run-budget-token", "/root/budget-token");
+    const control = {
+      resumeAgentFromRollout: vi.fn(async () => ({
+        resumedCount: 1,
+        rootLive: live,
+      })),
+      sendInput: vi.fn(async () => {}),
+      shutdown: vi.fn(async () => {}),
+    };
+    const runAgentFn = (async function* (
+      params: Parameters<AgenCRunAgentFunction>[0],
+    ) {
+      params.live.tokenUsage.inputTokens = 8;
+      params.live.tokenUsage.outputTokens = 4;
+      params.live.tokenUsage.totalTokens = 12;
+      yield {
+        kind: "run_complete",
+        finalMessage: "done",
+        toolCallCount: 0,
+      };
+      await new Promise(() => {});
+    }) as AgenCRunAgentFunction;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        registry: { tools: [], toLLMTools: () => [], dispatch: vi.fn() },
+        shutdown: vi.fn(async () => {}),
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      runAgentFn,
+      agentBudget: { token_cap: 10 },
+      now: () => "2026-05-01T12:00:10.000Z",
+      budgetNowMs: () => Date.parse("2026-05-01T12:00:10.000Z"),
+    });
+
+    await expect(
+      runner.restoreAgent({
+        agentId: "run-budget-token",
+        objective: "stay within token cap",
+        startedAt: "2026-05-01T12:00:00.000Z",
+        currentSessionId: "session-budget-token",
+        model: "gpt-5.4",
+        provider: "openai",
+        metadata: { agentPath: "/root/budget-token" },
+      }),
+    ).resolves.toBe(true);
+    const emitted: unknown[] = [];
+    await runner.attachAgentSessionEvents("run-budget-token", {
+      sessionId: "session-budget-token",
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+
+    await vi.waitFor(() =>
+      expect(control.shutdown).toHaveBeenCalledWith(
+        "run-budget-token",
+        expect.stringContaining("token_cap"),
+      ),
+    );
+    expect(emitted).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: "event.agent_status",
+          params: expect.objectContaining({
+            status: "stopped",
+            runStatus: "stopped",
+            message: expect.stringContaining("token_cap"),
+            budgetHalt: expect.objectContaining({
+              kind: "token_cap",
+              cap: 10,
+              observed: 12,
+              reason: expect.stringContaining("agent budget token_cap reached"),
+              costBasis: "input_output_token_usage",
+              tokens: expect.objectContaining({ total: 12 }),
+            }),
+            budgetUsage: expect.objectContaining({
+              totalTokens: 12,
+              costBasis: "input_output_token_usage",
+            }),
+          }),
+        }),
+      ]),
+    );
+    await expect(runner.getAgentSnapshot("run-budget-token")).resolves.toEqual(
+      expect.objectContaining({
+        status: "stopped",
+        metadata: {
+          budgetHalt: expect.objectContaining({ kind: "token_cap" }),
+        },
+      }),
+    );
+    await expect(
+      runner.submitAgentMessage("run-budget-token", {
+        sessionId: "session-budget-token",
+        content: "more work",
+        originalContent: "more work",
+        messageId: "message-after-budget",
+        streamId: "stream-after-budget",
+        acceptedAt: "2026-05-01T12:00:11.000Z",
+      }),
+    ).rejects.toThrow("AgenC daemon agent not running: run-budget-token");
+    await expect(
+      runner.resolveToolDecision("run-budget-token", {
+        requestId: "tool-after-budget",
+        decision: APPROVED,
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      runner.cancelTool("run-budget-token", {
+        requestId: "tool-after-budget",
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      runner.respondToElicitation("run-budget-token", {
+        requestId: "elicitation-after-budget",
+        kind: "accept",
+        response: {},
+      }),
+    ).resolves.toBe(false);
+  });
+
+  it("halts a recovered agent when the configured dollar cap is reached", async () => {
+    const session = {
+      conversationId: "session-budget-dollar",
+      permissionModeRegistry: {
+        current: () => createEmptyToolPermissionContext(),
+        update: vi.fn(async () => {}),
+      },
+      services: {},
+    };
+    const live = restoredLiveAgent("run-budget-dollar", "/root/budget-dollar");
+    const control = {
+      resumeAgentFromRollout: vi.fn(async () => ({
+        resumedCount: 1,
+        rootLive: live,
+      })),
+      sendInput: vi.fn(async () => {}),
+      shutdown: vi.fn(async () => {}),
+    };
+    const runAgentFn = (async function* (
+      params: Parameters<AgenCRunAgentFunction>[0],
+    ) {
+      params.live.tokenUsage.inputTokens = 0;
+      params.live.tokenUsage.outputTokens = 10;
+      params.live.tokenUsage.totalTokens = 10;
+      yield { kind: "status", text: "cost updated" };
+      await new Promise(() => {});
+    }) as AgenCRunAgentFunction;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        registry: { tools: [], toLLMTools: () => [], dispatch: vi.fn() },
+        shutdown: vi.fn(async () => {}),
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      runAgentFn,
+      agentBudget: { dollar_cap: 0.00001 },
+      now: () => "2026-05-01T12:00:10.000Z",
+      budgetNowMs: () => Date.parse("2026-05-01T12:00:10.000Z"),
+    });
+
+    await expect(
+      runner.restoreAgent({
+        agentId: "run-budget-dollar",
+        objective: "stay within dollar cap",
+        startedAt: "2026-05-01T12:00:00.000Z",
+        currentSessionId: "session-budget-dollar",
+        model: "gpt-5.4",
+        provider: "openai",
+        metadata: { agentPath: "/root/budget-dollar" },
+      }),
+    ).resolves.toBe(true);
+    const emitted: unknown[] = [];
+    await runner.attachAgentSessionEvents("run-budget-dollar", {
+      sessionId: "session-budget-dollar",
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+
+    await vi.waitFor(() =>
+      expect(control.shutdown).toHaveBeenCalledWith(
+        "run-budget-dollar",
+        expect.stringContaining("dollar_cap"),
+      ),
+    );
+    expect(emitted).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: "event.agent_status",
+          params: expect.objectContaining({
+            status: "stopped",
+            runStatus: "stopped",
+            message: expect.stringContaining("dollar_cap"),
+            budgetHalt: expect.objectContaining({
+              kind: "dollar_cap",
+              cap: 0.00001,
+              observed: expect.any(Number),
+              costUsd: expect.any(Number),
+              costBasis: "input_output_token_usage",
+            }),
+            budgetUsage: expect.objectContaining({
+              totalTokens: 10,
+              costBasis: "input_output_token_usage",
+            }),
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("restores prior budget usage before enforcing caps", async () => {
+    const session = {
+      conversationId: "session-budget-prior",
+      permissionModeRegistry: {
+        current: () => createEmptyToolPermissionContext(),
+        update: vi.fn(async () => {}),
+      },
+      services: {},
+    };
+    const live = restoredLiveAgent("run-budget-prior", "/root/budget-prior");
+    const control = {
+      resumeAgentFromRollout: vi.fn(async () => ({
+        resumedCount: 1,
+        rootLive: live,
+      })),
+      sendInput: vi.fn(async () => {}),
+      shutdown: vi.fn(async () => {}),
+    };
+    const runAgentFn = (async function* () {
+      await new Promise(() => {});
+    }) as AgenCRunAgentFunction;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        registry: { tools: [], toLLMTools: () => [], dispatch: vi.fn() },
+        shutdown: vi.fn(async () => {}),
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      runAgentFn,
+      agentBudget: { token_cap: 10 },
+      now: () => "2026-05-01T12:00:10.000Z",
+      budgetNowMs: () => Date.parse("2026-05-01T12:00:10.000Z"),
+    });
+
+    await expect(
+      runner.restoreAgent({
+        agentId: "run-budget-prior",
+        objective: "resume with prior usage",
+        startedAt: "2026-05-01T12:00:00.000Z",
+        currentSessionId: "session-budget-prior",
+        model: "gpt-5.4",
+        provider: "openai",
+        metadata: {
+          agentPath: "/root/budget-prior",
+          budgetUsage: {
+            inputTokens: 9,
+            outputTokens: 1,
+            totalTokens: 10,
+            costUsd: 0.00002,
+          },
+        },
+      }),
+    ).resolves.toBe(true);
+
+    await vi.waitFor(() =>
+      expect(control.shutdown).toHaveBeenCalledWith(
+        "run-budget-prior",
+        expect.stringContaining("token_cap"),
+      ),
+    );
+    const emitted: unknown[] = [];
+    await runner.attachAgentSessionEvents("run-budget-prior", {
+      sessionId: "session-budget-prior",
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+    expect(emitted).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: "event.agent_status",
+          params: expect.objectContaining({
+            budgetHalt: expect.objectContaining({
+              kind: "token_cap",
+              observed: 10,
+              tokens: expect.objectContaining({
+                input: 9,
+                output: 1,
+                total: 10,
+              }),
+            }),
+            budgetUsage: expect.objectContaining({
+              inputTokens: 9,
+              outputTokens: 1,
+              totalTokens: 10,
+              costUsd: 0.00002,
+            }),
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("still shuts down when budget halt notification delivery fails", async () => {
+    const session = {
+      conversationId: "session-budget-emit-fail",
+      permissionModeRegistry: {
+        current: () => createEmptyToolPermissionContext(),
+        update: vi.fn(async () => {}),
+      },
+      services: {},
+    };
+    const live = restoredLiveAgent(
+      "run-budget-emit-fail",
+      "/root/budget-emit-fail",
+    );
+    const shutdown = vi.fn(async () => {});
+    const control = {
+      resumeAgentFromRollout: vi.fn(async () => ({
+        resumedCount: 1,
+        rootLive: live,
+      })),
+      sendInput: vi.fn(async () => {}),
+      shutdown: vi.fn(async () => {}),
+    };
+    let release!: () => void;
+    const progressGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const runAgentFn = (async function* (
+      params: Parameters<AgenCRunAgentFunction>[0],
+    ) {
+      await progressGate;
+      params.live.tokenUsage.inputTokens = 12;
+      params.live.tokenUsage.outputTokens = 0;
+      params.live.tokenUsage.totalTokens = 12;
+      yield {
+        kind: "run_complete",
+        finalMessage: "done",
+        toolCallCount: 0,
+      };
+      await new Promise(() => {});
+    }) as AgenCRunAgentFunction;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        registry: { tools: [], toLLMTools: () => [], dispatch: vi.fn() },
+        shutdown,
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      runAgentFn,
+      agentBudget: { token_cap: 10 },
+      now: () => "2026-05-01T12:00:10.000Z",
+      budgetNowMs: () => Date.parse("2026-05-01T12:00:10.000Z"),
+    });
+
+    await expect(
+      runner.restoreAgent({
+        agentId: "run-budget-emit-fail",
+        objective: "halt despite notification failure",
+        currentSessionId: "session-budget-emit-fail",
+        metadata: { agentPath: "/root/budget-emit-fail" },
+      }),
+    ).resolves.toBe(true);
+    await runner.attachAgentSessionEvents("run-budget-emit-fail", {
+      sessionId: "session-budget-emit-fail",
+      emit: vi.fn(async () => {
+        throw new Error("broadcast failed");
+      }),
+    });
+
+    release();
+
+    await vi.waitFor(() =>
+      expect(control.shutdown).toHaveBeenCalledWith(
+        "run-budget-emit-fail",
+        expect.stringContaining("token_cap"),
+      ),
+    );
+    expect(shutdown).toHaveBeenCalledTimes(1);
+    await expect(
+      runner.submitAgentMessage("run-budget-emit-fail", {
+        sessionId: "session-budget-emit-fail",
+        content: "more work",
+        originalContent: "more work",
+        messageId: "message-after-failed-budget-emit",
+        streamId: "stream-after-failed-budget-emit",
+        acceptedAt: "2026-05-01T12:00:11.000Z",
+      }),
+    ).rejects.toThrow("AgenC daemon agent not running: run-budget-emit-fail");
+  });
+
+  it("halts at the usage update boundary before a queued follow-up turn starts", async () => {
+    const session = {
+      conversationId: "session-budget-boundary",
+      permissionModeRegistry: {
+        current: () => createEmptyToolPermissionContext(),
+        update: vi.fn(async () => {}),
+      },
+      services: {},
+    };
+    const live = restoredLiveAgent("run-budget-boundary", "/root/budget-boundary");
+    const control = {
+      resumeAgentFromRollout: vi.fn(async () => ({
+        resumedCount: 1,
+        rootLive: live,
+      })),
+      sendInput: vi.fn(async () => {}),
+      shutdown: vi.fn(async (agentId: string, reason: string) => {
+        live.abortController.abort(reason);
+        void agentId;
+      }),
+    };
+    let secondTurnStarted = false;
+    const runAgentFn = (async function* (
+      params: Parameters<AgenCRunAgentFunction>[0],
+    ) {
+      params.live.tokenUsage.inputTokens = 8;
+      params.live.tokenUsage.outputTokens = 4;
+      params.live.tokenUsage.totalTokens = 12;
+      yield {
+        kind: "usage_update",
+        inputTokens: 8,
+        outputTokens: 4,
+        totalTokens: 12,
+      };
+      if (params.live.abortController.signal.aborted) {
+        return {
+          threadId: params.live.agentId,
+          durationMs: 1,
+          outcome: "interrupted",
+          toolCallCount: 0,
+        };
+      }
+      secondTurnStarted = true;
+      yield { kind: "status", text: "second provider turn started" };
+      await new Promise(() => {});
+    }) as AgenCRunAgentFunction;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        registry: { tools: [], toLLMTools: () => [], dispatch: vi.fn() },
+        shutdown: vi.fn(async () => {}),
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      runAgentFn,
+      agentBudget: { token_cap: 10 },
+      now: () => "2026-05-01T12:00:10.000Z",
+      budgetNowMs: () => Date.parse("2026-05-01T12:00:10.000Z"),
+    });
+
+    await expect(
+      runner.restoreAgent({
+        agentId: "run-budget-boundary",
+        objective: "stop before next turn",
+        currentSessionId: "session-budget-boundary",
+        metadata: { agentPath: "/root/budget-boundary" },
+      }),
+    ).resolves.toBe(true);
+
+    await vi.waitFor(() =>
+      expect(control.shutdown).toHaveBeenCalledWith(
+        "run-budget-boundary",
+        expect.stringContaining("token_cap"),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(secondTurnStarted).toBe(false);
+  });
+
+  it("halts an idle recovered agent when the wall-clock cap timer fires", async () => {
+    const startedAtMs = Date.parse("2026-05-01T12:00:00.000Z");
+    let nowMs = startedAtMs;
+    let timerCallback: (() => void) | undefined;
+    const timer = { unref: vi.fn() };
+    const clearBudgetTimer = vi.fn();
+    const session = {
+      conversationId: "session-budget-wall",
+      permissionModeRegistry: {
+        current: () => createEmptyToolPermissionContext(),
+        update: vi.fn(async () => {}),
+      },
+      services: {},
+    };
+    const live = restoredLiveAgent("run-budget-wall", "/root/budget-wall");
+    const control = {
+      resumeAgentFromRollout: vi.fn(async () => ({
+        resumedCount: 1,
+        rootLive: live,
+      })),
+      sendInput: vi.fn(async () => {}),
+      shutdown: vi.fn(async () => {}),
+    };
+    const runAgentFn = (async function* () {
+      await new Promise(() => {});
+    }) as AgenCRunAgentFunction;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        registry: { tools: [], toLLMTools: () => [], dispatch: vi.fn() },
+        shutdown: vi.fn(async () => {}),
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      runAgentFn,
+      agentBudget: { wall_clock_seconds: 30 },
+      now: () => new Date(nowMs).toISOString(),
+      budgetNowMs: () => nowMs,
+      setBudgetTimer: (callback, delayMs) => {
+        expect(delayMs).toBe(30_000);
+        timerCallback = callback;
+        return timer;
+      },
+      clearBudgetTimer,
+    });
+
+    await expect(
+      runner.restoreAgent({
+        agentId: "run-budget-wall",
+        objective: "stay within wall clock",
+        startedAt: "2026-05-01T12:00:00.000Z",
+        currentSessionId: "session-budget-wall",
+        metadata: { agentPath: "/root/budget-wall" },
+      }),
+    ).resolves.toBe(true);
+    expect(timer.unref).toHaveBeenCalledTimes(1);
+    const emitted: unknown[] = [];
+    await runner.attachAgentSessionEvents("run-budget-wall", {
+      sessionId: "session-budget-wall",
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+
+    nowMs = startedAtMs + 30_000;
+    timerCallback?.();
+
+    await vi.waitFor(() =>
+      expect(control.shutdown).toHaveBeenCalledWith(
+        "run-budget-wall",
+        expect.stringContaining("wall_clock_seconds"),
+      ),
+    );
+    expect(clearBudgetTimer).toHaveBeenCalledWith(timer);
+    expect(emitted).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: "event.agent_status",
+          params: expect.objectContaining({
+            status: "stopped",
+            runStatus: "stopped",
+            budgetHalt: expect.objectContaining({
+              kind: "wall_clock_seconds",
+              cap: 30,
+              observed: 30,
+            }),
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("reschedules wall-clock caps that exceed the Node timer range", async () => {
+    const startedAtMs = Date.parse("2026-05-01T12:00:00.000Z");
+    let nowMs = startedAtMs;
+    const timerCallbacks: Array<() => void> = [];
+    const delays: number[] = [];
+    const session = {
+      conversationId: "session-budget-wall-long",
+      permissionModeRegistry: {
+        current: () => createEmptyToolPermissionContext(),
+        update: vi.fn(async () => {}),
+      },
+      services: {},
+    };
+    const live = restoredLiveAgent(
+      "run-budget-wall-long",
+      "/root/budget-wall-long",
+    );
+    const control = {
+      resumeAgentFromRollout: vi.fn(async () => ({
+        resumedCount: 1,
+        rootLive: live,
+      })),
+      sendInput: vi.fn(async () => {}),
+      shutdown: vi.fn(async () => {}),
+    };
+    const runAgentFn = (async function* () {
+      await new Promise(() => {});
+    }) as AgenCRunAgentFunction;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        registry: { tools: [], toLLMTools: () => [], dispatch: vi.fn() },
+        shutdown: vi.fn(async () => {}),
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      runAgentFn,
+      agentBudget: { wall_clock_seconds: 2_147_484.647 },
+      now: () => new Date(nowMs).toISOString(),
+      budgetNowMs: () => nowMs,
+      setBudgetTimer: (callback, delayMs) => {
+        delays.push(delayMs);
+        timerCallbacks.push(callback);
+        return { unref: vi.fn() };
+      },
+      clearBudgetTimer: vi.fn(),
+    });
+
+    await expect(
+      runner.restoreAgent({
+        agentId: "run-budget-wall-long",
+        objective: "stay within long wall clock",
+        startedAt: "2026-05-01T12:00:00.000Z",
+        currentSessionId: "session-budget-wall-long",
+        metadata: { agentPath: "/root/budget-wall-long" },
+      }),
+    ).resolves.toBe(true);
+    expect(delays[0]).toBe(2_147_483_647);
+
+    nowMs = startedAtMs + 2_147_483_647;
+    timerCallbacks[0]?.();
+    expect(control.shutdown).not.toHaveBeenCalled();
+    expect(delays[1]).toBe(1000);
+
+    nowMs = startedAtMs + 2_147_484_647;
+    timerCallbacks[1]?.();
+    await vi.waitFor(() =>
+      expect(control.shutdown).toHaveBeenCalledWith(
+        "run-budget-wall-long",
+        expect.stringContaining("wall_clock_seconds"),
+      ),
+    );
+  });
+
+  it("buffers a start-path budget halt before a session is attached", async () => {
+    const shutdown = vi.fn(async () => {});
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    const session = { conversationId: "parent-session", permissionModeRegistry };
+    const live = restoredLiveAgent("agent-budget-start", "/root/budget-start");
+    const control = { shutdown: vi.fn(async () => {}) };
+    const thread = {
+      threadId: "agent-budget-start",
+      agentPath: "/root/budget-start",
+      live,
+      join: vi.fn(() => new Promise(() => {})),
+    } as unknown as AgentThread;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        shutdown,
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      delegateFn: vi.fn(async () => ({
+        kind: "async_launched",
+        thread,
+      })) as unknown as AgenCDelegateFunction,
+      agentBudget: { token_cap: 0 },
+      now: () => "2026-05-01T12:00:00.500Z",
+      budgetNowMs: () => Date.parse("2026-05-01T12:00:00.500Z"),
+    });
+
+    await expect(
+      runner.startAgent({
+        objective: "halt immediately",
+        unattendedAllow: [],
+        unattendedDeny: [],
+      }),
+    ).resolves.toMatchObject({
+      agentId: "agent-budget-start",
+      status: "running",
+    });
+    await vi.waitFor(() =>
+      expect(control.shutdown).toHaveBeenCalledWith(
+        "agent-budget-start",
+        expect.stringContaining("token_cap"),
+      ),
+    );
+    expect(shutdown).toHaveBeenCalledTimes(1);
+
+    const replayedEvents: unknown[] = [];
+    await runner.attachAgentSessionEvents("agent-budget-start", {
+      sessionId: "session-budget-start",
+      emit: (event) => {
+        replayedEvents.push(event);
+      },
+    });
+    expect(replayedEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: "event.agent_status",
+          params: expect.objectContaining({
+            sessionId: "session-budget-start",
+            status: "stopped",
+            runStatus: "stopped",
+            message: expect.stringContaining("token_cap"),
+            budgetHalt: expect.objectContaining({
+              kind: "token_cap",
+              cap: 0,
+              observed: 0,
+              reason: expect.stringContaining("agent budget token_cap reached"),
+            }),
+          }),
+        }),
+      ]),
+    );
+  });
+
   it("passes the daemon AuthBackend into delegate bootstrap", async () => {
     const shutdown = vi.fn(async () => {});
     const permissionModeRegistry = {

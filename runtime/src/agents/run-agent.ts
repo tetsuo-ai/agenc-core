@@ -94,6 +94,12 @@ export type RunAgentProgressEvent =
       readonly result: string;
       readonly isError: boolean;
     }
+  | {
+      readonly kind: "usage_update";
+      readonly inputTokens: number;
+      readonly outputTokens: number;
+      readonly totalTokens: number;
+    }
   | { readonly kind: "run_complete"; readonly finalMessage?: string; readonly toolCallCount: number }
   | { readonly kind: "run_error"; readonly error: string }
   | { readonly kind: "run_interrupted"; readonly reason: string };
@@ -1129,6 +1135,13 @@ export async function* runAgent(
         live.tokenUsage.totalTokens +=
           turnUsage.totalTokens ??
           (turnUsage.promptTokens ?? 0) + (turnUsage.completionTokens ?? 0);
+        yield {
+          kind: "usage_update",
+          inputTokens: live.tokenUsage.inputTokens,
+          outputTokens: live.tokenUsage.outputTokens,
+          totalTokens: live.tokenUsage.totalTokens,
+        };
+        if (merged.signal.aborted) break;
       }
 
       if (stopReason === "error") {

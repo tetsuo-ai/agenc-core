@@ -409,6 +409,7 @@ async function runAgenCDaemonForeground(
       env: host.env,
       argv: [host.execPath, host.entrypointPath, "--autonomous"],
       authBackend: authStartup.authBackend,
+      agentBudget: authStartup.config.agent?.budget,
     });
   let snapshotPolicies: AgenCDaemonSnapshotPolicyRegistry;
   try {
@@ -1086,6 +1087,7 @@ async function restoreRecoveredAgentRuntime(
       agentId: run.id,
       objective: run.objective,
       cwd: run.projectDir,
+      startedAt: run.startedAt,
       currentSessionId: run.currentSessionId,
       ...optionalMetadataString(run.metadata, "model"),
       ...optionalMetadataString(run.metadata, "provider"),

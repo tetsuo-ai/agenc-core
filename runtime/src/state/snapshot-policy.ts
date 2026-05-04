@@ -57,6 +57,7 @@ export interface SnapshotPolicyAgentStatusTransition {
   readonly runStatus?: string;
   readonly transitionAt: string;
   readonly reason?: string;
+  readonly metadataPatch?: JsonObject;
 }
 
 export interface SnapshotPolicySnapshotRecord {
@@ -216,6 +217,9 @@ export class AgenCSessionSnapshotPolicy {
         status: runStatus,
         lastActiveAt: transition.transitionAt,
         currentSessionId: transition.sessionId,
+        ...(transition.metadataPatch !== undefined
+          ? { metadataPatch: transition.metadataPatch }
+          : {}),
       });
     }
     const state = this.#session(transition.sessionId);
@@ -229,6 +233,9 @@ export class AgenCSessionSnapshotPolicy {
       status: transition.status,
       transitionAt: transition.transitionAt,
       ...(transition.reason !== undefined ? { reason: transition.reason } : {}),
+      ...(transition.metadataPatch !== undefined
+        ? { metadataPatch: transition.metadataPatch }
+        : {}),
     });
     return this.#writeSnapshot(state, "agent_status");
   }
@@ -294,6 +301,7 @@ export class AgenCSessionSnapshotPolicy {
     }
     if (method === "event.agent_status") {
       const params = eventParams;
+      const metadataPatch = agentStatusMetadataPatch(params);
       return this.recordAgentStatusTransition({
         sessionId,
         agentId: stringField(params, "agentId") ?? sessionId,
@@ -305,6 +313,7 @@ export class AgenCSessionSnapshotPolicy {
         ...(stringField(params, "message") !== undefined
           ? { reason: stringField(params, "message") }
           : {}),
+        ...(metadataPatch !== undefined ? { metadataPatch } : {}),
       });
     }
     if (method === "event.session_event") {
@@ -746,6 +755,22 @@ function toolRecoveryCategoryField(
     field === "side-effecting" ||
     field === "interactive"
     ? field
+    : undefined;
+}
+
+function agentStatusMetadataPatch(params: JsonObject): JsonObject | undefined {
+  const budgetHalt = asOptionalJsonObject(params.budgetHalt);
+  const budgetUsage = asOptionalJsonObject(params.budgetUsage);
+  if (budgetHalt === undefined && budgetUsage === undefined) return undefined;
+  return {
+    ...(budgetHalt !== undefined ? { budgetHalt } : {}),
+    ...(budgetUsage !== undefined ? { budgetUsage } : {}),
+  };
+}
+
+function asOptionalJsonObject(value: unknown): JsonObject | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? normalizeJsonObject(value as JsonObject)
     : undefined;
 }
 
