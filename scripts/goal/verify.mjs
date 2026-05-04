@@ -417,6 +417,31 @@ const ITEM_EVIDENCE = {
       },
     ],
   },
+  "T-12": {
+    files: [
+      "runtime/src/tui/input/processUserInput.ts",
+      "runtime/src/tui/input/processBashCommand.tsx",
+      "runtime/src/tui/input/processSlashCommand.tsx",
+      "runtime/src/tui/input/processTextPrompt.ts",
+      "runtime/src/tui/input/PARITY.md",
+    ],
+    tests: [
+      "runtime/src/tui/input/processBashCommand.test.tsx",
+      "runtime/src/tui/input/processSlashCommand.test.ts",
+      "runtime/src/tui/input/processUserInput.test.ts",
+      "runtime/src/tui/components/PromptInput/inputModes.test.ts",
+    ],
+    grepPresent: [
+      {
+        pattern: "\\.\\./\\.\\./\\.\\./tui/input/processUserInput\\.js",
+        scope: "runtime/src/agenc/upstream/utils/handlePromptSubmit.ts",
+      },
+      {
+        pattern: "\\.\\./\\.\\./input/processUserInput\\.js",
+        scope: "runtime/src/tui/components/PromptInput/PromptInput.tsx",
+      },
+    ],
+  },
   "ST-10": {
     files: [{ globUnder: "runtime/src/rollout", matching: /recorder|session.?index/i, minCount: 1 }],
   },
@@ -772,13 +797,14 @@ if (toScan.length === 0) {
   pass(`branding clean (${toScan.length} file(s))`);
 }
 
-// --- Gate 2.6: no new upstream/ files; no new shim-pattern files; no forwarding-only modules ---
+// --- Gate 2.6: no upstream growth; no new shim-pattern files; no forwarding-only modules ---
 //
 // Hard rule: this codebase isn't public yet, there is no backwards-compatibility
 // to preserve, and the upstream mirror at runtime/src/agenc/upstream/ exists ONLY
 // as temporary scaffolding that gets deleted at Z-02. Bans:
-//   1. Any new file inside runtime/src/agenc/upstream/ (additions only — growth still
-//      allowed during absorb, but new file paths are forbidden).
+//   1. Any new file inside runtime/src/agenc/upstream/ and any net-positive
+//      line growth in existing upstream files. Absorbs may delete or rewrite
+//      imports there, but the mirror must only shrink.
 //   2. Any new file matching a shim suffix (shim/adapter/compat/legacy/bridge/wrapper/
 //      facade/proxy/glue/forwarder/passthrough/stub/indirect/dispatch/barrel) across
 //      .ts/.tsx/.mts/.cts/.mjs/.cjs/.js/.jsx outside the two legitimate dirs
@@ -787,7 +813,7 @@ if (toScan.length === 0) {
 //      re-exports + single-line forwarders (catches barrel/index files that the
 //      filename suffix wouldn't flag — wrapper-by-another-name).
 
-header("no new upstream/ files; no new shim/adapter/compat/legacy/bridge files");
+header("no upstream growth; no new shim/adapter/compat/legacy/bridge files");
 const addedRes = git("diff", "--name-only", "--diff-filter=A", "main...HEAD");
 const addedStagedRes = git("diff", "--name-only", "--diff-filter=A", "--cached");
 const addedWtRes = git("ls-files", "--others", "--exclude-standard");
@@ -808,6 +834,42 @@ if (upstreamAdditions.length > 0) {
       `That tree is temporary scaffolding scheduled for deletion at Z-02. Do not add to it. ` +
       `Move the new logic to its proper AgenC-owned destination instead.\n  ` +
       upstreamAdditions.map((p) => `- ${p}`).join("\n  "),
+  );
+}
+
+const upstreamNumstatRes = git(
+  "diff",
+  "--numstat",
+  "main",
+  "--",
+  "runtime/src/agenc/upstream",
+);
+const upstreamGrowth = upstreamNumstatRes.stdout
+  .split("\n")
+  .map((line) => line.trim())
+  .filter(Boolean)
+  .map((line) => {
+    const [addedText, deletedText, file] = line.split("\t");
+    return {
+      added: Number.parseInt(addedText ?? "0", 10),
+      deleted: Number.parseInt(deletedText ?? "0", 10),
+      file: file ?? "",
+    };
+  })
+  .filter((row) =>
+    Number.isFinite(row.added) &&
+    Number.isFinite(row.deleted) &&
+    row.file.startsWith("runtime/src/agenc/upstream/") &&
+    !added.has(row.file) &&
+    row.added > row.deleted,
+  );
+if (upstreamGrowth.length > 0) {
+  failGate(
+    `forbidden: existing runtime/src/agenc/upstream/ file(s) have net-positive line growth. ` +
+      `Absorb items may delete upstream files or rewrite imports, but must not grow the mirror.\n  ` +
+      upstreamGrowth
+        .map((row) => `- ${row.file} (+${row.added}/-${row.deleted})`)
+        .join("\n  "),
   );
 }
 
@@ -1022,6 +1084,10 @@ async function tuiAbsorbGates(item) {
     await t09ToolTargetGates();
     return;
   }
+  if (id === "T-12") {
+    await t12ProcessUserInputGates();
+    return;
+  }
   if (id === "T-13") {
     await t13SlashCommandGates();
     return;
@@ -1101,6 +1167,34 @@ async function t09ToolTargetGates() {
   }
 
   pass("T-09 scoped tool importers resolved to AgenC-owned paths");
+}
+
+async function t12ProcessUserInputGates() {
+  const retiredTargets = [
+    "runtime/src/agenc/upstream/utils/processUserInput/processUserInput.ts",
+    "runtime/src/agenc/upstream/utils/processUserInput/processBashCommand.tsx",
+    "runtime/src/agenc/upstream/utils/processUserInput/processSlashCommand.tsx",
+    "runtime/src/agenc/upstream/utils/processUserInput/processTextPrompt.ts",
+  ];
+
+  for (const upstream of retiredTargets) {
+    if (existsSync(path.join(root, upstream))) {
+      failGate(`T-12 upstream target still present: ${upstream}`);
+    }
+    pass(`T-12 upstream target deleted (${upstream})`);
+  }
+
+  const retiredImportPattern = String.raw`agenc/upstream/utils/processUserInput|utils/processUserInput/(?:processUserInput|processBashCommand|processSlashCommand|processTextPrompt)\.js|src/utils/processUserInput/(?:processUserInput|processBashCommand|processSlashCommand|processTextPrompt)\.js`;
+  const retiredImportScan = run(
+    "rg",
+    ["--no-messages", "-n", retiredImportPattern, "runtime/src"],
+    { silent: true },
+  );
+  if (retiredImportScan.status === 0 && retiredImportScan.stdout.trim()) {
+    failGate(`T-12 retired processUserInput imports remain:\n${retiredImportScan.stdout}`);
+  }
+
+  pass("T-12 processUserInput imports resolved to AgenC-owned paths");
 }
 
 async function t13SlashCommandGates() {

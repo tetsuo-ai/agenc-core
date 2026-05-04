@@ -1,50 +1,50 @@
 import { feature } from 'bun:bundle';
 import type { ContentBlockParam, TextBlockParam } from '@anthropic-ai/sdk/resources';
 import { randomUUID } from 'crypto';
-import { setPromptId } from 'src/bootstrap/state.js';
-import { builtInCommandNames, type Command, type CommandBase, findCommand, getCommand, getCommandName, hasCommand, type PromptCommand } from 'src/commands.js';
-import { NO_CONTENT_MESSAGE } from 'src/constants/messages.js';
-import type { SetToolJSXFn, ToolUseContext } from 'src/Tool.js';
-import type { AssistantMessage, AttachmentMessage, Message, NormalizedUserMessage, ProgressMessage, UserMessage } from 'src/types/message.js';
-import { addInvokedSkill, getSessionId } from '../../bootstrap/state.js';
-import { COMMAND_MESSAGE_TAG, COMMAND_NAME_TAG } from '../../constants/xml.js';
-import type { CanUseToolFn } from '../../hooks/useCanUseTool.js';
-import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, type AnalyticsMetadata_I_VERIFIED_THIS_IS_PII_TAGGED, logEvent } from '../../services/analytics/index.js';
-import { getDumpPromptsPath } from '../../services/api/dumpPrompts.js';
-import { buildPostCompactMessages } from '../../services/compact/compact.js';
-import { resetMicrocompactState } from '../../services/compact/microCompact.js';
-import type { Progress as AgentProgress } from '../../tools/AgentTool/AgentTool.js';
-import { runAgent } from '../../tools/AgentTool/runAgent.js';
-import { renderToolUseProgressMessage } from '../../tools/AgentTool/UI.js';
-import type { CommandResultDisplay } from '../../types/command.js';
-import { createAbortController } from '../abortController.js';
-import { getAgentContext } from '../agentContext.js';
-import { createAttachmentMessage, getAttachmentMessages } from '../attachments.js';
-import { logForDebugging } from 'src/utils/debug.js';
-import { isEnvTruthy } from '../envUtils.js';
-import { AbortError, MalformedCommandError } from '../errors.js';
-import { getDisplayPath } from '../file.js';
-import { extractResultText, prepareForkedCommandContext } from '../forkedAgent.js';
-import { getFsImplementation } from '../fsOperations.js';
-import { isFullscreenEnvEnabled } from '../fullscreen.js';
-import { toArray } from '../generators.js';
-import { registerSkillHooks } from '../hooks/registerSkillHooks.js';
-import { logError } from '../log.js';
-import { enqueuePendingNotification } from '../messageQueueManager.js';
-import { createCommandInputMessage, createSyntheticUserCaveatMessage, createSystemMessage, createUserInterruptionMessage, createUserMessage, formatCommandInputTags, isCompactBoundaryMessage, isSystemLocalCommandMessage, normalizeMessages, prepareUserContent } from '../messages.js';
-import type { ModelAlias } from '../model/aliases.js';
-import { parseToolListFromCLI } from '../permissions/permissionSetup.js';
-import { hasPermissionsToUseTool } from '../permissions/permissions.js';
-import { isOfficialMarketplaceName, parsePluginIdentifier } from '../plugins/pluginIdentifier.js';
-import { isRestrictedToPluginOnly, isSourceAdminTrusted } from '../settings/pluginOnlyPolicy.js';
-import { parseSlashCommand } from '../../../../tui/slash/slash-command-parsing.js';
-import { sleep } from '../sleep.js';
-import { recordSkillUsage } from '../suggestions/skillUsageTracking.js';
-import { logOTelEvent, redactIfDisabled } from '../telemetry/events.js';
-import { buildPluginCommandTelemetryFields } from '../telemetry/pluginTelemetry.js';
-import { getAssistantMessageContentLength } from '../tokens.js';
-import { createAgentId } from '../uuid.js';
-import { getWorkload } from '../workloadContext.js';
+import { setPromptId } from '../../agenc/upstream/bootstrap/state.js';
+import { builtInCommandNames, type Command, type CommandBase, findCommand, getCommand, getCommandName, hasCommand, type PromptCommand } from '../../commands.js';
+import { NO_CONTENT_MESSAGE } from '../../agenc/upstream/constants/messages.js';
+import type { SetToolJSXFn, ToolUseContext } from '../../agenc/upstream/Tool.js';
+import type { AssistantMessage, AttachmentMessage, Message, NormalizedUserMessage, ProgressMessage, UserMessage } from '../../agenc/upstream/types/message.js';
+import { addInvokedSkill, getSessionId } from '../../agenc/upstream/bootstrap/state.js';
+import { COMMAND_MESSAGE_TAG, COMMAND_NAME_TAG } from '../../agenc/upstream/constants/xml.js';
+import type { CanUseToolFn } from '../../agenc/upstream/hooks/useCanUseTool.js';
+import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, type AnalyticsMetadata_I_VERIFIED_THIS_IS_PII_TAGGED, logEvent } from '../../agenc/upstream/services/analytics/index.js';
+import { getDumpPromptsPath } from '../../agenc/upstream/services/api/dumpPrompts.js';
+import { buildPostCompactMessages } from '../../agenc/upstream/services/compact/compact.js';
+import { resetMicrocompactState } from '../../agenc/upstream/services/compact/microCompact.js';
+import type { Progress as AgentProgress } from '../../agenc/upstream/tools/AgentTool/AgentTool.js';
+import { runAgent } from '../../agenc/upstream/tools/AgentTool/runAgent.js';
+import { renderToolUseProgressMessage } from '../../agenc/upstream/tools/AgentTool/UI.js';
+import type { CommandResultDisplay } from '../../agenc/upstream/types/command.js';
+import { createAbortController } from '../../agenc/upstream/utils/abortController.js';
+import { getAgentContext } from '../../agenc/upstream/utils/agentContext.js';
+import { createAttachmentMessage, getAttachmentMessages } from '../../agenc/upstream/utils/attachments.js';
+import { logForDebugging } from '../../utils/debug.js';
+import { isEnvTruthy } from '../../agenc/upstream/utils/envUtils.js';
+import { AbortError, MalformedCommandError } from '../../agenc/upstream/utils/errors.js';
+import { getDisplayPath } from '../../agenc/upstream/utils/file.js';
+import { extractResultText, prepareForkedCommandContext } from '../../agenc/upstream/utils/forkedAgent.js';
+import { getFsImplementation } from '../../agenc/upstream/utils/fsOperations.js';
+import { isFullscreenEnvEnabled } from '../../agenc/upstream/utils/fullscreen.js';
+import { toArray } from '../../agenc/upstream/utils/generators.js';
+import { registerSkillHooks } from '../../agenc/upstream/utils/hooks/registerSkillHooks.js';
+import { logError } from '../../agenc/upstream/utils/log.js';
+import { enqueuePendingNotification } from '../../agenc/upstream/utils/messageQueueManager.js';
+import { createCommandInputMessage, createSyntheticUserCaveatMessage, createSystemMessage, createUserInterruptionMessage, createUserMessage, formatCommandInputTags, isCompactBoundaryMessage, isSystemLocalCommandMessage, normalizeMessages, prepareUserContent } from '../../agenc/upstream/utils/messages.js';
+import type { ModelAlias } from '../../agenc/upstream/utils/model/aliases.js';
+import { parseToolListFromCLI } from '../../agenc/upstream/utils/permissions/permissionSetup.js';
+import { hasPermissionsToUseTool } from '../../agenc/upstream/utils/permissions/permissions.js';
+import { isOfficialMarketplaceName, parsePluginIdentifier } from '../../agenc/upstream/utils/plugins/pluginIdentifier.js';
+import { isRestrictedToPluginOnly, isSourceAdminTrusted } from '../../agenc/upstream/utils/settings/pluginOnlyPolicy.js';
+import { parseSlashCommand } from '../slash/slash-command-parsing.js';
+import { sleep } from '../../agenc/upstream/utils/sleep.js';
+import { recordSkillUsage } from '../../agenc/upstream/utils/suggestions/skillUsageTracking.js';
+import { logOTelEvent, redactIfDisabled } from '../../agenc/upstream/utils/telemetry/events.js';
+import { buildPluginCommandTelemetryFields } from '../../agenc/upstream/utils/telemetry/pluginTelemetry.js';
+import { getAssistantMessageContentLength } from '../../agenc/upstream/utils/tokens.js';
+import { createAgentId } from '../../agenc/upstream/utils/uuid.js';
+import { getWorkload } from '../../agenc/upstream/utils/workloadContext.js';
 import type { ProcessUserInputBaseResult, ProcessUserInputContext } from './processUserInput.js';
 type SlashCommandResult = ProcessUserInputBaseResult & {
   command: Command;
@@ -62,7 +62,7 @@ const MCP_SETTLE_TIMEOUT_MS = 10_000;
 async function executeForkedSlashCommand(command: CommandBase & PromptCommand, args: string, context: ProcessUserInputContext, precedingInputBlocks: ContentBlockParam[], setToolJSX: SetToolJSXFn, canUseTool: CanUseToolFn): Promise<SlashCommandResult> {
   const agentId = createAgentId();
   const pluginMarketplace = command.pluginInfo ? parsePluginIdentifier(command.pluginInfo.repository).marketplace : undefined;
-  logEvent('tengu_slash_command_forked', {
+  logEvent('agenc_slash_command_forked', {
     command_name: command.name as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     invocation_trigger: 'user-slash' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     ...(command.pluginInfo && {
@@ -309,7 +309,7 @@ export function looksLikeCommand(commandName: string): boolean {
 export async function processSlashCommand(inputString: string, precedingInputBlocks: ContentBlockParam[], imageContentBlocks: ContentBlockParam[], attachmentMessages: AttachmentMessage[], context: ProcessUserInputContext, setToolJSX: SetToolJSXFn, uuid?: string, isAlreadyProcessing?: boolean, canUseTool?: CanUseToolFn): Promise<ProcessUserInputBaseResult> {
   const parsed = parseSlashCommand(inputString);
   if (!parsed) {
-    logEvent('tengu_input_slash_missing', {});
+    logEvent('agenc_input_slash_missing', {});
     const errorMessage = 'Commands are in the form `/command [args]`';
     return {
       messages: [createSyntheticUserCaveatMessage(), ...attachmentMessages, createUserMessage({
@@ -341,7 +341,7 @@ export async function processSlashCommand(inputString: string, precedingInputBlo
       // Not a file path — treat as command name
     }
     if (looksLikeCommand(commandName) && !isFilePath) {
-      logEvent('tengu_input_slash_invalid', {
+      logEvent('agenc_input_slash_invalid', {
         input: commandName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
       const unknownMessage = `Unknown skill: ${commandName}`;
@@ -361,7 +361,7 @@ export async function processSlashCommand(inputString: string, precedingInputBlo
     }
     const promptId = randomUUID();
     setPromptId(promptId);
-    logEvent('tengu_input_prompt', {});
+    logEvent('agenc_input_prompt', {});
     // Log user prompt event for OTLP
     void logOTelEvent('user_prompt', {
       prompt_length: String(inputString.length),
@@ -424,7 +424,7 @@ export async function processSlashCommand(inputString: string, precedingInputBlo
       }
       Object.assign(eventData, buildPluginCommandTelemetryFields(returnedCommand.pluginInfo));
     }
-    logEvent('tengu_input_command', {
+    logEvent('agenc_input_command', {
       ...eventData,
       invocation_trigger: 'user-slash' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       ...("external" === 'ant' && {
@@ -454,7 +454,7 @@ export async function processSlashCommand(inputString: string, precedingInputBlo
     // Don't log as invalid if it looks like a common file path
     const looksLikeFilePath = inputString.startsWith('/var') || inputString.startsWith('/tmp') || inputString.startsWith('/private');
     if (!looksLikeFilePath) {
-      logEvent('tengu_input_slash_invalid', {
+      logEvent('agenc_input_slash_invalid', {
         input: commandName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
     }
@@ -492,7 +492,7 @@ export async function processSlashCommand(inputString: string, precedingInputBlo
     }
     Object.assign(eventData, buildPluginCommandTelemetryFields(returnedCommand.pluginInfo));
   }
-  logEvent('tengu_input_command', {
+  logEvent('agenc_input_command', {
     ...eventData,
     invocation_trigger: 'user-slash' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     ...("external" === 'ant' && {

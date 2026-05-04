@@ -5,18 +5,18 @@ import type {
   ImageBlockParam,
 } from '@anthropic-ai/sdk/resources/messages.mjs'
 import { randomUUID } from 'crypto'
-import type { QuerySource } from 'src/constants/querySource.js'
-import { logEvent } from 'src/services/analytics/index.js'
-import { getContentText } from 'src/utils/messages.js'
+import type { QuerySource } from '../../agenc/upstream/constants/querySource.js'
+import { logEvent } from '../../agenc/upstream/services/analytics/index.js'
+import { getContentText } from '../../agenc/upstream/utils/messages.js'
 import {
   findCommand,
   getCommandName,
   isBridgeSafeCommand,
   type LocalJSXCommandContext,
 } from '../../commands.js'
-import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
-import type { IDESelection } from '../../hooks/useIdeSelection.js'
-import type { SetToolJSXFn, ToolUseContext } from '../../Tool.js'
+import type { CanUseToolFn } from '../../agenc/upstream/hooks/useCanUseTool.js'
+import type { IDESelection } from '../../agenc/upstream/hooks/useIdeSelection.js'
+import type { SetToolJSXFn, ToolUseContext } from '../../agenc/upstream/Tool.js'
 import type {
   AssistantMessage,
   AttachmentMessage,
@@ -24,40 +24,40 @@ import type {
   ProgressMessage,
   SystemMessage,
   UserMessage,
-} from '../../types/message.js'
-import type { PermissionMode } from '../../types/permissions.js'
+} from '../../agenc/upstream/types/message.js'
+import type { PermissionMode } from '../../agenc/upstream/types/permissions.js'
 import {
   isValidImagePaste,
   type PromptInputMode,
-} from '../../types/textInputTypes.js'
+} from '../../agenc/upstream/types/textInputTypes.js'
 import {
   type AgentMentionAttachment,
   createAttachmentMessage,
   getAttachmentMessages,
-} from '../attachments.js'
-import type { PastedContent } from '../config.js'
-import type { EffortValue } from '../effort.js'
-import { toArray } from '../generators.js'
+} from '../../agenc/upstream/utils/attachments.js'
+import type { PastedContent } from '../../agenc/upstream/utils/config.js'
+import type { EffortValue } from '../../agenc/upstream/utils/effort.js'
+import { toArray } from '../../agenc/upstream/utils/generators.js'
 import {
   executeUserPromptSubmitHooks,
   getUserPromptSubmitHookBlockingMessage,
-} from '../hooks.js'
+} from '../../agenc/upstream/utils/hooks.js'
 import {
   createImageMetadataText,
   maybeResizeAndDownsampleImageBlock,
-} from '../imageResizer.js'
-import { storeImages } from '../imageStore.js'
+} from '../../agenc/upstream/utils/imageResizer.js'
+import { storeImages } from '../../agenc/upstream/utils/imageStore.js'
 import {
   createCommandInputMessage,
   createSystemMessage,
   createUserMessage,
-} from '../messages.js'
-import { queryCheckpoint } from '../queryProfiler.js'
-import { parseSlashCommand } from '../../../../tui/slash/slash-command-parsing.js'
+} from '../../agenc/upstream/utils/messages.js'
+import { queryCheckpoint } from '../../agenc/upstream/utils/queryProfiler.js'
+import { parseSlashCommand } from '../slash/slash-command-parsing.js'
 import {
   hasUltraplanKeyword,
   replaceUltraplanKeyword,
-} from '../ultraplan/keyword.js'
+} from '../../agenc/upstream/utils/ultraplan/keyword.js'
 import { processTextPrompt } from './processTextPrompt.js'
 export type ProcessUserInputContext = ToolUseContext & LocalJSXCommandContext
 
@@ -374,7 +374,7 @@ async function processUserInputBase(
           data: pastedImage.content,
         },
       }
-      logEvent('tengu_pasted_image_resize_attempt', {
+      logEvent('agenc_pasted_image_resize_attempt', {
         original_size_bytes: pastedImage.content.length,
       })
       const resized = await maybeResizeAndDownsampleImageBlock(imageBlock)
@@ -475,7 +475,7 @@ async function processUserInputBase(
     !context.getAppState().ultraplanLaunching &&
     hasUltraplanKeyword(preExpansionInput ?? inputString)
   ) {
-    logEvent('tengu_ultraplan_keyword', {})
+    logEvent('agenc_ultraplan_keyword', {})
     const rewritten = replaceUltraplanKeyword(inputString).trim()
     const { processSlashCommand } = await import('./processSlashCommand.js')
     const slashResult = await processSlashCommand(
@@ -566,7 +566,7 @@ async function processUserInputBase(
         trimmedInput.startsWith(agentMentionString) && !isSubagentOnly
 
       // Log whenever users use @agent-<name> syntax
-      logEvent('tengu_subagent_at_mention', {
+      logEvent('agenc_subagent_at_mention', {
         is_subagent_only: isSubagentOnly,
         is_prefix: isPrefix,
       })

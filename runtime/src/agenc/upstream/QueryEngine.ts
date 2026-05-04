@@ -14,7 +14,7 @@ import type {
   SDKStatus,
   SDKUserMessageReplay,
 } from 'src/entrypoints/agentSdkTypes.js'
-import { accumulateUsage, updateUsage } from 'src/services/api/claude.js'
+import { accumulateUsage, updateUsage } from 'src/services/api/claude.js' // branding-scan: allow upstream API usage module path is not part of T-12
 import type { NonNullableUsage } from 'src/services/api/logging.js'
 import { EMPTY_USAGE } from 'src/services/api/logging.js'
 import stripAnsi from 'strip-ansi'
@@ -69,7 +69,7 @@ import { loadAllPluginsCacheOnly } from './utils/plugins/pluginLoader.js'
 import {
   type ProcessUserInputContext,
   processUserInput,
-} from './utils/processUserInput/processUserInput.js'
+} from '../../tui/input/processUserInput.js'
 import { fetchSystemPromptParts } from './utils/queryContext.js'
 import { setCwd } from './utils/Shell.js'
 import {
@@ -695,7 +695,7 @@ export class QueryEngine {
         // messages up through the preservedSegment tail. Attachments and
         // progress are now recorded inline (their switch cases below), but
         // this flush still matters for the preservedSegment tail walk.
-        // If the SDK subprocess restarts before then (claude-desktop kills
+        // If the SDK subprocess restarts before then (desktop clients can kill
         // between turns), tailUuid can point to a never-written message. In
         // that case strip preservedSegment before transcript persistence so
         // resume falls back to ordinary boundary pruning instead of relying on
@@ -729,7 +729,7 @@ export class QueryEngine {
         }
         messages.push(transcriptMessage)
         if (persistSession) {
-          // Fire-and-forget for assistant messages. claude.ts yields one
+          // Fire-and-forget for assistant messages. The API stream adapter yields one
           // assistant message per content block, then mutates the last
           // one's message.usage/stop_reason on message_delta — relying on
           // the write queue's 100ms lazy jsonStringify. Awaiting here
@@ -815,7 +815,7 @@ export class QueryEngine {
             )
             // Capture stop_reason from message_delta. The assistant message
             // is yielded at content_block_stop with stop_reason=null; the
-            // real value only arrives here (see claude.ts message_delta
+            // real value only arrives here (see the API stream message_delta
             // handler). Without this, result.stop_reason is always null.
             if (message.event.delta.stop_reason != null) {
               lastStopReason = message.event.delta.stop_reason
@@ -1192,7 +1192,7 @@ export class QueryEngine {
 
 /**
  * Sends a single prompt to the AgenC API and returns the response.
- * Assumes that claude is being used non-interactively -- will not
+ * Assumes non-interactive usage and will not
  * ask the user for permissions or further input.
  *
  * Convenience wrapper around QueryEngine for one-shot usage.

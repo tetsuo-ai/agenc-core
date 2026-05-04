@@ -257,6 +257,14 @@ function assertOldTuiRemoved() {
     "main.tsx",
     "context/promptOverlayContext.test.tsx",
     "context/promptOverlayContext.tsx",
+    "input/PARITY.md",
+    "input/processBashCommand.test.tsx",
+    "input/processBashCommand.tsx",
+    "input/processSlashCommand.test.ts",
+    "input/processSlashCommand.tsx",
+    "input/processTextPrompt.ts",
+    "input/processUserInput.test.ts",
+    "input/processUserInput.ts",
     // App imports these helpers directly, so they live under a neutral
     // bridge path rather than the compatibility test directory.
     "bridges/message-adapter.ts",
