@@ -208,6 +208,13 @@ function analyzeWrites(
       knownSafeWhenTargetless: false,
     };
   }
+  if (tool.name === "write_stdin") {
+    return {
+      targets: [],
+      indeterminate: false,
+      knownSafeWhenTargetless: true,
+    };
+  }
   const targets = writeTargets(args, cwd);
   return {
     targets,

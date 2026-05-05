@@ -66,6 +66,7 @@ import {
 } from "../session/event-log.js";
 import type { ToolDispatchResult } from "../tool-registry.js";
 import type {
+  FunctionCallOutputContentItem,
   ToolInvocation,
   ToolName,
   ToolOutput,
@@ -74,6 +75,7 @@ import type {
 import {
   codeModeResult,
   functionToolOutput,
+  functionToolOutputFromContent,
   toolNameDisplay,
 } from "./context.js";
 import type { Tool } from "./types.js";
@@ -144,6 +146,10 @@ export const DEFAULT_TOOL_TIMEOUT_MS = 30_000;
  * Per-tool override via `tool.maxResultBytes`.
  */
 export const DEFAULT_MAX_TOOL_RESULT_BYTES = 400_000;
+const RICH_OUTPUT_CONTENT_ITEMS = new WeakMap<
+  ToolOutput,
+  readonly FunctionCallOutputContentItem[]
+>();
 
 /** Appended marker when a result is truncated. */
 const TRUNCATION_MARKER_TEMPLATE =
@@ -1517,6 +1523,9 @@ export async function runToolUse(
         return {
           content: result.content,
           isError: result.isError,
+          ...(result.contentItems !== undefined
+            ? { contentItems: result.contentItems }
+            : {}),
           metadata: result.metadata,
         } satisfies ToolDispatchResult;
       },
@@ -1712,6 +1721,21 @@ export async function runToolUse(
   }
 
   cleanupModeSub();
+  if (finalDispatch.contentItems !== undefined && !capped.truncated) {
+    const output = functionToolOutputFromContent({
+      callId: invocation.callId,
+      toolName: invocation.toolName,
+      payload: invocation.payload,
+      body: finalDispatch.contentItems,
+      isError: finalDispatch.isError === true,
+      durationMs: performance.now() - startedAt,
+      ...(finalDispatch.metadata !== undefined
+        ? { metadata: finalDispatch.metadata }
+        : {}),
+    });
+    RICH_OUTPUT_CONTENT_ITEMS.set(output, finalDispatch.contentItems);
+    return output;
+  }
   return functionToolOutput({
     callId: invocation.callId,
     toolName: invocation.toolName,
@@ -1747,6 +1771,9 @@ export async function executeToolDispatch(
     content: output.content,
     isError: output.isError,
     codeModeResult: codeModeResult(output),
+    ...(RICH_OUTPUT_CONTENT_ITEMS.get(output) !== undefined
+      ? { contentItems: RICH_OUTPUT_CONTENT_ITEMS.get(output)! }
+      : {}),
     metadata: output.metadata ? { ...output.metadata } : undefined,
   };
 }

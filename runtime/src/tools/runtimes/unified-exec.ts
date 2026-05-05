@@ -4,7 +4,6 @@ import type { Tool } from "../types.js";
 export const UNIFIED_EXEC_RUNTIME_TOOL_NAMES = new Set([
   "exec_command",
   "system.bash",
-  "write_stdin",
 ]);
 
 export interface UnifiedExecRuntimeCommand {

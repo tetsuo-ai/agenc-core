@@ -979,6 +979,8 @@ const ITEM_EVIDENCE = {
       { pattern: "enforceRuntimeSandboxAttempt", scope: "runtime/src/tools/execution.ts" },
       { pattern: "ToolRuntimeScheduler|runToolRuntimeCall", scope: "runtime/src/tools/streaming-executor.ts" },
       { pattern: "createToolExecutionRuntime", scope: "runtime/src/phases/execute-tools.ts" },
+      { pattern: "write_stdin", scope: "runtime/src/tools/runtimes/runtime.test.ts" },
+      { pattern: "contentItems", scope: "runtime/src/tools/runtimes/runtime.test.ts" },
     ],
     tests: [
       "runtime/src/tools/runtimes/runtime.test.ts",

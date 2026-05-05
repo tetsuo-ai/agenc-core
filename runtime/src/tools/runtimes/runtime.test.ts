@@ -9,6 +9,7 @@ import type { Tool } from "../types.js";
 import { EXCLUSIVE, SHARED_READ } from "../concurrency.js";
 import { createExecCommandTool } from "../system/exec-command.js";
 import { createFileWriteTool } from "../system/file-write.js";
+import { createWriteStdinTool } from "../system/write-stdin.js";
 import {
   enforceRuntimeSandboxAttempt,
   permissionProfileForSandboxMode,
@@ -506,15 +507,37 @@ describe("tools/runtimes", () => {
       truncated: false,
       original_token_count: 1,
     }));
+    const writeStdin = vi.fn(async () => ({
+      output: "continued\n",
+      stdout: "continued\n",
+      stderr: "",
+      exitCode: 0,
+      exit_code: 0,
+      process_id: 123,
+      session_id: 7,
+      durationMs: 1,
+      wall_time_seconds: 0.001,
+      timedOut: false,
+      truncated: false,
+      original_token_count: 1,
+    }));
     const manager = {
       maxTimeoutMs: 30_000,
       execCommand,
-      writeStdin: vi.fn(),
+      writeStdin,
       closeAll: vi.fn(),
     };
     const router = new ToolRouter([
       {
         tool: createExecCommandTool({
+          cwd: workspaceRoot,
+          allowedPaths: [workspaceRoot],
+          unifiedExecManager: manager,
+        }),
+        supportsParallelToolCalls: false,
+      },
+      {
+        tool: createWriteStdinTool({
           cwd: workspaceRoot,
           allowedPaths: [workspaceRoot],
           unifiedExecManager: manager,
@@ -573,6 +596,39 @@ describe("tools/runtimes", () => {
     );
     expect(tmpWrite.isError).toBeFalsy();
     expect(execCommand).toHaveBeenCalledOnce();
+
+    const stdin = await router.dispatchModelToolCall(
+      {
+        id: "call-stdin-continue",
+        name: "write_stdin",
+        arguments: JSON.stringify({
+          session_id: 7,
+          chars: "printf agenc-pty\\n",
+        }),
+      },
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: {
+          subId: "turn-stdin-continue",
+          cwd: workspaceRoot,
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "workspace_write" },
+        } as never,
+        tracker: tracker() as never,
+        approvalPolicy: "never",
+        sandboxMode: "workspace_write",
+      },
+    );
+    expect(stdin.isError).toBeFalsy();
+    expect(writeStdin).toHaveBeenCalledWith(
+      expect.objectContaining({
+        session_id: 7,
+        chars: "printf agenc-pty\\n",
+      }),
+    );
   });
 
   test("actual Write handler obeys per-attempt workspace-write preflight", async () => {
@@ -820,6 +876,52 @@ describe("tools/runtimes", () => {
     expect(result.isError).toBe(true);
     expect(result.content).toContain("workspace_write blocked");
     expect(executed).toBe(false);
+  });
+
+  test("direct dispatch preserves rich content items through runtime execution", async () => {
+    const contentItems = [{ type: "input_text" as const, text: "rich output" }];
+    const tool: Tool = {
+      name: "RichOutput",
+      description: "",
+      inputSchema: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+      isReadOnly: true,
+      execute: async () => ({
+        content: "fallback output",
+        contentItems,
+      }),
+    };
+    const router = new ToolRouter([
+      { tool, supportsParallelToolCalls: true },
+    ]);
+
+    const result = await router.dispatchToolCall(
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: {
+          subId: "turn-rich-runtime",
+          cwd: "/repo",
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "read_only" },
+        } as never,
+        tracker: tracker() as never,
+        callId: "call-rich-runtime",
+        toolName: { name: "RichOutput" },
+        payload: { kind: "function", arguments: "{}" },
+        source: "direct",
+      },
+      {},
+      { sandboxMode: "read_only" },
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.contentItems).toEqual(contentItems);
   });
 
   test("code-mode dispatch carries runtime source and selected sandbox", async () => {
