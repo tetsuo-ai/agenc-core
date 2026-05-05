@@ -5,7 +5,7 @@ import type { KeyboardEvent } from '../../../../../tui/ink/events/keyboard-event
 import { Box, Text } from '../../../../../tui/ink.js';
 import { useKeybinding, useKeybindings } from '../../../../../tui/keybindings/useKeybinding.js';
 import { useAppState } from '../../../../../tui/state/AppState.js';
-import type { Question } from 'src/tools/AskUserQuestionTool/AskUserQuestionTool.js';
+import type { AskUserQuestion as Question } from 'src/tools/ask-user-question/tool.js';
 import { getExternalEditor } from '../../../utils/editor.js';
 import { toIDEDisplayName } from '../../../utils/ide.js';
 import { editPromptInEditor } from '../../../utils/promptEditor.js';

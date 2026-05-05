@@ -85,7 +85,7 @@ import {
 import type {
   ApprovalResolver,
   PermissionRequestHook,
-} from "./_deps/orchestrator-types.js";
+} from "../tools/orchestrator.js";
 import type {
   PermissionAuditErrorHandler,
   PermissionAuditLogger,

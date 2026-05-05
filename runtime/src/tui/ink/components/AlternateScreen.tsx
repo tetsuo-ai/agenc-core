@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { type PropsWithChildren, useContext, useInsertionEffect } from 'react';
-import instances from '../instances.js';
+import { getInkInstance } from '../instances.js';
 import { DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN } from '../termio/dec.js';
 import { TerminalWriteContext } from '../useTerminalNotification.js';
 import Box from './Box.js';
@@ -43,7 +43,7 @@ export function AlternateScreen(t0) {
   let t3;
   if ($[0] !== mouseTracking || $[1] !== writeRaw) {
     t2 = () => {
-      const ink = instances.get(process.stdout);
+      const ink = getInkInstance();
       if (!writeRaw) {
         return;
       }

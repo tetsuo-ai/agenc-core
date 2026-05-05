@@ -4,7 +4,7 @@ import figures from 'figures';
 import Fuse from 'fuse.js';
 import React from 'react';
 import { getOriginalCwd, getSessionId } from '../bootstrap/state.js';
-import { useExitOnCtrlCDWithKeybindings } from '../hooks/useExitOnCtrlCDWithKeybindings.js';
+import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { useSearchInput } from '../hooks/useSearchInput.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { applyColor } from '../../../tui/ink/colorize.js';

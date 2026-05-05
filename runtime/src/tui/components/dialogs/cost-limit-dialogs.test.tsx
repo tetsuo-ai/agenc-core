@@ -72,7 +72,7 @@ vi.mock('../../../agenc/upstream/services/rateLimitMocking.js', () => ({
   shouldProcessMockLimits: () => rateLimitMock.shouldProcessMockLimits,
 }))
 
-vi.mock('../../../agenc/upstream/services/agencAiLimitsHook.js', () => ({
+vi.mock('../../rate-limits/agenc-ai-limits.js', () => ({
   useAgenCAiLimits: () => rateLimitMock.limits,
 }))
 

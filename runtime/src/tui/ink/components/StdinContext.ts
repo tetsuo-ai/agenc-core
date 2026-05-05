@@ -1,4 +1,4 @@
-import { createContext } from 'react'
+import { createContext, useContext } from 'react'
 import { EventEmitter } from '../events/emitter.js'
 import type { TerminalQuerier } from '../terminal-querier.js'
 
@@ -45,5 +45,9 @@ const StdinContext = createContext<Props>({
 
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
 StdinContext.displayName = 'InternalStdinContext'
+
+export function useStdin(): Props {
+  return useContext(StdinContext)
+}
 
 export default StdinContext

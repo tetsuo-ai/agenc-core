@@ -1,4 +1,6 @@
-export { ASK_USER_QUESTION_TOOL_NAME } from '../ask-user-question/tool.js'
+import { ASK_USER_QUESTION_TOOL_NAME as LIVE_ASK_USER_QUESTION_TOOL_NAME } from '../ask-user-question/tool.js'
+
+export const ASK_USER_QUESTION_TOOL_NAME = LIVE_ASK_USER_QUESTION_TOOL_NAME
 
 export const ASK_USER_QUESTION_TOOL_CHIP_WIDTH = 12
 
@@ -19,7 +21,7 @@ Use the optional \`preview\` field on options when presenting concrete artifacts
 export const ASK_USER_QUESTION_TOOL_PROMPT = `Use this tool when you need to ask the user questions during execution. This allows you to:
 1. Gather user preferences or requirements
 2. Clarify ambiguous instructions
-3. Get decisions on implementation choices as you work
+3. Get decisions on implementation choices
 4. Offer choices to the user about what direction to take.
 
 Usage notes:

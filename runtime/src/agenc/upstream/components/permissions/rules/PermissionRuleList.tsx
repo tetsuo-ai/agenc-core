@@ -8,7 +8,7 @@ import { applyPermissionUpdate, persistPermissionUpdate } from 'src/utils/permis
 import type { PermissionUpdateDestination } from 'src/utils/permissions/PermissionUpdateSchema.js';
 import type { CommandResultDisplay } from '../../../../../commands.js';
 import { Select } from '../../../components/CustomSelect/select.js';
-import { useExitOnCtrlCDWithKeybindings } from '../../../hooks/useExitOnCtrlCDWithKeybindings.js';
+import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { useSearchInput } from '../../../hooks/useSearchInput.js';
 import type { KeyboardEvent } from '../../../../../tui/ink/events/keyboard-event.js';
 import { Box, Text, useTerminalFocus } from '../../../../../tui/ink.js';
