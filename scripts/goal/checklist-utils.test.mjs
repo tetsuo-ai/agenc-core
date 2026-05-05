@@ -149,6 +149,10 @@ assert(
   "complete.mjs hard-fails branch deletion failures",
   /const deleteRes =[\s\S]*if \(deleteRes\.status !== 0\) \{\s*abort\(/.test(completeSource),
 );
+assert(
+  "complete.mjs deletes the feature branch from the main checkout cwd",
+  /const deleteRes = runInMainCheckout\("git", \["-C", mainRoot, "branch", "-d", expected\]\);/.test(completeSource),
+);
 
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
 process.exit(failed > 0 ? 1 : 0);

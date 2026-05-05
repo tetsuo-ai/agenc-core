@@ -163,6 +163,10 @@ function run(cmd, argv, opts = {}) {
   });
 }
 
+function runInMainCheckout(cmd, argv, opts = {}) {
+  return run(cmd, argv, { ...opts, cwd: mainRoot });
+}
+
 function git(...argv) {
   // Hard guard: forbid any remote-touching arg.
   for (const a of argv) {
@@ -273,14 +277,14 @@ writeFileSync(journalPath, JSON.stringify({
 // regardless of whether complete.mjs was launched from the main checkout or
 // from a per-item worktree. This keeps the merge target consistent across
 // parallel sessions.
-const checkoutMain = run("git", ["-C", mainRoot, "checkout", "main"]);
+const checkoutMain = runInMainCheckout("git", ["-C", mainRoot, "checkout", "main"]);
 if (checkoutMain.status !== 0) {
   try { unlinkSync(journalPath); } catch {}
   abort("git checkout main failed (in main checkout)");
 }
 
 const mergeMsg = `Merge branch '${expected}'`;
-const mergeRes = run("git", ["-C", mainRoot, "merge", "--no-ff", expected, "-m", mergeMsg]);
+const mergeRes = runInMainCheckout("git", ["-C", mainRoot, "merge", "--no-ff", expected, "-m", mergeMsg]);
 if (mergeRes.status !== 0) {
   try { unlinkSync(journalPath); } catch {}
   abort(`git merge --no-ff ${expected} failed (in main checkout)`);
@@ -300,7 +304,7 @@ if (isWorktree && existsSync(expectedWorktreePath)) {
   try { process.chdir(mainRoot); } catch (e) {
     process.stderr.write(`${BOLD}${RED}!${RESET} could not chdir to ${mainRoot} before worktree removal: ${e?.message || e}\n`);
   }
-  const wtRemove = run("git", ["-C", mainRoot, "worktree", "remove", "--force", expectedWorktreePath]);
+  const wtRemove = runInMainCheckout("git", ["-C", mainRoot, "worktree", "remove", "--force", expectedWorktreePath]);
   if (wtRemove.status !== 0) {
     abort(
       `could not remove worktree ${expectedWorktreePath}; completion left ${journalPath} for recovery. ` +
@@ -313,7 +317,7 @@ if (isWorktree && existsSync(expectedWorktreePath)) {
 
 // ---- step 6: delete feature branch -------------------------------------
 
-const deleteRes = run("git", ["-C", mainRoot, "branch", "-d", expected]);
+const deleteRes = runInMainCheckout("git", ["-C", mainRoot, "branch", "-d", expected]);
 if (deleteRes.status !== 0) {
   abort(
     `could not delete branch ${expected}; completion left ${journalPath} for recovery. ` +
