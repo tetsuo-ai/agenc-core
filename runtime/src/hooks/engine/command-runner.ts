@@ -9,6 +9,8 @@ import { spawn } from "node:child_process";
 
 import type { CommandRunResult } from "./types.js";
 
+const MAX_HOOK_OUTPUT_CHARS = 1_048_576;
+
 export interface RunHookCommandOptions {
   readonly command: string;
   readonly cwd: string;
@@ -41,6 +43,7 @@ export async function runHookCommand(
     });
     let stdout = "";
     let stderr = "";
+    let outputTruncated = false;
     let settled = false;
     let abortListener: (() => void) | null = null;
     let terminationResult:
@@ -62,6 +65,11 @@ export async function runHookCommand(
         ...result,
         stdout,
         stderr,
+        ...(result.error !== undefined
+          ? { error: result.error }
+          : outputTruncated
+            ? { error: `hook output truncated at ${MAX_HOOK_OUTPUT_CHARS} characters per stream` }
+            : {}),
         durationMs: Date.now() - started,
       });
     };
@@ -90,10 +98,14 @@ export async function runHookCommand(
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
-      stdout += String(chunk);
+      const appended = appendBoundedOutput(stdout, String(chunk));
+      stdout = appended.value;
+      outputTruncated ||= appended.truncated;
     });
     child.stderr.on("data", (chunk) => {
-      stderr += String(chunk);
+      const appended = appendBoundedOutput(stderr, String(chunk));
+      stderr = appended.value;
+      outputTruncated ||= appended.truncated;
     });
     child.on("error", (err) => {
       finish({
@@ -125,6 +137,23 @@ export async function runHookCommand(
     });
     child.stdin.end(opts.stdin);
   });
+}
+
+function appendBoundedOutput(
+  current: string,
+  chunk: string,
+): { readonly value: string; readonly truncated: boolean } {
+  if (current.length >= MAX_HOOK_OUTPUT_CHARS) {
+    return { value: current, truncated: chunk.length > 0 };
+  }
+  const remaining = MAX_HOOK_OUTPUT_CHARS - current.length;
+  if (chunk.length <= remaining) {
+    return { value: current + chunk, truncated: false };
+  }
+  return {
+    value: current + chunk.slice(0, remaining),
+    truncated: true,
+  };
 }
 
 function signalChild(pid: number | undefined, signal: NodeJS.Signals): void {

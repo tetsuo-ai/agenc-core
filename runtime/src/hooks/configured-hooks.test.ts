@@ -308,6 +308,215 @@ describe("configured hooks runtime", () => {
     });
   });
 
+  test("permission hook exit code 2 denies with stderr reason", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      PermissionRequest: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command: "printf 'deny from stderr' >&2; exit 2",
+            },
+          ],
+        },
+      ],
+    });
+
+    const decision = await target.permissionDecisionHooks[0]!({
+      toolName: "Write",
+      args: {},
+    });
+
+    expect(decision).toEqual({
+      kind: "deny",
+      reason: "deny from stderr",
+    });
+  });
+
+  test("permission hook records missing exit-code-2 denial reason", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      PermissionRequest: [
+        {
+          hooks: [{ type: "command", command: "exit 2" }],
+        },
+      ],
+    });
+
+    const decision = await target.permissionDecisionHooks[0]!({
+      toolName: "Write",
+      args: {},
+    });
+
+    expect(decision).toEqual({ kind: "pass" });
+    expect(runtime.latestDiagnostics()[0]?.error).toContain(
+      "did not write a denial reason to stderr",
+    );
+  });
+
+  test("permission hook deny wins over earlier allow", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      PermissionRequest: [
+        {
+          matcher: "Write",
+          hooks: [
+            {
+              type: "command",
+              command:
+                "node -e \"console.log(JSON.stringify({hookSpecificOutput:{hookEventName:'PermissionRequest',decision:{behavior:'allow'}}}))\"",
+            },
+            {
+              type: "command",
+              command:
+                "node -e \"console.log(JSON.stringify({hookSpecificOutput:{hookEventName:'PermissionRequest',decision:{behavior:'deny',message:'later deny'}}}))\"",
+            },
+          ],
+        },
+      ],
+    });
+
+    const decision = await target.permissionDecisionHooks[0]!({
+      toolName: "Write",
+      args: {},
+    });
+
+    expect(decision).toEqual({ kind: "deny", reason: "later deny" });
+    expect(runtime.latestDiagnostics()).toHaveLength(2);
+  });
+
+  test("permission hook matcher aliases select handlers through runtime wiring", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      PermissionRequest: [
+        {
+          matcher: "Edit",
+          hooks: [
+            {
+              type: "command",
+              command:
+                "node -e \"console.log(JSON.stringify({hookSpecificOutput:{hookEventName:'PermissionRequest',decision:{behavior:'deny',message:'alias denied'}}}))\"",
+            },
+          ],
+        },
+      ],
+    });
+
+    const decision = await target.permissionDecisionHooks[0]!({
+      toolName: "apply_patch",
+      matcherAliases: ["Edit"],
+      args: {},
+    });
+
+    expect(decision).toEqual({ kind: "deny", reason: "alias denied" });
+  });
+
+  test("permission hook stdin includes approval context fields", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: "/tmp",
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      PermissionRequest: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command:
+                "node -e 'let s=\"\"; process.stdin.on(\"data\", c => s += c); process.stdin.on(\"end\", () => { const x = JSON.parse(s); if (x.session_id === \"sess-1\" && x.turn_id === \"turn-1\" && x.cwd === \"/work\" && x.transcript_path === \"/tmp/transcript.jsonl\" && x.model === \"model-a\" && x.permission_mode === \"plan\") { console.error(\"context checked\"); process.exit(2); } })'",
+            },
+          ],
+        },
+      ],
+    });
+
+    const decision = await target.permissionDecisionHooks[0]!({
+      toolName: "Write",
+      args: {},
+      sessionId: "sess-1",
+      turnId: "turn-1",
+      cwd: "/work",
+      transcriptPath: "/tmp/transcript.jsonl",
+      model: "model-a",
+      permissionMode: "plan",
+    });
+
+    expect(decision).toEqual({ kind: "deny", reason: "context checked" });
+  });
+
   test("permission hook records unsupported structured output and passes", async () => {
     const runtime = new ConfiguredHooksRuntime({
       cwd: process.cwd(),
@@ -670,6 +879,57 @@ describe("configured hooks runtime", () => {
     expect(decision.hookPermissionResult).toBeUndefined();
     expect(runtime.latestDiagnostics()[0]?.error).toContain(
       "permissionDecision must be allow, deny, or ask",
+    );
+  });
+
+  test("PreToolUse stdin includes invocation context fields", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: "/tmp",
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      PreToolUse: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command:
+                "node -e 'let s=\"\"; process.stdin.on(\"data\", c => s += c); process.stdin.on(\"end\", () => { const x = JSON.parse(s); process.stdout.write([x.session_id,x.turn_id,x.cwd,x.transcript_path,x.model,x.permission_mode].join(\"|\")); })'",
+            },
+          ],
+        },
+      ],
+    });
+
+    await target.preToolUseHooks[0]!({
+      invocation: {
+        callId: "call-1",
+        session: { conversationId: "sess-1", transcriptPath: "/tmp/t.jsonl" },
+        turn: {
+          subId: "turn-1",
+          cwd: "/work",
+          modelInfo: { slug: "model-a" },
+          permissionMode: "plan",
+        },
+      } as never,
+      tool: { name: "Read" } as never,
+      args: {},
+    });
+
+    expect(runtime.latestDiagnostics()[0]?.stdout).toBe(
+      "sess-1|turn-1|/work|/tmp/t.jsonl|model-a|plan",
     );
   });
 

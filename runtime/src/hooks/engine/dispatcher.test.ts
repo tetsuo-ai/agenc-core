@@ -240,4 +240,42 @@ describe("hook output parser", () => {
     expect(parsed.output?.stopReason).toBe("halt");
     expect(parsed.output?.additionalContext).toBe("details");
   });
+
+  test("validates event-specific hookSpecificOutput tag and unknown fields", () => {
+    expect(
+      readHookSpecificOutput(
+        JSON.stringify({
+          hookSpecificOutput: {
+            decision: { behavior: "allow" },
+          },
+        }),
+        "PermissionRequest",
+      ).invalid,
+    ).toContain("hookSpecificOutput.hookEventName must be PermissionRequest");
+
+    expect(
+      readHookSpecificOutput(
+        JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "PostToolUse",
+            decision: { behavior: "allow" },
+          },
+        }),
+        "PermissionRequest",
+      ).invalid,
+    ).toContain("hookSpecificOutput.hookEventName must be PermissionRequest");
+
+    expect(
+      readHookSpecificOutput(
+        JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "PermissionRequest",
+            decision: { behavior: "allow" },
+            extra: true,
+          },
+        }),
+        "PermissionRequest",
+      ).invalid,
+    ).toContain("hookSpecificOutput returned unsupported field extra");
+  });
 });

@@ -40,7 +40,10 @@ export function parseHookSpecificOutput(
   return readHookSpecificOutput(stdout).output;
 }
 
-export function readHookSpecificOutput(stdout: string): ParsedHookSpecificOutput {
+export function readHookSpecificOutput(
+  stdout: string,
+  expectedEvent?: string,
+): ParsedHookSpecificOutput {
   const raw = stdout.trim();
   if (!raw.startsWith("{")) return { explicit: false };
   try {
@@ -64,6 +67,13 @@ export function readHookSpecificOutput(stdout: string): ParsedHookSpecificOutput
       };
     }
     const { output, invalid } = normalizeHookSpecificOutput(rawSpecific);
+    validateKnownOutputFields({
+      root: parsed,
+      specific: rawSpecific,
+      nested: rawSpecific !== parsed,
+      expectedEvent,
+      invalid,
+    });
     if (rawSpecific !== parsed) {
       mergeCommonOutputFields(parsed, output, invalid);
     }
@@ -77,6 +87,102 @@ export function readHookSpecificOutput(stdout: string): ParsedHookSpecificOutput
       explicit: true,
       invalid: "hook output JSON could not be parsed",
     };
+  }
+}
+
+interface OutputFieldValidationInput {
+  readonly root: Record<string, unknown>;
+  readonly specific: Record<string, unknown>;
+  readonly nested: boolean;
+  readonly expectedEvent?: string;
+  readonly invalid: string[];
+}
+
+function validateKnownOutputFields(input: OutputFieldValidationInput): void {
+  const rootAllowed = new Set([
+    "continue",
+    "stopReason",
+    "suppressOutput",
+    "systemMessage",
+    "hookSpecificOutput",
+    "decision",
+    "reason",
+    ...(input.nested ? [] : specificKeysForEvent(input.expectedEvent)),
+  ]);
+  validateAllowedKeys(input.root, rootAllowed, input.invalid, "hook output");
+
+  const specificAllowed = new Set([
+    "hookEventName",
+    "continue",
+    "stopReason",
+    "suppressOutput",
+    "systemMessage",
+    ...specificKeysForEvent(input.expectedEvent),
+  ]);
+  validateAllowedKeys(
+    input.specific,
+    specificAllowed,
+    input.invalid,
+    input.nested ? "hookSpecificOutput" : "hook output",
+  );
+
+  if (input.nested && input.expectedEvent !== undefined) {
+    if (input.specific.hookEventName === undefined) {
+      input.invalid.push(
+        `hookSpecificOutput.hookEventName must be ${input.expectedEvent}`,
+      );
+    } else if (input.specific.hookEventName !== input.expectedEvent) {
+      input.invalid.push(
+        `hookSpecificOutput.hookEventName must be ${input.expectedEvent}`,
+      );
+    }
+  }
+}
+
+function specificKeysForEvent(event: string | undefined): readonly string[] {
+  switch (event) {
+    case "PreToolUse":
+      return [
+        "permissionDecision",
+        "permissionDecisionReason",
+        "updatedInput",
+        "additionalContext",
+        "decision",
+        "reason",
+      ];
+    case "PermissionRequest":
+      return ["decision"];
+    case "PostToolUse":
+    case "UserPromptSubmit":
+    case "SessionStart":
+    case "PreCompact":
+    case "PostCompact":
+      return ["additionalContext", "decision", "reason"];
+    case "Stop":
+    case "StopFailure":
+      return ["decision", "reason"];
+    default:
+      return [
+        "permissionDecision",
+        "permissionDecisionReason",
+        "updatedInput",
+        "additionalContext",
+        "decision",
+        "reason",
+      ];
+  }
+}
+
+function validateAllowedKeys(
+  raw: Record<string, unknown>,
+  allowed: ReadonlySet<string>,
+  invalid: string[],
+  label: string,
+): void {
+  for (const key of Object.keys(raw)) {
+    if (!allowed.has(key)) {
+      invalid.push(`${label} returned unsupported field ${key}`);
+    }
   }
 }
 

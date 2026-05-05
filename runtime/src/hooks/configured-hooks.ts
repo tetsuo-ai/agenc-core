@@ -7,6 +7,7 @@ import {
 } from "../config/schema.js";
 import type {
   PermissionDecisionHook,
+  PermissionDecisionHookInput,
   PermissionDecisionResult,
   PostToolUseFailureHook,
   PostToolUseHook,
@@ -164,6 +165,7 @@ export class ConfiguredHooksRuntime {
   private rebuildTarget(): void {
     const target = this.target;
     if (!target) return;
+    let hasPermissionRequestHook = false;
     target.preToolUseHooks.length = 0;
     target.postToolUseHooks.length = 0;
     target.failureToolUseHooks.length = 0;
@@ -186,7 +188,7 @@ export class ConfiguredHooksRuntime {
           target.failureToolUseHooks.push(this.createFailureHook(hook));
           break;
         case "PermissionRequest":
-          target.permissionDecisionHooks.push(this.createPermissionHook(hook));
+          hasPermissionRequestHook = true;
           break;
         case "UserPromptSubmit":
           target.userPromptSubmitHooks.push(this.createUserPromptSubmitHook(hook));
@@ -208,6 +210,9 @@ export class ConfiguredHooksRuntime {
           break;
       }
     }
+    if (hasPermissionRequestHook) {
+      target.permissionDecisionHooks.push(this.createPermissionHook());
+    }
   }
 
   private createPreToolUseHook(hook: IndividualHookConfig): PreToolUseHook {
@@ -217,6 +222,7 @@ export class ConfiguredHooksRuntime {
         return { kind: "continue" };
       }
       const result = await this.runCommandHook(hook, {
+        ...toolInvocationHookContext(invocation, this.opts.cwd),
         hook_event_name: "PreToolUse",
         tool_name: toolName,
         tool_input: args,
@@ -268,6 +274,7 @@ export class ConfiguredHooksRuntime {
         return { kind: "continue" };
       }
       const run = await this.runCommandHook(hook, {
+        ...toolInvocationHookContext(invocation, this.opts.cwd),
         hook_event_name: "PostToolUse",
         tool_name: toolName,
         tool_input: args,
@@ -321,6 +328,7 @@ export class ConfiguredHooksRuntime {
       const toolName = tool.name;
       if (this.isDisabled() || !matchesPattern(toolName, hook.matcher)) return;
       await this.runCommandHook(hook, {
+        ...toolInvocationHookContext(invocation, this.opts.cwd),
         hook_event_name: "PostToolUseFailure",
         tool_name: toolName,
         tool_input: args,
@@ -333,22 +341,43 @@ export class ConfiguredHooksRuntime {
     };
   }
 
-  private createPermissionHook(
-    hook: IndividualHookConfig,
-  ): PermissionDecisionHook {
-    return async ({ toolName, args }) => {
-      if (this.isDisabled() || !matchesPattern(toolName, hook.matcher)) {
+  private createPermissionHook(): PermissionDecisionHook {
+    return async (input) => {
+      const { toolName, args } = input;
+      if (this.isDisabled()) {
         return { kind: "pass" };
       }
-      const run = await this.runCommandHook(hook, {
-        hook_event_name: "PermissionRequest",
-        tool_name: toolName,
-        tool_input: args,
-      });
-      if (run.status !== "success") return { kind: "pass" };
-      const decision = this.parsePermissionDecision(run);
-      if (!decision) return { kind: "pass" };
-      return decision;
+      const runs = await this.engine.dispatch(
+        "PermissionRequest",
+        [toolName, ...(input.matcherAliases ?? [])],
+        {
+          ...permissionDecisionHookInput(input, this.opts.cwd),
+          hook_event_name: "PermissionRequest",
+          tool_name: toolName,
+          tool_input: args,
+        },
+        input.signal,
+      );
+      let allow: PermissionDecisionResult | undefined;
+      for (const { run } of runs) {
+        if (run.status === "blocking") {
+          const reason = trimmedReason(run.stderr) ?? trimmedReason(run.stdout);
+          if (reason === undefined) {
+            this.recordHookOutputIssue(
+              run,
+              "PermissionRequest hook exited with code 2 but did not write a denial reason to stderr",
+            );
+            continue;
+          }
+          return { kind: "deny", reason: redactSecrets(reason) };
+        }
+        if (run.status !== "success") continue;
+        const decision = this.parsePermissionDecision(run);
+        if (!decision) continue;
+        if (decision.kind === "deny") return decision;
+        if (decision.kind === "allow") allow = decision;
+      }
+      return allow ?? { kind: "pass" };
     };
   }
 
@@ -514,7 +543,7 @@ export class ConfiguredHooksRuntime {
   private readStructuredOutput(
     run: HookCommandRunDiagnostic,
   ): ReturnType<typeof readHookSpecificOutput> {
-    const parsed = readHookSpecificOutput(run.rawStdout);
+    const parsed = readHookSpecificOutput(run.rawStdout, run.event);
     if (parsed.invalid) this.recordHookOutputIssue(run, parsed.invalid);
     return parsed;
   }
@@ -558,6 +587,41 @@ export function hookDisplayText(hook: IndividualHookConfig): string {
 
 function hookCommandLabel(hook: IndividualHookConfig): string {
   return redactSecrets(hook.command.statusMessage ?? hook.command.command);
+}
+
+function permissionDecisionHookInput(
+  input: PermissionDecisionHookInput,
+  fallbackCwd: string,
+): Record<string, unknown> {
+  return {
+    session_id: input.sessionId ?? "",
+    turn_id: input.turnId ?? "",
+    transcript_path: input.transcriptPath ?? null,
+    cwd: input.cwd ?? fallbackCwd,
+    model: input.model ?? "unknown",
+    permission_mode: input.permissionMode ?? "default",
+  };
+}
+
+function toolInvocationHookContext(
+  invocation: unknown,
+  fallbackCwd: string,
+): Record<string, unknown> {
+  const root = asRecord(invocation);
+  const session = asRecord(root?.session);
+  const turn = asRecord(root?.turn);
+  return {
+    session_id: stringValue(session?.conversationId) ?? "",
+    turn_id: stringValue(turn?.subId) ?? "",
+    transcript_path: stringValue(session?.transcriptPath) ?? null,
+    cwd: stringValue(turn?.cwd) ?? fallbackCwd,
+    model:
+      stringValue(asRecord(turn?.modelInfo)?.slug) ??
+      stringValue(asRecord(turn?.collaborationMode)?.model) ??
+      stringValue(asRecord(turn?.config)?.model) ??
+      "unknown",
+    permission_mode: stringValue(turn?.permissionMode) ?? "default",
+  };
 }
 
 function allowStopOutcome(): StopHookOutcome {
@@ -711,4 +775,16 @@ function unsupportedPermissionRequestOutput(
 function trimmedReason(reason: string | undefined): string | undefined {
   const trimmed = reason?.trim();
   return trimmed !== undefined && trimmed.length > 0 ? trimmed : undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value
+    : undefined;
 }

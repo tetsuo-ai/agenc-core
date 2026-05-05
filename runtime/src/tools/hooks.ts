@@ -554,10 +554,22 @@ export interface PermissionDecisionResult {
   readonly updatedArgs?: Record<string, unknown>;
 }
 
-export type PermissionDecisionHook = (input: {
+export interface PermissionDecisionHookInput {
   readonly toolName: string;
   readonly args: Record<string, unknown>;
-}) =>
+  readonly invocation?: ToolInvocation;
+  readonly callId?: string;
+  readonly turnId?: string;
+  readonly cwd?: string;
+  readonly sessionId?: string;
+  readonly transcriptPath?: string;
+  readonly model?: string;
+  readonly permissionMode?: string;
+  readonly matcherAliases?: readonly string[];
+  readonly signal?: AbortSignal;
+}
+
+export type PermissionDecisionHook = (input: PermissionDecisionHookInput) =>
   | Promise<PermissionDecisionResult | undefined>
   | PermissionDecisionResult
   | undefined;
@@ -578,6 +590,7 @@ export async function resolveHookPermissionDecision(
   hooks: ReadonlyArray<PermissionDecisionHook>,
   onError?: (err: unknown, idx: number) => void,
   onTiming?: (record: HookTimingRecord) => void,
+  context: Omit<PermissionDecisionHookInput, "toolName" | "args"> = {},
 ): Promise<PermissionDecisionResult> {
   for (let i = 0; i < hooks.length; i += 1) {
     const hook = hooks[i];
@@ -585,7 +598,7 @@ export async function resolveHookPermissionDecision(
     const started = Date.now();
     let decision: PermissionDecisionResult | undefined;
     try {
-      decision = await hook({ toolName, args });
+      decision = await hook({ toolName, args, ...context });
     } catch (err) {
       onError?.(err, i);
       decision = undefined;

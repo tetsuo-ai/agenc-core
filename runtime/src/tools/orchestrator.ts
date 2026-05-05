@@ -44,6 +44,7 @@ import type { PermissionDefaultMode } from "../config/schema.js";
 import {
   resolveHookPermissionDecision,
   type PermissionDecisionHook,
+  type PermissionDecisionHookInput,
 } from "./hooks.js";
 import {
   defaultExecApprovalRequirement as defaultExecApprovalRequirementFromPermissions,
@@ -506,6 +507,46 @@ async function awaitWithAbort<T>(
   });
 }
 
+function permissionDecisionHookContext(
+  ctx: ApprovalCtx,
+  signal: AbortSignal | undefined,
+): Omit<PermissionDecisionHookInput, "toolName" | "args"> {
+  const invocation = ctx.invocation;
+  const session = asRecord(invocation.session);
+  const turn = asRecord(invocation.turn);
+  const cwd = stringValue(turn?.cwd);
+  const sessionId = stringValue(session?.conversationId);
+  const transcriptPath = stringValue(session?.transcriptPath);
+  const model =
+    stringValue(asRecord(turn?.modelInfo)?.slug) ??
+    stringValue(asRecord(turn?.collaborationMode)?.model) ??
+    stringValue(asRecord(turn?.config)?.model);
+  const permissionMode = stringValue(turn?.permissionMode);
+  return {
+    invocation,
+    callId: ctx.callId,
+    turnId: ctx.turnId,
+    ...(cwd !== undefined ? { cwd } : {}),
+    ...(sessionId !== undefined ? { sessionId } : {}),
+    ...(transcriptPath !== undefined ? { transcriptPath } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(permissionMode !== undefined ? { permissionMode } : {}),
+    ...(signal !== undefined ? { signal } : {}),
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value
+    : undefined;
+}
+
 /**
  * Run the permission-request pipeline. donor runtime order:
  *
@@ -549,6 +590,9 @@ export async function requestApproval(
           opts.ctx.toolName,
           opts.args ?? {},
           opts.permissionDecisionHooks,
+          undefined,
+          undefined,
+          permissionDecisionHookContext(opts.ctx, signal),
         ),
         signal,
       );
