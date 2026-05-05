@@ -356,6 +356,39 @@ if (reviewRes.status !== 0) {
 }
 ok("reviewer APPROVED");
 
+// ---- step 4.5: main-ancestry guard -------------------------------------
+// The branch MUST contain every commit currently on main. If main has moved
+// since this branch was created (because a parallel session merged something),
+// the agent is required to merge main into this worktree FIRST and resolve
+// any conflicts by INTEGRATING main's changes (never by reverting them).
+// This is a hard gate: complete.mjs refuses to merge a branch that doesn't
+// already contain main, because the resulting auto-merge in the main checkout
+// could silently regress another session's work or stomp a security fix.
+header("step 4.5 — main-ancestry guard (branch must contain main)");
+{
+  const r = spawnSync("git", ["-C", mainRoot, "rev-list", `${expected}..main`, "--count"], {
+    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (r.status !== 0) {
+    abort(`could not run rev-list ${expected}..main: ${(r.stderr || "").trim()}`);
+  }
+  const behind = parseInt((r.stdout || "0").trim(), 10);
+  if (behind > 0) {
+    abort(
+      `branch ${expected} is ${behind} commit(s) BEHIND main. Another session merged work while this item was in flight.\n\n` +
+      `MANDATORY recovery from inside this worktree (${root}):\n\n` +
+      `  git merge main -m "Merge main into worktree to integrate parallel work"\n\n` +
+      `If git reports conflicts, resolve them by INTEGRATING main's changes — never by reverting them. ` +
+      `Main's changes came from another session that already passed gates and review; deleting them is forbidden. ` +
+      `Preserve BOTH your in-progress work AND main's changes; if the two genuinely conflict on the same line, ` +
+      `prefer main's version unless your item's spec specifically supersedes it (in which case document the ` +
+      `conflict resolution in PARITY.md or parity/<id>-parity.json). After merging, re-run verify, then re-run ` +
+      `complete.mjs.`,
+    );
+  }
+  pass(`branch ${expected} contains all of main (no integration debt)`);
+}
+
 // ---- step 5: switch to main + merge ------------------------------------
 
 header(`step 5 — local merge ${expected} → main (--no-ff)${isWorktree ? ` (from worktree)` : ""}`);
