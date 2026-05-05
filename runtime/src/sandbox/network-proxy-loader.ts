@@ -327,7 +327,7 @@ export function networkTablesFromToml(
       throw new Error("permissions must be a TOML table");
     }
     permissions = {};
-    for (const [name, profileRaw] of Object.entries(permissionsRaw)) {
+    for (const [name, profileRaw] of sortedRecordEntries(permissionsRaw)) {
       if (!isPlainRecord(profileRaw)) {
         throw new Error(`permissions.${name} must be a TOML table`);
       }
@@ -470,7 +470,7 @@ export function applyNetworkConstraints(
   }
   if (network.unixSockets !== undefined) {
     const allowed = unixSocketAllowEntries(network.unixSockets);
-    constraints.allowUnixSockets = allowed.length > 0 ? allowed : undefined;
+    constraints.allowUnixSockets = allowed;
   }
   if (network.allowLocalBinding !== undefined) {
     constraints.allowLocalBinding = network.allowLocalBinding;
@@ -1331,7 +1331,7 @@ function optionalDomainPermissionsEntry(
   if (!isPlainRecord(raw)) throw new Error("network.domains must be a table");
   return {
     domains: {
-      entries: Object.entries(raw).map(([pattern, permission]) => {
+      entries: sortedRecordEntries(raw).map(([pattern, permission]) => {
         if (permission !== "allow" && permission !== "deny") {
           throw new Error(
             `network.domains.${pattern} must be allow or deny`,
@@ -1352,7 +1352,7 @@ function optionalUnixSocketPermissionsEntry(
     throw new Error("network.unix_sockets must be a table");
   }
   const entries: Record<string, NetworkUnixSocketPermission> = {};
-  for (const [socketPath, permission] of Object.entries(raw)) {
+  for (const [socketPath, permission] of sortedRecordEntries(raw)) {
     if (permission !== "allow" && permission !== "none") {
       throw new Error(
         `network.unix_sockets.${socketPath} must be allow or none`,
@@ -1381,6 +1381,8 @@ async function loadConfigLayers(
     };
   }
 
+  // AgenC's full config-layer stack is not available in this sandbox module yet.
+  // Production callers with system/managed layers must pass `layers` explicitly.
   const agencHome = options.agencHome ?? resolveAgencHome(options.env);
   const configPath = path.join(agencHome, "config.toml");
   let raw: string;
@@ -1391,7 +1393,7 @@ async function loadConfigLayers(
     if (code === "ENOENT") return { layers: [], layerMtimes: [] };
     throw error;
   }
-  const parsed = parseToml(raw);
+  const parsed = parseNetworkProxyToml(raw, configPath);
   if (!isPlainRecord(parsed)) {
     throw new Error("config.toml must parse to a TOML table");
   }
@@ -1402,6 +1404,27 @@ async function loadConfigLayers(
     layers,
     layerMtimes: await captureLayerMtimes(layers),
   };
+}
+
+function parseNetworkProxyToml(
+  raw: string,
+  configPath: string,
+): Record<string, unknown> {
+  return parseToml(raw, {
+    onDuplicateKey: (warning) => {
+      throw new Error(
+        `duplicate TOML key '${warning.key}' in ${configPath}:${warning.line}`,
+      );
+    },
+  }) as Record<string, unknown>;
+}
+
+function sortedRecordEntries(
+  value: Readonly<Record<string, unknown>>,
+): Array<[string, unknown]> {
+  return Object.entries(value).sort(([left], [right]) =>
+    left < right ? -1 : left > right ? 1 : 0
+  );
 }
 
 async function captureLayerMtimes(

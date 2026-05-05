@@ -81,6 +81,8 @@
         "malformed sandbox network TOML throws instead of falling back to defaults",
         "permission-profile network TOML ignores unsupported mitm fields instead of enabling proxy interception",
         "permission-profile network domains reject unsupported none values at the TOML boundary",
+        "duplicate keys and redeclared network TOML tables throw instead of using last-write-wins",
+        "TOML-derived flattened domain and Unix-socket entries are sorted for deterministic parity",
         "missing user config is the only silent no-layer default path",
         "mtime reload updates config state after a config.toml write"
       ],
@@ -100,7 +102,8 @@
         "trusted layers are system, managed, and legacy_managed",
         "user, project, and session_flags layers never contribute trusted constraints",
         "trusted scalar constraints use last trusted layer wins",
-        "trusted domain constraints overlay by normalized pattern"
+        "trusted domain constraints overlay by normalized pattern",
+        "trusted unix_sockets tables with only none entries produce an explicit empty allowlist constraint"
       ],
       "edgeCases": [
         "trusted enabled=false rejects a user layer that enables the proxy",
@@ -150,6 +153,10 @@
     {
       "id": "no-proxy-listener-runtime",
       "reason": "C-01g owns policy decision and config-loader behavior only. Starting HTTP/SOCKS listeners is outside this item."
+    },
+    {
+      "id": "default-disk-loader-user-layer-only",
+      "reason": "AgenC does not yet expose a runtime-wide config-layer stack to this sandbox module. The no-argument disk loader reads only <agencHome>/config.toml as the user layer; production call sites that have system, managed, legacy-managed, project, or session layers must pass the explicit layers option until that stack exists."
     }
   ]
 }

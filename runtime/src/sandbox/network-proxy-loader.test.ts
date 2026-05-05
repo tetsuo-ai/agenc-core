@@ -6,6 +6,7 @@ import { describe, expect, test } from "vitest";
 
 import { parseToml } from "../config/loader.js";
 import {
+  allowUnixSockets,
   applyExecPolicyNetworkRules,
   applyNetworkTables,
   buildConfigState,
@@ -127,6 +128,31 @@ default_permissions = "workspace"
 `)),
     ).toThrow(/must be allow or deny/);
   });
+
+  test("TOML-derived flattened entries are sorted deterministically", () => {
+    const parsed = networkTablesFromToml(rawToml(`
+default_permissions = "workspace"
+
+[permissions.workspace.network.domains]
+"z.agenc.tech" = "allow"
+"a.agenc.tech" = "allow"
+
+[permissions.workspace.network.unix_sockets]
+"/tmp/z.sock" = "allow"
+"/tmp/a.sock" = "allow"
+`));
+
+    const config = defaultNetworkProxyConfig();
+    applyNetworkTables(config, parsed);
+    expect(buildConfigState(config).allowedDomains).toEqual([
+      "a.agenc.tech",
+      "z.agenc.tech",
+    ]);
+    expect(allowUnixSockets(config)).toEqual([
+      "/tmp/a.sock",
+      "/tmp/z.sock",
+    ]);
+  });
 });
 
 describe("domain overlays and host decisions", () => {
@@ -150,8 +176,8 @@ default_permissions = "workspace"
 
     expect(buildConfigState(config).allowedDomains).toEqual([
       "lower.agenc.tech",
-      "shared.agenc.tech",
       "higher.agenc.tech",
+      "shared.agenc.tech",
     ]);
     expect(buildConfigState(config).deniedDomains).toEqual([]);
   });
@@ -344,7 +370,7 @@ default_permissions = "workspace"
     expect(constraints.deniedDomains).toEqual(["api.agenc.tech"]);
   });
 
-  test("user layers do not contribute trusted constraints", () => {
+  test("user-controlled layers do not contribute trusted constraints", () => {
     const constraints = networkConstraintsFromTrustedLayers([
       layer("user", `
 default_permissions = "workspace"
@@ -352,9 +378,80 @@ default_permissions = "workspace"
 [permissions.workspace.network]
 enabled = false
 `),
+      layer("project", `
+default_permissions = "workspace"
+
+[permissions.workspace.network]
+mode = "limited"
+`),
+      layer("session_flags", `
+default_permissions = "workspace"
+
+[permissions.workspace.network]
+allow_local_binding = true
+`),
     ]);
 
     expect(constraints.enabled).toBeUndefined();
+    expect(constraints.mode).toBeUndefined();
+    expect(constraints.allowLocalBinding).toBeUndefined();
+  });
+
+  test("trusted unix socket none entries create an empty allowlist constraint", () => {
+    const constraints = networkConstraintsFromTrustedLayers([
+      layer("managed", `
+default_permissions = "workspace"
+
+[permissions.workspace.network.unix_sockets]
+"/tmp/blocked.sock" = "none"
+`),
+    ]);
+
+    expect(constraints.allowUnixSockets).toEqual([]);
+  });
+
+  test("trusted empty unix socket allowlist rejects user socket expansion", () => {
+    const layers = [
+      layer("managed", `
+default_permissions = "workspace"
+
+[permissions.workspace.network.unix_sockets]
+"/tmp/blocked.sock" = "none"
+`),
+      layer("user", `
+default_permissions = "workspace"
+
+[permissions.workspace.network.unix_sockets]
+"/tmp/user.sock" = "allow"
+`),
+    ];
+    const config = configFromLayers(layers);
+
+    expect(() => enforceTrustedConstraints(layers, config)).toThrow(
+      /network.allow_unix_sockets/,
+    );
+  });
+
+  test("trusted empty unix socket allowlist rejects all-socket opt-in", () => {
+    const layers = [
+      layer("managed", `
+default_permissions = "workspace"
+
+[permissions.workspace.network.unix_sockets]
+"/tmp/blocked.sock" = "none"
+`),
+      layer("user", `
+default_permissions = "workspace"
+
+[permissions.workspace.network]
+dangerously_allow_all_unix_sockets = true
+`),
+    ];
+    const config = configFromLayers(layers);
+
+    expect(() => enforceTrustedConstraints(layers, config)).toThrow(
+      /dangerously_allow_all_unix_sockets/,
+    );
   });
 
   test("validator rejects widening over trusted constraints", () => {
@@ -563,6 +660,65 @@ describe("host normalization", () => {
     expect(normalizeHost("[::1]:443")).toBe("::1");
     expect(normalizeHost("2001:db8::1")).toBe("2001:db8::1");
     expect(normalizeHost("[fe80::1%25lo0]:443")).toBe("fe80::1%lo0");
+  });
+});
+
+describe("disk loader", () => {
+  test("missing user config is the only silent no-layer default path", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-network-missing-"));
+    try {
+      const state = await buildNetworkProxyState({ agencHome: home });
+      expect(state.current().config.network.enabled).toBe(false);
+      expect(state.current().allowedDomains).toEqual([]);
+      expect(state.current().deniedDomains).toEqual([]);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test.each([
+    {
+      label: "duplicate network key",
+      toml: `
+default_permissions = "workspace"
+
+[permissions.workspace.network]
+enabled = false
+enabled = true
+`,
+    },
+    {
+      label: "duplicate network domain key",
+      toml: `
+default_permissions = "workspace"
+
+[permissions.workspace.network.domains]
+"api.agenc.tech" = "deny"
+"api.agenc.tech" = "allow"
+`,
+    },
+    {
+      label: "redeclared network table",
+      toml: `
+default_permissions = "workspace"
+
+[permissions.workspace.network]
+enabled = true
+
+[permissions.workspace.network]
+mode = "limited"
+`,
+    },
+  ])("fails closed on malformed TOML: $label", async ({ toml }) => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-network-duplicate-"));
+    try {
+      await writeFile(join(home, "config.toml"), toml);
+      await expect(buildNetworkProxyState({ agencHome: home })).rejects.toThrow(
+        /duplicate TOML key/,
+      );
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 });
 
