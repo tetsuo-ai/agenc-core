@@ -1,12 +1,14 @@
-import { readdir, readFile, realpath, stat } from "node:fs/promises";
+import { readdir, realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { validateHooksConfig } from "../config/schema.js";
 import type { AgenCConfig, HooksMap, LspServerConfigInput, McpServerConfig } from "../config/schema.js";
 import {
   isRecord,
+  findPluginManifestPath,
   loadPluginManifest,
   normalizePluginManifest,
   PLUGIN_MANIFEST_RELATIVE_PATH,
+  readJsonText,
   resolveManifestRelativePath,
   type PluginCommandDeclaration,
   type PluginCommandMetadata,
@@ -378,13 +380,18 @@ export async function createPluginFromPath(
       pluginPath,
       opts.fallbackName,
     );
+    const attemptedManifestPath = await findPluginManifestPath(pluginPath);
     errors.push({
       type: "manifest",
       source: opts.source,
       plugin: opts.fallbackName,
-      path: join(pluginPath, PLUGIN_MANIFEST_RELATIVE_PATH),
+      path: attemptedManifestPath ?? join(pluginPath, PLUGIN_MANIFEST_RELATIVE_PATH),
       message: error instanceof Error ? error.message : String(error),
     });
+    return {
+      plugin: emptyPlugin(pluginPath, opts.source, false, manifest),
+      errors,
+    };
   }
   if (!opts.enabled || opts.isEnabled?.(manifest.name) === false) {
     return {
@@ -781,7 +788,7 @@ async function appendHookFile(
   errors: PluginLoadIssue[],
 ): Promise<void> {
   try {
-    const parsed = JSON.parse(await readFile(path, "utf8"));
+    const parsed = JSON.parse(await readJsonText(path));
     const hooks = normalizeHooksMap(parsed);
     if (hooks === null) {
       errors.push({
@@ -893,7 +900,7 @@ async function readServerFile<T>(
   pluginName: string,
 ): Promise<Readonly<Record<string, T>>> {
   try {
-    const parsed = JSON.parse(await readFile(path, "utf8"));
+    const parsed = JSON.parse(await readJsonText(path));
     const map = isRecord(parsed) && isRecord(parsed[wrapperKey])
       ? parsed[wrapperKey]
       : parsed;
@@ -1075,7 +1082,7 @@ async function loadAppConnectorIdsFromFile(
   pluginName: string,
 ): Promise<readonly string[]> {
   try {
-    const parsed = JSON.parse(await readFile(path, "utf8"));
+    const parsed = JSON.parse(await readJsonText(path));
     if (!isRecord(parsed) || !isRecord(parsed.apps)) return [];
     return Object.values(parsed.apps)
       .map((entry) => isRecord(entry) && typeof entry.id === "string" ? entry.id : null)

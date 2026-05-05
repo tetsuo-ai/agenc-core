@@ -177,6 +177,26 @@ describe("plugin loader", () => {
     });
   });
 
+  test("keeps malformed manifests disabled and reports the real manifest path", async () => {
+    await withTempDir(async (root) => {
+      const pluginRoot = join(root, "plugins", "bad-json");
+      await writeFileAt(join(pluginRoot, "plugin.json"), "{ invalid json");
+      await writeFileAt(join(pluginRoot, "commands", "ghost.md"), "# ghost\n");
+
+      const { plugin, errors } = await createPluginFromPath(pluginRoot, {
+        source: "test",
+        enabled: true,
+        fallbackName: "bad-json",
+      });
+
+      expect(plugin.enabled).toBe(false);
+      expect(plugin.commands).toEqual([]);
+      expect(errors).toMatchObject([
+        { type: "manifest", path: join(pluginRoot, "plugin.json") },
+      ]);
+    });
+  });
+
   test("reports missing configured roots without enabling phantom plugins", async () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");
@@ -338,6 +358,39 @@ describe("plugin loader", () => {
         .toBe("Inline command");
       expect(plugin.commands.find((command) => command.name === "file")?.metadata.argumentHint)
         .toBe("<topic>");
+    });
+  });
+
+  test("rejects unsafe command and settings keys", async () => {
+    await withTempDir(async (root) => {
+      const pluginRoot = join(root, "plugins", "unsafe-manifest");
+      await writeFileAt(
+        join(pluginRoot, PLUGIN_MANIFEST_RELATIVE_PATH),
+        `{
+  "name": "unsafe-manifest",
+  "commands": {
+    "__proto__": { "content": "bad" }
+  },
+  "settings": {
+    "constructor": true
+  },
+  "userConfig": {
+    "prototype": true
+  }
+}
+`,
+      );
+
+      const { plugin, errors } = await createPluginFromPath(pluginRoot, {
+        source: "test",
+        enabled: true,
+        fallbackName: "unsafe-manifest",
+      });
+
+      expect(plugin.enabled).toBe(false);
+      expect(errors.map((error) => error.message)).toContain(
+        "Plugin manifest failed validation",
+      );
     });
   });
 
@@ -594,6 +647,49 @@ describe("plugin validation", () => {
           "lspServers",
         ]),
       );
+    });
+  });
+
+  test("rejects malformed optional manifest fields", async () => {
+    await withTempDir(async (root) => {
+      const pluginRoot = join(root, "plugins", "bad-fields");
+      await writePluginManifest(pluginRoot, {
+        name: "bad-fields",
+        version: 12,
+        keywords: ["ok", 3],
+        settings: "bad",
+        interface: {
+          capabilities: ["ok", 4],
+        },
+      });
+
+      const result = await validateManifest(pluginRoot);
+
+      expect(result.success).toBe(false);
+      expect(result.errors.map((error) => error.path)).toEqual(
+        expect.arrayContaining([
+          "version",
+          "keywords",
+          "settings",
+          "interface.capabilities",
+        ]),
+      );
+    });
+  });
+
+  test("caps JSON plugin file reads", async () => {
+    await withTempDir(async (root) => {
+      const pluginRoot = join(root, "plugins", "huge");
+      await writeFileAt(
+        join(pluginRoot, PLUGIN_MANIFEST_RELATIVE_PATH),
+        JSON.stringify({ name: "huge", description: "x".repeat(1_100_000) }),
+      );
+
+      const result = await validateManifest(pluginRoot);
+
+      expect(result.success).toBe(false);
+      expect(result.errors.map((error) => error.message).join("\n"))
+        .toContain("too large");
     });
   });
 

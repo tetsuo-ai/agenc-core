@@ -1,4 +1,4 @@
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, stat } from "node:fs/promises";
 import {
   basename,
   isAbsolute,
@@ -14,6 +14,7 @@ export const PLUGIN_MANIFEST_RELATIVE_PATH = `${PLUGIN_MANIFEST_DIR}/${PLUGIN_MA
 export const ROOT_PLUGIN_MANIFEST_RELATIVE_PATH = PLUGIN_MANIFEST_FILE;
 export const MAX_DEFAULT_PROMPT_COUNT = 3;
 export const MAX_DEFAULT_PROMPT_LENGTH = 128;
+export const MAX_PLUGIN_JSON_BYTES = 1_048_576;
 
 export type PluginComponentKind =
   | "commands"
@@ -141,7 +142,7 @@ export async function loadPluginManifest(
 ): Promise<ParsedPluginManifest | null> {
   const manifestPath = await findPluginManifestPath(pluginRoot);
   if (!manifestPath) return null;
-  const raw = await readFile(manifestPath, "utf8");
+  const raw = await readJsonText(manifestPath);
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -168,6 +169,7 @@ export function normalizePluginManifest(
     ]);
   }
   const issues: ManifestIssue[] = [];
+  validateManifestFieldTypes(value, issues);
   const name = optionalString(value.name)?.trim() || fallbackName;
   if (name.trim().length === 0) {
     issues.push({ path: "name", message: "Plugin name cannot be empty" });
@@ -260,6 +262,16 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+export async function readJsonText(path: string): Promise<string> {
+  const stats = await stat(path);
+  if (stats.size > MAX_PLUGIN_JSON_BYTES) {
+    throw new PluginManifestError("Plugin JSON file is too large", [
+      { path, message: `JSON files must be at most ${MAX_PLUGIN_JSON_BYTES} bytes` },
+    ]);
+  }
+  return readFile(path, "utf8");
+}
+
 export function optionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
@@ -290,7 +302,7 @@ function optionalRecordProperty(
   key: string,
 ): Record<string, Readonly<Record<string, unknown>>> {
   const value = record[key];
-  return isRecord(value) ? { [key]: value } : {};
+  return isRecord(value) ? { [key]: cloneNullProtoRecord(value) } : {};
 }
 
 function optionalAuthor(
@@ -335,8 +347,12 @@ function normalizeCommandDeclaration(
     return { commands: value };
   }
   if (isRecord(value)) {
-    const out: Record<string, PluginCommandMetadata> = {};
+    const out = nullProtoRecord<PluginCommandMetadata>();
     for (const [name, metadata] of Object.entries(value)) {
+      if (isUnsafeObjectKey(name)) {
+        issues.push({ path: `commands.${name}`, message: "Unsafe command name" });
+        continue;
+      }
       if (!isRecord(metadata)) {
         issues.push({ path: `commands.${name}`, message: "Expected command metadata object" });
         continue;
@@ -369,6 +385,66 @@ function normalizeCommandDeclaration(
   }
   issues.push({ path: "commands", message: "Expected path, path array, or command map" });
   return {};
+}
+
+function validateManifestFieldTypes(
+  record: Record<string, unknown>,
+  issues: ManifestIssue[],
+): void {
+  for (const key of ["version", "description", "homepage", "repository", "license"] as const) {
+    if (record[key] !== undefined && typeof record[key] !== "string") {
+      issues.push({ path: key, message: "Expected string" });
+    }
+  }
+  for (const key of ["keywords"] as const) {
+    if (record[key] !== undefined && (
+      !Array.isArray(record[key]) ||
+      !(record[key] as unknown[]).every((entry) => typeof entry === "string")
+    )) {
+      issues.push({ path: key, message: "Expected string array" });
+    }
+  }
+  for (const key of ["settings", "userConfig"] as const) {
+    const value = record[key];
+    if (value !== undefined && !isRecord(value)) {
+      issues.push({ path: key, message: "Expected object" });
+    } else if (isRecord(value) && hasUnsafeObjectKey(value)) {
+      issues.push({ path: key, message: "Object contains unsafe key" });
+    }
+  }
+  if (isRecord(record.interface)) {
+    const capabilities = record.interface.capabilities;
+    if (
+      capabilities !== undefined &&
+      (!Array.isArray(capabilities) ||
+        !capabilities.every((entry) => typeof entry === "string"))
+    ) {
+      issues.push({ path: "interface.capabilities", message: "Expected string array" });
+    }
+  }
+}
+
+function cloneNullProtoRecord(
+  record: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  const out = nullProtoRecord<unknown>();
+  for (const [key, value] of Object.entries(record)) {
+    if (isUnsafeObjectKey(key)) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+function hasUnsafeObjectKey(record: Readonly<Record<string, unknown>>): boolean {
+  return Object.keys(record).some(isUnsafeObjectKey);
+}
+
+function nullProtoRecord<T>(): Record<string, T> {
+  return Object.create(null) as Record<string, T>;
+}
+
+function isUnsafeObjectKey(key: string): boolean {
+  return key === "__proto__" || key === "constructor" || key === "prototype";
 }
 
 function normalizeHooks(

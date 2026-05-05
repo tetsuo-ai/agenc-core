@@ -9,6 +9,7 @@ import {
   PLUGIN_MANIFEST_DIR,
   PLUGIN_MANIFEST_FILE,
   PluginManifestError,
+  readJsonText,
   resolveManifestRelativePath,
 } from "./manifest.js";
 
@@ -90,7 +91,7 @@ export async function validatePluginManifest(
   const warnings: ValidationWarning[] = [];
   let parsed: unknown;
   try {
-    parsed = JSON.parse(await readFile(absolutePath, "utf8"));
+    parsed = JSON.parse(await readJsonText(absolutePath));
   } catch (error) {
     const code = errno(error);
     return {
@@ -206,7 +207,7 @@ async function readJsonFile(
   errors: ValidationError[],
 ): Promise<unknown> {
   try {
-    return JSON.parse(await readFile(filePath, "utf8"));
+    return JSON.parse(await readJsonText(filePath));
   } catch (error) {
     errors.push({
       path: field,
@@ -291,7 +292,7 @@ export async function validateMarketplaceManifest(
   const warnings: ValidationWarning[] = [];
   let parsed: unknown;
   try {
-    parsed = JSON.parse(await readFile(absolutePath, "utf8"));
+    parsed = JSON.parse(await readJsonText(absolutePath));
   } catch (error) {
     const code = errno(error);
     return {
