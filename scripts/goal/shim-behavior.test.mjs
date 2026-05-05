@@ -75,6 +75,40 @@ assert(
   JSON.stringify(multilineBarrel),
 );
 
+const namedTypeExportFrom = measure(`
+export type { Alpha } from './types.js'
+`);
+assert(
+  "flags named type export-from barrels",
+  namedTypeExportFrom.violates && namedTypeExportFrom.forwardLines === 1,
+  JSON.stringify(namedTypeExportFrom),
+);
+
+const multilineTypeBarrel = measure(`
+export type {
+  Alpha,
+  Beta,
+  Gamma,
+} from './types.js'
+`);
+assert(
+  "counts multi-line named type re-export statements as forwarding LOC",
+  multilineTypeBarrel.violates &&
+    multilineTypeBarrel.forwardLines === 5 &&
+    multilineTypeBarrel.ratio === 1,
+  JSON.stringify(multilineTypeBarrel),
+);
+
+const importedTypeReexport = measure(`
+import type { Alpha } from './types.js'
+export type { Alpha }
+`);
+assert(
+  "flags imported type re-export barrels",
+  importedTypeReexport.violates && importedTypeReexport.forwardLines === 1,
+  JSON.stringify(importedTypeReexport),
+);
+
 const packedImportExport = measure(`
 import { realImpl } from './impl.js'; export function shim(input: string): string { return realImpl(input) }
 `);
@@ -92,6 +126,16 @@ assert(
   "flags typed rest-argument forwarding wrappers",
   typedRestWrapper.violates,
   JSON.stringify(typedRestWrapper),
+);
+
+const defaultFunctionWrapper = measure(`
+import { realImpl } from './impl.js'
+export default function shim(input: string): string { return realImpl(input) }
+`);
+assert(
+  "flags default-exported single-line forwarding functions",
+  defaultFunctionWrapper.violates && defaultFunctionWrapper.forwardLines === 1,
+  JSON.stringify(defaultFunctionWrapper),
 );
 
 const existingRuntimeHit = measureShimBehaviorForPath(

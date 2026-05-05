@@ -1,7 +1,7 @@
 import { useKeybindings } from '../../../tui/keybindings/useKeybinding.js'
-import { type ExitState, useExitOnCtrlCD } from './useExitOnCtrlCD.js'
+import { type ExitState as BaseExitState, useExitOnCtrlCD } from './useExitOnCtrlCD.js'
 
-export type { ExitState }
+export type ExitState = BaseExitState
 
 /**
  * Convenience hook that wires up useExitOnCtrlCD with useKeybindings.
@@ -20,5 +20,6 @@ export function useExitOnCtrlCDWithKeybindings(
   onInterrupt?: () => boolean,
   isActive?: boolean,
 ): ExitState {
-  return useExitOnCtrlCD(useKeybindings, onInterrupt, onExit, isActive)
+  const keybindings = useKeybindings
+  return useExitOnCtrlCD(keybindings, onInterrupt, onExit, isActive)
 }

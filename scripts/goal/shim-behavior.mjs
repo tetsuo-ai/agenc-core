@@ -3,11 +3,11 @@ export const SHIM_BEHAVIOR_SIGNIFICANT_LINE_LIMIT = 40;
 export const SHIM_BEHAVIOR_BODY_LENGTH_LIMIT = 16000;
 
 export const FORWARD_LINE_RE =
-  /^\s*(export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[^}]*\}\s*from\b|export\s*\{[^}]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
+  /^\s*(export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*type\s*\{[^}]*\}\s*from\b|export\s*type\s*\{[^}]*\}\s*;?\s*$|export\s*\{[^}]*\}\s*from\b|export\s*\{[^}]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
 export const FORWARD_STATEMENT_RE =
-  /^\s*(export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[\s\S]*\}\s*from\b|export\s*\{[\s\S]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
+  /^\s*(export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*type\s*\{[\s\S]*\}\s*from\b|export\s*type\s*\{[\s\S]*\}\s*;?\s*$|export\s*\{[\s\S]*\}\s*from\b|export\s*\{[\s\S]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
 export const SINGLE_LINE_FORWARD_FN_RE =
-  /^\s*(?:export\s+)?(?:async\s+)?function\s+\w+\s*\([\s\S]*\)\s*(?::[^{]+)?\{\s*(?:return\s+(?:await\s+)?|await\s+)?[\w$.]+\([^{};]*\)\s*;?\s*\}\s*$/;
+  /^\s*(?:(?:export\s+default\s+)|(?:export\s+))?(?:async\s+)?function\s+\w*\s*\([\s\S]*\)\s*(?::[^{]+)?\{\s*(?:return\s+(?:await\s+)?|await\s+)?[\w$.]+\([^{};]*\)\s*;?\s*\}\s*$/;
 export const SINGLE_LINE_FORWARD_ARROW_RE =
   /^\s*(?:export\s+)?const\s+\w+\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*=>\s*(?:\{\s*(?:return\s+(?:await\s+)?|await\s+)?[\w$.]+\([^{};]*\)\s*;?\s*\}|[\w$.]+\([^{};]*\)|[\w$.]+\.[\w$]+(?:\([^{};]*\))?)\s*;?\s*$/;
 
@@ -81,7 +81,7 @@ export function combineLogicalStatements(significant) {
   let current = "";
   let braceDepth = 0;
   for (const line of significant) {
-    const startsMultilineForward = current.length > 0 || /^\s*(import|export)\s*\{/u.test(line);
+    const startsMultilineForward = current.length > 0 || /^\s*(?:import|export(?:\s+type)?)\s*\{/u.test(line);
     if (!startsMultilineForward) {
       statements.push(line);
       continue;

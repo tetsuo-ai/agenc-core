@@ -28,7 +28,6 @@ export type * from './sdk/runtimeTypes.js'
 
 // Re-export settings types (generated from settings JSON schema)
 export type { Settings } from './sdk/settingsTypes.generated.js'
-export type * from './sdk/toolTypes.js'
 
 // ============================================================================
 // Functions
@@ -450,8 +449,8 @@ export type ExitReason = {
 // ============================================================================
 // Stub re-exports — types not included in source snapshot.
 //
-// The upstream SDK defines these in sub-files (sdk/coreTypes,
-// sdk/runtimeTypes, sdk/controlTypes, sdk/toolTypes) that are stubbed
+// The SDK defines these in sub-files (sdk/coreTypes,
+// sdk/runtimeTypes, sdk/controlTypes) that are stubbed
 // in this open repo. Until the real definitions are restored, alias the
 // names to `any` so callers can resolve their imports and `tsc` becomes
 // actionable. See issue #473 for the typecheck-foundation effort.

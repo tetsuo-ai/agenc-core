@@ -9,12 +9,18 @@
       "runtime/src/agenc/upstream/commands/assistant/assistant.ts",
       "runtime/src/agenc/upstream/commands/dream/index.ts",
       "runtime/src/agenc/upstream/components/mcp/index.ts",
+      "runtime/src/agenc/upstream/components/wizard/index.ts",
+      "runtime/src/agenc/upstream/entrypoints/sdk/toolTypes.ts",
+      "runtime/src/agenc/upstream/hooks/useExitOnCtrlCDWithKeybindings.ts",
       "runtime/src/agenc/upstream/services/api/minimaxUsage.ts",
       "runtime/src/agenc/upstream/services/agencAiLimitsHook.ts",
       "runtime/src/agenc/upstream/services/api/openaiSchemaSanitizer.ts",
       "runtime/src/agenc/upstream/utils/crypto.ts",
       "runtime/src/agenc/upstream/utils/nativeInstaller/index.ts",
-      "runtime/src/llm/api/watchdog.ts"
+      "runtime/src/agenc/upstream/utils/permissions/PermissionResult.ts",
+      "runtime/src/llm/api/watchdog.ts",
+      "runtime/src/phases/_deps/orchestrator-types.ts",
+      "runtime/src/tools/tasks/index.ts"
     ],
     "detectorRules": [
       {
@@ -25,6 +31,9 @@
       },
       {
         "rule": "The ZC-20 custom gate scans tracked files under runtime/src rather than only newly added files."
+      },
+      {
+        "rule": "Named type re-exports and default-exported one-line forwarding functions count as forwarding LOC."
       }
     ]
   }

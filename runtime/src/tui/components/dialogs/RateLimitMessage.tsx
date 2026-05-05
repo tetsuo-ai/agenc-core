@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import React, { useEffect, useMemo, useState } from 'react';
 import { extraUsage } from '../../../agenc/upstream/commands/extra-usage/index.js';
 import { shouldProcessMockLimits } from '../../../agenc/upstream/services/rateLimitMocking.js'; // Used for /mock-limits command
-import { useAgenCAiLimits } from '../../../agenc/upstream/services/claudeAiLimitsHook.js'; // branding-scan: allow existing upstream rate-limit module path
+import { useAgenCAiLimits } from '../../rate-limits/agenc-ai-limits.js';
 import { getRateLimitTier, getSubscriptionType, isAgenCAISubscriber } from '../../../agenc/upstream/utils/auth.js';
 import { hasAgenCAiBillingAccess } from '../../../agenc/upstream/utils/billing.js';
 import { Box, Text } from '../../ink.js';

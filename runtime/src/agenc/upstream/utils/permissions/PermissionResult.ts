@@ -1,24 +1,21 @@
 // Types extracted to src/types/permissions.ts to break import cycles
 import type {
-  PermissionAllowDecision,
-  PermissionAskDecision,
-  PermissionDecision,
-  PermissionDecisionReason,
-  PermissionDenyDecision,
-  PermissionMetadata,
-  PermissionResult,
+  PermissionAllowDecision as PermissionAllowDecisionType,
+  PermissionAskDecision as PermissionAskDecisionType,
+  PermissionDecision as PermissionDecisionType,
+  PermissionDecisionReason as PermissionDecisionReasonType,
+  PermissionDenyDecision as PermissionDenyDecisionType,
+  PermissionMetadata as PermissionMetadataType,
+  PermissionResult as PermissionResultType,
 } from '../../types/permissions.js'
 
-// Re-export for backwards compatibility
-export type {
-  PermissionAllowDecision,
-  PermissionAskDecision,
-  PermissionDecision,
-  PermissionDecisionReason,
-  PermissionDenyDecision,
-  PermissionMetadata,
-  PermissionResult,
-}
+export type PermissionAllowDecision = PermissionAllowDecisionType
+export type PermissionAskDecision = PermissionAskDecisionType
+export type PermissionDecision = PermissionDecisionType
+export type PermissionDecisionReason = PermissionDecisionReasonType
+export type PermissionDenyDecision = PermissionDenyDecisionType
+export type PermissionMetadata = PermissionMetadataType
+export type PermissionResult = PermissionResultType
 
 // Helper function to get the appropriate prose description for rule behavior
 export function getRuleBehaviorDescription(

@@ -65,10 +65,9 @@ export async function launchAssistantSessionChooser(root: Root, props: {
 }
 
 /**
- * `agenc assistant` found zero sessions — show the same install wizard
- * as `/assistant` when daemon.json is empty. Resolves to the installed dir on
- * success, null on cancel. Rejects on install failure so the caller can
- * distinguish errors from user cancellation.
+ * `agenc assistant` found zero sessions, but this source snapshot has no
+ * installer implementation for the assistant daemon. Resolve as cancellation so
+ * the caller follows the same graceful-exit path as an explicit cancel.
  */
 export async function launchAssistantInstallWizard(root: Root): Promise<string | null> {
   void root;
