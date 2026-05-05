@@ -153,7 +153,7 @@ export function determineInterceptedExecAction(opts: {
   if (policyPromptRejection !== null) {
     return {
       kind: "deny",
-      reason: "Execution forbidden by policy",
+      reason: policyPromptRejection,
       decision: opts.evaluation.decision,
       source,
     };

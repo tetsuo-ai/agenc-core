@@ -112,6 +112,32 @@ describe("guardian approval request", () => {
     );
   });
 
+  test("carries approval decision metadata into guardian requests", () => {
+    const request = buildGuardianApprovalRequest(
+      {
+        ...ctx({ kind: "function", arguments: "{}" }, "exec_command"),
+        additionalPermissions: {
+          network: { enabled: true },
+          file_system: { write: ["/tmp/agenc-extra"] },
+        },
+        availableDecisions: [{ kind: "approved" }, { kind: "abort" }],
+      },
+      {
+        sandbox_permissions: "with_additional_permissions",
+        additional_permissions: { network: { enabled: true } },
+      },
+    );
+
+    expect(request.additionalPermissions).toEqual({
+      network: { enabled: true },
+      file_system: { write: ["/tmp/agenc-extra"] },
+    });
+    expect(request.availableDecisions?.map((decision) => decision.kind)).toEqual([
+      "approved",
+      "abort",
+    ]);
+  });
+
   test("does not label generic url-bearing tools as network approval requests", () => {
     const request = buildGuardianApprovalRequest(
       ctx({ kind: "function", arguments: "{}" }, "BookmarkUrl"),

@@ -570,6 +570,7 @@ const ITEM_EVIDENCE = {
       "runtime/src/sandbox/escalation/escalation.test.ts",
       "runtime/src/tools/orchestrator.test.ts",
       "runtime/src/tools/runtimes/runtime.test.ts",
+      "runtime/src/permissions/guardian/approval-request.test.ts",
     ],
     grepPresent: [
       { pattern: "sandbox.*bypass|bypass.*sandbox", scope: "runtime/src/sandbox/escalation" },
@@ -2770,6 +2771,7 @@ async function donorRuntimePortGates(item) {
       "src/sandbox/escalation/escalation.test.ts",
       "src/tools/orchestrator.test.ts",
       "src/tools/runtimes/runtime.test.ts",
+      "src/permissions/guardian/approval-request.test.ts",
     ]);
     if (testRun.status !== 0) {
       failGate("C-01e escalation tests failed");
@@ -2823,6 +2825,12 @@ async function donorRuntimePortGates(item) {
     }
     if (!/sandbox_permissions=require_escalated/.test(orchestratorTestsSource) || !/exec-policy prefix allow drives unsandboxed local-shell dispatch/.test(orchestratorTestsSource)) {
       failGate("C-01e: orchestrator tests must exercise live sandbox_permissions and exec-policy routing");
+    }
+    if (!/skip policies still require approval/.test(orchestratorTestsSource) || !/skipped tools do not receive free grants/.test(orchestratorTestsSource)) {
+      failGate("C-01e: sandbox permission tests must reject free opt-out paths");
+    }
+    if (!/REJECT_RULES_APPROVAL_REASON/.test(orchestratorTestsSource)) {
+      failGate("C-01e: exec-policy tests must preserve granular rejection reasons");
     }
     if (!/additionalPermissions/.test(runtimeTestsSource) || !/permissionProfileForRuntimeContext/.test(runtimeTestsSource)) {
       failGate("C-01e: runtime tests must prove scoped additional permissions affect sandbox profiles");

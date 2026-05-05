@@ -57,7 +57,7 @@ export function prefixRuleAllowedForCommand(
   if (/\bgit(?:\s+-C\s+\S+)?\s+reset\b[\s\S]*\s--hard\b/u.test(joined)) {
     return false;
   }
-  if (/\brm\b|\bdd\b|\bmkfs\b/u.test(joined)) return false;
   const head = command[0] ?? "";
+  if (head === "rm" || head === "dd" || head.startsWith("mkfs")) return false;
   return head !== "python" && head !== "python3" && head !== "node";
 }

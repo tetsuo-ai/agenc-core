@@ -22,6 +22,7 @@ import {
 import type { Tool } from "./types.js";
 import { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
 import { Policy } from "../sandbox/execpolicy/policy.js";
+import { REJECT_RULES_APPROVAL_REASON } from "../sandbox/escalation/unix-escalation.js";
 
 const readTool: Tool = {
   name: "FileRead",
@@ -843,8 +844,53 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
     expect(dispatched).not.toHaveBeenCalled();
   });
 
+  test("sandbox_permissions=require_escalated: skip policies still require approval", async () => {
+    const dispatched = vi.fn(async () => "ok");
+    await expect(
+      orchestrateToolCall<string>({
+        tool: mkTool(),
+        approvalCtx: mkCtx(),
+        approvalPolicy: "on_failure",
+        sandboxMode: "workspace_write",
+        approvalArgs: { sandbox_permissions: "require_escalated" },
+        dispatch: dispatched,
+      }),
+    ).rejects.toBeInstanceOf(ApprovalRejectedError);
+
+    expect(dispatched).not.toHaveBeenCalled();
+  });
+
+  test("sandbox_permissions=require_escalated: approvalPolicy=never denies before sandbox bypass", async () => {
+    const dispatched = vi.fn(async () => "ok");
+    await expect(
+      orchestrateToolCall<string>({
+        tool: mkTool(),
+        approvalCtx: mkCtx(),
+        approvalPolicy: "never",
+        sandboxMode: "workspace_write",
+        approvalArgs: { sandbox_permissions: "require_escalated" },
+        dispatch: dispatched,
+      }),
+    ).rejects.toMatchObject({
+      message:
+        "sandbox escalation requires approval, but approval policy is never",
+    });
+
+    expect(dispatched).not.toHaveBeenCalled();
+  });
+
   test("sandbox_permissions=with_additional_permissions stays sandboxed after approval", async () => {
     const dispatches: string[] = [];
+    const resolver = vi.fn(async (ctx: ApprovalCtx) => {
+      expect(ctx.additionalPermissions).toEqual({
+        network: { enabled: true },
+      });
+      expect(ctx.availableDecisions?.map((decision) => decision.kind)).toEqual([
+        "approved",
+        "abort",
+      ]);
+      return { kind: "approved" as const };
+    });
     const result = await orchestrateToolCall<string>({
       tool: mkTool(),
       approvalCtx: mkCtx(),
@@ -862,12 +908,57 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
         return "ok";
       },
       approvalResolver: {
-        request: async () => ({ kind: "approved" }),
+        request: resolver,
       },
     });
 
     expect(result).toBe("ok");
     expect(dispatches).toEqual(["workspace_write"]);
+    expect(resolver).toHaveBeenCalledOnce();
+  });
+
+  test("sandbox_permissions=with_additional_permissions: skipped tools do not receive free grants", async () => {
+    const dispatched = vi.fn(async () => "ok");
+    await expect(
+      orchestrateToolCall<string>({
+        tool: mkTool(),
+        approvalCtx: mkCtx(),
+        approvalPolicy: "on_failure",
+        sandboxMode: "workspace_write",
+        approvalArgs: {
+          sandbox_permissions: "with_additional_permissions",
+          additional_permissions: {
+            network: { enabled: true },
+            file_system: { write: ["/tmp/agenc-extra"] },
+          },
+        },
+        dispatch: dispatched,
+      }),
+    ).rejects.toBeInstanceOf(ApprovalRejectedError);
+
+    expect(dispatched).not.toHaveBeenCalled();
+  });
+
+  test("sandbox_permissions=with_additional_permissions: denied approval blocks dispatch", async () => {
+    const dispatched = vi.fn(async () => "ok");
+    await expect(
+      orchestrateToolCall<string>({
+        tool: mkTool(),
+        approvalCtx: mkCtx(),
+        approvalPolicy: "untrusted",
+        sandboxMode: "workspace_write",
+        approvalArgs: {
+          sandbox_permissions: "with_additional_permissions",
+          additional_permissions: { network: { enabled: true } },
+        },
+        dispatch: dispatched,
+        approvalResolver: {
+          request: async () => ({ kind: "denied" }),
+        },
+      }),
+    ).rejects.toBeInstanceOf(ApprovalRejectedError);
+
+    expect(dispatched).not.toHaveBeenCalled();
   });
 
   test("exec-policy prefix allow drives unsandboxed local-shell dispatch without resolver", async () => {
@@ -924,7 +1015,9 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
         dispatch: dispatched,
         approvalResolver: resolver,
       }),
-    ).rejects.toBeInstanceOf(ApprovalRejectedError);
+    ).rejects.toMatchObject({
+      message: REJECT_RULES_APPROVAL_REASON,
+    });
 
     expect(dispatched).not.toHaveBeenCalled();
     expect(resolver.request).not.toHaveBeenCalled();

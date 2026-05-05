@@ -28,6 +28,8 @@
     "runtime/src/tools/runtimes/sandboxing.ts",
     "runtime/src/bin/bootstrap-services.ts",
     "runtime/src/tools/system/exec-command.ts",
+    "runtime/src/permissions/guardian/arbiter.ts",
+    "runtime/src/permissions/guardian/approval-request.ts",
     "runtime/src/unified-exec/types.ts",
     "runtime/src/unified-exec/process-manager.ts",
     "runtime/src/permissions/network-approval.ts"
@@ -36,6 +38,8 @@
     "runtime/src/sandbox/escalation/escalation.test.ts",
     "runtime/src/tools/orchestrator.test.ts",
     "runtime/src/tools/runtimes/runtime.test.ts",
+    "runtime/src/permissions/guardian/approval-request.test.ts",
+    "runtime/src/permissions/guardian/arbiter.test.ts",
     "runtime/src/permissions/network-approval.test.ts"
   ],
   "documentedPathNormalizations": [
@@ -143,14 +147,17 @@
       "target": "runtime/src/tools/orchestrator.ts",
       "requiredBehaviors": [
         "live tool orchestration parses sandbox_permissions from approval arguments and applies first-attempt sandbox selection",
+        "non-default sandbox permission requests are denied or approval-gated before any sandbox bypass or scoped grant is applied",
         "live local-shell calls evaluate the current exec policy before dispatch",
         "the tool router passes the current session exec policy into orchestration",
         "approved scoped additional permissions flow into runtime attempt context and effective permission profiles",
+        "live approval contexts carry available decision sets and scoped permission metadata to resolvers and guardian requests",
         "bootstrap network approvals route through the sandbox-mode approval gate before the backing network approval service",
         "the exec command schema advertises require_escalated and with_additional_permissions request modes"
       ],
       "edgeCases": [
         "denied full-escalation approvals do not dispatch the tool",
+        "skip-classified tools cannot use sandbox permission requests as a free opt-out",
         "approved read/write/network grants are applied without widening unrelated paths",
         "exec-policy prefix allow rules run the local shell without an extra approval resolver",
         "granular policies with rule approvals disabled deny prefix prompt rules before dispatch"
@@ -158,6 +165,8 @@
       "tests": [
         "runtime/src/tools/orchestrator.test.ts",
         "runtime/src/tools/runtimes/runtime.test.ts",
+        "runtime/src/permissions/guardian/approval-request.test.ts",
+        "runtime/src/permissions/guardian/arbiter.test.ts",
         "runtime/src/sandbox/escalation/escalation.test.ts"
       ],
       "status": "required"

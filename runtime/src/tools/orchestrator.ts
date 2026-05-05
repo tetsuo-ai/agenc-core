@@ -77,6 +77,8 @@ import {
   type GuardianApprovalReviewer,
 } from "../permissions/guardian/reviewer.js";
 import {
+  hasAdditionalSandboxPermissions,
+  normalizeSandboxPermissionsRequest,
   runtimeAdditionalPermissionsForSandboxRequest,
   sandboxOverrideForFirstAttempt,
   sandboxPermissionsFromArgs,
@@ -84,6 +86,7 @@ import {
   toolEscalatesOnFailure,
   toolWantsNoSandboxApproval,
   type SandboxPermissionsInput,
+  type SandboxPermissionsRequest,
 } from "../sandbox/escalation/sandboxing.js";
 import type { AdditionalPermissionProfile } from "../sandbox/engine/index.js";
 import type { Policy } from "../sandbox/execpolicy/policy.js";
@@ -92,6 +95,9 @@ import {
   evaluateInterceptedExecPolicy,
   type InterceptedExecAction,
 } from "../sandbox/escalation/unix-escalation.js";
+import {
+  defaultAvailableApprovalDecisions,
+} from "../sandbox/escalation/approvals.js";
 
 export { requestApproval };
 export type {
@@ -482,6 +488,99 @@ function approvalRejectionMessage(
   return "rejected by user";
 }
 
+type SandboxPermissionApprovalAction =
+  | { readonly kind: "none" }
+  | { readonly kind: "prompt"; readonly reason: string }
+  | { readonly kind: "deny"; readonly reason: string };
+
+function sandboxPermissionApprovalAction(opts: {
+  readonly request: SandboxPermissionsRequest;
+  readonly approvalPolicy: ApprovalPolicy;
+  readonly granular?: GranularApprovalConfig;
+}): SandboxPermissionApprovalAction {
+  switch (opts.request.kind) {
+    case "default":
+      return { kind: "none" };
+    case "require_escalated":
+      if (opts.approvalPolicy === "never") {
+        return {
+          kind: "deny",
+          reason:
+            "sandbox escalation requires approval, but approval policy is never",
+        };
+      }
+      if (
+        opts.approvalPolicy === "granular" &&
+        opts.granular?.sandbox_approval === false
+      ) {
+        return {
+          kind: "deny",
+          reason: "sandbox escalation is disabled by granular policy",
+        };
+      }
+      return {
+        kind: "prompt",
+        reason: "sandbox escalation requested",
+      };
+    case "with_additional_permissions":
+      if (!hasAdditionalSandboxPermissions(opts.request.additionalPermissions)) {
+        return { kind: "none" };
+      }
+      if (opts.approvalPolicy === "never") {
+        return {
+          kind: "deny",
+          reason:
+            "additional sandbox permissions require approval, but approval policy is never",
+        };
+      }
+      if (
+        opts.approvalPolicy === "granular" &&
+        opts.granular?.request_permissions === false
+      ) {
+        return {
+          kind: "deny",
+          reason:
+            "additional sandbox permissions are disabled by granular policy",
+        };
+      }
+      return {
+        kind: "prompt",
+        reason: "additional sandbox permissions requested",
+      };
+    default: {
+      const _exhaustive: never = opts.request;
+      return _exhaustive;
+    }
+  }
+}
+
+function approvalContextForSandboxPermissions(
+  request: SandboxPermissionsRequest,
+): Partial<ApprovalCtx> {
+  switch (request.kind) {
+    case "default":
+      return {};
+    case "require_escalated":
+      return {
+        availableDecisions: defaultAvailableApprovalDecisions({}),
+      };
+    case "with_additional_permissions":
+      if (!hasAdditionalSandboxPermissions(request.additionalPermissions)) {
+        return {};
+      }
+      return {
+        additionalPermissions: request.additionalPermissions,
+        availableDecisions: defaultAvailableApprovalDecisions({
+          additionalPermissions: request.additionalPermissions,
+        }),
+      };
+    default: {
+      const _exhaustive: never = request;
+      return _exhaustive;
+    }
+  }
+}
+
 /**
  * Port of donor runtime `ToolOrchestrator::run` (orchestrator.rs:105-377).
  *
@@ -528,6 +627,8 @@ export async function orchestrateToolCall<T>(
     (opts.approvalArgs !== undefined
       ? sandboxPermissionsFromArgs(opts.approvalArgs)
       : { kind: "default" as const });
+  const normalizedSandboxPermissions =
+    normalizeSandboxPermissionsRequest(resolvedSandboxPermissions);
   const toolRequirement = classifyToolApproval(opts.tool, {
     approvalPolicy: effectiveApprovalPolicy,
     sandboxMode: opts.sandboxMode,
@@ -541,6 +642,11 @@ export async function orchestrateToolCall<T>(
   });
 
   let requirement = toolRequirement;
+  const sandboxPermissionApproval = sandboxPermissionApprovalAction({
+    request: normalizedSandboxPermissions,
+    approvalPolicy: effectiveApprovalPolicy,
+    granular: opts.granular,
+  });
   const execPolicyAction = evaluateLocalShellExecPolicyAction({
     policy: opts.execPolicy,
     payload: opts.payload,
@@ -557,6 +663,16 @@ export async function orchestrateToolCall<T>(
     );
     throw new ApprovalRejectedError(execPolicyAction.reason, { kind: "denied" });
   }
+  if (sandboxPermissionApproval.kind === "deny") {
+    await recordApprovalRequirementOutcome(
+      opts,
+      { kind: "forbidden", reason: sandboxPermissionApproval.reason },
+      effectiveApprovalPolicy,
+    );
+    throw new ApprovalRejectedError(sandboxPermissionApproval.reason, {
+      kind: "denied",
+    });
+  }
   if (
     execPolicyAction?.kind === "prompt" &&
     toolRequirement.kind !== "forbidden"
@@ -567,8 +683,18 @@ export async function orchestrateToolCall<T>(
     };
   }
   if (
-    execPolicyAction?.kind === "run" &&
+    sandboxPermissionApproval.kind === "prompt" &&
     toolRequirement.kind !== "forbidden"
+  ) {
+    requirement = {
+      kind: "needs_approval",
+      reason: sandboxPermissionApproval.reason,
+    };
+  }
+  if (
+    execPolicyAction?.kind === "run" &&
+    toolRequirement.kind !== "forbidden" &&
+    sandboxPermissionApproval.kind !== "prompt"
   ) {
     requirement = {
       kind: "skip",
@@ -589,8 +715,8 @@ export async function orchestrateToolCall<T>(
   const sandboxOverride = policyBypass
     ? { kind: "bypass_sandbox" as const, reason: "approval_requirement" as const }
     : sandboxOverrideForFirstAttempt(resolvedSandboxPermissions, toolRequirement);
-  const additionalPermissions =
-    runtimeAdditionalPermissionsForSandboxRequest(resolvedSandboxPermissions);
+  const requestedAdditionalPermissions =
+    runtimeAdditionalPermissionsForSandboxRequest(normalizedSandboxPermissions);
 
   if (requirement.kind === "skip") {
     await recordApprovalRequirementOutcome(opts, requirement, effectiveApprovalPolicy);
@@ -602,6 +728,7 @@ export async function orchestrateToolCall<T>(
       ...(requirement.reason !== undefined
         ? { retryReason: requirement.reason }
         : {}),
+      ...approvalContextForSandboxPermissions(normalizedSandboxPermissions),
     };
     const approval = await requestApproval({
       ctx: approvalCtx,
@@ -631,6 +758,10 @@ export async function orchestrateToolCall<T>(
     }
     alreadyApproved = true;
   }
+  const additionalPermissions =
+    alreadyApproved && sandboxPermissionApproval.kind === "prompt"
+      ? requestedAdditionalPermissions
+      : undefined;
 
   // Step 2 — first attempt with bounded transient retry.
   const firstSandbox = selectFirstAttemptSandbox(

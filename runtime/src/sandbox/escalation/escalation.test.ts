@@ -382,6 +382,7 @@ describe("prompt guidance helpers", () => {
     expect(shouldRetryWithEscalationAfterFailure("EACCES: permission denied"))
       .toBe(true);
     expect(prefixRuleAllowedForCommand(["rm", "-rf", "dist"])).toBe(false);
+    expect(prefixRuleAllowedForCommand(["grep", "rm", "file.txt"])).toBe(true);
     expect(prefixRuleAllowedForCommand(["git", "-C", "repo", "reset", "--hard"]))
       .toBe(false);
     expect(prefixRuleAllowedForCommand(["bash", "-lc", "git reset --hard"]))
