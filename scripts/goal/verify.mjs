@@ -1418,6 +1418,24 @@ const ITEM_EVIDENCE = {
       "runtime/src/sandbox/linux-launcher/linux-launcher.test.ts",
     ],
   },
+  "ZC-34": {
+    files: [
+      "runtime/src/agents/graph-store/PARITY.md",
+      "runtime/src/agents/graph-store/types.ts",
+      "runtime/src/agents/graph-store/errors.ts",
+      "runtime/src/agents/graph-store/store.ts",
+      "runtime/src/agents/graph-store/local.ts",
+      "runtime/src/agents/graph-store/local.test.ts",
+    ],
+    grepPresent: [
+      { pattern: "ZC-34 coverage lock", scope: "runtime/src/agents/graph-store/PARITY.md" },
+      { pattern: "LocalAgentGraphStore", scope: "runtime/src/agents/graph-store/local.ts" },
+      { pattern: "thread_spawn_edges", scope: "runtime/src/agents/graph-store/local.ts" },
+      { pattern: "listThreadSpawnDescendants", scope: "runtime/src/agents/graph-store/local.ts" },
+      { pattern: "breadth-first", scope: "runtime/src/agents/graph-store/local.test.ts" },
+    ],
+    tests: ["runtime/src/agents/graph-store/local.test.ts"],
+  },
 };
 
 function usage() {
@@ -5004,6 +5022,85 @@ function assertZc33SandboxCoverage() {
   pass("ZC-33: sandbox engine and Linux launcher coverage locked");
 }
 
+function assertZc34AgentGraphStoreCoverage() {
+  const readRequired = (rel) => {
+    const abs = path.join(root, rel);
+    if (!existsSync(abs)) failGate(`ZC-34: missing required file ${rel}`);
+    return readFileSync(abs, "utf8");
+  };
+
+  const parity = readRequired("runtime/src/agents/graph-store/PARITY.md");
+  const sourceRoot = `${["co", "dex-rs"].join("")}/agent-graph-store/src`;
+  const requiredAnchors = [
+    `${sourceRoot}/lib.rs`,
+    `${sourceRoot}/error.rs`,
+    `${sourceRoot}/types.rs`,
+    `${sourceRoot}/store.rs`,
+    `${sourceRoot}/local.rs`,
+  ];
+  const missingAnchors = requiredAnchors.filter((anchor) => !parity.includes(anchor));
+  if (missingAnchors.length > 0) {
+    failGate(`ZC-34: graph-store parity is missing source anchor(s):\n  ${missingAnchors.join("\n  ")}`);
+  }
+
+  const requiredTargets = [
+    "runtime/src/agents/graph-store/types.ts",
+    "runtime/src/agents/graph-store/errors.ts",
+    "runtime/src/agents/graph-store/store.ts",
+    "runtime/src/agents/graph-store/local.ts",
+    "runtime/src/agents/graph-store/local.test.ts",
+  ];
+  const missingTargets = requiredTargets.filter((rel) => !existsSync(path.join(root, rel)));
+  if (missingTargets.length > 0) {
+    failGate(`ZC-34: graph-store target file(s) missing:\n  ${missingTargets.join("\n  ")}`);
+  }
+
+  const localSource = readRequired("runtime/src/agents/graph-store/local.ts");
+  for (const marker of [
+    "class LocalAgentGraphStore",
+    "upsertThreadSpawnEdge",
+    "setThreadSpawnEdgeStatus",
+    "listThreadSpawnChildren",
+    "listThreadSpawnDescendants",
+    "thread_spawn_edges",
+    "driver.transaction",
+  ]) {
+    if (!localSource.includes(marker)) {
+      failGate(`ZC-34: local graph store is missing ${marker}.`);
+    }
+  }
+
+  const testSource = readRequired("runtime/src/agents/graph-store/local.test.ts");
+  for (const marker of [
+    "stable status filters",
+    "undefined",
+    "null",
+    "missing children as a no-op",
+    "breadth-first",
+    "cycle",
+    "invalid runtime statuses",
+    "read-side SQLite failures",
+    "preserves existing AgenC edge metadata",
+  ]) {
+    if (!testSource.includes(marker)) {
+      failGate(`ZC-34: graph-store tests are missing ${marker}.`);
+    }
+  }
+
+  const testRun = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/agents/graph-store/local.test.ts",
+  ]);
+  if (testRun.status !== 0) {
+    failGate("ZC-34: graph-store behavior tests failed.");
+  }
+
+  pass("ZC-34: agent graph store coverage locked");
+}
+
 function listSourceFiles(dir) {
   const out = [];
   for (const entry of readdirSync(dir)) {
@@ -5398,6 +5495,7 @@ async function cleanupGates(item) {
       "ZC-30": { custom: assertZc30PluginCoverage },
       "ZC-31": { custom: assertZc31SkillsCoverage },
       "ZC-33": { custom: assertZc33SandboxCoverage },
+      "ZC-34": { custom: assertZc34AgentGraphStoreCoverage },
     };
     const expectations = zcMap[id];
     if (!expectations) {
