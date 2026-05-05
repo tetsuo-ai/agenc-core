@@ -15,6 +15,7 @@ import {
   join,
   resolve,
 } from "node:path";
+import { isIP } from "node:net";
 import {
   ROOT_AGENT_PATH,
   type AgentPath,
@@ -128,6 +129,12 @@ interface WebSearchResultEntry {
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_FETCH_CHARS = 120_000;
 const MAX_SEARCH_RESULTS = 8;
+const WEB_FETCH_TOOL_NAME = "web_fetch";
+const LEGACY_WEB_FETCH_TOOL_NAME = "WebFetch";
+const WEB_FETCH_TOOL_NAMES = [
+  WEB_FETCH_TOOL_NAME,
+  LEGACY_WEB_FETCH_TOOL_NAME,
+] as const;
 
 function json(content: unknown, isError?: boolean): ToolResult {
   return { content: safeStringify(content), ...(isError ? { isError: true } : {}) };
@@ -599,7 +606,128 @@ function normalizeUrl(raw: string): string {
   if (url.protocol !== "https:") {
     throw new Error("URL must use https");
   }
+  if (url.username || url.password) {
+    throw new Error("URL must not include embedded credentials");
+  }
+  if (isBlockedWebFetchHostname(url.hostname)) {
+    throw new Error("URL targets a private or link-local address");
+  }
   return url.toString();
+}
+
+function isBlockedWebFetchHostname(hostname: string): boolean {
+  const unwrapped =
+    hostname.startsWith("[") && hostname.endsWith("]")
+      ? hostname.slice(1, -1)
+      : hostname;
+  const ipVersion = isIP(unwrapped);
+  if (ipVersion === 4) return isBlockedWebFetchIPv4(unwrapped);
+  if (ipVersion === 6) return isBlockedWebFetchIPv6(unwrapped);
+  return false;
+}
+
+function isBlockedWebFetchIPv4(address: string): boolean {
+  const parts = address.split(".").map(Number);
+  const [a, b] = parts;
+  if (
+    parts.length !== 4 ||
+    a === undefined ||
+    b === undefined ||
+    parts.some((part) => Number.isNaN(part))
+  ) {
+    return false;
+  }
+  if (a === 127) return false;
+  if (a === 0) return true;
+  if (a === 10) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  if (a === 192 && b === 168) return true;
+  return false;
+}
+
+function isBlockedWebFetchIPv6(address: string): boolean {
+  const lower = address.toLowerCase();
+  if (lower === "::1") return false;
+  if (lower === "::") return true;
+
+  const mappedV4 = webFetchMappedIPv4(lower);
+  if (mappedV4 !== null) return isBlockedWebFetchIPv4(mappedV4);
+
+  if (lower.startsWith("fc") || lower.startsWith("fd")) return true;
+
+  const firstHextet = lower.split(":")[0];
+  return (
+    firstHextet !== undefined &&
+    firstHextet.length === 4 &&
+    firstHextet >= "fe80" &&
+    firstHextet <= "febf"
+  );
+}
+
+function expandWebFetchIPv6Groups(address: string): number[] | null {
+  let addr = address;
+  let tailHextets: number[] = [];
+  if (addr.includes(".")) {
+    const lastColon = addr.lastIndexOf(":");
+    const v4 = addr.slice(lastColon + 1);
+    addr = addr.slice(0, lastColon);
+    const octets = v4.split(".").map(Number);
+    if (
+      octets.length !== 4 ||
+      octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)
+    ) {
+      return null;
+    }
+    tailHextets = [
+      (octets[0]! << 8) | octets[1]!,
+      (octets[2]! << 8) | octets[3]!,
+    ];
+  }
+
+  const dbl = addr.indexOf("::");
+  let head: string[];
+  let tail: string[];
+  if (dbl === -1) {
+    head = addr.split(":");
+    tail = [];
+  } else {
+    const headStr = addr.slice(0, dbl);
+    const tailStr = addr.slice(dbl + 2);
+    head = headStr === "" ? [] : headStr.split(":");
+    tail = tailStr === "" ? [] : tailStr.split(":");
+  }
+
+  const target = 8 - tailHextets.length;
+  const fill = target - head.length - tail.length;
+  if (fill < 0) return null;
+
+  const groups = [...head, ...new Array<string>(fill).fill("0"), ...tail];
+  const nums = groups.map((group) => parseInt(group, 16));
+  if (nums.some((num) => Number.isNaN(num) || num < 0 || num > 0xffff)) {
+    return null;
+  }
+  nums.push(...tailHextets);
+  return nums.length === 8 ? nums : null;
+}
+
+function webFetchMappedIPv4(address: string): string | null {
+  const groups = expandWebFetchIPv6Groups(address);
+  if (!groups) return null;
+  if (
+    groups[0] === 0 &&
+    groups[1] === 0 &&
+    groups[2] === 0 &&
+    groups[3] === 0 &&
+    groups[4] === 0 &&
+    groups[5] === 0xffff
+  ) {
+    const hi = groups[6]!;
+    const lo = groups[7]!;
+    return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+  }
+  return null;
 }
 
 function strictArgs(
@@ -1272,79 +1400,230 @@ function skillPermissionSuggestions(skillName: string): readonly PermissionUpdat
   ];
 }
 
-function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
+function webFetchInputToPermissionRuleContent(input: unknown): string {
+  const url = stringValue((input as { readonly url?: unknown })?.url);
+  if (!url) return "input:missing-url";
+  try {
+    const parsed = new URL(normalizeUrl(url));
+    return `domain:${parsed.hostname}`;
+  } catch {
+    return `input:${url.slice(0, 100)}`;
+  }
+}
+
+function getMatchingWebFetchRule(
+  permissionContext: ToolPermissionContext,
+  behavior: "allow" | "ask" | "deny",
+  toolName: string,
+  ruleContent: string,
+) {
+  const names = [
+    toolName,
+    ...WEB_FETCH_TOOL_NAMES.filter((name) => name !== toolName),
+  ];
+  for (const candidateName of names) {
+    const rule = getRuleByContentsForTool(
+      permissionContext,
+      candidateName,
+      behavior,
+    ).get(ruleContent);
+    if (rule) return rule;
+  }
+  return null;
+}
+
+function webFetchPermissionSuggestions(
+  toolName: string,
+  ruleContent: string,
+): readonly PermissionUpdate[] {
   return [
     {
-      name: "WebFetch",
-      description:
-        "Fetch an HTTPS URL and return readable text content plus status and final URL.",
-      metadata: toolMetadata("web", {
-        keywords: ["web", "fetch", "url", "http"],
-      }),
-      isReadOnly: true,
-      concurrencyClass: { kind: "shared_read" },
-      recoveryCategory: "side-effecting",
-      inputSchema: {
-        type: "object",
-        properties: {
-          url: { type: "string" },
-          prompt: { type: "string" },
-          timeout_ms: { type: "number" },
-          max_chars: { type: "number" },
-        },
-        required: ["url"],
-        additionalProperties: false,
-      },
-      execute: async (args) => {
-        const url = stringValue(args.url);
-        if (!url) return json({ error: "url is required" }, true);
-        const normalized = normalizeUrl(url);
-        const parsed = new URL(normalized);
-        const preapproved = isPreapprovedHost(parsed.hostname, parsed.pathname);
-        const response = await fetchWithTimeout(
-          normalized,
-          numberValue(args.timeout_ms) ?? DEFAULT_TIMEOUT_MS,
-        );
-        const contentType = response.headers.get("content-type") ?? "";
-        const raw = await response.text();
-        const isHtml = contentType.includes("html");
-        let body: string;
-        let renderedAs: "markdown" | "text" | "passthrough";
-        if (isHtml) {
-          try {
-            body = await htmlToMarkdown(raw);
-            renderedAs = "markdown";
-          } catch {
-            // Turndown / parser failure: fall back to the regex strip
-            // so a single bad page doesn't break WebFetch entirely.
-            body = htmlToText(raw);
-            renderedAs = "text";
-          }
-        } else {
-          body = raw;
-          renderedAs = "passthrough";
-        }
-        const maxChars = Math.max(
-          1_000,
-          Math.min(numberValue(args.max_chars) ?? MAX_FETCH_CHARS, MAX_FETCH_CHARS),
-        );
-        const textBody =
-          body.length > maxChars
-            ? `${body.slice(0, maxChars)}\n\n[truncated ${body.length - maxChars} chars]`
-            : body;
-        return json({
-          status: response.status,
-          ok: response.ok,
-          url: normalized,
-          final_url: response.url,
-          content_type: contentType,
-          preapproved,
-          rendered_as: renderedAs,
-          prompt: stringValue(args.prompt),
-          content: textBody,
-        }, response.ok ? undefined : true);
-      },
+      type: "addRules",
+      destination: "localSettings",
+      rules: [{ toolName, ruleContent }],
+      behavior: "allow",
     },
+  ];
+}
+
+function checkWebFetchPermissions(
+  input: unknown,
+  context: ToolEvaluatorContext,
+  toolName: string,
+): PermissionResult {
+  const url = stringValue((input as { readonly url?: unknown })?.url);
+  if (!url) {
+    return {
+      behavior: "deny",
+      message: `${toolName} requires a url.`,
+      decisionReason: { type: "other", reason: "missing url" },
+    };
+  }
+
+  let normalized: string;
+  let parsed: URL;
+  try {
+    normalized = normalizeUrl(url);
+    parsed = new URL(normalized);
+  } catch (error) {
+    return {
+      behavior: "deny",
+      message: `${toolName} received an invalid URL: ${errorMessage(error)}`,
+      decisionReason: { type: "other", reason: "invalid url" },
+    };
+  }
+
+  if (isPreapprovedHost(parsed.hostname, parsed.pathname)) {
+    return {
+      behavior: "allow",
+      updatedInput: { ...(input as Record<string, unknown>), url: normalized },
+      decisionReason: { type: "other", reason: "preapproved host" },
+    };
+  }
+
+  const permissionContext = context.getAppState().toolPermissionContext;
+  const ruleContent = webFetchInputToPermissionRuleContent({ url: normalized });
+  const denyRule = getMatchingWebFetchRule(
+    permissionContext,
+    "deny",
+    toolName,
+    ruleContent,
+  );
+  if (denyRule !== null) {
+    return {
+      behavior: "deny",
+      message: `${toolName} denied access to ${ruleContent}.`,
+      decisionReason: { type: "rule", rule: denyRule },
+    };
+  }
+
+  const askRule = getMatchingWebFetchRule(
+    permissionContext,
+    "ask",
+    toolName,
+    ruleContent,
+  );
+  if (askRule !== null) {
+    return {
+      behavior: "ask",
+      message: `AgenC requested permission to fetch ${parsed.hostname}.`,
+      updatedInput: { ...(input as Record<string, unknown>), url: normalized },
+      decisionReason: { type: "rule", rule: askRule },
+      suggestions: webFetchPermissionSuggestions(toolName, ruleContent),
+    };
+  }
+
+  const allowRule = getMatchingWebFetchRule(
+    permissionContext,
+    "allow",
+    toolName,
+    ruleContent,
+  );
+  if (allowRule !== null) {
+    return {
+      behavior: "allow",
+      updatedInput: { ...(input as Record<string, unknown>), url: normalized },
+      decisionReason: { type: "rule", rule: allowRule },
+    };
+  }
+
+  return {
+    behavior: "ask",
+    message: `AgenC requested permission to fetch ${parsed.hostname}.`,
+    updatedInput: { ...(input as Record<string, unknown>), url: normalized },
+    suggestions: webFetchPermissionSuggestions(toolName, ruleContent),
+    decisionReason: { type: "other", reason: "web fetch requires approval" },
+  };
+}
+
+function createWebFetchTool(toolName: string): Tool {
+  const isLegacy = toolName === LEGACY_WEB_FETCH_TOOL_NAME;
+  return {
+    name: toolName,
+    description:
+      "Fetch an HTTPS URL and return readable text content plus status and final URL.",
+    metadata: toolMetadata("web", {
+      keywords: ["web", "fetch", "url", "http"],
+      deferred: isLegacy,
+      hiddenByDefault: isLegacy,
+    }),
+    isReadOnly: true,
+    concurrencyClass: { kind: "shared_read" },
+    recoveryCategory: "side-effecting",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string" },
+        prompt: { type: "string" },
+        timeout_ms: { type: "number" },
+        max_chars: { type: "number" },
+      },
+      required: ["url"],
+      additionalProperties: false,
+    },
+    checkPermissions: (input, context) =>
+      checkWebFetchPermissions(input, context, toolName),
+    execute: async (args) => {
+      const url = stringValue(args.url);
+      if (!url) return json({ error: "url is required" }, true);
+      let normalized: string;
+      try {
+        normalized = normalizeUrl(url);
+      } catch (error) {
+        return json({ error: errorMessage(error) }, true);
+      }
+      const parsed = new URL(normalized);
+      const preapproved = isPreapprovedHost(parsed.hostname, parsed.pathname);
+      const response = await fetchWithTimeout(
+        normalized,
+        numberValue(args.timeout_ms) ?? DEFAULT_TIMEOUT_MS,
+      );
+      const contentType = response.headers.get("content-type") ?? "";
+      const raw = await response.text();
+      const isHtml = contentType.includes("html");
+      let body: string;
+      let renderedAs: "markdown" | "text" | "passthrough";
+      if (isHtml) {
+        try {
+          body = await htmlToMarkdown(raw);
+          renderedAs = "markdown";
+        } catch {
+          // Parser failure falls back to a conservative tag strip so a
+          // single malformed page does not break the fetch tool entirely.
+          body = htmlToText(raw);
+          renderedAs = "text";
+        }
+      } else {
+        body = raw;
+        renderedAs = "passthrough";
+      }
+      const maxChars = Math.max(
+        1_000,
+        Math.min(numberValue(args.max_chars) ?? MAX_FETCH_CHARS, MAX_FETCH_CHARS),
+      );
+      const textBody =
+        body.length > maxChars
+          ? `${body.slice(0, maxChars)}\n\n[truncated ${body.length - maxChars} chars]`
+          : body;
+      return json({
+        status: response.status,
+        ok: response.ok,
+        url: normalized,
+        final_url: response.url,
+        content_type: contentType,
+        preapproved,
+        rendered_as: renderedAs,
+        prompt: stringValue(args.prompt),
+        content: textBody,
+      }, response.ok ? undefined : true);
+    },
+  };
+}
+
+function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
+  return [
+    createWebFetchTool(WEB_FETCH_TOOL_NAME),
+    createWebFetchTool(LEGACY_WEB_FETCH_TOOL_NAME),
     {
       name: "WebSearch",
       description:

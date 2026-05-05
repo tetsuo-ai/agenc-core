@@ -1,0 +1,136 @@
+{
+  "contractName": "TL-08-web-fetch-tool",
+  "scope": "Canonical model-facing web_fetch tool with cleaned rendering, domain permission rules, and preapproved-host handling.",
+  "generatedAt": "2026-05-05T14:58:44.599Z",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/tools/WebFetchTool/WebFetchTool.ts",
+    "src/tools/WebFetchTool/prompt.ts",
+    "src/tools/WebFetchTool/utils.ts",
+    "src/tools/WebFetchTool/preapproved.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/bin/model-facing-tools.ts",
+    "runtime/src/bin/web-fetch-preapproved.ts",
+    "runtime/src/tool-registry.ts"
+  ],
+  "testFiles": [
+    "runtime/src/bin/model-facing-tools.test.ts",
+    "runtime/src/bin/web-fetch-preapproved.test.ts",
+    "runtime/src/tool-registry.test.ts"
+  ],
+  "omissions": [
+    {
+      "id": "firecrawl-scrape-provider",
+      "sourceFiles": ["src/tools/WebFetchTool/WebFetchTool.ts"],
+      "reason": "AgenC runtime does not ship the Firecrawl integration or managed Firecrawl credential path; web_fetch uses the built-in HTTPS fetch/render path."
+    },
+    {
+      "id": "secondary-model-summarization",
+      "sourceFiles": [
+        "src/tools/WebFetchTool/WebFetchTool.ts",
+        "src/tools/WebFetchTool/prompt.ts",
+        "src/tools/WebFetchTool/utils.ts"
+      ],
+      "reason": "TL-08 scope is URL fetch plus cleaned rendering. AgenC returns cleaned page content and the original prompt field instead of spending a second model call inside the tool."
+    },
+    {
+      "id": "first-party-domain-preflight",
+      "sourceFiles": ["src/tools/WebFetchTool/utils.ts"],
+      "reason": "The donor preflight endpoint is product-specific. AgenC uses preapproved hosts plus domain-scoped permission rules for this item."
+    },
+    {
+      "id": "binary-content-persistence",
+      "sourceFiles": ["src/tools/WebFetchTool/utils.ts"],
+      "reason": "TL-08 returns cleaned text/markdown content. Binary persistence belongs to a future attachment/output-storage item."
+    },
+    {
+      "id": "dns-lookup-ssrf-hook",
+      "sourceFiles": ["src/tools/WebFetchTool/utils.ts"],
+      "reason": "The live AgenC path uses Node fetch, which does not expose an axios-style lookup hook. This item blocks direct private/link-local IP literals and leaves DNS-level rebinding protection to a future HTTP-client hardening item."
+    }
+  ],
+  "rows": [
+    {
+      "id": "canonical-web-fetch-registration",
+      "source": "src/tools/WebFetchTool/WebFetchTool.ts",
+      "target": "runtime/src/bin/model-facing-tools.ts",
+      "requiredBehaviors": [
+        "register canonical web_fetch as the visible model-facing fetch tool",
+        "keep legacy WebFetch dispatch available as a deferred compatibility entry",
+        "mark both fetch spellings as read-only shared-read tools with declared recovery categories"
+      ],
+      "tests": ["runtime/src/bin/model-facing-tools.test.ts"],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/bin/model-facing-tools.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "fetch-render-cleanup",
+      "source": "src/tools/WebFetchTool/utils.ts",
+      "target": "runtime/src/bin/model-facing-tools.ts",
+      "requiredBehaviors": [
+        "upgrade http URLs to https before fetching",
+        "reject non-https URLs and embedded URL credentials",
+        "convert HTML responses to markdown while removing scripts and styles",
+        "fall back to text cleanup when markdown conversion fails",
+        "truncate very large returned content with an explicit truncation marker"
+      ],
+      "tests": ["runtime/src/bin/model-facing-tools.test.ts"],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/bin/model-facing-tools.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "domain-permission-policy",
+      "source": "src/tools/WebFetchTool/WebFetchTool.ts",
+      "target": "runtime/src/bin/model-facing-tools.ts",
+      "requiredBehaviors": [
+        "auto-allow hosts in the preapproved web fetch allowlist",
+        "derive content rules as domain:<hostname>",
+        "honor deny, ask, and allow rules for both web_fetch and legacy WebFetch spellings",
+        "offer localSettings allow-rule suggestions for new domain approvals",
+        "block direct private/link-local IP literal targets before fetch"
+      ],
+      "tests": ["runtime/src/bin/model-facing-tools.test.ts"],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/bin/model-facing-tools.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "registry-string-dispatch",
+      "source": "src/tools/WebFetchTool/prompt.ts",
+      "target": "runtime/src/tool-registry.ts",
+      "requiredBehaviors": [
+        "map plain-string web_fetch calls to the url argument field",
+        "preserve plain-string WebFetch calls for existing transcripts or deferred callers",
+        "satisfy the TL-08 registry evidence grep for web_fetch/webFetch"
+      ],
+      "tests": ["runtime/src/tool-registry.test.ts"],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/tool-registry.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "preapproved-hosts",
+      "source": "src/tools/WebFetchTool/preapproved.ts",
+      "target": "runtime/src/bin/web-fetch-preapproved.ts",
+      "requiredBehaviors": [
+        "keep hostname-only preapproved checks O(1)",
+        "preserve path-prefix matching with path segment boundaries",
+        "use the allowed AgenC service domain for AgenC-owned preapproval entries"
+      ],
+      "tests": ["runtime/src/bin/web-fetch-preapproved.test.ts"],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/bin/web-fetch-preapproved.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

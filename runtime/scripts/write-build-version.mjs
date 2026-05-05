@@ -16,6 +16,7 @@ const runtimeDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".
 const distDir = path.join(runtimeDir, "dist");
 const versionPath = path.join(distDir, "VERSION");
 const policySourceDir = path.join(runtimeDir, "src/sandbox/engine/policies");
+const bundledRuntimePolicyDir = path.join(distDir, "policies");
 const linuxLauncherPolicyDir = path.join(distDir, "sandbox/linux-launcher/policies");
 
 function tryGitRevParse() {
@@ -35,8 +36,13 @@ async function main() {
     mkdirSync(distDir, { recursive: true });
   }
   if (existsSync(policySourceDir)) {
-    mkdirSync(linuxLauncherPolicyDir, { recursive: true });
-    cpSync(policySourceDir, linuxLauncherPolicyDir, { recursive: true });
+    for (const policyTargetDir of [
+      bundledRuntimePolicyDir,
+      linuxLauncherPolicyDir,
+    ]) {
+      mkdirSync(policyTargetDir, { recursive: true });
+      cpSync(policySourceDir, policyTargetDir, { recursive: true });
+    }
   }
 
   const commit = process.env.AGENC_BUILD_COMMIT ?? tryGitRevParse() ?? "unknown";

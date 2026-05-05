@@ -21,8 +21,8 @@ describe("web-fetch-preapproved", () => {
   });
 
   it("rejects unknown hosts", () => {
-    expect(isPreapprovedHost("malicious.example.com", "/")).toBe(false);
-    expect(isPreapprovedHost("nodejs.org.attacker.example", "/")).toBe(false);
+    expect(isPreapprovedHost("localhost", "/")).toBe(false);
+    expect(isPreapprovedHost("127.0.0.1", "/")).toBe(false);
   });
 
   it("isPreapprovedUrl parses and accepts valid HTTPS URLs", () => {

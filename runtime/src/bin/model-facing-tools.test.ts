@@ -208,6 +208,7 @@ describe("model-facing tools", () => {
     const allNames = registry.tools.map((tool) => tool.name);
     expect(allNames).toEqual(
       expect.arrayContaining([
+        "web_fetch",
         "WebFetch",
         "WebSearch",
         "spawn_agent",
@@ -251,7 +252,7 @@ describe("model-facing tools", () => {
     const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
     expect(visibleNames).toEqual(
       expect.arrayContaining([
-        "WebFetch",
+        "web_fetch",
         "WebSearch",
         "Skill",
         "spawn_agent",
@@ -263,6 +264,7 @@ describe("model-facing tools", () => {
         "NotebookRead",
       ]),
     );
+    expect(visibleNames).not.toContain("WebFetch");
     expect(allNames).not.toContain("system.agent.delegate");
     expect(visibleNames).not.toContain("system.agent.delegate");
     expect(visibleNames).not.toContain("NotebookEdit");
@@ -846,18 +848,18 @@ describe("model-facing tools", () => {
     }
   });
 
-  it("WebFetch renders HTML through Turndown and reports preapproved hosts", async () => {
+  it("web_fetch renders HTML through Turndown and reports preapproved hosts", async () => {
     const html =
       "<!doctype html><html><head><title>x</title><style>body{}</style></head><body>" +
       "<h1>Hello</h1>" +
-      "<p>This is a <strong>test</strong> with a <a href=\"https://example.com\">link</a>.</p>" +
+      "<p>This is a <strong>test</strong> with a <a href=\"/docs\">link</a>.</p>" +
       "<ul><li>one</li><li>two</li></ul>" +
       "<script>alert('x')</script>" +
       "</body></html>";
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      url: "https://docs.python.org/3/library/asyncio.html",
+      url: "https://agenc.tech/docs",
       headers: {
         get: (name: string) =>
           name.toLowerCase() === "content-type" ? "text/html; charset=utf-8" : null,
@@ -872,8 +874,8 @@ describe("model-facing tools", () => {
         getSession: () => null,
       });
       const byName = new Map(tools.map((tool) => [tool.name, tool]));
-      const result = await byName.get("WebFetch")!.execute({
-        url: "https://docs.python.org/3/library/asyncio.html",
+      const result = await byName.get("web_fetch")!.execute({
+        url: "https://agenc.tech/docs",
       });
       expect(result.isError).toBeUndefined();
       const parsed = JSON.parse(result.content);
@@ -881,7 +883,7 @@ describe("model-facing tools", () => {
       expect(parsed.rendered_as).toBe("markdown");
       expect(parsed.content).toContain("# Hello");
       expect(parsed.content).toContain("**test**");
-      expect(parsed.content).toContain("[link](https://example.com)");
+      expect(parsed.content).toContain("[link](/docs)");
       // List bullet rendered with the configured "-" marker.
       expect(parsed.content).toMatch(/-\s+one/);
       // Scripts and styles must not leak into the markdown.
@@ -892,11 +894,11 @@ describe("model-facing tools", () => {
     }
   });
 
-  it("WebFetch flags non-preapproved hosts as preapproved=false", async () => {
+  it("WebFetch legacy alias flags non-preapproved hosts as preapproved=false", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      url: "https://random.example.com/page",
+      url: "https://localhost/page",
       headers: {
         get: (name: string) =>
           name.toLowerCase() === "content-type" ? "text/plain" : null,
@@ -912,7 +914,7 @@ describe("model-facing tools", () => {
       });
       const byName = new Map(tools.map((tool) => [tool.name, tool]));
       const result = await byName.get("WebFetch")!.execute({
-        url: "https://random.example.com/page",
+        url: "https://localhost/page",
       });
       const parsed = JSON.parse(result.content);
       expect(parsed.preapproved).toBe(false);
@@ -921,6 +923,79 @@ describe("model-facing tools", () => {
     } finally {
       globalThis.fetch = previousFetch;
     }
+  });
+
+  it("web_fetch permissions auto-allow preapproved hosts and honor domain rules", async () => {
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => null,
+    });
+    const tool = tools.find((candidate) => candidate.name === "web_fetch");
+    expect(tool).toBeDefined();
+
+    const preapproved = await tool!.checkPermissions?.(
+      { url: "http://agenc.tech/docs" },
+      fakeEvaluatorContext(),
+    );
+    expect(preapproved).toMatchObject({
+      behavior: "allow",
+      updatedInput: { url: "https://agenc.tech/docs" },
+    });
+
+    const denied = await tool!.checkPermissions?.(
+      { url: "https://localhost/page" },
+      fakeEvaluatorContext(
+        createEmptyToolPermissionContext({
+          alwaysDenyRules: {
+            localSettings: ["web_fetch(domain:localhost)"],
+          },
+        }),
+      ),
+    );
+    expect(denied).toMatchObject({
+      behavior: "deny",
+      message: "web_fetch denied access to domain:localhost.",
+    });
+
+    const blockedAddress = await tool!.checkPermissions?.(
+      { url: "https://169.254.169.254/latest" },
+      fakeEvaluatorContext(),
+    );
+    expect(blockedAddress).toMatchObject({
+      behavior: "deny",
+      message: expect.stringContaining("private or link-local address"),
+    });
+
+    const legacyAllowed = await tool!.checkPermissions?.(
+      { url: "https://localhost/page" },
+      fakeEvaluatorContext(
+        createEmptyToolPermissionContext({
+          alwaysAllowRules: {
+            localSettings: ["WebFetch(domain:localhost)"],
+          },
+        }),
+      ),
+    );
+    expect(legacyAllowed).toMatchObject({
+      behavior: "allow",
+      decisionReason: { type: "rule" },
+    });
+
+    const ask = await tool!.checkPermissions?.(
+      { url: "https://localhost/page" },
+      fakeEvaluatorContext(),
+    );
+    expect(ask).toMatchObject({
+      behavior: "ask",
+      suggestions: [
+        {
+          type: "addRules",
+          destination: "localSettings",
+          behavior: "allow",
+          rules: [{ toolName: "web_fetch", ruleContent: "domain:localhost" }],
+        },
+      ],
+    });
   });
 
   it("WebSearch uses Grok provider-native web_search when the active model supports it", async () => {

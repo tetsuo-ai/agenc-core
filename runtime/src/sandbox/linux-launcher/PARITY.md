@@ -25,7 +25,7 @@ Target mapping:
 - `proxy-routing.ts` ports proxy environment recognition, loopback endpoint validation, host-side UDS route preparation, serialized route validation, namespace-local loopback activation, URL rewrite helpers, and stream-pairing primitives.
 - `vendored-bwrap.ts` records the build-shape divergence: the TypeScript runtime requires a system bubblewrap binary instead of linking an embedded C helper.
 - `build.ts` records the launcher build contract exposed to tests and package validation.
-- `runtime/scripts/write-build-version.mjs` copies sandbox policy assets beside the built launcher entrypoint so package-bin smoke execution can import the bundled sandbox modules.
+- `runtime/scripts/write-build-version.mjs` copies sandbox policy assets both beside the built launcher entrypoint and beside bundled runtime chunks so package-bin and TUI startup smoke execution can import the bundled sandbox modules.
 
 Documented divergences:
 - Legacy direct Landlock is fail-closed in the TypeScript launcher. AgenC's active Linux path performs filesystem isolation with bubblewrap and network syscall restriction with a bubblewrap-loaded seccomp cBPF program. The Rust-only direct Landlock fallback has no Node native binding in this runtime.

@@ -1,15 +1,13 @@
 /**
  * Preapproved-host allowlist for `WebFetch`.
  *
- * Verbatim port of agenc
- * `src/tools/WebFetchTool/preapproved.ts` — common dev/docs domains
- * that are known-safe for GET-only fetches. AgenC surfaces this via
- * the WebFetch tool result so the model knows when a host is
- * well-known; the access-control gate itself remains the standard
- * permission classifier.
+ * Common dev/docs domains that are known-safe for GET-only fetches.
+ * AgenC surfaces this via the web fetch tool result so the model
+ * knows when a host is well-known; the access-control gate itself
+ * remains the standard permission classifier.
  *
- * Security note (carried verbatim from upstream): this list applies
- * ONLY to WebFetch (HTTPS GET). Sandbox network policy must NOT
+ * Security note: this list applies ONLY to WebFetch (HTTPS GET).
+ * Sandbox network policy must NOT
  * inherit it — arbitrary network access (POST / uploads) to hosts in
  * this list could enable data exfiltration, since some entries
  * (huggingface.co, kaggle.com, nuget.org) accept uploads.
@@ -18,9 +16,8 @@
  */
 
 export const PREAPPROVED_HOSTS: ReadonlySet<string> = new Set([
-  // Anthropic + protocol surfaces
-  "platform.agenc.com",
-  "code.agenc.com",
+  // AgenC + protocol surfaces
+  "agenc.tech",
   "modelcontextprotocol.io",
   "github.com/anthropics",
   "agentskills.io",
@@ -138,7 +135,6 @@ export const PREAPPROVED_HOSTS: ReadonlySet<string> = new Set([
 // Split once at module load so lookups are O(1) Set.has() for the
 // common hostname-only case, falling back to a small per-host
 // path-prefix list for path-scoped entries (e.g. "github.com/anthropics").
-// Mirrors agenc `src/tools/WebFetchTool/preapproved.ts:136`.
 const HOSTNAME_ONLY = new Set<string>();
 const PATH_PREFIXES = new Map<string, string[]>();
 for (const entry of PREAPPROVED_HOSTS) {
