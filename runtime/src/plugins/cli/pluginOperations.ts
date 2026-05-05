@@ -8,6 +8,7 @@ import { findPluginManifestPath } from "../manifest.js";
 import { validateMarketplaceManifest, validatePluginManifest, type ValidationResult } from "../validation.js";
 import { deletePluginDataDir, sanitizePluginId } from "../directories.js";
 import {
+  pluginDependencyIdentityFromSource,
   pluginSourceNeedsRedaction,
   redactPluginSource,
   resolvePluginSource,
@@ -279,6 +280,7 @@ export async function installPluginOp(
     await writeInstallMetadata(destination, {
       name: pluginName,
       source: resolutionKind === "local" ? source : redactPluginSource(input.source),
+      ...(resolutionKind !== "local" ? dependencyIdentityMetadata(input.source) : {}),
       ...(resolutionKind !== "local" && pluginSourceNeedsRedaction(input.source) ? { sourceRedacted: true } : {}),
       sourceRoot: source,
       scope,
@@ -565,6 +567,11 @@ async function copyDirectoryAtomically(
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
+}
+
+function dependencyIdentityMetadata(source: string): { readonly dependencyIdentity?: string } {
+  const dependencyIdentity = pluginDependencyIdentityFromSource(source);
+  return dependencyIdentity === undefined ? {} : { dependencyIdentity };
 }
 
 async function writeInstallMetadata(

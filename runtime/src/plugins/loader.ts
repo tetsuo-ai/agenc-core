@@ -1,8 +1,8 @@
-import { readdir, realpath, stat } from "node:fs/promises";
+import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { validateHooksConfig } from "../config/schema.js";
 import type { AgenCConfig, HooksMap, LspServerConfigInput, McpServerConfig } from "../config/schema.js";
-import { verifyPluginDependencyState } from "./resolution.js";
+import { pluginDependencyIdentityFromSource, verifyPluginDependencyState } from "./resolution.js";
 import {
   findPluginManifestPath,
   loadPluginManifest,
@@ -26,6 +26,7 @@ const DEFAULT_MCP_FILE = ".mcp.json";
 const DEFAULT_LSP_FILE = ".lsp.json";
 const DEFAULT_APP_FILE = ".app.json";
 const DEFAULT_SETTINGS_FILE = "settings.json";
+const INSTALL_METADATA_FILE = "agenc-install.json";
 const MAX_PLUGIN_MARKDOWN_FILES = 512;
 const MAX_PLUGIN_SCAN_DEPTH = 8;
 const LSP_SERVER_KEYS = new Set([
@@ -241,7 +242,11 @@ async function hasPluginShape(path: string): Promise<boolean> {
 async function discoverRootsUnder(baseDir: string): Promise<DiscoveredPluginRoot[]> {
   if (!(await pathIsDirectory(baseDir))) return [];
   if (await hasPluginShape(baseDir)) {
-    return [{ path: await maybeRealpath(baseDir), source: baseDir, enabled: true }];
+    return [{
+      path: await maybeRealpath(baseDir),
+      source: await installedPluginDependencyIdentity(baseDir) ?? baseDir,
+      enabled: true,
+    }];
   }
   let entries;
   try {
@@ -256,12 +261,28 @@ async function discoverRootsUnder(baseDir: string): Promise<DiscoveredPluginRoot
     if (await hasPluginShape(candidate)) {
       roots.push({
         path: await maybeRealpath(candidate),
-        source: candidate,
+        source: await installedPluginDependencyIdentity(candidate) ?? candidate,
         enabled: true,
       });
     }
   }
   return roots.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+async function installedPluginDependencyIdentity(pluginRoot: string): Promise<string | undefined> {
+  let metadata: unknown;
+  try {
+    metadata = JSON.parse(await readFile(join(pluginRoot, ".agenc-plugin", INSTALL_METADATA_FILE), "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    return undefined;
+  }
+  if (!isRecord(metadata)) return undefined;
+  if (typeof metadata.dependencyIdentity === "string") {
+    return pluginDependencyIdentityFromSource(metadata.dependencyIdentity);
+  }
+  if (metadata.sourceRedacted === true || typeof metadata.source !== "string") return undefined;
+  return pluginDependencyIdentityFromSource(metadata.source);
 }
 
 export async function discoverPluginRoots(

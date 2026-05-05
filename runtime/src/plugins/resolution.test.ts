@@ -190,6 +190,65 @@ describe("plugin source resolution", () => {
     });
   });
 
+  test("loader uses installed remote dependency identities from install metadata", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const packSources: string[] = [];
+      const runProcess: PluginProcessRunner = async (command, args) => {
+        if (command === "npm") {
+          const source = String(args.at(-1));
+          packSources.push(source);
+          const packDir = String(args[args.indexOf("--pack-destination") + 1]);
+          const filename = `${source.replace(/[^a-z0-9._-]/giu, "-")}.tgz`;
+          await writeFile(join(packDir, filename), "fixture");
+          return {
+            stdout: JSON.stringify([{ filename }]),
+            stderr: "",
+          };
+        }
+        if (command === "tar") {
+          if (args[0] === "-tzf") return { stdout: safeTarListing("package"), stderr: "" };
+          if (args[0] === "-tvzf") return { stdout: safeTarVerboseListing("package"), stderr: "" };
+          const source = packSources.shift();
+          const extractRoot = String(args[args.indexOf("-C") + 1]);
+          await writePlugin(
+            join(extractRoot, "package"),
+            source === "app@main" ? "app" : "lib",
+            source === "app@main" ? ["lib@main"] : [],
+          );
+          return { stdout: "", stderr: "" };
+        }
+        throw new Error(`unexpected process: ${command}`);
+      };
+
+      await installPluginOp({
+        source: "lib@main",
+        agencHome,
+        workspaceRoot: root,
+        runResolutionProcess: runProcess,
+        requireSignature: false,
+      });
+      await installPluginOp({
+        source: "app@main",
+        agencHome,
+        workspaceRoot: root,
+        runResolutionProcess: runProcess,
+        requireSignature: false,
+      });
+
+      const result = await loadPlugins({
+        agencHome,
+        workspaceRoot: root,
+        config: {},
+      });
+
+      expect(result.enabled.map((plugin) => plugin.name).sort()).toEqual(["app", "lib"]);
+      expect(result.enabled.find((plugin) => plugin.name === "app")?.source).toBe("app@main");
+      expect(result.enabled.find((plugin) => plugin.name === "lib")?.source).toBe("lib@main");
+      expect(result.errors.filter((issue) => issue.type === "dependency")).toEqual([]);
+    });
+  });
+
   test("strips VCS metadata from installed plugin copies", async () => {
     await withTempDir(async (root) => {
       const sourceRoot = join(root, "source");
@@ -688,6 +747,47 @@ describe("plugin source resolution", () => {
           fetchBytes: async () => new Uint8Array([1, 2, 3]),
         }),
       ).rejects.toThrow(/escapes extraction root/u);
+    });
+  });
+
+  test("rejects unsupported tar entry types before extraction", async () => {
+    await withTempDir(async (root) => {
+      const calls: string[] = [];
+      const runProcess: PluginProcessRunner = async (command, args) => {
+        calls.push(`${command} ${args.join(" ")}`);
+        if (command === "tar") {
+          if (args[0] === "-tzf") {
+            return {
+              stdout: [
+                "package/.agenc-plugin/plugin.json",
+                "package/commands/hello.md",
+                "package/runtime.pipe",
+              ].join("\n"),
+              stderr: "",
+            };
+          }
+          if (args[0] === "-tvzf") {
+            return {
+              stdout: [
+                "-rw-r--r-- 0/0 0 2026-05-05 00:00 package/.agenc-plugin/plugin.json",
+                "prw-r--r-- 0/0 0 2026-05-05 00:00 package/runtime.pipe",
+              ].join("\n"),
+              stderr: "",
+            };
+          }
+        }
+        throw new Error(`unexpected process: ${command} ${args.join(" ")}`);
+      };
+
+      await expect(
+        resolvePluginSource("https://agenc.tech/plugins/bad-entry.tgz", {
+          agencHome: join(root, "home"),
+          workspaceRoot: root,
+          fetchBytes: async () => Buffer.from("fixture"),
+          runProcess,
+        }),
+      ).rejects.toThrow(/unsupported tar entry type/u);
+      expect(calls.some((call) => call.startsWith("tar -xzf"))).toBe(false);
     });
   });
 
@@ -1256,6 +1356,13 @@ describe("plugin source resolution", () => {
         publisher: "tetsuo",
         payloadFileCount: 1,
       });
+      await expect(
+        verifyResolvedPluginSignature(pluginRoot, {
+          publishersPath,
+          requireSignature: true,
+          maxExtractedFiles: 0,
+        }),
+      ).rejects.toThrow(/signature payload exceeds maximum file count/u);
 
       const emptyPublishersPath = join(root, "empty-publishers.json");
       await writeJson(emptyPublishersPath, { publishers: {} });

@@ -151,6 +151,7 @@ const DEFAULT_MAX_EXTRACT_DEPTH = 32;
 const DEFAULT_CACHE_LOCK_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_ARCHIVE_REDIRECTS = 5;
 const PLUGIN_INSTALL_METADATA_RELATIVE_PATH = ".agenc-plugin/agenc-install.json";
+const PLUGIN_DEPENDENCY_IDENTITY_PATTERN = /^[a-z0-9][-a-z0-9._]*(?:@[a-z][a-z0-9._-]*)?$/iu;
 const KNOWN_PUBLIC_HOSTS = new Set([
   "github.com",
   "raw.githubusercontent.com",
@@ -698,16 +699,16 @@ function comparePrereleaseVersions(a: readonly string[], b: readonly string[]): 
 }
 
 export function pluginDependencyIdentifier(plugin: LoadedPlugin): string {
-  return isDependencyIdentitySource(plugin.source) ? plugin.source : plugin.name;
+  return pluginDependencyIdentityFromSource(plugin.source) ?? plugin.name;
 }
 
-function isDependencyIdentitySource(source: string): boolean {
+export function pluginDependencyIdentityFromSource(source: string): string | undefined {
   const trimmed = source.trim();
-  if (trimmed.length === 0) return false;
-  if (trimmed === "user" || trimmed === "project" || trimmed === "local") return false;
-  if (isAbsolute(trimmed)) return false;
-  if (trimmed.startsWith(".") || trimmed.includes("/") || trimmed.includes("\\")) return false;
-  return true;
+  if (trimmed.length === 0) return undefined;
+  if (trimmed === "user" || trimmed === "project" || trimmed === "local") return undefined;
+  if (isAbsolute(trimmed)) return undefined;
+  if (trimmed.startsWith(".") || trimmed.includes("/") || trimmed.includes("\\")) return undefined;
+  return PLUGIN_DEPENDENCY_IDENTITY_PATTERN.test(trimmed) ? trimmed : undefined;
 }
 
 export function findPluginReverseDependents(
@@ -732,7 +733,10 @@ export function findPluginReverseDependents(
 
 export async function verifyResolvedPluginSignature(
   pluginRoot: string,
-  options: Pick<PluginResolverOptions, "publishersPath" | "requireSignature">,
+  options: Pick<
+    PluginResolverOptions,
+    "maxExtractDepth" | "maxExtractedBytes" | "maxExtractedFiles" | "publishersPath" | "requireSignature"
+  >,
 ): Promise<PluginSignatureVerification> {
   const signaturePath = join(pluginRoot, ".agenc-plugin", "signature.json");
   let signature: SignatureFile;
@@ -757,7 +761,7 @@ export async function verifyResolvedPluginSignature(
   const manifestPath = await findPluginManifestPath(pluginRoot);
   if (!manifestPath) throw new Error("cannot verify plugin signature without plugin.json");
   const manifestBytes = await readFile(manifestPath);
-  const actualFiles = await collectPluginPayloadDigests(pluginRoot, manifestPath, signaturePath);
+  const actualFiles = await collectPluginPayloadDigests(pluginRoot, manifestPath, signaturePath, options);
   assertSignedPayloadMatches(signature.files, actualFiles);
   const payload = pluginSignaturePayloadBytes(manifestBytes, signature.files);
   const verified = verifyEd25519Signature({
@@ -964,9 +968,10 @@ function assertTarMetadataSafe(
 ): void {
   const entries: ArchivePreflightEntry[] = [];
   for (const line of verboseListing.split("\n")) {
-    if (/^[lh]/u.test(line)) {
-      throw new Error("plugin archive contains a symlink or hardlink entry");
-    }
+    const trimmed = line.trimStart();
+    if (!trimmed) continue;
+    const type = trimmed[0];
+    if (type !== "-" && type !== "d") throw new Error(`plugin archive contains an unsupported tar entry type: ${type}`);
     const parsed = parseTarVerboseLine(line);
     if (parsed) entries.push(parsed);
   }
@@ -1117,6 +1122,8 @@ async function assertExtractedTreeContained(
         byteCount += childStat.size;
         if (fileCount > maxFiles) throw new Error(`plugin archive exceeds maximum extracted file count: ${fileCount} > ${maxFiles}`);
         if (byteCount > maxBytes) throw new Error(`plugin archive exceeds maximum extracted size: ${byteCount} > ${maxBytes}`);
+      } else {
+        throw new Error(`plugin archive contains an unsupported extracted entry type: ${entry.name}`);
       }
     }
   }
@@ -1456,13 +1463,20 @@ async function collectPluginPayloadDigests(
   pluginRoot: string,
   manifestPath: string,
   signaturePath: string,
+  options: Pick<PluginResolverOptions, "maxExtractDepth" | "maxExtractedBytes" | "maxExtractedFiles">,
 ): Promise<Readonly<Record<string, string>>> {
   const rootReal = await realpath(pluginRoot);
   const manifestReal = await realpath(manifestPath);
   const signatureReal = await realpath(signaturePath);
+  const maxDepth = options.maxExtractDepth ?? DEFAULT_MAX_EXTRACT_DEPTH;
+  const maxFiles = options.maxExtractedFiles ?? DEFAULT_MAX_EXTRACTED_FILES;
+  const maxBytes = options.maxExtractedBytes ?? DEFAULT_MAX_EXTRACTED_BYTES;
   const out: Record<string, string> = {};
+  let fileCount = 0;
+  let byteCount = 0;
 
-  async function walk(dir: string): Promise<void> {
+  async function walk(dir: string, depth: number): Promise<void> {
+    if (depth > maxDepth) throw new Error(`plugin signature payload exceeds maximum depth: ${depth} > ${maxDepth}`);
     const entries = await readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
       const child = join(dir, entry.name);
@@ -1476,18 +1490,22 @@ async function collectPluginPayloadDigests(
         throw new Error(`plugin payload escapes plugin root: ${entry.name}`);
       }
       if (childStat.isDirectory()) {
-        await walk(child);
+        await walk(child, depth + 1);
         continue;
       }
       if (!childStat.isFile()) continue;
       if (childReal === manifestReal || childReal === signatureReal) continue;
       const relPath = relative(pluginRoot, child).replace(/\\/g, "/");
       if (relPath === PLUGIN_INSTALL_METADATA_RELATIVE_PATH) continue;
+      fileCount += 1;
+      byteCount += childStat.size;
+      if (fileCount > maxFiles) throw new Error(`plugin signature payload exceeds maximum file count: ${fileCount} > ${maxFiles}`);
+      if (byteCount > maxBytes) throw new Error(`plugin signature payload exceeds maximum size: ${byteCount} > ${maxBytes}`);
       out[relPath] = `sha256:${sha256Hex(await readFile(child))}`;
     }
   }
 
-  await walk(pluginRoot);
+  await walk(pluginRoot, 0);
   return out;
 }
 
