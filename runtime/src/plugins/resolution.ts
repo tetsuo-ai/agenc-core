@@ -149,6 +149,7 @@ const DEFAULT_MAX_EXTRACTED_BYTES = 200 * 1024 * 1024;
 const DEFAULT_MAX_EXTRACTED_FILES = 4096;
 const DEFAULT_MAX_EXTRACT_DEPTH = 32;
 const DEFAULT_CACHE_LOCK_TIMEOUT_MS = 60_000;
+const DEFAULT_MAX_ARCHIVE_REDIRECTS = 5;
 const KNOWN_PUBLIC_HOSTS = new Set([
   "github.com",
   "raw.githubusercontent.com",
@@ -631,7 +632,11 @@ function pluginVersionSatisfies(version: string | undefined, constraint: string 
     case "~":
       return cmp >= 0 && actual.major === target.major && actual.minor === target.minor;
     case "^":
-      return cmp >= 0 && actual.major === target.major && (target.major > 0 || actual.minor === target.minor);
+      return cmp >= 0 &&
+        actual.major === target.major &&
+        (target.major > 0 ||
+          actual.minor === target.minor &&
+            (target.minor > 0 || actual.patch === target.patch));
     default:
       return cmp === 0;
   }
@@ -1129,7 +1134,11 @@ async function activatePluginCache(sourceRoot: string, cacheRoot: string): Promi
   const tempDir = await mkdtemp(join(parent, `.${basename(cacheRoot)}-`));
   const staging = join(tempDir, "root");
   try {
-    await cp(sourceRoot, staging, { recursive: true, dereference: false });
+    await cp(sourceRoot, staging, {
+      recursive: true,
+      dereference: false,
+      filter: (sourcePath) => shouldCopyPluginPayloadPath(sourceRoot, sourcePath),
+    });
     await rm(cacheRoot, { recursive: true, force: true });
     await rename(staging, cacheRoot);
     return cacheRoot;
@@ -1278,47 +1287,90 @@ async function fetchBytes(
     }
     return data;
   }
+  return fetchBytesWithRedirectPolicy(source, options, maxBytes);
+}
+
+async function fetchBytesWithRedirectPolicy(
+  source: string,
+  options: PluginResolverOptions,
+  maxBytes: number,
+): Promise<Uint8Array> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS);
   timeout.unref();
   try {
-    const response = await fetch(source, { signal: controller.signal });
-    if (!response.ok) {
-      throw new Error(`failed to fetch plugin archive: ${response.status} ${response.statusText}`);
-    }
-    const contentLength = Number(response.headers.get("content-length") ?? "0");
-    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
-      throw new Error(`plugin archive exceeds maximum download size: ${contentLength} > ${maxBytes}`);
-    }
-    const body = response.body;
-    if (!body) {
-      const data = new Uint8Array(await response.arrayBuffer());
-      if (data.byteLength > maxBytes) throw new Error(`plugin archive exceeds maximum download size: ${data.byteLength} > ${maxBytes}`);
-      return data;
-    }
-    const reader = body.getReader();
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    for (;;) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      total += chunk.value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel("plugin archive exceeded maximum download size").catch(() => {});
-        throw new Error(`plugin archive exceeds maximum download size: ${total} > ${maxBytes}`);
+    let current = new URL(source);
+    for (let redirects = 0; ; redirects += 1) {
+      const response = await fetch(current.toString(), {
+        signal: controller.signal,
+        redirect: "manual",
+      });
+      if (isRedirectStatus(response.status)) {
+        if (redirects >= DEFAULT_MAX_ARCHIVE_REDIRECTS) {
+          throw new Error(`plugin archive redirect limit exceeded: ${DEFAULT_MAX_ARCHIVE_REDIRECTS}`);
+        }
+        current = nextPluginArchiveRedirectUrl(current, response);
+        continue;
       }
-      chunks.push(chunk.value);
+      if (!response.ok) {
+        throw new Error(`failed to fetch plugin archive: ${response.status} ${response.statusText}`);
+      }
+      const contentLength = Number(response.headers.get("content-length") ?? "0");
+      if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+        throw new Error(`plugin archive exceeds maximum download size: ${contentLength} > ${maxBytes}`);
+      }
+      const body = response.body;
+      if (!body) {
+        const data = new Uint8Array(await response.arrayBuffer());
+        if (data.byteLength > maxBytes) throw new Error(`plugin archive exceeds maximum download size: ${data.byteLength} > ${maxBytes}`);
+        return data;
+      }
+      const reader = body.getReader();
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        total += chunk.value.byteLength;
+        if (total > maxBytes) {
+          await reader.cancel("plugin archive exceeded maximum download size").catch(() => {});
+          throw new Error(`plugin archive exceeds maximum download size: ${total} > ${maxBytes}`);
+        }
+        chunks.push(chunk.value);
+      }
+      const out = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of chunks) {
+        out.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return out;
     }
-    const out = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of chunks) {
-      out.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return out;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function isRedirectStatus(status: number): boolean {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+}
+
+function nextPluginArchiveRedirectUrl(current: URL, response: Response): URL {
+  const location = response.headers.get("location");
+  if (!location) throw new Error("plugin archive redirect is missing a location header");
+  const next = new URL(location, current);
+  if (!["http:", "https:"].includes(next.protocol)) {
+    throw new Error(`plugin archive redirect uses an unsupported protocol: ${next.protocol}`);
+  }
+  if (next.username || next.password) {
+    throw new Error("plugin archive redirects with URL credentials are not allowed");
+  }
+  if (next.origin !== current.origin) {
+    throw new Error(
+      `plugin archive redirects must stay on ${current.origin}: ${redactPluginSource(next.toString())}`,
+    );
+  }
+  return next;
 }
 
 function appendBounded(
@@ -1418,7 +1470,16 @@ async function collectPluginPayloadDigests(
 }
 
 function isIgnoredSignaturePayloadDirectory(name: string): boolean {
+  return isPluginVcsMetadataDirectoryName(name);
+}
+
+export function isPluginVcsMetadataDirectoryName(name: string): boolean {
   return name === ".git" || name === ".hg" || name === ".svn";
+}
+
+export function shouldCopyPluginPayloadPath(pluginRoot: string, sourcePath: string): boolean {
+  const relativePath = relative(resolve(pluginRoot), resolve(sourcePath)).replace(/\\/g, "/");
+  return relativePath === "" || !relativePath.split("/").some(isPluginVcsMetadataDirectoryName);
 }
 
 function assertSignedPayloadMatches(

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { promisify } from "node:util";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import {
   classifyPluginSource,
@@ -187,6 +187,60 @@ describe("plugin source resolution", () => {
       expect(updated.source).toBe("@tetsuo-ai/remote-demo");
       expect(updated.resolutionKind).toBe("npm");
       expect(npmPacks).toBe(2);
+    });
+  });
+
+  test("strips VCS metadata from installed plugin copies", async () => {
+    await withTempDir(async (root) => {
+      const sourceRoot = join(root, "source");
+      await writePlugin(sourceRoot, "local-vcs");
+      await mkdir(join(sourceRoot, ".git"), { recursive: true });
+      await writeFile(join(sourceRoot, ".git", "config"), "[remote \"origin\"]\nurl = https://token@agenc.tech/private.git\n");
+
+      const installed = await installPluginOp({
+        source: sourceRoot,
+        agencHome: join(root, "home"),
+        workspaceRoot: root,
+      });
+
+      await expect(access(join(installed.destination, ".agenc-plugin", "plugin.json"))).resolves.toBeUndefined();
+      await expect(access(join(installed.destination, ".git", "config"))).rejects.toThrow();
+    });
+  });
+
+  test("rejects reserved internal install names", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const cacheRoot = join(agencHome, "plugins", "cache");
+      await mkdir(cacheRoot, { recursive: true });
+      await writeFile(join(cacheRoot, "marker"), "keep");
+      const sourceRoot = join(root, "source");
+      await writePlugin(sourceRoot, "cache");
+
+      await expect(
+        installPluginOp({
+          source: sourceRoot,
+          agencHome,
+          workspaceRoot: root,
+        }),
+      ).rejects.toThrow(/reserved for AgenC internal storage/u);
+      await expect(
+        installPluginOp({
+          source: sourceRoot,
+          name: "cache",
+          agencHome,
+          workspaceRoot: root,
+        }),
+      ).rejects.toThrow(/reserved for AgenC internal storage/u);
+      await expect(
+        updatePluginOp({
+          pluginId: "cache",
+          source: sourceRoot,
+          agencHome,
+          workspaceRoot: root,
+        }),
+      ).rejects.toThrow(/reserved for AgenC internal storage/u);
+      await expect(access(join(cacheRoot, "marker"))).resolves.toBeUndefined();
     });
   });
 
@@ -379,6 +433,7 @@ describe("plugin source resolution", () => {
         verified: true,
         publisher: "tetsuo",
       });
+      await expect(access(join(resolved.pluginRoot, ".git", "config"))).rejects.toThrow();
       await resolved.cleanup();
     });
   });
@@ -435,6 +490,35 @@ describe("plugin source resolution", () => {
       expect(calls.some((call) => call.startsWith("unzip -q"))).toBe(true);
       await tarball.cleanup();
       await bundle.cleanup();
+    });
+  });
+
+  test("rejects remote archive redirects to a different origin", async () => {
+    await withTempDir(async (root) => {
+      const fetchMock = vi.fn(async () =>
+        new Response(null, {
+          status: 302,
+          headers: {
+            location: "http://127.0.0.1/private.tgz",
+          },
+        })
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      try {
+        await expect(
+          resolvePluginSource("https://agenc.tech/plugins/redirect.tgz", {
+            agencHome: join(root, "home"),
+            workspaceRoot: root,
+            requireSignature: false,
+          }),
+        ).rejects.toThrow(/redirects must stay on https:\/\/agenc\.tech/u);
+        expect(fetchMock).toHaveBeenCalledWith(
+          "https://agenc.tech/plugins/redirect.tgz",
+          expect.objectContaining({ redirect: "manual" }),
+        );
+      } finally {
+        vi.unstubAllGlobals();
+      }
     });
   });
 
@@ -767,6 +851,33 @@ describe("plugin source resolution", () => {
       requiredVersion: ">=1.0.0",
       actualVersion: "1.5.0-invalid!",
     });
+    await expect(
+      resolvePluginDependencyClosure("app@main", async (id) => {
+        const entries: Record<string, { dependencies: readonly string[]; version: string }> = {
+          "app@main": { dependencies: ["lib@^0.0.3"], version: "1.0.0" },
+          "lib@main": { dependencies: [], version: "0.0.3" },
+        };
+        return entries[id] ?? null;
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      closure: ["lib@main", "app@main"],
+    });
+    await expect(
+      resolvePluginDependencyClosure("app@main", async (id) => {
+        const entries: Record<string, { dependencies: readonly string[]; version: string }> = {
+          "app@main": { dependencies: ["lib@^0.0.3"], version: "1.0.0" },
+          "lib@main": { dependencies: [], version: "0.0.4" },
+        };
+        return entries[id] ?? null;
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      reason: "version-mismatch",
+      dependency: "lib@main",
+      requiredVersion: "^0.0.3",
+      actualVersion: "0.0.4",
+    });
 
     expect(qualifyPluginDependency("lib", "app@main")).toBe("lib@main");
     expect(qualifyPluginDependency("lib@^1.0.0", "app@main")).toBe("lib@main");
@@ -941,6 +1052,58 @@ describe("plugin source resolution", () => {
       expect(runs).toBe(1);
       await expect(access(lockRoot)).rejects.toThrow();
       await resolved.cleanup();
+    });
+  });
+
+  test("serializes concurrent same-source cache resolutions", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const source = "git@github.com:tetsuo-ai/concurrent-cache.git";
+      const cacheRoot = pluginSourceCacheRoot(agencHome, source);
+      let cloneStartedResolve!: () => void;
+      let releaseClone!: () => void;
+      const cloneStarted = new Promise<void>((resolve) => {
+        cloneStartedResolve = resolve;
+      });
+      const cloneReleased = new Promise<void>((resolve) => {
+        releaseClone = resolve;
+      });
+      let runs = 0;
+      const runProcess: PluginProcessRunner = async (command, args) => {
+        if (command === "git") {
+          runs += 1;
+          cloneStartedResolve();
+          await cloneReleased;
+          await writePlugin(String(args.at(-1)), "concurrent-cache");
+          return { stdout: "", stderr: "" };
+        }
+        throw new Error(`unexpected process: ${command}`);
+      };
+
+      const firstPromise = resolvePluginSource(source, {
+        agencHome,
+        workspaceRoot: root,
+        runProcess,
+        requireSignature: false,
+      });
+      await cloneStarted;
+      const events: PluginFetchTelemetry[] = [];
+      const secondPromise = resolvePluginSource(source, {
+        agencHome,
+        workspaceRoot: root,
+        runProcess,
+        requireSignature: false,
+        onTelemetry: (event) => events.push(event),
+      });
+      releaseClone();
+      const [first, second] = await Promise.all([firstPromise, secondPromise]);
+
+      expect(first.pluginRoot).toBe(cacheRoot);
+      expect(second.pluginRoot).toBe(cacheRoot);
+      expect(runs).toBe(1);
+      expect(events.at(-1)).toMatchObject({ kind: "git", outcome: "cache_hit" });
+      await first.cleanup();
+      await second.cleanup();
     });
   });
 

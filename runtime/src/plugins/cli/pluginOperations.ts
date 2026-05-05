@@ -11,6 +11,7 @@ import {
   pluginSourceNeedsRedaction,
   redactPluginSource,
   resolvePluginSource,
+  shouldCopyPluginPayloadPath,
   type PluginFetchTelemetry,
   type PluginProcessRunner,
   type PluginResolutionKind,
@@ -116,6 +117,7 @@ export interface UpdatePluginResult extends InstallPluginResult {
 const MANAGED_CONFIG_PREFIX = "# BEGIN agenc plugin";
 const MANAGED_CONFIG_SUFFIX = "# END agenc plugin";
 const INSTALL_METADATA_FILE = "agenc-install.json";
+const RESERVED_INSTALL_NAMES = new Set(["cache", "data"]);
 
 export function resolvePluginAgencHome(options: PluginOperationOptions = {}): string {
   return options.agencHome ?? resolveAgencHome(options.env);
@@ -445,6 +447,9 @@ export function sanitizeInstallName(name: string): string {
   if (safeName.length === 0 || safeName === "." || safeName === "..") {
     throw new Error(`plugin name cannot be used as an install directory: ${name}`);
   }
+  if (RESERVED_INSTALL_NAMES.has(safeName.toLowerCase())) {
+    throw new Error(`plugin name is reserved for AgenC internal storage: ${name}`);
+  }
   return safeName;
 }
 
@@ -550,7 +555,11 @@ async function copyDirectoryAtomically(
   const tempDir = await mkdtemp(join(parent, `.${basename(destination)}-`));
   const staging = join(tempDir, "root");
   try {
-    await cp(source, staging, { recursive: true, dereference: false });
+    await cp(source, staging, {
+      recursive: true,
+      dereference: false,
+      filter: (sourcePath) => shouldCopyPluginPayloadPath(source, sourcePath),
+    });
     await rm(destination, { recursive: true, force: true });
     await rename(staging, destination);
   } finally {
