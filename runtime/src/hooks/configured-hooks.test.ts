@@ -249,7 +249,7 @@ describe("configured hooks runtime", () => {
             {
               type: "command",
               command:
-                "node -e \"console.log(JSON.stringify({decision:{behavior:'allow',updatedInput:{token:'opaque-value-12345'}}}))\"",
+                "node -e \"console.log(JSON.stringify({hookSpecificOutput:{hookEventName:'PermissionRequest',decision:{behavior:'allow',updatedInput:{token:'opaque-value-12345'}}}}))\"",
             },
           ],
         },
@@ -374,6 +374,42 @@ describe("configured hooks runtime", () => {
       PermissionRequest: [
         {
           hooks: [{ type: "command", command: "exit 2" }],
+        },
+      ],
+    });
+
+    const decision = await target.permissionDecisionHooks[0]!({
+      toolName: "Write",
+      args: {},
+    });
+
+    expect(decision).toEqual({ kind: "pass" });
+    expect(runtime.latestDiagnostics()[0]?.error).toContain(
+      "did not write a denial reason to stderr",
+    );
+  });
+
+  test("permission hook exit code 2 ignores stdout-only denial text", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      PermissionRequest: [
+        {
+          hooks: [{ type: "command", command: "printf stdout-only; exit 2" }],
         },
       ],
     });
@@ -602,6 +638,84 @@ describe("configured hooks runtime", () => {
     expect(decision).toEqual({ kind: "pass" });
     expect(runtime.latestDiagnostics()[0]?.error).toContain(
       "hookSpecificOutput.hookEventName must be PermissionRequest",
+    );
+  });
+
+  test("permission hook rejects root-level decisions", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      PermissionRequest: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command:
+                "node -e \"console.log(JSON.stringify({decision:{behavior:'deny',message:'root deny'}}))\"",
+            },
+          ],
+        },
+      ],
+    });
+
+    const decision = await target.permissionDecisionHooks[0]!({
+      toolName: "Write",
+      args: {},
+    });
+
+    expect(decision).toEqual({ kind: "pass" });
+    expect(runtime.latestDiagnostics()[0]?.error).toContain(
+      "PermissionRequest hook returned unsupported root decision",
+    );
+  });
+
+  test("permission hook records JSON array output as invalid structured output", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      PermissionRequest: [
+        {
+          hooks: [{ type: "command", command: "printf '[]'" }],
+        },
+      ],
+    });
+
+    const decision = await target.permissionDecisionHooks[0]!({
+      toolName: "Write",
+      args: {},
+    });
+
+    expect(decision).toEqual({ kind: "pass" });
+    expect(runtime.latestDiagnostics()[0]?.error).toContain(
+      "hook output JSON must be an object",
     );
   });
 

@@ -214,6 +214,9 @@ describe("hook output parser", () => {
     expect(readHookSpecificOutput("{not-json").invalid).toContain(
       "could not be parsed",
     );
+    expect(readHookSpecificOutput("[]").invalid).toBe(
+      "hook output JSON must be an object",
+    );
     expect(
       readHookSpecificOutput(JSON.stringify({ hookSpecificOutput: [] })).invalid,
     ).toBe("hookSpecificOutput must be an object");

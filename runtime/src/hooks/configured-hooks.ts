@@ -361,7 +361,7 @@ export class ConfiguredHooksRuntime {
       let allow: PermissionDecisionResult | undefined;
       for (const { run } of runs) {
         if (run.status === "blocking") {
-          const reason = trimmedReason(run.stderr) ?? trimmedReason(run.stdout);
+          const reason = trimmedReason(run.stderr);
           if (reason === undefined) {
             this.recordHookOutputIssue(
               run,

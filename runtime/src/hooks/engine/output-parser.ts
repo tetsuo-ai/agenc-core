@@ -45,6 +45,12 @@ export function readHookSpecificOutput(
   expectedEvent?: string,
 ): ParsedHookSpecificOutput {
   const raw = stdout.trim();
+  if (raw.startsWith("[")) {
+    return {
+      explicit: true,
+      invalid: "hook output JSON must be an object",
+    };
+  }
   if (!raw.startsWith("{")) return { explicit: false };
   try {
     const parsed = JSON.parse(raw) as unknown;
@@ -125,6 +131,19 @@ function validateKnownOutputFields(input: OutputFieldValidationInput): void {
     input.invalid,
     input.nested ? "hookSpecificOutput" : "hook output",
   );
+
+  if (!input.nested && input.expectedEvent === "PermissionRequest") {
+    if (input.root.decision !== undefined) {
+      input.invalid.push(
+        "PermissionRequest hook returned unsupported root decision",
+      );
+    }
+    if (input.root.reason !== undefined) {
+      input.invalid.push(
+        "PermissionRequest hook returned unsupported root reason",
+      );
+    }
+  }
 
   if (input.nested && input.expectedEvent !== undefined) {
     if (input.specific.hookEventName === undefined) {
