@@ -522,7 +522,11 @@ const ITEM_EVIDENCE = {
     ],
   },
   "C-04": {
-    files: [{ globUnder: "runtime/src", matching: /file-search|git-utils/, minCount: 1 }],
+    files: [
+      "runtime/src/utils/git.ts",
+      "runtime/src/utils/git.test.ts",
+      "parity/file-search-git-utils-parity.json",
+    ],
   },
   "C-05": {
     files: [{ globUnder: "runtime/src/tools/code-mode", matching: /\.tsx?$/, minCount: 2 }],
@@ -2448,13 +2452,26 @@ async function donorRuntimePortGates(item) {
   }
   // C-04: file-search/git-utils
   if (id === "C-04") {
-    const fileSearch = path.join(root, "runtime/src/file-search");
-    const gitOps = path.join(root, "runtime/src/git");
-    const altGit = path.join(root, "runtime/src/utils/git.ts");
-    if (!existsSync(fileSearch) && !existsSync(gitOps) && !existsSync(altGit)) {
-      failGate("C-04: expected runtime/src/file-search/ or runtime/src/git/ or runtime/src/utils/git.ts");
+    const gitUtils = path.join(root, "runtime/src/utils/git.ts");
+    const gitTests = path.join(root, "runtime/src/utils/git.test.ts");
+    const parityMatrix = path.join(root, "parity/file-search-git-utils-parity.json");
+    if (!existsSync(gitUtils) || !existsSync(gitTests) || !existsSync(parityMatrix)) {
+      failGate("C-04: expected runtime/src/utils/git.ts, git.test.ts, and parity matrix");
     }
-    pass("C-04: file-search / git utilities present");
+    const testRun = run("npm", [
+      "exec",
+      "--workspace=@tetsuo-ai/runtime",
+      "vitest",
+      "run",
+      "src/utils/git.test.ts",
+      "src/app-server/fuzzy-file-search.contract.test.ts",
+      "src/tools/system/grep.test.ts",
+      "src/tools/system/glob.test.ts",
+    ]);
+    if (testRun.status !== 0) {
+      failGate("C-04 git utility tests failed");
+    }
+    pass("C-04: git utilities and overlap parity present");
     return;
   }
   // C-05: code-mode finish
