@@ -1,0 +1,118 @@
+{
+  "contractName": "openclaude-magic-docs-parity",
+  "scope": "AgenC MagicDocs service port: tagged markdown read detection, session-scoped idle post-sampling document updates, Edit-only subagent policy, read-state cloning, inaccessible-file eviction, and maintenance prompt construction.",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/services/MagicDocs/magicDocs.ts",
+    "src/services/MagicDocs/prompts.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/services/MagicDocs/magicDocs.ts",
+    "runtime/src/services/MagicDocs/prompts.ts",
+    "runtime/src/services/MagicDocs/PARITY.md",
+    "runtime/src/agents/run-agent.ts",
+    "runtime/src/tools/system/file-read.ts",
+    "runtime/src/tools/system/filesystem.ts",
+    "runtime/src/tools/system/index.ts",
+    "runtime/src/session/run-turn.ts",
+    "runtime/src/bin/bootstrap-services.ts"
+  ],
+  "testFiles": [
+    "runtime/src/services/MagicDocs/magicDocs.test.ts",
+    "runtime/src/session/run-turn.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "magic-doc-header-detection",
+      "source": "src/services/MagicDocs/magicDocs.ts",
+      "target": "runtime/src/services/MagicDocs/magicDocs.ts",
+      "requiredBehaviors": [
+        "detects '# MAGIC DOC: <title>' headers case-insensitively",
+        "extracts optional italicized instructions immediately after the header"
+      ],
+      "edgeCases": [
+        "non-tagged markdown returns null",
+        "one blank line between header and instructions is accepted"
+      ],
+      "tests": [
+        "runtime/src/services/MagicDocs/magicDocs.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "file-read-registration",
+      "source": "src/services/MagicDocs/magicDocs.ts",
+      "target": "runtime/src/tools/system/file-read.ts; runtime/src/services/MagicDocs/magicDocs.ts",
+      "requiredBehaviors": [
+        "successful text FileRead calls notify MagicDocs listeners with the canonical path and raw read content",
+        "initMagicDocs registers an idempotent listener that tracks tagged markdown paths by session"
+      ],
+      "edgeCases": [
+        "small explicit partial reads still register tagged docs from the raw text",
+        "listener failures do not break successful FileRead calls",
+        "listener cleanup for tests does not leave global duplicate listeners"
+      ],
+      "tests": [
+        "runtime/src/services/MagicDocs/magicDocs.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "idle-post-sampling-update",
+      "source": "src/services/MagicDocs/magicDocs.ts",
+      "target": "runtime/src/services/MagicDocs/magicDocs.ts; runtime/src/session/run-turn.ts",
+      "requiredBehaviors": [
+        "main-thread terminal turns launch the MagicDocs post-sampling updater",
+        "updates are skipped when the last assistant turn still has tool calls",
+        "updates are skipped for subagent and MagicDocs child query sources",
+        "tracked docs are processed sequentially"
+      ],
+      "edgeCases": [
+        "non-main querySource is ignored",
+        "aborted signals stop processing"
+      ],
+      "tests": [
+        "runtime/src/services/MagicDocs/magicDocs.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "edit-only-background-agent",
+      "source": "src/services/MagicDocs/magicDocs.ts",
+      "target": "runtime/src/services/MagicDocs/magicDocs.ts; runtime/src/agents/run-agent.ts; runtime/src/tools/system/filesystem.ts",
+      "requiredBehaviors": [
+        "the updater builds a maintenance prompt from the current file contents",
+        "the child session is restricted to Edit on the tracked file path",
+        "the child session read-before-edit state is seeded from the current document",
+        "the child session receives a clone of the parent read-file cache with the target doc removed"
+      ],
+      "edgeCases": [
+        "the parent read-file cache is cloned and the tracked file entry is removed before update work",
+        "missing or inaccessible files are evicted from tracking instead of crashing the turn"
+      ],
+      "tests": [
+        "runtime/src/services/MagicDocs/magicDocs.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "maintenance-prompts",
+      "source": "src/services/MagicDocs/prompts.ts",
+      "target": "runtime/src/services/MagicDocs/prompts.ts",
+      "requiredBehaviors": [
+        "default prompt preserves the donor editing rules under AgenC terminology",
+        "custom prompt overrides load from '$AGENC_HOME/magic-docs/prompt.md'",
+        "variable substitution is single-pass and leaves unknown variables unchanged"
+      ],
+      "edgeCases": [
+        "missing custom prompt silently falls back to the default template"
+      ],
+      "tests": [
+        "runtime/src/services/MagicDocs/magicDocs.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

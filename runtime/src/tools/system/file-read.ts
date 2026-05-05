@@ -150,6 +150,29 @@ const BINARY_EXTENSIONS: ReadonlySet<string> = new Set([
 const PDF_EXTENSION = ".pdf";
 const NOTEBOOK_EXTENSION = ".ipynb";
 
+export interface FileReadEvent {
+  readonly filePath: string;
+  readonly content: string;
+  readonly sessionId?: string;
+}
+
+export type FileReadListener = (event: FileReadEvent) => void;
+
+const fileReadListeners = new Set<FileReadListener>();
+
+export function registerFileReadListener(
+  listener: FileReadListener,
+): () => void {
+  fileReadListeners.add(listener);
+  return () => {
+    fileReadListeners.delete(listener);
+  };
+}
+
+export function clearFileReadListenersForTests(): void {
+  fileReadListeners.clear();
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Description (model-facing)
 // ─────────────────────────────────────────────────────────────────────
@@ -276,6 +299,16 @@ function hasBinaryExtension(filePath: string): boolean {
 /** Produce the runtime `cat -n` style numbered output. */
 function formatNumbered(content: string, startLine: number): string {
   return addLineNumbers({ content, startLine });
+}
+
+function notifyFileReadListeners(event: FileReadEvent): void {
+  for (const listener of [...fileReadListeners]) {
+    try {
+      listener(event);
+    } catch {
+      // FileRead success must not depend on best-effort post-read hooks.
+    }
+  }
 }
 
 interface SliceResult {
@@ -573,6 +606,11 @@ async function readTextFile(
     // Partial reads intentionally skip rawContent — without the full file
     // there is nothing to diff against.
     ...(sliced.isPartial || text === undefined ? {} : { rawContent: text }),
+  });
+  notifyFileReadListeners({
+    filePath: resolvedPath.canonical,
+    content: text ?? sliced.content,
+    ...(sessionId !== undefined ? { sessionId } : {}),
   });
 
   if (sliced.content.length === 0) {
