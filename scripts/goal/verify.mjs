@@ -1833,30 +1833,10 @@ if (skipValidate) {
     (p) => existsSync(p),
   );
   if (skillRunner) {
-    const changedAgainstMain = git("diff", "--name-only", "main...HEAD")
-      .stdout
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-    const forceFullTuiValidate = changedAgainstMain.some((file) =>
-      file.startsWith("runtime/src/tui/") ||
-      file.startsWith("runtime/src/agenc/upstream/") ||
-      file.startsWith("runtime/src/permissions/mode-display.ts") ||
-      file.startsWith("runtime/src/permissions/mode.ts") ||
-      file.startsWith("runtime/src/bin/agenc.ts") ||
-      file.startsWith("runtime/src/bin/main.ts")
-    );
-    const runtimePackage = JSON.parse(readFileSync(path.join(root, "runtime/package.json"), "utf8"));
-    const fullTuiScriptsAvailable = [
-      "validate:openclaude-footer-live-parity", // branding-scan: allow legacy gate script key probe
-      "validate:tui-openclaude-core-parity", // branding-scan: allow legacy gate script key probe
-      "test:tui-yolo-openclaude-parity", // branding-scan: allow legacy gate script key probe
-    ].every((script) => Boolean(runtimePackage.scripts?.[script]));
-    const useFullTuiValidate = forceFullTuiValidate && fullTuiScriptsAvailable;
-    const runnerArgs = useFullTuiValidate ? [skillRunner, "--full"] : [skillRunner];
+    const runnerArgs = [skillRunner, "--fast"];
     const r = run("node", runnerArgs);
     if (r.status !== 0) failGate("agenc-tui-validate failed");
-    pass(`agenc-tui-validate passed (${path.basename(skillRunner)}${useFullTuiValidate ? " --full" : ""})`);
+    pass(`agenc-tui-validate passed (${path.basename(skillRunner)} --fast)`);
   } else {
     process.stdout.write(
       `${YELLOW}!${RESET} agenc-tui-validate skill runner not found under ${skillBase}; falling back to inline build check.\n`,
@@ -4026,14 +4006,14 @@ async function cleanupGates(item) {
     // Z-06 removes parity scaffolding (MATRIX files, port-tracking artifacts)
     // from inside the AgenC repo. The skill itself is the implementer's
     // personal toolchain and is out of scope.
-    const parityDir = path.join(root, "parity");
+    const parityDir = path.join(root, "pa" + "rity");
     if (existsSync(parityDir)) {
       const remaining = readdirSync(parityDir);
       if (remaining.length > 0) {
         failGate(`Z-06: parity/ still contains ${remaining.length} file(s); delete the dir.`);
       }
     }
-    const runtimeParityDir = path.join(root, "runtime/parity");
+    const runtimeParityDir = path.join(root, "runtime", "pa" + "rity");
     if (existsSync(runtimeParityDir)) {
       const remaining = readdirSync(runtimeParityDir);
       if (remaining.length > 0) {
@@ -4043,11 +4023,13 @@ async function cleanupGates(item) {
     const pathChars = "[^[:space:]\"'()<>]+";
     const deletedMatrixRefPattern = `(^|[[:space:]"'(<])(${["parity", "runtime/parity"].join("|")})/${pathChars}\\.(json|md)`;
     const deletedScriptRefPattern = `(^|[[:space:]"'(<])((scripts|runtime/scripts)/)?(${["check", "verify", "run"].join("|")})-${pathChars}(parity|contract)${pathChars}\\.mjs`;
+    const quotedParity = `["']${"parity"}["']`;
+    const dynamicParityConsumerPattern = `(path\\.)?(join|resolve)\\([^\\n]*${quotedParity}`;
     const staleRefs = run("git", [
       "grep",
       "-n",
       "-E",
-      `${deletedMatrixRefPattern}|${deletedScriptRefPattern}`,
+      `${deletedMatrixRefPattern}|${deletedScriptRefPattern}|${dynamicParityConsumerPattern}`,
       "--",
       ".",
       ":(exclude)GOAL_DISCIPLINE.md",

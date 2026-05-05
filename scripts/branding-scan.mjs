@@ -92,10 +92,6 @@ const ALLOW_LINE_PATTERNS = [
 
 const ALLOW_FILE_LINE_PATTERNS = [
   {
-    file: /^(?:parity\/.*\.json|runtime\/parity\/.*\.json)$/,
-    line: /\b(?:OpenClaude\w*|openclaude|Claude\w*|claude|Codex\w*|codex)\b|\.openclaude\//, // branding-scan: allow parity matrix exception pattern
-  },
-  {
     file: /(^|\/)PARITY\.md$/,
     line: /\b(?:OpenClaude\w*|openclaude|Claude\w*|claude|Codex\w*|codex|Anthropic)\b|\.openclaude\//, // branding-scan: allow source citation files
   },
@@ -317,7 +313,6 @@ async function scanFile(filePath) {
       baseName === "CLAUDE.md" ||
       baseName === "AGENTS.md" ||
       rel === "runtime/src/agenc/upstream/services/api/claude.ts" || // branding-scan: allow existing upstream provider API filename
-      /^(?:parity\/.*\.json|runtime\/parity\/.*\.json)$/.test(rel) ||
       ALLOW_LINE_PATTERNS.some((p) => p.test(baseName));
     if (!allowed) {
       findings.push({
@@ -332,16 +327,15 @@ async function scanFile(filePath) {
   }
   // Directory-path check: flag any directory in the path that is donor-named OR
   // uses a known donor-evasion alias (donor/mirror/vendored/external/_oc/_cx).
-  // The only allowed donor-named locations are the upstream mirror while it
-  // exists and explicit citation artifacts. Everywhere else is a leak.
+  // The only allowed donor-named location is the upstream mirror while it
+  // exists. Everywhere else is a leak.
   const dirComponents = path.dirname(rel).split("/").filter(Boolean);
   for (const comp of dirComponents) {
     const isDonorName = /^(?:openclaude|codex|claude|OpenClaude|Codex|Claude)$/i.test(comp); // branding-scan: allow regex enumerates the banned donor dir names
     const isEvasionName = /^(?:donor|mirror|vendored|external|_oc|_cx|_donor|_mirror|_vendored|_external)$/i.test(comp);
     if (isDonorName || isEvasionName) {
       const inUpstreamMirror = rel.startsWith("runtime/src/agenc/upstream/");
-      const inParityArtifacts = rel.startsWith("parity/") || rel.startsWith("runtime/parity/");
-      if (isDonorName && (inUpstreamMirror || inParityArtifacts)) continue;
+      if (isDonorName && inUpstreamMirror) continue;
       findings.push({
         file: filePath,
         line: 0,
