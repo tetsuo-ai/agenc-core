@@ -1,10 +1,16 @@
-// @ts-nocheck
 import type { UUID } from 'crypto'
-import type { FileHistorySnapshot } from 'src/utils/fileHistory.js'
-import type { ContentReplacementRecord } from 'src/utils/toolResultStorage.js'
+import type { FileHistorySnapshot } from '../session/file-history.js'
+import type { ContentReplacementRecord } from '../session/_deps/tool-result-storage.js'
 import type { AgentId } from './ids.js'
 import type { Message } from './message.js'
-import type { QueueOperationMessage } from './messageQueueTypes.js'
+
+export type QueueOperationMessage = {
+  type: 'queue-operation'
+  operation: string
+  timestamp: string
+  sessionId: UUID | null
+  content?: string
+}
 
 export type SerializedMessage = Message & {
   cwd: string
