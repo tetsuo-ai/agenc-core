@@ -276,7 +276,7 @@ const ITEM_EVIDENCE = {
       "runtime/src/services/compact/autoCompact.test.ts",
       "runtime/src/services/compact/microCompact.test.ts",
       "runtime/src/services/compact/compact-surfaces.test.ts",
-      "runtime/tests/compact-loader-service.contract.test.ts",
+      "runtime/tests/runtime-session.compact-contract.test.ts",
     ],
     grepNotPresent: [
       {
@@ -4415,6 +4415,7 @@ async function cleanupGates(item) {
       "ZC-12": { custom: assertZc12DonorPortArtifactsGone },
       "ZC-13": { gone: ["runtime/src/tui/bridges"] },
       "ZC-14": { gone: ["runtime/src/llm/grok/adapter.ts", "runtime/src/llm/grok/adapter-utils.ts"] },
+      "ZC-16": { gone: ["runtime/src/agenc/adapters/dynamic-loaders.js", "runtime/src/agenc/adapters/dynamic-loaders.d.ts"] },
       "ZC-17": {
         gone: ["runtime/src/config/upstream-init.ts", "runtime/src/config/upstream-init.test.ts"],
         grepNotPresent: { pattern: "upstream-init", scope: "runtime/src" },
