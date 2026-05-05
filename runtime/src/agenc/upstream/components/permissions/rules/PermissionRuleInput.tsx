@@ -3,7 +3,7 @@ import figures from 'figures';
 import * as React from 'react';
 import { useState } from 'react';
 import TextInput from '../../../components/TextInput.js';
-import { useExitOnCtrlCDWithKeybindings } from '../../../hooks/useExitOnCtrlCDWithKeybindings.js';
+import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { useTerminalSize } from '../../../hooks/useTerminalSize.js';
 import { Box, Newline, Text } from '../../../../../tui/ink.js';
 import { useKeybinding } from '../../../../../tui/keybindings/useKeybinding.js';

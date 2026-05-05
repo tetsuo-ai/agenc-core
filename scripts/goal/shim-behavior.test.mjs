@@ -138,6 +138,79 @@ assert(
   JSON.stringify(defaultFunctionWrapper),
 );
 
+const multilineFunctionWrapper = measure(`
+import { installLatest as installLatestImpl } from './impl.js'
+export function installLatest(input: string): string {
+  return installLatestImpl(input)
+}
+`);
+assert(
+  "flags multi-line forwarding functions that wrap imported implementations",
+  multilineFunctionWrapper.violates && multilineFunctionWrapper.forwardLines === 3,
+  JSON.stringify(multilineFunctionWrapper),
+);
+
+const localAliasFunctionWrapper = measure(`
+import { useKeybindings } from './keybindings.js'
+import { useExitOnCtrlCD } from './useExitOnCtrlCD.js'
+export function useExit(onExit?: () => void): ExitState {
+  const keybindings = useKeybindings
+  return useExitOnCtrlCD(keybindings, onExit)
+}
+`);
+assert(
+  "flags wrapper functions that only alias imports before forwarding",
+  localAliasFunctionWrapper.violates,
+  JSON.stringify(localAliasFunctionWrapper),
+);
+
+const importedTypeAliasForwarder = measure(`
+import type { PermissionDecision as PermissionDecisionType } from './types.js'
+export type PermissionDecision = PermissionDecisionType
+`);
+assert(
+  "flags exported aliases of imported types",
+  importedTypeAliasForwarder.violates && importedTypeAliasForwarder.forwardLines === 1,
+  JSON.stringify(importedTypeAliasForwarder),
+);
+
+const importedValueAliasForwarder = measure(`
+import { realValue } from './impl.js'
+export const value = realValue
+`);
+assert(
+  "flags exported aliases of imported values",
+  importedValueAliasForwarder.violates && importedValueAliasForwarder.forwardLines === 1,
+  JSON.stringify(importedValueAliasForwarder),
+);
+
+const largeCommentSmallForwarder = measure(`
+/*
+${"large comment body\\n".repeat(1200)}
+*/
+export { Alpha } from './impl.js'
+`);
+assert(
+  "does not skip large-comment files with small forwarding bodies",
+  largeCommentSmallForwarder.violates,
+  JSON.stringify(largeCommentSmallForwarder),
+);
+
+const commentedForwardingText = measure(`
+/*
+export { Alpha } from './impl.js'
+import { Alpha } from './impl.js'
+*/
+export function owned(): string {
+  return "import/export text in comments is ignored"
+}
+`);
+assert(
+  "ignores import/export text inside block comments",
+  !commentedForwardingText.violates && commentedForwardingText.forwardLines === 0,
+  JSON.stringify(commentedForwardingText),
+);
+
 const existingRuntimeHit = measureShimBehaviorForPath(
   "runtime/src/existing/helpers.ts",
   `

@@ -3,7 +3,7 @@ import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { Suspense, useState } from 'react';
 import { useKeybinding } from '../../../../tui/keybindings/useKeybinding.js';
-import { useExitOnCtrlCDWithKeybindings } from '../../hooks/useExitOnCtrlCDWithKeybindings.js';
+import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { useIsInsideModal, useModalOrTerminalSize } from '../../context/modalContext.js';
 import { Pane } from '../design-system/Pane.js';

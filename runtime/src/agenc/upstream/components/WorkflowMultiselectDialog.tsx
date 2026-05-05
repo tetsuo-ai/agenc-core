@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { useCallback, useState } from 'react';
 import type { Workflow } from '../commands/install-github-app/types.js';
-import type { ExitState } from '../hooks/useExitOnCtrlCDWithKeybindings.js';
+import type { ExitState } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Link, Text } from '../../../tui/ink.js';
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js';
 import { SelectMulti } from './CustomSelect/SelectMulti.js';
@@ -18,7 +18,7 @@ type Props = {
 };
 const WORKFLOWS: WorkflowOption[] = [{
   value: 'claude' as const,
-  label: '@AgenC - Tag @claude in issues and PR comments'
+  label: '@AgenC - Tag @agenc in issues and PR comments'
 }, {
   value: 'claude-review' as const,
   label: 'AgenC Review - Automated code review on new PRs'

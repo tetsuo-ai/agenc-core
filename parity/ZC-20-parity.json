@@ -34,6 +34,12 @@
       },
       {
         "rule": "Named type re-exports and default-exported one-line forwarding functions count as forwarding LOC."
+      },
+      {
+        "rule": "Multi-line forwarding functions, imported type aliases, and imported value aliases count as forwarding LOC."
+      },
+      {
+        "rule": "Large comments do not exempt small forwarding modules, and import/export text inside comments is ignored."
       }
     ]
   }

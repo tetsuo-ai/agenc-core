@@ -6,7 +6,7 @@ import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutH
 import { Byline } from '../../components/design-system/Byline.js';
 import { Pane } from '../../components/design-system/Pane.js';
 import { Tab, Tabs } from '../../components/design-system/Tabs.js';
-import { useExitOnCtrlCDWithKeybindings } from '../../hooks/useExitOnCtrlCDWithKeybindings.js';
+import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Text } from '../../../../tui/ink.js';
 import { useKeybinding, useKeybindings } from '../../../../tui/keybindings/useKeybinding.js';
 import { useAppState, useSetAppState } from '../../../../tui/state/AppState.js';

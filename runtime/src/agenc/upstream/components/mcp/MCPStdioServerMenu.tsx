@@ -1,7 +1,7 @@
 import figures from 'figures';
 import React, { useState } from 'react';
 import type { CommandResultDisplay } from '../../../../commands.js';
-import { useExitOnCtrlCDWithKeybindings } from '../../hooks/useExitOnCtrlCDWithKeybindings.js';
+import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, color, Text, useTheme } from '../../../../tui/ink.js';
 import { getMcpConfigByName } from '../../services/mcp/config.js';
 import { useMcpReconnect, useMcpToggleEnabled } from '../../services/mcp/MCPConnectionManager.js';
