@@ -16,6 +16,10 @@ import {
   compatibilitySandboxPolicyForPermissionProfile,
 } from "../../sandbox/engine/manager.js";
 import {
+  effectivePermissionProfile,
+  normalizeAdditionalPermissions,
+} from "../../sandbox/engine/policy-transforms.js";
+import {
   SandboxDeniedError,
   isPathWritable,
   type SandboxPolicy,
@@ -210,16 +214,34 @@ export function permissionProfileForRuntimeContext(
   options: RuntimeSandboxProfileOptions,
 ): PermissionProfile {
   if (!sandboxModeRequiresPlatformIsolation(context.sandboxMode)) {
-    return permissionProfileForSandboxMode(context.sandboxMode, options);
+    return applyRuntimeAdditionalPermissions(
+      permissionProfileForSandboxMode(context.sandboxMode, options),
+      context,
+      options.cwd,
+    );
   }
   const fileSystem = fileSystemPolicyFromContext(context, options.cwd);
   const network = networkPolicyFromContext(context) ?? options.network ?? "enabled";
-  return fileSystem === undefined
+  const profile = fileSystem === undefined
     ? permissionProfileForSandboxMode(context.sandboxMode, {
         cwd: options.cwd,
         network,
       })
     : permissionProfileFromRuntimePermissions(fileSystem, network);
+  return applyRuntimeAdditionalPermissions(profile, context, options.cwd);
+}
+
+function applyRuntimeAdditionalPermissions(
+  profile: PermissionProfile,
+  context: ToolRuntimeAttemptContext,
+  cwd: string,
+): PermissionProfile {
+  if (context.additionalPermissions === undefined) return profile;
+  const normalized = normalizeAdditionalPermissions(
+    context.additionalPermissions,
+    cwd,
+  );
+  return effectivePermissionProfile(profile, normalized);
 }
 
 export function compatibilityPolicyForSandboxMode(

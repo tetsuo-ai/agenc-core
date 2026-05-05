@@ -15,6 +15,18 @@
 import type { EventLog } from "../../session/event-log.js";
 import type { ToolInvocation, ToolPayload } from "../../tools/context.js";
 import type { Tool } from "../../tools/types.js";
+import type {
+  AdditionalSandboxPermissions,
+} from "../../sandbox/escalation/sandboxing.js";
+import type {
+  AvailableApprovalDecision,
+  NetworkApprovalContext,
+  ParsedApprovalCommand,
+} from "../../sandbox/escalation/approvals.js";
+import type {
+  ExecPolicyAmendment,
+  NetworkPolicyAmendment,
+} from "../review-decision.js";
 import {
   mergeHookPermissionDecision,
   resolveHookPermissionDecision,
@@ -211,6 +223,14 @@ export interface ApprovalCtx {
   readonly signal?: AbortSignal;
   readonly guardianReviewId?: string;
   readonly retryReason?: string;
+  readonly cwd?: string;
+  readonly command?: readonly string[];
+  readonly parsedCommand?: ParsedApprovalCommand;
+  readonly networkApprovalContext?: NetworkApprovalContext;
+  readonly additionalPermissions?: AdditionalSandboxPermissions;
+  readonly proposedExecPolicyAmendment?: ExecPolicyAmendment;
+  readonly proposedNetworkPolicyAmendments?: readonly NetworkPolicyAmendment[];
+  readonly availableDecisions?: readonly AvailableApprovalDecision[];
 }
 
 export interface ApprovalResolver {

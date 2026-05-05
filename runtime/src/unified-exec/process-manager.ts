@@ -690,6 +690,12 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
           args: params.args,
           cwd: params.cwd,
           env: params.env,
+          ...(params.runtimeSandbox.additionalPermissions !== undefined
+            ? {
+                additionalPermissions:
+                  params.runtimeSandbox.additionalPermissions,
+              }
+            : {}),
         },
         permissions,
         sandbox,

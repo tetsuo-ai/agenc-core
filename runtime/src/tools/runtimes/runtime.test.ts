@@ -382,6 +382,51 @@ describe("tools/runtimes", () => {
       }),
     ).toThrow(/workspace_write blocked/);
 
+    const scopedAdditionalContext = {
+      ...sandboxedWorkspaceContext,
+      additionalPermissions: {
+        network: { enabled: true },
+        fileSystem: {
+          entries: [
+            {
+              path: { kind: "path" as const, path: "/tmp/agenc-runtime-ok" },
+              access: "write" as const,
+            },
+          ],
+        },
+      },
+    };
+    const scopedProfile = permissionProfileForRuntimeContext(
+      scopedAdditionalContext,
+      {
+        cwd: "/repo",
+        network: "disabled",
+      },
+    );
+    expect(scopedProfile.network).toBe("enabled");
+    expect(
+      scopedProfile.fileSystem.entries.some(
+        (entry) =>
+          entry.access === "write" &&
+          entry.path.kind === "path" &&
+          entry.path.path === "/tmp/agenc-runtime-ok",
+      ),
+    ).toBe(true);
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: scopedAdditionalContext,
+        tool: shellTool,
+        args: { cmd: "echo allowed > /tmp/agenc-runtime-ok/file.txt" },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: scopedAdditionalContext,
+        tool: shellTool,
+        args: { cmd: "echo blocked > /tmp/agenc-runtime-nope/file.txt" },
+      }),
+    ).toThrow(/workspace_write blocked/);
+
     const originalTmpdir = process.env["TMPDIR"];
     process.env["TMPDIR"] = "/tmp/agenc-runtime-tmpdir";
     try {
