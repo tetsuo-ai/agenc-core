@@ -31,3 +31,27 @@ Startup prewarm contract:
   model-list path, then handing the first stream through the warmed provider
   instance. Provider adapters without a native startup/session prewarm hook are
   skipped.
+
+## ZC-29 breadth audit
+
+Decision: no additional file split is needed for the audited conversation surface. The donor spreads
+thread lifecycle, per-thread operations, rollout truncation, startup prewarm, and rollout
+reconstruction across several Rust modules. AgenC's public conversation boundary is the
+`ConversationThreadManager`; the existing file folds those behaviors into one manager because
+lower-level thread execution, durable state, provider access, and app-server protocol handling are
+already owned by neighboring AgenC subsystems.
+
+Carried behavior:
+- root and child thread registration over the shared `ThreadManager`
+- replay of restored rollout items into live session state
+- forked child threads from truncated rollout history
+- serialized fork/root turn execution through per-session locks
+- synthesized recovery events for orphaned rollout turns
+- startup prewarm and provider-handle consumption semantics
+
+Intentional reductions:
+- The donor's full process-backed thread spawner, environment manager, auth manager, model manager,
+  MCP manager, and thread-store construction remain in AgenC's session, agents, auth, app-server,
+  LLM, state, and MCP modules rather than being duplicated under `runtime/src/conversation/`.
+- Out-of-band elicitation counters and remote thread-store plumbing are not added here because
+  AgenC's protocol and daemon surfaces already own those user-visible contracts.

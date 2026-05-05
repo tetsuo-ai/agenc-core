@@ -4949,6 +4949,12 @@ async function cleanupGates(item) {
         grepNotPresent: { pattern: "@ts-nocheck", scope: "runtime/src" },
       },
       "ZC-28": { gone: ["runtime/src/utils/attachments.ts", "runtime/src/utils/teamMemoryOps.ts", "runtime/src/components/FeedbackSurvey/useMemorySurvey.tsx"] },
+      "ZC-29": {
+        grepPresent: {
+          pattern: '"decision": "scope-documented"',
+          scope: "parity/ZC-29-parity.json",
+        },
+      },
     };
     const expectations = zcMap[id];
     if (!expectations) {
