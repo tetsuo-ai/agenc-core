@@ -14,8 +14,7 @@
       "runtime/src/agenc/upstream/services/api/openaiSchemaSanitizer.ts",
       "runtime/src/agenc/upstream/utils/crypto.ts",
       "runtime/src/agenc/upstream/utils/nativeInstaller/index.ts",
-      "runtime/src/llm/api/watchdog.ts",
-      "runtime/src/llm/hooks/index.ts"
+      "runtime/src/llm/api/watchdog.ts"
     ],
     "detectorRules": [
       {

@@ -1,1 +1,0 @@
-import { sanitizeSchemaForOpenAICompat as sanitizeSchemaForProvider } from '../../utils/schemaSanitizer.js'; export function sanitizeSchemaForOpenAICompat(schema: unknown): Record<string, unknown> { return sanitizeSchemaForProvider(schema) }

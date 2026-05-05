@@ -22,7 +22,7 @@ import {
 import {
   installLatest as installLatestNative,
   removeInstalledSymlink,
-} from 'src/utils/nativeInstaller/index.js'
+} from 'src/utils/nativeInstaller/installer.js'
 import { getPackageManager } from 'src/utils/nativeInstaller/packageManagers.js'
 import { writeToStdout } from 'src/utils/process.js'
 import { gte } from 'src/utils/semver.js'
@@ -31,7 +31,7 @@ import { getInitialSettings } from 'src/utils/settings/settings.js'
 export async function update() {
   // Block updates for third-party providers. The update mechanism downloads
   // from the first-party distribution bucket, which would silently replace the
-  // AgenC build (with the OpenAI shim) with the upstream AgenC
+  // AgenC build with the provider shim with the upstream AgenC
   // binary (without it).
   if (getAPIProvider() !== 'firstParty') {
     writeToStdout(
@@ -83,7 +83,7 @@ export async function update() {
       logForDebugging(`update: Warning detected: ${warning.issue}`)
 
       // Don't skip PATH warnings - they're always relevant
-      // The user needs to know that 'which claude' points elsewhere
+      // The user needs to know that 'which agenc' points elsewhere
       logForDebugging(`update: Showing warning: ${warning.issue}`)
 
       writeToStdout(chalk.yellow(`Warning: ${warning.issue}\n`))
@@ -162,7 +162,7 @@ export async function update() {
         writeToStdout('\n')
         writeToStdout('To update, run:\n')
         writeToStdout(
-          chalk.bold('  winget upgrade Anthropic.AgenCCode') + '\n',
+          chalk.bold('  agenc update') + '\n',
         )
       } else {
         writeToStdout('AgenC is up to date!\n')

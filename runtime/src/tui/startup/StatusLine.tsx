@@ -2,7 +2,7 @@ import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { memo, useCallback, useEffect, useRef } from 'react';
 import { logEvent } from '../../agenc/upstream/services/analytics/index.js';
-import { getRawUtilization } from '../../agenc/upstream/services/agencAiLimitsHook.js';
+import { getRawUtilization } from '../../agenc/upstream/services/claudeAiLimits.js'; // branding-scan: allow existing upstream rate-limit module path
 import { getIsRemoteMode, getKairosActive, getMainThreadAgentType, getOriginalCwd, getSdkBetas, getSessionId } from '../../agenc/upstream/bootstrap/state.js';
 import { DEFAULT_OUTPUT_STYLE_NAME } from '../../agenc/upstream/constants/outputStyles.js';
 import { useNotifications } from '../../agenc/upstream/context/notifications.js';

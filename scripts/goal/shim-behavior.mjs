@@ -7,14 +7,15 @@ export const FORWARD_LINE_RE =
 export const FORWARD_STATEMENT_RE =
   /^\s*(export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[\s\S]*\}\s*from\b|export\s*\{[\s\S]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
 export const SINGLE_LINE_FORWARD_FN_RE =
-  /^\s*(?:export\s+)?(?:async\s+)?function\s+\w+\s*\([^)]*\)\s*\{\s*(?:return\s+(?:await\s+)?|await\s+)?[\w$.]+\([^{};]*\)\s*;?\s*\}\s*$/;
+  /^\s*(?:export\s+)?(?:async\s+)?function\s+\w+\s*\([\s\S]*\)\s*(?::[^{]+)?\{\s*(?:return\s+(?:await\s+)?|await\s+)?[\w$.]+\([^{};]*\)\s*;?\s*\}\s*$/;
 export const SINGLE_LINE_FORWARD_ARROW_RE =
-  /^\s*(?:export\s+)?const\s+\w+\s*=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*=>\s*(?:\{\s*(?:return\s+(?:await\s+)?|await\s+)?[\w$.]+\([^{};]*\)\s*;?\s*\}|[\w$.]+\([^{};]*\)|[\w$.]+\.[\w$]+(?:\([^{};]*\))?)\s*;?\s*$/;
+  /^\s*(?:export\s+)?const\s+\w+\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*=>\s*(?:\{\s*(?:return\s+(?:await\s+)?|await\s+)?[\w$.]+\([^{};]*\)\s*;?\s*\}|[\w$.]+\([^{};]*\)|[\w$.]+\.[\w$]+(?:\([^{};]*\))?)\s*;?\s*$/;
 
 export function significantSourceLines(body) {
   return body
     .split("\n")
     .map((line) => line.trim())
+    .flatMap(splitPackedSourceLine)
     .filter((line) =>
       line &&
       !line.startsWith("//") &&
@@ -22,6 +23,14 @@ export function significantSourceLines(body) {
       !line.startsWith("/*") &&
       line !== "*/",
     );
+}
+
+function splitPackedSourceLine(line) {
+  if (!/\b(?:import|export)\b/.test(line)) return [line];
+  return line
+    .split(/;\s+(?=(?:import|export)\b)/u)
+    .map((part) => part.trim())
+    .filter(Boolean);
 }
 
 export function splitImportAndImplementationLines(significant) {

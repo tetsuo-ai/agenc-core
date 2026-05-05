@@ -72,7 +72,7 @@ vi.mock('../../../agenc/upstream/services/rateLimitMocking.js', () => ({
   shouldProcessMockLimits: () => rateLimitMock.shouldProcessMockLimits,
 }))
 
-vi.mock('../../../agenc/upstream/services/agencAiLimitsHook.js', () => ({
+vi.mock('../../../agenc/upstream/services/claudeAiLimitsHook.js', () => ({ // branding-scan: allow existing upstream rate-limit module path
   useAgenCAiLimits: () => rateLimitMock.limits,
 }))
 

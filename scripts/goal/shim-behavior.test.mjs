@@ -75,6 +75,25 @@ assert(
   JSON.stringify(multilineBarrel),
 );
 
+const packedImportExport = measure(`
+import { realImpl } from './impl.js'; export function shim(input: string): string { return realImpl(input) }
+`);
+assert(
+  "flags same-line import plus typed forwarding export",
+  packedImportExport.violates && packedImportExport.forwardLines === 1,
+  JSON.stringify(packedImportExport),
+);
+
+const typedRestWrapper = measure(`
+import { installLatest as installLatestImpl } from './installer.js'
+export function installLatest(...args: Parameters<typeof installLatestImpl>): ReturnType<typeof installLatestImpl> { return installLatestImpl(...args) }
+`);
+assert(
+  "flags typed rest-argument forwarding wrappers",
+  typedRestWrapper.violates,
+  JSON.stringify(typedRestWrapper),
+);
+
 const existingRuntimeHit = measureShimBehaviorForPath(
   "runtime/src/existing/helpers.ts",
   `
