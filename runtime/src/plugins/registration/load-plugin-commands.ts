@@ -122,8 +122,13 @@ function namespaceFromCommandPath(filePath: string, baseDir: string): readonly s
   return rel.split(sep).filter((part) => part.length > 0);
 }
 
-function commandDisplayName(commandName: string, frontmatter: Record<string, unknown>): string {
-  return coerceString(frontmatter.name) ?? commandName;
+function commandDisplayName(
+  commandName: string,
+  pluginName: string,
+  frontmatter: Record<string, unknown>,
+): string {
+  const displayName = coerceString(frontmatter.name);
+  return displayName?.startsWith(`${pluginName}:`) ? displayName : commandName;
 }
 
 function metadataFrontmatter(
@@ -178,6 +183,17 @@ function maybeShell(value: unknown): "bash" | "powershell" | undefined {
   return value === "bash" || value === "powershell" ? value : undefined;
 }
 
+function namespacedAliases(
+  pluginName: string,
+  aliases: readonly string[],
+): string[] | undefined {
+  const prefix = `${pluginName}:`;
+  const out = aliases
+    .map((alias) => alias.includes(":") ? alias : `${prefix}${alias}`)
+    .filter((alias) => alias.startsWith(prefix));
+  return out.length > 0 ? [...new Set(out)] : undefined;
+}
+
 function createPluginCommand(
   entry: PluginMarkdownCommand,
   options: PluginCommandRegistrationOptions,
@@ -198,7 +214,7 @@ function createPluginCommand(
     frontmatter.allowedTools ??
     metadata?.allowedTools;
   const argNames = splitList(frontmatter.arguments ?? frontmatter.argNames);
-  const aliases = splitList(frontmatter.aliases);
+  const aliases = namespacedAliases(plugin.name, splitList(frontmatter.aliases));
   const userInvocable =
     frontmatter["user-invocable"] === undefined
       ? true
@@ -213,7 +229,7 @@ function createPluginCommand(
     type: "prompt",
     name: commandName,
     description,
-    ...(aliases.length > 0 ? { aliases } : {}),
+    ...(aliases !== undefined ? { aliases } : {}),
     argumentHint: coerceString(frontmatter["argument-hint"] ?? frontmatter.argumentHint),
     argNames: argNames.length > 0 ? argNames : undefined,
     allowedTools: normalizedToolList(plugin, rawAllowedTools),
@@ -233,7 +249,7 @@ function createPluginCommand(
     },
     progressMessage,
     shell: maybeShell(frontmatter.shell),
-    userFacingName: () => commandDisplayName(commandName, frontmatter),
+    userFacingName: () => commandDisplayName(commandName, plugin.name, frontmatter),
     getPromptForCommand: async (args, context) => {
       let content = isSkillMode || isSkillFile(file.filePath)
         ? `Base directory for this skill: ${skillBaseDir}\n\n${file.markdown}`

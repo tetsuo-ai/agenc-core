@@ -49,7 +49,7 @@ async function loadStyleFile(
     description,
     prompt: file.markdown.trim(),
     source: "plugin",
-    plugin: plugin.source,
+    plugin: plugin.name,
     filePath,
     ...(file.frontmatter["force-for-plugin"] !== undefined
       ? { forceForPlugin: parseBoolean(file.frontmatter["force-for-plugin"]) }

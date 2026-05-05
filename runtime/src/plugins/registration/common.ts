@@ -4,7 +4,7 @@
  * Projects local plugin-surface registration behavior onto AgenC's PK-01/PK-02
  * loader shape. This module is
  * intentionally runtime-owned: it consumes already-normalized `LoadedPlugin`
- * records and never imports from the upstream mirror.
+ * records and never imports from the legacy scaffolding tree.
  */
 
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { load as loadYaml } from "js-yaml";
 
+import { parseArguments } from "../../tui/slash/argument-substitution.js";
 import { loadPlugins, type LoadedPlugin, type PluginLoaderOptions } from "../loader.js";
 import { getPluginDataDir } from "../directories.js";
 import { isRecord } from "../manifest-schema.js";
@@ -228,20 +229,31 @@ export function pluginSettingValue(
     return `[configured:${key}]`;
   }
   const configured = settings?.[key];
-  if (
-    typeof configured === "string" ||
-    typeof configured === "number" ||
-    typeof configured === "boolean"
-  ) {
-    return String(configured);
-  }
+  const configuredValue = stringifySettingValue(configured);
+  if (configuredValue !== undefined) return configuredValue;
   const defaultValue = manifestOption?.default;
+  return stringifySettingValue(defaultValue);
+}
+
+function stringifySettingValue(value: unknown): string | undefined {
   if (
-    typeof defaultValue === "string" ||
-    typeof defaultValue === "number" ||
-    typeof defaultValue === "boolean"
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
   ) {
-    return String(defaultValue);
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    const entries = value
+      .map((entry) =>
+        typeof entry === "string" ||
+        typeof entry === "number" ||
+        typeof entry === "boolean"
+          ? String(entry)
+          : undefined,
+      )
+      .filter((entry): entry is string => entry !== undefined);
+    return entries.length > 0 ? entries.join(",") : undefined;
   }
   return undefined;
 }
@@ -303,11 +315,27 @@ export function substituteArguments(
   args: string,
   argNames: readonly string[] = [],
 ): string {
-  let out = value.replace(/\$ARGUMENTS/g, args);
-  const pieces = args.trim().length > 0 ? args.trim().split(/\s+/u) : [];
+  let out = value;
+  const original = value;
+  const pieces = parseArguments(args);
   for (const [index, name] of argNames.entries()) {
     const replacement = pieces[index] ?? "";
-    out = out.replace(new RegExp(`\\$\\{${escapeRegExp(name)}\\}`, "gu"), replacement);
+    out = out
+      .replace(
+        new RegExp(`\\$${escapeRegExp(name)}(?![\\[\\w])`, "gu"),
+        replacement,
+      )
+      .replace(new RegExp(`\\$\\{${escapeRegExp(name)}\\}`, "gu"), replacement);
+  }
+  out = out.replace(/\$ARGUMENTS\[(\d+)\]/gu, (_match, index: string) => {
+    return pieces[Number.parseInt(index, 10)] ?? "";
+  });
+  out = out.replace(/\$(\d+)(?!\w)/gu, (_match, index: string) => {
+    return pieces[Number.parseInt(index, 10)] ?? "";
+  });
+  out = out.replaceAll("$ARGUMENTS", args);
+  if (out === original && args.trim().length > 0) {
+    return `${out}\n\nARGUMENTS: ${args}`;
   }
   return out;
 }

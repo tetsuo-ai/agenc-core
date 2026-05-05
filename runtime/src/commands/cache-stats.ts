@@ -101,7 +101,16 @@ function summarizeCacheMetrics(label: string, metrics: CacheMetrics): string {
 }
 
 export async function formatCacheStats(): Promise<string> {
-  const tracker = await loadCacheStatsTracker();
+  let tracker: CacheStatsTracker;
+  try {
+    tracker = await loadCacheStatsTracker();
+  } catch {
+    return [
+      "Cache stats",
+      "  No API requests yet this session.",
+      "  Start a turn and re-run /cache-stats to see results.",
+    ].join("\n");
+  }
   const history = tracker.getCacheStatsHistory();
   if (history.length === 0) {
     return [

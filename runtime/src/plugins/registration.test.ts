@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 
 import { describe, expect, test, vi } from "vitest";
 
+import { findCommand } from "../commands.js";
 import { loadPlugins } from "./loader.js";
 import { loadPluginAgents } from "./registration/load-plugin-agents.js";
 import { loadPluginCommands, loadPluginSkills } from "./registration/load-plugin-commands.js";
@@ -47,7 +48,7 @@ describe("plugin registration", () => {
           text:
             `Deploy prod api from ${pluginRoot} into prod with ` +
             `${process.env.AGENC_PLUGIN_CACHE_DIR}/data/${pluginRoot.replace(/[^a-zA-Z0-9\-_]/g, "-")} ` +
-            "using [configured:token]",
+            "using [configured:token] tags alpha,beta scopes read,write",
         },
       ]);
 
@@ -73,9 +74,11 @@ describe("plugin registration", () => {
       expect(agents[0]).toMatchObject({
         agentType: "sample:review",
         source: "plugin",
+        plugin: "sample",
         tools: ["Read", "Edit"],
       });
-      expect(agents[0]?.getSystemPrompt()).toContain(`Use ${pluginRoot}/rules.md`);
+      expect(agents[0]?.getSystemPrompt())
+        .toContain(`Use ${pluginRoot}/rules.md with [configured:token]`);
       expect("permissionMode" in (agents[0] ?? {})).toBe(false);
       expect("hooks" in (agents[0] ?? {})).toBe(false);
       expect("mcpServers" in (agents[0] ?? {})).toBe(false);
@@ -89,6 +92,7 @@ describe("plugin registration", () => {
       expect(hooks?.PreToolUse?.[0]?.hooks[0]).toMatchObject({
         type: "command",
         command: `${pluginRoot}/hooks/pre.sh session-1`,
+        statusMessage: `Checking ${pluginRoot} for session-1`,
       });
 
       const mcpServers = await loadPluginMcpServers({
@@ -104,6 +108,8 @@ describe("plugin registration", () => {
           AGENC_PLUGIN_ROOT: pluginRoot,
           AGENC_PLUGIN_NAME: "sample",
           TOKEN: "stored-token",
+          TAGS: "alpha,beta",
+          SCOPES: "read,write",
         }),
       });
       expect(getUnconfiguredChannels(plugins[0]!)).toEqual([]);
@@ -128,6 +134,7 @@ describe("plugin registration", () => {
       expect(outputStyles).toEqual([
         expect.objectContaining({
           name: "sample:terse",
+          plugin: "sample",
           prompt: "Use short responses.",
           forceForPlugin: true,
         }),
@@ -345,6 +352,110 @@ describe("plugin registration", () => {
     });
   });
 
+  test("plugin frontmatter names and aliases cannot create unscoped command identifiers", async () => {
+    await withTempPlugin(async ({ pluginRoot, options }) => {
+      await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
+        name: "sample",
+      });
+      await writeFileAt(
+        join(pluginRoot, "commands", "shadow.md"),
+        [
+          "---",
+          "name: help",
+          "aliases: reload-plugins, sample:safe, other:unsafe",
+          "---",
+          "Shadow command.",
+        ].join("\n"),
+      );
+      await writeFileAt(
+        join(pluginRoot, "commands", "foreign.md"),
+        [
+          "---",
+          "name: other:unsafe",
+          "---",
+          "Foreign namespace command.",
+        ].join("\n"),
+      );
+
+      const result = await loadPlugins(options);
+      const commands = await loadPluginCommands({ plugins: result.enabled });
+      const shadow = commands.find((command) => command.name === "sample:shadow");
+      const foreign = commands.find((command) => command.name === "sample:foreign");
+
+      expect(shadow?.userFacingName?.()).toBe("sample:shadow");
+      expect(shadow?.aliases).toEqual(["sample:reload-plugins", "sample:safe"]);
+      expect(foreign?.userFacingName?.()).toBe("sample:foreign");
+      expect(findCommand("help", commands)).toBeUndefined();
+      expect(findCommand("reload-plugins", commands)).toBeUndefined();
+      expect(findCommand("other:unsafe", commands)).toBeUndefined();
+      expect(findCommand("sample:reload-plugins", commands)).toBe(shadow);
+    });
+  });
+
+  test("plugin command and skill arguments use shell-aware placeholder substitution", async () => {
+    await withTempPlugin(async ({ pluginRoot, options }) => {
+      await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
+        name: "sample",
+      });
+      await writeFileAt(
+        join(pluginRoot, "commands", "args.md"),
+        [
+          "---",
+          "arguments: env target",
+          "---",
+          "full=$ARGUMENTS first=$ARGUMENTS[0] zero=$0 second=$1 named=$target brace=${env}",
+        ].join("\n"),
+      );
+      await writeFileAt(
+        join(pluginRoot, "commands", "no-placeholder.md"),
+        "No placeholders.",
+      );
+      await writeFileAt(
+        join(pluginRoot, "commands", "fallback.md"),
+        "bad=$0 next=$ARGUMENTS[1]",
+      );
+
+      const result = await loadPlugins(options);
+      const commands = await loadPluginCommands({ plugins: result.enabled });
+      const args = commands.find((command) => command.name === "sample:args");
+      await expect(args?.getPromptForCommand?.('"prod api" web', {}))
+        .resolves.toEqual([
+          {
+            type: "text",
+            text:
+              'full="prod api" web first=prod api zero=prod api ' +
+              "second=web named=web brace=prod api",
+          },
+        ]);
+
+      const noPlaceholder = commands.find((command) => command.name === "sample:no-placeholder");
+      await expect(noPlaceholder?.getPromptForCommand?.("alpha beta", {}))
+        .resolves.toEqual([
+          {
+            type: "text",
+            text: "No placeholders.\n\nARGUMENTS: alpha beta",
+          },
+        ]);
+
+      const fallback = commands.find((command) => command.name === "sample:fallback");
+      await expect(fallback?.getPromptForCommand?.("a ${", {}))
+        .resolves.toEqual([
+          {
+            type: "text",
+            text: "bad=a next=${",
+          },
+        ]);
+
+      const skills = await loadPluginSkills({ plugins: result.enabled });
+      await expect(skills[0]?.getPromptForCommand?.("alpha beta", {}))
+        .resolves.toEqual([
+          expect.objectContaining({
+            text: expect.stringContaining("\n\nARGUMENTS: alpha beta"),
+          }),
+        ]);
+    });
+  });
+
   test("command registration does not expose nested Markdown below skill directories", async () => {
     await withTempPlugin(async ({ pluginRoot, options }) => {
       await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
@@ -460,6 +571,7 @@ async function withTempPlugin(
               {
                 type: "command",
                 command: "${AGENC_PLUGIN_ROOT}/hooks/pre.sh ${AGENC_SESSION_ID}",
+                statusMessage: "Checking ${AGENC_PLUGIN_ROOT} for ${AGENC_SESSION_ID}",
               },
             ],
           },
@@ -471,6 +583,8 @@ async function withTempPlugin(
           args: ["${AGENC_PLUGIN_ROOT}/server.js"],
           env: {
             TOKEN: "${user_config.token}",
+            TAGS: "${user_config.tags}",
+            SCOPES: "${user_config.scopes}",
           },
         },
       },
@@ -490,6 +604,19 @@ async function withTempPlugin(
           description: "Access token",
           sensitive: true,
         },
+        tags: {
+          type: "string",
+          title: "Tags",
+          description: "Tag list",
+          multiple: true,
+        },
+        scopes: {
+          type: "string",
+          title: "Scopes",
+          description: "Default scopes",
+          multiple: true,
+          default: ["read", "write"],
+        },
       },
       channels: [
         {
@@ -507,6 +634,13 @@ async function withTempPlugin(
               title: "Nickname",
               description: "Optional nickname",
             },
+            tags: {
+              type: "string",
+              title: "Tags",
+              description: "Tag list",
+              required: true,
+              multiple: true,
+            },
           },
         },
       ],
@@ -514,6 +648,7 @@ async function withTempPlugin(
     await writeJson(join(pluginRoot, "settings.json"), {
       options: {
         token: "stored-token",
+        tags: ["alpha", "beta"],
       },
     });
     await writeFileAt(
@@ -523,7 +658,7 @@ async function withTempPlugin(
         "description: Deploy command frontmatter",
         "arguments: env target",
         "---",
-        "Deploy $ARGUMENTS from ${AGENC_PLUGIN_ROOT} into ${env} with ${AGENC_PLUGIN_DATA} using ${user_config.token}",
+        "Deploy $ARGUMENTS from ${AGENC_PLUGIN_ROOT} into ${env} with ${AGENC_PLUGIN_DATA} using ${user_config.token} tags ${user_config.tags} scopes ${user_config.scopes}",
       ].join("\n"),
     );
     await writeFileAt(
@@ -539,7 +674,7 @@ async function withTempPlugin(
         "mcpServers:",
         "  - local",
         "---",
-        "Use ${AGENC_PLUGIN_ROOT}/rules.md",
+        "Use ${AGENC_PLUGIN_ROOT}/rules.md with ${user_config.token}",
       ].join("\n"),
     );
     await writeFileAt(

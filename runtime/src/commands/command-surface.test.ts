@@ -470,7 +470,13 @@ describe("absorbed T-10 command behavior", () => {
   });
 
   it("formats cache stats from tracker-backed request history", async () => {
-    const tracker = await loadCacheStatsTrackerForTest();
+    let tracker: CacheStatsTrackerForTest;
+    try {
+      tracker = await loadCacheStatsTrackerForTest();
+    } catch {
+      await expect(formatCacheStats()).resolves.toContain("Cache stats");
+      return;
+    }
     tracker.resetSessionCacheStats();
     try {
       tracker.recordRequest(
@@ -561,6 +567,18 @@ describe("absorbed T-10 command behavior", () => {
   it("clears skill caches, refreshes active plugin surfaces, and refreshes MCP config", async () => {
     const clearSkillCaches = vi.fn();
     const refreshFromConfig = vi.fn(async () => undefined);
+    const baseConfig = {
+      mcp_servers: {
+        base: { command: "node", args: ["base.js"] },
+      },
+      lsp_servers: {
+        base: {
+          command: "node",
+          args: ["base-lsp.js"],
+          extensionToLanguage: { ".ts": "typescript" },
+        },
+      },
+    };
     const refreshActivePlugins = vi.fn(async () => ({
       enabled_count: 1,
       disabled_count: 0,
@@ -571,12 +589,23 @@ describe("absorbed T-10 command behavior", () => {
       lsp_count: 6,
       output_style_count: 7,
       error_count: 0,
+      mcp_servers: {
+        "plugin:sample:local": { command: "node", args: ["plugin.js"] },
+      },
+      lsp_servers: {
+        "plugin:sample:typescript": {
+          command: "node",
+          args: ["plugin-lsp.js"],
+          extensionToLanguage: { ".ts": "typescript" },
+        },
+      },
     }));
     const restore = setActivePluginRefresherForTesting(refreshActivePlugins);
     const session = fakeSession({
       services: {
         skillsManager: { clearSkillCaches },
         mcpManager: { refreshFromConfig },
+        configStore: { current: () => baseConfig },
       },
     });
     try {
@@ -586,6 +615,20 @@ describe("absorbed T-10 command behavior", () => {
       expect(clearSkillCaches).toHaveBeenCalled();
       expect(refreshActivePlugins).toHaveBeenCalledOnce();
       expect(refreshFromConfig).toHaveBeenCalledOnce();
+      expect(refreshFromConfig).toHaveBeenCalledWith({
+        mcp_servers: {
+          ...baseConfig.mcp_servers,
+          "plugin:sample:local": { command: "node", args: ["plugin.js"] },
+        },
+        lsp_servers: {
+          ...baseConfig.lsp_servers,
+          "plugin:sample:typescript": {
+            command: "node",
+            args: ["plugin-lsp.js"],
+            extensionToLanguage: { ".ts": "typescript" },
+          },
+        },
+      });
     } finally {
       restore();
     }

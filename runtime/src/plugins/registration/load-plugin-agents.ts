@@ -167,7 +167,7 @@ function createPluginAgent(
     source: "plugin",
     filename: basename(file.filePath, ".md"),
     baseDir: file.baseDir,
-    plugin: plugin.source,
+    plugin: plugin.name,
     getSystemPrompt: () => {
       if (!memory || !isAutoMemoryEnabled()) return systemPrompt;
       return `${systemPrompt}\n\n${loadAgentMemoryPrompt(agentType, memory)}`;
