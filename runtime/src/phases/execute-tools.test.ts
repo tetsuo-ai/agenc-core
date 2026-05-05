@@ -213,6 +213,7 @@ function mkState(opts: {
     toolUseBlocks,
     needsFollowUp: true,
     toolResults: [],
+    completedToolResults: [],
     hasAttemptedReactiveCompact: false,
     maxOutputTokensOverride: undefined,
     maxOutputTokensRecoveryCount: 0,
@@ -332,6 +333,54 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     expect(sawResultContent).toBe("original");
     // state.messages[0].content should be the rewritten content
     expect(state.messages[0]!.content).toBe("rewritten");
+  });
+
+  test("post-hook additional context is appended after tool results", async () => {
+    const tool: Tool = {
+      name: "stub.echo",
+      description: "echoes",
+      inputSchema: { type: "object" },
+      execute: async () => ({ content: "original" }),
+    };
+
+    const postHook: PostToolUseHook = async () => ({
+      kind: "additionalContext",
+      content: ["post-tool context"],
+    });
+
+    const log = new EventLog();
+    const events: Array<{ msg: { type: string; payload?: { cause?: string } } }> = [];
+    log.subscribe((event) => events.push(event as never));
+    const registry = mkRegistry([tool]);
+    const session = mkSession({
+      log,
+      registry,
+      postToolUseHooks: [postHook],
+    });
+
+    const call: LLMToolCall = {
+      id: "c-context",
+      name: "stub.echo",
+      arguments: "{}",
+    };
+    const state = mkState({ toolCalls: [call] });
+
+    await executeTools(state, mkCtx(), session);
+
+    expect(state.messages.map((m) => m.role)).toEqual(["tool", "user"]);
+    expect(state.messages[1]!.content).toBe("post-tool context");
+    expect(state.toolResults[1]).toMatchObject({
+      role: "user",
+      kind: "attachment",
+      content: "post-tool context",
+    });
+    expect(
+      events.some(
+        (event) =>
+          event.msg.type === "warning" &&
+          event.msg.payload?.cause === "hook_additional_context",
+      ),
+    ).toBe(true);
   });
 
   test("live path binds router MCP resolution to the session, not the namespace heuristic", async () => {

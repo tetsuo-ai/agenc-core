@@ -1,0 +1,131 @@
+{
+  "contractName": "openclaude-auto-fix-parity",
+  "scope": "Port post-edit auto-fix lint/test feedback into AgenC services and hook execution.",
+  "generatedAt": "2026-05-05T00:00:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/services/autoFix/autoFixRunner.ts",
+    "src/services/autoFix/autoFixHook.ts",
+    "src/services/autoFix/autoFixConfig.ts",
+    "src/services/autoFix/autoFixRunner.test.ts",
+    "src/services/autoFix/autoFixHook.test.ts",
+    "src/services/autoFix/autoFixConfig.test.ts",
+    "src/services/autoFix/autoFixIntegration.test.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/services/autoFix/autoFixRunner.ts",
+    "runtime/src/services/autoFix/autoFixHook.ts",
+    "runtime/src/services/autoFix/autoFixConfig.ts",
+    "runtime/src/services/autoFix/PARITY.md",
+    "runtime/src/config/schema.ts",
+    "runtime/src/tools/hooks.ts",
+    "runtime/src/tools/execution.ts",
+    "runtime/src/tools/router.ts",
+    "runtime/src/phases/_deps/tool-runtime.ts",
+    "runtime/src/phases/execute-tools.ts",
+    "runtime/src/bin/bootstrap-services.ts"
+  ],
+  "testFiles": [
+    "runtime/src/services/autoFix/autoFixRunner.test.ts",
+    "runtime/src/services/autoFix/autoFixHook.test.ts",
+    "runtime/src/services/autoFix/autoFixConfig.test.ts",
+    "runtime/src/services/autoFix/autoFixIntegration.test.ts",
+    "runtime/src/phases/execute-tools.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "config-loader",
+      "source": "src/services/autoFix/autoFixConfig.ts",
+      "target": "runtime/src/services/autoFix/autoFixConfig.ts",
+      "sourceFiles": [
+        "src/services/autoFix/autoFixConfig.ts",
+        "src/services/autoFix/autoFixConfig.test.ts"
+      ],
+      "targetFiles": [
+        "runtime/src/services/autoFix/autoFixConfig.ts",
+        "runtime/src/config/schema.ts"
+      ],
+      "requiredBehaviors": [
+        "enabled autoFix configs require lint or test",
+        "maxRetries and timeout defaults match the donor service",
+        "invalid configs resolve to no auto-fix behavior",
+        "AgenC top-level config preserves autoFix on the typed path"
+      ],
+      "edgeCases": [
+        "disabled configs without commands return null",
+        "negative retry counts and retry counts above 10 are rejected",
+        "timeout accepts only the donor 1000ms to 300000ms range"
+      ],
+      "tests": [
+        "runtime/src/services/autoFix/autoFixConfig.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "runner",
+      "source": "src/services/autoFix/autoFixRunner.ts",
+      "target": "runtime/src/services/autoFix/autoFixRunner.ts",
+      "sourceFiles": [
+        "src/services/autoFix/autoFixRunner.ts",
+        "src/services/autoFix/autoFixRunner.test.ts"
+      ],
+      "targetFiles": [
+        "runtime/src/services/autoFix/autoFixRunner.ts"
+      ],
+      "requiredBehaviors": [
+        "lint command runs before test command",
+        "test command is skipped when lint fails",
+        "stdout and stderr are captured into the result",
+        "timeout and abort handling terminate spawned commands",
+        "error summaries include lint and test exit codes"
+      ],
+      "edgeCases": [
+        "no configured commands returns success",
+        "already-aborted signals return success without spawning",
+        "timed out commands mark hasErrors and timedOut"
+      ],
+      "tests": [
+        "runtime/src/services/autoFix/autoFixRunner.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "post-tool-hook",
+      "source": "src/services/autoFix/autoFixHook.ts",
+      "target": "runtime/src/services/autoFix/autoFixHook.ts",
+      "sourceFiles": [
+        "src/services/autoFix/autoFixHook.ts",
+        "src/services/autoFix/autoFixHook.test.ts",
+        "src/services/autoFix/autoFixIntegration.test.ts"
+      ],
+      "targetFiles": [
+        "runtime/src/services/autoFix/autoFixHook.ts",
+        "runtime/src/tools/hooks.ts",
+        "runtime/src/tools/router.ts",
+        "runtime/src/phases/_deps/tool-runtime.ts",
+        "runtime/src/phases/execute-tools.ts",
+        "runtime/src/bin/bootstrap-services.ts"
+      ],
+      "requiredBehaviors": [
+        "file edit and write tools trigger auto-fix checks",
+        "failed lint/test output becomes PostToolUse additional context",
+        "retry caps prevent unbounded auto-fix loops",
+        "passing checks reset retry state",
+        "bootstrap installs the auto-fix post-tool hook after configured hooks"
+      ],
+      "edgeCases": [
+        "non-file tools do not trigger auto-fix",
+        "hook failures do not fail the original tool result",
+        "additional context is appended after tool result messages"
+      ],
+      "tests": [
+        "runtime/src/services/autoFix/autoFixHook.test.ts",
+        "runtime/src/services/autoFix/autoFixIntegration.test.ts",
+        "runtime/src/phases/execute-tools.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

@@ -171,6 +171,7 @@ export interface LiveToolDispatchOptions {
     err: unknown,
     idx: number,
   ) => void;
+  readonly onHookAdditionalContext?: (contexts: readonly string[]) => void;
 }
 
 export interface DirectToolDispatchOptions {
@@ -1078,6 +1079,9 @@ function rawDispatchOptions(
       : {}),
     ...(opts.onPermissionAuditError !== undefined
       ? { onPermissionAuditError: opts.onPermissionAuditError }
+      : {}),
+    ...(opts.onHookAdditionalContext !== undefined
+      ? { onHookAdditionalContext: opts.onHookAdditionalContext }
       : {}),
     ...(opts.approvalResolver !== undefined && opts.canUseTool !== undefined
       ? {

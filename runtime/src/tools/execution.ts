@@ -909,6 +909,7 @@ export interface RunToolUseOptions {
   readonly permissionContext?: ToolEvaluatorContext;
   readonly permissionAuditLogger?: PermissionAuditLogger;
   readonly onPermissionAuditError?: PermissionAuditErrorHandler;
+  readonly onHookAdditionalContext?: (contexts: readonly string[]) => void;
   readonly modeChangeRegistry?: PermissionModeRegistry;
   readonly checkModeStillAllowed?: (
     tool: Tool,
@@ -1610,7 +1611,13 @@ export async function runToolUse(
   if (postHooks.length > 0) {
     const postDecision = await runPostToolUseHooks(
       postHooks,
-      { invocation, tool, args: inputForTool, result: finalDispatch },
+      {
+        invocation,
+        tool,
+        args: inputForTool,
+        result: finalDispatch,
+        ...(effectiveSignal !== undefined ? { signal: effectiveSignal } : {}),
+      },
       (err, idx) => {
         opts.onHookError?.("post", err, idx);
         emitHookAttachment(
@@ -1630,6 +1637,9 @@ export async function runToolUse(
         "hook_additional_context",
         `PostToolUse:${tool.name} context: ${c}`,
       );
+    }
+    if (postDecision.additionalContexts.length > 0) {
+      opts.onHookAdditionalContext?.(postDecision.additionalContexts);
     }
     for (const be of postDecision.blockingErrors) {
       emitHookAttachment(
