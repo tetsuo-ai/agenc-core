@@ -1,8 +1,7 @@
 /**
  * Command-hook output parser.
  *
- * Ports the Rust hook output parser listed in `PARITY.md` onto the JSON
- * forms emitted by AgenC command hooks.
+ * Parses the JSON forms emitted by AgenC command hooks.
  */
 
 export type HookPermissionBehavior = "allow" | "deny" | "ask";
