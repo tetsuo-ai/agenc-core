@@ -10,17 +10,21 @@ import { isEnvTruthy } from './envUtils.js'
 import { errorMessage, isENOENT } from './errors.js'
 import { getFsImplementation } from './fsOperations.js'
 
-/**
- * Well-known token file locations in CCR. The Go environment-manager creates
- * $HOME/.agenc/remote/ and will (eventually) write these files too.
- * Until then, this module writes them on successful FD read so subprocesses
- * spawned inside the CCR container can find the token without inheriting
- * the FD — which they can't: pipe FDs don't cross tmux/shell boundaries.
- */
-const CCR_TOKEN_DIR = process.env.AGENC_REMOTE_TOKEN_DIR?.trim() || `${process.env.HOME ?? '.'}/.agenc/remote`
-export const CCR_OAUTH_TOKEN_PATH = `${CCR_TOKEN_DIR}/.oauth_token`
-export const CCR_API_KEY_PATH = `${CCR_TOKEN_DIR}/.api_key`
-export const CCR_SESSION_INGRESS_TOKEN_PATH = `${CCR_TOKEN_DIR}/.session_ingress_token`
+// Defaults to $HOME/.agenc/remote; AGENC_REMOTE_TOKEN_DIR may override with an absolute path.
+const CCR_TOKEN_DIR = (() => {
+  const override = absolutePathOrNull(process.env.AGENC_REMOTE_TOKEN_DIR)
+  if (override !== null) return override
+  const home = absolutePathOrNull(process.env.HOME)
+  return home === null ? null : `${home}/.agenc/remote`
+})()
+export const CCR_OAUTH_TOKEN_PATH = CCR_TOKEN_DIR === null ? null : `${CCR_TOKEN_DIR}/.oauth_token`
+export const CCR_API_KEY_PATH = CCR_TOKEN_DIR === null ? null : `${CCR_TOKEN_DIR}/.api_key`
+export const CCR_SESSION_INGRESS_TOKEN_PATH = CCR_TOKEN_DIR === null ? null : `${CCR_TOKEN_DIR}/.session_ingress_token`
+
+function absolutePathOrNull(path: string | undefined): string | null {
+  const value = path?.trim()
+  return value && (value.startsWith('/') || /^[a-zA-Z]:[\\/]/u.test(value)) ? value : null
+}
 
 /**
  * Best-effort write of the token to a well-known location for subprocess
@@ -28,11 +32,11 @@ export const CCR_SESSION_INGRESS_TOKEN_PATH = `${CCR_TOKEN_DIR}/.session_ingress
  * put a token on disk that the FD was meant to keep off disk.
  */
 export function maybePersistTokenForSubprocesses(
-  path: string,
+  path: string | null,
   token: string,
   tokenName: string,
 ): void {
-  if (!isEnvTruthy(process.env.AGENC_REMOTE)) {
+  if (!isEnvTruthy(process.env.AGENC_REMOTE) || path === null || CCR_TOKEN_DIR === null) {
     return
   }
   try {
@@ -55,9 +59,10 @@ export function maybePersistTokenForSubprocesses(
  * else — treated as "no fallback", not an error.
  */
 export function readTokenFromWellKnownFile(
-  path: string,
+  path: string | null,
   tokenName: string,
 ): string | null {
+  if (path === null) return null
   try {
     const fsOps = getFsImplementation()
     // eslint-disable-next-line custom-rules/no-sync-fs -- fallback read for CCR subprocess path, one-shot at startup, caller is sync
@@ -81,19 +86,7 @@ export function readTokenFromWellKnownFile(
   }
 }
 
-/**
- * Shared FD-or-well-known-file credential reader.
- *
- * Priority order:
- *  1. File descriptor (legacy path) — env var points at a pipe FD passed by
- *     the Go env-manager via cmd.ExtraFiles. Pipe is drained on first read
- *     and doesn't cross exec/tmux boundaries.
- *  2. Well-known file — written by this function on successful FD read (and
- *     eventually by the env-manager directly). Covers subprocesses that can't
- *     inherit the FD.
- *
- * Returns null if neither source has a credential. Cached in global state.
- */
+// Shared FD-or-well-known-file credential reader. Cached in global state.
 function getCredentialFromFd({
   envVar,
   wellKnownPath,
@@ -102,7 +95,7 @@ function getCredentialFromFd({
   setCached,
 }: {
   envVar: string
-  wellKnownPath: string
+  wellKnownPath: string | null
   label: string
   getCached: () => string | null | undefined
   setCached: (value: string | null) => void
