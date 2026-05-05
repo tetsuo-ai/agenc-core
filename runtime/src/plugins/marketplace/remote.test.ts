@@ -8,6 +8,7 @@ import {
   fetchRemoteInstalledPlugins,
   fetchRemoteMarketplaces,
   fetchRemotePluginDetailWithDownloadUrls,
+  fetchRemotePluginSkillDetail,
   installRemotePlugin,
   markRemotePluginCacheMutationInFlight,
   syncRemoteInstalledPluginBundles,
@@ -77,6 +78,51 @@ describe("remote plugin marketplace API", () => {
         },
       }],
     });
+  });
+
+  it("fetches remote plugin skill details", async () => {
+    const calls: string[] = [];
+
+    await expect(fetchRemotePluginSkillDetail(
+      config,
+      auth,
+      "agenc-global",
+      "linear",
+      "triage",
+      createRemoteFetcher(calls),
+    )).resolves.toEqual({
+      contents: "# Triage\n",
+    });
+
+    expect(calls).toContain("GET /ps/plugins/linear/skills/triage");
+  });
+
+  it("rejects remote plugin skill details with mismatched identities", async () => {
+    await expect(fetchRemotePluginSkillDetail(
+      config,
+      auth,
+      "agenc-global",
+      "linear",
+      "triage",
+      async () => jsonResponse({
+        plugin_id: "calendar",
+        name: "triage",
+        skill_md_contents: "# Triage\n",
+      }),
+    )).rejects.toThrow("unexpected plugin id");
+
+    await expect(fetchRemotePluginSkillDetail(
+      config,
+      auth,
+      "agenc-global",
+      "linear",
+      "triage",
+      async () => jsonResponse({
+        plugin_id: "linear",
+        name: "plan",
+        skill_md_contents: "# Triage\n",
+      }),
+    )).rejects.toThrow("unexpected skill name");
   });
 
   it("posts install and uninstall mutations and clears local cache roots", async () => {
@@ -368,6 +414,13 @@ function createRemoteFetcher(calls: string[] = []): Fetcher {
     }
     if (parsed.pathname === "/ps/plugins/linear") {
       return jsonResponse(remotePlugin());
+    }
+    if (parsed.pathname === "/ps/plugins/linear/skills/triage") {
+      return jsonResponse({
+        plugin_id: "linear",
+        name: "triage",
+        skill_md_contents: "# Triage\n",
+      });
     }
     if (parsed.pathname === "/ps/plugins/linear/install") {
       return jsonResponse({ id: "linear", enabled: true });

@@ -409,9 +409,12 @@ export async function listMarketplaces(
   return { marketplaces, errors };
 }
 
-export async function loadMarketplace(manifestPath: string): Promise<Marketplace> {
+export async function loadMarketplace(
+  manifestPath: string,
+  marketplaceNameOverride?: string,
+): Promise<Marketplace> {
   const manifest = await readMarketplaceManifest(manifestPath);
-  const marketplaceName = normalizeMarketplaceName(inferMarketplaceName(manifest, { source: "file", path: manifestPath }));
+  const marketplaceName = marketplaceNameForManifest(manifest, manifestPath, marketplaceNameOverride);
   const root = marketplaceRootDir(manifestPath);
   const plugins: MarketplacePlugin[] = [];
   for (const rawPlugin of manifest.plugins) {
@@ -441,9 +444,10 @@ export async function loadMarketplace(manifestPath: string): Promise<Marketplace
 export async function findMarketplacePlugin(
   marketplacePath: string,
   pluginName: string,
+  marketplaceNameOverride?: string,
 ): Promise<ResolvedMarketplacePlugin> {
   const manifest = await readMarketplaceManifest(marketplacePath);
-  const marketplaceName = normalizeMarketplaceName(inferMarketplaceName(manifest, { source: "file", path: marketplacePath }));
+  const marketplaceName = marketplaceNameForManifest(manifest, marketplacePath, marketplaceNameOverride);
   for (const plugin of manifest.plugins) {
     if (plugin.name !== pluginName) continue;
     return resolveMarketplacePluginEntry(marketplacePath, marketplaceName, plugin);
@@ -455,8 +459,9 @@ export async function findInstallableMarketplacePlugin(
   marketplacePath: string,
   pluginName: string,
   product?: string,
+  marketplaceNameOverride?: string,
 ): Promise<ResolvedMarketplacePlugin> {
-  const resolved = await findMarketplacePlugin(marketplacePath, pluginName);
+  const resolved = await findMarketplacePlugin(marketplacePath, pluginName, marketplaceNameOverride);
   const products = resolved.policy.products;
   const productAllowed = products === undefined
     ? true
@@ -1115,6 +1120,16 @@ function inferMarketplaceName(manifest: RawMarketplaceManifest, source: Marketpl
     case "file":
       return basename(source.path, extname(source.path));
   }
+}
+
+function marketplaceNameForManifest(
+  manifest: RawMarketplaceManifest,
+  manifestPath: string,
+  marketplaceNameOverride: string | undefined,
+): string {
+  return normalizeMarketplaceName(
+    marketplaceNameOverride ?? inferMarketplaceName(manifest, { source: "file", path: manifestPath }),
+  );
 }
 
 async function normalizeInputSource(input: AddMarketplaceInput): Promise<MarketplaceSource> {

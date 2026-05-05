@@ -116,6 +116,34 @@ describe("plugin marketplace runtime", () => {
     });
   });
 
+  it("preserves configured marketplace names when manifest metadata differs", async () => {
+    const { agencHome, workspaceRoot } = await tempRuntime();
+    const marketplaceRoot = await writeMarketplace(join(workspaceRoot, "team-marketplace"), "upstream");
+
+    const result = await addMarketplaceOp({
+      agencHome,
+      workspaceRoot,
+      source: marketplaceRoot,
+      name: "team",
+      now: () => new Date("2026-05-05T00:00:00.000Z"),
+    });
+
+    expect(result.marketplace.name).toBe("team");
+
+    const marketplace = await getMarketplace("team", { agencHome, workspaceRoot });
+    expect(marketplace.name).toBe("team");
+    expect(marketplace.plugins.map((plugin) => plugin.name)).toEqual(["alpha"]);
+
+    const plugin = await findInstallableMarketplacePlugin(
+      result.marketplace.manifestPath,
+      "alpha",
+      undefined,
+      result.marketplace.name,
+    );
+    expect(plugin.pluginId).toBe("alpha@team");
+    expect(plugin.marketplaceName).toBe("team");
+  });
+
   it("removes by computed install path and ignores untrusted index paths", async () => {
     const { agencHome, root, workspaceRoot } = await tempRuntime();
     const marketplaceRoot = await writeMarketplace(join(workspaceRoot, "team-marketplace"), "team");

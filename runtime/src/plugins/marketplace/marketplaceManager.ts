@@ -296,7 +296,7 @@ export async function getMarketplaceCacheOnly(
   const matched = findMarketplaceName({ version: 1, marketplaces: config }, name);
   if (matched === undefined) return null;
   try {
-    return await loadMarketplace(config[matched]!.manifestPath);
+    return await loadMarketplace(config[matched]!.manifestPath, config[matched]!.name);
   } catch {
     return null;
   }
@@ -322,7 +322,7 @@ export function getMarketplace(
       );
     }
     try {
-      return await loadMarketplace(config[matched]!.manifestPath);
+      return await loadMarketplace(config[matched]!.manifestPath, config[matched]!.name);
     } catch {
       const result = await addMarketplaceOp({
         ...options,
@@ -331,7 +331,7 @@ export function getMarketplace(
         force: true,
         autoUpdate: config[matched]!.autoUpdate,
       });
-      return loadMarketplace(result.marketplace.manifestPath);
+      return loadMarketplace(result.marketplace.manifestPath, result.marketplace.name);
     }
   })();
   promise.catch(() => {
