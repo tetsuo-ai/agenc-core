@@ -13,6 +13,12 @@ import {
   createLocalSkillsServices,
   type LocalSkillMetadata,
 } from "./skills/local-loader.js";
+import {
+  clearPluginCommandCache,
+  clearPluginSkillsCache,
+  loadPluginCommands,
+  loadPluginSkills,
+} from "./plugins/registration/load-plugin-commands.js";
 
 export type LocalCommandResult =
   | { type: "text"; value: string }
@@ -357,7 +363,6 @@ async function loadProductionCommandSources(cwd: string): Promise<readonly Comma
   const skillsModulePath = "./agenc/upstream/skills/loadSkillsDir.js";
   const bundledSkillsModulePath = "./agenc/upstream/skills/bundledSkills.js";
   const builtinPluginsModulePath = "./agenc/upstream/plugins/builtinPlugins.js";
-  const pluginCommandsModulePath = "./agenc/upstream/utils/plugins/loadPluginCommands.js";
   const workflowCommandsModulePath =
     "./agenc/upstream/tools/WorkflowTool/createWorkflowCommand.js";
 
@@ -374,8 +379,8 @@ async function loadProductionCommandSources(cwd: string): Promise<readonly Comma
     callCommandSource(skillsModulePath, "getDynamicSkills"),
     callCommandSource(bundledSkillsModulePath, "getBundledSkills"),
     callCommandSource(builtinPluginsModulePath, "getBuiltinPluginSkillCommands"),
-    callCommandSource(pluginCommandsModulePath, "getPluginCommands"),
-    callCommandSource(pluginCommandsModulePath, "getPluginSkills"),
+    loadPluginCommands({ cwd }),
+    loadPluginSkills({ cwd }),
     callCommandSource(workflowCommandsModulePath, "getWorkflowCommands", cwd),
   ]);
 
@@ -586,15 +591,11 @@ export function clearCommandMemoizationCaches(): void {
   }
   localSkillServicesByRoot.clear();
   const skillsModulePath: string = "./agenc/upstream/skills/loadSkillsDir.js";
-  const pluginCommandsModulePath: string =
-    "./agenc/upstream/utils/plugins/loadPluginCommands.js";
   void import(skillsModulePath).then(module => {
     module.clearSkillCaches?.();
   }).catch(() => undefined);
-  void import(pluginCommandsModulePath).then(module => {
-    module.clearPluginCommandCache?.();
-    module.clearPluginSkillsCache?.();
-  }).catch(() => undefined);
+  clearPluginCommandCache();
+  clearPluginSkillsCache();
   getSkillToolCommands.cache.clear();
   getSlashCommandToolSkills.cache.clear();
 }
