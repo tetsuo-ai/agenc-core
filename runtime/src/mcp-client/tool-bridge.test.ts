@@ -7,7 +7,7 @@
  * a Session reference.
  */
 
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
 import { freshDenialTracking } from "../permissions/denial-tracking.js";
 import { RequestPermissionsRpc } from "../permissions/rpc/request-permissions.js";
@@ -16,6 +16,17 @@ import type { GuardianApprovalReviewOptions } from "../permissions/guardian/revi
 import { APPROVED, DENIED } from "../permissions/review-decision.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { createToolBridge, type MCPCallObserver } from "./tool-bridge.js";
+import {
+  resetAgencTelemetryClient,
+  setAgencTelemetryClient,
+  type TelemetryClient,
+  type TelemetrySpan,
+  type TelemetryTimer,
+} from "../observability/telemetry.js";
+
+afterEach(() => {
+  resetAgencTelemetryClient();
+});
 
 function permissionContext(): ToolEvaluatorContext {
   const toolPermissionContext = createEmptyToolPermissionContext();
@@ -32,6 +43,94 @@ function permissionContext(): ToolEvaluatorContext {
 }
 
 describe("createToolBridge — T6 gap #119 observer wiring", () => {
+  test("records MCP call spans, metrics, and result span metadata", async () => {
+    const spans: Array<{
+      name: string;
+      attributes: Record<string, unknown>;
+      ended: boolean;
+    }> = [];
+    const counters: string[] = [];
+    const durations: string[] = [];
+    const client: TelemetryClient = {
+      startSpan(name, attributes) {
+        const stored = {
+          name,
+          attributes: { ...(attributes ?? {}) },
+          ended: false,
+        };
+        spans.push(stored);
+        return {
+          name,
+          setAttribute(key, value) {
+            stored.attributes[key] = value;
+          },
+          setAttributes(next) {
+            Object.assign(stored.attributes, next);
+          },
+          addEvent() {},
+          enter(fn) {
+            return fn();
+          },
+          end() {
+            stored.ended = true;
+          },
+        } satisfies TelemetrySpan;
+      },
+      withSpan(_name, _attributes, fn) {
+        return fn();
+      },
+      getCurrentSpan() {
+        return undefined;
+      },
+      counter(name) {
+        counters.push(name);
+      },
+      histogram() {},
+      recordDuration(name) {
+        durations.push(name);
+      },
+      timer(): TelemetryTimer {
+        return { record() {}, end() {} };
+      },
+      event() {},
+    };
+    setAgencTelemetryClient(client);
+    const fakeClient = {
+      listTools: async () => ({
+        tools: [{ name: "echo", connectorId: "local", connectorName: "Local" }],
+      }),
+      callTool: async () => ({
+        content: [{ type: "text", text: "hello" }],
+        isError: false,
+        _meta: {
+          "agenc/telemetry": {
+            span: {
+              target_id: "target-123",
+              did_trigger_server_user_flow: true,
+            },
+          },
+        },
+      }),
+      close: async () => {},
+    };
+
+    const bridge = await createToolBridge(fakeClient, "srv", undefined, {
+      serverOrigin: "http://127.0.0.1:9443/rpc",
+      transport: "http",
+    });
+    await bridge.tools[0]!.execute({ msg: "hi" });
+
+    expect(spans[0]?.name).toBe("mcp.tools.call");
+    expect(spans[0]?.attributes["mcp.transport"]).toBe("streamable_http");
+    expect(spans[0]?.attributes["server.address"]).toBe("127.0.0.1");
+    expect(spans[0]?.attributes["server.port"]).toBe(9443);
+    expect(spans[0]?.attributes["agenc.mcp.target.id"]).toBe("target-123");
+    expect(spans[0]?.attributes["agenc.mcp.server_user_flow.triggered"]).toBe(true);
+    expect(spans[0]?.ended).toBe(true);
+    expect(counters).toContain("agenc.mcp.call");
+    expect(durations).toContain("agenc.mcp.call.duration_ms");
+  });
+
   test("observer.onBegin + onEnd fire around a successful call", async () => {
     const begins: Array<{ server: string; toolName: string; args: string }> = [];
     const ends: Array<{ server: string; toolName: string; isError: boolean }> = [];

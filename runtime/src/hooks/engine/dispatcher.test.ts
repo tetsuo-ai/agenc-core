@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 
 import {
   DEFAULT_HOOK_TIMEOUT_MS,
@@ -7,6 +7,17 @@ import {
 } from "./dispatcher.js";
 import { readHookSpecificOutput } from "./output-parser.js";
 import type { HooksMap } from "../../config/schema.js";
+import {
+  resetAgencTelemetryClient,
+  setAgencTelemetryClient,
+  type TelemetryClient,
+  type TelemetrySpan,
+  type TelemetryTimer,
+} from "../../observability/telemetry.js";
+
+afterEach(() => {
+  resetAgencTelemetryClient();
+});
 
 function makeEngine(config: HooksMap): HookEngine {
   const engine = new HookEngine({
@@ -172,6 +183,52 @@ describe("HookEngine dispatcher", () => {
     const skipped = await engine.runCommandHook(blocking!, {});
     expect(skipped.status).toBe("skipped");
     expect(engine.latestDiagnostics()[0]?.status).toBe("skipped");
+  });
+
+  test("records hook metrics through the observability surface", async () => {
+    const counters: string[] = [];
+    const durations: string[] = [];
+    const client: TelemetryClient = {
+      startSpan(name): TelemetrySpan {
+        return {
+          name,
+          setAttribute() {},
+          setAttributes() {},
+          addEvent() {},
+          enter(fn) {
+            return fn();
+          },
+          end() {},
+        };
+      },
+      withSpan(_name, _attributes, fn) {
+        return fn();
+      },
+      getCurrentSpan() {
+        return undefined;
+      },
+      counter(name) {
+        counters.push(name);
+      },
+      histogram() {},
+      recordDuration(name) {
+        durations.push(name);
+      },
+      timer(): TelemetryTimer {
+        return { record() {}, end() {} };
+      },
+      event() {},
+    };
+    setAgencTelemetryClient(client);
+    const engine = makeEngine({
+      Stop: [{ hooks: [{ type: "command", command: "printf ok" }] }],
+    });
+
+    const result = await engine.runCommandHook(engine.listHooks()[0]!, {});
+
+    expect(result.status).toBe("success");
+    expect(counters).toContain("agenc.hooks.run");
+    expect(durations).toContain("agenc.hooks.run.duration_ms");
   });
 
   test("does not spawn hooks when the signal is already aborted", async () => {

@@ -22,6 +22,12 @@ import type {
   HookRunDiagnostic,
   IndividualHookConfig,
 } from "./types.js";
+import {
+  AGENC_HOOK_RUN_DURATION_METRIC,
+  AGENC_HOOK_RUN_METRIC,
+  agencTelemetry,
+  toMetricTags,
+} from "../../observability/telemetry.js";
 
 export const DEFAULT_HOOK_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_DIAGNOSTICS = 50;
@@ -171,6 +177,22 @@ export class HookEngine {
       0,
       this.opts.maxDiagnostics ?? DEFAULT_MAX_DIAGNOSTICS,
     );
+    const tags = toMetricTags({
+      hook_name: hook.event,
+      status: sanitizedResult.status,
+      source: hook.matcher === undefined ? "unmatched" : "matched",
+    });
+    agencTelemetry.counter(AGENC_HOOK_RUN_METRIC, 1, tags);
+    agencTelemetry.recordDuration(
+      AGENC_HOOK_RUN_DURATION_METRIC,
+      sanitizedResult.durationMs,
+      tags,
+    );
+    agencTelemetry.event("hooks.run.completed", {
+      "hook.event": hook.event,
+      "hook.status": sanitizedResult.status,
+      "hook.duration_ms": sanitizedResult.durationMs,
+    });
     return {
       ...diagnostic,
       rawStdout: result.stdout,
