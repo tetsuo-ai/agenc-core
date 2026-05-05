@@ -1,8 +1,7 @@
 /**
  * Configured hook discovery.
  *
- * Ports the Rust discovery pass listed in `PARITY.md` onto AgenC's
- * validated config schema.
+ * Flattens AgenC's validated hook config into executable hook entries.
  */
 
 import type { HookEventName, HooksMap } from "../../config/schema.js";

@@ -19,8 +19,7 @@
     "fileWatcher": {
       "agencFiles": [
         "runtime/src/file-watcher/index.ts",
-        "runtime/src/file-watcher/index.test.ts",
-        "runtime/src/file-watcher/PARITY.md"
+        "runtime/src/file-watcher/index.test.ts"
       ],
       "decision": "implemented",
       "carriedBehavior": [
@@ -38,8 +37,7 @@
     "skills": {
       "agencFiles": [
         "runtime/src/skills/local-loader.ts",
-        "runtime/src/skills/local-loader.test.ts",
-        "runtime/src/skills/PARITY.md"
+        "runtime/src/skills/local-loader.test.ts"
       ],
       "decision": "scope-documented",
       "carriedBehavior": [
@@ -59,8 +57,7 @@
     "conversation": {
       "agencFiles": [
         "runtime/src/conversation/thread-manager.ts",
-        "runtime/src/conversation/thread-manager.contract.test.ts",
-        "runtime/src/conversation/PARITY.md"
+        "runtime/src/conversation/thread-manager.contract.test.ts"
       ],
       "decision": "implemented-with-neighboring-ownership",
       "carriedBehavior": [
@@ -83,10 +80,6 @@
       "runtime/src/skills/local-loader.test.ts",
       "runtime/src/conversation/thread-manager.contract.test.ts"
     ],
-    "documentation": [
-      "runtime/src/file-watcher/PARITY.md",
-      "runtime/src/skills/PARITY.md",
-      "runtime/src/conversation/PARITY.md"
-    ]
+    "runtimeDocsRetiredBy": "ZC-40"
   }
 }
