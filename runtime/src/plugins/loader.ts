@@ -22,8 +22,23 @@ const DEFAULT_HOOKS_FILE = "hooks/hooks.json";
 const DEFAULT_MCP_FILE = ".mcp.json";
 const DEFAULT_LSP_FILE = ".lsp.json";
 const DEFAULT_APP_FILE = ".app.json";
+const DEFAULT_SETTINGS_FILE = "settings.json";
 const MAX_PLUGIN_MARKDOWN_FILES = 512;
 const MAX_PLUGIN_SCAN_DEPTH = 8;
+const PLUGIN_SETTINGS_KEYS = new Set([
+  "permissions",
+  "env",
+  "mcpServers",
+  "lspServers",
+  "hooks",
+  "commands",
+  "agents",
+  "skills",
+  "outputStyles",
+  "apps",
+  "options",
+  "metadata",
+]);
 const DEFAULT_COMPONENT_DIRS = {
   commands: "commands",
   agents: "agents",
@@ -435,6 +450,7 @@ export async function createPluginFromPath(
     manifest.name,
   );
   const appConnectorIds = await loadAppConnectorIds(pluginPath, manifest, errors, opts.source, manifest.name);
+  const settings = await loadPluginSettings(pluginPath, manifest, errors, opts.source, manifest.name);
 
   const plugin: LoadedPlugin = {
     name: manifest.name,
@@ -466,7 +482,7 @@ export async function createPluginFromPath(
     mcpServers,
     lspServers,
     appConnectorIds,
-    ...(manifest.settings !== undefined ? { settings: manifest.settings } : {}),
+    ...(settings !== undefined ? { settings } : {}),
     errors,
   };
   return { plugin, errors };
@@ -1098,6 +1114,55 @@ async function loadAppConnectorIdsFromFile(
     });
     return [];
   }
+}
+
+async function loadPluginSettings(
+  pluginRoot: string,
+  manifest: PluginManifest,
+  errors: PluginLoadIssue[],
+  source: string,
+  pluginName: string,
+): Promise<Readonly<Record<string, unknown>> | undefined> {
+  const settingsPath = join(pluginRoot, DEFAULT_SETTINGS_FILE);
+  if (await pathIsFile(settingsPath)) {
+    try {
+      const parsed = JSON.parse(await readJsonText(settingsPath));
+      if (!isRecord(parsed)) {
+        errors.push({
+          type: "settings",
+          source,
+          plugin: pluginName,
+          path: settingsPath,
+          message: "Plugin settings file must contain a JSON object",
+        });
+        return undefined;
+      }
+      return filterPluginSettings(parsed);
+    } catch (error) {
+      errors.push({
+        type: "settings",
+        source,
+        plugin: pluginName,
+        path: settingsPath,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  }
+  return manifest.settings === undefined
+    ? undefined
+    : filterPluginSettings(manifest.settings);
+}
+
+function filterPluginSettings(
+  settings: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> | undefined {
+  const out = nullProtoRecord<unknown>();
+  for (const [key, value] of Object.entries(settings)) {
+    if (isUnsafeObjectKey(key) || !PLUGIN_SETTINGS_KEYS.has(key)) continue;
+    out[key] = value;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function stringValue(value: unknown): string | undefined {

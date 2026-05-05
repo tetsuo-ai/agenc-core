@@ -99,7 +99,7 @@ describe("plugin loader", () => {
         name: "toolbox",
         version: "1.0.0",
         apps: "./config/apps.json",
-        settings: { mode: "local" },
+        settings: { options: { fromManifest: true }, unsupported: true },
       });
       await writeFileAt(join(pluginRoot, "skills", "planner", "SKILL.md"), "---\nname: planner\n---\n");
       await writeFileAt(join(pluginRoot, "commands", "build.md"), "# build\n");
@@ -133,6 +133,11 @@ describe("plugin loader", () => {
           calendar: { id: "calendar" },
         },
       });
+      await writeJson(join(pluginRoot, "settings.json"), {
+        options: { fromFile: true },
+        metadata: { owner: "team" },
+        unsupported: true,
+      });
 
       const result = await loadPlugins({ agencHome, workspaceRoot });
       const plugin = result.enabled[0];
@@ -147,7 +152,45 @@ describe("plugin loader", () => {
       expect(plugin?.mcpServers.local?.cwd).toBe(join(pluginRoot, "bin"));
       expect(plugin?.lspServers.ts?.workspaceFolder).toBe(join(pluginRoot, "workspace"));
       expect(plugin?.appConnectorIds).toEqual(["calendar"]);
-      expect(plugin?.settings).toEqual({ mode: "local" });
+      expect(plugin?.settings).toEqual({
+        options: { fromFile: true },
+        metadata: { owner: "team" },
+      });
+    });
+  });
+
+  test("filters manifest settings and reports invalid settings files", async () => {
+    await withTempDir(async (root) => {
+      const manifestOnly = join(root, "plugins", "manifest-settings");
+      await writePluginManifest(manifestOnly, {
+        name: "manifest-settings",
+        settings: {
+          options: { enabled: true },
+          unknown: true,
+        },
+      });
+      const badSettings = join(root, "plugins", "bad-settings");
+      await writePluginManifest(badSettings, { name: "bad-settings" });
+      await writeFileAt(join(badSettings, "settings.json"), "{ bad json");
+
+      const manifestResult = await createPluginFromPath(manifestOnly, {
+        source: "test",
+        enabled: true,
+        fallbackName: "manifest-settings",
+      });
+      const badResult = await createPluginFromPath(badSettings, {
+        source: "test",
+        enabled: true,
+        fallbackName: "bad-settings",
+      });
+
+      expect(manifestResult.plugin.settings).toEqual({
+        options: { enabled: true },
+      });
+      expect(badResult.plugin.settings).toBeUndefined();
+      expect(badResult.errors).toMatchObject([
+        { type: "settings", path: join(badSettings, "settings.json") },
+      ]);
     });
   });
 
