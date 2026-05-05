@@ -23,7 +23,10 @@ function substituteStringRecord(
   return Object.fromEntries(
     Object.entries(value).map(([key, entry]) => [
       key,
-      substitutePluginTemplate(entry, plugin, { sessionId: options.sessionId }),
+      substitutePluginTemplate(entry, plugin, {
+        sessionId: options.sessionId,
+        exposeSensitive: true,
+      }),
     ]),
   );
 }
@@ -37,11 +40,15 @@ export function resolvePluginLspEnvironment(
     ...server,
     command: substitutePluginTemplate(server.command, plugin, {
       sessionId: options.sessionId,
+      exposeSensitive: true,
     }),
     ...(server.args !== undefined
       ? {
           args: server.args.map((arg) =>
-            substitutePluginTemplate(arg, plugin, { sessionId: options.sessionId }),
+            substitutePluginTemplate(arg, plugin, {
+              sessionId: options.sessionId,
+              exposeSensitive: true,
+            }),
           ),
         }
       : {}),
@@ -56,7 +63,7 @@ export function resolvePluginLspEnvironment(
           workspaceFolder: substitutePluginTemplate(
             server.workspaceFolder,
             plugin,
-            { sessionId: options.sessionId },
+            { sessionId: options.sessionId, exposeSensitive: true },
           ),
         }
       : { workspaceFolder: plugin.root }),

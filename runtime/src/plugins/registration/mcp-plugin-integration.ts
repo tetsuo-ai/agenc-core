@@ -3,6 +3,7 @@ import type { LoadedPlugin } from "../loader.js";
 import { getPluginDataDir } from "../directories.js";
 import {
   loadRuntimePlugins,
+  pluginSettingValue,
   substitutePluginTemplate,
   type PluginRuntimeLoadOptions,
 } from "./common.js";
@@ -30,7 +31,10 @@ function substituteStringRecord(
   return Object.fromEntries(
     Object.entries(value).map(([key, entry]) => [
       key,
-      substitutePluginTemplate(entry, plugin, { sessionId: options.sessionId }),
+      substitutePluginTemplate(entry, plugin, {
+        sessionId: options.sessionId,
+        exposeSensitive: true,
+      }),
     ]),
   );
 }
@@ -58,13 +62,17 @@ export function resolvePluginMcpEnvironment(
       ? {
           command: substitutePluginTemplate(server.command, plugin, {
             sessionId: options.sessionId,
+            exposeSensitive: true,
           }),
         }
       : {}),
     ...(server.args !== undefined
       ? {
           args: server.args.map((arg) =>
-            substitutePluginTemplate(arg, plugin, { sessionId: options.sessionId }),
+            substitutePluginTemplate(arg, plugin, {
+              sessionId: options.sessionId,
+              exposeSensitive: true,
+            }),
           ),
         }
       : {}),
@@ -72,6 +80,7 @@ export function resolvePluginMcpEnvironment(
       ? {
           endpoint: substitutePluginTemplate(server.endpoint, plugin, {
             sessionId: options.sessionId,
+            exposeSensitive: true,
           }),
         }
       : {}),
@@ -82,6 +91,7 @@ export function resolvePluginMcpEnvironment(
       ? {
           cwd: substitutePluginTemplate(server.cwd, plugin, {
             sessionId: options.sessionId,
+            exposeSensitive: true,
           }),
         }
       : server.command !== undefined
@@ -146,9 +156,9 @@ export function getUnconfiguredChannels(
     server: channel.server,
     ...(channel.displayName !== undefined ? { displayName: channel.displayName } : {}),
     configured: channel.userConfig === undefined ||
-      Object.keys(channel.userConfig).every((key) =>
-        plugin.settings !== undefined &&
-        Object.prototype.hasOwnProperty.call(plugin.settings, key),
+      Object.entries(channel.userConfig).every(([key, config]) =>
+        config.required !== true ||
+        pluginSettingValue(plugin, key, { exposeSensitive: true }) !== undefined,
       ),
   })).filter((channel) => !channel.configured);
 }

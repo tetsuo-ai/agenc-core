@@ -763,13 +763,13 @@ async function initializeAgentMemorySnapshots(
   }
 }
 
-async function loadPluginAgentsSafe(): Promise<PluginAgentDefinition[]> {
+async function loadPluginAgentsSafe(cwd: string): Promise<PluginAgentDefinition[]> {
   try {
     if (pluginAgentsLoaderForTesting) {
       return await pluginAgentsLoaderForTesting()
     }
     pluginAgentCacheClearer = clearPluginAgentCache
-    const loaded = await loadPluginAgents()
+    const loaded = await loadPluginAgents({ cwd })
     return Array.isArray(loaded)
       ? loaded.filter((agent): agent is PluginAgentDefinition =>
           isRecord(agent) &&
@@ -817,7 +817,7 @@ async function loadAgentDefinitions(cwd: string): Promise<AgentDefinitionsResult
       .filter((agent): agent is CustomAgentDefinition => agent !== null)
 
     const [pluginAgents] = await Promise.all([
-      loadPluginAgentsSafe(),
+      loadPluginAgentsSafe(cwd),
       initializeAgentMemorySnapshots(customAgents),
     ])
 

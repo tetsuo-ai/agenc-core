@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 
 import type { Command } from "../../commands.js";
 import type { LoadedPlugin, LoadedPluginCommand } from "../loader.js";
@@ -8,12 +8,16 @@ import { isRecord } from "../manifest-schema.js";
 import {
   collectMarkdownFiles,
   coerceString,
+  cwdOnlyRuntimeIdentityKey,
   descriptionFromMarkdown,
+  hasExplicitPluginDiscoveryInput,
+  isPluginRuntimeSimpleMode,
   loadRuntimePlugins,
   markdownStem,
   parseBoolean,
   pathIsDirectory,
   readMarkdownFile,
+  runtimeIdentityKey,
   splitFrontmatter,
   splitList,
   substituteArguments,
@@ -40,22 +44,49 @@ let pluginSkillCache: Promise<readonly Command[]> | null = null;
 const activePluginCommandsByCwd = new Map<string, readonly Command[]>();
 const activePluginSkillsByCwd = new Map<string, readonly Command[]>();
 
-function activeKey(cwd: string | undefined): string {
-  return resolve(cwd ?? process.cwd());
+interface ActivePluginSnapshotOptions {
+  readonly cwd: string;
+  readonly agencHome?: string;
+  readonly env?: NodeJS.ProcessEnv;
+}
+
+function setActiveSnapshot<T>(
+  snapshots: Map<string, readonly T[]>,
+  options: ActivePluginSnapshotOptions,
+  values: readonly T[],
+): void {
+  const copy = [...values];
+  snapshots.set(runtimeIdentityKey(options), copy);
+  snapshots.set(cwdOnlyRuntimeIdentityKey(options.cwd), copy);
+}
+
+function getActiveSnapshot<T>(
+  snapshots: Map<string, readonly T[]>,
+  options: PluginCommandRegistrationOptions,
+): readonly T[] | undefined {
+  const exact = snapshots.get(runtimeIdentityKey(options));
+  return exact ?? snapshots.get(cwdOnlyRuntimeIdentityKey(options.cwd));
+}
+
+function shouldSkipImplicitPluginDiscovery(
+  options: PluginCommandRegistrationOptions,
+): boolean {
+  return !hasExplicitPluginDiscoveryInput(options) &&
+    isPluginRuntimeSimpleMode(options.env);
 }
 
 export function setActivePluginCommandSnapshot(
-  cwd: string,
+  options: ActivePluginSnapshotOptions,
   commands: readonly Command[],
 ): void {
-  activePluginCommandsByCwd.set(activeKey(cwd), [...commands]);
+  setActiveSnapshot(activePluginCommandsByCwd, options, commands);
 }
 
 export function setActivePluginSkillSnapshot(
-  cwd: string,
+  options: ActivePluginSnapshotOptions,
   skills: readonly Command[],
 ): void {
-  activePluginSkillsByCwd.set(activeKey(cwd), [...skills]);
+  setActiveSnapshot(activePluginSkillsByCwd, options, skills);
 }
 
 function isSkillFile(filePath: string): boolean {
@@ -167,6 +198,7 @@ function createPluginCommand(
     frontmatter.allowedTools ??
     metadata?.allowedTools;
   const argNames = splitList(frontmatter.arguments ?? frontmatter.argNames);
+  const aliases = splitList(frontmatter.aliases);
   const userInvocable =
     frontmatter["user-invocable"] === undefined
       ? true
@@ -181,7 +213,7 @@ function createPluginCommand(
     type: "prompt",
     name: commandName,
     description,
-    aliases: splitList(frontmatter.aliases),
+    ...(aliases.length > 0 ? { aliases } : {}),
     argumentHint: coerceString(frontmatter["argument-hint"] ?? frontmatter.argumentHint),
     argNames: argNames.length > 0 ? argNames : undefined,
     allowedTools: normalizedToolList(plugin, rawAllowedTools),
@@ -251,7 +283,9 @@ async function readCommandPath(
   const baseDir = plugin.commandsPath && command.path.startsWith(`${plugin.commandsPath}${sep}`)
     ? plugin.commandsPath
     : dirname(command.path);
-  const declaredName = command.name === markdownStem(command.path)
+  const declaredName = command.manifestName !== undefined
+    ? `${plugin.name}:${command.manifestName}`
+    : command.name === markdownStem(command.path)
     ? undefined
     : `${plugin.name}:${command.name}`;
   return [
@@ -275,7 +309,7 @@ async function collectCommandMarkdownFiles(root: string): Promise<readonly strin
   );
   return files.filter((filePath) => {
     for (const skillDir of skillDirs) {
-      if (filePath === join(skillDir, "SKILL.md")) return true;
+      if (isSkillFile(filePath) && dirname(filePath) === skillDir) return true;
       if (filePath.startsWith(`${skillDir}${sep}`)) return false;
     }
     return true;
@@ -328,7 +362,7 @@ function filterLoadedCommandsForSkillDirectories(
     const path = command.path;
     if (path === undefined) return true;
     for (const skillDir of skillDirs) {
-      if (path === join(skillDir, "SKILL.md")) return true;
+      if (isSkillFile(path) && dirname(path) === skillDir) return true;
       if (path.startsWith(`${skillDir}${sep}`)) return false;
     }
     return true;
@@ -385,8 +419,9 @@ async function resolvePlugins(
 export async function loadPluginCommands(
   options: PluginCommandRegistrationOptions = {},
 ): Promise<readonly Command[]> {
-  if (options.plugins === undefined) {
-    const active = activePluginCommandsByCwd.get(activeKey(options.cwd));
+  if (shouldSkipImplicitPluginDiscovery(options)) return [];
+  if (!hasExplicitPluginDiscoveryInput(options)) {
+    const active = getActiveSnapshot(activePluginCommandsByCwd, options);
     if (active !== undefined) return active;
   }
   const plugins = await resolvePlugins(options);
@@ -401,8 +436,9 @@ export async function loadPluginCommands(
 export async function loadPluginSkills(
   options: PluginCommandRegistrationOptions = {},
 ): Promise<readonly Command[]> {
-  if (options.plugins === undefined) {
-    const active = activePluginSkillsByCwd.get(activeKey(options.cwd));
+  if (shouldSkipImplicitPluginDiscovery(options)) return [];
+  if (!hasExplicitPluginDiscoveryInput(options)) {
+    const active = getActiveSnapshot(activePluginSkillsByCwd, options);
     if (active !== undefined) return active;
   }
   const plugins = await resolvePlugins(options);

@@ -15,6 +15,7 @@ export interface ActivePluginRefreshResult {
   readonly hook_count: number;
   readonly mcp_count: number;
   readonly lsp_count: number;
+  readonly output_style_count: number;
   readonly error_count: number;
   readonly mcp_servers?: Readonly<Record<string, McpServerConfig>>;
   readonly lsp_servers?: Readonly<Record<string, LspServerConfigInput>>;
@@ -123,6 +124,7 @@ export function formatPluginRefreshSummary(
     `  ${plural(result.hook_count, "hook")}`,
     `  ${plural(result.mcp_count, "plugin MCP server")}`,
     `  ${plural(result.lsp_count, "plugin LSP server")}`,
+    `  ${plural(result.output_style_count, "plugin output style")}`,
     `  ${plural(result.error_count, "error")}`,
   ].join("\n");
 }

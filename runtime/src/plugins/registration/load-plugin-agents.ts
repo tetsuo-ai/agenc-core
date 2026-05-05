@@ -1,10 +1,13 @@
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname } from "node:path";
 
 import {
   AGENT_COLORS,
   type AgentColorName,
 } from "../../tools/AgentTool/agentColorManager.js";
 import { loadAgentMemoryPrompt } from "../../tools/AgentTool/agentMemory.js";
+import { FILE_EDIT_TOOL_NAME } from "../../tools/system/file-edit.js";
+import { FILE_READ_TOOL_NAME } from "../../tools/system/file-read.js";
+import { FILE_WRITE_TOOL_NAME } from "../../tools/system/file-write.js";
 import type {
   AgentMemoryScope,
   EffortValue,
@@ -14,12 +17,15 @@ import type { LoadedPlugin } from "../loader.js";
 import {
   collectMarkdownFiles,
   coerceString,
+  cwdOnlyRuntimeIdentityKey,
+  hasExplicitPluginDiscoveryInput,
   loadRuntimePlugins,
   markdownStem,
   namespaceFromPath,
   parseBoolean,
   pathIsDirectory,
   readMarkdownFile,
+  runtimeIdentityKey,
   splitList,
   substitutePluginTemplate,
   type ParsedMarkdownFile,
@@ -32,19 +38,42 @@ export interface PluginAgentRegistrationOptions extends PluginRuntimeLoadOptions
 
 const VALID_MEMORY_SCOPES: readonly AgentMemoryScope[] = ["user", "project", "local"];
 const VALID_EFFORTS = new Set(["none", "low", "medium", "high", "max", "xhigh"]);
+const MEMORY_TOOLS = [
+  FILE_WRITE_TOOL_NAME,
+  FILE_EDIT_TOOL_NAME,
+  FILE_READ_TOOL_NAME,
+] as const;
 
 let pluginAgentCache: Promise<readonly PluginAgentDefinition[]> | null = null;
 const activePluginAgentsByCwd = new Map<string, readonly PluginAgentDefinition[]>();
 
-function activeKey(cwd: string | undefined): string {
-  return resolve(cwd ?? process.cwd());
+interface ActivePluginSnapshotOptions {
+  readonly cwd: string;
+  readonly agencHome?: string;
+  readonly env?: NodeJS.ProcessEnv;
+}
+
+function setActiveSnapshot(
+  options: ActivePluginSnapshotOptions,
+  agents: readonly PluginAgentDefinition[],
+): void {
+  const copy = [...agents];
+  activePluginAgentsByCwd.set(runtimeIdentityKey(options), copy);
+  activePluginAgentsByCwd.set(cwdOnlyRuntimeIdentityKey(options.cwd), copy);
+}
+
+function getActiveSnapshot(
+  options: PluginAgentRegistrationOptions,
+): readonly PluginAgentDefinition[] | undefined {
+  const exact = activePluginAgentsByCwd.get(runtimeIdentityKey(options));
+  return exact ?? activePluginAgentsByCwd.get(cwdOnlyRuntimeIdentityKey(options.cwd));
 }
 
 export function setActivePluginAgentSnapshot(
-  cwd: string,
+  options: ActivePluginSnapshotOptions,
   agents: readonly PluginAgentDefinition[],
 ): void {
-  activePluginAgentsByCwd.set(activeKey(cwd), [...agents]);
+  setActiveSnapshot(options, agents);
 }
 
 function parseTools(value: unknown): string[] | undefined {
@@ -78,6 +107,18 @@ function parseMemoryScope(value: unknown): AgentMemoryScope | undefined {
     : undefined;
 }
 
+function addMemoryTools(
+  tools: string[] | undefined,
+  memory: AgentMemoryScope | undefined,
+): string[] | undefined {
+  if (!memory || tools === undefined || !isAutoMemoryEnabled()) return tools;
+  const merged = new Set(tools);
+  for (const tool of MEMORY_TOOLS) {
+    merged.add(tool);
+  }
+  return [...merged];
+}
+
 function parseColor(value: unknown): AgentColorName | undefined {
   return typeof value === "string" && (AGENT_COLORS as readonly string[]).includes(value)
     ? value as AgentColorName
@@ -108,7 +149,7 @@ function createPluginAgent(
     `Agent from ${plugin.name} plugin`;
   const memory = parseMemoryScope(file.frontmatter.memory);
   const systemPrompt = substitutePluginTemplate(file.markdown.trim(), plugin);
-  const tools = parseTools(file.frontmatter.tools);
+  const tools = addMemoryTools(parseTools(file.frontmatter.tools), memory);
   const disallowedTools =
     file.frontmatter.disallowedTools !== undefined
       ? parseTools(file.frontmatter.disallowedTools)
@@ -195,8 +236,8 @@ async function resolvePlugins(
 export async function loadPluginAgents(
   options: PluginAgentRegistrationOptions = {},
 ): Promise<readonly PluginAgentDefinition[]> {
-  if (options.plugins === undefined) {
-    const active = activePluginAgentsByCwd.get(activeKey(options.cwd));
+  if (!hasExplicitPluginDiscoveryInput(options)) {
+    const active = getActiveSnapshot(options);
     if (active !== undefined) return active;
   }
   const plugins = await resolvePlugins(options);

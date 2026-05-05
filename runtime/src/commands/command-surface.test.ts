@@ -569,6 +569,7 @@ describe("absorbed T-10 command behavior", () => {
       hook_count: 4,
       mcp_count: 5,
       lsp_count: 6,
+      output_style_count: 7,
       error_count: 0,
     }));
     const restore = setActivePluginRefresherForTesting(refreshActivePlugins);
@@ -579,8 +580,9 @@ describe("absorbed T-10 command behavior", () => {
       },
     });
     try {
-      await expect(reloadPluginSurfaces(fakeContext("/tmp", session))).resolves
-        .toContain("2 skill commands");
+      const summary = await reloadPluginSurfaces(fakeContext("/tmp", session));
+      expect(summary).toContain("2 skill commands");
+      expect(summary).toContain("7 plugin output styles");
       expect(clearSkillCaches).toHaveBeenCalled();
       expect(refreshActivePlugins).toHaveBeenCalledOnce();
       expect(refreshFromConfig).toHaveBeenCalledOnce();
@@ -603,6 +605,7 @@ describe("absorbed T-10 command behavior", () => {
         hook_count: 0,
         mcp_count: 0,
         lsp_count: 0,
+        output_style_count: 0,
         error_count: 0,
       };
     });
@@ -642,6 +645,7 @@ describe("absorbed T-10 command behavior", () => {
         hook_count: 0,
         mcp_count: 0,
         lsp_count: 0,
+        output_style_count: 0,
         error_count: 0,
       };
     });
@@ -691,6 +695,7 @@ describe("absorbed T-10 command behavior", () => {
       hook_count: 0,
       mcp_count: 0,
       lsp_count: 0,
+      output_style_count: 0,
       error_count: 0,
     }));
     const previousUserType = process.env.USER_TYPE;

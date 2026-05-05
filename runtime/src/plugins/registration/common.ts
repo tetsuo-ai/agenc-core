@@ -28,6 +28,12 @@ export interface PluginRuntimeLoadOptions {
   readonly env?: NodeJS.ProcessEnv;
 }
 
+export interface PluginRuntimeIdentityOptions {
+  readonly cwd?: string;
+  readonly agencHome?: string;
+  readonly env?: NodeJS.ProcessEnv;
+}
+
 export interface ParsedMarkdownFile {
   readonly filePath: string;
   readonly baseDir: string;
@@ -209,23 +215,25 @@ export function descriptionFromMarkdown(raw: string): string | undefined {
 export function pluginSettingValue(
   plugin: LoadedPlugin,
   key: string,
+  options: { readonly exposeSensitive?: boolean } = {},
 ): string | undefined {
-  const options = isRecord(plugin.settings?.options)
+  const settings = isRecord(plugin.settings?.options)
     ? plugin.settings.options
     : isRecord(plugin.settings)
       ? plugin.settings
       : undefined;
-  const configured = options?.[key];
+  const manifestOption = plugin.manifest.userConfig?.[key];
+  const exposeSensitive = options.exposeSensitive === true;
+  if (manifestOption?.sensitive === true && !exposeSensitive) {
+    return `[configured:${key}]`;
+  }
+  const configured = settings?.[key];
   if (
     typeof configured === "string" ||
     typeof configured === "number" ||
     typeof configured === "boolean"
   ) {
     return String(configured);
-  }
-  const manifestOption = plugin.manifest.userConfig?.[key];
-  if (manifestOption?.sensitive === true) {
-    return `[configured:${key}]`;
   }
   const defaultValue = manifestOption?.default;
   if (
@@ -241,16 +249,53 @@ export function pluginSettingValue(
 export function substitutePluginTemplate(
   value: string,
   plugin: LoadedPlugin,
-  options: { readonly sessionId?: string } = {},
+  options: { readonly sessionId?: string; readonly exposeSensitive?: boolean } = {},
 ): string {
   let out = value
     .replace(/\$\{AGENC_PLUGIN_ROOT\}/g, plugin.root)
     .replace(/\$\{AGENC_PLUGIN_DATA\}/g, getPluginDataDir(plugin.source))
     .replace(/\$\{AGENC_SESSION_ID\}/g, options.sessionId ?? "");
   out = out.replace(/\$\{user_config\.([A-Za-z_][\w.-]*)\}/g, (_match, key: string) => {
-    return pluginSettingValue(plugin, key) ?? "";
+    return pluginSettingValue(plugin, key, {
+      exposeSensitive: options.exposeSensitive,
+    }) ?? "";
   });
   return out;
+}
+
+export function runtimeIdentityKey(
+  options: PluginRuntimeIdentityOptions = {},
+): string {
+  const env = options.env ?? process.env;
+  const cwd = resolve(options.cwd ?? process.cwd());
+  const agencHome = resolve(
+    options.agencHome ??
+      env.AGENC_HOME ??
+      join(homedir(), ".agenc"),
+  );
+  return `${cwd}\0${agencHome}`;
+}
+
+export function cwdOnlyRuntimeIdentityKey(cwd: string | undefined): string {
+  return resolve(cwd ?? process.cwd());
+}
+
+export function isPluginRuntimeSimpleMode(env: NodeJS.ProcessEnv = process.env): boolean {
+  return parseBoolean(env.AGENC_SIMPLE) || parseBoolean(env.AGENC_BARE);
+}
+
+export function hasExplicitPluginDiscoveryInput(
+  options: Pick<PluginRuntimeLoadOptions, "config" | "extraPluginDirs"> & {
+    readonly plugins?: readonly unknown[];
+  },
+): boolean {
+  if (options.plugins !== undefined) return true;
+  if ((options.extraPluginDirs?.length ?? 0) > 0) return true;
+  const plugins = options.config?.plugins;
+  if (isRecord(options.config?.enabledPlugins)) return true;
+  return isRecord(plugins) &&
+    (Array.isArray(plugins.dirs) ||
+      isRecord(plugins.enabled));
 }
 
 export function substituteArguments(

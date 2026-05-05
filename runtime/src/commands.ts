@@ -14,11 +14,10 @@ import {
   type LocalSkillMetadata,
 } from "./skills/local-loader.js";
 import {
-  clearPluginCommandCache,
-  clearPluginSkillsCache,
   loadPluginCommands,
   loadPluginSkills,
 } from "./plugins/registration/load-plugin-commands.js";
+import { clearPluginRegistrationCaches } from "./plugins/registration/manager.js";
 
 export type LocalCommandResult =
   | { type: "text"; value: string }
@@ -594,8 +593,7 @@ export function clearCommandMemoizationCaches(): void {
   void import(skillsModulePath).then(module => {
     module.clearSkillCaches?.();
   }).catch(() => undefined);
-  clearPluginCommandCache();
-  clearPluginSkillsCache();
+  clearPluginRegistrationCaches();
   getSkillToolCommands.cache.clear();
   getSlashCommandToolSkills.cache.clear();
 }

@@ -9,17 +9,27 @@ import {
   toPluginLoaderOptions,
   type PluginRuntimeLoadOptions,
 } from "./common.js";
-import { loadPluginAgents, setActivePluginAgentSnapshot } from "./load-plugin-agents.js";
 import {
+  clearPluginAgentCache,
+  loadPluginAgents,
+  setActivePluginAgentSnapshot,
+} from "./load-plugin-agents.js";
+import {
+  clearPluginCommandCache,
+  clearPluginSkillsCache,
   loadPluginCommands,
   loadPluginSkills,
   setActivePluginCommandSnapshot,
   setActivePluginSkillSnapshot,
 } from "./load-plugin-commands.js";
-import { loadPluginHooks } from "./load-plugin-hooks.js";
-import { loadPluginLspServers } from "./lsp-plugin-integration.js";
-import { loadPluginMcpServers } from "./mcp-plugin-integration.js";
-import { loadPluginOutputStyles, type PluginOutputStyle } from "./load-plugin-output-styles.js";
+import { clearPluginHookCache, loadPluginHooks } from "./load-plugin-hooks.js";
+import { clearPluginLspServerCache, loadPluginLspServers } from "./lsp-plugin-integration.js";
+import { clearPluginMcpServerCache, loadPluginMcpServers } from "./mcp-plugin-integration.js";
+import {
+  clearPluginOutputStyleCache,
+  loadPluginOutputStyles,
+  type PluginOutputStyle,
+} from "./load-plugin-output-styles.js";
 
 export interface PluginRegistrationSnapshot {
   readonly enabled_count: number;
@@ -196,8 +206,24 @@ function appStateHooksConfig(plugin: LoadedPlugin): HooksMap | undefined {
 }
 
 function appStatePlugin(plugin: LoadedPlugin): Record<string, unknown> {
+  const { settings: _settings, ...manifest } = plugin.manifest;
   return {
-    ...plugin,
+    name: plugin.name,
+    ...(plugin.version !== undefined ? { version: plugin.version } : {}),
+    ...(plugin.description !== undefined ? { description: plugin.description } : {}),
+    root: plugin.root,
+    source: plugin.source,
+    enabled: plugin.enabled,
+    manifest,
+    ...(plugin.manifestPath !== undefined ? { manifestPath: plugin.manifestPath } : {}),
+    ...(plugin.commandsPath !== undefined ? { commandsPath: plugin.commandsPath } : {}),
+    commands: [...plugin.commands],
+    ...(plugin.agentsPath !== undefined ? { agentsPath: plugin.agentsPath } : {}),
+    ...(plugin.skillsPath !== undefined ? { skillsPath: plugin.skillsPath } : {}),
+    ...(plugin.outputStylesPath !== undefined ? { outputStylesPath: plugin.outputStylesPath } : {}),
+    hookSources: [...plugin.hookSources],
+    appConnectorIds: [...plugin.appConnectorIds],
+    errors: [...plugin.errors],
     path: plugin.root,
     repository: plugin.source,
     commandsPaths: [...plugin.commandsPaths],
@@ -210,6 +236,18 @@ function appStatePlugin(plugin: LoadedPlugin): Record<string, unknown> {
     mcpServers: { ...plugin.mcpServers },
     lspServers: { ...plugin.lspServers },
   };
+}
+
+function dedupeErrors(errors: readonly unknown[]): unknown[] {
+  const seen = new Set<string>();
+  const out: unknown[] = [];
+  for (const error of errors) {
+    const key = JSON.stringify(error);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(error);
+  }
+  return out;
 }
 
 function updatePluginAppState(
@@ -225,6 +263,10 @@ function updatePluginAppState(
       typeof currentMcp.pluginReconnectKey === "number"
         ? currentMcp.pluginReconnectKey
         : 0;
+    const errors = dedupeErrors([
+      ...arrayValue(currentPlugins.errors),
+      ...snapshot.loadResult.errors.map(pluginErrorFromIssue),
+    ]);
     return {
       ...current,
       plugins: {
@@ -233,7 +275,7 @@ function updatePluginAppState(
         disabled: snapshot.loadResult.disabled.map(appStatePlugin),
         commands: [...snapshot.commands, ...snapshot.skills],
         outputStyles: snapshot.outputStyles.map((style) => style.name),
-        errors: snapshot.loadResult.errors.map(pluginErrorFromIssue),
+        errors,
         needsRefresh: false,
       },
       agentDefinitions: mergeAgentDefinitions(current, snapshot.agents),
@@ -264,10 +306,15 @@ export function pluginRuntimeOptionsFromContext(
 export async function refreshActivePlugins(
   ctx: SlashCommandContext,
 ): Promise<PluginRegistrationSnapshot> {
-  const snapshot = await refreshPluginRegistrations(pluginRuntimeOptionsFromContext(ctx));
-  setActivePluginCommandSnapshot(ctx.cwd, snapshot.commands);
-  setActivePluginSkillSnapshot(ctx.cwd, snapshot.skills);
-  setActivePluginAgentSnapshot(ctx.cwd, snapshot.agents);
+  const options = pluginRuntimeOptionsFromContext(ctx);
+  const snapshot = await refreshPluginRegistrations(options);
+  const activeIdentity = {
+    cwd: ctx.cwd,
+    ...(options.agencHome !== undefined ? { agencHome: options.agencHome } : {}),
+  };
+  setActivePluginCommandSnapshot(activeIdentity, snapshot.commands);
+  setActivePluginSkillSnapshot(activeIdentity, snapshot.skills);
+  setActivePluginAgentSnapshot(activeIdentity, snapshot.agents);
   registerPluginHooksWithRuntime(ctx, snapshot.hooks);
   updatePluginAppState(ctx.appState?.setAppState, snapshot);
   return snapshot;
@@ -296,4 +343,14 @@ function registerPluginHooksWithRuntime(
   const runtime = ctx.session.services.hooksRuntime;
   if (!runtime) return;
   runtime.load(mergeHookMaps(currentConfig(ctx)?.hooks, hooks));
+}
+
+export function clearPluginRegistrationCaches(): void {
+  clearPluginCommandCache();
+  clearPluginSkillsCache();
+  clearPluginAgentCache();
+  clearPluginHookCache();
+  clearPluginMcpServerCache();
+  clearPluginLspServerCache();
+  clearPluginOutputStyleCache();
 }

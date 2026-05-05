@@ -9,10 +9,17 @@ import { loadPluginAgents } from "./registration/load-plugin-agents.js";
 import { loadPluginCommands, loadPluginSkills } from "./registration/load-plugin-commands.js";
 import { loadPluginHooks } from "./registration/load-plugin-hooks.js";
 import { loadPluginLspServers } from "./registration/lsp-plugin-integration.js";
-import { loadPluginMcpServers } from "./registration/mcp-plugin-integration.js";
+import { getUnconfiguredChannels, loadPluginMcpServers } from "./registration/mcp-plugin-integration.js";
 import { refreshActivePlugins, refreshPluginRegistrations } from "./registration/manager.js";
 import { loadPluginOutputStyles } from "./registration/load-plugin-output-styles.js";
 import type { SlashCommandContext } from "../commands/types.js";
+import {
+  clearAgentDefinitionsCache,
+  getAgentDefinitionsWithOverrides,
+} from "../tools/AgentTool/loadAgentsDir.js";
+import { FILE_EDIT_TOOL_NAME } from "../tools/system/file-edit.js";
+import { FILE_READ_TOOL_NAME } from "../tools/system/file-read.js";
+import { FILE_WRITE_TOOL_NAME } from "../tools/system/file-write.js";
 
 describe("plugin registration", () => {
   test("registers commands, agents, hooks, servers, and output styles from enabled plugins", async () => {
@@ -39,7 +46,8 @@ describe("plugin registration", () => {
           type: "text",
           text:
             `Deploy prod api from ${pluginRoot} into prod with ` +
-            `${process.env.AGENC_PLUGIN_CACHE_DIR}/data/${pluginRoot.replace(/[^a-zA-Z0-9\-_]/g, "-")}`,
+            `${process.env.AGENC_PLUGIN_CACHE_DIR}/data/${pluginRoot.replace(/[^a-zA-Z0-9\-_]/g, "-")} ` +
+            "using [configured:token]",
         },
       ]);
 
@@ -95,9 +103,10 @@ describe("plugin registration", () => {
         env: expect.objectContaining({
           AGENC_PLUGIN_ROOT: pluginRoot,
           AGENC_PLUGIN_NAME: "sample",
-          TOKEN: "[configured:token]",
+          TOKEN: "stored-token",
         }),
       });
+      expect(getUnconfiguredChannels(plugins[0]!)).toEqual([]);
 
       const lspServers = await loadPluginLspServers({
         cwd: root,
@@ -164,12 +173,17 @@ describe("plugin registration", () => {
         source: "built-in",
         whenToUse: "baseline",
       };
+      const existingPluginError = {
+        type: "lsp-manager",
+        server: "ts",
+        reason: "still active",
+      };
       let appState: Record<string, unknown> = {
         plugins: {
           enabled: [],
           disabled: [],
           commands: [],
-          errors: [],
+          errors: [existingPluginError],
           needsRefresh: true,
         },
         agentDefinitions: {
@@ -209,10 +223,15 @@ describe("plugin registration", () => {
       expect(appState.plugins).toMatchObject({
         needsRefresh: false,
       });
-      expect((appState.plugins as { enabled: unknown[] }).enabled[0])
-        .toMatchObject({ name: "sample" });
+      const enabledPlugin = (appState.plugins as { enabled: Array<Record<string, unknown>> }).enabled[0]!;
+      expect(enabledPlugin).toMatchObject({ name: "sample" });
+      expect(enabledPlugin).not.toHaveProperty("settings");
+      expect(enabledPlugin.manifest as Record<string, unknown>).not.toHaveProperty("settings");
+      expect(JSON.stringify(enabledPlugin)).not.toContain("stored-token");
       expect((appState.plugins as { commands: Array<{ name: string }> }).commands.map((command) => command.name))
         .toEqual(["sample:deploy", "sample:inspector"]);
+      expect((appState.plugins as { errors: unknown[] }).errors)
+        .toContainEqual(existingPluginError);
       expect(appState.mcp).toMatchObject({ pluginReconnectKey: 8 });
       expect((appState.agentDefinitions as { activeAgents: Array<{ agentType: string }> }).activeAgents)
         .toEqual([
@@ -224,6 +243,105 @@ describe("plugin registration", () => {
         .resolves.toEqual([expect.objectContaining({ name: "sample:deploy" })]);
       await expect(loadPluginAgents({ cwd: root }))
         .resolves.toEqual([expect.objectContaining({ agentType: "sample:review" })]);
+
+      clearAgentDefinitionsCache();
+      try {
+        await expect(getAgentDefinitionsWithOverrides(root))
+          .resolves.toEqual(
+            expect.objectContaining({
+              activeAgents: expect.arrayContaining([
+                expect.objectContaining({ agentType: "sample:review" }),
+              ]),
+            }),
+          );
+      } finally {
+        clearAgentDefinitionsCache();
+      }
+    });
+  });
+
+  test("explicit plugin discovery bypasses active snapshots for commands, skills, and agents", async () => {
+    await withTempPlugin(async ({ root, pluginRoot, options }) => {
+      const configStore = {
+        current: () => ({ plugins: { dirs: [pluginRoot] } }),
+      };
+      await refreshActivePlugins({
+        cwd: root,
+        home: root,
+        agencHome: options.agencHome,
+        argsRaw: "",
+        configStore,
+        session: {
+          services: {
+            configStore,
+          },
+        },
+      } as unknown as SlashCommandContext);
+
+      const explicitRoot = join(root, "explicit-plugin");
+      await writeJson(join(explicitRoot, ".agenc-plugin", "plugin.json"), {
+        name: "explicit",
+      });
+      await writeFileAt(join(explicitRoot, "commands", "alt.md"), "Explicit command.");
+      await writeFileAt(join(explicitRoot, "skills", "audit", "SKILL.md"), "Explicit skill.");
+      await writeFileAt(
+        join(explicitRoot, "agents", "audit.md"),
+        [
+          "---",
+          "name: audit",
+          "description: Audit explicit plugin",
+          "---",
+          "Audit the workspace.",
+        ].join("\n"),
+      );
+
+      await expect(loadPluginCommands({
+        cwd: root,
+        agencHome: options.agencHome,
+        extraPluginDirs: [explicitRoot],
+      })).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: "explicit:alt" }),
+        ]),
+      );
+      await expect(loadPluginSkills({
+        cwd: root,
+        agencHome: options.agencHome,
+        extraPluginDirs: [explicitRoot],
+      })).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: "explicit:audit" }),
+        ]),
+      );
+      await expect(loadPluginAgents({
+        cwd: root,
+        agencHome: options.agencHome,
+        extraPluginDirs: [explicitRoot],
+      })).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ agentType: "explicit:audit" }),
+        ]),
+      );
+    });
+  });
+
+  test("manifest object-map command names win over nested source paths", async () => {
+    await withTempPlugin(async ({ pluginRoot, options }) => {
+      await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
+        name: "sample",
+        commands: {
+          deploy: {
+            source: "./commands/admin/deploy.md",
+          },
+        },
+      });
+      await writeFileAt(join(pluginRoot, "commands", "admin", "deploy.md"), "Deploy nested.");
+
+      const result = await loadPlugins(options);
+      const commands = await loadPluginCommands({ plugins: result.enabled });
+
+      expect(commands.map((command) => command.name)).toContain("sample:deploy");
+      expect(commands.map((command) => command.name)).not.toContain("sample:admin:deploy");
     });
   });
 
@@ -234,7 +352,7 @@ describe("plugin registration", () => {
       });
       await rm(join(pluginRoot, "commands", "deploy.md"), { force: true });
       await writeFileAt(join(pluginRoot, "commands", "regular.md"), "Regular command.");
-      await writeFileAt(join(pluginRoot, "commands", "tool", "SKILL.md"), "Skill command.");
+      await writeFileAt(join(pluginRoot, "commands", "tool", "skill.md"), "Skill command.");
       await writeFileAt(join(pluginRoot, "commands", "tool", "README.md"), "Nested docs.");
 
       const result = await loadPlugins(options);
@@ -244,6 +362,65 @@ describe("plugin registration", () => {
         "sample:regular",
         "sample:tool",
       ]);
+    });
+  });
+
+  test("plugin agents with memory keep memory access tools when tools are restricted", async () => {
+    await withTempPlugin(async ({ root, pluginRoot, options }) => {
+      await writeFileAt(
+        join(pluginRoot, "agents", "review.md"),
+        [
+          "---",
+          "name: review",
+          "description: Review changes",
+          "tools: Read",
+          "memory: user",
+          "---",
+          "Use ${AGENC_PLUGIN_ROOT}/rules.md",
+        ].join("\n"),
+      );
+
+      const result = await loadPlugins(options);
+      const agents = await loadPluginAgents({
+        cwd: root,
+        agencHome: options.agencHome,
+        plugins: result.enabled,
+      });
+
+      expect(agents[0]?.tools).toEqual(
+        expect.arrayContaining([
+          "Read",
+          FILE_WRITE_TOOL_NAME,
+          FILE_EDIT_TOOL_NAME,
+          FILE_READ_TOOL_NAME,
+        ]),
+      );
+    });
+  });
+
+  test("implicit command loading is skipped in simple mode but explicit plugin dirs still load", async () => {
+    await withTempPlugin(async ({ root, pluginRoot, options }) => {
+      const previousSimple = process.env.AGENC_SIMPLE;
+      try {
+        process.env.AGENC_SIMPLE = "1";
+        await expect(loadPluginCommands({
+          cwd: root,
+          agencHome: options.agencHome,
+        })).resolves.toEqual([]);
+        await expect(loadPluginCommands({
+          cwd: root,
+          agencHome: options.agencHome,
+          extraPluginDirs: [pluginRoot],
+        })).resolves.toEqual([
+          expect.objectContaining({ name: "sample:deploy" }),
+        ]);
+      } finally {
+        if (previousSimple === undefined) {
+          delete process.env.AGENC_SIMPLE;
+        } else {
+          process.env.AGENC_SIMPLE = previousSimple;
+        }
+      }
     });
   });
 });
@@ -261,7 +438,7 @@ async function withTempPlugin(
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "agenc-plugin-registration-"));
   const previousCacheDir = process.env.AGENC_PLUGIN_CACHE_DIR;
-  const pluginRoot = join(root, "sample-plugin");
+  const pluginRoot = join(root, ".agents", "plugins", "sample-plugin");
   const agencHome = join(root, "home");
   try {
     process.env.AGENC_PLUGIN_CACHE_DIR = join(root, "plugin-cache");
@@ -314,6 +491,30 @@ async function withTempPlugin(
           sensitive: true,
         },
       },
+      channels: [
+        {
+          server: "local",
+          userConfig: {
+            token: {
+              type: "string",
+              title: "Token",
+              description: "Access token",
+              required: true,
+              sensitive: true,
+            },
+            nickname: {
+              type: "string",
+              title: "Nickname",
+              description: "Optional nickname",
+            },
+          },
+        },
+      ],
+    });
+    await writeJson(join(pluginRoot, "settings.json"), {
+      options: {
+        token: "stored-token",
+      },
     });
     await writeFileAt(
       join(pluginRoot, "commands", "deploy.md"),
@@ -322,7 +523,7 @@ async function withTempPlugin(
         "description: Deploy command frontmatter",
         "arguments: env target",
         "---",
-        "Deploy $ARGUMENTS from ${AGENC_PLUGIN_ROOT} into ${env} with ${AGENC_PLUGIN_DATA}",
+        "Deploy $ARGUMENTS from ${AGENC_PLUGIN_ROOT} into ${env} with ${AGENC_PLUGIN_DATA} using ${user_config.token}",
       ].join("\n"),
     );
     await writeFileAt(

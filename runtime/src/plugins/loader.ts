@@ -88,6 +88,7 @@ export interface LoadedPluginCommand {
   readonly path?: string;
   readonly content?: string;
   readonly metadata: PluginCommandMetadata;
+  readonly manifestName?: string;
 }
 
 export interface PluginHookSource {
@@ -595,7 +596,7 @@ async function commandDeclarationsToCommands(
   const out: LoadedPluginCommand[] = [];
   for (const [name, metadata] of Object.entries(declaration)) {
     if (metadata.content !== undefined) {
-      out.push({ name, content: metadata.content, metadata });
+      out.push({ name, content: metadata.content, metadata, manifestName: name });
       continue;
     }
     if (metadata.source === undefined) continue;
@@ -607,7 +608,7 @@ async function commandDeclarationsToCommands(
       pluginName,
       errors,
     );
-    out.push(...paths.map((path) => ({ name, path, metadata })));
+    out.push(...paths.map((path) => ({ name, path, metadata, manifestName: name })));
   }
   return out;
 }
