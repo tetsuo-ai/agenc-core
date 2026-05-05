@@ -6,6 +6,7 @@ import {
   findMarketplaceName,
   loadMarketplace,
   marketplaceInstalledPath,
+  normalizeMarketplaceName,
   readMarketplaceIndex,
   removeMarketplaceOp,
   upgradeMarketplaceOp,
@@ -122,11 +123,18 @@ export async function loadSeedMarketplaces(
   for (const seedDir of seedDirs) {
     const config = await readSeedKnownMarketplaces(seedDir);
     if (config === null) continue;
-    for (const [name, rawEntry] of Object.entries(config)) {
-      if (claimed.has(name)) continue;
+    for (const [rawName, rawEntry] of Object.entries(config)) {
+      let name: string;
+      try {
+        name = normalizeMarketplaceName(rawName);
+      } catch {
+        continue;
+      }
+      const claimedKey = name.toLowerCase();
+      if (claimed.has(claimedKey)) continue;
       const location = await findSeedMarketplaceLocation(seedDir, name);
       if (location === null) continue;
-      const sourceDescriptor = normalizeSeedMarketplaceSource(rawEntry, location.installedPath);
+      const sourceDescriptor = seedMarketplaceLocalSource(location.installedPath);
       seeds[name] = {
         name,
         source: displaySeedMarketplaceSource(sourceDescriptor),
@@ -149,7 +157,7 @@ export async function loadSeedMarketplaces(
         autoUpdate: false,
         updatedAt: seedMarketplaceUpdatedAt(rawEntry),
       };
-      claimed.add(name);
+      claimed.add(claimedKey);
     }
   }
   return seeds;
@@ -476,14 +484,15 @@ async function findSeedMarketplaceLocation(
   seedDir: string,
   name: string,
 ): Promise<{ readonly installedPath: string; readonly manifestPath: string } | null> {
-  const marketplaceRoot = join(seedDir, "marketplaces", name);
+  const safeName = normalizeMarketplaceName(name);
+  const marketplaceRoot = join(seedDir, "marketplaces", safeName);
   for (const relativePath of SEED_MARKETPLACE_MANIFEST_RELATIVE_PATHS) {
     const manifestPath = join(marketplaceRoot, relativePath);
     if (await marketplaceManifestLoads(manifestPath)) {
       return { installedPath: marketplaceRoot, manifestPath };
     }
   }
-  const jsonMarketplace = join(seedDir, "marketplaces", `${name}.json`);
+  const jsonMarketplace = join(seedDir, "marketplaces", `${safeName}.json`);
   if (await marketplaceManifestLoads(jsonMarketplace)) {
     return { installedPath: jsonMarketplace, manifestPath: jsonMarketplace };
   }
@@ -499,11 +508,7 @@ async function marketplaceManifestLoads(manifestPath: string): Promise<boolean> 
   }
 }
 
-function normalizeSeedMarketplaceSource(rawEntry: unknown, installedPath: string): MarketplaceSource {
-  if (isRecord(rawEntry)) {
-    if (isMarketplaceSource(rawEntry.sourceDescriptor)) return rawEntry.sourceDescriptor;
-    if (isMarketplaceSource(rawEntry.source)) return rawEntry.source;
-  }
+function seedMarketplaceLocalSource(installedPath: string): MarketplaceSource {
   return { source: "local", path: installedPath };
 }
 
@@ -575,11 +580,6 @@ function marketplaceDeclarationMatches(
 ): boolean {
   return JSON.stringify(existing.sourceDescriptor) === JSON.stringify(declaration.source) &&
     (declaration.autoUpdate === undefined || existing.autoUpdate === declaration.autoUpdate);
-}
-
-function isMarketplaceSource(value: unknown): value is MarketplaceSource {
-  if (!isRecord(value) || typeof value.source !== "string") return false;
-  return ["local", "file", "directory", "git", "github", "url", "settings"].includes(value.source);
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {

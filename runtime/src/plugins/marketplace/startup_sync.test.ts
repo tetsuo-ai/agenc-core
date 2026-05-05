@@ -374,11 +374,77 @@ describe("startup marketplace sync", () => {
     });
 
     const index = JSON.parse(await readFile(marketplaceIndexPath({ agencHome }), "utf8")) as {
-      marketplaces: Record<string, { autoUpdate?: boolean; manifestPath?: string; installedPath?: string }>;
+      marketplaces: Record<string, {
+        autoUpdate?: boolean;
+        installedPath?: string;
+        manifestPath?: string;
+        source?: string;
+        sourceDescriptor?: { source?: string; path?: string };
+        sourceType?: string;
+      }>;
     };
     expect(index.marketplaces.seeded?.manifestPath).toBe(join(seededMarketplaceRoot, "marketplace.json"));
     expect(index.marketplaces.seeded?.installedPath).toBe(seededMarketplaceRoot);
+    expect(index.marketplaces.seeded?.source).toBe(seededMarketplaceRoot);
+    expect(index.marketplaces.seeded?.sourceDescriptor).toEqual({
+      source: "local",
+      path: seededMarketplaceRoot,
+    });
+    expect(index.marketplaces.seeded?.sourceType).toBe("local");
     expect(index.marketplaces.seeded?.autoUpdate).toBe(false);
+    expect(state.plugins.needsRefresh).toBe(true);
+  });
+
+  it("rejects unsafe seed marketplace names before path lookup and persistence", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-startup-checks-seed-safe-names-"));
+    const seedDir = await mkdtemp(join(tmpdir(), "agenc-plugin-seed-safe-names-"));
+    const safeMarketplaceRoot = join(seedDir, "marketplaces", "safe");
+    await writeLocalMarketplace(safeMarketplaceRoot, "safe");
+    await writeLocalMarketplace(join(seedDir, "outside"), "outside");
+    await writeLocalMarketplace(join(seedDir, "marketplaces", "absolute"), "absolute");
+    await writeLocalMarketplace(join(seedDir, "marketplaces", "C:\\outside"), "windows");
+    await writeFile(
+      join(seedDir, "known_marketplaces.json"),
+      `${JSON.stringify({
+        " safe ": {
+          source: { source: "local", path: "/build-time/safe" },
+          lastUpdated: "2026-05-05T00:00:00.000Z",
+        },
+        safe: {
+          source: { source: "local", path: "/duplicate/safe" },
+          lastUpdated: "2026-05-06T00:00:00.000Z",
+        },
+        "../outside": { source: { source: "local", path: "/build-time/outside" } },
+        "/absolute": { source: { source: "local", path: "/build-time/absolute" } },
+        "C:\\outside": { source: { source: "local", path: "/build-time/windows" } },
+      }, null, 2)}\n`,
+    );
+    let state = { plugins: { needsRefresh: false } };
+    const setAppState = (update: (prev: typeof state) => typeof state) => {
+      state = update(state);
+    };
+
+    await performStartupChecks(setAppState, {
+      trustAccepted: true,
+      agencHome,
+      env: { AGENC_PLUGIN_SEED_DIR: seedDir },
+      runProcess: curatedGitRunner("abc123"),
+    });
+
+    const index = JSON.parse(await readFile(marketplaceIndexPath({ agencHome }), "utf8")) as {
+      marketplaces: Record<string, {
+        installedPath?: string;
+        sourceDescriptor?: { source?: string; path?: string };
+        updatedAt?: string;
+      }>;
+    };
+    expect(Object.keys(index.marketplaces)).toEqual(["safe"]);
+    expect(index.marketplaces.safe?.installedPath).toBe(safeMarketplaceRoot);
+    expect(index.marketplaces.safe?.sourceDescriptor).toEqual({
+      source: "local",
+      path: safeMarketplaceRoot,
+    });
+    expect(index.marketplaces.safe?.updatedAt).toBe("2026-05-05T00:00:00.000Z");
     expect(state.plugins.needsRefresh).toBe(true);
   });
 
