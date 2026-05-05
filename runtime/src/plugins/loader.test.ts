@@ -307,6 +307,50 @@ describe("plugin loader", () => {
     });
   });
 
+  test("rejects malformed hook matcher entries", async () => {
+    await withTempDir(async (root) => {
+      const pluginRoot = join(root, "plugins", "bad-hooks");
+      await writePluginManifest(pluginRoot, {
+        name: "bad-hooks",
+        hooks: {
+          Stop: [3],
+        },
+      });
+
+      const { plugin, errors } = await createPluginFromPath(pluginRoot, {
+        source: "test",
+        enabled: true,
+        fallbackName: "bad-hooks",
+      });
+
+      expect(plugin.hookSources).toEqual([]);
+      expect(errors.map((error) => error.message)).toContain(
+        "Inline hooks must be a hooks map or an object with a hooks map",
+      );
+    });
+  });
+
+  test("uses the real manifest path for inline hook diagnostics", async () => {
+    await withTempDir(async (root) => {
+      const pluginRoot = join(root, "plugins", "root-hooks");
+      await writeJson(join(pluginRoot, "plugin.json"), {
+        name: "root-hooks",
+        hooks: {
+          Stop: [{ hooks: [{ type: "command", command: "true" }] }],
+        },
+      });
+
+      const { plugin } = await createPluginFromPath(pluginRoot, {
+        source: "test",
+        enabled: true,
+        fallbackName: "root-hooks",
+      });
+
+      expect(plugin.hookSources[0]?.sourcePath).toBe(join(pluginRoot, "plugin.json"));
+      expect(plugin.hookSources[0]?.sourceRelativePath).toBe("plugin.json#hooks[0]");
+    });
+  });
+
   test("bounds default command discovery", async () => {
     await withTempDir(async (root) => {
       const pluginRoot = join(root, "plugins", "many-commands");
@@ -384,6 +428,30 @@ describe("plugin loader", () => {
         join(userPlugin, "skills"),
         join(workspacePlugin, "skills"),
       ].sort());
+    });
+  });
+
+  test("discovers manifestless app-only and output-style-only plugins", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const workspaceRoot = join(root, "workspace");
+      const appPlugin = join(workspaceRoot, ".agents", "plugins", "app-only");
+      const stylePlugin = join(agencHome, "plugins", "style-only");
+      await writeJson(join(appPlugin, ".app.json"), {
+        apps: { calendar: { id: "calendar" } },
+      });
+      await writeFileAt(join(stylePlugin, "output-styles", "plain.md"), "# plain\n");
+
+      const result = await loadPlugins({ agencHome, workspaceRoot });
+
+      expect(result.enabled.map((plugin) => plugin.name).sort()).toEqual([
+        "app-only",
+        "style-only",
+      ]);
+      expect(result.enabled.find((plugin) => plugin.name === "app-only")?.appConnectorIds)
+        .toEqual(["calendar"]);
+      expect(result.enabled.find((plugin) => plugin.name === "style-only")?.outputStylesPaths)
+        .toEqual([join(stylePlugin, "output-styles")]);
     });
   });
 });
@@ -464,6 +532,37 @@ describe("plugin validation", () => {
           "lspServers",
         ]),
       );
+    });
+  });
+
+  test("allows normalized in-root filenames that contain double dots", async () => {
+    await withTempDir(async (root) => {
+      const pluginRoot = join(root, "plugins", "dots");
+      await writePluginManifest(pluginRoot, {
+        name: "dots",
+        commands: "./commands/v1..v2.md",
+      });
+      await writeFileAt(join(pluginRoot, "commands", "v1..v2.md"), "# ok\n");
+
+      const result = await validateManifest(pluginRoot);
+
+      expect(result.success).toBe(true);
+    });
+  });
+
+  test("validates nested plugin skills", async () => {
+    await withTempDir(async (root) => {
+      const pluginRoot = join(root, "plugins", "nested-skill");
+      await writePluginManifest(pluginRoot, { name: "nested-skill" });
+      await writeFileAt(
+        join(pluginRoot, "skills", "a", "b", "SKILL.md"),
+        "---\ndescription: 10\n---\nBody\n",
+      );
+
+      const results = await validatePluginContents(pluginRoot);
+
+      expect(results.find((result) => result.filePath.endsWith("skills/a/b/SKILL.md"))?.success)
+        .toBe(false);
     });
   });
 

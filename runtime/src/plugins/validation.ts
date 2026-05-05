@@ -72,7 +72,7 @@ function checkPathTraversal(
   errors: ValidationError[],
   hint?: string,
 ): void {
-  if (value.includes("..")) {
+  if (value.split(/[\\/]/u).includes("..")) {
     errors.push({
       path: field,
       message: hint
@@ -324,12 +324,6 @@ export async function validatePluginContents(
 }
 
 async function collectMarkdown(dir: string, skillsDir: boolean): Promise<string[]> {
-  if (skillsDir) {
-    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
-    return entries
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => join(dir, entry.name, "SKILL.md"));
-  }
   const out: string[] = [];
   const queue: Array<{ readonly path: string; readonly depth: number }> = [
     { path: dir, depth: 0 },
@@ -353,7 +347,12 @@ async function collectMarkdown(dir: string, skillsDir: boolean): Promise<string[
       const fullPath = join(current.path, entry.name);
       if (entry.isDirectory()) {
         queue.push({ path: fullPath, depth: current.depth + 1 });
-      } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
+      } else if (
+        entry.isFile() &&
+        (skillsDir
+          ? entry.name === "SKILL.md"
+          : entry.name.toLowerCase().endsWith(".md"))
+      ) {
         out.push(fullPath);
       }
     }

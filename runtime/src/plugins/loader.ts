@@ -1,5 +1,6 @@
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
+import { validateHooksConfig } from "../config/schema.js";
 import type { AgenCConfig, HooksMap, LspServerConfigInput, McpServerConfig } from "../config/schema.js";
 import {
   isRecord,
@@ -197,9 +198,11 @@ async function hasPluginShape(path: string): Promise<boolean> {
     pathIsDirectory(join(path, DEFAULT_COMPONENT_DIRS.commands)),
     pathIsDirectory(join(path, DEFAULT_COMPONENT_DIRS.agents)),
     pathIsDirectory(join(path, DEFAULT_COMPONENT_DIRS.skills)),
+    pathIsDirectory(join(path, DEFAULT_COMPONENT_DIRS.outputStyles)),
     pathIsFile(join(path, DEFAULT_HOOKS_FILE)),
     pathIsFile(join(path, DEFAULT_MCP_FILE)),
     pathIsFile(join(path, DEFAULT_LSP_FILE)),
+    pathIsFile(join(path, DEFAULT_APP_FILE)),
   ]).then((checks) => checks.some(Boolean));
 }
 
@@ -388,7 +391,7 @@ export async function createPluginFromPath(
     opts.source,
     manifest.name,
   );
-  const hookSources = await loadHooks(pluginPath, manifest, opts.source, errors);
+  const hookSources = await loadHooks(pluginPath, manifest, manifestPath, opts.source, errors);
   const mcpServers = await loadServers<McpServerConfig>(
     "mcp",
     pluginPath,
@@ -692,6 +695,7 @@ async function collectMarkdownFiles(root: string): Promise<string[]> {
 async function loadHooks(
   pluginRoot: string,
   manifest: PluginManifest,
+  manifestPath: string | undefined,
   source: string,
   errors: PluginLoadIssue[],
 ): Promise<readonly PluginHookSource[]> {
@@ -743,8 +747,11 @@ async function loadHooks(
     sources.push({
       pluginName: manifest.name,
       pluginRoot,
-      sourcePath: join(pluginRoot, PLUGIN_MANIFEST_RELATIVE_PATH),
-      sourceRelativePath: `plugin.json#hooks[${inlineIndex}]`,
+      sourcePath: manifestPath ?? join(pluginRoot, PLUGIN_MANIFEST_RELATIVE_PATH),
+      sourceRelativePath: `${relativePluginPath(
+        pluginRoot,
+        manifestPath ?? join(pluginRoot, PLUGIN_MANIFEST_RELATIVE_PATH),
+      )}#hooks[${inlineIndex}]`,
       hooks,
     });
     inlineIndex += 1;
@@ -800,9 +807,13 @@ function normalizeHooksMap(value: unknown): HooksMap | null {
   const out = nullProtoRecord<unknown>();
   for (const [event, matchers] of Object.entries(hooks)) {
     if (isUnsafeObjectKey(event)) return null;
-    if (Array.isArray(matchers)) out[event] = matchers;
+    out[event] = matchers;
   }
-  return out as HooksMap;
+  try {
+    return validateHooksConfig(out) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function loadServers<T>(
