@@ -318,6 +318,7 @@ async function fetchWithTimeout(
       }
 
       if (redirects >= MAX_FETCH_REDIRECTS) {
+        await response.body?.cancel().catch(() => undefined);
         throw new Error(`too many redirects; limit is ${MAX_FETCH_REDIRECTS}`);
       }
       const location = response.headers.get("location");
@@ -1706,6 +1707,11 @@ function createWebFetchTool(toolName: string): Tool {
         Math.min(MAX_FETCH_BYTES, maxChars * 4),
       );
       try {
+        const initialParsed = new URL(normalized);
+        const initialPreapproved = isPreapprovedHost(
+          initialParsed.hostname,
+          initialParsed.pathname,
+        );
         const response = await fetchWithTimeout(
           normalized,
           numberValue(args.timeout_ms) ?? DEFAULT_TIMEOUT_MS,
@@ -1717,6 +1723,12 @@ function createWebFetchTool(toolName: string): Tool {
           finalParsed.hostname,
           finalParsed.pathname,
         );
+        if (initialPreapproved && !preapproved) {
+          await response.body?.cancel().catch(() => undefined);
+          return json({
+            error: "redirect target is outside the preapproved URL scope",
+          }, true);
+        }
         const contentType = response.headers.get("content-type") ?? "";
         const raw = await readResponseTextBounded(response, maxBytes);
         const isHtml = contentType.toLowerCase().includes("html");

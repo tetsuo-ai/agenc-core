@@ -87,6 +87,7 @@
         "reject non-https URLs and embedded URL credentials",
         "validate every redirect target and final response URL before reading",
         "reject redirects that change hostname so domain permission decisions cannot be bypassed",
+        "reject preapproved path-scoped redirects whose final URL leaves the approved path scope",
         "read response bodies through a bounded stream before markdown conversion",
         "convert HTML responses to markdown while removing scripts and styles",
         "fall back to text cleanup when markdown conversion fails",

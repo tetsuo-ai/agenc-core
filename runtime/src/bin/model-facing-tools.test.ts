@@ -216,8 +216,10 @@ function fetchResponse(opts: {
   readonly location?: string;
   readonly text?: string;
   readonly contentType?: string;
+  readonly bodyCancel?: boolean;
 }) {
   const status = opts.status ?? 200;
+  const cancel = vi.fn(async () => undefined);
   const textRead = vi.fn(async () => opts.text ?? "");
   const response = {
     ok: status >= 200 && status < 300,
@@ -231,9 +233,10 @@ function fetchResponse(opts: {
         return null;
       },
     },
+    ...(opts.bodyCancel ? { body: { cancel } } : {}),
     text: textRead,
   } as unknown as Response;
-  return { response, textRead };
+  return { response, textRead, cancel };
 }
 
 function codeMode<T>(result: { readonly codeModeResult?: unknown }): T {
@@ -1104,11 +1107,11 @@ describe("model-facing tools", () => {
       const safeRedirect = fetchResponse({
         status: 302,
         url: "https://github.com/modelcontextprotocol",
-        location: "/other-org/repo",
+        location: "/modelcontextprotocol/typescript-sdk",
       });
       const finalResponse = fetchResponse({
         status: 200,
-        url: "https://github.com/other-org/repo",
+        url: "https://github.com/modelcontextprotocol/typescript-sdk",
         text: "redirected body",
       });
       globalThis.fetch = vi
@@ -1121,8 +1124,33 @@ describe("model-facing tools", () => {
       expect(safeResult.isError).toBeUndefined();
       const safeParsed = JSON.parse(safeResult.content);
       expect(safeParsed.content).toBe("redirected body");
-      expect(safeParsed.preapproved).toBe(false);
-      expect(safeParsed.final_url).toBe("https://github.com/other-org/repo");
+      expect(safeParsed.preapproved).toBe(true);
+      expect(safeParsed.final_url).toBe(
+        "https://github.com/modelcontextprotocol/typescript-sdk",
+      );
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+
+      const outOfScopeRedirect = fetchResponse({
+        status: 302,
+        url: "https://github.com/modelcontextprotocol",
+        location: "/other-org/repo",
+      });
+      const outOfScopeFinal = fetchResponse({
+        status: 200,
+        url: "https://github.com/other-org/repo",
+        text: "redirected body",
+      });
+      globalThis.fetch = vi
+        .fn()
+        .mockResolvedValueOnce(outOfScopeRedirect.response)
+        .mockResolvedValueOnce(outOfScopeFinal.response) as unknown as typeof globalThis.fetch;
+      const outOfScopeResult = await byName.get("web_fetch")!.execute({
+        url: "https://github.com/modelcontextprotocol",
+      });
+      expect(outOfScopeResult.isError).toBe(true);
+      expect(JSON.parse(outOfScopeResult.content).error).toContain(
+        "outside the preapproved URL scope",
+      );
       expect(globalThis.fetch).toHaveBeenCalledTimes(2);
 
       const redirectChain = Array.from({ length: 6 }, (_, index) =>
@@ -1130,6 +1158,7 @@ describe("model-facing tools", () => {
           status: 302,
           url: `https://agenc.tech/r${index}`,
           location: `/r${index + 1}`,
+          bodyCancel: true,
         }),
       );
       const chainFetch = vi.fn();
@@ -1143,6 +1172,7 @@ describe("model-facing tools", () => {
       expect(limitResult.isError).toBe(true);
       expect(JSON.parse(limitResult.content).error).toContain("too many redirects");
       expect(globalThis.fetch).toHaveBeenCalledTimes(6);
+      expect(redirectChain[5]!.cancel).toHaveBeenCalledOnce();
     } finally {
       globalThis.fetch = previousFetch;
     }
@@ -1227,6 +1257,22 @@ describe("model-facing tools", () => {
       behavior: "deny",
       message: expect.stringContaining("loopback"),
     });
+
+    for (const url of [
+      "https://[::1]/page",
+      "https://[fd00::1]/page",
+      "https://[fe80::1]/page",
+      "https://[::ffff:169.254.169.254]/page",
+    ]) {
+      const blockedIpv6 = await tool!.checkPermissions?.(
+        { url },
+        fakeEvaluatorContext(),
+      );
+      expect(blockedIpv6).toMatchObject({
+        behavior: "deny",
+        message: expect.stringContaining("private, loopback, or link-local address"),
+      });
+    }
 
     const legacyAllowed = await tool!.checkPermissions?.(
       { url: "https://localhost/page" },
