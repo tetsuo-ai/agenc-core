@@ -52,4 +52,32 @@ describe("code-mode description helpers", () => {
       }),
     ]);
   });
+
+  test("filters control tools and sorts/deduplicates normalized globals", () => {
+    function tool(name: string): Tool {
+      return {
+        name,
+        description: `${name} description`,
+        inputSchema: { type: "object" },
+        execute: async () => ({ content: "ok" }),
+      };
+    }
+
+    const definitions = codeModeToolDefinitionsFromTools([
+      tool("z.tool"),
+      tool("system.searchTools"),
+      tool("a_tool"),
+      tool("a-tool"),
+      tool("z.tool"),
+    ]);
+
+    expect(definitions.map((definition) => definition.name)).toEqual([
+      "a_tool",
+      "z.tool",
+    ]);
+    expect(definitions.map((definition) => definition.globalName)).toEqual([
+      "a_tool",
+      "z_tool",
+    ]);
+  });
 });

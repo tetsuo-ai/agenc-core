@@ -15,6 +15,7 @@
   ],
   "targetFiles": [
     "runtime/src/tools/code-mode/description.ts",
+    "runtime/src/tools/code-mode/policy.ts",
     "runtime/src/tools/code-mode/response-adapter.ts",
     "runtime/src/tools/code-mode/service.ts",
     "runtime/src/tools/code-mode/tools.ts",
@@ -75,8 +76,8 @@
       "id": "nested-tool-turn-host",
       "requiredBehaviors": [
         "reject exec/wait self-invocation from nested code-mode tools",
-        "dispatch read-only enabled non-exec nested tools through the registry code-mode path",
-        "fail closed for side-effecting or approval-required nested tools when no permission-aware nested runtime hook is available",
+        "dispatch explicitly idempotent read-only enabled non-exec nested tools through the registry code-mode path",
+        "fail closed for side-effecting, non-idempotent, control/discovery, or approval-required nested tools when no permission-aware nested runtime hook is available",
         "support JSON-object inputs and string inputs for string-argument nested tools",
         "propagate nested-tool cancellation signals into tool execution arguments",
         "return the code-mode result projection when present",

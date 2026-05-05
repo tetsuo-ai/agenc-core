@@ -278,6 +278,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
           inputSchema: { type: "object" },
           metadata: { mutating: false },
           isReadOnly: true,
+          recoveryCategory: "idempotent",
           execute: async (args) => {
             seenArgs = args;
             return {
@@ -306,18 +307,21 @@ describe("tool-registry dynamic and deferred catalog", () => {
 
   test("code mode nested dispatch supports string input for string-argument tools", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-code-mode-glob-"));
-    await writeFile(join(root, "hit.txt"), "hello\n");
-    const registry = buildToolRegistry({ workspaceRoot: root });
+    try {
+      await writeFile(join(root, "hit.txt"), "hello\n");
+      const registry = buildToolRegistry({ workspaceRoot: root });
 
-    const result = await registry.dispatchCodeModeNestedTool?.({
-      id: "exec-nested-2",
-      name: "Glob",
-      input: "*.txt",
-    });
+      const result = await registry.dispatchCodeModeNestedTool?.({
+        id: "exec-nested-2",
+        name: "Glob",
+        input: "*.txt",
+      });
 
-    expect(result?.isError).toBeUndefined();
-    expect(result?.content).toContain("hit.txt");
-    await rm(root, { recursive: true, force: true });
+      expect(result?.isError).toBeUndefined();
+      expect(result?.content).toContain("hit.txt");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test("code mode nested dispatch rejects side-effecting and malformed string calls", async () => {
@@ -330,6 +334,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
           inputSchema: { type: "object" },
           metadata: { mutating: false },
           isReadOnly: true,
+          recoveryCategory: "idempotent",
           execute: async () => ({ content: "should not run" }),
         } satisfies Tool,
       ],
@@ -357,6 +362,47 @@ describe("tool-registry dynamic and deferred catalog", () => {
       expect.objectContaining({
         isError: true,
         content: expect.stringContaining("expects a JSON object"),
+      }),
+    );
+  });
+
+  test("code mode nested dispatch rejects read-only side-effecting tools and control tools", async () => {
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      extraTools: [
+        {
+          name: "custom.readSideEffect",
+          description: "Looks read-only but lacks a replay-safe contract.",
+          inputSchema: { type: "object" },
+          metadata: { mutating: false },
+          isReadOnly: true,
+          execute: async () => ({ content: "should not run" }),
+        } satisfies Tool,
+      ],
+    });
+
+    await expect(
+      registry.dispatchCodeModeNestedTool?.({
+        id: "exec-nested-side-effect",
+        name: "custom.readSideEffect",
+        input: {},
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        isError: true,
+        content: expect.stringContaining("requires permission-aware dispatch"),
+      }),
+    );
+    await expect(
+      registry.dispatchCodeModeNestedTool?.({
+        id: "exec-nested-search",
+        name: "system.searchTools",
+        input: { query: "select:Glob" },
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        isError: true,
+        content: expect.stringContaining("not available to code-mode"),
       }),
     );
   });

@@ -1,8 +1,8 @@
 import type { Tool } from "../types.js";
-import {
-  CODE_MODE_EXEC_TOOL_NAME,
-  CODE_MODE_WAIT_TOOL_NAME,
-  type CodeModeToolDefinition,
+import { isCodeModeNestedToolName } from "./policy.js";
+import type {
+  CodeModeToolDefinition,
+  CodeModeToolKind,
 } from "./types.js";
 
 const MAX_JS_SAFE_INTEGER = 2 ** 53 - 1;
@@ -137,7 +137,7 @@ export function normalizeCodeModeIdentifier(toolKey: string): string {
 }
 
 export function isCodeModeNestedTool(toolName: string): boolean {
-  return toolName !== CODE_MODE_EXEC_TOOL_NAME && toolName !== CODE_MODE_WAIT_TOOL_NAME;
+  return isCodeModeNestedToolName(toolName);
 }
 
 export function codeModeToolDefinitionsFromTools(
@@ -146,18 +146,32 @@ export function codeModeToolDefinitionsFromTools(
     readonly stringArgumentFields?: Readonly<Record<string, string>>;
   } = {},
 ): CodeModeToolDefinition[] {
-  return tools
+  const definitions = tools
     .filter((tool) => isCodeModeNestedTool(tool.name))
-    .map((tool) => ({
-      name: tool.name,
-      globalName: normalizeCodeModeIdentifier(tool.name),
-      description: tool.description,
-      kind:
+    .map((tool) => {
+      const kind: CodeModeToolKind =
         opts.stringArgumentFields?.[tool.name] !== undefined
           ? "freeform"
-          : "function",
-      inputSchema: tool.inputSchema,
-    }));
+          : "function";
+      return {
+        name: tool.name,
+        globalName: normalizeCodeModeIdentifier(tool.name),
+        description: tool.description,
+        kind,
+        inputSchema: tool.inputSchema,
+      };
+    });
+  definitions.sort(
+    (left, right) =>
+      left.globalName.localeCompare(right.globalName) ||
+      left.name.localeCompare(right.name),
+  );
+  const seenGlobals = new Set<string>();
+  return definitions.filter((definition) => {
+    if (seenGlobals.has(definition.globalName)) return false;
+    seenGlobals.add(definition.globalName);
+    return true;
+  });
 }
 
 export function buildExecToolDescription(

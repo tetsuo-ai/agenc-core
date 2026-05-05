@@ -70,6 +70,7 @@ import {
   createCodeModeTools,
   type CodeModeService,
 } from "./tools/code-mode/index.js";
+import { isCodeModeNestedToolName } from "./tools/code-mode/policy.js";
 import {
   APPLY_PATCH_TOOL_NAME,
   createApplyPatchTool,
@@ -391,7 +392,11 @@ function parseCodeModeNestedToolArguments(
 }
 
 function canDirectDispatchFromCodeMode(tool: Tool): boolean {
-  return tool.requiresApproval !== true && tool.isReadOnly === true;
+  return (
+    tool.requiresApproval !== true &&
+    tool.isReadOnly === true &&
+    tool.recoveryCategory === "idempotent"
+  );
 }
 
 export interface BuildToolRegistryOptions {
@@ -875,6 +880,14 @@ export function buildToolRegistry(
     async dispatchCodeModeNestedTool(
       toolCall: CodeModeNestedToolDispatch,
     ): Promise<ToolDispatchResult> {
+      if (!isCodeModeNestedToolName(toolCall.name)) {
+        return {
+          content: safeStringify({
+            error: `tool ${toolCall.name} is not available to code-mode nested calls`,
+          }),
+          isError: true,
+        };
+      }
       const router = buildRouter();
       const spec = router.findSpec(toolCall.name);
       if (!spec) {
