@@ -264,7 +264,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     let inFlight = 0;
     let maxInFlight = 0;
     const tool: Tool = {
-      name: "stub.runtime",
+      name: "RuntimeProbe",
       description: "observes runtime context",
       inputSchema: { type: "object" },
       isReadOnly: true,
@@ -288,12 +288,12 @@ describe("executeTools — T7 gap #109 pipeline", () => {
       toolCalls: [
         {
           id: "runtime-a",
-          name: "stub.runtime",
+          name: "RuntimeProbe",
           arguments: "{}",
         },
         {
           id: "runtime-b",
-          name: "stub.runtime",
+          name: "RuntimeProbe",
           arguments: "{}",
         },
       ],
@@ -532,6 +532,61 @@ describe("executeTools — T7 gap #109 pipeline", () => {
 
     expect(observedPayloadKinds).toEqual(["mcp"]);
     expect(state.messages[0]!.content).toBe("streaming-mcp-ok");
+  });
+
+  test("streaming live path serializes MCP calls from non-allowlisted servers", async () => {
+    let active = 0;
+    let peak = 0;
+    const makeTool = (name: string): Tool & {
+      serverId: string;
+      supportsParallelToolCalls: boolean;
+    } => ({
+      name,
+      serverId: "github",
+      supportsParallelToolCalls: true,
+      description: "mcp-backed tool",
+      inputSchema: { type: "object" },
+      execute: async () => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        active -= 1;
+        return { content: `${name}-ok` };
+      },
+    });
+    const registry = mkRegistry([
+      makeTool("listIssues"),
+      makeTool("getIssue"),
+    ]);
+    const session = mkSession({
+      log: new EventLog(),
+      registry,
+      mcpManager: {
+        resolveMcpToolInfo: (toolName: string) => {
+          if (toolName === "github.listIssues") {
+            return { serverName: "github", toolName: "listIssues" };
+          }
+          if (toolName === "github.getIssue") {
+            return { serverName: "github", toolName: "getIssue" };
+          }
+          return undefined;
+        },
+      },
+    });
+    const state = mkState({
+      toolCalls: [
+        { id: "stream-mcp-a", name: "github.listIssues", arguments: "{}" },
+        { id: "stream-mcp-b", name: "github.getIssue", arguments: "{}" },
+      ],
+    });
+
+    await executeTools(state, mkCtx(), session);
+
+    expect(peak).toBe(1);
+    expect(state.messages.map((message) => message.content)).toEqual([
+      "listIssues-ok",
+      "getIssue-ok",
+    ]);
   });
 
   test("AGENC_MAX_TOOL_USE_CONCURRENCY=2 limits parallel dispatch", async () => {

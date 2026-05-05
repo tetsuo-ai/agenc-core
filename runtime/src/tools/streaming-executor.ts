@@ -902,13 +902,15 @@ export class StreamingToolExecutor {
     const definition = this.registry.tools.find(
       (candidate) => candidate.name === tool.toolCall.name,
     );
+    const supportsParallelToolCalls = this.liveToolDispatch
+      ? this.liveToolDispatch.router.toolSupportsParallel(routed)
+      : definition?.supportsParallelToolCalls ?? tool.isConcurrencySafe;
     return {
       callId: tool.toolCall.id,
       toolName: tool.toolCall.name,
       runtimeKind: runtimeKindForPayload(routed.payload),
       classification: tool.classification,
-      supportsParallelToolCalls:
-        definition?.supportsParallelToolCalls ?? tool.isConcurrencySafe,
+      supportsParallelToolCalls,
       source: this.liveToolDispatch?.options.source ?? "direct",
       submittedAtMs,
     };
