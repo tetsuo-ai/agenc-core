@@ -46,11 +46,13 @@ import {
   StreamingToolExecutor,
 } from "../tools/streaming-executor.js";
 import {
+  SHARED_READ,
   ToolCallRuntime,
 } from "../tools/concurrency.js";
 import {
   routerFromRegistry,
 } from "../tools/router.js";
+import { readToolRuntimeContext } from "../tools/runtimes/context.js";
 
 function mkCtx(overrides: Record<string, unknown> = {}): TurnContext {
   return {
@@ -257,6 +259,64 @@ afterEach(() => {
 });
 
 describe("executeTools — T7 gap #109 pipeline", () => {
+  test("executeTools dispatches batched calls through per-call runtime context", async () => {
+    const observedSandboxModes: Array<string | undefined> = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const tool: Tool = {
+      name: "stub.runtime",
+      description: "observes runtime context",
+      inputSchema: { type: "object" },
+      isReadOnly: true,
+      supportsParallelToolCalls: true,
+      concurrencyClass: SHARED_READ,
+      execute: async (args) => {
+        observedSandboxModes.push(readToolRuntimeContext(args)?.sandboxMode);
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        inFlight -= 1;
+        return { content: readToolRuntimeContext(args)?.runtimeKind ?? "missing" };
+      },
+    };
+    const registry = mkRegistry([tool]);
+    const session = mkSession({
+      log: new EventLog(),
+      registry,
+    });
+    const state = mkState({
+      toolCalls: [
+        {
+          id: "runtime-a",
+          name: "stub.runtime",
+          arguments: "{}",
+        },
+        {
+          id: "runtime-b",
+          name: "stub.runtime",
+          arguments: "{}",
+        },
+      ],
+    });
+
+    await executeTools(
+      state,
+      mkCtx({
+        cwd: "/repo",
+        approvalPolicy: { value: "never" },
+        sandboxPolicy: { value: "read_only" },
+      }),
+      session,
+    );
+
+    expect(observedSandboxModes).toEqual(["read_only", "read_only"]);
+    expect(maxInFlight).toBe(2);
+    expect(state.messages.map((message) => message.content)).toEqual([
+      "function",
+      "function",
+    ]);
+  });
+
   test("pre-hook fires before runToolUse and can mutate args", async () => {
     const observedArgs: Array<Record<string, unknown>> = [];
     const tool: Tool & { supportsParallelToolCalls?: boolean } = {

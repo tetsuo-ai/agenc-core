@@ -1,0 +1,54 @@
+{
+  "item": "TL-21",
+  "title": "Tool orchestrator/runtimes split",
+  "sourceRoot": "/home/tetsuo/git/codex/codex-rs/core/src/tools",
+  "sourceCommit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
+  "targetRoot": "runtime/src/tools/runtimes",
+  "targets": [
+    "runtime/src/tools/runtimes/context.ts",
+    "runtime/src/tools/runtimes/parallel.ts",
+    "runtime/src/tools/runtimes/sandboxing.ts",
+    "runtime/src/tools/runtimes/runtime.test.ts",
+    "runtime/src/phases/execute-tools.test.ts",
+    "runtime/src/tools/router.ts",
+    "runtime/src/tools/execution.ts",
+    "runtime/src/tools/streaming-executor.ts",
+    "runtime/src/phases/execute-tools.ts",
+    "scripts/goal/verify.mjs"
+  ],
+  "sourceFilesRead": [
+    "orchestrator.rs",
+    "router.rs",
+    "registry.rs",
+    "parallel.rs",
+    "sandboxing.rs",
+    "events.rs",
+    "context.rs",
+    "runtimes/mod.rs",
+    "runtimes/shell.rs",
+    "runtimes/unified_exec.rs",
+    "runtimes/apply_patch.rs"
+  ],
+  "documentedOmissions": [
+    {
+      "source": "handlers/*",
+      "reason": "Existing AgenC-owned tool handlers remain in their feature directories; TL-21 wires runtime context into the dispatch path instead of duplicating every handler under tools/runtimes."
+    },
+    {
+      "source": "registry.rs",
+      "reason": "The AgenC registry is already implemented in runtime/src/tool-registry.ts and is consumed by ToolRouter; this item does not relocate the registry."
+    },
+    {
+      "source": "events.rs",
+      "reason": "AgenC event emission is already owned by session/event-log and tool execution hooks; TL-21 preserves those owners."
+    },
+    {
+      "source": "context.rs",
+      "reason": "AgenC tool invocation context already lives in runtime/src/tools/context.ts; TL-21 adds only the runtime-attempt context needed for the split."
+    }
+  ],
+  "checks": [
+    "runtime/src/tools/runtimes/runtime.test.ts",
+    "runtime/src/phases/execute-tools.test.ts"
+  ]
+}

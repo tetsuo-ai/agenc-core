@@ -1375,6 +1375,24 @@ if (shimAdditions.length > 0) {
 // has fewer than 40 significant lines is functionally a shim regardless of name.
 const FORWARD_LINE_RE =
   /^\s*(import\s|export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[^}]*\}\s*from\b|export\s*\{[^}]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
+function countForwardingLines(significant) {
+  let forward = 0;
+  let inMultilineExport = false;
+  for (const line of significant) {
+    if (inMultilineExport) {
+      forward += 1;
+      if (/\}\s*(from\b|;?\s*$)/.test(line)) inMultilineExport = false;
+      continue;
+    }
+    if (/^\s*export\s*\{/.test(line) && !/\}/.test(line)) {
+      forward += 1;
+      inMultilineExport = true;
+      continue;
+    }
+    if (FORWARD_LINE_RE.test(line)) forward += 1;
+  }
+  return forward;
+}
 const forwardingViolations = [];
 for (const rel of added) {
   if (!/^runtime\/src\//.test(rel)) continue;
@@ -1394,7 +1412,7 @@ for (const rel of added) {
     .map((l) => l.trim())
     .filter((l) => l && !l.startsWith("//") && !l.startsWith("*") && !l.startsWith("/*") && l !== "*/");
   if (significant.length === 0 || significant.length >= 40) continue;
-  const forward = significant.filter((l) => FORWARD_LINE_RE.test(l)).length;
+  const forward = countForwardingLines(significant);
   const ratio = forward / significant.length;
   if (ratio > 0.8) {
     forwardingViolations.push({ path: rel, ratio: ratio.toFixed(2), lines: significant.length, forward });

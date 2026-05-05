@@ -1,0 +1,413 @@
+import { describe, expect, test } from "vitest";
+import { EventLog } from "../../session/event-log.js";
+import type { LLMToolCall } from "../../llm/types.js";
+import { ToolRouter } from "../router.js";
+import type { Tool } from "../types.js";
+import { EXCLUSIVE, SHARED_READ } from "../concurrency.js";
+import {
+  enforceRuntimeSandboxAttempt,
+  permissionProfileForSandboxMode,
+} from "./sandboxing.js";
+import {
+  readToolRuntimeContext,
+  type ToolRuntimeCallContext,
+} from "./context.js";
+import { createToolExecutionRuntime } from "./parallel.js";
+
+function callContext(
+  callId: string,
+  classification: ToolRuntimeCallContext["classification"],
+  supportsParallelToolCalls = classification.kind === "shared_read",
+): ToolRuntimeCallContext {
+  return {
+    callId,
+    toolName: "RuntimeProbe",
+    runtimeKind: "function",
+    classification,
+    supportsParallelToolCalls,
+    source: "direct",
+    submittedAtMs: performance.now(),
+  };
+}
+
+async function tick(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
+function tracker() {
+  return {
+    appendFileDiff: () => {},
+    snapshot: () => [],
+    clear: () => {},
+  };
+}
+
+describe("tools/runtimes", () => {
+  test("ToolExecutionRuntime schedules each call through its runtime context", async () => {
+    const runtime = createToolExecutionRuntime();
+    const started: string[] = [];
+    let releaseRead!: () => void;
+    const readGate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+
+    const readA = runtime.runToolCall(callContext("read-a", SHARED_READ), async () => {
+      started.push("read-a");
+      await readGate;
+      return "read-a";
+    });
+    const readB = runtime.runToolCall(callContext("read-b", SHARED_READ), async () => {
+      started.push("read-b");
+      await readGate;
+      return "read-b";
+    });
+
+    await tick();
+    expect(started.sort()).toEqual(["read-a", "read-b"]);
+    releaseRead();
+    await expect(Promise.all([readA, readB])).resolves.toEqual([
+      "read-a",
+      "read-b",
+    ]);
+
+    started.length = 0;
+    let releaseWrite!: () => void;
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    const write = runtime.runToolCall(callContext("write", EXCLUSIVE), async () => {
+      started.push("write");
+      await writeGate;
+      return "write";
+    });
+    const readAfterWrite = runtime.runToolCall(
+      callContext("read-after-write", SHARED_READ),
+      async () => {
+        started.push("read-after-write");
+        return "read-after-write";
+      },
+    );
+
+    await tick();
+    expect(started).toEqual(["write"]);
+    releaseWrite();
+    await expect(Promise.all([write, readAfterWrite])).resolves.toEqual([
+      "write",
+      "read-after-write",
+    ]);
+    expect(started).toEqual(["write", "read-after-write"]);
+
+    started.length = 0;
+    let releaseNonParallel!: () => void;
+    const nonParallelGate = new Promise<void>((resolve) => {
+      releaseNonParallel = resolve;
+    });
+    const nonParallelA = runtime.runToolCall(
+      callContext("shared-but-not-advertised-a", SHARED_READ, false),
+      async () => {
+        started.push("shared-but-not-advertised-a");
+        await nonParallelGate;
+        return "a";
+      },
+    );
+    const nonParallelB = runtime.runToolCall(
+      callContext("shared-but-not-advertised-b", SHARED_READ, false),
+      async () => {
+        started.push("shared-but-not-advertised-b");
+        return "b";
+      },
+    );
+    await tick();
+    expect(started).toEqual(["shared-but-not-advertised-a"]);
+    releaseNonParallel();
+    await expect(Promise.all([nonParallelA, nonParallelB])).resolves.toEqual([
+      "a",
+      "b",
+    ]);
+    expect(started).toEqual([
+      "shared-but-not-advertised-a",
+      "shared-but-not-advertised-b",
+    ]);
+  });
+
+  test("sandbox mode profiles map onto the sandbox engine policy model", () => {
+    const readOnly = permissionProfileForSandboxMode("read_only", {
+      cwd: "/repo",
+    });
+    expect(readOnly.fileSystem.kind).toBe("restricted");
+    expect(readOnly.fileSystem.entries.every((entry) => entry.access !== "write"))
+      .toBe(true);
+
+    const workspaceWrite = permissionProfileForSandboxMode("workspace_write", {
+      cwd: "/repo",
+    });
+    expect(workspaceWrite.fileSystem.kind).toBe("restricted");
+    expect(workspaceWrite.fileSystem.entries.some((entry) => entry.access === "write"))
+      .toBe(true);
+
+    const full = permissionProfileForSandboxMode("danger_full_access", {
+      cwd: "/repo",
+    });
+    expect(full.fileSystem.kind).toBe("unrestricted");
+
+    const external = permissionProfileForSandboxMode("external_sandbox", {
+      cwd: "/repo",
+    });
+    expect(external.fileSystem.kind).toBe("external_sandbox");
+  });
+
+  test("runtime sandbox enforcement denies read-only writes and outside-workspace writes", () => {
+    const mutatingTool: Tool = {
+      name: "Write",
+      description: "",
+      inputSchema: { type: "object" },
+      metadata: { mutating: true },
+      execute: async () => ({ content: "not reached" }),
+    };
+    const invocation = {
+      session: {} as never,
+      turn: { cwd: "/repo" } as never,
+      tracker: tracker() as never,
+      callId: "call-sandbox-enforce",
+      toolName: { name: "Write" },
+      payload: { kind: "function", arguments: "{}" },
+      source: "direct",
+    } as const;
+    const base = callContext("call-sandbox-enforce", EXCLUSIVE, false);
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "read_only",
+          sandboxMode: "read_only",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation,
+        },
+        tool: mutatingTool,
+        args: { file_path: "README.md" },
+      }),
+    ).toThrow(/read_only blocked/);
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "workspace_write",
+          sandboxMode: "workspace_write",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation,
+        },
+        tool: mutatingTool,
+        args: { file_path: "src/file.txt" },
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "workspace_write",
+          sandboxMode: "workspace_write",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation,
+        },
+        tool: mutatingTool,
+        args: { file_path: "/etc/passwd" },
+      }),
+    ).toThrow(/workspace_write blocked/);
+
+    const shellTool: Tool = {
+      name: "exec_command",
+      description: "",
+      inputSchema: { type: "object" },
+      metadata: { mutating: true },
+      execute: async () => ({ content: "not reached" }),
+    };
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "read_only",
+          sandboxMode: "read_only",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation,
+        },
+        tool: shellTool,
+        args: { cmd: "ls -la" },
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "read_only",
+          sandboxMode: "read_only",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation,
+        },
+        tool: shellTool,
+        args: { cmd: "echo blocked > README.md" },
+      }),
+    ).toThrow(/read_only blocked/);
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "workspace_write",
+          sandboxMode: "workspace_write",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation,
+        },
+        tool: shellTool,
+        args: { cmd: "echo blocked > /etc/agenc-outside" },
+      }),
+    ).toThrow(/workspace_write blocked/);
+  });
+
+  test("router injects selected sandbox attempt context without breaking schemas", async () => {
+    let observedKeys: string[] = [];
+    let observedSandboxMode: string | undefined;
+    let observedApprovalPolicy: string | undefined;
+    const tool: Tool = {
+      name: "RuntimeProbe",
+      description: "",
+      inputSchema: {
+        type: "object",
+        properties: { value: { type: "string" } },
+        required: ["value"],
+        additionalProperties: false,
+      },
+      isReadOnly: true,
+      supportsParallelToolCalls: true,
+      concurrencyClass: SHARED_READ,
+      execute: async (args) => {
+        observedKeys = Object.keys(args);
+        const context = readToolRuntimeContext(args);
+        observedSandboxMode = context?.sandboxMode;
+        observedApprovalPolicy = context?.approvalPolicy;
+        return {
+          content: JSON.stringify({
+            sandboxMode: context?.sandboxMode,
+            runtimeKind: context?.runtimeKind,
+          }),
+        };
+      },
+    };
+    const router = new ToolRouter([
+      { tool, supportsParallelToolCalls: true },
+    ]);
+    const call: LLMToolCall = {
+      id: "call-runtime-probe",
+      name: "RuntimeProbe",
+      arguments: '{"value":"ok"}',
+    };
+
+    const result = await router.dispatchModelToolCall(call, {
+      session: {
+        eventLog: new EventLog(),
+        services: {},
+      } as never,
+      turn: {
+        subId: "turn-runtime-probe",
+        cwd: "/repo",
+        approvalPolicy: { value: "never" },
+        sandboxPolicy: { value: "read_only" },
+      } as never,
+      tracker: tracker() as never,
+      approvalPolicy: "never",
+      sandboxMode: "read_only",
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(observedKeys).toEqual(["value"]);
+    expect(observedSandboxMode).toBe("read_only");
+    expect(observedApprovalPolicy).toBe("never");
+    expect(JSON.parse(result.content)).toEqual({
+      sandboxMode: "read_only",
+      runtimeKind: "function",
+    });
+    expect(
+      readToolRuntimeContext({
+        __toolRuntimeContext: {
+          callId: "spoof",
+          toolName: "RuntimeProbe",
+          sandboxMode: "danger_full_access",
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  test("sandbox denial escalates through approval and retries without sandbox", async () => {
+    let executedSandboxMode: string | undefined;
+    let approvals = 0;
+    const tool: Tool = {
+      name: "Write",
+      description: "",
+      inputSchema: {
+        type: "object",
+        properties: { file_path: { type: "string" } },
+        required: ["file_path"],
+        additionalProperties: false,
+      },
+      metadata: { mutating: true },
+      requiresApproval: true,
+      recoveryCategory: "side-effecting",
+      execute: async (args) => {
+        executedSandboxMode = readToolRuntimeContext(args)?.sandboxMode;
+        return { content: executedSandboxMode ?? "missing-context" };
+      },
+    };
+    const router = new ToolRouter([
+      { tool, supportsParallelToolCalls: false },
+    ]);
+
+    const result = await router.dispatchModelToolCall(
+      {
+        id: "call-runtime-escalation",
+        name: "Write",
+        arguments: '{"file_path":"README.md"}',
+      },
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: {
+          subId: "turn-runtime-escalation",
+          cwd: "/repo",
+          approvalPolicy: { value: "on_failure" },
+          sandboxPolicy: { value: "read_only" },
+        } as never,
+        tracker: tracker() as never,
+        approvalPolicy: "on_failure",
+        sandboxMode: "read_only",
+        approvalResolver: {
+          request: async () => {
+            approvals += 1;
+            return { kind: "approved" };
+          },
+        },
+      },
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toBe("danger_full_access");
+    expect(executedSandboxMode).toBe("danger_full_access");
+    expect(approvals).toBe(1);
+  });
+});

@@ -93,6 +93,11 @@ import {
   type PlanFileContext,
 } from "../planning/plan-files.js";
 import { markLoadedToolNamesDiscovered } from "./deferred-discovery.js";
+import {
+  buildToolRuntimeAttemptContext,
+  buildToolRuntimeCallContext,
+  type ToolRuntimeAttemptContext,
+} from "./runtimes/context.js";
 
 export interface ToolCall {
   readonly toolName: ToolName;
@@ -828,16 +833,26 @@ export class ToolRouter {
       });
     }
 
+    const effectiveApprovalPolicy =
+      permissionAlreadyAllowed || preHookPermissionDecision?.behavior === "allow"
+        ? "never"
+        : forcedApprovalReason !== undefined
+          ? "untrusted"
+          : opts.approvalPolicy;
+    const runtimeCallContext = buildToolRuntimeCallContext({
+      toolCall,
+      payload: executionPayload,
+      tool: spec.tool,
+      args: executionArgs,
+      source: opts.source ?? "direct",
+      supportsParallelToolCalls: spec.supportsParallelToolCalls,
+    });
+
     try {
       const result = await orchestrateToolCall({
         tool: spec.tool,
         approvalCtx,
-        approvalPolicy:
-          permissionAlreadyAllowed || preHookPermissionDecision?.behavior === "allow"
-            ? "never"
-            : forcedApprovalReason !== undefined
-              ? "untrusted"
-              : opts.approvalPolicy,
+        approvalPolicy: effectiveApprovalPolicy,
         sandboxMode: opts.sandboxMode,
         payload: executionPayload,
         approvalArgs,
@@ -875,8 +890,19 @@ export class ToolRouter {
           );
           void ctx;
         },
-        dispatch: async (_sandbox, dispatchContext) =>
-          executeToolDispatch(rawDispatchOptions(executionRawArgs, {
+        dispatch: async (sandbox, dispatchContext) => {
+          const runtimeAttemptContext = buildToolRuntimeAttemptContext(
+            runtimeCallContext,
+            {
+              approvalPolicy: effectiveApprovalPolicy,
+              requestedSandboxMode: opts.sandboxMode,
+              sandboxMode: sandbox,
+              approvalResolved: dispatchContext.approvalResolved,
+              rawArgs: executionRawArgs,
+              invocation: executionInvocation,
+            },
+          );
+          return executeToolDispatch(rawDispatchOptions(executionRawArgs, {
             ...withoutPermissionEvaluator(opts),
             tool: spec.tool,
             invocation: executionInvocation,
@@ -887,7 +913,9 @@ export class ToolRouter {
             approvalAlreadyResolved: dispatchContext.approvalResolved,
             abortController: toolAbortController,
             subId: toolCall.id,
-          })),
+            runtimeAttemptContext,
+          }));
+        },
       });
       markLoadedToolNamesDiscovered(
         toolCall.name,
@@ -1043,6 +1071,7 @@ function rawDispatchOptions(
     readonly subId: string;
     readonly preHookPermissionDecision?: MergedHookPermissionDecision;
     readonly approvalAlreadyResolved?: boolean;
+    readonly runtimeAttemptContext?: ToolRuntimeAttemptContext;
   },
 ) {
   return {
@@ -1073,6 +1102,9 @@ function rawDispatchOptions(
       : {}),
     ...(opts.approvalAlreadyResolved !== undefined
       ? { approvalAlreadyResolved: opts.approvalAlreadyResolved }
+      : {}),
+    ...(opts.runtimeAttemptContext !== undefined
+      ? { runtimeAttemptContext: opts.runtimeAttemptContext }
       : {}),
     ...(opts.permissionAuditLogger !== undefined
       ? { permissionAuditLogger: opts.permissionAuditLogger }

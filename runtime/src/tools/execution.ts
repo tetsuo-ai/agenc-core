@@ -126,6 +126,11 @@ import {
   type PermissionAuditErrorHandler,
   type PermissionAuditLogger,
 } from "../permissions/permission-audit-log.js";
+import {
+  attachToolRuntimeContext,
+  type ToolRuntimeAttemptContext,
+} from "./runtimes/context.js";
+import { enforceRuntimeSandboxAttempt } from "./runtimes/sandboxing.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -937,6 +942,8 @@ export interface RunToolUseOptions {
    * forwarded so the executor's user-message includes it.
    */
   readonly onMcpToolCallError?: (mcpMeta: unknown) => void;
+  /** Hidden per-call runtime context selected by router/orchestrator. */
+  readonly runtimeAttemptContext?: ToolRuntimeAttemptContext;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1015,6 +1022,9 @@ export async function runToolUse(
       content: message,
       elapsedMs: performance.now() - startedAt,
     });
+  }
+  if (opts.runtimeAttemptContext !== undefined) {
+    attachToolRuntimeContext(parsedArgs, opts.runtimeAttemptContext);
   }
 
   // Step 2: JSON Schema validation (+ humanized prose override + hint).
@@ -1446,6 +1456,14 @@ export async function runToolUse(
         configurable: true,
       });
     }
+  }
+  if (opts.runtimeAttemptContext !== undefined) {
+    attachToolRuntimeContext(argsForTool, opts.runtimeAttemptContext);
+    enforceRuntimeSandboxAttempt({
+      context: opts.runtimeAttemptContext,
+      tool,
+      args: inputForTool,
+    });
   }
 
   // Step 5: I-9 timeout + abort race.
