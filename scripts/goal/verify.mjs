@@ -1396,6 +1396,28 @@ const ITEM_EVIDENCE = {
       { pattern: "^\\*\\*/undefined/$", scope: ".gitignore" },
     ],
   },
+  "ZC-39": {
+    files: [
+      "runtime/src/tui/components/PromptInput/Notifications.tsx",
+      "runtime/src/tui/components/PromptInput/PromptInput.tsx",
+      "runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx",
+      "runtime/src/tui/state/AppState.tsx",
+      "runtime/src/tui/keybindings/defaultBindings.ts",
+      "runtime/src/tui/keybindings/types.ts",
+      "runtime/src/tui/keybindings/validate.ts",
+      "runtime/src/build/feature.ts",
+      "runtime/src/config/schema.ts",
+      "runtime/src/commands/keybindings.ts",
+    ],
+    grepNotPresent: [
+      { pattern: "VoiceIndicator|VoiceWarmupHint|voiceInterimRange|useVoiceState|useVoiceEnabled|VOICE_MODE", scope: "runtime/src/tui/components/PromptInput" },
+      { pattern: "VoiceProvider|VOICE_MODE|context/voice", scope: "runtime/src/tui/state/AppState.tsx" },
+      { pattern: "voice:pushToTalk|VOICE_MODE", scope: "runtime/src/tui/keybindings" },
+      { pattern: "chat:voiceInput", scope: "runtime/src/commands/keybindings.ts" },
+      { pattern: "VoiceInputConfig|voiceInput", scope: "runtime/src/config" },
+      { pattern: "VOICE_MODE", scope: "runtime/src/build/feature.ts" },
+    ],
+  },
   "ZC-33": {
     files: [
       "runtime/src/permissions/sandbox.ts",
@@ -5313,6 +5335,56 @@ function assertZc37UndefinedDirectoryGone() {
   pass("ZC-37: undefined/ directory absent, untracked, and ignored");
 }
 
+function assertZc39VoicePartialPortResolved() {
+  const deletedComponent = "runtime/src/tui/components/PromptInput/VoiceIndicator.tsx";
+  if (existsSync(path.join(root, deletedComponent))) {
+    failGate(`ZC-39: ${deletedComponent} still exists.`);
+  }
+
+  const blockedRefs = [
+    {
+      scope: "runtime/src/tui/components/PromptInput",
+      pattern: "VoiceIndicator|VoiceWarmupHint|voiceInterimRange|useVoiceState|useVoiceEnabled|VOICE_MODE",
+    },
+    {
+      scope: "runtime/src/tui/state/AppState.tsx",
+      pattern: "VoiceProvider|VOICE_MODE|context/voice",
+    },
+    {
+      scope: "runtime/src/tui/keybindings",
+      pattern: "voice:pushToTalk|VOICE_MODE",
+    },
+    {
+      scope: "runtime/src/commands/keybindings.ts",
+      pattern: "chat:voiceInput",
+    },
+    {
+      scope: "runtime/src/config",
+      pattern: "VoiceInputConfig|voiceInput",
+    },
+    {
+      scope: "runtime/src/build/feature.ts",
+      pattern: "VOICE_MODE",
+    },
+  ];
+
+  for (const { scope, pattern } of blockedRefs) {
+    const scan = run("rg", ["--no-messages", "-n", pattern, scope], { silent: true });
+    if (scan.status === 0) {
+      failGate(`ZC-39: live voice partial-port reference(s) remain in ${scope}:\n${scan.stdout.trim()}`);
+    }
+    if (scan.status !== 1) {
+      failGate(`ZC-39: failed to scan ${scope} for voice partial-port references.`);
+    }
+  }
+
+  if (existsSync(path.join(root, "runtime/src/services/voice"))) {
+    failGate("ZC-39: runtime/src/services/voice exists; this item chose deletion, not a voice service port.");
+  }
+
+  pass("ZC-39: voice partial-port UI, config, and keybinding surfaces removed from live runtime");
+}
+
 function assertZc36TestFixtureParityCoverage() {
   const readRequired = (rel) => {
     const abs = path.join(root, rel);
@@ -5815,6 +5887,7 @@ async function cleanupGates(item) {
       "ZC-34": { custom: assertZc34AgentGraphStoreCoverage },
       "ZC-35": { custom: assertZc35OcCoverage },
       "ZC-37": { custom: assertZc37UndefinedDirectoryGone },
+      "ZC-39": { custom: assertZc39VoicePartialPortResolved },
       "ZC-36": { custom: assertZc36TestFixtureParityCoverage },
     };
     const expectations = zcMap[id];

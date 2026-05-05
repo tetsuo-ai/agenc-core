@@ -66,7 +66,6 @@ describe("schema: defaultConfig", () => {
     expect(cfg.daemon?.autostart).toBe(true);
     expect(cfg.permissions?.default_mode).toBe("on-request");
     expect(cfg.editorMode).toBe("default");
-    expect(cfg.voiceInput?.enabled).toBe(false);
     expect(cfg.tuiLayout?.mode).toBe("single");
     expect(cfg.agent?.budget).toEqual({
       token_cap: 2_000_000,
@@ -217,16 +216,11 @@ describe("schema: normalizeRawConfig", () => {
       editorMode: "vim",
       agent_max_threads: 12,
       agent_max_depth: 2,
-      voiceInput: { enabled: true, command: "agenc-voice" },
       tuiLayout: { mode: "multi-pane", sidePane: "context", minColumns: 100 },
     });
     expect(out.editorMode).toBe("vim");
     expect(out.agent_max_threads).toBe(12);
     expect(out.agent_max_depth).toBe(2);
-    expect(out.voiceInput).toEqual({
-      enabled: true,
-      command: "agenc-voice",
-    });
     expect(out.tuiLayout).toEqual({
       mode: "multi-pane",
       sidePane: "context",

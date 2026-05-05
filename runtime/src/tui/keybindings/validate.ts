@@ -1,4 +1,4 @@
-import { chordToString, parseChord, parseKeystroke } from './parser.js'
+import { chordToString, parseKeystroke } from './parser.js'
 import {
   getReservedShortcuts,
   normalizeKeyForComparison,
@@ -201,29 +201,6 @@ function validateBlock(
           context: contextName,
           action,
           suggestion: 'Move this binding to a block with "context": "Chat"',
-        })
-      }
-    } else if (action === 'voice:pushToTalk') {
-      // Hold detection needs OS auto-repeat. Bare letters print into the
-      // input during warmup and the activation strip is best-effort —
-      // space (default) or a modifier combo like meta+k avoid that.
-      const ks = parseChord(key)[0]
-      if (
-        ks &&
-        !ks.ctrl &&
-        !ks.alt &&
-        !ks.shift &&
-        !ks.meta &&
-        !ks.super &&
-        /^[a-z]$/.test(ks.key)
-      ) {
-        warnings.push({
-          type: 'invalid_action',
-          severity: 'warning',
-          message: `Binding "${key}" to voice:pushToTalk prints into the input during warmup; use space or a modifier combo like meta+k`,
-          key,
-          context: contextName,
-          action,
         })
       }
     }
