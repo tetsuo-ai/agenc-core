@@ -93,6 +93,7 @@ export interface TrackedTool {
   cancelBeforeDispatch?: SyntheticErrorReason;
   promise?: Promise<void>;
   result?: ToolDispatchResult;
+  additionalContexts?: readonly string[];
   error?: Error;
   /** Progress events buffered for immediate streaming. */
   readonly pendingProgress: ProgressEvent[];
@@ -113,6 +114,7 @@ export interface ProgressEvent {
 export interface StreamingToolResult {
   readonly toolCall: LLMToolCall;
   readonly result: ToolDispatchResult;
+  readonly additionalContexts?: readonly string[];
   readonly status: "completed" | "synthetic_error";
   readonly durationMs: number;
 }
@@ -137,12 +139,22 @@ export type SyntheticErrorReason =
   | "sibling_error"
   | "streaming_fallback";
 
+function normalizeMaxConcurrency(value: number | undefined): number {
+  if (value === undefined) return Number.POSITIVE_INFINITY;
+  if (!Number.isFinite(value) || value <= 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return Math.floor(value);
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Options
 // ─────────────────────────────────────────────────────────────────────
 
 export interface StreamingToolExecutorOptions {
   readonly registry: ToolRegistry;
+  /** Maximum number of simultaneously executing tool calls. */
+  readonly maxConcurrency?: number;
   /** Session-scoped AbortSignal (user Ctrl+C, provider switch). */
   readonly abortSignal?: AbortSignal;
   /**
@@ -191,6 +203,7 @@ export class StreamingToolExecutor {
   private readonly registry: ToolRegistry;
   private readonly onSiblingAbort?: (reason: string) => void;
   private readonly onProgress?: (event: ProgressEvent) => void;
+  private readonly maxConcurrency: number;
   private readonly siblingAbortController: AbortController;
   private readonly bashToolName: string;
   private readonly runtime?: ToolCallRuntime;
@@ -234,6 +247,7 @@ export class StreamingToolExecutor {
     this.registry = opts.registry;
     this.onSiblingAbort = opts.onSiblingAbort;
     this.onProgress = opts.onProgress;
+    this.maxConcurrency = normalizeMaxConcurrency(opts.maxConcurrency);
     this.bashToolName = opts.bashToolName ?? "system.bash";
     this.runtime = opts.runtime;
     this.runToolUseFn = opts.runToolUseFn;
@@ -399,6 +413,7 @@ export class StreamingToolExecutor {
         yield {
           toolCall: tool.toolCall,
           result: tool.result,
+          additionalContexts: tool.additionalContexts ?? [],
           status: tool.error ? "synthetic_error" : "completed",
           durationMs: 0,
         };
@@ -435,6 +450,7 @@ export class StreamingToolExecutor {
           result: {
             toolCall: tool.toolCall,
             result: tool.result,
+            additionalContexts: tool.additionalContexts ?? [],
             status: tool.error ? "synthetic_error" : "completed",
             durationMs: 0,
           },
@@ -549,6 +565,14 @@ export class StreamingToolExecutor {
     }));
   }
 
+  dispatchPending(): void {
+    void this.processQueue();
+  }
+
+  inflightCount(): number {
+    return this.tools.filter((tool) => tool.status === "executing").length;
+  }
+
   /**
    * Convert not-yet-dispatched queued tools into terminal errors without
    * starting them. Used when a provider stream drops after tool_use blocks
@@ -653,6 +677,7 @@ export class StreamingToolExecutor {
   private canExecuteTool(tool: TrackedTool): boolean {
     const executing = this.tools.filter((t) => t.status === "executing");
     if (executing.length === 0) return true;
+    if (executing.length >= this.maxConcurrency) return false;
     const selfSafe =
       tool.classification.kind === "shared_read" ||
       tool.classification.kind === "shared_server" ||
@@ -784,6 +809,15 @@ export class StreamingToolExecutor {
               signal: childAbort.signal,
               onProgress: (event) =>
                 this.emitProgress(tool.toolCall.id, event.chunk),
+              onHookAdditionalContext: (contexts) => {
+                tool.additionalContexts = [
+                  ...(tool.additionalContexts ?? []),
+                  ...contexts,
+                ];
+                this.liveToolDispatch?.options.onHookAdditionalContext?.(
+                  contexts,
+                );
+              },
             },
           );
         }

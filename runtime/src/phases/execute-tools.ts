@@ -39,22 +39,28 @@ import type {
 import { validateToolCallsForExecution } from "../llm/stream-parser.js";
 import {
   StreamingToolExecutor,
+} from "../tools/streaming-executor.js";
+import {
   ToolCallRuntime,
+} from "../tools/concurrency.js";
+import {
   ToolHookRegistry,
-  routerFromRegistry,
   type PermissionDecisionHook,
   type PostToolUseFailureHook,
   type PostToolUseHook,
   type PreToolUseHook,
-} from "./_deps/tool-runtime.js";
+} from "../tools/hooks.js";
+import {
+  routerFromRegistry,
+} from "../tools/router.js";
 import {
   type ApprovalPolicy as OrchestratorApprovalPolicy,
   type ApprovalResolver,
   type PermissionRequestHook,
   type SandboxMode,
-} from "./_deps/orchestrator-types.js";
-import { resolveMaxToolUseConcurrency } from "./_deps/orchestration.js";
-import type { ToolDispatchResult } from "./_deps/tool-registry.js";
+} from "../tools/orchestrator.js";
+import { resolveMaxToolUseConcurrency } from "../tools/orchestration.js";
+import type { ToolDispatchResult } from "../tool-registry.js";
 import { emitError as emitErrorEvent } from "../session/event-log.js";
 import { emitWarning as emitWarningEvent } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
@@ -326,6 +332,7 @@ export function ensureStreamingToolExecutor(
 
   executor = new StreamingToolExecutor({
     registry: session.services.registry,
+    maxConcurrency: resolveMaxToolUseConcurrency(),
     abortSignal: signal,
     runtime,
     onSiblingAbort: (reason) => {
@@ -482,26 +489,6 @@ function recordCompletedToolCall(
   state.messages.push(toolResultMessage(toolCall.id, result));
 }
 
-async function drainCompletedToolResults(
-  state: TurnState,
-  ctx: TurnContext,
-  session: Session,
-  executor: StreamingToolExecutor,
-  additionalContexts: string[],
-): Promise<void> {
-  for (const completed of executor.getCompletedResults()) {
-    recordCompletedToolCall(
-      state,
-      ctx,
-      session,
-      completed.toolCall,
-      completed.result,
-    );
-    additionalContexts.push(...(completed.additionalContexts ?? []));
-  }
-  await Promise.resolve();
-}
-
 export async function executeTools(
   state: TurnState,
   ctx: TurnContext,
@@ -534,12 +521,6 @@ export async function executeTools(
   const executor = ensureStreamingToolExecutor(state, ctx, session, signal);
   const additionalContexts: string[] = [];
 
-  // T7 gap #109: AGENC_MAX_TOOL_USE_CONCURRENCY env cap. We layer the
-  // env cap on top of the executor by gating queue + dispatch: at
-  // most `envCap` tools are in-flight concurrently. After each queued
-  // call we kick off `dispatchPending()` so workers run in parallel,
-  // then pause queuing if `inflightCount` already equals the cap.
-  const envCap = resolveMaxToolUseConcurrency();
   const toolBlocksById = new Map(
     state.toolUseBlocks.map((block) => [block.id, block] as const),
   );
@@ -548,23 +529,10 @@ export async function executeTools(
     const block = toolBlocksById.get(call.id);
     if (!block) continue;
 
-    // Env-cap gate: if in-flight already equals the cap, wait for at
-    // least one to complete before queueing the next.
-    while (executor.inflightCount() >= envCap) {
-      await drainCompletedToolResults(
-        state,
-        ctx,
-        session,
-        executor,
-        additionalContexts,
-      );
-      if (executor.inflightCount() < envCap) break;
-      await new Promise<void>((resolve) => setTimeout(resolve, 1));
-    }
-
     queueStreamingToolCall(executor, block, call, session);
     // Kick off any newly-queued workers so they can run in parallel
-    // with subsequent queueing iterations.
+    // with subsequent queueing iterations. The executor owns the env
+    // concurrency cap and wakes queued work as running calls complete.
     executor.dispatchPending();
   }
 

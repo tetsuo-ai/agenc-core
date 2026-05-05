@@ -277,6 +277,43 @@ const ITEM_EVIDENCE = {
       "runtime/src/agents/run-agent.test.ts",
     ],
   },
+  "S-10": {
+    files: [
+      "runtime/src/tools/PARITY.md",
+      "runtime/src/tools/orchestration.ts",
+      "runtime/src/tools/execution.ts",
+      "runtime/src/tools/streaming-executor.ts",
+      "runtime/src/tools/hooks.ts",
+      "runtime/src/phases/execute-tools.ts",
+      "runtime/src/session/turn-state.ts",
+      "parity/service-tools-port-parity.json",
+    ],
+    grepPresent: [
+      { pattern: "partitionToolCalls", scope: "runtime/src/tools/orchestration.ts" },
+      { pattern: "runTools", scope: "runtime/src/tools/orchestration.ts" },
+      { pattern: "maxConcurrency", scope: "runtime/src/tools/streaming-executor.ts" },
+      { pattern: "runToolUse", scope: "runtime/src/tools/execution.ts" },
+      { pattern: "PermissionDecisionHook", scope: "runtime/src/tools/hooks.ts" },
+      { pattern: "../tools/streaming-executor", scope: "runtime/src/phases/execute-tools.ts" },
+      { pattern: "../tools/orchestration", scope: "runtime/src/phases/execute-tools.ts" },
+      { pattern: "approvedDivergence", scope: "parity/service-tools-port-parity.json" },
+    ],
+    grepNotPresent: [
+      { pattern: "_deps/tool-runtime", scope: "runtime/src/phases/execute-tools.ts" },
+      { pattern: "_deps/orchestration", scope: "runtime/src/phases/execute-tools.ts" },
+      { pattern: "@ts-nocheck", scope: "runtime/src/tools/orchestration.ts" },
+      { pattern: "@ts-nocheck", scope: "runtime/src/tools/execution.ts" },
+      { pattern: "@ts-nocheck", scope: "runtime/src/tools/streaming-executor.ts" },
+      { pattern: "@ts-nocheck", scope: "runtime/src/tools/hooks.ts" },
+    ],
+    tests: [
+      "runtime/src/tools/orchestration.test.ts",
+      "runtime/src/tools/execution.test.ts",
+      "runtime/src/tools/streaming-executor.test.ts",
+      "runtime/src/tools/hooks.test.ts",
+      "runtime/src/phases/execute-tools.test.ts",
+    ],
+  },
   "F-07": {
     files: [{ globUnder: "runtime/src/lifecycle", matching: /\.tsx?$/, minCount: 1 }],
   },
@@ -2188,6 +2225,44 @@ async function donorRuntimePortGates(item) {
 }
 
 async function serviceGates(item) {
+  if (id === "S-10") {
+    const dir = path.join(root, "runtime/src/tools");
+    if (!existsSync(dir)) failGate("S-10: runtime/src/tools/ missing");
+    const required = [
+      "runtime/src/tools/orchestration.ts",
+      "runtime/src/tools/execution.ts",
+      "runtime/src/tools/streaming-executor.ts",
+      "runtime/src/tools/hooks.ts",
+      "runtime/src/phases/execute-tools.ts",
+      "runtime/src/session/turn-state.ts",
+      "runtime/src/tools/PARITY.md",
+      "parity/service-tools-port-parity.json",
+    ];
+    for (const rel of required) {
+      if (!existsSync(path.join(root, rel))) failGate(`S-10 file missing: ${rel}`);
+    }
+    const tests = [
+      "runtime/src/tools/orchestration.test.ts",
+      "runtime/src/tools/execution.test.ts",
+      "runtime/src/tools/streaming-executor.test.ts",
+      "runtime/src/tools/hooks.test.ts",
+      "runtime/src/phases/execute-tools.test.ts",
+    ];
+    for (const rel of tests) {
+      if (!existsSync(path.join(root, rel))) failGate(`S-10 test missing: ${rel}`);
+    }
+    const legacyDir = path.join(root, "runtime/src/services/tools");
+    if (existsSync(legacyDir)) {
+      failGate("S-10 must be owned by runtime/src/tools/, not runtime/src/services/tools/");
+    }
+    const phaseSource = readFileSync(path.join(root, "runtime/src/phases/execute-tools.ts"), "utf8");
+    if (phaseSource.includes("_deps/tool-runtime") || phaseSource.includes("_deps/orchestration")) {
+      failGate("S-10 live execute-tools phase still imports legacy _deps tools runtime");
+    }
+    pass("S-10 tools runtime owner present under runtime/src/tools/");
+    return;
+  }
+
   // S-* and OC-*: service ports under runtime/src/services/.
   const serviceMatch = /services\/([\w-]+)/.exec(item.body) || /services\/([\w-]+)/.exec(item.title);
   if (!serviceMatch) {

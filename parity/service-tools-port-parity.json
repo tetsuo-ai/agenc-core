@@ -1,0 +1,146 @@
+{
+  "contractName": "service-tools-port-parity",
+  "scope": "Close S-10 by binding the tools service runtime to AgenC-owned root tools modules, including orchestration, execution, streaming dispatch, and hooks.",
+  "sourceRoot": "/home/tetsuo/git/openclaude", "_sourceRootBrandingAllow": "branding-scan: allow upstream source root path",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/services/tools/toolOrchestration.ts",
+    "src/services/tools/toolExecution.ts",
+    "src/services/tools/StreamingToolExecutor.ts",
+    "src/services/tools/toolHooks.ts",
+    "src/services/tools/toolExecution.test.ts"
+  ],
+  "approvedDivergence": {
+    "sourceTargetPath": "runtime/src/services/tools/",
+    "agencOwnerPath": "runtime/src/tools/",
+    "reason": "The checklist preserves the source service path, while the AgenC architecture and feature matrix designate runtime/src/tools/ as the live owner. S-10 intentionally binds the live phase to runtime/src/tools/ and rejects recreation of the legacy services directory.",
+    "evidence": [
+      "docs/plan/architecture.md",
+      "docs/plan/feature-matrix.md",
+      "runtime/src/phases/execute-tools.ts"
+    ]
+  },
+  "targetFiles": [
+    "runtime/src/tools/PARITY.md",
+    "runtime/src/tools/orchestration.ts",
+    "runtime/src/tools/execution.ts",
+    "runtime/src/tools/streaming-executor.ts",
+    "runtime/src/tools/hooks.ts",
+    "runtime/src/phases/execute-tools.ts",
+    "runtime/src/session/turn-state.ts",
+    "scripts/goal/verify.mjs"
+  ],
+  "testFiles": [
+    "runtime/src/tools/orchestration.test.ts",
+    "runtime/src/tools/execution.test.ts",
+    "runtime/src/tools/streaming-executor.test.ts",
+    "runtime/src/tools/hooks.test.ts",
+    "runtime/src/phases/execute-tools.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "tool-batch-orchestration",
+      "sourceAnchors": [
+        "src/services/tools/toolOrchestration.ts"
+      ],
+      "targetAnchors": [
+        "runtime/src/tools/orchestration.ts",
+        "runtime/src/phases/execute-tools.ts"
+      ],
+      "requiredBehaviors": [
+        "Partition consecutive concurrency-safe tool-use blocks into one safe batch.",
+        "Treat unknown tools, invalid input, absent safety hooks, and throwing safety hooks as non-concurrency-safe.",
+        "Run safe batches concurrently while deferring context modifiers until the batch drains.",
+        "Run non-concurrency-safe blocks serially and apply context modifiers immediately.",
+        "Use AGENC_MAX_TOOL_USE_CONCURRENCY with a default of 10 and fallback for invalid values."
+      ],
+      "edgeCases": [
+        "Safe batch result yield order follows tool-use submission order.",
+        "In-progress tool-use IDs are added before dispatch and removed after terminal result yield.",
+        "A cap of 1 serializes otherwise safe work without changing result order."
+      ],
+      "tests": [
+        "runtime/src/tools/orchestration.test.ts",
+        "runtime/src/phases/execute-tools.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "streaming-tool-executor",
+      "sourceAnchors": [
+        "src/services/tools/StreamingToolExecutor.ts"
+      ],
+      "targetAnchors": [
+        "runtime/src/tools/streaming-executor.ts",
+        "runtime/src/phases/execute-tools.ts",
+        "runtime/src/session/turn-state.ts"
+      ],
+      "requiredBehaviors": [
+        "Queue streamed tool calls and dispatch eligible safe calls without waiting for the full model response.",
+        "Preserve exclusive/head-of-line blocking for non-concurrency-safe calls.",
+        "Yield terminal results in submission order while progress can be interleaved.",
+        "Propagate Bash sibling aborts and external abort reasons as terminal tool results.",
+        "Honor the global maxConcurrency cap in addition to per-tool concurrency classes."
+      ],
+      "edgeCases": [
+        "Unknown tools synthesize a terminal error result without dispatch.",
+        "discard() makes all result iterators early-return without synthesizing fallback results.",
+        "maxConcurrency does not bypass exclusive tool ordering or per-server runtime locks."
+      ],
+      "tests": [
+        "runtime/src/tools/streaming-executor.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "tool-execution-permissions-hooks",
+      "sourceAnchors": [
+        "src/services/tools/toolExecution.ts"
+      ],
+      "targetAnchors": [
+        "runtime/src/tools/execution.ts"
+      ],
+      "requiredBehaviors": [
+        "Parse and validate tool arguments before dispatch.",
+        "Run pre-tool hooks before approval and dispatch.",
+        "Honor permission deny/ask/allow outcomes and updated arguments.",
+        "Run post-tool and failure hooks around tool execution.",
+        "Preserve progress events, timeout handling, abort handling, and result-size caps."
+      ],
+      "edgeCases": [
+        "Invalid JSON arguments produce tool errors without dispatch.",
+        "Denied tools do not execute.",
+        "Hook-thrown errors are surfaced through hook diagnostics without skipping the terminal tool result."
+      ],
+      "tests": [
+        "runtime/src/tools/execution.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "tool-hooks",
+      "sourceAnchors": [
+        "src/services/tools/toolHooks.ts"
+      ],
+      "targetAnchors": [
+        "runtime/src/tools/hooks.ts"
+      ],
+      "requiredBehaviors": [
+        "Support pre-tool, post-tool, failure, and permission decision hooks.",
+        "Merge hook-provided additional context into the execution result path.",
+        "Preserve permission hook precedence so hook allow does not bypass rule deny/ask decisions.",
+        "Record hook timing and hook-error diagnostics for callers."
+      ],
+      "edgeCases": [
+        "Multiple additional-context payloads preserve order.",
+        "Hook result rewrites preserve tool error status.",
+        "Permission hook exceptions become diagnostics instead of implicit allow decisions."
+      ],
+      "tests": [
+        "runtime/src/tools/hooks.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

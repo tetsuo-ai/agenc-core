@@ -44,8 +44,13 @@ import {
 } from "./execute-tools.js";
 import {
   StreamingToolExecutor,
+} from "../tools/streaming-executor.js";
+import {
   ToolCallRuntime,
-} from "./_deps/tool-runtime.js";
+} from "../tools/concurrency.js";
+import {
+  routerFromRegistry,
+} from "../tools/router.js";
 
 function mkCtx(overrides: Record<string, unknown> = {}): TurnContext {
   return {
@@ -1119,7 +1124,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
       registry,
       runtime: new ToolCallRuntime(),
       liveToolDispatch: {
-        router: { registry },
+        router: routerFromRegistry(registry),
         options: {
           session,
           turn: mkCtx(),
@@ -1189,7 +1194,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
       registry,
       runtime: new ToolCallRuntime(),
       liveToolDispatch: {
-        router: { registry },
+        router: routerFromRegistry(registry),
         options: {
           session,
           turn: mkCtx(),
