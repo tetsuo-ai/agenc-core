@@ -160,7 +160,7 @@ export function getEnabledSettingSources(): SettingSource[] {
   const allowed = getAllowedSettingSources()
 
   // Always include policy and flag settings
-  const result = new Set<SettingSource>(allowed)
+  const result = new Set<SettingSource>(allowed as SettingSource[])
   result.add('policySettings')
   result.add('flagSettings')
   return Array.from(result)

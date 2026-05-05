@@ -1221,10 +1221,21 @@ const ITEM_EVIDENCE = {
     ],
   },
   "PK-09": {
+    files: [
+      "runtime/src/plugins/resolution.ts",
+      "runtime/src/plugins/cli/pluginOperations.ts",
+      "runtime/src/plugins/loader.ts",
+      "runtime/src/plugins/registration/manager.ts",
+    ],
     grepPresent: [
       { pattern: "plugin.*resolve|resolvePlugin", scope: "runtime/src/plugins" },
       { pattern: "verifySignature|signature.*verify", scope: "runtime/src/plugins" },
+      { pattern: "requireSignature:\\s*input\\.requireSignature\\s*\\?\\?\\s*true", scope: "runtime/src/plugins/cli/pluginOperations.ts" },
+      { pattern: "verifyPluginDependencyState", scope: "runtime/src/plugins/loader.ts" },
+      { pattern: "maxExtractedFiles|maxExtractedBytes|maxExtractDepth", scope: "runtime/src/plugins/resolution.ts" },
+      { pattern: "plugin-dependency-invalid", scope: "runtime/src/plugins/registration/manager.ts" },
     ],
+    tests: ["runtime/src/plugins/resolution.test.ts"],
   },
   "PK-10": {
     files: ["scripts/check-sdk-daemon-methods.mjs"],
@@ -1585,8 +1596,17 @@ const FORWARD_LINE_RE =
   /^\s*(export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[^}]*\}\s*from\b|export\s*\{[^}]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
 const FORWARD_STATEMENT_RE =
   /^\s*(export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[\s\S]*\}\s*from\b|export\s*\{[\s\S]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
+const SINGLE_LINE_FORWARD_FN_RE =
+  /^\s*(?:export\s+)?(?:async\s+)?function\s+\w+\s*\([^)]*\)\s*\{\s*(?:return\s+(?:await\s+)?|await\s+)?[\w$.]+\([^{};]*\)\s*;?\s*\}\s*$/;
+const SINGLE_LINE_FORWARD_ARROW_RE =
+  /^\s*export\s+const\s+\w+\s*=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*=>\s*(?:\{\s*(?:return\s+(?:await\s+)?|await\s+)?[\w$.]+\([^{};]*\)\s*;?\s*\}|[\w$.]+\([^{};]*\)|[\w$.]+\.[\w$]+(?:\([^{};]*\))?)\s*;?\s*$/;
 function countForwardingLines(significant) {
-  return combineLogicalStatements(significant).filter((stmt) => FORWARD_LINE_RE.test(stmt) || FORWARD_STATEMENT_RE.test(stmt)).length;
+  return combineLogicalStatements(significant).filter((stmt) =>
+    FORWARD_LINE_RE.test(stmt) ||
+    FORWARD_STATEMENT_RE.test(stmt) ||
+    SINGLE_LINE_FORWARD_FN_RE.test(stmt) ||
+    SINGLE_LINE_FORWARD_ARROW_RE.test(stmt)
+  ).length;
 }
 const forwardingViolations = [];
 for (const rel of added) {
@@ -3287,6 +3307,20 @@ async function pluginGates(item) {
       failGate("PK-08 plugin-kit hello-tool example check failed");
     }
     pass("plugin-kit hello-tool example matches the live plugin contract");
+    return;
+  }
+  if (id === "PK-09") {
+    const resolutionTests = run("npm", [
+      "exec",
+      "--workspace=@tetsuo-ai/runtime",
+      "vitest",
+      "run",
+      "src/plugins/resolution.test.ts",
+    ]);
+    if (resolutionTests.status !== 0) {
+      failGate("PK-09 plugin resolution/signing/cache telemetry tests failed");
+    }
+    pass("plugin resolution, signature verification, cache, and telemetry tests passed");
     return;
   }
   if (id === "PK-10") {
