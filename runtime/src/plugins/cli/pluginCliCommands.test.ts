@@ -8,7 +8,7 @@ import {
   marketplaceIndexPath,
   marketplaceStoreRoot,
   writeMarketplaceIndex,
-} from "./marketplace-add.js";
+} from "../marketplace/marketplace.js";
 import {
   formatAgenCPluginCliHelpText,
   parseAgenCPluginCliArgs,
@@ -338,6 +338,7 @@ describe("agenc plugin CLI", () => {
           name: "team",
           source: "local",
           sourceType: "local",
+          sourceDescriptor: { source: "local", path: installedPath },
           installedPath: hostilePath,
           manifestPath: join(hostilePath, "marketplace.json"),
           updatedAt: "2026-05-05T00:00:00.000Z",

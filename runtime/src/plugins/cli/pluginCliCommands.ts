@@ -15,9 +15,9 @@ import {
   addMarketplaceOp,
   readMarketplaceIndex,
   type MarketplaceOperationOptions,
-} from "./marketplace-add.js";
-import { removeMarketplaceOp } from "./marketplace-remove.js";
-import { upgradeMarketplaceOp } from "./marketplace-upgrade.js";
+  removeMarketplaceOp,
+  upgradeMarketplaceOp,
+} from "../marketplace/marketplace.js";
 
 export type AgenCPluginCliCommand =
   | { readonly kind: "list"; readonly json: boolean }

@@ -117,7 +117,7 @@ export function parseEnvVars(
 
 /**
  * Get the AWS region with fallback to default
- * Matches the Anthropic Bedrock SDK's region behavior
+ * Matches the provider Bedrock SDK's region behavior
  */
 export function getAWSRegion(): string {
   return process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1'
@@ -166,7 +166,7 @@ export function isInProtectedNamespace(): boolean {
     /* eslint-disable @typescript-eslint/no-require-imports */
     return (
       require('./protectedNamespace.js') as typeof import('./protectedNamespace.js')
-    ).checkProtectedNamespace()
+    ).isProtectedNamespace(process.env.KUBERNETES_NAMESPACE ?? '')
     /* eslint-enable @typescript-eslint/no-require-imports */
   }
   return false

@@ -22,17 +22,13 @@ import {
   addMarketplaceOp,
   type AddMarketplaceInput,
   type AddMarketplaceResult,
-} from "./marketplace-add.js";
-import {
   removeMarketplaceOp,
   type RemoveMarketplaceInput,
   type RemoveMarketplaceResult,
-} from "./marketplace-remove.js";
-import {
   upgradeMarketplaceOp,
   type UpgradeMarketplaceInput,
   type UpgradeMarketplaceResult,
-} from "./marketplace-upgrade.js";
+} from "../marketplace/marketplace.js";
 
 export class AgenCPluginInstallationManager {
   private readonly options: PluginOperationOptions;

@@ -1,0 +1,49 @@
+# Plugin Marketplace Parity
+
+Donor references are local-only parity metadata for PK-07.
+
+Primary source anchors:
+- `/home/tetsuo/git/codex` at `c8c30d9d75556ecbe94991af22380d2a4e9d6589` // branding-scan: allow local parity citation
+- `/home/tetsuo/git/openclaude` at `0ca43335375beec6e58711b797d5b0c4bb5019b8` // branding-scan: allow local parity citation
+
+Source files inspected end-to-end:
+- `codex-rs/core-plugins/src/marketplace.rs` // branding-scan: allow local parity citation
+- `codex-rs/core-plugins/src/installed_marketplaces.rs` // branding-scan: allow local parity citation
+- `codex-rs/core-plugins/src/remote.rs` // branding-scan: allow local parity citation
+- `codex-rs/core-plugins/src/remote_bundle.rs` // branding-scan: allow local parity citation
+- `codex-rs/core-plugins/src/remote_legacy.rs` // branding-scan: allow local parity citation
+- `codex-rs/core-plugins/src/startup_sync.rs` // branding-scan: allow local parity citation
+- `codex-rs/core-plugins/src/startup_remote_sync.rs` // branding-scan: allow local parity citation
+- `src/utils/plugins/marketplaceManager.ts`
+- `src/utils/plugins/marketplaceHelpers.ts`
+- `src/utils/plugins/parseMarketplaceInput.ts`
+- `src/utils/plugins/officialMarketplace.ts`
+- `src/utils/plugins/officialMarketplaceGcs.ts`
+- `src/utils/plugins/officialMarketplaceStartupCheck.ts`
+- `src/utils/plugins/headlessPluginInstall.ts`
+- `src/utils/plugins/pluginAutoupdate.ts`
+- `src/utils/plugins/refresh.ts`
+- `src/utils/plugins/performStartupChecks.tsx`
+- `src/utils/plugins/dependencyResolver.ts`
+- `src/utils/plugins/pluginVersioning.ts`
+
+PK-07 scope carried into AgenC:
+- `marketplace.ts` owns canonical marketplace source parsing, local/git/url/settings staging, validation, atomic activation, persistent marketplace index reads/writes, plugin entry resolution, and safe removal by computed install root.
+- `marketplaceManager.ts` owns marketplace cache refresh, config persistence, source registration/removal, plugin lookup, auto-update toggles, and runtime refresh entry points.
+- `marketplaceHelpers.ts` owns policy allow/block matching, host/path pattern handling, marketplace loading degradation, empty-marketplace reason detection, and display formatting.
+- `parseMarketplaceInput.ts` owns user input normalization for local paths, git URLs, SSH git URLs, HTTP(S) manifests, and GitHub shorthand.
+- `officialMarketplace.ts` declares the AgenC-owned official marketplace source.
+- `installed_marketplaces.ts` projects persistent marketplace index/config entries into installed marketplace roots.
+- `remote.ts` owns authenticated remote marketplace listing, installed-plugin listing, detail fetches, skill detail fetches, install/uninstall mutations, and remote cache cleanup.
+- `remote_bundle.ts` owns remote bundle validation, HTTPS/loopback download policy, size-limited download, safe tar.gz extraction, versioned cache activation, and manifest readback.
+- `remote_legacy.ts` owns the older remote plugin status, featured-plugin, enable, and uninstall endpoints that the runtime may still need while the hosted service migrates.
+- `startup_sync.ts` owns startup curated marketplace sync through git, HTTP zipball, and backup archive fallbacks with private SHA tracking.
+- `startup_remote_sync.ts` owns one-shot startup remote plugin reconciliation after curated marketplace prerequisites are available.
+
+Intentional PK-07 scope reductions:
+- Hosted-service auth token vending is not owned here. Callers pass `RemoteAuth` headers from the auth layer so PK-07 never reads API key environment variables directly.
+- Remote bundle signing and signature verification remain a later plugin row; PK-07 enforces transport, path, and size safety but does not invent a signing backend.
+- Dependency solving and plugin demotion are not wired into install/update decisions yet. The inspected dependency/versioning donors are documented so the later dependency row can continue from the same source anchors.
+- UI refresh notifications and marketplace-specific TUI status transitions are not carried here; PK-07 exposes runtime functions that later UI rows can call.
+- The GCS mirror helper is reduced to AgenC-owned startup HTTP/backup fallbacks under `agenc.tech`; no public donor bucket or donor product domain is retained in runtime source.
+- Existing PK-06 CLI marketplace modules remain in place as already-merged main work. Live CLI and manager callers now import the canonical PK-07 marketplace layer directly, with no re-export wrapper.

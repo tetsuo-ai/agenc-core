@@ -1,0 +1,86 @@
+{
+  "item": "PK-07",
+  "status": "implemented",
+  "sourceCommits": {
+    "openclaude": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+    "codex": "c8c30d9d75556ecbe94991af22380d2a4e9d6589"
+  },
+  "inspectedDonorFiles": [
+    "/home/tetsuo/git/codex/codex-rs/core-plugins/src/marketplace.rs",
+    "/home/tetsuo/git/codex/codex-rs/core-plugins/src/installed_marketplaces.rs",
+    "/home/tetsuo/git/codex/codex-rs/core-plugins/src/remote.rs",
+    "/home/tetsuo/git/codex/codex-rs/core-plugins/src/remote_bundle.rs",
+    "/home/tetsuo/git/codex/codex-rs/core-plugins/src/remote_legacy.rs",
+    "/home/tetsuo/git/codex/codex-rs/core-plugins/src/startup_sync.rs",
+    "/home/tetsuo/git/codex/codex-rs/core-plugins/src/startup_remote_sync.rs",
+    "/home/tetsuo/git/openclaude/src/utils/plugins/marketplaceManager.ts",
+    "/home/tetsuo/git/openclaude/src/utils/plugins/marketplaceHelpers.ts",
+    "/home/tetsuo/git/openclaude/src/utils/plugins/parseMarketplaceInput.ts",
+    "/home/tetsuo/git/openclaude/src/utils/plugins/officialMarketplace.ts",
+    "/home/tetsuo/git/openclaude/src/utils/plugins/officialMarketplaceGcs.ts",
+    "/home/tetsuo/git/openclaude/src/utils/plugins/officialMarketplaceStartupCheck.ts",
+    "/home/tetsuo/git/openclaude/src/utils/plugins/headlessPluginInstall.ts",
+    "/home/tetsuo/git/openclaude/src/utils/plugins/pluginAutoupdate.ts",
+    "/home/tetsuo/git/openclaude/src/utils/plugins/refresh.ts",
+    "/home/tetsuo/git/openclaude/src/utils/plugins/performStartupChecks.tsx",
+    "/home/tetsuo/git/openclaude/src/utils/plugins/dependencyResolver.ts",
+    "/home/tetsuo/git/openclaude/src/utils/plugins/pluginVersioning.ts"
+  ],
+  "counterparts": {
+    "marketplace.rs": "runtime/src/plugins/marketplace/marketplace.ts",
+    "installed_marketplaces.rs": "runtime/src/plugins/marketplace/installed_marketplaces.ts",
+    "remote.rs": "runtime/src/plugins/marketplace/remote.ts",
+    "remote_bundle.rs": "runtime/src/plugins/marketplace/remote_bundle.ts",
+    "remote_legacy.rs": "runtime/src/plugins/marketplace/remote_legacy.ts",
+    "startup_sync.rs": "runtime/src/plugins/marketplace/startup_sync.ts",
+    "startup_remote_sync.rs": "runtime/src/plugins/marketplace/startup_remote_sync.ts",
+    "marketplaceManager.ts": "runtime/src/plugins/marketplace/marketplaceManager.ts",
+    "marketplaceHelpers.ts": "runtime/src/plugins/marketplace/marketplaceHelpers.ts",
+    "parseMarketplaceInput.ts": "runtime/src/plugins/marketplace/parseMarketplaceInput.ts",
+    "officialMarketplace.ts": "runtime/src/plugins/marketplace/officialMarketplace.ts",
+    "officialMarketplaceGcs.ts": "runtime/src/plugins/marketplace/startup_sync.ts",
+    "officialMarketplaceStartupCheck.ts": "runtime/src/plugins/marketplace/startup_sync.ts",
+    "headlessPluginInstall.ts": "runtime/src/plugins/marketplace/remote_bundle.ts",
+    "pluginAutoupdate.ts": "runtime/src/plugins/marketplace/marketplaceManager.ts",
+    "refresh.ts": "runtime/src/plugins/marketplace/marketplaceManager.ts",
+    "performStartupChecks.tsx": "runtime/src/plugins/marketplace/startup_remote_sync.ts",
+    "dependencyResolver.ts": "runtime/src/plugins/marketplace/marketplaceManager.ts",
+    "pluginVersioning.ts": "runtime/src/plugins/marketplace/remote_bundle.ts"
+  },
+  "carriedBehavior": [
+    "Canonical marketplace source parsing, staging, validation, atomic activation, persistent indexing, plugin lookup, and safe removal live under runtime/src/plugins/marketplace.",
+    "CLI and PluginInstallationManager marketplace methods call the canonical PK-07 layer directly.",
+    "Marketplace manager helpers cover config persistence, source registration/removal, cache refresh, plugin lookup, auto-update flags, policy allow/block matching, graceful loading degradation, and empty-state reason selection.",
+    "Remote marketplace helpers cover authenticated listing, installed-plugin listing, detail and skill fetches, install/uninstall mutations, and local cache cleanup.",
+    "Remote bundle helpers validate release metadata, require HTTPS or explicit loopback HTTP, cap download/extracted sizes, reject path traversal and link entries, and activate versioned cache installs atomically.",
+    "Startup sync helpers refresh curated marketplace snapshots through git first, then HTTP zipball, then backup archive, and gate one-shot remote plugin reconciliation on local curated prerequisites."
+  ],
+  "intentionalReductions": [
+    "Auth token vending remains outside PK-07; remote functions require caller-provided RemoteAuth headers and do not read API key environment variables directly.",
+    "Signed bundle verification is not invented in this row. PK-07 implements transport, path, and size safety, leaving signature policy to the later plugin security row.",
+    "Dependency solving, plugin demotion, and managed update orchestration are documented from inspected donors but are not wired into install/update decisions here.",
+    "UI refresh notification rendering and marketplace-specific TUI status transitions are reduced to runtime entry points that later UI rows can call.",
+    "The donor GCS mirror path is reduced to AgenC-owned agenc.tech startup HTTP and backup archive fallbacks; no donor bucket or donor product domain is retained.",
+    "Already-merged PK-06 CLI marketplace modules are not deleted. Live callers import the canonical PK-07 layer directly and no compatibility wrapper is added."
+  ],
+  "validation": {
+    "tests": [
+      "runtime/src/plugins/marketplace/marketplace.test.ts",
+      "runtime/src/plugins/marketplace/remote.test.ts",
+      "runtime/src/plugins/marketplace/remote_bundle.test.ts",
+      "runtime/src/plugins/marketplace/startup_sync.test.ts",
+      "runtime/src/plugins/cli/pluginCliCommands.test.ts"
+    ],
+    "commands": [
+      "npm exec --workspace=@tetsuo-ai/runtime vitest run src/plugins/marketplace src/plugins/cli/pluginCliCommands.test.ts",
+      "node scripts/goal/verify.mjs PK-07 --skip-validate --skip-typecheck"
+    ],
+    "evidence": [
+      "runtime/src/plugins/marketplace/ contains counterparts for every PK-07 named donor file.",
+      "runtime/src/plugins/cli/pluginCliCommands.ts imports marketplace operations from ../marketplace/marketplace.js.",
+      "runtime/src/plugins/cli/PluginInstallationManager.ts imports marketplace operations from ../marketplace/marketplace.js.",
+      "runtime/src/types/typecheck-shims.d.ts keeps inherited upstream-mirror type imports typecheck-clean without weakening .typecheck-baseline.json.",
+      "runtime/src/agenc/upstream/utils/envUtils.ts now calls its existing protected-namespace helper export, removing the inherited typecheck/runtime mismatch without adding upstream mirror lines."
+    ]
+  }
+}

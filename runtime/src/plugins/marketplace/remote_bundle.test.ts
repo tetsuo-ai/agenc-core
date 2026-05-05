@@ -1,0 +1,122 @@
+import { gzipSync } from "node:zlib";
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import {
+  checkedTarOutputPath,
+  extractPluginBundleTarGz,
+  installRemotePluginBundle,
+  readInstalledRemotePluginManifest,
+  remotePluginInstallRoot,
+  validateRemotePluginBundle,
+} from "./remote_bundle.js";
+
+describe("remote plugin bundles", () => {
+  it("validates remote bundle metadata and only permits secure download URLs", () => {
+    const bundle = validateRemotePluginBundle(
+      "linear",
+      "agenc-global",
+      "linear",
+      "1.0.0",
+      "https://agenc.tech/plugins/linear.tgz",
+    );
+    expect(bundle).toMatchObject({
+      pluginId: "linear@agenc-global",
+      marketplaceName: "agenc-global",
+      pluginVersion: "1.0.0",
+    });
+    expect(() =>
+      validateRemotePluginBundle("linear", "agenc-global", "linear", "1.0.0", "http://agenc.tech/linear.tgz"),
+    ).toThrow("unsupported download URL scheme");
+    expect(() =>
+      validateRemotePluginBundle("linear", "agenc-global", "linear", "../1.0.0", "https://agenc.tech/linear.tgz"),
+    ).toThrow("invalid remote plugin release version");
+    expect(validateRemotePluginBundle(
+      "linear",
+      "agenc-global",
+      "linear",
+      "1.0.0",
+      "http://127.0.0.1/linear.tgz",
+      { allowLoopbackHttp: true },
+    ).bundleDownloadUrl).toBe("http://127.0.0.1/linear.tgz");
+  });
+
+  it("extracts a nested plugin root into the versioned cache location", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-bundle-"));
+    const bundle = validateRemotePluginBundle(
+      "linear",
+      "agenc-global",
+      "linear",
+      "1.0.0",
+      "https://agenc.tech/plugins/linear.tgz",
+    );
+    const bytes = createTarGz({
+      "linear/.agenc-plugin/plugin.json": JSON.stringify({
+        name: "linear",
+        version: "1.0.0",
+        description: "Remote plugin",
+        commands: "./commands",
+      }),
+      "linear/commands/hello.md": "# Hello\n",
+    });
+
+    const result = await installRemotePluginBundle(agencHome, bundle, bytes);
+
+    expect(result).toEqual({
+      pluginId: "linear@agenc-global",
+      installedPath: remotePluginInstallRoot(agencHome, bundle),
+      version: "1.0.0",
+    });
+    await expect(readFile(join(result.installedPath, "commands", "hello.md"), "utf8"))
+      .resolves.toBe("# Hello\n");
+    await expect(readInstalledRemotePluginManifest(result.installedPath))
+      .resolves.toMatchObject({ name: "linear", version: "1.0.0" });
+  });
+
+  it("rejects hostile tar paths before writing outside extraction root", async () => {
+    const destination = await mkdtemp(join(tmpdir(), "agenc-remote-extract-"));
+    expect(() => checkedTarOutputPath(destination, "../escape.txt")).toThrow("escapes extraction root");
+    await expect(extractPluginBundleTarGz(createTarGz({ "../escape.txt": "x" }), destination))
+      .rejects.toThrow("escapes extraction root");
+  });
+});
+
+function createTarGz(files: Readonly<Record<string, string>>): Buffer {
+  const chunks: Buffer[] = [];
+  for (const [name, content] of Object.entries(files)) {
+    const body = Buffer.from(content, "utf8");
+    chunks.push(createTarHeader(name, body.length), body, Buffer.alloc(padding(body.length)));
+  }
+  chunks.push(Buffer.alloc(1024));
+  return gzipSync(Buffer.concat(chunks));
+}
+
+function createTarHeader(name: string, size: number): Buffer {
+  const header = Buffer.alloc(512);
+  writeTarString(header, 0, 100, name);
+  writeTarOctal(header, 100, 8, 0o644);
+  writeTarOctal(header, 108, 8, 0);
+  writeTarOctal(header, 116, 8, 0);
+  writeTarOctal(header, 124, 12, size);
+  writeTarOctal(header, 136, 12, 0);
+  header.fill(0x20, 148, 156);
+  header[156] = "0".charCodeAt(0);
+  writeTarString(header, 257, 6, "ustar");
+  writeTarString(header, 263, 2, "00");
+  const checksum = header.reduce((sum, byte) => sum + byte, 0);
+  writeTarString(header, 148, 8, `${checksum.toString(8).padStart(6, "0")}\0 `);
+  return header;
+}
+
+function writeTarString(header: Buffer, offset: number, length: number, value: string): void {
+  header.write(value.slice(0, length), offset, length, "utf8");
+}
+
+function writeTarOctal(header: Buffer, offset: number, length: number, value: number): void {
+  writeTarString(header, offset, length, `${value.toString(8).padStart(length - 1, "0")}\0`);
+}
+
+function padding(size: number): number {
+  return (512 - (size % 512)) % 512;
+}
