@@ -9,7 +9,7 @@ import {
   SessionApprovalCache,
   type ShellApprovalKey,
 } from "./approval-cache.js";
-import { canonicalizeCommandForApproval } from "./command-parser.js";
+import { canonicalizeCommandForApproval } from "../shell-command/parser.js";
 import type { ReviewDecision } from "./review-decision.js";
 import { createEmptyToolPermissionContext } from "./types.js";
 

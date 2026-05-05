@@ -1,14 +1,10 @@
 /**
  * T11 Wave 2 — Bash permission splitter + sandbox override + I-3 re-fetch.
  *
- * LEAN port of AgenC
- * `src/tools/BashTool/bashPermissions.ts` (~2600 LOC) into ~700 LOC. The
- * upstream file layers tree-sitter AST parsing, shell-quote argv parsing,
- * heredoc extraction, classifier callbacks, and a React dialog queue on
- * top of the legacy regex/shell-quote security gate. AgenC keeps ONLY
- * the pieces the runtime evaluator needs:
+ * AgenC keeps the pieces the runtime evaluator needs from the Bash permission
+ * pipeline:
  *
- *   1. Shared command parsing from `command-parser.ts` (no tree-sitter, no
+ *   1. Shared command parsing from `shell-command/parser.ts` (no tree-sitter, no
  *      shell-quote npm dep) that honours quote boundaries.
  *   2. `getSimpleCommandPrefix` and `getFirstWordPrefix` for stable
  *      rule matching (`git commit`, `npm run`, …).
@@ -29,7 +25,7 @@
  *   - shell-quote npm dep (inline argv parser covers our matching needs).
  *   - Remote Bash classifier race policy (orchestrator owns).
  *   - React dialog queue / pending classifier hooks (orchestrator owns).
- *   - Heredoc extraction (rule matching uses first-word prefix only).
+ *   - Full heredoc body extraction; rule matching uses command prefixes only.
  *   - Full path-constraint validator (T11 Wave 2 Agent C owns).
  *   - 30+ dangerous pattern matchers (we keep the ~15 that AgenC enforces).
  *
@@ -38,7 +34,7 @@
  * default guarantees forward-compatibility.
  *
  * `dangerous-patterns.ts` keeps its own recursive shell-fragment scanner. That
- * layer finds nested safety hazards; `command-parser.ts` owns conservative
+ * layer finds nested safety hazards; `shell-command/parser.ts` owns conservative
  * argv/prefix parsing for rules, sandbox checks, and approval cache keys.
  *
  * @module
@@ -57,14 +53,18 @@ import {
   matchedDangerousShellCommandLabel,
 } from "./dangerous-patterns.js";
 import {
-  ENV_VAR_ASSIGN_RE,
   MAX_SUBCOMMANDS_FOR_SECURITY_CHECK,
   getFirstWordPrefix,
   getSimpleCommandPrefix,
   parseShellCommand,
   parseShellWrapperSubcommandsForPermission,
   splitCommand,
-} from "./command-parser.js";
+} from "../shell-command/parser.js";
+import {
+  commandMightBeDangerous,
+  isKnownSafeCommand,
+  shellCommandMightBeDangerous,
+} from "../shell-command/safety.js";
 import type { ToolEvaluatorContext } from "./evaluator.js";
 import type {
   PermissionDecisionReason,
@@ -79,89 +79,6 @@ export type { ToolEvaluatorContext } from "./evaluator.js";
 // ─────────────────────────────────────────────────────────────────────
 
 export const BASH_TOOL_NAME = "Bash";
-
-/**
- * Conservative sandbox-safe command allow-list. These commands are
- * read-only or otherwise have no file-mutating side effects when
- * invoked without `>`, `>>`, `|tee`, or similar redirections. The
- * `shouldUseSandbox` check composes this list with a redirection
- * sniff — presence on the list alone is NOT sufficient.
- *
- * AgenC has a much larger list driven by remote feature flags.
- * Lean port keeps the stable subset; adding entries requires a
- * corresponding test in `bash.test.ts`.
- */
-const SANDBOX_SAFE_COMMANDS: ReadonlySet<string> = new Set([
-  "ls",
-  "cat",
-  "head",
-  "tail",
-  "wc",
-  "find",
-  "grep",
-  "rg",
-  "pwd",
-  "echo",
-  "which",
-  "whoami",
-  "hostname",
-  "date",
-  "uname",
-  "id",
-  "stat",
-  "realpath",
-  "readlink",
-  "file",
-  "du",
-  "df",
-  "env",
-  "printenv",
-  "type",
-  "git", // `git status`, `git log` etc. — guarded further by redirection check
-  "node",
-  "npm",
-  "python",
-  "python3",
-  "ruby",
-  "true",
-  "false",
-  "test",
-  "printf",
-  "awk",
-  "sed",
-  "cut",
-  "sort",
-  "uniq",
-  "tr",
-  "jq",
-  "xargs",
-  "column",
-  "basename",
-  "dirname",
-  "tree",
-  "tokei",
-  "cloc",
-]);
-
-/**
- * Commands excluded from sandbox regardless of shape (they interact
- * with network/privileged daemons). Entering the sandbox for these is
- * pointless or counter-productive.
- */
-const EXCLUDED_SANDBOX_COMMANDS: ReadonlySet<string> = new Set([
-  "docker",
-  "podman",
-  "kubectl",
-  "sudo",
-  "doas",
-  "pkexec",
-  "systemctl",
-  "service",
-  "launchctl",
-  "ssh",
-  "scp",
-  "rsync",
-]);
 
 // ─────────────────────────────────────────────────────────────────────
 // Input + result types
@@ -201,8 +118,7 @@ const UNSAFE_SANDBOX_CHARS_RE = /[`$]|(^|\s)\|\s*tee\b|(?:^|\s)(>>?|<)\s|^\s*(>>
  * Determine whether a command is sandbox-safe. A command is sandbox-
  * safe when:
  *   - `input.dangerouslyDisableSandbox` is not true
- *   - the FIRST command token is in `SANDBOX_SAFE_COMMANDS`
- *   - no subcommand first-token is in `EXCLUDED_SANDBOX_COMMANDS`
+ *   - every parsed subcommand is known read-only by shell-command safety
  *   - the command contains no redirection / command substitution
  *   - splitting reveals ≤ `MAX_SUBCOMMANDS_FOR_SECURITY_CHECK` parts
  *
@@ -223,19 +139,12 @@ export function shouldUseSandbox(input: BashPermissionInput): boolean {
   }
 
   for (const part of parts) {
-    const firstTok = getFirstCommandToken(part);
-    if (firstTok === null) return false;
-    if (EXCLUDED_SANDBOX_COMMANDS.has(firstTok)) return false;
-    if (!SANDBOX_SAFE_COMMANDS.has(firstTok)) return false;
+    const argv = parseShellCommand(part);
+    if (argv === null || argv.length === 0) return false;
+    if (commandMightBeDangerous(argv)) return false;
+    if (!isKnownSafeCommand(argv)) return false;
   }
   return true;
-}
-
-function getFirstCommandToken(segment: string): string | null {
-  const tokens = segment.trim().split(/\s+/).filter(Boolean);
-  let i = 0;
-  while (i < tokens.length && ENV_VAR_ASSIGN_RE.test(tokens[i]!)) i++;
-  return tokens[i] ?? null;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -247,11 +156,12 @@ function getFirstCommandToken(segment: string): string | null {
  * Called against both the original command and each subcommand.
  */
 export function isDangerousCommand(command: string): boolean {
-  return isDangerousShellCommand(command);
+  return isDangerousShellCommand(command) || shellCommandMightBeDangerous(command);
 }
 
 export function matchedDangerousLabel(command: string): string | null {
-  return matchedDangerousShellCommandLabel(command);
+  return matchedDangerousShellCommandLabel(command) ??
+    (shellCommandMightBeDangerous(command) ? "unsafe shell command" : null);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -455,14 +365,10 @@ export async function bashToolHasPermission(
   appState = context.getAppState();
   ctx = appState.toolPermissionContext;
 
-  // Plan-mode enforcement is upstream-faithful: AgenC's
-  // `checkPermissionMode` (BashTool/modeValidation.ts:168-205) has no
-  // plan branch — `mode === "plan"` falls through to the normal
-  // permission flow. Bash redirects, mkdir, mv, rm in plan mode are
-  // discouraged by the system prompt only. The single hard gate is the
-  // plan-file write allowlist in `tools/system/filesystem.ts`. Earlier
-  // AgenC versions hard-blocked here via `looksReadOnly`; that block
-  // was non-upstream and is removed for strict parity.
+  // Plan mode has no separate branch here: `mode === "plan"` falls through to
+  // the normal permission flow. Bash redirects, mkdir, mv, and rm in plan mode
+  // are discouraged by the system prompt only. The single hard gate is the
+  // plan-file write allowlist in the filesystem tool.
 
   // Split into subcommands (regex-based, quote-aware). Recognized shell
   // wrappers use the shared argv-tree parser so rules see the wrapped action,
@@ -504,8 +410,8 @@ export async function bashToolHasPermission(
   appState = context.getAppState();
   ctx = appState.toolPermissionContext;
 
-  // (Removed second plan-mode re-check — not present upstream; see the
-  // first block above for the rationale.)
+  // (Removed second plan-mode re-check; see the first block above for the
+  // rationale.)
 
   // Per-subcommand evaluation.
   const subresults: BashSubcommandResult[] = [];

@@ -9,11 +9,12 @@ import {
   getSimpleCommandPrefix,
   parseCommand,
   parseCommandArgvTree,
+  parseShellLcSingleCommandPrefix,
   parseShellCommand,
   parseShellWrapperSubcommandsForPermission,
   parseWordOnlyShellSequence,
   splitCommand,
-} from "./command-parser.js";
+} from "./parser.js";
 
 describe("shell string parsing", () => {
   test("keeps parseShellCommand as a conservative single-command tokenizer", () => {
@@ -62,6 +63,23 @@ describe("shell string parsing", () => {
     ]);
   });
 
+  test("fails closed across metacharacter and unterminated-quote samples", () => {
+    const metacharacters = ["|", "&", ";", ">", "<", "(", ")", "`", "$", "#", "{", "}"];
+    for (const char of metacharacters) {
+      expect(parseShellCommand(`echo before ${char} after`)).toBeNull();
+    }
+
+    const malformedInputs = [
+      "echo 'unterminated",
+      'echo "unterminated',
+      `echo ${"a".repeat(4096)} $HOME`,
+      `echo ${"literal ".repeat(512)} > out`,
+    ];
+    for (const input of malformedInputs) {
+      expect(parseShellCommand(input)).toBeNull();
+    }
+  });
+
   test("prefix helpers preserve safe env-var behavior", () => {
     expect(getSimpleCommandPrefix("NODE_ENV=test npm run build")).toBe(
       "npm run",
@@ -78,6 +96,34 @@ describe("shell string parsing", () => {
       .toBeNull();
     expect(parseShellWrapperSubcommandsForPermission("rg TODO src")).toBeNull();
   });
+
+  test("recovers a single Bash command prefix before here-doc data", () => {
+    expect(
+      parseShellLcSingleCommandPrefix([
+        "bash",
+        "-lc",
+        "python3 <<'PY'\nprint('hello')\nPY",
+      ]),
+    ).toEqual(["python3"]);
+    expect(
+      parseShellLcSingleCommandPrefix(["bash", "-lc", "cat <<< 'literal'"]),
+    ).toEqual(["cat"]);
+    expect(
+      parseShellLcSingleCommandPrefix(["bash", "-lc", "cd src && cat <<EOF"]),
+    ).toBeNull();
+    expect(
+      parseShellLcSingleCommandPrefix(["bash", "-lc", "FOO=bar cat <<EOF"]),
+    ).toBeNull();
+    expect(
+      parseShellLcSingleCommandPrefix(["bash", "-lc", "cat <<EOF && rm -rf /\nEOF"]),
+    ).toBeNull();
+    expect(
+      parseShellLcSingleCommandPrefix(["bash", "-lc", "cat <<EOF; rm -rf /\nEOF"]),
+    ).toBeNull();
+    expect(
+      parseShellLcSingleCommandPrefix(["bash", "-lc", "cat <<EOF | wc -l\nEOF"]),
+    ).toBeNull();
+  });
 });
 
 describe("wrapper extraction and argv tree", () => {
@@ -90,7 +136,19 @@ describe("wrapper extraction and argv tree", () => {
     expect(extractBashCommand(["bash", "-lc", "ls", "extra"])).toBeNull();
   });
 
-  test("recognizes PowerShell wrappers with donor flag behavior", () => {
+  test("recognizes PowerShell wrappers with strict flag behavior", () => {
+    expect(
+      extractPowerShellCommand([
+        "pwsh",
+        "-NoProfile",
+        "-Command",
+        "Get-ChildItem",
+      ]),
+    ).toEqual({
+      shell: "pwsh",
+      commandFlag: "-Command",
+      script: "Get-ChildItem",
+    });
     expect(
       extractPowerShellCommand([
         "pwsh",
@@ -99,11 +157,7 @@ describe("wrapper extraction and argv tree", () => {
         "Get-ChildItem",
         "ignored",
       ]),
-    ).toEqual({
-      shell: "pwsh",
-      commandFlag: "-Command",
-      script: "Get-ChildItem",
-    });
+    ).toBeNull();
     expect(extractPowerShellCommand(["powershell.exe", "-NoExit", "-c", "ls"]))
       .toBeNull();
   });

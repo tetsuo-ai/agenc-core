@@ -14,7 +14,7 @@ import {
   getSimpleCommandPrefix,
   parseShellCommand,
   splitCommand,
-} from "./command-parser.js";
+} from "../shell-command/parser.js";
 import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,
