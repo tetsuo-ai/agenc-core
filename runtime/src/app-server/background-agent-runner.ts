@@ -44,10 +44,9 @@ import {
   DEFAULT_MODEL_COSTS,
   type ModelUsage,
 } from "../session/cost.js";
-import { setRulesForSource } from "../permissions/rules.js";
 import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
-import type { ToolPermissionContext } from "../permissions/types.js";
 import { permissionGrantsFromToolPermissionContext } from "../permissions/permission-grants.js";
+import { applyUnattendedPermissionPolicyToContext } from "../permissions/unattended-policy.js";
 import { ABORT, DENIED, type ReviewDecision } from "../permissions/review-decision.js";
 import { isFinal } from "../agents/status.js";
 import type { AgentStatus as ThreadAgentStatus } from "../agents/status.js";
@@ -334,7 +333,7 @@ export class AgenCDelegateBackgroundAgentRunner
 
     try {
       const { control, registry } = this.#ensureAgentControl(bootstrap.session);
-      await applyUnattendedPermissionPolicy(
+      await installUnattendedPermissionPolicy(
         bootstrap.session.permissionModeRegistry,
         params.unattendedAllow,
         params.unattendedDeny,
@@ -446,7 +445,7 @@ export class AgenCDelegateBackgroundAgentRunner
       uninstallApprovalBridge =
         this.#installDaemonApprovalBridge(bootstrap.session);
       const { control, registry } = this.#ensureAgentControl(bootstrap.session);
-      await applyUnattendedPermissionPolicy(
+      await installUnattendedPermissionPolicy(
         bootstrap.session.permissionModeRegistry,
         metadataStringList(params.metadata, "unattendedAllow"),
         metadataStringList(params.metadata, "unattendedDeny"),
@@ -1778,9 +1777,12 @@ function metadataNumberField(
 function metadataStringList(
   value: JsonObject | undefined,
   key: string,
-): readonly string[] {
-  const field = value?.[key];
-  if (!Array.isArray(field)) return [];
+): readonly string[] | undefined {
+  if (value === undefined || !Object.prototype.hasOwnProperty.call(value, key)) {
+    return undefined;
+  }
+  const field = value[key];
+  if (!Array.isArray(field)) return undefined;
   return field.filter(
     (entry): entry is string =>
       typeof entry === "string" && entry.trim().length > 0,
@@ -2271,34 +2273,14 @@ function appendFlag(argv: string[], flag: string, value: string | undefined): vo
   argv.push(flag, trimmed);
 }
 
-async function applyUnattendedPermissionPolicy(
+async function installUnattendedPermissionPolicy(
   registry: PermissionModeRegistry,
-  allow: readonly string[],
-  deny: readonly string[],
+  allow: readonly string[] | undefined,
+  deny: readonly string[] | undefined,
 ): Promise<void> {
-  const allowed = mergeRuleStrings(registry.current(), "allow", allow);
-  const denied = mergeRuleStrings(registry.current(), "deny", deny);
-  let next = setRulesForSource(registry.current(), "session", "allow", allowed);
-  next = setRulesForSource(next, "session", "deny", denied);
+  const next = applyUnattendedPermissionPolicyToContext(registry.current(), {
+    ...(allow !== undefined ? { allowlist: allow } : {}),
+    ...(deny !== undefined ? { denylist: deny } : {}),
+  });
   await registry.update(next);
-}
-
-function mergeRuleStrings(
-  context: ToolPermissionContext,
-  behavior: "allow" | "deny",
-  values: readonly string[],
-): readonly string[] {
-  const existing =
-    behavior === "allow"
-      ? context.alwaysAllowRules.session ?? []
-      : context.alwaysDenyRules.session ?? [];
-  const seen = new Set(existing);
-  const merged = [...existing];
-  for (const value of values) {
-    const trimmed = value.trim();
-    if (trimmed.length === 0 || seen.has(trimmed)) continue;
-    seen.add(trimmed);
-    merged.push(trimmed);
-  }
-  return merged;
 }

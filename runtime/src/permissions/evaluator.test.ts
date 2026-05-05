@@ -28,9 +28,11 @@ import {
 } from "./rules.js";
 import {
   createEmptyToolPermissionContext,
+  type PermissionMode,
   type PermissionResult,
   type ToolPermissionContext,
 } from "./types.js";
+import { createUnattendedPermissionPolicy } from "./unattended-policy.js";
 import type { Session } from "../session/session.js";
 
 // ---------------------------------------------------------------------------
@@ -58,10 +60,14 @@ async function withEnv<T>(
 }
 
 type HarnessOverrides = {
-  mode?: "default" | "acceptEdits" | "plan" | "bypassPermissions" | "dontAsk" | "auto";
+  mode?: PermissionMode;
   shouldAvoidPermissionPrompts?: boolean;
   isBypassPermissionsModeAvailable?: boolean;
   autoModeActive?: boolean;
+  unattendedPolicy?: {
+    readonly allowlist?: readonly string[];
+    readonly denylist?: readonly string[];
+  };
   allowRules?: readonly { toolName: string; ruleContent?: string }[];
   denyRules?: readonly { toolName: string; ruleContent?: string }[];
   askRules?: readonly { toolName: string; ruleContent?: string }[];
@@ -82,6 +88,13 @@ function buildHarness(overrides: HarnessOverrides = {}): {
       overrides.isBypassPermissionsModeAvailable ?? false,
     shouldAvoidPermissionPrompts: overrides.shouldAvoidPermissionPrompts,
     autoModeActive: overrides.autoModeActive,
+    ...(overrides.unattendedPolicy !== undefined
+      ? {
+          unattendedPolicy: createUnattendedPermissionPolicy(
+            overrides.unattendedPolicy,
+          ),
+        }
+      : {}),
   });
   for (const rule of overrides.allowRules ?? []) {
     ctx = applyPermissionUpdate(ctx, {
@@ -388,6 +401,114 @@ describe("hasPermissionsToUseTool — generic tool asks still flow through the m
         type: "mode",
         mode: "bypassPermissions",
       });
+    }
+  });
+});
+
+describe("hasPermissionsToUseTool — unattended policy", () => {
+  it("allows allowlisted tools in unattended mode", async () => {
+    const { context } = buildHarness({
+      mode: "unattended",
+      unattendedPolicy: { allowlist: ["FileRead"], denylist: [] },
+    });
+    const result = await hasPermissionsToUseTool(
+      makeTool({ name: "FileRead" }),
+      { path: "README.md" },
+      context,
+    );
+    expect(result.behavior).toBe("allow");
+    if (result.behavior === "allow") {
+      expect(result.decisionReason).toMatchObject({
+        type: "other",
+        reason: "unattended allowlist: FileRead",
+      });
+      expect(result.updatedInput).toEqual({ path: "README.md" });
+    }
+  });
+
+  it("denies denylisted read-only tools before read-only fast paths", async () => {
+    const { context } = buildHarness({
+      mode: "unattended",
+      unattendedPolicy: { allowlist: [], denylist: ["FileRead"] },
+    });
+    const result = await hasPermissionsToUseTool(
+      makeTool({ name: "FileRead", isReadOnly: true }),
+      { path: "README.md" },
+      context,
+    );
+    expect(result.behavior).toBe("deny");
+    if (result.behavior === "deny") {
+      expect(result.message).toContain("denied by unattended policy");
+    }
+  });
+
+  it("pauses unlisted tools even when permission prompts are avoided", async () => {
+    const { context } = buildHarness({
+      mode: "unattended",
+      shouldAvoidPermissionPrompts: true,
+      unattendedPolicy: { allowlist: ["FileRead"], denylist: [] },
+    });
+    const result = await hasPermissionsToUseTool(
+      makeTool({ name: "Bash" }),
+      { command: "npm test" },
+      context,
+    );
+    expect(result.behavior).toBe("ask");
+    if (result.behavior === "ask") {
+      expect(result.decisionReason).toMatchObject({
+        type: "other",
+        reason: "unattended pause: Bash",
+      });
+    }
+  });
+
+  it("does not let session allow rules bypass an unlisted unattended tool", async () => {
+    const { context } = buildHarness({
+      mode: "unattended",
+      unattendedPolicy: { allowlist: ["FileRead"], denylist: [] },
+      allowRules: [{ toolName: "Bash" }],
+    });
+    const result = await hasPermissionsToUseTool(
+      makeTool({ name: "Bash" }),
+      { command: "npm test" },
+      context,
+    );
+    expect(result.behavior).toBe("ask");
+  });
+
+  it("does not let tool-level allow bypass an unlisted unattended tool", async () => {
+    const { context } = buildHarness({
+      mode: "unattended",
+      unattendedPolicy: { allowlist: ["FileRead"], denylist: [] },
+    });
+    const result = await hasPermissionsToUseTool(
+      makeTool({
+        name: "Bash",
+        checkPermissions: () => ({
+          behavior: "allow" as const,
+          updatedInput: { command: "npm test" },
+        }),
+      }),
+      { command: "npm test" },
+      context,
+    );
+    expect(result.behavior).toBe("ask");
+  });
+
+  it("keeps ask rules as pauses unless the tool is denylisted", async () => {
+    const { context } = buildHarness({
+      mode: "unattended",
+      unattendedPolicy: { allowlist: ["Bash"], denylist: [] },
+      askRules: [{ toolName: "Bash" }],
+    });
+    const result = await hasPermissionsToUseTool(
+      makeTool({ name: "Bash" }),
+      { command: "npm test" },
+      context,
+    );
+    expect(result.behavior).toBe("ask");
+    if (result.behavior === "ask") {
+      expect(result.decisionReason?.type).toBe("rule");
     }
   });
 });

@@ -51,6 +51,7 @@ import {
   type PermissionAuditErrorHandler,
   type PermissionAuditLogger,
 } from "../permissions/permission-audit-log.js";
+import { DEFAULT_UNATTENDED_ALLOWLIST } from "../permissions/unattended-policy.js";
 import type { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import {
   ThreadNotFoundError,
@@ -182,14 +183,6 @@ export interface AgenCDaemonAgentRestoreRecord {
   readonly sessionIds?: readonly string[];
   readonly runtimeAvailable?: boolean;
 }
-
-export const DEFAULT_UNATTENDED_ALLOWLIST = [
-  "FileRead",
-  "system.grep",
-  "system.glob",
-  "system.listDir",
-  "system.stat",
-] as const;
 
 interface MutableAgent {
   agentId: string;

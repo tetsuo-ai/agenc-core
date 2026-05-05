@@ -58,6 +58,51 @@ function restoredLiveAgent(
   };
 }
 
+function makeRestorePermissionRunner(
+  permissionUpdates: ToolPermissionContext[],
+): AgenCDelegateBackgroundAgentRunner {
+  const permissionModeRegistry = {
+    current: () => createEmptyToolPermissionContext(),
+    update: vi.fn(async (context: ToolPermissionContext) => {
+      permissionUpdates.push(context);
+    }),
+  };
+  const session = {
+    conversationId: "session-restore-policy",
+    permissionModeRegistry,
+    services: {},
+  };
+  const control = {
+    resumeAgentFromRollout: vi.fn(
+      async (params: { readonly rootThreadId: string }) => ({
+        resumedCount: 1,
+        rootLive: restoredLiveAgent(params.rootThreadId),
+      }),
+    ),
+    sendInput: vi.fn(async () => {}),
+    shutdown: vi.fn(async () => {}),
+  };
+  const runAgentFn = (async function* () {}) as AgenCRunAgentFunction;
+
+  return new AgenCDelegateBackgroundAgentRunner({
+    bootstrap: vi.fn(async () => ({
+      session,
+      registry: {
+        tools: [],
+        toLLMTools: () => [],
+        dispatch: vi.fn(),
+      },
+      shutdown: vi.fn(async () => {}),
+    })) as unknown as AgenCBootstrapFunction,
+    ensureAgentControl: vi.fn(() => ({
+      control,
+      registry: {},
+    })) as unknown as AgenCEnsureAgentControlFunction,
+    runAgentFn,
+    now: () => "2026-05-01T12:00:00.500Z",
+  });
+}
+
 describe("AgenC delegate background-agent runner", () => {
   it("starts agent.create through the async delegate path and keeps it alive", async () => {
     const shutdown = vi.fn(async () => {});
@@ -137,13 +182,13 @@ describe("AgenC delegate background-agent runner", () => {
       onProgress: expect.any(Function),
     });
     expect(permissionModeRegistry.update).toHaveBeenCalledTimes(1);
-    expect(permissionUpdates[0]?.alwaysAllowRules.session).toEqual([
-      "FileRead",
-      "system.grep",
-    ]);
-    expect(permissionUpdates[0]?.alwaysDenyRules.session).toEqual([
-      "exec_command",
-    ]);
+    expect(permissionUpdates[0]).toMatchObject({
+      mode: "unattended",
+      unattendedPolicy: {
+        allowlist: ["FileRead", "system.grep"],
+        denylist: ["exec_command"],
+      },
+    });
     expect(shutdown).not.toHaveBeenCalled();
   });
 
@@ -256,12 +301,11 @@ describe("AgenC delegate background-agent runner", () => {
     expect(permissionModeRegistry.update).toHaveBeenCalledTimes(1);
     expect(permissionModeRegistry.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        alwaysAllowRules: expect.objectContaining({
-          session: ["FileRead"],
-        }),
-        alwaysDenyRules: expect.objectContaining({
-          session: ["system.bash"],
-        }),
+        mode: "unattended",
+        unattendedPolicy: {
+          allowlist: ["FileRead"],
+          denylist: ["system.bash"],
+        },
       }),
     );
     await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(2));
@@ -388,6 +432,56 @@ describe("AgenC delegate background-agent runner", () => {
       }),
     ).resolves.toBeUndefined();
     expect(sendInput).toHaveBeenCalledWith("run-restart", "follow up");
+  });
+
+  it("restores missing unattended metadata to the default unattended policy", async () => {
+    const permissionUpdates: ToolPermissionContext[] = [];
+    const runner = makeRestorePermissionRunner(permissionUpdates);
+
+    await expect(
+      runner.restoreAgent({
+        agentId: "run-default-policy",
+        objective: "recover daemon state",
+      }),
+    ).resolves.toBe(true);
+
+    expect(permissionUpdates[0]).toMatchObject({
+      mode: "unattended",
+      unattendedPolicy: {
+        allowlist: [
+          "FileRead",
+          "system.grep",
+          "system.glob",
+          "system.listDir",
+          "system.stat",
+        ],
+        denylist: [],
+      },
+    });
+  });
+
+  it("restores explicit empty unattended metadata as an empty policy", async () => {
+    const permissionUpdates: ToolPermissionContext[] = [];
+    const runner = makeRestorePermissionRunner(permissionUpdates);
+
+    await expect(
+      runner.restoreAgent({
+        agentId: "run-empty-policy",
+        objective: "recover daemon state",
+        metadata: {
+          unattendedAllow: [],
+          unattendedDeny: [],
+        },
+      }),
+    ).resolves.toBe(true);
+
+    expect(permissionUpdates[0]).toMatchObject({
+      mode: "unattended",
+      unattendedPolicy: {
+        allowlist: [],
+        denylist: [],
+      },
+    });
   });
 
   it("poisons recovered replay when the current registry is not idempotent", async () => {

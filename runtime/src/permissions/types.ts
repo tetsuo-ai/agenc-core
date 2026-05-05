@@ -1,16 +1,16 @@
 /**
  * T11 — foundational permission primitives.
  *
- * Ported from openclaude `src/types/permissions.ts`, trimmed to what
- * AgenC needs for the rule + settings layer (Wave 1). Wave 2 modules
- * (yoloClassifier, hooks, dangerousPatterns) extend these types; they
- * are not required here.
+ * AgenC permission primitives for the rule + settings layer. Wave 2 modules
+ * (yoloClassifier, hooks, dangerousPatterns) extend these types.
  *
  * Invariants:
  *   - Every public type is `readonly` where possible.
  *   - `PERMISSION_RULE_SOURCES` preserves AgenC priority order.
- *   - Mode list is the 7-variant superset (bubble kept for completeness
+ *   - Mode list is the 8-variant superset (bubble kept for completeness
  *     but marked internal-only).
+ *   - "unattended" is background-agent-only; it is valid runtime state
+ *     but is not accepted as a settings/CLI default mode.
  *
  * @module
  */
@@ -31,6 +31,8 @@
  *   - "auto"
  *
  * Internal-only:
+ *   - "unattended" — background-agent mode; unattended policy decides
+ *     allow/deny/pause while no client is attached.
  *   - "bubble" — reserved for nested/child permission contexts that
  *     "bubble up" denials to the parent session. Kept here for
  *     completeness; not exposed by CLI or settings today.
@@ -42,11 +44,12 @@ export type PermissionMode =
   | "bypassPermissions"
   | "dontAsk"
   | "auto"
+  | "unattended"
   | "bubble";
 
 /**
  * Modes that can be referenced by CLI flags / settings JSON. Excludes
- * the internal-only `"bubble"` mode.
+ * internal-only `"unattended"` and `"bubble"` modes.
  */
 export const USER_ADDRESSABLE_PERMISSION_MODES: readonly PermissionMode[] =
   Object.freeze([
@@ -68,6 +71,7 @@ export const ALL_PERMISSION_MODES: readonly PermissionMode[] = Object.freeze([
   "bypassPermissions",
   "dontAsk",
   "auto",
+  "unattended",
   "bubble",
 ] as const);
 
@@ -75,6 +79,15 @@ export function isPermissionMode(value: unknown): value is PermissionMode {
   return (
     typeof value === "string" &&
     (ALL_PERMISSION_MODES as readonly string[]).includes(value)
+  );
+}
+
+export function isUserAddressablePermissionMode(
+  value: unknown,
+): value is PermissionMode {
+  return (
+    typeof value === "string" &&
+    (USER_ADDRESSABLE_PERMISSION_MODES as readonly string[]).includes(value)
   );
 }
 
@@ -362,6 +375,12 @@ export interface ToolPermissionContext {
    * alongside `config.bypassPermissionsModeAcceptedIn`.
    */
   readonly bypassPermissionsAcceptedIn?: readonly string[];
+  /**
+   * Background-agent permission policy used only when `mode` is
+   * `"unattended"`. Missing policy is interpreted as the conservative
+   * default policy by `unattended-policy.ts`.
+   */
+  readonly unattendedPolicy?: import("./unattended-policy.js").UnattendedPermissionPolicy;
 }
 
 // ─────────────────────────────────────────────────────────────────────

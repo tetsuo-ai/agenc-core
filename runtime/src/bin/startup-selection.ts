@@ -3,7 +3,7 @@ import {
   type ProviderName,
 } from "../llm/provider.js";
 import {
-  isPermissionMode,
+  isUserAddressablePermissionMode,
   type PermissionMode,
 } from "../permissions/types.js";
 import {
@@ -58,7 +58,7 @@ export function readStartupCliFlags(
   const rawPermissionMode =
     extractFlagValue(userArgv, "--permission-mode") ?? undefined;
   const permissionMode =
-    rawPermissionMode && isPermissionMode(rawPermissionMode)
+    rawPermissionMode && isUserAddressablePermissionMode(rawPermissionMode)
       ? rawPermissionMode
       : undefined;
   const allowDangerouslySkipPermissions =

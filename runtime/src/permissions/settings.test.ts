@@ -644,6 +644,20 @@ describe("initialPermissionModeFromCLI", () => {
     expect(r.mode).toBe("default");
   });
 
+  test("unattended CLI mode is ignored", () => {
+    const r = initialPermissionModeFromCLI({
+      permissionModeCli: "unattended",
+    });
+    expect(r.mode).toBe("default");
+  });
+
+  test("unattended settings.defaultMode is ignored", () => {
+    const r = initialPermissionModeFromCLI({
+      userDefaultMode: "unattended",
+    });
+    expect(r.mode).toBe("default");
+  });
+
   test("auto mode falls back when disabled by settings", () => {
     const r = initialPermissionModeFromCLI({
       permissionModeCli: "auto",

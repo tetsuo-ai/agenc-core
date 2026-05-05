@@ -242,6 +242,17 @@ describe("readStartupCliFlags", () => {
       allowDangerouslySkipPermissions: true,
     });
   });
+
+  it("ignores unattended as a startup permission mode", () => {
+    expect(
+      readStartupCliFlags([
+        "node",
+        "agenc",
+        "--permission-mode",
+        "unattended",
+      ]).permissionMode,
+    ).toBeUndefined();
+  });
 });
 
 describe("bootstrapLocalRuntimeSession", () => {

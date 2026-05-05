@@ -56,7 +56,7 @@ import {
   PERMISSION_RULE_SOURCES,
   SETTING_SOURCES,
   createEmptyToolPermissionContext,
-  isPermissionMode,
+  isUserAddressablePermissionMode,
   type EditablePermissionRuleSource,
   type PermissionBehavior,
   type PermissionMode,
@@ -636,10 +636,16 @@ export function initialPermissionModeFromCLI(
 
   const ordered: PermissionMode[] = [];
   if (input.dangerouslySkipPermissions) ordered.push("bypassPermissions");
-  if (input.permissionModeCli && isPermissionMode(input.permissionModeCli)) {
+  if (
+    input.permissionModeCli &&
+    isUserAddressablePermissionMode(input.permissionModeCli)
+  ) {
     ordered.push(input.permissionModeCli);
   }
-  if (input.userDefaultMode && isPermissionMode(input.userDefaultMode)) {
+  if (
+    input.userDefaultMode &&
+    isUserAddressablePermissionMode(input.userDefaultMode)
+  ) {
     ordered.push(input.userDefaultMode);
   }
 

@@ -52,6 +52,12 @@ const PERMISSION_MODE_DISPLAY = Object.freeze({
     symbol: "⏵⏵",
     color: "warning",
   },
+  unattended: {
+    title: "Unattended",
+    shortTitle: "Unattended",
+    symbol: "⏵",
+    color: "warning",
+  },
   bubble: {
     title: "Bubble",
     shortTitle: "Bubble",

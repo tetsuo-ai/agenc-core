@@ -6,6 +6,7 @@ import {
   type ToolPermissionContext,
   type ToolPermissionRulesBySource,
 } from "./types.js";
+import { unattendedPolicyForContext } from "./unattended-policy.js";
 
 export function permissionGrantsFromToolPermissionContext(
   context: ToolPermissionContext,
@@ -22,6 +23,7 @@ export function permissionGrantsFromToolPermissionContext(
   appendRuleGrants(grants, "allow", context.alwaysAllowRules);
   appendRuleGrants(grants, "deny", context.alwaysDenyRules);
   appendRuleGrants(grants, "ask", context.alwaysAskRules);
+  appendUnattendedPolicyGrants(grants, context);
 
   for (const entry of context.additionalWorkingDirectories.values()) {
     grants.push({
@@ -33,6 +35,32 @@ export function permissionGrantsFromToolPermissionContext(
   }
 
   return grants;
+}
+
+function appendUnattendedPolicyGrants(
+  grants: PermissionGrant[],
+  context: ToolPermissionContext,
+): void {
+  if (context.mode !== "unattended" && context.unattendedPolicy === undefined) {
+    return;
+  }
+  const policy = unattendedPolicyForContext(context);
+  for (const tool of policy.allowlist) {
+    grants.push({
+      permissionId: `unattended:allow:${tool}`,
+      subject: tool,
+      action: "unattended-allow",
+      scope: "session",
+    });
+  }
+  for (const tool of policy.denylist) {
+    grants.push({
+      permissionId: `unattended:deny:${tool}`,
+      subject: tool,
+      action: "unattended-deny",
+      scope: "session",
+    });
+  }
 }
 
 function appendRuleGrants(
