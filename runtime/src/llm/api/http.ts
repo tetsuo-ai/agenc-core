@@ -168,7 +168,7 @@ export class AgenCApiHttpClient {
       headers.set(key, value);
     }
 
-    let body: BodyInit | undefined;
+    let body: RequestInit["body"] | undefined;
     if (options.body !== undefined) {
       if (isNativeBodyInit(options.body)) {
         body = options.body;
@@ -227,7 +227,7 @@ export function isRetryableHttpApiError(error: unknown): boolean {
   return shouldRetryApiError(error);
 }
 
-function isNativeBodyInit(value: unknown): value is BodyInit {
+function isNativeBodyInit(value: unknown): value is NonNullable<RequestInit["body"]> {
   return (
     typeof value === "string" ||
     (typeof FormData !== "undefined" && value instanceof FormData) ||

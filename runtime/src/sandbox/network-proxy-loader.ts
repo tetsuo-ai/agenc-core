@@ -1,4 +1,3 @@
-// Source parity for C-01g is tracked in ../../../parity/C-01g-parity.json.
 import path from "node:path";
 import { stat } from "node:fs/promises";
 

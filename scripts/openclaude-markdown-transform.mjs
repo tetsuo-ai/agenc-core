@@ -1,9 +1,7 @@
 /**
  * Pure transform applied to every wholesale-copied openclaude file in
- * the markdown wholesale-port. Imported by both
- * openclaude-markdown-port.mjs (writes) and
- * check-openclaude-markdown-wholesale-parity.mjs (verifies) so the two
- * cannot drift.
+ * the markdown wholesale-port. Imported by the markdown port helper so
+ * transformation rules stay centralized.
  */
 
 function rewriteEnvVars(src) {
