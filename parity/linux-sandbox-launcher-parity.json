@@ -1,0 +1,145 @@
+{
+  "contractName": "linux-sandbox-launcher-parity",
+  "scope": "Linux sandbox launcher binary for AgenC runtime subprocess isolation",
+  "generatedAt": "2026-05-05T00:00:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/codex/codex-rs",
+  "targetRoot": "..",
+  "sourceCommit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
+  "sourceFiles": [
+    "linux-sandbox/src/lib.rs",
+    "linux-sandbox/src/main.rs",
+    "linux-sandbox/src/launcher.rs",
+    "linux-sandbox/src/bwrap.rs",
+    "linux-sandbox/src/landlock.rs",
+    "linux-sandbox/src/linux_run_main.rs",
+    "linux-sandbox/src/proxy_routing.rs",
+    "linux-sandbox/src/vendored_bwrap.rs",
+    "linux-sandbox/config.h",
+    "linux-sandbox/build.rs"
+  ],
+  "targetFiles": [
+    "runtime/bin/agenc-linux-sandbox",
+    "runtime/src/sandbox/linux-launcher/main.ts",
+    "runtime/src/sandbox/linux-launcher/lib.ts",
+    "runtime/src/sandbox/linux-launcher/cli.ts",
+    "runtime/src/sandbox/linux-launcher/linux-run-main.ts",
+    "runtime/src/sandbox/linux-launcher/launcher.ts",
+    "runtime/src/sandbox/linux-launcher/bwrap.ts",
+    "runtime/src/sandbox/linux-launcher/landlock.ts",
+    "runtime/src/sandbox/linux-launcher/proxy-routing.ts",
+    "runtime/src/sandbox/linux-launcher/vendored-bwrap.ts",
+    "runtime/src/sandbox/linux-launcher/build.ts",
+    "runtime/src/sandbox/linux-launcher/config.ts",
+    "runtime/src/sandbox/linux-launcher/PARITY.md",
+    "runtime/scripts/write-build-version.mjs"
+  ],
+  "testFiles": [
+    "runtime/src/sandbox/linux-launcher/linux-launcher.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "cli-handoff",
+      "source": "linux-sandbox/src/linux_run_main.rs",
+      "target": "runtime/src/sandbox/linux-launcher/cli.ts",
+      "requiredBehaviors": [
+        "parses sandbox cwd, command cwd, serialized permission profile, hidden hardening flags, and command separator",
+        "rejects missing command and malformed permission profile input",
+        "uses execve for the non-proxy inner command stage",
+        "preserves final command argv0 while reserving agenc-linux-sandbox argv0 for helper reentry",
+        "relays parent signals to the outer bubblewrap child"
+      ],
+      "edgeCases": [
+        "command arguments after -- are preserved byte-for-byte as argv strings",
+        "inner-stage seccomp flag cannot be combined with legacy Landlock mode"
+      ],
+      "tests": [
+        "runtime/src/sandbox/linux-launcher/linux-launcher.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "bubblewrap-launch",
+      "source": "linux-sandbox/src/launcher.rs",
+      "target": "runtime/src/sandbox/linux-launcher/launcher.ts",
+      "requiredBehaviors": [
+        "finds trusted system bubblewrap executables on PATH",
+        "probes --argv0 support with a child process",
+        "spawns the selected bubblewrap binary with array argv and inherited seccomp FD"
+      ],
+      "edgeCases": [
+        "cwd-local bwrap candidates are ignored to avoid workspace-controlled launcher selection",
+        "seccomp FD is kept open for the child and cleaned after exit"
+      ],
+      "tests": [
+        "runtime/src/sandbox/linux-launcher/linux-launcher.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "filesystem-policy",
+      "source": "linux-sandbox/src/bwrap.rs",
+      "target": "runtime/src/sandbox/linux-launcher/bwrap.ts",
+      "requiredBehaviors": [
+        "full-write full-network commands can run without bubblewrap",
+        "network-isolated full-write commands retain full filesystem access under bubblewrap",
+        "restricted policies add namespace, proc, readonly, writable, unreadable, and protected metadata mounts",
+        "unreadable glob masks support star, question-mark, and character-class patterns",
+        "platform default readonly roots include common Linux and Nix system locations"
+      ],
+      "edgeCases": [
+        "missing protected metadata paths are represented as readonly empty directories or monitored when a parent repository metadata path must remain visible",
+        "protected metadata creation causes an otherwise successful launch to fail",
+        "unreadable glob matches are expanded and masked before launch",
+        "root-level unreadable glob scans fail closed instead of walking the filesystem root"
+      ],
+      "tests": [
+        "runtime/src/sandbox/linux-launcher/linux-launcher.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "network-seccomp",
+      "source": "linux-sandbox/src/landlock.rs",
+      "target": "runtime/src/sandbox/linux-launcher/landlock.ts",
+      "requiredBehaviors": [
+        "builds a cBPF seccomp program for restricted network mode",
+        "denies network syscalls while allowing AF_UNIX sockets in restricted mode",
+        "passes the generated program to bubblewrap with --seccomp FD"
+      ],
+      "edgeCases": [
+        "unsupported CPU architectures fail closed during filter generation",
+        "managed proxy mode computes a proxy-routed socket-family policy without blocking namespace listener setup"
+      ],
+      "tests": [
+        "runtime/src/sandbox/linux-launcher/linux-launcher.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "proxy-routing-validation",
+      "source": "linux-sandbox/src/proxy_routing.rs",
+      "target": "runtime/src/sandbox/linux-launcher/proxy-routing.ts",
+      "requiredBehaviors": [
+        "recognizes the donor proxy environment key set case-insensitively",
+        "accepts only loopback proxy endpoints",
+        "rewrites proxy URLs to local loopback ports while preserving no-path formatting",
+        "prepares host-side UDS routes for loopback proxies",
+        "validates serialized route specs before opening namespace sockets",
+        "activates namespace-local loopback proxy listeners from the serialized route spec",
+        "runs managed proxy commands through an inner proxy-routed seccomp bubblewrap wrapper"
+      ],
+      "edgeCases": [
+        "non-loopback proxy endpoints are ignored by the route plan",
+        "missing proxy configuration fails closed for managed proxy mode",
+        "route activation rewrites only the proxy variables present in the serialized spec",
+        "active TCP and UDS proxy sockets are destroyed when route cleanup runs",
+        "duplicate proxy endpoints share a host-side UDS route",
+        "socks4 and socks4a proxy URLs default to port 1080"
+      ],
+      "tests": [
+        "runtime/src/sandbox/linux-launcher/linux-launcher.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}
