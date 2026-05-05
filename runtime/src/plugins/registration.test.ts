@@ -6,7 +6,7 @@ import { describe, expect, test, vi } from "vitest";
 
 import { findCommand } from "../commands.js";
 import { pluginDataDirPath } from "./directories.js";
-import { loadPlugins } from "./loader.js";
+import { loadPlugins, type PluginLoadIssue } from "./loader.js";
 import { substitutePluginTemplate } from "./registration/common.js";
 import { loadPluginAgents } from "./registration/load-plugin-agents.js";
 import { loadPluginCommands, loadPluginSkills } from "./registration/load-plugin-commands.js";
@@ -202,6 +202,176 @@ describe("plugin registration", () => {
       }
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  test("expands general environment variables in plugin MCP and LSP server configs", async () => {
+    await withTempPlugin(async ({ pluginRoot, options }) => {
+      const previousCommand = process.env.AGENC_PLUGIN_TEST_COMMAND;
+      const previousArg = process.env.AGENC_PLUGIN_TEST_ARG;
+      const previousCwd = process.env.AGENC_PLUGIN_TEST_CWD;
+      try {
+        process.env.AGENC_PLUGIN_TEST_COMMAND = "node";
+        process.env.AGENC_PLUGIN_TEST_ARG = "expanded-arg";
+        process.env.AGENC_PLUGIN_TEST_CWD = "workspace";
+        await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
+          name: "sample",
+          mcpServers: {
+            local: {
+              command: "${AGENC_PLUGIN_TEST_COMMAND}",
+              args: [
+                "--flag=${AGENC_PLUGIN_TEST_ARG}",
+                "${AGENC_PLUGIN_TEST_DEFAULT:-fallback}",
+              ],
+              env: {
+                EXPANDED: "${AGENC_PLUGIN_TEST_ARG}",
+              },
+              headers: {
+                Authorization: "Bearer ${AGENC_PLUGIN_TEST_ARG}",
+              },
+              cwd: "cwd-${AGENC_PLUGIN_TEST_CWD}",
+            },
+          },
+          lspServers: {
+            typescript: {
+              command: "${AGENC_PLUGIN_TEST_COMMAND}",
+              args: ["--stdio=${AGENC_PLUGIN_TEST_ARG}"],
+              env: {
+                EXPANDED: "${AGENC_PLUGIN_TEST_ARG}",
+              },
+              workspaceFolder: "workspace-${AGENC_PLUGIN_TEST_CWD}",
+              extensionToLanguage: {
+                ".ts": "typescript",
+              },
+            },
+          },
+        });
+
+        const result = await loadPlugins(options);
+        const errors: PluginLoadIssue[] = [];
+        const mcpServers = await loadPluginMcpServers({
+          plugins: result.enabled,
+          errors,
+        });
+        const lspServers = await loadPluginLspServers({
+          plugins: result.enabled,
+          errors,
+        });
+
+        expect(errors).toEqual([]);
+        expect(mcpServers["plugin:sample:local"]).toMatchObject({
+          command: "node",
+          args: ["--flag=expanded-arg", "fallback"],
+          env: expect.objectContaining({ EXPANDED: "expanded-arg" }),
+          headers: { Authorization: "Bearer expanded-arg" },
+          cwd: join(pluginRoot, "cwd-workspace"),
+        });
+        expect(lspServers["plugin:sample:typescript"]).toMatchObject({
+          command: "node",
+          args: ["--stdio=expanded-arg"],
+          env: expect.objectContaining({ EXPANDED: "expanded-arg" }),
+          workspaceFolder: join(pluginRoot, "workspace-workspace"),
+        });
+      } finally {
+        if (previousCommand === undefined) {
+          delete process.env.AGENC_PLUGIN_TEST_COMMAND;
+        } else {
+          process.env.AGENC_PLUGIN_TEST_COMMAND = previousCommand;
+        }
+        if (previousArg === undefined) {
+          delete process.env.AGENC_PLUGIN_TEST_ARG;
+        } else {
+          process.env.AGENC_PLUGIN_TEST_ARG = previousArg;
+        }
+        if (previousCwd === undefined) {
+          delete process.env.AGENC_PLUGIN_TEST_CWD;
+        } else {
+          process.env.AGENC_PLUGIN_TEST_CWD = previousCwd;
+        }
+      }
+    });
+  });
+
+  test("omits plugin MCP and LSP servers with unresolved config placeholders", async () => {
+    await withTempPlugin(async ({ root, pluginRoot, options }) => {
+      const previousMissing = process.env.AGENC_PLUGIN_TEST_MISSING;
+      try {
+        delete process.env.AGENC_PLUGIN_TEST_MISSING;
+        await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
+          name: "sample",
+          userConfig: {
+            token: {
+              type: "string",
+              title: "Token",
+              description: "Access token",
+              required: true,
+              sensitive: true,
+            },
+          },
+          mcpServers: {
+            local: {
+              command: "node",
+              args: ["${user_config.token}"],
+              env: {
+                MISSING: "${AGENC_PLUGIN_TEST_MISSING}",
+              },
+            },
+          },
+          lspServers: {
+            typescript: {
+              command: "node",
+              args: ["${user_config.token}"],
+              env: {
+                MISSING: "${AGENC_PLUGIN_TEST_MISSING}",
+              },
+              extensionToLanguage: {
+                ".ts": "typescript",
+              },
+            },
+          },
+        });
+        await writeJson(join(pluginRoot, "settings.json"), { options: {} });
+
+        const snapshot = await refreshPluginRegistrations({
+          cwd: root,
+          agencHome: options.agencHome,
+          extraPluginDirs: [pluginRoot],
+        });
+
+        expect(snapshot.mcp_servers["plugin:sample:local"]).toBeUndefined();
+        expect(snapshot.lsp_servers["plugin:sample:typescript"]).toBeUndefined();
+        expect(snapshot.loadResult.errors).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: "mcp",
+              path: "local",
+              message: "Missing user configuration values: token",
+            }),
+            expect.objectContaining({
+              type: "mcp",
+              path: "local",
+              message: "Missing environment variables: AGENC_PLUGIN_TEST_MISSING",
+            }),
+            expect.objectContaining({
+              type: "lsp",
+              path: "typescript",
+              message: "Missing user configuration values: token",
+            }),
+            expect.objectContaining({
+              type: "lsp",
+              path: "typescript",
+              message: "Missing environment variables: AGENC_PLUGIN_TEST_MISSING",
+            }),
+          ]),
+        );
+        expect(snapshot.error_count).toBeGreaterThanOrEqual(4);
+      } finally {
+        if (previousMissing === undefined) {
+          delete process.env.AGENC_PLUGIN_TEST_MISSING;
+        } else {
+          process.env.AGENC_PLUGIN_TEST_MISSING = previousMissing;
+        }
+      }
+    });
   });
 
   test("active refresh registers hooks, preserves AppState shapes, and publishes active discovery snapshots", async () => {

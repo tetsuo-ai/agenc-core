@@ -283,6 +283,20 @@ export function substitutePluginTemplate(
   plugin: LoadedPlugin,
   options: { readonly sessionId?: string; readonly exposeSensitive?: boolean } = {},
 ): string {
+  return resolvePluginTemplate(value, plugin, options).value;
+}
+
+export interface PluginTemplateResolution {
+  readonly value: string;
+  readonly missingUserConfig: readonly string[];
+}
+
+export function resolvePluginTemplate(
+  value: string,
+  plugin: LoadedPlugin,
+  options: { readonly sessionId?: string; readonly exposeSensitive?: boolean } = {},
+): PluginTemplateResolution {
+  const missingUserConfig: string[] = [];
   let pluginDataDir: string | undefined;
   const dataDir = (): string => {
     pluginDataDir ??= formatTemplatePath(getPluginDataDir(plugin.source));
@@ -293,15 +307,67 @@ export function substitutePluginTemplate(
     .replace(/\$\{AGENC_PLUGIN_DATA\}/g, () => dataDir())
     .replace(/\$\{AGENC_SESSION_ID\}/g, () => options.sessionId ?? "");
   out = out.replace(/\$\{user_config\.([A-Za-z_][\w.-]*)\}/g, (_match, key: string) => {
-    return pluginSettingValue(plugin, key, {
+    const value = pluginSettingValue(plugin, key, {
       exposeSensitive: options.exposeSensitive,
-    }) ?? "";
+    });
+    if (value === undefined) {
+      missingUserConfig.push(key);
+      return "";
+    }
+    return value;
   });
-  return out;
+  return { value: out, missingUserConfig: [...new Set(missingUserConfig)] };
 }
 
 function formatTemplatePath(path: string): string {
   return process.platform === "win32" ? path.replace(/\\/g, "/") : path;
+}
+
+export interface EnvTemplateResolution {
+  readonly value: string;
+  readonly missingEnv: readonly string[];
+}
+
+export function expandEnvTemplate(
+  value: string,
+  env: NodeJS.ProcessEnv = process.env,
+): EnvTemplateResolution {
+  const missingEnv: string[] = [];
+  const expanded = value.replace(/\$\{([^}]+)\}/g, (match, rawName: string) => {
+    const [name, defaultValue] = rawName.split(":-", 2);
+    const envValue = env[name ?? ""];
+    if (envValue !== undefined) return envValue;
+    if (defaultValue !== undefined) return defaultValue;
+    missingEnv.push(name ?? rawName);
+    return match;
+  });
+  return { value: expanded, missingEnv: [...new Set(missingEnv)] };
+}
+
+export interface PluginServerTemplateResolution {
+  readonly value: string;
+  readonly missingUserConfig: readonly string[];
+  readonly missingEnv: readonly string[];
+}
+
+export function resolvePluginServerTemplate(
+  value: string,
+  plugin: LoadedPlugin,
+  options: {
+    readonly sessionId?: string;
+    readonly env?: NodeJS.ProcessEnv;
+  } = {},
+): PluginServerTemplateResolution {
+  const pluginResult = resolvePluginTemplate(value, plugin, {
+    sessionId: options.sessionId,
+    exposeSensitive: true,
+  });
+  const envResult = expandEnvTemplate(pluginResult.value, options.env);
+  return {
+    value: envResult.value,
+    missingUserConfig: pluginResult.missingUserConfig,
+    missingEnv: envResult.missingEnv,
+  };
 }
 
 export function runtimeIdentityKey(

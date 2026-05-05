@@ -65,6 +65,7 @@ export async function refreshPluginRegistrations(
   options: PluginRuntimeLoadOptions = {},
 ): Promise<PluginRegistrationSnapshot> {
   const loadResult = await loadPlugins(toPluginLoaderOptions(options));
+  const registrationErrors: PluginLoadIssue[] = [];
   const plugins = loadResult.enabled;
   const [
     commands,
@@ -79,10 +80,17 @@ export async function refreshPluginRegistrations(
     loadPluginSkills({ ...options, plugins }),
     loadPluginAgents({ ...options, plugins }),
     loadPluginHooks({ ...options, plugins }),
-    loadPluginMcpServers({ ...options, plugins }),
-    loadPluginLspServers({ ...options, plugins }),
+    loadPluginMcpServers({ ...options, plugins, errors: registrationErrors }),
+    loadPluginLspServers({ ...options, plugins, errors: registrationErrors }),
     loadPluginOutputStyles({ ...options, plugins }),
   ]);
+  const combinedLoadResult: PluginLoadResult =
+    registrationErrors.length === 0
+      ? loadResult
+      : {
+          ...loadResult,
+          errors: [...loadResult.errors, ...registrationErrors],
+        };
 
   return {
     enabled_count: loadResult.enabled.length,
@@ -93,7 +101,7 @@ export async function refreshPluginRegistrations(
     mcp_count: Object.keys(mcpServers).length,
     lsp_count: Object.keys(lspServers).length,
     output_style_count: outputStyles.length,
-    error_count: loadResult.errors.length,
+    error_count: combinedLoadResult.errors.length,
     commands,
     skills,
     agents,
@@ -101,7 +109,7 @@ export async function refreshPluginRegistrations(
     lsp_servers: lspServers,
     ...(hooks !== undefined ? { hooks } : {}),
     outputStyles,
-    loadResult,
+    loadResult: combinedLoadResult,
   };
 }
 

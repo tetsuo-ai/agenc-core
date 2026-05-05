@@ -1,16 +1,17 @@
 import type { McpServerConfig } from "../../config/schema.js";
-import type { LoadedPlugin } from "../loader.js";
+import type { LoadedPlugin, PluginLoadIssue } from "../loader.js";
 import { getPluginDataDir } from "../directories.js";
 import {
   loadRuntimePlugins,
   pluginSettingValue,
-  substitutePluginTemplate,
+  resolvePluginServerTemplate,
   type PluginRuntimeLoadOptions,
 } from "./common.js";
 
 export interface PluginMcpRegistrationOptions extends PluginRuntimeLoadOptions {
   readonly plugins?: readonly LoadedPlugin[];
   readonly sessionId?: string;
+  readonly errors?: PluginLoadIssue[];
 }
 
 export interface PluginChannelRegistration {
@@ -22,19 +23,44 @@ export interface PluginChannelRegistration {
 
 let pluginMcpCache: Promise<Readonly<Record<string, McpServerConfig>>> | null = null;
 
+interface ServerResolutionIssues {
+  readonly missingUserConfig: Set<string>;
+  readonly missingEnv: Set<string>;
+}
+
+function createServerResolutionIssues(): ServerResolutionIssues {
+  return {
+    missingUserConfig: new Set(),
+    missingEnv: new Set(),
+  };
+}
+
+function resolveServerString(
+  plugin: LoadedPlugin,
+  value: string,
+  options: PluginMcpRegistrationOptions,
+  issues: ServerResolutionIssues,
+): string {
+  const result = resolvePluginServerTemplate(value, plugin, {
+    sessionId: options.sessionId,
+    env: options.env,
+  });
+  result.missingUserConfig.forEach((key) => issues.missingUserConfig.add(key));
+  result.missingEnv.forEach((key) => issues.missingEnv.add(key));
+  return result.value;
+}
+
 function substituteStringRecord(
   plugin: LoadedPlugin,
   value: Readonly<Record<string, string>> | undefined,
   options: PluginMcpRegistrationOptions,
+  issues: ServerResolutionIssues,
 ): Readonly<Record<string, string>> | undefined {
   if (value === undefined) return undefined;
   return Object.fromEntries(
     Object.entries(value).map(([key, entry]) => [
       key,
-      substitutePluginTemplate(entry, plugin, {
-        sessionId: options.sessionId,
-        exposeSensitive: true,
-      }),
+      resolveServerString(plugin, entry, options, issues),
     ]),
   );
 }
@@ -52,53 +78,77 @@ export function resolvePluginMcpEnvironment(
   server: McpServerConfig,
   options: PluginMcpRegistrationOptions = {},
 ): McpServerConfig {
+  return resolvePluginMcpEnvironmentWithIssues(plugin, server, options).server;
+}
+
+function resolvePluginMcpEnvironmentWithIssues(
+  plugin: LoadedPlugin,
+  server: McpServerConfig,
+  options: PluginMcpRegistrationOptions,
+): { readonly server: McpServerConfig; readonly issues: ServerResolutionIssues } {
+  const issues = createServerResolutionIssues();
   const env = {
     ...pluginEnvironment(plugin),
-    ...(substituteStringRecord(plugin, server.env, options) ?? {}),
+    ...(substituteStringRecord(plugin, server.env, options, issues) ?? {}),
   };
   return {
-    ...server,
-    ...(server.command !== undefined
-      ? {
-          command: substitutePluginTemplate(server.command, plugin, {
-            sessionId: options.sessionId,
-            exposeSensitive: true,
-          }),
-        }
-      : {}),
-    ...(server.args !== undefined
-      ? {
-          args: server.args.map((arg) =>
-            substitutePluginTemplate(arg, plugin, {
-              sessionId: options.sessionId,
-              exposeSensitive: true,
-            }),
-          ),
-        }
-      : {}),
-    ...(server.endpoint !== undefined
-      ? {
-          endpoint: substitutePluginTemplate(server.endpoint, plugin, {
-            sessionId: options.sessionId,
-            exposeSensitive: true,
-          }),
-        }
-      : {}),
-    ...(server.headers !== undefined
-      ? { headers: substituteStringRecord(plugin, server.headers, options) }
-      : {}),
-    ...(server.cwd !== undefined
-      ? {
-          cwd: substitutePluginTemplate(server.cwd, plugin, {
-            sessionId: options.sessionId,
-            exposeSensitive: true,
-          }),
-        }
-      : server.command !== undefined
-        ? { cwd: plugin.root }
+    server: {
+      ...server,
+      ...(server.command !== undefined
+        ? { command: resolveServerString(plugin, server.command, options, issues) }
         : {}),
-    env,
+      ...(server.args !== undefined
+        ? {
+            args: server.args.map((arg) =>
+              resolveServerString(plugin, arg, options, issues)
+            ),
+          }
+        : {}),
+      ...(server.endpoint !== undefined
+        ? { endpoint: resolveServerString(plugin, server.endpoint, options, issues) }
+        : {}),
+      ...(server.headers !== undefined
+        ? { headers: substituteStringRecord(plugin, server.headers, options, issues) }
+        : {}),
+      ...(server.cwd !== undefined
+        ? { cwd: resolveServerString(plugin, server.cwd, options, issues) }
+        : server.command !== undefined
+          ? { cwd: plugin.root }
+          : {}),
+      env,
+    },
+    issues,
   };
+}
+
+function reportServerIssues(
+  plugin: LoadedPlugin,
+  serverName: string,
+  issues: ServerResolutionIssues,
+  options: PluginMcpRegistrationOptions,
+): boolean {
+  const missingUserConfig = [...issues.missingUserConfig].sort();
+  const missingEnv = [...issues.missingEnv].sort();
+  if (missingUserConfig.length === 0 && missingEnv.length === 0) return false;
+  if (missingUserConfig.length > 0) {
+    options.errors?.push({
+      type: "mcp",
+      source: `plugin:${plugin.name}`,
+      plugin: plugin.name,
+      path: serverName,
+      message: `Missing user configuration values: ${missingUserConfig.join(", ")}`,
+    });
+  }
+  if (missingEnv.length > 0) {
+    options.errors?.push({
+      type: "mcp",
+      source: `plugin:${plugin.name}`,
+      plugin: plugin.name,
+      path: serverName,
+      message: `Missing environment variables: ${missingEnv.join(", ")}`,
+    });
+  }
+  return true;
 }
 
 export function addPluginScopeToServers(
@@ -106,12 +156,13 @@ export function addPluginScopeToServers(
   servers: Readonly<Record<string, McpServerConfig>>,
   options: PluginMcpRegistrationOptions = {},
 ): Readonly<Record<string, McpServerConfig>> {
-  return Object.fromEntries(
-    Object.entries(servers).map(([name, server]) => [
-      `plugin:${plugin.name}:${name}`,
-      resolvePluginMcpEnvironment(plugin, server, options),
-    ]),
-  );
+  const scoped: Record<string, McpServerConfig> = {};
+  for (const [name, server] of Object.entries(servers)) {
+    const resolved = resolvePluginMcpEnvironmentWithIssues(plugin, server, options);
+    if (reportServerIssues(plugin, name, resolved.issues, options)) continue;
+    scoped[`plugin:${plugin.name}:${name}`] = resolved.server;
+  }
+  return scoped;
 }
 
 async function resolvePlugins(

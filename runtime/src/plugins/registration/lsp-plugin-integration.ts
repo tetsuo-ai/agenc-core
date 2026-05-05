@@ -1,32 +1,58 @@
 import type { LspServerConfigInput } from "../../config/schema.js";
-import type { LoadedPlugin } from "../loader.js";
+import type { LoadedPlugin, PluginLoadIssue } from "../loader.js";
 import { getPluginDataDir } from "../directories.js";
 import {
   loadRuntimePlugins,
-  substitutePluginTemplate,
+  resolvePluginServerTemplate,
   type PluginRuntimeLoadOptions,
 } from "./common.js";
 
 export interface PluginLspRegistrationOptions extends PluginRuntimeLoadOptions {
   readonly plugins?: readonly LoadedPlugin[];
   readonly sessionId?: string;
+  readonly errors?: PluginLoadIssue[];
 }
 
 let pluginLspCache: Promise<Readonly<Record<string, LspServerConfigInput>>> | null = null;
+
+interface ServerResolutionIssues {
+  readonly missingUserConfig: Set<string>;
+  readonly missingEnv: Set<string>;
+}
+
+function createServerResolutionIssues(): ServerResolutionIssues {
+  return {
+    missingUserConfig: new Set(),
+    missingEnv: new Set(),
+  };
+}
+
+function resolveServerString(
+  plugin: LoadedPlugin,
+  value: string,
+  options: PluginLspRegistrationOptions,
+  issues: ServerResolutionIssues,
+): string {
+  const result = resolvePluginServerTemplate(value, plugin, {
+    sessionId: options.sessionId,
+    env: options.env,
+  });
+  result.missingUserConfig.forEach((key) => issues.missingUserConfig.add(key));
+  result.missingEnv.forEach((key) => issues.missingEnv.add(key));
+  return result.value;
+}
 
 function substituteStringRecord(
   plugin: LoadedPlugin,
   value: Readonly<Record<string, string>> | undefined,
   options: PluginLspRegistrationOptions,
+  issues: ServerResolutionIssues,
 ): Readonly<Record<string, string>> | undefined {
   if (value === undefined) return undefined;
   return Object.fromEntries(
     Object.entries(value).map(([key, entry]) => [
       key,
-      substitutePluginTemplate(entry, plugin, {
-        sessionId: options.sessionId,
-        exposeSensitive: true,
-      }),
+      resolveServerString(plugin, entry, options, issues),
     ]),
   );
 }
@@ -36,38 +62,75 @@ export function resolvePluginLspEnvironment(
   server: LspServerConfigInput,
   options: PluginLspRegistrationOptions = {},
 ): LspServerConfigInput {
+  return resolvePluginLspEnvironmentWithIssues(plugin, server, options).server;
+}
+
+function resolvePluginLspEnvironmentWithIssues(
+  plugin: LoadedPlugin,
+  server: LspServerConfigInput,
+  options: PluginLspRegistrationOptions,
+): { readonly server: LspServerConfigInput; readonly issues: ServerResolutionIssues } {
+  const issues = createServerResolutionIssues();
   return {
-    ...server,
-    command: substitutePluginTemplate(server.command, plugin, {
-      sessionId: options.sessionId,
-      exposeSensitive: true,
-    }),
-    ...(server.args !== undefined
-      ? {
-          args: server.args.map((arg) =>
-            substitutePluginTemplate(arg, plugin, {
-              sessionId: options.sessionId,
-              exposeSensitive: true,
-            }),
-          ),
-        }
-      : {}),
-    env: {
-      AGENC_PLUGIN_ROOT: plugin.root,
-      AGENC_PLUGIN_DATA: getPluginDataDir(plugin.source),
-      AGENC_PLUGIN_NAME: plugin.name,
-      ...(substituteStringRecord(plugin, server.env, options) ?? {}),
+    server: {
+      ...server,
+      command: resolveServerString(plugin, server.command, options, issues),
+      ...(server.args !== undefined
+        ? {
+            args: server.args.map((arg) =>
+              resolveServerString(plugin, arg, options, issues)
+            ),
+          }
+        : {}),
+      env: {
+        AGENC_PLUGIN_ROOT: plugin.root,
+        AGENC_PLUGIN_DATA: getPluginDataDir(plugin.source),
+        AGENC_PLUGIN_NAME: plugin.name,
+        ...(substituteStringRecord(plugin, server.env, options, issues) ?? {}),
+      },
+      ...(server.workspaceFolder !== undefined
+        ? {
+            workspaceFolder: resolveServerString(
+              plugin,
+              server.workspaceFolder,
+              options,
+              issues,
+            ),
+          }
+        : { workspaceFolder: plugin.root }),
     },
-    ...(server.workspaceFolder !== undefined
-      ? {
-          workspaceFolder: substitutePluginTemplate(
-            server.workspaceFolder,
-            plugin,
-            { sessionId: options.sessionId, exposeSensitive: true },
-          ),
-        }
-      : { workspaceFolder: plugin.root }),
+    issues,
   };
+}
+
+function reportServerIssues(
+  plugin: LoadedPlugin,
+  serverName: string,
+  issues: ServerResolutionIssues,
+  options: PluginLspRegistrationOptions,
+): boolean {
+  const missingUserConfig = [...issues.missingUserConfig].sort();
+  const missingEnv = [...issues.missingEnv].sort();
+  if (missingUserConfig.length === 0 && missingEnv.length === 0) return false;
+  if (missingUserConfig.length > 0) {
+    options.errors?.push({
+      type: "lsp",
+      source: `plugin:${plugin.name}`,
+      plugin: plugin.name,
+      path: serverName,
+      message: `Missing user configuration values: ${missingUserConfig.join(", ")}`,
+    });
+  }
+  if (missingEnv.length > 0) {
+    options.errors?.push({
+      type: "lsp",
+      source: `plugin:${plugin.name}`,
+      plugin: plugin.name,
+      path: serverName,
+      message: `Missing environment variables: ${missingEnv.join(", ")}`,
+    });
+  }
+  return true;
 }
 
 export function addPluginScopeToLspServers(
@@ -75,12 +138,13 @@ export function addPluginScopeToLspServers(
   servers: Readonly<Record<string, LspServerConfigInput>>,
   options: PluginLspRegistrationOptions = {},
 ): Readonly<Record<string, LspServerConfigInput>> {
-  return Object.fromEntries(
-    Object.entries(servers).map(([name, server]) => [
-      `plugin:${plugin.name}:${name}`,
-      resolvePluginLspEnvironment(plugin, server, options),
-    ]),
-  );
+  const scoped: Record<string, LspServerConfigInput> = {};
+  for (const [name, server] of Object.entries(servers)) {
+    const resolved = resolvePluginLspEnvironmentWithIssues(plugin, server, options);
+    if (reportServerIssues(plugin, name, resolved.issues, options)) continue;
+    scoped[`plugin:${plugin.name}:${name}`] = resolved.server;
+  }
+  return scoped;
 }
 
 async function resolvePlugins(
