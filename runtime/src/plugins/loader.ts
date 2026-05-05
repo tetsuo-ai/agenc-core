@@ -19,6 +19,8 @@ const DEFAULT_HOOKS_FILE = "hooks/hooks.json";
 const DEFAULT_MCP_FILE = ".mcp.json";
 const DEFAULT_LSP_FILE = ".lsp.json";
 const DEFAULT_APP_FILE = ".app.json";
+const MAX_PLUGIN_MARKDOWN_FILES = 512;
+const MAX_PLUGIN_SCAN_DEPTH = 8;
 const DEFAULT_COMPONENT_DIRS = {
   commands: "commands",
   agents: "agents",
@@ -596,19 +598,28 @@ function componentFromField(field: string): PluginComponentKind | undefined {
 
 async function collectMarkdownFiles(root: string): Promise<string[]> {
   const out: string[] = [];
-  const queue = [root];
+  const queue: Array<{ readonly path: string; readonly depth: number }> = [
+    { path: root, depth: 0 },
+  ];
+  const visitedDirs = new Set<string>();
   while (queue.length > 0) {
+    if (out.length >= MAX_PLUGIN_MARKDOWN_FILES) break;
     const current = queue.shift()!;
+    if (current.depth > MAX_PLUGIN_SCAN_DEPTH) continue;
+    const identity = await maybeRealpath(current.path);
+    if (visitedDirs.has(identity)) continue;
+    visitedDirs.add(identity);
     let entries;
     try {
-      entries = await readdir(current, { withFileTypes: true });
+      entries = await readdir(current.path, { withFileTypes: true });
     } catch {
       continue;
     }
     for (const entry of entries) {
-      const path = join(current, entry.name);
+      if (out.length >= MAX_PLUGIN_MARKDOWN_FILES) break;
+      const path = join(current.path, entry.name);
       if (entry.isDirectory()) {
-        queue.push(path);
+        queue.push({ path, depth: current.depth + 1 });
       } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
         out.push(path);
       }
@@ -739,7 +750,7 @@ async function loadServers<T>(
     : Array.isArray(declaration)
       ? declaration
       : [declaration];
-  const out: Record<string, T> = {};
+  const out = nullProtoRecord<T>();
   for (const entry of declarations) {
     if (typeof entry === "string") {
       let resolved: string;
@@ -813,9 +824,31 @@ function normalizeServerMap<T>(
   pluginName: string,
 ): Readonly<Record<string, T>> {
   if (!isRecord(value)) return {};
-  const out: Record<string, T> = {};
+  const out = nullProtoRecord<T>();
   for (const [name, server] of Object.entries(value)) {
-    const normalized = normalizeServer(name, server, pluginRoot);
+    if (isUnsafeObjectKey(name)) {
+      errors.push({
+        type: component,
+        source,
+        plugin: pluginName,
+        component,
+        message: `Unsafe ${component} server key "${name}"`,
+      });
+      continue;
+    }
+    let normalized: T | null;
+    try {
+      normalized = normalizeServer(name, server, pluginRoot);
+    } catch (error) {
+      errors.push({
+        type: component,
+        source,
+        plugin: pluginName,
+        component,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      continue;
+    }
     if (normalized === null) {
       errors.push({
         type: component,
@@ -829,6 +862,14 @@ function normalizeServerMap<T>(
     out[name] = normalized;
   }
   return out;
+}
+
+function nullProtoRecord<T>(): Record<string, T> {
+  return Object.create(null) as Record<string, T>;
+}
+
+function isUnsafeObjectKey(key: string): boolean {
+  return key === "__proto__" || key === "constructor" || key === "prototype";
 }
 
 function normalizeMcpServer(
@@ -856,7 +897,7 @@ function normalizeMcpServer(
     ...(headers !== undefined ? { headers } : {}),
     ...(env !== undefined ? { env } : {}),
     ...(cwd !== undefined
-      ? { cwd: isAbsolute(cwd) ? cwd : join(pluginRoot, cwd) }
+      ? { cwd: resolveServerWorkingDir(pluginRoot, "mcpServers.cwd", cwd) }
       : {}),
     ...(typeof value.enabled === "boolean" ? { enabled: value.enabled } : {}),
     ...(typeof value.timeout === "number" ? { timeout: value.timeout } : {}),
@@ -880,9 +921,15 @@ function normalizeLspServer(
       ? { args: value.args.filter((entry): entry is string => typeof entry === "string") }
       : {}),
     ...(stringRecord(value.env) !== undefined ? { env: stringRecord(value.env) } : {}),
-    workspaceFolder: typeof value.workspaceFolder === "string" && !isAbsolute(value.workspaceFolder)
-      ? join(pluginRoot, value.workspaceFolder)
-      : stringValue(value.workspaceFolder),
+    ...(typeof value.workspaceFolder === "string"
+      ? {
+          workspaceFolder: resolveServerWorkingDir(
+            pluginRoot,
+            "lspServers.workspaceFolder",
+            value.workspaceFolder,
+          ),
+        }
+      : {}),
     extensionToLanguage,
     ...(value.initializationOptions !== undefined
       ? { initializationOptions: value.initializationOptions }
@@ -929,11 +976,23 @@ function stringValue(value: unknown): string | undefined {
 
 function stringRecord(value: unknown): Record<string, string> | undefined {
   if (!isRecord(value)) return undefined;
-  const out: Record<string, string> = {};
+  const out = nullProtoRecord<string>();
   for (const [key, entry] of Object.entries(value)) {
+    if (isUnsafeObjectKey(key)) continue;
     if (typeof entry === "string") out[key] = entry;
   }
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function resolveServerWorkingDir(
+  pluginRoot: string,
+  field: string,
+  value: string,
+): string {
+  if (value === "." || value === "./") return pluginRoot;
+  if (isAbsolute(value)) return value;
+  const relativeValue = value.startsWith("./") ? value : `./${value}`;
+  return resolveManifestRelativePath(pluginRoot, field, relativeValue);
 }
 
 function relativePluginPath(pluginRoot: string, path: string): string {

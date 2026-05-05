@@ -1050,12 +1050,24 @@ export function createLocalSkillsServices(
   SessionServices,
   "skillsManager" | "pluginsManager" | "skillsWatcher"
 > {
-  let cache: Promise<LocalSkillsSnapshot> | null = null;
+  let cache: {
+    readonly key: string;
+    readonly value: Promise<LocalSkillsSnapshot>;
+  } | null = null;
   let activePaths = new Set<string>();
   let watchers: readonly FSWatcher[] = [];
-  const load = (): Promise<LocalSkillsSnapshot> => {
-    cache ??= loadLocalSkillsSnapshot(options, [...activePaths]);
-    return cache;
+  const load = (
+    config?: Pick<AgenCConfig, "plugins" | "enabledPlugins">,
+  ): Promise<LocalSkillsSnapshot> => {
+    const effectiveOptions = config === undefined ? options : { ...options, config };
+    const key = skillSnapshotCacheKey(effectiveOptions.config, activePaths);
+    if (cache?.key !== key) {
+      cache = {
+        key,
+        value: loadLocalSkillsSnapshot(effectiveOptions, [...activePaths]),
+      };
+    }
+    return cache.value;
   };
   const clear = () => {
     cache = null;
@@ -1063,13 +1075,13 @@ export function createLocalSkillsServices(
 
   const skillsManager = {
     async skillsForConfig(
-      _input: AgenCConfig | unknown,
+      input: AgenCConfig | unknown,
       fsArg: unknown,
     ): Promise<SkillLoadOutcome> {
-      for (const path of extractActivePaths(_input, fsArg)) {
+      for (const path of extractActivePaths(input, fsArg)) {
         activePaths.add(path);
       }
-      const snapshot = await load();
+      const snapshot = await load(pluginConfigView(input));
       return {
         invokedSkills: [...getInvokedSkillsForAgent().keys()],
         availableSkills: snapshot.skills,
@@ -1132,6 +1144,17 @@ export function createLocalSkillsServices(
       },
     },
   };
+}
+
+function skillSnapshotCacheKey(
+  config: Pick<AgenCConfig, "plugins" | "enabledPlugins"> | undefined,
+  activePaths: ReadonlySet<string>,
+): string {
+  return JSON.stringify({
+    plugins: config?.plugins ?? null,
+    enabledPlugins: config?.enabledPlugins ?? null,
+    activePaths: [...activePaths].sort(),
+  });
 }
 
 function pluginConfigView(

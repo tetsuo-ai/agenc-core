@@ -23,7 +23,7 @@ import {
   PLUGIN_MANIFEST_RELATIVE_PATH,
   resolveManifestRelativePath,
 } from "./manifest.js";
-import { validateManifest } from "./validation.js";
+import { validateManifest, validatePluginContents } from "./validation.js";
 
 describe("plugin manifest", () => {
   test("prefers canonical manifests and normalizes interface prompts", async () => {
@@ -176,6 +176,78 @@ describe("plugin loader", () => {
     });
   });
 
+  test("rejects unsafe server keys and working directories", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const workspaceRoot = join(root, "workspace");
+      const pluginRoot = join(agencHome, "plugins", "server-safety");
+      await writePluginManifest(pluginRoot, { name: "server-safety" });
+      await writeFileAt(
+        join(pluginRoot, ".mcp.json"),
+        `{
+  "mcpServers": {
+    "__proto__": { "command": "node" },
+    "constructor": { "command": "node" },
+    "valid": { "command": "node", "cwd": "bin" },
+    "escape": { "command": "node", "cwd": "../outside" }
+  }
+}
+`,
+      );
+      await writeJson(join(pluginRoot, ".lsp.json"), {
+        lspServers: {
+          prototype: {
+            command: "server",
+            extensionToLanguage: { ".ts": "typescript" },
+          },
+          ts: {
+            command: "server",
+            extensionToLanguage: { ".ts": "typescript" },
+            workspaceFolder: "../outside",
+          },
+        },
+      });
+
+      const result = await loadPlugins({ agencHome, workspaceRoot });
+      const plugin = result.enabled[0];
+
+      expect(Object.getPrototypeOf(plugin?.mcpServers)).toBeNull();
+      expect(plugin?.mcpServers.valid?.cwd).toBe(join(pluginRoot, "bin"));
+      expect(Object.keys(plugin?.mcpServers ?? {})).toEqual(["valid"]);
+      expect(Object.keys(plugin?.lspServers ?? {})).toEqual([]);
+      expect(result.errors.map((error) => error.message)).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining("Unsafe mcp server key"),
+          expect.stringContaining("Unsafe lsp server key"),
+          expect.stringContaining("path must be normalized"),
+        ]),
+      );
+    });
+  });
+
+  test("bounds default command discovery", async () => {
+    await withTempDir(async (root) => {
+      const pluginRoot = join(root, "plugins", "many-commands");
+      await writePluginManifest(pluginRoot, { name: "many-commands" });
+      for (let index = 0; index < 520; index += 1) {
+        await writeFileAt(join(pluginRoot, "commands", `cmd-${index}.md`), "# command\n");
+      }
+      await writeFileAt(
+        join(pluginRoot, "commands", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8", "d9", "deep.md"),
+        "# deep\n",
+      );
+
+      const { plugin } = await createPluginFromPath(pluginRoot, {
+        source: "test",
+        enabled: true,
+        fallbackName: "many-commands",
+      });
+
+      expect(plugin.commands).toHaveLength(512);
+      expect(plugin.commands.map((command) => command.name)).not.toContain("deep");
+    });
+  });
+
   test("discovers user, workspace, and configured plugin roots", async () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");
@@ -257,6 +329,28 @@ describe("plugin directories", () => {
       });
       await deletePluginDataDir("team/plugin@1", env, root);
       await expect(getPluginDataDirSize("team/plugin@1", env, root)).resolves.toBeNull();
+    });
+  });
+});
+
+describe("plugin validation", () => {
+  test("rejects malformed markdown component metadata", async () => {
+    await withTempDir(async (root) => {
+      const pluginRoot = join(root, "plugins", "bad-metadata");
+      await writePluginManifest(pluginRoot, { name: "bad-metadata" });
+      await writeFileAt(
+        join(pluginRoot, "skills", "broken", "SKILL.md"),
+        "---\ndescription: 12\nallowed-tools: [Read, 3]\nunknown-field: true\n---\nBody\n",
+      );
+
+      const results = await validatePluginContents(pluginRoot);
+      const skillResult = results.find((result) => result.fileType === "skill");
+
+      expect(skillResult?.success).toBe(false);
+      expect(skillResult?.errors.map((error) => error.path)).toEqual(
+        expect.arrayContaining(["description", "allowed-tools"]),
+      );
+      expect(skillResult?.warnings.map((warning) => warning.path)).toContain("unknown-field");
     });
   });
 });

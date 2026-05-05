@@ -1,5 +1,6 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import { load as loadYaml } from "js-yaml";
 import {
   findPluginManifestPath,
   isRecord,
@@ -297,11 +298,14 @@ function validateMarkdownComponent(
 ): ValidationResult {
   const errors: ValidationError[] = [];
   const warnings: ValidationWarning[] = [];
-  if (!raw.startsWith("---")) {
+  const frontmatter = readMarkdownFrontmatter(raw, errors);
+  if (frontmatter === undefined) {
     warnings.push({
       path: "frontmatter",
       message: "No frontmatter block found.",
     });
+  } else {
+    validateFrontmatterShape(frontmatter, fileType, errors, warnings);
   }
   return {
     success: errors.length === 0,
@@ -310,4 +314,126 @@ function validateMarkdownComponent(
     filePath,
     fileType,
   };
+}
+
+function readMarkdownFrontmatter(
+  raw: string,
+  errors: ValidationError[],
+): Readonly<Record<string, unknown>> | undefined {
+  if (!raw.startsWith("---")) return undefined;
+  const end = raw.indexOf("\n---", 3);
+  if (end < 0) {
+    errors.push({
+      path: "frontmatter",
+      message: "Frontmatter block is not closed.",
+    });
+    return undefined;
+  }
+  try {
+    const parsed = loadYaml(raw.slice(3, end).trim()) ?? {};
+    if (!isRecord(parsed)) {
+      errors.push({
+        path: "frontmatter",
+        message: "Frontmatter must be an object.",
+      });
+      return undefined;
+    }
+    return parsed;
+  } catch (error) {
+    errors.push({
+      path: "frontmatter",
+      message: `Invalid frontmatter syntax: ${errorMessage(error)}`,
+    });
+    return undefined;
+  }
+}
+
+function validateFrontmatterShape(
+  frontmatter: Readonly<Record<string, unknown>>,
+  fileType: "skill" | "agent" | "command",
+  errors: ValidationError[],
+  warnings: ValidationWarning[],
+): void {
+  for (const [key, value] of Object.entries(frontmatter)) {
+    switch (key) {
+      case "name":
+      case "description":
+      case "argument-hint":
+      case "argumentHint":
+      case "when_to_use":
+      case "whenToUse":
+      case "version":
+      case "model":
+      case "context":
+      case "agent":
+      case "effort":
+      case "shell":
+      case "system-prompt":
+      case "systemPrompt":
+        validateStringField(key, value, errors);
+        break;
+      case "allowed-tools":
+      case "allowedTools":
+      case "tools":
+      case "paths":
+        validateStringListField(key, value, errors);
+        break;
+      case "arguments":
+        validateArgumentsField(value, errors);
+        break;
+      case "disable-model-invocation":
+      case "disableModelInvocation":
+      case "user-invocable":
+      case "userInvocable":
+        if (typeof value !== "boolean") {
+          errors.push({ path: key, message: "Expected boolean value." });
+        }
+        break;
+      case "hooks":
+        if (!isRecord(value)) {
+          errors.push({ path: key, message: "Expected hooks object." });
+        }
+        break;
+      default:
+        warnings.push({
+          path: key,
+          message: `Unknown ${fileType} frontmatter field.`,
+        });
+    }
+  }
+  if (fileType === "skill" && typeof frontmatter.description !== "string") {
+    errors.push({
+      path: "description",
+      message: "Skill frontmatter requires a description string.",
+    });
+  }
+}
+
+function validateStringField(
+  key: string,
+  value: unknown,
+  errors: ValidationError[],
+): void {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    errors.push({ path: key, message: "Expected non-empty string." });
+  }
+}
+
+function validateStringListField(
+  key: string,
+  value: unknown,
+  errors: ValidationError[],
+): void {
+  if (typeof value === "string") return;
+  if (Array.isArray(value) && value.every((entry) => typeof entry === "string")) return;
+  errors.push({ path: key, message: "Expected string or string array." });
+}
+
+function validateArgumentsField(
+  value: unknown,
+  errors: ValidationError[],
+): void {
+  if (typeof value === "string") return;
+  if (Array.isArray(value) && value.every((entry) => typeof entry === "string")) return;
+  errors.push({ path: "arguments", message: "Expected string or string array." });
 }

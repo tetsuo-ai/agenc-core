@@ -388,14 +388,11 @@ export interface PluginEntryConfig {
   readonly version?: string;
   readonly required?: boolean;
   readonly options?: Readonly<Record<string, unknown>>;
-  readonly mcp_servers?: Readonly<Record<string, McpServerConfig>>;
 }
 
 export interface PluginsConfig {
   readonly dirs?: readonly string[];
-  readonly inline?: readonly string[];
   readonly enabled?: Readonly<Record<string, boolean | PluginEntryConfig>>;
-  readonly seed_dirs?: readonly string[];
 }
 
 // ─────────────────────────────────────────────────────────────────────
