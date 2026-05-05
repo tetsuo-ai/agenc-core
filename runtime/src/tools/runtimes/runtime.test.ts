@@ -297,7 +297,7 @@ describe("tools/runtimes", () => {
         tool: shellTool,
         args: { cmd: "echo blocked > README.md" },
       }),
-    ).toThrow(/read_only blocked/);
+    ).toThrow(/could not verify read targets|read_only blocked/);
 
     expect(() =>
       enforceRuntimeSandboxAttempt({
@@ -361,7 +361,7 @@ describe("tools/runtimes", () => {
         tool: shellTool,
         args: { cmd: "node -e \"require('fs').writeFileSync('/etc/agenc-outside','x')\"" },
       }),
-    ).toThrow(/could not verify write targets/);
+    ).toThrow(/could not verify (read|write) targets/);
 
     expect(() =>
       enforceRuntimeSandboxAttempt({
@@ -394,6 +394,86 @@ describe("tools/runtimes", () => {
         args: { cmd: "cat /etc/passwd" },
       }),
     ).toThrow(/read outside workspace/);
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "read_only",
+          sandboxMode: "read_only",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation,
+        },
+        tool: shellTool,
+        args: { cmd: 'cat "/etc/passwd"' },
+      }),
+    ).toThrow(/read outside workspace/);
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "read_only",
+          sandboxMode: "read_only",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation,
+        },
+        tool: shellTool,
+        args: { cmd: "cat $HOME/.ssh/id_rsa" },
+      }),
+    ).toThrow(/could not verify read targets/);
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "read_only",
+          sandboxMode: "read_only",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation,
+        },
+        tool: shellTool,
+        args: { cmd: "sh -c 'cat /etc/passwd'" },
+      }),
+    ).toThrow(/could not verify read targets/);
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "read_only",
+          sandboxMode: "read_only",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation,
+        },
+        tool: shellTool,
+        args: { cmd: "find . -exec cat /etc/passwd ;" },
+      }),
+    ).toThrow(/could not verify read targets/);
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "read_only",
+          sandboxMode: "read_only",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation,
+        },
+        tool: shellTool,
+        args: { cmd: 'awk "BEGIN{system(\\"cat /etc/passwd\\")}"' },
+      }),
+    ).toThrow(/could not verify read targets/);
 
     expect(() =>
       enforceRuntimeSandboxAttempt({

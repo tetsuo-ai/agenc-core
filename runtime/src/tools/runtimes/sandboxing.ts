@@ -164,6 +164,16 @@ function enforceRuntimeReadSandboxAttempt(
   if (policy.kind !== "read_only") return;
   const shell = analyzeShellRuntimeAccess(input.tool, input.args, cwd);
   if (shell === null) return;
+  if (shell.indeterminateRead) {
+    throw new SandboxDeniedError(
+      `sandbox read_only could not verify read targets for ${input.tool.name}`,
+      {
+        denial: "filesystem",
+        target: input.tool.name,
+        policy,
+      },
+    );
+  }
   for (const target of shell.readTargets) {
     if (isPathUnder(target, cwd)) continue;
     throw new SandboxDeniedError(

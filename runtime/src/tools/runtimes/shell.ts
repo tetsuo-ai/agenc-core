@@ -1,4 +1,8 @@
 import path from "node:path";
+import {
+  SHELL_COMMAND_SEPARATORS,
+  tokenizeShellCommand,
+} from "../../llm/_deps/command-line.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 import type { Tool } from "../types.js";
 import {
@@ -9,23 +13,21 @@ import {
 export interface ShellRuntimeAccessAnalysis {
   readonly writeTargets: readonly string[];
   readonly readTargets: readonly string[];
+  readonly indeterminateRead: boolean;
   readonly indeterminateWrite: boolean;
   readonly knownSafeWhenTargetless: boolean;
 }
 
 const READ_ONLY_SHELL_COMMANDS = new Set([
-  "awk",
   "basename",
   "cat",
   "cut",
   "dirname",
-  "find",
   "grep",
   "head",
   "ls",
   "pwd",
   "rg",
-  "sed",
   "sort",
   "stat",
   "tail",
@@ -44,6 +46,7 @@ const READ_ONLY_GIT_SUBCOMMANDS = new Set([
   "show",
   "status",
 ]);
+const DYNAMIC_SHELL_READ_TARGET_RE = /(?:[$*?\[\]{}~]|`|\$\(|<\()/u;
 
 export function analyzeShellRuntimeAccess(
   tool: Tool,
@@ -58,12 +61,15 @@ export function analyzeShellRuntimeAccess(
     return {
       writeTargets: [],
       readTargets: [...readTargets],
+      indeterminateRead: false,
       indeterminateWrite: false,
       knownSafeWhenTargetless: true,
     };
   }
 
-  for (const target of shellCommandReadTargets(command, runtimeCommand.cwd)) {
+  const knownReadOnly = isShellCommandKnownReadOnly(command);
+  const reads = shellCommandReadTargets(command, runtimeCommand.cwd);
+  for (const target of reads.targets) {
     readTargets.add(target);
   }
   const decision = classifyShellWorkspaceWritePolicy({
@@ -74,10 +80,10 @@ export function analyzeShellRuntimeAccess(
     },
     workspaceRoot: cwd,
   });
-  const knownReadOnly = isShellCommandKnownReadOnly(command);
   return {
     writeTargets: decision.observedTargets,
     readTargets: [...readTargets],
+    indeterminateRead: reads.indeterminate || !knownReadOnly,
     indeterminateWrite:
       decision.indeterminate ||
       (decision.observedTargets.length === 0 && !knownReadOnly),
@@ -93,23 +99,26 @@ function isShellCommandKnownReadOnly(command: string): boolean {
 function shellCommandReadTargets(
   command: string,
   cwd: string,
-): readonly string[] {
+): { readonly targets: readonly string[]; readonly indeterminate: boolean } {
   const targets = new Set<string>();
+  let indeterminate = false;
   for (const segment of tokenizeShellLike(command)) {
-    collectShellSegmentReadTargets(segment, cwd, targets);
+    const result = collectShellSegmentReadTargets(segment, cwd, targets);
+    indeterminate ||= result.indeterminate;
   }
-  return [...targets];
+  return { targets: [...targets], indeterminate };
 }
 
 function collectShellSegmentReadTargets(
   segment: readonly string[],
   cwd: string,
   targets: Set<string>,
-): void {
+): { readonly indeterminate: boolean } {
   const command = shellSegmentCommand(segment);
-  if (command === undefined) return;
+  if (command === undefined) return { indeterminate: false };
   const commandIndex = segment.indexOf(command);
   const pathOptionValueIndexes = new Set<number>();
+  let indeterminate = DYNAMIC_SHELL_READ_TARGET_RE.test(command);
   for (let i = commandIndex + 1; i < segment.length; i += 1) {
     const token = segment[i];
     if (token === "-C" || token === "--git-dir" || token === "--work-tree") {
@@ -119,10 +128,16 @@ function collectShellSegmentReadTargets(
   for (let i = commandIndex + 1; i < segment.length; i += 1) {
     const token = segment[i];
     if (!token || token === "--") continue;
+    if (token.startsWith("-") && !pathOptionValueIndexes.has(i)) continue;
+    if (DYNAMIC_SHELL_READ_TARGET_RE.test(token)) {
+      indeterminate = true;
+      continue;
+    }
     if (pathOptionValueIndexes.has(i) || isShellPathOperand(token)) {
       targets.add(resolveTarget(token, cwd));
     }
   }
+  return { indeterminate };
 }
 
 function isShellSegmentKnownReadOnly(segment: readonly string[]): boolean {
@@ -139,8 +154,8 @@ function isShellSegmentKnownReadOnly(segment: readonly string[]): boolean {
 function tokenizeShellLike(command: string): string[][] {
   const segments: string[][] = [];
   let current: string[] = [];
-  for (const token of command.split(/\s+/).filter(Boolean)) {
-    if (token === "&&" || token === "||" || token === ";" || token === "|") {
+  for (const token of tokenizeShellCommand(command)) {
+    if (SHELL_COMMAND_SEPARATORS.has(token)) {
       segments.push(current);
       current = [];
       continue;
