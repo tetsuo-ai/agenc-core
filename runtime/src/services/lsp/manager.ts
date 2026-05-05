@@ -125,25 +125,45 @@ export function reinitializeLspServerManager(
 ): void {
   if (initializationState === "not-started") return;
   const oldManager = lspManagerInstance;
-  if (oldManager) void oldManager.shutdown().catch(() => {});
   lspManagerInstance = undefined;
-  initializationState = "not-started";
+  initializationState = "pending";
   initializationError = undefined;
-  initializationGeneration += 1;
-  initializeLspServerManager(options);
+  lastManagerOptions = options;
+  const generation = ++initializationGeneration;
+
+  initializationPromise = (async () => {
+    if (oldManager) await oldManager.shutdown();
+    if (generation !== initializationGeneration) return;
+    lspManagerInstance = createLSPServerManager(options);
+    await lspManagerInstance.initialize();
+    if (generation !== initializationGeneration) return;
+    initializationState = "success";
+    if (lspManagerInstance) {
+      registerLSPNotificationHandlers(lspManagerInstance);
+    }
+  })().catch((error: unknown) => {
+    if (generation !== initializationGeneration) return;
+    initializationState = "failed";
+    initializationError = toError(error);
+    lspManagerInstance = undefined;
+  });
 }
 
 export async function shutdownLspServerManager(): Promise<void> {
   const manager = lspManagerInstance;
-  if (!manager) return;
+  const pending = initializationPromise;
+  const generation = ++initializationGeneration;
+  lspManagerInstance = undefined;
+  initializationState = "not-started";
+  initializationError = undefined;
+  initializationPromise = undefined;
+  lastManagerOptions = undefined;
   try {
-    await manager.shutdown();
+    await pending?.catch(() => {});
+    await manager?.shutdown();
   } finally {
-    lspManagerInstance = undefined;
-    initializationState = "not-started";
-    initializationError = undefined;
-    initializationPromise = undefined;
-    lastManagerOptions = undefined;
-    initializationGeneration += 1;
+    if (generation === initializationGeneration) {
+      initializationState = "not-started";
+    }
   }
 }

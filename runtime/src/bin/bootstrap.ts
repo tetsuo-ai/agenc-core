@@ -1132,7 +1132,7 @@ export async function bootstrapLocalRuntimeSession(
         /* best effort */
       });
     }
-    bootstrapServices.shutdown();
+    await bootstrapServices.shutdown();
   };
 
   try {

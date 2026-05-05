@@ -7,6 +7,43 @@ import { describe, expect, test } from "vitest";
 import { createLSPClient } from "./LSPClient.js";
 
 const EXITING_SERVER = "setTimeout(() => process.exit(1), 10)";
+const JSON_RPC_SERVER = `
+let buffer = Buffer.alloc(0);
+function send(message) {
+  const body = JSON.stringify(message);
+  process.stdout.write("Content-Length: " + Buffer.byteLength(body) + "\\r\\n\\r\\n" + body);
+}
+function handle(message) {
+  if (message.method === "initialize") {
+    send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+    setTimeout(() => send({ jsonrpc: "2.0", method: "custom/event", params: { ok: true } }), 5);
+    return;
+  }
+  if (message.method === "shutdown") {
+    send({ jsonrpc: "2.0", id: message.id, result: null });
+    return;
+  }
+  if (message.method === "exit") {
+    process.exit(0);
+  }
+}
+process.stdin.on("data", chunk => {
+  buffer = Buffer.concat([buffer, chunk]);
+  while (true) {
+    const headerEnd = buffer.indexOf("\\r\\n\\r\\n");
+    if (headerEnd === -1) return;
+    const header = buffer.subarray(0, headerEnd).toString("utf8");
+    const match = /Content-Length: (\\d+)/i.exec(header);
+    if (!match) throw new Error("missing content length");
+    const length = Number(match[1]);
+    const bodyStart = headerEnd + 4;
+    if (buffer.length < bodyStart + length) return;
+    const body = buffer.subarray(bodyStart, bodyStart + length).toString("utf8");
+    buffer = buffer.subarray(bodyStart + length);
+    handle(JSON.parse(body));
+  }
+});
+`;
 
 describe("createLSPClient", () => {
   test("clears closed process state so a crashed server can be started again", async () => {
@@ -60,5 +97,31 @@ describe("createLSPClient", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  test("re-registers handlers after restart", async () => {
+    const client = createLSPClient("jsonrpc");
+    let notificationCount = 0;
+    client.onNotification("custom/event", () => {
+      notificationCount += 1;
+    });
+
+    await client.start(process.execPath, ["-e", JSON_RPC_SERVER]);
+    await client.initialize({
+      processId: process.pid,
+      capabilities: {},
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await client.stop();
+
+    await client.start(process.execPath, ["-e", JSON_RPC_SERVER]);
+    await client.initialize({
+      processId: process.pid,
+      capabilities: {},
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await client.stop();
+
+    expect(notificationCount).toBe(2);
   });
 });

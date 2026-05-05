@@ -19,8 +19,6 @@ export interface LspServerConfig {
   readonly initializationOptions?: unknown;
   readonly startupTimeout?: number;
   readonly maxRestarts?: number;
-  readonly restartOnCrash?: boolean;
-  readonly shutdownTimeout?: number;
 }
 
 export interface ScopedLspServerConfig extends LspServerConfig {

@@ -85,7 +85,7 @@ describe("loadBootstrapLspServers", () => {
   test("starts and stops the LSP manager from typed config", async () => {
     _resetLspManagerForTesting();
     try {
-      loadBootstrapLspServers(
+      await loadBootstrapLspServers(
         {
           ...defaultConfig(),
           lsp_servers: {
@@ -102,7 +102,7 @@ describe("loadBootstrapLspServers", () => {
       expect(getInitializationStatus().status).toBe("success");
       expect(getLspServerManager()?.getAllServers().has("ts")).toBe(true);
 
-      loadBootstrapLspServers(
+      await loadBootstrapLspServers(
         { ...defaultConfig(), lsp_servers: undefined },
         { workspaceRoot: "/workspace/project" },
       );
@@ -117,7 +117,7 @@ describe("loadBootstrapLspServers", () => {
   test("surfaces invalid LSP config as initialization failure", async () => {
     _resetLspManagerForTesting();
     try {
-      loadBootstrapLspServers(
+      await loadBootstrapLspServers(
         {
           ...defaultConfig(),
           lsp_servers: {

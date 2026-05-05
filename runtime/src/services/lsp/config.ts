@@ -97,9 +97,18 @@ export function normalizeLspServerConfig(
   if (typeof raw.command !== "string" || raw.command.trim().length === 0) {
     throw new Error(`LSP server ${name} missing required command`);
   }
+  if (raw.command !== raw.command.trim()) {
+    throw new Error(`LSP server ${name} command must not include surrounding whitespace`);
+  }
+  if (raw.restartOnCrash !== undefined) {
+    throw new Error(`LSP server ${name} restartOnCrash is not supported`);
+  }
+  if (raw.shutdownTimeout !== undefined) {
+    throw new Error(`LSP server ${name} shutdownTimeout is not supported`);
+  }
   const env = stringRecord(raw.env, "env");
   const config: LspServerConfig = Object.freeze({
-    command: raw.command,
+    command: raw.command.trim(),
     args: Object.freeze([...stringArray(raw.args, "args")]),
     ...(env !== undefined ? { env } : {}),
     ...(typeof raw.workspaceFolder === "string" &&
@@ -121,18 +130,6 @@ export function normalizeLspServerConfig(
       : {}),
     ...(optionalPositiveInteger(raw.maxRestarts, "maxRestarts") !== undefined
       ? { maxRestarts: optionalPositiveInteger(raw.maxRestarts, "maxRestarts")! }
-      : {}),
-    ...(typeof raw.restartOnCrash === "boolean"
-      ? { restartOnCrash: raw.restartOnCrash }
-      : {}),
-    ...(optionalPositiveInteger(raw.shutdownTimeout, "shutdownTimeout") !==
-    undefined
-      ? {
-          shutdownTimeout: optionalPositiveInteger(
-            raw.shutdownTimeout,
-            "shutdownTimeout",
-          )!,
-        }
       : {}),
   });
   return Object.freeze({

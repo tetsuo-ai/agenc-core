@@ -36,6 +36,33 @@ describe("lsp config", () => {
     expect(result.success ? "" : result.reason).toContain("broken");
   });
 
+  test("rejects unsupported lifecycle fields and non-canonical commands", () => {
+    expect(
+      parseLspServersConfig({
+        bad: {
+          command: " server ",
+          extensionToLanguage: { ".ts": "typescript" },
+        },
+      }),
+    ).toMatchObject({
+      success: false,
+      reason: expect.stringContaining("surrounding whitespace"),
+    });
+
+    expect(
+      parseLspServersConfig({
+        bad: {
+          command: "server",
+          extensionToLanguage: { ".ts": "typescript" },
+          restartOnCrash: true,
+        },
+      }),
+    ).toMatchObject({
+      success: false,
+      reason: expect.stringContaining("restartOnCrash is not supported"),
+    });
+  });
+
   test("uses injectable server sources", async () => {
     const restore = setLspServerConfigSourceForTesting(() => ({
       py: normalizeLspServerConfig("py", {

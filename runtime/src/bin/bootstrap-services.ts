@@ -143,7 +143,7 @@ export interface BootstrapSessionServicesHandle {
   readonly threadStore: FileThreadStore;
   bindSession(session: Session): void;
   bindRolloutStore(binding: BootstrapRolloutBinding): LiveThread;
-  shutdown(): void;
+  shutdown(): Promise<void>;
 }
 
 export class BootstrapAnalyticsEventsClient
@@ -469,10 +469,10 @@ function readConfiguredLspServers(
   return parseLspServersConfig(cfg.lsp_servers);
 }
 
-export function loadBootstrapLspServers(
+export async function loadBootstrapLspServers(
   cfg: ReturnType<ConfigStore["current"]>,
   opts: { readonly workspaceRoot?: string } = {},
-): void {
+): Promise<void> {
   const parsed = readConfiguredLspServers(cfg);
   const managerOptions =
     opts.workspaceRoot !== undefined ? { workspaceRoot: opts.workspaceRoot } : {};
@@ -489,7 +489,7 @@ export function loadBootstrapLspServers(
     return;
   }
   if (Object.keys(parsed.servers).length === 0) {
-    void shutdownLspServerManager();
+    await shutdownLspServerManager();
     return;
   }
   configureLspServerSource(() => parsed.servers);
@@ -619,12 +619,12 @@ export function buildBootstrapSessionServices(
     });
   };
   loadHooks(opts.configStore.current());
-  loadBootstrapLspServers(opts.configStore.current(), {
+  void loadBootstrapLspServers(opts.configStore.current(), {
     workspaceRoot: opts.workspaceRoot,
   });
   const unsubscribeHooksConfig = opts.configStore.subscribe((cfg) => {
     loadHooks(cfg);
-    loadBootstrapLspServers(cfg, { workspaceRoot: opts.workspaceRoot });
+    void loadBootstrapLspServers(cfg, { workspaceRoot: opts.workspaceRoot });
   });
 
   const services: SessionServices = {
@@ -761,9 +761,9 @@ export function buildBootstrapSessionServices(
       });
       return liveThread;
     },
-    shutdown: () => {
+    shutdown: async () => {
       unsubscribeHooksConfig();
-      void shutdownLspServerManager();
+      await shutdownLspServerManager();
       hooksService.clearConfiguredLifecycleHooks();
       rolloutTrace.flush();
       rolloutTrace.close();

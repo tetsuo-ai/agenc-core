@@ -79,17 +79,6 @@ export function createLSPServerInstance(
   config: ScopedLspServerConfig,
   options: LSPServerInstanceOptions = {},
 ): LSPServerInstance {
-  if (config.restartOnCrash !== undefined) {
-    throw new Error(
-      `LSP server '${name}': restartOnCrash is not yet implemented. Remove this field from the configuration.`,
-    );
-  }
-  if (config.shutdownTimeout !== undefined) {
-    throw new Error(
-      `LSP server '${name}': shutdownTimeout is not yet implemented. Remove this field from the configuration.`,
-    );
-  }
-
   let state: LspServerState = "stopped";
   let startTime: Date | undefined;
   let lastError: Error | undefined;

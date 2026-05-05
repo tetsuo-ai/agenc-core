@@ -378,8 +378,6 @@ export interface LspServerConfigInput {
   readonly initializationOptions?: unknown;
   readonly startupTimeout?: number;
   readonly maxRestarts?: number;
-  readonly restartOnCrash?: boolean;
-  readonly shutdownTimeout?: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────

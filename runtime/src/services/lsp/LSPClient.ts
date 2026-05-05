@@ -94,11 +94,11 @@ export function createLSPClient(
   let startFailed = false;
   let startError: Error | undefined;
   let stopping = false;
-  const pendingNotifications: Array<{
+  const notificationHandlers: Array<{
     readonly method: string;
     readonly handler: (params: unknown) => void;
   }> = [];
-  const pendingRequests: Array<{
+  const requestHandlers: Array<{
     readonly method: string;
     readonly handler: (params: unknown) => unknown | Promise<unknown>;
   }> = [];
@@ -146,10 +146,10 @@ export function createLSPClient(
 
   const applyQueuedHandlers = (): void => {
     if (!connection) return;
-    for (const { method, handler } of pendingNotifications.splice(0)) {
+    for (const { method, handler } of notificationHandlers) {
       connection.onNotification(method, handler);
     }
-    for (const { method, handler } of pendingRequests.splice(0)) {
+    for (const { method, handler } of requestHandlers) {
       connection.onRequest(method, handler);
     }
   };
@@ -303,8 +303,8 @@ export function createLSPClient(
     },
 
     onNotification(method, handler): void {
+      notificationHandlers.push({ method, handler });
       if (!connection) {
-        pendingNotifications.push({ method, handler });
         return;
       }
       assertStarted();
@@ -315,11 +315,11 @@ export function createLSPClient(
       method: string,
       handler: (params: TParams) => TResult | Promise<TResult>,
     ): void {
+      requestHandlers.push({
+        method,
+        handler: handler as (params: unknown) => unknown | Promise<unknown>,
+      });
       if (!connection) {
-        pendingRequests.push({
-          method,
-          handler: handler as (params: unknown) => unknown | Promise<unknown>,
-        });
         return;
       }
       assertStarted();
