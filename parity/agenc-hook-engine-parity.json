@@ -1,0 +1,108 @@
+{
+  "contractName": "agenc-hook-engine-parity",
+  "scope": "AgenC configured hook runtime dispatcher mapped from the upstream Rust hook runtime and engine.",
+  "sourceRoot": "/home/tetsuo/git/codex/codex-rs", "_sourceRootBrandingAllow": "branding-scan: allow upstream source root path",
+  "targetRoot": "..",
+  "sourceCommit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
+  "sourceFiles": [
+    "core/src/hook_runtime.rs",
+    "hooks/src/engine/dispatcher.rs",
+    "hooks/src/engine/command_runner.rs",
+    "hooks/src/engine/output_parser.rs",
+    "hooks/src/engine/discovery.rs"
+  ],
+  "targetFiles": [
+    "runtime/src/hooks/engine/discovery.ts",
+    "runtime/src/hooks/engine/dispatcher.ts",
+    "runtime/src/hooks/engine/command-runner.ts",
+    "runtime/src/hooks/engine/output-parser.ts",
+    "runtime/src/hooks/engine/types.ts",
+    "runtime/src/hooks/configured-hooks.ts",
+    "runtime/src/permissions/review-decision.ts",
+    "runtime/src/tools/orchestrator.ts"
+  ],
+  "testFiles": [
+    "runtime/src/hooks/engine/dispatcher.test.ts",
+    "runtime/src/hooks/configured-hooks.test.ts",
+    "runtime/src/tools/orchestrator.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "handler-discovery",
+      "source": "hooks/src/engine/discovery.rs",
+      "target": "runtime/src/hooks/engine/discovery.ts",
+      "requiredBehaviors": [
+        "validated hooks config is flattened in event and declaration order",
+        "disabled matcher groups and command handlers are omitted from live dispatch",
+        "source path and stable per-handler index are preserved for diagnostics and list output"
+      ],
+      "edgeCases": [
+        "empty config produces no handlers",
+        "several matcher aliases matching one handler select that handler once"
+      ],
+      "tests": [
+        "runtime/src/hooks/engine/dispatcher.test.ts",
+        "runtime/src/hooks/configured-hooks.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "command-dispatch",
+      "source": "hooks/src/engine/dispatcher.rs; hooks/src/engine/command_runner.rs",
+      "target": "runtime/src/hooks/engine/dispatcher.ts; runtime/src/hooks/engine/command-runner.ts",
+      "requiredBehaviors": [
+        "matching command hooks receive JSON stdin and execute in the configured working directory",
+        "exit code 0 is success, exit code 2 is blocking, other exits are non-blocking errors",
+        "timeouts and abort signals terminate the subprocess and record diagnostics"
+      ],
+      "edgeCases": [
+        "hooks that exit without reading stdin do not crash the runtime",
+        "disabled runtime records skipped diagnostics for direct test runs"
+      ],
+      "tests": [
+        "runtime/src/hooks/engine/dispatcher.test.ts",
+        "runtime/src/hooks/configured-hooks.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "output-parser",
+      "source": "hooks/src/engine/output_parser.rs",
+      "target": "runtime/src/hooks/engine/output-parser.ts",
+      "requiredBehaviors": [
+        "structured hookSpecificOutput is normalized for PreToolUse, PermissionRequest, PostToolUse, UserPromptSubmit, and lifecycle hooks",
+        "malformed or unsupported fields are reported as diagnostics rather than throwing",
+        "raw command output remains available for parser decisions while user-facing diagnostics are redacted"
+      ],
+      "edgeCases": [
+        "non-JSON stdout remains an implicit non-structured hook result",
+        "invalid permissionDecision values are ignored and surfaced as diagnostic errors"
+      ],
+      "tests": [
+        "runtime/src/hooks/engine/dispatcher.test.ts",
+        "runtime/src/hooks/configured-hooks.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "permission-pipeline",
+      "source": "core/src/hook_runtime.rs",
+      "target": "runtime/src/hooks/configured-hooks.ts; runtime/src/tools/orchestrator.ts; runtime/src/permissions/review-decision.ts",
+      "requiredBehaviors": [
+        "PermissionRequest command hook decisions feed the approval pipeline before the resolver",
+        "allow decisions approve the tool call and deny decisions reject it",
+        "ask/pass decisions continue to the normal resolver and guardian approval reviewer path"
+      ],
+      "edgeCases": [
+        "non-success PermissionRequest command runs pass through without changing approval behavior",
+        "hook denial reason remains redacted before it reaches model/user-facing surfaces"
+      ],
+      "tests": [
+        "runtime/src/hooks/configured-hooks.test.ts",
+        "runtime/src/tools/orchestrator.test.ts"
+      ],
+      "status": "required"
+    }
+  ],
+  "generatedAt": "2026-05-05T00:00:00.000Z"
+}

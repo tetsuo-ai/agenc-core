@@ -1,0 +1,159 @@
+import { describe, expect, test } from "vitest";
+
+import { HookEngine, matchesPattern } from "./dispatcher.js";
+import { readHookSpecificOutput } from "./output-parser.js";
+import type { HooksMap } from "../../config/schema.js";
+
+function makeEngine(config: HooksMap): HookEngine {
+  const engine = new HookEngine({
+    cwd: process.cwd(),
+    env: process.env,
+    shellPath: process.env.SHELL ?? "/bin/sh",
+    sourcePath: "/tmp/agenc-hooks-test/config.toml",
+  });
+  engine.load(config);
+  return engine;
+}
+
+describe("HookEngine dispatcher", () => {
+  test("matches exact, pipe, wildcard, and regex patterns", () => {
+    expect(matchesPattern("Read", "Read")).toBe(true);
+    expect(matchesPattern("Read", "Grep|Read")).toBe(true);
+    expect(matchesPattern("Read", "*")).toBe(true);
+    expect(matchesPattern("Read", "^Re")).toBe(true);
+    expect(matchesPattern("Read", "Write")).toBe(false);
+  });
+
+  test("selects each handler once when several matcher aliases match", () => {
+    const engine = makeEngine({
+      PreToolUse: [
+        {
+          matcher: "^apply_patch$",
+          hooks: [{ type: "command", command: "printf apply" }],
+        },
+        {
+          matcher: "^Write$",
+          hooks: [{ type: "command", command: "printf write" }],
+        },
+        {
+          matcher: "^Edit$",
+          hooks: [{ type: "command", command: "printf edit" }],
+        },
+        {
+          matcher: "apply_patch|Write|Edit",
+          hooks: [{ type: "command", command: "printf combined" }],
+        },
+      ],
+    });
+
+    const selected = engine.selectHandlersForMatcherInputs("PreToolUse", [
+      "apply_patch",
+      "Write",
+      "Edit",
+    ]);
+
+    expect(selected.map((hook) => hook.command.command)).toEqual([
+      "printf apply",
+      "printf write",
+      "printf edit",
+      "printf combined",
+    ]);
+  });
+
+  test("dispatches matching command hooks with JSON stdin", async () => {
+    const engine = makeEngine({
+      PermissionRequest: [
+        {
+          matcher: "Read",
+          hooks: [
+            {
+              type: "command",
+              command:
+                "node -e \"let s=''; process.stdin.on('data', c => s += c); process.stdin.on('end', () => process.stdout.write(JSON.parse(s).tool_name));\"",
+            },
+          ],
+        },
+        {
+          matcher: "Write",
+          hooks: [{ type: "command", command: "printf wrong" }],
+        },
+      ],
+    });
+
+    const runs = await engine.dispatch(
+      "PermissionRequest",
+      ["Read"],
+      { hook_event_name: "PermissionRequest", tool_name: "Read" },
+    );
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.run.status).toBe("success");
+    expect(runs[0]?.run.stdout).toBe("Read");
+  });
+
+  test("records blocking, timeout, and disabled command diagnostics", async () => {
+    const engine = makeEngine({
+      PreToolUse: [
+        {
+          hooks: [
+            { type: "command", command: "printf blocked >&2; exit 2" },
+            {
+              type: "command",
+              command: "node -e \"setTimeout(() => {}, 1000)\"",
+              timeout_ms: 20,
+            },
+          ],
+        },
+      ],
+    });
+    const [blocking, timeout] = engine.listHooks();
+
+    const blocked = await engine.runCommandHook(blocking!, {});
+    expect(blocked.status).toBe("blocking");
+    expect(blocked.stderr).toBe("blocked");
+
+    const timedOut = await engine.runCommandHook(timeout!, {});
+    expect(timedOut.status).toBe("timeout");
+    expect(timedOut.error).toContain("hook timed out");
+
+    engine.setDisabled(true);
+    const skipped = await engine.runCommandHook(blocking!, {});
+    expect(skipped.status).toBe("skipped");
+    expect(engine.latestDiagnostics()[0]?.status).toBe("skipped");
+  });
+});
+
+describe("hook output parser", () => {
+  test("normalizes nested hookSpecificOutput fields", () => {
+    const parsed = readHookSpecificOutput(
+      JSON.stringify({
+        hookSpecificOutput: {
+          permissionDecision: "deny",
+          permissionDecisionReason: "blocked by policy",
+          updatedInput: { path: "safe.txt" },
+          additionalContext: "lint passed",
+        },
+      }),
+    );
+
+    expect(parsed.invalid).toBeUndefined();
+    expect(parsed.output?.permissionDecision).toBe("deny");
+    expect(parsed.output?.permissionDecisionReason).toBe("blocked by policy");
+    expect(parsed.output?.updatedInput).toEqual({ path: "safe.txt" });
+    expect(parsed.output?.additionalContext).toBe("lint passed");
+  });
+
+  test("reports malformed structured output without throwing", () => {
+    expect(readHookSpecificOutput("{not-json").invalid).toContain(
+      "could not be parsed",
+    );
+    expect(
+      readHookSpecificOutput(JSON.stringify({ hookSpecificOutput: [] })).invalid,
+    ).toBe("hookSpecificOutput must be an object");
+    expect(
+      readHookSpecificOutput(
+        JSON.stringify({ hookSpecificOutput: { permissionDecision: "block" } }),
+      ).invalid,
+    ).toBe("permissionDecision must be allow, deny, or ask");
+  });
+});

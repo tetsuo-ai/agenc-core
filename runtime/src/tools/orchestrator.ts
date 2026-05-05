@@ -58,6 +58,7 @@ import {
   reviewDecisionIsAllow,
   type ReviewDecision as PermissionsReviewDecision,
 } from "../permissions/review-decision.js";
+import { hookDispatcherApprovalSource } from "../permissions/tool-approval.js";
 import {
   recordPermissionAuditEvent,
   type PermissionAuditDecision,
@@ -558,10 +559,10 @@ export async function requestApproval(
       throw err;
     }
     if (decision.kind === "allow") {
-      return { decision: { kind: "approved" }, source: "permission_hook" };
+      return { decision: { kind: "approved" }, source: hookDispatcherApprovalSource };
     }
     if (decision.kind === "deny") {
-      return { decision: { kind: "denied" }, source: "permission_hook" };
+      return { decision: { kind: "denied" }, source: hookDispatcherApprovalSource };
     }
     // `ask` / `pass` → fall through to resolver.
   }

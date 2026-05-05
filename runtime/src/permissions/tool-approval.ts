@@ -26,6 +26,8 @@ import type {
 export type ToolApprovalBehavior = "auto" | "prompt" | "deny";
 export type ToolApprovalDecisionBehavior = ToolApprovalBehavior | "none";
 
+export const hookDispatcherApprovalSource = "permission_hook" as const;
+
 export interface ToolApprovalRule {
   readonly behavior: ToolApprovalBehavior;
   readonly rule: PermissionRule;
