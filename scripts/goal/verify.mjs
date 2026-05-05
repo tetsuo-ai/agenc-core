@@ -1408,6 +1408,7 @@ const ITEM_EVIDENCE = {
       "runtime/src/build/feature.ts",
       "runtime/src/config/schema.ts",
       "runtime/src/commands/keybindings.ts",
+      "runtime/src/agenc/upstream/screens/REPL.tsx",
     ],
     grepNotPresent: [
       { pattern: "VoiceIndicator|VoiceWarmupHint|voiceInterimRange|useVoiceState|useVoiceEnabled|VOICE_MODE", scope: "runtime/src/tui/components/PromptInput" },
@@ -1416,6 +1417,7 @@ const ITEM_EVIDENCE = {
       { pattern: "chat:voiceInput", scope: "runtime/src/commands/keybindings.ts" },
       { pattern: "VoiceInputConfig|voiceInput", scope: "runtime/src/config" },
       { pattern: "VOICE_MODE", scope: "runtime/src/build/feature.ts" },
+      { pattern: "useVoiceIntegration|VoiceKeybindingHandler|insertTextRef|VOICE_MODE|voiceInterimRange", scope: "runtime/src/agenc/upstream/screens/REPL.tsx" },
     ],
   },
   "ZC-33": {
@@ -5376,6 +5378,10 @@ function assertZc39VoicePartialPortResolved() {
     {
       scope: "runtime/src/build/feature.ts",
       pattern: "VOICE_MODE",
+    },
+    {
+      scope: "runtime/src/agenc/upstream/screens/REPL.tsx",
+      pattern: "useVoiceIntegration|VoiceKeybindingHandler|insertTextRef|VOICE_MODE|voiceInterimRange",
     },
   ];
 
