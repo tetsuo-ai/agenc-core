@@ -11,6 +11,10 @@ import { backgroundTaskLifecycle } from "../tasks/index.js";
 import { createModelFacingTools } from "./model-facing-tools.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
 import { _clearAgentControlCacheForTesting, _setAgentControlForTesting } from "./delegate-tool.js";
+import {
+  clearSessionReadState,
+  getSessionReadSnapshot,
+} from "../tools/system/filesystem.js";
 
 const { delegateMock } = vi.hoisted(() => ({
   delegateMock: vi.fn(),
@@ -148,11 +152,13 @@ function fakeProvider(
   } as unknown as LLMProvider;
 }
 
-function fakeEvaluatorContext(): ToolEvaluatorContext {
+function fakeEvaluatorContext(
+  toolPermissionContext = createEmptyToolPermissionContext(),
+): ToolEvaluatorContext {
   return {
     getAppState() {
       return {
-        toolPermissionContext: createEmptyToolPermissionContext(),
+        toolPermissionContext,
         denialTracking: { consecutiveDenials: 0, totalDenials: 0 },
         autoModeActive: false,
       };
@@ -1491,34 +1497,44 @@ describe("model-facing tools", () => {
     }
   });
 
+  function notebookSource(cells: readonly Record<string, unknown>[]): string {
+    return JSON.stringify({
+      cells,
+      metadata: { language_info: { name: "python" } },
+      nbformat: 4,
+      nbformat_minor: 5,
+    });
+  }
+
+  function findModelFacingTool(workspace: string, name: string) {
+    const tool = createModelFacingTools({
+      workspaceRoot: workspace,
+      getSession: () => null,
+    }).find((candidate) => candidate.name === name);
+    expect(tool).toBeDefined();
+    return tool!;
+  }
+
   it("edits notebook cells structurally", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "agenc-notebook-ws-"));
     try {
       const notebookPath = join(workspace, "demo.ipynb");
       await writeFile(
         notebookPath,
-        JSON.stringify({
-          cells: [
-            {
-              cell_type: "code",
-              id: "cell-a",
-              metadata: {},
-              source: "print('old')\n",
-              execution_count: null,
-              outputs: [],
-            },
-          ],
-          metadata: {},
-          nbformat: 4,
-          nbformat_minor: 5,
-        }),
+        notebookSource([
+          {
+            cell_type: "code",
+            id: "cell-a",
+            metadata: {},
+            source: "print('old')\n",
+            execution_count: 12,
+            outputs: [{ output_type: "stream", name: "stdout", text: "old\n" }],
+          },
+        ]),
         "utf8",
       );
 
-      const tool = createModelFacingTools({
-        workspaceRoot: workspace,
-        getSession: () => null,
-      }).find((candidate) => candidate.name === "NotebookEdit")!;
+      const tool = findModelFacingTool(workspace, "NotebookEdit");
 
       const result = await tool.execute({
         notebook_path: notebookPath,
@@ -1528,7 +1544,269 @@ describe("model-facing tools", () => {
 
       expect(result.isError).toBeUndefined();
       const updated = JSON.parse(await readFile(notebookPath, "utf8"));
-      expect(updated.cells[0].source).toBe("print('new')\n");
+      expect(updated.cells[0].source).toBe("print('new')");
+      expect(updated.cells[0].execution_count).toBeNull();
+      expect(updated.cells[0].outputs).toEqual([]);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("requires a full NotebookRead before session-backed NotebookEdit", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-notebook-read-edit-ws-"));
+    const sessionId = "notebook-read-edit-session";
+    try {
+      const notebookPath = join(workspace, "demo.ipynb");
+      await writeFile(
+        notebookPath,
+        notebookSource([
+          {
+            cell_type: "code",
+            id: "cell-a",
+            metadata: {},
+            source: "print('old')",
+            execution_count: 7,
+            outputs: [{ output_type: "stream", name: "stdout", text: "old\n" }],
+          },
+        ]),
+        "utf8",
+      );
+      const readTool = findModelFacingTool(workspace, "NotebookRead");
+      const editTool = findModelFacingTool(workspace, "NotebookEdit");
+
+      const readResult = await readTool.execute({
+        notebook_path: notebookPath,
+        __agencSessionId: sessionId,
+      });
+      expect(readResult.isError).toBeUndefined();
+
+      const editResult = await editTool.execute({
+        notebook_path: notebookPath,
+        cell_id: "cell-a",
+        new_source: "print('new')",
+        __agencSessionId: sessionId,
+      });
+
+      expect(editResult.isError).toBeUndefined();
+      const updatedRaw = await readFile(notebookPath, "utf8");
+      const updated = JSON.parse(updatedRaw);
+      expect(updated.cells[0].source).toBe("print('new')");
+      expect(updated.cells[0].execution_count).toBeNull();
+      expect(updated.cells[0].outputs).toEqual([]);
+      expect(getSessionReadSnapshot(sessionId, notebookPath)?.rawContent).toBe(
+        updatedRaw,
+      );
+    } finally {
+      clearSessionReadState(sessionId);
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects session-backed NotebookEdit without a prior full read", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-notebook-no-read-ws-"));
+    const sessionId = "notebook-no-read-session";
+    try {
+      const notebookPath = join(workspace, "demo.ipynb");
+      const original = notebookSource([
+        {
+          cell_type: "code",
+          id: "cell-a",
+          metadata: {},
+          source: "print('old')",
+          execution_count: null,
+          outputs: [],
+        },
+      ]);
+      await writeFile(notebookPath, original, "utf8");
+      const editTool = findModelFacingTool(workspace, "NotebookEdit");
+
+      const result = await editTool.execute({
+        notebook_path: notebookPath,
+        cell_id: "cell-a",
+        new_source: "print('new')",
+        __agencSessionId: sessionId,
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("File has not been read yet");
+      await expect(readFile(notebookPath, "utf8")).resolves.toBe(original);
+    } finally {
+      clearSessionReadState(sessionId);
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects NotebookEdit after a partial NotebookRead", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-notebook-partial-ws-"));
+    const sessionId = "notebook-partial-read-session";
+    try {
+      const notebookPath = join(workspace, "demo.ipynb");
+      const original = notebookSource([
+        {
+          cell_type: "markdown",
+          id: "intro",
+          metadata: {},
+          source: "# Intro",
+        },
+        {
+          cell_type: "code",
+          id: "cell-a",
+          metadata: {},
+          source: "print('old')",
+          execution_count: null,
+          outputs: [],
+        },
+      ]);
+      await writeFile(notebookPath, original, "utf8");
+      const readTool = findModelFacingTool(workspace, "NotebookRead");
+      const editTool = findModelFacingTool(workspace, "NotebookEdit");
+
+      await readTool.execute({
+        notebook_path: notebookPath,
+        offset: 1,
+        limit: 4,
+        __agencSessionId: sessionId,
+      });
+      const result = await editTool.execute({
+        notebook_path: notebookPath,
+        cell_id: "cell-a",
+        new_source: "print('new')",
+        __agencSessionId: sessionId,
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("File has not been read yet");
+      await expect(readFile(notebookPath, "utf8")).resolves.toBe(original);
+    } finally {
+      clearSessionReadState(sessionId);
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects NotebookEdit when the notebook changed since read", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-notebook-stale-ws-"));
+    const sessionId = "notebook-stale-read-session";
+    try {
+      const notebookPath = join(workspace, "demo.ipynb");
+      const original = notebookSource([
+        {
+          cell_type: "code",
+          id: "cell-a",
+          metadata: {},
+          source: "print('old')",
+          execution_count: null,
+          outputs: [],
+        },
+      ]);
+      const externallyChanged = notebookSource([
+        {
+          cell_type: "code",
+          id: "cell-a",
+          metadata: {},
+          source: "print('external')",
+          execution_count: null,
+          outputs: [],
+        },
+      ]);
+      await writeFile(notebookPath, original, "utf8");
+      const readTool = findModelFacingTool(workspace, "NotebookRead");
+      const editTool = findModelFacingTool(workspace, "NotebookEdit");
+
+      await readTool.execute({
+        notebook_path: notebookPath,
+        __agencSessionId: sessionId,
+      });
+      await writeFile(notebookPath, externallyChanged, "utf8");
+      const result = await editTool.execute({
+        notebook_path: notebookPath,
+        cell_id: "cell-a",
+        new_source: "print('new')",
+        __agencSessionId: sessionId,
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("File has been modified since read");
+      await expect(readFile(notebookPath, "utf8")).resolves.toBe(
+        externallyChanged,
+      );
+    } finally {
+      clearSessionReadState(sessionId);
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("handles notebook cell addressing and edit modes", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-notebook-modes-ws-"));
+    try {
+      const notebookPath = join(workspace, "demo.ipynb");
+      await writeFile(
+        notebookPath,
+        notebookSource([
+          {
+            cell_type: "markdown",
+            id: "intro",
+            metadata: {},
+            source: "# Intro",
+          },
+          {
+            cell_type: "code",
+            id: "code-a",
+            metadata: {},
+            source: "print('old')",
+            execution_count: 3,
+            outputs: [{ output_type: "stream", name: "stdout", text: "old\n" }],
+          },
+          {
+            cell_type: "markdown",
+            id: "tail",
+            metadata: {},
+            source: "Tail",
+          },
+        ]),
+        "utf8",
+      );
+      const tool = findModelFacingTool(workspace, "NotebookEdit");
+
+      await tool.execute({
+        notebook_path: notebookPath,
+        cell_id: "cell-1",
+        new_source: "print('numeric')",
+      });
+      await tool.execute({
+        notebook_path: notebookPath,
+        edit_mode: "insert",
+        cell_type: "markdown",
+        new_source: "# Start",
+      });
+      await tool.execute({
+        notebook_path: notebookPath,
+        cell_id: "intro",
+        edit_mode: "insert",
+        cell_type: "code",
+        new_source: "print('after intro')",
+      });
+      await tool.execute({
+        notebook_path: notebookPath,
+        cell_id: "tail",
+        edit_mode: "delete",
+        new_source: "",
+      });
+
+      const updated = JSON.parse(await readFile(notebookPath, "utf8"));
+      expect(updated.cells.map((cell: Record<string, unknown>) => cell.source))
+        .toEqual([
+          "# Start",
+          "# Intro",
+          "print('after intro')",
+          "print('numeric')",
+        ]);
+      expect(updated.cells[2]).toMatchObject({
+        cell_type: "code",
+        execution_count: null,
+        outputs: [],
+      });
+      expect(updated.cells.some((cell: Record<string, unknown>) => cell.id === "tail"))
+        .toBe(false);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -1637,6 +1915,41 @@ describe("model-facing tools", () => {
     }
   });
 
+  it("dispatches NotebookEdit with a raw string notebook path", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-notebook-edit-dispatch-ws-"));
+    try {
+      await writeFile(
+        join(workspace, "demo.ipynb"),
+        notebookSource([
+          {
+            cell_type: "markdown",
+            id: "intro",
+            metadata: {},
+            source: "# Dispatch",
+          },
+        ]),
+        "utf8",
+      );
+      const registry = buildBootstrapToolRegistry({
+        workspaceRoot: workspace,
+        mcpManager: fakeMcpManager() as never,
+        getSession: () => null,
+        emitWarning: () => {},
+      });
+
+      const result = await registry.dispatch({
+        id: "notebook-edit-string",
+        name: "NotebookEdit",
+        arguments: "demo.ipynb",
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("new_source must be a string");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("delegates NotebookRead path permissions to FileRead", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "agenc-notebook-perm-ws-"));
     const outside = await mkdtemp(join(tmpdir(), "agenc-notebook-perm-out-"));
@@ -1670,6 +1983,62 @@ describe("model-facing tools", () => {
         behavior: "ask",
         blockedPath: outsidePath,
       });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("delegates NotebookEdit path permissions to Write", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-notebook-edit-perm-ws-"));
+    const outside = await mkdtemp(join(tmpdir(), "agenc-notebook-edit-perm-out-"));
+    try {
+      const notebookPath = join(workspace, "demo.ipynb");
+      const outsidePath = join(outside, "demo.ipynb");
+      const outsideOriginal = notebookSource([
+        {
+          cell_type: "markdown",
+          id: "intro",
+          metadata: {},
+          source: "# Outside",
+        },
+      ]);
+      await writeFile(outsidePath, outsideOriginal, "utf8");
+      const tool = findModelFacingTool(workspace, "NotebookEdit");
+      const context = fakeEvaluatorContext(
+        createEmptyToolPermissionContext({ mode: "acceptEdits" }),
+      );
+
+      const allowed = await tool.checkPermissions?.(
+        {
+          notebook_path: notebookPath,
+          cell_id: "intro",
+          new_source: "# Updated",
+        },
+        context,
+      );
+      expect(allowed?.behavior).toBe("allow");
+      expect(
+        (allowed as { updatedInput?: Record<string, unknown> } | undefined)
+          ?.updatedInput,
+      ).toMatchObject({
+        file_path: notebookPath,
+        notebook_path: notebookPath,
+      });
+
+      const blocked = await tool.checkPermissions?.(
+        {
+          notebook_path: outsidePath,
+          cell_id: "intro",
+          new_source: "# Updated",
+        },
+        context,
+      );
+      expect(blocked).toMatchObject({
+        behavior: "ask",
+        blockedPath: outsidePath,
+      });
+      await expect(readFile(outsidePath, "utf8")).resolves.toBe(outsideOriginal);
     } finally {
       await rm(workspace, { recursive: true, force: true });
       await rm(outside, { recursive: true, force: true });

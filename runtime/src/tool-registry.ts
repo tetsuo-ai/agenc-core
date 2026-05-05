@@ -553,6 +553,7 @@ export function buildToolRegistry(
   const modelFacingStringArgumentFieldCandidates = {
     [modelFacingProviderNativeSurface.webSearch]: "query",
     NotebookRead: "notebook_path",
+    NotebookEdit: "notebook_path",
     [modelFacingTaskSurface.taskGet]: "taskId",
     [modelFacingTaskSurface.taskOutput]: "task_id",
     [modelFacingTaskSurface.taskStop]: "task_id",

@@ -1,0 +1,148 @@
+{
+  "contractName": "notebook-edit-tool-parity",
+  "scope": "AgenC NotebookEdit model-facing tool port, read-before-edit guard, notebook cell mutation semantics, permission flow, and registry surface.",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/tools/NotebookEditTool/NotebookEditTool.ts",
+    "src/tools/NotebookEditTool/prompt.ts",
+    "src/tools/NotebookEditTool/constants.ts",
+    "src/utils/notebook.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/bin/model-facing-tools.ts",
+    "runtime/src/tool-registry.ts"
+  ],
+  "testFiles": [
+    "runtime/src/bin/model-facing-tools.test.ts",
+    "runtime/src/tool-registry.test.ts",
+    "runtime/src/tools/system/file-read.test.ts",
+    "runtime/src/tools/system/file-write.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "schema-and-path-validation",
+      "source": "src/tools/NotebookEditTool/NotebookEditTool.ts",
+      "target": "runtime/src/bin/model-facing-tools.ts",
+      "requiredBehaviors": [
+        "NotebookEdit is named NotebookEdit and remains deferred from the default visible tool catalog",
+        "notebook_path and new_source are required",
+        "only .ipynb notebook paths are accepted",
+        "missing notebook files are rejected instead of being created",
+        "edit_mode is limited to replace, insert, and delete",
+        "insert mode requires an explicit cell_type"
+      ],
+      "edgeCases": [
+        "direct headless invocations without a session id keep existing compatibility for tests and embedded callers",
+        "workspace-relative paths are resolved through the same allowed-root and canonicalization path as NotebookRead",
+        "raw notebook source text is preserved exactly when assigning new_source"
+      ],
+      "tests": [
+        "runtime/src/bin/model-facing-tools.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/bin/model-facing-tools.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "read-before-edit",
+      "source": "src/tools/NotebookEditTool/NotebookEditTool.ts",
+      "target": "runtime/src/bin/model-facing-tools.ts",
+      "requiredBehaviors": [
+        "session-backed notebook edits require a prior NotebookRead or equivalent full session read",
+        "partial NotebookRead snapshots do not authorize NotebookEdit",
+        "the read-before-edit guard uses the canonical path key recorded by NotebookRead",
+        "a notebook changed after the recorded read is rejected with the source-compatible modified-since-read message",
+        "successful edits record a fresh full snapshot with post-write notebook bytes"
+      ],
+      "edgeCases": [
+        "unread session-backed edits leave the notebook unchanged",
+        "partial-read rejections leave the notebook unchanged",
+        "stale-read rejections leave the externally changed notebook unchanged"
+      ],
+      "tests": [
+        "runtime/src/bin/model-facing-tools.test.ts",
+        "runtime/src/tools/system/file-read.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/bin/model-facing-tools.test.ts src/tools/system/file-read.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "cell-addressing-and-modes",
+      "source": "src/tools/NotebookEditTool/NotebookEditTool.ts + src/utils/notebook.ts",
+      "target": "runtime/src/bin/model-facing-tools.ts",
+      "requiredBehaviors": [
+        "replace and delete require a cell_id",
+        "cell_id resolves by exact notebook cell id before falling back to cell-N numeric indexes",
+        "insert without a cell_id inserts at the beginning of the notebook",
+        "insert with a cell_id inserts after the addressed cell",
+        "delete removes the addressed cell",
+        "replace resets execution_count and outputs for code cells before optional cell_type changes",
+        "inserted code cells receive execution_count null and empty outputs"
+      ],
+      "edgeCases": [
+        "out-of-range cell-N ids report the source-compatible missing-index message",
+        "unknown nonnumeric cell ids report the source-compatible missing-id message",
+        "generated notebook cell ids avoid collisions with existing cell ids"
+      ],
+      "tests": [
+        "runtime/src/bin/model-facing-tools.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/bin/model-facing-tools.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "permission-flow",
+      "source": "src/tools/NotebookEditTool/NotebookEditTool.ts",
+      "target": "runtime/src/bin/model-facing-tools.ts",
+      "requiredBehaviors": [
+        "NotebookEdit requires approval by default",
+        "NotebookEdit remains side-effecting for recovery classification",
+        "checkPermissions delegates to the same write-path permission validation as Write",
+        "allowed decisions preserve the notebook_path while exposing the validated file_path",
+        "outside-working-root paths produce ask decisions before mutation"
+      ],
+      "edgeCases": [
+        "permission-denied paths do not mutate notebook files",
+        "write permission suggestions are reused from the shared path-validation layer"
+      ],
+      "tests": [
+        "runtime/src/bin/model-facing-tools.test.ts",
+        "runtime/src/tools/system/file-write.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/bin/model-facing-tools.test.ts src/tools/system/file-write.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "registry-surface",
+      "source": "src/tools/NotebookEditTool/constants.ts + src/tools/NotebookEditTool/prompt.ts",
+      "target": "runtime/src/tool-registry.ts",
+      "requiredBehaviors": [
+        "NotebookEdit is registered through the model-facing bootstrap tool surface",
+        "NotebookEdit remains deferred until discovery",
+        "NotebookEdit raw string dispatch maps the string to notebook_path",
+        "the registry evidence includes NotebookEdit in runtime/src/tool-registry.ts"
+      ],
+      "edgeCases": [
+        "raw string dispatch still fails cleanly when new_source is omitted",
+        "NotebookRead raw string dispatch remains unchanged"
+      ],
+      "tests": [
+        "runtime/src/bin/model-facing-tools.test.ts",
+        "runtime/src/tool-registry.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/bin/model-facing-tools.test.ts src/tool-registry.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}
