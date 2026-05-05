@@ -9,7 +9,7 @@
  */
 
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 vi.mock("axios", () => {
@@ -73,6 +73,12 @@ import type { Tool } from "../tools/types.js";
 import { BudgetTracker } from "../llm/token-budget.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import {
+  registerMagicDoc,
+  resetMagicDocsForTests,
+  runMagicDocsPostSamplingHook,
+  setMagicDocsAgentRunnerForTests,
+} from "../services/MagicDocs/magicDocs.js";
 
 function mkCtx(): TurnContext {
   return {
@@ -781,6 +787,46 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       expect(last.msg.payload.turnId).toBe("turn-abc");
       expect(last.msg.payload.lastAgentMessage).toBe("final reply");
       expect(typeof last.msg.payload.durationMs).toBe("number");
+    }
+  });
+
+  test("does not launch MagicDocs from subagent sessions", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "agenc-magic-docs-run-turn-"));
+    const docPath = join(tempDir, "doc.md");
+    resetMagicDocsForTests();
+    try {
+      writeFileSync(docPath, "# MAGIC DOC: Run Turn\n\nBody\n", "utf8");
+      registerMagicDoc(docPath, "conv-test");
+      let calls = 0;
+      setMagicDocsAgentRunnerForTests(async () => {
+        calls += 1;
+      });
+      const { session } = mkSession({
+        provider: mkProvider({ content: "subagent reply" }),
+        registry: mkRegistry(),
+        sessionConfiguration: {
+          sessionSource: {
+            kind: "subagent",
+            source: {
+              kind: "thread_spawn",
+              parentThreadId: "parent",
+              depth: 1,
+            },
+          },
+        },
+      });
+
+      await drain(session.runTurn("hello", { ctx: mkCtx() }));
+      await runMagicDocsPostSamplingHook({
+        messages: [],
+        querySource: "agent:flush",
+        sessionId: "conv-test",
+      });
+
+      expect(calls).toBe(0);
+    } finally {
+      resetMagicDocsForTests();
+      rmSync(tempDir, { recursive: true, force: true });
     }
   });
 

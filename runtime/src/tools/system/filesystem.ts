@@ -106,7 +106,7 @@ export const SESSION_ID_ARG = "__agencSessionId";
  * This map is intentionally NOT exposed via tool args. Mutation
  * happens via the helpers below; tools never see the underlying Set.
  */
-interface SessionReadSnapshot {
+export interface SessionReadSnapshot {
   readonly content?: string | null;
   readonly timestamp?: number;
   readonly viewKind?: SessionReadViewKind;
@@ -149,6 +149,8 @@ export interface SessionReadSeedEntry {
   readonly timestamp?: number;
   readonly viewKind?: SessionReadViewKind;
   readonly isPartialView?: boolean;
+  readonly readOffset?: number;
+  readonly readLimit?: number;
   /** See `SessionReadSnapshot.rawContent`. */
   readonly rawContent?: string;
 }
@@ -356,6 +358,13 @@ export function seedSessionReadState(
         : {}),
       viewKind: entry.viewKind ?? "legacy_unknown",
       ...(entry.isPartialView === true ? { isPartialView: true } : {}),
+      ...(typeof entry.readOffset === "number" && Number.isFinite(entry.readOffset)
+        ? { readOffset: entry.readOffset }
+        : {}),
+      ...(typeof entry.readLimit === "number" && Number.isFinite(entry.readLimit)
+        ? { readLimit: entry.readLimit }
+        : {}),
+      ...(entry.rawContent === undefined ? {} : { rawContent: entry.rawContent }),
     });
   }
 }

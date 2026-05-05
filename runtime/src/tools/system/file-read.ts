@@ -150,7 +150,13 @@ const BINARY_EXTENSIONS: ReadonlySet<string> = new Set([
 const PDF_EXTENSION = ".pdf";
 const NOTEBOOK_EXTENSION = ".ipynb";
 
-export type FileReadListener = (filePath: string, content: string) => void;
+export interface FileReadEvent {
+  readonly filePath: string;
+  readonly content: string;
+  readonly sessionId?: string;
+}
+
+export type FileReadListener = (event: FileReadEvent) => void;
 
 const fileReadListeners = new Set<FileReadListener>();
 
@@ -295,9 +301,9 @@ function formatNumbered(content: string, startLine: number): string {
   return addLineNumbers({ content, startLine });
 }
 
-function notifyFileReadListeners(filePath: string, content: string): void {
+function notifyFileReadListeners(event: FileReadEvent): void {
   for (const listener of [...fileReadListeners]) {
-    listener(filePath, content);
+    listener(event);
   }
 }
 
@@ -597,7 +603,11 @@ async function readTextFile(
     // there is nothing to diff against.
     ...(sliced.isPartial || text === undefined ? {} : { rawContent: text }),
   });
-  notifyFileReadListeners(resolvedPath.canonical, sliced.content);
+  notifyFileReadListeners({
+    filePath: resolvedPath.canonical,
+    content: text ?? sliced.content,
+    ...(sessionId !== undefined ? { sessionId } : {}),
+  });
 
   if (sliced.content.length === 0) {
     if (sliced.totalLines === 0) {

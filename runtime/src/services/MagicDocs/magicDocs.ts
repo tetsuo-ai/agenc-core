@@ -21,7 +21,11 @@ import {
   registerFileReadListener,
 } from "../../tools/system/index.js";
 import {
+  forEachSessionRead,
   recordSessionRead,
+  seedSessionReadState,
+  type SessionReadSeedEntry,
+  type SessionReadSnapshot,
 } from "../../tools/system/filesystem.js";
 import { ROOT_AGENT_PATH } from "../../agents/registry.js";
 import type { LiveAgent } from "../../agents/control.js";
@@ -38,7 +42,9 @@ type MagicDocInfo = {
   readonly path: string;
 };
 
-export type MagicDocsReadFileState = Map<string, unknown>;
+type MagicDocsReadFileSnapshot = Omit<SessionReadSeedEntry, "path">;
+
+export type MagicDocsReadFileState = Map<string, MagicDocsReadFileSnapshot>;
 
 export interface MagicDocsAgentRequest {
   readonly docPath: string;
@@ -48,6 +54,7 @@ export interface MagicDocsAgentRequest {
   readonly prompt: string;
   readonly messages: readonly LLMMessage[];
   readonly session?: Session;
+  readonly currentDocMtimeMs: number;
   readonly readFileState: MagicDocsReadFileState;
   readonly signal?: AbortSignal;
 }
@@ -60,11 +67,15 @@ export interface MagicDocsPostSamplingContext {
   readonly messages: readonly LLMMessage[];
   readonly querySource?: string;
   readonly session?: Session;
+  readonly sessionId?: string;
   readonly readFileState?: ReadonlyMap<string, unknown>;
   readonly signal?: AbortSignal;
 }
 
-const trackedMagicDocs = new Map<string, MagicDocInfo>();
+const GLOBAL_SCOPE_ID = "__global__";
+const MAGIC_DOCS_QUERY_SOURCE = "magic_docs";
+
+const trackedMagicDocsByScope = new Map<string, Map<string, MagicDocInfo>>();
 
 let unregisterReadListener: (() => void) | null = null;
 let updateQueue: Promise<void> = Promise.resolve();
@@ -99,11 +110,19 @@ function hasToolCallsInLastAssistantTurn(
 }
 
 export function clearTrackedMagicDocs(): void {
-  trackedMagicDocs.clear();
+  trackedMagicDocsByScope.clear();
 }
 
-export function trackedMagicDocPathsForTests(): readonly string[] {
-  return [...trackedMagicDocs.keys()].sort();
+export function trackedMagicDocPathsForTests(sessionId?: string): readonly string[] {
+  if (sessionId !== undefined) {
+    return [...(trackedMagicDocsByScope.get(scopeIdForSessionId(sessionId))?.keys() ?? [])]
+      .sort();
+  }
+  const paths = new Set<string>();
+  for (const docs of trackedMagicDocsByScope.values()) {
+    for (const path of docs.keys()) paths.add(path);
+  }
+  return [...paths].sort();
 }
 
 export function setMagicDocsAgentRunnerForTests(
@@ -113,7 +132,7 @@ export function setMagicDocsAgentRunnerForTests(
 }
 
 export function resetMagicDocsForTests(): void {
-  trackedMagicDocs.clear();
+  trackedMagicDocsByScope.clear();
   updateQueue = Promise.resolve();
   agentRunnerForTests = null;
   if (unregisterReadListener !== null) {
@@ -148,16 +167,102 @@ export function detectMagicDocHeader(
   return { title };
 }
 
-export function registerMagicDoc(filePath: string): void {
-  if (!trackedMagicDocs.has(filePath)) {
-    trackedMagicDocs.set(filePath, { path: filePath });
+function scopeIdForSessionId(sessionId: string | undefined): string {
+  const trimmed = sessionId?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : GLOBAL_SCOPE_ID;
+}
+
+function scopeIdForContext(context: MagicDocsPostSamplingContext): string {
+  return scopeIdForSessionId(context.session?.conversationId ?? context.sessionId);
+}
+
+function docsForScope(scopeId: string): Map<string, MagicDocInfo> {
+  let docs = trackedMagicDocsByScope.get(scopeId);
+  if (!docs) {
+    docs = new Map();
+    trackedMagicDocsByScope.set(scopeId, docs);
   }
+  return docs;
+}
+
+function deleteTrackedDoc(scopeId: string, filePath: string): void {
+  const docs = trackedMagicDocsByScope.get(scopeId);
+  if (!docs) return;
+  docs.delete(filePath);
+  if (docs.size === 0) {
+    trackedMagicDocsByScope.delete(scopeId);
+  }
+}
+
+export function registerMagicDoc(filePath: string, sessionId?: string): void {
+  const docs = docsForScope(scopeIdForSessionId(sessionId));
+  if (!docs.has(filePath)) {
+    docs.set(filePath, { path: filePath });
+  }
+}
+
+function snapshotToSeed(snapshot: SessionReadSnapshot): MagicDocsReadFileSnapshot {
+  return {
+    ...(snapshot.content === undefined ? {} : { content: snapshot.content }),
+    ...(typeof snapshot.timestamp === "number" && Number.isFinite(snapshot.timestamp)
+      ? { timestamp: snapshot.timestamp }
+      : {}),
+    ...(snapshot.viewKind === undefined ? {} : { viewKind: snapshot.viewKind }),
+    ...(snapshot.isPartialView === true ? { isPartialView: true } : {}),
+    ...(typeof snapshot.readOffset === "number" && Number.isFinite(snapshot.readOffset)
+      ? { readOffset: snapshot.readOffset }
+      : {}),
+    ...(typeof snapshot.readLimit === "number" && Number.isFinite(snapshot.readLimit)
+      ? { readLimit: snapshot.readLimit }
+      : {}),
+    ...(snapshot.rawContent === undefined ? {} : { rawContent: snapshot.rawContent }),
+  };
 }
 
 export function cloneMagicDocsReadFileState(
   state?: ReadonlyMap<string, unknown>,
 ): MagicDocsReadFileState {
-  return new Map(state ? [...state.entries()] : []);
+  const cloned = new Map<string, MagicDocsReadFileSnapshot>();
+  if (!state) return cloned;
+  for (const [path, value] of state.entries()) {
+    if (typeof path !== "string" || path.trim().length === 0) continue;
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      cloned.set(path, snapshotToSeed(value as SessionReadSnapshot));
+    } else {
+      cloned.set(path, {});
+    }
+  }
+  return cloned;
+}
+
+function cloneSessionReadFileState(
+  sessionId: string | undefined,
+): MagicDocsReadFileState {
+  const cloned = new Map<string, MagicDocsReadFileSnapshot>();
+  forEachSessionRead(sessionId, (path, snapshot) => {
+    cloned.set(path, snapshotToSeed(snapshot));
+  });
+  return cloned;
+}
+
+function readFileStateForContext(
+  context: MagicDocsPostSamplingContext,
+): MagicDocsReadFileState {
+  if (context.readFileState !== undefined) {
+    return cloneMagicDocsReadFileState(context.readFileState);
+  }
+  return cloneSessionReadFileState(
+    context.session?.conversationId ?? context.sessionId,
+  );
+}
+
+function seedEntriesFromReadFileState(
+  state: MagicDocsReadFileState,
+): SessionReadSeedEntry[] {
+  return [...state.entries()].map(([path, snapshot]) => ({
+    path,
+    ...snapshot,
+  }));
 }
 
 export function createMagicDocsEditPolicy(docPath: string): ChildToolPolicy {
@@ -210,12 +315,12 @@ async function runMagicDocsAgentWithSubagent(
   if (request.signal?.aborted) return;
 
   const live = await spawnMagicDocsLiveAgent(request.session);
-  const fileStats = await stat(request.docPath);
+  seedSessionReadState(live.agentId, seedEntriesFromReadFileState(request.readFileState));
   recordSessionRead(live.agentId, request.docPath, {
     content: request.currentDoc,
     rawContent: request.currentDoc,
-    timestamp: Number.isFinite(fileStats.mtimeMs)
-      ? fileStats.mtimeMs
+    timestamp: Number.isFinite(request.currentDocMtimeMs)
+      ? request.currentDocMtimeMs
       : Date.now(),
     viewKind: "full",
   });
@@ -231,6 +336,7 @@ async function runMagicDocsAgentWithSubagent(
     taskPrompt: request.prompt,
     toolAllowlist: [FILE_EDIT_TOOL_NAME],
     childToolPolicy: createMagicDocsEditPolicy(request.docPath),
+    querySource: MAGIC_DOCS_QUERY_SOURCE,
     maxTurns: 2,
     silent: true,
     ...(request.signal !== undefined ? { externalSignal: request.signal } : {}),
@@ -248,13 +354,32 @@ function magicDocsAgentRunner(): MagicDocsAgentRunner {
 async function updateMagicDoc(
   docInfo: MagicDocInfo,
   context: MagicDocsPostSamplingContext,
+  scopeId: string,
 ): Promise<void> {
   let currentDoc: string;
   try {
     currentDoc = await readFile(docInfo.path, "utf8");
   } catch (error) {
     if (isInaccessibleFileError(error)) {
-      trackedMagicDocs.delete(docInfo.path);
+      deleteTrackedDoc(scopeId, docInfo.path);
+      return;
+    }
+    throw error;
+  }
+
+  let currentDocMtimeMs: number;
+  try {
+    const fileStats = await stat(docInfo.path);
+    if (!fileStats.isFile()) {
+      deleteTrackedDoc(scopeId, docInfo.path);
+      return;
+    }
+    currentDocMtimeMs = Number.isFinite(fileStats.mtimeMs)
+      ? fileStats.mtimeMs
+      : Date.now();
+  } catch (error) {
+    if (isInaccessibleFileError(error)) {
+      deleteTrackedDoc(scopeId, docInfo.path);
       return;
     }
     throw error;
@@ -262,11 +387,11 @@ async function updateMagicDoc(
 
   const detected = detectMagicDocHeader(currentDoc);
   if (!detected) {
-    trackedMagicDocs.delete(docInfo.path);
+    deleteTrackedDoc(scopeId, docInfo.path);
     return;
   }
 
-  const readFileState = cloneMagicDocsReadFileState(context.readFileState);
+  const readFileState = readFileStateForContext(context);
   readFileState.delete(docInfo.path);
   const prompt = await buildMagicDocsUpdatePrompt(
     currentDoc,
@@ -285,6 +410,7 @@ async function updateMagicDoc(
     prompt,
     messages: context.messages,
     ...(context.session !== undefined ? { session: context.session } : {}),
+    currentDocMtimeMs,
     readFileState,
     ...(context.signal !== undefined ? { signal: context.signal } : {}),
   });
@@ -300,13 +426,15 @@ async function updateMagicDocs(
   if (hasToolCallsInLastAssistantTurn(context.messages)) {
     return;
   }
-  if (trackedMagicDocs.size === 0) {
+  const scopeId = scopeIdForContext(context);
+  const trackedMagicDocs = trackedMagicDocsByScope.get(scopeId);
+  if (!trackedMagicDocs || trackedMagicDocs.size === 0) {
     return;
   }
 
   for (const docInfo of [...trackedMagicDocs.values()]) {
     if (context.signal?.aborted) return;
-    await updateMagicDoc(docInfo, context);
+    await updateMagicDoc(docInfo, context, scopeId);
   }
 }
 
@@ -322,9 +450,9 @@ export function runMagicDocsPostSamplingHook(
 
 export function initMagicDocs(): void {
   if (unregisterReadListener !== null) return;
-  unregisterReadListener = registerFileReadListener((filePath, content) => {
-    if (detectMagicDocHeader(content)) {
-      registerMagicDoc(filePath);
+  unregisterReadListener = registerFileReadListener((event) => {
+    if (detectMagicDocHeader(event.content)) {
+      registerMagicDoc(event.filePath, event.sessionId);
     }
   });
 }

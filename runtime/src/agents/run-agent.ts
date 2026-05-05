@@ -77,6 +77,8 @@ export interface RunAgentParams {
   readonly externalSignal?: AbortSignal;
   /** Optional per-call child tool policy layered after allowlist filtering. */
   readonly childToolPolicy?: ChildToolPolicy;
+  /** Query source label for the child session. Defaults to the inherited source. */
+  readonly querySource?: string;
   /** Optional per-child turn cap. */
   readonly maxTurns?: number;
   /** Suppress parent mailbox notifications and child rollout recording. */
@@ -916,6 +918,7 @@ function buildChildSession(
       ...params.parent.services,
       provider,
       registry,
+      querySource: params.querySource ?? params.parent.services.querySource,
       permissionModeRegistry: new PermissionModeRegistry(
         params.parent.permissionModeRegistry.current(),
       ),

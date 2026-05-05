@@ -1,4 +1,5 @@
 import {
+  readFile,
   mkdtemp,
   mkdir,
   rm,
@@ -13,14 +14,22 @@ import {
   describe,
   expect,
   it,
+  vi,
 } from "vitest";
 
 import type { LLMMessage } from "../../llm/types.js";
+import type { RunAgentParams } from "../../agents/run-agent.js";
 import {
   clearFileReadListenersForTests,
   createFileReadTool,
 } from "../../tools/system/index.js";
-import { SESSION_ID_ARG } from "../../tools/system/filesystem.js";
+import {
+  clearSessionReadState,
+  getSessionReadSnapshot,
+  seedSessionReadState,
+  SESSION_ID_ARG,
+} from "../../tools/system/filesystem.js";
+import type { Session } from "../../session/session.js";
 import {
   createMagicDocsEditPolicy,
   detectMagicDocHeader,
@@ -36,6 +45,21 @@ import {
   buildMagicDocsUpdatePrompt,
   substituteMagicDocsVariables,
 } from "./prompts.js";
+
+const runAgentMockState = vi.hoisted(() => ({
+  calls: [] as unknown[],
+}));
+
+vi.mock("../../agents/run-agent.js", () => ({
+  runAgent: async function* (params: unknown) {
+    runAgentMockState.calls.push(params);
+    return {
+      threadId: "magic-docs-child",
+      durationMs: 0,
+      outcome: "completed",
+    };
+  },
+}));
 
 let tempRoot: string;
 let previousAgencHome: string | undefined;
@@ -54,17 +78,43 @@ beforeEach(async () => {
   delete process.env.AGENC_CONFIG_DIR;
   clearFileReadListenersForTests();
   resetMagicDocsForTests();
+  runAgentMockState.calls.length = 0;
 });
 
 afterEach(async () => {
   resetMagicDocsForTests();
   clearFileReadListenersForTests();
+  runAgentMockState.calls.length = 0;
   if (previousAgencHome === undefined) delete process.env.AGENC_HOME;
   else process.env.AGENC_HOME = previousAgencHome;
   if (previousAgencConfigDir === undefined) delete process.env.AGENC_CONFIG_DIR;
   else process.env.AGENC_CONFIG_DIR = previousAgencConfigDir;
   await rm(tempRoot, { recursive: true, force: true });
 });
+
+function makeMagicDocsSession(
+  sessionId: string,
+  childId: string,
+): Session {
+  return {
+    conversationId: sessionId,
+    sessionConfiguration: {
+      sessionSource: "cli_main",
+    },
+    services: {
+      agentControl: {
+        spawn: async () => ({
+          agentId: childId,
+          agentPath: "/root/magic-docs",
+          nickname: "magic-docs",
+          depth: 1,
+          role: { name: "magic-docs", config: {} },
+          abortController: new AbortController(),
+        }),
+      },
+    },
+  } as unknown as Session;
+}
 
 describe("MagicDocs", () => {
   it("detects a Magic Doc header and optional italicized instructions", () => {
@@ -118,7 +168,29 @@ describe("MagicDocs", () => {
     });
 
     expect(result.isError).not.toBe(true);
-    expect(trackedMagicDocPathsForTests()).toEqual([docPath]);
+    expect(trackedMagicDocPathsForTests("session-1")).toEqual([docPath]);
+  });
+
+  it("registers tagged markdown from raw text even when FileRead returns a slice", async () => {
+    const docPath = join(tempRoot, "partial.md");
+    await writeFile(
+      docPath,
+      "# MAGIC DOC: Partial\n\nHidden body\nVisible slice\n",
+      "utf8",
+    );
+    initMagicDocs();
+
+    const tool = createFileReadTool({ allowedPaths: [tempRoot] });
+    const result = await tool.execute({
+      file_path: docPath,
+      offset: 4,
+      limit: 1,
+      [SESSION_ID_ARG]: "session-partial",
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.content).not.toContain("MAGIC DOC");
+    expect(trackedMagicDocPathsForTests("session-partial")).toEqual([docPath]);
   });
 
   it("runs idle post-sampling updates with cloned read-file state", async () => {
@@ -131,12 +203,12 @@ describe("MagicDocs", () => {
     registerMagicDoc(docPath);
     const parentReadFileState = new Map<string, unknown>([
       [docPath, { stale: true }],
-      ["/keep.md", { keep: true }],
+      ["/keep.md", { content: "keep", viewKind: "full" }],
     ]);
     let captured: MagicDocsAgentRequest | null = null;
     setMagicDocsAgentRunnerForTests(async (request) => {
       captured = request;
-      request.readFileState.set("/mutated.md", true);
+      request.readFileState.set("/mutated.md", {});
     });
 
     await runMagicDocsPostSamplingHook({
@@ -150,9 +222,102 @@ describe("MagicDocs", () => {
     expect(captured?.instructions).toBe("Keep only current design.");
     expect(captured?.prompt).toContain("Old body");
     expect(captured?.readFileState.has(docPath)).toBe(false);
-    expect(captured?.readFileState.get("/keep.md")).toEqual({ keep: true });
+    expect(captured?.readFileState.get("/keep.md")).toEqual({
+      content: "keep",
+      viewKind: "full",
+    });
     expect(parentReadFileState.has(docPath)).toBe(true);
     expect(parentReadFileState.has("/mutated.md")).toBe(false);
+  });
+
+  it("only updates docs tracked by the current session scope", async () => {
+    const firstPath = join(tempRoot, "first.md");
+    const secondPath = join(tempRoot, "second.md");
+    await writeFile(firstPath, "# MAGIC DOC: First\n\nBody\n", "utf8");
+    await writeFile(secondPath, "# MAGIC DOC: Second\n\nBody\n", "utf8");
+    registerMagicDoc(firstPath, "session-a");
+    registerMagicDoc(secondPath, "session-b");
+    const seen: string[] = [];
+    setMagicDocsAgentRunnerForTests(async (request) => {
+      seen.push(request.docPath);
+    });
+
+    await runMagicDocsPostSamplingHook({
+      messages: idleMessages,
+      querySource: "repl_main_thread",
+      sessionId: "session-a",
+    });
+
+    expect(seen).toEqual([firstPath]);
+    expect(trackedMagicDocPathsForTests()).toEqual([firstPath, secondPath]);
+  });
+
+  it("skips updates for non-main query sources", async () => {
+    const docPath = join(tempRoot, "notes.md");
+    await writeFile(docPath, "# MAGIC DOC: Notes\n\nBody\n", "utf8");
+    registerMagicDoc(docPath, "session-1");
+    let calls = 0;
+    setMagicDocsAgentRunnerForTests(async () => {
+      calls += 1;
+    });
+
+    await runMagicDocsPostSamplingHook({
+      messages: idleMessages,
+      querySource: "magic_docs",
+      sessionId: "session-1",
+    });
+    await runMagicDocsPostSamplingHook({
+      messages: idleMessages,
+      querySource: "agent:child-1",
+      sessionId: "session-1",
+    });
+
+    expect(calls).toBe(0);
+  });
+
+  it("seeds the real MagicDocs child with cloned parent read state", async () => {
+    const parentId = "parent-session";
+    const childId = "child-session";
+    const docPath = join(tempRoot, "architecture.md");
+    const otherPath = join(tempRoot, "other.md");
+    await writeFile(docPath, "# MAGIC DOC: Architecture\n\nCurrent body\n", "utf8");
+    await writeFile(otherPath, "Other context\n", "utf8");
+    seedSessionReadState(parentId, [
+      {
+        path: docPath,
+        content: "stale body",
+        rawContent: "stale body",
+        timestamp: 1,
+        viewKind: "full",
+      },
+      {
+        path: otherPath,
+        content: "Other context\n",
+        rawContent: "Other context\n",
+        timestamp: 2,
+        viewKind: "full",
+      },
+    ]);
+    registerMagicDoc(docPath, parentId);
+
+    await runMagicDocsPostSamplingHook({
+      messages: idleMessages,
+      querySource: "repl_main_thread",
+      session: makeMagicDocsSession(parentId, childId),
+    });
+
+    expect(runAgentMockState.calls).toHaveLength(1);
+    const params = runAgentMockState.calls[0] as RunAgentParams;
+    expect(params.querySource).toBe("magic_docs");
+    expect(params.toolAllowlist).toEqual(["Edit"]);
+    expect(getSessionReadSnapshot(childId, otherPath)?.content).toBe("Other context\n");
+    expect(getSessionReadSnapshot(childId, docPath)?.rawContent).toBe(
+      await readFile(docPath, "utf8"),
+    );
+    expect(getSessionReadSnapshot(childId, docPath)?.content).not.toBe("stale body");
+
+    clearSessionReadState(parentId);
+    clearSessionReadState(childId);
   });
 
   it("skips updates when the last assistant turn still has tool calls", async () => {

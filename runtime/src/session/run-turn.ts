@@ -479,6 +479,24 @@ function terminalToStopReason(
   }
 }
 
+function sessionQuerySourceForPostSampling(session: Session): string {
+  const raw =
+    typeof session.services.querySource === "string" &&
+      session.services.querySource.length > 0
+      ? session.services.querySource
+      : "repl_main_thread";
+  const source = session.sessionConfiguration.sessionSource;
+  if (
+    raw === "repl_main_thread" &&
+    typeof source === "object" &&
+    source !== null &&
+    source.kind === "subagent"
+  ) {
+    return `agent:${session.conversationId}`;
+  }
+  return raw;
+}
+
 function launchMagicDocsPostSampling(
   state: TurnState,
   session: Session,
@@ -486,7 +504,7 @@ function launchMagicDocsPostSampling(
 ): void {
   void runMagicDocsPostSamplingHook({
     messages: state.messages,
-    querySource: "repl_main_thread",
+    querySource: sessionQuerySourceForPostSampling(session),
     session,
     ...(signal !== undefined ? { signal } : {}),
   }).catch((error) => {
