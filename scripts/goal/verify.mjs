@@ -32,6 +32,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { findItem, repoRoot, fail } from "./checklist-utils.mjs";
+import {
+  SHIM_BEHAVIOR_RATIO_LIMIT,
+  measureShimBehavior,
+} from "./shim-behavior.mjs";
 
 const RESET = "\x1b[0m";
 const BOLD = "\x1b[1m";
@@ -1335,6 +1339,10 @@ const ITEM_EVIDENCE = {
     // Strict typecheck must pass with NO baseline tolerance.
     runStrict: true,
   },
+  "ZC-20": {
+    files: ["scripts/goal/shim-behavior.mjs"],
+    tests: ["scripts/goal/shim-behavior.test.mjs"],
+  },
 };
 
 function usage() {
@@ -1588,25 +1596,9 @@ if (shimAdditions.length > 0) {
   );
 }
 
-// Behavior gate: catch forwarding-only modules whose filename doesn't match SHIM_RE.
-// A new module whose body is >80% imports + re-exports + single-line forwards AND
+// Behavior gate: catch forwarding-heavy modules whose filename doesn't match SHIM_RE.
+// A new module whose body is >50% imports + re-exports + single-line forwards AND
 // has fewer than 40 significant lines is functionally a shim regardless of name.
-const FORWARD_LINE_RE =
-  /^\s*(export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[^}]*\}\s*from\b|export\s*\{[^}]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
-const FORWARD_STATEMENT_RE =
-  /^\s*(export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[\s\S]*\}\s*from\b|export\s*\{[\s\S]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
-const SINGLE_LINE_FORWARD_FN_RE =
-  /^\s*(?:export\s+)?(?:async\s+)?function\s+\w+\s*\([^)]*\)\s*\{\s*(?:return\s+(?:await\s+)?|await\s+)?[\w$.]+\([^{};]*\)\s*;?\s*\}\s*$/;
-const SINGLE_LINE_FORWARD_ARROW_RE =
-  /^\s*export\s+const\s+\w+\s*=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*=>\s*(?:\{\s*(?:return\s+(?:await\s+)?|await\s+)?[\w$.]+\([^{};]*\)\s*;?\s*\}|[\w$.]+\([^{};]*\)|[\w$.]+\.[\w$]+(?:\([^{};]*\))?)\s*;?\s*$/;
-function countForwardingLines(significant) {
-  return combineLogicalStatements(significant).filter((stmt) =>
-    FORWARD_LINE_RE.test(stmt) ||
-    FORWARD_STATEMENT_RE.test(stmt) ||
-    SINGLE_LINE_FORWARD_FN_RE.test(stmt) ||
-    SINGLE_LINE_FORWARD_ARROW_RE.test(stmt)
-  ).length;
-}
 const forwardingViolations = [];
 for (const rel of added) {
   if (!/^runtime\/src\//.test(rel)) continue;
@@ -1620,28 +1612,25 @@ for (const rel of added) {
   } catch {
     continue;
   }
-  if (body.length > 16000) continue; // big files aren't shims
-  const lines = body.split("\n");
-  const significant = lines
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith("//") && !l.startsWith("*") && !l.startsWith("/*") && l !== "*/");
-  if (significant.length === 0 || significant.length >= 40) continue;
-  const implementationLines = significant.filter((line) => !/^\s*import\s/.test(line));
-  if (implementationLines.length === 0) continue;
-  const logicalStatements = combineLogicalStatements(implementationLines);
-  if (logicalStatements.length === 0 || logicalStatements.length >= 40) continue;
-  const forward = countForwardingLines(implementationLines);
-  const ratio = forward / logicalStatements.length;
-  if (forward > 0 && ratio > 0.8) {
-    forwardingViolations.push({ path: rel, ratio: ratio.toFixed(2), lines: logicalStatements.length, forward });
+  const stats = measureShimBehavior(body);
+  if (stats.violates) {
+    forwardingViolations.push({
+      path: rel,
+      ratio: stats.ratio.toFixed(2),
+      lines: stats.significantLines,
+      imports: stats.importLines,
+      forwards: stats.forwardLines,
+    });
   }
 }
 if (forwardingViolations.length > 0) {
   failGate(
     `forbidden: this item adds ${forwardingViolations.length} forwarding-only module(s) ` +
-      `(>80% imports + re-exports + single-line forwarders, <40 significant lines). ` +
+      `(>${Math.round(SHIM_BEHAVIOR_RATIO_LIMIT * 100)}% imports + re-exports + single-line forwarders, <40 significant lines). ` +
       `These are shims by another name. Inline at the call site or move to canonical home.\n  ` +
-      forwardingViolations.map((v) => `- ${v.path} (${v.forward}/${v.lines} forward lines, ratio ${v.ratio})`).join("\n  "),
+      forwardingViolations
+        .map((v) => `- ${v.path} (${v.imports} import line(s) + ${v.forwards} forward statement(s) / ${v.lines} significant line(s), ratio ${v.ratio})`)
+        .join("\n  "),
   );
 }
 pass("no new upstream/ files, no new shim-pattern additions, no forwarding-only modules");
@@ -1665,36 +1654,6 @@ if (sdkDaemonDriftRelevant) {
   pass("daemon SDK method drift check passed");
 } else {
   pass("daemon SDK method drift check not required for this diff");
-}
-
-function combineLogicalStatements(significant) {
-  const statements = [];
-  let current = "";
-  let braceDepth = 0;
-  for (const line of significant) {
-    const startsMultilineForward = current.length > 0 || /^\s*(import|export)\s*\{/u.test(line);
-    if (!startsMultilineForward) {
-      statements.push(line);
-      continue;
-    }
-    current = current.length === 0 ? line : `${current}\n${line}`;
-    braceDepth += countChar(line, "{") - countChar(line, "}");
-    if (braceDepth <= 0 && /(?:;|\bfrom\s+["'][^"']+["'];?)\s*$/u.test(line)) {
-      statements.push(current);
-      current = "";
-      braceDepth = 0;
-    }
-  }
-  if (current.length > 0) statements.push(current);
-  return statements;
-}
-
-function countChar(value, needle) {
-  let count = 0;
-  for (const char of value) {
-    if (char === needle) count += 1;
-  }
-  return count;
 }
 
 // --- Gate 2.5: per-item named evidence ----------------------------------
@@ -4065,26 +4024,11 @@ function assertZc20NoRuntimeShimCruft() {
     } catch {
       continue;
     }
-    if (body.length > 16000) continue;
-    const significant = body
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) =>
-        line &&
-        !line.startsWith("//") &&
-        !line.startsWith("*") &&
-        !line.startsWith("/*") &&
-        line !== "*/",
+    const stats = measureShimBehavior(body);
+    if (stats.violates) {
+      forwardingHits.push(
+        `${rel} (${stats.importLines} import line(s) + ${stats.forwardLines} forward statement(s) / ${stats.significantLines} significant line(s), ratio ${stats.ratio.toFixed(2)})`,
       );
-    if (significant.length === 0 || significant.length >= 40) continue;
-    const implementationLines = significant.filter((line) => !/^\s*import\s/.test(line));
-    if (implementationLines.length === 0) continue;
-    const logicalStatements = combineLogicalStatements(implementationLines);
-    if (logicalStatements.length === 0 || logicalStatements.length >= 40) continue;
-    const forward = countForwardingLines(implementationLines);
-    const ratio = forward / logicalStatements.length;
-    if (forward > 0 && ratio > 0.8) {
-      forwardingHits.push(`${rel} (${forward}/${logicalStatements.length} forward statements, ratio ${ratio.toFixed(2)})`);
     }
   }
 
@@ -4093,7 +4037,9 @@ function assertZc20NoRuntimeShimCruft() {
     failures.push(`shim-pattern file(s):\n${suffixHits.join("\n")}`);
   }
   if (forwardingHits.length > 0) {
-    failures.push(`forwarding-only module(s):\n${forwardingHits.join("\n")}`);
+    failures.push(
+      `forwarding-heavy module(s) (>${Math.round(SHIM_BEHAVIOR_RATIO_LIMIT * 100)}% imports+forwards LOC):\n${forwardingHits.join("\n")}`,
+    );
   }
   if (failures.length > 0) {
     failGate(`ZC-20: runtime/src shim cruft remains:\n${failures.join("\n\n")}`);

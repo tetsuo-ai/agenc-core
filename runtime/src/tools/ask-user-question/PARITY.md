@@ -10,4 +10,5 @@ Primary source anchors:
 
 This directory owns the AgenC model-facing `AskUserQuestion` tool:
 - `tool.ts` implements question parsing, strict schema, permission prompt behavior, answer consumption, and result formatting.
+- `tui-tool.tsx` owns the permission/TUI rendering surface.
 - Callers import the needed tool functions and types directly from `tool.ts`; no barrel module is kept for this surface.

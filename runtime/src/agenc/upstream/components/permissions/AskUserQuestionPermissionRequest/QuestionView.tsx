@@ -3,7 +3,7 @@ import figures from 'figures';
 import React, { useState } from 'react';
 import { Box, Text, useInput } from '../../../../../tui/ink.js';
 import { useAppState } from '../../../../../tui/state/AppState.js';
-import type { Question, QuestionOption } from 'src/tools/AskUserQuestionTool/AskUserQuestionTool.js';
+import type { AskUserQuestion as Question, AskUserQuestionOption as QuestionOption } from 'src/tools/ask-user-question/tool.js';
 import type { PastedContent } from '../../../utils/config.js';
 import { getExternalEditor } from '../../../utils/editor.js';
 import { toIDEDisplayName } from '../../../utils/ide.js';

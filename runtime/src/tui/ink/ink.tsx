@@ -20,7 +20,7 @@ import { KeyboardEvent } from './events/keyboard-event.js';
 import { FocusManager } from './focus.js';
 import { emptyFrame, type Frame, type FrameEvent } from './frame.js';
 import { dispatchClick, dispatchHover } from './hit-test.js';
-import instances from './instances.js';
+import { deleteInkInstance } from './instances.js';
 import { LogUpdate } from './log-update.js';
 import { nodeCache } from './node-cache.js';
 import { optimize } from './optimizer.js';
@@ -119,7 +119,7 @@ export default class Ink {
   }>;
   // Text selection state (alt-screen only). Owned here so the overlay
   // pass in onRender can read it and App.tsx can update it from mouse
-  // events. Public so instances.get() callers can access.
+  // events. Public so instance-registry callers can access.
   readonly selection: SelectionState = createSelectionState();
   // Search highlight query (alt-screen only). Setter below triggers
   // scheduleRender; applySearchHighlight in onRender inverts matching cells.
@@ -1548,7 +1548,7 @@ export default class Ink {
     reconciler.updateContainerSync(null, this.container, null, noop);
     // @ts-expect-error flushSyncWork exists in react-reconciler but not in @types/react-reconciler
     reconciler.flushSyncWork();
-    instances.delete(this.options.stdout);
+    deleteInkInstance(this.options.stdout);
 
     // Free the root yoga node, then clear its reference. Children are already
     // freed by the reconciler's removeChildFromContainer; using .free() (not
