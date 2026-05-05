@@ -164,6 +164,19 @@ assert(
   JSON.stringify(localAliasFunctionWrapper),
 );
 
+const unrelatedNameFunctionWrapper = measure(`
+import { run } from './impl.js'
+export function handle(input: string): string {
+  return run(input)
+}
+`);
+assert(
+  "flags multi-line forwarding functions with unrelated public names",
+  unrelatedNameFunctionWrapper.violates &&
+    unrelatedNameFunctionWrapper.forwardLines === 3,
+  JSON.stringify(unrelatedNameFunctionWrapper),
+);
+
 const importedTypeAliasForwarder = measure(`
 import type { PermissionDecision as PermissionDecisionType } from './types.js'
 export type PermissionDecision = PermissionDecisionType

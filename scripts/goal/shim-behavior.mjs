@@ -8,7 +8,7 @@ export const FORWARD_STATEMENT_RE =
 export const SINGLE_LINE_FORWARD_FN_RE =
   /^\s*(?:(?:export\s+default\s+)|(?:export\s+))?(?:async\s+)?function\s+\w*\s*\([\s\S]*\)\s*(?::[^{]+)?\{\s*(?:return\s+(?:await\s+)?|await\s+)?[\w$.]+\([^{};]*\)\s*;?\s*\}\s*$/;
 export const FORWARD_FN_WITH_LOCAL_ALIASES_RE =
-  /^\s*(?:(?:export\s+default\s+)|(?:export\s+))?(?:async\s+)?function\s+([\w$]*)\s*\([\s\S]*?\)\s*(?::[^{]+)?\{([\s\S]*)\}\s*$/;
+  /^\s*(?:(?:export\s+default\s+)|(?:export\s+))?(?:async\s+)?function\s+[\w$]*\s*\(([\s\S]*?)\)\s*(?::[^{]+)?\{([\s\S]*)\}\s*$/;
 export const SINGLE_LINE_FORWARD_ARROW_RE =
   /^\s*(?:export\s+)?const\s+\w+\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*=>\s*(?:\{\s*(?:return\s+(?:await\s+)?|await\s+)?[\w$.]+\([^{};]*\)\s*;?\s*\}|[\w$.]+\([^{};]*\)|[\w$.]+\.[\w$]+(?:\([^{};]*\))?)\s*;?\s*$/;
 export const EXPORTED_TYPE_ALIAS_RE =
@@ -327,10 +327,9 @@ function isForwardingFunctionStatement(statement, importedBindings) {
   const functionMatch = statement.match(FORWARD_FN_WITH_LOCAL_ALIASES_RE);
   if (!functionMatch) return false;
 
-  const functionName = functionMatch[1] ?? "";
+  const parameterNames = parseFunctionParameterNames(functionMatch[1]);
   const body = functionMatch[2].trim();
   const localAliases = new Set();
-  let sawImportedAliasStatement = false;
   const bodyWithoutAliases = body
     .replace(
       /^\s*const\s+([\w$]+)\s*=\s*([\w$.]+)\s*;?\s*$/gmu,
@@ -338,41 +337,43 @@ function isForwardingFunctionStatement(statement, importedBindings) {
         const sourceBase = String(source).split(".")[0];
         if (importedBindings.has(sourceBase)) {
           localAliases.add(local);
-          sawImportedAliasStatement = true;
         }
         return "";
       },
     )
     .trim();
   const returnMatch = bodyWithoutAliases.match(
-    /^(?:return\s+(?:await\s+)?|await\s+)?([\w$]+)(?:\.[\w$]+)?\([^{};]*\)\s*;?$/u,
+    /^(?:return\s+(?:await\s+)?|await\s+)([\w$]+)(?:\.[\w$]+)?\(([^(){};]*)\)\s*;?$/u,
   );
   if (!returnMatch) return false;
 
   const calleeBase = returnMatch[1];
   if (localAliases.has(calleeBase)) return true;
   if (!importedBindings.has(calleeBase)) return false;
-  if (sawImportedAliasStatement) return true;
-
-  return functionNameWrapsImportedCallee(functionName, calleeBase);
+  return callArgumentsArePassThrough(returnMatch[2], parameterNames, localAliases);
 }
 
-function functionNameWrapsImportedCallee(functionName, calleeBase) {
-  if (!functionName || !calleeBase) return false;
-  if (functionName === calleeBase) return true;
-  if (
-    calleeBase.endsWith("Impl") &&
-    functionName === calleeBase.slice(0, -"Impl".length)
-  ) {
-    return true;
+function parseFunctionParameterNames(parameters) {
+  const names = new Set();
+  for (const rawParam of parameters.split(",")) {
+    const withoutDefault = rawParam.split("=")[0].trim();
+    const withoutType = withoutDefault.split(":")[0].trim();
+    const name = withoutType.replace(/^\.\.\./u, "").replace(/\?$/u, "").trim();
+    if (/^[\w$]+$/u.test(name)) names.add(name);
   }
-  if (
-    calleeBase.endsWith("Implementation") &&
-    functionName === calleeBase.slice(0, -"Implementation".length)
-  ) {
-    return true;
-  }
-  return functionName.includes(calleeBase) || calleeBase.includes(functionName);
+  return names;
+}
+
+function callArgumentsArePassThrough(args, parameterNames, localAliases) {
+  const trimmed = args.trim();
+  if (!trimmed || trimmed.includes("=>")) return false;
+  return trimmed.split(",").every((rawArg) => {
+    const arg = rawArg.trim().replace(/^\.\.\./u, "");
+    return (
+      /^[\w$]+$/u.test(arg) &&
+      (parameterNames.has(arg) || localAliases.has(arg))
+    );
+  });
 }
 
 function isFunctionOrArrowBlockComplete(statement, line) {
