@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, test, vi } from "vitest";
@@ -48,6 +55,14 @@ function tracker() {
     snapshot: () => [],
     clear: () => {},
   };
+}
+
+function makeExecutableSandboxHelper(): string {
+  const dir = mkdtempSync(join(tmpdir(), "agenc-runtime-helper-"));
+  const helper = join(dir, "agenc-linux-sandbox");
+  writeFileSync(helper, "#!/bin/sh\nexit 126\n");
+  chmodSync(helper, 0o755);
+  return helper;
 }
 
 describe("tools/runtimes", () => {
@@ -182,6 +197,23 @@ describe("tools/runtimes", () => {
       source: "direct",
     } as const;
     const base = callContext("call-sandbox-enforce", EXCLUSIVE, false);
+    const sandboxHelper = makeExecutableSandboxHelper();
+    const sandboxedInvocation = {
+      ...invocation,
+      turn: {
+        cwd: "/repo",
+        agencLinuxSandboxExe: sandboxHelper,
+      } as never,
+    };
+    const sandboxedWorkspaceContext = {
+      ...base,
+      approvalPolicy: "never" as const,
+      requestedSandboxMode: "workspace_write" as const,
+      sandboxMode: "workspace_write" as const,
+      approvalResolved: false,
+      rawArgs: "{}",
+      invocation: sandboxedInvocation,
+    };
 
     expect(() =>
       enforceRuntimeSandboxAttempt({
@@ -284,7 +316,7 @@ describe("tools/runtimes", () => {
         tool: shellTool,
         args: { cmd: "ls -la" },
       }),
-    ).not.toThrow();
+    ).toThrow(/without platform sandbox context/);
 
     expect(() =>
       enforceRuntimeSandboxAttempt({
@@ -295,7 +327,7 @@ describe("tools/runtimes", () => {
           sandboxMode: "read_only",
           approvalResolved: false,
           rawArgs: "{}",
-          invocation,
+          invocation: sandboxedInvocation,
         },
         tool: shellTool,
         args: { cmd: "echo blocked > README.md" },
@@ -311,7 +343,7 @@ describe("tools/runtimes", () => {
           sandboxMode: "workspace_write",
           approvalResolved: false,
           rawArgs: "{}",
-          invocation,
+          invocation: sandboxedInvocation,
         },
         tool: shellTool,
         args: { cmd: "echo blocked > /etc/agenc-outside" },
@@ -327,7 +359,7 @@ describe("tools/runtimes", () => {
           sandboxMode: "workspace_write",
           approvalResolved: false,
           rawArgs: "{}",
-          invocation,
+          invocation: sandboxedInvocation,
         },
         tool: shellTool,
         args: { cmd: "echo allowed > src/generated.txt" },
@@ -343,7 +375,7 @@ describe("tools/runtimes", () => {
           sandboxMode: "workspace_write",
           approvalResolved: false,
           rawArgs: "{}",
-          invocation,
+          invocation: sandboxedInvocation,
         },
         tool: shellTool,
         args: { cmd: "echo allowed > /tmp/agenc-runtime-ok" },
@@ -362,7 +394,7 @@ describe("tools/runtimes", () => {
             sandboxMode: "workspace_write",
             approvalResolved: false,
             rawArgs: "{}",
-            invocation,
+            invocation: sandboxedInvocation,
           },
           tool: shellTool,
           args: { cmd: "echo allowed > /tmp/agenc-runtime-tmpdir/file.txt" },
@@ -385,7 +417,7 @@ describe("tools/runtimes", () => {
           sandboxMode: "read_only",
           approvalResolved: false,
           rawArgs: "{}",
-          invocation,
+          invocation: sandboxedInvocation,
         },
         tool: shellTool,
         args: { cmd: "node -e \"require('fs').writeFileSync('/etc/agenc-outside','x')\"" },
@@ -406,23 +438,7 @@ describe("tools/runtimes", () => {
         tool: shellTool,
         args: { cmd: "python -c \"open('/etc/agenc-outside', 'w').write('x')\"" },
       }),
-    ).toThrow(/could not verify write targets/);
-
-    const sandboxedWorkspaceContext = {
-      ...base,
-      approvalPolicy: "never" as const,
-      requestedSandboxMode: "workspace_write" as const,
-      sandboxMode: "workspace_write" as const,
-      approvalResolved: false,
-      rawArgs: "{}",
-      invocation: {
-        ...invocation,
-        turn: {
-          cwd: "/repo",
-          agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
-        } as never,
-      },
-    };
+    ).toThrow(/without platform sandbox context/);
     for (const cmd of ["npm test", "node script.js", "python -m pytest", "make"]) {
       expect(() =>
         enforceRuntimeSandboxAttempt({
@@ -442,7 +458,7 @@ describe("tools/runtimes", () => {
         tool: shellTool,
         args: { cmd: "node script.js" },
       }),
-    ).toThrow(/could not verify write targets/);
+    ).toThrow(/without platform sandbox context/);
 
     expect(() =>
       enforceRuntimeSandboxAttempt({
@@ -458,7 +474,7 @@ describe("tools/runtimes", () => {
         tool: shellTool,
         args: { cmd: "ls", shell: "/bin/sh" },
       }),
-    ).toThrow(/shell execution envelope/);
+    ).toThrow(/without platform sandbox context/);
 
     expect(() =>
       enforceRuntimeSandboxAttempt({
@@ -469,7 +485,7 @@ describe("tools/runtimes", () => {
           sandboxMode: "read_only",
           approvalResolved: false,
           rawArgs: "{}",
-          invocation,
+          invocation: sandboxedInvocation,
         },
         tool: shellTool,
         args: { cmd: "cat /etc/passwd" },
@@ -485,7 +501,7 @@ describe("tools/runtimes", () => {
           sandboxMode: "read_only",
           approvalResolved: false,
           rawArgs: "{}",
-          invocation,
+          invocation: sandboxedInvocation,
         },
         tool: shellTool,
         args: { cmd: 'cat "/etc/passwd"' },
@@ -501,7 +517,7 @@ describe("tools/runtimes", () => {
           sandboxMode: "read_only",
           approvalResolved: false,
           rawArgs: "{}",
-          invocation,
+          invocation: sandboxedInvocation,
         },
         tool: shellTool,
         args: { cmd: "cat $HOME/.ssh/id_rsa" },
@@ -517,7 +533,7 @@ describe("tools/runtimes", () => {
           sandboxMode: "read_only",
           approvalResolved: false,
           rawArgs: "{}",
-          invocation,
+          invocation: sandboxedInvocation,
         },
         tool: shellTool,
         args: { cmd: "sh -c 'cat /etc/passwd'" },
@@ -533,7 +549,7 @@ describe("tools/runtimes", () => {
           sandboxMode: "read_only",
           approvalResolved: false,
           rawArgs: "{}",
-          invocation,
+          invocation: sandboxedInvocation,
         },
         tool: shellTool,
         args: { cmd: "find . -exec cat /etc/passwd ;" },
@@ -549,7 +565,7 @@ describe("tools/runtimes", () => {
           sandboxMode: "read_only",
           approvalResolved: false,
           rawArgs: "{}",
-          invocation,
+          invocation: sandboxedInvocation,
         },
         tool: shellTool,
         args: { cmd: 'awk "BEGIN{system(\\"cat /etc/passwd\\")}"' },
@@ -565,7 +581,7 @@ describe("tools/runtimes", () => {
           sandboxMode: "read_only",
           approvalResolved: false,
           rawArgs: "{}",
-          invocation,
+          invocation: sandboxedInvocation,
         },
         tool: shellTool,
         args: { cmd: "ls", workdir: "/etc" },
@@ -576,6 +592,7 @@ describe("tools/runtimes", () => {
       ...invocation,
       turn: {
         cwd: "/repo",
+        agencLinuxSandboxExe: sandboxHelper,
         fileSystemSandboxPolicy: {
           allowWrite: ["/repo"],
           denyWrite: ["/repo/blocked"],
@@ -622,6 +639,7 @@ describe("tools/runtimes", () => {
             ...livePolicyInvocation,
             turn: {
               cwd: "/repo",
+              agencLinuxSandboxExe: sandboxHelper,
               fileSystemSandboxPolicy: {
                 allowWrite: [],
                 denyWrite: ["/repo"],
@@ -734,6 +752,7 @@ describe("tools/runtimes", () => {
 
   test("actual exec_command handler is preflighted by selected runtime sandbox", async () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-runtime-exec-"));
+    const sandboxHelper = makeExecutableSandboxHelper();
     const execCommand = vi.fn(async () => ({
       output: "ok\n",
       stdout: "ok\n",
@@ -799,6 +818,7 @@ describe("tools/runtimes", () => {
         turn: {
           subId: "turn-exec-read-outside",
           cwd: workspaceRoot,
+          agencLinuxSandboxExe: sandboxHelper,
           approvalPolicy: { value: "never" },
           sandboxPolicy: { value: "read_only" },
         } as never,
@@ -825,7 +845,7 @@ describe("tools/runtimes", () => {
         turn: {
           subId: "turn-exec-generated-write",
           cwd: workspaceRoot,
-          agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
+          agencLinuxSandboxExe: sandboxHelper,
           approvalPolicy: { value: "never" },
           sandboxPolicy: { value: "workspace_write" },
         } as never,
@@ -867,7 +887,7 @@ describe("tools/runtimes", () => {
         turn: {
           subId: "turn-exec-root-scoped-read",
           cwd: workspaceRoot,
-          agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
+          agencLinuxSandboxExe: sandboxHelper,
           fileSystemSandboxPolicy: {
             allowWrite: [],
             denyWrite: [workspaceRoot],
@@ -950,7 +970,7 @@ describe("tools/runtimes", () => {
         turn: {
           subId: "turn-stdin-read-only",
           cwd: workspaceRoot,
-          agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
+          agencLinuxSandboxExe: sandboxHelper,
           approvalPolicy: { value: "never" },
           sandboxPolicy: { value: "read_only" },
         } as never,
@@ -987,7 +1007,7 @@ describe("tools/runtimes", () => {
         turn: {
           subId: "turn-stdin-continue",
           cwd: workspaceRoot,
-          agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
+          agencLinuxSandboxExe: sandboxHelper,
           approvalPolicy: { value: "never" },
           sandboxPolicy: { value: "workspace_write" },
         } as never,
@@ -1044,7 +1064,7 @@ describe("tools/runtimes", () => {
     );
   });
 
-  test("actual exec_command runs statically safe workspace-write commands without a platform helper", async () => {
+  test("actual exec_command denies restricted shell commands without a platform helper", async () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-runtime-real-exec-"));
     const router = new ToolRouter([
       {
@@ -1082,11 +1102,90 @@ describe("tools/runtimes", () => {
       },
     );
 
-    expect(result.isError).toBeFalsy();
-    expect(result.content).toContain(workspaceRoot);
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("without platform sandbox context");
   });
 
-  test("actual exec_command denies custom shell envelopes without a platform helper", async () => {
+  test.runIf(process.platform === "linux")(
+    "actual exec_command validates linux sandbox helper before dispatch",
+    async () => {
+      const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-runtime-helper-check-"));
+      const helperDir = mkdtempSync(join(tmpdir(), "agenc-runtime-helper-bad-"));
+      const missingHelper = join(helperDir, "missing-helper");
+      const nonExecutableHelper = join(helperDir, "non-executable-helper");
+      writeFileSync(nonExecutableHelper, "#!/bin/sh\nexit 126\n");
+      chmodSync(nonExecutableHelper, 0o644);
+      const workspaceHelper = join(workspaceRoot, "agenc-linux-sandbox");
+      writeFileSync(workspaceHelper, "#!/bin/sh\nexit 126\n");
+      chmodSync(workspaceHelper, 0o755);
+      const execCommand = vi.fn(async () => ({
+        output: "ok\n",
+        stdout: "ok\n",
+        stderr: "",
+        exitCode: 0,
+        exit_code: 0,
+        durationMs: 1,
+        wall_time_seconds: 0.001,
+        timedOut: false,
+        truncated: false,
+        original_token_count: 1,
+      }));
+      const router = new ToolRouter([
+        {
+          tool: createExecCommandTool({
+            cwd: workspaceRoot,
+            allowedPaths: [workspaceRoot],
+            unifiedExecManager: {
+              maxTimeoutMs: 30_000,
+              execCommand,
+              writeStdin: vi.fn(),
+              closeAll: vi.fn(),
+            },
+          }),
+          supportsParallelToolCalls: false,
+        },
+      ]);
+      const dispatch = (helper: string) =>
+        router.dispatchModelToolCall(
+          {
+            id: `call-helper-${helper}`,
+            name: "exec_command",
+            arguments: JSON.stringify({ cmd: "pwd" }),
+          },
+          {
+            session: {
+              eventLog: new EventLog(),
+              services: {},
+            } as never,
+            turn: {
+              subId: "turn-helper-check",
+              cwd: workspaceRoot,
+              agencLinuxSandboxExe: helper,
+              approvalPolicy: { value: "never" },
+              sandboxPolicy: { value: "workspace_write" },
+            } as never,
+            tracker: tracker() as never,
+            approvalPolicy: "never",
+            sandboxMode: "workspace_write",
+          },
+        );
+
+      const missing = await dispatch(missingHelper);
+      expect(missing.isError).toBe(true);
+      expect(missing.content).toContain("does not exist");
+
+      const nonExecutable = await dispatch(nonExecutableHelper);
+      expect(nonExecutable.isError).toBe(true);
+      expect(nonExecutable.content).toContain("not executable");
+
+      const local = await dispatch(workspaceHelper);
+      expect(local.isError).toBe(true);
+      expect(local.content).toContain("outside the workspace");
+      expect(execCommand).not.toHaveBeenCalled();
+    },
+  );
+
+  test("actual exec_command denies shell envelopes without a platform helper", async () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-runtime-shell-env-"));
     const execCommand = vi.fn(async () => ({
       output: "ok\n",
@@ -1140,7 +1239,7 @@ describe("tools/runtimes", () => {
       baseOpts,
     );
     expect(customShell.isError).toBe(true);
-    expect(customShell.content).toContain("shell execution envelope");
+    expect(customShell.content).toContain("without platform sandbox context");
 
     const loginShell = await router.dispatchModelToolCall(
       {
@@ -1151,7 +1250,7 @@ describe("tools/runtimes", () => {
       baseOpts,
     );
     expect(loginShell.isError).toBe(true);
-    expect(loginShell.content).toContain("shell execution envelope");
+    expect(loginShell.content).toContain("without platform sandbox context");
     expect(execCommand).not.toHaveBeenCalled();
   });
 

@@ -555,6 +555,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     }
 
     if (params.tty) {
+      if (
+        params.argv0 !== undefined &&
+        params.argv0 !== basename(params.program)
+      ) {
+        throw new UnifiedExecError(
+          "create_process",
+          "restricted tty sessions cannot preserve sandbox launcher argv0",
+        );
+      }
       let processHandle: IPty;
       try {
         const pty = await this.loadPty();

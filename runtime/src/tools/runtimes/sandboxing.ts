@@ -1,3 +1,4 @@
+import { realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import {
   externalFileSystemPolicy,
@@ -40,6 +41,12 @@ interface WriteAnalysis {
   readonly targets: readonly string[];
   readonly indeterminate: boolean;
   readonly knownSafeWhenTargetless: boolean;
+}
+
+export interface RuntimePlatformSandboxStatus {
+  readonly available: boolean;
+  readonly agencLinuxSandboxExe?: string;
+  readonly reason?: string;
 }
 
 function projectRootEntry(
@@ -100,6 +107,12 @@ export function sandboxModeRequiresPlatformIsolation(mode: SandboxMode): boolean
 export function runtimePlatformSandboxAvailable(
   context: ToolRuntimeAttemptContext,
 ): boolean {
+  return runtimePlatformSandboxStatus(context).available;
+}
+
+export function runtimePlatformSandboxStatus(
+  context: ToolRuntimeAttemptContext,
+): RuntimePlatformSandboxStatus {
   const turn = context.invocation.turn as {
     readonly agencLinuxSandboxExe?: unknown;
     readonly config?: { readonly agencLinuxSandboxExe?: unknown };
@@ -107,21 +120,89 @@ export function runtimePlatformSandboxAvailable(
   };
   switch (process.platform) {
     case "linux":
-      return typeof turn.agencLinuxSandboxExe === "string" &&
-        turn.agencLinuxSandboxExe.length > 0 ||
-        typeof turn.config?.agencLinuxSandboxExe === "string" &&
-        turn.config.agencLinuxSandboxExe.length > 0;
+      return linuxSandboxStatus(context, turn);
     case "darwin":
-      return true;
+      return { available: true };
     case "win32":
-      return turn.windowsSandboxLevel === "permissive" ||
+      if (
+        turn.windowsSandboxLevel === "permissive" ||
         turn.windowsSandboxLevel === "strict" ||
         turn.windowsSandboxLevel === "low" ||
         turn.windowsSandboxLevel === "medium" ||
-        turn.windowsSandboxLevel === "high";
+        turn.windowsSandboxLevel === "high"
+      ) {
+        return { available: true };
+      }
+      return { available: false, reason: "windows sandbox is disabled" };
     default:
-      return false;
+      return { available: false, reason: `platform ${process.platform} has no sandbox` };
   }
+}
+
+function linuxSandboxStatus(
+  context: ToolRuntimeAttemptContext,
+  turn: {
+    readonly agencLinuxSandboxExe?: unknown;
+    readonly config?: { readonly agencLinuxSandboxExe?: unknown };
+  },
+): RuntimePlatformSandboxStatus {
+  const candidate = stringValue(turn.agencLinuxSandboxExe) ??
+    stringValue(turn.config?.agencLinuxSandboxExe);
+  if (candidate === undefined) {
+    return {
+      available: false,
+      reason: "agencLinuxSandboxExe is not configured",
+    };
+  }
+  const workspaceRoot = runtimeCwd(context);
+  const resolved = path.resolve(workspaceRoot, candidate);
+  let stat: ReturnType<typeof statSync>;
+  try {
+    stat = statSync(resolved);
+  } catch {
+    return {
+      available: false,
+      reason: `linux sandbox helper does not exist: ${resolved}`,
+    };
+  }
+  if (!stat.isFile()) {
+    return {
+      available: false,
+      reason: `linux sandbox helper is not a file: ${resolved}`,
+    };
+  }
+  if ((stat.mode & 0o111) === 0) {
+    return {
+      available: false,
+      reason: `linux sandbox helper is not executable: ${resolved}`,
+    };
+  }
+  const workspaceResolved = path.resolve(workspaceRoot);
+  const workspaceReal = safeRealpath(workspaceRoot);
+  const helperReal = safeRealpath(resolved);
+  if (
+    isPathUnder(resolved, workspaceResolved) ||
+    isPathUnder(resolved, workspaceReal) ||
+    isPathUnder(helperReal, workspaceReal)
+  ) {
+    return {
+      available: false,
+      reason: "linux sandbox helper must be outside the workspace",
+    };
+  }
+  return { available: true, agencLinuxSandboxExe: helperReal };
+}
+
+function safeRealpath(target: string): string {
+  try {
+    return realpathSync(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 export function permissionProfileForRuntimeContext(
@@ -168,9 +249,25 @@ export function enforceRuntimeSandboxAttempt(
   if (policy.kind === "danger_full_access" || policy.kind === "external_sandbox") {
     return;
   }
+  const shellAccess = analyzeShellRuntimeAccess(input.tool, input.args, cwd);
+  const platformSandbox = runtimePlatformSandboxStatus(input.context);
+  if (
+    shellAccess !== null &&
+    sandboxModeRequiresPlatformIsolation(input.context.sandboxMode) &&
+    !platformSandbox.available
+  ) {
+    throw new SandboxDeniedError(
+      `sandbox ${policy.kind} blocked ${input.tool.name} without platform sandbox context${platformSandbox.reason ? `: ${platformSandbox.reason}` : ""}`,
+      {
+        denial: "filesystem",
+        target: input.tool.name,
+        policy,
+      },
+    );
+  }
   if (
     shellEnvelopeRequiresPlatformSandbox(input.tool, input.args) &&
-    !runtimePlatformSandboxAvailable(input.context)
+    !platformSandbox.available
   ) {
     throw new SandboxDeniedError(
       `sandbox ${policy.kind} could not verify shell execution envelope for ${input.tool.name}`,
@@ -183,9 +280,9 @@ export function enforceRuntimeSandboxAttempt(
   }
   enforceRuntimeReadSandboxAttempt(input, policy, cwd, profile.fileSystem);
   if (input.tool.name === "write_stdin") {
-    if (!runtimePlatformSandboxAvailable(input.context)) {
+    if (!platformSandbox.available) {
       throw new SandboxDeniedError(
-        `sandbox ${policy.kind} blocked write_stdin without platform sandbox context`,
+        `sandbox ${policy.kind} blocked write_stdin without platform sandbox context${platformSandbox.reason ? `: ${platformSandbox.reason}` : ""}`,
         {
           denial: "filesystem",
           target: input.tool.name,

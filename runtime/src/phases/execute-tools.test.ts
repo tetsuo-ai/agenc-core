@@ -492,6 +492,48 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     expect(state.messages[0]!.content).toBe("ok");
   });
 
+  test("streaming live path accepts MCP bare registry tools resolved from namespaced calls", async () => {
+    const observedPayloadKinds: string[] = [];
+    const tool: Tool & { serverId: string } = {
+      name: "listIssues",
+      serverId: "github",
+      description: "mcp-backed tool",
+      inputSchema: { type: "object" },
+      execute: async () => ({ content: "streaming-mcp-ok" }),
+    };
+    const preHook: PreToolUseHook = async ({ invocation }) => {
+      observedPayloadKinds.push(invocation.payload.kind);
+      return { kind: "continue" };
+    };
+    const log = new EventLog();
+    const registry = mkRegistry([tool]);
+    const session = mkSession({
+      log,
+      registry,
+      preToolUseHooks: [preHook],
+      mcpManager: {
+        resolveMcpToolInfo: (toolName: string) =>
+          toolName === "github.listIssues"
+            ? { serverName: "github", toolName: "listIssues" }
+            : undefined,
+      },
+    });
+    const state = mkState({
+      toolCalls: [
+        {
+          id: "stream-mcp-1",
+          name: "github.listIssues",
+          arguments: "{}",
+        },
+      ],
+    });
+
+    await executeTools(state, mkCtx(), session);
+
+    expect(observedPayloadKinds).toEqual(["mcp"]);
+    expect(state.messages[0]!.content).toBe("streaming-mcp-ok");
+  });
+
   test("AGENC_MAX_TOOL_USE_CONCURRENCY=2 limits parallel dispatch", async () => {
     let active = 0;
     let peak = 0;

@@ -291,9 +291,7 @@ export class StreamingToolExecutor {
     if (this.closed || this.isAborting) return;
 
     // Unknown-tool short-circuit (AgenC StreamingToolExecutor.ts:77-102).
-    const isKnown =
-      this.concurrencyClassOverrides.has(toolCall.name) ||
-      this.registry.tools.some((t) => t.name === toolCall.name);
+    const isKnown = this.isKnownToolCall(toolCall);
     if (!isKnown) {
       const syntheticResult: ToolDispatchResult = {
         content: JSON.stringify({
@@ -610,6 +608,12 @@ export class StreamingToolExecutor {
   }
 
   private readonly concurrencyClassOverrides = new Map<string, ConcurrencyClass>();
+
+  private isKnownToolCall(toolCall: LLMToolCall): boolean {
+    if (this.concurrencyClassOverrides.has(toolCall.name)) return true;
+    if (this.registry.tools.some((t) => t.name === toolCall.name)) return true;
+    return this.liveToolDispatch?.router.findSpec(toolCall.name) !== undefined;
+  }
 
   private resolveClassifiable(toolCall: LLMToolCall): ConcurrencyClassifiable {
     const override = this.concurrencyClassOverrides.get(toolCall.name);

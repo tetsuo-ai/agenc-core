@@ -22,7 +22,7 @@ import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 import { readToolRuntimeContext } from "../runtimes/context.js";
 import {
   permissionProfileForRuntimeContext,
-  runtimePlatformSandboxAvailable,
+  runtimePlatformSandboxStatus,
   sandboxModeRequiresPlatformIsolation,
 } from "../runtimes/sandboxing.js";
 
@@ -61,11 +61,12 @@ export function runtimeSandboxForExec(
   const context = readToolRuntimeContext(args);
   if (
     context === undefined ||
-    !sandboxModeRequiresPlatformIsolation(context.sandboxMode) ||
-    !runtimePlatformSandboxAvailable(context)
+    !sandboxModeRequiresPlatformIsolation(context.sandboxMode)
   ) {
     return undefined;
   }
+  const platformSandbox = runtimePlatformSandboxStatus(context);
+  if (!platformSandbox.available) return undefined;
   const turn = context.invocation.turn as {
     readonly agencLinuxSandboxExe?: unknown;
     readonly config?: {
@@ -85,9 +86,6 @@ export function runtimeSandboxForExec(
     stringValue(turn.cwd) ?? fallbackCwd,
   );
   const network = networkPolicy(turn.networkSandboxPolicy);
-  const agencLinuxSandboxExe =
-    stringValue(turn.agencLinuxSandboxExe) ??
-    stringValue(turn.config?.agencLinuxSandboxExe);
   return {
     permissionProfile: permissionProfileForRuntimeContext(context, {
       cwd: sandboxPolicyCwd,
@@ -100,7 +98,9 @@ export function runtimeSandboxForExec(
     windowsSandboxPrivateDesktop: booleanValue(
       turn.windowsSandboxPrivateDesktop,
     ) ?? booleanValue(turn.config?.permissions?.windowsSandboxPrivateDesktop) ?? false,
-    ...(agencLinuxSandboxExe !== undefined ? { agencLinuxSandboxExe } : {}),
+    ...(platformSandbox.agencLinuxSandboxExe !== undefined
+      ? { agencLinuxSandboxExe: platformSandbox.agencLinuxSandboxExe }
+      : {}),
   };
 }
 

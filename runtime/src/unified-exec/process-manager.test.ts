@@ -39,6 +39,23 @@ function passthroughSandboxManager(): Pick<SandboxManager, "selectInitial" | "tr
   };
 }
 
+function ptyCompatibleSandboxManager(): Pick<SandboxManager, "selectInitial" | "transform"> {
+  return {
+    selectInitial: () => "linux_seccomp",
+    transform: (request): SandboxExecRequest => ({
+      command: [request.command.program, ...request.command.args],
+      cwd: request.command.cwd,
+      env: request.command.env,
+      sandbox: request.sandbox,
+      windowsSandboxLevel: request.windowsSandboxLevel,
+      windowsSandboxPrivateDesktop: request.windowsSandboxPrivateDesktop,
+      permissionProfile: request.permissions,
+      fileSystemSandboxPolicy: request.permissions.fileSystem,
+      networkSandboxPolicy: request.permissions.network,
+    }),
+  };
+}
+
 describe("UnifiedExecProcessManager", () => {
   test("runs one-shot non-PTY commands without returning a session id", async () => {
     const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
@@ -227,6 +244,32 @@ describe("UnifiedExecProcessManager", () => {
     10_000,
   );
 
+  test("rejects restricted PTY sessions when sandbox argv0 cannot be preserved", async () => {
+    const permissionProfile = permissionProfileFromRuntimePermissions(
+      restrictedFileSystemPolicy(),
+      "enabled",
+    );
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      sandboxManager: passthroughSandboxManager(),
+    });
+
+    await expect(
+      manager.execCommand({
+        cmd: "bash -i",
+        tty: true,
+        yield_time_ms: 250,
+        runtimeSandbox: {
+          permissionProfile,
+          sandboxPolicyCwd: process.cwd(),
+          preference: "require",
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "create_process",
+    } satisfies Partial<UnifiedExecError>);
+  });
+
   test.runIf(hasPtySupport)(
     "allows restricted write_stdin for a compatible sandboxed PTY session",
     async () => {
@@ -255,7 +298,7 @@ describe("UnifiedExecProcessManager", () => {
       };
       const manager = new UnifiedExecProcessManager({
         cwd: process.cwd(),
-        sandboxManager: passthroughSandboxManager(),
+        sandboxManager: ptyCompatibleSandboxManager(),
       });
       try {
         const started = await manager.execCommand({
