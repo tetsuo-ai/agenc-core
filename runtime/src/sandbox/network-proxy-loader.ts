@@ -807,7 +807,7 @@ function validateNonGlobalWildcardDomainPatterns(
     invalidValue(
       fieldName,
       pattern.trim(),
-      "exact hosts or scoped wildcards like *.service.test or **.service.test",
+      "exact hosts or scoped wildcards like *.agenc.tech or **.agenc.tech",
     );
   }
 }

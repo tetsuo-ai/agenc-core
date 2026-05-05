@@ -16,7 +16,7 @@ describe("network policy decision payloads", () => {
         decision: "deny",
         source: "decider",
         protocol: "https",
-        host: "api.service.test",
+        host: "api.agenc.tech",
       }),
     ).toBeNull();
     expect(
@@ -24,7 +24,7 @@ describe("network policy decision payloads", () => {
         decision: "ask",
         source: "baseline_policy",
         protocol: "https",
-        host: "api.service.test",
+        host: "api.agenc.tech",
       }),
     ).toBeNull();
   });
@@ -34,13 +34,13 @@ describe("network policy decision payloads", () => {
       decision: "ask",
       source: "decider",
       protocol: "https_connect",
-      host: "  api.service.test  ",
+      host: "  api.agenc.tech  ",
       reason: "not_allowed",
       port: 443,
     });
 
     expect(networkApprovalContextFromPayload(payload)).toEqual({
-      host: "api.service.test",
+      host: "api.agenc.tech",
       protocol: "https",
     });
 
@@ -49,7 +49,7 @@ describe("network policy decision payloads", () => {
         decision: "ask",
         source: "decider",
         protocol: "http-connect",
-        host: "api.service.test",
+        host: "api.agenc.tech",
       }).protocol,
     ).toBe("https");
     expect(
@@ -57,7 +57,7 @@ describe("network policy decision payloads", () => {
         decision: "ask",
         source: "decider",
         protocol: "socks5_tcp",
-        host: "api.service.test",
+        host: "api.agenc.tech",
       }).protocol,
     ).toBe("socks5-tcp");
     expect(
@@ -65,7 +65,7 @@ describe("network policy decision payloads", () => {
         decision: "ask",
         source: "decider",
         protocol: "socks5_udp",
-        host: "api.service.test",
+        host: "api.agenc.tech",
       }).protocol,
     ).toBe("socks5-udp");
   });
@@ -75,7 +75,7 @@ describe("network policy decision payloads", () => {
       networkApprovalContextFromPayload({
         decision: "ask",
         source: "decider",
-        host: "api.service.test",
+        host: "api.agenc.tech",
       }),
     ).toBeNull();
     expect(
@@ -113,7 +113,7 @@ describe("network policy decision payloads", () => {
 
 describe("denied network policy messages", () => {
   const baseBlocked: BlockedRequest = {
-    host: "api.service.test",
+    host: "api.agenc.tech",
     reason: "not_allowed",
     method: "GET",
     protocol: "http",
@@ -132,7 +132,7 @@ describe("denied network policy messages", () => {
     expect(
       deniedNetworkPolicyMessage({ ...baseBlocked, reason: "denied" }),
     ).toBe(
-      'Network access to "api.service.test" was blocked: domain is explicitly denied by policy and cannot be approved from this prompt.',
+      'Network access to "api.agenc.tech" was blocked: domain is explicitly denied by policy and cannot be approved from this prompt.',
     );
     expect(
       deniedNetworkPolicyMessage({
@@ -140,7 +140,7 @@ describe("denied network policy messages", () => {
         reason: "not_allowed_local",
       }),
     ).toBe(
-      'Network access to "api.service.test" was blocked: local/private network addresses are blocked by the sandbox policy.',
+      'Network access to "api.agenc.tech" was blocked: local/private network addresses are blocked by the sandbox policy.',
     );
     expect(
       deniedNetworkPolicyMessage({
@@ -148,7 +148,7 @@ describe("denied network policy messages", () => {
         reason: "method_not_allowed",
       }),
     ).toBe(
-      'Network access to "api.service.test" was blocked: request method is blocked by the current network mode.',
+      'Network access to "api.agenc.tech" was blocked: request method is blocked by the current network mode.',
     );
     expect(
       deniedNetworkPolicyMessage({
@@ -156,7 +156,7 @@ describe("denied network policy messages", () => {
         reason: "proxy_disabled",
       }),
     ).toBe(
-      'Network access to "api.service.test" was blocked: network proxy is disabled.',
+      'Network access to "api.agenc.tech" was blocked: network proxy is disabled.',
     );
   });
 
@@ -171,7 +171,7 @@ describe("network policy amendments", () => {
   test("permission-layer amendments map to exec-policy rule amendments", () => {
     const review = networkPolicyAmendment({
       action: "deny",
-      host: "api.service.test",
+      host: "api.agenc.tech",
       protocol: "socks5-udp",
     });
 
@@ -181,27 +181,27 @@ describe("network policy amendments", () => {
     expect(
       execpolicyNetworkRuleAmendment(
         review.amendment,
-        { host: "api.service.test", protocol: "socks5-udp" },
-        "api.service.test",
+        { host: "api.agenc.tech", protocol: "socks5-udp" },
+        "api.agenc.tech",
       ),
     ).toEqual({
       protocol: "socks5-udp",
       decision: "forbidden",
-      justification: "Deny socks5_udp access to api.service.test",
+      justification: "Deny socks5_udp access to api.agenc.tech",
     });
   });
 
   test("allow amendments produce allow justifications", () => {
     expect(
       execpolicyNetworkRuleAmendment(
-        { action: "allow", host: "api.service.test" },
-        { host: "api.service.test", protocol: "https" },
-        "api.service.test",
+        { action: "allow", host: "api.agenc.tech" },
+        { host: "api.agenc.tech", protocol: "https" },
+        "api.agenc.tech",
       ),
     ).toEqual({
       protocol: "https",
       decision: "allow",
-      justification: "Allow https_connect access to api.service.test",
+      justification: "Allow https_connect access to api.agenc.tech",
     });
   });
 });
