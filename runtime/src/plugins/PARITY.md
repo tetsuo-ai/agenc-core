@@ -92,7 +92,7 @@ PK-06 scope carried into AgenC:
 
 PK-07 scope carried into AgenC:
 - `marketplace/marketplace.ts` owns canonical marketplace source parsing, local/git/url/settings staging, validation, atomic activation, persistent marketplace index reads/writes, plugin entry resolution, and safe removal by computed install root. String add/CLI inputs use `parseMarketplaceInput.ts`, malformed plugin entries fail explicitly instead of being silently skipped, and git clone transports reject non-loopback HTTP.
-- `marketplace/marketplaceManager.ts` owns marketplace cache refresh, config persistence, source registration/removal, plugin lookup, auto-update toggles, and runtime refresh entry points.
+- `marketplace/marketplaceManager.ts` owns marketplace cache refresh, config persistence, source registration/removal, declared-vs-materialized marketplace diffing/reconciliation, plugin lookup, auto-update toggles, and runtime refresh entry points.
 - `marketplace/marketplaceHelpers.ts` owns policy allow/block matching, host/path pattern handling, marketplace loading degradation, empty-marketplace reason detection, and display formatting.
 - `marketplace/parseMarketplaceInput.ts` owns user input normalization for local paths, git URLs, SSH/file git URLs, HTTP(S) manifests, GitHub shorthand, and GitHub tree refs with slash-bearing branch names when the marketplace path starts at a known marker.
 - `marketplace/officialMarketplace.ts` declares the AgenC-owned official marketplace source.
@@ -103,7 +103,7 @@ PK-07 scope carried into AgenC:
 - `marketplace/remote_legacy.ts` owns the older remote plugin status, featured-plugin, enable, and uninstall endpoints that the runtime may still need while the hosted service migrates, including response-shape validation before mapping.
 - `marketplace/startup_sync.ts` owns startup curated marketplace sync through guarded git, HTTP zipball, and backup archive fallbacks with private SHA tracking and existing-snapshot degradation.
 - `marketplace/startup_remote_sync.ts` owns one-shot startup remote plugin reconciliation after curated marketplace prerequisites are available, including stale lock recovery and concrete remote bundle reconciliation when no injected manager sync callback is supplied.
-- `marketplace/startup_checks.ts` owns the live REPL startup entrypoint for seed marketplace registration, curated marketplace sync, cache invalidation, and remote installed-plugin reconciliation when auth/config inputs are available. `runtime/src/agenc/upstream/screens/REPL.tsx` imports this AgenC-owned module directly; the old upstream `performStartupChecks.tsx` path is removed so startup no longer routes through upstream marketplace utilities.
+- `marketplace/startup_checks.ts` owns the live REPL startup entrypoint for trust-gated seed marketplace registration, declared marketplace reconciliation, curated marketplace sync, cache invalidation, marketplace install-status AppState updates, and remote installed-plugin reconciliation through caller-provided auth or the remote-auth layer. `runtime/src/agenc/upstream/screens/REPL.tsx` imports this AgenC-owned module directly and passes the current trust/config/env state; the old upstream `performStartupChecks.tsx` path is removed so startup no longer routes through upstream marketplace utilities.
 
 Intentional PK-01 scope reductions:
 - Marketplace fetch/install/cache refresh, signing, dependency demotion, plugin CLI, plugin sandboxing, policy/blocklist, MCP/LSP live registration, and remote sync are later PK rows.
@@ -141,9 +141,9 @@ Intentional PK-06 scope reductions:
 - Marketplace add/upgrade supports real git staging through the `git` binary and local filesystem marketplaces. It records source metadata in `$AGENC_HOME/plugins/marketplaces/marketplaces.json` rather than adding a new public config schema before CF-owned config work.
 
 Intentional PK-07 scope reductions:
-- Hosted-service auth token vending is not owned here. Callers pass `RemoteAuth` headers from the auth layer so PK-07 never reads API key environment variables directly.
+- Hosted-service auth token vending is not owned here. Callers may pass `RemoteAuth` headers directly, and live startup can derive bearer headers from the remote-auth layer's persisted/bootstrap token state, so PK-07 never reads API key environment variables directly.
 - Remote bundle signing and signature verification remain a later plugin row; PK-07 enforces transport, path, and size safety but does not invent a signing backend.
 - Dependency solving and plugin demotion are not wired into install/update decisions yet. The inspected dependency/versioning donors are documented so the later dependency row can continue from the same source anchors.
-- UI refresh notifications and marketplace-specific TUI status transitions are not carried here; PK-07 exposes runtime functions that later UI rows can call.
+- Full plugin reload/MCP reconnect after startup marketplace reconciliation remains owned by the existing reload/registration path. PK-07 carries marketplace install-status updates and marks plugins for refresh when startup changes local plugin or marketplace cache state.
 - The GCS mirror helper is reduced to AgenC-owned startup HTTP/backup fallbacks under `agenc.tech`; no public donor bucket or donor product domain is retained in runtime source.
 - Existing PK-06 CLI marketplace modules remain in place as already-merged main work. Live CLI and manager callers now import the canonical PK-07 marketplace layer directly, with no re-export wrapper.

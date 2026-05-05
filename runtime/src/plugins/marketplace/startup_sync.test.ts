@@ -2,7 +2,12 @@ import { mkdtemp, mkdir, readFile, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { FetchResponse, Fetcher, ProcessRunner } from "./marketplace.js";
+import {
+  marketplaceIndexPath,
+  type FetchResponse,
+  type Fetcher,
+  type ProcessRunner,
+} from "./marketplace.js";
 import {
   curatedPluginsRepoPath,
   curatedPluginsShaPath,
@@ -17,7 +22,11 @@ import {
   startStartupRemotePluginSyncOnce,
   startupRemotePluginSyncLockPath,
 } from "./startup_remote_sync.js";
-import { performStartupChecks } from "./startup_checks.js";
+import {
+  DEFAULT_REMOTE_PLUGIN_SERVICE_BASE_URL,
+  performStartupChecks,
+  REMOTE_PLUGIN_SERVICE_URL_ENV,
+} from "./startup_checks.js";
 
 describe("startup marketplace sync", () => {
   it("clones the curated marketplace only when the remote HEAD changed", async () => {
@@ -151,6 +160,7 @@ describe("startup marketplace sync", () => {
     };
 
     await performStartupChecks(setAppState, {
+      trustAccepted: true,
       agencHome,
       runProcess: async (_command, args) => {
         if (args[0] === "ls-remote") {
@@ -172,11 +182,121 @@ describe("startup marketplace sync", () => {
     await expect(hasLocalCuratedPluginsSnapshot(agencHome)).resolves.toBe(true);
   });
 
+  it("skips all startup install work until workspace trust is accepted", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-startup-checks-untrusted-"));
+    let state = { plugins: { needsRefresh: false } };
+    const setAppState = (update: (prev: typeof state) => typeof state) => {
+      state = update(state);
+    };
+    const marketplaceRoot = join(agencHome, "team-marketplace");
+    await writeLocalMarketplace(marketplaceRoot, "team");
+    let touchedExternalWork = false;
+
+    await performStartupChecks(setAppState, {
+      trustAccepted: false,
+      agencHome,
+      declaredMarketplaces: {
+        team: { source: { source: "local", path: marketplaceRoot } },
+      },
+      runProcess: async () => {
+        touchedExternalWork = true;
+        throw new Error("should not run git");
+      },
+      remoteFetcher: async () => {
+        touchedExternalWork = true;
+        throw new Error("should not fetch remote plugins");
+      },
+      remoteAuth: { headers: { authorization: "Bearer test" } },
+      remotePluginServiceConfig: { baseUrl: "https://agenc.tech" },
+    });
+
+    expect(touchedExternalWork).toBe(false);
+    expect(state.plugins.needsRefresh).toBe(false);
+    await expect(readFile(marketplaceIndexPath({ agencHome }), "utf8"))
+      .rejects.toThrow();
+  });
+
+  it("reconciles declared marketplaces during trusted startup checks", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-startup-checks-reconcile-"));
+    const marketplaceRoot = join(agencHome, "team-marketplace");
+    await writeLocalMarketplace(marketplaceRoot, "team");
+    let state = {
+      plugins: {
+        needsRefresh: false,
+        installationStatus: { marketplaces: [], plugins: [] as unknown[] },
+      },
+    };
+    const setAppState = (update: (prev: typeof state) => typeof state) => {
+      state = update(state);
+    };
+
+    await performStartupChecks(setAppState, {
+      trustAccepted: true,
+      agencHome,
+      declaredMarketplaces: {
+        team: {
+          source: { source: "local", path: marketplaceRoot },
+          autoUpdate: true,
+        },
+      },
+      runProcess: curatedGitRunner("abc123"),
+    });
+
+    const index = JSON.parse(await readFile(marketplaceIndexPath({ agencHome }), "utf8")) as {
+      marketplaces: Record<string, { autoUpdate?: boolean; sourceType?: string }>;
+    };
+    expect(index.marketplaces.team?.sourceType).toBe("local");
+    expect(index.marketplaces.team?.autoUpdate).toBe(true);
+    expect(state.plugins.needsRefresh).toBe(true);
+    expect(state.plugins.installationStatus.marketplaces)
+      .toContainEqual({ name: "team", status: "installed" });
+  });
+
+  it("uses remote auth state from the auth layer for live startup remote sync", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-startup-checks-remote-auth-"));
+    let state = { plugins: { needsRefresh: false } };
+    const setAppState = (update: (prev: typeof state) => typeof state) => {
+      state = update(state);
+    };
+    const calls: Array<{ readonly path: string; readonly authorization?: string }> = [];
+
+    await performStartupChecks(setAppState, {
+      trustAccepted: true,
+      agencHome,
+      env: {
+        AGENC_REMOTE_AUTH_TOKEN: "remote-token",
+        [REMOTE_PLUGIN_SERVICE_URL_ENV]: DEFAULT_REMOTE_PLUGIN_SERVICE_BASE_URL,
+      },
+      runProcess: curatedGitRunner("abc123"),
+      prerequisiteTimeoutMs: 10,
+      pollMs: 1,
+      remoteFetcher: async (url, init) => {
+        const parsed = new URL(url);
+        calls.push({
+          path: parsed.pathname,
+          authorization: init?.headers?.authorization,
+        });
+        if (parsed.pathname === "/ps/plugins/installed") {
+          return jsonResponse({ plugins: [], pagination: {} });
+        }
+        return jsonResponse({ message: "not found" }, false, 404);
+      },
+    });
+
+    expect(calls).toEqual([
+      { path: "/ps/plugins/installed", authorization: "Bearer remote-token" },
+      { path: "/ps/plugins/installed", authorization: "Bearer remote-token" },
+    ]);
+    await expect(hasStartupRemotePluginSyncMarker(agencHome)).resolves.toBe(true);
+  });
+
   it("keeps the live REPL startup import on the AgenC-owned marketplace path", async () => {
     const repl = await readFile(join(process.cwd(), "src/agenc/upstream/screens/REPL.tsx"), "utf8");
 
     expect(repl).toContain("src/plugins/marketplace/startup_checks.js");
     expect(repl).not.toContain("src/utils/plugins/performStartupChecks.js");
+    expect(repl).toContain("trustAccepted: checkHasTrustDialogAccepted()");
+    expect(repl).toContain("config: getGlobalConfig()");
   });
 
   it("uses the existing curated snapshot when refresh mechanisms fail", async () => {
@@ -379,6 +499,34 @@ async function writeCuratedMarketplace(destination: string): Promise<void> {
       plugins: [],
     }, null, 2)}\n`,
   );
+}
+
+async function writeLocalMarketplace(destination: string, name: string): Promise<void> {
+  await mkdir(destination, { recursive: true });
+  await writeFile(
+    join(destination, "marketplace.json"),
+    `${JSON.stringify({
+      metadata: { name },
+      plugins: [],
+    }, null, 2)}\n`,
+  );
+}
+
+function curatedGitRunner(sha: string): ProcessRunner {
+  return async (_command, args) => {
+    if (args[0] === "ls-remote") {
+      return { stdout: `${sha}\tHEAD\n`, stderr: "" };
+    }
+    if (args[0] === "clone") {
+      const destination = args[args.length - 1]!;
+      await writeCuratedMarketplace(destination);
+      return { stdout: "", stderr: "" };
+    }
+    if (args.includes("rev-parse")) {
+      return { stdout: `${sha}\n`, stderr: "" };
+    }
+    throw new Error(`unexpected git command: ${args.join(" ")}`);
+  };
 }
 
 function createCuratedZipFetcher(zipball: Buffer, sha: string): Fetcher {

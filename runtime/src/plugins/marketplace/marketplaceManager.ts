@@ -20,6 +20,39 @@ export type KnownMarketplacesConfig = MarketplaceIndex["marketplaces"];
 
 const marketplaceCache = new Map<string, Promise<Marketplace>>();
 
+export interface DeclaredMarketplace {
+  readonly source: string | MarketplaceSource;
+  readonly autoUpdate?: boolean;
+  readonly sourceIsFallback?: boolean;
+}
+
+export interface MarketplaceDiff {
+  readonly missing: readonly string[];
+  readonly sourceChanged: readonly {
+    readonly name: string;
+    readonly declared: DeclaredMarketplace;
+    readonly materialized: MarketplaceRecord;
+  }[];
+  readonly upToDate: readonly string[];
+}
+
+export type MarketplaceReconcileProgress =
+  | { readonly type: "installing"; readonly name: string }
+  | { readonly type: "installed"; readonly name: string }
+  | { readonly type: "failed"; readonly name: string; readonly error: string };
+
+export interface ReconcileMarketplacesOptions extends MarketplaceOperationOptions {
+  readonly declaredMarketplaces?: Readonly<Record<string, DeclaredMarketplace>>;
+  readonly onMarketplaceProgress?: (event: MarketplaceReconcileProgress) => void;
+}
+
+export interface MarketplaceReconcileResult {
+  readonly installed: readonly MarketplaceRecord[];
+  readonly updated: readonly MarketplaceRecord[];
+  readonly failed: readonly { readonly name: string; readonly error: string }[];
+  readonly upToDate: readonly string[];
+}
+
 export function clearMarketplacesCache(): void {
   marketplaceCache.clear();
 }
@@ -81,6 +114,88 @@ export function getDeclaredMarketplaces(
       },
     ]),
   );
+}
+
+export function diffMarketplaces(
+  declared: Readonly<Record<string, DeclaredMarketplace>>,
+  materialized: KnownMarketplacesConfig,
+): MarketplaceDiff {
+  const missing: string[] = [];
+  const sourceChanged: Array<{
+    readonly name: string;
+    readonly declared: DeclaredMarketplace;
+    readonly materialized: MarketplaceRecord;
+  }> = [];
+  const upToDate: string[] = [];
+  for (const [name, declaration] of Object.entries(declared).sort(([a], [b]) => a.localeCompare(b))) {
+    const existingName = findMarketplaceName({ version: 1, marketplaces: materialized }, name);
+    if (existingName === undefined) {
+      missing.push(name);
+      continue;
+    }
+    const existing = materialized[existingName]!;
+    if (declaration.sourceIsFallback || marketplaceDeclarationMatches(existing, declaration)) {
+      upToDate.push(existingName);
+      continue;
+    }
+    sourceChanged.push({ name: existingName, declared: declaration, materialized: existing });
+  }
+  return { missing, sourceChanged, upToDate };
+}
+
+export async function reconcileMarketplaces(
+  options: ReconcileMarketplacesOptions = {},
+): Promise<MarketplaceReconcileResult> {
+  const declared = options.declaredMarketplaces ?? {};
+  const materialized = await loadKnownMarketplacesConfigSafe(options);
+  const diff = diffMarketplaces(declared, materialized);
+  const installed: MarketplaceRecord[] = [];
+  const updated: MarketplaceRecord[] = [];
+  const failed: Array<{ readonly name: string; readonly error: string }> = [];
+  const targets = [
+    ...diff.missing.map((name) => ({
+      name,
+      kind: "installed" as const,
+      declaration: declared[name]!,
+    })),
+    ...diff.sourceChanged.map((entry) => ({
+      name: entry.name,
+      kind: "updated" as const,
+      declaration: entry.declared,
+    })),
+  ];
+  for (const target of targets) {
+    options.onMarketplaceProgress?.({ type: "installing", name: target.name });
+    try {
+      const result = await addMarketplaceOp({
+        ...options,
+        source: target.declaration.source,
+        name: target.name,
+        force: true,
+        ...(target.declaration.autoUpdate !== undefined
+          ? { autoUpdate: target.declaration.autoUpdate }
+          : {}),
+      });
+      if (target.kind === "installed") {
+        installed.push(result.marketplace);
+      } else {
+        updated.push(result.marketplace);
+      }
+      options.onMarketplaceProgress?.({ type: "installed", name: target.name });
+    } catch (error) {
+      const failure = { name: target.name, error: message(error) };
+      failed.push(failure);
+      options.onMarketplaceProgress?.({
+        type: "failed",
+        name: target.name,
+        error: failure.error,
+      });
+    }
+  }
+  if (installed.length > 0 || updated.length > 0) {
+    clearMarketplacesCache();
+  }
+  return { installed, updated, failed, upToDate: diff.upToDate };
 }
 
 export async function addMarketplaceSource(
@@ -289,4 +404,16 @@ function parsePluginId(pluginId: string): { readonly name: string; readonly mark
     name: pluginId.slice(0, at),
     marketplace: pluginId.slice(at + 1),
   };
+}
+
+function marketplaceDeclarationMatches(
+  existing: MarketplaceRecord,
+  declaration: DeclaredMarketplace,
+): boolean {
+  return JSON.stringify(existing.sourceDescriptor) === JSON.stringify(declaration.source) &&
+    (declaration.autoUpdate === undefined || existing.autoUpdate === declaration.autoUpdate);
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

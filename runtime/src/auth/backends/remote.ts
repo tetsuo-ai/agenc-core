@@ -321,6 +321,14 @@ async function resolveRemoteAuthToken(
   return explicit;
 }
 
+export async function resolveRemoteAuthHeaders(
+  options: RemoteAuthBackendOptions = {},
+): Promise<Readonly<Record<string, string>> | null> {
+  const token = await resolveRemoteAuthToken(options);
+  if (token === undefined) return null;
+  return remoteAuthJsonHeaders(token);
+}
+
 function createHttpRemoteAuthKeyVendor(
   options: RemoteAuthBackendOptions,
 ): RemoteAuthKeyVendor {

@@ -5,7 +5,10 @@ export type {
   LocalAuthLoginResult,
   LocalAuthWhoamiResult,
 } from "./backends/local.js";
-export { RemoteAuthBackend } from "./backends/remote.js";
+export {
+  RemoteAuthBackend,
+  resolveRemoteAuthHeaders,
+} from "./backends/remote.js";
 export type {
   RemoteAuthBackendOptions,
   RemoteAuthDeviceCodeHandler,
