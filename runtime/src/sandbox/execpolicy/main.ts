@@ -38,7 +38,7 @@ export function parseExecPolicyArgv(argv: readonly string[]): ExecPolicyCheckCom
         index = rest.length;
         break;
       default:
-        if (arg.startsWith("-")) {
+        if (arg.startsWith("-") && rules.length === 0) {
           throw new Error(`unknown agenc-execpolicy check option: ${arg}`);
         }
         command.push(...rest.slice(index));

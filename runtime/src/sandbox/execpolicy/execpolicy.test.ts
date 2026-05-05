@@ -112,6 +112,11 @@ network_rule(host = "127.0.0.1", protocol = "socks5_tcp", decision = "prompt")
       `
 prefix_rule(pattern = ["git", "status"])
 prefix_rule(
+  pattern = ["git", "status"],
+  decision = "allow",
+  justification = "read-only status",
+)
+prefix_rule(
   pattern = ["rm"],
   decision = "forbidden",
   justification = "destructive command",
@@ -128,6 +133,13 @@ prefix_rule(
           decision: "allow",
           resolvedProgram: null,
           justification: null,
+        },
+        {
+          type: "prefix_rule_match",
+          matchedPrefix: tokens(["git", "status"]),
+          decision: "allow",
+          resolvedProgram: null,
+          justification: "read-only status",
         },
       ],
     } satisfies Evaluation);
@@ -249,6 +261,45 @@ prefix_rule(
       parsePolicy(
         "bad.agencpolicy",
         'prefix_rule(pattern = ["git"], not_match = [["git", "status"]])',
+      ),
+    ).toThrow(ExampleDidMatchError);
+  });
+
+  test("match and not_match examples honor host executable resolution", () => {
+    const gitPath = hostAbsolutePath(["usr", "bin", hostExecutableName("git")]);
+    const escapedGitPath = escapedPolicyString(gitPath);
+
+    expect(() =>
+      parsePolicy(
+        "host-examples.agencpolicy",
+        `
+prefix_rule(
+  pattern = ["git", "status"],
+  match = [["${escapedGitPath}", "status"]],
+  not_match = [["${escapedGitPath}", "commit"]],
+)
+host_executable(name = "git", paths = ["${escapedGitPath}"])
+`,
+      ),
+    ).not.toThrow();
+
+    expect(() =>
+      parsePolicy(
+        "bad-host-examples.agencpolicy",
+        `
+prefix_rule(pattern = ["git", "status"], match = [["${escapedGitPath}", "commit"]])
+host_executable(name = "git", paths = ["${escapedGitPath}"])
+`,
+      ),
+    ).toThrow(ExampleDidNotMatchError);
+
+    expect(() =>
+      parsePolicy(
+        "bad-host-examples.agencpolicy",
+        `
+prefix_rule(pattern = ["git", "status"], not_match = [["${escapedGitPath}", "status"]])
+host_executable(name = "git", paths = ["${escapedGitPath}"])
+`,
       ),
     ).toThrow(ExampleDidMatchError);
   });
@@ -491,6 +542,13 @@ host_executable(name = "git", paths = [])
         pretty: false,
         resolveHostExecutables: false,
         command: ["git", "status"],
+      });
+    expect(parseExecPolicyArgv(["check", "--rules", policyPath, "-weird", "--flag"]))
+      .toEqual({
+        rules: [policyPath],
+        pretty: false,
+        resolveHostExecutables: false,
+        command: ["-weird", "--flag"],
       });
   });
 

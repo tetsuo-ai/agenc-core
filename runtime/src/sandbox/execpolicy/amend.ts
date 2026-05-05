@@ -1,7 +1,8 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 
-import lockfile from "proper-lockfile";
+type Lockfile = typeof import("proper-lockfile");
 
 import type { Decision } from "./decision.js";
 import {
@@ -18,6 +19,14 @@ export class AmendError extends Error {
     this.name = "AmendError";
     this.code = code;
   }
+}
+
+const requireCjs = createRequire(import.meta.url);
+let cachedLockfile: Lockfile | null = null;
+
+function getLockfile(): Lockfile {
+  cachedLockfile ??= requireCjs("proper-lockfile") as Lockfile;
+  return cachedLockfile;
 }
 
 export function blockingAppendAllowPrefixRule(
@@ -98,7 +107,7 @@ function appendLockedLine(policyPath: string, line: string): void {
 
   let release: (() => void) | null = null;
   try {
-    release = lockfile.lockSync(policyPath, { realpath: false });
+    release = getLockfile().lockSync(policyPath, { realpath: false });
   } catch (error) {
     throw new AmendError(
       "lock_policy_file",
