@@ -153,6 +153,17 @@ assert(
   "complete.mjs deletes the feature branch from the main checkout cwd",
   /const deleteRes = runInMainCheckout\("git", \["-C", mainRoot, "branch", "-d", expected\]\);/.test(completeSource),
 );
+assert(
+  "complete.mjs can recover a same-item in-flight journal after merge",
+  /async function recoverMatchingInFlightJournal/.test(completeSource) &&
+    /const mergeCommit = mergeCommitForJournal\(journal\);/.test(completeSource) &&
+    /writeCompletionMarker\(mergeCommit\);/.test(completeSource),
+);
+assert(
+  "complete.mjs keeps foreign in-flight journals fail-closed",
+  /Foreign journals still fail closed/.test(completeSource) &&
+    /failIfInFlightJournalsFound\(\);/.test(completeSource),
+);
 
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
 process.exit(failed > 0 ? 1 : 0);

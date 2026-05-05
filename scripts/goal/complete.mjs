@@ -47,6 +47,7 @@ const root = repoRoot();
 const mainRoot = mainCheckoutRoot();
 const isWorktree = root !== mainRoot;
 const expectedWorktreePath = worktreePath(id);
+const expected = `port/${id}`;
 const { item } = await findItem(id);
 
 function collectInFlightJournals() {
@@ -72,9 +73,9 @@ function failIfInFlightJournalsFound() {
     .join("\n\n");
   fail(
     `Refusing to start: ${inFlight.length} in-flight journal(s) from previous complete.mjs run(s):\n\n${journalContents}\n\n` +
-      `A previous complete.mjs was killed mid-flight (between merge and checklist-flip). Inspect the journal, ` +
-      `decide whether the merge happened, then either complete the work manually (flip checklist + delete journal) ` +
-      `or roll back (git reset to preMergeHead + delete journal).`,
+      `A previous complete.mjs was killed mid-flight (between merge and checklist-flip). ` +
+      `Rerun complete.mjs for the journal's own item to finish recovery, or roll back ` +
+      `to the journal's preMergeHead if the merge did not happen.`,
   );
 }
 
@@ -132,16 +133,6 @@ function acquireMergeLock() {
   }
 }
 
-if (item.statusToken === STATUS.DONE) {
-  fail(`Item ${id} is already marked done. Refusing to re-run.`);
-}
-
-// Atomicity recovery: refuse to start if any in-flight journal exists from
-// a previously-killed complete.mjs run. The user must inspect the journal
-// and either complete or roll back the half-finished work before any new
-// item can be completed.
-failIfInFlightJournalsFound();
-
 function header(name) {
   process.stdout.write(`\n${BOLD}━━ ${name}${RESET}\n`);
 }
@@ -180,6 +171,147 @@ function git(...argv) {
   return spawnSync("git", argv, { cwd: root, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" });
 }
 
+function gitInMain(...argv) {
+  return spawnSync("git", argv, {
+    cwd: mainRoot,
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8",
+  });
+}
+
+function parseJournal(entry) {
+  try {
+    const parsed = JSON.parse(entry.body);
+    if (!parsed || typeof parsed !== "object") {
+      throw new Error("journal is not an object");
+    }
+    return parsed;
+  } catch (error) {
+    fail(`Could not parse in-flight journal ${entry.file}: ${error?.message || error}`);
+  }
+}
+
+function mergeCommitForJournal(journal) {
+  if (
+    typeof journal.preMergeHead !== "string" ||
+    journal.preMergeHead.length === 0 ||
+    typeof journal.branch !== "string" ||
+    journal.branch.length === 0
+  ) {
+    fail(`In-flight journal for ${id} is missing preMergeHead or branch.`);
+  }
+  const log = gitInMain(
+    "log",
+    "--format=%H%x00%s",
+    `${journal.preMergeHead}..HEAD`,
+  );
+  if (log.status !== 0) {
+    fail(`Could not inspect main history since ${journal.preMergeHead}: ${log.stderr || log.stdout}`);
+  }
+  const expectedSubject = `Merge branch '${journal.branch}'`;
+  for (const line of log.stdout.split("\n")) {
+    if (!line.trim()) continue;
+    const [hash, subject] = line.split("\0");
+    if (subject === expectedSubject) return hash;
+  }
+  return null;
+}
+
+function branchExists(branchName) {
+  const res = gitInMain("show-ref", "--verify", "--quiet", `refs/heads/${branchName}`);
+  return res.status === 0;
+}
+
+function writeCompletionMarker(mergedHead) {
+  const markerData = {
+    itemId: id,
+    title: item.title,
+    phase: item.phase,
+    completedAt: new Date().toISOString(),
+    mergedHead,
+  };
+  writeFileSync(markerPath(id), JSON.stringify(markerData, null, 2) + "\n");
+}
+
+async function recoverMatchingInFlightJournal(entry) {
+  const journal = parseJournal(entry);
+  if (journal.itemId !== id || journal.branch !== expected) {
+    return false;
+  }
+  header(`recovery — finalizing previous ${id} completion`);
+  const mergeCommit = mergeCommitForJournal(journal);
+  if (!mergeCommit) {
+    fail(
+      `In-flight journal ${entry.file} belongs to ${id}, but main does not contain ` +
+        `a merge commit for ${expected} after ${journal.preMergeHead}. Roll back or inspect manually.`,
+    );
+  }
+
+  const recoveryWorktree = typeof journal.worktree === "string" ? journal.worktree : null;
+  if (recoveryWorktree && existsSync(recoveryWorktree)) {
+    const wtRemove = runInMainCheckout("git", [
+      "-C",
+      mainRoot,
+      "worktree",
+      "remove",
+      "--force",
+      recoveryWorktree,
+    ]);
+    if (wtRemove.status !== 0) {
+      abort(`could not remove recovered worktree ${recoveryWorktree}`);
+    }
+    ok(`worktree removed: ${recoveryWorktree}`);
+  }
+
+  if (branchExists(expected)) {
+    const deleteRes = runInMainCheckout("git", ["-C", mainRoot, "branch", "-d", expected]);
+    if (deleteRes.status !== 0) {
+      abort(`could not delete recovered branch ${expected}`);
+    }
+    ok(`feature branch ${expected} deleted`);
+  } else {
+    process.stderr.write(`${DIM}(feature branch ${expected} already deleted)${RESET}\n`);
+  }
+
+  writeCompletionMarker(mergeCommit);
+  ok(`marker written: .goal-completed/${id}.json`);
+  const flip = await setItemStatus(id, STATUS.DONE);
+  if (flip.changed) {
+    ok(`PORT_CHECKLIST.md updated`);
+  } else {
+    process.stderr.write(`${DIM}(no change to PORT_CHECKLIST.md row)${RESET}\n`);
+  }
+
+  try {
+    unlinkSync(path.join(markerDir(), entry.file));
+  } catch (error) {
+    abort(`could not remove in-flight journal ${entry.file}: ${error?.message || error}`);
+  }
+
+  process.stdout.write(`\n${BOLD}${GREEN}✓ ${id} complete${RESET} — ${item.title}\n`);
+  process.stdout.write(`${DIM}Recovered from existing in-flight journal.${RESET}\n`);
+  process.exit(0);
+}
+
+async function recoverOrFailInFlightJournals() {
+  const inFlight = collectInFlightJournals();
+  if (inFlight.length === 0) return;
+  if (inFlight.length === 1 && await recoverMatchingInFlightJournal(inFlight[0])) {
+    return;
+  }
+  failIfInFlightJournalsFound();
+}
+
+// Atomicity recovery: if a previous complete.mjs merged this same item but
+// died before cleanup, finish the marker/checklist/branch cleanup here.
+// Foreign journals still fail closed so one item cannot silently complete
+// another session's half-finished merge.
+await recoverOrFailInFlightJournals();
+
+if (item.statusToken === STATUS.DONE) {
+  fail(`Item ${id} is already marked done. Refusing to re-run.`);
+}
+
 // ---- step 1: verify ----------------------------------------------------
 
 header("step 1 — running all gates (verify.mjs)");
@@ -206,7 +338,6 @@ ok("working tree clean");
 
 const branchRes = git("rev-parse", "--abbrev-ref", "HEAD");
 const branch = branchRes.stdout.trim();
-const expected = `port/${id}`;
 if (branch !== expected) {
   abort(`current branch is "${branch}", expected "${expected}".`);
 }
@@ -236,7 +367,7 @@ if (isWorktree) {
 // Atomicity: write an in-flight journal BEFORE the merge so that if the
 // process is killed between merge and checklist-flip, recovery on next
 // run can detect the half-completed state. The journal includes the
-// expected end state so a re-run can complete it or surface manual fix.
+// expected end state so a re-run can complete it or surface rollback guidance.
 //
 // The journal lives in mainRoot/.goal-completed (not the worktree's local
 // copy), so any future complete.mjs run from any worktree sees it.
@@ -270,7 +401,7 @@ writeFileSync(journalPath, JSON.stringify({
   startedAt: new Date().toISOString(),
   preMergeHead,
   expectedEndState: "checklist=[x] + branch deleted + worktree removed + marker written",
-  recovery: "If this file exists at next complete.mjs invocation, the previous run was killed mid-flight. Either: (a) inspect git log to see if the merge happened; if yes, manually flip the checklist row to [x] and delete this file, or (b) git reset --hard <preMergeHead> in the main checkout, delete this file, and re-run complete.mjs.",
+  recovery: "If this file exists at next complete.mjs invocation, the previous run was killed mid-flight. Re-run complete.mjs for this same item to finish marker/checklist/branch cleanup if the merge happened. If the merge did not happen, roll back to preMergeHead and delete this file.",
 }, null, 2) + "\n", { flag: "wx", mode: 0o600 });
 
 // Checkout main + merge — ALWAYS performed in the main checkout via `git -C`,
@@ -330,14 +461,12 @@ if (deleteRes.status !== 0) {
 // ---- step 7: marker file -----------------------------------------------
 
 header("step 7 — writing completion marker");
-const markerData = {
-  itemId: id,
-  title: item.title,
-  phase: item.phase,
-  completedAt: new Date().toISOString(),
-  mergedHead: spawnSync("git", ["-C", mainRoot, "rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).stdout.trim(),
-};
-writeFileSync(markerPath(id), JSON.stringify(markerData, null, 2) + "\n");
+writeCompletionMarker(
+  spawnSync("git", ["-C", mainRoot, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).stdout.trim(),
+);
 ok(`marker written: .goal-completed/${id}.json`);
 
 // ---- step 8: flip checklist status -------------------------------------
