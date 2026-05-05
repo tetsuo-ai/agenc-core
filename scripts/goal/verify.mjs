@@ -960,11 +960,16 @@ const ITEM_EVIDENCE = {
     files: [
       "runtime/src/tools/runtimes/context.ts",
       "runtime/src/tools/runtimes/parallel.ts",
+      "runtime/src/tools/runtimes/shell.ts",
+      "runtime/src/tools/runtimes/unified-exec.ts",
+      "runtime/src/tools/runtimes/apply-patch.ts",
       "runtime/src/tools/runtimes/sandboxing.ts",
       "runtime/src/tools/runtimes/PARITY.md",
       "parity/tool-runtimes-split-parity.json",
     ],
     grepPresent: [
+      { pattern: "analyzeShellRuntimeAccess", scope: "runtime/src/tools/runtimes/sandboxing.ts" },
+      { pattern: "analyzeApplyPatchRuntimeWrites", scope: "runtime/src/tools/runtimes/sandboxing.ts" },
       { pattern: "buildToolRuntimeAttemptContext", scope: "runtime/src/tools/router.ts" },
       { pattern: "executeToolDispatch", scope: "runtime/src/tools/router.ts" },
       { pattern: "enforceRuntimeSandboxAttempt", scope: "runtime/src/tools/execution.ts" },

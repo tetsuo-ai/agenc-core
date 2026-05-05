@@ -1,9 +1,14 @@
-import { describe, expect, test } from "vitest";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { describe, expect, test, vi } from "vitest";
 import { EventLog } from "../../session/event-log.js";
 import type { LLMToolCall } from "../../llm/types.js";
 import { ToolRouter } from "../router.js";
 import type { Tool } from "../types.js";
 import { EXCLUSIVE, SHARED_READ } from "../concurrency.js";
+import { createExecCommandTool } from "../system/exec-command.js";
+import { createFileWriteTool } from "../system/file-write.js";
 import {
   enforceRuntimeSandboxAttempt,
   permissionProfileForSandboxMode,
@@ -331,6 +336,22 @@ describe("tools/runtimes", () => {
         context: {
           ...base,
           approvalPolicy: "never",
+          requestedSandboxMode: "workspace_write",
+          sandboxMode: "workspace_write",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation,
+        },
+        tool: shellTool,
+        args: { cmd: "echo allowed > /tmp/agenc-runtime-ok" },
+      }),
+    ).toThrow(/workspace_write blocked/);
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
           requestedSandboxMode: "read_only",
           sandboxMode: "read_only",
           approvalResolved: false,
@@ -357,6 +378,188 @@ describe("tools/runtimes", () => {
         args: { cmd: "python -c \"open('/etc/agenc-outside', 'w').write('x')\"" },
       }),
     ).toThrow(/could not verify write targets/);
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "read_only",
+          sandboxMode: "read_only",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation,
+        },
+        tool: shellTool,
+        args: { cmd: "cat /etc/passwd" },
+      }),
+    ).toThrow(/read outside workspace/);
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "read_only",
+          sandboxMode: "read_only",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation,
+        },
+        tool: shellTool,
+        args: { cmd: "ls", workdir: "/etc" },
+      }),
+    ).toThrow(/read outside workspace/);
+  });
+
+  test("actual exec_command handler is preflighted by selected runtime sandbox", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-runtime-exec-"));
+    const execCommand = vi.fn(async () => ({
+      output: "ok\n",
+      stdout: "ok\n",
+      stderr: "",
+      exitCode: 0,
+      exit_code: 0,
+      durationMs: 1,
+      wall_time_seconds: 0.001,
+      timedOut: false,
+      truncated: false,
+      original_token_count: 1,
+    }));
+    const manager = {
+      maxTimeoutMs: 30_000,
+      execCommand,
+      writeStdin: vi.fn(),
+      closeAll: vi.fn(),
+    };
+    const router = new ToolRouter([
+      {
+        tool: createExecCommandTool({
+          cwd: workspaceRoot,
+          allowedPaths: [workspaceRoot],
+          unifiedExecManager: manager,
+        }),
+        supportsParallelToolCalls: false,
+      },
+    ]);
+
+    const blockedRead = await router.dispatchModelToolCall(
+      {
+        id: "call-exec-read-outside",
+        name: "exec_command",
+        arguments: JSON.stringify({ cmd: "cat /etc/passwd" }),
+      },
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: {
+          subId: "turn-exec-read-outside",
+          cwd: workspaceRoot,
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "read_only" },
+        } as never,
+        tracker: tracker() as never,
+        approvalPolicy: "never",
+        sandboxMode: "read_only",
+      },
+    );
+    expect(blockedRead.isError).toBe(true);
+    expect(blockedRead.content).toContain("read outside workspace");
+    expect(execCommand).not.toHaveBeenCalled();
+
+    const tmpWrite = await router.dispatchModelToolCall(
+      {
+          id: "call-exec-generated-write",
+          name: "exec_command",
+          arguments: JSON.stringify({ cmd: "echo ok > dist/agenc-runtime-ok" }),
+      },
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: {
+          subId: "turn-exec-generated-write",
+          cwd: workspaceRoot,
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "workspace_write" },
+        } as never,
+        tracker: tracker() as never,
+        approvalPolicy: "never",
+        sandboxMode: "workspace_write",
+      },
+    );
+    expect(tmpWrite.isError).toBeFalsy();
+    expect(execCommand).toHaveBeenCalledOnce();
+  });
+
+  test("actual Write handler obeys per-attempt workspace-write preflight", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-runtime-write-"));
+    const router = new ToolRouter([
+      {
+        tool: createFileWriteTool({ allowedPaths: [workspaceRoot] }),
+        supportsParallelToolCalls: false,
+      },
+    ]);
+    const session = {
+      conversationId: "runtime-write-session",
+      eventLog: new EventLog(),
+      services: {},
+    } as never;
+
+    const blocked = await router.dispatchModelToolCall(
+      {
+        id: "call-write-outside",
+        name: "Write",
+        arguments: JSON.stringify({
+          file_path: "/etc/agenc-runtime-denied",
+          content: "blocked",
+        }),
+      },
+      {
+        session,
+        turn: {
+          subId: "turn-write-outside",
+          cwd: workspaceRoot,
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "workspace_write" },
+        } as never,
+        tracker: tracker() as never,
+        approvalPolicy: "never",
+        sandboxMode: "workspace_write",
+      },
+    );
+    expect(blocked.isError).toBe(true);
+    expect(blocked.content).toContain("workspace_write blocked");
+
+    const allowedPath = join(workspaceRoot, "created.txt");
+    const allowed = await router.dispatchModelToolCall(
+      {
+        id: "call-write-inside",
+        name: "Write",
+        arguments: JSON.stringify({
+          file_path: "created.txt",
+          content: "created by runtime sandbox\n",
+        }),
+      },
+      {
+        session,
+        turn: {
+          subId: "turn-write-inside",
+          cwd: workspaceRoot,
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "workspace_write" },
+        } as never,
+        tracker: tracker() as never,
+        approvalPolicy: "never",
+        sandboxMode: "workspace_write",
+      },
+    );
+    expect(allowed.isError).toBeFalsy();
+    expect(existsSync(allowedPath)).toBe(true);
+    expect(readFileSync(allowedPath, "utf8")).toBe("created by runtime sandbox\n");
   });
 
   test("router injects selected sandbox attempt context without breaking schemas", async () => {

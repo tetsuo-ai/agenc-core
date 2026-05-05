@@ -7,9 +7,13 @@
   "targets": [
     "runtime/src/tools/runtimes/context.ts",
     "runtime/src/tools/runtimes/parallel.ts",
+    "runtime/src/tools/runtimes/shell.ts",
+    "runtime/src/tools/runtimes/unified-exec.ts",
+    "runtime/src/tools/runtimes/apply-patch.ts",
     "runtime/src/tools/runtimes/sandboxing.ts",
     "runtime/src/tools/runtimes/runtime.test.ts",
     "runtime/src/phases/execute-tools.test.ts",
+    "runtime/src/tools/router.test.ts",
     "runtime/src/tools/router.ts",
     "runtime/src/tools/execution.ts",
     "runtime/src/tools/streaming-executor.ts",
@@ -32,7 +36,7 @@
   "documentedOmissions": [
     {
       "source": "handlers/*",
-      "reason": "Existing AgenC-owned tool handlers remain in their feature directories; TL-21 wires runtime context into the dispatch path instead of duplicating every handler under tools/runtimes."
+      "reason": "Existing AgenC-owned tool handlers remain in their feature directories, while runtime-specific shell/unified-exec/apply-patch analysis now lives under tools/runtimes and is enforced before those handlers execute."
     },
     {
       "source": "registry.rs",
@@ -49,6 +53,7 @@
   ],
   "checks": [
     "runtime/src/tools/runtimes/runtime.test.ts",
-    "runtime/src/phases/execute-tools.test.ts"
+    "runtime/src/phases/execute-tools.test.ts",
+    "runtime/src/tools/router.test.ts"
   ]
 }
