@@ -30,8 +30,13 @@ Source files inspected end-to-end:
 - `src/services/plugins/pluginOperations.ts`
 - `src/services/plugins/PluginInstallationManager.ts`
 - `codex-rs/core-plugins/src/marketplace_add.rs` // branding-scan: allow local parity citation
+- `codex-rs/core-plugins/src/marketplace_add/install.rs` // branding-scan: allow local parity citation
+- `codex-rs/core-plugins/src/marketplace_add/metadata.rs` // branding-scan: allow local parity citation
+- `codex-rs/core-plugins/src/marketplace_add/source.rs` // branding-scan: allow local parity citation
 - `codex-rs/core-plugins/src/marketplace_remove.rs` // branding-scan: allow local parity citation
 - `codex-rs/core-plugins/src/marketplace_upgrade.rs` // branding-scan: allow local parity citation
+- `codex-rs/core-plugins/src/marketplace_upgrade/activation.rs` // branding-scan: allow local parity citation
+- `codex-rs/core-plugins/src/marketplace_upgrade/git.rs` // branding-scan: allow local parity citation
 - `codex-rs/core-plugins/src/marketplace.rs` // branding-scan: allow local parity citation
 - `codex-rs/core-plugins/src/installed_marketplaces.rs` // branding-scan: allow local parity citation
 - `codex-rs/core-plugins/src/remote.rs` // branding-scan: allow local parity citation
@@ -126,6 +131,9 @@ PK-09 scope carried into AgenC:
 - `loader.ts` reads installed plugin metadata when discovering user/project/local plugin roots so installed remote plugins retain the dependency identity they were installed from instead of falling back to filesystem paths.
 - `registration/manager.ts` serializes dependency-load issues into the active plugin snapshot for UI/runtime consumers.
 - `resolution.test.ts` and `loader.test.ts` cover npm resolution priority for ambiguous package-like names, installed remote dependency identity retention, source hardening before subprocess launch, credential redaction in metadata/telemetry/process errors/cache labels, resolver and install-operation default remote signature enforcement, signed git resolution with cache VCS metadata stripping, installed signed-plugin re-verification after install metadata is written, install-copy VCS metadata stripping, internal install-name rejection, install-operation resolver wiring and update refresh, object-form dependency version-constraint preservation/rejection, git cache hits, corrupt-cache rematerialization when signatures are optional, stale-lock expiry, concurrent same-source cache serialization, real gzip/plain tar and zip extraction, cross-origin archive redirect rejection, archive traversal rejection, zip symlink and unsupported tar entry rejection, pre-extraction and post-extraction quota rejection, signature payload quota rejection, remote `.mcpb` extraction, loader dependency demotion/cycle demotion, local path dependency identities when workspace paths contain `@`, duplicate-name dependency ambiguity, dependency version mismatch handling including zero-major caret boundaries, prerelease/build/malformed versions, dependency closure/demotion, Ed25519 payload verification, telemetry outcomes, and source classification.
+
+ZC-30 coverage lock:
+- The plugin-engine source anchors above cover the PK-01 through PK-09 plugin rows that previously lacked a single tracked coverage closure. `scripts/goal/verify.mjs` now checks those anchors and the AgenC-owned counterpart files before ZC-30 can complete.
 
 Intentional PK-01 scope reductions:
 - Marketplace fetch/install/cache refresh, signing, dependency demotion, plugin CLI, plugin sandboxing, policy/blocklist, MCP/LSP live registration, and remote sync are later PK rows.
