@@ -22,11 +22,18 @@
 
 import type { MCPManager, MCPManagerStartOpts } from "../mcp-client/manager.js";
 import { MCPManager as LiveMCPManager } from "../mcp-client/manager.js";
+import type { MCPToolBridgePermissionOptions } from "../mcp-client/tool-bridge.js";
 import type { MCPServerConfig } from "../mcp-client/types.js";
 import type {
   AgenCConfig,
   McpServerConfig as AgenCMcpServerConfig,
 } from "../config/index.js";
+import { freshDenialTracking } from "../permissions/denial-tracking.js";
+import {
+  attachContextDefaults,
+  hasPermissionsToUseTool,
+} from "../permissions/evaluator.js";
+import { RequestPermissionsRpc } from "../permissions/rpc/request-permissions.js";
 import type { Session } from "./session.js";
 import type { SessionServices } from "./session.js";
 import { createMCPCallObserverForSession } from "./observer-wiring.js";
@@ -351,6 +358,13 @@ export function attachMcpManagerToSession(
   const observer = createMCPCallObserverForSession(session);
   try {
     manager.setCallObserver(observer);
+    const permissionManager = manager as MCPManager & {
+      setPermissionOptions?: (options: MCPToolBridgePermissionOptions) => void;
+    };
+    const permissionOptions = createMcpPermissionOptionsForSession(session);
+    if (permissionOptions !== undefined) {
+      permissionManager.setPermissionOptions?.(permissionOptions);
+    }
     const elicitationManager = manager as MCPManager & {
       setElicitationHandlers?: MCPManager["setElicitationHandlers"];
     };
@@ -376,6 +390,63 @@ export function attachMcpManagerToSession(
     });
     throw err;
   }
+}
+
+function createMcpPermissionOptionsForSession(
+  session: Session,
+): MCPToolBridgePermissionOptions | undefined {
+  const registry = (session as {
+    readonly permissionModeRegistry?: Session["permissionModeRegistry"];
+  }).permissionModeRegistry;
+  const sessionConfiguration = (session as {
+    readonly sessionConfiguration?: Session["sessionConfiguration"];
+  }).sessionConfiguration;
+  if (registry === undefined || sessionConfiguration === undefined) {
+    return undefined;
+  }
+  const services = (session as {
+    readonly services?: Partial<Session["services"]>;
+  }).services ?? {};
+  const denialTracking = freshDenialTracking();
+  return {
+    canUseTool: hasPermissionsToUseTool,
+    permissionContext: attachContextDefaults({
+      session,
+      denialTracking,
+      getAppState() {
+        const toolPermissionContext = registry.current();
+        return {
+          toolPermissionContext,
+          denialTracking,
+          autoModeActive: toolPermissionContext.autoModeActive === true,
+        };
+      },
+    }),
+    ...(services.approvalResolver !== undefined
+      ? { approvalResolver: services.approvalResolver }
+      : {}),
+    ...(services.guardianApprovalReviewer !== undefined
+      ? { guardianApprovalReviewer: services.guardianApprovalReviewer }
+      : {}),
+    getActiveTurnId: () =>
+      (session as { readonly activeTurn?: Session["activeTurn"] })
+        .activeTurn?.unsafePeek()?.turnId ?? null,
+    requestPermissionsRpc: new RequestPermissionsRpc(),
+    session,
+    cwd: sessionConfiguration.cwd,
+    ...((session as { readonly abortController?: Session["abortController"] })
+      .abortController?.signal !== undefined
+      ? {
+          signal: (session as { readonly abortController?: Session["abortController"] })
+            .abortController!.signal,
+        }
+      : {}),
+    approvalPolicy: sessionConfiguration.approvalPolicy.value,
+    sandboxPolicy: sessionConfiguration.sandboxPolicy.value,
+    ...(sessionConfiguration.approvalsReviewer !== undefined
+      ? { approvalsReviewer: sessionConfiguration.approvalsReviewer }
+      : {}),
+  };
 }
 
 function granularElicitationPolicyForSession(

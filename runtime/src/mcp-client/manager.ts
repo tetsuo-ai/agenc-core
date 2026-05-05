@@ -22,6 +22,7 @@ import { ResilientMCPBridge } from "./resilient-bridge.js";
 import type {
   MCPCallObserver,
   MCPToolCatalogPolicyConfig,
+  MCPToolBridgePermissionOptions,
 } from "./tool-bridge.js";
 import {
   createResourceBridge,
@@ -109,6 +110,7 @@ export class MCPManager {
    * owner sets this to a shim that calls `session.emit(...)`.
    */
   private callObserver: MCPCallObserver | undefined;
+  private permissionOptions: MCPToolBridgePermissionOptions | undefined;
   private elicitationHandlers: MCPElicitationHandlers | undefined;
 
   constructor(configs: MCPServerConfig[], logger: Logger = silentLogger) {
@@ -124,6 +126,12 @@ export class MCPManager {
    */
   setCallObserver(observer: MCPCallObserver | undefined): void {
     this.callObserver = observer;
+  }
+
+  setPermissionOptions(
+    options: MCPToolBridgePermissionOptions | undefined,
+  ): void {
+    this.permissionOptions = options;
   }
 
   setElicitationHandlers(
@@ -563,6 +571,9 @@ export class MCPManager {
           ...(this.callObserver !== undefined
             ? { callObserver: this.callObserver }
             : {}),
+          ...(this.permissionOptions !== undefined
+            ? { permissions: this.permissionOptions }
+            : {}),
         },
       );
       if (startupGate?.isCancelled()) {
@@ -574,7 +585,16 @@ export class MCPManager {
       // already-registered tools (from earlier servers). Bail the
       // whole bridge — the caller can re-configure the namespace.
       this.assertNoNameShadowing(config.name, rawBridge);
-      const bridge = new ResilientMCPBridge(config, rawBridge, this.logger);
+      const bridge = new ResilientMCPBridge(
+        config,
+        rawBridge,
+        this.logger,
+        {
+          ...(this.permissionOptions !== undefined
+            ? { permissions: this.permissionOptions }
+            : {}),
+        },
+      );
       this.bridges.set(config.name, bridge);
 
       // T9-D: resource + prompt bridges are optional on many servers.

@@ -9,6 +9,7 @@
 
 import type { Tool, ToolResult } from "./_deps/tools-types.js";
 import type { MCPServerConfig, MCPToolBridge } from "./types.js";
+import type { MCPToolBridgePermissionOptions } from "./tool-bridge.js";
 import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
 
@@ -31,6 +32,10 @@ const INITIAL_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;
 const BACKOFF_MULTIPLIER = 2;
 
+interface ResilientMCPBridgeOptions {
+  readonly permissions?: MCPToolBridgePermissionOptions;
+}
+
 /**
  * Wraps an MCPToolBridge with automatic reconnection on connection failures.
  *
@@ -44,6 +49,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
   private inner: MCPToolBridge;
   private readonly config: MCPServerConfig;
   private readonly logger: Logger;
+  private readonly options: ResilientMCPBridgeOptions;
 
   private reconnecting = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -54,10 +60,12 @@ export class ResilientMCPBridge implements MCPToolBridge {
     config: MCPServerConfig,
     initialBridge: MCPToolBridge,
     logger: Logger = silentLogger,
+    options: ResilientMCPBridgeOptions = {},
   ) {
     this.config = config;
     this.inner = initialBridge;
     this.logger = logger;
+    this.options = options;
     this.serverName = initialBridge.serverName;
 
     // Build stable proxy tools that delegate to the current inner bridge
@@ -149,6 +157,9 @@ export class ResilientMCPBridge implements MCPToolBridge {
         {
           listToolsTimeoutMs: this.config.timeout,
           callToolTimeoutMs: this.config.timeout,
+          ...(this.options.permissions !== undefined
+            ? { permissions: this.options.permissions }
+            : {}),
         },
       );
 

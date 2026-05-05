@@ -11,6 +11,34 @@ import type { Tool, ToolResult, JSONSchema } from "./_deps/tools-types.js";
 import type { MCPToolBridge } from "./types.js";
 import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
+import { createTurnDiffTracker, type ToolInvocation } from "../tools/context.js";
+import {
+  arbitratePermissionMode,
+  requestApproval,
+  type ApprovalResolver,
+} from "../permissions/guardian/arbiter.js";
+import type { GuardianApprovalReviewer } from "../permissions/guardian/reviewer.js";
+import {
+  reviewDecisionIsAllow,
+  type ReviewDecision,
+} from "../permissions/review-decision.js";
+import type {
+  CanUseToolFn,
+  ToolEvaluatorContext,
+} from "../permissions/evaluator.js";
+import {
+  EMPTY_REQUEST_PERMISSION_PROFILE,
+  requestPermissionsEventPermissionLabels,
+  type RequestPermissionsEvent,
+  type RequestPermissionsRpc,
+  type RequestPermissionProfile,
+  type RequestPermissionsResponse,
+} from "../permissions/rpc/request-permissions.js";
+import {
+  renderMcpToolApprovalTemplate,
+  type McpToolApprovalJsonValue,
+  type McpToolApprovalTemplateFile,
+} from "../permissions/rpc/mcp-tool-approval-templates.js";
 import {
   computeMCPToolCatalogSha256,
   catalogDigestMatches,
@@ -50,6 +78,7 @@ function filterMCPToolCatalog<T extends { name: string }>(
 
 const DEFAULT_MCP_LIST_TOOLS_TIMEOUT_MS = 30_000;
 const DEFAULT_MCP_CALL_TIMEOUT_MS = 45_000;
+const MCP_REQUEST_PERMISSIONS_TOOL_NAME = "request_permissions";
 
 /** I-76: upper bound on a single MCP tool-call result, 5MB. */
 export const MAX_MCP_CALL_RESULT_BYTES = 5 * 1024 * 1024;
@@ -78,11 +107,29 @@ export interface MCPCallObserver {
   }) => void;
 }
 
+export interface MCPToolBridgePermissionOptions {
+  readonly canUseTool?: CanUseToolFn;
+  readonly permissionContext?: ToolEvaluatorContext;
+  readonly approvalResolver?: ApprovalResolver;
+  readonly guardianApprovalReviewer?: GuardianApprovalReviewer;
+  readonly getActiveTurnId?: () => string | null;
+  readonly requestPermissionsRpc?: RequestPermissionsRpc;
+  readonly approvalTemplates?: McpToolApprovalTemplateFile;
+  readonly cwd?: string;
+  readonly turnId?: string;
+  readonly session?: unknown;
+  readonly approvalsReviewer?: string;
+  readonly approvalPolicy?: string;
+  readonly sandboxPolicy?: string;
+  readonly signal?: AbortSignal;
+}
+
 interface ToolBridgeOptions {
   listToolsTimeoutMs?: number;
   callToolTimeoutMs?: number;
   serverConfig?: MCPToolCatalogPolicyConfig;
   callObserver?: MCPCallObserver;
+  permissions?: MCPToolBridgePermissionOptions;
 }
 
 interface MCPToolDescriptor {
@@ -99,6 +146,16 @@ interface MCPCallToolResponse {
   content?: unknown;
   isError?: boolean;
 }
+
+type PermissionResolution =
+  | { readonly ok: true; readonly args: Record<string, unknown> }
+  | { readonly ok: false; readonly result: ToolResult };
+
+const EMPTY_REQUEST_PERMISSIONS_RESPONSE: RequestPermissionsResponse = {
+  permissions: EMPTY_REQUEST_PERMISSION_PROFILE,
+  scope: "turn",
+  strictAutoReview: false,
+};
 
 function normalizeTimeoutMs(value: number | undefined, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
@@ -129,6 +186,356 @@ function safeStringifyArgs(args: Record<string, unknown>): string {
     return JSON.stringify(args);
   } catch {
     return "{}";
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value
+    : undefined;
+}
+
+function errorResult(content: string): ToolResult {
+  return { content, isError: true };
+}
+
+function approvalPathConfigured(
+  options: MCPToolBridgePermissionOptions,
+): boolean {
+  return options.approvalResolver !== undefined ||
+    options.guardianApprovalReviewer !== undefined;
+}
+
+function requestPermissionsApprovalArgs(
+  event: RequestPermissionsEvent,
+): Record<string, unknown> {
+  return {
+    permissions: requestPermissionsEventPermissionLabels(event.permissions),
+    requested: event.permissions,
+    ...(event.reason !== undefined ? { reason: event.reason } : {}),
+  };
+}
+
+function bridgeApprovalTurnConfig(
+  options: MCPToolBridgePermissionOptions,
+): { readonly approvalsReviewer?: string } {
+  return {
+    ...(options.approvalsReviewer !== undefined
+      ? { approvalsReviewer: options.approvalsReviewer }
+      : options.guardianApprovalReviewer !== undefined
+        ? { approvalsReviewer: "auto_review" }
+        : {}),
+  };
+}
+
+function mcpApprovalReason(
+  serverName: string,
+  descriptor: MCPToolDescriptorLike,
+  args: Record<string, unknown>,
+  options: MCPToolBridgePermissionOptions,
+  fallback?: string,
+): string {
+  const record = asRecord(descriptor) ?? {};
+  const connectorId = stringValue(record.connectorId) ?? serverName;
+  const connectorName = stringValue(record.connectorName) ?? serverName;
+  const toolTitle =
+    stringValue(record.toolTitle) ??
+    stringValue(record.title) ??
+    descriptor.name;
+  const rendered = renderMcpToolApprovalTemplate(
+    serverName,
+    connectorId,
+    connectorName,
+    toolTitle,
+    args as McpToolApprovalJsonValue,
+    options.approvalTemplates,
+  );
+  return rendered?.question ?? fallback ?? `Permission required to use mcp.${serverName}.${descriptor.name}`;
+}
+
+function approvalCtxForMcpClientTool(
+  serverName: string,
+  descriptor: MCPToolDescriptorLike,
+  callId: string,
+  args: Record<string, unknown>,
+  options: MCPToolBridgePermissionOptions,
+  retryReason?: string,
+): Parameters<typeof requestApproval>[0]["ctx"] {
+  const turnId = options.turnId ?? `mcp-${callId}`;
+  const toolName = `mcp.${serverName}.${descriptor.name}`;
+  const invocation: ToolInvocation = {
+    session: (options.session ??
+      options.permissionContext?.session ??
+      { services: {}, conversationId: "mcp-client" }) as ToolInvocation["session"],
+    turn: {
+      subId: turnId,
+      cwd: options.cwd ?? process.cwd(),
+      approvalPolicy: { value: options.approvalPolicy ?? "on_request" },
+      sandboxPolicy: { value: options.sandboxPolicy ?? "workspace_write" },
+      config: bridgeApprovalTurnConfig(options),
+    } as ToolInvocation["turn"],
+    tracker: createTurnDiffTracker(),
+    callId,
+    toolName: { name: toolName },
+    payload: {
+      kind: "mcp",
+      server: serverName,
+      tool: descriptor.name,
+      rawArguments: safeStringifyArgs(args),
+    },
+    source: "direct",
+  };
+  return {
+    invocation,
+    callId,
+    toolName,
+    turnId,
+    ...(retryReason !== undefined ? { retryReason } : {}),
+  };
+}
+
+function approvalCtxForRequestPermissions(
+  event: RequestPermissionsEvent,
+  options: MCPToolBridgePermissionOptions,
+  retryReason?: string,
+): Parameters<typeof requestApproval>[0]["ctx"] {
+  const callId = event.callId;
+  const turnId = event.turnId || options.turnId || `mcp-${callId}`;
+  const approvalArgs = requestPermissionsApprovalArgs(event);
+  const invocation: ToolInvocation = {
+    session: (options.session ??
+      options.permissionContext?.session ??
+      { services: {}, conversationId: "mcp-client" }) as ToolInvocation["session"],
+    turn: {
+      subId: turnId,
+      cwd: event.cwd ?? options.cwd ?? process.cwd(),
+      approvalPolicy: { value: options.approvalPolicy ?? "on_request" },
+      sandboxPolicy: { value: options.sandboxPolicy ?? "workspace_write" },
+      config: bridgeApprovalTurnConfig(options),
+    } as ToolInvocation["turn"],
+    tracker: createTurnDiffTracker(),
+    callId,
+    toolName: { name: MCP_REQUEST_PERMISSIONS_TOOL_NAME },
+    payload: {
+      kind: "function",
+      arguments: safeStringifyArgs(approvalArgs),
+    },
+    source: "direct",
+  };
+  return {
+    invocation,
+    callId,
+    toolName: MCP_REQUEST_PERMISSIONS_TOOL_NAME,
+    turnId,
+    ...(retryReason !== undefined ? { retryReason } : {}),
+  };
+}
+
+async function requestMcpClientApproval(
+  serverName: string,
+  descriptor: MCPToolDescriptorLike,
+  callId: string,
+  args: Record<string, unknown>,
+  options: MCPToolBridgePermissionOptions,
+  reason: string,
+): Promise<ReviewDecision | null> {
+  if (!approvalPathConfigured(options)) return null;
+  const approval = await requestApproval({
+    ctx: approvalCtxForMcpClientTool(
+      serverName,
+      descriptor,
+      callId,
+      args,
+      options,
+      reason,
+    ),
+    args,
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    ...(options.approvalResolver !== undefined
+      ? { resolver: options.approvalResolver }
+      : {}),
+    ...(options.guardianApprovalReviewer !== undefined
+      ? { guardianApprovalReviewer: options.guardianApprovalReviewer }
+      : {}),
+    ...(options.getActiveTurnId !== undefined
+      ? { getActiveTurnId: options.getActiveTurnId }
+      : {}),
+  });
+  return approval.decision;
+}
+
+async function requestRequestPermissionsApproval(
+  event: RequestPermissionsEvent,
+  options: MCPToolBridgePermissionOptions,
+  reason: string,
+): Promise<ReviewDecision | null> {
+  if (!approvalPathConfigured(options)) return null;
+  const approval = await requestApproval({
+    ctx: approvalCtxForRequestPermissions(event, options, reason),
+    args: requestPermissionsApprovalArgs(event),
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    ...(options.approvalResolver !== undefined
+      ? { resolver: options.approvalResolver }
+      : {}),
+    ...(options.guardianApprovalReviewer !== undefined
+      ? { guardianApprovalReviewer: options.guardianApprovalReviewer }
+      : {}),
+    ...(options.getActiveTurnId !== undefined
+      ? { getActiveTurnId: options.getActiveTurnId }
+      : {}),
+  });
+  return approval.decision;
+}
+
+async function authorizeMcpClientToolCall(
+  tool: Tool,
+  serverName: string,
+  descriptor: MCPToolDescriptorLike,
+  callId: string,
+  args: Record<string, unknown>,
+  options: MCPToolBridgePermissionOptions | undefined,
+): Promise<PermissionResolution> {
+  if (options === undefined) return { ok: true, args };
+
+  let executionArgs = args;
+  let promptReason: string | undefined;
+  const hasEvaluator =
+    options.canUseTool !== undefined && options.permissionContext !== undefined;
+
+  if (hasEvaluator) {
+    const permissionDecision = await arbitratePermissionMode({
+      tool,
+      args,
+      canUseTool: options.canUseTool,
+      permissionContext: options.permissionContext,
+    });
+    if (permissionDecision.kind === "deny") {
+      return {
+        ok: false,
+        result: errorResult(permissionDecision.message ?? "Permission denied"),
+      };
+    }
+    if (permissionDecision.kind === "ask") {
+      executionArgs = permissionDecision.args;
+      promptReason = mcpApprovalReason(
+        serverName,
+        descriptor,
+        executionArgs,
+        options,
+        permissionDecision.message,
+      );
+    } else if (permissionDecision.kind === "allow") {
+      return { ok: true, args: permissionDecision.args };
+    }
+  }
+
+  if (promptReason === undefined && !hasEvaluator) {
+    promptReason = mcpApprovalReason(serverName, descriptor, executionArgs, options);
+  }
+  if (promptReason === undefined) return { ok: true, args: executionArgs };
+
+  const decision = await requestMcpClientApproval(
+    serverName,
+    descriptor,
+    callId,
+    executionArgs,
+    options,
+    promptReason,
+  );
+  if (decision === null) {
+    return {
+      ok: false,
+      result: errorResult("approval requested with no prompt wired"),
+    };
+  }
+  if (!reviewDecisionIsAllow(decision)) {
+    return {
+      ok: false,
+      result: errorResult(`Permission denied: ${decision.kind}`),
+    };
+  }
+  return { ok: true, args: executionArgs };
+}
+
+function responseScopeFromDecision(
+  decision: ReviewDecision | null,
+): RequestPermissionsResponse["scope"] {
+  return decision?.kind === "approved_for_session" ? "session" : "turn";
+}
+
+function responseForRequestPermissionsDecision(
+  requested: RequestPermissionProfile,
+  decision: ReviewDecision | null,
+): RequestPermissionsResponse {
+  if (decision === null || !reviewDecisionIsAllow(decision)) {
+    return EMPTY_REQUEST_PERMISSIONS_RESPONSE;
+  }
+  return {
+    permissions: requested,
+    scope: responseScopeFromDecision(decision),
+    strictAutoReview: false,
+  };
+}
+
+function requestPermissionsReason(
+  reason: string | undefined,
+  requested: RequestPermissionProfile,
+): string {
+  if (reason !== undefined && reason.trim().length > 0) return reason;
+  const labels = requestPermissionsEventPermissionLabels(requested);
+  return labels.length > 0
+    ? `Permission required: ${labels.join(", ")}`
+    : "Permission required";
+}
+
+async function callRequestPermissionsTool(
+  args: Record<string, unknown>,
+  callId: string,
+  options: MCPToolBridgePermissionOptions,
+): Promise<ToolResult> {
+  const rpc = options.requestPermissionsRpc;
+  if (rpc === undefined) return errorResult("request_permissions RPC is not configured");
+  let pending;
+  try {
+    pending = rpc.request({
+      callId,
+      turnId: options.turnId,
+      args,
+      cwd: options.cwd,
+    });
+  } catch (error) {
+    return errorResult(error instanceof Error ? error.message : String(error));
+  }
+  const reason = requestPermissionsReason(
+    pending.event.reason,
+    pending.event.permissions,
+  );
+  try {
+    const decision = await requestRequestPermissionsApproval(
+      pending.event,
+      options,
+      reason,
+    );
+    const response = responseForRequestPermissionsDecision(
+      pending.event.permissions,
+      decision,
+    );
+    rpc.respond(pending.event.callId, response);
+    return {
+      content: JSON.stringify(
+        (await pending.response) ?? EMPTY_REQUEST_PERMISSIONS_RESPONSE,
+      ),
+    };
+  } catch (error) {
+    rpc.respond(pending.event.callId, EMPTY_REQUEST_PERMISSIONS_RESPONSE);
+    await pending.response;
+    return errorResult(error instanceof Error ? error.message : String(error));
   }
 }
 
@@ -217,10 +624,12 @@ export async function createToolBridge(
   const tools: Tool[] = mcpTools.map((mcpTool) => {
     const namespacedName = `mcp.${serverName}.${mcpTool.name}`;
 
-    return {
+    const bridgeTool: Tool = {
       name: namespacedName,
       description: mcpTool.description ?? `MCP tool: ${mcpTool.name}`,
       inputSchema: (mcpTool.inputSchema ?? { type: "object", properties: {} }) as JSONSchema,
+      serverId: serverName,
+      mcpInfo: { serverName, toolName: mcpTool.name },
 
       async execute(args: Record<string, unknown>): Promise<ToolResult> {
         if (disposed) {
@@ -235,7 +644,30 @@ export async function createToolBridge(
         // session-agnostic. `callId` is synthesized here because the
         // MCP bridge is not given one by the executor wrapper.
         const callId = `mcp-${serverName}-${mcpTool.name}-${randomCallId()}`;
-        const callArgs = safeStringifyArgs(args);
+        if (
+          mcpTool.name === MCP_REQUEST_PERMISSIONS_TOOL_NAME &&
+          options.permissions?.requestPermissionsRpc !== undefined
+        ) {
+          return callRequestPermissionsTool(args, callId, options.permissions);
+        }
+        let executionArgs: Record<string, unknown>;
+        try {
+          const authorization = await authorizeMcpClientToolCall(
+            bridgeTool,
+            serverName,
+            mcpTool,
+            callId,
+            args,
+            options.permissions,
+          );
+          if (!authorization.ok) return authorization.result;
+          executionArgs = authorization.args;
+        } catch (error) {
+          return errorResult(
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+        const callArgs = safeStringifyArgs(executionArgs);
         const observer = options.callObserver;
         observer?.onBegin?.({
           callId,
@@ -252,7 +684,7 @@ export async function createToolBridge(
             () =>
               client.callTool({
                 name: mcpTool.name,
-                arguments: args,
+                arguments: executionArgs,
               }),
           );
 
@@ -307,6 +739,7 @@ export async function createToolBridge(
         }
       },
     };
+    return bridgeTool;
   });
 
   return {
