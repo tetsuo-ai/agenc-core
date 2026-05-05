@@ -14,7 +14,7 @@ import {
   assertConfigReadsEnabled,
   configReadsEnabled,
   enableConfigs,
-} from "./upstream-init.js";
+} from "./init.js";
 
 describe("enableConfigs", () => {
   const originalNodeEnv = process.env.NODE_ENV;
@@ -42,7 +42,7 @@ describe("enableConfigs", () => {
   });
 
   async function useConfigDir(configContents?: string): Promise<string> {
-    const dir = await mkdtemp(join(tmpdir(), "agenc-upstream-init-"));
+    const dir = await mkdtemp(join(tmpdir(), "agenc-config-init-"));
     tempDirs.push(dir);
     process.env.AGENC_CONFIG_DIR = dir;
     if (configContents !== undefined) {
@@ -52,7 +52,7 @@ describe("enableConfigs", () => {
     return dir;
   }
 
-  it("enables mirrored config reads idempotently", async () => {
+  it("enables config reads idempotently", async () => {
     const dir = await useConfigDir();
     process.env.AGENC_DIAGNOSTICS_FILE = join(dir, "diagnostics.log");
 

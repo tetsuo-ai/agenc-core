@@ -45,7 +45,7 @@ import {
   type ConfigReloadLatch,
 } from "./agenc.js";
 import { ConfigStore, defaultConfig } from "../config/index.js";
-import * as configUtils from "../config/upstream-init.js";
+import * as configUtils from "../config/init.js";
 import {
   assembleSystemPrompt,
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
