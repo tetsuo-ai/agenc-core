@@ -63,6 +63,16 @@ import {
 } from "../llm/hooks/index.js";
 import { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
 import { createAutoFixPostToolHook } from "../services/autoFix/autoFixHook.js";
+import {
+  configureLspServerSource,
+  parseLspServersConfig,
+} from "../services/lsp/config.js";
+import {
+  getInitializationStatus as getLspInitializationStatus,
+  initializeLspServerManager,
+  reinitializeLspServerManager,
+  shutdownLspServerManager,
+} from "../services/lsp/manager.js";
 import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
 import {
   evaluateStopHooks,
@@ -453,6 +463,30 @@ export function loadBootstrapHooks(opts: {
   }
 }
 
+function readConfiguredLspServers(
+  cfg: ReturnType<ConfigStore["current"]>,
+): ReturnType<typeof parseLspServersConfig> {
+  return parseLspServersConfig(cfg.lsp_servers);
+}
+
+export function loadBootstrapLspServers(
+  cfg: ReturnType<ConfigStore["current"]>,
+): void {
+  const parsed = readConfiguredLspServers(cfg);
+  const hasServers = parsed.success && Object.keys(parsed.servers).length > 0;
+  if (!hasServers) {
+    void shutdownLspServerManager();
+    return;
+  }
+  configureLspServerSource(() => (parsed.success ? parsed.servers : {}));
+  const status = getLspInitializationStatus().status;
+  if (status === "not-started" || status === "failed") {
+    initializeLspServerManager();
+    return;
+  }
+  reinitializeLspServerManager();
+}
+
 function createShellSnapshotTx(
   workspaceRoot: string,
   env: NodeJS.ProcessEnv,
@@ -571,8 +605,14 @@ export function buildBootstrapSessionServices(
     });
   };
   loadHooks(opts.configStore.current());
+  configureLspServerSource(() => {
+    const parsed = readConfiguredLspServers(opts.configStore.current());
+    return parsed.success ? parsed.servers : {};
+  });
+  loadBootstrapLspServers(opts.configStore.current());
   const unsubscribeHooksConfig = opts.configStore.subscribe((cfg) => {
     loadHooks(cfg);
+    loadBootstrapLspServers(cfg);
   });
 
   const services: SessionServices = {
@@ -711,6 +751,7 @@ export function buildBootstrapSessionServices(
     },
     shutdown: () => {
       unsubscribeHooksConfig();
+      void shutdownLspServerManager();
       hooksService.clearConfiguredLifecycleHooks();
       rolloutTrace.flush();
       rolloutTrace.close();

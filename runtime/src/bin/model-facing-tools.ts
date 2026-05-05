@@ -100,6 +100,8 @@ import type {
   ToolPermissionContext,
 } from "../permissions/types.js";
 import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
+import { checkForLSPDiagnostics } from "../services/lsp/LSPDiagnosticRegistry.js";
+import { getLspServerManager } from "../services/lsp/manager.js";
 
 export interface ModelFacingToolOptions {
   readonly workspaceRoot: string;
@@ -2724,14 +2726,31 @@ function createLspTool(opts: ModelFacingToolOptions): Tool {
         const resolved = resolveWorkspacePath(opts, filePath);
         const exists = existsSync(resolved);
         const fileStat = exists ? await stat(resolved) : null;
+        if (!exists || !fileStat?.isFile()) {
+          return json({
+            file_path: resolved,
+            diagnostics: [{
+              severity: "error",
+              message: "File not found",
+            }],
+          });
+        }
+        const manager = getLspServerManager();
+        const server = await manager?.ensureServerStarted(resolved);
+        const pendingDiagnostics = checkForLSPDiagnostics()
+          .flatMap((set) => set.files)
+          .filter((file) => file.uri === resolved || file.uri === filePath)
+          .flatMap((file) => file.diagnostics);
         return json({
           file_path: resolved,
-          diagnostics: exists && fileStat?.isFile() ? [] : [{
-            severity: "error",
-            message: "File not found",
-          }],
+          diagnostics: pendingDiagnostics,
+          server: server?.name ?? null,
           note:
-            "No language server is configured in this runtime; diagnostics are limited to file availability.",
+            pendingDiagnostics.length > 0
+              ? "Pending language-server diagnostics were returned."
+              : server === undefined
+              ? "No language server is configured for this file."
+              : "No pending diagnostics were available for this file.",
         });
       }
       const query = stringValue(args.symbol) ?? stringValue(args.query);

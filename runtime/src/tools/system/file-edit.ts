@@ -56,6 +56,7 @@ import {
   safePathAllowingSessionPlanFile,
 } from "./filesystem.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
+import { notifyLspFileChanged } from "../../services/lsp/fileNotifications.js";
 
 export const FILE_EDIT_TOOL_NAME = "Edit";
 export const FILE_MULTI_EDIT_TOOL_NAME = "MultiEdit";
@@ -673,10 +674,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
 
       await snapshotPostWrite(sessionId, absoluteFilePath, updated);
 
-      // TODO(file-edit): wire LSP didChange/didSave notifications when
-      // AgenC adds an LSP integration. AgenC's FileEditTool.ts:493-514
-      // emits both events for incremental diagnostics; AgenC has no
-      // LSP today so nothing to notify.
+      notifyLspFileChanged(absoluteFilePath, updated);
 
       return {
         content: successText(file_path, replace_all),

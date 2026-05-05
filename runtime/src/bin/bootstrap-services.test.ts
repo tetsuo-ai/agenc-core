@@ -6,7 +6,17 @@ import {
 } from "../hooks/configured-hooks.js";
 import { defaultConfig } from "../config/schema.js";
 import type { PostToolUseHook } from "../tools/hooks.js";
-import { loadBootstrapHooks } from "./bootstrap-services.js";
+import {
+  loadBootstrapHooks,
+  loadBootstrapLspServers,
+} from "./bootstrap-services.js";
+import {
+  _resetLspManagerForTesting,
+  getInitializationStatus,
+  getLspServerManager,
+  shutdownLspServerManager,
+  waitForInitialization,
+} from "../services/lsp/manager.js";
 
 describe("loadBootstrapHooks", () => {
   test("installs the built-in auto-fix post hook once across reloads", () => {
@@ -68,5 +78,33 @@ describe("loadBootstrapHooks", () => {
       autoFixPostToolHook: autoFixHook,
     });
     expect(target.postToolUseHooks).toEqual([autoFixHook]);
+  });
+});
+
+describe("loadBootstrapLspServers", () => {
+  test("starts and stops the LSP manager from typed config", async () => {
+    _resetLspManagerForTesting();
+    try {
+      loadBootstrapLspServers({
+        ...defaultConfig(),
+        lsp_servers: {
+          ts: {
+            command: "typescript-language-server",
+            extensionToLanguage: { ".ts": "typescript" },
+          },
+        },
+      });
+      expect(getInitializationStatus().status).toBe("pending");
+      await waitForInitialization();
+      expect(getInitializationStatus().status).toBe("success");
+      expect(getLspServerManager()?.getAllServers().has("ts")).toBe(true);
+
+      loadBootstrapLspServers({ ...defaultConfig(), lsp_servers: undefined });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(getInitializationStatus().status).toBe("not-started");
+    } finally {
+      await shutdownLspServerManager();
+      _resetLspManagerForTesting();
+    }
   });
 });

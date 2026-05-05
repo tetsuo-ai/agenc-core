@@ -401,6 +401,7 @@ export interface AgenCConfig {
   readonly hooks?: HooksMap;
   readonly mcp_servers?: Readonly<Record<string, McpServerConfig>>;
   readonly daemon?: DaemonConfig;
+  readonly lsp_servers?: unknown;
 
   // ── Settings fields ────────────────────────────────────────────────
   readonly autoUpdates?: boolean;
@@ -482,6 +483,9 @@ export interface AgenCConfig {
  * Lit up by S-05:
  *   - autoFix          → see `services/autoFix/autoFixConfig.ts`.
  *
+ * Lit up by S-07:
+ *   - lsp_servers      → see `services/lsp/config.ts`.
+ *
  * Adding one of these to the schema means: (a) add it to
  * `KNOWN_CONFIG_KEYS`, (b) add a typed field to `AgenCConfig`, (c)
  * extend the merge + env-override paths if it reaches the runtime,
@@ -537,6 +541,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "hooks",
   "mcp_servers",
   "daemon",
+  "lsp_servers",
   "autoUpdates",
   "bypassPermissionsModeAcceptedIn",
   "experiments",
