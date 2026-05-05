@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Branded types for session and agent IDs.
  * These prevent accidentally mixing up session IDs and agent IDs at compile time.

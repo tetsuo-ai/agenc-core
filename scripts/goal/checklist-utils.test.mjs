@@ -179,6 +179,27 @@ assert(
     singleLineForwardArrow.test("export const shim = (input) => { return realImpl(input); };"),
 );
 
+const zc24GateSource = extractFunctionSource(verifySource, "assertZc24UnusedDependenciesRemoved");
+assert(
+  "verify.mjs ZC-24 scans runtime module import extensions",
+  ["*.ts", "*.tsx", "*.mts", "*.cts", "*.js", "*.jsx", "*.mjs", "*.cjs"].every((glob) =>
+    zc24GateSource.includes(`"${glob}"`),
+  ),
+);
+assert(
+  "verify.mjs ZC-24 includes upstream source in removed-package scan",
+  zc24GateSource.includes('"runtime/src"') &&
+    !zc24GateSource.includes("!runtime/src/agenc/upstream") &&
+    !zc24GateSource.includes("!agenc/upstream"),
+);
+assert(
+  "verify.mjs ZC-24 retains packages with runtime importers",
+  zc24GateSource.includes("packagesWithRuntimeImporters") &&
+    zc24GateSource.includes('"@ant/computer-use-mcp"') &&
+    zc24GateSource.includes('"jimp"') &&
+    zc24GateSource.includes('"markdown-it"'),
+);
+
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
 process.exit(failed > 0 ? 1 : 0);
 
@@ -193,4 +214,12 @@ function extractRegexFromSource(source, name) {
   const lastSlash = literal.lastIndexOf("/");
   if (!literal.startsWith("/") || lastSlash <= 0) return /a^/u;
   return new RegExp(literal.slice(1, lastSlash), literal.slice(lastSlash + 1));
+}
+
+function extractFunctionSource(source, name) {
+  const marker = `function ${name}()`;
+  const start = source.indexOf(marker);
+  if (start === -1) return "";
+  const nextFunction = source.indexOf("\nfunction ", start + marker.length);
+  return source.slice(start, nextFunction === -1 ? undefined : nextFunction);
 }
