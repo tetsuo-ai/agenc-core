@@ -33,11 +33,14 @@
   "testFiles": [
     "runtime/src/services/lsp/config.test.ts",
     "runtime/src/services/lsp/LSPDiagnosticRegistry.test.ts",
+    "runtime/src/services/lsp/LSPClient.test.ts",
     "runtime/src/services/lsp/LSPServerManager.test.ts",
     "runtime/src/services/lsp/LSPServerInstance.test.ts",
     "runtime/src/services/lsp/manager.test.ts",
     "runtime/src/services/lsp/passiveFeedback.test.ts",
-    "runtime/src/bin/bootstrap-services.test.ts"
+    "runtime/src/bin/bootstrap-services.test.ts",
+    "runtime/src/bin/model-facing-tools.test.ts",
+    "runtime/src/tools/system/file-edit.test.ts"
   ],
   "rows": [
     {
@@ -67,10 +70,13 @@
       ],
       "edgeCases": [
         "startup timeout",
+        "concurrent start calls",
+        "crash recovery after process exit",
         "request before healthy state",
         "restart cap"
       ],
       "tests": [
+        "runtime/src/services/lsp/LSPClient.test.ts",
         "runtime/src/services/lsp/LSPServerInstance.test.ts",
         "runtime/src/services/lsp/manager.test.ts"
       ],
@@ -86,9 +92,13 @@
       "edgeCases": [
         "unsupported extensions",
         "already-open files",
+        "file create and empty-file write notification paths",
         "shutdown clears maps"
       ],
-      "tests": ["runtime/src/services/lsp/LSPServerManager.test.ts"],
+      "tests": [
+        "runtime/src/services/lsp/LSPServerManager.test.ts",
+        "runtime/src/tools/system/file-edit.test.ts"
+      ],
       "status": "required"
     },
     {
@@ -100,12 +110,15 @@
       ],
       "edgeCases": [
         "invalid notification payloads",
+        "malformed diagnostic entries mixed with valid entries",
         "duplicate diagnostics",
-        "large diagnostic batches"
+        "large diagnostic batches",
+        "non-destructive per-file diagnostic queries"
       ],
       "tests": [
         "runtime/src/services/lsp/passiveFeedback.test.ts",
-        "runtime/src/services/lsp/LSPDiagnosticRegistry.test.ts"
+        "runtime/src/services/lsp/LSPDiagnosticRegistry.test.ts",
+        "runtime/src/bin/model-facing-tools.test.ts"
       ],
       "status": "required"
     }

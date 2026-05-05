@@ -9,9 +9,18 @@ import { clearDeliveredDiagnosticsForFile } from "./LSPDiagnosticRegistry.js";
 import { getLspServerManager } from "./manager.js";
 
 export function notifyLspFileChanged(filePath: string, content: string): void {
-  clearDeliveredDiagnosticsForFile(pathToFileURL(resolve(filePath)).href);
+  const absolutePath = resolve(filePath);
+  clearDeliveredDiagnosticsForFile(absolutePath);
+  clearDeliveredDiagnosticsForFile(pathToFileURL(absolutePath).href);
   const manager = getLspServerManager();
   if (!manager) return;
-  void manager.changeFile(filePath, content).catch(() => {});
-  void manager.saveFile(filePath).catch(() => {});
+  void (async () => {
+    try {
+      await manager.changeFile(filePath, content);
+      await manager.saveFile(filePath);
+    } catch {
+      // LSP notifications are best-effort. File mutation tools must never fail
+      // because an optional language server is unavailable.
+    }
+  })();
 }

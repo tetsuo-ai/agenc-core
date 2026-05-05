@@ -95,6 +95,8 @@ export function createLSPServerInstance(
   let lastError: Error | undefined;
   let restartCount = 0;
   let crashRecoveryCount = 0;
+  let activeStart: Promise<void> | undefined;
+  let startGeneration = 0;
   const makeClient =
     options.createClient ??
     ((serverName: string, onCrash: (error: Error) => void) =>
@@ -108,7 +110,11 @@ export function createLSPServerInstance(
     });
 
   async function start(): Promise<void> {
-    if (state === "running" || state === "starting") return;
+    if (state === "running") return;
+    if (state === "starting") {
+      if (activeStart) await activeStart;
+      return;
+    }
 
     const maxRestarts = config.maxRestarts ?? 3;
     if (state === "error" && crashRecoveryCount > maxRestarts) {
@@ -119,6 +125,15 @@ export function createLSPServerInstance(
       throw error;
     }
 
+    activeStart = startCore(++startGeneration);
+    try {
+      await activeStart;
+    } finally {
+      activeStart = undefined;
+    }
+  }
+
+  async function startCore(generation: number): Promise<void> {
     let initPromise: Promise<unknown> | undefined;
     try {
       state = "starting";
@@ -189,6 +204,11 @@ export function createLSPServerInstance(
         await initPromise;
       }
 
+      if (generation !== startGeneration || state !== "starting") {
+        await client.stop().catch(() => {});
+        return;
+      }
+
       state = "running";
       startTime = new Date();
       crashRecoveryCount = 0;
@@ -196,6 +216,7 @@ export function createLSPServerInstance(
     } catch (error) {
       void client.stop().catch(() => {});
       void initPromise?.catch(() => {});
+      if (generation !== startGeneration) return;
       state = "error";
       lastError = error instanceof Error ? error : new Error(String(error));
       throw lastError;
@@ -204,6 +225,7 @@ export function createLSPServerInstance(
 
   async function stop(): Promise<void> {
     if (state === "stopped" || state === "stopping") return;
+    startGeneration += 1;
     try {
       state = "stopping";
       await client.stop();

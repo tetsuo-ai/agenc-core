@@ -19,7 +19,11 @@ import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+
+vi.mock("../../services/lsp/fileNotifications.js", () => ({
+  notifyLspFileChanged: vi.fn(),
+}));
 
 import {
   createFileEditTool,
@@ -35,6 +39,7 @@ import {
   SESSION_AGENC_HOME_ARG,
   SESSION_ID_ARG,
 } from "./filesystem.js";
+import { notifyLspFileChanged } from "../../services/lsp/fileNotifications.js";
 import {
   clearAllPlanSlugs,
   getPlanFilePath,
@@ -48,6 +53,7 @@ describe("Edit tool", () => {
 
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "agenc-file-edit-"));
+    vi.mocked(notifyLspFileChanged).mockClear();
   });
 
   afterEach(async () => {
@@ -541,6 +547,63 @@ describe("Edit tool", () => {
     });
     await expect(readFile(file, "utf8")).resolves.toBe("done\n");
     expect(getSessionReadSnapshot(SESSION_ID, file)?.content).toBe("done\n");
+    expect(notifyLspFileChanged).toHaveBeenCalledWith(file, "done\n");
+  });
+
+  test("notifies LSP for Edit create and empty-file writes", async () => {
+    const created = join(root, "created.ts");
+    const empty = join(root, "empty.ts");
+    await writeFile(empty, "", "utf8");
+
+    const tool = createFileEditTool({ allowedPaths: [root] });
+    await tool.execute({
+      file_path: created,
+      old_string: "",
+      new_string: "export const created = true;\n",
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+    await tool.execute({
+      file_path: empty,
+      old_string: "",
+      new_string: "export const empty = true;\n",
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(notifyLspFileChanged).toHaveBeenCalledWith(
+      created,
+      "export const created = true;\n",
+    );
+    expect(notifyLspFileChanged).toHaveBeenCalledWith(
+      empty,
+      "export const empty = true;\n",
+    );
+  });
+
+  test("notifies LSP for MultiEdit create and empty-file writes", async () => {
+    const created = join(root, "multi-created.ts");
+    const empty = join(root, "multi-empty.ts");
+    await writeFile(empty, "", "utf8");
+
+    const tool = createFileMultiEditTool({ allowedPaths: [root] });
+    await tool.execute({
+      file_path: created,
+      edits: [{ old_string: "", new_string: "export const created = true;\n" }],
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+    await tool.execute({
+      file_path: empty,
+      edits: [{ old_string: "", new_string: "export const empty = true;\n" }],
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(notifyLspFileChanged).toHaveBeenCalledWith(
+      created,
+      "export const created = true;\n",
+    );
+    expect(notifyLspFileChanged).toHaveBeenCalledWith(
+      empty,
+      "export const empty = true;\n",
+    );
   });
 
   test("MultiEdit leaves the file untouched when a later edit fails", async () => {

@@ -12,6 +12,11 @@ import { createModelFacingTools } from "./model-facing-tools.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
 import { _clearAgentControlCacheForTesting, _setAgentControlForTesting } from "./delegate-tool.js";
 import {
+  checkForLSPDiagnostics,
+  registerPendingLSPDiagnostic,
+  resetAllLSPDiagnosticState,
+} from "../services/lsp/LSPDiagnosticRegistry.js";
+import {
   clearSessionReadState,
   getSessionReadSnapshot,
 } from "../tools/system/filesystem.js";
@@ -175,6 +180,7 @@ function codeMode<T>(result: { readonly codeModeResult?: unknown }): T {
 describe("model-facing tools", () => {
   beforeEach(() => {
     delegateMock.mockReset();
+    resetAllLSPDiagnosticState();
   });
 
   it("registers the requested product tools and omits raw system HTTP tools", () => {
@@ -309,6 +315,55 @@ describe("model-facing tools", () => {
       properties: {},
       additionalProperties: false,
     });
+  });
+
+  it("returns LSP diagnostics for one file without draining other pending diagnostics", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-lsp-tool-"));
+    try {
+      const a = join(root, "a.ts");
+      const b = join(root, "b.ts");
+      await writeFile(a, "const a = 1;\n", "utf8");
+      await writeFile(b, "const b = 1;\n", "utf8");
+      registerPendingLSPDiagnostic({
+        serverName: "ts",
+        files: [
+          {
+            uri: a,
+            diagnostics: [{
+              message: "a diag",
+              severity: "Error",
+            }],
+          },
+          {
+            uri: b,
+            diagnostics: [{
+              message: "b diag",
+              severity: "Warning",
+            }],
+          },
+        ],
+      });
+
+      const tools = createModelFacingTools({
+        workspaceRoot: root,
+        getSession: () => null,
+      });
+      const lsp = tools.find((tool) => tool.name === "LSP")!;
+
+      const result = await lsp.execute({
+        operation: "diagnostics",
+        file_path: "a.ts",
+      });
+
+      expect(JSON.parse(result.content).diagnostics).toEqual([
+        { message: "a diag", severity: "Error" },
+      ]);
+      expect(
+        checkForLSPDiagnostics()[0]!.files.map((file) => file.uri).sort(),
+      ).toEqual([a, b]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("persists TaskCreate/TaskGet/TaskUpdate/TaskList against the per-project task board", async () => {

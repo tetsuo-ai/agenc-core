@@ -100,7 +100,7 @@ import type {
   ToolPermissionContext,
 } from "../permissions/types.js";
 import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
-import { checkForLSPDiagnostics } from "../services/lsp/LSPDiagnosticRegistry.js";
+import { peekLSPDiagnosticsForFile } from "../services/lsp/LSPDiagnosticRegistry.js";
 import { getLspServerManager } from "../services/lsp/manager.js";
 
 export interface ModelFacingToolOptions {
@@ -2737,10 +2737,7 @@ function createLspTool(opts: ModelFacingToolOptions): Tool {
         }
         const manager = getLspServerManager();
         const server = await manager?.ensureServerStarted(resolved);
-        const pendingDiagnostics = checkForLSPDiagnostics()
-          .flatMap((set) => set.files)
-          .filter((file) => file.uri === resolved || file.uri === filePath)
-          .flatMap((file) => file.diagnostics);
+        const pendingDiagnostics = peekLSPDiagnosticsForFile(resolved);
         return json({
           file_path: resolved,
           diagnostics: pendingDiagnostics,

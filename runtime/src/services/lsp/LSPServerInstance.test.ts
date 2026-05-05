@@ -93,4 +93,62 @@ describe("createLSPServerInstance", () => {
     expect(instance.state).toBe("error");
     expect(instance.lastError?.message).toContain("timed out");
   });
+
+  test("concurrent start calls share the same startup", async () => {
+    let releaseInitialize!: () => void;
+    const initializeGate = new Promise<void>((resolve) => {
+      releaseInitialize = resolve;
+    });
+    const client = fakeClient({
+      initialize: async () => {
+        await initializeGate;
+        client.initialized = true;
+        return { capabilities: {} };
+      },
+    });
+    const instance = createLSPServerInstance(
+      "concurrent",
+      normalizeLspServerConfig("concurrent", {
+        command: "server",
+        extensionToLanguage: { ".ts": "typescript" },
+      }),
+      { client },
+    );
+
+    const first = instance.start();
+    const second = instance.start();
+    expect(client.starts).toHaveLength(1);
+    releaseInitialize();
+    await Promise.all([first, second]);
+
+    expect(instance.state).toBe("running");
+    expect(client.starts).toHaveLength(1);
+  });
+
+  test("restarts after crash state is reported", async () => {
+    let crash: ((error: Error) => void) | undefined;
+    const client = fakeClient();
+    const instance = createLSPServerInstance(
+      "crashy",
+      normalizeLspServerConfig("crashy", {
+        command: "server",
+        extensionToLanguage: { ".ts": "typescript" },
+      }),
+      {
+        createClient: (_name, onCrash) => {
+          crash = onCrash;
+          return client;
+        },
+      },
+    );
+
+    await instance.start();
+    expect(client.starts).toHaveLength(1);
+    crash?.(new Error("server exited"));
+    expect(instance.state).toBe("error");
+
+    await instance.start();
+    expect(client.starts).toHaveLength(2);
+    expect(instance.state).toBe("running");
+  });
 });

@@ -51,21 +51,41 @@ function isPublishDiagnosticsParams(
   );
 }
 
+function isDiagnosticPayload(diagnostic: unknown): diagnostic is PublishDiagnosticsParams["diagnostics"][number] {
+  if (typeof diagnostic !== "object" || diagnostic === null) return false;
+  const candidate = diagnostic as {
+    readonly message?: unknown;
+    readonly range?: {
+      readonly start?: { readonly line?: unknown; readonly character?: unknown };
+      readonly end?: { readonly line?: unknown; readonly character?: unknown };
+    };
+  };
+  return (
+    typeof candidate.message === "string" &&
+    typeof candidate.range?.start?.line === "number" &&
+    typeof candidate.range.start.character === "number" &&
+    typeof candidate.range?.end?.line === "number" &&
+    typeof candidate.range.end.character === "number"
+  );
+}
+
 export function formatDiagnosticsForAttachment(
   params: PublishDiagnosticsParams,
 ): DiagnosticFile[] {
   return [
     {
       uri: uriToPath(params.uri),
-      diagnostics: params.diagnostics.map((diagnostic) => ({
-        message: diagnostic.message,
-        severity: mapLSPSeverity(diagnostic.severity),
-        range: diagnostic.range,
-        source: diagnostic.source,
-        ...(diagnostic.code !== undefined
-          ? { code: String(diagnostic.code) }
-          : {}),
-      })),
+      diagnostics: params.diagnostics
+        .filter(isDiagnosticPayload)
+        .map((diagnostic) => ({
+          message: diagnostic.message,
+          severity: mapLSPSeverity(diagnostic.severity),
+          range: diagnostic.range,
+          source: diagnostic.source,
+          ...(diagnostic.code !== undefined
+            ? { code: String(diagnostic.code) }
+            : {}),
+        })),
     },
   ];
 }

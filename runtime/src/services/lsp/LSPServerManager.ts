@@ -75,20 +75,20 @@ export function createLSPServerManager(
           );
         }
 
+        const instance = instanceFactory(serverName, config);
+        instance.onRequest(
+          "workspace/configuration",
+          (params: { readonly items?: readonly unknown[] }) =>
+            (params.items ?? []).map(() => null),
+        );
+        servers.set(serverName, instance);
+
         for (const ext of Object.keys(config.extensionToLanguage)) {
           const normalized = ext.toLowerCase();
           const list = extensionMap.get(normalized) ?? [];
           list.push(serverName);
           extensionMap.set(normalized, list);
         }
-
-        const instance = instanceFactory(serverName, config);
-        servers.set(serverName, instance);
-        instance.onRequest(
-          "workspace/configuration",
-          (params: { readonly items?: readonly unknown[] }) =>
-            (params.items ?? []).map(() => null),
-        );
       } catch {
         servers.delete(serverName);
       }
@@ -97,7 +97,10 @@ export function createLSPServerManager(
 
   async function shutdown(): Promise<void> {
     const toStop = Array.from(servers.entries()).filter(
-      ([, server]) => server.state === "running" || server.state === "error",
+      ([, server]) =>
+        server.state === "running" ||
+        server.state === "starting" ||
+        server.state === "error",
     );
     const results = await Promise.allSettled(
       toStop.map(([, server]) => server.stop()),
@@ -131,7 +134,11 @@ export function createLSPServerManager(
   ): Promise<LSPServerInstance | undefined> {
     const server = getServerForFile(filePath);
     if (!server) return undefined;
-    if (server.state === "stopped" || server.state === "error") {
+    if (
+      server.state === "stopped" ||
+      server.state === "starting" ||
+      server.state === "error"
+    ) {
       await server.start();
     }
     return server;

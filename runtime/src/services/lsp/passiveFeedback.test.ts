@@ -47,6 +47,28 @@ describe("passive LSP feedback", () => {
     ]);
   });
 
+  test("filters malformed diagnostic entries without dropping valid ones", () => {
+    const files = formatDiagnosticsForAttachment({
+      uri: "/tmp/example.ts",
+      diagnostics: [
+        {
+          message: "bad type",
+          severity: 1,
+          range: {
+            start: { line: 1, character: 0 },
+            end: { line: 1, character: 3 },
+          },
+        },
+        {
+          message: "missing range",
+        } as never,
+      ],
+    });
+
+    expect(files[0]!.diagnostics).toHaveLength(1);
+    expect(files[0]!.diagnostics[0]!.message).toBe("bad type");
+  });
+
   test("registers notification handlers and isolates invalid payloads", () => {
     const handlers = new Map<string, (params: unknown) => void>();
     const server = {

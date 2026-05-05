@@ -102,6 +102,34 @@ export function createLSPClient(
     options.onDiagnostic?.(`[lsp:${serverName}] ${message}`);
   };
 
+  const disposeConnection = (): void => {
+    if (!connection) return;
+    const current = connection;
+    connection = undefined;
+    try {
+      current.dispose();
+    } catch (error) {
+      diagnostic(`connection dispose failed: ${errorMessage(error)}`);
+    }
+  };
+
+  const clearConnectionState = (): void => {
+    disposeConnection();
+    initialized = false;
+    capabilities = undefined;
+  };
+
+  const clearClosedRuntimeState = (): void => {
+    clearConnectionState();
+    if (child) {
+      child.removeAllListeners("error");
+      child.removeAllListeners("exit");
+      child.stdin?.removeAllListeners("error");
+      child.stderr?.removeAllListeners("data");
+      child = undefined;
+    }
+  };
+
   const assertStarted = (): void => {
     if (startFailed) {
       throw startError ?? new Error(`LSP server ${serverName} failed to start`);
@@ -180,7 +208,7 @@ export function createLSPClient(
 
         child.on("exit", (code, signal) => {
           if (stopping) return;
-          initialized = false;
+          clearClosedRuntimeState();
           if (code !== 0 && code !== null) {
             const error = new Error(
               `LSP server ${serverName} crashed with exit code ${code}`,
@@ -211,14 +239,18 @@ export function createLSPClient(
 
         connection.onClose(() => {
           if (stopping) return;
-          initialized = false;
+          clearConnectionState();
           diagnostic("connection closed");
         });
 
         connection.listen();
-        void connection.trace(Trace.Verbose, {
-          log: (message: string) => diagnostic(message),
-        });
+        void connection
+          .trace(Trace.Verbose, {
+            log: (message: string) => diagnostic(message),
+          })
+          .catch((error: Error) => {
+            diagnostic(`trace setup failed: ${error.message}`);
+          });
         applyQueuedHandlers();
       } catch (error) {
         startFailed = true;
@@ -304,12 +336,7 @@ export function createLSPClient(
       } catch (error) {
         shutdownError = error instanceof Error ? error : new Error(String(error));
       } finally {
-        try {
-          connection?.dispose();
-        } catch (error) {
-          diagnostic(`connection dispose failed: ${errorMessage(error)}`);
-        }
-        connection = undefined;
+        disposeConnection();
         if (child) {
           child.removeAllListeners("error");
           child.removeAllListeners("exit");

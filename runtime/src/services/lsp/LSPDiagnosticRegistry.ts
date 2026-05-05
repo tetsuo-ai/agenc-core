@@ -7,6 +7,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { LRUCache } from "lru-cache";
 
@@ -51,6 +53,29 @@ function diagnosticKey(diag: DiagnosticEntry): string {
     source: diag.source ?? null,
     code: diag.code ?? null,
   });
+}
+
+function fileKeys(file: string): string[] {
+  const keys = new Set([file]);
+  if (file.startsWith("file://")) {
+    try {
+      keys.add(fileURLToPath(file));
+    } catch {
+      // Keep the original malformed URI key only.
+    }
+  } else {
+    try {
+      keys.add(pathToFileURL(resolve(file)).href);
+    } catch {
+      // Keep the original path key only.
+    }
+  }
+  return Array.from(keys);
+}
+
+function fileMatches(a: string, b: string): boolean {
+  const aKeys = new Set(fileKeys(a));
+  return fileKeys(b).some((key) => aKeys.has(key));
 }
 
 function deduplicateDiagnosticFiles(
@@ -144,6 +169,29 @@ export function checkForLSPDiagnostics(): Array<{
   ];
 }
 
+export function peekLSPDiagnosticsForFile(file: string): DiagnosticEntry[] {
+  const seen = new Set<string>();
+  const diagnostics: DiagnosticEntry[] = [];
+
+  for (const pending of pendingDiagnostics.values()) {
+    if (pending.attachmentSent) continue;
+    for (const diagnosticFile of pending.files) {
+      if (!fileMatches(diagnosticFile.uri, file)) continue;
+      const delivered = deliveredDiagnostics.get(diagnosticFile.uri) ?? new Set();
+      for (const diagnostic of diagnosticFile.diagnostics) {
+        const key = diagnosticKey(diagnostic);
+        if (seen.has(key) || delivered.has(key)) continue;
+        seen.add(key);
+        diagnostics.push(diagnostic);
+      }
+    }
+  }
+
+  return diagnostics.sort(
+    (a, b) => severityToNumber(a.severity) - severityToNumber(b.severity),
+  );
+}
+
 export function clearAllLSPDiagnostics(): void {
   pendingDiagnostics.clear();
 }
@@ -154,7 +202,9 @@ export function resetAllLSPDiagnosticState(): void {
 }
 
 export function clearDeliveredDiagnosticsForFile(fileUri: string): void {
-  deliveredDiagnostics.delete(fileUri);
+  for (const key of fileKeys(fileUri)) {
+    deliveredDiagnostics.delete(key);
+  }
 }
 
 export function getPendingLSPDiagnosticCount(): number {

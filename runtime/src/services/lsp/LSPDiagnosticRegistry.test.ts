@@ -4,6 +4,7 @@ import {
   checkForLSPDiagnostics,
   clearDeliveredDiagnosticsForFile,
   getPendingLSPDiagnosticCount,
+  peekLSPDiagnosticsForFile,
   registerPendingLSPDiagnostic,
   resetAllLSPDiagnosticState,
 } from "./LSPDiagnosticRegistry.js";
@@ -49,6 +50,50 @@ describe("LSPDiagnosticRegistry", () => {
       files: [{ uri: "/tmp/a.ts", diagnostics: [baseDiagnostic] }],
     });
     expect(checkForLSPDiagnostics()[0]!.files[0]!.diagnostics).toHaveLength(1);
+  });
+
+  test("clears delivered diagnostics by either path or file URI", () => {
+    registerPendingLSPDiagnostic({
+      serverName: "ts",
+      files: [{ uri: "/tmp/a.ts", diagnostics: [baseDiagnostic] }],
+    });
+    expect(checkForLSPDiagnostics()[0]!.files[0]!.diagnostics).toHaveLength(1);
+
+    registerPendingLSPDiagnostic({
+      serverName: "ts",
+      files: [{ uri: "/tmp/a.ts", diagnostics: [baseDiagnostic] }],
+    });
+    expect(checkForLSPDiagnostics()).toEqual([]);
+
+    clearDeliveredDiagnosticsForFile("file:///tmp/a.ts");
+    registerPendingLSPDiagnostic({
+      serverName: "ts",
+      files: [{ uri: "/tmp/a.ts", diagnostics: [baseDiagnostic] }],
+    });
+    expect(checkForLSPDiagnostics()[0]!.files[0]!.diagnostics).toHaveLength(1);
+  });
+
+  test("peeks diagnostics for one file without draining other pending files", () => {
+    registerPendingLSPDiagnostic({
+      serverName: "ts",
+      files: [
+        { uri: "/tmp/a.ts", diagnostics: [baseDiagnostic] },
+        {
+          uri: "/tmp/b.ts",
+          diagnostics: [{ ...baseDiagnostic, message: "other file" }],
+        },
+      ],
+    });
+
+    expect(peekLSPDiagnosticsForFile("/tmp/a.ts").map((d) => d.message)).toEqual([
+      "missing semicolon",
+    ]);
+
+    const drained = checkForLSPDiagnostics()[0]!.files;
+    expect(drained.map((file) => file.uri).sort()).toEqual([
+      "/tmp/a.ts",
+      "/tmp/b.ts",
+    ]);
   });
 
   test("limits diagnostic volume by severity", () => {
