@@ -1,7 +1,7 @@
 import { type StructuredPatchHunk, structuredPatch } from 'diff'
 import { logEvent } from 'src/services/analytics/index.js'
 import { getLocCounter } from '../bootstrap/state.js'
-import { addToTotalLinesChanged } from '../cost-tracker.js'
+import { addToTotalLinesChanged } from '../../../cost/tracker.js'
 import type { FileEdit } from '../tools/FileEditTool/types.js'
 import { count } from './array.js'
 import { convertLeadingTabsToSpaces } from './file.js'

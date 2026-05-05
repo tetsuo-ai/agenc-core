@@ -29,7 +29,7 @@ import { startPreventSleep, stopPreventSleep } from '../services/preventSleep.js
 import { useTerminalNotification } from '../../../tui/ink/useTerminalNotification.js';
 import { hasCursorUpViewportYankBug } from '../../../tui/ink/terminal.js';
 import { createFileStateCacheWithSizeLimit, mergeFileStateCaches, READ_FILE_STATE_CACHE_SIZE } from '../utils/fileStateCache.js';
-import { updateLastInteractionTime, getLastInteractionTime, getOriginalCwd, getProjectRoot, getSessionId, switchSession, setCostStateForRestore, getTurnHookDurationMs, getTurnHookCount, resetTurnHookDuration, getTurnToolDurationMs, getTurnToolCount, resetTurnToolDuration, getTurnClassifierDurationMs, getTurnClassifierCount, resetTurnClassifierDuration } from '../bootstrap/state.js';
+import { updateLastInteractionTime, getLastInteractionTime, getOriginalCwd, getProjectRoot, getSessionId, switchSession, getTurnHookDurationMs, getTurnHookCount, resetTurnHookDuration, getTurnToolDurationMs, getTurnToolCount, resetTurnToolDuration, getTurnClassifierDurationMs, getTurnClassifierCount, resetTurnClassifierDuration } from '../bootstrap/state.js';
 import { asSessionId, asAgentId } from '../types/ids.js';
 import { logForDebugging } from 'src/utils/debug.js';
 import { QueryGuard } from '../utils/QueryGuard.js';
@@ -72,8 +72,8 @@ import { buildEffectiveSystemPrompt } from '../utils/systemPrompt.js';
 import { getSystemContext, getUserContext } from '../context.js';
 import { getMemoryFiles } from '../utils/claudemd.js'; // branding-scan: allow upstream mirror import path
 import { startBackgroundHousekeeping } from '../utils/backgroundHousekeeping.js';
-import { getTotalCost, saveCurrentSessionCosts, resetCostState, getStoredSessionCosts } from '../cost-tracker.js';
-import { useCostSummary } from '../costHook.js';
+import { getTotalCost, saveCurrentSessionCosts, resetCostState, restoreCostStateForSession } from '../../../cost/tracker.js';
+import { useCostSummary } from '../../../cost/hook.js';
 import { useFpsMetrics } from '../context/fpsMetrics.js';
 import { useAfterFirstRender } from '../hooks/useAfterFirstRender.js';
 import { useDeferredHookMessages } from '../hooks/useDeferredHookMessages.js';
@@ -1863,12 +1863,8 @@ export function REPL({
       setAbortController(null);
       setConversationId(sessionId);
 
-      // Get target session's costs BEFORE saving current session
-      // (saveCurrentSessionCosts overwrites the config, so we need to read first)
-      const targetSessionCosts = getStoredSessionCosts(sessionId);
-
       // Save current session's costs before switching to avoid losing accumulated costs
-      saveCurrentSessionCosts();
+      await saveCurrentSessionCosts();
 
       // Reset cost state for clean slate before restoring target session
       resetCostState();
@@ -1937,10 +1933,8 @@ export function REPL({
         saveMode(isCoordinatorMode() ? 'coordinator' : 'normal');
       }
 
-      // Restore target session's costs from the data we read earlier
-      if (targetSessionCosts) {
-        setCostStateForRestore(targetSessionCosts);
-      }
+      // Restore target session's costs from the loaded per-session ledger
+      restoreCostStateForSession(sessionId);
 
       // Reconstruct replacement state for the resumed session. Runs after
       // setSessionId so any NEW replacements post-resume write to the

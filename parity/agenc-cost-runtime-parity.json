@@ -1,0 +1,123 @@
+{
+  "contractName": "agenc-cost-runtime-parity",
+  "scope": "Per-provider cost tracker facade, active sidecar binding, cost summary hook fallback, and resume-safe session total restoration",
+  "generatedAt": "2026-05-05T00:00:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
+  "sourceRootBrandingScanOverride": "branding-scan: allow upstream source path",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/cost-tracker.ts",
+    "src/costHook.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/cost/tracker.ts",
+    "runtime/src/cost/hook.ts",
+    "runtime/src/cost/PARITY.md",
+    "runtime/src/session/cost.ts",
+    "runtime/src/bin/bootstrap.ts",
+    "runtime/src/tui/history/ResumeConversation.tsx",
+    "runtime/src/tui/startup/StatusLine.tsx",
+    "runtime/src/agenc/upstream/QueryEngine.ts",
+    "runtime/src/agenc/upstream/services/api/claude.ts",
+    "runtime/src/agenc/upstream/services/api/logging.ts",
+    "runtime/src/agenc/upstream/services/vcr.ts",
+    "runtime/src/agenc/upstream/components/Settings/Usage.tsx"
+  ],
+  "testFiles": [
+    "runtime/src/cost/tracker.test.ts",
+    "runtime/src/session/cost.test.ts",
+    "runtime/src/session/cost-persistence.test.ts",
+    "runtime/src/commands/status.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "single-accounting-engine",
+      "source": "src/cost-tracker.ts",
+      "target": "runtime/src/cost/tracker.ts + runtime/src/session/cost.ts",
+      "requiredBehaviors": [
+        "expose donor-shaped process getters without creating a second token or dollar accumulator",
+        "delegate live totals to the active CostSidecar",
+        "return safe zero defaults when no active sidecar is bound",
+        "carry detached line counters into the sidecar when binding happens after line accounting"
+      ],
+      "edgeCases": [
+        "no active sidecar",
+        "active sidecar replacement",
+        "stale disposer from an older sidecar",
+        "line changes before sidecar binding"
+      ],
+      "tests": [
+        "runtime/src/cost/tracker.test.ts",
+        "runtime/src/session/cost.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "live-api-producers",
+      "source": "src/cost-tracker.ts::addToTotalSessionCost + API duration state",
+      "target": "runtime/src/cost/tracker.ts + runtime/src/session/cost.ts",
+      "requiredBehaviors": [
+        "route API and VCR token-dollar producers into the active CostSidecar",
+        "preserve explicit API-computed USD cost instead of recomputing it differently",
+        "record cache read/write token totals and explicit cache-aware API cost from the migrated facade",
+        "route API duration including retry and without-retry timings into the sidecar"
+      ],
+      "edgeCases": [
+        "producer runs before a sidecar is active",
+        "API logging duration and turn_complete duration both occur for one turn",
+        "cache metrics are unavailable for a provider"
+      ],
+      "tests": [
+        "runtime/src/cost/tracker.test.ts",
+        "runtime/src/session/cost.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "resume-replacement",
+      "source": "src/cost-tracker.ts::restoreCostStateForSession",
+      "target": "runtime/src/session/cost.ts + runtime/src/cost/tracker.ts + runtime/src/tui/history/ResumeConversation.tsx",
+      "requiredBehaviors": [
+        "restore a matching persisted session into the current sidecar",
+        "remove the restored record from loaded lifetime totals before treating it as current-session baseline",
+        "replace the restored session record on shutdown instead of appending a duplicate",
+        "preserve duration, API duration, line counters, aggregate legacy totals, and per-provider model buckets"
+      ],
+      "edgeCases": [
+        "legacy records without modelUsage",
+        "repeated restore of the same session id",
+        "restore attempted after current in-memory usage already exists",
+        "malformed nested modelUsage rows from a previous cost-totals file"
+      ],
+      "tests": [
+        "runtime/src/session/cost-persistence.test.ts",
+        "runtime/src/cost/tracker.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "summary-hook-and-status",
+      "source": "src/costHook.ts + src/cost-tracker.ts::formatTotalCost",
+      "target": "runtime/src/cost/hook.ts + runtime/src/bin/bootstrap.ts + runtime/src/tui/startup/StatusLine.tsx",
+      "requiredBehaviors": [
+        "bootstrap binds the active CostSidecar for status-line cost getters",
+        "shutdown clears the active binding so future getters do not read stale sessions",
+        "the hook fallback does not add a duplicate exit listener while bootstrap owns the active CostSidecar summary",
+        "status-line cost input reads AgenC-owned cost/tracker.ts instead of the upstream mirror"
+      ],
+      "edgeCases": [
+        "bootstrap-managed sidecar",
+        "fallback hook with no active sidecar",
+        "fallback hook registered before bootstrap binds a sidecar",
+        "live tree import scan for retired cost-tracker mirror imports",
+        "retired upstream cost mirror files deleted"
+      ],
+      "tests": [
+        "runtime/src/cost/tracker.test.ts",
+        "runtime/src/commands/status.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

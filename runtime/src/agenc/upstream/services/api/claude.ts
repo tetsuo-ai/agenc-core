@@ -99,7 +99,7 @@ import {
   currentLimits,
   extractQuotaStatusFromError,
   extractQuotaStatusFromHeaders,
-} from '../claudeAiLimits.js'
+} from '../claudeAiLimits.js' // branding-scan: allow existing upstream provider-limit module path
 import { getAPIContextManagement } from '../compact/apiMicrocompact.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -144,7 +144,7 @@ import {
 } from 'src/constants/betas.js'
 import type { QuerySource } from 'src/constants/querySource.js'
 import type { Notification } from 'src/context/notifications.js'
-import { addToTotalSessionCost } from 'src/cost-tracker.js'
+import { addToTotalSessionCost } from 'src/cost/tracker.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import type { AgentId } from 'src/types/ids.js'
 import {
@@ -162,8 +162,8 @@ import {
   shouldIncludeFirstPartyOnlyBetas,
   shouldUseGlobalCacheScope,
 } from 'src/utils/betas.js'
-import { AGENC_IN_CHROME_MCP_SERVER_NAME } from 'src/utils/claudeInChrome/common.js'
-import { CHROME_TOOL_SEARCH_INSTRUCTIONS } from 'src/utils/claudeInChrome/prompt.js'
+import { AGENC_IN_CHROME_MCP_SERVER_NAME } from 'src/utils/claudeInChrome/common.js' // branding-scan: allow existing upstream browser-integration module path
+import { CHROME_TOOL_SEARCH_INSTRUCTIONS } from 'src/utils/claudeInChrome/prompt.js' // branding-scan: allow existing upstream browser-integration module path
 import { getMaxThinkingTokensForModel } from 'src/utils/context.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from 'src/utils/diagLogs.js'
@@ -332,12 +332,12 @@ export function getExtraBodyParams(betaHeaders?: string[]): JsonObject {
 }
 
 export function getPromptCachingEnabled(model: string): boolean {
-  // Prompt caching is an Anthropic-specific feature. Third-party providers
+  // Prompt caching is an Anthropic-specific feature. Third-party providers // branding-scan: allow provider API terminology
   // do not understand cache_control blocks and strict backends (e.g. Azure
   // Foundry) reject or flag requests that contain them.
   //
-  // Exception: when the GitHub provider is configured in native Anthropic API
-  // mode (AGENC_GITHUB_ANTHROPIC_API=1), requests are sent in Anthropic
+  // Exception: when the GitHub provider is configured in native Anthropic API // branding-scan: allow provider API terminology
+  // mode (AGENC_GITHUB_ANTHROPIC_API=1), requests are sent in Anthropic // branding-scan: allow provider API terminology
   // format, so cache_control blocks are supported.
   const provider = getAPIProvider()
   const isNativeGithub = isGithubNativeAnthropicMode(model)
@@ -483,7 +483,7 @@ function configureEffortParams(
 // Stainless SDK types don't yet include task_budget on BetaOutputConfig, so we
 // define the wire shape locally and cast. The API validates on receipt; see
 // api/api/schemas/messages/request/output_config.py:12-39 in the monorepo.
-// Beta: task-budgets-2026-03-13 (EAP, claude-strudel-eap only as of Mar 2026).
+// Beta: task-budgets-2026-03-13 (EAP, claude-strudel-eap only as of Mar 2026). // branding-scan: allow provider model family reference
 type TaskBudgetParam = {
   type: 'tokens'
   total: number
@@ -2954,7 +2954,7 @@ export function cleanupStream(
 
 /**
  * Updates usage statistics with new values from streaming API events.
- * Note: Anthropic's streaming API provides cumulative usage totals, not incremental deltas.
+ * Note: Anthropic's streaming API provides cumulative usage totals, not incremental deltas. // branding-scan: allow provider API terminology
  * Each event contains the complete usage up to that point in the stream.
  *
  * Input-related tokens (input_tokens, cache_creation_input_tokens, cache_read_input_tokens)
@@ -3444,7 +3444,7 @@ export function getMaxOutputTokensForModel(model: string): number {
   // = 4,911 tokens; 32k/64k defaults over-reserve 8-16× slot capacity.
   // Requests hitting the cap get one clean retry at 64k (query.ts
   // max_output_tokens_escalate). Math.min keeps models with lower native
-  // defaults (e.g. claude-3-opus at 4k) at their native value. Applied
+  // defaults (e.g. claude-3-opus at 4k) at their native value. Applied // branding-scan: allow provider model family reference
   // before the env-var override so AGENC_MAX_OUTPUT_TOKENS still wins.
   const defaultTokens = isMaxTokensCapEnabled()
     ? Math.min(maxOutputTokens.default, CAPPED_DEFAULT_MAX_TOKENS)

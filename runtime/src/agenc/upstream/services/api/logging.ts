@@ -5,7 +5,6 @@ import type {
   BetaUsage as Usage,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import {
-  addToTotalDurationState,
   consumePostCompaction,
   getIsNonInteractiveSession,
   getLastApiCompletionTimestamp,
@@ -13,6 +12,7 @@ import {
   markFirstTeleportMessageLogged,
   setLastApiCompletionTimestamp,
 } from 'src/bootstrap/state.js'
+import { addToTotalDurationState } from 'src/cost/tracker.js'
 import type { QueryChainTracking } from 'src/Tool.js'
 import { isConnectorTextBlock } from 'src/types/connectorText.js'
 import type { AssistantMessage } from 'src/types/message.js'
