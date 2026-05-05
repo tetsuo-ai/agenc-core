@@ -369,6 +369,19 @@ export interface AuthConfig {
   readonly backend?: AuthBackendConfigKind;
 }
 
+export interface LspServerConfigInput {
+  readonly command: string;
+  readonly args?: readonly string[];
+  readonly env?: Readonly<Record<string, string>>;
+  readonly workspaceFolder?: string;
+  readonly extensionToLanguage: Readonly<Record<string, string>>;
+  readonly initializationOptions?: unknown;
+  readonly startupTimeout?: number;
+  readonly maxRestarts?: number;
+  readonly restartOnCrash?: boolean;
+  readonly shutdownTimeout?: number;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Canonical AgenCConfig
 // ─────────────────────────────────────────────────────────────────────
@@ -401,7 +414,7 @@ export interface AgenCConfig {
   readonly hooks?: HooksMap;
   readonly mcp_servers?: Readonly<Record<string, McpServerConfig>>;
   readonly daemon?: DaemonConfig;
-  readonly lsp_servers?: unknown;
+  readonly lsp_servers?: Readonly<Record<string, LspServerConfigInput>>;
 
   // ── Settings fields ────────────────────────────────────────────────
   readonly autoUpdates?: boolean;

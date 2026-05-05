@@ -50,4 +50,15 @@ describe("lsp config", () => {
       restore();
     }
   });
+
+  test("surfaces config source failures", async () => {
+    const restore = setLspServerConfigSourceForTesting(() => {
+      throw new Error("cannot read lsp config");
+    });
+    try {
+      await expect(getAllLspServers()).rejects.toThrow("cannot read lsp config");
+    } finally {
+      restore();
+    }
+  });
 });

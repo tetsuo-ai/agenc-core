@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { setTimeout as sleep } from "node:timers/promises";
 
 import { normalizeLspServerConfig } from "./config.js";
 import { createLSPServerInstance } from "./LSPServerInstance.js";
@@ -76,8 +77,14 @@ describe("createLSPServerInstance", () => {
   });
 
   test("cleans up and enters error state when initialize times out", async () => {
+    let stopCompleted = false;
     const client = fakeClient({
       initialize: async () => new Promise(() => {}),
+      stop: async () => {
+        await sleep(10);
+        stopCompleted = true;
+        client.initialized = false;
+      },
     });
     const instance = createLSPServerInstance(
       "slow",
@@ -90,8 +97,38 @@ describe("createLSPServerInstance", () => {
     );
 
     await expect(instance.start()).rejects.toThrow("timed out");
+    expect(stopCompleted).toBe(true);
     expect(instance.state).toBe("error");
     expect(instance.lastError?.message).toContain("timed out");
+  });
+
+  test("uses workspace fallback for process cwd and initialize root", async () => {
+    let initializeParams: unknown;
+    const client = fakeClient({
+      initialize: async (params) => {
+        initializeParams = params;
+        client.initialized = true;
+        return { capabilities: {} };
+      },
+    });
+    const instance = createLSPServerInstance(
+      "workspace",
+      normalizeLspServerConfig("workspace", {
+        command: "server",
+        extensionToLanguage: { ".ts": "typescript" },
+      }),
+      { client, cwd: "/workspace/project" },
+    );
+
+    await instance.start();
+
+    expect((client.starts[0] as unknown[])[2]).toMatchObject({
+      cwd: "/workspace/project",
+    });
+    expect(initializeParams).toMatchObject({
+      rootPath: "/workspace/project",
+      workspaceFolders: [{ name: "project" }],
+    });
   });
 
   test("concurrent start calls share the same startup", async () => {

@@ -87,15 +87,22 @@ describe("createLSPServerManager", () => {
 
     await manager.changeFile("src/a.ts", "let x = 1;");
     await manager.changeFile("src/a.ts", "let x = 2;");
+    await manager.changeFile("src/a.ts", "let x = 3;");
     await manager.saveFile("src/a.ts");
     await manager.closeFile("src/a.ts");
 
     expect(created[0]!.notifications.map((n) => n.method)).toEqual([
       "textDocument/didOpen",
       "textDocument/didChange",
+      "textDocument/didChange",
       "textDocument/didSave",
       "textDocument/didClose",
     ]);
+    expect(
+      created[0]!.notifications
+        .filter((n) => n.method !== "textDocument/didSave" && n.method !== "textDocument/didClose")
+        .map((n) => (n.params as { textDocument: { version: number } }).textDocument.version),
+    ).toEqual([1, 2, 3]);
     expect(manager.isFileOpen("src/a.ts")).toBe(false);
 
     await manager.shutdown();

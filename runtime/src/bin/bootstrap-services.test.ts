@@ -85,23 +85,56 @@ describe("loadBootstrapLspServers", () => {
   test("starts and stops the LSP manager from typed config", async () => {
     _resetLspManagerForTesting();
     try {
-      loadBootstrapLspServers({
-        ...defaultConfig(),
-        lsp_servers: {
-          ts: {
-            command: "typescript-language-server",
-            extensionToLanguage: { ".ts": "typescript" },
+      loadBootstrapLspServers(
+        {
+          ...defaultConfig(),
+          lsp_servers: {
+            ts: {
+              command: "typescript-language-server",
+              extensionToLanguage: { ".ts": "typescript" },
+            },
           },
         },
-      });
+        { workspaceRoot: "/workspace/project" },
+      );
       expect(getInitializationStatus().status).toBe("pending");
       await waitForInitialization();
       expect(getInitializationStatus().status).toBe("success");
       expect(getLspServerManager()?.getAllServers().has("ts")).toBe(true);
 
-      loadBootstrapLspServers({ ...defaultConfig(), lsp_servers: undefined });
+      loadBootstrapLspServers(
+        { ...defaultConfig(), lsp_servers: undefined },
+        { workspaceRoot: "/workspace/project" },
+      );
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(getInitializationStatus().status).toBe("not-started");
+    } finally {
+      await shutdownLspServerManager();
+      _resetLspManagerForTesting();
+    }
+  });
+
+  test("surfaces invalid LSP config as initialization failure", async () => {
+    _resetLspManagerForTesting();
+    try {
+      loadBootstrapLspServers(
+        {
+          ...defaultConfig(),
+          lsp_servers: {
+            broken: {
+              command: "",
+              extensionToLanguage: {},
+            },
+          },
+        },
+        { workspaceRoot: "/workspace/project" },
+      );
+      await waitForInitialization();
+      const status = getInitializationStatus();
+      expect(status.status).toBe("failed");
+      expect(status.status === "failed" ? status.error.message : "").toContain(
+        "Invalid LSP server config",
+      );
     } finally {
       await shutdownLspServerManager();
       _resetLspManagerForTesting();

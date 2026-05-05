@@ -36,6 +36,7 @@ export interface LSPServerManager {
 
 export interface LSPServerManagerOptions {
   readonly configSource?: LspServerConfigSource;
+  readonly workspaceRoot?: string;
   readonly instanceFactory?: (
     name: string,
     config: ScopedLspServerConfig,
@@ -55,11 +56,11 @@ export function createLSPServerManager(
 ): LSPServerManager {
   const servers = new Map<string, LSPServerInstance>();
   const extensionMap = new Map<string, string[]>();
-  const openedFiles = new Map<string, string>();
+  const openedFiles = new Map<string, { serverName: string; version: number }>();
   const instanceFactory =
     options.instanceFactory ??
     ((name: string, config: ScopedLspServerConfig) =>
-      createLSPServerInstance(name, config));
+      createLSPServerInstance(name, config, { cwd: options.workspaceRoot }));
 
   async function initialize(): Promise<void> {
     const { servers: configs } = await getAllLspServers(options.configSource);
@@ -157,7 +158,7 @@ export function createLSPServerManager(
     const server = await ensureServerStarted(filePath);
     if (!server) return;
     const uri = fileUri(filePath);
-    if (openedFiles.get(uri) === server.name) return;
+    if (openedFiles.get(uri)?.serverName === server.name) return;
     const ext = extname(filePath).toLowerCase();
     const languageId = server.config.extensionToLanguage[ext] ?? "plaintext";
     await server.sendNotification("textDocument/didOpen", {
@@ -168,7 +169,7 @@ export function createLSPServerManager(
         text: content,
       },
     });
-    openedFiles.set(uri, server.name);
+    openedFiles.set(uri, { serverName: server.name, version: 1 });
   }
 
   async function changeFile(filePath: string, content: string): Promise<void> {
@@ -178,14 +179,17 @@ export function createLSPServerManager(
       return;
     }
     const uri = fileUri(filePath);
-    if (openedFiles.get(uri) !== server.name) {
+    const opened = openedFiles.get(uri);
+    if (opened?.serverName !== server.name) {
       await openFile(filePath, content);
       return;
     }
+    const version = opened.version + 1;
     await server.sendNotification("textDocument/didChange", {
-      textDocument: { uri, version: 1 },
+      textDocument: { uri, version },
       contentChanges: [{ text: content }],
     });
+    openedFiles.set(uri, { serverName: server.name, version });
   }
 
   async function saveFile(filePath: string): Promise<void> {

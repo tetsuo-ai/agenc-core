@@ -28,7 +28,8 @@
     "runtime/src/bin/bootstrap-services.ts",
     "runtime/src/bin/model-facing-tools.ts",
     "runtime/src/tools/system/file-edit.ts",
-    "runtime/src/tools/system/file-write.ts"
+    "runtime/src/tools/system/file-write.ts",
+    "runtime/src/utils/subprocess-env.ts"
   ],
   "testFiles": [
     "runtime/src/services/lsp/config.test.ts",
@@ -53,7 +54,8 @@
         "extension names without leading dot",
         "missing command",
         "empty extension mappings",
-        "invalid positive integer fields"
+        "invalid positive integer fields",
+        "invalid config surfaces initialization failure"
       ],
       "tests": [
         "runtime/src/services/lsp/config.test.ts",
@@ -66,12 +68,16 @@
       "requiredBehaviors": [
         "Start and initialize each language server before requests.",
         "Track stopped/starting/running/stopping/error state.",
-        "Stop clients on initialization timeout and expose lastError."
+        "Stop clients on initialization timeout and expose lastError.",
+        "Spawn LSP child processes with sanitized inherited environment plus explicit config env."
       ],
       "edgeCases": [
         "startup timeout",
         "concurrent start calls",
         "crash recovery after process exit",
+        "workspace root fallback for process cwd and initialize params",
+        "startup timeout cleanup completes before rejection",
+        "secret env vars are scrubbed from spawned server environments",
         "request before healthy state",
         "restart cap"
       ],

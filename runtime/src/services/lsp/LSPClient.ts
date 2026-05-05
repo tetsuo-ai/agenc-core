@@ -23,6 +23,7 @@ import type {
   InitializeResult,
   ServerCapabilities,
 } from "./protocol.js";
+import { subprocessEnv } from "../../utils/subprocess-env.js";
 
 export interface LSPClient {
   readonly capabilities: ServerCapabilities | undefined;
@@ -49,6 +50,7 @@ export interface LSPClient {
 export interface LSPClientOptions {
   readonly onCrash?: (error: Error) => void;
   readonly onDiagnostic?: (message: string) => void;
+  readonly baseEnv?: NodeJS.ProcessEnv;
 }
 
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 1_000;
@@ -57,9 +59,12 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function mergedEnv(extra?: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
+function mergedEnv(
+  baseEnv: NodeJS.ProcessEnv | undefined,
+  extra?: Readonly<Record<string, string>>,
+): NodeJS.ProcessEnv {
   return {
-    ...process.env,
+    ...subprocessEnv(baseEnv),
     ...(extra ?? {}),
   };
 }
@@ -167,7 +172,7 @@ export function createLSPClient(
       try {
         child = spawn(command, [...args], {
           stdio: ["pipe", "pipe", "pipe"],
-          env: mergedEnv(runOptions?.env),
+          env: mergedEnv(options.baseEnv, runOptions?.env),
           cwd: runOptions?.cwd,
           windowsHide: true,
         });

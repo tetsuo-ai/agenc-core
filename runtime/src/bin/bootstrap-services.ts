@@ -471,20 +471,34 @@ function readConfiguredLspServers(
 
 export function loadBootstrapLspServers(
   cfg: ReturnType<ConfigStore["current"]>,
+  opts: { readonly workspaceRoot?: string } = {},
 ): void {
   const parsed = readConfiguredLspServers(cfg);
-  const hasServers = parsed.success && Object.keys(parsed.servers).length > 0;
-  if (!hasServers) {
+  const managerOptions =
+    opts.workspaceRoot !== undefined ? { workspaceRoot: opts.workspaceRoot } : {};
+  if (!parsed.success) {
+    configureLspServerSource(() => {
+      throw new Error(`Invalid LSP server config: ${parsed.reason}`);
+    });
+    const status = getLspInitializationStatus().status;
+    if (status === "not-started" || status === "failed") {
+      initializeLspServerManager(managerOptions);
+      return;
+    }
+    reinitializeLspServerManager(managerOptions);
+    return;
+  }
+  if (Object.keys(parsed.servers).length === 0) {
     void shutdownLspServerManager();
     return;
   }
-  configureLspServerSource(() => (parsed.success ? parsed.servers : {}));
+  configureLspServerSource(() => parsed.servers);
   const status = getLspInitializationStatus().status;
   if (status === "not-started" || status === "failed") {
-    initializeLspServerManager();
+    initializeLspServerManager(managerOptions);
     return;
   }
-  reinitializeLspServerManager();
+  reinitializeLspServerManager(managerOptions);
 }
 
 function createShellSnapshotTx(
@@ -605,14 +619,12 @@ export function buildBootstrapSessionServices(
     });
   };
   loadHooks(opts.configStore.current());
-  configureLspServerSource(() => {
-    const parsed = readConfiguredLspServers(opts.configStore.current());
-    return parsed.success ? parsed.servers : {};
+  loadBootstrapLspServers(opts.configStore.current(), {
+    workspaceRoot: opts.workspaceRoot,
   });
-  loadBootstrapLspServers(opts.configStore.current());
   const unsubscribeHooksConfig = opts.configStore.subscribe((cfg) => {
     loadHooks(cfg);
-    loadBootstrapLspServers(cfg);
+    loadBootstrapLspServers(cfg, { workspaceRoot: opts.workspaceRoot });
   });
 
   const services: SessionServices = {

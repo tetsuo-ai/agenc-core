@@ -139,7 +139,7 @@ export function createLSPServerInstance(
       state = "starting";
       await client.start(config.command, config.args ?? [], {
         env: config.env,
-        cwd: config.workspaceFolder,
+        cwd: config.workspaceFolder ?? options.cwd,
       });
 
       const workspaceFolder = config.workspaceFolder ?? options.cwd ?? process.cwd();
@@ -214,7 +214,7 @@ export function createLSPServerInstance(
       crashRecoveryCount = 0;
       lastError = undefined;
     } catch (error) {
-      void client.stop().catch(() => {});
+      await client.stop().catch(() => {});
       void initPromise?.catch(() => {});
       if (generation !== startGeneration) return;
       state = "error";

@@ -179,9 +179,5 @@ export function configureLspServerSource(source: LspServerConfigSource): void {
 export async function getAllLspServers(
   source: LspServerConfigSource = configuredSource,
 ): Promise<{ readonly servers: Record<string, ScopedLspServerConfig> }> {
-  try {
-    return { servers: await source() };
-  } catch {
-    return { servers: {} };
-  }
+  return { servers: await source() };
 }
