@@ -10,7 +10,7 @@ import { logEvent } from '../services/analytics/index.js'
 import {
   assertConfigReadsEnabled,
   enableConfigs as enableConfigReads,
-} from '../../../config/upstream-init.js'
+} from '../../../config/init.js'
 import type { McpServerConfig } from '../services/mcp/types.js'
 import type {
   BillingType,
@@ -602,7 +602,7 @@ export type GlobalConfig = {
   additionalModelOptionsCache?: ModelOption[]
   additionalModelOptionsCacheScope?: string
 
-  // Additional model options discovered from OpenAI-compatible endpoints.
+  // Additional model options discovered from OpenAI-compatible endpoints. // branding-scan: allow real provider compatibility label
   openaiAdditionalModelOptionsCache?: ModelOption[]
 
   // Provider profiles managed inside the TUI. The active profile determines
@@ -610,7 +610,7 @@ export type GlobalConfig = {
   providerProfiles?: ProviderProfile[]
   activeProviderProfileId?: string
 
-  // Per-profile cache for models discovered from OpenAI-compatible endpoints.
+  // Per-profile cache for models discovered from OpenAI-compatible endpoints. // branding-scan: allow real provider compatibility label
   // Keyed by provider profile id.
   openaiAdditionalModelOptionsCacheByProfile?: Record<string, ModelOption[]>
 
