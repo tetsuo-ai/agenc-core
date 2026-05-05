@@ -125,6 +125,35 @@ describe("remote plugin marketplace API", () => {
     await expect(fetchRemoteInstalledPlugins(config, auth, fetcher))
       .rejects.toThrow("exceeded maximum size");
   });
+
+  it("rejects malformed remote JSON shapes before mapping responses", async () => {
+    await expect(fetchRemoteMarketplaces(config, auth, async (url) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/ps/plugins/list") {
+        return jsonResponse({ plugins: [] });
+      }
+      return jsonResponse({ plugins: [], pagination: {} });
+    })).rejects.toThrow("pagination must be an object");
+
+    await expect(fetchRemoteMarketplaces(config, auth, async (url) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/ps/plugins/list") {
+        return jsonResponse({ plugins: {}, pagination: {} });
+      }
+      return jsonResponse({ plugins: [], pagination: {} });
+    })).rejects.toThrow("plugins must be an array");
+
+    await expect(fetchRemoteMarketplaces(config, auth, async (url) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/ps/plugins/list") {
+        return jsonResponse({
+          plugins: [{ ...remotePlugin(), release: undefined }],
+          pagination: {},
+        });
+      }
+      return jsonResponse({ plugins: [], pagination: {} });
+    })).rejects.toThrow("release must be an object");
+  });
 });
 
 function createRemoteFetcher(calls: string[] = []): Fetcher {

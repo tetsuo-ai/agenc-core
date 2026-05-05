@@ -10,6 +10,7 @@ import {
 } from "./marketplace.js";
 import {
   assertHttpsOrLoopbackUrl,
+  fetchWithTimeout,
   readResponseBytesWithLimit,
   readResponseErrorText,
   readResponseTextWithLimit,
@@ -275,7 +276,12 @@ async function fetchCuratedRepoZipball(
 
 async function fetchText(url: string, fetcher: Fetcher): Promise<string> {
   assertHttpsOrLoopbackUrl(url, "curated plugins metadata URL", { allowLoopbackHttp: true });
-  const response = await fetcher(url);
+  const response = await fetchWithTimeout(
+    fetcher,
+    url,
+    {},
+    { label: `curated plugins metadata request from ${redactUrlForError(url)}` },
+  );
   if (!response.ok) {
     const body = await readResponseErrorText(response);
     throw new Error(`request from ${redactUrlForError(url)} failed with status ${response.status}: ${body}`);
@@ -289,7 +295,12 @@ async function fetchText(url: string, fetcher: Fetcher): Promise<string> {
 
 async function fetchBytes(url: string, fetcher: Fetcher): Promise<Buffer> {
   assertHttpsOrLoopbackUrl(url, "curated plugins archive URL", { allowLoopbackHttp: true });
-  const response = await fetcher(url);
+  const response = await fetchWithTimeout(
+    fetcher,
+    url,
+    {},
+    { label: `curated plugins archive request from ${redactUrlForError(url)}` },
+  );
   if (!response.ok) {
     const body = await readResponseErrorText(response);
     throw new Error(`request from ${redactUrlForError(url)} failed with status ${response.status}: ${body}`);

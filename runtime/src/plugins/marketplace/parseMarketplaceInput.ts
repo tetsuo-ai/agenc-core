@@ -11,6 +11,7 @@ export type ParsedMarketplaceInput =
 
 export async function parseMarketplaceInput(
   input: string,
+  options: { readonly workspaceRoot?: string } = {},
 ): Promise<ParsedMarketplaceInput> {
   const trimmed = input.trim();
   if (trimmed.length === 0) {
@@ -25,6 +26,20 @@ export async function parseMarketplaceInput(
         source: "git",
         url: sshMatch[1],
         ...(sshMatch[3] !== undefined ? { ref: sshMatch[3] } : {}),
+      },
+    };
+  }
+
+  if (trimmed.startsWith("ssh://") || trimmed.startsWith("file://")) {
+    const fragmentMatch = /^([^#]+)(#(.+))?$/u.exec(trimmed);
+    const url = fragmentMatch?.[1] ?? trimmed;
+    const ref = fragmentMatch?.[3];
+    return {
+      ok: true,
+      source: {
+        source: "git",
+        url,
+        ...(ref !== undefined ? { ref } : {}),
       },
     };
   }
@@ -63,7 +78,7 @@ export async function parseMarketplaceInput(
     }
   }
 
-  const local = await parseLocalPath(trimmed);
+  const local = await parseLocalPath(trimmed, options.workspaceRoot);
   if (local !== null) return local;
 
   if (trimmed.includes("/") && !trimmed.startsWith("@") && !trimmed.includes(":")) {
@@ -81,6 +96,18 @@ export async function parseMarketplaceInput(
     };
   }
 
+  const gitPathMatch = /^([^#\s]+\.git)(?:#(.+))?$/u.exec(trimmed);
+  if (gitPathMatch?.[1] !== undefined) {
+    return {
+      ok: true,
+      source: {
+        source: "git",
+        url: gitPathMatch[1],
+        ...(gitPathMatch[2] !== undefined ? { ref: gitPathMatch[2] } : {}),
+      },
+    };
+  }
+
   return { ok: false, unrecognized: true };
 }
 
@@ -92,11 +119,12 @@ function parseGitHubUrl(parsed: URL, fragmentRef: string | undefined): Marketpla
   const repo = `${owner}/${repoPart.replace(/\.git$/u, "")}`;
   if (!repo.includes("/") || repo.endsWith("/")) return null;
   if (parts.length >= 4 && (parts[2] === "tree" || parts[2] === "blob")) {
+    const split = splitGitHubTreeRefAndPath(parts.slice(3));
     return {
       source: "github",
       repo,
-      ref: parts[3],
-      ...(parts.length > 4 ? { path: parts.slice(4).join("/") } : {}),
+      ref: split.ref,
+      ...(split.path !== undefined ? { path: split.path } : {}),
     };
   }
   return {
@@ -106,7 +134,24 @@ function parseGitHubUrl(parsed: URL, fragmentRef: string | undefined): Marketpla
   };
 }
 
-async function parseLocalPath(value: string): Promise<ParsedMarketplaceInput | null> {
+function splitGitHubTreeRefAndPath(parts: readonly string[]): { readonly ref: string; readonly path?: string } {
+  const markerIndex = parts.findIndex((part, index) =>
+    index > 0 &&
+    (part === "marketplaces" ||
+      part === "plugins" ||
+      part === ".agents" ||
+      part === ".agenc-plugin" ||
+      part === "marketplace.json"));
+  if (markerIndex > 0) {
+    return {
+      ref: parts.slice(0, markerIndex).join("/"),
+      path: parts.slice(markerIndex).join("/"),
+    };
+  }
+  return { ref: parts.join("/") };
+}
+
+async function parseLocalPath(value: string, workspaceRoot: string | undefined): Promise<ParsedMarketplaceInput | null> {
   const isWindows = process.platform === "win32";
   const isWindowsPath = isWindows &&
     (value.startsWith(".\\") || value.startsWith("..\\") || /^[a-zA-Z]:[/\\]/u.test(value));
@@ -119,7 +164,9 @@ async function parseLocalPath(value: string): Promise<ParsedMarketplaceInput | n
   ) {
     return null;
   }
-  const resolvedPath = resolve(value.startsWith("~") ? value.replace(/^~/u, homedir()) : value);
+  const resolvedPath = value.startsWith("~")
+    ? resolve(value.replace(/^~/u, homedir()))
+    : resolve(workspaceRoot ?? process.cwd(), value);
   let stats;
   try {
     stats = await stat(resolvedPath);

@@ -8,6 +8,9 @@ import {
   type Fetcher,
 } from "./marketplace.js";
 import {
+  assertHttpsOrLoopbackUrl,
+  fetchWithTimeout,
+  readResponseBytesWithLimit,
   readResponseErrorText,
   redactUrlForError,
 } from "./fetchGuards.js";
@@ -47,9 +50,16 @@ export function validateRemotePluginBundle(
   if (!url) {
     throw new Error(`backend did not return a download URL for remote plugin '${remotePluginId}'`);
   }
-  const parsed = new URL(url);
-  if (!isAllowedBundleDownloadUrl(parsed, options.allowLoopbackHttp === true)) {
-    throw new Error(`backend returned an unsupported download URL scheme for remote plugin '${remotePluginId}': ${parsed.protocol.replace(/:$/u, "")}`);
+  try {
+    assertHttpsOrLoopbackUrl(url, `remote plugin bundle download URL for '${remotePluginId}'`, {
+      allowLoopbackHttp: options.allowLoopbackHttp === true,
+    });
+  } catch (error) {
+    const protocol = new URL(url).protocol.replace(/:$/u, "");
+    if (error instanceof Error && error.message.includes("must use HTTPS")) {
+      throw new Error(`backend returned an unsupported download URL scheme for remote plugin '${remotePluginId}': ${protocol}`);
+    }
+    throw error;
   }
   return {
     pluginId: `${pluginName}@${remoteMarketplaceName}`,
@@ -65,6 +75,9 @@ export async function downloadAndInstallRemotePluginBundle(
   bundle: ValidatedRemotePluginBundle,
   fetcher: Fetcher = defaultFetch,
 ): Promise<RemotePluginBundleInstallResult> {
+  assertHttpsOrLoopbackUrl(bundle.bundleDownloadUrl, "remote plugin bundle download URL", {
+    allowLoopbackHttp: true,
+  });
   const bytes = await downloadRemotePluginBundleWithLimit(
     bundle.bundleDownloadUrl,
     REMOTE_PLUGIN_BUNDLE_MAX_DOWNLOAD_BYTES,
@@ -185,7 +198,12 @@ async function downloadRemotePluginBundleWithLimit(
   maxBytes: number,
   fetcher: Fetcher,
 ): Promise<Buffer> {
-  const response = await fetcher(bundleDownloadUrl);
+  const response = await fetchWithTimeout(
+    fetcher,
+    bundleDownloadUrl,
+    {},
+    { label: `remote plugin bundle download from ${redactUrlForError(bundleDownloadUrl)}` },
+  );
   if (!response.ok) {
     const body = await readResponseErrorText(response);
     throw new Error(`remote plugin bundle download from ${redactUrlForError(bundleDownloadUrl)} failed with status ${response.status}: ${body}`);
@@ -216,19 +234,6 @@ function validatePluginVersionSegment(version: string): void {
   ) {
     throw new Error(`invalid remote plugin release version segment: ${version}`);
   }
-}
-
-function isAllowedBundleDownloadUrl(url: URL, allowLoopbackHttp: boolean): boolean {
-  if (url.protocol === "https:") return true;
-  return url.protocol === "http:" && allowLoopbackHttp && isLoopbackUrl(url);
-}
-
-function isLoopbackUrl(url: URL): boolean {
-  const host = url.hostname.toLowerCase();
-  return host === "localhost" ||
-    host === "127.0.0.1" ||
-    host === "::1" ||
-    /^127\./u.test(host);
 }
 
 async function validateExtractedPluginManifest(
@@ -300,37 +305,6 @@ async function pathExists(path: string): Promise<boolean> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
   }
-}
-
-async function readResponseBytesWithLimit(
-  response: { readonly body?: ReadableStream<Uint8Array> | null; readonly arrayBuffer: () => Promise<ArrayBuffer> },
-  maxBytes: number,
-  label: string,
-): Promise<Buffer> {
-  if (response.body !== undefined && response.body !== null) {
-    const reader = response.body.getReader();
-    const chunks: Buffer[] = [];
-    let total = 0;
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        total += value.byteLength;
-        if (total > maxBytes) {
-          throw new Error(`${label} exceeded maximum size of ${maxBytes} bytes`);
-        }
-        chunks.push(Buffer.from(value));
-      }
-    } finally {
-      reader.releaseLock();
-    }
-    return Buffer.concat(chunks, total);
-  }
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.byteLength > maxBytes) {
-    throw new Error(`${label} exceeded maximum size of ${maxBytes} bytes`);
-  }
-  return bytes;
 }
 
 export async function readInstalledRemotePluginManifest(installPath: string): Promise<unknown> {

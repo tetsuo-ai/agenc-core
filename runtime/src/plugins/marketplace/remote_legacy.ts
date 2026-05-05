@@ -4,6 +4,7 @@ import {
 } from "./marketplace.js";
 import {
   assertHttpsOrLoopbackUrl,
+  fetchWithTimeout,
   readResponseErrorText,
   readResponseTextWithLimit,
   redactUrlForError,
@@ -104,10 +105,15 @@ async function remoteRequest(
   }
   const url = `${config.baseUrl.replace(/\/+$/u, "")}${path}`;
   assertHttpsOrLoopbackUrl(url, "legacy remote plugin API URL", { allowLoopbackHttp: true });
-  const response = await fetcher(url, {
-    method,
-    ...(auth !== undefined ? { headers: auth.headers } : {}),
-  });
+  const response = await fetchWithTimeout(
+    fetcher,
+    url,
+    {
+      method,
+      ...(auth !== undefined ? { headers: auth.headers } : {}),
+    },
+    { label: `legacy remote plugin request to ${redactUrlForError(url)}` },
+  );
   if (!response.ok) {
     const body = await readResponseErrorText(response);
     throw new Error(`remote plugin operation failed with status ${response.status} from ${redactUrlForError(url)}: ${body}`);

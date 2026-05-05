@@ -28,15 +28,16 @@ Source files inspected end-to-end:
 - `src/utils/plugins/pluginVersioning.ts`
 
 PK-07 scope carried into AgenC:
-- `marketplace.ts` owns canonical marketplace source parsing, local/git/url/settings staging, validation, atomic activation, persistent marketplace index reads/writes, plugin entry resolution, and safe removal by computed install root.
+- `marketplace.ts` owns canonical marketplace source parsing, local/git/url/settings staging, validation, atomic activation, persistent marketplace index reads/writes, plugin entry resolution, and safe removal by computed install root. `addMarketplaceOp` calls `parseMarketplaceInput.ts` for string sources so CLI/add handling cannot drift from the documented parser grammar.
 - `marketplaceManager.ts` owns marketplace cache refresh, config persistence, source registration/removal, plugin lookup, auto-update toggles, and runtime refresh entry points.
 - `marketplaceHelpers.ts` owns policy allow/block matching, host/path pattern handling, marketplace loading degradation, empty-marketplace reason detection, and display formatting.
-- `parseMarketplaceInput.ts` owns user input normalization for local paths, git URLs, SSH git URLs, HTTP(S) manifests, and GitHub shorthand.
+- `parseMarketplaceInput.ts` owns user input normalization for local paths, git URLs, SSH/file git URLs, HTTP(S) manifests, GitHub shorthand, and GitHub tree URLs with slash-bearing refs when the marketplace path begins at a known marketplace directory marker.
 - `officialMarketplace.ts` declares the AgenC-owned official marketplace source.
 - `installed_marketplaces.ts` projects persistent marketplace index/config entries into installed marketplace roots.
-- `remote.ts` owns authenticated remote marketplace listing, installed-plugin listing, detail fetches, skill detail fetches, install/uninstall mutations, and remote cache cleanup.
-- `fetchGuards.ts` owns shared HTTPS/loopback URL policy, bounded response reads, and credential-redacted URL formatting for marketplace network surfaces.
-- `remote_bundle.ts` owns remote bundle validation, HTTPS/loopback download policy, size-limited download, safe tar.gz extraction, manifest identity verification, versioned cache activation, and manifest readback.
+- `marketplace.ts` rejects malformed plugin entries, missing source fields, unsupported source shapes, traversal sources, and duplicate plugin names instead of silently dropping invalid catalog data.
+- `remote.ts` owns authenticated remote marketplace listing, installed-plugin listing, detail fetches, skill detail fetches, install/uninstall mutations, remote cache cleanup, and JSON response-shape validation before mapping.
+- `fetchGuards.ts` owns shared HTTPS/loopback URL policy, timeout/abort handling, stream cancellation on size-limit failures, bounded response reads, and credential-redacted URL formatting for marketplace network surfaces.
+- `remote_bundle.ts` owns remote bundle validation, download-boundary HTTPS/loopback revalidation, size-limited download, safe tar.gz extraction, manifest identity verification, versioned cache activation, and manifest readback.
 - `remote_legacy.ts` owns the older remote plugin status, featured-plugin, enable, and uninstall endpoints that the runtime may still need while the hosted service migrates.
 - `startup_sync.ts` owns startup curated marketplace sync through git, HTTP zipball, and backup archive fallbacks with private SHA tracking and existing-snapshot degradation.
 - `startup_remote_sync.ts` owns one-shot startup remote plugin reconciliation after curated marketplace prerequisites are available, including stale lock recovery.

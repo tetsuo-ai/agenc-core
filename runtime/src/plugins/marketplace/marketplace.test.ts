@@ -92,7 +92,7 @@ describe("plugin marketplace runtime", () => {
           team: {
             name: "team",
             sourceType: "local",
-            sourceDescriptor: { source: "local", path: marketplaceRoot },
+            sourceDescriptor: { source: "directory", path: marketplaceRoot },
           },
         },
       });
@@ -161,6 +161,15 @@ describe("plugin marketplace runtime", () => {
         path: "marketplaces/team",
       },
     });
+    await expect(parseMarketplaceInput("https://github.com/agenc-org/plugins/tree/feature/team/marketplaces/internal")).resolves.toEqual({
+      ok: true,
+      source: {
+        source: "github",
+        repo: "agenc-org/plugins",
+        ref: "feature/team",
+        path: "marketplaces/internal",
+      },
+    });
     await expect(parseMarketplaceInput("owner/repo/extra")).resolves.toEqual({
       ok: false,
       unrecognized: true,
@@ -171,6 +180,39 @@ describe("plugin marketplace runtime", () => {
     });
     expect(normalizeSparsePath("marketplaces/team")).toBe("marketplaces/team");
     expect(() => normalizeSparsePath("../team")).toThrow("--sparse must not contain");
+  });
+
+  it("normalizes addMarketplace string inputs through the parser grammar", async () => {
+    const { agencHome, workspaceRoot } = await tempRuntime();
+    const cloneCalls: string[][] = [];
+
+    const result = await addMarketplaceOp({
+      agencHome,
+      workspaceRoot,
+      source: "agenc-org/plugins#stable",
+      runProcess: async (_command, args) => {
+        if (args[0] === "clone") {
+          cloneCalls.push([...args]);
+          const target = args.at(-1);
+          if (target === undefined) throw new Error("missing clone target");
+          await writeMarketplace(target, "team");
+          return { stdout: "", stderr: "" };
+        }
+        if (args[0] === "rev-parse") {
+          return { stdout: "abc123\n", stderr: "" };
+        }
+        return { stdout: "", stderr: "" };
+      },
+    });
+
+    expect(result.marketplace.sourceDescriptor).toEqual({
+      source: "github",
+      repo: "agenc-org/plugins",
+      ref: "stable",
+    });
+    expect(cloneCalls[0]).toContain("https://github.com/agenc-org/plugins.git");
+    expect(cloneCalls[0]).toContain("--branch");
+    expect(cloneCalls[0]).toContain("stable");
   });
 
   it("requires safe URL marketplace transport and bounded manifest downloads", async () => {
@@ -199,6 +241,55 @@ describe("plugin marketplace runtime", () => {
         arrayBuffer: async () => exactArrayBuffer(Buffer.from(largeBody, "utf8")),
       }),
     })).rejects.toThrow("exceeded maximum size");
+  });
+
+  it("fails malformed marketplace plugin entries instead of silently skipping them", async () => {
+    const { workspaceRoot } = await tempRuntime();
+    const marketplaceRoot = join(workspaceRoot, "bad-marketplace");
+    await mkdir(marketplaceRoot, { recursive: true });
+
+    await writeFile(
+      join(marketplaceRoot, "marketplace.json"),
+      JSON.stringify({
+        metadata: { name: "bad" },
+        plugins: [{ name: "alpha" }],
+      }),
+    );
+    await expect(loadMarketplace(join(marketplaceRoot, "marketplace.json")))
+      .rejects.toThrow("must define source");
+
+    await writeFile(
+      join(marketplaceRoot, "marketplace.json"),
+      JSON.stringify({
+        metadata: { name: "bad" },
+        plugins: [{ name: "alpha", source: { source: "git-subdir", url: "https://github.com/agenc-org/plugins.git" } }],
+      }),
+    );
+    await expect(loadMarketplace(join(marketplaceRoot, "marketplace.json")))
+      .rejects.toThrow("git-subdir marketplace plugin source must include a path");
+
+    await writeFile(
+      join(marketplaceRoot, "marketplace.json"),
+      JSON.stringify({
+        metadata: { name: "bad" },
+        plugins: [{ name: "alpha", source: "../outside" }],
+      }),
+    );
+    await expect(loadMarketplace(join(marketplaceRoot, "marketplace.json")))
+      .rejects.toThrow("must start with './'");
+
+    await writeFile(
+      join(marketplaceRoot, "marketplace.json"),
+      JSON.stringify({
+        metadata: { name: "bad" },
+        plugins: [
+          { name: "Alpha", source: "./alpha" },
+          { name: "alpha", source: "./alpha2" },
+        ],
+      }),
+    );
+    await expect(loadMarketplace(join(marketplaceRoot, "marketplace.json")))
+      .rejects.toThrow("duplicate plugin names");
   });
 
   it("treats policy host and path patterns as a safe bounded subset", () => {

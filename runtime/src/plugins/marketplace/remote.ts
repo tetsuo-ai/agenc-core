@@ -6,6 +6,7 @@ import {
 } from "./marketplace.js";
 import {
   assertHttpsOrLoopbackUrl,
+  fetchWithTimeout,
   readResponseErrorText,
   readResponseTextWithLimit,
   redactUrlForError,
@@ -227,7 +228,10 @@ export async function fetchRemotePluginSkillDetail(
   requireKnownMarketplace(marketplaceName);
   const headers = requireRemoteAuth(auth);
   const url = remotePluginSkillDetailUrl(config, pluginId, skillName);
-  const response = await sendAndDecode<RemotePluginSkillDetailResponse>(url, headers, fetcher);
+  const response = validateRemotePluginSkillDetailResponse(
+    await sendAndDecode(url, headers, fetcher),
+    "remote plugin skill response",
+  );
   if (response.plugin_id !== pluginId) {
     throw new Error(`remote plugin skill response returned unexpected plugin id: expected '${pluginId}', got '${response.plugin_id}'`);
   }
@@ -272,7 +276,10 @@ async function postRemotePluginMutation(
   validateRemotePluginId(pluginId);
   const headers = requireRemoteAuth(auth);
   const url = `${config.baseUrl.replace(/\/+$/u, "")}/ps/plugins/${encodeURIComponent(pluginId)}/${action}`;
-  return sendAndDecode<RemotePluginMutationResponse>(url, headers, fetcher, "POST");
+  return validateRemotePluginMutationResponse(
+    await sendAndDecode(url, headers, fetcher, "POST"),
+    "remote plugin mutation response",
+  );
 }
 
 async function removeRemotePluginCache(
@@ -315,7 +322,10 @@ async function fetchDirectoryPluginsForScope(
     url.searchParams.set("scope", scope.apiValue);
     url.searchParams.set("limit", "200");
     if (pageToken !== undefined) url.searchParams.set("pageToken", pageToken);
-    const response = await sendAndDecode<RemotePluginListResponse>(url.toString(), headers, fetcher);
+    const response = validateRemotePluginListResponse(
+      await sendAndDecode(url.toString(), headers, fetcher),
+      "remote plugin directory response",
+    );
     plugins.push(...response.plugins);
     if (plugins.length > REMOTE_PLUGIN_MAX_ITEMS) {
       throw new Error(`remote plugin directory exceeded ${REMOTE_PLUGIN_MAX_ITEMS} items for ${scope.apiValue}`);
@@ -351,7 +361,10 @@ async function fetchInstalledPluginsForScope(
     url.searchParams.set("scope", scope.apiValue);
     if (includeDownloadUrls) url.searchParams.set("includeDownloadUrls", "true");
     if (pageToken !== undefined) url.searchParams.set("pageToken", pageToken);
-    const response = await sendAndDecode<RemotePluginInstalledResponse>(url.toString(), headers, fetcher);
+    const response = validateRemotePluginInstalledResponse(
+      await sendAndDecode(url.toString(), headers, fetcher),
+      "remote installed plugin response",
+    );
     plugins.push(...response.plugins);
     if (plugins.length > REMOTE_PLUGIN_MAX_ITEMS) {
       throw new Error(`remote installed plugin list exceeded ${REMOTE_PLUGIN_MAX_ITEMS} items for ${scope.apiValue}`);
@@ -371,17 +384,25 @@ async function fetchPluginDetail(
   validateRemotePluginId(pluginId);
   const url = new URL(`${config.baseUrl.replace(/\/+$/u, "")}/ps/plugins/${encodeURIComponent(pluginId)}`);
   if (includeDownloadUrls) url.searchParams.set("includeDownloadUrls", "true");
-  return sendAndDecode<RemotePluginDirectoryItem>(url.toString(), headers, fetcher);
+  return validateRemotePluginDirectoryItem(
+    await sendAndDecode(url.toString(), headers, fetcher),
+    "remote plugin detail response",
+  );
 }
 
-async function sendAndDecode<T>(
+async function sendAndDecode(
   url: string,
   headers: Readonly<Record<string, string>>,
   fetcher: Fetcher,
   method = "GET",
-): Promise<T> {
+): Promise<unknown> {
   assertHttpsOrLoopbackUrl(url, "remote plugin API URL", { allowLoopbackHttp: true });
-  const response = await fetcher(url, { method, headers });
+  const response = await fetchWithTimeout(
+    fetcher,
+    url,
+    { method, headers },
+    { label: `remote plugin request to ${redactUrlForError(url)}` },
+  );
   if (!response.ok) {
     const body = await readResponseErrorText(response);
     throw new Error(`remote plugin request to ${redactUrlForError(url)} failed with status ${response.status}: ${body}`);
@@ -391,7 +412,7 @@ async function sendAndDecode<T>(
     REMOTE_PLUGIN_JSON_MAX_BYTES,
     `remote plugin request to ${redactUrlForError(url)}`,
   );
-  return JSON.parse(body) as T;
+  return JSON.parse(body);
 }
 
 function requireRemoteAuth(auth: RemoteAuth | undefined): Readonly<Record<string, string>> {
@@ -414,6 +435,144 @@ function assertMutation(pluginId: string, expectedEnabled: boolean, response: Re
   if (response.enabled !== expectedEnabled) {
     throw new Error(`remote plugin mutation returned unexpected enabled state for '${pluginId}': expected ${expectedEnabled}, got ${response.enabled}`);
   }
+}
+
+function validateRemotePluginListResponse(value: unknown, label: string): RemotePluginListResponse {
+  const record = requireRecord(value, label);
+  if (!Array.isArray(record.plugins)) {
+    throw new Error(`${label}.plugins must be an array`);
+  }
+  return {
+    plugins: record.plugins.map((plugin, index) =>
+      validateRemotePluginDirectoryItem(plugin, `${label}.plugins[${index}]`)),
+    pagination: validateRemotePluginPagination(record.pagination, `${label}.pagination`),
+  };
+}
+
+function validateRemotePluginInstalledResponse(value: unknown, label: string): RemotePluginInstalledResponse {
+  const record = requireRecord(value, label);
+  if (!Array.isArray(record.plugins)) {
+    throw new Error(`${label}.plugins must be an array`);
+  }
+  return {
+    plugins: record.plugins.map((plugin, index) =>
+      validateRemotePluginInstalledItem(plugin, `${label}.plugins[${index}]`)),
+    pagination: validateRemotePluginPagination(record.pagination, `${label}.pagination`),
+  };
+}
+
+function validateRemotePluginDirectoryItem(value: unknown, label: string): RemotePluginDirectoryItem {
+  const record = requireRecord(value, label);
+  const scope = requireString(record.scope, `${label}.scope`);
+  if (scope !== "GLOBAL" && scope !== "WORKSPACE") {
+    throw new Error(`${label}.scope must be GLOBAL or WORKSPACE`);
+  }
+  return {
+    id: requireString(record.id, `${label}.id`),
+    name: requireString(record.name, `${label}.name`),
+    scope,
+    installation_policy: requireString(record.installation_policy, `${label}.installation_policy`),
+    authentication_policy: requireString(record.authentication_policy, `${label}.authentication_policy`),
+    ...(record.status !== undefined ? { status: requireString(record.status, `${label}.status`) } : {}),
+    release: validateRemotePluginRelease(record.release, `${label}.release`),
+  };
+}
+
+function validateRemotePluginInstalledItem(value: unknown, label: string): RemotePluginInstalledItem {
+  const record = requireRecord(value, label);
+  return {
+    plugin: validateRemotePluginDirectoryItem(record.plugin, `${label}.plugin`),
+    enabled: requireBoolean(record.enabled, `${label}.enabled`),
+    ...(record.disabled_skill_names !== undefined
+      ? { disabled_skill_names: requireStringArray(record.disabled_skill_names, `${label}.disabled_skill_names`) }
+      : {}),
+  };
+}
+
+function validateRemotePluginRelease(value: unknown, label: string): RemotePluginReleaseResponse {
+  const record = requireRecord(value, label);
+  return {
+    ...(record.version !== undefined ? { version: requireString(record.version, `${label}.version`) } : {}),
+    display_name: requireString(record.display_name, `${label}.display_name`),
+    description: requireString(record.description, `${label}.description`),
+    ...(record.bundle_download_url !== undefined
+      ? { bundle_download_url: requireString(record.bundle_download_url, `${label}.bundle_download_url`) }
+      : {}),
+    ...(record.app_ids !== undefined ? { app_ids: requireStringArray(record.app_ids, `${label}.app_ids`) } : {}),
+    interface: validateRemotePluginReleaseInterface(record.interface, `${label}.interface`),
+    skills: validateRemotePluginSkills(record.skills, `${label}.skills`),
+  };
+}
+
+function validateRemotePluginReleaseInterface(value: unknown, label: string): RemotePluginReleaseInterfaceResponse {
+  const record = requireRecord(value, label);
+  return {
+    ...(record.short_description !== undefined ? { short_description: requireString(record.short_description, `${label}.short_description`) } : {}),
+    ...(record.long_description !== undefined ? { long_description: requireString(record.long_description, `${label}.long_description`) } : {}),
+    ...(record.developer_name !== undefined ? { developer_name: requireString(record.developer_name, `${label}.developer_name`) } : {}),
+    ...(record.category !== undefined ? { category: requireString(record.category, `${label}.category`) } : {}),
+    ...(record.capabilities !== undefined ? { capabilities: requireStringArray(record.capabilities, `${label}.capabilities`) } : {}),
+    ...(record.website_url !== undefined ? { website_url: requireString(record.website_url, `${label}.website_url`) } : {}),
+    ...(record.privacy_policy_url !== undefined ? { privacy_policy_url: requireString(record.privacy_policy_url, `${label}.privacy_policy_url`) } : {}),
+    ...(record.terms_of_service_url !== undefined ? { terms_of_service_url: requireString(record.terms_of_service_url, `${label}.terms_of_service_url`) } : {}),
+    ...(record.brand_color !== undefined ? { brand_color: requireString(record.brand_color, `${label}.brand_color`) } : {}),
+    ...(record.default_prompt !== undefined ? { default_prompt: requireString(record.default_prompt, `${label}.default_prompt`) } : {}),
+    ...(record.composer_icon_url !== undefined ? { composer_icon_url: requireString(record.composer_icon_url, `${label}.composer_icon_url`) } : {}),
+    ...(record.logo_url !== undefined ? { logo_url: requireString(record.logo_url, `${label}.logo_url`) } : {}),
+    ...(record.screenshot_urls !== undefined ? { screenshot_urls: requireStringArray(record.screenshot_urls, `${label}.screenshot_urls`) } : {}),
+  };
+}
+
+function validateRemotePluginSkills(value: unknown, label: string): readonly RemotePluginSkillResponse[] {
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+  return value.map((skill, index) => {
+    const record = requireRecord(skill, `${label}[${index}]`);
+    return {
+      name: requireString(record.name, `${label}[${index}].name`),
+      description: requireString(record.description, `${label}[${index}].description`),
+      ...(record.interface !== undefined
+        ? { interface: validateRemotePluginSkillInterface(record.interface, `${label}[${index}].interface`) }
+        : {}),
+    };
+  });
+}
+
+function validateRemotePluginSkillInterface(value: unknown, label: string): RemotePluginSkillInterfaceResponse {
+  const record = requireRecord(value, label);
+  return {
+    ...(record.display_name !== undefined ? { display_name: requireString(record.display_name, `${label}.display_name`) } : {}),
+    ...(record.short_description !== undefined ? { short_description: requireString(record.short_description, `${label}.short_description`) } : {}),
+    ...(record.brand_color !== undefined ? { brand_color: requireString(record.brand_color, `${label}.brand_color`) } : {}),
+    ...(record.default_prompt !== undefined ? { default_prompt: requireString(record.default_prompt, `${label}.default_prompt`) } : {}),
+  };
+}
+
+function validateRemotePluginPagination(value: unknown, label: string): RemotePluginPagination {
+  const record = requireRecord(value, label);
+  return {
+    ...(record.next_page_token !== undefined
+      ? { next_page_token: requireString(record.next_page_token, `${label}.next_page_token`) }
+      : {}),
+  };
+}
+
+function validateRemotePluginSkillDetailResponse(value: unknown, label: string): RemotePluginSkillDetailResponse {
+  const record = requireRecord(value, label);
+  return {
+    plugin_id: requireString(record.plugin_id, `${label}.plugin_id`),
+    name: requireString(record.name, `${label}.name`),
+    ...(record.skill_md_contents !== undefined
+      ? { skill_md_contents: requireString(record.skill_md_contents, `${label}.skill_md_contents`) }
+      : {}),
+  };
+}
+
+function validateRemotePluginMutationResponse(value: unknown, label: string): RemotePluginMutationResponse {
+  const record = requireRecord(value, label);
+  return {
+    id: requireString(record.id, `${label}.id`),
+    enabled: requireBoolean(record.enabled, `${label}.enabled`),
+  };
 }
 
 function buildRemotePluginSummary(
@@ -506,6 +665,34 @@ function normalizeRemoteDefaultPrompt(prompt: string | undefined): readonly stri
   const trimmed = prompt?.trim();
   if (!trimmed || [...trimmed].length > 128) return undefined;
   return [trimmed];
+}
+
+function requireRecord(value: unknown, label: string): Readonly<Record<string, unknown>> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  return value as Readonly<Record<string, unknown>>;
+}
+
+function requireString(value: unknown, label: string): string {
+  if (typeof value !== "string") {
+    throw new Error(`${label} must be a string`);
+  }
+  return value;
+}
+
+function requireBoolean(value: unknown, label: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new Error(`${label} must be a boolean`);
+  }
+  return value;
+}
+
+function requireStringArray(value: unknown, label: string): readonly string[] {
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
+    throw new Error(`${label} must be an array of strings`);
+  }
+  return value;
 }
 
 function remotePluginSkillDetailUrl(

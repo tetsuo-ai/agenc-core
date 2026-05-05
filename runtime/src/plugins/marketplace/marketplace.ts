@@ -9,10 +9,12 @@ import type { PluginManifest, PluginManifestInterface } from "../manifest-schema
 import { validateMarketplaceManifest } from "../validation.js";
 import {
   assertHttpsOrLoopbackUrl,
+  fetchWithTimeout as fetchWithTimeoutGuard,
   readResponseErrorText,
   readResponseTextWithLimit,
   redactUrlForError,
 } from "./fetchGuards.js";
+import { parseMarketplaceInput } from "./parseMarketplaceInput.js";
 
 export type MarketplaceSourceType = "local" | "git" | "url" | "settings";
 
@@ -220,7 +222,6 @@ const RESERVED_MARKETPLACE_NAMES = new Set(["agenc", "builtin", "curated"]);
 const MARKETPLACE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u;
 const DEFAULT_GIT_TIMEOUT_MS = 120_000;
 const DEFAULT_GIT_MAX_OUTPUT_BYTES = 1_048_576;
-const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
 const MARKETPLACE_URL_MANIFEST_MAX_BYTES = 1 * 1024 * 1024;
 
 export function marketplaceStoreRoot(options: MarketplaceOperationOptions = {}): string {
@@ -270,10 +271,7 @@ export async function writeMarketplaceIndex(
 export async function addMarketplaceOp(
   input: AddMarketplaceInput,
 ): Promise<AddMarketplaceResult> {
-  const source = normalizeInputSource(input);
-  if (source.source === "git" && source.sparse !== undefined) {
-    normalizeSparsePath(source.sparse);
-  }
+  const source = await normalizeInputSource(input);
   const storeRoot = marketplaceStoreRoot(input);
   await mkdir(storeRoot, { recursive: true, mode: 0o700 });
   const staged = await stageMarketplaceSource(source, input);
@@ -417,22 +415,17 @@ export async function loadMarketplace(manifestPath: string): Promise<Marketplace
   const root = marketplaceRootDir(manifestPath);
   const plugins: MarketplacePlugin[] = [];
   for (const rawPlugin of manifest.plugins) {
-    try {
-      const resolved = await resolveMarketplacePluginEntry(
-        manifestPath,
-        marketplaceName,
-        rawPlugin,
-      );
-      if (resolved === null) continue;
-      plugins.push({
-        name: resolved.pluginName,
-        source: resolved.source,
-        policy: resolved.policy,
-        ...(resolved.interface !== undefined ? { interface: resolved.interface } : {}),
-      });
-    } catch {
-      continue;
-    }
+    const resolved = await resolveMarketplacePluginEntry(
+      manifestPath,
+      marketplaceName,
+      rawPlugin,
+    );
+    plugins.push({
+      name: resolved.pluginName,
+      source: resolved.source,
+      policy: resolved.policy,
+      ...(resolved.interface !== undefined ? { interface: resolved.interface } : {}),
+    });
   }
   plugins.sort((a, b) => a.name.localeCompare(b.name));
   const displayName = manifest.interface?.displayName ?? manifest.metadata?.displayName;
@@ -453,8 +446,7 @@ export async function findMarketplacePlugin(
   const marketplaceName = normalizeMarketplaceName(inferMarketplaceName(manifest, { source: "file", path: marketplacePath }));
   for (const plugin of manifest.plugins) {
     if (plugin.name !== pluginName) continue;
-    const resolved = await resolveMarketplacePluginEntry(marketplacePath, marketplaceName, plugin);
-    if (resolved !== null) return resolved;
+    return resolveMarketplacePluginEntry(marketplacePath, marketplaceName, plugin);
   }
   throw new Error(`plugin '${pluginName}' was not found in marketplace '${marketplaceName}'`);
 }
@@ -670,7 +662,8 @@ async function stageMarketplaceSource(
       case "url": {
         await mkdir(root, { recursive: true, mode: 0o700 });
         assertHttpsOrLoopbackUrl(source.url, "marketplace URL", { allowLoopbackHttp: true });
-        const response = await fetchWithTimeout(
+        const response = await fetchWithTimeoutGuard(
+          options.fetcher ?? defaultFetch,
           source.url,
           {
             headers: {
@@ -678,7 +671,7 @@ async function stageMarketplaceSource(
               "User-Agent": "AgenC-Plugin-Manager",
             },
           },
-          options,
+          { label: `marketplace download from ${redactUrlForError(source.url)}` },
         );
         if (!response.ok) {
           const body = await readResponseErrorText(response);
@@ -802,9 +795,8 @@ async function resolveMarketplacePluginEntry(
   marketplacePath: string,
   marketplaceName: string,
   plugin: RawMarketplaceManifestPlugin,
-): Promise<ResolvedMarketplacePlugin | null> {
+): Promise<ResolvedMarketplacePlugin> {
   const source = resolvePluginSource(marketplacePath, plugin.source);
-  if (source === null) return null;
   const manifest = source.type === "local"
     ? (await loadPluginManifest(source.path).catch(() => null))?.manifest
     : undefined;
@@ -827,13 +819,18 @@ async function resolveMarketplacePluginEntry(
 function resolvePluginSource(
   marketplacePath: string,
   source: unknown,
-): MarketplacePluginSource | null {
+): MarketplacePluginSource {
   if (typeof source === "string") {
     return { type: "local", path: resolveLocalPluginSourcePath(marketplacePath, source) };
   }
-  if (!isRecord(source)) return null;
+  if (!isRecord(source)) {
+    throw new Error("marketplace plugin source must be a string or object");
+  }
   if (source.source === "local" && typeof source.path === "string") {
     return { type: "local", path: resolveLocalPluginSourcePath(marketplacePath, source.path) };
+  }
+  if (source.source === "local") {
+    throw new Error("local marketplace plugin source must include a string path");
   }
   if (
     (source.source === "url" || source.source === "git-subdir" || source.source === "git") &&
@@ -842,7 +839,9 @@ function resolvePluginSource(
     const path = typeof source.path === "string"
       ? normalizeRemotePluginSubdir(marketplacePath, source.path)
       : undefined;
-    if (source.source === "git-subdir" && path === undefined) return null;
+    if (source.source === "git-subdir" && path === undefined) {
+      throw new Error("git-subdir marketplace plugin source must include a path");
+    }
     return {
       type: "git",
       url: normalizeGitPluginSourceUrl(marketplacePath, source.url),
@@ -851,7 +850,13 @@ function resolvePluginSource(
       ...(typeof source.sha === "string" && source.sha.trim() ? { sha: source.sha.trim() } : {}),
     };
   }
-  return null;
+  if (source.source === "git-subdir") {
+    throw new Error("git-subdir marketplace plugin source must include a string url and path");
+  }
+  if (source.source === "git" || source.source === "url") {
+    throw new Error("git marketplace plugin source must include a string url");
+  }
+  throw new Error("unsupported marketplace plugin source");
 }
 
 function resolveLocalPluginSourcePath(
@@ -996,15 +1001,73 @@ async function readMarketplaceManifest(path: string): Promise<RawMarketplaceMani
   if (!isRecord(parsed) || !Array.isArray(parsed.plugins)) {
     throw new Error("marketplace manifest must define a plugins array");
   }
-  const plugins = parsed.plugins.filter((entry): entry is RawMarketplaceManifestPlugin =>
-    isRecord(entry) && typeof entry.name === "string" && "source" in entry,
-  );
+  const plugins = parsed.plugins.map((entry, index) => normalizeRawMarketplacePlugin(entry, index));
+  assertNoDuplicateMarketplacePlugins(plugins);
   return {
     ...(typeof parsed.name === "string" ? { name: parsed.name } : {}),
     ...(isRecord(parsed.metadata) ? { metadata: parsed.metadata as RawMarketplaceManifest["metadata"] } : {}),
     ...(isRecord(parsed.interface) ? { interface: parsed.interface as RawMarketplaceManifest["interface"] } : {}),
     plugins,
   };
+}
+
+function normalizeRawMarketplacePlugin(entry: unknown, index: number): RawMarketplaceManifestPlugin {
+  if (!isRecord(entry)) {
+    throw new Error(`marketplace manifest plugin at index ${index} must be an object`);
+  }
+  if (typeof entry.name !== "string" || entry.name.trim().length === 0) {
+    throw new Error(`marketplace manifest plugin at index ${index} must define a non-empty name`);
+  }
+  if (!("source" in entry)) {
+    throw new Error(`marketplace manifest plugin '${entry.name}' must define source`);
+  }
+  return {
+    name: entry.name,
+    source: entry.source,
+    ...(isRecord(entry.policy) ? { policy: normalizeRawMarketplacePluginPolicy(entry.name, entry.policy) } : {}),
+    ...(typeof entry.category === "string" ? { category: entry.category } : {}),
+  };
+}
+
+function normalizeRawMarketplacePluginPolicy(
+  pluginName: string,
+  policy: Readonly<Record<string, unknown>>,
+): RawMarketplaceManifestPlugin["policy"] {
+  if (
+    policy.installation !== undefined &&
+    policy.installation !== "NOT_AVAILABLE" &&
+    policy.installation !== "AVAILABLE" &&
+    policy.installation !== "INSTALLED_BY_DEFAULT"
+  ) {
+    throw new Error(`marketplace manifest plugin '${pluginName}' has invalid installation policy`);
+  }
+  if (
+    policy.authentication !== undefined &&
+    policy.authentication !== "ON_INSTALL" &&
+    policy.authentication !== "ON_USE"
+  ) {
+    throw new Error(`marketplace manifest plugin '${pluginName}' has invalid authentication policy`);
+  }
+  if (policy.products !== undefined && !isStringArray(policy.products)) {
+    throw new Error(`marketplace manifest plugin '${pluginName}' products policy must be an array of strings`);
+  }
+  return {
+    ...(policy.installation !== undefined ? { installation: policy.installation } : {}),
+    ...(policy.authentication !== undefined ? { authentication: policy.authentication } : {}),
+    ...(policy.products !== undefined ? { products: policy.products } : {}),
+  };
+}
+
+function assertNoDuplicateMarketplacePlugins(plugins: readonly RawMarketplaceManifestPlugin[]): void {
+  const seen = new Map<string, string>();
+  for (const plugin of plugins) {
+    const key = sanitizePluginId(plugin.name).toLowerCase();
+    const existing = seen.get(key);
+    if (existing !== undefined) {
+      throw new Error(`marketplace manifest has duplicate plugin names: '${existing}' and '${plugin.name}'`);
+    }
+    seen.set(key, plugin.name);
+  }
 }
 
 function inferMarketplaceName(manifest: RawMarketplaceManifest, source: MarketplaceSource): string {
@@ -1025,25 +1088,38 @@ function inferMarketplaceName(manifest: RawMarketplaceManifest, source: Marketpl
   }
 }
 
-function normalizeInputSource(input: AddMarketplaceInput): MarketplaceSource {
+async function normalizeInputSource(input: AddMarketplaceInput): Promise<MarketplaceSource> {
   if (typeof input.source !== "string") {
-    if (input.source.source === "git" && input.sparse !== undefined) {
-      return { ...input.source, sparse: normalizeSparsePath(input.sparse) };
+    return applyMarketplaceInputOverrides(input.source, input);
+  }
+  const parsed = await parseMarketplaceInput(input.source, {
+    workspaceRoot: resolveMarketplaceWorkspaceRoot(input),
+  });
+  if (!parsed.ok) {
+    if ("error" in parsed) throw new Error(parsed.error);
+    throw new Error(`unrecognized marketplace source: ${input.source}`);
+  }
+  return applyMarketplaceInputOverrides(parsed.source, input);
+}
+
+function applyMarketplaceInputOverrides(
+  source: MarketplaceSource,
+  input: Pick<AddMarketplaceInput, "ref" | "sparse">,
+): MarketplaceSource {
+  let next = source;
+  if (input.ref !== undefined) {
+    if (next.source !== "git" && next.source !== "github") {
+      throw new Error("--ref is only valid for git marketplaces");
     }
-    return input.source;
+    next = { ...next, ref: input.ref };
   }
-  const localPath = resolvePath(input.source, resolveMarketplaceWorkspaceRoot(input));
-  const source = statSyncExists(localPath)
-    ? { source: "local" as const, path: localPath }
-    : { source: "git" as const, url: input.source };
-  if (source.source === "git") {
-    return {
-      ...source,
-      ...(input.ref !== undefined ? { ref: input.ref } : {}),
-      ...(input.sparse !== undefined ? { sparse: normalizeSparsePath(input.sparse) } : {}),
-    };
+  if (input.sparse !== undefined) {
+    const sparse = normalizeSparsePath(input.sparse);
+    if (next.source === "git") return { ...next, sparse };
+    if (next.source === "github") return { ...next, path: sparse };
+    throw new Error("--sparse is only valid for git marketplaces");
   }
-  return source;
+  return next;
 }
 
 function displayMarketplaceSource(source: MarketplaceSource): string {
@@ -1102,27 +1178,6 @@ function withMarketplaceCategory(
     ...(pluginInterface ?? { capabilities: [], screenshots: [] }),
     category,
   };
-}
-
-async function fetchWithTimeout(
-  url: string,
-  init: {
-    readonly method?: string;
-    readonly headers?: Readonly<Record<string, string>>;
-  },
-  options: MarketplaceOperationOptions,
-): Promise<FetchResponse> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), DEFAULT_FETCH_TIMEOUT_MS);
-  timeout.unref();
-  try {
-    return await (options.fetcher ?? defaultFetch)(url, {
-      ...init,
-      signal: controller.signal,
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
 }
 
 async function readJsonFile<T>(path: string, fallback: T): Promise<T> {
@@ -1188,6 +1243,10 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isStringArray(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
 async function pathExists(path: string): Promise<boolean> {
   try {
     await stat(path);
@@ -1198,18 +1257,6 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-function statSyncExists(path: string): boolean {
-  try {
-    return statSyncFile(path) || statSyncDirectory(path);
-  } catch {
-    return false;
-  }
-}
-
 function statSyncFile(path: string): boolean {
   return statSync(path).isFile();
-}
-
-function statSyncDirectory(path: string): boolean {
-  return statSync(path).isDirectory();
 }

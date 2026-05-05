@@ -1,3 +1,8 @@
+// Narrow declaration-only contracts for inherited `src/...` imports that the
+// runtime tsup entrypoint build compiles transitively. Keep this file free of
+// runtime exports and avoid blanket `any` declarations so type regressions stay
+// visible at the owning import surface.
+
 declare module "@opentelemetry/sdk-metrics" {
   export interface MeterProvider {
     forceFlush?: () => Promise<void>;

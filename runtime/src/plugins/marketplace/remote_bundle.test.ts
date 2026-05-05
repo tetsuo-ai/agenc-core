@@ -128,6 +128,25 @@ describe("remote plugin bundles", () => {
     )).rejects.toThrow("https://agenc.tech/plugins/linear.tgz?<redacted>");
   });
 
+  it("revalidates forged bundle download URLs at the download boundary", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-bundle-forged-"));
+    const forged = {
+      pluginId: "linear@agenc-global",
+      marketplaceName: "agenc-global",
+      pluginName: "linear",
+      pluginVersion: "1.0.0",
+      bundleDownloadUrl: "http://agenc.tech/plugins/linear.tgz",
+    };
+
+    await expect(downloadAndInstallRemotePluginBundle(
+      agencHome,
+      forged,
+      async () => {
+        throw new Error("fetch should not run for forged bundle URLs");
+      },
+    )).rejects.toThrow("must use HTTPS or loopback HTTP");
+  });
+
   it("rejects oversized streamed bundle downloads before extraction", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-bundle-large-"));
     const bundle = validateRemotePluginBundle(
