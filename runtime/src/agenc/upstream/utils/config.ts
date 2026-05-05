@@ -177,7 +177,6 @@ export type AccountInfo = {
   subscriptionCreatedAt?: string
 }
 
-// TODO: 'emacs' is kept for backward compatibility - remove after a few releases
 export type EditorMode = 'emacs' | (typeof EDITOR_MODES)[number]
 
 export type DiffTool = 'terminal' | 'auto'
