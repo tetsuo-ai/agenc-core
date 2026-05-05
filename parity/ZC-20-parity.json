@@ -40,6 +40,9 @@
       },
       {
         "rule": "Large comments do not exempt small forwarding modules, and import/export text inside comments is ignored."
+      },
+      {
+        "rule": "Bare named export lists count as forwarding only when every exported local binding originated from an import."
       }
     ]
   }

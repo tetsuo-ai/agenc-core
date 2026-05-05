@@ -109,6 +109,31 @@ assert(
   JSON.stringify(importedTypeReexport),
 );
 
+const localNamedExport = measure(`
+import { a } from './a.js'
+import { b } from './b.js'
+import { c } from './c.js'
+const local = a + b + c
+export { local }
+`);
+assert(
+  "does not flag local named value exports",
+  !localNamedExport.violates && localNamedExport.forwardLines === 0,
+  JSON.stringify(localNamedExport),
+);
+
+const localNamedTypeExport = measure(`
+import type { A } from './a.js'
+import type { B } from './b.js'
+type Local = A & B
+export type { Local }
+`);
+assert(
+  "does not flag local named type exports",
+  !localNamedTypeExport.violates && localNamedTypeExport.forwardLines === 0,
+  JSON.stringify(localNamedTypeExport),
+);
+
 const packedImportExport = measure(`
 import { realImpl } from './impl.js'; export function shim(input: string): string { return realImpl(input) }
 `);
@@ -275,9 +300,9 @@ assert(
 
 const boundary = measure(`
 import value from './value.js'
-const local = value
-export { local }
+export { value }
 const other = 1
+const another = 2
 `);
 assert(
   "does not flag the exact 50 percent boundary",

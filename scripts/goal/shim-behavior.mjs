@@ -2,9 +2,9 @@ export const SHIM_BEHAVIOR_RATIO_LIMIT = 0.5;
 export const SHIM_BEHAVIOR_SIGNIFICANT_LINE_LIMIT = 40;
 
 export const FORWARD_LINE_RE =
-  /^\s*(export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*type\s*\{[^}]*\}\s*from\b|export\s*type\s*\{[^}]*\}\s*;?\s*$|export\s*\{[^}]*\}\s*from\b|export\s*\{[^}]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
+  /^\s*(export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*type\s*\{[^}]*\}\s*from\b|export\s*\{[^}]*\}\s*from\b|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
 export const FORWARD_STATEMENT_RE =
-  /^\s*(export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*type\s*\{[\s\S]*\}\s*from\b|export\s*type\s*\{[\s\S]*\}\s*;?\s*$|export\s*\{[\s\S]*\}\s*from\b|export\s*\{[\s\S]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
+  /^\s*(export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*type\s*\{[\s\S]*\}\s*from\b|export\s*\{[\s\S]*\}\s*from\b|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
 export const SINGLE_LINE_FORWARD_FN_RE =
   /^\s*(?:(?:export\s+default\s+)|(?:export\s+))?(?:async\s+)?function\s+\w*\s*\([\s\S]*\)\s*(?::[^{]+)?\{\s*(?:return\s+(?:await\s+)?|await\s+)?[\w$.]+\([^{};]*\)\s*;?\s*\}\s*$/;
 export const FORWARD_FN_WITH_LOCAL_ALIASES_RE =
@@ -98,6 +98,7 @@ export function countForwardingLines(significant, importedBindings = new Set()) 
       (!stmt.includes("\n") && SINGLE_LINE_FORWARD_FN_RE.test(stmt)) ||
       isForwardingFunctionStatement(stmt, importedBindings) ||
       SINGLE_LINE_FORWARD_ARROW_RE.test(stmt) ||
+      isBareExportForward(stmt, importedBindings) ||
       isImportedAliasForward(stmt, importedBindings) ||
       isCommonJSExportForward(stmt, importedBindings)
     ) {
@@ -313,6 +314,22 @@ function isImportedAliasForward(statement, importedBindings) {
 
   const valueAlias = statement.match(EXPORTED_VALUE_ALIAS_RE);
   return Boolean(valueAlias && importedBindings.has(valueAlias[1]));
+}
+
+function isBareExportForward(statement, importedBindings) {
+  const match = statement.match(/^\s*export(?:\s+type)?\s*\{([\s\S]*?)\}\s*;?\s*$/u);
+  if (!match) return false;
+  const names = match[1]
+    .split(",")
+    .map((item) =>
+      item
+        .trim()
+        .replace(/^type\s+/u, "")
+        .split(/\s+as\s+/u)[0]
+        .trim(),
+    )
+    .filter(Boolean);
+  return names.length > 0 && names.every((name) => importedBindings.has(name));
 }
 
 function isCommonJSExportForward(statement, importedBindings) {
