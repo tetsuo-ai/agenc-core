@@ -270,8 +270,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/services/compact/sessionMemoryCompact.ts",
       "runtime/src/services/compact/cachedMicrocompact.ts",
       "runtime/src/services/compact/PARITY.md",
-      "parity/compact-service-parity.json",
-      "scripts/check-compact-service-parity.mjs",
     ],
     tests: [
       "runtime/src/services/compact/compact.test.ts",
@@ -302,8 +300,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/session/run-turn.ts",
       "runtime/src/session/turn-context.ts",
       "runtime/src/session/turn-state.ts",
-      "parity/extract-memories-parity.json",
-      "scripts/check-extract-memories-parity.mjs",
     ],
     grepPresent: [
       { pattern: "executeExtractMemories", scope: "runtime/src/phases/commit.ts" },
@@ -335,7 +331,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/tools/hooks.ts",
       "runtime/src/phases/execute-tools.ts",
       "runtime/src/session/turn-state.ts",
-      "parity/service-tools-port-parity.json",
     ],
     grepPresent: [
       { pattern: "partitionToolCalls", scope: "runtime/src/tools/orchestration.ts" },
@@ -345,7 +340,6 @@ const ITEM_EVIDENCE = {
       { pattern: "PermissionDecisionHook", scope: "runtime/src/tools/hooks.ts" },
       { pattern: "../tools/streaming-executor", scope: "runtime/src/phases/execute-tools.ts" },
       { pattern: "../tools/orchestration", scope: "runtime/src/phases/execute-tools.ts" },
-      { pattern: "approvedDivergence", scope: "parity/service-tools-port-parity.json" },
     ],
     grepNotPresent: [
       { pattern: "_deps/tool-runtime", scope: "runtime/src/phases/execute-tools.ts" },
@@ -369,11 +363,9 @@ const ITEM_EVIDENCE = {
       "runtime/src/services/preventSleep.ts",
       "runtime/src/services/tokenEstimation.ts",
       "runtime/src/services/PARITY.md",
-      "parity/agenc-service-utilities-parity.json",
     ],
     tests: [
       "runtime/src/services/service-utilities.test.ts",
-      "runtime/src/services/service-utilities.contract.test.ts",
     ],
   },
   "OC-10": {
@@ -385,7 +377,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/bin/bootstrap.ts",
       "runtime/src/tui/history/ResumeConversation.tsx",
       "runtime/src/tui/startup/StatusLine.tsx",
-      "parity/agenc-cost-runtime-parity.json",
     ],
     grepPresent: [
       { pattern: "bindActiveCostSidecar", scope: "runtime/src/cost/tracker.ts" },
@@ -415,7 +406,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/agents/run-agent.ts",
       "runtime/src/agents/thread.ts",
       "runtime/src/agents/delegate.ts",
-      "parity/agent-summary-service-parity.json",
     ],
     grepPresent: [
       { pattern: "startAgentSummarization", scope: "runtime/src/services/AgentSummary/agentSummary.ts" },
@@ -428,7 +418,6 @@ const ITEM_EVIDENCE = {
       { pattern: "summaryCacheSafeParams", scope: "runtime/src/tasks/agent-thread.ts" },
       { pattern: "onCacheSafeParams", scope: "runtime/src/agents/run-agent.ts" },
       { pattern: "recordSummaryProgressEvent", scope: "runtime/src/agents/delegate.ts" },
-      { pattern: "agent-summary-service-parity", scope: "parity/agent-summary-service-parity.json" },
     ],
     grepNotPresent: [
       { pattern: "@ts-nocheck", scope: "runtime/src/services/AgentSummary" },
@@ -495,14 +484,12 @@ const ITEM_EVIDENCE = {
       "runtime/src/sandbox/engine/policies/seatbelt_base_policy.sbpl",
       "runtime/src/sandbox/engine/policies/seatbelt_network_policy.sbpl",
       "runtime/src/sandbox/engine/policies/restricted_read_only_platform_defaults.sbpl",
-      "parity/cross-platform-sandbox-engine-parity.json",
     ],
     grepPresent: [
       { pattern: "SandboxManager", scope: "runtime/src/sandbox/engine/manager.ts" },
       { pattern: "createSeatbeltCommandArgs", scope: "runtime/src/sandbox/engine/seatbelt.ts" },
       { pattern: "createLinuxSandboxCommandArgsForPermissionProfile", scope: "runtime/src/sandbox/engine/landlock.ts" },
       { pattern: "systemBwrapWarning", scope: "runtime/src/sandbox/engine/bwrap.ts" },
-      { pattern: "cross-platform-sandbox-engine-parity", scope: "parity/cross-platform-sandbox-engine-parity.json" },
     ],
     tests: [
       "runtime/src/sandbox/engine/linux-engine.test.ts",
@@ -525,7 +512,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/sandbox/linux-launcher/build.ts",
       "runtime/src/sandbox/linux-launcher/PARITY.md",
       "runtime/package.json",
-      "parity/linux-sandbox-launcher-parity.json",
     ],
     grepPresent: [
       { pattern: "spawn\\(", scope: "runtime/src/sandbox/linux-launcher/launcher.ts" },
@@ -561,7 +547,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/sandbox/execpolicy/index.ts",
       "runtime/src/sandbox/execpolicy/examples/example.agencpolicy",
       "runtime/src/sandbox/execpolicy/PARITY.md",
-      "parity/execpolicy-dsl-parity.json",
     ],
     grepPresent: [
       { pattern: "class PolicyParser", scope: "runtime/src/sandbox/execpolicy/parser.ts" },
@@ -588,7 +573,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/tools/router.ts",
       "runtime/src/bin/bootstrap-services.ts",
       "runtime/src/tools/system/exec-command.ts",
-      "parity/C-01e-parity.json",
     ],
     tests: [
       "runtime/src/sandbox/escalation/escalation.test.ts",
@@ -635,14 +619,12 @@ const ITEM_EVIDENCE = {
     files: [
       "runtime/src/utils/terminal-detection.ts",
       "runtime/src/utils/terminal-detection.test.ts",
-      "parity/terminal-detection-parity.json",
     ],
   },
   "C-04": {
     files: [
       "runtime/src/utils/git.ts",
       "runtime/src/utils/git.test.ts",
-      "parity/file-search-git-utils-parity.json",
     ],
   },
   "C-05": {
@@ -697,7 +679,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/config/schema.ts",
       "runtime/src/bin/bootstrap.ts",
       "runtime/src/bin/agenc.ts",
-      "parity/openclaude-config-migrations-parity.json", // branding-scan: allow parity filename
     ],
     tests: [
       "runtime/src/state/config-migrations.test.ts",
@@ -725,7 +706,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/tui/components/PromptInput/PromptInput.tsx",
       "runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx",
       "runtime/src/tui/components/spinner/Spinner.tsx",
-      "parity/openclaude-task-registry-parity.json", // branding-scan: allow parity filename
     ],
     tests: [
       "runtime/src/tasks/types.test.ts",
@@ -1086,7 +1066,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/tools/runtimes/apply-patch.ts",
       "runtime/src/tools/runtimes/sandboxing.ts",
       "runtime/src/tools/runtimes/PARITY.md",
-      "parity/tool-runtimes-split-parity.json",
       "runtime/src/tools/system/exec-command.ts",
       "runtime/src/tools/system/write-stdin.ts",
       "runtime/src/unified-exec/process-manager.ts",
@@ -1232,7 +1211,6 @@ const ITEM_EVIDENCE = {
   "PK-08": {
     files: [
       "scripts/check-plugin-kit-hello-example.mjs",
-      "parity/PK-08-parity.json",
     ],
     grepPresent: [
       {
@@ -2836,10 +2814,7 @@ async function donorRuntimePortGates(item) {
     if (!/git", "reset", "--hard/.test(exampleSource) || !/decision = "forbidden"/.test(exampleSource)) {
       failGate("C-01d: example policy corpus fixture missing expected command rules");
     }
-    if (!existsSync(path.join(root, "parity/execpolicy-dsl-parity.json"))) {
-      failGate("C-01d: parity/execpolicy-dsl-parity.json missing");
-    }
-    pass("C-01d: execpolicy parser, policy engine, amendment helpers, checker, tests, and parity present");
+    pass("C-01d: execpolicy parser, policy engine, amendment helpers, checker, and tests present");
     return;
   }
   if (id === "C-01e") {
@@ -2920,10 +2895,7 @@ async function donorRuntimePortGates(item) {
     if (!/\bexecFile\b/.test(testsSource) || !/NetworkApprovalService/.test(testsSource) || !/Policy\.empty/.test(testsSource)) {
       failGate("C-01e: tests must exercise subprocess, network approval, and exec-policy paths");
     }
-    if (!existsSync(path.join(root, "parity/C-01e-parity.json"))) {
-      failGate("C-01e: parity/C-01e-parity.json missing");
-    }
-    pass("C-01e: approval-driven sandbox escalation, exec-policy interception, network approval, tests, and parity present");
+    pass("C-01e: approval-driven sandbox escalation, exec-policy interception, network approval, and tests present");
     return;
   }
   // C-01a..C-01e: sandboxing.
@@ -2968,9 +2940,8 @@ async function donorRuntimePortGates(item) {
   if (id === "C-04") {
     const gitUtils = path.join(root, "runtime/src/utils/git.ts");
     const gitTests = path.join(root, "runtime/src/utils/git.test.ts");
-    const parityMatrix = path.join(root, "parity/file-search-git-utils-parity.json");
-    if (!existsSync(gitUtils) || !existsSync(gitTests) || !existsSync(parityMatrix)) {
-      failGate("C-04: expected runtime/src/utils/git.ts, git.test.ts, and parity matrix");
+    if (!existsSync(gitUtils) || !existsSync(gitTests)) {
+      failGate("C-04: expected runtime/src/utils/git.ts and git.test.ts");
     }
     const testRun = run("npm", [
       "exec",
@@ -2985,7 +2956,7 @@ async function donorRuntimePortGates(item) {
     if (testRun.status !== 0) {
       failGate("C-04 git utility tests failed");
     }
-    pass("C-04: git utilities and overlap parity present");
+    pass("C-04: git utilities and overlap tests present");
     return;
   }
   // C-05: code-mode finish
@@ -3043,7 +3014,6 @@ async function serviceGates(item) {
       "runtime/src/agenc/upstream/services/api/cacheStatsTracker.ts",
       "runtime/src/agenc/upstream/services/vcr.ts",
       "runtime/src/agenc/upstream/components/Settings/Usage.tsx",
-      "parity/agenc-cost-runtime-parity.json",
     ];
     for (const rel of required) {
       if (!existsSync(path.join(root, rel))) failGate(`OC-10 file missing: ${rel}`);
@@ -3153,7 +3123,6 @@ async function serviceGates(item) {
       "runtime/src/state/config-migrations.test.ts",
       "runtime/src/config/config.test.ts",
       "runtime/src/bin/project-trust-preflight.test.ts",
-      "parity/openclaude-config-migrations-parity.json", // branding-scan: allow parity filename
     ];
     for (const rel of required) {
       if (!existsSync(path.join(root, rel))) failGate(`OC-04 file missing: ${rel}`);
@@ -3174,7 +3143,6 @@ async function serviceGates(item) {
       "runtime/src/tasks/stopTask.test.ts",
       "runtime/src/tasks/pillLabel.test.ts",
       "runtime/src/tools/tasks/task-tools.test.ts",
-      "parity/openclaude-task-registry-parity.json", // branding-scan: allow parity filename
     ];
     for (const rel of required) {
       if (!existsSync(path.join(root, rel))) failGate(`OC-08 file missing: ${rel}`);
@@ -3204,14 +3172,12 @@ async function serviceGates(item) {
       "runtime/src/services/preventSleep.ts",
       "runtime/src/services/tokenEstimation.ts",
       "runtime/src/services/PARITY.md",
-      "parity/agenc-service-utilities-parity.json",
     ];
     for (const rel of required) {
       if (!existsSync(path.join(root, rel))) failGate(`S-14 file missing: ${rel}`);
     }
     const tests = [
       "runtime/src/services/service-utilities.test.ts",
-      "runtime/src/services/service-utilities.contract.test.ts",
     ];
     for (const rel of tests) {
       if (!existsSync(path.join(root, rel))) failGate(`S-14 test missing: ${rel}`);
@@ -3222,7 +3188,6 @@ async function serviceGates(item) {
       "vitest",
       "run",
       "src/services/service-utilities.test.ts",
-      "src/services/service-utilities.contract.test.ts",
     ]);
     if (testRun.status !== 0) {
       failGate("S-14 targeted service utility tests failed");
@@ -3242,7 +3207,6 @@ async function serviceGates(item) {
       "runtime/src/phases/execute-tools.ts",
       "runtime/src/session/turn-state.ts",
       "runtime/src/tools/PARITY.md",
-      "parity/service-tools-port-parity.json",
     ];
     for (const rel of required) {
       if (!existsSync(path.join(root, rel))) failGate(`S-10 file missing: ${rel}`);
@@ -3291,25 +3255,7 @@ async function serviceGates(item) {
   if (tests.length === 0) failGate(`no test files in runtime/src/services/${serviceMatch[1]}/`);
   pass(`${tests.length} test file(s)`);
 
-  if (id === "S-01") {
-    const parity = run("node", [
-      "scripts/check-compact-service-parity.mjs",
-      "--require-source-snapshot",
-      "--require-inventory",
-      "--require-commands",
-      "--run-commands",
-      "--command-timeout-ms",
-      "180000",
-    ]);
-    if (parity.status !== 0) failGate("S-01 compact-service parity contract failed");
-    pass("S-01 compact-service parity contract passed");
-  }
-
   if (id === "S-03") {
-    const parity = run("node", ["scripts/check-extract-memories-parity.mjs"]);
-    if (parity.status !== 0) failGate("S-03 extract-memories parity contract failed");
-    pass("S-03 extract-memories parity contract passed");
-
     const vitest = run("node_modules/.bin/vitest", [
       "run",
       "runtime/src/services/extractMemories/extractMemories.test.ts",
@@ -4086,6 +4032,26 @@ async function cleanupGates(item) {
       if (remaining.length > 0) {
         failGate(`Z-06: runtime/parity/ still contains ${remaining.length} file(s); delete the dir.`);
       }
+    }
+    const pathChars = "[^[:space:]\"'()<>]+";
+    const deletedMatrixRefPattern = `(^|[[:space:]"'(<])(${["parity", "runtime/parity"].join("|")})/${pathChars}\\.(json|md)`;
+    const deletedScriptRefPattern = `(^|[[:space:]"'(<])((scripts|runtime/scripts)/)?(${["check", "verify", "run"].join("|")})-${pathChars}(parity|contract)${pathChars}\\.mjs`;
+    const staleRefs = run("git", [
+      "grep",
+      "-n",
+      "-E",
+      `${deletedMatrixRefPattern}|${deletedScriptRefPattern}`,
+      "--",
+      ".",
+      ":(exclude)GOAL_DISCIPLINE.md",
+      ":(exclude)PORT_CHECKLIST.md",
+      ":(exclude)scripts/goal/complete.mjs",
+    ], { silent: true });
+    if (staleRefs.status === 0) {
+      failGate(`Z-06: live files still reference deleted parity scaffolding:\n${staleRefs.stdout.trim()}`);
+    }
+    if (staleRefs.status !== 1) {
+      failGate("Z-06: failed to scan for deleted parity scaffold references");
     }
     pass("Z-06: parity scaffolding removed");
   }

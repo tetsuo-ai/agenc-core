@@ -1,9 +1,8 @@
 /**
  * Turn environment selection helpers for AgenC sandbox execution.
  *
- * Source parity is documented in `parity/C-01f-parity.json`; this file keeps
- * the runtime-facing shape generic so local, remote, and test environment
- * managers can share the same validation path.
+ * This file keeps the runtime-facing shape generic so local, remote, and
+ * test environment managers can share the same validation path.
  */
 
 export interface ExecutorFileSystem {

@@ -87,7 +87,7 @@ const ALLOW_LINE_PATTERNS = [
   // npm package names that legitimately contain these strings
   /["'@][\w-]*claude[\w-]*["']/i, // branding-scan: allow allow-list pattern
   /["']codex[-/][\w@/-]+["']/i, // branding-scan: allow allow-list pattern
-  /^check-openclaude-tui-replacement\.mjs$/i, // branding-scan: allow existing parity-contract filename
+  /^openclaude-(?:ink|markdown)-transform\.mjs$/i, // branding-scan: allow source-transform helper filenames
 ];
 
 const ALLOW_FILE_LINE_PATTERNS = [
@@ -96,16 +96,18 @@ const ALLOW_FILE_LINE_PATTERNS = [
     line: /\b(?:OpenClaude\w*|openclaude|Claude\w*|claude|Codex\w*|codex)\b|\.openclaude\//, // branding-scan: allow parity matrix exception pattern
   },
   {
+    file: /(^|\/)PARITY\.md$/,
+    line: /\b(?:OpenClaude\w*|openclaude|Claude\w*|claude|Codex\w*|codex|Anthropic)\b|\.openclaude\//, // branding-scan: allow source citation files
+  },
+  {
+    file: /^scripts\/openclaude-(?:ink|markdown)-transform\.mjs$/, // branding-scan: allow source transform helper path
+    line: /\b(?:OpenClaude\w*|openclaude|Claude\w*|claude|Anthropic)\b|\.claude\//, // branding-scan: allow source transform rules
+  },
+  {
     // .gitignore must literally name the external assistant/IDE config
     // dirs and files it is keeping out of the repo.
     file: /(^|\/)\.gitignore$/,
     line: /\b(?:OpenClaude\w*|openclaude|Claude\w*|claude|Codex\w*|codex|Cursor)\b|\.openclaude\//, // branding-scan: allow gitignore exception pattern
-  },
-  {
-    // Existing runtime package scripts still carry historical parity-task names.
-    // Keep this exact-key list narrow so new donor-branded package keys still fail.
-    file: /^runtime\/package\.json$/,
-    line: /"(?:check:codex-control-parity|check:codex-registry-parity|check:codex-mailbox-parity|check:codex-status-parity|check:codex-role-parity|check:codex-thread-manager-parity|check:codex-fork-context-parity|check:codex-thread-parity|check:codex-run-agent-parity|check:codex-agents-parity|check:codex-v2-agent-contract|test:codex-v2-agent-contract|validate:codex-v2-agent-contract|check:openclaude-tui-replacement|test:openclaude-tui-replacement|validate:openclaude-tui-replacement|check:tui-openclaude-core-parity|check:openclaude-tui-renderer-parity|test:tui-openclaude-core-parity|validate:tui-openclaude-core-parity|check:openclaude-footer-live-parity|test:openclaude-footer-live-parity|validate:openclaude-footer-live-parity|test:tui-yolo-openclaude-parity|validate:required)"\s*:/i, // branding-scan: allow exact existing package parity script keys
   },
 ];
 
@@ -330,16 +332,15 @@ async function scanFile(filePath) {
   }
   // Directory-path check: flag any directory in the path that is donor-named OR
   // uses a known donor-evasion alias (donor/mirror/vendored/external/_oc/_cx).
-  // The only allowed donor-named locations are the upstream mirror (which gets
-  // deleted at Z-02) and the parity tracking dirs (port artifacts, also scheduled
-  // for cleanup). Everywhere else is a leak.
+  // The only allowed donor-named locations are the upstream mirror while it
+  // exists and explicit citation artifacts. Everywhere else is a leak.
   const dirComponents = path.dirname(rel).split("/").filter(Boolean);
   for (const comp of dirComponents) {
     const isDonorName = /^(?:openclaude|codex|claude|OpenClaude|Codex|Claude)$/i.test(comp); // branding-scan: allow regex enumerates the banned donor dir names
     const isEvasionName = /^(?:donor|mirror|vendored|external|_oc|_cx|_donor|_mirror|_vendored|_external)$/i.test(comp);
     if (isDonorName || isEvasionName) {
       const inUpstreamMirror = rel.startsWith("runtime/src/agenc/upstream/");
-      const inParityArtifacts = rel.startsWith("parity/") || rel.startsWith("runtime/parity/") || rel.startsWith("docs/plan/");
+      const inParityArtifacts = rel.startsWith("parity/") || rel.startsWith("runtime/parity/");
       if (isDonorName && (inUpstreamMirror || inParityArtifacts)) continue;
       findings.push({
         file: filePath,

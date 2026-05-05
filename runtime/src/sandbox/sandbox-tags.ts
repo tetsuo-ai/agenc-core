@@ -1,8 +1,8 @@
 /**
  * Sandbox metric and legacy-policy tag derivation for AgenC runtime profiles.
  *
- * Source parity is documented in `parity/C-01f-parity.json`; the executable
- * sandbox command builders remain owned by `runtime/src/sandbox/engine/`.
+ * The executable sandbox command builders remain owned by
+ * `runtime/src/sandbox/engine/`.
  */
 
 import {

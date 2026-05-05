@@ -1,7 +1,7 @@
 # Request Permissions RPC Parity
 
-Upstream reference root and commit are recorded in
-`parity/request-permissions-rpc-parity.json`.
+Upstream reference root: `/home/tetsuo/git/codex/codex-rs`
+Upstream reference commit: `c8c30d9d75556ecbe94991af22380d2a4e9d6589`
 
 Primary source anchors:
 - `protocol/src/permissions.rs`
