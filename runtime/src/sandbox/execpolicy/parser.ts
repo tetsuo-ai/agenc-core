@@ -47,6 +47,11 @@ interface UserFunction {
   readonly bodyExpression: string;
 }
 
+interface BlockSource {
+  readonly source: string;
+  readonly startLine: number;
+}
+
 interface PendingExampleValidation {
   readonly rules: readonly Rule[];
   readonly matches: readonly (readonly string[])[];
@@ -466,7 +471,9 @@ class DeclarativePolicyParser {
     private readonly source: string,
     variables: ReadonlyMap<string, DslValue> = new Map(),
     functions: Map<string, UserFunction> = new Map(),
+    startLine = 1,
   ) {
+    this.line = startLine;
     this.variables = new Map(
       [...variables.entries()].map(([key, value]) => [key, cloneDslValue(value)]),
     );
@@ -576,7 +583,7 @@ class DeclarativePolicyParser {
     this.skipHorizontalTrivia();
     this.expect(":");
     const body = this.readIndentedBlockSource();
-    const statements = body
+    const statements = body.source
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line.length > 0 && !line.startsWith("#"));
@@ -613,9 +620,10 @@ class DeclarativePolicyParser {
         statements.push(
           ...new DeclarativePolicyParser(
             this.policyIdentifier,
-            body,
+            body.source,
             this.variables,
             this.functions,
+            body.startLine,
           ).parse(),
         );
       }
@@ -730,14 +738,9 @@ class DeclarativePolicyParser {
     const end = this.findClosingListBracket(start - 1);
     if (end === null) return null;
     const content = this.source.slice(start, end);
-    const match = /^([\s\S]+?)\s+for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([\s\S]+)$/u.exec(
-      content.trim(),
-    );
-    if (match === null) return null;
-    const [, itemExpression, variableName, iterableExpression] = match;
-    if (itemExpression === undefined || variableName === undefined || iterableExpression === undefined) {
-      return null;
-    }
+    const comprehension = splitListComprehension(content);
+    if (comprehension === null) return null;
+    const { itemExpression, variableName, iterableExpression } = comprehension;
     const iterable = this.evaluateExpressionSnippet(iterableExpression, this.variables);
     if (!Array.isArray(iterable)) {
       throw this.error("list comprehension iterable must be a list");
@@ -904,13 +907,14 @@ class DeclarativePolicyParser {
     return value;
   }
 
-  private readIndentedBlockSource(): string {
+  private readIndentedBlockSource(): BlockSource {
     this.skipHorizontalTrivia();
     if (this.peek() !== "\n") {
       throw this.error("expected newline before indented block");
     }
     this.advance();
     const blockStart = this.offset;
+    const startLine = this.line;
     let scan = this.offset;
     let indent: number | null = null;
     let blockEnd = this.offset;
@@ -944,7 +948,7 @@ class DeclarativePolicyParser {
       .map((line) => stripIndent(line, indent))
       .join("\n");
     this.advanceTo(blockEnd);
-    return block;
+    return { source: block, startLine };
   }
 
   private findClosingListBracket(openOffset: number): number | null {
@@ -1122,4 +1126,55 @@ function stripIndent(line: string, indent: number): string {
     remaining -= 1;
   }
   return line.slice(offset);
+}
+
+function splitListComprehension(
+  content: string,
+): { itemExpression: string; variableName: string; iterableExpression: string } | null {
+  const trimmed = content.trim();
+  const forIndex = findTopLevelKeyword(trimmed, "for");
+  if (forIndex === null) return null;
+  const inIndex = findTopLevelKeyword(trimmed, "in", forIndex + "for".length);
+  if (inIndex === null) return null;
+  const itemExpression = trimmed.slice(0, forIndex).trim();
+  const variableName = trimmed.slice(forIndex + "for".length, inIndex).trim();
+  const iterableExpression = trimmed.slice(inIndex + "in".length).trim();
+  if (itemExpression.length === 0 || iterableExpression.length === 0) return null;
+  if (!isIdentifier(variableName)) return null;
+  return { itemExpression, variableName, iterableExpression };
+}
+
+function findTopLevelKeyword(source: string, keyword: string, start = 0): number | null {
+  let depth = 0;
+  let quote: "'" | "\"" | null = null;
+  for (let index = start; index < source.length; index += 1) {
+    const char = source[index] ?? "";
+    if (quote !== null) {
+      if (char === "\\") {
+        index += 1;
+        continue;
+      }
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      quote = char;
+      continue;
+    }
+    if (char === "[" || char === "(" || char === "{") {
+      depth += 1;
+      continue;
+    }
+    if (char === "]" || char === ")" || char === "}") {
+      depth -= 1;
+      continue;
+    }
+    if (depth !== 0 || !source.startsWith(keyword, index)) continue;
+    const before = source[index - 1];
+    const after = source[index + keyword.length];
+    const beforeOk = before === undefined || !/[A-Za-z0-9_]/u.test(before);
+    const afterOk = after === undefined || !/[A-Za-z0-9_]/u.test(after);
+    if (beforeOk && afterOk) return index;
+  }
+  return null;
 }

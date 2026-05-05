@@ -93,6 +93,8 @@
         "empty patterns are rejected",
         "empty string examples are rejected",
         "unknown policy builtins are rejected",
+        "strings containing comprehension-like text remain ordinary strings",
+        "validation errors inside generated loop bodies keep original policy line numbers",
         "negative examples fail when any rule matches them",
         "the carried example corpus parses and evaluates representative commands"
       ],

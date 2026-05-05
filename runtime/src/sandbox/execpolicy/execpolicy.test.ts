@@ -285,6 +285,26 @@ host_executable("git", [git_path])
     expect(policy.check(tokens(["echo", "safe"]), allowAll).decision).toBe("allow");
   });
 
+  test("list comprehension lookalikes inside strings stay literal", () => {
+    const policy = parsePolicy(
+      "lookalike.agencpolicy",
+      'prefix_rule(["echo", "x for y in z"])',
+    );
+
+    expect(policy.check(tokens(["echo", "x for y in z"]), promptAll)).toEqual({
+      decision: "allow",
+      matchedRules: [
+        {
+          type: "prefix_rule_match",
+          matchedPrefix: tokens(["echo", "x for y in z"]),
+          decision: "allow",
+          resolvedProgram: null,
+          justification: null,
+        },
+      ],
+    });
+  });
+
   test("match and not_match examples validate at parse time", () => {
     expect(() =>
       parsePolicy(
@@ -311,6 +331,25 @@ prefix_rule(
         'prefix_rule(pattern = ["git"], not_match = [["git", "status"]])',
       ),
     ).toThrow(ExampleDidMatchError);
+  });
+
+  test("match validation errors inside for-loop bodies keep source line numbers", () => {
+    try {
+      parsePolicy(
+        "loop-examples.agencpolicy",
+        `
+for verb in ["status"]:
+  prefix_rule(
+    pattern = ["git", verb],
+    match = [["git", "commit"]],
+  )
+`,
+      );
+      throw new Error("parse should fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ExampleDidNotMatchError);
+      expect((error as ExecPolicyError).location?.range.start.line).toBe(3);
+    }
   });
 
   test("match and not_match examples honor host executable resolution", () => {
