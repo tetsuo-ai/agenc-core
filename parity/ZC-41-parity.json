@@ -78,6 +78,22 @@
       "carried": ["duration status", "age at first turn status"]
     },
     {
+      "id": "compact",
+      "required": true,
+      "source": "core/src/compact.rs",
+      "target": [
+        "runtime/src/agenc/adapters/runtime-session.ts",
+        "runtime/tests/runtime-session-compact-telemetry.test.ts"
+      ],
+      "carried": [
+        "auto compact status",
+        "manual compact status",
+        "context usage status",
+        "overflow recovery status",
+        "prepare-query compaction status"
+      ]
+    },
+    {
       "id": "hooks",
       "required": true,
       "source": "core/src/hook_runtime.rs",
@@ -132,6 +148,7 @@
   ],
   "tests": [
     "runtime/src/observability/telemetry.test.ts",
+    "runtime/tests/runtime-session-compact-telemetry.test.ts",
     "runtime/src/hooks/engine/dispatcher.test.ts",
     "runtime/src/mcp-client/tool-bridge.test.ts"
   ]

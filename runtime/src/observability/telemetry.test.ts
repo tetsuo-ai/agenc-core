@@ -138,6 +138,22 @@ describe("observability telemetry", () => {
     expect(noop.getCurrentSpan()).toBeUndefined();
   });
 
+  test("default no-op client preserves async span scope until settle", async () => {
+    const noop = createNoopTelemetryClient();
+    let immediateSpan: string | undefined;
+    let awaitedSpan: string | undefined;
+
+    await noop.withSpan("test.async", undefined, async () => {
+      immediateSpan = noop.getCurrentSpan()?.name;
+      await Promise.resolve();
+      awaitedSpan = noop.getCurrentSpan()?.name;
+    });
+
+    expect(immediateSpan).toBe("test.async");
+    expect(awaitedSpan).toBe("test.async");
+    expect(noop.getCurrentSpan()).toBeUndefined();
+  });
+
   test("global client can be swapped without changing call sites", () => {
     const recording = new RecordingTelemetryClient();
     const restore = setAgencTelemetryClient(recording);

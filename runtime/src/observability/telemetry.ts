@@ -63,6 +63,8 @@ export const AGENC_STARTUP_PREWARM_DURATION_METRIC =
   "agenc.startup_prewarm.duration_ms";
 export const AGENC_STARTUP_PREWARM_AGE_AT_FIRST_TURN_METRIC =
   "agenc.startup_prewarm.age_at_first_turn_ms";
+export const AGENC_COMPACT_CALL_METRIC = "agenc.compact.call";
+export const AGENC_COMPACT_DURATION_METRIC = "agenc.compact.duration_ms";
 export const AGENC_WINDOWS_SANDBOX_SETUP_DURATION_METRIC =
   "agenc.windows_sandbox.setup_duration_ms";
 export const AGENC_WINDOWS_SANDBOX_SETUP_SUCCESS_METRIC =
@@ -127,18 +129,22 @@ class NoopTelemetryClient implements TelemetryClient {
       if (isPromiseLike(result)) {
         return (result as Promise<unknown>).finally(() => {
           span.end();
-          this.currentSpan = previous;
+          if (this.currentSpan === span) {
+            this.currentSpan = previous;
+          }
         }) as T;
       }
       span.end();
-      return result;
-    } catch (error) {
-      span.end();
-      throw error;
-    } finally {
       if (this.currentSpan === span) {
         this.currentSpan = previous;
       }
+      return result;
+    } catch (error) {
+      span.end();
+      if (this.currentSpan === span) {
+        this.currentSpan = previous;
+      }
+      throw error;
     }
   }
 

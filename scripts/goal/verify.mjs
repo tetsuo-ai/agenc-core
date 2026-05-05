@@ -5532,6 +5532,7 @@ function assertZc41ObservabilityCoverage() {
     ["runtime/src/session/session.ts", "AGENC_TURN_E2E_DURATION_METRIC"],
     ["runtime/src/session/run-turn.ts", "AGENC_TURN_TTFT_DURATION_METRIC"],
     ["runtime/src/session/startup-prewarm.ts", "AGENC_STARTUP_PREWARM_AGE_AT_FIRST_TURN_METRIC"],
+    ["runtime/src/agenc/adapters/runtime-session.ts", "AGENC_COMPACT_DURATION_METRIC"],
     ["runtime/src/hooks/engine/dispatcher.ts", "AGENC_HOOK_RUN_DURATION_METRIC"],
     ["runtime/src/mcp-client/tool-bridge.ts", "mcp.tools.call"],
     ["runtime/src/session/observer-wiring.ts", "AGENC_TOOL_UNIFIED_EXEC_DURATION_METRIC"],
@@ -5551,8 +5552,8 @@ function assertZc41ObservabilityCoverage() {
   if (ledger.item !== "ZC-41" || ledger.status !== "implemented") {
     failGate("ZC-41: parity ledger must identify item ZC-41 with implemented status");
   }
-  if (!Array.isArray(ledger.coverageRows) || ledger.coverageRows.length < 8) {
-    failGate("ZC-41: parity ledger must cover client, timer, turn timing, task lifecycle, startup prewarm, hooks, MCP, exec, and Windows sandbox seams");
+  if (!Array.isArray(ledger.coverageRows) || ledger.coverageRows.length < 9) {
+    failGate("ZC-41: parity ledger must cover client, timer, turn timing, task lifecycle, startup prewarm, compact, hooks, MCP, exec, and Windows sandbox seams");
   }
   const nonRequiredRows = ledger.coverageRows.filter((row) => row?.required !== true);
   if (nonRequiredRows.length > 0) {
@@ -5565,6 +5566,7 @@ function assertZc41ObservabilityCoverage() {
     "vitest",
     "run",
     "src/observability/telemetry.test.ts",
+    "tests/runtime-session-compact-telemetry.test.ts",
     "src/hooks/engine/dispatcher.test.ts",
     "src/mcp-client/tool-bridge.test.ts",
   ]);
