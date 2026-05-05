@@ -9,6 +9,7 @@ Primary source anchors:
 This directory owns the donor-shaped cost runtime facade:
 - `tracker.ts` exposes process-level cost getters, reset/restore helpers, and summary formatting by delegating to the active `CostSidecar`.
 - `tracker.ts` also accepts live API/VCR token-dollar producers and API duration producers, then records them through the active `CostSidecar`.
+- The live API/VCR producers continue to feed `cacheStatsTracker` so REPL cache-hit summaries and `/cache-stats` stay in sync with cost resets.
 - `hook.ts` preserves the cost-summary hook shape as a print-only fallback listener while bootstrap keeps live exit summary and persistence on `CostSidecar`.
 
 Durable token, model, dollar, cache, and session-total accounting remains owned by `runtime/src/session/cost.ts`.

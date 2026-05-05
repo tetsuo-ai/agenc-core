@@ -5,6 +5,7 @@ import isPlainObject from 'lodash-es/isPlainObject.js'
 import mapValues from 'lodash-es/mapValues.js'
 import { dirname, join } from 'path'
 import { addToTotalSessionCost } from 'src/cost/tracker.js'
+import { recordUsageCacheStats } from 'src/services/api/cacheStatsTracker.js'
 import { calculateUSDCost } from 'src/utils/modelCost.js'
 import type {
   AssistantMessage,
@@ -19,7 +20,6 @@ import { getAgenCConfigHomeDir, isEnvTruthy } from '../utils/envUtils.js'
 import { getErrnoCode } from '../utils/errors.js'
 import { normalizeMessagesForAPI } from '../utils/messages.js'
 import { jsonParse, jsonStringify } from '../utils/slowOperations.js'
-
 function shouldUseVCR(): boolean {
   if (process.env.NODE_ENV === 'test') {
     return true
@@ -169,9 +169,9 @@ function addCachedCostToTotalSessionCost(
   const model = message.message.model
   const usage = message.message.usage
   const costUSD = calculateUSDCost(model, usage)
+  recordUsageCacheStats(usage, model)
   addToTotalSessionCost(costUSD, usage, model)
 }
-
 function mapMessages(
   messages: (UserMessage | AssistantMessage)['message']['content'][],
   f: (s: unknown) => unknown,

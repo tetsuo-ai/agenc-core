@@ -60,13 +60,14 @@
       "requiredBehaviors": [
         "route API and VCR token-dollar producers into the active CostSidecar",
         "preserve explicit API-computed USD cost instead of recomputing it differently",
-        "record cache read/write token totals and explicit cache-aware API cost from the migrated facade",
+        "record cache read/write token totals and feed cacheStatsTracker hit-rate state from the migrated producers",
         "route API duration including retry and without-retry timings into the sidecar"
       ],
       "edgeCases": [
         "producer runs before a sidecar is active",
         "API logging duration and turn_complete duration both occur for one turn",
-        "cache metrics are unavailable for a provider"
+        "cache metrics are unavailable for a provider",
+        "cost resets also clear cache-hit state"
       ],
       "tests": [
         "runtime/src/cost/tracker.test.ts",

@@ -6,6 +6,7 @@ import {
   addToTotalLinesChanged,
   addToToolDuration,
   bindActiveCostSidecar,
+  bindCacheStatsResetHook,
   formatTotalCost,
   getActiveCostSidecar,
   getModelUsage,
@@ -15,10 +16,17 @@ import {
   getTotalLinesAdded,
   getTotalLinesRemoved,
   getTotalToolDuration,
+  resetCostState,
   resetStateForTests,
   restoreCostStateForSession,
 } from "./tracker.js";
 import { registerCostSummaryFallbackOnExit } from "./hook.js";
+import {
+  getCurrentTurnCacheMetrics,
+  getSessionCacheMetrics,
+  recordUsageCacheStats,
+  resetSessionCacheStats,
+} from "../agenc/upstream/services/api/cacheStatsTracker.js";
 
 describe("cost tracker facade", () => {
   test("returns zero defaults without an active sidecar", () => {
@@ -91,27 +99,33 @@ describe("cost tracker facade", () => {
 
   test("token-dollar producer records explicit API cost and cache usage", () => {
     resetStateForTests();
+    resetSessionCacheStats();
     const sidecar = new CostSidecar({
       defaultProvider: "openai",
       defaultModel: "gpt-4o",
     });
     const dispose = bindActiveCostSidecar(sidecar);
+    const usage = {
+      input_tokens: 1000,
+      output_tokens: 250,
+      cache_read_input_tokens: 400,
+      cache_creation_input_tokens: 25,
+      server_tool_use: { web_search_requests: 2 },
+    };
 
-    const returned = addToTotalSessionCost(
-      0.1234,
-      {
-        input_tokens: 1000,
-        output_tokens: 250,
-        cache_read_input_tokens: 400,
-        cache_creation_input_tokens: 25,
-        server_tool_use: { web_search_requests: 2 },
-      },
-      "gpt-4o",
-    );
+    recordUsageCacheStats(usage, "gpt-4o");
+    const returned = addToTotalSessionCost(0.1234, usage, "gpt-4o");
 
     expect(returned).toBeCloseTo(0.1234, 6);
     expect(getTotalCost()).toBeCloseTo(0.1234, 6);
     expect(getTotalInputTokens()).toBe(1000);
+    expect(getCurrentTurnCacheMetrics()).toMatchObject({
+      read: 400,
+      created: 25,
+      total: 1425,
+      supported: true,
+    });
+    expect(getSessionCacheMetrics().read).toBe(400);
     expect(getModelUsage()["openai:gpt-4o"]).toMatchObject({
       inputTokens: 1000,
       outputTokens: 250,
@@ -121,6 +135,22 @@ describe("cost tracker facade", () => {
       costUSD: 0.1234,
     });
     dispose();
+  });
+
+  test("resetCostState clears registered cache stats with cost totals", () => {
+    resetStateForTests();
+    resetSessionCacheStats();
+    const disposeReset = bindCacheStatsResetHook(resetSessionCacheStats);
+    recordUsageCacheStats(
+      { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 80 },
+      "gpt-4o",
+    );
+
+    expect(getSessionCacheMetrics().read).toBe(80);
+    resetCostState();
+    expect(getSessionCacheMetrics().supported).toBe(false);
+
+    disposeReset();
   });
 
   test("fallback exit hook does not register when bootstrap owns an active sidecar", () => {

@@ -5,7 +5,7 @@
  * write failure, and appendSessionRecord aggregation.
  */
 
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,7 @@ import {
   COST_TOTALS_FILENAME,
   COST_TOTALS_SCHEMA_VERSION,
   CostSidecar,
+  atomicWriteJson,
   type CostTotalsFile,
   type SessionCostRecord,
 } from "./cost.js";
@@ -185,6 +186,39 @@ describe("CostSidecar.loadFromDisk", () => {
       },
     ]);
     expect(sidecar.getTotalCostUsd()).toBeCloseTo(0.02, 6);
+  });
+
+  test("load filters malformed session records before restore", async () => {
+    writeFileSync(
+      join(projectDir, COST_TOTALS_FILENAME),
+      JSON.stringify({
+        version: COST_TOTALS_SCHEMA_VERSION,
+        totalUsage: {
+          inputTokens: "bad",
+          outputTokens: 5,
+          cacheReadTokens: 0,
+          reasoningOutputTokens: 0,
+          totalTokens: 5,
+        },
+        totalCostUsd: 0,
+        sessions: [
+          {
+            sessionId: "bad-session",
+            startedAtMs: "bad",
+            endedAtMs: 20,
+            usage: undefined,
+            costUsd: "bad",
+          },
+        ],
+        updatedAtMs: 30,
+      }),
+    );
+    const sidecar = new CostSidecar({ projectDir, sessionId: "new-session" });
+    await sidecar.loadFromDisk();
+
+    expect(sidecar.restoreSessionCostsForSession("bad-session")).toBe(false);
+    expect(sidecar.getLifetimeTotals().inputTokens).toBe(0);
+    expect(sidecar.getLifetimeCostUsd()).toBe(0);
   });
 });
 
@@ -366,6 +400,16 @@ describe("CostSidecar.saveToDisk", () => {
     const parsed = JSON.parse(raw) as CostTotalsFile;
     expect(parsed.version).toBe(COST_TOTALS_SCHEMA_VERSION);
     // No lingering tmp beside the final file.
+    expect(
+      readdirSync(projectDir).some((f) => f.endsWith(".tmp")),
+    ).toBe(false);
+  });
+
+  test("real atomic write removes tmp file when rename fails", async () => {
+    const blockedPath = join(projectDir, COST_TOTALS_FILENAME);
+    mkdirSync(blockedPath);
+
+    await expect(atomicWriteJson(blockedPath, "{}")).rejects.toThrow();
     expect(
       readdirSync(projectDir).some((f) => f.endsWith(".tmp")),
     ).toBe(false);

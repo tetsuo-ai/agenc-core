@@ -145,6 +145,7 @@ import {
 import type { QuerySource } from 'src/constants/querySource.js'
 import type { Notification } from 'src/context/notifications.js'
 import { addToTotalSessionCost } from 'src/cost/tracker.js'
+import { recordUsageCacheStats } from 'src/services/api/cacheStatsTracker.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import type { AgentId } from 'src/types/ids.js'
 import {
@@ -2288,8 +2289,8 @@ async function* queryModel(
               lastMsg.message.stop_reason = stopReason
             }
 
-            // Update cost
             const costUSDForPart = calculateUSDCost(resolvedModel, usage)
+            recordUsageCacheStats(usage, options.model)
             costUSD += addToTotalSessionCost(
               costUSDForPart,
               usage,
@@ -2855,14 +2856,12 @@ async function* queryModel(
     // until the generator itself is GC'd (see GH #32920).
     releaseStreamResources()
 
-    // Non-streaming fallback cost: the streaming path tracks cost in the
-    // message_delta handler before any yield. Fallback pushes to newMessages
-    // then yields, so tracking must be here to survive .return() at the yield.
     if (fallbackMessage) {
       const fallbackUsage = fallbackMessage.message.usage
       usage = updateUsage(EMPTY_USAGE, fallbackUsage)
       stopReason = fallbackMessage.message.stop_reason
       const fallbackCost = calculateUSDCost(resolvedModel, fallbackUsage)
+      recordUsageCacheStats(fallbackUsage, options.model)
       costUSD += addToTotalSessionCost(
         fallbackCost,
         fallbackUsage,

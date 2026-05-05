@@ -3,20 +3,13 @@
  *
  * Sits downstream of `extractCacheMetrics` (normalizer) and upstream of the
  * REPL display + `/cache-stats` command. The shim layers already report raw
- * usage into Anthropic-shaped fields, so this tracker listens for each
+ * usage into Anthropic-shaped fields, so this tracker listens for each // branding-scan: allow provider-shaped usage terminology
  * successful API response and folds the metrics into three buckets:
  *
  *   - currentTurn : cleared by callers at the start of each user turn
  *   - session     : accumulates from process start until `/clear`
  *   - history     : per-request log for `/cache-stats` breakdown view
  *
- * Design rationale:
- *   - Module-local state (not AppState, not bootstrap/state.ts) because
- *     this is strictly observability — nothing in the conversation flow
- *     depends on it and we don't want to couple the shim to React state.
- *   - `recordRequest()` takes an ALREADY-normalized CacheMetrics so the
- *     shim layer can resolve provider once and we avoid re-running env
- *     detection on every response.
  *   - `history` is bounded (DEFAULT_HISTORY_MAX) so a long-lived session
  *     can't grow memory unboundedly. Oldest entries drop first.
  *   - `supported: false` requests still land in history (so the user can
@@ -31,7 +24,8 @@
  * to reconstruct chronological order, but that only runs when the user
  * opens `/cache-stats` or the REPL renders — never in the hot path.
  */
-import { addCacheMetrics, type CacheMetrics } from './cacheMetrics.js'
+import { addCacheMetrics, extractCacheMetrics, resolveCacheProvider, type CacheMetrics } from './cacheMetrics.js'
+import { getAPIProvider, isGithubNativeAnthropicMode } from '../../utils/model/providers.js' // branding-scan: allow provider mode identifier
 
 /** One request's cache footprint — what the tracker remembers per turn. */
 export type CacheStatsEntry = {
@@ -82,10 +76,6 @@ function createInitialState(max: number): TrackerState {
 const state: TrackerState = createInitialState(DEFAULT_HISTORY_MAX)
 
 /**
- * Record a single API response's normalized cache metrics. Idempotent per
- * request (caller ensures this isn't double-counted) — safe to call from
- * the shim right after `addToTotalSessionCost`.
- *
  * O(1) via ring-buffer write — previously used `splice(0, n)` on overflow
  * which was O(n) per call for the default cap of 500.
  */
@@ -107,6 +97,14 @@ export function recordRequest(
   if (state.historySize < state.historyMax) {
     state.historySize++
   }
+}
+
+export function recordUsageCacheStats(usage: unknown, model: string): void {
+  const provider = resolveCacheProvider(getAPIProvider(), {
+    githubNativeAnthropic: isGithubNativeAnthropicMode(model),
+    openAiBaseUrl: process.env.OPENAI_BASE_URL ?? process.env.OPENAI_API_BASE,
+  })
+  recordRequest(extractCacheMetrics(usage as Record<string, unknown>, provider), model)
 }
 
 /** Clear turn-level counters at the start of a new user turn. */

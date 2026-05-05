@@ -47,6 +47,7 @@ export type LegacyModelUsage = ModelUsage & {
 let activeCostSidecar: CostSidecar | null = null;
 let detachedLinesAdded = 0;
 let detachedLinesRemoved = 0;
+let cacheStatsResetHook: (() => void) | null = null;
 
 export function bindActiveCostSidecar(
   sidecar: CostSidecar | null,
@@ -66,6 +67,15 @@ export function bindActiveCostSidecar(
 
 export function getActiveCostSidecar(): CostSidecar | null {
   return activeCostSidecar;
+}
+
+export function bindCacheStatsResetHook(hook: (() => void) | null): () => void {
+  cacheStatsResetHook = hook;
+  return () => {
+    if (cacheStatsResetHook === hook) {
+      cacheStatsResetHook = null;
+    }
+  };
 }
 
 export function getTotalCost(): number {
@@ -218,6 +228,7 @@ export function getUsageForModel(model: string): LegacyModelUsage | undefined {
 
 export function resetCostState(): void {
   activeCostSidecar?.reset();
+  cacheStatsResetHook?.();
   detachedLinesAdded = 0;
   detachedLinesRemoved = 0;
 }
@@ -225,6 +236,7 @@ export function resetCostState(): void {
 export function resetStateForTests(): void {
   resetCostState();
   activeCostSidecar = null;
+  cacheStatsResetHook = null;
 }
 
 export function restoreCostStateForSession(sessionId: string): boolean {

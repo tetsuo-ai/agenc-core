@@ -597,13 +597,13 @@ function emptyTotals(): CostTotals {
 
 function coerceTotals(raw: Partial<CostTotals> | undefined): CostTotals {
   return {
-    inputTokens: raw?.inputTokens ?? 0,
-    outputTokens: raw?.outputTokens ?? 0,
-    cacheReadTokens: raw?.cacheReadTokens ?? 0,
-    cacheCreationTokens: raw?.cacheCreationTokens ?? 0,
-    reasoningOutputTokens: raw?.reasoningOutputTokens ?? 0,
-    webSearchRequests: raw?.webSearchRequests ?? 0,
-    totalTokens: raw?.totalTokens ?? 0,
+    inputTokens: normalizeCounter(raw?.inputTokens),
+    outputTokens: normalizeCounter(raw?.outputTokens),
+    cacheReadTokens: normalizeCounter(raw?.cacheReadTokens),
+    cacheCreationTokens: normalizeCounter(raw?.cacheCreationTokens),
+    reasoningOutputTokens: normalizeCounter(raw?.reasoningOutputTokens),
+    webSearchRequests: normalizeCounter(raw?.webSearchRequests),
+    totalTokens: normalizeCounter(raw?.totalTokens),
   };
 }
 
@@ -633,6 +633,55 @@ function coerceSessionModelUsage(
     totalTokens: normalizeCounter(row.totalTokens as number | undefined),
     turns: normalizeCounter(row.turns as number | undefined),
     costUsd: normalizeCost(row.costUsd as number | undefined),
+  };
+}
+
+function coerceSessionRecord(raw: unknown): SessionCostRecord | null {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  if (typeof record.sessionId !== "string" || record.sessionId.length === 0) {
+    return null;
+  }
+  if (!record.usage || typeof record.usage !== "object") return null;
+  const startedAtMs = normalizeWallMs(record.startedAtMs as number | undefined);
+  const endedAtMs = normalizeWallMs(record.endedAtMs as number | undefined);
+  if (startedAtMs === null || endedAtMs === null) return null;
+  const modelUsage = Array.isArray(record.modelUsage)
+    ? record.modelUsage
+      .map((row) => coerceSessionModelUsage(row))
+      .filter((row): row is SessionCostModelUsage => row !== null)
+    : undefined;
+  const durationMs = normalizeDuration(record.durationMs as number | undefined);
+  const apiDurationMs = normalizeDuration(
+    record.apiDurationMs as number | undefined,
+  );
+  const apiDurationWithoutRetriesMs = normalizeDuration(
+    record.apiDurationWithoutRetriesMs as number | undefined,
+  );
+  const toolDurationMs = normalizeDuration(
+    record.toolDurationMs as number | undefined,
+  );
+  return {
+    sessionId: record.sessionId,
+    startedAtMs,
+    endedAtMs,
+    usage: coerceTotals(record.usage as Partial<CostTotals>),
+    costUsd: normalizeCost(record.costUsd as number | undefined),
+    ...(modelUsage !== undefined ? { modelUsage } : {}),
+    ...(durationMs !== null ? { durationMs } : {}),
+    ...(apiDurationMs !== null ? { apiDurationMs } : {}),
+    ...(apiDurationWithoutRetriesMs !== null
+      ? { apiDurationWithoutRetriesMs }
+      : {}),
+    ...(toolDurationMs !== null ? { toolDurationMs } : {}),
+    linesAdded: normalizeCounter(record.linesAdded as number | undefined),
+    linesRemoved: normalizeCounter(record.linesRemoved as number | undefined),
+    ...(typeof record.fpsAverage === "number" && Number.isFinite(record.fpsAverage)
+      ? { fpsAverage: record.fpsAverage }
+      : {}),
+    ...(typeof record.fpsLow1Pct === "number" && Number.isFinite(record.fpsLow1Pct)
+      ? { fpsLow1Pct: record.fpsLow1Pct }
+      : {}),
   };
 }
 
@@ -688,6 +737,11 @@ function normalizeCost(value: number | undefined): number {
   return Math.max(0, value);
 }
 
+function normalizeWallMs(value: number | undefined): number | null {
+  if (value === undefined || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.trunc(value));
+}
+
 function validateTotalsFile(raw: unknown): CostTotalsFile | null {
   if (!raw || typeof raw !== "object") return null;
   const f = raw as Partial<CostTotalsFile>;
@@ -711,14 +765,28 @@ export async function atomicWriteJson(
   content: string,
 ): Promise<void> {
   const tmp = `${path}.tmp`;
-  const handle = await fsp.open(tmp, "w", 0o600);
+  let handle: Awaited<ReturnType<typeof fsp.open>> | null = await fsp.open(
+    tmp,
+    "w",
+    0o600,
+  );
   try {
     await handle.writeFile(content);
     await handle.sync();
-  } finally {
     await handle.close();
+    handle = null;
+    await fsp.rename(tmp, path);
+  } catch (err) {
+    if (handle !== null) {
+      try {
+        await handle.close();
+      } catch {
+        // best effort; preserve the original write/rename failure
+      }
+    }
+    await fsp.rm(tmp, { force: true }).catch(() => {});
+    throw err;
   }
-  await fsp.rename(tmp, path);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1301,8 +1369,10 @@ export class CostSidecar implements Sidecar {
     }
     // Coerce partial totalUsage (forward-compat: missing fields → 0).
     this.loadedTotalUsage = coerceTotals(validated.totalUsage);
-    this.loadedTotalCostUsd = validated.totalCostUsd;
-    this.loadedSessions = [...validated.sessions];
+    this.loadedTotalCostUsd = normalizeCost(validated.totalCostUsd);
+    this.loadedSessions = validated.sessions
+      .map((record) => coerceSessionRecord(record))
+      .filter((record): record is SessionCostRecord => record !== null);
   }
 
   /** Current session's in-memory totals, in `CostTotals` shape. */

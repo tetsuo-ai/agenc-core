@@ -2472,6 +2472,7 @@ async function serviceGates(item) {
       "runtime/src/agenc/upstream/QueryEngine.ts",
       "runtime/src/agenc/upstream/services/api/claude.ts", // branding-scan: allow provider API filename under upstream mirror
       "runtime/src/agenc/upstream/services/api/logging.ts",
+      "runtime/src/agenc/upstream/services/api/cacheStatsTracker.ts",
       "runtime/src/agenc/upstream/services/vcr.ts",
       "runtime/src/agenc/upstream/components/Settings/Usage.tsx",
       "parity/agenc-cost-runtime-parity.json",
@@ -2531,13 +2532,13 @@ async function serviceGates(item) {
       ],
       [
         "runtime/src/agenc/upstream/services/api/claude.ts", // branding-scan: allow provider API filename under upstream mirror
-        /addToTotalSessionCost\s*}\s*from\s+['"]src\/cost\/tracker\.js['"]/,
-        "API token-dollar producer routes through runtime/src/cost/tracker.ts",
+        /addToTotalSessionCost\s*}\s*from\s+['"]src\/cost\/tracker\.js['"][\s\S]*recordUsageCacheStats\s*}\s*from\s+['"]src\/services\/api\/cacheStatsTracker\.js['"]/,
+        "API token-dollar and cache producers route through runtime cost/cache state",
       ],
       [
         "runtime/src/agenc/upstream/services/vcr.ts",
-        /addToTotalSessionCost\s*}\s*from\s+['"]src\/cost\/tracker\.js['"]/,
-        "VCR token-dollar producer routes through runtime/src/cost/tracker.ts",
+        /addToTotalSessionCost\s*}\s*from\s+['"]src\/cost\/tracker\.js['"][\s\S]*recordUsageCacheStats\s*}\s*from\s+['"]src\/services\/api\/cacheStatsTracker\.js['"]/,
+        "VCR token-dollar and cache producers route through runtime cost/cache state",
       ],
       [
         "runtime/src/agenc/upstream/services/api/logging.ts",
@@ -2548,6 +2549,11 @@ async function serviceGates(item) {
         "runtime/src/agenc/upstream/components/Settings/Usage.tsx",
         /formatCost\s*}\s*from\s+['"]src\/cost\/tracker\.js['"]/,
         "usage settings formatting routes through runtime/src/cost/tracker.ts",
+      ],
+      [
+        "runtime/src/agenc/upstream/screens/REPL.tsx",
+        /bindCacheStatsResetHook[\s\S]*resetSessionCacheStats/,
+        "cost reset clears cache stats for REPL cache-hit accounting",
       ],
     ];
     for (const [rel, pattern, label] of liveCostProducers) {
