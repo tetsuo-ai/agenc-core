@@ -494,5 +494,5 @@ try {
 releaseMergeLock();
 
 process.stdout.write(`\n${BOLD}${GREEN}✓ ${id} complete${RESET} — ${item.title}\n`);
-process.stdout.write(`${DIM}You may now call update_goal complete.${RESET}\n`);
+process.stdout.write(`${DIM}This is ONE iteration of the loop, not goal completion. The goal is the entire checklist. Continue: cd /home/tetsuo/git/AgenC/agenc-core && node scripts/goal/next.mjs${RESET}\n`);
 process.exit(0);
