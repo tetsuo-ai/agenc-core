@@ -179,6 +179,33 @@ describe("Write tool", () => {
     await expect(readFile(target, "utf8")).resolves.toBe("alpha\nbeta\n");
   });
 
+  test("rejects overwrite after only a partial session read", async () => {
+    const target = join(root, "partial-read.txt");
+    await writeFile(target, "alpha\nbeta\ngamma\n", "utf8");
+    seedSessionReadState(sessionId, [
+      {
+        path: target,
+        content: "beta\n",
+        viewKind: "partial",
+      },
+    ]);
+
+    const tool = createFileWriteTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: target,
+      content: "replacement\n",
+      __agencSessionId: sessionId,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(String(result.content)).toBe(
+      "File has not been read yet. Read it first before writing to it.",
+    );
+    await expect(readFile(target, "utf8")).resolves.toBe(
+      "alpha\nbeta\ngamma\n",
+    );
+  });
+
   test("rejects overwrite when the file has been modified since the session read", async () => {
     const target = join(root, "drifted.txt");
     const seeded = "alpha\nbeta\n";

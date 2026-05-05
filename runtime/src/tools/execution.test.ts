@@ -1,3 +1,6 @@
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import {
   capToolResult,
@@ -38,6 +41,8 @@ import {
   type PermissionResult,
   type ToolPermissionContext,
 } from "../permissions/types.js";
+import { createFileReadTool } from "./system/file-read.js";
+import { createFileWriteTool } from "./system/file-write.js";
 
 function makeInvocation(callId: string, toolName: string): ToolInvocation {
   return {
@@ -481,6 +486,95 @@ describe("runToolUse end-to-end", () => {
     expect(signalAbortedAtResolve).toBe(true);
     expect(controller.signal.aborted).toBe(true);
     expect(out.isError).toBe(true);
+  });
+
+  test("injects conversation id into live tool args for session-scoped guards", async () => {
+    let seenSessionId: unknown;
+    let seenCallId: unknown;
+    const tool: Tool = {
+      name: "Write",
+      description: "",
+      inputSchema: {},
+      execute: async (args) => {
+        seenSessionId = (
+          args as { __agencSessionId?: unknown }
+        ).__agencSessionId;
+        seenCallId = (args as { __callId?: unknown }).__callId;
+        return { content: "ok" };
+      },
+    };
+    const invocation = makeInvocation("c-session", "Write");
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool,
+      invocation: {
+        ...invocation,
+        session: {
+          services: {},
+          conversationId: "live-session-1",
+        } as never,
+      },
+    });
+
+    expect(out.isError).toBe(false);
+    expect(seenSessionId).toBe("live-session-1");
+    expect(seenCallId).toBe("c-session");
+  });
+
+  test("rejects live Write after an offset FileRead only captured a partial snapshot", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-write-partial-live-"));
+    try {
+      const target = join(root, "tracked.txt");
+      await writeFile(target, "alpha\nbeta\ngamma\n", "utf8");
+      const session = {
+        services: {},
+        conversationId: "live-partial-session",
+      } as never;
+      const readTool = createFileReadTool({ allowedPaths: [root] });
+      const writeTool = createFileWriteTool({ allowedPaths: [root] });
+
+      const readOut = await runToolUse(
+        JSON.stringify({
+          file_path: target,
+          offset: 2,
+          limit: 1,
+        }),
+        {
+          currentTurnId: "t1",
+          tool: readTool,
+          invocation: {
+            ...makeInvocation("read-partial", "FileRead"),
+            session,
+          },
+        },
+      );
+      expect(readOut.isError).toBe(false);
+
+      const writeOut = await runToolUse(
+        JSON.stringify({
+          file_path: target,
+          content: "replacement\n",
+        }),
+        {
+          currentTurnId: "t1",
+          tool: writeTool,
+          invocation: {
+            ...makeInvocation("write-after-partial", "Write"),
+            session,
+          },
+        },
+      );
+
+      expect(writeOut.isError).toBe(true);
+      expect(writeOut.content).toBe(
+        "File has not been read yet. Read it first before writing to it.",
+      );
+      await expect(readFile(target, "utf8")).resolves.toBe(
+        "alpha\nbeta\ngamma\n",
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test("I-44: stale active turn after approval blocks execute() and emits a warning", async () => {

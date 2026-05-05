@@ -1,0 +1,126 @@
+{
+  "contractName": "file-write-tool-parity",
+  "scope": "AgenC first-class Write tool port, read-before-overwrite guard, permission flow, and registry surface.",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/tools/FileWriteTool/FileWriteTool.ts",
+    "src/tools/FileWriteTool/prompt.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/tools/system/file-write.ts",
+    "runtime/src/tools/system/index.ts",
+    "runtime/src/tool-registry.ts"
+  ],
+  "testFiles": [
+    "runtime/src/tools/system/file-write.test.ts",
+    "runtime/src/permissions/path-validation.test.ts",
+    "runtime/src/tools/execution.test.ts",
+    "runtime/src/tool-registry.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "create-and-overwrite-results",
+      "source": "src/tools/FileWriteTool/FileWriteTool.ts",
+      "target": "runtime/src/tools/system/file-write.ts",
+      "requiredBehaviors": [
+        "the tool is named Write",
+        "new files are created with the exact provided UTF-8 content",
+        "missing parent directories are created before writing",
+        "existing files are overwritten only after the write guards pass",
+        "create and overwrite successes return the source-compatible plain-text result strings",
+        "file mutation metadata reports create/write operations with additions and removals"
+      ],
+      "edgeCases": [
+        "workspace-relative file_path resolves against cwd",
+        "plain-text error results are not JSON-wrapped envelopes",
+        "notebook files are rejected with a notebook-edit hint",
+        "content larger than the write cap is rejected before mutation"
+      ],
+      "tests": [
+        "runtime/src/tools/system/file-write.test.ts",
+        "runtime/src/tool-registry.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/tools/system/file-write.test.ts src/tool-registry.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "read-before-overwrite",
+      "source": "src/tools/FileWriteTool/FileWriteTool.ts",
+      "target": "runtime/src/tools/system/file-write.ts",
+      "requiredBehaviors": [
+        "existing files require a prior session read before Write may overwrite them",
+        "the prior session read must be a full-file snapshot, not an offset/limit partial view",
+        "unread existing files return the source-compatible read-first error message",
+        "a file changed since the recorded read returns the source-compatible modified-since-read message",
+        "full read snapshots compare raw disk content when rendered read content differs",
+        "a successful write records a fresh full snapshot so a follow-up write in the same session can proceed"
+      ],
+      "edgeCases": [
+        "direct headless tool invocations without a session id keep the established test harness bypass",
+        "live dispatch injects conversationId as __agencSessionId so session-scoped guards are active outside direct tests",
+        "a live offset FileRead followed by Write is rejected without mutating the file",
+        "external drift leaves the on-disk file unchanged after rejection"
+      ],
+      "tests": [
+        "runtime/src/tools/system/file-write.test.ts",
+        "runtime/src/tools/execution.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/tools/system/file-write.test.ts src/tools/execution.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "permission-flow",
+      "source": "src/tools/FileWriteTool/FileWriteTool.ts",
+      "target": "runtime/src/tools/system/file-write.ts + runtime/src/permissions/path-validation.ts",
+      "requiredBehaviors": [
+        "Write requires approval by default",
+        "Write is registered as side-effecting for restart recovery",
+        "checkPermissions runs path validation before execution",
+        "deny rules produce deny decisions and outside-working-root paths produce ask decisions",
+        "permission checks classify the operation as write"
+      ],
+      "edgeCases": [
+        "active session plan files may be written through the dedicated plan-file carve-out",
+        "paths outside allowed roots are rejected before filesystem mutation",
+        "the registry marks Write as exclusive and not parallel-safe"
+      ],
+      "tests": [
+        "runtime/src/tools/system/file-write.test.ts",
+        "runtime/src/permissions/path-validation.test.ts",
+        "runtime/src/tool-registry.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/tools/system/file-write.test.ts src/permissions/path-validation.test.ts src/tool-registry.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "registry-surface",
+      "source": "src/tools/FileWriteTool/prompt.ts",
+      "target": "runtime/src/tool-registry.ts",
+      "requiredBehaviors": [
+        "Write is registered in the first-class file tool group",
+        "Write remains visible by default to model-facing providers",
+        "the consolidated first-class file surface maps write to the Write tool name",
+        "the string argument field for Write is file_path"
+      ],
+      "edgeCases": [
+        "legacy compatibility filesystem tools remain separate from the first-class Write surface",
+        "Write is exported through runtime/src/tools/system/index.ts for consumers that construct tools directly"
+      ],
+      "tests": [
+        "runtime/src/tool-registry.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/tool-registry.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

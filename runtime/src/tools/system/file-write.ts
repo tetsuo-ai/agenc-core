@@ -1,13 +1,15 @@
 /**
- * `Write` — port of the upstream file-write tool.
+ * `Write` — port of the donor UI snapshot's file-write tool.
  *
- * Lifted from the upstream file-write implementation and prompt. The
- * model-facing description is
- * the AgenC wording, lightly adapted to AgenC's voice.
+ * Ports `src/tools/FileWriteTool/FileWriteTool.ts` and
+ * `src/tools/FileWriteTool/prompt.ts` from donor UI snapshot commit
+ * `0ca43335375beec6e58711b797d5b0c4bb5019b8` onto AgenC's tool
+ * contract. The model-facing description keeps the source behavior,
+ * lightly adapted to AgenC's voice.
  *
  * Behavior preserved from upstream:
  *   - Creates a new file or overwrites an existing one.
- *   - Read-before-overwrite: existing files require a prior
+ *   - Read-before-overwrite: existing files require a prior full
  *     `FileRead` (or equivalent session read) in the same
  *     session before the write is accepted. This is the same
  *     structural defense `Edit` and `Write` use against
@@ -27,8 +29,7 @@
  *     `resolveToolAllowedPaths`.
  *   - Errors are returned as plain text (runtime envelope), not JSON.
  *
- * Lifted FROM AgenC; the following AgenC couplings are
- * intentionally NOT lifted:
+ * Source couplings intentionally not carried:
  *   - analytics / growthbook / `logEvent` calls
  *   - LSP didChange/didSave notifications
  *   - VS Code MCP file-update notifications
@@ -305,23 +306,28 @@ export function createFileWriteTool(
           typeof snapshot?.rawContent === "string"
             ? snapshot.rawContent
             : snapshot?.content;
-        if (snapshotContent != null && snapshot?.viewKind === "full") {
-          let onDisk: string;
-          try {
-            const buffer = await readFile(absolutePath);
-            onDisk = normalizeNewlines(buffer.toString("utf-8"));
-            existingContentForUi = onDisk;
-          } catch (err) {
-            const code = (err as NodeJS.ErrnoException)?.code;
-            return errorResult(
-              code
-                ? `${code}: failed to re-read ${filePath} before overwrite`
+        if (
+          snapshot?.viewKind !== "full" ||
+          typeof snapshotContent !== "string"
+        ) {
+          return errorResult(READ_REQUIRED_MESSAGE);
+        }
+
+        let onDisk: string;
+        try {
+          const buffer = await readFile(absolutePath);
+          onDisk = normalizeNewlines(buffer.toString("utf-8"));
+          existingContentForUi = onDisk;
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException)?.code;
+          return errorResult(
+            code
+              ? `${code}: failed to re-read ${filePath} before overwrite`
               : `failed to re-read ${filePath} before overwrite`,
-            );
-          }
-          if (onDisk !== normalizeNewlines(snapshotContent)) {
-            return errorResult(FILE_UNEXPECTEDLY_MODIFIED_MESSAGE);
-          }
+          );
+        }
+        if (onDisk !== normalizeNewlines(snapshotContent)) {
+          return errorResult(FILE_UNEXPECTEDLY_MODIFIED_MESSAGE);
         }
       } else if (existed && existingStat !== null) {
         try {
