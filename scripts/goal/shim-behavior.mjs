@@ -15,6 +15,14 @@ export const EXPORTED_TYPE_ALIAS_RE =
   /^\s*export\s+type\s+\w+(?:\s*<[\s\S]*?>)?\s*=\s*([\w$]+)(?:\s*<[\s\S]*>)?\s*;?\s*$/;
 export const EXPORTED_VALUE_ALIAS_RE =
   /^\s*export\s+const\s+\w+\s*(?::[^=]+)?=\s*([\w$]+)\s*;?\s*$/;
+export const COMMONJS_REQUIRE_RE =
+  /^\s*(?:const|let|var)\s+([\w$]+)\s*=\s*require\s*\(\s*["'][^"']+["']\s*\)\s*;?\s*$/;
+export const COMMONJS_DESTRUCTURED_REQUIRE_RE =
+  /^\s*(?:const|let|var)\s*\{([\s\S]*?)\}\s*=\s*require\s*\(\s*["'][^"']+["']\s*\)\s*;?\s*$/;
+export const COMMONJS_MODULE_EXPORT_RE =
+  /^\s*module\.exports\s*=\s*([\w$]+)\s*;?\s*$/;
+export const COMMONJS_NAMED_EXPORT_RE =
+  /^\s*(?:module\.)?exports\.[\w$]+\s*=\s*([\w$]+)(?:\.[\w$]+)?\s*;?\s*$/;
 
 export function significantSourceLines(body) {
   return stripComments(body)
@@ -69,6 +77,12 @@ export function splitImportAndImplementationLines(significant) {
       continue;
     }
 
+    if (isCommonJSRequireLine(line)) {
+      importLines += 1;
+      addCommonJSRequireBindings(line, importedBindings);
+      continue;
+    }
+
     implementationLines.push(line);
   }
 
@@ -84,7 +98,8 @@ export function countForwardingLines(significant, importedBindings = new Set()) 
       (!stmt.includes("\n") && SINGLE_LINE_FORWARD_FN_RE.test(stmt)) ||
       isForwardingFunctionStatement(stmt, importedBindings) ||
       SINGLE_LINE_FORWARD_ARROW_RE.test(stmt) ||
-      isImportedAliasForward(stmt, importedBindings)
+      isImportedAliasForward(stmt, importedBindings) ||
+      isCommonJSExportForward(stmt, importedBindings)
     ) {
       forwardLines += significantStatementLineCount(stmt);
     }
@@ -268,12 +283,44 @@ function addImportedBindings(statement, importedBindings) {
   }
 }
 
+function isCommonJSRequireLine(line) {
+  return (
+    COMMONJS_REQUIRE_RE.test(line) ||
+    COMMONJS_DESTRUCTURED_REQUIRE_RE.test(line)
+  );
+}
+
+function addCommonJSRequireBindings(line, importedBindings) {
+  const requireMatch = line.match(COMMONJS_REQUIRE_RE);
+  if (requireMatch) {
+    importedBindings.add(requireMatch[1]);
+    return;
+  }
+
+  const destructuredMatch = line.match(COMMONJS_DESTRUCTURED_REQUIRE_RE);
+  if (!destructuredMatch) return;
+  for (const item of destructuredMatch[1].split(",")) {
+    const cleaned = item.trim();
+    if (!cleaned) continue;
+    const parts = cleaned.split(/\s*:\s*/u).map((part) => part.trim());
+    importedBindings.add(parts.at(-1));
+  }
+}
+
 function isImportedAliasForward(statement, importedBindings) {
   const typeAlias = statement.match(EXPORTED_TYPE_ALIAS_RE);
   if (typeAlias && importedBindings.has(typeAlias[1])) return true;
 
   const valueAlias = statement.match(EXPORTED_VALUE_ALIAS_RE);
   return Boolean(valueAlias && importedBindings.has(valueAlias[1]));
+}
+
+function isCommonJSExportForward(statement, importedBindings) {
+  const moduleExport = statement.match(COMMONJS_MODULE_EXPORT_RE);
+  if (moduleExport && importedBindings.has(moduleExport[1])) return true;
+
+  const namedExport = statement.match(COMMONJS_NAMED_EXPORT_RE);
+  return Boolean(namedExport && importedBindings.has(namedExport[1]));
 }
 
 function isForwardingFunctionStatement(statement, importedBindings) {

@@ -184,6 +184,37 @@ assert(
   JSON.stringify(importedValueAliasForwarder),
 );
 
+const commonJSDefaultForwarder = measure(`
+const impl = require('./impl.js')
+module.exports = impl
+`);
+assert(
+  "flags CommonJS module.exports forwarding",
+  commonJSDefaultForwarder.violates && commonJSDefaultForwarder.forwardLines === 1,
+  JSON.stringify(commonJSDefaultForwarder),
+);
+
+const commonJSNamedForwarder = measure(`
+const impl = require('./impl.js')
+exports.foo = impl.foo
+`);
+assert(
+  "flags CommonJS named export forwarding",
+  commonJSNamedForwarder.violates && commonJSNamedForwarder.forwardLines === 1,
+  JSON.stringify(commonJSNamedForwarder),
+);
+
+const commonJSDestructuredForwarder = measure(`
+const { foo } = require('./impl.js')
+exports.foo = foo
+`);
+assert(
+  "flags CommonJS destructured export forwarding",
+  commonJSDestructuredForwarder.violates &&
+    commonJSDestructuredForwarder.forwardLines === 1,
+  JSON.stringify(commonJSDestructuredForwarder),
+);
+
 const largeCommentSmallForwarder = measure(`
 /*
 ${"large comment body\\n".repeat(1200)}
