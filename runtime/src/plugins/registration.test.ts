@@ -1,17 +1,23 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { describe, expect, test, vi } from "vitest";
 
 import { findCommand } from "../commands.js";
+import { pluginDataDirPath } from "./directories.js";
 import { loadPlugins } from "./loader.js";
+import { substitutePluginTemplate } from "./registration/common.js";
 import { loadPluginAgents } from "./registration/load-plugin-agents.js";
 import { loadPluginCommands, loadPluginSkills } from "./registration/load-plugin-commands.js";
 import { loadPluginHooks } from "./registration/load-plugin-hooks.js";
 import { loadPluginLspServers } from "./registration/lsp-plugin-integration.js";
 import { getUnconfiguredChannels, loadPluginMcpServers } from "./registration/mcp-plugin-integration.js";
-import { refreshActivePlugins, refreshPluginRegistrations } from "./registration/manager.js";
+import {
+  clearPluginRegistrationCaches,
+  refreshActivePlugins,
+  refreshPluginRegistrations,
+} from "./registration/manager.js";
 import { loadPluginOutputStyles } from "./registration/load-plugin-output-styles.js";
 import type { SlashCommandContext } from "../commands/types.js";
 import {
@@ -159,6 +165,45 @@ describe("plugin registration", () => {
     });
   });
 
+  test("template substitution treats replacement-token paths literally and creates data dirs lazily", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-plugin-$&-"));
+    const previousCacheDir = process.env.AGENC_PLUGIN_CACHE_DIR;
+    const pluginRoot = join(root, ".agents", "plugins", "dollar-plugin");
+    const agencHome = join(root, "home");
+    const cacheRoot = join(root, "cache-$$");
+    try {
+      process.env.AGENC_PLUGIN_CACHE_DIR = cacheRoot;
+      await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
+        name: "dollar",
+      });
+
+      const result = await loadPlugins({ agencHome, workspaceRoot: root });
+      const plugin = result.enabled[0]!;
+      const dataDir = pluginDataDirPath(plugin.source);
+      await rm(dataDir, { recursive: true, force: true });
+
+      expect(
+        substitutePluginTemplate(
+          "root=${AGENC_PLUGIN_ROOT} session=${AGENC_SESSION_ID}",
+          plugin,
+          { sessionId: "session-$&-$1" },
+        ),
+      ).toBe(`root=${plugin.root} session=session-$&-$1`);
+      await expect(access(dataDir)).rejects.toBeTruthy();
+
+      expect(substitutePluginTemplate("data=${AGENC_PLUGIN_DATA}", plugin))
+        .toBe(`data=${dataDir}`);
+      await expect(access(dataDir)).resolves.toBeUndefined();
+    } finally {
+      if (previousCacheDir === undefined) {
+        delete process.env.AGENC_PLUGIN_CACHE_DIR;
+      } else {
+        process.env.AGENC_PLUGIN_CACHE_DIR = previousCacheDir;
+      }
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("active refresh registers hooks, preserves AppState shapes, and publishes active discovery snapshots", async () => {
     await withTempPlugin(async ({ root, pluginRoot, options }) => {
       const hooksRuntime = { load: vi.fn() };
@@ -185,12 +230,19 @@ describe("plugin registration", () => {
         server: "ts",
         reason: "still active",
       };
+      const staleLoaderError = {
+        type: "manifest-validation-error",
+        source: pluginRoot,
+        plugin: "sample",
+        manifestPath: join(pluginRoot, ".agenc-plugin", "plugin.json"),
+        validationErrors: ["old error"],
+      };
       let appState: Record<string, unknown> = {
         plugins: {
           enabled: [],
           disabled: [],
           commands: [],
-          errors: [existingPluginError],
+          errors: [existingPluginError, staleLoaderError],
           needsRefresh: true,
         },
         agentDefinitions: {
@@ -239,6 +291,8 @@ describe("plugin registration", () => {
         .toEqual(["sample:deploy", "sample:inspector"]);
       expect((appState.plugins as { errors: unknown[] }).errors)
         .toContainEqual(existingPluginError);
+      expect((appState.plugins as { errors: unknown[] }).errors)
+        .not.toContainEqual(staleLoaderError);
       expect(appState.mcp).toMatchObject({ pluginReconnectKey: 8 });
       expect((appState.agentDefinitions as { activeAgents: Array<{ agentType: string }> }).activeAgents)
         .toEqual([
@@ -264,6 +318,46 @@ describe("plugin registration", () => {
       } finally {
         clearAgentDefinitionsCache();
       }
+    });
+  });
+
+  test("clearing registration caches drops active discovery snapshots", async () => {
+    await withTempPlugin(async ({ root, pluginRoot, options }) => {
+      const cwd = join(root, "workspace-without-default-plugin");
+      await mkdir(cwd, { recursive: true });
+      const configStore = {
+        current: () => ({ plugins: { dirs: [pluginRoot] } }),
+      };
+      const ctx = {
+        cwd,
+        home: root,
+        agencHome: options.agencHome,
+        argsRaw: "",
+        configStore,
+        session: {
+          services: {
+            configStore,
+          },
+        },
+      } as unknown as SlashCommandContext;
+
+      await refreshActivePlugins(ctx);
+
+      await expect(loadPluginCommands({ cwd, agencHome: options.agencHome }))
+        .resolves.toEqual([expect.objectContaining({ name: "sample:deploy" })]);
+      await expect(loadPluginSkills({ cwd, agencHome: options.agencHome }))
+        .resolves.toEqual([expect.objectContaining({ name: "sample:inspector" })]);
+      await expect(loadPluginAgents({ cwd, agencHome: options.agencHome }))
+        .resolves.toEqual([expect.objectContaining({ agentType: "sample:review" })]);
+
+      clearPluginRegistrationCaches();
+
+      await expect(loadPluginCommands({ cwd, agencHome: options.agencHome }))
+        .resolves.toEqual([]);
+      await expect(loadPluginSkills({ cwd, agencHome: options.agencHome }))
+        .resolves.toEqual([]);
+      await expect(loadPluginAgents({ cwd, agencHome: options.agencHome }))
+        .resolves.toEqual([]);
     });
   });
 
@@ -533,6 +627,43 @@ describe("plugin registration", () => {
         }
       }
     });
+  });
+
+  test("implicit command and skill discovery share one runtime plugin load", async () => {
+    vi.resetModules();
+    const loadPluginsMock = vi.fn(async () => ({
+      enabled: [],
+      disabled: [],
+      errors: [],
+    }));
+    vi.doMock("./loader.js", async () => {
+      const actual = await vi.importActual<typeof import("./loader.js")>("./loader.js");
+      return {
+        ...actual,
+        loadPlugins: loadPluginsMock,
+      };
+    });
+    try {
+      const commandsModule = await import("./registration/load-plugin-commands.js");
+      const commonModule = await import("./registration/common.js");
+      commonModule.clearRuntimePluginLoadCache();
+
+      await Promise.all([
+        commandsModule.loadPluginCommands({
+          cwd: "/tmp/agenc-plugin-shared-load",
+          agencHome: "/tmp/agenc-plugin-shared-home",
+        }),
+        commandsModule.loadPluginSkills({
+          cwd: "/tmp/agenc-plugin-shared-load",
+          agencHome: "/tmp/agenc-plugin-shared-home",
+        }),
+      ]);
+
+      expect(loadPluginsMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.doUnmock("./loader.js");
+      vi.resetModules();
+    }
   });
 });
 

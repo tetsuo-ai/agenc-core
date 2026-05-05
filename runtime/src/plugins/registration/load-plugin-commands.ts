@@ -478,10 +478,12 @@ export async function getPluginSkills(): Promise<readonly Command[]> {
 
 export function clearPluginCommandCache(): void {
   pluginCommandCache = null;
+  activePluginCommandsByCwd.clear();
 }
 
 export function clearPluginSkillsCache(): void {
   pluginSkillCache = null;
+  activePluginSkillsByCwd.clear();
 }
 
 export function registerPluginCommandProvider(

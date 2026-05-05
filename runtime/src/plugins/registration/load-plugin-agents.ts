@@ -252,4 +252,5 @@ export async function getPluginAgents(): Promise<readonly PluginAgentDefinition[
 
 export function clearPluginAgentCache(): void {
   pluginAgentCache = null;
+  activePluginAgentsByCwd.clear();
 }

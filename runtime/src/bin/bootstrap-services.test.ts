@@ -188,6 +188,92 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
       rmSync(workspace, { recursive: true, force: true });
     }
   });
+
+  test("exposes a live LSP refresh service", async () => {
+    _resetLspManagerForTesting();
+    const stopBackgroundPolling = vi.fn();
+    const policyLimits = {
+      initializePolicyLimitsLoadingPromise: vi.fn(),
+      loadPolicyLimits: vi.fn(async () => {}),
+      stopBackgroundPolling,
+    };
+    policyLimitsMocks.configurePolicyLimitsService.mockReturnValue(
+      policyLimits as never,
+    );
+    const home = mkdtempSync(join(tmpdir(), "agenc-lsp-refresh-home-"));
+    const workspace = mkdtempSync(join(tmpdir(), "agenc-lsp-refresh-ws-"));
+    const handle = buildBootstrapSessionServices({
+      provider: {
+        name: "anthropic",
+        chat: async () => ({
+          content: "ok",
+          toolCalls: [],
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        }),
+        chatStream: async () => ({
+          content: "ok",
+          toolCalls: [],
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        }),
+        healthCheck: async () => true,
+      },
+      providerName: "anthropic",
+      apiKey: "direct-policy-key",
+      registry: { tools: [] } as never,
+      mcpManager: {} as never,
+      unifiedExecManager: {} as never,
+      permissionModeRegistry: new PermissionModeRegistry(
+        createEmptyToolPermissionContext(),
+      ),
+      configStore: {
+        current: () => defaultConfig(),
+        subscribe: () => () => {},
+      } as never,
+      toolApprovals: {
+        get: () => undefined,
+        set: () => {},
+        clear: () => {},
+        withCachedApproval: async (request: {
+          fetchDecision: () => Promise<unknown>;
+        }) => request.fetchDecision(),
+      } as never,
+      networkApproval: {
+        clearSessionHosts: () => {},
+        requestNetworkApproval: async () => ({ kind: "approved" }),
+        requestDeferredApproval: async () => ({ kind: "approved" }),
+      } as never,
+      modelsManager: {} as never,
+      agencHome: home,
+      workspaceRoot: workspace,
+      env: { HOME: home, SHELL: "/bin/sh" },
+      conversationId: "session-lsp-refresh",
+      model: "agenc-opus-4-7",
+      sessionConfiguration: {} as never,
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      await handle.services.lspManager?.refreshFromConfig({
+        ...defaultConfig(),
+        lsp_servers: {
+          ts: {
+            command: "typescript-language-server",
+            extensionToLanguage: { ".ts": "typescript" },
+          },
+        },
+      });
+      await waitForInitialization();
+
+      expect(getInitializationStatus().status).toBe("success");
+      expect(getLspServerManager()?.getAllServers().has("ts")).toBe(true);
+    } finally {
+      await handle.shutdown();
+      await shutdownLspServerManager();
+      _resetLspManagerForTesting();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("loadBootstrapLspServers", () => {

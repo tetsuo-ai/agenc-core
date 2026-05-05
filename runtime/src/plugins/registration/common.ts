@@ -63,8 +63,28 @@ export function toPluginLoaderOptions(
 export async function loadRuntimePlugins(
   options: PluginRuntimeLoadOptions = {},
 ): Promise<readonly LoadedPlugin[]> {
-  const result = await loadPlugins(toPluginLoaderOptions(options));
-  return result.enabled;
+  const loaderOptions = toPluginLoaderOptions(options);
+  if (hasExplicitPluginDiscoveryInput(options)) {
+    const result = await loadPlugins(loaderOptions);
+    return result.enabled;
+  }
+  const key = `${loaderOptions.workspaceRoot}\0${loaderOptions.agencHome}`;
+  const cached = runtimePluginLoadCache.get(key);
+  if (cached !== undefined) return cached;
+  const loaded = loadPlugins(loaderOptions)
+    .then((result) => result.enabled)
+    .catch((error: unknown) => {
+      runtimePluginLoadCache.delete(key);
+      throw error;
+    });
+  runtimePluginLoadCache.set(key, loaded);
+  return loaded;
+}
+
+const runtimePluginLoadCache = new Map<string, Promise<readonly LoadedPlugin[]>>();
+
+export function clearRuntimePluginLoadCache(): void {
+  runtimePluginLoadCache.clear();
 }
 
 export function splitFrontmatter(raw: string): {
@@ -263,16 +283,25 @@ export function substitutePluginTemplate(
   plugin: LoadedPlugin,
   options: { readonly sessionId?: string; readonly exposeSensitive?: boolean } = {},
 ): string {
+  let pluginDataDir: string | undefined;
+  const dataDir = (): string => {
+    pluginDataDir ??= formatTemplatePath(getPluginDataDir(plugin.source));
+    return pluginDataDir;
+  };
   let out = value
-    .replace(/\$\{AGENC_PLUGIN_ROOT\}/g, plugin.root)
-    .replace(/\$\{AGENC_PLUGIN_DATA\}/g, getPluginDataDir(plugin.source))
-    .replace(/\$\{AGENC_SESSION_ID\}/g, options.sessionId ?? "");
+    .replace(/\$\{AGENC_PLUGIN_ROOT\}/g, () => formatTemplatePath(plugin.root))
+    .replace(/\$\{AGENC_PLUGIN_DATA\}/g, () => dataDir())
+    .replace(/\$\{AGENC_SESSION_ID\}/g, () => options.sessionId ?? "");
   out = out.replace(/\$\{user_config\.([A-Za-z_][\w.-]*)\}/g, (_match, key: string) => {
     return pluginSettingValue(plugin, key, {
       exposeSensitive: options.exposeSensitive,
     }) ?? "";
   });
   return out;
+}
+
+function formatTemplatePath(path: string): string {
+  return process.platform === "win32" ? path.replace(/\\/g, "/") : path;
 }
 
 export function runtimeIdentityKey(
@@ -323,9 +352,9 @@ export function substituteArguments(
     out = out
       .replace(
         new RegExp(`\\$${escapeRegExp(name)}(?![\\[\\w])`, "gu"),
-        replacement,
+        () => replacement,
       )
-      .replace(new RegExp(`\\$\\{${escapeRegExp(name)}\\}`, "gu"), replacement);
+      .replace(new RegExp(`\\$\\{${escapeRegExp(name)}\\}`, "gu"), () => replacement);
   }
   out = out.replace(/\$ARGUMENTS\[(\d+)\]/gu, (_match, index: string) => {
     return pieces[Number.parseInt(index, 10)] ?? "";
@@ -333,7 +362,7 @@ export function substituteArguments(
   out = out.replace(/\$(\d+)(?!\w)/gu, (_match, index: string) => {
     return pieces[Number.parseInt(index, 10)] ?? "";
   });
-  out = out.replaceAll("$ARGUMENTS", args);
+  out = out.replace(/\$ARGUMENTS/gu, () => args);
   if (out === original && args.trim().length > 0) {
     return `${out}\n\nARGUMENTS: ${args}`;
   }

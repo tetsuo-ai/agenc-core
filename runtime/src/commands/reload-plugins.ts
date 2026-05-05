@@ -142,6 +142,9 @@ export async function reloadPluginSurfaces(
   if (ctx.session.services.mcpManager.refreshFromConfig && refreshedConfig !== undefined) {
     await ctx.session.services.mcpManager.refreshFromConfig(refreshedConfig);
   }
+  if (ctx.session.services.lspManager?.refreshFromConfig && refreshedConfig !== undefined) {
+    await ctx.session.services.lspManager.refreshFromConfig(refreshedConfig);
+  }
 
   return formatPluginRefreshSummary(result);
 }

@@ -6,6 +6,7 @@ import type { SlashCommandContext } from "../../commands/types.js";
 import type { PluginAgentDefinition } from "../../tools/AgentTool/loadAgentsDir.js";
 import { loadPlugins, type LoadedPlugin, type PluginLoadIssue, type PluginLoadResult } from "../loader.js";
 import {
+  clearRuntimePluginLoadCache,
   toPluginLoaderOptions,
   type PluginRuntimeLoadOptions,
 } from "./common.js";
@@ -250,6 +251,35 @@ function dedupeErrors(errors: readonly unknown[]): unknown[] {
   return out;
 }
 
+function pluginErrorKey(error: unknown): string {
+  if (!isRecord(error)) return JSON.stringify(error);
+  const type = typeof error.type === "string" ? error.type : "unknown";
+  const source = typeof error.source === "string" ? error.source : "unknown";
+  const detail = typeof error.error === "string" ? `:${error.error}` : "";
+  return `${type}:${source}${detail}`;
+}
+
+function shouldPreserveExistingPluginError(error: unknown): boolean {
+  if (!isRecord(error)) return false;
+  const source = typeof error.source === "string" ? error.source : undefined;
+  const type = typeof error.type === "string" ? error.type : undefined;
+  return source === "lsp-manager" || source?.startsWith("plugin:") === true ||
+    type === "lsp-manager";
+}
+
+function mergePluginErrors(
+  existing: readonly unknown[],
+  fresh: readonly unknown[],
+): unknown[] {
+  const freshKeys = new Set(fresh.map(pluginErrorKey));
+  return dedupeErrors([
+    ...existing
+      .filter(shouldPreserveExistingPluginError)
+      .filter((error) => !freshKeys.has(pluginErrorKey(error))),
+    ...fresh,
+  ]);
+}
+
 function updatePluginAppState(
   setAppState: ((updater: (prev: unknown) => unknown) => void) | undefined,
   snapshot: PluginRegistrationSnapshot,
@@ -263,10 +293,10 @@ function updatePluginAppState(
       typeof currentMcp.pluginReconnectKey === "number"
         ? currentMcp.pluginReconnectKey
         : 0;
-    const errors = dedupeErrors([
-      ...arrayValue(currentPlugins.errors),
-      ...snapshot.loadResult.errors.map(pluginErrorFromIssue),
-    ]);
+    const errors = mergePluginErrors(
+      arrayValue(currentPlugins.errors),
+      snapshot.loadResult.errors.map(pluginErrorFromIssue),
+    );
     return {
       ...current,
       plugins: {
@@ -346,6 +376,7 @@ function registerPluginHooksWithRuntime(
 }
 
 export function clearPluginRegistrationCaches(): void {
+  clearRuntimePluginLoadCache();
   clearPluginCommandCache();
   clearPluginSkillsCache();
   clearPluginAgentCache();

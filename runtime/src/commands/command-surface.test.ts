@@ -564,9 +564,10 @@ describe("absorbed T-10 command behavior", () => {
       .resolves.toContain("Ingested `notes.md`");
   });
 
-  it("clears skill caches, refreshes active plugin surfaces, and refreshes MCP config", async () => {
+  it("clears skill caches, refreshes active plugin surfaces, and refreshes MCP/LSP config", async () => {
     const clearSkillCaches = vi.fn();
     const refreshFromConfig = vi.fn(async () => undefined);
+    const refreshLspFromConfig = vi.fn(async () => undefined);
     const baseConfig = {
       mcp_servers: {
         base: { command: "node", args: ["base.js"] },
@@ -605,6 +606,7 @@ describe("absorbed T-10 command behavior", () => {
       services: {
         skillsManager: { clearSkillCaches },
         mcpManager: { refreshFromConfig },
+        lspManager: { refreshFromConfig: refreshLspFromConfig },
         configStore: { current: () => baseConfig },
       },
     });
@@ -616,6 +618,21 @@ describe("absorbed T-10 command behavior", () => {
       expect(refreshActivePlugins).toHaveBeenCalledOnce();
       expect(refreshFromConfig).toHaveBeenCalledOnce();
       expect(refreshFromConfig).toHaveBeenCalledWith({
+        mcp_servers: {
+          ...baseConfig.mcp_servers,
+          "plugin:sample:local": { command: "node", args: ["plugin.js"] },
+        },
+        lsp_servers: {
+          ...baseConfig.lsp_servers,
+          "plugin:sample:typescript": {
+            command: "node",
+            args: ["plugin-lsp.js"],
+            extensionToLanguage: { ".ts": "typescript" },
+          },
+        },
+      });
+      expect(refreshLspFromConfig).toHaveBeenCalledOnce();
+      expect(refreshLspFromConfig).toHaveBeenCalledWith({
         mcp_servers: {
           ...baseConfig.mcp_servers,
           "plugin:sample:local": { command: "node", args: ["plugin.js"] },
