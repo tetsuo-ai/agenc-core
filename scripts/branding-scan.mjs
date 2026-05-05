@@ -199,6 +199,9 @@ function isAbsorbImportRewriteLine(line, rel) {
     /(?:^|[./])components\/(?:CostThresholdDialog|messages\/RateLimitMessage)(?:\.js)?/,
     /(?:^|[./])(?:CostThresholdDialog|RateLimitMessage)(?:\.js)?/,
     /(?:^|[./])services\/PromptSuggestion\/(?:promptSuggestion|speculation)(?:\.js)?/,
+    /(?:^|[./])components\/CustomSelect\/(?:index|select|SelectMulti)(?:\.js)?/,
+    /(?:^|[./])CustomSelect\/(?:index|select|SelectMulti)(?:\.js)?/,
+    /(?:^|[./])commands(?:\.js)?/,
   ];
   if (commonAbsorbImportPatterns.some((pattern) => pattern.test(line))) {
     return true;

@@ -1,4 +1,4 @@
-import type { Command } from '../../commands.js'
+import type { Command } from '../../../../commands.js'
 import {
   FAST_MODE_MODEL_DISPLAY,
   isFastModeEnabled,

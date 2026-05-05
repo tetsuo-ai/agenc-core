@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { useEffect, useMemo } from 'react';
-import type { CommandResultDisplay } from '../../commands.js';
+import type { CommandResultDisplay } from '../../../../commands.js';
 import { AgenCAuthProvider } from '../../services/mcp/auth.js';
 import type { McpAgenCAIProxyServerConfig, McpHTTPServerConfig, McpSSEServerConfig, McpStdioServerConfig } from '../../services/mcp/types.js';
 import { extractAgentMcpServers, filterToolsByServer } from '../../services/mcp/utils.js';

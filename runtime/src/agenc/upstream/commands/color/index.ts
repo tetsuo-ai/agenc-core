@@ -2,7 +2,7 @@
  * Color command - minimal metadata only.
  * Implementation is lazy-loaded from color.ts to reduce startup time.
  */
-import type { Command } from '../../commands.js'
+import type { Command } from '../../../../commands.js'
 
 const color = {
   type: 'local-jsx',

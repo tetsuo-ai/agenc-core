@@ -27,7 +27,7 @@ vi.mock('bun:bundle', () => ({
   feature: () => false,
 }))
 
-vi.mock('../../../agenc/upstream/components/CustomSelect/index.js', async () => {
+vi.mock('../../../agenc/upstream/components/CustomSelect/select.js', async () => {
   const { Box, Text } = await import('../../ink.js')
   return {
     Select: ({ options }: { options: Array<{ label: string }> }) => (

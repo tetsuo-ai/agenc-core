@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import capitalize from 'lodash-es/capitalize.js';
 import * as React from 'react';
 import { useMemo } from 'react';
-import { type Command, type CommandBase, type CommandResultDisplay, getCommandName, type PromptCommand } from '../../commands.js';
+import { type Command, type CommandBase, type CommandResultDisplay, getCommandName, type PromptCommand } from '../../../../commands.js';
 import { Box, Text } from '../../../../tui/ink.js';
 import { estimateSkillFrontmatterTokens, getSkillsPath } from '../../skills/loadSkillsDir.js';
 import { getDisplayPath } from '../../utils/file.js';

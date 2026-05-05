@@ -5,7 +5,7 @@
  * - clearSessionCaches: import from './clear/caches.js'
  * - clearConversation: import from './clear/conversation.js'
  */
-import type { Command } from '../../commands.js'
+import type { Command } from '../../../../commands.js'
 
 const clear = {
   type: 'local',

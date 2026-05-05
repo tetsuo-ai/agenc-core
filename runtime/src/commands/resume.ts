@@ -17,7 +17,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import type { RolloutItem } from "../session/rollout-item.js";
-import { FileThreadStore } from "../thread-store/index.js";
+import { FileThreadStore } from "../thread-store/store.js";
 import {
   safeExecute,
   type SlashCommand,

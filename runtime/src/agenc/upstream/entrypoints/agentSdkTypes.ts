@@ -21,14 +21,14 @@ export type {
   SDKControlResponse,
 } from './sdk/controlTypes.js'
 // Re-export core types (common serializable types)
-export * from './sdk/coreTypes.js'
+export { EXIT_REASONS, HOOK_EVENTS } from './sdk/coreTypes.js'
+export type * from './sdk/coreTypes.js'
 // Re-export runtime types (callbacks, interfaces with methods)
-export * from './sdk/runtimeTypes.js'
+export type * from './sdk/runtimeTypes.js'
 
 // Re-export settings types (generated from settings JSON schema)
 export type { Settings } from './sdk/settingsTypes.generated.js'
-// Re-export tool types (all marked @internal until SDK API stabilizes)
-export * from './sdk/toolTypes.js'
+export type * from './sdk/toolTypes.js'
 
 // ============================================================================
 // Functions
@@ -450,7 +450,7 @@ export type ExitReason = {
 // ============================================================================
 // Stub re-exports — types not included in source snapshot.
 //
-// The upstream Anthropic SDK defines these in sub-files (sdk/coreTypes,
+// The upstream SDK defines these in sub-files (sdk/coreTypes,
 // sdk/runtimeTypes, sdk/controlTypes, sdk/toolTypes) that are stubbed
 // in this open repo. Until the real definitions are restored, alias the
 // names to `any` so callers can resolve their imports and `tsc` becomes

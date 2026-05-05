@@ -1,4 +1,4 @@
-import { formatDescriptionWithSource } from './commands.js'
+import { formatDescriptionWithSource } from '../../commands.js'
 
 describe('formatDescriptionWithSource', () => {
   test('returns empty text for prompt commands missing a description', () => {

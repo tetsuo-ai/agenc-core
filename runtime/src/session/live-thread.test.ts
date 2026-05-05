@@ -7,10 +7,10 @@ import {
   LiveThreadInitGuard,
   createLiveThread,
   resumeLiveThread,
-} from "./live-thread.js";
+} from "../thread-store/live-thread.js";
 import type { RolloutItem } from "./rollout-item.js";
 import { RolloutStore } from "./rollout-store.js";
-import { FileThreadStore } from "./thread-store.js";
+import { FileThreadStore } from "../thread-store/store.js";
 
 let agencHome = "";
 let originalAgencHome = "";

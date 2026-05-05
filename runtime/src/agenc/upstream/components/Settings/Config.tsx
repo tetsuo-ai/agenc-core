@@ -24,7 +24,7 @@ import { isBilledAsExtraUsage } from '../../utils/extraUsage.js';
 import { AgenCMdExternalIncludesDialog } from '../AgenCMdExternalIncludesDialog.js';
 import { ChannelDowngradeDialog, type ChannelDowngradeChoice } from '../ChannelDowngradeDialog.js';
 import { Dialog } from '../design-system/Dialog.js';
-import { Select } from '../CustomSelect/index.js';
+import { Select } from '../CustomSelect/select.js';
 import { OutputStylePicker } from '../OutputStylePicker.js';
 import { LanguagePicker } from '../LanguagePicker.js';
 import { getExternalAgenCMdIncludes, getMemoryFiles, hasExternalAgenCMdIncludes } from 'src/utils/claudemd.js';
@@ -39,7 +39,7 @@ import { getInitialSettings, getSettingsForSource, updateSettingsForSource } fro
 import { getUserMsgOptIn, setUserMsgOptIn } from '../../bootstrap/state.js';
 import { DEFAULT_OUTPUT_STYLE_NAME } from 'src/constants/outputStyles.js';
 import { isEnvTruthy, isRunningOnHomespace } from 'src/utils/envUtils.js';
-import type { LocalJSXCommandContext, CommandResultDisplay } from '../../commands.js';
+import type { LocalJSXCommandContext, CommandResultDisplay } from '../../../../commands.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js';
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js';
 import { getCliTeammateModeOverride, clearCliTeammateModeOverride } from '../../utils/swarm/backends/teammateModeSnapshot.js';

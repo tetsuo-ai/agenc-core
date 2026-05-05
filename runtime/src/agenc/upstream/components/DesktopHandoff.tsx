@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { useEffect, useState } from 'react';
-import type { CommandResultDisplay } from '../commands.js';
+import type { CommandResultDisplay } from '../../../commands.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw input for "any key" dismiss and y/n prompt
 import { Box, Text, useInput } from '../../../tui/ink.js';
 import { openBrowser } from '../utils/browser.js';

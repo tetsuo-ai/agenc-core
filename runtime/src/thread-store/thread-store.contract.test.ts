@@ -14,10 +14,10 @@ import {
 } from "../session/rollout-item.js";
 import {
   FileThreadStore,
-  InMemoryThreadStore,
   ThreadStoreInvalidRequestError,
   type ThreadSource,
-} from "./index.js";
+} from "./store.js";
+import { InMemoryThreadStore } from "./in-memory.js";
 
 let agencHome = "";
 let originalAgencHome = "";

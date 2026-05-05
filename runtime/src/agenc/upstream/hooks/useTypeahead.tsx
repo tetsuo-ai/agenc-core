@@ -4,7 +4,7 @@ import { useNotifications } from 'src/context/notifications.js';
 import { Text } from '../../../tui/ink.js';
 import { logEvent } from 'src/services/analytics/index.js';
 import { useDebounceCallback } from 'usehooks-ts';
-import { type Command, getCommandName } from '../commands.js';
+import { type Command, getCommandName } from '../../../commands.js';
 import { getModeFromInput, getValueFromInput } from '../../../tui/components/PromptInput/inputModes.js';
 import type { SuggestionItem, SuggestionType } from '../../../tui/components/PromptInput/PromptInputFooterSuggestions.js';
 import { useIsModalOverlayActive, useRegisterOverlay } from '../context/overlayContext.js';
