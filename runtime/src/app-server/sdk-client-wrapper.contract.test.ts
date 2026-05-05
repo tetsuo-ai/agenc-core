@@ -1,18 +1,37 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { AGENC_DAEMON_METHODS } from "./protocol/index.js";
+import {
+  AGENC_DAEMON_METHODS,
+  AGENC_DAEMON_NOTIFICATION_METHODS,
+} from "./protocol/index.js";
 
 function siblingSdkPath(...segments: readonly string[]): string {
   const path = [
     resolve(process.cwd(), "..", "..", "agenc-sdk", ...segments),
     resolve(process.cwd(), "..", "agenc-sdk", ...segments),
+    siblingSdkPathFromMainCheckout(...segments),
   ].find(existsSync);
 
   if (path === undefined) {
     throw new Error(`Missing sibling agenc-sdk path: ${segments.join("/")}`);
   }
   return path;
+}
+
+function siblingSdkPathFromMainCheckout(
+  ...segments: readonly string[]
+): string {
+  const result = spawnSync("git", ["rev-parse", "--git-common-dir"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.status !== 0) return "";
+  const commonDir = resolve(process.cwd(), result.stdout.trim());
+  if (basename(commonDir) !== ".git") return "";
+  return resolve(dirname(commonDir), "..", "agenc-sdk", ...segments);
 }
 
 function readSiblingSdkSource(...segments: readonly string[]): string {
@@ -29,6 +48,9 @@ describe("AgenC SDK daemon client wrapper", () => {
     expect(daemonSource).toContain("export interface AgenCDaemonTransport");
 
     for (const method of AGENC_DAEMON_METHODS) {
+      expect(daemonSource).toContain(`"${method}"`);
+    }
+    for (const method of AGENC_DAEMON_NOTIFICATION_METHODS) {
       expect(daemonSource).toContain(`"${method}"`);
     }
 

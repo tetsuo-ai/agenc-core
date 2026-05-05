@@ -1211,6 +1211,13 @@ const ITEM_EVIDENCE = {
       { pattern: "verifySignature|signature.*verify", scope: "runtime/src/plugins" },
     ],
   },
+  "PK-10": {
+    files: ["scripts/check-sdk-daemon-methods.mjs"],
+    grepPresent: [
+      { pattern: "AGENC_DAEMON_NOTIFICATION_METHODS", scope: "scripts/check-sdk-daemon-methods.mjs" },
+    ],
+    tests: ["scripts/check-sdk-daemon-methods.test.mjs"],
+  },
   "MG-01": {
     files: ["runtime/src/bin/agenc.ts"],
   },
@@ -3258,6 +3265,14 @@ async function pluginGates(item) {
     const cliReferenced = grepRepo("agenc plugin", "runtime/src");
     if (!cliReferenced) failGate(`'agenc plugin' subcommand surface not found anywhere in runtime/src/`);
     pass("agenc plugin subcommand present");
+    return;
+  }
+  if (id === "PK-10") {
+    const r = run("node", ["scripts/check-sdk-daemon-methods.mjs"]);
+    if (r.status !== 0) {
+      failGate("PK-10 SDK daemon method drift check failed");
+    }
+    pass("PK-10 SDK daemon method drift check passed");
     return;
   }
   // PK-01..PK-05, PK-07..PK-09: subsystem-shape items satisfied by the
