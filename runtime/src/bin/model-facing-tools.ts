@@ -67,6 +67,10 @@ import {
   formatUnifiedExecToolContent,
   unifiedExecCodeModeResult,
 } from "../tools/system/exec-result-format.js";
+import {
+  CodeIntelManager,
+  toRelativeWorkspacePath,
+} from "../tools/system/code-intel.js";
 import { delegate } from "../agents/delegate.js";
 import {
   AgentJobCapacityError,
@@ -2695,12 +2699,16 @@ function createNotebookEditTool(opts: ModelFacingToolOptions): Tool {
 }
 
 function createLspTool(opts: ModelFacingToolOptions): Tool {
+  const codeIntel = new CodeIntelManager({
+    persistenceRootDir: opts.agencHome ?? opts.workspaceRoot,
+  });
   return {
     name: "LSP",
-    description: "Inspect pending diagnostics from configured language servers.",
+    description:
+      "Inspect pending language-server diagnostics and native semantic code-index lookups.",
     metadata: toolMetadata("coding", {
       deferred: true,
-      keywords: ["lsp", "diagnostics"],
+      keywords: ["lsp", "diagnostics", "definition", "references", "symbols"],
     }),
     isReadOnly: true,
     recoveryCategory: "idempotent",
@@ -2709,18 +2717,18 @@ function createLspTool(opts: ModelFacingToolOptions): Tool {
       properties: {
         operation: {
           type: "string",
-          enum: ["diagnostics"],
+          enum: ["diagnostics", "definition", "references", "symbols"],
         },
         file_path: { type: "string" },
+        symbol: { type: "string" },
+        query: { type: "string" },
       },
-      required: ["operation", "file_path"],
+      required: ["operation"],
       additionalProperties: false,
     },
     execute: async (args) => {
       const operation = stringValue(args.operation);
-      if (operation !== "diagnostics") {
-        return json({ error: "operation must be diagnostics" }, true);
-      }
+      if (operation === "diagnostics") {
       const filePath = stringValue(args.file_path);
       if (!filePath) return json({ error: "file_path is required" }, true);
       const resolved = resolveWorkspacePath(opts, filePath);
@@ -2794,6 +2802,67 @@ function createLspTool(opts: ModelFacingToolOptions): Tool {
             : serverName === null
             ? "No language server is configured for this file."
             : "No pending diagnostics were available for this file.",
+      });
+      }
+      const query = stringValue(args.symbol) ?? stringValue(args.query);
+      if (!query) return json({ error: "symbol or query is required" }, true);
+      const filePath = stringValue(args.file_path);
+      if (operation === "definition") {
+        const definition = await codeIntel.getDefinition({
+          workspaceRoot: opts.workspaceRoot,
+          symbolName: query,
+          ...(filePath !== undefined
+            ? { filePath: resolveWorkspacePath(opts, filePath) }
+            : {}),
+        });
+        return json({
+          operation,
+          query,
+          definition:
+            definition == null
+              ? null
+              : {
+                  ...definition,
+                  filePath: toRelativeWorkspacePath(
+                    opts.workspaceRoot,
+                    definition.filePath,
+                  ),
+                },
+        });
+      }
+      if (operation === "references") {
+        const references = await codeIntel.getReferences({
+          workspaceRoot: opts.workspaceRoot,
+          symbolName: query,
+          ...(filePath !== undefined
+            ? { filePath: resolveWorkspacePath(opts, filePath) }
+            : {}),
+          maxResults: 100,
+        });
+        return json({
+          operation,
+          query,
+          references: references.map((entry) => ({
+            ...entry,
+            filePath: toRelativeWorkspacePath(opts.workspaceRoot, entry.filePath),
+          })),
+        });
+      }
+      if (operation !== "symbols") {
+        return json({ error: "operation must be diagnostics, definition, references, or symbols" }, true);
+      }
+      const symbols = await codeIntel.searchSymbols({
+        workspaceRoot: opts.workspaceRoot,
+        query,
+        maxResults: 100,
+      });
+      return json({
+        operation,
+        query,
+        symbols: symbols.map((symbol) => ({
+          ...symbol,
+          filePath: toRelativeWorkspacePath(opts.workspaceRoot, symbol.filePath),
+        })),
       });
     },
   };

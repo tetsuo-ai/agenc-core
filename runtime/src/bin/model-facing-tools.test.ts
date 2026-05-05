@@ -338,10 +338,12 @@ describe("model-facing tools", () => {
     expect(
       registry.tools.find((tool) => tool.name === "LSP")?.inputSchema,
     ).toMatchObject({
-      required: ["operation", "file_path"],
+      required: ["operation"],
       additionalProperties: false,
       properties: {
-        operation: { enum: ["diagnostics"] },
+        operation: {
+          enum: ["diagnostics", "definition", "references", "symbols"],
+        },
       },
     });
   });
@@ -390,6 +392,69 @@ describe("model-facing tools", () => {
       expect(
         checkForLSPDiagnostics()[0]!.files.map((file) => file.uri).sort(),
       ).toEqual([a, b]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps native semantic definition, references, and symbols operations available", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-lsp-tool-code-intel-"));
+    try {
+      await writeFile(
+        join(root, "app.ts"),
+        [
+          "export function greet(name: string) {",
+          "  return `hello ${name}`;",
+          "}",
+          "export const message = greet('Ada');",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      const tools = createModelFacingTools({
+        workspaceRoot: root,
+        getSession: () => null,
+      });
+      const lsp = tools.find((tool) => tool.name === "LSP")!;
+
+      const definition = JSON.parse(
+        (
+          await lsp.execute({
+            operation: "definition",
+            symbol: "greet",
+          })
+        ).content,
+      );
+      expect(definition.definition).toMatchObject({
+        name: "greet",
+        filePath: "app.ts",
+      });
+
+      const references = JSON.parse(
+        (
+          await lsp.execute({
+            operation: "references",
+            symbol: "greet",
+          })
+        ).content,
+      );
+      expect(references.references.map((entry: { line: number }) => entry.line)).toEqual([
+        1,
+        4,
+      ]);
+
+      const symbols = JSON.parse(
+        (
+          await lsp.execute({
+            operation: "symbols",
+            query: "greet",
+          })
+        ).content,
+      );
+      expect(symbols.symbols[0]).toMatchObject({
+        name: "greet",
+        filePath: "app.ts",
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
