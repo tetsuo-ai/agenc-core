@@ -48,7 +48,7 @@ import {
   safePathAllowingSessionPlanFile,
 } from "../tools/system/filesystem.js";
 import { SESSION_ID_ARG } from "../agents/_deps/filesystem-args.js";
-import type { UnifiedExecProcessManagerLike } from "../unified-exec/index.js";
+import type { UnifiedExecProcessManagerLike } from "../unified-exec/types.js";
 import {
   formatUnifiedExecToolContent,
   unifiedExecCodeModeResult,

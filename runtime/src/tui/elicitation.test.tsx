@@ -16,7 +16,7 @@ import {
   type McpFormPending,
   type McpUrlPending,
   type PendingElicitation,
-} from "./elicitation-bridge.js";
+} from "./elicitation.js";
 
 function createBridgeSession(): Parameters<typeof installElicitationResolvers>[0] {
   return { services: {} } as Parameters<typeof installElicitationResolvers>[0];

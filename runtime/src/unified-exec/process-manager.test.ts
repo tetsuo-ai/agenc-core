@@ -9,7 +9,8 @@ import {
   type SandboxManager,
   type SandboxTransformRequest,
 } from "../sandbox/engine/index.js";
-import { UnifiedExecError, UnifiedExecProcessManager } from "./index.js";
+import { UnifiedExecProcessManager } from "./process-manager.js";
+import { UnifiedExecError } from "./types.js";
 
 const require = createRequire(import.meta.url);
 const hasPtySupport = (() => {

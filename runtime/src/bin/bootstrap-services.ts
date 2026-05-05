@@ -94,7 +94,7 @@ import type {
 } from "../tools/hooks.js";
 import type { ConfigStore } from "../config/store.js";
 import type { ToolRegistry } from "../tool-registry.js";
-import type { UnifiedExecProcessManagerLike } from "../unified-exec/index.js";
+import type { UnifiedExecProcessManagerLike } from "../unified-exec/types.js";
 import type {
   AuthBackend,
   AuthSubscriptionTier,

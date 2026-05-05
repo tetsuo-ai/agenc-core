@@ -10,4 +10,4 @@ Primary source anchors:
 
 This directory owns the AgenC model-facing `AskUserQuestion` tool:
 - `tool.ts` implements question parsing, strict schema, permission prompt behavior, answer consumption, and result formatting.
-- `index.ts` re-exports the subsystem surface for the registry and TUI bridge.
+- Callers import the needed tool functions and types directly from `tool.ts`; no barrel module is kept for this surface.

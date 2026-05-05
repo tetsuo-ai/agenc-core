@@ -1,11 +1,11 @@
 /**
- * Tests for `Monitor` — verbatim openclaude `MonitorTool` port.
- * Verifies schema parity, the upstream-style result-content sentence,
+ * Tests for `Monitor`.
+ * Verifies schema parity, the result-content sentence,
  * and that the tool wires through to AgenC's `unifiedExecManager`.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
-import { UnifiedExecProcessManager } from "../../unified-exec/index.js";
+import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
 import { createMonitorTool } from "./monitor.js";
 
 describe("Monitor (AgenC port)", () => {

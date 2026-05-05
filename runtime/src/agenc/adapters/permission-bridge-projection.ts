@@ -21,7 +21,7 @@ import {
   recordAskUserQuestionPlanInterviewAction,
   recordAskUserQuestionUpdatedInput,
   type AskUserQuestionPlanInterviewAction,
-} from "../../tools/ask-user-question/index.js";
+} from "../../tools/ask-user-question/tool.js";
 import { makeToolUseMessage } from "../../tui/session-transcript.js";
 
 export interface PendingRequest {

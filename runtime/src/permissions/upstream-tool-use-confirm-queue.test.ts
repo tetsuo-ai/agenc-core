@@ -13,7 +13,7 @@ import {
   clearAskUserQuestionResponsesForTest,
   createAskUserQuestionTool,
   type AskUserQuestionInput,
-} from "../tools/ask-user-question/index.js";
+} from "../tools/ask-user-question/tool.js";
 
 interface PendingRequestLike {
   readonly id: string;

@@ -6,7 +6,7 @@ import {
   parseAskUserQuestionInput,
   recordAskUserQuestionResponse,
   type AskUserQuestionInput,
-} from "./index.js";
+} from "./tool.js";
 
 const BASE_INPUT: AskUserQuestionInput = {
   questions: [

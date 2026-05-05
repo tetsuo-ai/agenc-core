@@ -35,7 +35,7 @@ import {
 import {
   ElicitationOverlay,
   useElicitationBridge,
-} from "../elicitation-bridge.js";
+} from "../elicitation.js";
 import { submitViaElicitationBridge } from "../elicitation-submit-routing.js";
 import { loadUpstreamCommandList } from "../../agenc/adapters/upstream-commands.js";
 import { loadUpstreamAgentList } from "../../agenc/adapters/upstream-agent-list.js";

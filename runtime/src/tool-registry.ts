@@ -64,8 +64,8 @@ import type { BashExecObserver } from "./tools/system/types.js";
 import type { WorkflowToolController } from "./tools/system/index.js";
 import {
   UnifiedExecProcessManager,
-  type UnifiedExecProcessManagerLike,
-} from "./unified-exec/index.js";
+} from "./unified-exec/process-manager.js";
+import type { UnifiedExecProcessManagerLike } from "./unified-exec/types.js";
 import { createCodeModeTools } from "./tools/code-mode/tools.js";
 import type { CodeModeService } from "./tools/code-mode/types.js";
 import { isCodeModeNestedToolName } from "./tools/code-mode/policy.js";

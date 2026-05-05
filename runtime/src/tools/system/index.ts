@@ -40,7 +40,7 @@ export {
   type AskUserQuestion,
   type AskUserQuestionInput,
   type AskUserQuestionOption,
-} from "../ask-user-question/index.js";
+} from "../ask-user-question/tool.js";
 
 export {
   createBashTool,

@@ -9,9 +9,11 @@ import { createExecCommandTool } from "./exec-command.js";
 import { createWriteStdinTool } from "./write-stdin.js";
 import {
   UnifiedExecProcessManager,
-  type ExecCommandToolOutput,
-  type UnifiedExecProcessManagerLike,
-} from "../../unified-exec/index.js";
+} from "../../unified-exec/process-manager.js";
+import type {
+  ExecCommandToolOutput,
+  UnifiedExecProcessManagerLike,
+} from "../../unified-exec/types.js";
 
 function completedExecOutput(stdout: string): ExecCommandToolOutput {
   return {

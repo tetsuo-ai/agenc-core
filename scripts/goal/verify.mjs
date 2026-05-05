@@ -4047,6 +4047,59 @@ function assertZc12DonorPortArtifactsGone() {
   }
 }
 
+function assertZc20NoRuntimeShimCruft() {
+  const suffixHits = [];
+  const forwardingHits = [];
+  for (const rel of listSourceFiles(path.join(root, "runtime/src"))) {
+    if (!rel.startsWith("runtime/src/")) continue;
+    if (rel.startsWith("runtime/src/agenc/upstream/")) continue;
+    if (SHIM_ALLOW_DIRS.some((dir) => rel.startsWith(dir))) continue;
+    if (/\.test\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(rel)) continue;
+    if (/\.d\.ts$/.test(rel)) continue;
+
+    if (SHIM_RE.test(rel)) suffixHits.push(rel);
+
+    let body;
+    try {
+      body = readFileSync(path.join(root, rel), "utf8");
+    } catch {
+      continue;
+    }
+    if (body.length > 16000) continue;
+    const significant = body
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) =>
+        line &&
+        !line.startsWith("//") &&
+        !line.startsWith("*") &&
+        !line.startsWith("/*") &&
+        line !== "*/",
+      );
+    if (significant.length === 0 || significant.length >= 40) continue;
+    const implementationLines = significant.filter((line) => !/^\s*import\s/.test(line));
+    if (implementationLines.length === 0) continue;
+    const logicalStatements = combineLogicalStatements(implementationLines);
+    if (logicalStatements.length === 0 || logicalStatements.length >= 40) continue;
+    const forward = countForwardingLines(implementationLines);
+    const ratio = forward / logicalStatements.length;
+    if (forward > 0 && ratio > 0.8) {
+      forwardingHits.push(`${rel} (${forward}/${logicalStatements.length} forward statements, ratio ${ratio.toFixed(2)})`);
+    }
+  }
+
+  const failures = [];
+  if (suffixHits.length > 0) {
+    failures.push(`shim-pattern file(s):\n${suffixHits.join("\n")}`);
+  }
+  if (forwardingHits.length > 0) {
+    failures.push(`forwarding-only module(s):\n${forwardingHits.join("\n")}`);
+  }
+  if (failures.length > 0) {
+    failGate(`ZC-20: runtime/src shim cruft remains:\n${failures.join("\n\n")}`);
+  }
+}
+
 function listSourceFiles(dir) {
   const out = [];
   for (const entry of readdirSync(dir)) {
@@ -4421,6 +4474,7 @@ async function cleanupGates(item) {
         grepNotPresent: { pattern: "upstream-init", scope: "runtime/src" },
       },
       "ZC-18": { gone: ["runtime/parity/agenc-compaction-context.json"] },
+      "ZC-20": { custom: assertZc20NoRuntimeShimCruft },
       "ZC-22": { gone: ["runtime/src/tui/elicitation-bridge.tsx"] },
       "ZC-26": { grepNotPresent: { pattern: "/home/claude/.agenc/remote", scope: "runtime/src" } }, // branding-scan: allow donor-leak path that ZC-26 is removing
       "ZC-27": { grepNotPresent: { pattern: "@ts-nocheck", scope: "runtime/src/types" } },

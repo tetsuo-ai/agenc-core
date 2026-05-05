@@ -9,11 +9,22 @@ import {
   buildToolUseConfirmQueue,
   type PendingRequest,
 } from "../agenc/adapters/permission-bridge-projection.js";
-import { createSessionAppStateBridge } from "../agenc/adapters/app-state-bridge.js";
 import type { AgenCBridgeSession } from "./session-types.js";
 import type { AppState } from "./state/AppState.js";
 
 export { buildToolUseConfirmQueue, type PendingRequest };
+
+export function createSessionAppStateBridge(
+  setModel: (next: string) => void,
+  setExpandedView: (next: "none" | "tasks") => void,
+  setAppState: (updater: (prev: AppState) => AppState) => void,
+): NonNullable<AgenCBridgeSession["appStateBridge"]> {
+  return {
+    setModel,
+    setExpandedView,
+    setAppState: setAppState as (updater: (prev: unknown) => unknown) => void,
+  };
+}
 
 function parseJsonObject(raw: string | undefined): Record<string, unknown> {
   if (raw === undefined || raw.trim().length === 0) return {};

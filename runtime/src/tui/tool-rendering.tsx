@@ -5,7 +5,7 @@ import { AskUserQuestionTool } from "../tools/ask-user-question/tui-tool.js";
 import {
   pickToolResultDispatch,
   resultTextForTuiTool,
-} from "../agenc/adapters/upstream-tool-result-dispatch.js";
+} from "./tool-result-routing.js";
 
 /**
  * Tag extractor mirroring upstream `extractTag` semantics — pulls
@@ -401,7 +401,7 @@ export function createTuiTool(name: string): any {
       // local upstream-compatible renderers; unrouted tool names fall
       // through to the generic <Text> rendering below. Dispatch
       // decision lives in the JSX-free
-      // `agenc/adapters/upstream-tool-result-dispatch.ts` so unit tests
+      // `tool-result-routing.ts` so unit tests
       // can exercise the routing logic without dragging the upstream
       // component chain into vitest.
       const joined = resultTextForTuiTool(content);

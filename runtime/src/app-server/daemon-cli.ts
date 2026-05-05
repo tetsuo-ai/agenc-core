@@ -46,10 +46,12 @@ import {
 import { AgenCDaemonHealthService } from "./health.js";
 import {
   AgenCCleanupRegistry,
+} from "../lifecycle/cleanup-registry.js";
+import {
   installAgenCShutdownSignalHandlers,
-  summarizeAgenCShutdown,
   type AgenCSignalProcess,
-} from "../lifecycle/index.js";
+} from "../lifecycle/signal-handlers.js";
+import { summarizeAgenCShutdown } from "../lifecycle/shutdown-message.js";
 import { createAuthBackend } from "../auth/index.js";
 import type { AuthBackend } from "../auth/backend.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";

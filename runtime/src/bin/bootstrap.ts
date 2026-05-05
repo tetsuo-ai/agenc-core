@@ -69,7 +69,7 @@ import {
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
 import {
   UnifiedExecProcessManager,
-} from "../unified-exec/index.js";
+} from "../unified-exec/process-manager.js";
 import { createCodeModeService } from "../tools/code-mode/service.js";
 import {
   clearCurrentRuntimeSession,

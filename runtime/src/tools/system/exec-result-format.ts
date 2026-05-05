@@ -1,4 +1,4 @@
-import type { ExecCommandToolOutput } from "../../unified-exec/index.js";
+import type { ExecCommandToolOutput } from "../../unified-exec/types.js";
 
 export function formatUnifiedExecToolContent(
   output: ExecCommandToolOutput,

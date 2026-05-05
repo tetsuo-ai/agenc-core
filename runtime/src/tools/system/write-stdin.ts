@@ -2,10 +2,12 @@ import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 import {
-  UnifiedExecError,
   UnifiedExecProcessManager,
+} from "../../unified-exec/process-manager.js";
+import {
+  UnifiedExecError,
   type UnifiedExecProcessManagerLike,
-} from "../../unified-exec/index.js";
+} from "../../unified-exec/types.js";
 import {
   formatUnifiedExecToolContent,
   unifiedExecCodeModeResult,

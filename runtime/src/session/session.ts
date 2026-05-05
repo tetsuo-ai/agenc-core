@@ -128,7 +128,7 @@ import {
 } from "./turn-context.js";
 import type { PhaseEvent } from "../phases/events.js";
 import type { RunTurnOptions, Terminal } from "./run-turn.js";
-import type { UnifiedExecProcessManagerLike } from "../unified-exec/index.js";
+import type { UnifiedExecProcessManagerLike } from "../unified-exec/types.js";
 import type { CodeModeService } from "../tools/code-mode/types.js";
 import type { PolicyLimitsService } from "../services/policyLimits/index.js";
 import type { AgentStatus as RuntimeAgentStatus } from "../agents/status.js";

@@ -24,7 +24,7 @@ import type {
   RequestUserInputArgs,
   RequestUserInputResponse,
 } from "./types.js";
-import { installElicitationResolvers } from "../tui/elicitation-bridge.js";
+import { installElicitationResolvers } from "../tui/elicitation.js";
 
 function mkFeatures(): ManagedFeatures {
   return {
