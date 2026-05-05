@@ -130,6 +130,7 @@ import type { PhaseEvent } from "../phases/events.js";
 import type { RunTurnOptions, Terminal } from "./run-turn.js";
 import type { UnifiedExecProcessManagerLike } from "../unified-exec/index.js";
 import type { CodeModeService } from "../tools/code-mode/types.js";
+import type { PolicyLimitsService } from "../services/policyLimits/index.js";
 import type { AgentStatus as RuntimeAgentStatus } from "../agents/status.js";
 import type { SessionStartSource as HookSessionStartSource } from "../llm/hooks/types.js";
 import type {
@@ -742,6 +743,7 @@ export interface SessionServices {
   readonly configStore?: ConfigStore;
   readonly costSidecar?: CostSidecar;
   readonly hooksRuntime?: ConfiguredHooksRuntime;
+  readonly policyLimits?: PolicyLimitsService;
 }
 
 /**

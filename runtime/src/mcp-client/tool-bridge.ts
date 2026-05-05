@@ -267,7 +267,9 @@ function approvalCtxForMcpClientTool(
   options: MCPToolBridgePermissionOptions,
   retryReason?: string,
 ): Parameters<typeof requestApproval>[0]["ctx"] {
-  const turnId = options.turnId ?? `mcp-${callId}`;
+  const activeTurnId = options.getActiveTurnId?.();
+  const turnId = options.turnId ??
+    (activeTurnId && activeTurnId.length > 0 ? activeTurnId : `mcp-${callId}`);
   const toolName = `mcp.${serverName}.${descriptor.name}`;
   const invocation: ToolInvocation = {
     session: (options.session ??
@@ -306,7 +308,10 @@ function approvalCtxForRequestPermissions(
   retryReason?: string,
 ): Parameters<typeof requestApproval>[0]["ctx"] {
   const callId = event.callId;
-  const turnId = event.turnId || options.turnId || `mcp-${callId}`;
+  const activeTurnId = options.getActiveTurnId?.();
+  const turnId = event.turnId ||
+    options.turnId ||
+    (activeTurnId && activeTurnId.length > 0 ? activeTurnId : `mcp-${callId}`);
   const approvalArgs = requestPermissionsApprovalArgs(event);
   const invocation: ToolInvocation = {
     session: (options.session ??

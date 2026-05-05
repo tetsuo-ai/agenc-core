@@ -1,0 +1,119 @@
+{
+  "contractName": "agenc-policy-limits-parity",
+  "scope": "AgenC policy limits service port: organization restriction fetch, ETag caching, retry/fail-open behavior, remote-auth eligibility, background polling, and synchronous policy checks.",
+  "sourceRoot": "/home/tetsuo/git/openclau\u0064e",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/services/policyLimits/index.ts",
+    "src/services/policyLimits/types.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/services/policyLimits/index.ts",
+    "runtime/src/services/policyLimits/types.ts",
+    "runtime/src/services/policyLimits/PARITY.md",
+    "runtime/src/components/FeedbackSurvey/useMemorySurvey.tsx",
+    "runtime/src/auth/backends/remote.ts",
+    "runtime/src/llm/provider.ts",
+    "runtime/src/session/session.ts",
+    "runtime/src/bin/bootstrap-services.ts"
+  ],
+  "testFiles": [
+    "runtime/src/services/policyLimits/policyLimits.test.ts",
+    "runtime/src/auth/backends/remote.contract.test.ts",
+    "runtime/src/bin/bootstrap-services.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "response-contract",
+      "source": "src/services/policyLimits/types.ts",
+      "target": "runtime/src/services/policyLimits/types.ts",
+      "requiredBehaviors": [
+        "policy-limit responses contain a restrictions record keyed by policy name",
+        "each restriction exposes an allowed boolean",
+        "invalid cache/API payloads are rejected instead of poisoning the session cache"
+      ],
+      "edgeCases": [
+        "missing restrictions field",
+        "array restrictions payload",
+        "non-boolean allowed value"
+      ],
+      "tests": [
+        "runtime/src/services/policyLimits/policyLimits.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "eligibility-and-auth",
+      "source": "src/services/policyLimits/index.ts",
+      "target": "runtime/src/services/policyLimits/index.ts; runtime/src/bin/bootstrap-services.ts",
+      "requiredBehaviors": [
+        "API-key sessions are eligible without reading provider API-key environment variables in the service",
+        "remote-auth sessions are eligible only for team, enterprise, and C4E tiers",
+        "C4E subscription responses normalize to the enterprise entitlement used by policy-limit eligibility",
+        "ineligible or unauthenticated sessions fail open and do not fetch policy limits",
+        "bootstrap injects selected provider/auth state and exposes the service through SessionServices"
+      ],
+      "edgeCases": [
+        "free remote-auth tier",
+        "enterprise and C4E remote-auth tiers",
+        "managed-key vending failure",
+        "subscription-tier lookup failure",
+        "third-party provider or custom base URL"
+      ],
+      "tests": [
+        "runtime/src/services/policyLimits/policyLimits.test.ts",
+        "runtime/src/auth/backends/remote.contract.test.ts",
+        "runtime/src/bin/bootstrap-services.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "fetch-cache-and-retry",
+      "source": "src/services/policyLimits/index.ts",
+      "target": "runtime/src/services/policyLimits/index.ts",
+      "requiredBehaviors": [
+        "successful fetches persist restrictions to policy-limits.json with mode 0600",
+        "environment endpoint overrides cannot redirect authenticated policy requests away from AgenC-owned or injected loopback test endpoints",
+        "cached restrictions produce a deterministic checksum sent as If-None-Match",
+        "304 responses reuse the stale cache",
+        "404 responses clear stale cache and leave an empty restriction set",
+        "transient failures retry with AgenC retry delay arithmetic",
+        "auth failures skip retry"
+      ],
+      "edgeCases": [
+        "network failure with no cache",
+        "network failure with stale cache",
+        "cache persistence failure after a valid API response",
+        "invalid JSON or invalid response body",
+        "empty restrictions response"
+      ],
+      "tests": [
+        "runtime/src/services/policyLimits/policyLimits.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "policy-checks-and-polling",
+      "source": "src/services/policyLimits/index.ts",
+      "target": "runtime/src/services/policyLimits/index.ts; runtime/src/session/session.ts",
+      "requiredBehaviors": [
+        "known denied policies return false",
+        "unknown policies and cache/API misses fail open",
+        "allow_product_feedback fails closed only when essential-traffic-only mode is active and no cache exists",
+        "Feedback survey prompts call the product-feedback policy helper before showing or uploading survey data",
+        "background polling is idempotent and stops on bootstrap shutdown"
+      ],
+      "edgeCases": [
+        "policy check before load completes",
+        "repeated startBackgroundPolling calls",
+        "shutdown after a partially initialized bootstrap"
+      ],
+      "tests": [
+        "runtime/src/services/policyLimits/policyLimits.test.ts",
+        "runtime/src/bin/bootstrap-services.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

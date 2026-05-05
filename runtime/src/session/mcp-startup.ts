@@ -33,6 +33,7 @@ import {
   attachContextDefaults,
   hasPermissionsToUseTool,
 } from "../permissions/evaluator.js";
+import { EMPTY_MCP_TOOL_APPROVAL_TEMPLATE_FILE } from "../permissions/rpc/mcp-tool-approval-templates.js";
 import { RequestPermissionsRpc } from "../permissions/rpc/request-permissions.js";
 import type { Session } from "./session.js";
 import type { SessionServices } from "./session.js";
@@ -432,6 +433,7 @@ function createMcpPermissionOptionsForSession(
       (session as { readonly activeTurn?: Session["activeTurn"] })
         .activeTurn?.unsafePeek()?.turnId ?? null,
     requestPermissionsRpc: new RequestPermissionsRpc(),
+    approvalTemplates: EMPTY_MCP_TOOL_APPROVAL_TEMPLATE_FILE,
     session,
     cwd: sessionConfiguration.cwd,
     ...((session as { readonly abortController?: Session["abortController"] })

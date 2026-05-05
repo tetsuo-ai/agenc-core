@@ -212,6 +212,7 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
           guardianApprovalReviewer: {
             reviewApprovalRequest: reviewer,
           },
+          getActiveTurnId: () => "turn-active",
           approvalTemplates: {
             schemaVersion: 4,
             templates: [
@@ -233,6 +234,7 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
     expect(reviewer.mock.calls[0]![0].ctx.retryReason).toBe(
       "Allow calendar to create an event?",
     );
+    expect(reviewer.mock.calls[0]![0].ctx.turnId).toBe("turn-active");
     expect(reviewer.mock.calls[0]![0].args).toEqual({ title: "Updated" });
   });
 
@@ -267,6 +269,7 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
           guardianApprovalReviewer: {
             reviewApprovalRequest: reviewer,
           },
+          getActiveTurnId: () => "turn-rpc",
           cwd: "/repo",
         },
       },
@@ -283,6 +286,46 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
     });
     expect(result.isError).toBeFalsy();
     expect(reviewer).toHaveBeenCalledOnce();
+    expect(reviewer.mock.calls[0]![0].ctx.turnId).toBe("turn-rpc");
+    expect(callTool).not.toHaveBeenCalled();
+  });
+
+  test("request_permissions handles invalid args and denied approvals locally", async () => {
+    const callTool = vi.fn();
+    const rpc = new RequestPermissionsRpc();
+    const bridge = await createToolBridge(
+      {
+        listTools: async () => ({
+          tools: [{ name: "request_permissions", description: "requests perms" }],
+        }),
+        callTool,
+        close: async () => {},
+      },
+      "srv",
+      undefined,
+      {
+        permissions: {
+          requestPermissionsRpc: rpc,
+          approvalResolver: { request: async () => DENIED },
+          cwd: "/repo",
+        },
+      },
+    );
+
+    await expect(bridge.tools[0]!.execute({})).resolves.toEqual({
+      content: "request_permissions requires at least one permission",
+      isError: true,
+    });
+    const denied = await bridge.tools[0]!.execute({
+      permissions: { network: { enabled: true } },
+    });
+    expect(JSON.parse(denied.content)).toEqual({
+      permissions: {},
+      scope: "turn",
+      strictAutoReview: false,
+    });
+    expect(denied.isError).toBeFalsy();
+    expect(rpc.pendingCount).toBe(0);
     expect(callTool).not.toHaveBeenCalled();
   });
 });

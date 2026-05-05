@@ -17,7 +17,9 @@
     "runtime/src/session/mcp-startup.ts"
   ],
   "testFiles": [
-    "runtime/src/mcp-client/tool-bridge.test.ts"
+    "runtime/src/mcp-client/tool-bridge.test.ts",
+    "runtime/src/mcp-client/manager.test.ts",
+    "runtime/src/mcp-client/resilient-bridge.test.ts"
   ],
   "rows": [
     {
@@ -42,7 +44,9 @@
         "Reconnect-created bridges receive the same permission options as the original bridge."
       ],
       "tests": [
-        "runtime/src/mcp-client/tool-bridge.test.ts"
+        "runtime/src/mcp-client/tool-bridge.test.ts",
+        "runtime/src/mcp-client/manager.test.ts",
+        "runtime/src/mcp-client/resilient-bridge.test.ts"
       ],
       "status": "required"
     },
