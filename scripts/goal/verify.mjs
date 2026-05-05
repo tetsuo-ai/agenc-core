@@ -654,6 +654,19 @@ const ITEM_EVIDENCE = {
   "SK-02": {
     files: [{ globUnder: "runtime/src/skills", matching: /change.*detector|hot.?reload/i, minCount: 1 }],
   },
+  "ZC-31": {
+    files: [
+      "runtime/src/skills/PARITY.md",
+      "runtime/src/skills/local-loader.ts",
+      "runtime/src/skills/local-loader.test.ts",
+      "runtime/src/prompts/attachments/skill-listing.ts",
+      "runtime/src/bin/model-facing-tools.ts",
+      "runtime/src/commands/skills.ts",
+    ],
+    grepPresent: [
+      { pattern: "ZC-31 coverage lock", scope: "runtime/src/skills/PARITY.md" },
+    ],
+  },
   "ST-01": {
     grepPresent: [{ pattern: "CREATE TABLE.*agent_runs|agent_runs.*CREATE TABLE|table.*agent_runs", scope: "runtime/src/state" }],
   },
@@ -4633,6 +4646,90 @@ function assertZc30PluginCoverage() {
   }
 }
 
+function assertZc31SkillsCoverage() {
+  const sourceRoot = `${["co", "dex-rs"].join("")}/core-skills/src`;
+  const requiredSourceAnchors = [
+    `${sourceRoot}/injection.rs`,
+    `${sourceRoot}/env_var_dependencies.rs`,
+    `${sourceRoot}/invocation_utils.rs`,
+    `${sourceRoot}/loader.rs`,
+    `${sourceRoot}/manager.rs`,
+    `${sourceRoot}/mention_counts.rs`,
+    `${sourceRoot}/model.rs`,
+    `${sourceRoot}/remote.rs`,
+    `${sourceRoot}/render.rs`,
+    `${sourceRoot}/system.rs`,
+  ];
+  const parityPath = path.join(root, "runtime/src/skills/PARITY.md");
+  const parityText = readFileSync(parityPath, "utf8");
+  const missingAnchors = requiredSourceAnchors.filter((anchor) => !parityText.includes(anchor));
+  if (missingAnchors.length > 0) {
+    failGate(`ZC-31: skills parity is missing source anchor(s):\n  ${missingAnchors.join("\n  ")}`);
+  }
+
+  const requiredCounterparts = [
+    "runtime/src/skills/local-loader.ts",
+    "runtime/src/skills/local-loader.test.ts",
+    "runtime/src/prompts/attachments/skill-listing.ts",
+    "runtime/src/bin/model-facing-tools.ts",
+    "runtime/src/commands/skills.ts",
+    "runtime/src/commands/skills.test.ts",
+    "runtime/src/bin/model-facing-tools.test.ts",
+  ];
+  const missingCounterparts = requiredCounterparts.filter((rel) => !existsSync(path.join(root, rel)));
+  if (missingCounterparts.length > 0) {
+    failGate(`ZC-31: skills counterpart file(s) missing:\n  ${missingCounterparts.join("\n  ")}`);
+  }
+
+  const localLoader = readFileSync(path.join(root, "runtime/src/skills/local-loader.ts"), "utf8");
+  const localLoaderSymbols = [
+    "discoverSkillRoots",
+    "loadLocalSkillsSnapshot",
+    "formatSkillListingWithinBudget",
+    "recordInvokedSkill",
+    "BUNDLED_SKILLS",
+    "AGENC_MANAGED_HOME",
+    "pathsActivateSkill",
+    "renderSkill",
+  ];
+  const missingLocalLoaderSymbols = localLoaderSymbols.filter((symbol) => !localLoader.includes(symbol));
+  if (missingLocalLoaderSymbols.length > 0) {
+    failGate(`ZC-31: local skills loader is missing symbol(s): ${missingLocalLoaderSymbols.join(", ")}`);
+  }
+
+  const skillListing = readFileSync(
+    path.join(root, "runtime/src/prompts/attachments/skill-listing.ts"),
+    "utf8",
+  );
+  if (!skillListing.includes("formatSkillListingWithinBudget")) {
+    failGate("ZC-31: skill listing attachment no longer uses the shared listing budget helper.");
+  }
+
+  const modelFacingTools = readFileSync(path.join(root, "runtime/src/bin/model-facing-tools.ts"), "utf8");
+  for (const pattern of ['name: "Skill"', "renderSkill", "recordInvokedSkill"]) {
+    if (!modelFacingTools.includes(pattern)) {
+      failGate(`ZC-31: model-facing Skill tool is missing ${pattern}.`);
+    }
+  }
+
+  const requiredReductionNotes = [
+    "Sidecar `agents/openai.yaml` metadata is not carried.",
+    "Automatic text mention injection is not carried.",
+    "Implicit shell-script and skill-doc command detection is not carried.",
+    "Product-surface filtering is not carried",
+    "Remote skill listing/export is not carried",
+    "Disk-installed system skill cache management is not carried.",
+    "Rich root-alias rendering from the donor renderer is reduced",
+  ];
+  const missingReductions = requiredReductionNotes.filter((note) => !parityText.includes(note));
+  if (missingReductions.length > 0) {
+    failGate(`ZC-31: skills parity is missing reduction note(s):\n  ${missingReductions.join("\n  ")}`);
+  }
+  if (!parityText.includes("ZC-31 coverage lock:")) {
+    failGate("ZC-31: skills parity is missing the ZC-31 coverage lock note.");
+  }
+}
+
 function listSourceFiles(dir) {
   const out = [];
   for (const entry of readdirSync(dir)) {
@@ -5023,6 +5120,7 @@ async function cleanupGates(item) {
       },
       "ZC-28": { gone: ["runtime/src/utils/attachments.ts", "runtime/src/utils/teamMemoryOps.ts", "runtime/src/components/FeedbackSurvey/useMemorySurvey.tsx"] },
       "ZC-30": { custom: assertZc30PluginCoverage },
+      "ZC-31": { custom: assertZc31SkillsCoverage },
     };
     const expectations = zcMap[id];
     if (!expectations) {
