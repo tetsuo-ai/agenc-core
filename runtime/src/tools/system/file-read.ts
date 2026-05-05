@@ -150,6 +150,23 @@ const BINARY_EXTENSIONS: ReadonlySet<string> = new Set([
 const PDF_EXTENSION = ".pdf";
 const NOTEBOOK_EXTENSION = ".ipynb";
 
+export type FileReadListener = (filePath: string, content: string) => void;
+
+const fileReadListeners = new Set<FileReadListener>();
+
+export function registerFileReadListener(
+  listener: FileReadListener,
+): () => void {
+  fileReadListeners.add(listener);
+  return () => {
+    fileReadListeners.delete(listener);
+  };
+}
+
+export function clearFileReadListenersForTests(): void {
+  fileReadListeners.clear();
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Description (model-facing)
 // ─────────────────────────────────────────────────────────────────────
@@ -276,6 +293,12 @@ function hasBinaryExtension(filePath: string): boolean {
 /** Produce the runtime `cat -n` style numbered output. */
 function formatNumbered(content: string, startLine: number): string {
   return addLineNumbers({ content, startLine });
+}
+
+function notifyFileReadListeners(filePath: string, content: string): void {
+  for (const listener of [...fileReadListeners]) {
+    listener(filePath, content);
+  }
 }
 
 interface SliceResult {
@@ -574,6 +597,7 @@ async function readTextFile(
     // there is nothing to diff against.
     ...(sliced.isPartial || text === undefined ? {} : { rawContent: text }),
   });
+  notifyFileReadListeners(resolvedPath.canonical, sliced.content);
 
   if (sliced.content.length === 0) {
     if (sliced.totalLines === 0) {

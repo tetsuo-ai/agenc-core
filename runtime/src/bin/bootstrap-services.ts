@@ -37,6 +37,7 @@ import {
   createCodeModeService,
   type CodeModeService,
 } from "../tools/code-mode/index.js";
+import { initMagicDocs } from "../services/MagicDocs/magicDocs.js";
 import type { RolloutItem } from "../session/rollout-item.js";
 import type { RolloutStore } from "../session/rollout-store.js";
 import {
@@ -537,6 +538,7 @@ export function buildBootstrapSessionServices(
     opts.mcpManager,
   );
   const hooksService = createHooksService();
+  initMagicDocs();
   const hooksRuntime = new ConfiguredHooksRuntime({
     cwd: opts.workspaceRoot,
     env: opts.env,

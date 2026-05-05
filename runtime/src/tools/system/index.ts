@@ -76,6 +76,9 @@ export {
 export {
   createFileReadTool,
   FILE_READ_TOOL_NAME,
+  clearFileReadListenersForTests,
+  registerFileReadListener,
+  type FileReadListener,
   type FileReadToolConfig,
 } from "./file-read.js";
 
