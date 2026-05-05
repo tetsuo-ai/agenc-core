@@ -80,6 +80,17 @@ export interface DisableAllPluginsResult {
   readonly configPath: string;
 }
 
+export interface UpdatePluginInput extends PluginOperationOptions {
+  readonly pluginId: string;
+  readonly scope?: PluginScope;
+  readonly source?: string;
+}
+
+export interface UpdatePluginResult extends InstallPluginResult {
+  readonly previousRoot: string;
+  readonly source: string;
+}
+
 const MANAGED_CONFIG_PREFIX = "# BEGIN agenc plugin";
 const MANAGED_CONFIG_SUFFIX = "# END agenc plugin";
 const INSTALL_METADATA_FILE = "agenc-install.json";
@@ -297,6 +308,45 @@ export async function disableAllPluginsOp(
   };
 }
 
+export async function updatePluginOp(
+  input: UpdatePluginInput,
+): Promise<UpdatePluginResult> {
+  const scope = input.scope ?? "user";
+  const roots = await resolvePluginRootsForRemoval(input.pluginId, scope, input);
+  if (roots.length === 0) {
+    throw new Error(`plugin is not installed in ${scope} scope: ${input.pluginId}`);
+  }
+  if (roots.length > 1) {
+    throw new Error(`plugin resolves to multiple install roots in ${scope} scope: ${input.pluginId}`);
+  }
+  const previousRoot = roots[0]!;
+  const source = input.source !== undefined
+    ? resolvePath(input.source, resolvePluginWorkspaceRoot(input))
+    : await readInstalledPluginSource(previousRoot);
+  if (source === undefined) {
+    throw new Error(
+      `plugin ${input.pluginId} has no recorded source; rerun with --source <path>`,
+    );
+  }
+  const sourceReal = await realpath(source);
+  const rootReal = await realpath(previousRoot);
+  if (sourceReal === rootReal || sourceReal.startsWith(`${rootReal}/`)) {
+    throw new Error(`plugin update source cannot be the installed plugin root: ${source}`);
+  }
+  const installed = await installPluginOp({
+    ...input,
+    source,
+    name: input.pluginId,
+    scope,
+    force: true,
+  });
+  return {
+    ...installed,
+    previousRoot,
+    source,
+  };
+}
+
 export async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
   await writeTextAtomic(path, `${JSON.stringify(value, null, 2)}\n`, 0o600);
 }
@@ -411,6 +461,13 @@ async function copyDirectoryAtomically(
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
+  if (existing) {
+    const sourceReal = await realpath(source);
+    const destinationReal = await realpath(destination);
+    if (sourceReal === destinationReal || sourceReal.startsWith(`${destinationReal}/`)) {
+      throw new Error(`plugin source cannot be the installed plugin root: ${source}`);
+    }
+  }
   if (existing && !options.force) {
     throw new Error(`plugin destination already exists: ${destination}`);
   }
@@ -438,6 +495,18 @@ async function writeInstallMetadata(
 ): Promise<void> {
   await mkdir(join(pluginRoot, ".agenc-plugin"), { recursive: true, mode: 0o700 });
   await writeJsonAtomic(join(pluginRoot, ".agenc-plugin", INSTALL_METADATA_FILE), metadata);
+}
+
+async function readInstalledPluginSource(
+  pluginRoot: string,
+): Promise<string | undefined> {
+  const metadata = await readJsonFile<unknown>(
+    join(pluginRoot, ".agenc-plugin", INSTALL_METADATA_FILE),
+    null,
+  );
+  return isRecord(metadata) && typeof metadata.source === "string"
+    ? metadata.source
+    : undefined;
 }
 
 async function resolvePluginRootsForRemoval(
@@ -469,6 +538,10 @@ function isPathInside(path: string, root: string): boolean {
   const normalizedPath = resolve(path);
   const normalizedRoot = resolve(root);
   return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}/`);
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function writePluginConfigEntry(

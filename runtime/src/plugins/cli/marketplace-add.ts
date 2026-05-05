@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, rename, rm, stat } from "node:fs/promises";
-import { basename, extname, join } from "node:path";
+import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat } from "node:fs/promises";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { validateMarketplaceManifest } from "../validation.js";
 import {
   readJsonFile,
@@ -39,7 +39,11 @@ export interface ProcessResult {
 export type ProcessRunner = (
   command: string,
   args: readonly string[],
-  options: { readonly cwd?: string },
+  options: {
+    readonly cwd?: string;
+    readonly timeoutMs?: number;
+    readonly maxOutputBytes?: number;
+  },
 ) => Promise<ProcessResult>;
 
 export interface MarketplaceOperationOptions extends PluginOperationOptions {
@@ -62,18 +66,27 @@ export interface AddMarketplaceResult {
 const MARKETPLACE_INDEX_FILE = "marketplaces.json";
 const MARKETPLACE_MANIFEST_FILE = "marketplace.json";
 const RESERVED_MARKETPLACE_NAMES = new Set(["agenc", "builtin", "curated"]);
+const MARKETPLACE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u;
+const DEFAULT_GIT_TIMEOUT_MS = 120_000;
+const DEFAULT_GIT_MAX_OUTPUT_BYTES = 1_048_576;
 
 export async function addMarketplaceOp(
   input: AddMarketplaceInput,
 ): Promise<AddMarketplaceResult> {
-  if (input.sparse && (await detectSourceType(input.source, input)) !== "git") {
+  const sparse = input.sparse !== undefined
+    ? normalizeSparsePath(input.sparse)
+    : undefined;
+  if (sparse && (await detectSourceType(input.source, input)) !== "git") {
     throw new Error("--sparse is only valid for git marketplaces");
   }
   const storeRoot = marketplaceStoreRoot(input);
   await mkdir(storeRoot, { recursive: true, mode: 0o700 });
-  const staged = await stageMarketplaceSource(input);
+  const staged = await stageMarketplaceSource({
+    ...input,
+    ...(sparse !== undefined ? { sparse } : {}),
+  });
   try {
-    const manifestPath = await resolveMarketplaceManifestPath(staged.root, input.sparse);
+    const manifestPath = await resolveMarketplaceManifestPath(staged.root, sparse);
     const validation = await validateMarketplaceManifest(manifestPath);
     if (!validation.success) {
       throw new Error(
@@ -92,12 +105,20 @@ export async function addMarketplaceOp(
     if (duplicate !== undefined && input.force !== true) {
       throw new Error(`marketplace already exists: ${name}`);
     }
-    const safeName = sanitizeInstallName(name);
-    const installedPath = join(storeRoot, safeName);
+    const safeName = sanitizeMarketplaceInstallName(name);
+    const installNameConflict = findMarketplaceInstallName(index, safeName);
+    if (
+      installNameConflict !== undefined &&
+      installNameConflict !== name
+    ) {
+      throw new Error(
+        `marketplace install directory collides with existing marketplace: ${installNameConflict}`,
+      );
+    }
+    const installedPath = marketplaceInstalledPath(name, input);
     const replaced = duplicate !== undefined || await pathExists(installedPath);
-    await rm(installedPath, { recursive: true, force: true });
-    await rename(staged.root, installedPath);
-    const finalManifestPath = join(installedPath, manifestPath.slice(staged.root.length + 1));
+    const manifestRelativePath = relative(staged.root, manifestPath);
+    const finalManifestPath = join(installedPath, manifestRelativePath);
     const marketplace: MarketplaceRecord = {
       name,
       source: staged.source,
@@ -105,17 +126,18 @@ export async function addMarketplaceOp(
       installedPath,
       manifestPath: finalManifestPath,
       ...(input.ref !== undefined ? { ref: input.ref } : {}),
-      ...(input.sparse !== undefined ? { sparse: input.sparse } : {}),
+      ...(sparse !== undefined ? { sparse } : {}),
       ...(staged.revision !== undefined ? { revision: staged.revision } : {}),
       updatedAt: (input.now ?? (() => new Date()))().toISOString(),
     };
-    await writeMarketplaceIndex({
+    const nextIndex: MarketplaceIndex = {
       version: 1,
       marketplaces: {
         ...index.marketplaces,
         [name]: marketplace,
       },
-    }, input);
+    };
+    await activateMarketplaceStaging(staged.root, installedPath, nextIndex, input);
     return { marketplace, replaced };
   } finally {
     await rm(staged.tempDir, { recursive: true, force: true });
@@ -124,6 +146,13 @@ export async function addMarketplaceOp(
 
 export function marketplaceStoreRoot(options: PluginOperationOptions = {}): string {
   return join(resolvePluginAgencHome(options), "plugins", "marketplaces");
+}
+
+export function marketplaceInstalledPath(
+  name: string,
+  options: PluginOperationOptions = {},
+): string {
+  return join(marketplaceStoreRoot(options), sanitizeMarketplaceInstallName(name));
 }
 
 export function marketplaceIndexPath(options: PluginOperationOptions = {}): string {
@@ -155,30 +184,62 @@ export async function writeMarketplaceIndex(
 export async function defaultRunProcess(
   command: string,
   args: readonly string[],
-  options: { readonly cwd?: string } = {},
+  options: {
+    readonly cwd?: string;
+    readonly timeoutMs?: number;
+    readonly maxOutputBytes?: number;
+  } = {},
 ): Promise<ProcessResult> {
   return new Promise((resolvePromise, reject) => {
+    const timeoutMs = options.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS;
+    const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_GIT_MAX_OUTPUT_BYTES;
     const child = spawn(command, [...args], {
       cwd: options.cwd,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), 2_000).unref();
+    }, timeoutMs);
+    timeout.unref();
     let stdout = "";
     let stderr = "";
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
-      stdout += chunk;
+      const appended = appendBoundedOutput(stdout, stdoutBytes, chunk, maxOutputBytes);
+      stdout = appended.text;
+      stdoutBytes = appended.bytes;
+      stdoutTruncated ||= appended.truncated;
     });
     child.stderr.on("data", (chunk) => {
-      stderr += chunk;
+      const appended = appendBoundedOutput(stderr, stderrBytes, chunk, maxOutputBytes);
+      stderr = appended.text;
+      stderrBytes = appended.bytes;
+      stderrTruncated ||= appended.truncated;
     });
-    child.once("error", reject);
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
     child.once("close", (code) => {
+      clearTimeout(timeout);
+      if (stdoutTruncated) stdout += "\n[stdout truncated]\n";
+      if (stderrTruncated) stderr += "\n[stderr truncated]\n";
       if (code === 0) {
         resolvePromise({ stdout, stderr });
         return;
       }
-      reject(new Error(`${command} ${args.join(" ")} failed with exit ${code}: ${stderr.trim()}`));
+      const displayArgs = redactProcessArgs(args).join(" ");
+      const reason = timedOut ? `timed out after ${timeoutMs}ms` : `failed with exit ${code}`;
+      const detail = redactSensitiveText(stderr.trim());
+      reject(new Error(`${command} ${displayArgs} ${reason}${detail ? `: ${detail}` : ""}`));
     });
   });
 }
@@ -188,10 +249,19 @@ export function normalizeMarketplaceName(name: string): string {
   if (trimmed.length === 0) {
     throw new Error("marketplace name cannot be empty");
   }
+  if (!MARKETPLACE_NAME_RE.test(trimmed)) {
+    throw new Error(
+      "marketplace name must be an alphanumeric segment with only '.', '_', or '-' separators",
+    );
+  }
   if (RESERVED_MARKETPLACE_NAMES.has(trimmed.toLowerCase())) {
     throw new Error(`marketplace name is reserved: ${trimmed}`);
   }
   return trimmed;
+}
+
+export function sanitizeMarketplaceInstallName(name: string): string {
+  return sanitizeInstallName(normalizeMarketplaceName(name));
 }
 
 export function findMarketplaceName(
@@ -200,6 +270,37 @@ export function findMarketplaceName(
 ): string | undefined {
   const lowered = name.toLowerCase();
   return Object.keys(index.marketplaces).find((candidate) => candidate.toLowerCase() === lowered);
+}
+
+export function findMarketplaceInstallName(
+  index: MarketplaceIndex,
+  safeName: string,
+): string | undefined {
+  for (const candidate of Object.keys(index.marketplaces)) {
+    try {
+      if (sanitizeMarketplaceInstallName(candidate) === safeName) return candidate;
+    } catch {
+      // Ignore malformed historical index entries for collision detection.
+    }
+  }
+  return undefined;
+}
+
+export function normalizeSparsePath(path: string): string {
+  const trimmed = path.trim();
+  if (
+    trimmed.length === 0 ||
+    isAbsolute(trimmed) ||
+    trimmed.includes("\0") ||
+    /^[a-zA-Z]:[\\/]/u.test(trimmed)
+  ) {
+    throw new Error("--sparse must be a relative marketplace path");
+  }
+  const parts = trimmed.split(/[\\/]+/u);
+  if (parts.some((part) => part.length === 0 || part === "." || part === "..")) {
+    throw new Error("--sparse must not contain empty, '.', or '..' path segments");
+  }
+  return parts.join("/");
 }
 
 async function detectSourceType(
@@ -280,12 +381,54 @@ async function resolveMarketplaceManifestPath(
   ];
   for (const candidate of candidates) {
     try {
-      if ((await stat(candidate)).isFile()) return candidate;
+      const resolved = resolve(candidate);
+      const resolvedRoot = resolve(root);
+      if (resolved !== resolvedRoot && !resolved.startsWith(`${resolvedRoot}/`)) {
+        continue;
+      }
+      if ((await stat(resolved)).isFile()) return resolved;
     } catch {
       // Try the next candidate.
     }
   }
   throw new Error(`marketplace source must contain ${MARKETPLACE_MANIFEST_FILE}`);
+}
+
+async function activateMarketplaceStaging(
+  stagingRoot: string,
+  installedPath: string,
+  nextIndex: MarketplaceIndex,
+  options: PluginOperationOptions,
+): Promise<void> {
+  const storeRoot = marketplaceStoreRoot(options);
+  const installedRealParent = await realpath(dirname(installedPath));
+  const storeReal = await realpath(storeRoot);
+  if (installedRealParent !== storeReal) {
+    throw new Error("marketplace install path must stay inside the marketplace store");
+  }
+  const backupPath = `${installedPath}.backup-${process.pid}-${Date.now()}`;
+  let hadExisting = false;
+  let activated = false;
+  try {
+    if (await pathExists(installedPath)) {
+      await rename(installedPath, backupPath);
+      hadExisting = true;
+    }
+    await rename(stagingRoot, installedPath);
+    activated = true;
+    await writeMarketplaceIndex(nextIndex, options);
+    if (hadExisting) {
+      await rm(backupPath, { recursive: true, force: true });
+    }
+  } catch (error) {
+    if (activated) {
+      await rm(installedPath, { recursive: true, force: true });
+    }
+    if (hadExisting && await pathExists(backupPath)) {
+      await rename(backupPath, installedPath);
+    }
+    throw error;
+  }
 }
 
 async function readMarketplaceManifest(path: string): Promise<unknown> {
@@ -304,6 +447,46 @@ function inferMarketplaceName(manifest: unknown, source: string): string {
   }
   const base = basename(source, extname(source));
   return base.endsWith(".git") ? base.slice(0, -4) : base;
+}
+
+function appendBoundedOutput(
+  current: string,
+  currentBytes: number,
+  chunk: string,
+  maxBytes: number,
+): { readonly text: string; readonly bytes: number; readonly truncated: boolean } {
+  const chunkBytes = Buffer.byteLength(chunk, "utf8");
+  if (currentBytes >= maxBytes) {
+    return {
+      text: current,
+      bytes: currentBytes + chunkBytes,
+      truncated: chunkBytes > 0,
+    };
+  }
+  const remaining = maxBytes - currentBytes;
+  if (chunkBytes <= remaining) {
+    return {
+      text: current + chunk,
+      bytes: currentBytes + chunkBytes,
+      truncated: false,
+    };
+  }
+  return {
+    text: current + Buffer.from(chunk, "utf8").subarray(0, remaining).toString("utf8"),
+    bytes: currentBytes + chunkBytes,
+    truncated: true,
+  };
+}
+
+function redactProcessArgs(args: readonly string[]): string[] {
+  return args.map((arg) => redactSensitiveText(arg));
+}
+
+function redactSensitiveText(value: string): string {
+  return value
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)([^@\s/]+)@/giu, "$1<redacted>@")
+    .replace(/([?&](?:token|access_token|password|apikey|api_key)=)[^&\s]+/giu, "$1<redacted>")
+    .replace(/((?:token|access_token|password|apikey|api_key)=)[^&\s]+/giu, "$1<redacted>");
 }
 
 function isMarketplaceRecord(value: unknown): value is MarketplaceRecord {

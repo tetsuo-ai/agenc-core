@@ -4,6 +4,7 @@ import {
   listInstalledPlugins,
   setPluginEnabledOp,
   uninstallPluginOp,
+  updatePluginOp,
   validatePluginPath,
   type DisableAllPluginsResult,
   type InstallPluginInput,
@@ -14,6 +15,8 @@ import {
   type SetPluginEnabledResult,
   type UninstallPluginInput,
   type UninstallPluginResult,
+  type UpdatePluginInput,
+  type UpdatePluginResult,
 } from "./pluginOperations.js";
 import {
   addMarketplaceOp,
@@ -52,6 +55,10 @@ export class AgenCPluginInstallationManager {
 
   uninstall(input: Omit<UninstallPluginInput, keyof PluginOperationOptions>): Promise<UninstallPluginResult> {
     return uninstallPluginOp({ ...this.options, ...input });
+  }
+
+  update(input: Omit<UpdatePluginInput, keyof PluginOperationOptions>): Promise<UpdatePluginResult> {
+    return updatePluginOp({ ...this.options, ...input });
   }
 
   setEnabled(input: Omit<SetPluginEnabledInput, keyof PluginOperationOptions>): Promise<SetPluginEnabledResult> {

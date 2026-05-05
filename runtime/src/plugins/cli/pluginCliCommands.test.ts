@@ -3,6 +3,13 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import {
+  defaultRunProcess,
+  marketplaceInstalledPath,
+  marketplaceIndexPath,
+  marketplaceStoreRoot,
+  writeMarketplaceIndex,
+} from "./marketplace-add.js";
+import {
   formatAgenCPluginCliHelpText,
   parseAgenCPluginCliArgs,
   runAgenCPluginCli,
@@ -102,6 +109,28 @@ describe("agenc plugin CLI", () => {
       scope: "project",
       name: "toolbox",
       force: true,
+    });
+    expect(parseAgenCPluginCliArgs([
+      "plugin",
+      "update",
+      "toolbox",
+      "--scope",
+      "user",
+      "--source=./plugin",
+    ])).toEqual({
+      kind: "update",
+      pluginId: "toolbox",
+      scope: "user",
+      source: "./plugin",
+    });
+    expect(parseAgenCPluginCliArgs([
+      "plugin",
+      "install",
+      "./plugin",
+      "--name",
+    ])).toEqual({
+      kind: "error",
+      message: "--name requires a value",
     });
     expect(parseAgenCPluginCliArgs([
       "plugin",
@@ -218,5 +247,122 @@ describe("agenc plugin CLI", () => {
       json: true,
     }, options(agencHome, workspaceRoot, emptyListIo));
     expect(JSON.parse(emptyListIo.stdoutText())).toEqual({ marketplaces: [] });
+  });
+
+  it("updates an installed plugin from its recorded source", async () => {
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const source = await writePlugin(root, "alpha");
+    const installIo = createIo();
+    await runAgenCPluginCli({
+      kind: "install",
+      source,
+      scope: "user",
+      force: false,
+    }, options(agencHome, workspaceRoot, installIo));
+
+    await writeFile(
+      join(source, ".agenc-plugin", "plugin.json"),
+      JSON.stringify({
+        name: "alpha",
+        version: "2.0.0",
+        description: "Updated plugin",
+        commands: "./commands",
+      }, null, 2),
+    );
+
+    const updateIo = createIo();
+    const updateExit = await runAgenCPluginCli({
+      kind: "update",
+      pluginId: "alpha",
+      scope: "user",
+    }, options(agencHome, workspaceRoot, updateIo));
+    expect(updateExit).toBe(0);
+
+    const listIo = createIo();
+    await runAgenCPluginCli({
+      kind: "list",
+      json: true,
+    }, options(agencHome, workspaceRoot, listIo));
+    expect(JSON.parse(listIo.stdoutText())).toMatchObject({
+      plugins: [{ name: "alpha", version: "2.0.0" }],
+    });
+  });
+
+  it("rejects unsafe marketplace names and sparse paths before mutating", async () => {
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const marketplaceRoot = join(root, "marketplace");
+    await mkdir(marketplaceRoot, { recursive: true });
+    await writeFile(
+      join(marketplaceRoot, "marketplace.json"),
+      JSON.stringify({ metadata: { name: "bad/name" }, plugins: [] }),
+    );
+
+    const nameIo = createIo();
+    const nameExit = await runAgenCPluginCli({
+      kind: "marketplace-add",
+      source: marketplaceRoot,
+      force: false,
+    }, options(agencHome, workspaceRoot, nameIo));
+    expect(nameExit).toBe(1);
+    expect(nameIo.stderrText()).toContain("marketplace name must be an alphanumeric segment");
+
+    const sparseIo = createIo();
+    const sparseExit = await runAgenCPluginCli({
+      kind: "marketplace-add",
+      source: "repo.git",
+      name: "team",
+      sparse: "../marketplace",
+      force: false,
+    }, {
+      ...options(agencHome, workspaceRoot, sparseIo),
+      runProcess: async () => {
+        throw new Error("git should not run for invalid sparse paths");
+      },
+    });
+    expect(sparseExit).toBe(1);
+    expect(sparseIo.stderrText()).toContain("--sparse must not contain");
+  });
+
+  it("removes marketplaces by computed install root instead of trusted index paths", async () => {
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const io = createIo();
+    await mkdir(marketplaceStoreRoot({ agencHome }), { recursive: true });
+    const installedPath = marketplaceInstalledPath("team", { agencHome });
+    const hostilePath = join(root, "outside");
+    await mkdir(installedPath, { recursive: true });
+    await mkdir(hostilePath, { recursive: true });
+    await writeMarketplaceIndex({
+      version: 1,
+      marketplaces: {
+        team: {
+          name: "team",
+          source: "local",
+          sourceType: "local",
+          installedPath: hostilePath,
+          manifestPath: join(hostilePath, "marketplace.json"),
+          updatedAt: "2026-05-05T00:00:00.000Z",
+        },
+      },
+    }, { agencHome });
+
+    const removeExit = await runAgenCPluginCli({
+      kind: "marketplace-remove",
+      name: "team",
+    }, options(agencHome, workspaceRoot, io));
+    expect(removeExit).toBe(0);
+    expect((await stat(hostilePath)).isDirectory()).toBe(true);
+    await expect(stat(installedPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(JSON.parse(await readFile(marketplaceIndexPath({ agencHome }), "utf8")))
+      .toEqual({ version: 1, marketplaces: {} });
+  });
+
+  it("redacts credential-bearing git failures", async () => {
+    await expect(defaultRunProcess(process.execPath, [
+      "-e",
+      "process.stderr.write('https://token@agenc.tech/repo?token=secret'); process.exit(2)",
+    ], {
+      timeoutMs: 1_000,
+      maxOutputBytes: 512,
+    })).rejects.toThrow("https://<redacted>@agenc.tech/repo?token=<redacted>");
   });
 });

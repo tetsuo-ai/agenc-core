@@ -6,6 +6,7 @@ import {
   listInstalledPlugins,
   setPluginEnabledOp,
   uninstallPluginOp,
+  updatePluginOp,
   validatePluginPath,
   type PluginCliIo,
   type PluginScope,
@@ -23,6 +24,7 @@ export type AgenCPluginCliCommand =
   | { readonly kind: "validate"; readonly path: string; readonly marketplace: boolean; readonly json: boolean }
   | { readonly kind: "install"; readonly source: string; readonly scope: PluginScope; readonly name?: string; readonly force: boolean }
   | { readonly kind: "uninstall"; readonly pluginId: string; readonly scope: PluginScope; readonly keepData: boolean }
+  | { readonly kind: "update"; readonly pluginId: string; readonly scope: PluginScope; readonly source?: string }
   | { readonly kind: "enable"; readonly pluginId: string; readonly path?: string }
   | { readonly kind: "disable"; readonly pluginId: string }
   | { readonly kind: "disable-all" }
@@ -46,6 +48,7 @@ export function formatAgenCPluginCliHelpText(): string {
     "  validate <path> [--marketplace] [--json]       Validate a plugin or marketplace manifest",
     "  install <path> [--scope <user|project|local>]  Install a local plugin directory",
     "  uninstall <name> [--scope <user|project|local>] Remove an installed plugin",
+    "  update <name> [--source <path>]                 Refresh an installed plugin from its source",
     "  enable <name> [--path <path>]                  Enable a plugin in user config",
     "  disable <name>                                 Disable a plugin in user config",
     "  disable-all                                    Disable every currently enabled plugin",
@@ -82,6 +85,8 @@ export function parseAgenCPluginCliArgs(
       return parseInstall(argv.slice(2));
     case "uninstall":
       return parseUninstall(argv.slice(2));
+    case "update":
+      return parseUpdate(argv.slice(2));
     case "enable":
       return parseEnable(argv.slice(2));
     case "disable":
@@ -147,6 +152,18 @@ export async function runAgenCPluginCli(
         });
         io.stdout.write(
           `Uninstalled plugin ${result.pluginId}: ${result.removedRoots.length} path(s) removed\n`,
+        );
+        return 0;
+      }
+      case "update": {
+        const result = await updatePluginOp({
+          ...options,
+          pluginId: command.pluginId,
+          scope: command.scope,
+          ...(command.source !== undefined ? { source: command.source } : {}),
+        });
+        io.stdout.write(
+          `Updated plugin ${result.plugin.name} from ${result.source}: ${result.destination}\n`,
         );
         return 0;
       }
@@ -282,10 +299,13 @@ function parseInstall(args: readonly string[]): AgenCPluginCliCommand {
       force = true;
       continue;
     }
-    const parsed = parseValueOption(args, i, arg, ["--scope", "--name"]);
-    if (parsed !== null) {
-      i = parsed.nextIndex;
-      if (parsed.name === "--scope") {
+      const parsed = parseValueOption(args, i, arg, ["--scope", "--name"]);
+      if (parsed !== null) {
+        i = parsed.nextIndex;
+        if (parsed.value.length === 0) {
+          return { kind: "error", message: `${parsed.name} requires a value` };
+        }
+        if (parsed.name === "--scope") {
         const parsedScope = parseScope(parsed.value);
         if (parsedScope === null) return { kind: "error", message: "--scope must be user, project, or local" };
         scope = parsedScope;
@@ -323,6 +343,9 @@ function parseUninstall(args: readonly string[]): AgenCPluginCliCommand {
     const parsed = parseValueOption(args, i, arg, ["--scope"]);
     if (parsed !== null) {
       i = parsed.nextIndex;
+      if (parsed.value.length === 0) {
+        return { kind: "error", message: `${parsed.name} requires a value` };
+      }
       const parsedScope = parseScope(parsed.value);
       if (parsedScope === null) return { kind: "error", message: "--scope must be user, project, or local" };
       scope = parsedScope;
@@ -337,6 +360,42 @@ function parseUninstall(args: readonly string[]): AgenCPluginCliCommand {
   return { kind: "uninstall", pluginId: positional[0]!, scope, keepData };
 }
 
+function parseUpdate(args: readonly string[]): AgenCPluginCliCommand {
+  let scope: PluginScope = "user";
+  let source: string | undefined;
+  const positional: string[] = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!;
+    if (arg === "--help" || arg === "-h") return { kind: "help", text: formatAgenCPluginCliHelpText() };
+    const parsed = parseValueOption(args, i, arg, ["--scope", "--source"]);
+    if (parsed !== null) {
+      i = parsed.nextIndex;
+      if (parsed.value.length === 0) {
+        return { kind: "error", message: `${parsed.name} requires a value` };
+      }
+      if (parsed.name === "--scope") {
+        const parsedScope = parseScope(parsed.value);
+        if (parsedScope === null) return { kind: "error", message: "--scope must be user, project, or local" };
+        scope = parsedScope;
+      } else {
+        source = parsed.value;
+      }
+      continue;
+    }
+    if (arg.startsWith("-")) return { kind: "error", message: `unknown plugin update option: ${arg}` };
+    positional.push(arg);
+  }
+  if (positional.length !== 1) {
+    return { kind: "error", message: "plugin update requires exactly one plugin name" };
+  }
+  return {
+    kind: "update",
+    pluginId: positional[0]!,
+    scope,
+    ...(source !== undefined ? { source } : {}),
+  };
+}
+
 function parseEnable(args: readonly string[]): AgenCPluginCliCommand {
   let path: string | undefined;
   const positional: string[] = [];
@@ -346,6 +405,9 @@ function parseEnable(args: readonly string[]): AgenCPluginCliCommand {
     const parsed = parseValueOption(args, i, arg, ["--path"]);
     if (parsed !== null) {
       i = parsed.nextIndex;
+      if (parsed.value.length === 0) {
+        return { kind: "error", message: `${parsed.name} requires a value` };
+      }
       path = parsed.value;
       continue;
     }
@@ -427,6 +489,9 @@ function parseMarketplaceAdd(args: readonly string[]): AgenCPluginCliCommand {
     const parsed = parseValueOption(args, i, arg, ["--name", "--ref", "--sparse"]);
     if (parsed !== null) {
       i = parsed.nextIndex;
+      if (parsed.value.length === 0) {
+        return { kind: "error", message: `${parsed.name} requires a value` };
+      }
       if (parsed.name === "--name") name = parsed.value;
       if (parsed.name === "--ref") ref = parsed.value;
       if (parsed.name === "--sparse") sparse = parsed.value;

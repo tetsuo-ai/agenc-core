@@ -1,6 +1,9 @@
-import { rm, stat } from "node:fs/promises";
+import { realpath, rm, stat } from "node:fs/promises";
+import { resolve } from "node:path";
 import {
   findMarketplaceName,
+  marketplaceInstalledPath,
+  marketplaceStoreRoot,
   readMarketplaceIndex,
   writeMarketplaceIndex,
   type MarketplaceRecord,
@@ -28,9 +31,11 @@ export async function removeMarketplaceOp(
   const nextMarketplaces = { ...index.marketplaces };
   delete nextMarketplaces[matchedName];
   let removedInstall = false;
+  const installedPath = marketplaceInstalledPath(marketplace.name, input);
+  await assertMarketplaceInstallPath(installedPath, input);
   try {
-    await stat(marketplace.installedPath);
-    await rm(marketplace.installedPath, { recursive: true, force: true });
+    await stat(installedPath);
+    await rm(installedPath, { recursive: true, force: true });
     removedInstall = true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -40,4 +45,15 @@ export async function removeMarketplaceOp(
     marketplaces: nextMarketplaces,
   }, input);
   return { marketplace, removedInstall };
+}
+
+async function assertMarketplaceInstallPath(
+  installedPath: string,
+  options: MarketplaceOperationOptions,
+): Promise<void> {
+  const storeReal = await realpath(marketplaceStoreRoot(options));
+  const normalized = resolve(installedPath);
+  if (normalized === storeReal || !normalized.startsWith(`${storeReal}/`)) {
+    throw new Error("marketplace install path must stay inside the marketplace store");
+  }
 }

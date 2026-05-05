@@ -23,13 +23,15 @@
   },
   "carriedBehavior": [
     "User-facing agenc plugin command parsing and help.",
-    "Local plugin install, uninstall, enable, disable, disable-all, list, and validation operations.",
+    "Local plugin install, uninstall, update, enable, disable, disable-all, list, and validation operations.",
     "Filesystem-backed plugin install roots for user and workspace scopes.",
     "Marketplace add, remove, and upgrade operations with staging, validation, atomic activation, and persistent metadata.",
     "Git marketplace staging through the git binary plus local filesystem marketplace handling."
   ],
   "intentionalReductions": [
     "Project/local enable-disable persistence waits for tiered AgenC config; installs still land in workspace .agents/plugins where the current loader discovers them.",
+    "Plugin update refreshes local installs from explicit or recorded local sources; marketplace cache version selection and managed update orchestration remain later plugin rows.",
+    "PluginInstallationManager.ts is scoped to CLI operation orchestration; background marketplace reconciliation, UI status transitions, cache clearing, and runtime refresh notifications remain later plugin integration rows.",
     "Remote marketplace registry discovery, signed-plugin verification, managed settings sync, and dependency solving remain later plugin rows.",
     "Marketplace metadata is stored in a private AgenC plugin-home index instead of introducing a new public config schema in PK-06."
   ],

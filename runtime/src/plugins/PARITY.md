@@ -65,8 +65,8 @@ PK-04 scope carried into AgenC:
 
 PK-06 scope carried into AgenC:
 - `cli/pluginCliCommands.ts` owns `agenc plugin` argument parsing, terminal output, and subcommand dispatch.
-- `cli/pluginOperations.ts` owns local plugin list/validate/install/uninstall/enable/disable/disable-all operations using AgenC's existing loader, manifest validator, plugin directories, and global TOML config.
-- `cli/PluginInstallationManager.ts` provides an AgenC-owned manager facade over the plugin and marketplace operations.
+- `cli/pluginOperations.ts` owns local plugin list/validate/install/uninstall/update/enable/disable/disable-all operations using AgenC's existing loader, manifest validator, plugin directories, and global TOML config.
+- `cli/PluginInstallationManager.ts` provides an AgenC-owned manager facade over the plugin and marketplace operations available in PK-06.
 - `cli/marketplace-add.ts`, `cli/marketplace-remove.ts`, and `cli/marketplace-upgrade.ts` own local and git marketplace staging, validation, atomic activation, private marketplace index writes, removal, and refresh.
 - `bin/agenc.ts` routes `agenc plugin ...` before prompt/TUI routing so plugin commands never get treated as user prompts.
 
@@ -100,5 +100,7 @@ Intentional PK-04 scope reductions:
 
 Intentional PK-06 scope reductions:
 - AgenC's current runtime only loads user-level `config.toml`; `project` and `local` plugin install scopes map to workspace `.agents/plugins` discovery, while enable/disable writes remain global TOML entries until tiered config persistence lands.
+- `agenc plugin update` refreshes local installs from an explicit or recorded local source. Remote marketplace cache version selection, dependency demotion, and managed plugin update orchestration remain later plugin rows.
+- `PluginInstallationManager.ts` is scoped to CLI operation orchestration in PK-06. Background marketplace reconciliation, UI status transitions, plugin-cache clearing, and runtime refresh notifications remain with later startup/runtime plugin integration rows.
 - Remote marketplace discovery services, signed plugin verification, dependency solving, managed remote settings sync, and marketplace plugin cache/version dependency demotion remain later plugin rows.
 - Marketplace add/upgrade supports real git staging through the `git` binary and local filesystem marketplaces. It records source metadata in `$AGENC_HOME/plugins/marketplaces/marketplaces.json` rather than adding a new public config schema before CF-owned config work.
