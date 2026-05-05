@@ -48,6 +48,8 @@ export type {
   PrivateStorageConfig,
   McpServerConfig,
   McpTransport,
+  PluginEntryConfig,
+  PluginsConfig,
   ProviderModelPair,
 } from "./schema.js";
 
