@@ -12,19 +12,19 @@ import { getFsImplementation } from './fsOperations.js'
 
 /**
  * Well-known token file locations in CCR. The Go environment-manager creates
- * /home/claude/.agenc/remote/ and will (eventually) write these files too.
+ * $HOME/.agenc/remote/ and will (eventually) write these files too.
  * Until then, this module writes them on successful FD read so subprocesses
  * spawned inside the CCR container can find the token without inheriting
  * the FD — which they can't: pipe FDs don't cross tmux/shell boundaries.
  */
-const CCR_TOKEN_DIR = '/home/claude/.agenc/remote'
+const CCR_TOKEN_DIR = process.env.AGENC_REMOTE_TOKEN_DIR?.trim() || `${process.env.HOME ?? '.'}/.agenc/remote`
 export const CCR_OAUTH_TOKEN_PATH = `${CCR_TOKEN_DIR}/.oauth_token`
 export const CCR_API_KEY_PATH = `${CCR_TOKEN_DIR}/.api_key`
 export const CCR_SESSION_INGRESS_TOKEN_PATH = `${CCR_TOKEN_DIR}/.session_ingress_token`
 
 /**
  * Best-effort write of the token to a well-known location for subprocess
- * access. CCR-gated: outside CCR there's no /home/claude/ and no reason to
+ * access. CCR-gated: outside remote sessions there's no token dir and no reason to
  * put a token on disk that the FD was meant to keep off disk.
  */
 export function maybePersistTokenForSubprocesses(
@@ -168,7 +168,7 @@ function getCredentialFromFd({
 /**
  * Get the CCR-injected OAuth token. See getCredentialFromFd for FD-vs-disk
  * rationale. Env var: AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR.
- * Well-known file: /home/claude/.agenc/remote/.oauth_token.
+ * Well-known file: $HOME/.agenc/remote/.oauth_token.
  */
 export function getOAuthTokenFromFileDescriptor(): string | null {
   return getCredentialFromFd({
@@ -183,7 +183,7 @@ export function getOAuthTokenFromFileDescriptor(): string | null {
 /**
  * Get the CCR-injected API key. See getCredentialFromFd for FD-vs-disk
  * rationale. Env var: AGENC_API_KEY_FILE_DESCRIPTOR.
- * Well-known file: /home/claude/.agenc/remote/.api_key.
+ * Well-known file: $HOME/.agenc/remote/.api_key.
  */
 export function getApiKeyFromFileDescriptor(): string | null {
   return getCredentialFromFd({
