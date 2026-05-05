@@ -348,6 +348,32 @@ describe("tools/runtimes", () => {
       }),
     ).toThrow(/workspace_write blocked/);
 
+    const originalTmpdir = process.env["TMPDIR"];
+    process.env["TMPDIR"] = "/tmp/agenc-runtime-tmpdir";
+    try {
+      expect(() =>
+        enforceRuntimeSandboxAttempt({
+          context: {
+            ...base,
+            approvalPolicy: "never",
+            requestedSandboxMode: "workspace_write",
+            sandboxMode: "workspace_write",
+            approvalResolved: false,
+            rawArgs: "{}",
+            invocation,
+          },
+          tool: shellTool,
+          args: { cmd: "echo allowed > /tmp/agenc-runtime-tmpdir/file.txt" },
+        }),
+      ).not.toThrow();
+    } finally {
+      if (originalTmpdir === undefined) {
+        delete process.env["TMPDIR"];
+      } else {
+        process.env["TMPDIR"] = originalTmpdir;
+      }
+    }
+
     expect(() =>
       enforceRuntimeSandboxAttempt({
         context: {
@@ -596,6 +622,35 @@ describe("tools/runtimes", () => {
     );
     expect(tmpWrite.isError).toBeFalsy();
     expect(execCommand).toHaveBeenCalledOnce();
+
+    const readOnlyStdin = await router.dispatchModelToolCall(
+      {
+        id: "call-stdin-read-only",
+        name: "write_stdin",
+        arguments: JSON.stringify({
+          session_id: 7,
+          chars: "printf should-not-run\\n",
+        }),
+      },
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: {
+          subId: "turn-stdin-read-only",
+          cwd: workspaceRoot,
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "read_only" },
+        } as never,
+        tracker: tracker() as never,
+        approvalPolicy: "never",
+        sandboxMode: "read_only",
+      },
+    );
+    expect(readOnlyStdin.isError).toBe(true);
+    expect(readOnlyStdin.content).toContain("write_stdin");
+    expect(writeStdin).not.toHaveBeenCalled();
 
     const stdin = await router.dispatchModelToolCall(
       {
@@ -880,6 +935,7 @@ describe("tools/runtimes", () => {
 
   test("direct dispatch preserves rich content items through runtime execution", async () => {
     const contentItems = [{ type: "input_text" as const, text: "rich output" }];
+    const structuredResult = { rich: true };
     const tool: Tool = {
       name: "RichOutput",
       description: "",
@@ -891,6 +947,7 @@ describe("tools/runtimes", () => {
       isReadOnly: true,
       execute: async () => ({
         content: "fallback output",
+        codeModeResult: structuredResult,
         contentItems,
       }),
     };
@@ -922,6 +979,49 @@ describe("tools/runtimes", () => {
 
     expect(result.isError).toBeFalsy();
     expect(result.contentItems).toEqual(contentItems);
+    expect(result.codeModeResult).toEqual(structuredResult);
+  });
+
+  test("direct dispatch serializes BigInt args without losing runtime execution", async () => {
+    let seen: unknown;
+    const tool: Tool = {
+      name: "BigIntEcho",
+      description: "",
+      inputSchema: { type: "object" },
+      isReadOnly: true,
+      execute: async (args) => {
+        seen = args["lamports"];
+        return { content: "ok" };
+      },
+    };
+    const router = new ToolRouter([
+      { tool, supportsParallelToolCalls: true },
+    ]);
+
+    const result = await router.dispatchToolCall(
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: {
+          subId: "turn-bigint-runtime",
+          cwd: "/repo",
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "read_only" },
+        } as never,
+        tracker: tracker() as never,
+        callId: "call-bigint-runtime",
+        toolName: { name: "BigIntEcho" },
+        payload: { kind: "function", arguments: "{}" },
+        source: "direct",
+      },
+      { lamports: 9007199254740993n },
+      { sandboxMode: "read_only" },
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(seen).toBe(9007199254740993n);
   });
 
   test("code-mode dispatch carries runtime source and selected sandbox", async () => {

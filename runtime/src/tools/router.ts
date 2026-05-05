@@ -522,7 +522,7 @@ export class ToolRouter {
         ...invocation,
         payload: executionPayload,
       };
-      const executionRawArgs = JSON.stringify(executionArgs);
+      const executionRawArgs = stringifyToolArgsWithBigInt(executionArgs);
       const runtimeCallContext = buildToolRuntimeCallContext({
         toolCall: {
           id: invocation.callId,
@@ -1050,7 +1050,7 @@ function buildPayloadForArgs(
   payload: ToolPayload,
   args: Record<string, unknown>,
 ): ToolPayload {
-  const serialized = JSON.stringify(args);
+  const serialized = stringifyToolArgsWithBigInt(args);
   switch (payload.kind) {
     case "function":
       return { kind: "function", arguments: serialized };
@@ -1066,6 +1066,12 @@ function buildPayloadForArgs(
     case "local_shell":
       return payload;
   }
+}
+
+function stringifyToolArgsWithBigInt(args: Record<string, unknown>): string {
+  return JSON.stringify(args, (_key, value) =>
+    typeof value === "bigint" ? `__bigint__${value.toString()}` : value,
+  );
 }
 
 function planFileContextForApproval(

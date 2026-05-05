@@ -981,6 +981,9 @@ const ITEM_EVIDENCE = {
       { pattern: "createToolExecutionRuntime", scope: "runtime/src/phases/execute-tools.ts" },
       { pattern: "write_stdin", scope: "runtime/src/tools/runtimes/runtime.test.ts" },
       { pattern: "contentItems", scope: "runtime/src/tools/runtimes/runtime.test.ts" },
+      { pattern: "codeModeResult", scope: "runtime/src/tools/runtimes/runtime.test.ts" },
+      { pattern: "BigInt", scope: "runtime/src/tools/runtimes/runtime.test.ts" },
+      { pattern: "TMPDIR", scope: "runtime/src/tools/runtimes/runtime.test.ts" },
     ],
     tests: [
       "runtime/src/tools/runtimes/runtime.test.ts",

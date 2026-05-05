@@ -150,6 +150,7 @@ const RICH_OUTPUT_CONTENT_ITEMS = new WeakMap<
   ToolOutput,
   readonly FunctionCallOutputContentItem[]
 >();
+const STRUCTURED_CODE_MODE_RESULTS = new WeakMap<ToolOutput, unknown>();
 
 /** Appended marker when a result is truncated. */
 const TRUNCATION_MARKER_TEMPLATE =
@@ -1526,6 +1527,9 @@ export async function runToolUse(
           ...(result.contentItems !== undefined
             ? { contentItems: result.contentItems }
             : {}),
+          ...(result.codeModeResult !== undefined
+            ? { codeModeResult: result.codeModeResult }
+            : {}),
           metadata: result.metadata,
         } satisfies ToolDispatchResult;
       },
@@ -1734,9 +1738,12 @@ export async function runToolUse(
         : {}),
     });
     RICH_OUTPUT_CONTENT_ITEMS.set(output, finalDispatch.contentItems);
+    if (finalDispatch.codeModeResult !== undefined) {
+      STRUCTURED_CODE_MODE_RESULTS.set(output, finalDispatch.codeModeResult);
+    }
     return output;
   }
-  return functionToolOutput({
+  const output = functionToolOutput({
     callId: invocation.callId,
     toolName: invocation.toolName,
     payload: invocation.payload,
@@ -1747,6 +1754,10 @@ export async function runToolUse(
       ? { metadata: finalDispatch.metadata }
       : {}),
   });
+  if (finalDispatch.codeModeResult !== undefined) {
+    STRUCTURED_CODE_MODE_RESULTS.set(output, finalDispatch.codeModeResult);
+  }
+  return output;
 }
 
 export interface ExecuteToolDispatchOptions extends RunToolUseOptions {
@@ -1770,7 +1781,9 @@ export async function executeToolDispatch(
   return {
     content: output.content,
     isError: output.isError,
-    codeModeResult: codeModeResult(output),
+    codeModeResult: STRUCTURED_CODE_MODE_RESULTS.has(output)
+      ? STRUCTURED_CODE_MODE_RESULTS.get(output)
+      : codeModeResult(output),
     ...(RICH_OUTPUT_CONTENT_ITEMS.get(output) !== undefined
       ? { contentItems: RICH_OUTPUT_CONTENT_ITEMS.get(output)! }
       : {}),

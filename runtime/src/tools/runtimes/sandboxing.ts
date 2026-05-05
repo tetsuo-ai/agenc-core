@@ -118,6 +118,16 @@ export function enforceRuntimeSandboxAttempt(
     return;
   }
   enforceRuntimeReadSandboxAttempt(input, policy, cwd);
+  if (input.tool.name === "write_stdin" && policy.kind === "read_only") {
+    throw new SandboxDeniedError(
+      "sandbox read_only blocked write_stdin without process sandbox context",
+      {
+        denial: "filesystem",
+        target: input.tool.name,
+        policy,
+      },
+    );
+  }
   if (!toolMayMutate(input.tool)) return;
   const writes = analyzeWrites(input.tool, input.args, cwd);
   if (writes.indeterminate) {
