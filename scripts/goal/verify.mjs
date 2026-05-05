@@ -31,7 +31,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { findItem, repoRoot, fail } from "./checklist-utils.mjs";
+import { findItem, repoRoot, mainCheckoutRoot, fail } from "./checklist-utils.mjs";
 import {
   SHIM_BEHAVIOR_RATIO_LIMIT,
   formatShimBehaviorViolation,
@@ -5403,6 +5403,21 @@ function assertZc42ExternalAgentMigrationPort() {
     if (!importer.includes(required)) {
       failGate(`ZC-42: project importer is missing expected implementation anchor ${required}.`);
     }
+  }
+
+  const checklistPath = path.join(mainCheckoutRoot(), "PORT_CHECKLIST.md");
+  if (!existsSync(checklistPath)) {
+    failGate(`ZC-42: checklist not found at ${checklistPath}; cannot verify Phase 5 reclassification.`);
+  }
+  const checklist = readFileSync(checklistPath, "utf8");
+  const identitySkipLine = checklist
+    .split("\n")
+    .find((line) => line.includes("agent-identity/") && line.includes("keyring-store/"));
+  if (!identitySkipLine) {
+    failGate("ZC-42: could not find the Phase 5 identity/keyring skip row.");
+  }
+  if (/external-agent/i.test(identitySkipLine)) {
+    failGate("ZC-42: Phase 5 identity/keyring skip row still covers external-agent migration.");
   }
 
   const testRun = run("npm", [

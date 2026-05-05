@@ -16,3 +16,5 @@ Shape differences:
 - HTTP MCP servers with env-placeholder headers are skipped because AgenC's live MCP config supports static `headers` today; generating unresolved headers would produce a broken runtime config.
 - Agent role TOML uses escaped basic strings rather than multiline TOML strings so the existing AgenC TOML loader can parse migrated output.
 - Hook timeout fields are emitted as `timeout_ms` because AgenC's configured hook runtime expects millisecond timeouts.
+- The default source layout targets `.cursor` / `.cursor.json`; other source layouts can be passed explicitly without changing the AgenC output shape.
+- ZC-42 reclassifies the Phase 5 identity/keyring skip row so `external-agent-migration` is no longer covered by that skipped bucket.

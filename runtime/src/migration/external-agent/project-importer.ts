@@ -112,16 +112,16 @@ interface AgentMetadata {
 
 const MCP_CONFIG_FILE = ".mcp.json";
 const DEFAULT_LAYOUT: NormalizedSourceAgentLayout = Object.freeze({
-  configDirName: ".source-agent",
-  projectConfigFileName: ".source-agent.json",
-  projectDirEnvVar: "SOURCE_AGENT_PROJECT_DIR",
-  docFileName: "SOURCE_AGENT.md",
+  configDirName: ".cursor",
+  projectConfigFileName: ".cursor.json",
+  projectDirEnvVar: "CURSOR_PROJECT_DIR",
+  docFileName: "AGENTS.md",
   termVariants: Object.freeze([
+    "cursor",
     "source agent",
     "source-agent",
     "source_agent",
     "sourceagent",
-    "source",
   ]),
   hooksSubdir: "hooks",
   migratedHooksSubdir: "hooks",

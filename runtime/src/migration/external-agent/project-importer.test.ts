@@ -12,6 +12,7 @@ import {
   importExternalAgentProject,
   importHooks,
   missingSubagentNames,
+  renderMcpConfigToml,
   type SourceAgentLayout,
 } from "./project-importer.js";
 
@@ -95,7 +96,7 @@ describe("external agent project migration", () => {
         "permissionMode: acceptEdits",
         "effort: max",
         "---",
-        "Read SOURCE.md and review source agent changes.",
+        "Read AGENTS.md and review source agent changes.",
         "",
       ].join("\n"),
       "utf8",
@@ -110,7 +111,6 @@ describe("external agent project migration", () => {
       sourceRoot: project,
       sourceAgentHome: sourceHome,
       targetAgencHome: targetHome,
-      layout: SOURCE_LAYOUT,
     });
 
     expect(result.importedSubagents).toBe(1);
@@ -176,6 +176,39 @@ describe("external agent project migration", () => {
     expect(skill).toContain("Run AgenC review.");
   });
 
+  test("default layout imports a cursor-style project without custom layout injection", async () => {
+    const root = await tempRoot();
+    const project = join(root, "project");
+    const sourceHome = join(project, ".cursor");
+    const targetHome = join(root, "agenc-home");
+    await mkdir(join(sourceHome, "agents"), { recursive: true });
+    await writeJson(join(project, ".mcp.json"), {
+      mcpServers: {
+        local: { command: "default-server" },
+      },
+    });
+    await writeFile(
+      join(sourceHome, "agents", "default.md"),
+      "---\nname: default\ndescription: Default import\n---\nRead AGENTS.md.\n",
+      "utf8",
+    );
+
+    const result = await importExternalAgentProject({
+      sourceRoot: project,
+      sourceAgentHome: sourceHome,
+      targetAgencHome: targetHome,
+    });
+
+    expect(result.mcpToml).toContain("[mcp_servers.local]");
+    expect(result.importedSubagents).toBe(1);
+    const agentToml = parseToml(
+      await readFile(join(targetHome, "agents", "default.toml"), "utf8"),
+    );
+    expect(agentToml).toMatchObject({
+      developer_instructions: "Read AGENC.md.",
+    });
+  });
+
   test("filters unsupported MCP servers and honors enabled settings", async () => {
     const root = await tempRoot();
     const project = join(root, "project");
@@ -235,6 +268,16 @@ describe("external agent project migration", () => {
       "home-only": { command: "home-server", transport: "stdio" },
       shared: { command: "project-server", transport: "stdio" },
     });
+  });
+
+  test("rejects TOML strings with unsupported control characters", () => {
+    expect(() =>
+      renderMcpConfigToml({
+        mcp_servers: {
+          bad: { command: "node\u0001server", transport: "stdio" },
+        },
+      }),
+    ).toThrow(/control character U\+0001/);
   });
 
   test("preserves existing hook scripts and refuses unsafe hook path rewrites", async () => {

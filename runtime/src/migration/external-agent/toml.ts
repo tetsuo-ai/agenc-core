@@ -28,14 +28,36 @@ function dottedKey(parts: readonly string[]): string {
 }
 
 function escapeTomlString(value: string): string {
-  return value
-    .replace(/\\/g, "\\\\")
-    .replace(/\u0008/g, "\\b")
-    .replace(/\t/g, "\\t")
-    .replace(/\n/g, "\\n")
-    .replace(/\f/g, "\\f")
-    .replace(/\r/g, "\\r")
-    .replace(/"/g, '\\"');
+  let escaped = "";
+  for (const ch of value) {
+    const code = ch.charCodeAt(0);
+    switch (ch) {
+      case "\\":
+        escaped += "\\\\";
+        break;
+      case "\t":
+        escaped += "\\t";
+        break;
+      case "\n":
+        escaped += "\\n";
+        break;
+      case "\r":
+        escaped += "\\r";
+        break;
+      case '"':
+        escaped += '\\"';
+        break;
+      default:
+        if (code < 0x20 || code === 0x7f) {
+          throw new Error(
+            `Cannot render TOML string containing control character U+${code.toString(16).padStart(4, "0")}`,
+          );
+        }
+        escaped += ch;
+        break;
+    }
+  }
+  return escaped;
 }
 
 function renderScalar(value: TomlPrimitive): string {
