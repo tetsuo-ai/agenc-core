@@ -63,6 +63,23 @@ describe("shell string parsing", () => {
     ]);
   });
 
+  test("fails closed across metacharacter and unterminated-quote samples", () => {
+    const metacharacters = ["|", "&", ";", ">", "<", "(", ")", "`", "$", "#", "{", "}"];
+    for (const char of metacharacters) {
+      expect(parseShellCommand(`echo before ${char} after`)).toBeNull();
+    }
+
+    const malformedInputs = [
+      "echo 'unterminated",
+      'echo "unterminated',
+      `echo ${"a".repeat(4096)} $HOME`,
+      `echo ${"literal ".repeat(512)} > out`,
+    ];
+    for (const input of malformedInputs) {
+      expect(parseShellCommand(input)).toBeNull();
+    }
+  });
+
   test("prefix helpers preserve safe env-var behavior", () => {
     expect(getSimpleCommandPrefix("NODE_ENV=test npm run build")).toBe(
       "npm run",
@@ -117,13 +134,21 @@ describe("wrapper extraction and argv tree", () => {
         "-NoProfile",
         "-Command",
         "Get-ChildItem",
-        "ignored",
       ]),
     ).toEqual({
       shell: "pwsh",
       commandFlag: "-Command",
       script: "Get-ChildItem",
     });
+    expect(
+      extractPowerShellCommand([
+        "pwsh",
+        "-NoProfile",
+        "-Command",
+        "Get-ChildItem",
+        "ignored",
+      ]),
+    ).toBeNull();
     expect(extractPowerShellCommand(["powershell.exe", "-NoExit", "-c", "ls"]))
       .toBeNull();
   });

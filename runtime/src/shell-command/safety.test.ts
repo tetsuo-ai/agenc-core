@@ -5,6 +5,7 @@ import {
   isDangerousWindowsCommand,
   isKnownSafeCommand,
   isSafePowerShellWords,
+  isSafeWindowsCommand,
   shellCommandIsKnownSafe,
 } from "./safety.js";
 
@@ -35,6 +36,9 @@ describe("isKnownSafeCommand", () => {
     expect(isKnownSafeCommand(["git", "branch", "new-branch"])).toBe(false);
     expect(isKnownSafeCommand(["find", ".", "-delete"])).toBe(false);
     expect(isKnownSafeCommand(["find", ".", "-exec", "rm", "{}", ";"])).toBe(false);
+    expect(isKnownSafeCommand(["find", ".", "-ok", "rm", "{}", ";"])).toBe(false);
+    expect(isKnownSafeCommand(["find", ".", "-okdir", "rm", "{}", ";"])).toBe(false);
+    expect(isKnownSafeCommand(["find", ".", "-fls", "out"])).toBe(false);
     expect(isKnownSafeCommand(["base64", "--output=out", "file.txt"])).toBe(false);
     expect(isKnownSafeCommand(["rg", "--pre", "cat", "needle"])).toBe(false);
     expect(isKnownSafeCommand(["rg", "--search-zip", "needle"])).toBe(false);
@@ -85,6 +89,20 @@ describe("Windows and PowerShell safety lists", () => {
     expect(
       isDangerousWindowsCommand([
         "powershell",
+        "-Sta",
+        "-Command",
+        "Remove-Item file.txt -Force",
+      ]),
+    ).toBe(true);
+    expect(
+      isDangerousWindowsCommand([
+        "powershell",
+        "Remove-Item file.txt -Force",
+      ]),
+    ).toBe(true);
+    expect(
+      isDangerousWindowsCommand([
+        "powershell",
         "-UnknownSwitch",
         "-Command",
         "Remove-Item file.txt -Force",
@@ -105,8 +123,33 @@ describe("Windows and PowerShell safety lists", () => {
     expect(isDangerousPowerShellWords(["Remove-Item", "file.txt", "-Force"]))
       .toBe(true);
     expect(isSafePowerShellWords(["Get-ChildItem", "."])).toBe(true);
+    expect(isSafePowerShellWords(["gci", "."])).toBe(true);
+    expect(isSafePowerShellWords(["gc", "file.txt"])).toBe(true);
+    expect(isSafePowerShellWords(["sls", "needle", "file.txt"])).toBe(true);
+    expect(isSafePowerShellWords(["measure"])).toBe(true);
+    expect(isSafePowerShellWords(["gl"])).toBe(true);
+    expect(isSafePowerShellWords(["tp", "file.txt"])).toBe(true);
+    expect(isSafePowerShellWords(["rvpa", "."])).toBe(true);
+    expect(isSafePowerShellWords(["select", "Name"])).toBe(true);
     expect(isSafePowerShellWords(["git", "status"])).toBe(true);
     expect(isSafePowerShellWords(["rg", "--search-zip", "needle"])).toBe(false);
     expect(isSafePowerShellWords(["Remove-Item", "file.txt"])).toBe(false);
+  });
+
+  test("does not run user-supplied PowerShell executable paths for safe checks", () => {
+    expect(
+      isSafeWindowsCommand([
+        "C:\\Users\\attacker\\pwsh.exe",
+        "-Command",
+        "Get-ChildItem",
+      ]),
+    ).toBe(false);
+    expect(
+      isSafeWindowsCommand([
+        "/tmp/pwsh",
+        "-Command",
+        "Get-ChildItem",
+      ]),
+    ).toBe(false);
   });
 });

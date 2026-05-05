@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
+
 import {
   extractBashCommand,
   parseShellCommand,
@@ -62,6 +65,18 @@ const POWERSHELL_READ_ONLY_COMMANDS: ReadonlySet<string> = new Set([
   "resolve-path",
   "select-object",
   "get-item",
+]);
+
+const POWERSHELL_ALIAS_MAP: ReadonlyMap<string, string> = new Map([
+  ["gci", "get-childitem"],
+  ["gc", "get-content"],
+  ["sls", "select-string"],
+  ["measure", "measure-object"],
+  ["gl", "get-location"],
+  ["tp", "test-path"],
+  ["rvpa", "resolve-path"],
+  ["select", "select-object"],
+  ["gi", "get-item"],
 ]);
 
 const POWERSHELL_REMOVE_ITEM_COMMANDS: ReadonlySet<string> = new Set([
@@ -200,8 +215,12 @@ export function isDangerousWindowsCommand(command: readonly string[]): boolean {
 export function isSafeWindowsCommand(command: readonly string[]): boolean {
   const invocation = parsePowerShellInvocation(command, "safe");
   if (invocation === null) return false;
-  const parsed = parsePowerShellScriptWithNativeAst(
+  const trustedExecutable = resolveTrustedPowerShellExecutable(
     invocation.executable,
+  );
+  if (trustedExecutable === null) return false;
+  const parsed = parsePowerShellScriptWithNativeAst(
+    trustedExecutable,
     invocation.script,
   );
   return (
@@ -316,7 +335,10 @@ function isSafeFindCommand(args: readonly string[]): boolean {
     return (
       lower === "-exec" ||
       lower === "-execdir" ||
+      lower === "-ok" ||
+      lower === "-okdir" ||
       lower === "-delete" ||
+      lower === "-fls" ||
       lower === "-fprint" ||
       lower === "-fprint0" ||
       lower === "-fprintf"
@@ -493,8 +515,11 @@ function parsePowerShellInvocation(
     const arg = command[i]!;
     const lower = arg.toLowerCase();
     if (lower === "-command" || lower === "/command" || lower === "-c") {
-      const script = command[i + 1];
-      return script === undefined ? null : { executable, script };
+      const rest = command.slice(i + 1);
+      if (rest.length === 0) return null;
+      return mode === "safe" && rest.length !== 1
+        ? null
+        : { executable, script: rest.join(" ") };
     }
     if (lower.startsWith("-command:") || lower.startsWith("/command:")) {
       const script = arg.slice(arg.indexOf(":") + 1);
@@ -503,7 +528,9 @@ function parsePowerShellInvocation(
     if (
       lower === "-nologo" ||
       lower === "-noprofile" ||
-      lower === "-noninteractive"
+      lower === "-noninteractive" ||
+      lower === "-mta" ||
+      lower === "-sta"
     ) {
       continue;
     }
@@ -514,10 +541,43 @@ function parsePowerShellInvocation(
     if (mode === "dangerous") {
       return { executable, script: command.slice(i).join(" ") };
     }
+    if (mode === "safe" && !lower.startsWith("-")) {
+      return { executable, script: command.slice(i).join(" ") };
+    }
     return null;
   }
 
   return null;
+}
+
+function resolveTrustedPowerShellExecutable(executable: string): string | null {
+  const normalizedInput = executable.replace(/\\/g, "/");
+  if (normalizedInput.includes("/")) return null;
+
+  const base = executableBasename(executable);
+  if (!POWERSHELL_EXECUTABLES.has(base)) return null;
+  if (process.platform !== "win32") return null;
+
+  if (base === "powershell") {
+    const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
+    return path.win32.join(
+      systemRoot,
+      "System32",
+      "WindowsPowerShell",
+      "v1.0",
+      "powershell.exe",
+    );
+  }
+
+  const candidates = [
+    process.env.ProgramFiles,
+    process.env["ProgramFiles(x86)"],
+  ]
+    .filter((value): value is string => value !== undefined && value.length > 0)
+    .map((programFiles) =>
+      path.win32.join(programFiles, "PowerShell", "7", "pwsh.exe"),
+    );
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
 }
 
 function powershellFlagConsumesValue(flag: string): boolean {
@@ -635,7 +695,8 @@ function containsUrl(args: readonly string[]): boolean {
 }
 
 function normalizePowerShellCommandName(value: string): string {
-  return executableBasename(value);
+  const name = executableBasename(value);
+  return POWERSHELL_ALIAS_MAP.get(name) ?? name;
 }
 
 function executableBasename(value: string): string {

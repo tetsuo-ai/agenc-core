@@ -213,7 +213,7 @@ export function extractPowerShellCommand(
     if (!POWERSHELL_FLAGS.has(normalized)) return null;
     if (normalized === "-command" || normalized === "-c") {
       const script = command[i + 1];
-      return script === undefined
+      return script === undefined || i + 2 !== command.length
         ? null
         : { shell, commandFlag: flag, script };
     }

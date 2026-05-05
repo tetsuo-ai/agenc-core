@@ -5013,8 +5013,11 @@ function assertZc32ShellCommandCoverage() {
     "--workspace=@tetsuo-ai/runtime",
     "vitest",
     "run",
+    "src/shell-command/parser.test.ts",
     "src/shell-command/safety.test.ts",
+    "src/shell-command/powershell-parser.test.ts",
     "src/permissions/bash.test.ts",
+    "src/permissions/approval-cache.test.ts",
   ]);
   if (testRun.status !== 0) {
     failGate("ZC-32: shell-command safety behavior test suites failed.");

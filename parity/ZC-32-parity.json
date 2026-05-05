@@ -5,6 +5,11 @@
   "mergeResolutions": [
     "The final main integration conflicted in scripts/goal/verify.mjs because main added the ZC-33 sandbox coverage gate while this branch added the ZC-32 shell-command coverage gate. Resolution kept main's ZC-33 helper and map entry intact, then added the ZC-32 helper and map entry beside them."
   ],
+  "intentionalReductions": [
+    "AgenC does not add a native tree-sitter Bash dependency in this row; unsupported Bash syntax remains opaque and cannot auto-approve.",
+    "Windows PowerShell safe auto-approval rejects user-supplied executable paths and requires a trusted platform PowerShell location; when that cannot be resolved, the command is not classified safe.",
+    "PowerShell safe classification remains literal-only: parser errors, dynamic expressions, invocation operators, and redirection all fail closed."
+  ],
   "sourceFiles": [
     "src/lib.rs",
     "src/shell_detect.rs",
@@ -138,6 +143,7 @@
       "edgeCases": [
         "missing PowerShell executable returns a failed outcome instead of throwing or approving",
         "dangerous Windows PowerShell detection finds -Command after pre-command flags such as -ExecutionPolicy, -Mta, -Sta, and unknown dash flags",
+        "safe Windows PowerShell parsing rejects trailing argv after -Command and never executes caller-supplied PowerShell paths",
         "URL launcher tests use the AgenC-owned domain",
         "non-Windows hosts do not approximate PowerShell safe auto-approval"
       ],
