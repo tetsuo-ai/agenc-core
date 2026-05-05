@@ -1,18 +1,10 @@
-/**
- * Native Installer - Public API
- *
- * This is the barrel file that exports only the functions actually used by external modules.
- * External modules should only import from this file.
- */
+import { checkInstall as checkInstallImpl, cleanupNpmInstallations as cleanupNpmInstallationsImpl, cleanupOldVersions as cleanupOldVersionsImpl, cleanupShellAliases as cleanupShellAliasesImpl, installLatest as installLatestImpl, lockCurrentVersion as lockCurrentVersionImpl, removeInstalledSymlink as removeInstalledSymlinkImpl, type SetupMessage as InstallerSetupMessage } from './installer.js'
 
-// Re-export only the functions that are actually used
-export {
-  checkInstall,
-  cleanupNpmInstallations,
-  cleanupOldVersions,
-  cleanupShellAliases,
-  installLatest,
-  lockCurrentVersion,
-  removeInstalledSymlink,
-  type SetupMessage,
-} from './installer.js'
+export type SetupMessage = InstallerSetupMessage
+export function checkInstall(...args: Parameters<typeof checkInstallImpl>): ReturnType<typeof checkInstallImpl> { return checkInstallImpl(...args) }
+export function cleanupNpmInstallations(...args: Parameters<typeof cleanupNpmInstallationsImpl>): ReturnType<typeof cleanupNpmInstallationsImpl> { return cleanupNpmInstallationsImpl(...args) }
+export function cleanupOldVersions(...args: Parameters<typeof cleanupOldVersionsImpl>): ReturnType<typeof cleanupOldVersionsImpl> { return cleanupOldVersionsImpl(...args) }
+export function cleanupShellAliases(...args: Parameters<typeof cleanupShellAliasesImpl>): ReturnType<typeof cleanupShellAliasesImpl> { return cleanupShellAliasesImpl(...args) }
+export function installLatest(...args: Parameters<typeof installLatestImpl>): ReturnType<typeof installLatestImpl> { return installLatestImpl(...args) }
+export function lockCurrentVersion(...args: Parameters<typeof lockCurrentVersionImpl>): ReturnType<typeof lockCurrentVersionImpl> { return lockCurrentVersionImpl(...args) }
+export function removeInstalledSymlink(...args: Parameters<typeof removeInstalledSymlinkImpl>): ReturnType<typeof removeInstalledSymlinkImpl> { return removeInstalledSymlinkImpl(...args) }

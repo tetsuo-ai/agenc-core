@@ -3,8 +3,9 @@
 import process from "node:process";
 import {
   SHIM_BEHAVIOR_RATIO_LIMIT,
-  isAllowedZc20RuntimeShimPath,
+  formatShimBehaviorViolation,
   measureShimBehavior,
+  measureShimBehaviorForPath,
 } from "./shim-behavior.mjs";
 
 let passed = 0;
@@ -54,16 +55,42 @@ const upstreamIndexForwarder = measure(`
 export { Something } from './Something.js'
 `);
 assert(
-  "non-allowlisted upstream forwarding fixture remains a ZC-20 failure",
-  upstreamIndexForwarder.violates &&
-    !isAllowedZc20RuntimeShimPath("runtime/src/agenc/upstream/not-allowed/index.ts"),
+  "upstream forwarding fixture remains a ZC-20 failure",
+  upstreamIndexForwarder.violates,
   JSON.stringify(upstreamIndexForwarder),
 );
 
+const multilineBarrel = measure(`
+export {
+  Alpha,
+  Beta,
+  Gamma,
+} from './impl.js'
+`);
 assert(
-  "documented upstream mirror exceptions are explicit paths only",
-  isAllowedZc20RuntimeShimPath("runtime/src/agenc/upstream/commands/dream/index.ts") &&
-    !isAllowedZc20RuntimeShimPath("runtime/src/agenc/upstream/commands/dream/other-index.ts"),
+  "counts multi-line forwarding statements as forwarding LOC",
+  multilineBarrel.violates &&
+    multilineBarrel.forwardLines === 5 &&
+    multilineBarrel.ratio === 1,
+  JSON.stringify(multilineBarrel),
+);
+
+const existingRuntimeHit = measureShimBehaviorForPath(
+  "runtime/src/existing/helpers.ts",
+  `
+export {
+  Alpha,
+  Beta,
+} from './impl.js'
+`,
+);
+assert(
+  "ZC-20 runtime gate formats existing forwarding-heavy files by path",
+  existingRuntimeHit &&
+    formatShimBehaviorViolation(existingRuntimeHit).includes(
+      "runtime/src/existing/helpers.ts",
+    ),
+  JSON.stringify(existingRuntimeHit),
 );
 
 const boundary = measure(`
@@ -76,6 +103,22 @@ assert(
   "does not flag the exact 50 percent boundary",
   !boundary.violates && boundary.ratio === SHIM_BEHAVIOR_RATIO_LIMIT,
   JSON.stringify(boundary),
+);
+
+const importHeavyOwnedModule = measure(`
+import * as React from 'react'
+import type { LocalJSXCommandContext } from '../../../../commands.js'
+import { Settings } from '../../components/Settings/Settings.js'
+import type { LocalJSXCommandOnDone } from '../../types/command.js'
+
+export async function call(onDone: LocalJSXCommandOnDone, context: LocalJSXCommandContext): Promise<React.ReactNode> {
+  return Settings({ onClose: onDone, context, defaultTab: 'Status' })
+}
+`);
+assert(
+  "does not flag import-heavy modules without forwarding LOC",
+  !importHeavyOwnedModule.violates && importHeavyOwnedModule.forwardLines === 0,
+  JSON.stringify(importHeavyOwnedModule),
 );
 
 const realModule = measure(`

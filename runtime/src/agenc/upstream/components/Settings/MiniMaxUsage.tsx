@@ -4,12 +4,9 @@ import { useEffect, useState } from 'react'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { Box, Text } from '../../../../tui/ink.js'
 import { useKeybinding } from '../../../../tui/keybindings/useKeybinding.js'
-import {
-  buildMiniMaxUsageRows,
-  fetchMiniMaxUsage,
-  type MiniMaxUsageData,
-  type MiniMaxUsageRow,
-} from '../../services/api/minimaxUsage.js'
+import { buildMiniMaxUsageRows, type MiniMaxUsageRow } from '../../services/api/minimaxUsage/parse.js'
+import type { MiniMaxUsageData } from '../../services/api/minimaxUsage/types.js'
+import { fetchMiniMaxUsage } from '../../services/api/minimaxUsage/fetch.js'
 import { logError } from '../../utils/log.js'
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js'
 import { Byline } from '../design-system/Byline.js'

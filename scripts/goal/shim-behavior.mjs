@@ -2,53 +2,6 @@ export const SHIM_BEHAVIOR_RATIO_LIMIT = 0.5;
 export const SHIM_BEHAVIOR_SIGNIFICANT_LINE_LIMIT = 40;
 export const SHIM_BEHAVIOR_BODY_LENGTH_LIMIT = 16000;
 
-export const ZC20_RUNTIME_SHIM_ALLOWLIST = new Map([
-  [
-    "runtime/src/agenc/upstream/commands/assistant/assistant.ts",
-    "Frozen upstream assistant installer placeholder; ZC-20 documents the exception and Z-02 owns deleting the mirror.",
-  ],
-  [
-    "runtime/src/agenc/upstream/commands/dream/index.ts",
-    "Frozen upstream command entrypoint retained for command discovery shape until upstream mirror deletion.",
-  ],
-  [
-    "runtime/src/agenc/upstream/commands/skills/skills.tsx",
-    "Frozen upstream JSX command entrypoint; import-heavy but owns its UI call implementation.",
-  ],
-  [
-    "runtime/src/agenc/upstream/commands/status/status.tsx",
-    "Frozen upstream JSX command entrypoint; import-heavy but owns its UI call implementation.",
-  ],
-  [
-    "runtime/src/agenc/upstream/commands/tasks/tasks.tsx",
-    "Frozen upstream JSX command entrypoint; import-heavy but owns its UI call implementation.",
-  ],
-  [
-    "runtime/src/agenc/upstream/hooks/useCommandQueue.ts",
-    "Frozen upstream React subscription hook; small import-heavy module with owned hook behavior.",
-  ],
-  [
-    "runtime/src/agenc/upstream/services/agencAiLimitsHook.ts",
-    "AgenC-named upstream mirror facade hides donor-named rate-limit internals from AgenC-owned TUI imports until mirror deletion.",
-  ],
-  [
-    "runtime/src/agenc/upstream/services/api/openaiSchemaSanitizer.ts",
-    "Frozen upstream provider-protocol sanitizer entrypoint retained to avoid touching the large provider translation module.",
-  ],
-  [
-    "runtime/src/agenc/upstream/utils/sandbox/sandbox-adapter.ts",
-    "Large frozen upstream sandbox-runtime integration; suffix is historical but the file contains the real implementation.",
-  ],
-  [
-    "runtime/src/agenc/upstream/utils/crypto.ts",
-    "Upstream browser-build indirection for package replacement; not an AgenC-owned compatibility shim.",
-  ],
-]);
-
-export function isAllowedZc20RuntimeShimPath(rel) {
-  return ZC20_RUNTIME_SHIM_ALLOWLIST.has(rel);
-}
-
 export const FORWARD_LINE_RE =
   /^\s*(export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[^}]*\}\s*from\b|export\s*\{[^}]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
 export const FORWARD_STATEMENT_RE =
@@ -100,12 +53,18 @@ export function splitImportAndImplementationLines(significant) {
 }
 
 export function countForwardingLines(significant) {
-  return combineLogicalStatements(significant).filter((stmt) =>
-    FORWARD_LINE_RE.test(stmt) ||
-    FORWARD_STATEMENT_RE.test(stmt) ||
-    SINGLE_LINE_FORWARD_FN_RE.test(stmt) ||
-    SINGLE_LINE_FORWARD_ARROW_RE.test(stmt)
-  ).length;
+  let forwardLines = 0;
+  for (const stmt of combineLogicalStatements(significant)) {
+    if (
+      FORWARD_LINE_RE.test(stmt) ||
+      FORWARD_STATEMENT_RE.test(stmt) ||
+      SINGLE_LINE_FORWARD_FN_RE.test(stmt) ||
+      SINGLE_LINE_FORWARD_ARROW_RE.test(stmt)
+    ) {
+      forwardLines += significantStatementLineCount(stmt);
+    }
+  }
+  return forwardLines;
 }
 
 export function combineLogicalStatements(significant) {
@@ -160,12 +119,32 @@ export function measureShimBehavior(body, opts = {}) {
 
   return {
     eligible: implementationLines.length > 0,
-    violates: implementationLines.length > 0 && numerator > 0 && ratio > ratioLimit,
+    violates:
+      implementationLines.length > 0 &&
+      forwardLines > 0 &&
+      numerator > 0 &&
+      ratio > ratioLimit,
     significantLines: significant.length,
     importLines,
     forwardLines,
     ratio,
   };
+}
+
+export function measureShimBehaviorForPath(rel, body, opts = {}) {
+  const stats = measureShimBehavior(body, opts);
+  if (!stats.violates) return null;
+  return { path: rel, ...stats };
+}
+
+export function formatShimBehaviorViolation(violation) {
+  return (
+    `${violation.path} (` +
+    `${violation.importLines} import line(s) + ` +
+    `${violation.forwardLines} forward LOC / ` +
+    `${violation.significantLines} significant line(s), ` +
+    `ratio ${violation.ratio.toFixed(2)})`
+  );
 }
 
 function countChar(value, needle) {
@@ -174,4 +153,11 @@ function countChar(value, needle) {
     if (char === needle) count += 1;
   }
   return count;
+}
+
+function significantStatementLineCount(statement) {
+  return statement
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean).length;
 }

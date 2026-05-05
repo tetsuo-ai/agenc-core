@@ -34,9 +34,8 @@ import process from "node:process";
 import { findItem, repoRoot, fail } from "./checklist-utils.mjs";
 import {
   SHIM_BEHAVIOR_RATIO_LIMIT,
-  ZC20_RUNTIME_SHIM_ALLOWLIST,
-  isAllowedZc20RuntimeShimPath,
-  measureShimBehavior,
+  formatShimBehaviorViolation,
+  measureShimBehaviorForPath,
 } from "./shim-behavior.mjs";
 
 const RESET = "\x1b[0m";
@@ -1607,31 +1606,22 @@ for (const rel of added) {
   if (!/\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(rel)) continue;
   if (/\.test\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(rel)) continue;
   if (/\.d\.ts$/.test(rel)) continue;
-  if (rel.startsWith("runtime/src/agenc/upstream/")) continue;
   let body;
   try {
     body = readFileSync(path.join(repoRoot(), rel), "utf8");
   } catch {
     continue;
   }
-  const stats = measureShimBehavior(body);
-  if (stats.violates) {
-    forwardingViolations.push({
-      path: rel,
-      ratio: stats.ratio.toFixed(2),
-      lines: stats.significantLines,
-      imports: stats.importLines,
-      forwards: stats.forwardLines,
-    });
-  }
+  const violation = measureShimBehaviorForPath(rel, body);
+  if (violation) forwardingViolations.push(violation);
 }
 if (forwardingViolations.length > 0) {
   failGate(
     `forbidden: this item adds ${forwardingViolations.length} forwarding-only module(s) ` +
-      `(>${Math.round(SHIM_BEHAVIOR_RATIO_LIMIT * 100)}% imports + re-exports + single-line forwarders, <40 significant lines). ` +
+      `(>${Math.round(SHIM_BEHAVIOR_RATIO_LIMIT * 100)}% imports + forwarding LOC, <40 significant lines). ` +
       `These are shims by another name. Inline at the call site or move to canonical home.\n  ` +
       forwardingViolations
-        .map((v) => `- ${v.path} (${v.imports} import line(s) + ${v.forwards} forward statement(s) / ${v.lines} significant line(s), ratio ${v.ratio})`)
+        .map((violation) => `- ${formatShimBehaviorViolation(violation)}`)
         .join("\n  "),
   );
 }
@@ -4009,16 +3999,12 @@ function assertZc12DonorPortArtifactsGone() {
 }
 
 function assertZc20NoRuntimeShimCruft() {
-  const suffixHits = [];
   const forwardingHits = [];
   for (const rel of listSourceFiles(path.join(root, "runtime/src"))) {
     if (!rel.startsWith("runtime/src/")) continue;
     if (SHIM_ALLOW_DIRS.some((dir) => rel.startsWith(dir))) continue;
-    if (isAllowedZc20RuntimeShimPath(rel)) continue;
     if (/\.test\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(rel)) continue;
     if (/\.d\.ts$/.test(rel)) continue;
-
-    if (SHIM_RE.test(rel)) suffixHits.push(rel);
 
     let body;
     try {
@@ -4026,31 +4012,18 @@ function assertZc20NoRuntimeShimCruft() {
     } catch {
       continue;
     }
-    const stats = measureShimBehavior(body);
-    if (stats.violates) {
-      forwardingHits.push(
-        `${rel} (${stats.importLines} import line(s) + ${stats.forwardLines} forward statement(s) / ${stats.significantLines} significant line(s), ratio ${stats.ratio.toFixed(2)})`,
-      );
-    }
+    const violation = measureShimBehaviorForPath(rel, body);
+    if (violation) forwardingHits.push(formatShimBehaviorViolation(violation));
   }
 
   const failures = [];
-  if (suffixHits.length > 0) {
-    failures.push(`shim-pattern file(s):\n${suffixHits.join("\n")}`);
-  }
   if (forwardingHits.length > 0) {
     failures.push(
       `forwarding-heavy module(s) (>${Math.round(SHIM_BEHAVIOR_RATIO_LIMIT * 100)}% imports+forwards LOC):\n${forwardingHits.join("\n")}`,
     );
   }
   if (failures.length > 0) {
-    const allowed = [...ZC20_RUNTIME_SHIM_ALLOWLIST]
-      .map(([rel, reason]) => `- ${rel}: ${reason}`)
-      .join("\n");
-    failGate(
-      `ZC-20: runtime/src shim cruft remains:\n${failures.join("\n\n")}` +
-      (allowed ? `\n\nDocumented ZC-20 allowlist:\n${allowed}` : ""),
-    );
+    failGate(`ZC-20: runtime/src shim cruft remains:\n${failures.join("\n\n")}`);
   }
 }
 

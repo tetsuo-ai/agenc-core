@@ -62,12 +62,12 @@ import {
   dispatchPostCompact,
   dispatchPreCompact,
   dispatchSessionStart,
-} from "../llm/hooks/index.js";
+} from "../llm/hooks/dispatcher.js";
 import {
   registerPostCompactHook,
   registerPreCompactHook,
   registerSessionStartHook,
-} from "../llm/hooks/index.js";
+} from "../llm/hooks/registry.js";
 import { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
 import { createAutoFixPostToolHook } from "../services/autoFix/autoFixHook.js";
 import {
