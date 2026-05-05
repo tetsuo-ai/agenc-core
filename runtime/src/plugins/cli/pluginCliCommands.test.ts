@@ -8,7 +8,8 @@ import {
   marketplaceIndexPath,
   marketplaceStoreRoot,
   writeMarketplaceIndex,
-} from "./marketplace-add.js";
+  type FetchResponse,
+} from "../marketplace/marketplace.js";
 import {
   formatAgenCPluginCliHelpText,
   parseAgenCPluginCliArgs,
@@ -38,6 +39,18 @@ function createIo(): PluginCliIo & {
     } as Pick<NodeJS.WriteStream, "write">,
     stdoutText: () => stdout,
     stderrText: () => stderr,
+  };
+}
+
+function jsonResponse(body: unknown, ok = true, status = ok ? 200 : 500): FetchResponse {
+  const text = JSON.stringify(body);
+  const bytes = Buffer.from(text, "utf8");
+  return {
+    ok,
+    status,
+    statusText: ok ? "OK" : "Error",
+    text: async () => text,
+    arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
   };
 }
 
@@ -85,6 +98,13 @@ function options(
 }
 
 describe("agenc plugin CLI", () => {
+  it("documents marketplace source forms in help text", () => {
+    const help = formatAgenCPluginCliHelpText();
+
+    expect(help).toContain("marketplace add <path|git|url|github>");
+    expect(help).toContain("Add local, git, URL, or GitHub marketplace");
+  });
+
   it("parses plugin and marketplace commands", () => {
     expect(parseAgenCPluginCliArgs(["prompt"])).toBeNull();
     expect(parseAgenCPluginCliArgs(["plugin"])).toEqual({
@@ -199,6 +219,7 @@ describe("agenc plugin CLI", () => {
     const { agencHome, workspaceRoot, root } = await tempRuntime();
     const marketplaceRoot = join(root, "marketplace");
     await mkdir(marketplaceRoot, { recursive: true });
+    await writePlugin(marketplaceRoot, "alpha");
     await writeFile(
       join(marketplaceRoot, "marketplace.json"),
       JSON.stringify({
@@ -247,6 +268,59 @@ describe("agenc plugin CLI", () => {
       json: true,
     }, options(agencHome, workspaceRoot, emptyListIo));
     expect(JSON.parse(emptyListIo.stdoutText())).toEqual({ marketplaces: [] });
+  });
+
+  it("adds URL and GitHub shorthand marketplaces through the CLI parser grammar", async () => {
+    const { agencHome, workspaceRoot } = await tempRuntime();
+    const urlIo = createIo();
+    const urlExit = await runAgenCPluginCli({
+      kind: "marketplace-add",
+      source: "http://127.0.0.1/marketplace.json",
+      name: "url-team",
+      force: false,
+    }, {
+      ...options(agencHome, workspaceRoot, urlIo),
+      fetcher: async () => jsonResponse({
+        metadata: { name: "url-team" },
+        plugins: [],
+      }),
+      runProcess: async () => {
+        throw new Error("git should not run for URL marketplaces");
+      },
+    });
+    expect(urlExit).toBe(0);
+    expect(urlIo.stdoutText()).toContain("Added marketplace url-team");
+
+    const cloneCalls: string[][] = [];
+    const gitIo = createIo();
+    const gitExit = await runAgenCPluginCli({
+      kind: "marketplace-add",
+      source: "agenc-org/plugins#stable",
+      name: "github-team",
+      force: false,
+    }, {
+      ...options(agencHome, workspaceRoot, gitIo),
+      runProcess: async (_command, args) => {
+        if (args[0] === "clone") {
+          cloneCalls.push([...args]);
+          const target = args.at(-1);
+          if (target === undefined) throw new Error("missing clone target");
+          await mkdir(target, { recursive: true });
+          await writeFile(
+            join(target, "marketplace.json"),
+            JSON.stringify({ metadata: { name: "github-team" }, plugins: [] }),
+          );
+        }
+        if (args[0] === "rev-parse") return { stdout: "abc123\n", stderr: "" };
+        return { stdout: "", stderr: "" };
+      },
+    });
+    expect(gitExit).toBe(0);
+    expect(cloneCalls[0]).toContain("https://github.com/agenc-org/plugins.git");
+    expect(cloneCalls[0]).toContain("stable");
+    const repositorySeparator = cloneCalls[0]!.indexOf("--");
+    expect(repositorySeparator).toBeGreaterThan(-1);
+    expect(cloneCalls[0]![repositorySeparator + 1]).toBe("https://github.com/agenc-org/plugins.git");
   });
 
   it("updates an installed plugin from its recorded source", async () => {
@@ -323,6 +397,26 @@ describe("agenc plugin CLI", () => {
     expect(sparseIo.stderrText()).toContain("--sparse must not contain");
   });
 
+  it("rejects leading-dash git marketplace CLI sources before spawning git", async () => {
+    const { agencHome, workspaceRoot } = await tempRuntime();
+    const io = createIo();
+
+    const exitCode = await runAgenCPluginCli({
+      kind: "marketplace-add",
+      source: "--upload-pack=x.git",
+      name: "team",
+      force: false,
+    }, {
+      ...options(agencHome, workspaceRoot, io),
+      runProcess: async () => {
+        throw new Error("git should not run for unsafe leading-dash sources");
+      },
+    });
+
+    expect(exitCode).toBe(1);
+    expect(io.stderrText()).toContain("must not start with '-'");
+  });
+
   it("removes marketplaces by computed install root instead of trusted index paths", async () => {
     const { agencHome, workspaceRoot, root } = await tempRuntime();
     const io = createIo();
@@ -338,6 +432,7 @@ describe("agenc plugin CLI", () => {
           name: "team",
           source: "local",
           sourceType: "local",
+          sourceDescriptor: { source: "local", path: installedPath },
           installedPath: hostilePath,
           manifestPath: join(hostilePath, "marketplace.json"),
           updatedAt: "2026-05-05T00:00:00.000Z",
