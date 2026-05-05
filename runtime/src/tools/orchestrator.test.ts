@@ -854,8 +854,11 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
         sandbox_permissions: "with_additional_permissions",
         additional_permissions: { network: { enabled: true } },
       },
-      dispatch: async (sandbox) => {
+      dispatch: async (sandbox, context) => {
         dispatches.push(sandbox);
+        expect(context.additionalPermissions).toMatchObject({
+          network: { enabled: true },
+        });
         return "ok";
       },
       approvalResolver: {

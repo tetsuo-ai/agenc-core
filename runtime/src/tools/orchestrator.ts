@@ -77,6 +77,7 @@ import {
   type GuardianApprovalReviewer,
 } from "../permissions/guardian/reviewer.js";
 import {
+  runtimeAdditionalPermissionsForSandboxRequest,
   sandboxOverrideForFirstAttempt,
   sandboxPermissionsFromArgs,
   selectFirstAttemptSandbox,
@@ -84,6 +85,7 @@ import {
   toolWantsNoSandboxApproval,
   type SandboxPermissionsInput,
 } from "../sandbox/escalation/sandboxing.js";
+import type { AdditionalPermissionProfile } from "../sandbox/engine/index.js";
 import type { Policy } from "../sandbox/execpolicy/policy.js";
 import {
   determineInterceptedExecAction,
@@ -354,7 +356,10 @@ export interface OrchestrateToolCallOpts<T> {
    *  throw `SandboxDeniedError` on sandbox denial. */
   readonly dispatch: (
     sandbox: SandboxMode,
-    context: { readonly approvalResolved: boolean },
+    context: {
+      readonly approvalResolved: boolean;
+      readonly additionalPermissions?: AdditionalPermissionProfile;
+    },
   ) => Promise<T>;
   /** Approval pipeline plumbing. */
   readonly permissionHooks?: ReadonlyArray<PermissionRequestHook>;
@@ -584,6 +589,8 @@ export async function orchestrateToolCall<T>(
   const sandboxOverride = policyBypass
     ? { kind: "bypass_sandbox" as const, reason: "approval_requirement" as const }
     : sandboxOverrideForFirstAttempt(resolvedSandboxPermissions, toolRequirement);
+  const additionalPermissions =
+    runtimeAdditionalPermissionsForSandboxRequest(resolvedSandboxPermissions);
 
   if (requirement.kind === "skip") {
     await recordApprovalRequirementOutcome(opts, requirement, effectiveApprovalPolicy);
@@ -634,7 +641,12 @@ export async function orchestrateToolCall<T>(
   try {
     return await attemptWithRetry({
       dispatch: () =>
-        opts.dispatch(firstSandbox, { approvalResolved: alreadyApproved }),
+        opts.dispatch(firstSandbox, {
+          approvalResolved: alreadyApproved,
+          ...(additionalPermissions !== undefined
+            ? { additionalPermissions }
+            : {}),
+        }),
       onFailure: defaultToolRetryPolicy,
       ...(opts.maxAttempts !== undefined ? { maxAttempts: opts.maxAttempts } : {}),
       ...(opts.sleep !== undefined ? { sleep: opts.sleep } : {}),
@@ -703,6 +715,9 @@ export async function orchestrateToolCall<T>(
     // Retry with sandbox disabled (donor runtime `SandboxType::None`).
     return await opts.dispatch("danger_full_access", {
       approvalResolved: true,
+      ...(additionalPermissions !== undefined
+        ? { additionalPermissions }
+        : {}),
     });
   }
 }

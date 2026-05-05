@@ -6,6 +6,10 @@ import type {
 } from "../../permissions/approval-policy.js";
 import { defaultExecApprovalRequirement } from "../../permissions/approval-policy.js";
 import type { Tool } from "../../tools/types.js";
+import type {
+  AdditionalPermissionProfile,
+  FileSystemSandboxEntry,
+} from "../engine/index.js";
 
 export type EscalationSandboxMode =
   | "danger_full_access"
@@ -104,6 +108,37 @@ export function hasAdditionalSandboxPermissions(
   if (reads.length > 0) return true;
   const writes = permissions.file_system?.write ?? [];
   return writes.length > 0;
+}
+
+export function runtimeAdditionalPermissionsForSandboxRequest(
+  request: SandboxPermissionsInput,
+): AdditionalPermissionProfile | undefined {
+  const normalized = normalizeSandboxPermissionsRequest(request);
+  if (normalized.kind !== "with_additional_permissions") return undefined;
+  return additionalPermissionProfileFromSandboxPermissions(
+    normalized.additionalPermissions,
+  );
+}
+
+export function additionalPermissionProfileFromSandboxPermissions(
+  permissions: AdditionalSandboxPermissions,
+): AdditionalPermissionProfile | undefined {
+  const entries: FileSystemSandboxEntry[] = [];
+  for (const target of permissions.file_system?.read ?? []) {
+    entries.push({ path: { kind: "path", path: target }, access: "read" });
+  }
+  for (const target of permissions.file_system?.write ?? []) {
+    entries.push({ path: { kind: "path", path: target }, access: "write" });
+  }
+  const profile: AdditionalPermissionProfile = {
+    ...(permissions.network?.enabled === true
+      ? { network: { enabled: true } }
+      : {}),
+    ...(entries.length > 0 ? { fileSystem: { entries } } : {}),
+  };
+  return profile.network !== undefined || profile.fileSystem !== undefined
+    ? profile
+    : undefined;
 }
 
 export function sandboxPermissionsRequireEscalation(

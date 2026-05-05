@@ -91,6 +91,9 @@ export function runtimeSandboxForExec(
       cwd: sandboxPolicyCwd,
       ...(network !== undefined ? { network } : {}),
     }),
+    ...(context.additionalPermissions !== undefined
+      ? { additionalPermissions: context.additionalPermissions }
+      : {}),
     sandboxPolicyCwd,
     preference: "require",
     useLegacyLandlock: useLegacyLandlock(turn.features ?? turn.config?.features),

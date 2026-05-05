@@ -4,6 +4,7 @@ import { classify } from "../concurrency.js";
 import type { ToolCallSource, ToolInvocation, ToolPayload } from "../context.js";
 import type { ApprovalPolicy, SandboxMode } from "../orchestrator.js";
 import type { Tool } from "../types.js";
+import type { AdditionalPermissionProfile } from "../../sandbox/engine/index.js";
 
 export const TOOL_RUNTIME_CONTEXT_ARG = "__toolRuntimeContext";
 const RUNTIME_CONTEXT_MARKER = Symbol("agenc.toolRuntimeContext");
@@ -30,6 +31,7 @@ export interface ToolRuntimeAttemptContext extends ToolRuntimeCallContext {
   readonly requestedSandboxMode: SandboxMode;
   readonly sandboxMode: SandboxMode;
   readonly approvalResolved: boolean;
+  readonly additionalPermissions?: AdditionalPermissionProfile;
   readonly rawArgs: string;
   readonly invocation: ToolInvocation;
 }
@@ -76,6 +78,7 @@ export function buildToolRuntimeAttemptContext(
     readonly requestedSandboxMode: SandboxMode;
     readonly sandboxMode: SandboxMode;
     readonly approvalResolved: boolean;
+    readonly additionalPermissions?: AdditionalPermissionProfile;
     readonly rawArgs: string;
     readonly invocation: ToolInvocation;
   },
@@ -86,6 +89,9 @@ export function buildToolRuntimeAttemptContext(
     requestedSandboxMode: params.requestedSandboxMode,
     sandboxMode: params.sandboxMode,
     approvalResolved: params.approvalResolved,
+    ...(params.additionalPermissions !== undefined
+      ? { additionalPermissions: params.additionalPermissions }
+      : {}),
     rawArgs: params.rawArgs,
     invocation: params.invocation,
   };

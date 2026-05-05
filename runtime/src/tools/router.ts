@@ -586,6 +586,9 @@ export class ToolRouter {
               requestedSandboxMode,
               sandboxMode: sandbox,
               approvalResolved: dispatchContext.approvalResolved,
+              ...(dispatchContext.additionalPermissions !== undefined
+                ? { additionalPermissions: dispatchContext.additionalPermissions }
+                : {}),
               rawArgs: executionRawArgs,
               invocation: executionInvocation,
             },
@@ -949,6 +952,9 @@ export class ToolRouter {
               requestedSandboxMode: opts.sandboxMode,
               sandboxMode: sandbox,
               approvalResolved: dispatchContext.approvalResolved,
+              ...(dispatchContext.additionalPermissions !== undefined
+                ? { additionalPermissions: dispatchContext.additionalPermissions }
+                : {}),
               rawArgs: executionRawArgs,
               invocation: executionInvocation,
             },

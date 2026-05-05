@@ -24,13 +24,18 @@
     "runtime/src/sandbox/escalation/on-request-rule-request-permission.ts",
     "runtime/src/tools/orchestrator.ts",
     "runtime/src/tools/router.ts",
+    "runtime/src/tools/runtimes/context.ts",
+    "runtime/src/tools/runtimes/sandboxing.ts",
     "runtime/src/bin/bootstrap-services.ts",
     "runtime/src/tools/system/exec-command.ts",
+    "runtime/src/unified-exec/types.ts",
+    "runtime/src/unified-exec/process-manager.ts",
     "runtime/src/permissions/network-approval.ts"
   ],
   "testFiles": [
     "runtime/src/sandbox/escalation/escalation.test.ts",
     "runtime/src/tools/orchestrator.test.ts",
+    "runtime/src/tools/runtimes/runtime.test.ts",
     "runtime/src/permissions/network-approval.test.ts"
   ],
   "documentedPathNormalizations": [
@@ -140,16 +145,19 @@
         "live tool orchestration parses sandbox_permissions from approval arguments and applies first-attempt sandbox selection",
         "live local-shell calls evaluate the current exec policy before dispatch",
         "the tool router passes the current session exec policy into orchestration",
+        "approved scoped additional permissions flow into runtime attempt context and effective permission profiles",
         "bootstrap network approvals route through the sandbox-mode approval gate before the backing network approval service",
         "the exec command schema advertises require_escalated and with_additional_permissions request modes"
       ],
       "edgeCases": [
         "denied full-escalation approvals do not dispatch the tool",
+        "approved read/write/network grants are applied without widening unrelated paths",
         "exec-policy prefix allow rules run the local shell without an extra approval resolver",
         "granular policies with rule approvals disabled deny prefix prompt rules before dispatch"
       ],
       "tests": [
         "runtime/src/tools/orchestrator.test.ts",
+        "runtime/src/tools/runtimes/runtime.test.ts",
         "runtime/src/sandbox/escalation/escalation.test.ts"
       ],
       "status": "required"

@@ -566,7 +566,11 @@ const ITEM_EVIDENCE = {
       "runtime/src/tools/system/exec-command.ts",
       "parity/C-01e-parity.json",
     ],
-    tests: ["runtime/src/sandbox/escalation/escalation.test.ts"],
+    tests: [
+      "runtime/src/sandbox/escalation/escalation.test.ts",
+      "runtime/src/tools/orchestrator.test.ts",
+      "runtime/src/tools/runtimes/runtime.test.ts",
+    ],
     grepPresent: [
       { pattern: "sandbox.*bypass|bypass.*sandbox", scope: "runtime/src/sandbox/escalation" },
       { pattern: "execvePromptRejectedByPolicy", scope: "runtime/src/sandbox/escalation" },
@@ -2765,6 +2769,7 @@ async function donorRuntimePortGates(item) {
       "run",
       "src/sandbox/escalation/escalation.test.ts",
       "src/tools/orchestrator.test.ts",
+      "src/tools/runtimes/runtime.test.ts",
     ]);
     if (testRun.status !== 0) {
       failGate("C-01e escalation tests failed");
@@ -2779,6 +2784,7 @@ async function donorRuntimePortGates(item) {
     const bootstrapSource = readFileSync(path.join(root, "runtime/src/bin/bootstrap-services.ts"), "utf8");
     const execCommandSource = readFileSync(path.join(root, "runtime/src/tools/system/exec-command.ts"), "utf8");
     const orchestratorTestsSource = readFileSync(path.join(root, "runtime/src/tools/orchestrator.test.ts"), "utf8");
+    const runtimeTestsSource = readFileSync(path.join(root, "runtime/src/tools/runtimes/runtime.test.ts"), "utf8");
     if (!/sandboxOverrideForFirstAttempt/.test(sandboxingSource) || !/selectFirstAttemptSandbox/.test(sandboxingSource)) {
       failGate("C-01e: sandboxing port must select first-attempt sandbox overrides");
     }
@@ -2817,6 +2823,9 @@ async function donorRuntimePortGates(item) {
     }
     if (!/sandbox_permissions=require_escalated/.test(orchestratorTestsSource) || !/exec-policy prefix allow drives unsandboxed local-shell dispatch/.test(orchestratorTestsSource)) {
       failGate("C-01e: orchestrator tests must exercise live sandbox_permissions and exec-policy routing");
+    }
+    if (!/additionalPermissions/.test(runtimeTestsSource) || !/permissionProfileForRuntimeContext/.test(runtimeTestsSource)) {
+      failGate("C-01e: runtime tests must prove scoped additional permissions affect sandbox profiles");
     }
     if (!/\bexecFile\b/.test(testsSource) || !/NetworkApprovalService/.test(testsSource) || !/Policy\.empty/.test(testsSource)) {
       failGate("C-01e: tests must exercise subprocess, network approval, and exec-policy paths");
