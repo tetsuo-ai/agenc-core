@@ -4,12 +4,12 @@ export interface ComposerSubmitHelpers {
   setCursorOffset(offset: number): void;
 }
 
-export interface ElicitationSubmitRouter {
+export interface ElicitationSubmitTarget {
   submit(value: string): boolean;
 }
 
-export async function submitViaElicitationBridge(
-  elicitation: ElicitationSubmitRouter,
+export async function submitViaElicitationPrompt(
+  elicitation: ElicitationSubmitTarget,
   submit: (value: string) => Promise<void>,
   value: string,
   helpers: ComposerSubmitHelpers,

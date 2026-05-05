@@ -3,6 +3,98 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("../tui/ink.js", () => ({
   Box: () => null,
   Text: () => null,
+  useApp: () => ({ exit: () => {} }),
+  useTerminalFocus: () => true,
+  useTerminalTitle: () => {},
+}));
+
+vi.mock("bun:bundle", () => ({
+  feature: () => false,
+}));
+
+vi.mock("../agenc/adapters/upstream-commands.js", () => ({
+  loadUpstreamCommandList: () => [],
+}));
+
+vi.mock("../agenc/adapters/upstream-agent-list.js", () => ({
+  loadUpstreamAgentList: () => [],
+}));
+
+vi.mock("../agenc/adapters/upstream-model-switch.js", () => ({
+  buildPendingProviderSwitch: () => null,
+}));
+
+vi.mock("../agenc/adapters/upstream-attachments.js", () => ({
+  pastedContentsToLLMMessage: () => null,
+}));
+
+vi.mock("../agenc/upstream/tools.js", () => ({
+  assembleToolPool: () => [],
+  filterToolsByDenyRules: (tools: unknown) => tools,
+  getAllBaseTools: () => [],
+  getTools: () => [],
+  getToolsForDefaultPreset: () => [],
+  parseToolPreset: () => [],
+}));
+
+vi.mock("src/tools.js", () => ({
+  assembleToolPool: () => [],
+  filterToolsByDenyRules: (tools: unknown) => tools,
+  getAllBaseTools: () => [],
+  getTools: () => [],
+}));
+
+vi.mock("../agenc/upstream/context/fpsMetrics.js", () => ({
+  FpsMetricsProvider: ({ children }: { children: unknown }) => children,
+}));
+
+vi.mock("../agenc/upstream/context/stats.js", () => ({
+  StatsProvider: ({ children }: { children: unknown }) => children,
+}));
+
+vi.mock("../agenc/upstream/state/onChangeAppState.js", () => ({
+  onChangeAppState: () => {},
+}));
+
+vi.mock("../tui/components/Messages.js", () => ({
+  Messages: () => null,
+}));
+
+vi.mock("../tui/components/PromptInput/PromptInput.js", () => ({
+  default: () => null,
+}));
+
+vi.mock("../tui/context/promptOverlayContext.js", () => ({
+  PromptOverlayProvider: ({ children }: { children: unknown }) => children,
+}));
+
+vi.mock("../tui/keybindings/KeybindingProviderSetup.js", () => ({
+  KeybindingSetup: ({ children }: { children: unknown }) => children,
+}));
+
+vi.mock("../tui/permission-requests.js", () => ({
+  AgenCPermissionOverlay: () => null,
+  buildToolUseConfirmQueue: () => [],
+  usePermissionRequests: () => [],
+}));
+
+vi.mock("../tui/session-transcript.js", () => ({
+  useSessionTranscript: () => ({
+    messages: [],
+    toolNames: [],
+    isStreaming: false,
+    inProgressToolUseIDs: [],
+    streamingToolUses: [],
+    streamingText: "",
+  }),
+}));
+
+vi.mock("../tui/tool-jsx-state.js", () => ({
+  useToolJSX: () => [null, () => {}],
+}));
+
+vi.mock("../tui/tool-rendering.js", () => ({
+  createTuiTools: () => [],
 }));
 
 import { AsyncQueue } from "../utils/async-queue.js";
@@ -24,7 +116,7 @@ import type {
   RequestUserInputArgs,
   RequestUserInputResponse,
 } from "./types.js";
-import { installElicitationResolvers } from "../tui/elicitation.js";
+import { installElicitationResolvers } from "../tui/components/App.js";
 
 function mkFeatures(): ManagedFeatures {
   return {
@@ -265,7 +357,7 @@ describe("Session elicitation pending responders", () => {
     unsubscribe();
   });
 
-  it("resolves direct TUI bridge submission through the original request_user_input promise", async () => {
+  it("resolves direct TUI resolver submission through the original request_user_input promise", async () => {
     const session = buildSession();
     await session.spawnTask({ subId: "turn-1", kind: "regular", autoStart: false });
     const prompts: unknown[] = [];
@@ -286,7 +378,7 @@ describe("Session elicitation pending responders", () => {
     controller.cleanup();
   });
 
-  it("propagates direct TUI bridge cleanup as request_user_input cancellation", async () => {
+  it("propagates direct TUI resolver cleanup as request_user_input cancellation", async () => {
     const session = buildSession();
     await session.spawnTask({ subId: "turn-1", kind: "regular", autoStart: false });
     const controller = installElicitationResolvers(session, () => {});
@@ -302,7 +394,7 @@ describe("Session elicitation pending responders", () => {
     const session = buildSession();
     await session.spawnTask({ subId: "turn-1", kind: "regular", autoStart: false });
     const prompts: unknown[] = [];
-    const bridge = installElicitationResolvers(session, (pending) => {
+    const renderer = installElicitationResolvers(session, (pending) => {
       prompts.push(pending);
     });
     const controller = new AbortController();
@@ -320,7 +412,7 @@ describe("Session elicitation pending responders", () => {
 
     await expect(pending).resolves.toBeNull();
     expect(prompts.at(-1)).toBeNull();
-    bridge.cleanup();
+    renderer.cleanup();
   });
 
   it("keeps overlapping request_user_input waits keyed by call id", async () => {
@@ -402,7 +494,7 @@ describe("Session elicitation pending responders", () => {
     const session = buildSession();
     await session.spawnTask({ subId: "turn-1", kind: "regular", autoStart: false });
     const prompts: unknown[] = [];
-    const bridge = installElicitationResolvers(session, (pending) => {
+    const renderer = installElicitationResolvers(session, (pending) => {
       prompts.push(pending);
     });
     const controller = new AbortController();
@@ -421,7 +513,7 @@ describe("Session elicitation pending responders", () => {
 
     await expect(pending).resolves.toBeNull();
     expect(prompts.at(-1)).toBeNull();
-    bridge.cleanup();
+    renderer.cleanup();
   });
 
   it("cleans up user-input waits on abort", async () => {
