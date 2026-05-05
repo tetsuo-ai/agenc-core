@@ -2,6 +2,7 @@
   "item": "ZC-41",
   "status": "implemented",
   "destination": "runtime/src/observability",
+  "coverageLock": "ZC-41 coverage lock",
   "sourceCommits": {
     "rustRuntimeSource": "c8c30d9d75556ecbe94991af22380d2a4e9d6589"
   },

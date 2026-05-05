@@ -162,6 +162,7 @@
     }
   ],
   "validation": {
+    "runtimeDocsRetiredBy": "ZC-40",
     "commands": [
       "npm test --workspace=@tetsuo-ai/runtime -- shell-command/parser.test.ts shell-command/safety.test.ts shell-command/powershell-parser.test.ts permissions/bash.test.ts permissions/approval-cache.test.ts"
     ]

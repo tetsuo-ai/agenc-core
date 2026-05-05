@@ -1,5 +1,4 @@
 import { c as _c } from "react-compiler-runtime";
-import { feature } from 'bun:bundle';
 import React, { useContext, useEffect, useState, useSyncExternalStore } from 'react';
 import { MailboxProvider } from '../../agenc/upstream/context/mailbox.js';
 import { useEffectEventCompat } from '../../agenc/upstream/hooks/useEffectEventCompat.js';
@@ -10,15 +9,6 @@ import { applySettingsChange } from '../../agenc/upstream/utils/settings/applySe
 import type { SettingSource } from '../../agenc/upstream/utils/settings/constants.js';
 import { createStore } from './store.js';
 
-// DCE: voice context is internal-only. External builds get a passthrough.
-/* eslint-disable @typescript-eslint/no-require-imports */
-const VoiceProvider: (props: {
-  children: React.ReactNode;
-}) => React.ReactNode = feature('VOICE_MODE') ? require('../../agenc/upstream/context/voice.js').VoiceProvider : ({
-  children
-}) => children;
-
-/* eslint-enable @typescript-eslint/no-require-imports */
 import { type AppState, type AppStateStore, getDefaultAppState } from './AppStateStore.js';
 
 // TODO: Remove these re-exports once all callers import directly from the
@@ -92,7 +82,7 @@ export function AppStateProvider(t0) {
   useSettingsChange(onSettingsChange);
   let t5;
   if ($[8] !== children) {
-    t5 = <MailboxProvider><VoiceProvider>{children}</VoiceProvider></MailboxProvider>;
+    t5 = <MailboxProvider>{children}</MailboxProvider>;
     $[8] = children;
     $[9] = t5;
   } else {

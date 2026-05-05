@@ -1,8 +1,7 @@
 /**
  * Subprocess execution for configured command hooks.
  *
- * Ports the Rust engine command-runner behavior listed in `PARITY.md`
- * onto Node child processes.
+ * Runs configured hook commands through Node child processes.
  */
 
 import { spawn } from "node:child_process";

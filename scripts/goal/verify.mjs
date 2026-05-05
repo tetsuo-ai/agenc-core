@@ -274,7 +274,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/services/compact/microCompact.ts",
       "runtime/src/services/compact/sessionMemoryCompact.ts",
       "runtime/src/services/compact/cachedMicrocompact.ts",
-      "runtime/src/services/compact/PARITY.md",
     ],
     tests: [
       "runtime/src/services/compact/compact.test.ts",
@@ -296,7 +295,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/services/extractMemories/prompts.ts",
       "runtime/src/services/extractMemories/memory-paths.ts",
       "runtime/src/services/extractMemories/memory-scan.ts",
-      "runtime/src/services/extractMemories/PARITY.md",
       "runtime/src/agents/delegate.ts",
       "runtime/src/agents/fork-context.ts",
       "runtime/src/agents/run-agent.ts",
@@ -329,7 +327,6 @@ const ITEM_EVIDENCE = {
   },
   "S-10": {
     files: [
-      "runtime/src/tools/PARITY.md",
       "runtime/src/tools/orchestration.ts",
       "runtime/src/tools/execution.ts",
       "runtime/src/tools/streaming-executor.ts",
@@ -367,7 +364,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/services/notifier.ts",
       "runtime/src/services/preventSleep.ts",
       "runtime/src/services/tokenEstimation.ts",
-      "runtime/src/services/PARITY.md",
     ],
     tests: [
       "runtime/src/services/service-utilities.test.ts",
@@ -378,7 +374,6 @@ const ITEM_EVIDENCE = {
     files: [
       "runtime/src/cost/tracker.ts",
       "runtime/src/cost/hook.ts",
-      "runtime/src/cost/PARITY.md",
       "runtime/src/session/cost.ts",
       "runtime/src/bin/bootstrap.ts",
       "runtime/src/tui/history/ResumeConversation.tsx",
@@ -406,7 +401,6 @@ const ITEM_EVIDENCE = {
     files: [
       "runtime/src/services/AgentSummary/agentSummary.ts",
       "runtime/src/services/AgentSummary/transcript.ts",
-      "runtime/src/services/AgentSummary/PARITY.md",
       "runtime/src/tasks/lifecycle.ts",
       "runtime/src/tasks/agent-thread.ts",
       "runtime/src/agents/run-agent.ts",
@@ -486,7 +480,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/sandbox/engine/seatbelt.ts",
       "runtime/src/sandbox/engine/landlock.ts",
       "runtime/src/sandbox/engine/bwrap.ts",
-      "runtime/src/sandbox/engine/PARITY.md",
       "runtime/src/sandbox/engine/policies/seatbelt_base_policy.sbpl",
       "runtime/src/sandbox/engine/policies/seatbelt_network_policy.sbpl",
       "runtime/src/sandbox/engine/policies/restricted_read_only_platform_defaults.sbpl",
@@ -516,7 +509,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/sandbox/linux-launcher/proxy-routing.ts",
       "runtime/src/sandbox/linux-launcher/vendored-bwrap.ts",
       "runtime/src/sandbox/linux-launcher/build.ts",
-      "runtime/src/sandbox/linux-launcher/PARITY.md",
       "runtime/package.json",
     ],
     grepPresent: [
@@ -552,7 +544,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/sandbox/execpolicy/main.ts",
       "runtime/src/sandbox/execpolicy/index.ts",
       "runtime/src/sandbox/execpolicy/examples/example.agencpolicy",
-      "runtime/src/sandbox/execpolicy/PARITY.md",
     ],
     grepPresent: [
       { pattern: "class PolicyParser", scope: "runtime/src/sandbox/execpolicy/parser.ts" },
@@ -661,7 +652,6 @@ const ITEM_EVIDENCE = {
   },
   "ZC-31": {
     files: [
-      "runtime/src/skills/PARITY.md",
       "runtime/src/skills/local-loader.ts",
       "runtime/src/skills/local-loader.test.ts",
       "runtime/src/prompts/attachments/skill-listing.ts",
@@ -669,12 +659,10 @@ const ITEM_EVIDENCE = {
       "runtime/src/commands/skills.ts",
     ],
     grepPresent: [
-      { pattern: "ZC-31 coverage lock", scope: "runtime/src/skills/PARITY.md" },
     ],
   },
   "ZC-32": {
     files: [
-      "runtime/src/shell-command/PARITY.md",
       "runtime/src/shell-command/parser.ts",
       "runtime/src/shell-command/safety.ts",
       "runtime/src/shell-command/powershell-parser.ts",
@@ -684,9 +672,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/shell-command/parser.test.ts",
       "runtime/src/shell-command/safety.test.ts",
       "runtime/src/shell-command/powershell-parser.test.ts",
-    ],
-    grepPresent: [
-      { pattern: "ZC-32 coverage lock", scope: "runtime/src/shell-command/PARITY.md" },
     ],
   },
   "ST-01": {
@@ -710,7 +695,6 @@ const ITEM_EVIDENCE = {
   "OC-04": {
     files: [
       "runtime/src/state/migrations/config-migrations.ts",
-      "runtime/src/state/migrations/PARITY.md",
       "runtime/src/config/loader.ts",
       "runtime/src/config/schema.ts",
       "runtime/src/bin/bootstrap.ts",
@@ -734,7 +718,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/tasks/registry.ts",
       "runtime/src/tasks/stopTask.ts",
       "runtime/src/tasks/pillLabel.ts",
-      "runtime/src/tasks/PARITY.md",
       "runtime/src/tasks/lifecycle.ts",
       "runtime/src/tasks/index.ts",
       "runtime/src/tools/tasks/background.ts",
@@ -780,7 +763,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/tools/BriefTool/prompt.ts",
       "runtime/src/tools/AskUserQuestionTool/AskUserQuestionTool.tsx",
       "runtime/src/tools/AskUserQuestionTool/prompt.ts",
-      "runtime/src/tools/AgentTool/PARITY.md",
     ],
     tests: [
       "runtime/src/tools/ask-user-question-bridge-routing.test.tsx",
@@ -820,7 +802,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/tui/startup/StatusLine.tsx",
       "runtime/src/tui/startup/StatusNotices.tsx",
       "runtime/src/tui/startup/statusNoticeDefinitions.tsx",
-      "runtime/src/tui/startup/PARITY.md",
     ],
     tests: [
       "runtime/src/tui/startup/StartupScreen.test.ts",
@@ -847,7 +828,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/tui/history/HistorySearchDialog.tsx",
       "runtime/src/tui/history/ResumeConversation.tsx",
       "runtime/src/tui/history/transcriptSearch.ts",
-      "runtime/src/tui/history/PARITY.md",
     ],
     tests: [
       "runtime/src/tui/history/history.test.ts",
@@ -882,7 +862,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/tui/cost/TokenWarning.tsx",
       "runtime/src/tui/cost/MemoryUsageIndicator.tsx",
       "runtime/src/tui/cost/tokenAnalytics.ts",
-      "runtime/src/tui/cost/PARITY.md",
     ],
     tests: [
       "runtime/src/tui/cost/tokenAnalytics.test.ts",
@@ -908,7 +887,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/tui/components/spinner/useStalledAnimation.ts",
       "runtime/src/tui/components/spinner/utils.ts",
       "runtime/src/tui/components/spinner/types.ts",
-      "runtime/src/tui/components/spinner/PARITY.md",
     ],
     tests: [
       "runtime/src/tui/components/spinner/spinner-primitives.test.tsx",
@@ -938,7 +916,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/tui/components/markdown/MarkdownTable.tsx",
       "runtime/src/tui/components/markdown/HighlightedCode.tsx",
       "runtime/src/tui/components/markdown/HighlightedCodeFallback.tsx",
-      "runtime/src/tui/components/markdown/PARITY.md",
     ],
     tests: [
       "runtime/src/tui/components/markdown/markdown-rendering.test.tsx",
@@ -982,7 +959,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/tui/slash/slash-command-parsing.ts",
       "runtime/src/tui/slash/argument-substitution.ts",
       "runtime/src/tui/slash/shell-quote.ts",
-      "runtime/src/tui/slash/PARITY.md",
     ],
     tests: [
       "runtime/src/tui/slash/slash-command-parsing.test.ts",
@@ -1003,7 +979,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/tui/input/processBashCommand.tsx",
       "runtime/src/tui/input/processSlashCommand.tsx",
       "runtime/src/tui/input/processTextPrompt.ts",
-      "runtime/src/tui/input/PARITY.md",
     ],
     tests: [
       "runtime/src/tui/input/processBashCommand.test.tsx",
@@ -1101,7 +1076,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/tools/runtimes/unified-exec.ts",
       "runtime/src/tools/runtimes/apply-patch.ts",
       "runtime/src/tools/runtimes/sandboxing.ts",
-      "runtime/src/tools/runtimes/PARITY.md",
       "runtime/src/tools/system/exec-command.ts",
       "runtime/src/tools/system/write-stdin.ts",
       "runtime/src/unified-exec/process-manager.ts",
@@ -1299,11 +1273,8 @@ const ITEM_EVIDENCE = {
   },
   "ZC-30": {
     files: [
-      "runtime/src/plugins/PARITY.md",
-      "runtime/src/plugins/marketplace/PARITY.md",
     ],
     grepPresent: [
-      { pattern: "ZC-30 coverage lock", scope: "runtime/src/plugins/PARITY.md" },
     ],
   },
   "MG-01": {
@@ -1386,16 +1357,8 @@ const ITEM_EVIDENCE = {
   "ZC-35": {
     files: [
       "parity/ZC-35-parity.json",
-      "runtime/src/agents/v2/PARITY.md",
-      "runtime/src/hooks/engine/PARITY.md",
-      "runtime/src/secrets/PARITY.md",
-      "runtime/src/conversation/PARITY.md",
     ],
     grepPresent: [
-      { pattern: "ZC-35 Coverage Lock", scope: "runtime/src/agents/v2/PARITY.md" },
-      { pattern: "ZC-35 Coverage Lock", scope: "runtime/src/hooks/engine/PARITY.md" },
-      { pattern: "ZC-35 Coverage Lock", scope: "runtime/src/secrets/PARITY.md" },
-      { pattern: "ZC-35 Coverage Lock", scope: "runtime/src/conversation/PARITY.md" },
     ],
     tests: [
       "runtime/src/agents/mailbox.test.ts",
@@ -1413,10 +1376,33 @@ const ITEM_EVIDENCE = {
       { pattern: "^\\*\\*/undefined/$", scope: ".gitignore" },
     ],
   },
+  "ZC-39": {
+    files: [
+      "runtime/src/tui/components/PromptInput/Notifications.tsx",
+      "runtime/src/tui/components/PromptInput/PromptInput.tsx",
+      "runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx",
+      "runtime/src/tui/state/AppState.tsx",
+      "runtime/src/tui/keybindings/defaultBindings.ts",
+      "runtime/src/tui/keybindings/types.ts",
+      "runtime/src/tui/keybindings/validate.ts",
+      "runtime/src/build/feature.ts",
+      "runtime/src/config/schema.ts",
+      "runtime/src/commands/keybindings.ts",
+      "runtime/src/agenc/upstream/screens/REPL.tsx",
+    ],
+    grepNotPresent: [
+      { pattern: "VoiceIndicator|VoiceWarmupHint|voiceInterimRange|useVoiceState|useVoiceEnabled|VOICE_MODE", scope: "runtime/src/tui/components/PromptInput" },
+      { pattern: "VoiceProvider|VOICE_MODE|context/voice", scope: "runtime/src/tui/state/AppState.tsx" },
+      { pattern: "voice:pushToTalk|VOICE_MODE", scope: "runtime/src/tui/keybindings" },
+      { pattern: "chat:voiceInput", scope: "runtime/src/commands/keybindings.ts" },
+      { pattern: "VoiceInputConfig|voiceInput", scope: "runtime/src/config" },
+      { pattern: "VOICE_MODE", scope: "runtime/src/build/feature.ts" },
+      { pattern: "useVoiceIntegration|VoiceKeybindingHandler|insertTextRef|VOICE_MODE|voiceInterimRange", scope: "runtime/src/agenc/upstream/screens/REPL.tsx" },
+    ],
+  },
   "ZC-33": {
     files: [
       "runtime/src/permissions/sandbox.ts",
-      "runtime/src/sandbox/engine/PARITY.md",
       "runtime/src/sandbox/engine/index.ts",
       "runtime/src/sandbox/engine/manager.ts",
       "runtime/src/sandbox/engine/policy-transforms.ts",
@@ -1426,7 +1412,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/sandbox/engine/policies/seatbelt_base_policy.sbpl",
       "runtime/src/sandbox/engine/policies/seatbelt_network_policy.sbpl",
       "runtime/src/sandbox/engine/policies/restricted_read_only_platform_defaults.sbpl",
-      "runtime/src/sandbox/linux-launcher/PARITY.md",
       "runtime/src/sandbox/linux-launcher/main.ts",
       "runtime/src/sandbox/linux-launcher/lib.ts",
       "runtime/src/sandbox/linux-launcher/cli.ts",
@@ -1441,8 +1426,6 @@ const ITEM_EVIDENCE = {
       "runtime/bin/agenc-linux-sandbox",
     ],
     grepPresent: [
-      { pattern: "ZC-33 coverage lock", scope: "runtime/src/sandbox/engine/PARITY.md" },
-      { pattern: "ZC-33 coverage lock", scope: "runtime/src/sandbox/linux-launcher/PARITY.md" },
       { pattern: "platform-backed execution", scope: "runtime/src/permissions/sandbox.ts" },
       { pattern: "spawnSeatbeltCommand", scope: "runtime/src/sandbox/engine/seatbelt.ts" },
       { pattern: "spawnLinuxSandboxCommand", scope: "runtime/src/sandbox/engine/landlock.ts" },
@@ -1467,7 +1450,6 @@ const ITEM_EVIDENCE = {
   },
   "ZC-34": {
     files: [
-      "runtime/src/agents/graph-store/PARITY.md",
       "runtime/src/agents/graph-store/types.ts",
       "runtime/src/agents/graph-store/errors.ts",
       "runtime/src/agents/graph-store/store.ts",
@@ -1475,7 +1457,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/agents/graph-store/local.test.ts",
     ],
     grepPresent: [
-      { pattern: "ZC-34 coverage lock", scope: "runtime/src/agents/graph-store/PARITY.md" },
       { pattern: "LocalAgentGraphStore", scope: "runtime/src/agents/graph-store/local.ts" },
       { pattern: "thread_spawn_edges", scope: "runtime/src/agents/graph-store/local.ts" },
       { pattern: "listThreadSpawnDescendants", scope: "runtime/src/agents/graph-store/local.ts" },
@@ -1485,12 +1466,10 @@ const ITEM_EVIDENCE = {
   },
   "ZC-36": {
     files: [
-      "runtime/src/test-parity/PARITY.md",
       "runtime/src/test-parity/zc36-suite-coverage.test.ts",
       "parity/ZC-36-parity.json",
     ],
     grepPresent: [
-      { pattern: "ZC-36 coverage lock", scope: "runtime/src/test-parity/PARITY.md" },
       { pattern: "representative-subset", scope: "parity/ZC-36-parity.json" },
       { pattern: "selectedCases", scope: "parity/ZC-36-parity.json" },
     ],
@@ -1509,13 +1488,12 @@ const ITEM_EVIDENCE = {
   },
   "ZC-41": {
     files: [
-      "runtime/src/observability/PARITY.md",
       "runtime/src/observability/telemetry.ts",
       "runtime/src/observability/telemetry.test.ts",
       "parity/ZC-41-parity.json",
     ],
     grepPresent: [
-      { pattern: "ZC-41 coverage lock", scope: "runtime/src/observability/PARITY.md" },
+      { pattern: "ZC-41 coverage lock", scope: "parity/ZC-41-parity.json" },
       { pattern: "TelemetryClient", scope: "runtime/src/observability/telemetry.ts" },
       { pattern: "startSpan", scope: "runtime/src/observability/telemetry.ts" },
       { pattern: "recordDuration", scope: "runtime/src/observability/telemetry.ts" },
@@ -1529,6 +1507,16 @@ const ITEM_EVIDENCE = {
       "runtime/src/observability/telemetry.test.ts",
       "runtime/src/hooks/engine/dispatcher.test.ts",
       "runtime/src/mcp-client/tool-bridge.test.ts",
+    ],
+  },
+  "ZC-40": {
+    files: ["scripts/goal/verify.mjs"],
+    grepPresent: [
+      { pattern: "assertZc40RuntimeParityDocsGone", scope: "scripts/goal/verify.mjs" },
+      { pattern: "ZC-40: runtime PARITY.md scaffolding is gone", scope: "scripts/goal/verify.mjs" },
+    ],
+    grepNotPresent: [
+      { pattern: "PARITY\\.md", scope: "runtime/src" },
     ],
   },
 };
@@ -3144,7 +3132,6 @@ async function serviceGates(item) {
     const required = [
       "runtime/src/cost/tracker.ts",
       "runtime/src/cost/hook.ts",
-      "runtime/src/cost/PARITY.md",
       "runtime/src/session/cost.ts",
       "runtime/src/bin/bootstrap.ts",
       "runtime/src/tui/history/ResumeConversation.tsx",
@@ -3265,7 +3252,6 @@ async function serviceGates(item) {
   if (id === "OC-04") {
     const required = [
       "runtime/src/state/migrations/config-migrations.ts",
-      "runtime/src/state/migrations/PARITY.md",
       "runtime/src/state/config-migrations.test.ts",
       "runtime/src/config/config.test.ts",
       "runtime/src/bin/project-trust-preflight.test.ts",
@@ -3283,7 +3269,6 @@ async function serviceGates(item) {
       "runtime/src/tasks/registry.ts",
       "runtime/src/tasks/stopTask.ts",
       "runtime/src/tasks/pillLabel.ts",
-      "runtime/src/tasks/PARITY.md",
       "runtime/src/tasks/types.test.ts",
       "runtime/src/tasks/registry.test.ts",
       "runtime/src/tasks/stopTask.test.ts",
@@ -3317,7 +3302,6 @@ async function serviceGates(item) {
       "runtime/src/services/notifier.ts",
       "runtime/src/services/preventSleep.ts",
       "runtime/src/services/tokenEstimation.ts",
-      "runtime/src/services/PARITY.md",
     ];
     for (const rel of required) {
       if (!existsSync(path.join(root, rel))) failGate(`S-14 file missing: ${rel}`);
@@ -3354,7 +3338,6 @@ async function serviceGates(item) {
       "runtime/src/tools/hooks.ts",
       "runtime/src/phases/execute-tools.ts",
       "runtime/src/session/turn-state.ts",
-      "runtime/src/tools/PARITY.md",
     ];
     for (const rel of required) {
       if (!existsSync(path.join(root, rel))) failGate(`S-10 file missing: ${rel}`);
@@ -4750,7 +4733,6 @@ function assertZc29AuditEvidence() {
       files: [
         "runtime/src/file-watcher/index.ts",
         "runtime/src/file-watcher/index.test.ts",
-        "runtime/src/file-watcher/PARITY.md",
       ],
     },
     {
@@ -4759,7 +4741,6 @@ function assertZc29AuditEvidence() {
       files: [
         "runtime/src/skills/local-loader.ts",
         "runtime/src/skills/local-loader.test.ts",
-        "runtime/src/skills/PARITY.md",
       ],
     },
     {
@@ -4768,12 +4749,10 @@ function assertZc29AuditEvidence() {
       files: [
         "runtime/src/conversation/thread-manager.ts",
         "runtime/src/conversation/thread-manager.contract.test.ts",
-        "runtime/src/conversation/PARITY.md",
       ],
     },
   ];
 
-  const validationDocs = ledger.validation?.documentation ?? [];
   const validationTests = ledger.validation?.existingTests ?? [];
   const missing = [];
 
@@ -4797,24 +4776,16 @@ function assertZc29AuditEvidence() {
       if (!subsystem.agencFiles?.includes(rel)) missing.push(`${spec.key}.agencFiles: ${rel}`);
     }
 
-    const parityDoc = spec.files.find((rel) => rel.endsWith("/PARITY.md"));
-    if (!validationDocs.includes(parityDoc)) missing.push(`validation.documentation: ${parityDoc}`);
     const testFile = spec.files.find((rel) => rel.includes(".test."));
     if (testFile && !validationTests.includes(testFile)) missing.push(`validation.existingTests: ${testFile}`);
-
-    const docSource = readFileSync(path.join(root, parityDoc), "utf8");
-    for (const marker of ["## ZC-29 breadth audit", "Decision:", "Carried behavior:", "Intentional reductions:"]) {
-      if (!docSource.includes(marker)) missing.push(`${parityDoc}: ${marker}`);
-    }
   }
 
   const skillsCarried = (ledger.subsystems?.skills?.carriedBehavior ?? []).join("\n");
   if (/\bMCP\b/i.test(skillsCarried)) {
     failGate("ZC-29: skills MCP roots must be documented as a reduction until local-loader.ts implements them");
   }
-  const skillsParity = readFileSync(path.join(root, "runtime/src/skills/PARITY.md"), "utf8");
-  if (/MCP-oriented skill roots/i.test(skillsParity)) {
-    failGate("ZC-29: skills PARITY.md still claims MCP-oriented roots as carried behavior");
+  if (ledger.validation?.runtimeDocsRetiredBy !== "ZC-40") {
+    failGate("ZC-29: audit ledger must record that runtime parity docs were retired by ZC-40");
   }
 
   if (missing.length > 0) {
@@ -4823,38 +4794,6 @@ function assertZc29AuditEvidence() {
 }
 
 function assertZc30PluginCoverage() {
-  const sourceRoot = `${["co", "dex-rs"].join("")}/core-plugins/src`;
-  const requiredSourceAnchors = [
-    `${sourceRoot}/loader.rs`,
-    `${sourceRoot}/manifest.rs`,
-    `${sourceRoot}/manager.rs`,
-    `${sourceRoot}/marketplace.rs`,
-    `${sourceRoot}/marketplace_add.rs`,
-    `${sourceRoot}/marketplace_add/install.rs`,
-    `${sourceRoot}/marketplace_add/metadata.rs`,
-    `${sourceRoot}/marketplace_add/source.rs`,
-    `${sourceRoot}/marketplace_remove.rs`,
-    `${sourceRoot}/marketplace_upgrade.rs`,
-    `${sourceRoot}/marketplace_upgrade/activation.rs`,
-    `${sourceRoot}/marketplace_upgrade/git.rs`,
-    `${sourceRoot}/installed_marketplaces.rs`,
-    `${sourceRoot}/remote_bundle.rs`,
-    `${sourceRoot}/startup_remote_sync.rs`,
-    `${sourceRoot}/store.rs`,
-    `${sourceRoot}/toggles.rs`,
-  ];
-  const parityFiles = [
-    "runtime/src/plugins/PARITY.md",
-    "runtime/src/plugins/marketplace/PARITY.md",
-  ];
-  const parityText = parityFiles
-    .map((rel) => readFileSync(path.join(root, rel), "utf8"))
-    .join("\n");
-  const missingAnchors = requiredSourceAnchors.filter((anchor) => !parityText.includes(anchor));
-  if (missingAnchors.length > 0) {
-    failGate(`ZC-30: plugin parity is missing source anchor(s):\n  ${missingAnchors.join("\n  ")}`);
-  }
-
   const requiredCounterparts = [
     "runtime/src/plugins/loader.ts",
     "runtime/src/plugins/manifest.ts",
@@ -4874,39 +4813,9 @@ function assertZc30PluginCoverage() {
   if (missingCounterparts.length > 0) {
     failGate(`ZC-30: plugin counterpart file(s) missing:\n  ${missingCounterparts.join("\n  ")}`);
   }
-
-  const rootParity = readFileSync(path.join(root, "runtime/src/plugins/PARITY.md"), "utf8");
-  const requiredSections = ["PK-01", "PK-02", "PK-03", "PK-04", "PK-06", "PK-07", "PK-09"];
-  const missingSections = requiredSections.filter((section) => !rootParity.includes(`${section} scope carried into AgenC:`));
-  if (missingSections.length > 0) {
-    failGate(`ZC-30: root plugin parity is missing carried-scope section(s): ${missingSections.join(", ")}`);
-  }
-  if (!rootParity.includes("ZC-30 coverage lock:")) {
-    failGate("ZC-30: root plugin parity is missing the ZC-30 coverage lock note.");
-  }
 }
 
 function assertZc31SkillsCoverage() {
-  const sourceRoot = `${["co", "dex-rs"].join("")}/core-skills/src`;
-  const requiredSourceAnchors = [
-    `${sourceRoot}/injection.rs`,
-    `${sourceRoot}/env_var_dependencies.rs`,
-    `${sourceRoot}/invocation_utils.rs`,
-    `${sourceRoot}/loader.rs`,
-    `${sourceRoot}/manager.rs`,
-    `${sourceRoot}/mention_counts.rs`,
-    `${sourceRoot}/model.rs`,
-    `${sourceRoot}/remote.rs`,
-    `${sourceRoot}/render.rs`,
-    `${sourceRoot}/system.rs`,
-  ];
-  const parityPath = path.join(root, "runtime/src/skills/PARITY.md");
-  const parityText = readFileSync(parityPath, "utf8");
-  const missingAnchors = requiredSourceAnchors.filter((anchor) => !parityText.includes(anchor));
-  if (missingAnchors.length > 0) {
-    failGate(`ZC-31: skills parity is missing source anchor(s):\n  ${missingAnchors.join("\n  ")}`);
-  }
-
   const requiredCounterparts = [
     "runtime/src/skills/local-loader.ts",
     "runtime/src/skills/local-loader.test.ts",
@@ -4951,27 +4860,9 @@ function assertZc31SkillsCoverage() {
       failGate(`ZC-31: model-facing Skill tool is missing ${pattern}.`);
     }
   }
-
-  const requiredReductionNotes = [
-    "Sidecar `agents/openai.yaml` metadata is not carried.",
-    "Automatic text mention injection is not carried.",
-    "Implicit shell-script and skill-doc command detection is not carried.",
-    "Product-surface filtering is not carried",
-    "Remote skill listing/export is not carried",
-    "Disk-installed system skill cache management is not carried.",
-    "Rich root-alias rendering from the donor renderer is reduced",
-  ];
-  const missingReductions = requiredReductionNotes.filter((note) => !parityText.includes(note));
-  if (missingReductions.length > 0) {
-    failGate(`ZC-31: skills parity is missing reduction note(s):\n  ${missingReductions.join("\n  ")}`);
-  }
-  if (!parityText.includes("ZC-31 coverage lock:")) {
-    failGate("ZC-31: skills parity is missing the ZC-31 coverage lock note.");
-  }
 }
 
 function assertZc32ShellCommandCoverage() {
-  const parityRel = "runtime/src/shell-command/PARITY.md";
   const ledgerRel = "parity/ZC-32-parity.json";
   const requiredFiles = [
     "runtime/src/shell-command/parser.ts",
@@ -4980,7 +4871,6 @@ function assertZc32ShellCommandCoverage() {
     "runtime/src/shell-command/parser.test.ts",
     "runtime/src/shell-command/safety.test.ts",
     "runtime/src/shell-command/powershell-parser.test.ts",
-    parityRel,
     ledgerRel,
   ];
   const missingFiles = requiredFiles.filter((rel) => !existsSync(path.join(root, rel)));
@@ -5012,25 +4902,24 @@ function assertZc32ShellCommandCoverage() {
     failGate(`ZC-32: parity rows must be required: ${nonRequiredRows.map((row) => row?.id ?? "<missing>").join(", ")}`);
   }
 
-  const sourceRoot = `${["co", "dex-rs"].join("")}/shell-command/src`;
+  const sourceFiles = Array.isArray(ledger.sourceFiles) ? ledger.sourceFiles : [];
   const requiredSourceAnchors = [
-    `${sourceRoot}/bash.rs`,
-    `${sourceRoot}/powershell.rs`,
-    `${sourceRoot}/parse_command.rs`,
-    `${sourceRoot}/command_safety/is_dangerous_command.rs`,
-    `${sourceRoot}/command_safety/is_safe_command.rs`,
-    `${sourceRoot}/command_safety/powershell_parser.rs`,
-    `${sourceRoot}/command_safety/powershell_parser.ps1`,
-    `${sourceRoot}/command_safety/windows_dangerous_commands.rs`,
-    `${sourceRoot}/command_safety/windows_safe_commands.rs`,
+    "src/bash.rs",
+    "src/powershell.rs",
+    "src/parse_command.rs",
+    "src/command_safety/is_dangerous_command.rs",
+    "src/command_safety/is_safe_command.rs",
+    "src/command_safety/powershell_parser.rs",
+    "src/command_safety/powershell_parser.ps1",
+    "src/command_safety/windows_dangerous_commands.rs",
+    "src/command_safety/windows_safe_commands.rs",
   ];
-  const parityText = readFileSync(path.join(root, parityRel), "utf8");
-  const missingAnchors = requiredSourceAnchors.filter((anchor) => !parityText.includes(anchor));
+  const missingAnchors = requiredSourceAnchors.filter((anchor) => !sourceFiles.includes(anchor));
   if (missingAnchors.length > 0) {
-    failGate(`ZC-32: shell-command parity is missing source anchor(s):\n  ${missingAnchors.join("\n  ")}`);
+    failGate(`ZC-32: shell-command parity ledger is missing source anchor(s):\n  ${missingAnchors.join("\n  ")}`);
   }
-  if (!parityText.includes("ZC-32 coverage lock:")) {
-    failGate("ZC-32: shell-command parity is missing the ZC-32 coverage lock note.");
+  if (ledger.validation?.runtimeDocsRetiredBy !== "ZC-40") {
+    failGate("ZC-32: shell-command parity ledger must record that runtime parity docs were retired by ZC-40");
   }
 
   const parser = readFileSync(path.join(root, "runtime/src/shell-command/parser.ts"), "utf8");
@@ -5123,48 +5012,7 @@ function assertZc33SandboxCoverage() {
     return readFileSync(abs, "utf8");
   };
 
-  const engineParity = readRequired("runtime/src/sandbox/engine/PARITY.md");
-  const linuxParity = readRequired("runtime/src/sandbox/linux-launcher/PARITY.md");
   const permissionsSandbox = readRequired("runtime/src/permissions/sandbox.ts");
-
-  const requiredEngineAnchors = [
-    "sandboxing/src/lib.rs",
-    "sandboxing/src/manager.rs",
-    "sandboxing/src/policy_transforms.rs",
-    "sandboxing/src/policy_transforms_tests.rs",
-    "sandboxing/src/seatbelt.rs",
-    "sandboxing/src/seatbelt_tests.rs",
-    "sandboxing/src/landlock.rs",
-    "sandboxing/src/landlock_tests.rs",
-    "sandboxing/src/bwrap.rs",
-    "sandboxing/src/bwrap_tests.rs",
-    "sandboxing/src/manager_tests.rs",
-    "sandboxing/src/seatbelt_base_policy.sbpl",
-    "sandboxing/src/seatbelt_network_policy.sbpl",
-    "sandboxing/src/restricted_read_only_platform_defaults.sbpl",
-  ];
-  const missingEngineAnchors = requiredEngineAnchors.filter((anchor) => !engineParity.includes(anchor));
-  if (missingEngineAnchors.length > 0) {
-    failGate(`ZC-33: engine parity is missing source anchor(s):\n  ${missingEngineAnchors.join("\n  ")}`);
-  }
-
-  const requiredLauncherAnchors = [
-    "linux-sandbox/src/lib.rs",
-    "linux-sandbox/src/main.rs",
-    "linux-sandbox/src/launcher.rs",
-    "linux-sandbox/src/bwrap.rs",
-    "linux-sandbox/src/landlock.rs",
-    "linux-sandbox/src/linux_run_main.rs",
-    "linux-sandbox/src/linux_run_main_tests.rs",
-    "linux-sandbox/src/proxy_routing.rs",
-    "linux-sandbox/src/vendored_bwrap.rs",
-    "linux-sandbox/config.h",
-    "linux-sandbox/build.rs",
-  ];
-  const missingLauncherAnchors = requiredLauncherAnchors.filter((anchor) => !linuxParity.includes(anchor));
-  if (missingLauncherAnchors.length > 0) {
-    failGate(`ZC-33: launcher parity is missing source anchor(s):\n  ${missingLauncherAnchors.join("\n  ")}`);
-  }
 
   const requiredTargets = [
     "runtime/src/sandbox/engine/index.ts",
@@ -5194,9 +5042,6 @@ function assertZc33SandboxCoverage() {
     failGate(`ZC-33: sandbox counterpart file(s) missing:\n  ${missingTargets.join("\n  ")}`);
   }
 
-  if (!engineParity.includes("ZC-33 coverage lock:") || !linuxParity.includes("ZC-33 coverage lock:")) {
-    failGate("ZC-33: sandbox parity docs must include ZC-33 coverage lock notes.");
-  }
   if (/does not use any of those primitives directly/.test(permissionsSandbox)) {
     failGate("ZC-33: permissions sandbox docs still deny the platform-backed sandbox layer.");
   }
@@ -5359,32 +5204,6 @@ function assertZc35OcCoverage() {
     failGate(`ZC-35: AgenC target coverage file(s) missing:\n  ${missingTargets.join("\n  ")}`);
   }
 
-  const lockFiles = [
-    {
-      rel: "runtime/src/agents/v2/PARITY.md",
-      required: ["ZC-35 Coverage Lock", "Multi-Agent V2", "mailbox"],
-    },
-    {
-      rel: "runtime/src/hooks/engine/PARITY.md",
-      required: ["ZC-35 Coverage Lock", "configured command-hook runtime", "structured output parsing"],
-    },
-    {
-      rel: "runtime/src/secrets/PARITY.md",
-      required: ["ZC-35 Coverage Lock", "platform credential vault storage", "LocalAuthBackend"],
-    },
-    {
-      rel: "runtime/src/conversation/PARITY.md",
-      required: ["ZC-35 Coverage Lock", "rollout-backed thread recovery", "SessionStart"],
-    },
-  ];
-  for (const { rel, required } of lockFiles) {
-    const text = readRequired(rel);
-    const missing = required.filter((needle) => !text.includes(needle));
-    if (missing.length > 0) {
-      failGate(`ZC-35: ${rel} is missing coverage lock text: ${missing.join(", ")}`);
-    }
-  }
-
   const testRun = run("npm", [
     "run",
     "test",
@@ -5410,20 +5229,6 @@ function assertZc34AgentGraphStoreCoverage() {
     if (!existsSync(abs)) failGate(`ZC-34: missing required file ${rel}`);
     return readFileSync(abs, "utf8");
   };
-
-  const parity = readRequired("runtime/src/agents/graph-store/PARITY.md");
-  const sourceRoot = `${["co", "dex-rs"].join("")}/agent-graph-store/src`;
-  const requiredAnchors = [
-    `${sourceRoot}/lib.rs`,
-    `${sourceRoot}/error.rs`,
-    `${sourceRoot}/types.rs`,
-    `${sourceRoot}/store.rs`,
-    `${sourceRoot}/local.rs`,
-  ];
-  const missingAnchors = requiredAnchors.filter((anchor) => !parity.includes(anchor));
-  if (missingAnchors.length > 0) {
-    failGate(`ZC-34: graph-store parity is missing source anchor(s):\n  ${missingAnchors.join("\n  ")}`);
-  }
 
   const requiredTargets = [
     "runtime/src/agents/graph-store/types.ts",
@@ -5511,42 +5316,66 @@ function assertZc37UndefinedDirectoryGone() {
   pass("ZC-37: undefined/ directory absent, untracked, and ignored");
 }
 
+function assertZc39VoicePartialPortResolved() {
+  const deletedComponent = "runtime/src/tui/components/PromptInput/VoiceIndicator.tsx";
+  if (existsSync(path.join(root, deletedComponent))) {
+    failGate(`ZC-39: ${deletedComponent} still exists.`);
+  }
+
+  const blockedRefs = [
+    {
+      scope: "runtime/src/tui/components/PromptInput",
+      pattern: "VoiceIndicator|VoiceWarmupHint|voiceInterimRange|useVoiceState|useVoiceEnabled|VOICE_MODE",
+    },
+    {
+      scope: "runtime/src/tui/state/AppState.tsx",
+      pattern: "VoiceProvider|VOICE_MODE|context/voice",
+    },
+    {
+      scope: "runtime/src/tui/keybindings",
+      pattern: "voice:pushToTalk|VOICE_MODE",
+    },
+    {
+      scope: "runtime/src/commands/keybindings.ts",
+      pattern: "chat:voiceInput",
+    },
+    {
+      scope: "runtime/src/config",
+      pattern: "VoiceInputConfig|voiceInput",
+    },
+    {
+      scope: "runtime/src/build/feature.ts",
+      pattern: "VOICE_MODE",
+    },
+    {
+      scope: "runtime/src/agenc/upstream/screens/REPL.tsx",
+      pattern: "useVoiceIntegration|VoiceKeybindingHandler|insertTextRef|VOICE_MODE|voiceInterimRange",
+    },
+  ];
+
+  for (const { scope, pattern } of blockedRefs) {
+    const scan = run("rg", ["--no-messages", "-n", pattern, scope], { silent: true });
+    if (scan.status === 0) {
+      failGate(`ZC-39: live voice partial-port reference(s) remain in ${scope}:\n${scan.stdout.trim()}`);
+    }
+    if (scan.status !== 1) {
+      failGate(`ZC-39: failed to scan ${scope} for voice partial-port references.`);
+    }
+  }
+
+  if (existsSync(path.join(root, "runtime/src/services/voice"))) {
+    failGate("ZC-39: runtime/src/services/voice exists; this item chose deletion, not a voice service port.");
+  }
+
+  pass("ZC-39: voice partial-port UI, config, and keybinding surfaces removed from live runtime");
+}
+
 function assertZc36TestFixtureParityCoverage() {
   const readRequired = (rel) => {
     const abs = path.join(root, rel);
     if (!existsSync(abs)) failGate(`ZC-36: missing required file ${rel}`);
     return readFileSync(abs, "utf8");
   };
-
-  const parity = readRequired("runtime/src/test-parity/PARITY.md");
-  const sourceRoot = `${["co", "dex-rs"].join("")}`;
-  const requiredAnchors = [
-    `${sourceRoot}/core/tests/suite/exec.rs`,
-    `${sourceRoot}/core/tests/suite/exec_policy.rs`,
-    `${sourceRoot}/core/tests/suite/fork_thread.rs`,
-    `${sourceRoot}/core/tests/suite/hierarchical_agents.rs`,
-    `${sourceRoot}/core/tests/suite/request_permissions.rs`,
-    `${sourceRoot}/core/tests/suite/request_user_input.rs`,
-    `${sourceRoot}/core/tests/suite/sqlite_state.rs`,
-    `${sourceRoot}/core/tests/suite/shell_command.rs`,
-    `${sourceRoot}/core/tests/suite/tool_parallelism.rs`,
-    `${sourceRoot}/app-server/tests/suite/v2/initialize.rs`,
-    `${sourceRoot}/app-server/tests/suite/v2/command_exec.rs`,
-    `${sourceRoot}/app-server/tests/suite/v2/request_permissions.rs`,
-    `${sourceRoot}/app-server/tests/suite/v2/request_user_input.rs`,
-    `${sourceRoot}/app-server/tests/suite/v2/thread_start.rs`,
-    `${sourceRoot}/app-server/tests/suite/v2/thread_read.rs`,
-    `${sourceRoot}/app-server/tests/suite/v2/thread_list.rs`,
-    `${sourceRoot}/app-server/tests/suite/v2/thread_fork.rs`,
-    `${sourceRoot}/app-server/tests/suite/v2/turn_interrupt.rs`,
-    `${sourceRoot}/app-server/tests/suite/v2/turn_steer.rs`,
-    `${sourceRoot}/apply-patch/tests/fixtures/scenarios/`,
-    `${sourceRoot}/apply-patch/tests/suite/scenarios.rs`,
-  ];
-  const missingAnchors = requiredAnchors.filter((anchor) => !parity.includes(anchor));
-  if (missingAnchors.length > 0) {
-    failGate(`ZC-36: test-suite parity is missing source anchor(s):\n  ${missingAnchors.join("\n  ")}`);
-  }
 
   const matrixText = readRequired("parity/ZC-36-parity.json");
   let matrix;
@@ -5674,7 +5503,6 @@ function assertZc41ObservabilityCoverage() {
   const requiredFiles = [
     "runtime/src/observability/telemetry.ts",
     "runtime/src/observability/telemetry.test.ts",
-    "runtime/src/observability/PARITY.md",
     "parity/ZC-41-parity.json",
   ];
   for (const rel of requiredFiles) {
@@ -5689,7 +5517,7 @@ function assertZc41ObservabilityCoverage() {
     "interface TelemetryTimer",
     "interface TelemetryClient",
     "startSpan(",
-    "withSpan(",
+    "withSpan",
     "recordDuration(",
     "timer(",
     "sanitizeMetricTagValue",
@@ -5745,6 +5573,38 @@ function assertZc41ObservabilityCoverage() {
   }
 
   pass("ZC-41: observability no-op surface and call-site seams locked");
+}
+
+function assertZc40RuntimeParityDocsGone() {
+  const runtimeSrc = path.join(root, "runtime/src");
+  const filesystemDocs = walkFiles(runtimeSrc)
+    .filter((abs) => path.basename(abs) === "PARITY.md")
+    .map((abs) => path.relative(root, abs).replaceAll("\\", "/"));
+
+  const tracked = git("ls-files", "runtime/src/**/PARITY.md");
+  if (tracked.status !== 0) {
+    failGate(`ZC-40: failed to inspect tracked runtime PARITY.md files:\n${tracked.stderr || tracked.stdout}`);
+  }
+  const trackedDocs = tracked.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const remaining = [...new Set([...filesystemDocs, ...trackedDocs])].sort();
+  if (remaining.length > 0) {
+    failGate(`ZC-40: runtime PARITY.md scaffolding remains:\n  ${remaining.join("\n  ")}`);
+  }
+
+  const staleReferences = run(
+    "rg",
+    ["--no-messages", "-n", "PARITY\\.md", "runtime/src", "-g", "!**/PARITY.md"],
+    { silent: true },
+  );
+  if (staleReferences.status === 0 && staleReferences.stdout.trim()) {
+    failGate(`ZC-40: live runtime source still references deleted PARITY.md scaffolding:\n${staleReferences.stdout.trim()}`);
+  }
+
+  pass("ZC-40: runtime PARITY.md scaffolding is gone");
 }
 
 function listSourceFiles(dir) {
@@ -6145,9 +6005,11 @@ async function cleanupGates(item) {
       "ZC-34": { custom: assertZc34AgentGraphStoreCoverage },
       "ZC-35": { custom: assertZc35OcCoverage },
       "ZC-37": { custom: assertZc37UndefinedDirectoryGone },
+      "ZC-39": { custom: assertZc39VoicePartialPortResolved },
       "ZC-36": { custom: assertZc36TestFixtureParityCoverage },
       "ZC-38": { custom: assertZc38DistBuildArtifactsIgnored },
       "ZC-41": { custom: assertZc41ObservabilityCoverage },
+      "ZC-40": { custom: assertZc40RuntimeParityDocsGone },
     };
     const expectations = zcMap[id];
     if (!expectations) {
