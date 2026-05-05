@@ -2,13 +2,13 @@
  * GuardianRejectionCircuitBreaker — prevents runaway guardian-reject loops
  * within a single turn.
  *
- * Ported from upstream agenc runtime `agenc-rs/core/src/guardian/mod.rs`:
+ * Ported from the inspected guardian circuit-breaker source:
  *   - `struct GuardianRejectionCircuitBreaker`
  *   - `enum GuardianRejectionCircuitBreakerAction`
  *   - `const MAX_CONSECUTIVE_GUARDIAN_DENIALS_PER_TURN: u32 = 3`
  *   - `const MAX_TOTAL_GUARDIAN_DENIALS_PER_TURN: u32 = 10`
  *
- * Semantic contract (verbatim from agenc runtime):
+ * Semantic contract:
  *   - State is keyed by `turn_id` (string). Each turn has its own counters.
  *   - `recordDenial(turnId)` bumps both `consecutiveDenials` and
  *     `totalDenials`. If either threshold is hit AND `interruptTriggered` is
@@ -23,23 +23,20 @@
  *     a new turn starts with a fresh set of counters and no leftover
  *     `interruptTriggered` flag.
  *
- * NOTE on "window": the task spec mentioned a time-window reset. Upstream
- * agenc runtime does NOT use a wall-clock window. The scope is exclusively
- * per-turn (turn_id), reset by `clearTurn`. This port matches upstream
- * exactly rather than inventing a window that upstream does not have.
+ * NOTE on "window": the task spec mentioned a time-window reset. The inspected
+ * source does not use a wall-clock window. The scope is exclusively per-turn
+ * (turn_id), reset by `clearTurn`.
  *
  * @module
  */
 
 /**
- * Upstream: `MAX_CONSECUTIVE_GUARDIAN_DENIALS_PER_TURN: u32 = 3`.
- * See agenc-rs/core/src/guardian/mod.rs:46.
+ * `MAX_CONSECUTIVE_GUARDIAN_DENIALS_PER_TURN: u32 = 3`.
  */
 export const MAX_CONSECUTIVE_GUARDIAN_DENIALS_PER_TURN = 3;
 
 /**
- * Upstream: `MAX_TOTAL_GUARDIAN_DENIALS_PER_TURN: u32 = 10`.
- * See agenc-rs/core/src/guardian/mod.rs:47.
+ * `MAX_TOTAL_GUARDIAN_DENIALS_PER_TURN: u32 = 10`.
  */
 export const MAX_TOTAL_GUARDIAN_DENIALS_PER_TURN = 10;
 
@@ -65,7 +62,7 @@ interface GuardianRejectionCircuitBreakerTurn {
 }
 
 /**
- * Construction options. Thresholds default to upstream agenc runtime constants.
+ * Construction options. Thresholds default to the inspected source constants.
  */
 export interface GuardianRejectionCircuitBreakerOptions {
   /** Defaults to {@link MAX_CONSECUTIVE_GUARDIAN_DENIALS_PER_TURN}. */
@@ -155,7 +152,7 @@ export class GuardianRejectionCircuitBreaker {
 
   /**
    * Drop all turn state. Intended for session teardown or test resets; not
-   * part of the upstream API surface (upstream has no `clear_all`, only
+   * part of the inspected API surface (there is no `clear_all`, only
    * per-turn `clear_turn`).
    */
   resetAll(): void {
@@ -174,7 +171,7 @@ export class GuardianRejectionCircuitBreaker {
 
   /**
    * `true` if the breaker has already fired `interrupt_turn` for this
-   * `turnId` in the current turn. Corresponds to upstream's
+   * `turnId` in the current turn. Corresponds to the inspected source's
    * `interrupt_triggered` flag on the per-turn row.
    */
   isOpen(turnId: string): boolean {
@@ -211,8 +208,8 @@ export function createGuardianRejectionCircuitBreaker(
 
 /**
  * Saturating u32 increment — matches Rust's `saturating_add(1)` used
- * upstream. JavaScript numbers saturate at MAX_SAFE_INTEGER for practical
- * purposes; we emulate the exact upstream shape for clarity.
+ * inspected source. JavaScript numbers saturate at MAX_SAFE_INTEGER for
+ * practical purposes; we emulate the exact shape for clarity.
  */
 function saturatingIncrement(n: number): number {
   const U32_MAX = 0xffff_ffff;

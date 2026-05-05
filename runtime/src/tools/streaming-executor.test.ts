@@ -29,6 +29,23 @@ function mockRegistry(
   };
 }
 
+function mockGuardedDispatch(
+  dispatch: (call: LLMToolCall) => Promise<ToolDispatchResult>,
+  tools: Tool[] = [],
+): {
+  readonly registry: ToolRegistry;
+  readonly runToolUseFn: (
+    call: LLMToolCall,
+    signal: AbortSignal,
+  ) => Promise<ToolDispatchResult>;
+} {
+  const registry = mockRegistry(dispatch, tools);
+  return {
+    registry,
+    runToolUseFn: (call) => registry.dispatch(call),
+  };
+}
+
 function makeBlock(id: string, name: string): ToolUseBlock {
   return { type: "tool_use", id, name, input: {} };
 }
@@ -55,7 +72,7 @@ function testTool(overrides: Partial<Tool> & { name: string }): Tool {
 describe("StreamingToolExecutor (I-65 + I-41)", () => {
   test("completes in submission order (I-65)", async () => {
     const exec = new StreamingToolExecutor({
-      registry: mockRegistry(async (call) => ({ content: `ok-${call.id}` })),
+      ...mockGuardedDispatch(async (call) => ({ content: `ok-${call.id}` })),
     });
     for (const id of ["a", "b", "c"]) {
       exec.setConcurrencyClassFor("FileRead", SHARED_READ);
@@ -72,7 +89,7 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
   test("Bash error cascades sibling-abort", async () => {
     let bashErrored = 0;
     const exec = new StreamingToolExecutor({
-      registry: mockRegistry(async (call) => {
+      ...mockGuardedDispatch(async (call) => {
         if (call.id === "bash1") {
           bashErrored += 1;
           return { content: "bash error", isError: true };
@@ -102,11 +119,35 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
 
   test("I-41 re-entrance guard: second discard is no-op", () => {
     const exec = new StreamingToolExecutor({
-      registry: mockRegistry(async () => ({ content: "" })),
+      ...mockGuardedDispatch(async () => ({ content: "" })),
     });
     exec.discard("first");
     // Second call returns immediately without recursion / throw.
     expect(() => exec.discard("second")).not.toThrow();
+  });
+
+  test("fails closed when no guarded dispatch path is supplied", async () => {
+    let rawDispatchCalled = false;
+    const exec = new StreamingToolExecutor({
+      registry: mockRegistry(async () => {
+        rawDispatchCalled = true;
+        return { content: "raw" };
+      }, [testTool({ name: "Write" })]),
+    });
+    exec.addTool(
+      makeBlock("w1", "Write"),
+      makeCall("w1", "Write"),
+    );
+    exec.close();
+
+    const results: string[] = [];
+    for await (const result of exec.getRemainingResults()) {
+      results.push(String(result.result.content));
+    }
+
+    expect(rawDispatchCalled).toBe(false);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toContain("guarded tool dispatch is unavailable");
   });
 
   // AgenC behavior (`StreamingToolExecutor.ts:69-71`, :412-415, :454-456):
@@ -115,7 +156,7 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
   // abandons the output stream.
   test("discard early-returns all yield paths without synthesizing", async () => {
     const exec = new StreamingToolExecutor({
-      registry: mockRegistry(async () => {
+      ...mockGuardedDispatch(async () => {
         await new Promise<void>((r) => setTimeout(r, 50));
         return { content: "ok" };
       }),
@@ -149,7 +190,7 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
       concurrencyClass: EXCLUSIVE,
     });
     const exec = new StreamingToolExecutor({
-      registry: mockRegistry(async () => ({ content: "ok" }), [writeTool]),
+      ...mockGuardedDispatch(async () => ({ content: "ok" }), [writeTool]),
       abortSignal: abortCtl.signal,
     });
 
@@ -186,7 +227,7 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
       },
     };
     const exec = new StreamingToolExecutor({
-      registry: mockRegistry(async (call) => {
+      ...mockGuardedDispatch(async (call) => {
         const parsed = call.arguments ? JSON.parse(call.arguments) : {};
         const result = await tool.execute(parsed);
         return { content: result.content, isError: result.isError };
@@ -218,7 +259,7 @@ describe("StreamingToolExecutor AgenC behavior (T6)", () => {
     // pre-synthesize a deterministic tool_result for an unknown tool
     // so the tool_use block never reaches the model unpaired.
     const exec = new StreamingToolExecutor({
-      registry: mockRegistry(async () => ({ content: "should not dispatch" })),
+      ...mockGuardedDispatch(async () => ({ content: "should not dispatch" })),
     });
     exec.addTool(makeBlock("u1", "no.such.tool"), makeCall("u1", "no.such.tool"));
     exec.close();
@@ -243,7 +284,7 @@ describe("StreamingToolExecutor AgenC behavior (T6)", () => {
     // be yielded out of order.
     let resolveExclusive!: () => void;
     const exec = new StreamingToolExecutor({
-      registry: mockRegistry(async (call) => {
+      ...mockGuardedDispatch(async (call) => {
         if (call.id === "x1") {
           await new Promise<void>((r) => {
             resolveExclusive = r;
@@ -286,7 +327,7 @@ describe("StreamingToolExecutor AgenC behavior (T6)", () => {
     // drain loop via Promise.race.
     let triggerProgress!: () => void;
     const exec = new StreamingToolExecutor({
-      registry: mockRegistry(async (call) => {
+      ...mockGuardedDispatch(async (call) => {
         // Progress is driven externally; dispatch just waits.
         await new Promise<void>((r) => {
           triggerProgress = () => {
@@ -329,7 +370,7 @@ describe("StreamingToolExecutor AgenC behavior (T6)", () => {
       concurrencyClass: SHARED_READ,
     });
     const exec = new StreamingToolExecutor({
-      registry: mockRegistry(async (_call, signal?: unknown) => {
+      ...mockGuardedDispatch(async (_call, signal?: unknown) => {
         void _call;
         void signal;
         // Simulate permission-dialog reject by aborting sibling
@@ -371,7 +412,7 @@ describe("StreamingToolExecutor AgenC behavior (T6)", () => {
       concurrencyClass: SHARED_READ,
     });
     const exec = new StreamingToolExecutor({
-      registry: mockRegistry(async (call) => {
+      ...mockGuardedDispatch(async (call) => {
         if (call.id === "bash1") return { content: "err", isError: true };
         // read1 would get sibling_error cascade.
         await new Promise<void>((r) => setTimeout(r, 50));
@@ -405,7 +446,7 @@ describe("StreamingToolExecutor AgenC behavior (T6)", () => {
       interruptBehavior: () => "block",
     });
     const exec = new StreamingToolExecutor({
-      registry: mockRegistry(async () => ({ content: "completed-anyway" }), [
+      ...mockGuardedDispatch(async () => ({ content: "completed-anyway" }), [
         writeTool,
       ]),
       abortSignal: abortCtl.signal,
@@ -436,7 +477,7 @@ describe("StreamingToolExecutor AgenC behavior (T6)", () => {
       interruptBehavior: () => "cancel",
     });
     const exec = new StreamingToolExecutor({
-      registry: mockRegistry(async () => ({ content: "should-not-run" }), [
+      ...mockGuardedDispatch(async () => ({ content: "should-not-run" }), [
         writeTool,
       ]),
       abortSignal: abortCtl.signal,

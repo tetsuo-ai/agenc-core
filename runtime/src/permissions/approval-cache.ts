@@ -54,18 +54,47 @@ import type {
  * given order (command argv is positional and must not be reordered).
  */
 export function canonicalJsonKey(value: unknown): string {
-  return JSON.stringify(value, stableReplacer);
+  return JSON.stringify(stableKeyNode(value, new WeakSet<object>()));
 }
 
-function stableReplacer(_key: string, value: unknown): unknown {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    const obj = value as Record<string, unknown>;
-    const sorted: Record<string, unknown> = {};
-    for (const k of Object.keys(obj).sort()) {
-      sorted[k] = obj[k];
+function stableKeyNode(
+  value: unknown,
+  seen: WeakSet<object>,
+): unknown {
+  if (value === null) return ["null"];
+  if (typeof value === "string") return ["string", value];
+  if (typeof value === "number") return ["number", numberKey(value)];
+  if (typeof value === "boolean") return ["boolean", value];
+  if (typeof value === "bigint") return ["bigint", value.toString()];
+  if (typeof value === "undefined") return ["undefined"];
+  if (typeof value === "function") return ["function"];
+  if (typeof value === "symbol") return ["symbol", value.toString()];
+  if (typeof value !== "object") return ["unknown", String(value)];
+  if (seen.has(value)) return ["circular"];
+  if (value instanceof Date) return ["date", value.toJSON()];
+
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return ["array", value.map((item) => stableKeyNode(item, seen))];
     }
-    return sorted;
+    const obj = value as Record<string, unknown>;
+    return [
+      "object",
+      Object.keys(obj)
+        .sort()
+        .map((k) => [k, stableKeyNode(obj[k], seen)]),
+    ];
+  } finally {
+    seen.delete(value);
   }
+}
+
+function numberKey(value: number): number | string {
+  if (Number.isNaN(value)) return "NaN";
+  if (value === Infinity) return "Infinity";
+  if (value === -Infinity) return "-Infinity";
+  if (Object.is(value, -0)) return "-0";
   return value;
 }
 

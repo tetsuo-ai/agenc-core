@@ -168,10 +168,9 @@ export interface StreamingToolExecutorOptions {
    *  dependency chains; independent tools don't). */
   readonly bashToolName?: string;
   /**
-   * Optional per-tool dispatch override. Allows the caller to inject
-   * the full `runToolUse` pipeline from `execution.ts` (with
-   * approval + timeout + size cap wrapped). When absent, falls back
-   * to `registry.dispatch(toolCall)` directly.
+   * Optional per-tool dispatch override. Test and legacy integration
+   * seam for callers that already provide a guarded dispatch pipeline.
+   * Production model-tool dispatchers must prefer `liveToolDispatch`.
    */
   readonly runToolUseFn?: (
     toolCall: LLMToolCall,
@@ -791,7 +790,15 @@ export class StreamingToolExecutor {
         if (this.runToolUseFn) {
           return await this.runToolUseFn(tool.toolCall, childAbort.signal);
         }
-        return await this.registry.dispatch(tool.toolCall);
+        return {
+          content: JSON.stringify({
+            tool_use_id: tool.toolCall.id,
+            is_error: true,
+            content:
+              "<tool_use_error>guarded tool dispatch is unavailable for this execution path</tool_use_error>",
+          }),
+          isError: true,
+        };
       };
 
       const result = this.runtime

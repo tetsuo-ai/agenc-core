@@ -36,7 +36,15 @@ import {
 import type { AuthBackend } from "../auth/backend.js";
 import type { AgentBudgetConfig } from "../config/schema.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
+import { freshDenialTracking } from "../permissions/denial-tracking.js";
+import {
+  attachContextDefaults,
+  hasPermissionsToUseTool,
+  type AppStateSnapshot,
+  type ToolEvaluatorContext,
+} from "../permissions/evaluator.js";
 import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
+import { routerFromRegistry } from "../tools/router.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import {
@@ -50,6 +58,8 @@ import { applyUnattendedPermissionPolicyToContext } from "../permissions/unatten
 import { ABORT, DENIED, type ReviewDecision } from "../permissions/review-decision.js";
 import { isFinal } from "../agents/status.js";
 import type { AgentStatus as ThreadAgentStatus } from "../agents/status.js";
+import type { Session } from "../session/session.js";
+import type { TurnContext } from "../session/turn-context.js";
 import {
   respondToSessionElicitation,
   type SessionElicitationResponseParams,
@@ -1606,6 +1616,7 @@ async function runRestoredAgentToCompletion(
 
 async function replayRecoveredToolCalls(opts: {
   readonly thread: AgentThread;
+  readonly parent: LocalRuntimeBootstrap["session"];
   readonly registry: ToolRegistry;
   readonly initialMessages: ReadonlyArray<LLMMessage>;
   readonly replayToolCalls: readonly AgenCBackgroundAgentReplayToolCall[];
@@ -1650,10 +1661,14 @@ async function replayRecoveredToolCalls(opts: {
       },
       opts.thread,
     );
-    const result = await dispatchReplayToolCall(opts.registry, {
-      id: replay.callId,
-      name: replay.toolName,
-      arguments: args,
+    const result = await dispatchReplayToolCall({
+      registry: opts.registry,
+      session: opts.parent,
+      toolCall: {
+        id: replay.callId,
+        name: replay.toolName,
+        arguments: args,
+      },
     });
     if (opts.currentSessionId !== undefined) {
       await opts.onReplayToolResult?.({
@@ -1719,18 +1734,124 @@ function stringifyReplayToolArguments(value: JsonValue): string {
   return JSON.stringify(value);
 }
 
-async function dispatchReplayToolCall(
-  registry: ToolRegistry,
-  toolCall: { readonly id: string; readonly name: string; readonly arguments: string },
-): Promise<{ readonly content: string; readonly isError?: boolean }> {
+async function dispatchReplayToolCall(opts: {
+  readonly registry: ToolRegistry;
+  readonly session: LocalRuntimeBootstrap["session"];
+  readonly toolCall: {
+    readonly id: string;
+    readonly name: string;
+    readonly arguments: string;
+  };
+}): Promise<{ readonly content: string; readonly isError?: boolean }> {
   try {
-    return await registry.dispatch(toolCall);
+    const tool = opts.registry.tools.find(
+      (candidate) => candidate.name === opts.toolCall.name,
+    );
+    if (tool === undefined || typeof tool.execute !== "function") {
+      return {
+        content:
+          "Recovered tool call could not be replayed because the current tool registration is not executable.",
+        isError: true,
+      };
+    }
+    const router = routerFromRegistry(opts.registry);
+    const permissionModeRegistry = opts.session.permissionModeRegistry;
+    const permissionContext = permissionModeRegistry
+      ? buildReplayPermissionContext(opts.session, permissionModeRegistry)
+      : null;
+    const modeChangeRegistry =
+      typeof permissionModeRegistry?.subscribeToModeChange === "function"
+        ? permissionModeRegistry
+        : undefined;
+    return await router.dispatchModelToolCall(opts.toolCall, {
+      session: opts.session as Session,
+      turn: buildReplayTurnContext(opts.session, opts.toolCall.id),
+      tracker: replayNoopTracker,
+      approvalPolicy: "never",
+      sandboxMode: "workspace_write",
+      ...(permissionContext !== null
+        ? {
+            canUseTool: hasPermissionsToUseTool,
+            permissionContext,
+            ...(modeChangeRegistry !== undefined ? { modeChangeRegistry } : {}),
+          }
+        : {}),
+    });
   } catch (error) {
     return {
       content: error instanceof Error ? error.message : String(error),
       isError: true,
     };
   }
+}
+
+const replayNoopTracker = {
+  appendFileDiff: () => {},
+  snapshot: () => [],
+  clear: () => {},
+};
+
+function buildReplayPermissionContext(
+  session: LocalRuntimeBootstrap["session"],
+  permissionModeRegistry: PermissionModeRegistry,
+): ToolEvaluatorContext {
+  const denialTracking =
+    (session as { readonly denialTracking?: ReturnType<typeof freshDenialTracking> })
+      .denialTracking ?? freshDenialTracking();
+  return attachContextDefaults({
+    session: session as Session,
+    denialTracking,
+    executionSurface: "headless",
+    getAppState: (): AppStateSnapshot => {
+      const current = permissionModeRegistry.current();
+      return {
+        toolPermissionContext: current,
+        denialTracking,
+        autoModeActive: current.autoModeActive === true,
+      };
+    },
+  });
+}
+
+function buildReplayTurnContext(
+  session: LocalRuntimeBootstrap["session"],
+  subId: string,
+): TurnContext {
+  const sessionRecord = session as {
+    readonly config?: unknown;
+    readonly modelInfo?: unknown;
+    readonly provider?: unknown;
+    readonly cwd?: unknown;
+  };
+  const config = (sessionRecord.config ?? {}) as TurnContext["config"];
+  return {
+    subId,
+    config,
+    configSnapshot: config,
+    modelInfo: (sessionRecord.modelInfo ?? {
+      slug: "background-replay",
+      effectiveContextWindowPercent: 100,
+      contextWindow: 8192,
+      supportedReasoningLevels: [],
+      defaultReasoningSummary: "auto",
+      truncationPolicy: "off",
+      usedFallbackModelMetadata: false,
+    }) as TurnContext["modelInfo"],
+    provider: (sessionRecord.provider ?? {}) as TurnContext["provider"],
+    cwd: typeof sessionRecord.cwd === "string" ? sessionRecord.cwd : "/tmp",
+    realtimeActive: false,
+    sessionTelemetry: {} as TurnContext["sessionTelemetry"],
+    modelProviderId: "background-replay",
+    reasoningSummary: "auto",
+    sessionSource: "sdk",
+    dynamicTools: [],
+    depth: 0,
+    toolCallGate: {
+      isReady: () => true,
+      signal: () => {},
+      wait: async () => {},
+    },
+  } as unknown as TurnContext;
 }
 
 function restoredAgentMetadata(

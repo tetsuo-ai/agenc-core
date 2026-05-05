@@ -247,6 +247,7 @@ function mkRegistry(): ToolRegistry {
 function mkSession(opts: {
   readonly provider: LLMProvider;
   readonly registry: ToolRegistry;
+  readonly codeModeService?: SessionServices["codeModeService"];
   readonly pendingProviderSwitch?: {
     readonly provider: string;
     readonly model: string;
@@ -324,6 +325,9 @@ function mkSession(opts: {
     hooks: {
       executeStop: async () => ({}),
     },
+    ...(opts.codeModeService !== undefined
+      ? { codeModeService: opts.codeModeService }
+      : {}),
     ...(opts.permissionModeRegistry
       ? { permissionModeRegistry: opts.permissionModeRegistry }
       : {}),
@@ -348,6 +352,53 @@ function mkSession(opts: {
   return { session, events, getState: () => state };
 }
 
+function mkCodeModeNestedProbeService(
+  call: {
+    readonly toolName: string;
+    readonly input?: unknown;
+  },
+  onError: (error: unknown) => void,
+): SessionServices["codeModeService"] {
+  return {
+    enabled: () => true,
+    storedValues: async () => ({}),
+    replaceStoredValues: async () => {},
+    allocateCellId: () => "1",
+    execute: async () => ({
+      type: "result",
+      cellId: "1",
+      contentItems: [],
+      storedValues: {},
+      durationMs: 0,
+    }),
+    wait: async () => ({
+      type: "terminated",
+      cellId: "1",
+      contentItems: [],
+      durationMs: 0,
+    }),
+    startTurnWorker: (host) => {
+      const controller = new AbortController();
+      void host
+        .invokeTool(
+          {
+            cellId: "1",
+            runtimeToolCallId: "nested-approval-required",
+            toolName: call.toolName,
+            input: call.input,
+          },
+          controller.signal,
+        )
+        .catch(onError);
+      return {
+        dispose: () => {
+          controller.abort();
+        },
+      };
+    },
+  };
+}
+
 async function drain(
   gen: AsyncGenerator<unknown, unknown>,
 ): Promise<void> {
@@ -369,6 +420,39 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
 
     expect(events.some((event) => event.msg.type === "turn_complete")).toBe(
       true,
+    );
+  });
+
+  test("blocks approval-required code-mode nested tools before raw registry dispatch", async () => {
+    const ctx = mkCtx();
+    const dispatch = vi.fn(async () => ({ content: "executed", isError: false }));
+    let nestedError: unknown;
+    const { session } = mkSession({
+      provider: mkProvider({ content: "hi" }),
+      registry: {
+        ...mkRegistry(),
+        dispatch,
+      } as unknown as ToolRegistry,
+      codeModeService: mkCodeModeNestedProbeService(
+        {
+          toolName: "Write",
+          input: { path: "file.txt", content: "unsafe" },
+        },
+        (error) => {
+          nestedError = error;
+        },
+      ),
+    });
+
+    await drain(session.runTurn("hello world", { ctx }));
+    for (let idx = 0; idx < 5 && nestedError === undefined; idx += 1) {
+      await Promise.resolve();
+    }
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(nestedError).toBeInstanceOf(Error);
+    expect(nestedError instanceof Error ? nestedError.message : "").toContain(
+      "direct tool calls are disabled in code_mode",
     );
   });
 

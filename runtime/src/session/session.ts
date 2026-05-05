@@ -96,8 +96,8 @@ import {
   type McpStartupCancellationToken,
 } from "./mcp-startup.js";
 import type { PendingWorktreeState } from "./pending-worktree.js";
-import type { GuardianRejectionCircuitBreaker } from "./guardian-rejection-circuit-breaker.js";
-import type { GuardianApprovalReviewer } from "./guardian-approval-review.js";
+import type { GuardianRejectionCircuitBreaker } from "../permissions/guardian/rejection-circuit-breaker.js";
+import type { GuardianApprovalReviewer } from "../permissions/guardian/reviewer.js";
 import {
   EventLog,
   isDurableEvent,
@@ -656,7 +656,7 @@ export interface SessionServices {
    * the bootstrap default map above stays until every consumer routes
    * denials through the breaker instead.
    *
-   * See `./guardian-rejection-circuit-breaker.ts` for the full contract.
+   * See `../permissions/guardian/rejection-circuit-breaker.ts` for the full contract.
    */
   readonly guardianRejectionCircuitBreaker?: GuardianRejectionCircuitBreaker;
   /**

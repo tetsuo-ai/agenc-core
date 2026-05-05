@@ -60,6 +60,7 @@ import {
   CODE_MODE_WAIT_TOOL_NAME,
   type CodeModeNestedToolCall,
 } from "../tools/code-mode/types.js";
+import { isCodeModeSafeTool } from "../tools/router.js";
 import { commit } from "../phases/commit.js";
 import { continuationNudge } from "../phases/continuation-nudge.js";
 import type { PhaseEvent } from "../phases/events.js";
@@ -1368,7 +1369,7 @@ function resolveMaxTurns(ctx: TurnContext): number {
  * stream and appended to `state.messages` / `state.toolResults` so
  * every orphan `tool_use` block sent by the model during the
  * abort/error window has a paired `tool_result`. Without this, the
- * next turn's provider request would fail the Anthropic/openai
+ * next turn's provider request would fail the anthropic/openai
  * tool-use-id pairing contract.
  *
  * The executor's internal abort + discard logic is responsible for
@@ -1629,6 +1630,11 @@ export async function* runTurnKernel(
               call.toolName === CODE_MODE_WAIT_TOOL_NAME
             ) {
               throw new Error(`${CODE_MODE_EXEC_TOOL_NAME} cannot invoke itself`);
+            }
+            if (!isCodeModeSafeTool({ name: call.toolName })) {
+              throw new Error(
+                "direct tool calls are disabled in code_mode; use js_repl helpers instead",
+              );
             }
             if (
               call.input !== undefined &&
@@ -1942,7 +1948,7 @@ async function* runTurnKernelInner(
       return terminal;
     }
 
-    // Guardian-rejection circuit-breaker interrupt (upstream agenc runtime
+    // Guardian-rejection circuit-breaker interrupt (inspected runtime
     // `guardian/review.rs::record_guardian_denial` → `session.abort_turn_if_active(turn_id, Interrupted)`).
     // Detection-site writers call `recordDenial(turnId)` on the breaker
     // when a guardian review rejects an approval; the first crossing of
@@ -1951,7 +1957,7 @@ async function* runTurnKernelInner(
     // iteration so an interrupt raised during the just-finished
     // iteration's tool dispatch aborts the next iteration cleanly
     // instead of issuing another sampling request. The live writer is
-    // `guardian-approval-review.ts`, reached from the tool approval
+    // `permissions/guardian/reviewer.ts`, reached from the tool approval
     // orchestrator when `approvalsReviewer` is `auto_review`.
     const breaker = session.services.guardianRejectionCircuitBreaker;
     if (breaker?.isOpen(ctx.subId) === true) {

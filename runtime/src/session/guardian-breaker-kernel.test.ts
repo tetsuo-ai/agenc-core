@@ -15,13 +15,10 @@
  *      `turn_aborted` event and a `cancelled` terminal instead of
  *      issuing another sampling request.
  *
- * Gut has no guardian-reviewer subsystem ported yet (upstream's
- * `run_guardian_review` / `record_guardian_denial` live in
- * `guardian/review.rs`, and `tools/orchestrator.ts` explicitly defers
- * the `routes_approval_to_guardian` branch to T11). So these tests
- * drive the breaker state directly as a stand-in for the missing
- * detection layer and assert the kernel side of the wiring behaves
- * exactly as upstream documents.
+ * The guardian reviewer owns detection and denial recording. These
+ * tests drive the breaker state directly so the kernel contract stays
+ * focused on turn-loop interruption rather than reviewer prompt
+ * behavior.
  */
 
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -68,7 +65,7 @@ import {
   MAX_CONSECUTIVE_GUARDIAN_DENIALS_PER_TURN,
   MAX_TOTAL_GUARDIAN_DENIALS_PER_TURN,
   createGuardianRejectionCircuitBreaker,
-} from "./guardian-rejection-circuit-breaker.js";
+} from "../permissions/guardian/rejection-circuit-breaker.js";
 
 // ---------------------------------------------------------------------------
 // Test harness — mirrors run-turn.test.ts's session builder shape but keeps

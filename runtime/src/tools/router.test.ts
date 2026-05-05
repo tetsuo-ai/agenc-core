@@ -432,7 +432,153 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
     expect(result.content).toBe("ok");
   });
 
-  test("dispatchModelToolCall forwards approvalResolver into legacy requestApproval asks", async () => {
+  test("direct dispatch consults guardian approval before executing approval-required tools", async () => {
+    const execute = vi.fn(async () => ({ content: "should-not-run" }));
+    const router = new ToolRouter([
+      {
+        tool: {
+          name: "Write",
+          description: "",
+          inputSchema: {},
+          requiresApproval: true,
+          execute,
+        },
+        supportsParallelToolCalls: false,
+      },
+    ]);
+    const reviewer = {
+      reviewApprovalRequest: vi.fn(async () => ({
+        decision: { kind: "denied" as const },
+        reason: "direct guardian denied",
+        reviewId: "direct-guardian-review",
+        countedDenial: true,
+      })),
+    };
+    const resolver = {
+      request: vi.fn(async () => ({ kind: "approved" as const })),
+    };
+    const invocation: ToolInvocation = {
+      ...makeInvocation({ name: "Write" }, "direct-approval"),
+      session: {
+        eventLog: new EventLog(),
+        services: {},
+      } as never,
+      turn: {
+        subId: "turn-direct-approval",
+        approvalPolicy: { value: "on_request" },
+        sandboxPolicy: { value: "workspace_write" },
+        config: { approvalsReviewer: "auto_review" },
+      } as never,
+    };
+
+    const result = await router.dispatchToolCall(
+      invocation,
+      { file_path: "README.md" },
+      {
+        guardianApprovalReviewer: reviewer,
+        approvalResolver: resolver,
+      },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("direct guardian denied");
+    expect(reviewer.reviewApprovalRequest).toHaveBeenCalledOnce();
+    expect(resolver.request).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  test("direct dispatch permission-mode deny blocks execution before approval", async () => {
+    const execute = vi.fn(async () => ({ content: "should-not-run" }));
+    const router = new ToolRouter([
+      {
+        tool: {
+          name: "Write",
+          description: "",
+          inputSchema: {},
+          execute,
+        },
+        supportsParallelToolCalls: false,
+      },
+    ]);
+    const invocation = makeInvocation({ name: "Write" }, "direct-deny");
+
+    const result = await router.dispatchToolCall(
+      invocation,
+      { file_path: "README.md" },
+      {
+        canUseTool: vi.fn(async () => ({
+          behavior: "deny" as const,
+          message: "blocked by permission mode",
+        })),
+        permissionContext: {} as never,
+      },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("blocked by permission mode");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  test("direct dispatch permission-mode ask routes through guardian before resolver", async () => {
+    const execute = vi.fn(async () => ({ content: "should-not-run" }));
+    const router = new ToolRouter([
+      {
+        tool: {
+          name: "Write",
+          description: "",
+          inputSchema: {},
+          execute,
+        },
+        supportsParallelToolCalls: false,
+      },
+    ]);
+    const reviewer = {
+      reviewApprovalRequest: vi.fn(async () => ({
+        decision: { kind: "denied" as const },
+        reason: "guardian denied direct ask",
+        reviewId: "direct-ask-guardian-review",
+        countedDenial: true,
+      })),
+    };
+    const resolver = {
+      request: vi.fn(async () => ({ kind: "approved" as const })),
+    };
+    const invocation: ToolInvocation = {
+      ...makeInvocation({ name: "Write" }, "direct-ask"),
+      session: {
+        eventLog: new EventLog(),
+        services: {},
+      } as never,
+      turn: {
+        subId: "turn-direct-ask",
+        approvalPolicy: { value: "never" },
+        sandboxPolicy: { value: "workspace_write" },
+        config: { approvalsReviewer: "auto_review" },
+      } as never,
+    };
+
+    const result = await router.dispatchToolCall(
+      invocation,
+      { file_path: "README.md" },
+      {
+        canUseTool: vi.fn(async () => ({
+          behavior: "ask" as const,
+          message: "approval required by permission mode",
+        })),
+        permissionContext: {} as never,
+        guardianApprovalReviewer: reviewer,
+        approvalResolver: resolver,
+      },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("guardian denied direct ask");
+    expect(reviewer.reviewApprovalRequest).toHaveBeenCalledOnce();
+    expect(resolver.request).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  test("dispatchModelToolCall forwards evaluator asks to approvalResolver when guardian is not configured", async () => {
     const router = new ToolRouter([
       {
         tool: {
@@ -485,6 +631,207 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
         turnId: "turn-approval-1",
       }),
     );
+  });
+
+  test("dispatchModelToolCall routes evaluator ask through guardian without pre-hooks", async () => {
+    const execute = vi.fn(async () => ({ content: "should-not-run" }));
+    const router = new ToolRouter([
+      {
+        tool: {
+          name: "system.listDir",
+          description: "",
+          inputSchema: {},
+          execute,
+        },
+        supportsParallelToolCalls: false,
+      },
+    ]);
+    const reviewer = {
+      reviewApprovalRequest: vi.fn(async () => ({
+        decision: { kind: "denied" as const },
+        reason: "guardian denied evaluator ask",
+        reviewId: "guardian-review-evaluator-ask",
+        countedDenial: true,
+      })),
+    };
+    const resolver = {
+      request: vi.fn(async () => ({ kind: "approved" as const })),
+    };
+
+    const result = await router.dispatchModelToolCall(
+      {
+        id: "call-evaluator-ask",
+        name: "system.listDir",
+        arguments: '{"path":"."}',
+      },
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: {
+          subId: "turn-evaluator-ask",
+          cwd: "/repo",
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "workspace_write" },
+          config: { approvalsReviewer: "auto_review" },
+        } as never,
+        tracker: {
+          appendFileDiff: () => {},
+          snapshot: () => [],
+          clear: () => {},
+        },
+        approvalPolicy: "never",
+        sandboxMode: "workspace_write",
+        guardianApprovalReviewer: reviewer,
+        approvalResolver: resolver,
+        canUseTool: async () => ({
+          behavior: "ask",
+          message: "Permission required to use system.listDir",
+        }),
+        permissionContext: {} as never,
+      },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("guardian denied evaluator ask");
+    expect(reviewer.reviewApprovalRequest).toHaveBeenCalledOnce();
+    expect(resolver.request).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  test("dispatchModelToolCall blocks execution when guardian denies approval", async () => {
+    const execute = vi.fn(async () => ({ content: "should-not-run" }));
+    const router = new ToolRouter([
+      {
+        tool: {
+          name: "Write",
+          description: "",
+          inputSchema: {},
+          requiresApproval: true,
+          execute,
+        },
+        supportsParallelToolCalls: false,
+      },
+    ]);
+    const reviewer = {
+      reviewApprovalRequest: vi.fn(async () => ({
+        decision: { kind: "denied" as const },
+        reviewId: "guardian-review-1",
+        countedDenial: true,
+        reason: "guardian denied",
+      })),
+    };
+    const resolver = {
+      request: vi.fn(async () => ({ kind: "approved" as const })),
+    };
+
+    const result = await router.dispatchModelToolCall(
+      {
+        id: "call-guardian-denied",
+        name: "Write",
+        arguments: '{"file_path":"README.md"}',
+      },
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: {
+          subId: "turn-guardian-denied",
+          cwd: "/repo",
+          approvalPolicy: { value: "on_request" },
+          sandboxPolicy: { value: "workspace_write" },
+          config: { approvalsReviewer: "auto_review" },
+        } as never,
+        tracker: {
+          appendFileDiff: () => {},
+          snapshot: () => [],
+          clear: () => {},
+        },
+        approvalPolicy: "on_request",
+        sandboxMode: "workspace_write",
+        guardianApprovalReviewer: reviewer,
+        approvalResolver: resolver,
+      },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("guardian denied");
+    expect(reviewer.reviewApprovalRequest).toHaveBeenCalledOnce();
+    expect(resolver.request).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  test("dispatchModelToolCall routes pre-hook ask through guardian even when turn policy skips", async () => {
+    const execute = vi.fn(async () => ({ content: "should-not-run" }));
+    const router = new ToolRouter([
+      {
+        tool: {
+          name: "Write",
+          description: "",
+          inputSchema: {},
+          execute,
+        },
+        supportsParallelToolCalls: false,
+      },
+    ]);
+    const reviewer = {
+      reviewApprovalRequest: vi.fn(async () => ({
+        decision: { kind: "denied" as const },
+        reviewId: "guardian-review-hook-ask",
+        countedDenial: true,
+        reason: "guardian denied hook ask",
+      })),
+    };
+    const resolver = {
+      request: vi.fn(async () => ({ kind: "approved" as const })),
+    };
+
+    const result = await router.dispatchModelToolCall(
+      {
+        id: "call-hook-ask",
+        name: "Write",
+        arguments: '{"file_path":"README.md"}',
+      },
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: {
+          subId: "turn-hook-ask",
+          cwd: "/repo",
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "workspace_write" },
+          config: { approvalsReviewer: "auto_review" },
+        } as never,
+        tracker: {
+          appendFileDiff: () => {},
+          snapshot: () => [],
+          clear: () => {},
+        },
+        approvalPolicy: "never",
+        sandboxMode: "workspace_write",
+        preHooks: [
+          () => ({
+            kind: "continue" as const,
+            hookPermissionResult: {
+              behavior: "ask" as const,
+              message: "hook requested approval",
+            },
+          }),
+        ],
+        guardianApprovalReviewer: reviewer,
+        approvalResolver: resolver,
+      },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("guardian denied hook ask");
+    expect(reviewer.reviewApprovalRequest).toHaveBeenCalledOnce();
+    expect(resolver.request).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
   });
 
   test("dispatchModelToolCall audits terminal pre-hook denials once", async () => {
@@ -559,6 +906,16 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       },
     ]);
     const auditLogger = vi.fn(async () => {});
+    const resolver = {
+      request: vi.fn(async () => ({ kind: "denied" as const })),
+    };
+    const reviewer = {
+      reviewApprovalRequest: vi.fn(async () => ({
+        decision: { kind: "denied" as const },
+        reviewId: "guardian-review-skip",
+        countedDenial: true,
+      })),
+    };
 
     const result = await router.dispatchModelToolCall(
       {
@@ -581,11 +938,15 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
         approvalPolicy: "never",
         sandboxMode: "workspace_write",
         permissionAuditLogger: auditLogger,
+        approvalResolver: resolver,
+        guardianApprovalReviewer: reviewer,
       },
     );
 
     expect(result.isError).toBeFalsy();
     expect(execute).toHaveBeenCalledOnce();
+    expect(resolver.request).not.toHaveBeenCalled();
+    expect(reviewer.reviewApprovalRequest).not.toHaveBeenCalled();
     expect(auditLogger).toHaveBeenCalledWith(
       expect.objectContaining({
         eventKind: "policy_outcome",

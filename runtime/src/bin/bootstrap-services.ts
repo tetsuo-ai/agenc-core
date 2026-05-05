@@ -8,8 +8,8 @@ import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { ApprovalStore as RuntimeApprovalStore } from "../permissions/approval-cache.js";
 import { NetworkApprovalService as RuntimeNetworkApprovalService } from "../permissions/network-approval.js";
 import { createLocalSkillsServices } from "../skills/local-loader.js";
-import { createGuardianRejectionCircuitBreaker } from "../session/guardian-rejection-circuit-breaker.js";
-import { createDefaultGuardianApprovalReviewer } from "../session/guardian-approval-review.js";
+import { createGuardianRejectionCircuitBreaker } from "../permissions/guardian/rejection-circuit-breaker.js";
+import { createDefaultGuardianApprovalReviewer } from "../permissions/guardian/reviewer.js";
 import { ReviewManager } from "../session/review.js";
 import { createMcpStartupCancellationToken } from "../session/mcp-startup.js";
 import {
