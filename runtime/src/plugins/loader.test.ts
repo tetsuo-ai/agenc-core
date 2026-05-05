@@ -21,8 +21,12 @@ import {
 import {
   loadPluginManifest,
   PLUGIN_MANIFEST_RELATIVE_PATH,
-  resolveManifestRelativePath,
 } from "./manifest.js";
+import {
+  normalizePluginManifest,
+  PluginManifestError,
+  resolveManifestRelativePath,
+} from "./manifest-schema.js";
 import { validateManifest, validatePluginContents } from "./validation.js";
 
 describe("plugin manifest", () => {
@@ -85,6 +89,529 @@ describe("plugin manifest", () => {
 
       expect(result.success).toBe(true);
       expect(result.fileType).toBe("plugin");
+    });
+  });
+});
+
+describe("plugin manifest schema", () => {
+  test("normalizes interface aliases, dependencies, user config, and channels", async () => {
+    await withTempDir(async (root) => {
+      const manifest = normalizePluginManifest(
+        {
+          name: "schema-plugin",
+          dependencies: [
+            "base-plugin@^1.2",
+            { name: "team-plugin", marketplace: "team-marketplace" },
+            { name: "local-plugin" },
+          ],
+          interface: {
+            websiteURL: "urn:agenc:plugin:home",
+            privacyPolicyURL: "urn:agenc:plugin:privacy",
+            termsOfServiceURL: "urn:agenc:plugin:terms",
+          },
+          userConfig: {
+            token: {
+              type: "string",
+              title: "Token",
+              description: "Access token",
+              required: true,
+              default: "dev-token",
+              sensitive: true,
+            },
+          },
+          channels: [
+            {
+              server: "messages",
+              displayName: "Messages",
+              userConfig: {
+                "room-id": {
+                  type: "string",
+                  title: "Room",
+                  description: "Room identifier",
+                },
+              },
+            },
+          ],
+          mcpServers: {
+            typed: {
+              type: "http",
+              url: "urn:agenc:plugin:mcp",
+            },
+          },
+        },
+        root,
+      );
+
+      expect(manifest.dependencies).toEqual([
+        "base-plugin",
+        "team-plugin@team-marketplace",
+        "local-plugin",
+      ]);
+      expect(manifest.interface).toMatchObject({
+        websiteUrl: "urn:agenc:plugin:home",
+        privacyPolicyUrl: "urn:agenc:plugin:privacy",
+        termsOfServiceUrl: "urn:agenc:plugin:terms",
+      });
+      expect(manifest.userConfig?.token).toMatchObject({
+        type: "string",
+        title: "Token",
+        description: "Access token",
+        required: true,
+        default: "dev-token",
+        sensitive: true,
+      });
+      expect(manifest.channels).toEqual([
+        {
+          server: "messages",
+          displayName: "Messages",
+          userConfig: {
+            "room-id": {
+              type: "string",
+              title: "Room",
+              description: "Room identifier",
+            },
+          },
+        },
+      ]);
+      expect(manifest.mcpServers).toMatchObject({
+        typed: {
+          type: "http",
+          url: "urn:agenc:plugin:mcp",
+        },
+      });
+    });
+  });
+
+  test("rejects strict user config option violations", async () => {
+    await withTempDir(async (root) => {
+      const issues = manifestIssuePaths(() =>
+        normalizePluginManifest(
+          JSON.parse(`{
+            "name": "bad-user-config",
+            "userConfig": {
+              "__proto__": {
+                "type": "string",
+                "title": "Unsafe",
+                "description": "Unsafe key"
+              },
+              "1bad": {
+                "type": "string",
+                "title": "Bad key",
+                "description": "Invalid identifier"
+              },
+              "unknown": {
+                "type": "string",
+                "title": "Unknown",
+                "description": "Unknown field",
+                "extra": true
+              },
+              "missing": {
+                "type": "string",
+                "title": "Missing description"
+              },
+              "badDefault": {
+                "type": "string",
+                "title": "Bad default",
+                "description": "Invalid default",
+                "default": { "value": "x" }
+              },
+              "badType": {
+                "type": "secret",
+                "title": "Bad type",
+                "description": "Invalid type"
+              }
+            }
+          }`),
+          root,
+        ),
+      );
+
+      expect(issues).toEqual(
+        expect.arrayContaining([
+          "userConfig",
+          "userConfig.__proto__",
+          "userConfig.1bad",
+          "userConfig.unknown.extra",
+          "userConfig.missing.description",
+          "userConfig.badDefault.default",
+          "userConfig.badType.type",
+        ]),
+      );
+    });
+  });
+
+  test("rejects malformed channels and command metadata", async () => {
+    await withTempDir(async (root) => {
+      const channelIssues = manifestIssuePaths(() =>
+        normalizePluginManifest(
+          {
+            name: "bad-channels",
+            channels: [
+              { server: "ok", extra: true },
+              { displayName: "Missing server" },
+            ],
+          },
+          root,
+        ),
+      );
+      const commandIssues = manifestIssuePaths(() =>
+        normalizePluginManifest(
+          {
+            name: "bad-commands",
+            commands: {
+              both: { source: "./commands/both.md", content: "inline" },
+              neither: { description: "missing source/content" },
+            },
+          },
+          root,
+        ),
+      );
+
+      expect(channelIssues).toEqual(
+        expect.arrayContaining([
+          "channels[0].extra",
+          "channels[1].server",
+        ]),
+      );
+      expect(commandIssues).toEqual(
+        expect.arrayContaining(["commands.both", "commands.neither"]),
+      );
+    });
+  });
+
+  test("rejects unsafe channel user config keys", async () => {
+    await withTempDir(async (root) => {
+      const issues = manifestIssuePaths(() =>
+        normalizePluginManifest(
+          JSON.parse(`{
+            "name": "bad-channel-user-config",
+            "channels": [
+              {
+                "server": "messages",
+                "userConfig": {
+                  "__proto__": {
+                    "type": "string",
+                    "title": "Unsafe",
+                    "description": "Unsafe key"
+                  }
+                }
+              }
+            ]
+          }`),
+          root,
+        ),
+      );
+
+      expect(issues).toContain("channels[0].userConfig.__proto__");
+    });
+  });
+
+  test("rejects unsafe inline server map keys", async () => {
+    await withTempDir(async (root) => {
+      const issues = manifestIssuePaths(() =>
+        normalizePluginManifest(
+          JSON.parse(`{
+            "name": "unsafe-server-maps",
+            "mcpServers": {
+              "__proto__": { "command": "node" },
+              "valid": { "command": "node" }
+            },
+            "lspServers": [
+              {
+                "constructor": {
+                  "command": "server",
+                  "extensionToLanguage": { ".ts": "typescript" }
+                }
+              }
+            ]
+          }`),
+          root,
+        ),
+      );
+
+      expect(issues).toEqual(
+        expect.arrayContaining([
+          "mcpServers.__proto__",
+          "lspServers[0].constructor",
+        ]),
+      );
+    });
+  });
+
+  test("validates dependency reference syntax", async () => {
+    await withTempDir(async (root) => {
+      const manifest = normalizePluginManifest(
+        {
+          name: "dependencies",
+          dependencies: [
+            "base-plugin@^1.2",
+            "qualified@team@^2",
+            { name: "object-plugin", marketplace: "team_marketplace" },
+          ],
+        },
+        root,
+      );
+      const issues = manifestIssuePaths(() =>
+        normalizePluginManifest(
+          {
+            name: "bad-dependencies",
+            dependencies: [
+              "bad dep",
+              { name: "../escape" },
+              { name: "empty-marketplace", marketplace: "" },
+              3,
+            ],
+          },
+          root,
+        ),
+      );
+
+      expect(manifest.dependencies).toEqual([
+        "base-plugin",
+        "qualified@team",
+        "object-plugin@team_marketplace",
+      ]);
+      expect(issues).toEqual(
+        expect.arrayContaining([
+          "dependencies[0]",
+          "dependencies[1].name",
+          "dependencies[2].marketplace",
+          "dependencies[3]",
+        ]),
+      );
+    });
+  });
+
+  test("rejects invalid names, homepage URLs, and manifest paths", async () => {
+    await withTempDir(async (root) => {
+      const emptyNameIssues = manifestIssuePaths(() =>
+        normalizePluginManifest({ name: "   " }, root),
+      );
+      const bundleIssues = manifestIssuePaths(() =>
+        normalizePluginManifest(
+          {
+            name: "bundle-paths",
+            mcpServers: ["./server.mcpb", "urn:agenc:plugin:mcp-bundle"],
+          },
+          root,
+        ),
+      );
+      const issues = manifestIssuePaths(() =>
+        normalizePluginManifest(
+          {
+            name: "bad name",
+            homepage: "not-a-url",
+            commands: {
+              bad: { source: "../outside.md" },
+            },
+            agents: "./agents/readme.txt",
+            outputStyles: "./styles/../outside",
+            apps: "apps.json",
+            hooks: "./hooks.txt",
+            mcpServers: "./mcp.txt",
+            lspServers: "../lsp.json",
+          },
+          root,
+        ),
+      );
+
+      expect(emptyNameIssues).toContain("name");
+      expect(bundleIssues).toEqual(
+        expect.arrayContaining(["mcpServers[0]", "mcpServers[1]"]),
+      );
+      expect(issues).toEqual(
+        expect.arrayContaining([
+          "name",
+          "homepage",
+          "commands.bad.source",
+          "agents",
+          "outputStyles",
+          "apps",
+          "hooks",
+          "mcpServers",
+          "lspServers",
+        ]),
+      );
+    });
+  });
+
+  test("rejects wrong-typed nested optional fields", async () => {
+    await withTempDir(async (root) => {
+      const issues = manifestIssuePaths(() =>
+        normalizePluginManifest(
+          {
+            name: "bad-nested-types",
+            author: {
+              name: "Team",
+              email: 3,
+              url: false,
+            },
+            commands: {
+              bad: {
+                content: "ok",
+                description: 12,
+                model: 4,
+                allowedTools: ["Read", 2],
+              },
+            },
+            interface: {
+              displayName: 3,
+              websiteURL: false,
+              privacyPolicyUrl: 10,
+              brandColor: 8,
+            },
+          },
+          root,
+        ),
+      );
+
+      expect(issues).toEqual(
+        expect.arrayContaining([
+          "author.email",
+          "author.url",
+          "commands.bad.description",
+          "commands.bad.model",
+          "commands.bad.allowedTools",
+          "interface.displayName",
+          "interface.websiteURL",
+          "interface.privacyPolicyUrl",
+          "interface.brandColor",
+        ]),
+      );
+    });
+  });
+
+  test("rejects invalid inline hooks and server config shapes", async () => {
+    await withTempDir(async (root) => {
+      const issues = manifestIssuePaths(() =>
+        normalizePluginManifest(
+          {
+            name: "bad-inline-config",
+            hooks: {
+              Stop: [3],
+            },
+            mcpServers: {
+              badArgs: { command: "node", args: ["ok", 3] },
+              emptyCommand: { command: "" },
+              badType: { type: "ws", endpoint: "urn:agenc:plugin:mcp" },
+              badTransport: {
+                transport: "ws",
+                endpoint: "urn:agenc:plugin:mcp",
+              },
+              missingTarget: {},
+            },
+            lspServers: {
+              missingExtensionMap: { command: "server" },
+              badShape: {
+                command: "",
+                extensionToLanguage: { ts: "" },
+                startupTimeout: 0,
+                maxRestarts: -1,
+              },
+              spaceCommand: {
+                command: "node server.js",
+                extensionToLanguage: { ".js": "javascript" },
+              },
+              unsupportedFields: {
+                command: "server",
+                extensionToLanguage: { ".ts": "typescript" },
+                transport: "socket",
+                settings: {},
+                shutdownTimeout: 100,
+                restartOnCrash: true,
+                extra: true,
+              },
+            },
+          },
+          root,
+        ),
+      );
+
+      expect(issues).toEqual(
+        expect.arrayContaining([
+          "hooks",
+          "mcpServers.badArgs.args",
+          "mcpServers.emptyCommand.command",
+          "mcpServers.badType.type",
+          "mcpServers.badTransport.transport",
+          "mcpServers.missingTarget",
+          "lspServers.missingExtensionMap.extensionToLanguage",
+          "lspServers.badShape.command",
+          "lspServers.badShape.extensionToLanguage.ts",
+          "lspServers.badShape.startupTimeout",
+          "lspServers.badShape.maxRestarts",
+          "lspServers.spaceCommand.command",
+          "lspServers.unsupportedFields.transport",
+          "lspServers.unsupportedFields.settings",
+          "lspServers.unsupportedFields.shutdownTimeout",
+          "lspServers.unsupportedFields.restartOnCrash",
+          "lspServers.unsupportedFields.extra",
+        ]),
+      );
+    });
+  });
+
+  test("rejects malformed interface asset declarations", async () => {
+    await withTempDir(async (root) => {
+      const issues = manifestIssuePaths(() =>
+        normalizePluginManifest(
+          {
+            name: "bad-interface-assets",
+            interface: {
+              composerIcon: 3,
+              logo: "logo.png",
+              screenshots: ["./screens/ok.png", 4, "../outside.png"],
+            },
+          },
+          root,
+        ),
+      );
+
+      expect(issues).toEqual(
+        expect.arrayContaining([
+          "interface.composerIcon",
+          "interface.logo",
+          "interface.screenshots[1]",
+          "interface.screenshots[2]",
+        ]),
+      );
+    });
+  });
+
+  test("rejects escaping server work directories inside inline arrays", async () => {
+    await withTempDir(async (root) => {
+      const issues = manifestIssuePaths(() =>
+        normalizePluginManifest(
+          {
+            name: "bad-server-array-paths",
+            mcpServers: [
+              {
+                local: {
+                  command: "node",
+                  cwd: "../outside",
+                },
+              },
+            ],
+            lspServers: [
+              {
+                ts: {
+                  command: "server",
+                  extensionToLanguage: { ".ts": "typescript" },
+                  workspaceFolder: "../outside",
+                },
+              },
+            ],
+          },
+          root,
+        ),
+      );
+
+      expect(issues).toEqual(
+        expect.arrayContaining([
+          "mcpServers[0].local.cwd",
+          "lspServers[0].ts.workspaceFolder",
+        ]),
+      );
     });
   });
 });
@@ -483,7 +1010,7 @@ describe("plugin loader", () => {
 
       expect(plugin.hookSources).toEqual([]);
       expect(errors.map((error) => error.message)).toContain(
-        "Inline hooks must be a hooks map or an object with a hooks map",
+        "Plugin manifest failed validation",
       );
     });
   });
@@ -741,9 +1268,11 @@ describe("plugin validation", () => {
       const pluginRoot = join(root, "plugins", "bad-server-paths");
       await writePluginManifest(pluginRoot, {
         name: "bad-server-paths",
-        mcpServers: {
-          inline: { command: "node", cwd: "../outside" },
-        },
+        mcpServers: [
+          {
+            inline: { command: "node", cwd: "../outside" },
+          },
+        ],
         lspServers: "./lsp.json",
       });
       await writeJson(join(pluginRoot, "lsp.json"), {
@@ -761,7 +1290,7 @@ describe("plugin validation", () => {
       expect(result.success).toBe(false);
       expect(result.errors.map((error) => error.path)).toEqual(
         expect.arrayContaining([
-          "mcpServers.inline.cwd",
+          "mcpServers[0].inline.cwd",
           "lspServers.ts.workspaceFolder",
         ]),
       );
@@ -821,6 +1350,16 @@ describe("plugin validation", () => {
     });
   });
 });
+
+function manifestIssuePaths(fn: () => unknown): string[] {
+  try {
+    fn();
+    return [];
+  } catch (error) {
+    expect(error).toBeInstanceOf(PluginManifestError);
+    return (error as PluginManifestError).issues.map((issue) => issue.path);
+  }
+}
 
 async function withTempDir<T>(fn: (root: string) => Promise<T>): Promise<T> {
   const root = await import("node:fs/promises").then(({ mkdtemp }) =>

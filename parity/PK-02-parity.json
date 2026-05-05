@@ -1,0 +1,85 @@
+{
+  "contractName": "pk-02-plugin-manifest-schema",
+  "scope": "AgenC plugin.json schema and normalization contract",
+  "sourceRoots": [
+    {
+      "root": "/home/tetsuo/git/codex",
+      "commit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589"
+    },
+    {
+      "root": "/home/tetsuo/git/openclaude",
+      "commit": "0ca43335375beec6e58711b797d5b0c4bb5019b8"
+    }
+  ],
+  "sourceFiles": [
+    "codex-rs/core-plugins/src/manifest.rs",
+    "src/utils/plugins/schemas.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/plugins/manifest-schema.ts",
+    "runtime/src/plugins/manifest.ts",
+    "runtime/src/plugins/loader.ts",
+    "runtime/src/plugins/validation.ts",
+    "runtime/src/plugins/PARITY.md"
+  ],
+  "testFiles": [
+    "runtime/src/plugins/loader.test.ts"
+  ],
+  "omissions": [
+    {
+      "sourceFile": "src/utils/plugins/schemas.ts",
+      "reason": "Marketplace fetch/install source schemas, marketplace-name reservation, installed-plugin metadata, and remote registry policy belong to later plugin-kit rows. PK-02 carries the local plugin.json schema surface consumed by the current loader."
+    },
+    {
+      "sourceFile": "src/utils/plugins/schemas.ts",
+      "reason": "MCPB/DXT bundle path and URL declarations are intentionally rejected in PK-02 because the current AgenC plugin loader only reads local JSON MCP server maps. Bundle install/extraction belongs with later plugin runtime and marketplace rows (PK-03/PK-09)."
+    },
+    {
+      "sourceFile": "src/utils/plugins/schemas.ts",
+      "reason": "LSP transport/settings/shutdownTimeout/restartOnCrash manifest fields are intentionally rejected in PK-02 because AgenC's current LSP config input does not carry them. Preserving those fields belongs with later plugin runtime integration."
+    },
+    {
+      "sourceFile": "codex-rs/core-plugins/src/manifest.rs",
+      "reason": "Filesystem manifest discovery and bounded JSON reading remain in runtime/src/plugins/manifest.ts; schema validation and normalization live in runtime/src/plugins/manifest-schema.ts."
+    }
+  ],
+  "rows": [
+    {
+      "id": "manifest-file-boundary",
+      "requiredBehaviors": [
+        "Keep .agenc-plugin/plugin.json discovery and bounded JSON reads in manifest.ts",
+        "Keep plugin.json type validation and normalization in manifest-schema.ts",
+        "Avoid re-export-only compatibility modules"
+      ],
+      "tests": [
+        "runtime/src/plugins/loader.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "metadata-normalization",
+      "requiredBehaviors": [
+        "Trim non-empty manifest versions",
+        "Normalize dependencies from strings and object entries",
+        "Normalize interface URL aliases and default prompts"
+      ],
+      "tests": [
+        "runtime/src/plugins/loader.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "schema-strictness",
+      "requiredBehaviors": [
+        "Reject command metadata without exactly one of source or content",
+        "Reject unsafe object keys in command, settings, userConfig, channel, and server maps",
+        "Validate userConfig option keys, required fields, allowed types, defaults, and unknown fields",
+        "Validate and preserve channel declarations for later runtime integration"
+      ],
+      "tests": [
+        "runtime/src/plugins/loader.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}
