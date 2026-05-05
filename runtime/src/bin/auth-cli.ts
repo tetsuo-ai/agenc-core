@@ -6,16 +6,11 @@
  * persistence path.
  */
 
-import {
-  createAuthBackend,
-  type AuthBackend,
-  type AuthIdentity,
-  type RemoteAuthBackendOptions,
-} from "../auth/index.js";
-import {
-  loadConfig,
-  resolveAgencHome,
-} from "../config/index.js";
+import { createAuthBackend } from "../auth/selection.js";
+import type { AuthBackend, AuthIdentity } from "../auth/backend.js";
+import type { RemoteAuthBackendOptions } from "../auth/backends/remote.js";
+import { loadConfig } from "../config/loader.js";
+import { resolveAgencHome } from "../config/env.js";
 
 export type AgenCAuthCliCommand =
   | { readonly kind: "login" }

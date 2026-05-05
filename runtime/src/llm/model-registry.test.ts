@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { defaultConfig, mergeConfigs } from "../config/index.js";
+import { defaultConfig, mergeConfigs } from "../config/schema.js";
 import {
   ModelRegistry,
   modelRegistryEntryToModelInfo,
@@ -34,7 +34,7 @@ describe("ModelRegistry", () => {
     });
   });
 
-  it("uses the registered model catalog for newer OpenAI model metadata", () => {
+  it("uses the registered model catalog for newer openai model metadata", () => {
     const registry = new ModelRegistry({ config: defaultConfig() });
 
     const entry = registry.resolveSync({
@@ -57,11 +57,11 @@ describe("ModelRegistry", () => {
 
     const entry = registry.resolveSync({
       provider: "openai",
-      model: "codex-auto-review", // branding-scan: allow OpenAI model identifier
+      model: "codex-auto-review", // branding-scan: allow openai model identifier
     });
 
     expect(modelRegistryEntryToModelInfo(entry)).toMatchObject({
-      slug: "codex-auto-review", // branding-scan: allow OpenAI model identifier
+      slug: "codex-auto-review", // branding-scan: allow openai model identifier
       visibility: "hide",
       showInPicker: false,
     });

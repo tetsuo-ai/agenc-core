@@ -36,13 +36,7 @@ import {
   type ProjectInstructionChainEntry,
   type ProjectInstructionsConfig,
 } from "./project-instructions.js";
-import {
-  DEFAULT_MANAGED_RULES_DIR,
-  discoverInstructionRules,
-  formatRulesBlock,
-  projectRulesDir,
-  userRulesDir,
-} from "./rules/discovery.js";
+import { DEFAULT_MANAGED_RULES_DIR, discoverInstructionRules, formatRulesBlock, projectRulesDir, userRulesDir } from "./rules/discovery.js";
 
 /** Default max nesting depth for `@include` expansion. */
 export const DEFAULT_INCLUDE_MAX_DEPTH = 10;
@@ -627,7 +621,7 @@ function formatDroppedInclude(drop: DroppedInclude): string {
  *
  * The loader already preserves rejected include metadata per tier so callers
  * do not need to scrape the assembled prompt's HTML comments. The TUI uses
- * these notices to match AgenC's memory/config status surface while
+ * these notices to mirror AgenC's memory/config status surface while
  * keeping AgenC's AGENC.md terminology.
  */
 export function formatTieredInstructionWarnings(

@@ -4,7 +4,7 @@ import { LLMProviderError } from "../../errors.js";
 import { createProvider } from "../../provider.js";
 import type { LLMTool } from "../../types.js";
 import { resolveBuiltInProviderInfo } from "../../registry/provider-info.js";
-import { GrokProvider } from "./index.js";
+import { GrokProvider } from "./adapter.js";
 
 const TEST_TOOL: LLMTool = {
   type: "function",

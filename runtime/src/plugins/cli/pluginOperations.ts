@@ -1,7 +1,8 @@
 import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { resolveAgencHome, loadConfig } from "../../config/index.js";
+import { resolveAgencHome } from "../../config/env.js";
+import { loadConfig } from "../../config/loader.js";
 import type { PluginEntryConfig } from "../../config/schema.js";
 import { createPluginFromPath, loadPlugins, type LoadedPlugin } from "../loader.js";
 import { findPluginManifestPath } from "../manifest.js";

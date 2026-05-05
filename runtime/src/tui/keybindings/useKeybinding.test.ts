@@ -39,6 +39,13 @@ function key(overrides: Partial<Key> = {}): Key {
 }
 
 describe("useKeybinding exports and resolver contract", () => {
+  test("exports singular and aggregate hooks from the canonical module", async () => {
+    const { useKeybinding, useKeybindings } = await import("./useKeybinding.js");
+
+    expect(typeof useKeybinding).toBe("function");
+    expect(typeof useKeybindings).toBe("function");
+  });
+
   test("resolves display text and chord state for aggregate hook callers", () => {
     const bindings = parseBindings([
       {

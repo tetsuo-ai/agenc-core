@@ -4,11 +4,7 @@ import { tmpdir } from "node:os";
 
 import { describe, expect, test } from "vitest";
 
-import {
-  APPLY_PATCH_LARK_GRAMMAR,
-  APPLY_PATCH_TOOL_NAME,
-  createApplyPatchTool,
-} from "./index.js";
+import { APPLY_PATCH_LARK_GRAMMAR, APPLY_PATCH_TOOL_NAME, createApplyPatchTool } from "./tool.js";
 
 async function tempRoot(): Promise<string> {
   return mkdtemp(join(tmpdir(), "agenc-apply-patch-tool-"));

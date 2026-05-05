@@ -9,7 +9,7 @@ import {
   oneShotCLI,
   type PreparedTurnRuntimeInputs,
 } from "./agenc.js";
-import { defaultConfig } from "../config/index.js";
+import { defaultConfig } from "../config/schema.js";
 import { trustProjectSync } from "../permissions/trust/project-trust.js";
 import type { PhaseEvent } from "../phases/events.js";
 

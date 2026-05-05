@@ -3,13 +3,9 @@ import { describe, expect, test } from "vitest";
 import type { LLMToolCall } from "../llm/types.js";
 import type { ToolDispatchResult, ToolRegistry } from "../tool-registry.js";
 import type { Tool } from "../tools/types.js";
-import {
-  MCP_ERROR_INVALID_PARAMS,
-  McpServerFramework,
-  McpToolRegistry,
-  mcpDefinitionFromAgenCTool,
-  mcpToolRegistryFromAgenCTools,
-} from "./index.js";
+import { MCP_ERROR_INVALID_PARAMS } from "./types.js";
+import { McpServerFramework } from "./framework.js";
+import { McpToolRegistry, mcpDefinitionFromAgenCTool, mcpToolRegistryFromAgenCTools } from "./tools.js";
 
 const SAMPLE_TOOL: Tool = {
   name: "sample.echo",

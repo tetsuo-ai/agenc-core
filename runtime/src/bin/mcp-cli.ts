@@ -9,12 +9,10 @@ import type { Server } from "node:http";
 import type { Readable, Writable } from "node:stream";
 import { cwd as processCwd } from "node:process";
 import { VERSION } from "../index.js";
-import {
-  McpHttpSseServerTransport,
-  McpServerFramework,
-  McpStdioServerTransport,
-  mcpToolRegistryFromAgenCTools,
-} from "../mcp-server/index.js";
+import { McpHttpSseServerTransport } from "../mcp-server/http-sse.js";
+import { McpServerFramework } from "../mcp-server/framework.js";
+import { McpStdioServerTransport } from "../mcp-server/stdio.js";
+import { mcpToolRegistryFromAgenCTools } from "../mcp-server/tools.js";
 import {
   buildToolRegistry,
   type ToolRegistry,

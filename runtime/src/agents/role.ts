@@ -35,13 +35,10 @@
 
 import { readFileSync } from "node:fs";
 import type { AgentRegistry } from "./registry.js";
-import {
-  normalizeAgenCKeyAliases,
-  normalizeRawConfig,
-  parseToml,
-  resolveProfile,
-  type AgenCConfig,
-} from "../config/index.js";
+import { normalizeAgenCKeyAliases, normalizeRawConfig } from "../config/schema.js";
+import { parseToml } from "../config/loader.js";
+import { resolveProfile } from "../config/profiles.js";
+import type { AgenCConfig } from "../config/schema.js";
 import { normalizeExternalText } from "./_deps/file-read.js";
 import {
   agentRolePresentation,

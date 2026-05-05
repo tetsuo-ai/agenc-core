@@ -9,11 +9,8 @@ import {
   DENIED,
 } from "./review-decision.js";
 import { buildToolUseConfirmQueue } from "../agenc/adapters/permission-bridge-projection.js";
-import {
-  clearAskUserQuestionResponsesForTest,
-  createAskUserQuestionTool,
-  type AskUserQuestionInput,
-} from "../tools/ask-user-question/tool.js";
+import { clearAskUserQuestionResponsesForTest, createAskUserQuestionTool } from "../tools/ask-user-question/tool.js";
+import type { AskUserQuestionInput } from "../tools/ask-user-question/tool.js";
 
 interface PendingRequestLike {
   readonly id: string;

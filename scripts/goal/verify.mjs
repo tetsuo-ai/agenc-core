@@ -3860,10 +3860,10 @@ function stripSourceModuleExtension(filePath) {
   return null;
 }
 
-function zc06DeletedModuleBases() {
-  const diff = git("diff", "--name-only", "--diff-filter=D", "main...HEAD", "--", "runtime/src");
+function zc06DeletedModuleBases(label = "ZC-06") {
+  const diff = git("diff", "--name-only", "--diff-filter=D", "main", "--", "runtime/src");
   if (diff.status !== 0) {
-    failGate("ZC-06: could not derive deleted module list from git diff");
+    failGate(`${label}: could not derive deleted module list from git diff`);
   }
   const deletedBases = new Set();
   for (const rel of diff.stdout.split("\n").map((line) => line.trim()).filter(Boolean)) {
@@ -3872,12 +3872,12 @@ function zc06DeletedModuleBases() {
     deletedBases.add(path.join(root, baseRel));
   }
   if (deletedBases.size === 0) {
-    failGate("ZC-06: no deleted runtime source modules found in diff");
+    failGate(`${label}: no deleted runtime source modules found in diff`);
   }
   return deletedBases;
 }
 
-function assertNoZc06DeletedModuleSurvivors(deletedBases) {
+function assertNoDeletedModuleSurvivors(deletedBases, label = "ZC-06") {
   const survivors = [];
   for (const base of deletedBases) {
     for (const ext of sourceModuleExtensions()) {
@@ -3886,11 +3886,11 @@ function assertNoZc06DeletedModuleSurvivors(deletedBases) {
     }
   }
   if (survivors.length > 0) {
-    failGate(`ZC-06: same-base module file(s) still exist for deleted re-export modules:\n${survivors.join("\n")}`);
+    failGate(`${label}: same-base module file(s) still exist for deleted re-export modules:\n${survivors.join("\n")}`);
   }
 }
 
-function assertNoZc06DeletedModuleImporters(deletedBases) {
+function assertNoDeletedModuleImporters(deletedBases, label = "ZC-06") {
   const specifierPattern =
     /(?:from\s+|import\s*\(\s*|require\s*\(\s*|^\s*import\s+)["'](\.{1,2}\/[^"']+)["']/gm;
   const offenders = [];
@@ -3904,13 +3904,403 @@ function assertNoZc06DeletedModuleImporters(deletedBases) {
       if (!specifier || specifier.includes("?")) continue;
       const targetBase = importTargetBase(path.resolve(baseDir, specifier));
       if (deletedBases.has(targetBase)) {
-        offenders.push(`${rel}: imports deleted ZC-06 module ${specifier}`);
+        offenders.push(`${rel}: references deleted ${label} module ${specifier}`);
       }
     }
   }
 
   if (offenders.length > 0) {
-    failGate(`ZC-06: importer(s) still point at deleted re-export modules:\n${offenders.join("\n")}`);
+    failGate(`${label}: importer(s) still point at deleted re-export modules:\n${offenders.join("\n")}`);
+  }
+}
+
+function assertNoZc06DeletedModuleSurvivors(deletedBases) {
+  assertNoDeletedModuleSurvivors(deletedBases, "ZC-06");
+}
+
+function assertNoZc06DeletedModuleImporters(deletedBases) {
+  assertNoDeletedModuleImporters(deletedBases, "ZC-06");
+}
+
+var typeScriptModulePromise = null;
+
+async function loadTypeScriptForForwarderGate() {
+  typeScriptModulePromise ??= import("typescript").catch((error) => {
+    failGate(
+      `ZC-23: could not load TypeScript compiler API for forwarder detection: ` +
+      `${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
+  return typeScriptModulePromise;
+}
+
+function runtimeForwarderScriptKind(ts, rel) {
+  if (/\.tsx$/u.test(rel)) return ts.ScriptKind.TSX;
+  if (/\.jsx$/u.test(rel)) return ts.ScriptKind.JSX;
+  if (/\.mts$/u.test(rel)) return ts.ScriptKind.TS;
+  if (/\.cts$/u.test(rel)) return ts.ScriptKind.TS;
+  if (/\.mjs$/u.test(rel)) return ts.ScriptKind.JS;
+  if (/\.cjs$/u.test(rel)) return ts.ScriptKind.JS;
+  if (/\.js$/u.test(rel)) return ts.ScriptKind.JS;
+  return ts.ScriptKind.TS;
+}
+
+function runtimeForwarderSourceFile(ts, rel, source) {
+  return ts.createSourceFile(
+    rel,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    runtimeForwarderScriptKind(ts, rel),
+  );
+}
+
+function moduleSpecifierText(ts, node) {
+  if (!node || !ts.isStringLiteralLike(node)) return null;
+  return node.text;
+}
+
+function recordImportedBinding(bindings, localName, info) {
+  if (!localName) return;
+  bindings.set(localName, info);
+}
+
+function collectRuntimeForwarderImports(ts, node, importedBindings) {
+  const specifier = moduleSpecifierText(ts, node.moduleSpecifier);
+  if (specifier === null) return false;
+  if (!node.importClause) return false;
+
+  const importClause = node.importClause;
+  if (importClause.name) {
+    recordImportedBinding(importedBindings, importClause.name.text, {
+      module: specifier,
+      imported: "default",
+      typeOnly: importClause.isTypeOnly === true,
+      namespace: false,
+    });
+  }
+
+  const namedBindings = importClause.namedBindings;
+  if (!namedBindings) return true;
+
+  if (ts.isNamespaceImport(namedBindings)) {
+    recordImportedBinding(importedBindings, namedBindings.name.text, {
+      module: specifier,
+      imported: "*",
+      typeOnly: importClause.isTypeOnly === true,
+      namespace: true,
+    });
+    return true;
+  }
+
+  if (ts.isNamedImports(namedBindings)) {
+    for (const element of namedBindings.elements) {
+      const importedName = element.propertyName?.text ?? element.name.text;
+      recordImportedBinding(importedBindings, element.name.text, {
+        module: specifier,
+        imported: importedName,
+        typeOnly: importClause.isTypeOnly === true || element.isTypeOnly === true,
+        namespace: false,
+      });
+    }
+  }
+
+  return true;
+}
+
+function exportDeclarationForward(ts, node) {
+  const specifier = moduleSpecifierText(ts, node.moduleSpecifier);
+  if (specifier === null) return null;
+  const names = [];
+  const exportClause = node.exportClause;
+  if (!exportClause) {
+    names.push("*");
+  } else if (ts.isNamespaceExport(exportClause)) {
+    names.push(`* as ${exportClause.name.text}`);
+  } else if (ts.isNamedExports(exportClause)) {
+    for (const element of exportClause.elements) {
+      const imported = element.propertyName?.text ?? element.name.text;
+      const exported = element.name.text;
+      names.push(imported === exported ? exported : `${imported} as ${exported}`);
+    }
+  }
+  return {
+    kind: "export-from",
+    module: specifier,
+    names,
+    typeOnly: node.isTypeOnly === true,
+  };
+}
+
+function localExportDeclarationForward(ts, node, importedBindings) {
+  if (!node.exportClause) return {
+    kind: "module-marker",
+    forwards: [],
+  };
+  if (!ts.isNamedExports(node.exportClause)) return null;
+
+  const forwards = [];
+  for (const element of node.exportClause.elements) {
+    const localName = element.propertyName?.text ?? element.name.text;
+    const imported = importedBindings.get(localName);
+    if (!imported) return null;
+    const exported = element.name.text;
+    forwards.push({
+      kind: "imported-binding-export",
+      module: imported.module,
+      imported: imported.imported,
+      exported,
+      local: localName,
+      typeOnly: node.isTypeOnly === true || element.isTypeOnly === true || imported.typeOnly === true,
+      namespace: imported.namespace,
+    });
+  }
+
+  return {
+    kind: "local-export",
+    forwards,
+  };
+}
+
+function classifyRuntimeForwarderSource(ts, rel, source) {
+  const sourceFile = runtimeForwarderSourceFile(ts, rel, source);
+  const importedBindings = new Map();
+  const forwards = [];
+  let hasLocalBehavior = false;
+
+  for (const statement of sourceFile.statements) {
+    if (ts.isImportDeclaration(statement)) {
+      if (!collectRuntimeForwarderImports(ts, statement, importedBindings)) {
+        hasLocalBehavior = true;
+      }
+      continue;
+    }
+
+    if (ts.isExportDeclaration(statement)) {
+      const directForward = exportDeclarationForward(ts, statement);
+      if (directForward !== null) {
+        forwards.push(directForward);
+        continue;
+      }
+
+      const localForward = localExportDeclarationForward(ts, statement, importedBindings);
+      if (localForward?.kind === "module-marker") continue;
+      if (localForward?.kind === "local-export") {
+        forwards.push(...localForward.forwards);
+        continue;
+      }
+
+      hasLocalBehavior = true;
+      continue;
+    }
+
+    if (ts.isExportAssignment(statement)) {
+      if (statement.isExportEquals === true) {
+        hasLocalBehavior = true;
+        continue;
+      }
+      if (ts.isIdentifier(statement.expression)) {
+        const imported = importedBindings.get(statement.expression.text);
+        if (imported) {
+          forwards.push({
+            kind: "default-assignment",
+            module: imported.module,
+            imported: imported.imported,
+            exported: "default",
+            local: statement.expression.text,
+            typeOnly: imported.typeOnly === true,
+            namespace: imported.namespace,
+          });
+          continue;
+        }
+      }
+      hasLocalBehavior = true;
+      continue;
+    }
+
+    if (ts.isEmptyStatement(statement)) continue;
+    hasLocalBehavior = true;
+  }
+
+  return {
+    rel,
+    isForwarderOnly: forwards.length > 0 && !hasLocalBehavior,
+    forwards,
+    hasLocalBehavior,
+  };
+}
+
+function isRuntimeDeclarationFile(rel) {
+  return /\.d\.(?:ts|mts|cts)$/u.test(rel);
+}
+
+function isRuntimeTestSource(rel) {
+  return /\.test\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/u.test(rel);
+}
+
+function isRuntimeSourceModule(rel) {
+  return /^runtime\/src\/.*\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/u.test(rel);
+}
+
+function shouldScanRuntimeForwarderFile(rel) {
+  if (!isRuntimeSourceModule(rel)) return false;
+  if (isRuntimeDeclarationFile(rel)) return false;
+  if (isRuntimeTestSource(rel)) return false;
+  if (rel.startsWith("runtime/src/agenc/upstream/")) return false;
+  return true;
+}
+
+async function assertRuntimeForwarderClassifierSelfTests() {
+  const ts = await loadTypeScriptForForwarderGate();
+  const cases = [
+    {
+      name: "comment plus named export-from",
+      source: "// public surface\nexport { Foo } from './foo.js';\n",
+      expected: true,
+    },
+    {
+      name: "multiline mixed type value export-from",
+      source: "export {\n  type Foo,\n  Bar,\n} from './foo.js';\n",
+      expected: true,
+    },
+    {
+      name: "alias export-from",
+      source: "export { Foo as Bar } from './foo.js';\n",
+      expected: true,
+    },
+    {
+      name: "default export-from",
+      source: "export { default } from './foo.js';\n",
+      expected: true,
+    },
+    {
+      name: "default alias export-from",
+      source: "export { default as Foo } from './foo.js';\n",
+      expected: true,
+    },
+    {
+      name: "type star export-from",
+      source: "export type * from './foo.js';\n",
+      expected: true,
+    },
+    {
+      name: "namespace export-from",
+      source: "export * as ns from './foo.js';\n",
+      expected: true,
+    },
+    {
+      name: "import default then export default",
+      source: "import Foo from './foo.js';\nexport default Foo;\n",
+      expected: true,
+    },
+    {
+      name: "import named then export named",
+      source: "import { Foo } from './foo.js';\nexport { Foo };\n",
+      expected: true,
+    },
+    {
+      name: "import type then export type",
+      source: "import type { Foo } from './foo.js';\nexport type { Foo };\n",
+      expected: true,
+    },
+    {
+      name: "module marker plus forward",
+      source: "export {};\nexport { Foo } from './foo.js';\n",
+      expected: true,
+    },
+    {
+      name: "empty comments only",
+      source: "// nothing exported\n/* still empty */\n",
+      expected: false,
+    },
+    {
+      name: "side-effect import protects file",
+      source: "import './setup.js';\nimport Foo from './foo.js';\nexport default Foo;\n",
+      expected: false,
+    },
+    {
+      name: "local const plus re-export",
+      source: "export const local = 1;\nexport { Foo } from './foo.js';\n",
+      expected: false,
+    },
+    {
+      name: "local function plus re-export",
+      source: "export function local() {}\nexport { Foo } from './foo.js';\n",
+      expected: false,
+    },
+    {
+      name: "local type plus re-export",
+      source: "export type Local = string;\nexport { Foo } from './foo.js';\n",
+      expected: false,
+    },
+    {
+      name: "local interface plus re-export",
+      source: "export interface Local { value: string }\nexport { Foo } from './foo.js';\n",
+      expected: false,
+    },
+    {
+      name: "local export declaration",
+      source: "const Foo = 1;\nexport { Foo };\n",
+      expected: false,
+    },
+    {
+      name: "export equals is local behavior",
+      source: "import Foo from './foo.js';\nexport = Foo;\n",
+      expected: false,
+    },
+  ];
+
+  const failures = [];
+  for (const testCase of cases) {
+    const result = classifyRuntimeForwarderSource(
+      ts,
+      `runtime/src/__zc23_fixture_${testCase.name.replace(/[^a-z0-9]+/giu, "_")}.ts`,
+      testCase.source,
+    );
+    if (result.isForwarderOnly !== testCase.expected) {
+      failures.push(
+        `${testCase.name}: expected ${testCase.expected ? "forwarder" : "non-forwarder"}, ` +
+        `got ${result.isForwarderOnly ? "forwarder" : "non-forwarder"}`,
+      );
+    }
+  }
+
+  if (failures.length > 0) {
+    failGate(`ZC-23: runtime forwarder classifier self-test failed:\n  ${failures.join("\n  ")}`);
+  }
+}
+
+async function runtimeForwarderOnlyModules() {
+  const ts = await loadTypeScriptForForwarderGate();
+  const tracked = git("ls-files", "runtime/src");
+  if (tracked.status !== 0) failGate("ZC-23: git ls-files failed while scanning runtime/src");
+  const offenders = [];
+  for (const rel of tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean)) {
+    if (!shouldScanRuntimeForwarderFile(rel)) continue;
+    const abs = path.join(root, rel);
+    if (!existsSync(abs)) continue;
+    const source = readFileSync(abs, "utf8");
+    const result = classifyRuntimeForwarderSource(ts, rel, source);
+    if (result.isForwarderOnly) offenders.push(result);
+  }
+  return offenders;
+}
+
+async function assertNoRuntimeForwarderOnlyModules() {
+  await assertRuntimeForwarderClassifierSelfTests();
+  const offenders = await runtimeForwarderOnlyModules();
+  if (offenders.length > 0) {
+    failGate(
+      `ZC-23: runtime forwarder-only module(s) remain. Delete them and update importers to canonical homes:\n  ` +
+      offenders
+        .map((offender) => {
+          const targets = [...new Set(offender.forwards.map((forward) => forward.module))]
+            .filter(Boolean)
+            .join(", ");
+          return `${offender.rel}${targets ? ` -> ${targets}` : ""}`;
+        })
+        .join("\n  "),
+    );
   }
 }
 
@@ -4420,6 +4810,7 @@ async function cleanupGates(item) {
           globs: ["*.ts", "*.tsx"],
           excludeGlobs: ["*.test.ts", "*.test.tsx"],
         },
+        custom: assertNoRuntimeForwarderOnlyModules,
       },
       "ZC-07": {
         grepNotPresent: {
@@ -4448,6 +4839,7 @@ async function cleanupGates(item) {
         grepNotPresent: { pattern: "elicitation-bridge", scope: "runtime/src" },
         custom: assertZc22ElicitationRendererInlined,
       },
+      "ZC-23": { custom: assertNoRuntimeForwarderOnlyModules },
       "ZC-26": { grepNotPresent: { pattern: "/home/claude/.agenc/remote", scope: "runtime/src" } }, // branding-scan: allow donor-leak path that ZC-26 is removing
       "ZC-27": { grepNotPresent: { pattern: "@ts-nocheck", scope: "runtime/src/types" } },
       "ZC-28": { gone: ["runtime/src/utils/attachments.ts", "runtime/src/utils/teamMemoryOps.ts", "runtime/src/components/FeedbackSurvey/useMemorySurvey.tsx"] },
@@ -4476,7 +4868,7 @@ async function cleanupGates(item) {
       pass(`${id}: required pattern "${pattern}" found in ${scope}`);
     }
     if (expectations.custom) {
-      expectations.custom();
+      await expectations.custom();
       pass(`${id}: custom cleanup gate passed`);
     }
     if (id === "ZC-06") {
@@ -4487,6 +4879,15 @@ async function cleanupGates(item) {
       pass("ZC-06: no importers point at deleted re-export modules");
       assertChangedRelativeImportsResolve();
       pass("ZC-06: changed relative import targets resolve");
+    }
+    if (id === "ZC-23") {
+      const deletedBases = zc06DeletedModuleBases("ZC-23");
+      assertNoDeletedModuleSurvivors(deletedBases, "ZC-23");
+      pass("ZC-23: deleted forwarder modules have no same-base survivors");
+      assertNoDeletedModuleImporters(deletedBases, "ZC-23");
+      pass("ZC-23: no importers point at deleted forwarder modules");
+      assertChangedRelativeImportsResolve();
+      pass("ZC-23: changed relative import targets resolve");
     }
   }
 }

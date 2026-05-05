@@ -3,8 +3,8 @@ import React from 'react';
 import Link from './components/Link.js';
 import Text from './components/Text.js';
 import type { Color } from './styles.js';
-import { Parser } from './termio/parser.js';
-import type { Color as TermioColor, NamedColor, TextStyle } from './termio/types.js';
+import type { NamedColor, Color as TermioColor, TextStyle } from "./termio/types.js";
+import { Parser } from "./termio/parser.js";
 type Props = {
   children: string;
   /** When true, force all text to be rendered with dim styling */

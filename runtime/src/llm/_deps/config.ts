@@ -1,5 +1,5 @@
 /**
- * Local _deps stub for the gut/AgenC crossing of `../config/index.js`.
+ * Local _deps slice for the LLM/config boundary.
  * Provides the minimal surface the LLM models-manager consumes:
  *   - AgenCConfig type (loose pass-through shape)
  *   - normalizeProviderSlug
@@ -9,7 +9,7 @@
  *
  * The full config tranche will replace this when it lands; here we keep
  * behaviour conservative and the type permissive (`any` payloads on the
- * deeper records, since this stub is not a parser).
+ * deeper records, since this helper is not a parser).
  */
 
 import {

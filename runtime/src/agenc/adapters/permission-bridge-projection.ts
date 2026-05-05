@@ -16,12 +16,8 @@ import {
   APPROVED_FOR_SESSION,
   DENIED,
 } from "../../permissions/review-decision.js";
-import {
-  ASK_USER_QUESTION_TOOL_NAME,
-  recordAskUserQuestionPlanInterviewAction,
-  recordAskUserQuestionUpdatedInput,
-  type AskUserQuestionPlanInterviewAction,
-} from "../../tools/ask-user-question/tool.js";
+import { ASK_USER_QUESTION_TOOL_NAME, recordAskUserQuestionPlanInterviewAction, recordAskUserQuestionUpdatedInput } from "../../tools/ask-user-question/tool.js";
+import type { AskUserQuestionPlanInterviewAction } from "../../tools/ask-user-question/tool.js";
 import { makeToolUseMessage } from "../../tui/session-transcript.js";
 
 export interface PendingRequest {

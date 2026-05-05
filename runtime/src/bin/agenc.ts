@@ -67,12 +67,9 @@ import {
 } from "../session/observer-wiring.js";
 import { runSlashCommand } from "./slash.js";
 import type { SlashCommandAppStateBridge } from "../commands/types.js";
-import {
-  ConfigStore,
-  resolveAgencHome,
-  resolveWorkspace as resolveWorkspaceFromEnv,
-  type AgenCConfig,
-} from "../config/index.js";
+import { ConfigStore } from "../config/store.js";
+import { resolveAgencHome, resolveWorkspace as resolveWorkspaceFromEnv } from "../config/env.js";
+import type { AgenCConfig } from "../config/schema.js";
 import {
   bootstrapLocalRuntimeSession,
   type BootstrapLocalRuntimeSessionOptions,

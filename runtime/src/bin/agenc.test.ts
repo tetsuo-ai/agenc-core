@@ -44,7 +44,8 @@ import {
   validateAgencHome,
   type ConfigReloadLatch,
 } from "./agenc.js";
-import { ConfigStore, defaultConfig } from "../config/index.js";
+import { ConfigStore } from "../config/store.js";
+import { defaultConfig } from "../config/schema.js";
 import * as configUtils from "../config/init.js";
 import {
   assembleSystemPrompt,

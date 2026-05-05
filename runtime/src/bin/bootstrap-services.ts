@@ -58,16 +58,8 @@ import {
 } from "../thread-store/live-thread.js";
 import type { RegisteredAgentTask } from "../session/agent-task-lifecycle.js";
 import { BehaviorSubject } from "../utils/behavior-subject.js";
-import {
-  dispatchPostCompact,
-  dispatchPreCompact,
-  dispatchSessionStart,
-} from "../llm/hooks/dispatcher.js";
-import {
-  registerPostCompactHook,
-  registerPreCompactHook,
-  registerSessionStartHook,
-} from "../llm/hooks/registry.js";
+import { dispatchPostCompact, dispatchPreCompact, dispatchSessionStart } from "../llm/hooks/dispatcher.js";
+import { registerPostCompactHook, registerPreCompactHook, registerSessionStartHook } from "../llm/hooks/registry.js";
 import { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
 import { createAutoFixPostToolHook } from "../services/autoFix/autoFixHook.js";
 import {
