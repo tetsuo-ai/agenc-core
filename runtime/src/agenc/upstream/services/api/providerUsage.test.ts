@@ -5,7 +5,7 @@ import {
   formatCodexPlanType,
   getCodexUsageUrl,
   normalizeCodexUsagePayload,
-} from './codexUsage.js'
+} from './providerUsage.js'
 
 describe('normalizeCodexUsagePayload', () => {
   test('normalizes live Codex usage payloads from /backend-api/wham/usage', () => {

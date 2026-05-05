@@ -3,9 +3,9 @@ import * as React from 'react'
 import {
   CodexOAuthService,
   type CodexOAuthTokens,
-} from '../services/api/codexOAuth.js'
+} from '../services/api/providerOAuth.js'
 import { openBrowser } from '../utils/browser.js'
-import { saveCodexCredentials } from '../utils/codexCredentials.js'
+import { saveCodexCredentials } from '../utils/providerCredentials.js'
 import { isBareMode } from '../utils/envUtils.js'
 
 export type CodexOAuthFlowStatus =

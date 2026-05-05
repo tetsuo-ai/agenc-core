@@ -13,12 +13,12 @@ import {
 } from '../../components/CustomSelect/select.js'
 import { Dialog } from '../../components/design-system/Dialog.js'
 import { LoadingState } from '../../components/design-system/LoadingState.js'
-import { useCodexOAuthFlow } from '../../components/useCodexOAuthFlow.js'
+import { useCodexOAuthFlow } from '../../components/useProviderOAuthFlow.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { Box, Text } from '../../../../tui/ink.js'
 import {
   type CodexOAuthTokens,
-} from '../../services/api/codexOAuth.js'
+} from '../../services/api/providerOAuth.js'
 import {
   DEFAULT_CODEX_BASE_URL,
   DEFAULT_OPENAI_BASE_URL,

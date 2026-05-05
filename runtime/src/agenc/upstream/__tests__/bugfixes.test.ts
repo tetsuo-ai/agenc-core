@@ -51,7 +51,7 @@ describe('Session timeout fix', () => {
   })
 
   test('codexShim has idle timeout for SSE streams', async () => {
-    const content = await file('services/api/codexShim.ts').text()
+    const content = await file('services/api/providerResponses.ts').text()
 
     expect(content).toContain('STREAM_IDLE_TIMEOUT_MS')
     expect(content).toContain('readWithTimeout')

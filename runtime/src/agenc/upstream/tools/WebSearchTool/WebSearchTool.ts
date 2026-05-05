@@ -8,7 +8,7 @@ import type { PermissionResult } from 'src/utils/permissions/PermissionResult.js
 import { z } from 'zod/v4'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { queryModelWithStreaming } from '../../services/api/claude.js'
-import { collectCodexCompletedResponse } from '../../services/api/codexShim.js'
+import { collectCodexCompletedResponse } from '../../services/api/providerResponses.js'
 import { fetchWithProxyRetry } from '../../services/api/fetchWithProxyRetry.js'
 import {
   resolveCodexApiCredentials,

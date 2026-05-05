@@ -8,7 +8,7 @@ import type { ProviderProfile } from '../utils/config.js'
 import {
   clearCodexCredentials,
   readCodexCredentialsAsync,
-} from '../utils/codexCredentials.js'
+} from '../utils/providerCredentials.js'
 import { isBareMode, isEnvTruthy } from '../utils/envUtils.js'
 import { getPrimaryModel, hasMultipleModels, parseModelList } from '../utils/providerModels.js'
 import {
@@ -55,7 +55,7 @@ import {
 } from './CustomSelect/select.js'
 import { Pane } from './design-system/Pane.js'
 import TextInput from './TextInput.js'
-import { useCodexOAuthFlow } from './useCodexOAuthFlow.js'
+import { useCodexOAuthFlow } from './useProviderOAuthFlow.js'
 
 export type ProviderManagerResult = {
   action: 'saved' | 'cancelled' | 'activated'

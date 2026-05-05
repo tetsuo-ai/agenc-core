@@ -175,6 +175,12 @@ Before that line, write a structured report:
 - 1-3 sentence summary of the diff
 - "Files reviewed:" — explicit list of every changed file path you read in full. The runner WILL grep-verify this list against \`git diff main...HEAD --name-only\`; if your list omits a changed source file, the run is rejected.
 - "Issues:" — numbered list, each with severity (CRITICAL / HIGH / MEDIUM / LOW), file path + line if known, and the specific change needed. Include EVERY issue you found at EVERY severity. If no issues at a severity, write "  CRITICAL: none" / etc.
+  The Issues section MUST include all four severity markers exactly once even when empty, using this shape:
+    CRITICAL: none
+    HIGH: none
+    MEDIUM: none
+    LOW: none
+  Replace "none" with the findings for that severity when findings exist.
 - "Cross-cutting:" — issues that span multiple files or aren't tied to one location
 - "Security/supply-chain:" — findings from pass 4. If no findings, write exactly:
   "Security/supply-chain: none".

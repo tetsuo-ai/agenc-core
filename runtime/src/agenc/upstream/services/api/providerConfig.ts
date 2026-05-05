@@ -7,13 +7,13 @@ import {
   isCodexRefreshFailureCoolingDown,
   readCodexCredentials,
   type CodexCredentialBlob,
-} from '../../utils/codexCredentials.js'
+} from '../../utils/providerCredentials.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import {
   asTrimmedString,
   parseChatgptAccountId,
-} from './codexOAuthShared.js'
+} from './providerOAuthShared.js'
 import { DEFAULT_GEMINI_BASE_URL } from 'src/utils/providerProfile.js'
 
 export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1'

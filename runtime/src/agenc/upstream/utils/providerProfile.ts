@@ -7,7 +7,7 @@ import {
   resolveCodexApiCredentials,
   resolveProviderRequest,
 } from '../services/api/providerConfig.js'
-import { parseChatgptAccountId } from '../services/api/codexOAuthShared.js'
+import { parseChatgptAccountId } from '../services/api/providerOAuthShared.js'
 import {
   getGoalDefaultOpenAIModel,
   normalizeRecommendationGoal,

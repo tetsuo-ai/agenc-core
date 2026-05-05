@@ -243,6 +243,7 @@ function listFromGit(mode) {
     const abs = path.resolve(root, trimmed);
     if (!existsSync(abs)) continue;
     const rel = path.relative(root, abs).replaceAll("\\", "/");
+    if (UPSTREAM_MIRROR_RE.test(rel)) continue;
     if (isMirrorAbsorbImportRewriteOnly(root, rel, mode)) continue;
     out.push(abs);
   }

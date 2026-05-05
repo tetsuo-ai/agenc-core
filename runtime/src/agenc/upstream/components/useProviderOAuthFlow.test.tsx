@@ -117,7 +117,7 @@ test('does not persist credentials when downstream setup rejects', async () => {
   }
 
   const { useCodexOAuthFlow } = await import(
-    `./useCodexOAuthFlow.js?real-reject-${Date.now()}-${Math.random()}`
+    `./useProviderOAuthFlow.js?real-reject-${Date.now()}-${Math.random()}`
   )
 
   function Harness(): React.ReactNode {
@@ -179,7 +179,7 @@ test('persists credentials with profile linkage after downstream setup succeeds'
   }
 
   const { useCodexOAuthFlow } = await import(
-    `./useCodexOAuthFlow.js?real-persist-${Date.now()}-${Math.random()}`
+    `./useProviderOAuthFlow.js?real-persist-${Date.now()}-${Math.random()}`
   )
 
   function Harness(): React.ReactNode {

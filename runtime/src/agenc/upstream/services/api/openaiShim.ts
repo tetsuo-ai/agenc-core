@@ -29,7 +29,7 @@ import { APIError } from '@anthropic-ai/sdk'
 import {
   readCodexCredentialsAsync,
   refreshCodexAccessTokenIfNeeded,
-} from '../../utils/codexCredentials.js'
+} from '../../utils/providerCredentials.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isBareMode, isEnvTruthy } from '../../utils/envUtils.js'
 import { resolveGeminiCredential } from '../../utils/geminiAuth.js'
@@ -49,7 +49,7 @@ import {
   type AnthropicStreamEvent,
   type AnthropicUsage,
   type ShimCreateParams,
-} from './codexShim.js'
+} from './providerResponses.js'
 import { buildAnthropicUsageFromRawUsage } from './cacheMetrics.js'
 import { compressToolHistory } from './compressToolHistory.js'
 import { fetchWithProxyRetry } from './fetchWithProxyRetry.js'

@@ -38,7 +38,7 @@ describe('codexCredentials', () => {
 
     // @ts-expect-error cache-busting query string for Bun module mocks
     const { saveCodexCredentials } = await import(
-      './codexCredentials.js?save-bare-mode'
+      './providerCredentials.js?save-bare-mode'
     )
 
     const result = saveCodexCredentials({
@@ -71,7 +71,7 @@ describe('codexCredentials', () => {
 
     // @ts-expect-error cache-busting query string for Bun module mocks
     const { saveCodexCredentials } = await import(
-      './codexCredentials.js?save-no-plaintext-fallback'
+      './providerCredentials.js?save-no-plaintext-fallback'
     )
 
     const result = saveCodexCredentials({
@@ -165,7 +165,7 @@ describe('codexCredentials', () => {
 
     // @ts-expect-error cache-busting query string for Bun module mocks
     const { refreshCodexAccessTokenIfNeeded, readCodexCredentials } =
-      await import('./codexCredentials.js?refresh-success')
+      await import('./providerCredentials.js?refresh-success')
 
     const result = await refreshCodexAccessTokenIfNeeded()
     expect(result.refreshed).toBe(true)
@@ -226,7 +226,7 @@ describe('codexCredentials', () => {
 
     // @ts-expect-error cache-busting query string for Bun module mocks
     const { refreshCodexAccessTokenIfNeeded, readCodexCredentials } =
-      await import('./codexCredentials.js?refresh-cooldown')
+      await import('./providerCredentials.js?refresh-cooldown')
 
     await expect(refreshCodexAccessTokenIfNeeded()).rejects.toThrow(
       'Codex token refresh failed (invalid_grant): refresh token expired',
@@ -313,7 +313,7 @@ describe('codexCredentials', () => {
 
     // @ts-expect-error cache-busting query string for Bun module mocks
     const { refreshCodexAccessTokenIfNeeded, readCodexCredentials } =
-      await import('./codexCredentials.js?refresh-drop-stale-api-key')
+      await import('./providerCredentials.js?refresh-drop-stale-api-key')
 
     const result = await refreshCodexAccessTokenIfNeeded()
     expect(result.refreshed).toBe(true)
@@ -410,7 +410,7 @@ describe('codexCredentials', () => {
 
     // @ts-expect-error cache-busting query string for Bun module mocks
     const { refreshCodexAccessTokenIfNeeded } = await import(
-      './codexCredentials.js?refresh-dedupe'
+      './providerCredentials.js?refresh-dedupe'
     )
 
     const firstRefresh = refreshCodexAccessTokenIfNeeded()
@@ -453,7 +453,7 @@ describe('codexCredentials', () => {
 
     // @ts-expect-error cache-busting query string for Bun module mocks
     const { readCodexCredentials, saveCodexCredentials } = await import(
-      './codexCredentials.js?preserve-profile-id'
+      './providerCredentials.js?preserve-profile-id'
     )
 
     const saved = saveCodexCredentials({
@@ -492,7 +492,7 @@ describe('codexCredentials', () => {
     const {
       attachCodexProfileIdToStoredCredentials,
       readCodexCredentials,
-    } = await import('./codexCredentials.js?attach-profile-id')
+    } = await import('./providerCredentials.js?attach-profile-id')
 
     const result =
       attachCodexProfileIdToStoredCredentials('profile_codex_oauth')
@@ -535,7 +535,7 @@ describe('codexCredentials', () => {
 
     // @ts-expect-error cache-busting query string for Bun module mocks
     const { refreshCodexAccessTokenIfNeeded } = await import(
-      './codexCredentials.js?refresh-async-read'
+      './providerCredentials.js?refresh-async-read'
     )
 
     const result = await refreshCodexAccessTokenIfNeeded()
@@ -592,7 +592,7 @@ describe('codexCredentials', () => {
 
     // @ts-expect-error cache-busting query string for Bun module mocks
     const { refreshCodexAccessTokenIfNeeded } = await import(
-      './codexCredentials.js?refresh-memory-cooldown'
+      './providerCredentials.js?refresh-memory-cooldown'
     )
 
     await expect(refreshCodexAccessTokenIfNeeded()).rejects.toThrow(
