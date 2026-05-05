@@ -93,6 +93,7 @@
       "edgeCases": [
         "git branch is safe only for flag-only inspection forms",
         "git global and subcommand options that alter repository/config/helper lookup or execute helpers are rejected, including inline -C/-c, --super-prefix, --ext-diff, --textconv, --exec, and --paginate",
+        "Unix git safety remains limited to status/log/diff/show and read-only branch inspection; git grep and git ls-files are not auto-approved",
         "Windows PowerShell git safety follows the Windows list: git cat-file is allowed, git ls-files is not auto-approved there",
         "sed is safe only for -n print-range scripts",
         "interpreter and package-manager commands from the older sandbox allowlist are no longer auto-approved"
@@ -114,6 +115,7 @@
       ],
       "edgeCases": [
         "non-word-only shell scripts stay with the existing recursive shell-fragment detector",
+        "PowerShell comma-separated forced delete forms such as del,-Force,C:\\foo are denied",
         "safe read-only commands do not become dangerous solely because they are parsed by the new layer"
       ],
       "tests": [

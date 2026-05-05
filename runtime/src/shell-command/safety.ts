@@ -401,8 +401,6 @@ function isSafeGitCommand(command: readonly string[]): boolean {
     case "log":
     case "diff":
     case "show":
-    case "grep":
-    case "ls-files":
       return true;
     case "branch":
       return isSafeGitBranch(args);
@@ -753,9 +751,10 @@ function normalizePowerShellCommandName(value: string): string {
 }
 
 function containsPowerShellForcedDelete(words: readonly string[]): boolean {
+  const expanded = expandPowerShellSoftTokens(words);
   return (
-    containsPowerShellCommand(words, POWERSHELL_REMOVE_ITEM_COMMANDS) &&
-    words.some((word) => hasDashFlag([normalizePowerShellToken(word)], "force"))
+    containsPowerShellCommand(expanded, POWERSHELL_REMOVE_ITEM_COMMANDS) &&
+    expanded.some((word) => hasDashFlag([normalizePowerShellToken(word)], "force"))
   );
 }
 
@@ -773,11 +772,22 @@ function containsPowerShellCommand(
   words: readonly string[],
   commands: ReadonlySet<string>,
 ): boolean {
-  return words.some((word) => commands.has(normalizePowerShellCommandName(word)));
+  return expandPowerShellSoftTokens(words).some((word) =>
+    commands.has(normalizePowerShellCommandName(word)),
+  );
 }
 
 function normalizePowerShellToken(value: string): string {
   return value.replace(/^[\s("'`]+/g, "").replace(/[\s)"'`,;]+$/g, "");
+}
+
+function expandPowerShellSoftTokens(words: readonly string[]): readonly string[] {
+  return words.flatMap((word) =>
+    word
+      .split(/[,\[\]()]+/u)
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0),
+  );
 }
 
 function executableBasename(value: string): string {

@@ -33,6 +33,8 @@ describe("isKnownSafeCommand", () => {
     expect(isKnownSafeCommand(["git", "show", "--textconv", "HEAD"])).toBe(false);
     expect(isKnownSafeCommand(["git", "log", "--exec=touch /tmp/x"])).toBe(false);
     expect(isKnownSafeCommand(["git", "--paginate", "status"])).toBe(false);
+    expect(isKnownSafeCommand(["git", "grep", "needle"])).toBe(false);
+    expect(isKnownSafeCommand(["git", "ls-files"])).toBe(false);
     expect(isKnownSafeCommand(["git", "branch", "new-branch"])).toBe(false);
     expect(isKnownSafeCommand(["find", ".", "-delete"])).toBe(false);
     expect(isKnownSafeCommand(["find", ".", "-exec", "rm", "{}", ";"])).toBe(false);
@@ -50,6 +52,8 @@ describe("isKnownSafeCommand", () => {
     expect(isKnownSafeCommand(["bash", "-lc", "git -C. status"])).toBe(false);
     expect(isKnownSafeCommand(["bash", "-lc", "git show --textconv HEAD"]))
       .toBe(false);
+    expect(isKnownSafeCommand(["bash", "-lc", "git grep needle"])).toBe(false);
+    expect(isKnownSafeCommand(["bash", "-lc", "git ls-files"])).toBe(false);
     expect(shellCommandIsKnownSafe("bash -lc 'git status && rg TODO runtime'"))
       .toBe(true);
   });
@@ -110,6 +114,13 @@ describe("Windows and PowerShell safety lists", () => {
     ).toBe(true);
     expect(
       isDangerousWindowsCommand([
+        "powershell",
+        "-Command",
+        "del,-Force,C:\\foo",
+      ]),
+    ).toBe(true);
+    expect(
+      isDangerousWindowsCommand([
         "rundll32.exe",
         "url.dll,FileProtocolHandler",
         "https://agenc.tech",
@@ -140,6 +151,7 @@ describe("Windows and PowerShell safety lists", () => {
       .toBe(true);
     expect(isDangerousPowerShellWords(["Write-Host", "(rmdir", "dir", "-Force)"]))
       .toBe(true);
+    expect(isDangerousPowerShellWords(["del,-Force,C:\\foo"])).toBe(true);
     expect(isDangerousPowerShellWords(["Remove-Item", "file.txt", "-Force"]))
       .toBe(true);
     expect(isSafePowerShellWords(["Get-ChildItem", "."])).toBe(true);

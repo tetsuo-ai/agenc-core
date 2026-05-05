@@ -5010,6 +5010,17 @@ function assertZc32ShellCommandCoverage() {
     failGate(`ZC-32: safety.ts is missing marker(s): ${missingSafetyMarkers.join(", ")}`);
   }
 
+  const safetyTests = readFileSync(path.join(root, "runtime/src/shell-command/safety.test.ts"), "utf8");
+  const requiredSafetyRegressionMarkers = [
+    "del,-Force,C:\\\\foo",
+    "[\"git\", \"grep\", \"needle\"]",
+    "[\"git\", \"ls-files\"]",
+  ];
+  const missingSafetyRegressionMarkers = requiredSafetyRegressionMarkers.filter((marker) => !safetyTests.includes(marker));
+  if (missingSafetyRegressionMarkers.length > 0) {
+    failGate(`ZC-32: safety tests are missing regression marker(s): ${missingSafetyRegressionMarkers.join(", ")}`);
+  }
+
   const psParser = readFileSync(path.join(root, "runtime/src/shell-command/powershell-parser.ts"), "utf8");
   for (const marker of ["spawnSync", "-EncodedCommand", "parsePowerShellScriptWithNativeAst"]) {
     if (!psParser.includes(marker)) {
