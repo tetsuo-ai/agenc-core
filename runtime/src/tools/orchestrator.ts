@@ -76,6 +76,10 @@ import {
 import {
   type GuardianApprovalReviewer,
 } from "../permissions/guardian/reviewer.js";
+import {
+  toolEscalatesOnFailure,
+  toolWantsNoSandboxApproval,
+} from "../sandbox/escalation/sandboxing.js";
 
 export { requestApproval };
 export type {
@@ -357,49 +361,27 @@ export interface OrchestrateToolCallOpts<T> {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Tool capability readers — donor runtime `Sandboxable::escalate_on_failure()`
-// and `Approvable::wants_no_sandbox_approval(policy)`.
-//
-// Tool authors may opt into these via structural fields on the Tool
-// object. Adding them as full methods on the shared `Tool` interface
-// would ripple across Tool consumers outside this worker's scope, so
-// we read them by structural cast — matching how the existing
-// `requiresApproval` and `isReadOnly` hints are consumed.
+// Tool capability readers for sandbox-denial retry behavior. The live
+// implementation lives in sandbox/escalation so the security-sensitive
+// policy is testable at the sandbox destination and the orchestrator
+// stays a thin lifecycle consumer.
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Structural extension fields for sandbox-escalation behavior. A Tool
- * may expose either as a plain boolean or a function. Defaults mirror
- * donor runtime: `escalate_on_failure: true`, `wants_no_sandbox_approval` per
- * the policy table in `sandboxing.rs:290-298`.
- */
-interface ToolSandboxCapabilities {
-  readonly escalateOnFailure?: boolean | (() => boolean);
-  readonly wantsNoSandboxApproval?:
-    | boolean
-    | ((policy: ApprovalPolicy, granular?: GranularApprovalConfig) => boolean);
-}
-
-/**
- * Port of donor runtime `Sandboxable::escalate_on_failure()` (sandboxing.rs:309-311).
  * Default `true`. A tool that returns `false` bails with the original
  * `SandboxDeniedError` instead of prompting for approval. Read-only
  * tools can opt out so a sandbox denial does not propose running them
  * unsandboxed.
  */
 export function escalateOnFailure(tool: Tool): boolean {
-  const v = (tool as Tool & ToolSandboxCapabilities).escalateOnFailure;
-  if (v === undefined) return true;
-  if (typeof v === "function") return v();
-  return v;
+  return toolEscalatesOnFailure(tool);
 }
 
 /**
- * Port of donor runtime `Approvable::wants_no_sandbox_approval(policy)`
- * (sandboxing.rs:290-298). Decides whether the runtime should ASK for
- * approval to retry without the sandbox after a `SandboxDeniedError`.
+ * Decides whether the runtime should ASK for approval to retry without
+ * the sandbox after a `SandboxDeniedError`.
  *
- * donor runtime table:
+ * Policy table:
  *   - `OnFailure`                         → true
  *   - `UnlessTrusted` (= "untrusted")     → true
  *   - `Never`                             → false
@@ -414,26 +396,7 @@ export function wantsNoSandboxApproval(
   policy: ApprovalPolicy,
   granular?: GranularApprovalConfig,
 ): boolean {
-  const override = (tool as Tool & ToolSandboxCapabilities).wantsNoSandboxApproval;
-  if (override !== undefined) {
-    if (typeof override === "function") return override(policy, granular);
-    return override;
-  }
-  switch (policy) {
-    case "on_failure":
-    case "untrusted":
-      return true;
-    case "never":
-    case "on_request":
-      return false;
-    case "granular":
-      return granular?.sandbox_approval === true;
-    default: {
-      const _exhaustive: never = policy;
-      void _exhaustive;
-      return false;
-    }
-  }
+  return toolWantsNoSandboxApproval(tool, policy, granular);
 }
 
 function mapDefaultPermissionMode(mode: PermissionDefaultMode): ApprovalPolicy {
