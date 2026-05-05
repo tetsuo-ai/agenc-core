@@ -3,15 +3,17 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { load as loadYaml } from "js-yaml";
 import {
   findPluginManifestPath,
-  isRecord,
   loadPluginManifest,
-  normalizePluginManifest,
   PLUGIN_MANIFEST_DIR,
   PLUGIN_MANIFEST_FILE,
-  PluginManifestError,
   readJsonText,
-  resolveManifestRelativePath,
 } from "./manifest.js";
+import {
+  isRecord,
+  normalizePluginManifest,
+  PluginManifestError,
+  resolveManifestRelativePath,
+} from "./manifest-schema.js";
 
 export interface ValidationError {
   readonly path: string;
@@ -222,14 +224,23 @@ function validateServerMapPaths(
   wrapperKey: "mcpServers" | "lspServers",
   pluginRoot: string,
   errors: ValidationError[],
+  basePath: string = wrapperKey,
 ): void {
+  if (Array.isArray(value)) {
+    for (const [index, entry] of value.entries()) {
+      if (isRecord(entry)) {
+        validateServerMapPaths(entry, wrapperKey, pluginRoot, errors, `${wrapperKey}[${index}]`);
+      }
+    }
+    return;
+  }
   if (!isRecord(value)) return;
   const fieldName = wrapperKey === "mcpServers" ? "cwd" : "workspaceFolder";
   for (const [name, server] of Object.entries(value)) {
     if (!isRecord(server)) continue;
     const pathValue = server[fieldName];
     if (typeof pathValue !== "string") continue;
-    validateServerWorkingDir(pathValue, `${wrapperKey}.${name}.${fieldName}`, pluginRoot, errors);
+    validateServerWorkingDir(pathValue, `${basePath}.${name}.${fieldName}`, pluginRoot, errors);
   }
 }
 
