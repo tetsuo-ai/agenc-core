@@ -295,6 +295,7 @@ function compatibilityWorkspaceWritePolicy(
   const tmpdirWritable =
     typeof tmpdir === "string" &&
     tmpdir.length > 0 &&
+    path.isAbsolute(tmpdir) &&
     canWritePathWithCwd(fileSystemPolicy, tmpdir, cwd);
   const slashTmpWritable =
     path.sep === "/" && canWritePathWithCwd(fileSystemPolicy, "/tmp", cwd);

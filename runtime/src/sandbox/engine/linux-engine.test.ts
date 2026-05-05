@@ -13,6 +13,7 @@ import {
   type PermissionProfile,
 } from "./index.js";
 import {
+  findSystemBwrapInPath,
   isUserNamespaceFailure,
   procVersionIndicatesWsl1,
   systemBwrapWarning,
@@ -190,6 +191,75 @@ describe("Linux sandbox engine", () => {
     expect(systemBwrapWarning(profile, "darwin")).toBeNull();
     expect(systemBwrapWarning(profile, "win32")).toBeNull();
     expect(systemBwrapWarningForPath(null, "darwin")).toBeNull();
+  });
+
+  it("finds trusted system bubblewrap while ignoring cwd-local candidates", () => {
+    const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "agenc-bwrap-path-"));
+    const cwd = path.join(tmpdir, "workspace");
+    const trusted = path.join(tmpdir, "trusted-bin");
+    fs.mkdirSync(cwd);
+    fs.mkdirSync(trusted);
+    const localBwrap = path.join(cwd, "bwrap");
+    const trustedBwrap = path.join(trusted, "bwrap");
+    fs.writeFileSync(localBwrap, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    fs.writeFileSync(trustedBwrap, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+
+    const previousPath = process.env["PATH"];
+    try {
+      delete process.env["PATH"];
+      expect(findSystemBwrapInPath(undefined, cwd)).toBeNull();
+    } finally {
+      if (previousPath === undefined) {
+        delete process.env["PATH"];
+      } else {
+        process.env["PATH"] = previousPath;
+      }
+    }
+    expect(findSystemBwrapInPath("", cwd)).toBeNull();
+    expect(findSystemBwrapInPath([cwd, trusted].join(path.delimiter), cwd)).toBe(
+      fs.realpathSync(trustedBwrap),
+    );
+  });
+
+  it("does not mark a relative TMPDIR as writable in fallback compatibility projection", () => {
+    const previous = process.env["TMPDIR"];
+    const permissions: PermissionProfile = {
+      fileSystem: restrictedFileSystemPolicy([
+        { path: { kind: "path", path: "/external-write" }, access: "write" },
+      ]),
+      network: "disabled",
+    };
+    const runtimePolicy = restrictedFileSystemPolicy([
+      { path: { kind: "special", value: { kind: "project_roots" } }, access: "write" },
+      { path: { kind: "special", value: { kind: "tmpdir" } }, access: "write" },
+    ]);
+    try {
+      process.env["TMPDIR"] = "relative-tmp";
+      expect(
+        compatibilitySandboxPolicyForPermissionProfile(
+          permissions,
+          runtimePolicy,
+          "disabled",
+          "/repo",
+        ),
+      ).toMatchObject({ exclude_tmpdir_env_var: true });
+
+      process.env["TMPDIR"] = "/tmp/agenc-compat";
+      expect(
+        compatibilitySandboxPolicyForPermissionProfile(
+          permissions,
+          runtimePolicy,
+          "disabled",
+          "/repo",
+        ),
+      ).toMatchObject({ exclude_tmpdir_env_var: false });
+    } finally {
+      if (previous === undefined) {
+        delete process.env["TMPDIR"];
+      } else {
+        process.env["TMPDIR"] = previous;
+      }
+    }
   });
 
   it("runs a generated Linux launcher argv through a real helper subprocess", async () => {

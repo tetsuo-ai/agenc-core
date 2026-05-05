@@ -21,6 +21,7 @@ import {
   includePlatformDefaults,
   restrictedFileSystemPolicy,
   resolveAccessWithCwd,
+  resolveSpecialPath,
   unrestrictedFileSystemPolicy,
 } from "./index.js";
 
@@ -187,6 +188,31 @@ describe("sandbox permission profile transforms", () => {
     expect(resolveAccessWithCwd(relativeRead, "/other/src/index.ts", "/repo")).toBe(
       "none",
     );
+  });
+
+  it("only resolves tmpdir special paths from an absolute TMPDIR", () => {
+    const previous = process.env["TMPDIR"];
+    try {
+      delete process.env["TMPDIR"];
+      expect(resolveSpecialPath({ kind: "tmpdir" }, "/repo")).toBeNull();
+
+      process.env["TMPDIR"] = "";
+      expect(resolveSpecialPath({ kind: "tmpdir" }, "/repo")).toBeNull();
+
+      process.env["TMPDIR"] = "relative-tmp";
+      expect(resolveSpecialPath({ kind: "tmpdir" }, "/repo")).toBeNull();
+
+      process.env["TMPDIR"] = "/tmp/agenc-special";
+      expect(resolveSpecialPath({ kind: "tmpdir" }, "/repo")).toBe(
+        "/tmp/agenc-special",
+      );
+    } finally {
+      if (previous === undefined) {
+        delete process.env["TMPDIR"];
+      } else {
+        process.env["TMPDIR"] = previous;
+      }
+    }
   });
 
   it("applies specific carveouts and protected metadata over broader writes", () => {

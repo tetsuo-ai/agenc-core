@@ -11,7 +11,6 @@
  */
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 export const AGENC_LINUX_SANDBOX_ARG0 = "agenc-linux-sandbox";
@@ -289,11 +288,22 @@ export function resolveSpecialPath(
         ? resolvePathAgainstBase(target.subpath, cwd)
         : normalizePathForPolicy(cwd);
     case "tmpdir": {
-      const tmpdir = process.env["TMPDIR"] ?? os.tmpdir();
-      return tmpdir.length > 0 ? normalizePathForPolicy(tmpdir) : null;
+      const tmpdir = process.env["TMPDIR"];
+      return typeof tmpdir === "string" &&
+        tmpdir.length > 0 &&
+        path.isAbsolute(tmpdir)
+        ? normalizePathForPolicy(tmpdir)
+        : null;
     }
-    case "slash_tmp":
-      return path.sep === "/" && fs.existsSync("/tmp") ? "/tmp" : null;
+    case "slash_tmp": {
+      try {
+        return path.sep === "/" && fs.statSync("/tmp").isDirectory()
+          ? "/tmp"
+          : null;
+      } catch {
+        return null;
+      }
+    }
     case "minimal":
     case "unknown":
       return null;
