@@ -4422,7 +4422,10 @@ async function cleanupGates(item) {
       },
       "ZC-18": { gone: ["runtime/parity/agenc-compaction-context.json"] },
       "ZC-19": { grepPresent: { pattern: "openai-compatible.*OpenAI HTTP API protocol.*not a port-era shim", scope: "runtime/src/llm/providers/openai-compatible/README.md" } }, // branding-scan: allow real OpenAI protocol name in ZC-19 evidence
-      "ZC-22": { gone: ["runtime/src/tui/elicitation-bridge.tsx"] },
+      "ZC-22": {
+        gone: ["runtime/src/tui/elicitation-bridge.tsx"],
+        grepNotPresent: { pattern: "elicitation-bridge", scope: "runtime/src" },
+      },
       "ZC-26": { grepNotPresent: { pattern: "/home/claude/.agenc/remote", scope: "runtime/src" } }, // branding-scan: allow donor-leak path that ZC-26 is removing
       "ZC-27": { grepNotPresent: { pattern: "@ts-nocheck", scope: "runtime/src/types" } },
       "ZC-28": { gone: ["runtime/src/utils/attachments.ts", "runtime/src/utils/teamMemoryOps.ts", "runtime/src/components/FeedbackSurvey/useMemorySurvey.tsx"] },

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { Box, Text } from "./ink.js";
+import { Box, Text } from "../ink.js";
 import type {
   McpElicitationRequestEvent,
   McpElicitationResponse,
@@ -8,13 +8,11 @@ import type {
   McpRequestId,
   RequestUserInputEvent,
   RequestUserInputResponse,
-} from "../elicitation/types.js";
-import { createMcpUrlCompletionResponse } from "../elicitation/url-completion.js";
+} from "../../elicitation/types.js";
+import { createMcpUrlCompletionResponse } from "../../elicitation/url-completion.js";
 
 /**
- * AgenC-owned elicitation bridge for the existing renderer compatibility island.
- * Keep new behavior and exported helper names neutral; only the session adapter
- * import above reaches the upstream-compatible renderer contract.
+ * Elicitation prompt rendering and resolver wiring for the interactive TUI.
  */
 
 export type McpFieldValue = string | number | boolean | readonly string[];
@@ -72,12 +70,12 @@ export interface ElicitationPromptState {
   readonly placeholder: string;
 }
 
-export interface ElicitationBridge {
+export interface TuiElicitationState {
   readonly prompt: ElicitationPromptState | null;
   submit(value: string): boolean;
 }
 
-interface AgenCBridgeSession {
+interface AgenCTuiElicitationSession {
   readonly services: {
     requestUserInputResolver?: {
       request(
@@ -465,7 +463,7 @@ function resolveOnCleanup(pending: PendingElicitation): void {
   pending.resolve({ action: "cancel" });
 }
 
-export interface ElicitationBridgeController {
+export interface ElicitationResolverController {
   submit(value: string): boolean;
   completeMcpUrl(
     serverName: string,
@@ -476,9 +474,10 @@ export interface ElicitationBridgeController {
 }
 
 export function installElicitationResolvers(
-  session: Pick<AgenCBridgeSession, "services"> & Partial<Pick<AgenCBridgeSession, "eventLog">>,
+  session: Pick<AgenCTuiElicitationSession, "services"> &
+    Partial<Pick<AgenCTuiElicitationSession, "eventLog">>,
   onPendingChange: (pending: PendingElicitation | null) => void,
-): ElicitationBridgeController {
+): ElicitationResolverController {
   const queue = createElicitationQueue();
   const publish = (next: PendingElicitation | null): void => {
     onPendingChange(next);
@@ -580,8 +579,8 @@ export function installElicitationResolvers(
 }
 
 export function subscribeToMcpUrlCompletions(
-  session: Partial<Pick<AgenCBridgeSession, "subscribeToEvents">>,
-  controller: Pick<ElicitationBridgeController, "completeMcpUrl">,
+  session: Partial<Pick<AgenCTuiElicitationSession, "subscribeToEvents">>,
+  controller: Pick<ElicitationResolverController, "completeMcpUrl">,
 ): () => void {
   return session.subscribeToEvents?.((event) => {
     if (event === null || typeof event !== "object") return;
@@ -607,9 +606,9 @@ export function subscribeToMcpUrlCompletions(
   }) ?? (() => {});
 }
 
-export function useElicitationBridge(session: AgenCBridgeSession): ElicitationBridge {
+export function useTuiElicitation(session: AgenCTuiElicitationSession): TuiElicitationState {
   const [pending, setPending] = useState<PendingElicitation | null>(null);
-  const controllerRef = useRef<ElicitationBridgeController | null>(null);
+  const controllerRef = useRef<ElicitationResolverController | null>(null);
 
   useEffect(() => {
     const controller = installElicitationResolvers(session, setPending);

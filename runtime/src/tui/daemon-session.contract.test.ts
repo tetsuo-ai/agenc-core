@@ -17,7 +17,7 @@ import {
 import {
   installElicitationResolvers,
   subscribeToMcpUrlCompletions,
-} from "./elicitation-bridge.js";
+} from "./elicitation/prompt-renderer.js";
 import type {
   AgenCDaemonMethod,
   AgenCDaemonResultByMethod,

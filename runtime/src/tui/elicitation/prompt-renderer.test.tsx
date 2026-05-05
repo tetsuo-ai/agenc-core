@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 
-vi.mock("./ink.js", () => ({
+vi.mock("../ink.js", () => ({
   Box: () => null,
   Text: () => null,
 }));
@@ -9,16 +9,16 @@ import type {
   McpElicitationRequestEvent,
   McpPrimitiveSchemaDefinition,
   RequestUserInputEvent,
-} from "../elicitation/types.js";
+} from "../../elicitation/types.js";
 import {
   installElicitationResolvers,
   settlePendingOnSubmit,
   type McpFormPending,
   type McpUrlPending,
   type PendingElicitation,
-} from "./elicitation-bridge.js";
+} from "./prompt-renderer.js";
 
-function createBridgeSession(): Parameters<typeof installElicitationResolvers>[0] {
+function createRendererSession(): Parameters<typeof installElicitationResolvers>[0] {
   return { services: {} } as Parameters<typeof installElicitationResolvers>[0];
 }
 
@@ -99,9 +99,9 @@ function expectInvalidFormValue(
   expect((next as McpFormPending).error).toContain(expectedMessage);
 }
 
-describe("elicitation bridge", () => {
+describe("elicitation TUI renderer", () => {
   test("queues resolver requests that arrive before the first submit", async () => {
-    const session = createBridgeSession();
+    const session = createRendererSession();
     const prompted: (PendingElicitation | null)[] = [];
     const controller = installElicitationResolvers(
       session,
@@ -138,7 +138,7 @@ describe("elicitation bridge", () => {
   });
 
   test("cleanup cancels unresolved user-input resolver requests", async () => {
-    const session = createBridgeSession();
+    const session = createRendererSession();
     const controller = installElicitationResolvers(session, () => {});
     const pending = session.services.requestUserInputResolver!.request(
       userRequest("cancelled"),
@@ -150,7 +150,7 @@ describe("elicitation bridge", () => {
   });
 
   test("aborts unresolved direct user-input resolver requests", async () => {
-    const session = createBridgeSession();
+    const session = createRendererSession();
     const prompted: (PendingElicitation | null)[] = [];
     const controller = installElicitationResolvers(
       session,
@@ -172,7 +172,7 @@ describe("elicitation bridge", () => {
   });
 
   test("aborts unresolved direct MCP resolver requests", async () => {
-    const session = createBridgeSession();
+    const session = createRendererSession();
     const prompted: (PendingElicitation | null)[] = [];
     const controller = installElicitationResolvers(
       session,

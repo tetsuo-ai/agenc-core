@@ -34,9 +34,9 @@ import {
 } from "../permission-requests.js";
 import {
   ElicitationOverlay,
-  useElicitationBridge,
-} from "../elicitation-bridge.js";
-import { submitViaElicitationBridge } from "../elicitation-submit-routing.js";
+  useTuiElicitation,
+} from "../elicitation/prompt-renderer.js";
+import { submitViaElicitationPrompt } from "../elicitation-submit-routing.js";
 import { loadUpstreamCommandList } from "../../agenc/adapters/upstream-commands.js";
 import { loadUpstreamAgentList } from "../../agenc/adapters/upstream-agent-list.js";
 import { buildPendingProviderSwitch } from "../../agenc/adapters/upstream-model-switch.js";
@@ -254,7 +254,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     setExpandedView,
     setAppState,
   );
-  const elicitation = useElicitationBridge(props.session);
+  const elicitation = useTuiElicitation(props.session);
   const toolNames = useMemo(() => {
     const names = new Set(transcript.toolNames);
     const firstPermission = permissionRequests[0];
@@ -396,7 +396,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
         onExit={exit}
         getToolUseContext={getToolUseContext}
         onSubmit={(value, helpers) =>
-          submitViaElicitationBridge(elicitation, submit, value, helpers)
+          submitViaElicitationPrompt(elicitation, submit, value, helpers)
         }
         isSearchingHistory={isSearchingHistory}
         setIsSearchingHistory={setIsSearchingHistory}

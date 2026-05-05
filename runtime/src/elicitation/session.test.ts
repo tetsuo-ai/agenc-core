@@ -24,7 +24,7 @@ import type {
   RequestUserInputArgs,
   RequestUserInputResponse,
 } from "./types.js";
-import { installElicitationResolvers } from "../tui/elicitation-bridge.js";
+import { installElicitationResolvers } from "../tui/elicitation/prompt-renderer.js";
 
 function mkFeatures(): ManagedFeatures {
   return {
@@ -265,7 +265,7 @@ describe("Session elicitation pending responders", () => {
     unsubscribe();
   });
 
-  it("resolves direct TUI bridge submission through the original request_user_input promise", async () => {
+  it("resolves direct TUI resolver submission through the original request_user_input promise", async () => {
     const session = buildSession();
     await session.spawnTask({ subId: "turn-1", kind: "regular", autoStart: false });
     const prompts: unknown[] = [];
@@ -286,7 +286,7 @@ describe("Session elicitation pending responders", () => {
     controller.cleanup();
   });
 
-  it("propagates direct TUI bridge cleanup as request_user_input cancellation", async () => {
+  it("propagates direct TUI resolver cleanup as request_user_input cancellation", async () => {
     const session = buildSession();
     await session.spawnTask({ subId: "turn-1", kind: "regular", autoStart: false });
     const controller = installElicitationResolvers(session, () => {});
@@ -302,7 +302,7 @@ describe("Session elicitation pending responders", () => {
     const session = buildSession();
     await session.spawnTask({ subId: "turn-1", kind: "regular", autoStart: false });
     const prompts: unknown[] = [];
-    const bridge = installElicitationResolvers(session, (pending) => {
+    const renderer = installElicitationResolvers(session, (pending) => {
       prompts.push(pending);
     });
     const controller = new AbortController();
@@ -320,7 +320,7 @@ describe("Session elicitation pending responders", () => {
 
     await expect(pending).resolves.toBeNull();
     expect(prompts.at(-1)).toBeNull();
-    bridge.cleanup();
+    renderer.cleanup();
   });
 
   it("keeps overlapping request_user_input waits keyed by call id", async () => {
@@ -402,7 +402,7 @@ describe("Session elicitation pending responders", () => {
     const session = buildSession();
     await session.spawnTask({ subId: "turn-1", kind: "regular", autoStart: false });
     const prompts: unknown[] = [];
-    const bridge = installElicitationResolvers(session, (pending) => {
+    const renderer = installElicitationResolvers(session, (pending) => {
       prompts.push(pending);
     });
     const controller = new AbortController();
@@ -421,7 +421,7 @@ describe("Session elicitation pending responders", () => {
 
     await expect(pending).resolves.toBeNull();
     expect(prompts.at(-1)).toBeNull();
-    bridge.cleanup();
+    renderer.cleanup();
   });
 
   it("cleans up user-input waits on abort", async () => {

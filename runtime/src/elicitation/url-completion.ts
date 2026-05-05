@@ -1,6 +1,6 @@
 /**
  * Keeps MCP URL completion notifications distinct from user-entered accept
- * responses inside the AgenC TUI bridge.
+ * responses inside the AgenC TUI prompt renderer.
  *
  * MCP completion notifications already resolve the runtime-side pending
  * request. Daemon-backed TUI sessions still need to remove the local prompt,
