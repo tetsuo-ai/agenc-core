@@ -485,12 +485,18 @@ function sessionQuerySourceForPostSampling(session: Session): string {
       session.services.querySource.length > 0
       ? session.services.querySource
       : "repl_main_thread";
-  const source = session.sessionConfiguration.sessionSource;
+  const source = (session as unknown as {
+    readonly sessionConfiguration?: {
+      readonly sessionSource?: unknown;
+    };
+  }).sessionConfiguration?.sessionSource;
+  const sourceKind =
+    typeof source === "object" && source !== null
+      ? (source as { readonly kind?: unknown }).kind
+      : undefined;
   if (
     raw === "repl_main_thread" &&
-    typeof source === "object" &&
-    source !== null &&
-    source.kind === "subagent"
+    sourceKind === "subagent"
   ) {
     return `agent:${session.conversationId}`;
   }

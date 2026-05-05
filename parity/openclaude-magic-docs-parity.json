@@ -51,6 +51,7 @@
       ],
       "edgeCases": [
         "small explicit partial reads still register tagged docs from the raw text",
+        "listener failures do not break successful FileRead calls",
         "listener cleanup for tests does not leave global duplicate listeners"
       ],
       "tests": [

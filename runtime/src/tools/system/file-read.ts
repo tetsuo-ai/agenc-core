@@ -303,7 +303,11 @@ function formatNumbered(content: string, startLine: number): string {
 
 function notifyFileReadListeners(event: FileReadEvent): void {
   for (const listener of [...fileReadListeners]) {
-    listener(event);
+    try {
+      listener(event);
+    } catch {
+      // FileRead success must not depend on best-effort post-read hooks.
+    }
   }
 }
 

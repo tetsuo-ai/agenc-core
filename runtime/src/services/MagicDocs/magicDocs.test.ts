@@ -22,6 +22,7 @@ import type { RunAgentParams } from "../../agents/run-agent.js";
 import {
   clearFileReadListenersForTests,
   createFileReadTool,
+  registerFileReadListener,
 } from "../../tools/system/index.js";
 import {
   clearSessionReadState,
@@ -191,6 +192,27 @@ describe("MagicDocs", () => {
     expect(result.isError).not.toBe(true);
     expect(result.content).not.toContain("MAGIC DOC");
     expect(trackedMagicDocPathsForTests("session-partial")).toEqual([docPath]);
+  });
+
+  it("does not let listener failures break successful FileRead calls", async () => {
+    const docPath = join(tempRoot, "listener.md");
+    await writeFile(docPath, "# MAGIC DOC: Listener\n\nBody\n", "utf8");
+    let survivingListenerCalls = 0;
+    registerFileReadListener(() => {
+      throw new Error("listener failed");
+    });
+    registerFileReadListener(() => {
+      survivingListenerCalls += 1;
+    });
+
+    const tool = createFileReadTool({ allowedPaths: [tempRoot] });
+    const result = await tool.execute({
+      file_path: docPath,
+      [SESSION_ID_ARG]: "session-listener",
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(survivingListenerCalls).toBe(1);
   });
 
   it("runs idle post-sampling updates with cloned read-file state", async () => {

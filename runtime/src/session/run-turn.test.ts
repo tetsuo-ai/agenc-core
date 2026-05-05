@@ -790,6 +790,36 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     }
   });
 
+  test("launches MagicDocs from main-thread idle completed turns", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "agenc-magic-docs-run-turn-"));
+    const docPath = join(tempDir, "doc.md");
+    resetMagicDocsForTests();
+    try {
+      writeFileSync(docPath, "# MAGIC DOC: Run Turn\n\nBody\n", "utf8");
+      registerMagicDoc(docPath, "conv-test");
+      const seen: string[] = [];
+      setMagicDocsAgentRunnerForTests(async (request) => {
+        seen.push(request.docPath);
+      });
+      const { session } = mkSession({
+        provider: mkProvider({ content: "main reply" }),
+        registry: mkRegistry(),
+      });
+
+      await drain(session.runTurn("hello", { ctx: mkCtx() }));
+      await runMagicDocsPostSamplingHook({
+        messages: [],
+        querySource: "agent:flush",
+        sessionId: "conv-test",
+      });
+
+      expect(seen).toEqual([docPath]);
+    } finally {
+      resetMagicDocsForTests();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test("does not launch MagicDocs from subagent sessions", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "agenc-magic-docs-run-turn-"));
     const docPath = join(tempDir, "doc.md");
