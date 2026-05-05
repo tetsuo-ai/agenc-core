@@ -1231,6 +1231,16 @@ const ITEM_EVIDENCE = {
     ],
     tests: ["scripts/check-sdk-daemon-methods.test.mjs"],
   },
+  "PK-12": {
+    files: ["scripts/check-plugin-kit-abi-surface.mjs"],
+    grepNotPresent: [
+      {
+        pattern:
+          "ChannelAdapter|CHANNEL_ADAPTER|certifyChannelAdapter|certifyChannelAdapterModule|createChannelAdapter|channel_adapter|channel-host-matrix",
+        scope: "runtime/src",
+      },
+    ],
+  },
   "PK-13": {
     files: ["scripts/check-sibling-package-pins.mjs"],
     grepPresent: [
@@ -3321,6 +3331,16 @@ async function pluginGates(item) {
       failGate("PK-11 protocol package schema export check failed");
     }
     pass("protocol package schema export resolves from a packed install");
+    return;
+  }
+  if (id === "PK-12") {
+    const abiSurface = run("node", [
+      "scripts/check-plugin-kit-abi-surface.mjs",
+    ]);
+    if (abiSurface.status !== 0) {
+      failGate("PK-12 plugin-kit ABI surface check failed");
+    }
+    pass("plugin-kit dead ABI surface removed from runtime and package");
     return;
   }
   if (id === "PK-13") {
