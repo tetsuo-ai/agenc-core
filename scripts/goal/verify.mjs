@@ -4047,6 +4047,46 @@ function assertZc12DonorPortArtifactsGone() {
   }
 }
 
+function assertZc22ElicitationRendererInlined() {
+  const appRel = "runtime/src/tui/components/App.tsx";
+  const appPath = path.join(root, appRel);
+  if (!existsSync(appPath)) failGate("ZC-22: App.tsx consumer is missing.");
+  const appSource = readFileSync(appPath, "utf8");
+  const requiredAppSymbols = [
+    "createElicitationQueue",
+    "installElicitationResolvers",
+    "useTuiElicitation",
+    "ElicitationOverlay",
+  ];
+  const missing = requiredAppSymbols.filter((symbol) => !appSource.includes(symbol));
+  if (missing.length > 0) {
+    failGate(`ZC-22: elicitation logic is not inlined into ${appRel}; missing ${missing.join(", ")}.`);
+  }
+
+  const survivorPattern =
+    /\b(createElicitationQueue|installElicitationResolvers|useTuiElicitation|ElicitationOverlay)\b/;
+  const offenders = [];
+  for (const rel of listSourceFiles(path.join(root, "runtime/src"))) {
+    if (rel === appRel) continue;
+    if (/\.test\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(rel)) continue;
+    const source = readFileSync(path.join(root, rel), "utf8");
+    if (survivorPattern.test(source)) offenders.push(rel);
+  }
+  if (offenders.length > 0) {
+    failGate(`ZC-22: elicitation renderer logic survived outside the App consumer:\n${offenders.join("\n")}`);
+  }
+
+  const tuiElicitationDir = path.join(root, "runtime/src/tui/elicitation");
+  if (existsSync(tuiElicitationDir)) {
+    const survivors = listSourceFiles(tuiElicitationDir).filter(
+      (rel) => !/\.test\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(rel),
+    );
+    if (survivors.length > 0) {
+      failGate(`ZC-22: behavior survived as a separate TUI elicitation module:\n${survivors.join("\n")}`);
+    }
+  }
+}
+
 function listSourceFiles(dir) {
   const out = [];
   for (const entry of readdirSync(dir)) {
@@ -4422,7 +4462,11 @@ async function cleanupGates(item) {
       },
       "ZC-18": { gone: ["runtime/parity/agenc-compaction-context.json"] },
       "ZC-19": { grepPresent: { pattern: "openai-compatible.*OpenAI HTTP API protocol.*not a port-era shim", scope: "runtime/src/llm/providers/openai-compatible/README.md" } }, // branding-scan: allow real OpenAI protocol name in ZC-19 evidence
-      "ZC-22": { gone: ["runtime/src/tui/elicitation-bridge.tsx"] },
+      "ZC-22": {
+        gone: ["runtime/src/tui/elicitation-bridge.tsx"],
+        grepNotPresent: { pattern: "elicitation-bridge", scope: "runtime/src" },
+        custom: assertZc22ElicitationRendererInlined,
+      },
       "ZC-26": { grepNotPresent: { pattern: "/home/claude/.agenc/remote", scope: "runtime/src" } }, // branding-scan: allow donor-leak path that ZC-26 is removing
       "ZC-27": { grepNotPresent: { pattern: "@ts-nocheck", scope: "runtime/src/types" } },
       "ZC-28": { gone: ["runtime/src/utils/attachments.ts", "runtime/src/utils/teamMemoryOps.ts", "runtime/src/components/FeedbackSurvey/useMemorySurvey.tsx"] },
