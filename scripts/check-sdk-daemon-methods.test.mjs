@@ -19,6 +19,9 @@ const scriptPath = path.join(
   "check-sdk-daemon-methods.mjs",
 );
 
+const requestMethods = ["initialize", "agent.logs"];
+const notificationMethods = ["commandExec.outputDelta", "event.message_chunk"];
+
 let passed = 0;
 let failed = 0;
 
@@ -34,66 +37,135 @@ function assert(name, condition, detail = "") {
 }
 
 function runChecker(root, sdkRoot) {
-  return spawnSync(
-    process.execPath,
-    [scriptPath, "--root", root, "--sdk", sdkRoot],
-    {
-      cwd: root,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
+  const args = [scriptPath, "--root", root];
+  if (sdkRoot) args.push("--sdk", sdkRoot);
+  return spawnSync(process.execPath, args, {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
 }
 
-function createFixture({ sdkNotificationMethods }) {
+function runGit(root, args) {
+  const result = spawnSync("git", args, {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.status !== 0) {
+    throw new Error(
+      `git ${args.join(" ")} failed: ${(result.stderr || result.stdout).trim()}`,
+    );
+  }
+}
+
+function createFixture(overrides = {}) {
   const root = mkdtempSync(path.join(tmpdir(), "agenc-sdk-method-gate-"));
   const sdkRoot = path.join(root, "agenc-sdk");
   mkdirSync(path.join(root, "runtime/src/app-server/protocol"), {
     recursive: true,
   });
   mkdirSync(path.join(sdkRoot, "src"), { recursive: true });
+  writeProtocol(root);
+  writeSdkDaemon(sdkRoot, overrides);
+  return { root, sdkRoot };
+}
+
+function createMainCheckoutFallbackFixture() {
+  const parent = mkdtempSync(path.join(tmpdir(), "agenc-sdk-main-fallback-"));
+  const mainRoot = path.join(parent, "AgenC", "agenc-core");
+  const sdkRoot = path.join(parent, "AgenC", "agenc-sdk");
+  const worktreeRoot = path.join(parent, "worktrees", "PK-10");
+  mkdirSync(path.join(mainRoot, "runtime/src/app-server/protocol"), {
+    recursive: true,
+  });
+  mkdirSync(path.join(sdkRoot, "src"), { recursive: true });
+  writeProtocol(mainRoot);
+  writeSdkDaemon(sdkRoot);
+  runGit(parent, ["init", "-b", "main", mainRoot]);
+  runGit(mainRoot, ["config", "user.email", "test@localhost"]);
+  runGit(mainRoot, ["config", "user.name", "AgenC Test"]);
+  runGit(mainRoot, ["add", "."]);
+  runGit(mainRoot, ["commit", "-m", "baseline"]);
+  mkdirSync(path.dirname(worktreeRoot), { recursive: true });
+  runGit(mainRoot, ["worktree", "add", "-b", "port/PK-10", worktreeRoot]);
+  return { root: parent, worktreeRoot };
+}
+
+function writeProtocol(root) {
   writeFileSync(
     path.join(root, "runtime/src/app-server/protocol/index.ts"),
     `
 export const AGENC_DAEMON_METHODS = [
-  "initialize",
-  "agent.logs",
+${requestMethods.map((method) => `  "${method}",`).join("\n")}
 ] as const;
 
 export const AGENC_DAEMON_NOTIFICATION_METHODS = [
-  "commandExec.outputDelta",
-  "event.message_chunk",
+${notificationMethods.map((method) => `  "${method}",`).join("\n")}
 ] as const;
 `,
   );
+}
+
+function writeSdkDaemon(sdkRoot, overrides = {}) {
+  const methods = overrides.sdkMethods ?? requestMethods;
+  const paramsMethods = overrides.sdkParamsMethods ?? requestMethods;
+  const resultMethods = overrides.sdkResultMethods ?? requestMethods;
+  const notifications = overrides.sdkNotificationMethods ?? notificationMethods;
+  const notificationParams =
+    overrides.sdkNotificationParamsMethods ?? notificationMethods;
+
   writeFileSync(
     path.join(sdkRoot, "src/daemon.ts"),
     `
 export type AgenCDaemonMethod =
-  | "initialize"
-  | "agent.logs";
+${typeUnionLines(methods)}
 
 export type AgenCDaemonNotificationMethod =
-${sdkNotificationMethods.map((method) => `  | "${method}"`).join("\n")};
+${typeUnionLines(notifications)}
 
 export interface AgenCDaemonParamsByMethod {
-  readonly initialize: InitializeParams;
-  readonly "agent.logs": AgentLogsParams;
+${interfaceLines(paramsMethods, "Params")}
 }
 
 export interface AgenCDaemonResultByMethod {
-  readonly initialize: InitializeResult;
-  readonly "agent.logs": AgentLogsResult;
+${interfaceLines(resultMethods, "Result")}
 }
 
 export interface AgenCDaemonNotificationParamsByMethod {
-${sdkNotificationMethods
-  .map((method) => `  readonly "${method}": NotificationParams;`)
-  .join("\n")}
+${interfaceLines(notificationParams, "NotificationParams")}
 }
 `,
   );
-  return { root, sdkRoot };
+}
+
+function typeUnionLines(values) {
+  return `${values.map((value) => `  | "${value}"`).join("\n")};`;
+}
+
+function interfaceLines(values, suffix) {
+  return values
+    .map((value) =>
+      /^[A-Za-z_$][\w$]*$/.test(value)
+        ? `  readonly ${value}: ${suffix};`
+        : `  readonly "${value}": ${suffix};`,
+    )
+    .join("\n");
+}
+
+function assertCheckerFails(name, overrides, expectedText) {
+  const fixture = createFixture(overrides);
+  try {
+    const result = runChecker(fixture.root, fixture.sdkRoot);
+    assert(name, result.status === 1, `${result.stderr}${result.stdout}`);
+    assert(
+      `${name} reports expected method`,
+      result.stderr.includes(expectedText),
+      result.stderr,
+    );
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
 }
 
 try {
@@ -128,9 +200,7 @@ try {
       comparison.ok === false,
   );
 
-  const clean = createFixture({
-    sdkNotificationMethods: ["commandExec.outputDelta", "event.message_chunk"],
-  });
+  const clean = createFixture();
   try {
     const result = runChecker(clean.root, clean.sdkRoot);
     assert(
@@ -142,23 +212,65 @@ try {
     rmSync(clean.root, { recursive: true, force: true });
   }
 
-  const drift = createFixture({
-    sdkNotificationMethods: ["commandExec.outputDelta"],
-  });
+  assertCheckerFails(
+    "missing request method fails",
+    { sdkMethods: ["initialize"] },
+    "agent.logs",
+  );
+  assertCheckerFails(
+    "extra SDK method fails",
+    { sdkMethods: [...requestMethods, "extra.method"] },
+    "extra.method",
+  );
+  assertCheckerFails(
+    "missing params map entry fails",
+    { sdkParamsMethods: ["initialize"] },
+    "agent.logs",
+  );
+  assertCheckerFails(
+    "missing result map entry fails",
+    { sdkResultMethods: ["initialize"] },
+    "agent.logs",
+  );
+  assertCheckerFails(
+    "missing notification method fails",
+    { sdkNotificationMethods: ["commandExec.outputDelta"] },
+    "event.message_chunk",
+  );
+  assertCheckerFails(
+    "missing notification params map entry fails",
+    { sdkNotificationParamsMethods: ["commandExec.outputDelta"] },
+    "event.message_chunk",
+  );
+
+  const absentSdk = createFixture();
   try {
-    const result = runChecker(drift.root, drift.sdkRoot);
+    rmSync(absentSdk.sdkRoot, { recursive: true, force: true });
+    const result = runChecker(absentSdk.root, absentSdk.sdkRoot);
     assert(
-      "missing notification method fails",
-      result.status === 1,
+      "absent explicit SDK root fails",
+      result.status === 2,
       `${result.stderr}${result.stdout}`,
     );
     assert(
-      "failure reports missing method",
-      result.stderr.includes("event.message_chunk"),
+      "absent SDK failure names missing daemon file",
+      result.stderr.includes("src/daemon.ts"),
       result.stderr,
     );
   } finally {
-    rmSync(drift.root, { recursive: true, force: true });
+    rmSync(absentSdk.root, { recursive: true, force: true });
+  }
+
+  const fallback = createMainCheckoutFallbackFixture();
+  try {
+    const result = runChecker(fallback.worktreeRoot);
+    assert(
+      "main-checkout sibling fallback passes from linked worktree",
+      result.status === 0,
+      `${result.stderr}${result.stdout}`,
+    );
+  } finally {
+    rmSync(fallback.root, { recursive: true, force: true });
   }
 } catch (error) {
   assert("unexpected test exception", false, error.message);

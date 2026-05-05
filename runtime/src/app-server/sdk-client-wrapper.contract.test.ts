@@ -38,6 +38,14 @@ function readSiblingSdkSource(...segments: readonly string[]): string {
   return readFileSync(siblingSdkPath(...segments), "utf8");
 }
 
+function coreRoot(): string {
+  return resolve(process.cwd(), "..");
+}
+
+function siblingSdkRoot(): string {
+  return resolve(dirname(siblingSdkPath("src", "daemon.ts")), "..");
+}
+
 describe("AgenC SDK daemon client wrapper", () => {
   it("exposes a typed wrapper over every daemon method without SDK agent logic", () => {
     const daemonSource = readSiblingSdkSource("src", "daemon.ts");
@@ -53,6 +61,23 @@ describe("AgenC SDK daemon client wrapper", () => {
     for (const method of AGENC_DAEMON_NOTIFICATION_METHODS) {
       expect(daemonSource).toContain(`"${method}"`);
     }
+
+    const driftCheck = spawnSync(
+      process.execPath,
+      [
+        resolve(coreRoot(), "scripts/check-sdk-daemon-methods.mjs"),
+        "--root",
+        coreRoot(),
+        "--sdk",
+        siblingSdkRoot(),
+      ],
+      {
+        cwd: coreRoot(),
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    expect(driftCheck.status, driftCheck.stderr || driftCheck.stdout).toBe(0);
 
     expect(daemonSource).not.toMatch(/@solana\/web3\.js|@coral-xyz\/anchor/);
     expect(daemonSource).not.toMatch(

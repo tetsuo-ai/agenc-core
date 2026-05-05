@@ -1594,6 +1594,27 @@ if (forwardingViolations.length > 0) {
 }
 pass("no new upstream/ files, no new shim-pattern additions, no forwarding-only modules");
 
+// --- Gate 2.7: daemon protocol <-> sibling SDK method drift --------------
+//
+// This runs as a standard verification gate whenever the daemon protocol
+// registry changes, and for checklist rows that explicitly name agenc-sdk.
+// PK-10 adds the checker; future protocol edits inherit the same guard.
+
+header("daemon SDK method drift");
+const sdkDaemonDriftRelevant =
+  id === "PK-10" ||
+  candidates.has("runtime/src/app-server/protocol/index.ts") ||
+  item.body.includes("agenc-sdk");
+if (sdkDaemonDriftRelevant) {
+  const r = run("node", ["scripts/check-sdk-daemon-methods.mjs"]);
+  if (r.status !== 0) {
+    failGate("daemon SDK method drift check failed");
+  }
+  pass("daemon SDK method drift check passed");
+} else {
+  pass("daemon SDK method drift check not required for this diff");
+}
+
 function combineLogicalStatements(significant) {
   const statements = [];
   let current = "";
@@ -3268,11 +3289,7 @@ async function pluginGates(item) {
     return;
   }
   if (id === "PK-10") {
-    const r = run("node", ["scripts/check-sdk-daemon-methods.mjs"]);
-    if (r.status !== 0) {
-      failGate("PK-10 SDK daemon method drift check failed");
-    }
-    pass("PK-10 SDK daemon method drift check passed");
+    pass("PK-10 SDK daemon method drift check is enforced by the standard gate");
     return;
   }
   // PK-01..PK-05, PK-07..PK-09: subsystem-shape items satisfied by the
