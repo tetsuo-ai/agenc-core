@@ -2,7 +2,7 @@ import path from "node:path";
 
 import type { ApprovalPolicy, GranularApprovalConfig } from "../../permissions/approval-policy.js";
 import { isDangerousCommand, shouldUseSandbox } from "../../permissions/bash.js";
-import { parseWordOnlyShellSequence } from "../../permissions/command-parser.js";
+import { parseWordOnlyShellSequence } from "../../shell-command/parser.js";
 import type { Decision } from "../execpolicy/decision.js";
 import type { Evaluation, Policy } from "../execpolicy/policy.js";
 import type { RuleMatch } from "../execpolicy/rule.js";
