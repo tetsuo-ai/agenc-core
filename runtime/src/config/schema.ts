@@ -416,6 +416,7 @@ export interface AgenCConfig {
 
   // ── Settings fields ────────────────────────────────────────────────
   readonly autoUpdates?: boolean;
+  readonly remoteControlAtStartup?: boolean;
   readonly bypassPermissionsModeAcceptedIn?: readonly string[];
   readonly experiments?: ExperimentsConfig;
   readonly ideConnector?: IdeConnectorConfig;
@@ -554,6 +555,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "daemon",
   "lsp_servers",
   "autoUpdates",
+  "remoteControlAtStartup",
   "bypassPermissionsModeAcceptedIn",
   "experiments",
   "ideConnector",

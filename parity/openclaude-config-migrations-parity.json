@@ -1,0 +1,109 @@
+{
+  "contractName": "openclaude-config-migrations-port",
+  "scope": "Port donor startup migration runner shape into AgenC config and settings migrations without making config reloads mutate disk.",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/main.tsx",
+    "src/migrations/resetProToOpusDefault.ts",
+    "src/migrations/resetAutoModeOptInForDefaultOffer.ts",
+    "src/migrations/migrateEnableAllProjectMcpServersToSettings.ts",
+    "src/migrations/migrateLegacyOpusToCurrent.ts",
+    "src/migrations/migrateReplBridgeEnabledToRemoteControlAtStartup.ts",
+    "src/migrations/migrateSonnet1mToSonnet45.ts",
+    "src/migrations/migrateFennecToOpus.ts",
+    "src/migrations/migrateOpusToOpus1m.ts",
+    "src/migrations/migrateAutoUpdatesToSettings.ts",
+    "src/migrations/migrateSonnet45ToSonnet46.ts",
+    "src/migrations/migrateBypassPermissionsAcceptedToSettings.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/state/migrations/config-migrations.ts",
+    "runtime/src/config/loader.ts",
+    "runtime/src/config/schema.ts",
+    "runtime/src/bin/bootstrap.ts",
+    "runtime/src/bin/agenc.ts",
+    "runtime/src/state/migrations/PARITY.md"
+  ],
+  "testFiles": [
+    "runtime/src/state/config-migrations.test.ts",
+    "runtime/src/config/config.test.ts",
+    "runtime/src/bin/project-trust-preflight.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "read-only-config-normalization",
+      "requiredBehaviors": [
+        "Normalize legacy model provider key aliases before raw config normalization.",
+        "Migrate replBridgeEnabled into the typed remoteControlAtStartup config key.",
+        "Normalize providers.xai into providers.grok without rewriting configured request model IDs.",
+        "Keep loadConfig and ConfigStore.reload free of settings-file side effects."
+      ],
+      "edgeCases": [
+        "canonical top-level provider key wins over alias",
+        "canonical profile model_provider wins over provider aliases",
+        "providers.grok wins over providers.xai",
+        "configured model IDs remain unchanged"
+      ],
+      "tests": [
+        "runtime/src/state/config-migrations.test.ts",
+        "runtime/src/config/config.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "startup-settings-runner",
+      "requiredBehaviors": [
+        "Run settings-file migrations only from explicit startup call sites.",
+        "Persist configMigrationVersion markers in the settings JSON file each migration mutates.",
+        "Reload the config store only when startup migrations write files."
+      ],
+      "edgeCases": [
+        "current marker skips writes",
+        "missing files can be initialized",
+        "malformed existing settings files are warned and preserved",
+        "preflight and bootstrap duplicate calls are idempotent"
+      ],
+      "tests": [
+        "runtime/src/state/config-migrations.test.ts",
+        "runtime/src/bin/project-trust-preflight.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "settings-moves",
+      "requiredBehaviors": [
+        "Move legacy bypass permission acceptance into user settings bypassPermissionsModeAcceptedIn for the resolved workspace.",
+        "Move project MCP approval keys into local settings with deduplication.",
+        "Remove project MCP approval keys only after local settings write succeeds.",
+        "Advance local project marker only after local write and project cleanup succeed."
+      ],
+      "edgeCases": [
+        "missing workspace does not advance the user marker",
+        "existing accepted workspace is preserved without duplication",
+        "enabled and disabled MCP arrays are deduped",
+        "stale project keys are cleaned after successful local migration"
+      ],
+      "tests": [
+        "runtime/src/state/config-migrations.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "documented-omissions",
+      "requiredBehaviors": [
+        "Do not execute donor auto-update migration because AgenC has no live updater path and current defaults obscure explicit user intent.",
+        "Do not rewrite configured request model IDs without a verified provider request deprecation table."
+      ],
+      "edgeCases": [
+        "grok-4 remains unchanged because it is still in the built-in catalog",
+        "context-window aliases do not silently change user config"
+      ],
+      "tests": [
+        "runtime/src/state/config-migrations.test.ts"
+      ],
+      "status": "documented"
+    }
+  ]
+}

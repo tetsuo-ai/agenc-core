@@ -1037,6 +1037,32 @@ model = "grok-4-fast"
     expect(out.config.profiles?.fast?.model).toBe("grok-4-fast");
   });
 
+  test("applies read-only config migrations before normalization", async () => {
+    writeFileSync(
+      join(dir, "config.toml"),
+      `
+provider = "xai"
+replBridgeEnabled = true
+
+[profiles.fast]
+provider = "xai"
+
+[providers.xai]
+default_model = "grok-4-fast"
+      `,
+    );
+
+    const out = await loadConfig({ home: dir });
+    expect(out.config.model_provider).toBe("grok");
+    expect(out.config.remoteControlAtStartup).toBe(true);
+    expect(out.config.profiles?.fast?.model_provider).toBe("grok");
+    expect(out.config.providers).toEqual({
+      grok: { default_model: "grok-4-fast" },
+    });
+    expect(out.config._unknown?.provider).toBeUndefined();
+    expect(out.config._unknown?.replBridgeEnabled).toBeUndefined();
+  });
+
   test("auth.backend TOML overrides the local default", async () => {
     writeFileSync(
       join(dir, "config.toml"),

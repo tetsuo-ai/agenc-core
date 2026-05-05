@@ -84,6 +84,7 @@ import {
   resolveWorkspace as resolveWorkspaceFromEnv,
   type AgenCConfig,
 } from "../config/index.js";
+import { runStartupConfigMigrations } from "../state/migrations/config-migrations.js";
 import type { ResolvedProviderSettings } from "../config/resolve-provider.js";
 import type {
   AuthBackend,
@@ -803,6 +804,14 @@ export async function bootstrapLocalRuntimeSession(
 
   const workspaceRoot =
     resolveWorkspaceFromEnv(env) ?? options.cwd ?? process.cwd();
+  const configMigrations = await runStartupConfigMigrations({
+    home: agencHome,
+    cwd: workspaceRoot,
+    configStore,
+  });
+  if (configMigrations.wrote) {
+    await configStore.reload();
+  }
   const projectTrust = resolveProjectTrustStateSync({
     agencHome,
     env,

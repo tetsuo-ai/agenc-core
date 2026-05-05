@@ -139,6 +139,7 @@ import {
   formatProjectTrustSources,
   summarizeProjectTrustSources,
 } from "../permissions/trust/trust-sources.js";
+import { runStartupConfigMigrations } from "../state/migrations/config-migrations.js";
 
 export {
   bootstrapLocalRuntimeSession,
@@ -1696,6 +1697,14 @@ export async function runProjectTrustPreflightForTui(
     cwd: rawWorkspace,
     projectRootMarkers: startup.config.project_root_markers,
   });
+  const configMigrations = await runStartupConfigMigrations({
+    home: agencHome,
+    cwd: projectRoot,
+    configStore,
+  });
+  if (configMigrations.wrote) {
+    await configStore.reload();
+  }
   if (
     isProjectTrustedSync({
       agencHome,

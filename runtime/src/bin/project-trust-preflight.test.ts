@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -218,6 +218,43 @@ describe("project trust preflight", () => {
       });
       expect(markSessionTrusted).toHaveBeenCalledTimes(1);
       expect(stdio.stderrText()).toBe("");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("runs startup config migrations before trust enforcement", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-trust-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-trust-ws-"));
+    const env = makeEnv(home, workspace);
+    const stdio = makeNonTtyStdio();
+    const settingsPath = join(home, ".agenc", "settings.json");
+
+    try {
+      await mkdir(join(home, ".agenc"), { recursive: true });
+      await writeFile(
+        settingsPath,
+        `${JSON.stringify({ bypassPermissionsModeAccepted: true })}\n`,
+        "utf8",
+      );
+
+      const result = await runProjectTrustPreflightForTui({
+        env,
+        argv: ["node", "agenc"],
+        cwd: workspace,
+        stdin: stdio.stdin,
+        stdout: stdio.stdout,
+        stderr: stdio.stderr,
+      });
+
+      expect(result.accepted).toBe(false);
+      const migrated = JSON.parse(
+        await readFile(settingsPath, "utf8"),
+      ) as Record<string, unknown>;
+      expect(migrated.bypassPermissionsModeAccepted).toBeUndefined();
+      expect(migrated.bypassPermissionsModeAcceptedIn).toEqual([workspace]);
+      expect(migrated.configMigrationVersion).toBe(11);
     } finally {
       await rm(home, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });

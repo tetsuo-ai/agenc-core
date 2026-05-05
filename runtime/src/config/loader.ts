@@ -20,6 +20,7 @@
 //   - Date-time values
 //   - Hex/octal/binary integers
 //
+// branding-scan: allow upstream runtime compatibility reference
 // This is enough for AgenC's config surface (codex runtime + AgenC fields).
 // Unknown TOML values are still parsed and surfaced to the caller via
 // `normalizeRawConfig` (→ `_unknown` side-table).
@@ -50,6 +51,7 @@ import {
 } from "./schema.js";
 import { resolveAgencHome } from "./env.js";
 import { readTextFile } from "./_deps/file-read.js";
+import { migrateRawAgenCConfig } from "../state/migrations/config-migrations.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Parser
@@ -696,7 +698,8 @@ export async function loadConfig(
   }
 
   const aliased = normalizeAgenCKeyAliases(parsed);
-  const normalized = normalizeRawConfig(aliased);
+  const migrated = migrateRawAgenCConfig(aliased);
+  const normalized = normalizeRawConfig(migrated);
   const merged = mergeConfigs(base, normalized);
   return Object.freeze({
     config: merged,
