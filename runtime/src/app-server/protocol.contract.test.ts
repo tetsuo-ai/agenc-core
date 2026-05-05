@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import Ajv from "ajv";
 import { describe, expect, it } from "vitest";
 import {
@@ -33,9 +33,24 @@ interface ProtocolSchema {
 
 interface ProtocolPackageManifest {
   readonly name?: string;
+  readonly exports?: Record<
+    string,
+    | string
+    | {
+        readonly default?: string;
+        readonly import?: string;
+        readonly require?: string;
+      }
+  >;
+  readonly files?: readonly string[];
   readonly publishConfig?: {
     readonly access?: string;
   };
+}
+
+interface ProtocolPackageRead {
+  readonly manifest: ProtocolPackageManifest;
+  readonly packageDir: string;
 }
 
 const expectedMethods = [
@@ -106,8 +121,9 @@ function compileNotificationValidator(schema: ProtocolSchema) {
   });
 }
 
-function readSiblingProtocolPackage(): ProtocolPackageManifest | null {
-  const packagePath = [
+function readSiblingProtocolPackage(): ProtocolPackageRead | null {
+  const packagePathCandidates = [
+    process.env.AGENC_PROTOCOL_PACKAGE_JSON,
     resolve(
       process.cwd(),
       "..",
@@ -125,11 +141,27 @@ function readSiblingProtocolPackage(): ProtocolPackageManifest | null {
       "protocol",
       "package.json",
     ),
-  ].find(existsSync);
+  ].filter((candidate): candidate is string => typeof candidate === "string");
+  const packagePath = packagePathCandidates.find(existsSync);
   if (packagePath === undefined) return null;
-  return JSON.parse(
-    readFileSync(packagePath, "utf8"),
-  ) as ProtocolPackageManifest;
+  return {
+    manifest: JSON.parse(
+      readFileSync(packagePath, "utf8"),
+    ) as ProtocolPackageManifest,
+    packageDir: dirname(packagePath),
+  };
+}
+
+function protocolPackageExportTarget(
+  manifest: ProtocolPackageManifest,
+  exportPath: string,
+): string | null {
+  const target = manifest.exports?.[exportPath];
+  if (typeof target === "string") return target;
+  if (target && typeof target === "object") {
+    return target.default ?? target.require ?? target.import ?? null;
+  }
+  return null;
 }
 
 describe("AgenC daemon protocol surface", () => {
@@ -179,11 +211,31 @@ describe("AgenC daemon protocol surface", () => {
       schemaId: "urn:agenc:app-server:protocol",
     });
 
-    const siblingPackage = readSiblingProtocolPackage();
-    if (siblingPackage !== null) {
-      expect(siblingPackage.name).toBe(AGENC_DAEMON_PROTOCOL_PACKAGE_NAME);
-      expect(siblingPackage.publishConfig?.access).toBe("public");
+    const siblingPackageRead = readSiblingProtocolPackage();
+    if (siblingPackageRead === null) {
+      throw new Error(
+        "Missing sibling protocol package checkout for protocol package export contract.",
+      );
     }
+
+    const { manifest, packageDir } = siblingPackageRead;
+    expect(manifest.name).toBe(AGENC_DAEMON_PROTOCOL_PACKAGE_NAME);
+    expect(manifest.publishConfig?.access).toBe("public");
+
+    const exportTarget = protocolPackageExportTarget(
+      manifest,
+      AGENC_DAEMON_PROTOCOL_SCHEMA_EXPORT,
+    );
+    expect(exportTarget).toBe("./src/generated/daemon-json-rpc.schema.json");
+    expect(manifest.files).toContain("src/generated");
+
+    const packagedSchema = JSON.parse(
+      readFileSync(resolve(packageDir, exportTarget ?? ""), "utf8"),
+    ) as ProtocolSchema;
+    expect(packagedSchema.$id).toBe(schema.$id);
+    expect(packagedSchema["x-agenc-package"]).toEqual(
+      schema["x-agenc-package"],
+    );
   });
 
   it("validates all request-bearing methods through the published schema", () => {
