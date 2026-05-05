@@ -22,16 +22,14 @@
  *     multi-key semantics.
  *   - `SessionApprovalCache` — session-destination allow-rule cache for
  *     which tools/patterns were approved in the current session.
- *   - `canonicalizeCommandForApproval` — subset of donor runtime's
- *     canonicalizer: collapses `bash -lc` / `bash -c` / `/bin/bash`
- *     wrappers to a stable argv and trims whitespace around the
- *     script text.
  *   - `ShellApprovalKey` + `buildShellApprovalKey` — the shape
- *     `ShellRuntime` uses as its approval key.
+ *     shell execution uses as its approval key. Command parsing and
+ *     canonicalization live in `command-parser.ts`.
  *
  * @module
  */
 
+import { canonicalizeCommandForApproval } from "./command-parser.js";
 import type { ReviewDecision } from "./review-decision.js";
 import {
   applyPermissionUpdate,
@@ -320,94 +318,6 @@ function normalizeRule(rule: PermissionRuleValue | string): PermissionRuleValue 
 
 function normalizeRuleString(rule: PermissionRuleValue | string): string {
   return serializeRuleValue(normalizeRule(rule));
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// canonicalizeCommandForApproval — subset of donor runtime
-// `command_canonicalization.rs`.
-// ─────────────────────────────────────────────────────────────────────
-
-const BASH_WRAPPER_NAMES: ReadonlySet<string> = new Set([
-  "bash",
-  "sh",
-  "zsh",
-]);
-const BASH_WRAPPER_FLAGS: ReadonlySet<string> = new Set(["-lc", "-c"]);
-
-/** Canonical marker the donor runtime uses to tag shell scripts that cannot be
- *  cleanly tokenized (heredocs, pipes, etc.). */
-const CANONICAL_BASH_SCRIPT_PREFIX = "__agenc_shell_script__";
-
-/**
- * Collapse argv-invariant differences between equivalent shell
- * wrappers so the approval cache can hit across them.
- *
- * The donor runtime does full bash tokenization to split `bash -lc "cargo test"`
- * into `["cargo", "test"]`. AgenC Wave 1 handles the common cases:
- *
- *   1. `bash -lc "X"`, `bash -c "X"`, `/bin/bash -lc "X"`,
- *      `/usr/bin/zsh -lc "X"` with a simple whitespace-split
- *      command (no pipes / redirects / heredocs / quotes) → splits
- *      into the plain argv. `"cargo   test  -p core"` → `["cargo",
- *      "test", "-p", "core"]`.
- *   2. More complex scripts → fall back to a canonical script key
- *      `[CANONICAL_BASH_SCRIPT_PREFIX, flag, trimmed_script]`.
- *   3. Non-shell commands (no wrapper match) → return the argv as-is.
- *
- * Unix case matters, so nothing is lower-cased.
- */
-export function canonicalizeCommandForApproval(
-  command: readonly string[],
-): readonly string[] {
-  if (command.length < 3) return command.slice();
-  const [binary, flag, script, ...rest] = command;
-  if (rest.length > 0) return command.slice();
-  if (binary === undefined || flag === undefined || script === undefined) {
-    return command.slice();
-  }
-
-  const binaryName = basenameNoExt(binary);
-  if (!BASH_WRAPPER_NAMES.has(binaryName)) return command.slice();
-  if (!BASH_WRAPPER_FLAGS.has(flag)) return command.slice();
-
-  const trimmedScript = script.trim();
-  if (trimmedScript.length === 0) return command.slice();
-
-  if (isSimplePlainCommand(trimmedScript)) {
-    return trimmedScript.split(/\s+/).filter((s) => s.length > 0);
-  }
-
-  return [CANONICAL_BASH_SCRIPT_PREFIX, flag, trimmedScript];
-}
-
-/**
- * Cheap check: the script is a single command made of whitespace-
- * separated words with no shell metacharacters, quotes, or newlines.
- *
- * If this returns false, we fall back to the opaque script key so we
- * don't accidentally collide semantically different scripts. Being
- * conservative here matters — the approval cache grants
- * session-durable permission.
- */
-function isSimplePlainCommand(script: string): boolean {
-  if (script.length === 0) return false;
-  // Reject any shell metacharacter, newline, or quote. The regex is
-  // intentionally strict: anything outside [word, -, _, /, ., space,
-  // =, :, ,, @] means a non-trivial shell script and we should not
-  // try to tokenize it.
-  return /^[\w\-_/.\s=:,@]+$/.test(script);
-}
-
-function basenameNoExt(p: string): string {
-  const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
-  const name = idx >= 0 ? p.slice(idx + 1) : p;
-  // Strip .exe so `powershell.exe` and `bash.exe` collapse to the
-  // base name. (AgenC Wave 1 does not port PowerShell, but keeping
-  // the strip consistent costs nothing.)
-  if (name.toLowerCase().endsWith(".exe")) {
-    return name.slice(0, -4);
-  }
-  return name;
 }
 
 // ─────────────────────────────────────────────────────────────────────

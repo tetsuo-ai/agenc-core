@@ -8,7 +8,7 @@
  * top of the legacy regex/shell-quote security gate. AgenC keeps ONLY
  * the pieces the runtime evaluator needs:
  *
- *   1. A self-contained subcommand splitter (no tree-sitter, no
+ *   1. Shared command parsing from `command-parser.ts` (no tree-sitter, no
  *      shell-quote npm dep) that honours quote boundaries.
  *   2. `getSimpleCommandPrefix` and `getFirstWordPrefix` for stable
  *      rule matching (`git commit`, `npm run`, …).
@@ -37,6 +37,10 @@
  * `bashToolHasPermission`'s decision flow — this port's "fallback-to-ask"
  * default guarantees forward-compatibility.
  *
+ * `dangerous-patterns.ts` keeps its own recursive shell-fragment scanner. That
+ * layer finds nested safety hazards; `command-parser.ts` owns conservative
+ * argv/prefix parsing for rules, sandbox checks, and approval cache keys.
+ *
  * @module
  */
 
@@ -52,6 +56,15 @@ import {
   isDangerousShellCommand,
   matchedDangerousShellCommandLabel,
 } from "./dangerous-patterns.js";
+import {
+  ENV_VAR_ASSIGN_RE,
+  MAX_SUBCOMMANDS_FOR_SECURITY_CHECK,
+  getFirstWordPrefix,
+  getSimpleCommandPrefix,
+  parseShellCommand,
+  parseShellWrapperSubcommandsForPermission,
+  splitCommand,
+} from "./command-parser.js";
 import type { ToolEvaluatorContext } from "./evaluator.js";
 import type {
   PermissionDecisionReason,
@@ -65,88 +78,7 @@ export type { ToolEvaluatorContext } from "./evaluator.js";
 // Constants
 // ─────────────────────────────────────────────────────────────────────
 
-export const MAX_SUBCOMMANDS_FOR_SECURITY_CHECK = 50;
-
 export const BASH_TOOL_NAME = "Bash";
-
-/**
- * Env-var assignment pattern. Matches AgenC's `ENV_VAR_ASSIGN_RE`.
- */
-const ENV_VAR_ASSIGN_RE = /^[A-Za-z_]\w*=/;
-
-/**
- * Shape check for "this token looks like a subcommand/command name":
- * lowercase, optionally hyphenated (e.g. `git`, `npm`, `run`, `compose`).
- * Rejects flags, paths, numbers, and filenames.
- */
-const COMMAND_TOKEN_RE = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
-
-/**
- * Env vars safe to strip from the prefix lookup. Narrower than
- * AgenC's full list — AgenC keeps only the ones that appear in
- * lean-port test fixtures and which cannot execute code or hijack
- * binaries. When AgenC adds ANT_ONLY_SAFE_ENV_VARS (T11 Wave 3) it
- * should merge here, not replace.
- */
-export const SAFE_ENV_VARS: ReadonlySet<string> = new Set([
-  "NODE_ENV",
-  "PYTHONUNBUFFERED",
-  "PYTHONDONTWRITEBYTECODE",
-  "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
-  "GOEXPERIMENT",
-  "GOOS",
-  "GOARCH",
-  "CGO_ENABLED",
-  "GO111MODULE",
-  "RUST_BACKTRACE",
-  "RUST_LOG",
-  "LANG",
-  "LANGUAGE",
-  "LC_ALL",
-  "LC_CTYPE",
-  "LC_TIME",
-  "TERM",
-  "COLORTERM",
-  "NO_COLOR",
-  "FORCE_COLOR",
-  "TZ",
-  "CI",
-  "DEBUG",
-  "GOOGLE_CLOUD_PROJECT",
-  "LS_COLORS",
-  "LSCOLORS",
-  "GREP_COLOR",
-  "GREP_COLORS",
-]);
-
-/**
- * Bare shell/wrapper names we refuse to turn into prefix rules. A rule
- * like `Bash(bash:*)` would allow arbitrary code via `-c`. `sudo`/`doas`
- * similarly round-trip privilege.
- */
-const BARE_SHELL_PREFIXES: ReadonlySet<string> = new Set([
-  "sh",
-  "bash",
-  "zsh",
-  "fish",
-  "csh",
-  "tcsh",
-  "ksh",
-  "dash",
-  "cmd",
-  "powershell",
-  "pwsh",
-  "env",
-  "xargs",
-  "nice",
-  "stdbuf",
-  "nohup",
-  "timeout",
-  "time",
-  "sudo",
-  "doas",
-  "pkexec",
-]);
 
 /**
  * Conservative sandbox-safe command allow-list. These commands are
@@ -254,250 +186,6 @@ export interface BashSubcommandResult {
 export type BashPermissionResult = PermissionResult & {
   readonly subcommandResults?: readonly BashSubcommandResult[];
 };
-
-// ─────────────────────────────────────────────────────────────────────
-// Argv parser (inline shell-quote-lite)
-// ─────────────────────────────────────────────────────────────────────
-
-/**
- * Parse a single simple command into argv tokens. Honors:
- *   - single quotes  (literal)
- *   - double quotes  (backslash-escape of `"` `\` `$` `` ` `` only)
- *   - backslash escapes in unquoted context
- *
- * Returns `null` when the input has an unterminated quote or contains
- * a shell metachar (`|` `&` `;` `>` `<` `(` `)` `` ` ``, `$(`), which
- * signals that the caller should split first or fall back to "ask".
- *
- * NOT a full bash parser. Good enough for prefix extraction and first-
- * word lookup; any construct more subtle than "quoted arg with optional
- * backslash escapes" routes to the `ask` branch via the null return.
- */
-export function parseShellCommand(command: string): readonly string[] | null {
-  const src = command;
-  const n = src.length;
-  const tokens: string[] = [];
-  let i = 0;
-  let buf = "";
-  let inToken = false;
-
-  const flushToken = (): void => {
-    if (inToken) {
-      tokens.push(buf);
-      buf = "";
-      inToken = false;
-    }
-  };
-
-  while (i < n) {
-    const c = src[i]!;
-
-    if (c === " " || c === "\t") {
-      flushToken();
-      i++;
-      continue;
-    }
-
-    // Shell metachars → unparseable by this lean tokenizer.
-    if (c === "|" || c === "&" || c === ";" || c === ">" || c === "<" || c === "(" || c === ")" || c === "`" || c === "\n" || c === "\r") {
-      return null;
-    }
-
-    if (c === "$" && src[i + 1] === "(") {
-      return null; // command substitution
-    }
-
-    inToken = true;
-
-    if (c === "'") {
-      // Single-quoted: literal until closing '
-      const end = src.indexOf("'", i + 1);
-      if (end === -1) return null; // unterminated
-      buf += src.slice(i + 1, end);
-      i = end + 1;
-      continue;
-    }
-
-    if (c === '"') {
-      // Double-quoted: allow \", \\, \$, \`
-      let j = i + 1;
-      let closed = false;
-      while (j < n) {
-        const d = src[j]!;
-        if (d === '"') {
-          closed = true;
-          break;
-        }
-        if (d === "\\" && j + 1 < n) {
-          const e = src[j + 1]!;
-          if (e === '"' || e === "\\" || e === "$" || e === "`") {
-            buf += e;
-            j += 2;
-            continue;
-          }
-          buf += d;
-          j++;
-          continue;
-        }
-        if (d === "$" && src[j + 1] === "(") {
-          return null;
-        }
-        if (d === "`") {
-          return null;
-        }
-        buf += d;
-        j++;
-      }
-      if (!closed) return null;
-      i = j + 1;
-      continue;
-    }
-
-    if (c === "\\") {
-      // Backslash escape: preserve next char literally, or return null at EOF
-      if (i + 1 >= n) return null;
-      buf += src[i + 1]!;
-      i += 2;
-      continue;
-    }
-
-    buf += c;
-    i++;
-  }
-
-  flushToken();
-  return tokens;
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Subcommand splitter
-// ─────────────────────────────────────────────────────────────────────
-
-/**
- * Split a command string on top-level shell operators: `;`, `&&`, `||`,
- * `|`, `&`. Quote boundaries are honored. Redirection operators
- * (`>`, `<`, `>>`, `2>`, etc.) are NOT split points — the segment that
- * contains them is kept whole; the per-subcommand check plus
- * `isDangerousCommand` handle the rest.
- *
- * Returns an empty array for empty/blank input. Callers that need to
- * enforce the 50-subcommand cap should check
- * `MAX_SUBCOMMANDS_FOR_SECURITY_CHECK` against the return length.
- */
-export function splitCommand(command: string): readonly string[] {
-  const trimmed = command.trim();
-  if (trimmed.length === 0) return [];
-
-  const parts: string[] = [];
-  const n = trimmed.length;
-  let i = 0;
-  let start = 0;
-
-  while (i < n) {
-    const c = trimmed[i]!;
-
-    // Skip over quoted regions intact.
-    if (c === "'") {
-      const end = trimmed.indexOf("'", i + 1);
-      if (end === -1) {
-        // unterminated — treat rest of string as opaque, don't split
-        i = n;
-        continue;
-      }
-      i = end + 1;
-      continue;
-    }
-    if (c === '"') {
-      let j = i + 1;
-      while (j < n) {
-        const d = trimmed[j]!;
-        if (d === '"') break;
-        if (d === "\\" && j + 1 < n) {
-          j += 2;
-          continue;
-        }
-        j++;
-      }
-      i = j < n ? j + 1 : n;
-      continue;
-    }
-    if (c === "\\" && i + 1 < n) {
-      i += 2;
-      continue;
-    }
-
-    // Operator split points.
-    const two = trimmed.substr(i, 2);
-    let opLen = 0;
-    if (two === "&&" || two === "||") {
-      opLen = 2;
-    } else if (c === ";" || c === "|" || c === "&" || c === "\n" || c === "\r") {
-      // `&` ambiguous with `&&` — handled above.
-      opLen = 1;
-    }
-
-    if (opLen > 0) {
-      const segment = trimmed.slice(start, i).trim();
-      if (segment.length > 0) parts.push(segment);
-      i += opLen;
-      start = i;
-      continue;
-    }
-
-    i++;
-  }
-
-  const last = trimmed.slice(start).trim();
-  if (last.length > 0) parts.push(last);
-
-  return parts;
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Prefix extraction
-// ─────────────────────────────────────────────────────────────────────
-
-function stripLeadingSafeEnvVars(tokens: readonly string[]): readonly string[] | null {
-  let i = 0;
-  while (i < tokens.length && ENV_VAR_ASSIGN_RE.test(tokens[i]!)) {
-    const varName = tokens[i]!.split("=")[0]!;
-    if (!SAFE_ENV_VARS.has(varName)) return null;
-    i++;
-  }
-  return tokens.slice(i);
-}
-
-/**
- * Extract a stable two-token prefix ("git commit", "npm run"). Returns
- * null if:
- *   - a non-safe env var prefix is encountered
- *   - the command has fewer than 2 tokens
- *   - the second token doesn't look like a lowercase subcommand
- */
-export function getSimpleCommandPrefix(command: string): string | null {
-  const tokens = command.trim().split(/\s+/).filter(Boolean);
-  const stripped = stripLeadingSafeEnvVars(tokens);
-  if (stripped === null) return null;
-  if (stripped.length < 2) return null;
-  const subcmd = stripped[1]!;
-  if (!COMMAND_TOKEN_RE.test(subcmd)) return null;
-  return stripped.slice(0, 2).join(" ");
-}
-
-/**
- * Simpler fallback: return the first command token after stripping
- * safe env vars. Rejects bare shells / wrappers ("bash", "sudo", …).
- */
-export function getFirstWordPrefix(command: string): string | null {
-  const tokens = command.trim().split(/\s+/).filter(Boolean);
-  const stripped = stripLeadingSafeEnvVars(tokens);
-  if (stripped === null) return null;
-  const cmd = stripped[0];
-  if (!cmd) return null;
-  if (!COMMAND_TOKEN_RE.test(cmd)) return null;
-  if (BARE_SHELL_PREFIXES.has(cmd)) return null;
-  return cmd;
-}
 
 // ─────────────────────────────────────────────────────────────────────
 // Sandbox override
@@ -776,8 +464,12 @@ export async function bashToolHasPermission(
   // AgenC versions hard-blocked here via `looksReadOnly`; that block
   // was non-upstream and is removed for strict parity.
 
-  // Split into subcommands (regex-based, quote-aware).
-  const subcommands = splitCommand(input.command);
+  // Split into subcommands (regex-based, quote-aware). Recognized shell
+  // wrappers use the shared argv-tree parser so rules see the wrapped action,
+  // while opaque scripts fall back to the raw command string.
+  const subcommands =
+    parseShellWrapperSubcommandsForPermission(input.command) ??
+    splitCommand(input.command);
 
   if (subcommands.length === 0) {
     return {
@@ -798,7 +490,7 @@ export async function bashToolHasPermission(
   // If argv parse failed AND the split did not break the command into
   // recognizable parts (still contains exotic shell chars), fall back
   // to ask. Never silently allow.
-  if (argv === null && subcommands.length === 1 && /[`$()<]/.test(input.command)) {
+  if (argv === null && subcommands.length === 1 && /[`()<]/.test(input.command)) {
     return {
       behavior: "ask",
       message: `Bash command contains shell constructs this runtime cannot verify; confirm intent for \`${input.command}\`.`,

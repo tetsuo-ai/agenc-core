@@ -2,7 +2,6 @@ import { describe, expect, test, vi } from "vitest";
 import {
   ApprovalStore,
   buildShellApprovalKey,
-  canonicalizeCommandForApproval,
   canonicalJsonKey,
   createSessionApprovalCacheFromContext,
   hasSessionApproval,
@@ -10,6 +9,7 @@ import {
   SessionApprovalCache,
   type ShellApprovalKey,
 } from "./approval-cache.js";
+import { canonicalizeCommandForApproval } from "./command-parser.js";
 import type { ReviewDecision } from "./review-decision.js";
 import { createEmptyToolPermissionContext } from "./types.js";
 
@@ -346,6 +346,24 @@ describe("buildShellApprovalKey", () => {
       command: ["bash", "-c", "cargo check"],
       cwd: "/w",
     });
+    expect(store.get(k2)).toEqual({ kind: "approved_for_session" });
+  });
+
+  test("complex shell scripts preserve mode and script text across wrapper paths", () => {
+    const store = new ApprovalStore<ShellApprovalKey>();
+    const script = "echo hi | grep hi";
+    const k1 = buildShellApprovalKey({
+      command: ["/bin/bash", "-lc", script],
+      cwd: "/w",
+    });
+    const k2 = buildShellApprovalKey({
+      command: ["bash", "-lc", script],
+      cwd: "/w",
+    });
+    store.set(k1, { kind: "approved_for_session" });
+
+    expect(k1.command).toEqual(["__agenc_shell_script__", "-lc", script]);
+    expect(canonicalJsonKey(k1)).toBe(canonicalJsonKey(k2));
     expect(store.get(k2)).toEqual({ kind: "approved_for_session" });
   });
 });
