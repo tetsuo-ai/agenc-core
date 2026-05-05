@@ -150,6 +150,7 @@ const DEFAULT_MAX_EXTRACTED_FILES = 4096;
 const DEFAULT_MAX_EXTRACT_DEPTH = 32;
 const DEFAULT_CACHE_LOCK_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_ARCHIVE_REDIRECTS = 5;
+const PLUGIN_INSTALL_METADATA_RELATIVE_PATH = ".agenc-plugin/agenc-install.json";
 const KNOWN_PUBLIC_HOSTS = new Set([
   "github.com",
   "raw.githubusercontent.com",
@@ -1481,6 +1482,7 @@ async function collectPluginPayloadDigests(
       if (!childStat.isFile()) continue;
       if (childReal === manifestReal || childReal === signatureReal) continue;
       const relPath = relative(pluginRoot, child).replace(/\\/g, "/");
+      if (relPath === PLUGIN_INSTALL_METADATA_RELATIVE_PATH) continue;
       out[relPath] = `sha256:${sha256Hex(await readFile(child))}`;
     }
   }

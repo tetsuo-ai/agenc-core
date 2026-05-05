@@ -854,6 +854,7 @@ function validateOptionalNonNegativeInteger(
 const DEPENDENCY_REF_PATTERN =
   /^[a-z0-9][-a-z0-9._]*(?:@[a-z0-9][-a-z0-9._]*)?(?:@(?:\^|~|>=|<=|>|<|=)[0-9a-z][0-9a-z._+-]*)?$/iu;
 const DEPENDENCY_NAME_PATTERN = /^[a-z0-9][-a-z0-9._]*$/iu;
+const DEPENDENCY_VERSION_CONSTRAINT_PATTERN = /^(?:\^|~|>=|<=|>|<|=)[0-9a-z][0-9a-z._+-]*$/iu;
 const LSP_SERVER_KEYS = new Set([
   "command",
   "args",
@@ -907,9 +908,12 @@ function normalizeDependencies(
           });
           return null;
         }
-        return typeof entry.marketplace === "string"
+        const versionConstraint = normalizeObjectDependencyVersionConstraint(entry, index, issues);
+        if (versionConstraint === null) return null;
+        const id = typeof entry.marketplace === "string"
           ? `${entry.name}@${entry.marketplace}`
           : entry.name;
+        return versionConstraint === undefined ? id : `${id}@${versionConstraint}`;
       }
       issues.push({
         path: `dependencies[${index}]`,
@@ -919,6 +923,43 @@ function normalizeDependencies(
     })
     .filter((entry): entry is string => entry !== null && entry.length > 0);
   return dependencies.length > 0 ? { dependencies } : {};
+}
+
+function normalizeObjectDependencyVersionConstraint(
+  entry: Readonly<Record<string, unknown>>,
+  index: number,
+  issues: ManifestIssue[],
+): string | undefined | null {
+  const hasVersion = Object.prototype.hasOwnProperty.call(entry, "version");
+  const hasVersionConstraint = Object.prototype.hasOwnProperty.call(entry, "versionConstraint");
+  if (hasVersion && hasVersionConstraint) {
+    issues.push({
+      path: `dependencies[${index}].versionConstraint`,
+      message: "Use version or versionConstraint, not both",
+    });
+    return null;
+  }
+  const raw = hasVersionConstraint ? entry.versionConstraint : entry.version;
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    issues.push({
+      path: `dependencies[${index}].${hasVersionConstraint ? "versionConstraint" : "version"}`,
+      message: "Invalid dependency version constraint",
+    });
+    return null;
+  }
+  const trimmed = raw.trim();
+  const constraint = hasVersion && !/^(?:\^|~|>=|<=|>|<|=)/u.test(trimmed)
+    ? `=${trimmed}`
+    : trimmed;
+  if (!DEPENDENCY_VERSION_CONSTRAINT_PATTERN.test(constraint)) {
+    issues.push({
+      path: `dependencies[${index}].${hasVersionConstraint ? "versionConstraint" : "version"}`,
+      message: "Invalid dependency version constraint",
+    });
+    return null;
+  }
+  return constraint;
 }
 
 const USER_CONFIG_OPTION_TYPES = new Set<PluginUserConfigOptionType>([

@@ -473,6 +473,59 @@ describe("plugin source resolution", () => {
     });
   });
 
+  test("keeps installed signed plugins verifiable after writing install metadata", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+      const publishersPath = join(root, "plugin-publishers.json");
+      await writeJson(publishersPath, {
+        publishers: {
+          tetsuo: {
+            publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64"),
+          },
+        },
+      });
+      const runProcess: PluginProcessRunner = async (command, args) => {
+        if (command !== "git") throw new Error(`unexpected process: ${command}`);
+        const target = String(args.at(-1));
+        const manifestPath = await writePlugin(target, "signed-install");
+        const files = await pluginPayloadFiles(target);
+        const signature = sign(
+          null,
+          pluginSignaturePayloadBytes(await readFile(manifestPath), files),
+          privateKey,
+        ).toString("base64");
+        await writeJson(join(target, ".agenc-plugin", "signature.json"), {
+          publisher: "tetsuo",
+          signature,
+          files,
+        });
+        return { stdout: "", stderr: "" };
+      };
+
+      const installed = await installPluginOp({
+        source: "git@github.com:tetsuo-ai/signed-install.git",
+        agencHome,
+        workspaceRoot: root,
+        runResolutionProcess: runProcess,
+        publishersPath,
+      });
+
+      await expect(access(join(installed.destination, ".agenc-plugin", "agenc-install.json"))).resolves.toBeUndefined();
+      await expect(
+        verifyResolvedPluginSignature(installed.destination, {
+          publishersPath,
+          requireSignature: true,
+        }),
+      ).resolves.toMatchObject({
+        required: true,
+        present: true,
+        verified: true,
+        publisher: "tetsuo",
+      });
+    });
+  });
+
   test("resolves registry tarballs and remote bundle archives", async () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");

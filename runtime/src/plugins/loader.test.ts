@@ -105,6 +105,8 @@ describe("plugin manifest schema", () => {
             "tilde-plugin@~1.2.0",
             "range-plugin@>=2.0.0",
             { name: "team-plugin", marketplace: "team-marketplace" },
+            { name: "object-versioned", marketplace: "team-marketplace", versionConstraint: "^2.0.0" },
+            { name: "object-exact", version: "1.2.3" },
             { name: "local-plugin" },
           ],
           interface: {
@@ -151,6 +153,8 @@ describe("plugin manifest schema", () => {
         "tilde-plugin@~1.2.0",
         "range-plugin@>=2.0.0",
         "team-plugin@team-marketplace",
+        "object-versioned@team-marketplace@^2.0.0",
+        "object-exact@=1.2.3",
         "local-plugin",
       ]);
       expect(manifest.interface).toMatchObject({
@@ -355,7 +359,8 @@ describe("plugin manifest schema", () => {
             "exact-plugin@=1.2.3",
             "tilde-plugin@~1.2.0",
             "range-plugin@>=2.0.0",
-            { name: "object-plugin", marketplace: "team_marketplace" },
+            { name: "object-plugin", marketplace: "team_marketplace", versionConstraint: ">=2.1.0" },
+            { name: "object-exact", version: "2.1.3" },
           ],
         },
         root,
@@ -369,6 +374,8 @@ describe("plugin manifest schema", () => {
               { name: "../escape" },
               { name: "empty-marketplace", marketplace: "" },
               3,
+              { name: "bad-version", versionConstraint: "1.2.3" },
+              { name: "both-version-fields", version: "1.0.0", versionConstraint: "^1.0.0" },
             ],
           },
           root,
@@ -381,7 +388,8 @@ describe("plugin manifest schema", () => {
         "exact-plugin@=1.2.3",
         "tilde-plugin@~1.2.0",
         "range-plugin@>=2.0.0",
-        "object-plugin@team_marketplace",
+        "object-plugin@team_marketplace@>=2.1.0",
+        "object-exact@=2.1.3",
       ]);
       expect(issues).toEqual(
         expect.arrayContaining([
@@ -389,6 +397,8 @@ describe("plugin manifest schema", () => {
           "dependencies[1].name",
           "dependencies[2].marketplace",
           "dependencies[3]",
+          "dependencies[4].versionConstraint",
+          "dependencies[5].versionConstraint",
         ]),
       );
     });
