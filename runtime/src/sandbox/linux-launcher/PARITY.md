@@ -9,6 +9,7 @@ Primary source anchors:
 - `linux-sandbox/src/bwrap.rs`
 - `linux-sandbox/src/landlock.rs`
 - `linux-sandbox/src/linux_run_main.rs`
+- `linux-sandbox/src/linux_run_main_tests.rs`
 - `linux-sandbox/src/proxy_routing.rs`
 - `linux-sandbox/src/vendored_bwrap.rs`
 - `linux-sandbox/config.h`
@@ -26,6 +27,18 @@ Target mapping:
 - `vendored-bwrap.ts` records the build-shape divergence: the TypeScript runtime requires a system bubblewrap binary instead of linking an embedded C helper.
 - `build.ts` records the launcher build contract exposed to tests and package validation.
 - `runtime/scripts/write-build-version.mjs` copies sandbox policy assets both beside the built launcher entrypoint and beside bundled runtime chunks so package-bin and TUI startup smoke execution can import the bundled sandbox modules.
+
+ZC-33 coverage lock:
+- The launcher source set listed above remains represented by AgenC-owned
+  TypeScript counterparts in this directory.
+- Linux isolation is platform-backed: `launcher.ts` and `linux-run-main.ts`
+  spawn the real `bwrap` / `bubblewrap` binary, `bwrap.ts` passes namespace and
+  seccomp flags, and `landlock.ts` generates the cBPF seccomp program consumed
+  through `--seccomp FD`.
+- `linux-launcher.test.ts` exercises subprocess entry, package-bin exposure,
+  namespace reentry, proxy-routed seccomp, route validation, and helper cleanup.
+- The ZC-33 verifier runs `linux-launcher.test.ts` so launcher coverage cannot
+  pass on source-anchor presence alone.
 
 Documented divergences:
 - Legacy direct Landlock is fail-closed in the TypeScript launcher. AgenC's active Linux path performs filesystem isolation with bubblewrap and network syscall restriction with a bubblewrap-loaded seccomp cBPF program. The Rust-only direct Landlock fallback has no Node native binding in this runtime.

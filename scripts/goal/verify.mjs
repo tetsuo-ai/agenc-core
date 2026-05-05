@@ -1366,6 +1366,58 @@ const ITEM_EVIDENCE = {
     files: ["scripts/goal/shim-behavior.mjs", "parity/ZC-20-parity.json"],
     tests: ["scripts/goal/shim-behavior.test.mjs"],
   },
+  "ZC-33": {
+    files: [
+      "runtime/src/permissions/sandbox.ts",
+      "runtime/src/sandbox/engine/PARITY.md",
+      "runtime/src/sandbox/engine/index.ts",
+      "runtime/src/sandbox/engine/manager.ts",
+      "runtime/src/sandbox/engine/policy-transforms.ts",
+      "runtime/src/sandbox/engine/seatbelt.ts",
+      "runtime/src/sandbox/engine/landlock.ts",
+      "runtime/src/sandbox/engine/bwrap.ts",
+      "runtime/src/sandbox/engine/policies/seatbelt_base_policy.sbpl",
+      "runtime/src/sandbox/engine/policies/seatbelt_network_policy.sbpl",
+      "runtime/src/sandbox/engine/policies/restricted_read_only_platform_defaults.sbpl",
+      "runtime/src/sandbox/linux-launcher/PARITY.md",
+      "runtime/src/sandbox/linux-launcher/main.ts",
+      "runtime/src/sandbox/linux-launcher/lib.ts",
+      "runtime/src/sandbox/linux-launcher/cli.ts",
+      "runtime/src/sandbox/linux-launcher/linux-run-main.ts",
+      "runtime/src/sandbox/linux-launcher/launcher.ts",
+      "runtime/src/sandbox/linux-launcher/bwrap.ts",
+      "runtime/src/sandbox/linux-launcher/landlock.ts",
+      "runtime/src/sandbox/linux-launcher/proxy-routing.ts",
+      "runtime/src/sandbox/linux-launcher/vendored-bwrap.ts",
+      "runtime/src/sandbox/linux-launcher/config.ts",
+      "runtime/src/sandbox/linux-launcher/build.ts",
+      "runtime/bin/agenc-linux-sandbox",
+    ],
+    grepPresent: [
+      { pattern: "ZC-33 coverage lock", scope: "runtime/src/sandbox/engine/PARITY.md" },
+      { pattern: "ZC-33 coverage lock", scope: "runtime/src/sandbox/linux-launcher/PARITY.md" },
+      { pattern: "platform-backed execution", scope: "runtime/src/permissions/sandbox.ts" },
+      { pattern: "spawnSeatbeltCommand", scope: "runtime/src/sandbox/engine/seatbelt.ts" },
+      { pattern: "spawnLinuxSandboxCommand", scope: "runtime/src/sandbox/engine/landlock.ts" },
+      { pattern: "spawnSync", scope: "runtime/src/sandbox/engine/bwrap.ts" },
+      { pattern: "spawn\\(", scope: "runtime/src/sandbox/linux-launcher/launcher.ts" },
+      { pattern: "spawn\\(", scope: "runtime/src/sandbox/linux-launcher/linux-run-main.ts" },
+      { pattern: "\\-\\-seccomp", scope: "runtime/src/sandbox/linux-launcher/bwrap.ts" },
+      { pattern: "createNetworkSeccompProgram", scope: "runtime/src/sandbox/linux-launcher/landlock.ts" },
+    ],
+    grepNotPresent: [
+      {
+        pattern: "does not use any of those primitives directly",
+        scope: "runtime/src/permissions/sandbox.ts",
+      },
+    ],
+    tests: [
+      "runtime/src/sandbox/engine/linux-engine.test.ts",
+      "runtime/src/sandbox/engine/seatbelt.test.ts",
+      "runtime/src/sandbox/engine/policy-transforms.test.ts",
+      "runtime/src/sandbox/linux-launcher/linux-launcher.test.ts",
+    ],
+  },
 };
 
 function usage() {
@@ -4805,6 +4857,153 @@ function assertZc31SkillsCoverage() {
   }
 }
 
+function assertZc33SandboxCoverage() {
+  const readRequired = (rel) => {
+    const abs = path.join(root, rel);
+    if (!existsSync(abs)) failGate(`ZC-33: missing required file ${rel}`);
+    return readFileSync(abs, "utf8");
+  };
+
+  const engineParity = readRequired("runtime/src/sandbox/engine/PARITY.md");
+  const linuxParity = readRequired("runtime/src/sandbox/linux-launcher/PARITY.md");
+  const permissionsSandbox = readRequired("runtime/src/permissions/sandbox.ts");
+
+  const requiredEngineAnchors = [
+    "sandboxing/src/lib.rs",
+    "sandboxing/src/manager.rs",
+    "sandboxing/src/policy_transforms.rs",
+    "sandboxing/src/policy_transforms_tests.rs",
+    "sandboxing/src/seatbelt.rs",
+    "sandboxing/src/seatbelt_tests.rs",
+    "sandboxing/src/landlock.rs",
+    "sandboxing/src/landlock_tests.rs",
+    "sandboxing/src/bwrap.rs",
+    "sandboxing/src/bwrap_tests.rs",
+    "sandboxing/src/manager_tests.rs",
+    "sandboxing/src/seatbelt_base_policy.sbpl",
+    "sandboxing/src/seatbelt_network_policy.sbpl",
+    "sandboxing/src/restricted_read_only_platform_defaults.sbpl",
+  ];
+  const missingEngineAnchors = requiredEngineAnchors.filter((anchor) => !engineParity.includes(anchor));
+  if (missingEngineAnchors.length > 0) {
+    failGate(`ZC-33: engine parity is missing source anchor(s):\n  ${missingEngineAnchors.join("\n  ")}`);
+  }
+
+  const requiredLauncherAnchors = [
+    "linux-sandbox/src/lib.rs",
+    "linux-sandbox/src/main.rs",
+    "linux-sandbox/src/launcher.rs",
+    "linux-sandbox/src/bwrap.rs",
+    "linux-sandbox/src/landlock.rs",
+    "linux-sandbox/src/linux_run_main.rs",
+    "linux-sandbox/src/linux_run_main_tests.rs",
+    "linux-sandbox/src/proxy_routing.rs",
+    "linux-sandbox/src/vendored_bwrap.rs",
+    "linux-sandbox/config.h",
+    "linux-sandbox/build.rs",
+  ];
+  const missingLauncherAnchors = requiredLauncherAnchors.filter((anchor) => !linuxParity.includes(anchor));
+  if (missingLauncherAnchors.length > 0) {
+    failGate(`ZC-33: launcher parity is missing source anchor(s):\n  ${missingLauncherAnchors.join("\n  ")}`);
+  }
+
+  const requiredTargets = [
+    "runtime/src/sandbox/engine/index.ts",
+    "runtime/src/sandbox/engine/manager.ts",
+    "runtime/src/sandbox/engine/policy-transforms.ts",
+    "runtime/src/sandbox/engine/seatbelt.ts",
+    "runtime/src/sandbox/engine/landlock.ts",
+    "runtime/src/sandbox/engine/bwrap.ts",
+    "runtime/src/sandbox/engine/policies/seatbelt_base_policy.sbpl",
+    "runtime/src/sandbox/engine/policies/seatbelt_network_policy.sbpl",
+    "runtime/src/sandbox/engine/policies/restricted_read_only_platform_defaults.sbpl",
+    "runtime/src/sandbox/linux-launcher/main.ts",
+    "runtime/src/sandbox/linux-launcher/lib.ts",
+    "runtime/src/sandbox/linux-launcher/cli.ts",
+    "runtime/src/sandbox/linux-launcher/linux-run-main.ts",
+    "runtime/src/sandbox/linux-launcher/launcher.ts",
+    "runtime/src/sandbox/linux-launcher/bwrap.ts",
+    "runtime/src/sandbox/linux-launcher/landlock.ts",
+    "runtime/src/sandbox/linux-launcher/proxy-routing.ts",
+    "runtime/src/sandbox/linux-launcher/vendored-bwrap.ts",
+    "runtime/src/sandbox/linux-launcher/config.ts",
+    "runtime/src/sandbox/linux-launcher/build.ts",
+    "runtime/bin/agenc-linux-sandbox",
+  ];
+  const missingTargets = requiredTargets.filter((rel) => !existsSync(path.join(root, rel)));
+  if (missingTargets.length > 0) {
+    failGate(`ZC-33: sandbox counterpart file(s) missing:\n  ${missingTargets.join("\n  ")}`);
+  }
+
+  if (!engineParity.includes("ZC-33 coverage lock:") || !linuxParity.includes("ZC-33 coverage lock:")) {
+    failGate("ZC-33: sandbox parity docs must include ZC-33 coverage lock notes.");
+  }
+  if (/does not use any of those primitives directly/.test(permissionsSandbox)) {
+    failGate("ZC-33: permissions sandbox docs still deny the platform-backed sandbox layer.");
+  }
+  const donorBrandRe = new RegExp(
+    `${["co", "dex"].join("")}|${["open", ["clau", "de"].join("")].join("")}|${["Clau", "de"].join("")}`,
+    "i",
+  );
+  if (donorBrandRe.test(permissionsSandbox)) {
+    failGate("ZC-33: permissions sandbox source must not carry donor-branded runtime citations.");
+  }
+
+  const seatbeltSource = readRequired("runtime/src/sandbox/engine/seatbelt.ts");
+  if (!/\bspawn\(/.test(seatbeltSource) || !/MACOS_PATH_TO_SEATBELT_EXECUTABLE/.test(seatbeltSource) || !/sandbox-exec/.test(seatbeltSource)) {
+    failGate("ZC-33: seatbelt backend must spawn the platform sandbox executable.");
+  }
+  const engineLandlockSource = readRequired("runtime/src/sandbox/engine/landlock.ts");
+  if (!/\bspawn\(/.test(engineLandlockSource) || !/createLinuxSandboxCommandArgsForPermissionProfile/.test(engineLandlockSource)) {
+    failGate("ZC-33: engine landlock backend must spawn the Linux helper with serialized policy arguments.");
+  }
+  const engineBwrapSource = readRequired("runtime/src/sandbox/engine/bwrap.ts");
+  if (!/\bspawnSync\(/.test(engineBwrapSource) || !/--unshare-user/.test(engineBwrapSource) || !/--unshare-net/.test(engineBwrapSource)) {
+    failGate("ZC-33: engine bwrap diagnostics must probe the real bubblewrap binary.");
+  }
+
+  const launcherSource = readRequired("runtime/src/sandbox/linux-launcher/launcher.ts");
+  const runMainSource = readRequired("runtime/src/sandbox/linux-launcher/linux-run-main.ts");
+  const launcherBwrapSource = readRequired("runtime/src/sandbox/linux-launcher/bwrap.ts");
+  const launcherLandlockSource = readRequired("runtime/src/sandbox/linux-launcher/landlock.ts");
+  const launcherTestsSource = readRequired("runtime/src/sandbox/linux-launcher/linux-launcher.test.ts");
+
+  if (!/\bspawn\(/.test(launcherSource) || !/TRUSTED_BWRAP_DIRECTORIES/.test(launcherSource)) {
+    failGate("ZC-33: Linux launcher must spawn a trusted platform bubblewrap binary.");
+  }
+  if (!/\bspawn\(/.test(runMainSource) || !/runCommandWithInnerSeccomp/.test(runMainSource) || !/\bexecve\b/.test(runMainSource)) {
+    failGate("ZC-33: Linux run-main must execute both outer and inner platform sandbox stages.");
+  }
+  for (const flag of ["--unshare-user", "--unshare-pid", "--unshare-net", "--seccomp"]) {
+    if (!launcherBwrapSource.includes(flag)) {
+      failGate(`ZC-33: Linux bwrap builder is missing ${flag}.`);
+    }
+  }
+  if (!/createNetworkSeccompProgram/.test(launcherLandlockSource) || !/SECCOMP_RET_ERRNO/.test(launcherLandlockSource)) {
+    failGate("ZC-33: Linux landlock module must generate the seccomp cBPF program.");
+  }
+  if (!/\bspawn\(/.test(launcherTestsSource) || !/runLinuxSandboxMain/.test(launcherTestsSource) || !/withTempDir/.test(launcherTestsSource)) {
+    failGate("ZC-33: Linux launcher tests must exercise subprocess and temp-dir harness paths.");
+  }
+
+  const testRun = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/sandbox/engine/linux-engine.test.ts",
+    "src/sandbox/engine/seatbelt.test.ts",
+    "src/sandbox/engine/policy-transforms.test.ts",
+    "src/sandbox/linux-launcher/linux-launcher.test.ts",
+    "src/permissions/sandbox.test.ts",
+  ]);
+  if (testRun.status !== 0) {
+    failGate("ZC-33: sandbox coverage test suites failed.");
+  }
+
+  pass("ZC-33: sandbox engine and Linux launcher coverage locked");
+}
+
 function listSourceFiles(dir) {
   const out = [];
   for (const entry of readdirSync(dir)) {
@@ -5198,6 +5397,7 @@ async function cleanupGates(item) {
       "ZC-29": { custom: assertZc29AuditEvidence },
       "ZC-30": { custom: assertZc30PluginCoverage },
       "ZC-31": { custom: assertZc31SkillsCoverage },
+      "ZC-33": { custom: assertZc33SandboxCoverage },
     };
     const expectations = zcMap[id];
     if (!expectations) {
