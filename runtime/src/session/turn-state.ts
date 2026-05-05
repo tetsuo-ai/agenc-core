@@ -20,7 +20,7 @@
 
 import type { LLMMessage, LLMToolCall, LLMUsage } from "../llm/types.js";
 import type { TokenBudgetDecision as BoundaryTokenBudgetDecision } from "../llm/token-budget.js";
-import type { StreamingToolExecutor } from "../phases/_deps/tool-runtime.js";
+import type { StreamingToolExecutor } from "../tools/streaming-executor.js";
 import type { TurnContext } from "./turn-context.js";
 import {
   provisionContentReplacementState,

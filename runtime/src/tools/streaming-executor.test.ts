@@ -251,6 +251,39 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     expect(seenIds).toEqual(["unsafe", "safe"]);
     expect(peak).toBe(1);
   });
+
+  test("maxConcurrency caps safe tools without changing yield order", async () => {
+    let active = 0;
+    let peak = 0;
+    const readTool = testTool({
+      name: "FileRead",
+      isConcurrencySafe: () => true,
+    });
+    const exec = new StreamingToolExecutor({
+      ...mockGuardedDispatch(async (call) => {
+        active += 1;
+        peak = Math.max(peak, active);
+        const delay = call.id === "a" ? 10 : 1;
+        await new Promise<void>((resolve) => setTimeout(resolve, delay));
+        active -= 1;
+        return { content: `ok-${call.id}` };
+      }, [readTool]),
+      maxConcurrency: 1,
+    });
+
+    for (const id of ["a", "b", "c"]) {
+      exec.addTool(makeBlock(id, "FileRead"), makeCall(id, "FileRead"));
+    }
+    exec.close();
+
+    const seenIds: string[] = [];
+    for await (const result of exec.getRemainingResults()) {
+      seenIds.push(result.toolCall.id);
+    }
+
+    expect(seenIds).toEqual(["a", "b", "c"]);
+    expect(peak).toBe(1);
+  });
 });
 
 describe("StreamingToolExecutor AgenC behavior (T6)", () => {
