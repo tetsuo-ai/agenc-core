@@ -138,6 +138,8 @@
       "id": "active-refresh-registration",
       "requiredBehaviors": [
         "Refresh commands, skills, agents, hooks, MCP, LSP, and output styles from one enabled-plugin snapshot",
+        "Publish refreshed command, skill, and agent snapshots for runtime discovery paths that do not carry config arguments",
+        "Register merged config and plugin hooks with the live session hooks runtime when it is present",
         "Update AppState plugin and MCP reconnect surfaces",
         "Report registration counts through /reload-plugins"
       ],

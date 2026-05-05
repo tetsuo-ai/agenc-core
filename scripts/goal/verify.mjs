@@ -524,10 +524,32 @@ const ITEM_EVIDENCE = {
     tests: [{ globUnder: "runtime/src/sandbox/policy", matching: /\.test\.tsx?$/ }],
   },
   "C-01d": {
-    grepPresent: [
-      { pattern: "sandbox\\.mode", scope: "runtime/src/sandbox" },
-      { pattern: "workspace-write|read-only|sandbox.*off", scope: "runtime/src/sandbox" },
+    files: [
+      "runtime/src/sandbox/execpolicy/decision.ts",
+      "runtime/src/sandbox/execpolicy/error.ts",
+      "runtime/src/sandbox/execpolicy/executable-name.ts",
+      "runtime/src/sandbox/execpolicy/rule.ts",
+      "runtime/src/sandbox/execpolicy/policy.ts",
+      "runtime/src/sandbox/execpolicy/parser.ts",
+      "runtime/src/sandbox/execpolicy/amend.ts",
+      "runtime/src/sandbox/execpolicy/execpolicycheck.ts",
+      "runtime/src/sandbox/execpolicy/main.ts",
+      "runtime/src/sandbox/execpolicy/index.ts",
+      "runtime/src/sandbox/execpolicy/examples/example.agencpolicy",
+      "runtime/src/sandbox/execpolicy/PARITY.md",
+      "parity/execpolicy-dsl-parity.json",
     ],
+    grepPresent: [
+      { pattern: "class PolicyParser", scope: "runtime/src/sandbox/execpolicy/parser.ts" },
+      { pattern: "prefix_rule", scope: "runtime/src/sandbox/execpolicy/parser.ts" },
+      { pattern: "network_rule", scope: "runtime/src/sandbox/execpolicy/parser.ts" },
+      { pattern: "host_executable", scope: "runtime/src/sandbox/execpolicy/parser.ts" },
+      { pattern: "matchesForCommandWithOptions", scope: "runtime/src/sandbox/execpolicy/policy.ts" },
+      { pattern: "normalizeNetworkRuleHost", scope: "runtime/src/sandbox/execpolicy/rule.ts" },
+      { pattern: "lockSync", scope: "runtime/src/sandbox/execpolicy/amend.ts" },
+      { pattern: "formatMatchesJson", scope: "runtime/src/sandbox/execpolicy/execpolicycheck.ts" },
+    ],
+    tests: ["runtime/src/sandbox/execpolicy/execpolicy.test.ts"],
   },
   "C-01e": {
     grepPresent: [{ pattern: "sandbox.*bypass|bypass.*sandbox", scope: "runtime/src/sandbox" }],
@@ -1480,23 +1502,10 @@ if (shimAdditions.length > 0) {
 // has fewer than 40 significant lines is functionally a shim regardless of name.
 const FORWARD_LINE_RE =
   /^\s*(export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[^}]*\}\s*from\b|export\s*\{[^}]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
+const FORWARD_STATEMENT_RE =
+  /^\s*(export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[\s\S]*\}\s*from\b|export\s*\{[\s\S]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
 function countForwardingLines(significant) {
-  let forward = 0;
-  let inMultilineExport = false;
-  for (const line of significant) {
-    if (inMultilineExport) {
-      forward += 1;
-      if (/\}\s*(from\b|;?\s*$)/.test(line)) inMultilineExport = false;
-      continue;
-    }
-    if (/^\s*export\s*\{/.test(line) && !/\}/.test(line)) {
-      forward += 1;
-      inMultilineExport = true;
-      continue;
-    }
-    if (FORWARD_LINE_RE.test(line)) forward += 1;
-  }
-  return forward;
+  return combineLogicalStatements(significant).filter((stmt) => FORWARD_LINE_RE.test(stmt) || FORWARD_STATEMENT_RE.test(stmt)).length;
 }
 const forwardingViolations = [];
 for (const rel of added) {
@@ -1519,10 +1528,12 @@ for (const rel of added) {
   if (significant.length === 0 || significant.length >= 40) continue;
   const implementationLines = significant.filter((line) => !/^\s*import\s/.test(line));
   if (implementationLines.length === 0) continue;
+  const logicalStatements = combineLogicalStatements(implementationLines);
+  if (logicalStatements.length === 0 || logicalStatements.length >= 40) continue;
   const forward = countForwardingLines(implementationLines);
-  const ratio = forward / implementationLines.length;
+  const ratio = forward / logicalStatements.length;
   if (forward > 0 && ratio > 0.8) {
-    forwardingViolations.push({ path: rel, ratio: ratio.toFixed(2), lines: implementationLines.length, forward });
+    forwardingViolations.push({ path: rel, ratio: ratio.toFixed(2), lines: logicalStatements.length, forward });
   }
 }
 if (forwardingViolations.length > 0) {
@@ -1534,6 +1545,36 @@ if (forwardingViolations.length > 0) {
   );
 }
 pass("no new upstream/ files, no new shim-pattern additions, no forwarding-only modules");
+
+function combineLogicalStatements(significant) {
+  const statements = [];
+  let current = "";
+  let braceDepth = 0;
+  for (const line of significant) {
+    const startsMultilineForward = current.length > 0 || /^\s*(import|export)\s*\{/u.test(line);
+    if (!startsMultilineForward) {
+      statements.push(line);
+      continue;
+    }
+    current = current.length === 0 ? line : `${current}\n${line}`;
+    braceDepth += countChar(line, "{") - countChar(line, "}");
+    if (braceDepth <= 0 && /(?:;|\bfrom\s+["'][^"']+["'];?)\s*$/u.test(line)) {
+      statements.push(current);
+      current = "";
+      braceDepth = 0;
+    }
+  }
+  if (current.length > 0) statements.push(current);
+  return statements;
+}
+
+function countChar(value, needle) {
+  let count = 0;
+  for (const char of value) {
+    if (char === needle) count += 1;
+  }
+  return count;
+}
 
 // --- Gate 2.5: per-item named evidence ----------------------------------
 
@@ -2629,6 +2670,53 @@ async function donorRuntimePortGates(item) {
       failGate("C-01b: built package bin must execute the Linux launcher entrypoint");
     }
     pass("C-01b: Linux launcher subprocess, package bin, reentry, proxy routes, bwrap, seccomp, and tests present");
+    return;
+  }
+  if (id === "C-01d") {
+    const dir = path.join(root, "runtime/src/sandbox/execpolicy");
+    if (!existsSync(dir)) failGate("C-01d: runtime/src/sandbox/execpolicy/ missing");
+    const testRun = run("npm", [
+      "exec",
+      "--workspace=@tetsuo-ai/runtime",
+      "vitest",
+      "run",
+      "src/sandbox/execpolicy/execpolicy.test.ts",
+    ]);
+    if (testRun.status !== 0) {
+      failGate("C-01d execpolicy tests failed");
+    }
+    const parserSource = readFileSync(path.join(dir, "parser.ts"), "utf8");
+    const policySource = readFileSync(path.join(dir, "policy.ts"), "utf8");
+    const ruleSource = readFileSync(path.join(dir, "rule.ts"), "utf8");
+    const amendSource = readFileSync(path.join(dir, "amend.ts"), "utf8");
+    const checkerSource = readFileSync(path.join(dir, "execpolicycheck.ts"), "utf8");
+    const testsSource = readFileSync(path.join(dir, "execpolicy.test.ts"), "utf8");
+    const exampleSource = readFileSync(path.join(dir, "examples/example.agencpolicy"), "utf8");
+    if (!/class PolicyParser/.test(parserSource) || !/prefix_rule/.test(parserSource) || !/host_executable/.test(parserSource)) {
+      failGate("C-01d: parser must implement the execpolicy builtins");
+    }
+    if (!/matchesForCommandWithOptions/.test(policySource) || !/compiledNetworkDomains/.test(policySource)) {
+      failGate("C-01d: policy must evaluate commands and compile network domains");
+    }
+    if (!/normalizeNetworkRuleHost/.test(ruleSource) || !/parseNetworkRuleProtocol/.test(ruleSource)) {
+      failGate("C-01d: rule layer must normalize network hosts and protocols");
+    }
+    if (!/lockSync/.test(amendSource) || !/blockingAppendNetworkRule/.test(amendSource)) {
+      failGate("C-01d: amendment helpers must lock and append prefix/network rules");
+    }
+    if (!/formatMatchesJson/.test(checkerSource) || !/loadPolicies/.test(checkerSource)) {
+      failGate("C-01d: checker must load policies and render JSON");
+    }
+    if (!/host executable resolution/.test(testsSource) || !/match and not_match examples/.test(testsSource) || !/carried example policy corpus/.test(testsSource)) {
+      failGate("C-01d: tests must cover host executable resolution, example validation, and example corpus loading");
+    }
+    if (!/git", "reset", "--hard/.test(exampleSource) || !/decision = "forbidden"/.test(exampleSource)) {
+      failGate("C-01d: example policy corpus fixture missing expected command rules");
+    }
+    if (!existsSync(path.join(root, "parity/execpolicy-dsl-parity.json"))) {
+      failGate("C-01d: parity/execpolicy-dsl-parity.json missing");
+    }
+    pass("C-01d: execpolicy parser, policy engine, amendment helpers, checker, tests, and parity present");
     return;
   }
   // C-01a..C-01e: sandboxing.

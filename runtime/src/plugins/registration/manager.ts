@@ -1,14 +1,21 @@
 import { join } from "node:path";
 
 import type { AgenCConfig, HooksMap, LspServerConfigInput, McpServerConfig } from "../../config/schema.js";
+import type { Command } from "../../commands.js";
 import type { SlashCommandContext } from "../../commands/types.js";
-import { loadPlugins, type PluginLoadResult } from "../loader.js";
+import type { PluginAgentDefinition } from "../../tools/AgentTool/loadAgentsDir.js";
+import { loadPlugins, type LoadedPlugin, type PluginLoadIssue, type PluginLoadResult } from "../loader.js";
 import {
   toPluginLoaderOptions,
   type PluginRuntimeLoadOptions,
 } from "./common.js";
-import { loadPluginAgents } from "./load-plugin-agents.js";
-import { loadPluginCommands, loadPluginSkills } from "./load-plugin-commands.js";
+import { loadPluginAgents, setActivePluginAgentSnapshot } from "./load-plugin-agents.js";
+import {
+  loadPluginCommands,
+  loadPluginSkills,
+  setActivePluginCommandSnapshot,
+  setActivePluginSkillSnapshot,
+} from "./load-plugin-commands.js";
 import { loadPluginHooks } from "./load-plugin-hooks.js";
 import { loadPluginLspServers } from "./lsp-plugin-integration.js";
 import { loadPluginMcpServers } from "./mcp-plugin-integration.js";
@@ -24,6 +31,9 @@ export interface PluginRegistrationSnapshot {
   readonly lsp_count: number;
   readonly output_style_count: number;
   readonly error_count: number;
+  readonly commands: readonly Command[];
+  readonly skills: readonly Command[];
+  readonly agents: readonly PluginAgentDefinition[];
   readonly mcp_servers: Readonly<Record<string, McpServerConfig>>;
   readonly lsp_servers: Readonly<Record<string, LspServerConfigInput>>;
   readonly hooks?: HooksMap;
@@ -73,6 +83,9 @@ export async function refreshPluginRegistrations(
     lsp_count: Object.keys(lspServers).length,
     output_style_count: outputStyles.length,
     error_count: loadResult.errors.length,
+    commands,
+    skills,
+    agents,
     mcp_servers: mcpServers,
     lsp_servers: lspServers,
     ...(hooks !== undefined ? { hooks } : {}),
@@ -85,10 +98,118 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function arrayOfPluginNames(result: PluginLoadResult, enabled: boolean): string[] {
-  return (enabled ? result.enabled : result.disabled)
-    .map((plugin) => plugin.name)
-    .sort((a, b) => a.localeCompare(b));
+function isPluginAgent(value: unknown): boolean {
+  return isRecord(value) && value.source === "plugin";
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? [...value] : [];
+}
+
+function mergeAgentDefinitions(
+  current: Record<string, unknown>,
+  pluginAgents: readonly PluginAgentDefinition[],
+): Record<string, unknown> {
+  const currentDefinitions = isRecord(current.agentDefinitions)
+    ? current.agentDefinitions
+    : {};
+  return {
+    ...currentDefinitions,
+    allAgents: [
+      ...arrayValue(currentDefinitions.allAgents).filter((agent) => !isPluginAgent(agent)),
+      ...pluginAgents,
+    ],
+    activeAgents: [
+      ...arrayValue(currentDefinitions.activeAgents).filter((agent) => !isPluginAgent(agent)),
+      ...pluginAgents,
+    ],
+  };
+}
+
+function pluginErrorFromIssue(issue: PluginLoadIssue): Record<string, unknown> {
+  switch (issue.type) {
+    case "path-not-found":
+      return {
+        type: "path-not-found",
+        source: issue.source,
+        plugin: issue.plugin,
+        path: issue.path ?? issue.source,
+        component: issue.component ?? "commands",
+      };
+    case "manifest":
+      return {
+        type: "manifest-validation-error",
+        source: issue.source,
+        plugin: issue.plugin,
+        manifestPath: issue.path ?? issue.source,
+        validationErrors: [issue.message],
+      };
+    case "hooks":
+      return {
+        type: "hook-load-failed",
+        source: issue.source,
+        plugin: issue.plugin ?? "unknown",
+        hookPath: issue.path ?? issue.source,
+        reason: issue.message,
+      };
+    case "mcp":
+      return {
+        type: "mcp-config-invalid",
+        source: issue.source,
+        plugin: issue.plugin ?? "unknown",
+        serverName: issue.path ?? "unknown",
+        validationError: issue.message,
+      };
+    case "lsp":
+      return {
+        type: "lsp-config-invalid",
+        source: issue.source,
+        plugin: issue.plugin ?? "unknown",
+        serverName: issue.path ?? "unknown",
+        validationError: issue.message,
+      };
+    case "settings":
+      return {
+        type: "component-load-failed",
+        source: issue.source,
+        plugin: issue.plugin ?? "unknown",
+        component: "settings",
+        path: issue.path ?? issue.source,
+        reason: issue.message,
+      };
+  }
+}
+
+function appStateHooksConfig(plugin: LoadedPlugin): HooksMap | undefined {
+  let hooks: HooksMap | undefined;
+  for (const source of plugin.hookSources) {
+    const next: Record<string, NonNullable<HooksMap[string]>> = {};
+    for (const [event, matchers] of Object.entries(hooks ?? {})) {
+      next[event] = [...matchers];
+    }
+    for (const [event, matchers] of Object.entries(source.hooks)) {
+      next[event] = [...(next[event] ?? []), ...matchers];
+    }
+    hooks = next;
+  }
+  return hooks;
+}
+
+function appStatePlugin(plugin: LoadedPlugin): Record<string, unknown> {
+  return {
+    ...plugin,
+    path: plugin.root,
+    repository: plugin.source,
+    commandsPaths: [...plugin.commandsPaths],
+    agentsPaths: [...plugin.agentsPaths],
+    skillsPaths: [...plugin.skillsPaths],
+    outputStylesPaths: [...plugin.outputStylesPaths],
+    ...(appStateHooksConfig(plugin) !== undefined
+      ? { hooksConfig: appStateHooksConfig(plugin) }
+      : {}),
+    mcpServers: { ...plugin.mcpServers },
+    lspServers: { ...plugin.lspServers },
+  };
 }
 
 function updatePluginAppState(
@@ -108,18 +229,14 @@ function updatePluginAppState(
       ...current,
       plugins: {
         ...currentPlugins,
-        enabled: arrayOfPluginNames(snapshot.loadResult, true),
-        disabled: arrayOfPluginNames(snapshot.loadResult, false),
-        commands: snapshot.command_count,
+        enabled: snapshot.loadResult.enabled.map(appStatePlugin),
+        disabled: snapshot.loadResult.disabled.map(appStatePlugin),
+        commands: [...snapshot.commands, ...snapshot.skills],
         outputStyles: snapshot.outputStyles.map((style) => style.name),
-        errors: snapshot.loadResult.errors.map((error) => ({
-          plugin: error.plugin,
-          source: error.source,
-          path: error.path,
-          message: error.message,
-        })),
+        errors: snapshot.loadResult.errors.map(pluginErrorFromIssue),
         needsRefresh: false,
       },
+      agentDefinitions: mergeAgentDefinitions(current, snapshot.agents),
       mcp: {
         ...currentMcp,
         pluginReconnectKey: currentReconnectKey + 1,
@@ -148,6 +265,35 @@ export async function refreshActivePlugins(
   ctx: SlashCommandContext,
 ): Promise<PluginRegistrationSnapshot> {
   const snapshot = await refreshPluginRegistrations(pluginRuntimeOptionsFromContext(ctx));
+  setActivePluginCommandSnapshot(ctx.cwd, snapshot.commands);
+  setActivePluginSkillSnapshot(ctx.cwd, snapshot.skills);
+  setActivePluginAgentSnapshot(ctx.cwd, snapshot.agents);
+  registerPluginHooksWithRuntime(ctx, snapshot.hooks);
   updatePluginAppState(ctx.appState?.setAppState, snapshot);
   return snapshot;
+}
+
+function mergeHookMaps(
+  base: HooksMap | undefined,
+  pluginHooks: HooksMap | undefined,
+): HooksMap | undefined {
+  if (!base) return pluginHooks;
+  if (!pluginHooks) return base;
+  const out: Record<string, NonNullable<HooksMap[string]>> = {};
+  for (const [event, matchers] of Object.entries(base)) {
+    out[event] = [...matchers];
+  }
+  for (const [event, matchers] of Object.entries(pluginHooks)) {
+    out[event] = [...(out[event] ?? []), ...matchers];
+  }
+  return out;
+}
+
+function registerPluginHooksWithRuntime(
+  ctx: SlashCommandContext,
+  hooks: HooksMap | undefined,
+): void {
+  const runtime = ctx.session.services.hooksRuntime;
+  if (!runtime) return;
+  runtime.load(mergeHookMaps(currentConfig(ctx)?.hooks, hooks));
 }

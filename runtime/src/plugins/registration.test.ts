@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { loadPlugins } from "./loader.js";
 import { loadPluginAgents } from "./registration/load-plugin-agents.js";
@@ -10,8 +10,9 @@ import { loadPluginCommands, loadPluginSkills } from "./registration/load-plugin
 import { loadPluginHooks } from "./registration/load-plugin-hooks.js";
 import { loadPluginLspServers } from "./registration/lsp-plugin-integration.js";
 import { loadPluginMcpServers } from "./registration/mcp-plugin-integration.js";
-import { refreshPluginRegistrations } from "./registration/manager.js";
+import { refreshActivePlugins, refreshPluginRegistrations } from "./registration/manager.js";
 import { loadPluginOutputStyles } from "./registration/load-plugin-output-styles.js";
+import type { SlashCommandContext } from "../commands/types.js";
 
 describe("plugin registration", () => {
   test("registers commands, agents, hooks, servers, and output styles from enabled plugins", async () => {
@@ -139,6 +140,110 @@ describe("plugin registration", () => {
         output_style_count: 1,
         error_count: 0,
       });
+    });
+  });
+
+  test("active refresh registers hooks, preserves AppState shapes, and publishes active discovery snapshots", async () => {
+    await withTempPlugin(async ({ root, pluginRoot, options }) => {
+      const hooksRuntime = { load: vi.fn() };
+      const configStore = {
+        current: () => ({
+          plugins: { dirs: [pluginRoot] },
+          hooks: {
+            Stop: [
+              {
+                matcher: "*",
+                hooks: [{ type: "command", command: "echo base" }],
+              },
+            ],
+          },
+        }),
+      };
+      const builtInAgent = {
+        agentType: "built-in",
+        source: "built-in",
+        whenToUse: "baseline",
+      };
+      let appState: Record<string, unknown> = {
+        plugins: {
+          enabled: [],
+          disabled: [],
+          commands: [],
+          errors: [],
+          needsRefresh: true,
+        },
+        agentDefinitions: {
+          allAgents: [builtInAgent],
+          activeAgents: [builtInAgent],
+        },
+        mcp: { pluginReconnectKey: 7 },
+      };
+      const ctx = {
+        cwd: root,
+        home: root,
+        agencHome: options.agencHome,
+        argsRaw: "",
+        configStore,
+        appState: {
+          setAppState: (updater: (prev: unknown) => unknown) => {
+            appState = updater(appState) as Record<string, unknown>;
+          },
+        },
+        session: {
+          services: {
+            configStore,
+            hooksRuntime,
+          },
+        },
+      } as unknown as SlashCommandContext;
+
+      const snapshot = await refreshActivePlugins(ctx);
+
+      expect(snapshot.enabled_count).toBe(1);
+      expect(hooksRuntime.load).toHaveBeenCalledWith(
+        expect.objectContaining({
+          Stop: expect.any(Array),
+          PreToolUse: expect.any(Array),
+        }),
+      );
+      expect(appState.plugins).toMatchObject({
+        needsRefresh: false,
+      });
+      expect((appState.plugins as { enabled: unknown[] }).enabled[0])
+        .toMatchObject({ name: "sample" });
+      expect((appState.plugins as { commands: Array<{ name: string }> }).commands.map((command) => command.name))
+        .toEqual(["sample:deploy", "sample:inspector"]);
+      expect(appState.mcp).toMatchObject({ pluginReconnectKey: 8 });
+      expect((appState.agentDefinitions as { activeAgents: Array<{ agentType: string }> }).activeAgents)
+        .toEqual([
+          builtInAgent,
+          expect.objectContaining({ agentType: "sample:review" }),
+        ]);
+
+      await expect(loadPluginCommands({ cwd: root }))
+        .resolves.toEqual([expect.objectContaining({ name: "sample:deploy" })]);
+      await expect(loadPluginAgents({ cwd: root }))
+        .resolves.toEqual([expect.objectContaining({ agentType: "sample:review" })]);
+    });
+  });
+
+  test("command registration does not expose nested Markdown below skill directories", async () => {
+    await withTempPlugin(async ({ pluginRoot, options }) => {
+      await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
+        name: "sample",
+      });
+      await rm(join(pluginRoot, "commands", "deploy.md"), { force: true });
+      await writeFileAt(join(pluginRoot, "commands", "regular.md"), "Regular command.");
+      await writeFileAt(join(pluginRoot, "commands", "tool", "SKILL.md"), "Skill command.");
+      await writeFileAt(join(pluginRoot, "commands", "tool", "README.md"), "Nested docs.");
+
+      const result = await loadPlugins(options);
+      const commands = await loadPluginCommands({ plugins: result.enabled });
+
+      expect(commands.map((command) => command.name).sort()).toEqual([
+        "sample:regular",
+        "sample:tool",
+      ]);
     });
   });
 });

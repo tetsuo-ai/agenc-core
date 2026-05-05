@@ -1,0 +1,175 @@
+{
+  "contractName": "execpolicy-dsl-parity",
+  "scope": "ExecPolicy DSL parsing, rule evaluation, amendments, and checker JSON",
+  "generatedAt": "2026-05-05T12:46:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/codex/codex-rs",
+  "targetRoot": "..",
+  "sourceCommit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
+  "sourceFiles": [
+    "execpolicy/src/lib.rs",
+    "execpolicy/src/parser.rs",
+    "execpolicy/src/policy.rs",
+    "execpolicy/src/rule.rs",
+    "execpolicy/src/decision.rs",
+    "execpolicy/src/amend.rs",
+    "execpolicy/src/executable_name.rs",
+    "execpolicy/src/error.rs",
+    "execpolicy/src/execpolicycheck.rs",
+    "execpolicy/src/main.rs",
+    "execpolicy/examples/",
+    "execpolicy/tests/basic.rs"
+  ],
+  "targetFiles": [
+    "runtime/src/sandbox/execpolicy/PARITY.md",
+    "runtime/src/sandbox/execpolicy/amend.ts",
+    "runtime/src/sandbox/execpolicy/decision.ts",
+    "runtime/src/sandbox/execpolicy/error.ts",
+    "runtime/src/sandbox/execpolicy/executable-name.ts",
+    "runtime/src/sandbox/execpolicy/execpolicycheck.ts",
+    "runtime/src/sandbox/execpolicy/examples/example.agencpolicy",
+    "runtime/src/sandbox/execpolicy/index.ts",
+    "runtime/src/sandbox/execpolicy/main.ts",
+    "runtime/src/sandbox/execpolicy/parser.ts",
+    "runtime/src/sandbox/execpolicy/policy.ts",
+    "runtime/src/sandbox/execpolicy/rule.ts"
+  ],
+  "testFiles": [
+    "runtime/src/sandbox/execpolicy/execpolicy.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "decision-and-prefix-rules",
+      "source": [
+        "execpolicy/src/decision.rs",
+        "execpolicy/src/rule.rs",
+        "execpolicy/src/policy.rs"
+      ],
+      "target": [
+        "runtime/src/sandbox/execpolicy/decision.ts",
+        "runtime/src/sandbox/execpolicy/rule.ts",
+        "runtime/src/sandbox/execpolicy/policy.ts"
+      ],
+      "requiredBehaviors": [
+        "parse allow, prompt, and forbidden decisions",
+        "match prefix rules against command token prefixes",
+        "expand alternatives in the first pattern token into distinct rules",
+        "keep tail alternatives grouped within one rule",
+        "choose the strictest decision across all matching rules"
+      ],
+      "edgeCases": [
+        "empty prefixes are rejected before insertion",
+        "commands with no matching rule use the supplied heuristic decision",
+        "multiple command evaluations aggregate all matched rules before choosing a decision",
+        "matching rule output keeps matched prefixes and justifications"
+      ],
+      "tests": [
+        "runtime/src/sandbox/execpolicy/execpolicy.test.ts"
+      ],
+      "commands": [
+        "npm exec --workspace=@tetsuo-ai/runtime vitest run src/sandbox/execpolicy/execpolicy.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "policy-parser-and-examples",
+      "source": [
+        "execpolicy/src/parser.rs",
+        "execpolicy/tests/basic.rs",
+        "execpolicy/examples/"
+      ],
+      "target": [
+        "runtime/src/sandbox/execpolicy/parser.ts",
+        "runtime/src/sandbox/execpolicy/error.ts",
+        "runtime/src/sandbox/execpolicy/examples/example.agencpolicy"
+      ],
+      "requiredBehaviors": [
+        "parse prefix_rule, network_rule, and host_executable calls",
+        "parse strings, nested lists, comments, whitespace, and trailing commas",
+        "parse top-level assignments, identifier references, string/list + expressions, parenthesized expressions, helper functions with return expressions, for loops over lists, list comprehensions, positional arguments, and f-string substitutions from string variables",
+        "validate match and not_match examples at parse time",
+        "carry source locations on parse and validation failures"
+      ],
+      "edgeCases": [
+        "empty patterns are rejected",
+        "empty string examples are rejected",
+        "unknown policy builtins are rejected",
+        "strings containing comprehension-like text remain ordinary strings",
+        "validation errors inside generated loop bodies keep original policy line numbers",
+        "negative examples fail when any rule matches them",
+        "the carried example corpus parses and evaluates representative commands"
+      ],
+      "tests": [
+        "runtime/src/sandbox/execpolicy/execpolicy.test.ts"
+      ],
+      "commands": [
+        "npm exec --workspace=@tetsuo-ai/runtime vitest run src/sandbox/execpolicy/execpolicy.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "network-and-host-executable-rules",
+      "source": [
+        "execpolicy/src/rule.rs",
+        "execpolicy/src/executable_name.rs",
+        "execpolicy/src/policy.rs"
+      ],
+      "target": [
+        "runtime/src/sandbox/execpolicy/rule.ts",
+        "runtime/src/sandbox/execpolicy/executable-name.ts",
+        "runtime/src/sandbox/execpolicy/policy.ts"
+      ],
+      "requiredBehaviors": [
+        "normalize network rule hosts and protocol aliases",
+        "compile allowed and denied network domains with last writer wins",
+        "record host executable allowlists by executable basename",
+        "resolve absolute executable paths to basename prefix rules when enabled"
+      ],
+      "edgeCases": [
+        "wildcard hosts are rejected",
+        "host and Windows executable lookup lowercasing is ASCII-only",
+        "bracketed IPv6 hosts with ports normalize to the literal",
+        "explicit empty host executable allowlists block basename fallback",
+        "exact absolute-path prefix rules take precedence over host executable resolution"
+      ],
+      "tests": [
+        "runtime/src/sandbox/execpolicy/execpolicy.test.ts"
+      ],
+      "commands": [
+        "npm exec --workspace=@tetsuo-ai/runtime vitest run src/sandbox/execpolicy/execpolicy.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "amend-and-checker",
+      "source": [
+        "execpolicy/src/amend.rs",
+        "execpolicy/src/execpolicycheck.rs",
+        "execpolicy/src/main.rs"
+      ],
+      "target": [
+        "runtime/src/sandbox/execpolicy/amend.ts",
+        "runtime/src/sandbox/execpolicy/execpolicycheck.ts",
+        "runtime/src/sandbox/execpolicy/main.ts"
+      ],
+      "requiredBehaviors": [
+        "append deduplicated allow prefix rules",
+        "append normalized network rules with policy-file locking",
+        "load multiple policy files through the parser",
+        "render checker JSON with external-tagged rule matches"
+      ],
+      "edgeCases": [
+        "missing final newlines are inserted before appending",
+        "empty prefix amendments are rejected",
+        "invalid network amendment hosts are rejected before writing",
+        "checker argv parsing requires at least one rule file and command tokens"
+      ],
+      "tests": [
+        "runtime/src/sandbox/execpolicy/execpolicy.test.ts"
+      ],
+      "commands": [
+        "npm exec --workspace=@tetsuo-ai/runtime vitest run src/sandbox/execpolicy/execpolicy.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

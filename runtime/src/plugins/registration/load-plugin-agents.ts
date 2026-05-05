@@ -1,4 +1,4 @@
-import { basename, dirname } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 
 import {
   AGENT_COLORS,
@@ -34,6 +34,18 @@ const VALID_MEMORY_SCOPES: readonly AgentMemoryScope[] = ["user", "project", "lo
 const VALID_EFFORTS = new Set(["none", "low", "medium", "high", "max", "xhigh"]);
 
 let pluginAgentCache: Promise<readonly PluginAgentDefinition[]> | null = null;
+const activePluginAgentsByCwd = new Map<string, readonly PluginAgentDefinition[]>();
+
+function activeKey(cwd: string | undefined): string {
+  return resolve(cwd ?? process.cwd());
+}
+
+export function setActivePluginAgentSnapshot(
+  cwd: string,
+  agents: readonly PluginAgentDefinition[],
+): void {
+  activePluginAgentsByCwd.set(activeKey(cwd), [...agents]);
+}
 
 function parseTools(value: unknown): string[] | undefined {
   if (value === undefined) return undefined;
@@ -183,6 +195,10 @@ async function resolvePlugins(
 export async function loadPluginAgents(
   options: PluginAgentRegistrationOptions = {},
 ): Promise<readonly PluginAgentDefinition[]> {
+  if (options.plugins === undefined) {
+    const active = activePluginAgentsByCwd.get(activeKey(options.cwd));
+    if (active !== undefined) return active;
+  }
   const plugins = await resolvePlugins(options);
   const groups = await Promise.all(plugins.map(loadAgentsForPlugin));
   return groups.flat().sort((a, b) => a.agentType.localeCompare(b.agentType));

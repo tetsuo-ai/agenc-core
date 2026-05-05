@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { basename, dirname, join, relative, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 import type { Command } from "../../commands.js";
 import type { LoadedPlugin, LoadedPluginCommand } from "../loader.js";
@@ -37,6 +37,26 @@ interface PluginMarkdownCommand {
 
 let pluginCommandCache: Promise<readonly Command[]> | null = null;
 let pluginSkillCache: Promise<readonly Command[]> | null = null;
+const activePluginCommandsByCwd = new Map<string, readonly Command[]>();
+const activePluginSkillsByCwd = new Map<string, readonly Command[]>();
+
+function activeKey(cwd: string | undefined): string {
+  return resolve(cwd ?? process.cwd());
+}
+
+export function setActivePluginCommandSnapshot(
+  cwd: string,
+  commands: readonly Command[],
+): void {
+  activePluginCommandsByCwd.set(activeKey(cwd), [...commands]);
+}
+
+export function setActivePluginSkillSnapshot(
+  cwd: string,
+  skills: readonly Command[],
+): void {
+  activePluginSkillsByCwd.set(activeKey(cwd), [...skills]);
+}
 
 function isSkillFile(filePath: string): boolean {
   return basename(filePath).toLowerCase() === "skill.md";
@@ -221,7 +241,7 @@ async function readCommandPath(
   if (command.path === undefined) return [];
   if (await pathIsDirectory(command.path)) {
     const commandPath = command.path;
-    const files = await collectMarkdownFiles(command.path);
+    const files = await collectCommandMarkdownFiles(command.path);
     return Promise.all(
       files.map(async (filePath) =>
         readFileAsCommand(plugin, filePath, commandPath, loadedPaths, command.metadata),
@@ -244,6 +264,22 @@ async function readCommandPath(
       declaredName,
     ),
   ].filter((entry): entry is PluginMarkdownCommand => entry !== null);
+}
+
+async function collectCommandMarkdownFiles(root: string): Promise<readonly string[]> {
+  const files = await collectMarkdownFiles(root);
+  const skillDirs = new Set(
+    files
+      .filter((filePath) => isSkillFile(filePath))
+      .map((filePath) => dirname(filePath)),
+  );
+  return files.filter((filePath) => {
+    for (const skillDir of skillDirs) {
+      if (filePath === join(skillDir, "SKILL.md")) return true;
+      if (filePath.startsWith(`${skillDir}${sep}`)) return false;
+    }
+    return true;
+  });
 }
 
 async function readFileAsCommand(
@@ -271,10 +307,32 @@ async function loadPluginCommandEntries(
   plugin: LoadedPlugin,
 ): Promise<readonly PluginMarkdownCommand[]> {
   const loadedPaths = new Set<string>();
+  const commands = filterLoadedCommandsForSkillDirectories(plugin.commands);
   const groups = await Promise.all(
-    plugin.commands.map((command) => readCommandPath(plugin, command, loadedPaths)),
+    commands.map((command) => readCommandPath(plugin, command, loadedPaths)),
   );
   return groups.flat();
+}
+
+function filterLoadedCommandsForSkillDirectories(
+  commands: readonly LoadedPluginCommand[],
+): readonly LoadedPluginCommand[] {
+  const skillDirs = new Set(
+    commands
+      .map((command) => command.path)
+      .filter((path): path is string => path !== undefined && isSkillFile(path))
+      .map((path) => dirname(path)),
+  );
+  if (skillDirs.size === 0) return commands;
+  return commands.filter((command) => {
+    const path = command.path;
+    if (path === undefined) return true;
+    for (const skillDir of skillDirs) {
+      if (path === join(skillDir, "SKILL.md")) return true;
+      if (path.startsWith(`${skillDir}${sep}`)) return false;
+    }
+    return true;
+  });
 }
 
 async function loadSkillEntriesFromPath(
@@ -327,6 +385,10 @@ async function resolvePlugins(
 export async function loadPluginCommands(
   options: PluginCommandRegistrationOptions = {},
 ): Promise<readonly Command[]> {
+  if (options.plugins === undefined) {
+    const active = activePluginCommandsByCwd.get(activeKey(options.cwd));
+    if (active !== undefined) return active;
+  }
   const plugins = await resolvePlugins(options);
   const groups = await Promise.all(plugins.map(loadPluginCommandEntries));
   return groups
@@ -339,6 +401,10 @@ export async function loadPluginCommands(
 export async function loadPluginSkills(
   options: PluginCommandRegistrationOptions = {},
 ): Promise<readonly Command[]> {
+  if (options.plugins === undefined) {
+    const active = activePluginSkillsByCwd.get(activeKey(options.cwd));
+    if (active !== undefined) return active;
+  }
   const plugins = await resolvePlugins(options);
   const groups = await Promise.all(plugins.map(loadPluginSkillEntries));
   return groups
