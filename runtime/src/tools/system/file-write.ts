@@ -1,9 +1,11 @@
 /**
- * `Write` — port of the upstream file-write tool.
+ * `Write` — port of the donor UI snapshot's file-write tool.
  *
- * Lifted from the upstream file-write implementation and prompt. The
- * model-facing description is
- * the AgenC wording, lightly adapted to AgenC's voice.
+ * Ports `src/tools/FileWriteTool/FileWriteTool.ts` and
+ * `src/tools/FileWriteTool/prompt.ts` from donor UI snapshot commit
+ * `0ca43335375beec6e58711b797d5b0c4bb5019b8` onto AgenC's tool
+ * contract. The model-facing description keeps the source behavior,
+ * lightly adapted to AgenC's voice.
  *
  * Behavior preserved from upstream:
  *   - Creates a new file or overwrites an existing one.
@@ -27,8 +29,7 @@
  *     `resolveToolAllowedPaths`.
  *   - Errors are returned as plain text (runtime envelope), not JSON.
  *
- * Lifted FROM AgenC; the following AgenC couplings are
- * intentionally NOT lifted:
+ * Source couplings intentionally not carried:
  *   - analytics / growthbook / `logEvent` calls
  *   - LSP didChange/didSave notifications
  *   - VS Code MCP file-update notifications

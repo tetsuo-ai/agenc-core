@@ -483,6 +483,39 @@ describe("runToolUse end-to-end", () => {
     expect(out.isError).toBe(true);
   });
 
+  test("injects conversation id into live tool args for session-scoped guards", async () => {
+    let seenSessionId: unknown;
+    let seenCallId: unknown;
+    const tool: Tool = {
+      name: "Write",
+      description: "",
+      inputSchema: {},
+      execute: async (args) => {
+        seenSessionId = (
+          args as { __agencSessionId?: unknown }
+        ).__agencSessionId;
+        seenCallId = (args as { __callId?: unknown }).__callId;
+        return { content: "ok" };
+      },
+    };
+    const invocation = makeInvocation("c-session", "Write");
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool,
+      invocation: {
+        ...invocation,
+        session: {
+          services: {},
+          conversationId: "live-session-1",
+        } as never,
+      },
+    });
+
+    expect(out.isError).toBe(false);
+    expect(seenSessionId).toBe("live-session-1");
+    expect(seenCallId).toBe("c-session");
+  });
+
   test("I-44: stale active turn after approval blocks execute() and emits a warning", async () => {
     let executed = 0;
     let activeTurnId = "t1";
