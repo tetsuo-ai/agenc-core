@@ -327,8 +327,14 @@ async function runDelegateAgentLoop(opts: {
         ...(opts.reasoningEffort !== undefined
           ? { reasoningEffort: opts.reasoningEffort }
           : {}),
+        onCacheSafeParams: (params) => {
+          opts.thread.setSummaryCacheSafeParams(params);
+        },
       },
-      (event) => opts.onProgress?.(event, opts.thread),
+      (event) => {
+        opts.thread.recordSummaryProgressEvent(event);
+        return opts.onProgress?.(event, opts.thread);
+      },
     );
 
     if (result.outcome !== "errored") {

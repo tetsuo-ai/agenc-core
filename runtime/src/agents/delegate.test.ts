@@ -112,6 +112,78 @@ describe("delegate lifecycle recovery", () => {
     expect(control.shutdown).not.toHaveBeenCalled();
   });
 
+  it("records summary cache params and tool transcript events from async runs", async () => {
+    const live = makeLive("thread-summary", "/root/summary");
+    const control = {
+      spawn: vi.fn(async () => live),
+      shutdown: vi.fn(async () => {}),
+      resumeAgentFromRollout: vi.fn(),
+    };
+    const cacheSafeParams = {
+      systemPrompt: "",
+      userContext: {},
+      systemContext: {},
+      toolUseContext: {},
+      forkContextMessages: [],
+    };
+    mockRunAgent.mockImplementationOnce((params) =>
+      (async function* () {
+        params.onCacheSafeParams?.(cacheSafeParams as never);
+        yield {
+          kind: "tool_call" as const,
+          callId: "call-1",
+          toolName: "Read",
+          arguments: '{"file_path":"x.ts"}',
+        };
+        yield {
+          kind: "tool_result" as const,
+          callId: "call-1",
+          toolName: "Read",
+          result: "file body",
+          isError: false,
+        };
+        return {
+          threadId: "thread-summary",
+          durationMs: 5,
+          outcome: "completed" as const,
+          finalMessage: "done",
+        };
+      })(),
+    );
+
+    const outcome = await delegate({
+      parent: makeParentSession() as never,
+      parentPath: "/root",
+      control: control as never,
+      registry: {} as never,
+      taskPrompt: "run separately",
+    });
+
+    expect(outcome.kind).toBe("async_launched");
+    if (outcome.kind !== "async_launched") {
+      throw new Error("expected async_launched");
+    }
+    await outcome.thread.join();
+    expect(outcome.thread.summaryCacheSafeParams).toBe(cacheSafeParams);
+    expect(outcome.thread.summaryMessages.map((message) => message.type)).toEqual([
+      "assistant",
+      "user",
+    ]);
+    expect(outcome.thread.summaryMessages[0]?.message.content).toEqual([
+      expect.objectContaining({
+        type: "tool_use",
+        id: "call-1",
+        input: { file_path: "x.ts" },
+      }),
+    ]);
+    expect(outcome.thread.summaryMessages[1]?.message.content).toEqual([
+      expect.objectContaining({
+        type: "tool_result",
+        tool_use_id: "call-1",
+      }),
+    ]);
+  });
+
   it("forceSynchronous overrides role-level background mode", async () => {
     const live = {
       ...makeLive("thread-sync", "/root/sync"),

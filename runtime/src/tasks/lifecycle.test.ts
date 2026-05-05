@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { AgentStatus } from "../agents/status.js";
 import type { RunAgentResult } from "../agents/run-agent.js";
+import type { CacheSafeParams } from "../services/PromptSuggestion/runtime.js";
 import {
   BackgroundTaskError,
   BackgroundTaskLifecycle,
@@ -47,6 +48,34 @@ const flush = (): Promise<void> =>
   new Promise((resolve) => {
     setTimeout(resolve, 0);
   });
+
+function cacheSafeParams(): CacheSafeParams {
+  return {
+    systemPrompt: "system",
+    userContext: {},
+    systemContext: {},
+    toolUseContext: {
+      options: { tools: [{ name: "Read" }] },
+      getAppState: () => ({
+        promptSuggestionEnabled: false,
+        pendingWorkerRequest: null,
+        pendingSandboxRequest: null,
+        elicitation: { queue: [] },
+        toolPermissionContext: { mode: "default" },
+        promptSuggestion: {
+          text: null,
+          promptId: null,
+          shownAt: 0,
+          acceptedAt: 0,
+          generationRequestId: null,
+        },
+        speculation: { status: "idle" },
+        speculationSessionTimeSavedMs: 0,
+      }),
+    },
+    forkContextMessages: [],
+  } as CacheSafeParams;
+}
 
 describe("BackgroundTaskLifecycle", () => {
   it("tracks output deltas and terminal completion notifications", async () => {
@@ -161,6 +190,34 @@ describe("BackgroundTaskLifecycle", () => {
     lifecycle.appendOutput(large.id, "a".repeat(1_000_050));
     expect(lifecycle.readOutput(large.id).length).toBe(1_000_000);
   });
+
+  it("stores agent progress summaries without clobbering live counts", () => {
+    const lifecycle = new BackgroundTaskLifecycle();
+    lifecycle.register({
+      id: "agent-progress",
+      type: "local_agent",
+      description: "inspect",
+    });
+
+    lifecycle.updateAgentProgress("agent-progress", {
+      toolUseCount: 2,
+      tokenCount: 100,
+    });
+    lifecycle.updateAgentSummary("agent-progress", "Reading files");
+    lifecycle.updateAgentProgress("agent-progress", {
+      toolUseCount: 3,
+      tokenCount: 150,
+    });
+
+    expect(lifecycle.get("agent-progress")?.progress).toEqual({
+      toolUseCount: 3,
+      tokenCount: 150,
+      summary: "Reading files",
+    });
+    expect(lifecycle.drainNotifications().map((item) => item.kind)).toContain(
+      "progress",
+    );
+  });
 });
 
 describe("registerAgentThreadTask", () => {
@@ -237,5 +294,149 @@ describe("registerAgentThreadTask", () => {
 
     expect(lifecycle.get("agent-2")?.status).toBe("completed");
     expect(lifecycle.readOutput("agent-2")).toBe("summary");
+  });
+
+  it("starts AgentSummary for registered threads and writes progress summaries", async () => {
+    vi.useFakeTimers();
+    try {
+      const lifecycle = new BackgroundTaskLifecycle();
+      const status = new FakeStatus();
+      const joined = deferred<RunAgentResult>();
+      let cacheSafeParamsListener:
+        | ((params: CacheSafeParams) => void)
+        | null = null;
+      const runForkedAgent = vi.fn(async () => ({
+        messages: [
+          {
+            type: "assistant",
+            message: { content: [{ type: "text", text: "Reading files" }] },
+          },
+        ],
+        totalUsage: {},
+      }));
+      const thread: AgentThreadTaskHandle = {
+        threadId: "agent-3",
+        taskPrompt: "inspect summary",
+        messages: [
+          { role: "user", content: "one" },
+          {
+            role: "assistant",
+            content: "using a tool",
+            toolCalls: [
+              { id: "call-1", name: "Read", arguments: '{"file_path":"x.ts"}' },
+            ],
+          },
+          {
+            role: "tool",
+            toolCallId: "call-1",
+            toolName: "Read",
+            content: "file body",
+          },
+        ],
+        live: {
+          agentId: "agent-3",
+          abortController: new AbortController(),
+          status,
+        },
+        onSummaryCacheSafeParams: (listener) => {
+          cacheSafeParamsListener = listener;
+          return () => {
+            cacheSafeParamsListener = null;
+          };
+        },
+        join: () => joined.promise,
+      };
+
+      registerAgentThreadTask(lifecycle, thread, {
+        summary: {
+          intervalMs: 10,
+          runForkedAgent: runForkedAgent as never,
+        },
+      });
+
+      await vi.advanceTimersByTimeAsync(50);
+      expect(runForkedAgent).not.toHaveBeenCalled();
+      expect(cacheSafeParamsListener).not.toBeNull();
+      cacheSafeParamsListener?.(cacheSafeParams());
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(runForkedAgent).toHaveBeenCalledTimes(1);
+      expect(lifecycle.get("agent-3")?.progress?.summary).toBe("Reading files");
+      expect(
+        runForkedAgent.mock.calls[0]?.[0].cacheSafeParams.forkContextMessages,
+      ).toHaveLength(3);
+      const forkMessages =
+        runForkedAgent.mock.calls[0]?.[0].cacheSafeParams.forkContextMessages;
+      expect(forkMessages?.[1]?.message.content).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "tool_use",
+            id: "call-1",
+            input: { file_path: "x.ts" },
+          }),
+        ]),
+      );
+      expect(forkMessages?.[2]?.message.content).toEqual([
+        expect.objectContaining({
+          type: "tool_result",
+          tool_use_id: "call-1",
+          content: [
+            expect.objectContaining({ type: "text", text: "file body" }),
+          ],
+        }),
+      ]);
+
+      await lifecycle.stop("agent-3", "done");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not start AgentSummary for already-terminal threads", async () => {
+    vi.useFakeTimers();
+    try {
+      const lifecycle = new BackgroundTaskLifecycle();
+      const status = new FakeStatus();
+      status.set({
+        status: "completed",
+        turnId: "turn-terminal",
+        endedAtMs: 30,
+        lastMessage: "done",
+      });
+      const joined = deferred<RunAgentResult>();
+      const runForkedAgent = vi.fn(async () => ({
+        messages: [
+          {
+            type: "assistant",
+            message: { content: [{ type: "text", text: "Should not run" }] },
+          },
+        ],
+        totalUsage: {},
+      }));
+      const thread: AgentThreadTaskHandle = {
+        threadId: "agent-terminal",
+        taskPrompt: "already done",
+        live: {
+          agentId: "agent-terminal",
+          abortController: new AbortController(),
+          status,
+        },
+        summaryCacheSafeParams: cacheSafeParams(),
+        join: () => joined.promise,
+      };
+
+      registerAgentThreadTask(lifecycle, thread, {
+        summary: {
+          intervalMs: 10,
+          runForkedAgent: runForkedAgent as never,
+        },
+      });
+      await vi.advanceTimersByTimeAsync(50);
+
+      expect(runForkedAgent).not.toHaveBeenCalled();
+      expect(lifecycle.get("agent-terminal")?.status).toBe("completed");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

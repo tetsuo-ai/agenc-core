@@ -32,6 +32,7 @@ import {
 import { _resetNicknamePoolForTesting } from "./role.js";
 import type { InterAgentCommunication } from "./mailbox.js";
 import type {
+  LLMChatOptions,
   LLMMessage,
   LLMProvider,
   LLMResponse,
@@ -51,6 +52,7 @@ import {
   SESSION_ID_ARG,
 } from "../tools/system/filesystem.js";
 import { createApplyPatchTool } from "../tools/apply-patch/index.js";
+import { cloneFileStateCache } from "../agenc/upstream/utils/fileStateCache.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Helpers
@@ -435,6 +437,101 @@ describe("runAgent", () => {
     expect(provider.chatStream).toHaveBeenCalledTimes(2);
     expect(result.finalMessage).toBe("tool work complete");
     expect(result.toolCallCount).toBe(1);
+  });
+
+  it("captures AgentSummary cache-safe params from the real child run state", async () => {
+    const provider = makeProvider([{ content: "summary seed" }]);
+    const registry = {
+      tools: [
+        {
+          name: "system.echo",
+          description: "echo",
+          inputSchema: { type: "object" },
+          execute: async () => ({ content: JSON.stringify({ ok: true }) }),
+        },
+      ],
+      toLLMTools: () => [
+        {
+          type: "function",
+          function: {
+            name: "system.echo",
+            description: "echo",
+            parameters: { type: "object" },
+          },
+        },
+      ],
+      dispatch: async () => ({ content: JSON.stringify({ ok: true }) }),
+    } satisfies ToolRegistry;
+    const session = makeStubSession({ services: { provider, registry } });
+    const { live } = await spawnLive(session);
+    const captured: unknown[] = [];
+
+    await collectRun(
+      runAgent({
+        live,
+        parent: session,
+        initialMessages: [{ role: "user", content: "go" }],
+        taskPrompt: "go",
+        onCacheSafeParams: (params) => {
+          captured.push(params);
+        },
+      }),
+    );
+
+    expect(captured).toHaveLength(1);
+    const chatStreamCall = (
+      provider.chatStream as ReturnType<typeof vi.fn>
+    ).mock.calls[0] as
+      | [LLMMessage[], StreamProgressCallback, LLMChatOptions]
+      | undefined;
+    expect(chatStreamCall).toBeDefined();
+    const [providerMessages, , providerOptions] = chatStreamCall!;
+    const params = captured[0] as {
+      systemPrompt: string;
+      systemContext: { cwd: string };
+      toolUseContext: {
+        provider: LLMProvider;
+        options: {
+          mainLoopModel: string;
+          tools: Array<{ name: string }>;
+          contextWindowTokens: number;
+        };
+        getAppState: () => unknown;
+        readFileState: {
+          max: number;
+          maxSize: number;
+          dump: () => unknown;
+        };
+      };
+      forkContextMessages: unknown[];
+    };
+    expect(params.systemPrompt).toBe(providerOptions.systemPrompt ?? "");
+    expect(params.systemContext).toEqual({ cwd: "/tmp" });
+    expect(params.toolUseContext.provider.name).toBe(provider.name);
+    expect(params.toolUseContext.options.mainLoopModel).toBe("fake-model");
+    expect(params.toolUseContext.options.tools.map((tool) => tool.name)).toEqual(
+      providerOptions.tools?.map((tool) => tool.function.name),
+    );
+    expect(params.toolUseContext.options.contextWindowTokens).toBe(
+      providerOptions.contextWindowTokens,
+    );
+    expect(typeof params.toolUseContext.getAppState).toBe("function");
+    expect(params.toolUseContext.readFileState.max).toBeGreaterThan(0);
+    expect(params.toolUseContext.readFileState.maxSize).toBeGreaterThan(0);
+    expect(typeof params.toolUseContext.readFileState.dump).toBe("function");
+    expect(
+      cloneFileStateCache(params.toolUseContext.readFileState as never).max,
+    ).toBe(params.toolUseContext.readFileState.max);
+    expect(
+      params.forkContextMessages[0],
+    ).toEqual(
+      expect.objectContaining({
+        type: "user",
+        message: expect.objectContaining({
+          content: providerMessages[0]?.content,
+        }),
+      }),
+    );
   });
 
   it("treats child maxTurns termination as an errored run", async () => {
