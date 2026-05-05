@@ -3812,6 +3812,7 @@ async function ideExtensionGates(item) {
 
 function grepRepo(pattern, scope = "runtime/src", options = {}) {
   const args = ["--no-messages", "-l", pattern];
+  if (options.caseInsensitive) args.push("-i");
   for (const glob of options.globs ?? []) args.push("-g", glob);
   for (const glob of options.excludeGlobs ?? []) args.push("-g", `!${glob}`);
   args.push(scope);
@@ -4283,6 +4284,15 @@ async function cleanupGates(item) {
           excludeGlobs: ["*.test.ts", "*.test.tsx"],
         },
       },
+      "ZC-07": {
+        grepNotPresent: {
+          pattern: "TODO.*(legacy|temporary|remove after|backward[ -]?compat|for now)",
+          scope: "runtime/src",
+          globs: ["*.ts", "*.tsx"],
+          excludeGlobs: ["*.test.ts", "*.test.tsx"],
+          caseInsensitive: true,
+        },
+      },
       "ZC-10": { gone: ["runtime/src/agenc/upstream", "runtime/src/types/runtime-ambient.d.ts"] },
       "ZC-11": { gone: ["runtime/src/tools/code-mode/response-adapter.ts"] },
       "ZC-13": { gone: ["runtime/src/tui/bridges"] },
@@ -4305,8 +4315,8 @@ async function cleanupGates(item) {
       pass(`${id}: ${expectations.gone.length} target path(s) confirmed deleted`);
     }
     if (expectations.grepNotPresent) {
-      const { pattern, scope, globs, excludeGlobs } = expectations.grepNotPresent;
-      if (grepRepo(pattern, scope, { globs, excludeGlobs })) failGate(`${id}: pattern "${pattern}" still found in ${scope}; should return zero hits.`);
+      const { pattern, scope, globs, excludeGlobs, caseInsensitive } = expectations.grepNotPresent;
+      if (grepRepo(pattern, scope, { globs, excludeGlobs, caseInsensitive })) failGate(`${id}: pattern "${pattern}" still found in ${scope}; should return zero hits.`);
       pass(`${id}: no hits for "${pattern}" in ${scope}`);
     }
     if (id === "ZC-06") {
