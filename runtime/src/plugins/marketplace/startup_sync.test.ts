@@ -68,6 +68,24 @@ describe("startup marketplace sync", () => {
     expect(calls.filter((call) => call.startsWith("clone "))).toHaveLength(1);
   });
 
+  it("does not remove legitimate plugins-clone marketplace directories during curated sync", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-startup-sync-preserve-marketplace-"));
+    const marketplaceRoot = join(agencHome, "plugins", "marketplaces", "plugins-clone-team");
+    await writeLocalMarketplace(marketplaceRoot, "plugins-clone-team");
+    const stale = new Date(Date.now() - 20 * 60 * 1000);
+    await utimes(marketplaceRoot, stale, stale);
+
+    await expect(syncCuratedPluginsRepoViaGit(
+      agencHome,
+      "https://agenc.tech/plugins/curated.git",
+      "git",
+      curatedGitRunner("abc123"),
+    )).resolves.toBe("abc123");
+
+    await expect(readFile(join(marketplaceRoot, "marketplace.json"), "utf8"))
+      .resolves.toContain("plugins-clone-team");
+  });
+
   it("rejects unsafe curated marketplace git transports before running git", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-startup-sync-unsafe-git-"));
     const calls: string[] = [];

@@ -316,6 +316,45 @@ describe("plugin marketplace runtime", () => {
     })).rejects.toThrow("exceeded maximum size");
   });
 
+  it("does not persist URL marketplace headers or credential-bearing URLs", async () => {
+    const { agencHome, workspaceRoot } = await tempRuntime();
+
+    await addMarketplaceOp({
+      agencHome,
+      workspaceRoot,
+      source: {
+        source: "url",
+        url: "https://agenc.tech/marketplace.json?token=secret-token",
+        headers: {
+          Authorization: "Bearer secret-token",
+          "X-API-Key": "secret-token",
+        },
+      },
+      fetcher: async () => jsonResponse({
+        metadata: { name: "url-team" },
+        plugins: [],
+      }),
+    });
+
+    const rawIndex = await readFile(marketplaceIndexPath({ agencHome }), "utf8");
+    expect(rawIndex).not.toContain("secret-token");
+    expect(rawIndex).not.toContain("Authorization");
+    expect(rawIndex).not.toContain("X-API-Key");
+    const index = JSON.parse(rawIndex) as {
+      marketplaces: Record<string, {
+        source?: string;
+        sourceDescriptor?: { source?: string; url?: string; headers?: unknown };
+      }>;
+    };
+    expect(index.marketplaces["url-team"]?.source).toBe(
+      "https://agenc.tech/marketplace.json?token=<redacted>",
+    );
+    expect(index.marketplaces["url-team"]?.sourceDescriptor).toEqual({
+      source: "url",
+      url: "https://agenc.tech/marketplace.json?token=<redacted>",
+    });
+  });
+
   it("fails malformed marketplace plugin entries instead of silently skipping them", async () => {
     const { workspaceRoot } = await tempRuntime();
     const marketplaceRoot = join(workspaceRoot, "bad-marketplace");
@@ -541,4 +580,16 @@ describe("plugin marketplace runtime", () => {
 
 function exactArrayBuffer(bytes: Buffer): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+function jsonResponse(body: unknown, ok = true, status = ok ? 200 : 500): Awaited<ReturnType<Fetcher>> {
+  const text = JSON.stringify(body);
+  const bytes = Buffer.from(text, "utf8");
+  return {
+    ok,
+    status,
+    statusText: ok ? "OK" : "Error",
+    text: async () => text,
+    arrayBuffer: async () => exactArrayBuffer(bytes),
+  };
 }

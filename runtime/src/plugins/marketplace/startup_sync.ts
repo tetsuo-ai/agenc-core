@@ -190,15 +190,17 @@ export async function syncCuratedPluginsRepoViaBackupArchive(
 async function prepareCuratedRepoParentAndTempDir(repoPath: string): Promise<string> {
   const parent = dirname(repoPath);
   await mkdir(parent, { recursive: true, mode: 0o700 });
-  await removeStaleCuratedRepoTempDirs(parent);
-  return mkdtemp(join(parent, "plugins-clone-"));
+  const stagingParent = join(parent, ".curated-staging");
+  await mkdir(stagingParent, { recursive: true, mode: 0o700 });
+  await removeStaleCuratedRepoTempDirs(stagingParent);
+  return mkdtemp(join(stagingParent, "clone-"));
 }
 
 async function removeStaleCuratedRepoTempDirs(parent: string): Promise<void> {
   const entries = await readdir(parent, { withFileTypes: true }).catch(() => []);
   const cutoff = Date.now() - 10 * 60 * 1000;
   for (const entry of entries) {
-    if (!entry.isDirectory() || !entry.name.startsWith("plugins-clone-")) continue;
+    if (!entry.isDirectory() || !entry.name.startsWith("clone-")) continue;
     const path = join(parent, entry.name);
     const metadata = await stat(path).catch(() => null);
     if (metadata === null || metadata.mtimeMs >= cutoff) continue;

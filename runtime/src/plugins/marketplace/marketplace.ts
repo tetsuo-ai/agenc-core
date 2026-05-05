@@ -307,11 +307,12 @@ export async function addMarketplaceOp(
     const replaced = duplicate !== undefined || await pathExists(installedPath);
     const manifestRelativePath = relative(staged.root, manifestPath);
     const finalManifestPath = join(installedPath, manifestRelativePath);
+    const persistedSource = persistedMarketplaceSource(source);
     const marketplace: MarketplaceRecord = {
       name,
-      source: displayMarketplaceSource(source),
+      source: displayMarketplaceSource(persistedSource),
       sourceType: staged.sourceType,
-      sourceDescriptor: source,
+      sourceDescriptor: persistedSource,
       installedPath,
       manifestPath: finalManifestPath,
       ...(source.source === "git" && source.ref !== undefined ? { ref: source.ref } : {}),
@@ -1225,6 +1226,14 @@ function displayMarketplaceSource(source: MarketplaceSource): string {
     case "settings":
       return `settings:${source.name}`;
   }
+}
+
+function persistedMarketplaceSource(source: MarketplaceSource): MarketplaceSource {
+  if (source.source !== "url") return source;
+  return {
+    source: "url",
+    url: redactSensitiveText(source.url),
+  };
 }
 
 function resolveMarketplaceAgencHome(options: MarketplaceOperationOptions = {}): string {
