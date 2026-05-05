@@ -1,5 +1,5 @@
 /**
- * Pure dispatch logic for the AgenC TUI bridge tool's
+ * Pure dispatch logic for the AgenC TUI tool renderer's
  * `renderToolResultMessage`. Lives in a JSX-free `.ts` file (no React,
  * no upstream/ink imports) so unit tests can exercise the dispatch
  * decision without dragging the upstream component chain into vitest
@@ -10,7 +10,7 @@
  */
 
 /**
- * Hardcoded copies of the live registered tool names that the bridge
+ * Hardcoded copies of the live registered tool names that the TUI
  * dispatches structurally. Canonical sources:
  *   - `runtime/src/tools/system/bash.ts`      -> "Bash"
  *   - `runtime/src/tools/system/file-edit.ts`  -> "Edit"
@@ -29,7 +29,7 @@ export const FILE_WRITE_TOOL_NAME_FOR_DISPATCH = "Write";
 export const GREP_TOOL_NAME_FOR_DISPATCH = "Grep";
 export const GLOB_TOOL_NAME_FOR_DISPATCH = "Glob";
 
-/** Where the bridge should send a tool result for rendering. */
+/** Where the TUI should send a tool result for rendering. */
 export type ToolResultDispatchTarget =
   | "bash-output-view"
   | "edit-diff-view"
@@ -47,7 +47,7 @@ export type ToolResultDispatchTarget =
  * tool with a similar name doesn't accidentally inherit a routed
  * renderer. Each routed tool also requires its specific envelope
  * tag in the joined content (produced by
- * `message-adapter.formatStructuredToolResult`); bare-string results
+ * `session-transcript.formatStructuredToolResult`); bare-string results
  * (legacy or error-path) always fall through to the generic renderer.
  *
  * The `<tool-error>` envelope is the cross-cutting error path —
@@ -108,7 +108,7 @@ export function pickToolResultDispatch(
 /**
  * Collapse a tool result content value into a flat string for tag
  * extraction and fallback rendering. Mirrors the existing
- * `resultText` helper in `tool-stubs.tsx` (kept in sync by hand;
+ * `resultText` helper in `tool-rendering.tsx` (kept in sync by hand;
  * see test coverage).
  */
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -136,11 +136,11 @@ function isStructuredTextBlock(
   );
 }
 
-export function resultTextForBridgeTool(value: unknown): string {
+export function resultTextForTuiTool(value: unknown): string {
   if (typeof value === "string") return value;
   if (Array.isArray(value)) {
     // Structured-content-block array shape (the shape that
-    // `message-adapter.formatStructuredToolResult` produces). Flatten
+    // `session-transcript.formatStructuredToolResult` produces). Flatten
     // by joining the `.text` fields with newlines so tag-extraction
     // helpers see one continuous string with the upstream envelope.
     if (value.length > 0 && value.every(isStructuredTextBlock)) {
@@ -148,7 +148,7 @@ export function resultTextForBridgeTool(value: unknown): string {
         .map((item) => (item as { readonly text: string }).text)
         .join("\n");
     }
-    return value.map(resultTextForBridgeTool).join("\n");
+    return value.map(resultTextForTuiTool).join("\n");
   }
   if (isRecord(value)) {
     if (typeof value.content === "string") return value.content;

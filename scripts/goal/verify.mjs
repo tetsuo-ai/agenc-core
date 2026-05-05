@@ -755,7 +755,7 @@ const ITEM_EVIDENCE = {
     grepNotPresent: [
       {
         pattern: "agenc/upstream/tools/(AskUserQuestionTool|AgentTool|BriefTool)",
-        scope: "runtime/src/tui/bridges/tool-stubs.tsx",
+        scope: "runtime/src/tui/tool-rendering.tsx",
       },
       {
         pattern: "agenc/upstream/tools/(AskUserQuestionTool|AgentTool|BriefTool)",
@@ -1454,7 +1454,7 @@ if (toScan.length === 0 && candidates.size === 0) {
 //   2. Any new file matching a shim suffix (shim/adapter/compat/legacy/bridge/wrapper/
 //      facade/proxy/glue/forwarder/passthrough/stub/indirect/dispatch/barrel) across
 //      .ts/.tsx/.mts/.cts/.mjs/.cjs/.js/.jsx outside the two legitimate dirs
-//      (runtime/src/tui/bridges/ and runtime/src/mcp-client/).
+//      (runtime/src/mcp-client/).
 //   3. Any new file under runtime/src/ whose body is overwhelmingly imports +
 //      re-exports + single-line forwarders (catches barrel/index files that the
 //      filename suffix wouldn't flag — wrapper-by-another-name).
@@ -1569,7 +1569,6 @@ if (upstreamImportGrowthRes.status !== 0) {
 // branding-scan: allow regex enumerates banned shim-pattern suffixes for the gate
 const SHIM_RE = /(^|\/)[^/]+-(shim|adapter|compat|legacy|bridge|wrapper|facade|proxy|glue|forwarder|passthrough|stub|indirect|dispatch|barrel)\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/;
 const SHIM_ALLOW_DIRS = [
-  "runtime/src/tui/bridges/",
   "runtime/src/mcp-client/",
 ];
 const shimAdditions = [...added].filter((p) => {
@@ -1580,7 +1579,7 @@ const shimAdditions = [...added].filter((p) => {
 if (shimAdditions.length > 0) {
   failGate(
     `forbidden: this item adds ${shimAdditions.length} new shim-pattern file(s) ` +
-      `outside the two legitimate locations (runtime/src/tui/bridges/, runtime/src/mcp-client/). ` +
+      `outside the legitimate location (runtime/src/mcp-client/). ` +
       `Banned suffixes: -shim/-adapter/-compat/-legacy/-bridge/-wrapper/-facade/-proxy/-glue/` +
       `-forwarder/-passthrough/-stub/-indirect/-dispatch/-barrel across .ts/.tsx/.mts/.cts/.mjs/.cjs/.js/.jsx. ` +
       `This codebase has no backwards-compatibility constraint; do not create wrapper files to keep ` +
@@ -1963,7 +1962,7 @@ async function t09ToolTargetGates() {
   }
 
   const scopes = [
-    "runtime/src/tui/bridges/tool-stubs.tsx",
+    "runtime/src/tui/tool-rendering.tsx",
     "runtime/src/tui/components/PromptInput",
     "runtime/src/tui/components/Messages.tsx",
     "runtime/src/tui/components/App.tsx",
