@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
 
-const limitsService = await import('../../agenc/upstream/services/claudeAiLimits.js') // branding-scan: allow existing upstream rate-limit service path
+// branding-scan: allow existing upstream rate-limit service path
+type LimitsService = typeof import('../../agenc/upstream/services/claudeAiLimits.js')
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const limitsService = require('../../agenc/upstream/services/claudeAiLimits.js') as LimitsService // branding-scan: allow existing upstream rate-limit service path
 type AgenCAILimits = typeof limitsService.currentLimits
 
 export function useAgenCAiLimits(): AgenCAILimits {
