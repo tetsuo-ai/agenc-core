@@ -81,7 +81,7 @@ describe("createLSPClient", () => {
     await client.start(process.execPath, ["-e", CLEAN_EXIT_SERVER]);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(terminalEvents).toEqual([
-      "LSP server clean-exit connection closed unexpectedly",
+      "LSP server clean-exit exited unexpectedly with code 0",
     ]);
 
     await client.start(process.execPath, ["-e", CLEAN_EXIT_SERVER]);

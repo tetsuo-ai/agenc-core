@@ -54,6 +54,7 @@ export interface LSPClientOptions {
 }
 
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 1_000;
+const CONNECTION_CLOSE_EXIT_GRACE_MS = 20;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -263,10 +264,42 @@ export function createLSPClient(
 
         connection.onClose(() => {
           if (stopping) return;
-          clearClosedRuntimeState({ killChild: true });
-          notifyUnexpectedTerminal(
-            new Error(`LSP server ${serverName} connection closed unexpectedly`),
-          );
+          const closedChild = child;
+          clearConnectionState();
+          setTimeout(() => {
+            if (stopping || terminalNotified) return;
+            if (closedChild && child === closedChild) {
+              child.removeAllListeners("error");
+              child.removeAllListeners("exit");
+              child.stdin?.removeAllListeners("error");
+              child.stderr?.removeAllListeners("data");
+              if (!child.killed) child.kill();
+              child = undefined;
+            }
+            if (closedChild?.exitCode !== null && closedChild?.exitCode !== undefined) {
+              notifyUnexpectedTerminal(
+                closedChild.exitCode === 0
+                  ? new Error(
+                      `LSP server ${serverName} exited unexpectedly with code 0`,
+                    )
+                  : new Error(
+                      `LSP server ${serverName} crashed with exit code ${closedChild.exitCode}`,
+                    ),
+              );
+              return;
+            }
+            if (closedChild?.signalCode) {
+              notifyUnexpectedTerminal(
+                new Error(
+                  `LSP server ${serverName} exited with signal ${closedChild.signalCode}`,
+                ),
+              );
+              return;
+            }
+            notifyUnexpectedTerminal(
+              new Error(`LSP server ${serverName} connection closed unexpectedly`),
+            );
+          }, CONNECTION_CLOSE_EXIT_GRACE_MS);
         });
 
         connection.listen();

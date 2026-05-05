@@ -2729,81 +2729,82 @@ function createLspTool(opts: ModelFacingToolOptions): Tool {
     execute: async (args) => {
       const operation = stringValue(args.operation);
       if (operation === "diagnostics") {
-      const filePath = stringValue(args.file_path);
-      if (!filePath) return json({ error: "file_path is required" }, true);
-      const resolved = resolveWorkspacePath(opts, filePath);
-      const exists = existsSync(resolved);
-      const fileStat = exists ? await stat(resolved) : null;
-      if (!exists || !fileStat?.isFile()) {
-        return json({
-          file_path: resolved,
-          diagnostics: [{
-            severity: "error",
-            message: "File not found",
-          }],
-        });
-      }
+        const filePath = stringValue(args.file_path);
+        if (!filePath) return json({ error: "file_path is required" }, true);
+        const resolved = resolveWorkspacePath(opts, filePath);
+        const exists = existsSync(resolved);
+        const fileStat = exists ? await stat(resolved) : null;
+        if (!exists || !fileStat?.isFile()) {
+          return json({
+            file_path: resolved,
+            diagnostics: [{
+              severity: "error",
+              message: "File not found",
+            }],
+          });
+        }
 
-      await waitForInitialization();
-      const status = getInitializationStatus();
-      const pendingDiagnostics = peekLSPDiagnosticsForFile(resolved);
-      if (status.status === "failed") {
+        await waitForInitialization();
+        const status = getInitializationStatus();
+        const pendingDiagnostics = peekLSPDiagnosticsForFile(resolved);
+        if (status.status === "failed") {
+          return json({
+            file_path: resolved,
+            diagnostics: pendingDiagnostics,
+            server: null,
+            lsp_status: "failed",
+            server_error: { message: status.error.message },
+            note:
+              pendingDiagnostics.length > 0
+                ? "Pending language-server diagnostics were returned, but LSP initialization failed."
+                : "LSP initialization failed before diagnostics could be refreshed.",
+          });
+        }
+
+        const manager = getLspServerManager();
+        if (!manager) {
+          return json({
+            file_path: resolved,
+            diagnostics: pendingDiagnostics,
+            server: null,
+            lsp_status: status.status,
+            note:
+              pendingDiagnostics.length > 0
+                ? "Pending language-server diagnostics were returned."
+                : "No language server is configured for this file.",
+          });
+        }
+
+        let serverName: string | null = null;
+        try {
+          serverName = (await manager.ensureServerStarted(resolved))?.name ?? null;
+        } catch (error) {
+          return json({
+            file_path: resolved,
+            diagnostics: pendingDiagnostics,
+            server: null,
+            lsp_status: "server_error",
+            server_error: { message: errorMessage(error) },
+            note:
+              pendingDiagnostics.length > 0
+                ? "Pending language-server diagnostics were returned, but the server failed to start."
+                : "The language server failed to start.",
+          });
+        }
         return json({
           file_path: resolved,
           diagnostics: pendingDiagnostics,
-          server: null,
-          lsp_status: "failed",
-          server_error: { message: status.error.message },
-          note:
-            pendingDiagnostics.length > 0
-              ? "Pending language-server diagnostics were returned, but LSP initialization failed."
-              : "LSP initialization failed before diagnostics could be refreshed.",
-        });
-      }
-
-      const manager = getLspServerManager();
-      if (!manager) {
-        return json({
-          file_path: resolved,
-          diagnostics: pendingDiagnostics,
-          server: null,
+          server: serverName,
           lsp_status: status.status,
           note:
             pendingDiagnostics.length > 0
               ? "Pending language-server diagnostics were returned."
-              : "No language server is configured for this file.",
+              : serverName === null
+                ? "No language server is configured for this file."
+                : "No pending diagnostics were available for this file.",
         });
       }
 
-      let serverName: string | null = null;
-      try {
-        serverName = (await manager.ensureServerStarted(resolved))?.name ?? null;
-      } catch (error) {
-        return json({
-          file_path: resolved,
-          diagnostics: pendingDiagnostics,
-          server: null,
-          lsp_status: "server_error",
-          server_error: { message: errorMessage(error) },
-          note:
-            pendingDiagnostics.length > 0
-              ? "Pending language-server diagnostics were returned, but the server failed to start."
-              : "The language server failed to start.",
-        });
-      }
-      return json({
-        file_path: resolved,
-        diagnostics: pendingDiagnostics,
-        server: serverName,
-        lsp_status: status.status,
-        note:
-          pendingDiagnostics.length > 0
-            ? "Pending language-server diagnostics were returned."
-            : serverName === null
-            ? "No language server is configured for this file."
-            : "No pending diagnostics were available for this file.",
-      });
-      }
       const query = stringValue(args.symbol) ?? stringValue(args.query);
       if (!query) return json({ error: "symbol or query is required" }, true);
       const filePath = stringValue(args.file_path);
@@ -2849,7 +2850,13 @@ function createLspTool(opts: ModelFacingToolOptions): Tool {
         });
       }
       if (operation !== "symbols") {
-        return json({ error: "operation must be diagnostics, definition, references, or symbols" }, true);
+        return json(
+          {
+            error:
+              "operation must be diagnostics, definition, references, or symbols",
+          },
+          true,
+        );
       }
       const symbols = await codeIntel.searchSymbols({
         workspaceRoot: opts.workspaceRoot,
