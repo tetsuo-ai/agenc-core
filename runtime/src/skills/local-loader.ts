@@ -23,6 +23,7 @@ import {
 import { load as loadYaml } from "js-yaml";
 
 import type { AgenCConfig } from "../config/index.js";
+import { discoverPluginSkillRoots as discoverLoadedPluginSkillRoots } from "../plugins/loader.js";
 import type { SessionServices } from "../session/session.js";
 import type { SkillLoadOutcome } from "../session/turn-context.js";
 import { substituteArguments } from "../tui/slash/argument-substitution.js";
@@ -106,6 +107,7 @@ export interface LocalSkillsSnapshot {
 export interface LocalSkillsServiceOptions {
   readonly agencHome: string;
   readonly workspaceRoot: string;
+  readonly config?: Pick<AgenCConfig, "plugins" | "enabledPlugins">;
   readonly env?: Partial<
     Pick<NodeJS.ProcessEnv, "HOME" | "AGENC_MANAGED_HOME">
   >;
@@ -229,28 +231,6 @@ function projectDirsUpToHome(
   return dirs;
 }
 
-async function collectPluginSkillRoots(
-  baseDir: string,
-): Promise<readonly string[]> {
-  if (!(await pathIsDirectory(baseDir))) return [];
-  const roots: string[] = [];
-  let entries;
-  try {
-    entries = await readdir(baseDir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-
-  for (const entry of entries) {
-    if (!entry.isDirectory() || SKIP_DIRS.has(entry.name)) continue;
-    const candidate = join(baseDir, entry.name, "skills");
-    if (await pathIsDirectory(candidate)) {
-      roots.push(normalizeExistingCandidate(candidate));
-    }
-  }
-  return roots;
-}
-
 export async function discoverSkillRoots(
   options: LocalSkillsServiceOptions,
 ): Promise<readonly SkillRoot[]> {
@@ -315,10 +295,11 @@ export async function discoverSkillRoots(
     });
   }
 
-  const pluginRoots = [
-    ...(await collectPluginSkillRoots(join(agencHome, "plugins"))),
-    ...(await collectPluginSkillRoots(join(workspaceRoot, ".agents", "plugins"))),
-  ];
+  const pluginRoots = await discoverLoadedPluginSkillRoots({
+    agencHome,
+    workspaceRoot,
+    config: options.config,
+  });
   roots.push(
     ...pluginRoots.map((path) => ({
       path,
@@ -1069,12 +1050,26 @@ export function createLocalSkillsServices(
   SessionServices,
   "skillsManager" | "pluginsManager" | "skillsWatcher"
 > {
-  let cache: Promise<LocalSkillsSnapshot> | null = null;
+  let cache: {
+    readonly key: string;
+    readonly value: Promise<LocalSkillsSnapshot>;
+  } | null = null;
+  let lastPluginConfig: Pick<AgenCConfig, "plugins" | "enabledPlugins"> | undefined =
+    options.config;
   let activePaths = new Set<string>();
   let watchers: readonly FSWatcher[] = [];
-  const load = (): Promise<LocalSkillsSnapshot> => {
-    cache ??= loadLocalSkillsSnapshot(options, [...activePaths]);
-    return cache;
+  const load = (
+    config?: Pick<AgenCConfig, "plugins" | "enabledPlugins">,
+  ): Promise<LocalSkillsSnapshot> => {
+    const effectiveOptions = config === undefined ? options : { ...options, config };
+    const key = skillSnapshotCacheKey(effectiveOptions.config, activePaths);
+    if (cache?.key !== key) {
+      cache = {
+        key,
+        value: loadLocalSkillsSnapshot(effectiveOptions, [...activePaths]),
+      };
+    }
+    return cache.value;
   };
   const clear = () => {
     cache = null;
@@ -1082,20 +1077,21 @@ export function createLocalSkillsServices(
 
   const skillsManager = {
     async skillsForConfig(
-      _input: AgenCConfig | unknown,
+      input: AgenCConfig | unknown,
       fsArg: unknown,
     ): Promise<SkillLoadOutcome> {
-      for (const path of extractActivePaths(_input, fsArg)) {
+      for (const path of extractActivePaths(input, fsArg)) {
         activePaths.add(path);
       }
-      const snapshot = await load();
+      lastPluginConfig = pluginConfigView(input) ?? options.config;
+      const snapshot = await load(lastPluginConfig);
       return {
         invokedSkills: [...getInvokedSkillsForAgent().keys()],
         availableSkills: snapshot.skills,
       };
     },
     async resolveSkill(name: string): Promise<LocalSkillMetadata | null> {
-      const snapshot = await load();
+      const snapshot = await load(lastPluginConfig);
       return snapshotFindSkill(snapshot, name) ?? null;
     },
     async renderSkill(opts: {
@@ -1103,7 +1099,7 @@ export function createLocalSkillsServices(
       readonly args?: string;
       readonly sessionId?: string;
     }): Promise<RenderedSkill | null> {
-      const snapshot = await load();
+      const snapshot = await load(lastPluginConfig);
       const skill = snapshotFindSkill(snapshot, opts.name);
       if (!skill) return null;
       return loadSkillContent(
@@ -1128,10 +1124,14 @@ export function createLocalSkillsServices(
   return {
     skillsManager,
     pluginsManager: {
-      async pluginsForConfig() {
-        const snapshot = await load();
+      async pluginsForConfig(config) {
+        const pluginSkillRoots = await discoverLoadedPluginSkillRoots({
+          agencHome: options.agencHome,
+          workspaceRoot: options.workspaceRoot,
+          config: pluginConfigView(config),
+        });
         return {
-          effectiveSkillRoots: () => snapshot.pluginSkillRoots,
+          effectiveSkillRoots: () => pluginSkillRoots,
         };
       },
     },
@@ -1147,6 +1147,25 @@ export function createLocalSkillsServices(
       },
     },
   };
+}
+
+function skillSnapshotCacheKey(
+  config: Pick<AgenCConfig, "plugins" | "enabledPlugins"> | undefined,
+  activePaths: ReadonlySet<string>,
+): string {
+  return JSON.stringify({
+    plugins: config?.plugins ?? null,
+    enabledPlugins: config?.enabledPlugins ?? null,
+    activePaths: [...activePaths].sort(),
+  });
+}
+
+function pluginConfigView(
+  config: unknown,
+): Pick<AgenCConfig, "plugins" | "enabledPlugins"> | undefined {
+  return typeof config === "object" && config !== null
+    ? config as Pick<AgenCConfig, "plugins" | "enabledPlugins">
+    : undefined;
 }
 
 export async function discoverDynamicSkillDirsForPaths(
@@ -1394,7 +1413,7 @@ Help the user build against AgenC runtime APIs or the configured model provider 
 
 ${args || "Ask which API surface and language they are using."}
 
-Prefer live local source and official provider docs. For OpenAI, xAI, Anthropic, or other provider-specific behavior, use the official docs for the selected provider and adapt examples to AgenC's provider configuration.`;
+Prefer live local source and official provider docs. For provider-specific behavior, use the official docs for the selected provider and adapt examples to AgenC's provider configuration.`;
 }
 
 const VERIFY_FILES = {

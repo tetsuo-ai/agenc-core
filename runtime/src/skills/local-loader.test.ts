@@ -286,6 +286,53 @@ All=$ARGUMENTS
     ]);
   });
 
+  it("loads configured plugin skills from per-call config and invalidates the snapshot", async () => {
+    const agencHome = tmpRoot("skills-home");
+    const workspaceRoot = tmpRoot("skills-workspace");
+    const configuredPlugin = join(workspaceRoot, "vendor", "configured");
+    writeSkill(join(configuredPlugin, "skills"), "configured-skill");
+
+    const services = createLocalSkillsServices({
+      agencHome,
+      workspaceRoot,
+      env: {},
+    });
+
+    const enabled = await services.skillsManager.skillsForConfig({
+      plugins: {
+        enabled: {
+          configured: { path: "vendor/configured" },
+        },
+      },
+    }, null);
+
+    expect(enabled.availableSkills?.map((skill) => skill.name)).toContain(
+      "configured-skill",
+    );
+    await expect(services.skillsManager.resolveSkill?.("configured-skill"))
+      .resolves.toMatchObject({ name: "configured-skill" });
+    await expect(services.skillsManager.renderSkill?.({
+      name: "configured-skill",
+      args: "",
+    })).resolves.toMatchObject({
+      skill: expect.objectContaining({ name: "configured-skill" }),
+    });
+
+    const disabled = await services.skillsManager.skillsForConfig({
+      plugins: {
+        enabled: {
+          configured: { path: "vendor/configured", enabled: false },
+        },
+      },
+    }, null);
+
+    expect(disabled.availableSkills?.map((skill) => skill.name)).not.toContain(
+      "configured-skill",
+    );
+    await expect(services.skillsManager.resolveSkill?.("configured-skill"))
+      .resolves.toBeNull();
+  });
+
   it("supports listing budgets and argument substitution", () => {
     expect(substituteArguments("Do $0 for $name via $ARGUMENTS", "one two", true, [
       "name",
