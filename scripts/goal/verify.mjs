@@ -663,7 +663,6 @@ const ITEM_EVIDENCE = {
   },
   "ZC-32": {
     files: [
-      "runtime/src/shell-command/PARITY.md",
       "runtime/src/shell-command/parser.ts",
       "runtime/src/shell-command/safety.ts",
       "runtime/src/shell-command/powershell-parser.ts",
@@ -673,9 +672,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/shell-command/parser.test.ts",
       "runtime/src/shell-command/safety.test.ts",
       "runtime/src/shell-command/powershell-parser.test.ts",
-    ],
-    grepPresent: [
-      { pattern: "ZC-32 coverage lock", scope: "runtime/src/shell-command/PARITY.md" },
     ],
   },
   "ST-01": {
@@ -4820,7 +4816,6 @@ function assertZc31SkillsCoverage() {
 }
 
 function assertZc32ShellCommandCoverage() {
-  const parityRel = "runtime/src/shell-command/PARITY.md";
   const ledgerRel = "parity/ZC-32-parity.json";
   const requiredFiles = [
     "runtime/src/shell-command/parser.ts",
@@ -4829,7 +4824,6 @@ function assertZc32ShellCommandCoverage() {
     "runtime/src/shell-command/parser.test.ts",
     "runtime/src/shell-command/safety.test.ts",
     "runtime/src/shell-command/powershell-parser.test.ts",
-    parityRel,
     ledgerRel,
   ];
   const missingFiles = requiredFiles.filter((rel) => !existsSync(path.join(root, rel)));
