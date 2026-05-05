@@ -79,6 +79,7 @@ node_modules/
 # Build artifacts (all packages)
 dist/
 **/dist/
+# ZC-38: keep package build outputs grep-discoverable and ignored.
 runtime/dist/
 web/dist/
 mcp/dist/

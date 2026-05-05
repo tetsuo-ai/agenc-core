@@ -1472,6 +1472,17 @@ const ITEM_EVIDENCE = {
     ],
     tests: ["runtime/src/test-parity/zc36-suite-coverage.test.ts"],
   },
+  "ZC-38": {
+    files: [".gitignore", "scripts/goal/verify.mjs"],
+    grepPresent: [
+      { pattern: "\\*\\*/dist/", scope: ".gitignore" },
+      { pattern: "runtime/dist/", scope: ".gitignore" },
+      { pattern: "web/dist/", scope: ".gitignore" },
+      { pattern: "mcp/dist/", scope: ".gitignore" },
+      { pattern: "!patches/\\*\\*/dist/", scope: ".gitignore" },
+      { pattern: "ZC-38: keep package build outputs", scope: ".gitignore" },
+    ],
+  },
 };
 
 function usage() {
@@ -5383,6 +5394,60 @@ function assertZc36TestFixtureParityCoverage() {
   pass("ZC-36: representative test/fixture parity coverage locked");
 }
 
+function assertZc38DistBuildArtifactsIgnored() {
+  const gitignorePath = path.join(root, ".gitignore");
+  if (!existsSync(gitignorePath)) failGate("ZC-38: .gitignore is missing.");
+  const gitignoreLines = readFileSync(gitignorePath, "utf8").split(/\r?\n/u);
+  const requiredRules = [
+    "dist/",
+    "**/dist/",
+    "runtime/dist/",
+    "web/dist/",
+    "mcp/dist/",
+    "!patches/**/dist/",
+  ];
+  const ruleIndexes = requiredRules.map((rule) => gitignoreLines.indexOf(rule));
+  const missingRules = requiredRules.filter((_, index) => ruleIndexes[index] === -1);
+  if (missingRules.length > 0) {
+    failGate(`ZC-38: .gitignore is missing required dist rule(s):\n  ${missingRules.join("\n  ")}`);
+  }
+  for (let i = 1; i < ruleIndexes.length; i += 1) {
+    if (ruleIndexes[i] <= ruleIndexes[i - 1]) {
+      failGate("ZC-38: .gitignore dist rules must keep package-specific locks below the generic dist rules and above the patches exception.");
+    }
+  }
+
+  for (const sentinel of [
+    "runtime/dist/.zc38-sentinel",
+    "web/dist/.zc38-sentinel",
+    "mcp/dist/.zc38-sentinel",
+  ]) {
+    const ignored = git("check-ignore", sentinel);
+    if (ignored.status !== 0) {
+      failGate(`ZC-38: ${sentinel} is not ignored by git.`);
+    }
+  }
+  const patchDist = git("check-ignore", "patches/example/dist/.zc38-sentinel");
+  if (patchDist.status === 0) {
+    failGate("ZC-38: patches/**/dist/ exception no longer works.");
+  }
+
+  const files = git("ls-files");
+  if (files.status !== 0) failGate("ZC-38: git ls-files failed while checking tracked build artifacts.");
+  const trackedBuildArtifacts = files.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((rel) => (rel.startsWith("dist/") || rel.includes("/dist/")) && !rel.startsWith("patches/"));
+  if (trackedBuildArtifacts.length > 0) {
+    failGate(
+      `ZC-38: tracked non-patches dist build artifact(s) found:\n  ${trackedBuildArtifacts.join("\n  ")}`,
+    );
+  }
+
+  pass("ZC-38: dist build artifacts are ignored and absent from tracked files");
+}
+
 function listSourceFiles(dir) {
   const out = [];
   for (const entry of readdirSync(dir)) {
@@ -5780,6 +5845,7 @@ async function cleanupGates(item) {
       "ZC-34": { custom: assertZc34AgentGraphStoreCoverage },
       "ZC-35": { custom: assertZc35OcCoverage },
       "ZC-36": { custom: assertZc36TestFixtureParityCoverage },
+      "ZC-38": { custom: assertZc38DistBuildArtifactsIgnored },
     };
     const expectations = zcMap[id];
     if (!expectations) {
