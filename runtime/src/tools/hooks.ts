@@ -287,6 +287,7 @@ export type PostToolUseHook = (input: {
   readonly tool: Tool;
   readonly args: Record<string, unknown>;
   readonly result: ToolDispatchResult;
+  readonly signal?: AbortSignal;
 }) => Promise<PostToolUseDecision> | PostToolUseDecision;
 
 /** Kinds of live-path attachments every hook pipeline can emit. */
@@ -327,6 +328,7 @@ export async function runPostToolUseHooks(
     readonly tool: Tool;
     readonly args: Record<string, unknown>;
     readonly result: ToolDispatchResult;
+    readonly signal?: AbortSignal;
   },
   onError?: (err: unknown, idx: number) => void,
   onTiming?: (record: HookTimingRecord) => void,
@@ -348,6 +350,7 @@ export async function runPostToolUseHooks(
         tool: base.tool,
         args: base.args,
         result,
+        ...(base.signal !== undefined ? { signal: base.signal } : {}),
       });
     } catch (err) {
       onError?.(err, i);

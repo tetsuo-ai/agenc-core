@@ -22,6 +22,7 @@ import type {
   SessionConfiguration,
   SessionTelemetry,
 } from "../session/turn-context.js";
+import type { AgenCConfig } from "../config/schema.js";
 import type {
   AnalyticsEventsClient,
   ExecPolicyManager,
@@ -61,6 +62,7 @@ import {
   registerSessionStartHook,
 } from "../llm/hooks/index.js";
 import { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
+import { createAutoFixPostToolHook } from "../services/autoFix/autoFixHook.js";
 import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
 import {
   evaluateStopHooks,
@@ -439,6 +441,18 @@ function createHooksService(): Hooks & {
   };
 }
 
+export function loadBootstrapHooks(opts: {
+  readonly hooksRuntime: Pick<ConfiguredHooksRuntime, "load">;
+  readonly hooksService: { readonly postToolUseHooks: PostToolUseHook[] };
+  readonly config: Pick<AgenCConfig, "hooks">;
+  readonly autoFixPostToolHook: PostToolUseHook;
+}): void {
+  opts.hooksRuntime.load(opts.config.hooks);
+  if (!opts.hooksService.postToolUseHooks.includes(opts.autoFixPostToolHook)) {
+    opts.hooksService.postToolUseHooks.push(opts.autoFixPostToolHook);
+  }
+}
+
 function createShellSnapshotTx(
   workspaceRoot: string,
   env: NodeJS.ProcessEnv,
@@ -543,10 +557,22 @@ export function buildBootstrapSessionServices(
     agencHome: opts.agencHome,
     shellPath: opts.env.SHELL ?? "/bin/sh",
   });
+  const autoFixPostToolHook = createAutoFixPostToolHook({
+    configSource: () => opts.configStore.current().autoFix,
+    cwd: opts.workspaceRoot,
+  });
   hooksRuntime.attachTarget(hooksService);
-  hooksRuntime.load(opts.configStore.current().hooks);
+  const loadHooks = (cfg: ReturnType<ConfigStore["current"]>): void => {
+    loadBootstrapHooks({
+      hooksRuntime,
+      hooksService,
+      config: cfg,
+      autoFixPostToolHook,
+    });
+  };
+  loadHooks(opts.configStore.current());
   const unsubscribeHooksConfig = opts.configStore.subscribe((cfg) => {
-    hooksRuntime.load(cfg.hooks);
+    loadHooks(cfg);
   });
 
   const services: SessionServices = {

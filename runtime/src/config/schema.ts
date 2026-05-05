@@ -417,6 +417,7 @@ export interface AgenCConfig {
   readonly voiceInput?: VoiceInputConfig;
   readonly tuiLayout?: TuiLayoutConfig;
   readonly telemetryOptIn?: boolean;
+  readonly autoFix?: unknown;
 
   // ── AgenC-specific additions ──────────────────────────────────────
   readonly agent?: AgentConfig;
@@ -477,6 +478,9 @@ export interface AgenCConfig {
  *   - editorMode       → see `EditorMode` above.
  *   - voiceInput       → see `VoiceInputConfig` above.
  *   - tuiLayout        → see `TuiLayoutConfig` above.
+ *
+ * Lit up by S-05:
+ *   - autoFix          → see `services/autoFix/autoFixConfig.ts`.
  *
  * Adding one of these to the schema means: (a) add it to
  * `KNOWN_CONFIG_KEYS`, (b) add a typed field to `AgenCConfig`, (c)
@@ -547,6 +551,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "voiceInput",
   "tuiLayout",
   "telemetryOptIn",
+  "autoFix",
   "agent",
   "toolBudget",
   "stream_watchdog_timeout_ms",

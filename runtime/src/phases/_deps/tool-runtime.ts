@@ -195,6 +195,7 @@ export type ToolStatus = "queued" | "executing" | "completed" | "yielded";
 export interface StreamingToolResult {
   readonly toolCall: LLMToolCall;
   readonly result: ToolDispatchResultLike;
+  readonly additionalContexts?: readonly string[];
   readonly status: "completed" | "synthetic_error";
   readonly durationMs: number;
 }
@@ -204,6 +205,7 @@ interface TrackedTool {
   readonly toolCall: LLMToolCall;
   status: ToolStatus;
   result?: ToolDispatchResultLike;
+  additionalContexts?: readonly string[];
   hasDispatched: boolean;
   /** When set, the tool was queued but never dispatched (abort-drain). */
   drainErrorMessage?: string;
@@ -258,6 +260,7 @@ interface LiveDispatchOptions {
   readonly onPermissionAuditError?: PermissionAuditErrorHandler;
   readonly agencHome?: string;
   readonly onHookError?: (phase: string, err: unknown, idx: number) => void;
+  readonly onHookAdditionalContext?: (contexts: readonly string[]) => void;
   readonly tracker?: unknown;
   readonly [extra: string]: unknown;
 }
@@ -554,6 +557,7 @@ export class StreamingToolExecutor {
       yield {
         toolCall: tool.toolCall,
         result: tool.result,
+        additionalContexts: tool.additionalContexts ?? [],
         status: tool.result.isError ? "synthetic_error" : "completed",
         durationMs: 0,
       };
@@ -579,6 +583,7 @@ export class StreamingToolExecutor {
         yield {
           toolCall: tool.toolCall,
           result,
+          additionalContexts: tool.additionalContexts ?? [],
           status: result.isError ? "synthetic_error" : "completed",
           durationMs: 0,
         };
@@ -597,6 +602,7 @@ export class StreamingToolExecutor {
         yield {
           toolCall: tool.toolCall,
           result: tool.result,
+          additionalContexts: tool.additionalContexts ?? [],
           status: tool.result.isError ? "synthetic_error" : "completed",
           durationMs: 0,
         };
@@ -657,6 +663,13 @@ export class StreamingToolExecutor {
           {
             ...this.liveToolDispatch.options,
             signal: this.abortSignal,
+            onHookAdditionalContext: (contexts: readonly string[]) => {
+              tool.additionalContexts = [
+                ...(tool.additionalContexts ?? []),
+                ...contexts,
+              ];
+              this.liveOptions?.onHookAdditionalContext?.(contexts);
+            },
           } as never,
         );
         return tool;
@@ -948,11 +961,14 @@ export class StreamingToolExecutor {
               isError: dispatchResult.isError === true,
               codeModeResult: dispatchResult.codeModeResult,
               contentItems: dispatchResult.contentItems,
+              metadata: dispatchResult.metadata,
             },
+            signal: this.abortSignal,
           },
           onHookError ? (err, idx) => onHookError("post", err, idx) : undefined,
         );
         finalResult = postResult.result;
+        tool.additionalContexts = postResult.additionalContexts;
       }
 
       tool.result = finalResult;

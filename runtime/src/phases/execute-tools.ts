@@ -56,6 +56,7 @@ import {
 import { resolveMaxToolUseConcurrency } from "./_deps/orchestration.js";
 import type { ToolDispatchResult } from "./_deps/tool-registry.js";
 import { emitError as emitErrorEvent } from "../session/event-log.js";
+import { emitWarning as emitWarningEvent } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { GuardianApprovalReviewer } from "../permissions/guardian/reviewer.js";
 import type { PermissionAuditEventInput } from "../permissions/permission-audit-log.js";
@@ -139,6 +140,32 @@ function toolResultUserRecord(
     toolName,
     content: toolResultContent(result),
   };
+}
+
+function appendHookAdditionalContexts(
+  state: TurnState,
+  session: Session,
+  contexts: ReadonlyArray<string>,
+): void {
+  for (const context of contexts) {
+    emitWarningEvent(
+      session.eventLog,
+      session.nextInternalSubId(),
+      "hook_additional_context",
+      context,
+    );
+    state.toolResults.push({
+      uuid: crypto.randomUUID(),
+      role: "user",
+      kind: "attachment",
+      content: context,
+    });
+    state.messages.push({
+      role: "user",
+      content: context,
+      runtimeOnly: { mergeBoundary: "user_context" },
+    });
+  }
 }
 
 function createNoopTracker() {
@@ -460,6 +487,7 @@ async function drainCompletedToolResults(
   ctx: TurnContext,
   session: Session,
   executor: StreamingToolExecutor,
+  additionalContexts: string[],
 ): Promise<void> {
   for (const completed of executor.getCompletedResults()) {
     recordCompletedToolCall(
@@ -469,6 +497,7 @@ async function drainCompletedToolResults(
       completed.toolCall,
       completed.result,
     );
+    additionalContexts.push(...(completed.additionalContexts ?? []));
   }
   await Promise.resolve();
 }
@@ -503,6 +532,7 @@ export async function executeTools(
   }
 
   const executor = ensureStreamingToolExecutor(state, ctx, session, signal);
+  const additionalContexts: string[] = [];
 
   // T7 gap #109: AGENC_MAX_TOOL_USE_CONCURRENCY env cap. We layer the
   // env cap on top of the executor by gating queue + dispatch: at
@@ -521,7 +551,13 @@ export async function executeTools(
     // Env-cap gate: if in-flight already equals the cap, wait for at
     // least one to complete before queueing the next.
     while (executor.inflightCount() >= envCap) {
-      await drainCompletedToolResults(state, ctx, session, executor);
+      await drainCompletedToolResults(
+        state,
+        ctx,
+        session,
+        executor,
+        additionalContexts,
+      );
       if (executor.inflightCount() < envCap) break;
       await new Promise<void>((resolve) => setTimeout(resolve, 1));
     }
@@ -535,9 +571,11 @@ export async function executeTools(
   // Signal the executor that no more tools will arrive; drain results.
   executor.close();
 
-  for await (const { toolCall, result } of executor.getRemainingResults()) {
+  for await (const { toolCall, result, additionalContexts: contexts } of executor.getRemainingResults()) {
     recordCompletedToolCall(state, ctx, session, toolCall, result);
+    additionalContexts.push(...(contexts ?? []));
   }
+  appendHookAdditionalContexts(state, session, additionalContexts);
 
   // Clear the executor from state so commit starts a fresh one next
   // iteration. Matches AgenC query.ts's per-iteration
