@@ -34,6 +34,14 @@ const MAX_YIELD_TIME_MS = 30_000;
 const DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS = 300_000;
 const DEFAULT_MAX_PROCESSES = 64;
 const DEFAULT_OUTPUT_BUFFER_CHARS = 1024 * 1024;
+const PTY_ARGV0_EXECVE_SCRIPT =
+  "const [program, argv0, ...args] = process.argv.slice(1);" +
+  "const execve = process.execve;" +
+  "if (typeof execve !== 'function') {" +
+  "console.error('PTY argv0 handoff requires process.execve support');" +
+  "process.exit(126);" +
+  "}" +
+  "execve(program, [argv0, ...args], process.env);";
 const require = createRequire(import.meta.url);
 
 type ExitState = {
@@ -132,6 +140,11 @@ function runtimeSandboxesCompatible(
       canonicalPermissionProfile(requested.permissionProfile) &&
     (active.agencLinuxSandboxExe ?? "") ===
       (requested.agencLinuxSandboxExe ?? "") &&
+    (active.preference ?? "require") === (requested.preference ?? "require") &&
+    (active.enforceManagedNetwork ?? false) ===
+      (requested.enforceManagedNetwork ?? false) &&
+    stableStringify(active.network ?? null) ===
+      stableStringify(requested.network ?? null) &&
     (active.useLegacyLandlock ?? false) ===
       (requested.useLegacyLandlock ?? false) &&
     (active.windowsSandboxLevel ?? "disabled") ===
@@ -165,6 +178,20 @@ function stableStringify(value: unknown): string {
     return `{${entries.join(",")}}`;
   }
   return JSON.stringify(value) ?? "undefined";
+}
+
+function commandForPtyArgv0(
+  program: string,
+  args: readonly string[],
+  argv0: string | undefined,
+): { readonly program: string; readonly args: readonly string[] } {
+  if (argv0 === undefined || argv0 === basename(program)) {
+    return { program, args };
+  }
+  return {
+    program: process.execPath,
+    args: ["-e", PTY_ARGV0_EXECVE_SCRIPT, program, argv0, ...args],
+  };
 }
 
 interface ProcessEntry {
@@ -555,19 +582,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     }
 
     if (params.tty) {
-      if (
-        params.argv0 !== undefined &&
-        params.argv0 !== basename(params.program)
-      ) {
-        throw new UnifiedExecError(
-          "create_process",
-          "restricted tty sessions cannot preserve sandbox launcher argv0",
-        );
-      }
       let processHandle: IPty;
       try {
         const pty = await this.loadPty();
-        processHandle = pty.spawn(params.program, [...params.args], {
+        const ptyCommand = commandForPtyArgv0(
+          params.program,
+          params.args,
+          params.argv0,
+        );
+        processHandle = pty.spawn(ptyCommand.program, [...ptyCommand.args], {
           name: "xterm-256color",
           cols: 80,
           rows: 24,

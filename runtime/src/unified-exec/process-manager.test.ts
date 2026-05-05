@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import {
   permissionProfileFromRuntimePermissions,
@@ -54,6 +54,63 @@ function ptyCompatibleSandboxManager(): Pick<SandboxManager, "selectInitial" | "
       networkSandboxPolicy: request.permissions.network,
     }),
   };
+}
+
+function installFakePty(
+  manager: UnifiedExecProcessManager,
+  onSpawn?: (
+    file: string,
+    args: readonly string[],
+    options: {
+      readonly cwd?: string;
+      readonly env?: Record<string, string>;
+    },
+  ) => void,
+): void {
+  (manager as unknown as {
+    loadPty: () => Promise<{
+      spawn(
+        file: string,
+        args: readonly string[],
+        options: {
+          readonly cwd?: string;
+          readonly env?: Record<string, string>;
+        },
+      ): {
+        readonly pid: number;
+        write(data: string): void;
+        resize(columns: number, rows: number): void;
+        kill(signal?: string): void;
+        onData(listener: (data: string) => void): { dispose(): void };
+        onExit(
+          listener: (event: {
+            readonly exitCode: number;
+            readonly signal?: number | string;
+          }) => void,
+        ): { dispose(): void };
+      };
+    }>;
+  }).loadPty = async () => ({
+    spawn(file, args, options) {
+      onSpawn?.(file, args, options);
+      let exitListener:
+        | ((event: { readonly exitCode: number; readonly signal?: number | string }) => void)
+        | null = null;
+      return {
+        pid: 4242,
+        write: vi.fn(),
+        resize: vi.fn(),
+        kill: vi.fn(() => {
+          exitListener?.({ exitCode: 143, signal: "SIGTERM" });
+        }),
+        onData: () => ({ dispose: vi.fn() }),
+        onExit: (listener) => {
+          exitListener = listener;
+          return { dispose: vi.fn() };
+        },
+      };
+    },
+  });
 }
 
 describe("UnifiedExecProcessManager", () => {
@@ -244,7 +301,7 @@ describe("UnifiedExecProcessManager", () => {
     10_000,
   );
 
-  test("rejects restricted PTY sessions when sandbox argv0 cannot be preserved", async () => {
+  test("preserves sandbox argv0 for restricted PTY sessions", async () => {
     const permissionProfile = permissionProfileFromRuntimePermissions(
       restrictedFileSystemPolicy(),
       "enabled",
@@ -253,9 +310,15 @@ describe("UnifiedExecProcessManager", () => {
       cwd: process.cwd(),
       sandboxManager: passthroughSandboxManager(),
     });
+    let spawned:
+      | { readonly file: string; readonly args: readonly string[] }
+      | undefined;
+    installFakePty(manager, (file, args) => {
+      spawned = { file, args };
+    });
 
-    await expect(
-      manager.execCommand({
+    try {
+      const started = await manager.execCommand({
         cmd: "bash -i",
         tty: true,
         yield_time_ms: 250,
@@ -264,10 +327,79 @@ describe("UnifiedExecProcessManager", () => {
           sandboxPolicyCwd: process.cwd(),
           preference: "require",
         },
-      }),
-    ).rejects.toMatchObject({
-      code: "create_process",
-    } satisfies Partial<UnifiedExecError>);
+      });
+
+      expect(started.process_id).toEqual(expect.any(Number));
+      expect(spawned?.file).toBe(process.execPath);
+      expect(spawned?.args[0]).toBe("-e");
+      expect(spawned?.args).toEqual(
+        expect.arrayContaining(["agenc-sandbox-test", "bash -i"]),
+      );
+    } finally {
+      await manager.closeAll("test_cleanup");
+    }
+  });
+
+  test("rejects write_stdin when sandbox-affecting fields differ", async () => {
+    const permissionProfile = permissionProfileFromRuntimePermissions(
+      restrictedFileSystemPolicy(),
+      "enabled",
+    );
+    const runtimeSandbox = {
+      permissionProfile,
+      sandboxPolicyCwd: process.cwd(),
+      preference: "require" as const,
+    };
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      sandboxManager: ptyCompatibleSandboxManager(),
+    });
+    installFakePty(manager);
+    try {
+      const started = await manager.execCommand({
+        cmd: "bash -i",
+        tty: true,
+        yield_time_ms: 250,
+        runtimeSandbox,
+      });
+      const sessionId = started.process_id!;
+
+      await expect(
+        manager.writeStdin({
+          session_id: sessionId,
+          chars: "",
+          yield_time_ms: 250,
+          runtimeSandbox: {
+            ...runtimeSandbox,
+            preference: "auto",
+          },
+        }),
+      ).rejects.toMatchObject({ code: "write_stdin" } satisfies Partial<UnifiedExecError>);
+      await expect(
+        manager.writeStdin({
+          session_id: sessionId,
+          chars: "",
+          yield_time_ms: 250,
+          runtimeSandbox: {
+            ...runtimeSandbox,
+            enforceManagedNetwork: true,
+          },
+        }),
+      ).rejects.toMatchObject({ code: "write_stdin" } satisfies Partial<UnifiedExecError>);
+      await expect(
+        manager.writeStdin({
+          session_id: sessionId,
+          chars: "",
+          yield_time_ms: 250,
+          runtimeSandbox: {
+            ...runtimeSandbox,
+            network: { env: { HTTP_PROXY: "http://127.0.0.1:9" } },
+          },
+        }),
+      ).rejects.toMatchObject({ code: "write_stdin" } satisfies Partial<UnifiedExecError>);
+    } finally {
+      await manager.closeAll("test_cleanup");
+    }
   });
 
   test.runIf(hasPtySupport)(
