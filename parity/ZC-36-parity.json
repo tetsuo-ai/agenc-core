@@ -5,6 +5,9 @@
   "sourceCommit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
   "sourceRootLabel": "rust runtime reference checkout",
   "targetRoot": "..",
+  "mergeResolutions": [
+    "The required main integration conflicted in scripts/goal/verify.mjs because main added the ZC-35 cleanup gate while this branch added the ZC-36 cleanup gate at the same map location. Resolution preserved main's ZC-35 entry and added the ZC-36 entry immediately after it."
+  ],
   "applyPatchFixtureCoverage": {
     "decision": "complete fixture corpus carried",
     "expectedScenarioDirectories": [

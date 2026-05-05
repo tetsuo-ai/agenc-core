@@ -55,3 +55,30 @@ Intentional reductions:
   LLM, state, and MCP modules rather than being duplicated under `runtime/src/conversation/`.
 - Out-of-band elicitation counters and remote thread-store plumbing are not added here because
   AgenC's protocol and daemon surfaces already own those user-visible contracts.
+
+## ZC-35 Coverage Lock
+
+Source anchor: `/home/tetsuo/git/openclaude` at commit
+`0ca43335375beec6e58711b797d5b0c4bb5019b8`,
+`src/utils/conversationRecovery.ts`.
+
+Decision: TypeScript transcript-resume recovery is carried through AgenC's
+rollout-backed thread recovery and bootstrap path, with source-shape reductions
+documented here instead of adding a second transcript loader.
+
+Carried behavior:
+- rollout-backed resume into live session state
+- root and child thread registration during bootstrap
+- initial resume-history recording with prior token and tool state
+- synthesized recovery events for orphaned rollout turns
+- `SessionStart` resume-source propagation through configured lifecycle hooks
+
+Intentional reductions:
+- arbitrary transcript-file resume, legacy attachment migration, and
+  skill-state restoration are not duplicated because AgenC resumes from indexed
+  rollout/state stores.
+- interrupted-prompt auto-continue sentinels are not carried into bootstrap;
+  turn recovery is owned by state replay and tool recovery categories.
+- the donor transcript-size cap is not copied because AgenC reconstructs resume
+  state from indexed rollout items rather than a single pre-REPL message
+  payload.
