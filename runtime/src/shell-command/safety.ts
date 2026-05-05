@@ -89,6 +89,19 @@ const POWERSHELL_REMOVE_ITEM_COMMANDS: ReadonlySet<string> = new Set([
   "rmdir",
 ]);
 
+const POWERSHELL_UNSAFE_COMMANDS: ReadonlySet<string> = new Set([
+  "set-content",
+  "add-content",
+  "out-file",
+  "new-item",
+  "move-item",
+  "copy-item",
+  "rename-item",
+  "start-process",
+  "stop-process",
+  ...POWERSHELL_REMOVE_ITEM_COMMANDS,
+]);
+
 const URL_LAUNCH_COMMANDS: ReadonlySet<string> = new Set([
   "start",
   "start-process",
@@ -103,7 +116,7 @@ const URL_LAUNCH_COMMANDS: ReadonlySet<string> = new Set([
   "msedge",
 ]);
 
-const URL_RE = /^https?:\/\//i;
+const URL_RE = /https?:\/\/[^\s"'`)]+/i;
 
 export function isKnownSafeCommand(
   command: readonly string[],
@@ -235,10 +248,11 @@ export function isDangerousPowerShellWords(words: readonly string[]): boolean {
   const commandName = normalizePowerShellCommandName(words[0]!);
   const args = words.slice(1);
 
-  if (POWERSHELL_REMOVE_ITEM_COMMANDS.has(commandName) && hasDashFlag(args, "force")) {
+  const joined = words.join(" ");
+  if (containsPowerShellForcedDelete(words)) {
     return true;
   }
-  if (URL_LAUNCH_COMMANDS.has(commandName) && containsUrl(args)) {
+  if (containsPowerShellUrlLaunch(words)) {
     return true;
   }
   if (
@@ -250,7 +264,7 @@ export function isDangerousPowerShellWords(words: readonly string[]): boolean {
     return true;
   }
   if (
-    words.some((word) => /shell\.application/i.test(word)) &&
+    /shell\.application/i.test(joined) &&
     containsUrl(words)
   ) {
     return true;
@@ -265,10 +279,13 @@ export function isSafePowerShellWords(words: readonly string[]): boolean {
     return false;
   }
   if (isDangerousPowerShellWords(words)) return false;
+  if (containsPowerShellCommand(words, POWERSHELL_UNSAFE_COMMANDS)) {
+    return false;
+  }
 
   const commandName = normalizePowerShellCommandName(words[0]!);
   if (POWERSHELL_READ_ONLY_COMMANDS.has(commandName)) return true;
-  if (commandName === "git") return isSafeGitCommand(words);
+  if (commandName === "git") return isSafeWindowsPowerShellGitCommand(words);
   if (commandName === "rg") return isSafeRipgrepCommand(words.slice(1));
   return false;
 }
@@ -389,6 +406,37 @@ function isSafeGitCommand(command: readonly string[]): boolean {
       return true;
     case "branch":
       return isSafeGitBranch(args);
+    default:
+      return false;
+  }
+}
+
+function isSafeWindowsPowerShellGitCommand(command: readonly string[]): boolean {
+  let i = 1;
+  while (i < command.length) {
+    const arg = command[i]!;
+    if (arg === "--") {
+      i++;
+      break;
+    }
+    if (!arg.startsWith("-")) break;
+    if (isUnsafeGitGlobalOption(arg)) return false;
+    i += gitGlobalOptionConsumesValue(arg) ? 2 : 1;
+  }
+
+  const subcommand = command[i]?.toLowerCase();
+  if (subcommand === undefined) return false;
+  const args = command.slice(i + 1);
+  if (hasGitOutputFlag(args)) return false;
+
+  switch (subcommand) {
+    case "status":
+    case "log":
+    case "diff":
+    case "show":
+    case "branch":
+    case "cat-file":
+      return subcommand === "branch" ? isSafeGitBranch(args) : true;
     default:
       return false;
   }
@@ -695,8 +743,41 @@ function containsUrl(args: readonly string[]): boolean {
 }
 
 function normalizePowerShellCommandName(value: string): string {
-  const name = executableBasename(value);
+  const name = executableBasename(
+    value
+      .replace(/^[\s("'`&]+/g, "")
+      .replace(/[\s)"'`,;]+$/g, "")
+      .split("(")[0] ?? value,
+  );
   return POWERSHELL_ALIAS_MAP.get(name) ?? name;
+}
+
+function containsPowerShellForcedDelete(words: readonly string[]): boolean {
+  return (
+    containsPowerShellCommand(words, POWERSHELL_REMOVE_ITEM_COMMANDS) &&
+    words.some((word) => hasDashFlag([normalizePowerShellToken(word)], "force"))
+  );
+}
+
+function containsPowerShellUrlLaunch(words: readonly string[]): boolean {
+  if (!containsUrl(words)) return false;
+  const joined = words.join(" ");
+  return (
+    containsPowerShellCommand(words, URL_LAUNCH_COMMANDS) ||
+    /(?:^|[\s(;])(?:start-process|saps|invoke-item|ii|mshta|explorer|iexplore|chrome|firefox|msedge)\s*\(/i.test(joined) ||
+    /(?:shellexecute|shell\.application|fileprotocolhandler)/i.test(joined)
+  );
+}
+
+function containsPowerShellCommand(
+  words: readonly string[],
+  commands: ReadonlySet<string>,
+): boolean {
+  return words.some((word) => commands.has(normalizePowerShellCommandName(word)));
+}
+
+function normalizePowerShellToken(value: string): string {
+  return value.replace(/^[\s("'`]+/g, "").replace(/[\s)"'`,;]+$/g, "");
 }
 
 function executableBasename(value: string): string {

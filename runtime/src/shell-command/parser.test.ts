@@ -114,6 +114,15 @@ describe("shell string parsing", () => {
     expect(
       parseShellLcSingleCommandPrefix(["bash", "-lc", "FOO=bar cat <<EOF"]),
     ).toBeNull();
+    expect(
+      parseShellLcSingleCommandPrefix(["bash", "-lc", "cat <<EOF && rm -rf /\nEOF"]),
+    ).toBeNull();
+    expect(
+      parseShellLcSingleCommandPrefix(["bash", "-lc", "cat <<EOF; rm -rf /\nEOF"]),
+    ).toBeNull();
+    expect(
+      parseShellLcSingleCommandPrefix(["bash", "-lc", "cat <<EOF | wc -l\nEOF"]),
+    ).toBeNull();
   });
 });
 

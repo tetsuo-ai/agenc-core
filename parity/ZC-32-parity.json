@@ -93,6 +93,7 @@
       "edgeCases": [
         "git branch is safe only for flag-only inspection forms",
         "git global and subcommand options that alter repository/config/helper lookup or execute helpers are rejected, including inline -C/-c, --super-prefix, --ext-diff, --textconv, --exec, and --paginate",
+        "Windows PowerShell git safety follows the Windows list: git cat-file is allowed, git ls-files is not auto-approved there",
         "sed is safe only for -n print-range scripts",
         "interpreter and package-manager commands from the older sandbox allowlist are no longer auto-approved"
       ],
@@ -144,6 +145,7 @@
         "missing PowerShell executable returns a failed outcome instead of throwing or approving",
         "dangerous Windows PowerShell detection finds -Command after pre-command flags such as -ExecutionPolicy, -Mta, -Sta, and unknown dash flags",
         "safe Windows PowerShell parsing rejects trailing argv after -Command and never executes caller-supplied PowerShell paths",
+        "nested or parenthesized PowerShell delete cmdlets with -Force and embedded URL launcher forms are classified dangerous",
         "URL launcher tests use the AgenC-owned domain",
         "non-Windows hosts do not approximate PowerShell safe auto-approval"
       ],

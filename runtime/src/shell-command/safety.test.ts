@@ -120,6 +120,26 @@ describe("Windows and PowerShell safety lists", () => {
   test("classifies literal PowerShell commands without dynamic constructs", () => {
     expect(isDangerousPowerShellWords(["Start-Process", "https://agenc.tech"]))
       .toBe(true);
+    expect(isDangerousPowerShellWords(["Start-Process('https://agenc.tech')"]))
+      .toBe(true);
+    expect(isDangerousPowerShellWords(['Invoke-Item("https://agenc.tech")']))
+      .toBe(true);
+    expect(isDangerousPowerShellWords(["ShellExecute", "https://agenc.tech"]))
+      .toBe(true);
+    expect(
+      isDangerousPowerShellWords([
+        "Write-Host",
+        "(Remove-Item",
+        "file.txt",
+        "-Force)",
+      ]),
+    ).toBe(true);
+    expect(isDangerousPowerShellWords(["Write-Host", "(ri", "file.txt", "-Force)"]))
+      .toBe(true);
+    expect(isDangerousPowerShellWords(["Write-Host", "(del", "file.txt", "-Force)"]))
+      .toBe(true);
+    expect(isDangerousPowerShellWords(["Write-Host", "(rmdir", "dir", "-Force)"]))
+      .toBe(true);
     expect(isDangerousPowerShellWords(["Remove-Item", "file.txt", "-Force"]))
       .toBe(true);
     expect(isSafePowerShellWords(["Get-ChildItem", "."])).toBe(true);
@@ -132,8 +152,19 @@ describe("Windows and PowerShell safety lists", () => {
     expect(isSafePowerShellWords(["rvpa", "."])).toBe(true);
     expect(isSafePowerShellWords(["select", "Name"])).toBe(true);
     expect(isSafePowerShellWords(["git", "status"])).toBe(true);
+    expect(isSafePowerShellWords(["git", "cat-file", "-p", "HEAD"])).toBe(true);
+    expect(isSafePowerShellWords(["git", "ls-files"])).toBe(false);
     expect(isSafePowerShellWords(["rg", "--search-zip", "needle"])).toBe(false);
     expect(isSafePowerShellWords(["Remove-Item", "file.txt"])).toBe(false);
+    expect(isSafePowerShellWords(["Write-Host", "Set-Content", "file.txt"])).toBe(false);
+    expect(isSafePowerShellWords(["Write-Host", "Add-Content", "file.txt"])).toBe(false);
+    expect(isSafePowerShellWords(["Write-Host", "Out-File", "file.txt"])).toBe(false);
+    expect(isSafePowerShellWords(["Write-Host", "New-Item", "file.txt"])).toBe(false);
+    expect(isSafePowerShellWords(["Write-Host", "Move-Item", "a", "b"])).toBe(false);
+    expect(isSafePowerShellWords(["Write-Host", "Copy-Item", "a", "b"])).toBe(false);
+    expect(isSafePowerShellWords(["Write-Host", "Rename-Item", "a", "b"])).toBe(false);
+    expect(isSafePowerShellWords(["Write-Host", "Start-Process", "tool"])).toBe(false);
+    expect(isSafePowerShellWords(["Write-Host", "Stop-Process", "123"])).toBe(false);
   });
 
   test("does not run user-supplied PowerShell executable paths for safe checks", () => {

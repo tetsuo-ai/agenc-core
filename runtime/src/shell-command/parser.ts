@@ -630,6 +630,7 @@ export function parseBashSingleCommandPrefix(
 
   const hereDoc = findTopLevelHereDocOperator(trimmed);
   if (hereDoc === null) return null;
+  if (hasTrailingHereDocConnector(trimmed, hereDoc)) return null;
   const prefix = trimmed.slice(0, hereDoc.index).trim();
   if (prefix.length === 0) return null;
   if (splitWordOnlyCommandSequence(prefix)?.length !== 1) return null;
@@ -676,6 +677,41 @@ function findTopLevelHereDocOperator(
     i++;
   }
   return null;
+}
+
+function hasTrailingHereDocConnector(
+  script: string,
+  hereDoc: { readonly index: number; readonly operator: "<<" | "<<<" },
+): boolean {
+  const lineEnd = script.indexOf("\n", hereDoc.index);
+  const redirectionLine = script.slice(
+    hereDoc.index + hereDoc.operator.length,
+    lineEnd === -1 ? script.length : lineEnd,
+  );
+  return containsTopLevelConnector(redirectionLine);
+}
+
+function containsTopLevelConnector(value: string): boolean {
+  let quote: "'" | "\"" | null = null;
+  for (let i = 0; i < value.length; i++) {
+    const c = value[i]!;
+    if (quote !== null) {
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === "'" || c === "\"") {
+      quote = c;
+      continue;
+    }
+    if (c === "\\" && i + 1 < value.length) {
+      i++;
+      continue;
+    }
+    const two = value.slice(i, i + 2);
+    if (two === "&&" || two === "||") return true;
+    if (c === ";" || c === "|" || c === "&") return true;
+  }
+  return false;
 }
 
 /**
