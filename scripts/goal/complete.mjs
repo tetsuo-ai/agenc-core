@@ -386,7 +386,7 @@ header("step 4.5 — main-ancestry guard (branch must contain main)");
       `complete.mjs.`,
     );
   }
-  pass(`branch ${expected} contains all of main (no integration debt)`);
+  ok(`branch ${expected} contains all of main (no integration debt)`);
 }
 
 // ---- step 5: switch to main + merge ------------------------------------
