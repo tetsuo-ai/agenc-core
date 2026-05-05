@@ -185,10 +185,18 @@ describe("network policy amendments", () => {
         "api.agenc.tech",
       ),
     ).toEqual({
-      protocol: "socks5-udp",
+      protocol: "socks5_udp",
       decision: "forbidden",
       justification: "Deny socks5_udp access to api.agenc.tech",
     });
+
+    expect(
+      execpolicyNetworkRuleAmendment(
+        review.amendment,
+        { host: "api.agenc.tech", protocol: "socks5-tcp" },
+        "api.agenc.tech",
+      ).protocol,
+    ).toBe("socks5_tcp");
   });
 
   test("allow amendments produce allow justifications", () => {

@@ -12,6 +12,11 @@ export type NetworkApprovalProtocol =
   | "https"
   | "socks5-tcp"
   | "socks5-udp";
+export type ExecPolicyNetworkRuleProtocol =
+  | "http"
+  | "https"
+  | "socks5_tcp"
+  | "socks5_udp";
 
 export interface NetworkPolicyDecisionPayload {
   readonly decision: NetworkPolicyDecision;
@@ -41,7 +46,7 @@ export interface BlockedRequest {
 }
 
 export interface ExecPolicyNetworkRuleAmendment {
-  readonly protocol: NetworkApprovalProtocol;
+  readonly protocol: ExecPolicyNetworkRuleProtocol;
   readonly decision: "allow" | "forbidden";
   readonly justification: string;
 }
@@ -163,11 +168,15 @@ export function execpolicyNetworkRuleAmendment(
 ): ExecPolicyNetworkRuleAmendment {
   const decision = amendment.action === "allow" ? "allow" : "forbidden";
   const actionVerb = amendment.action === "allow" ? "Allow" : "Deny";
+  const protocol = execPolicyProtocolFromApprovalProtocol(
+    networkApprovalContext.protocol,
+  );
+  const protocolLabel = protocolJustificationLabel(networkApprovalContext.protocol);
   return {
-    protocol: networkApprovalContext.protocol,
+    protocol,
     decision,
     justification:
-      `${actionVerb} ${protocolJustificationLabel(networkApprovalContext.protocol)} ` +
+      `${actionVerb} ${protocolLabel} ` +
       `access to ${host}`,
   };
 }
@@ -186,6 +195,21 @@ function deniedReasonDetail(reason: string): string {
       return "network proxy is disabled";
     default:
       return "request is blocked by network policy";
+  }
+}
+
+function execPolicyProtocolFromApprovalProtocol(
+  protocol: NetworkApprovalProtocol,
+): ExecPolicyNetworkRuleProtocol {
+  switch (protocol) {
+    case "http":
+      return "http";
+    case "https":
+      return "https";
+    case "socks5-tcp":
+      return "socks5_tcp";
+    case "socks5-udp":
+      return "socks5_udp";
   }
 }
 

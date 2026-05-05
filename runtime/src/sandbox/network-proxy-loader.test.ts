@@ -547,6 +547,14 @@ describe("exec-policy network rule projection", () => {
       ]),
     ).toThrow(/decision must be one of/);
   });
+
+  test("malformed bracketed exec-policy hosts throw", () => {
+    expect(() =>
+      applyExecPolicyNetworkRules(defaultNetworkProxyConfig(), [
+        { host: "[::1]bad", protocol: "http", decision: "allow" },
+      ]),
+    ).toThrow(/unsupported suffix/);
+  });
 });
 
 describe("host normalization", () => {

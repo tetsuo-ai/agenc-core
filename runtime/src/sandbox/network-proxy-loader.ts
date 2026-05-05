@@ -6,6 +6,11 @@ import type { EnvSnapshot } from "../config/env.js";
 import { resolveAgencHome } from "../config/env.js";
 import { readTextFile } from "../config/_deps/file-read.js";
 import { parseToml } from "../config/loader.js";
+import {
+  normalizeNetworkRuleHost,
+  parseNetworkRuleProtocol,
+  type NetworkRuleProtocol,
+} from "./execpolicy/rule.js";
 
 export type NetworkMode = "limited" | "full";
 export type NetworkDomainPermission = "none" | "allow" | "deny";
@@ -17,11 +22,7 @@ export type ConfigLayerSource =
   | "user"
   | "project"
   | "session_flags";
-export type ExecPolicyNetworkProtocol =
-  | "http"
-  | "https"
-  | "socks5-tcp"
-  | "socks5-udp";
+export type ExecPolicyNetworkProtocol = NetworkRuleProtocol;
 export type ExecPolicyNetworkDecision = "allow" | "forbidden" | "prompt";
 
 export interface NetworkDomainPermissionEntry {
@@ -982,24 +983,7 @@ function unixSocketAllowEntries(
 function parseExecPolicyNetworkProtocol(
   value: string,
 ): ExecPolicyNetworkProtocol {
-  switch (value) {
-    case "http":
-      return "http";
-    case "https":
-    case "https_connect":
-    case "http-connect":
-      return "https";
-    case "socks5-tcp":
-    case "socks5_tcp":
-      return "socks5-tcp";
-    case "socks5-udp":
-    case "socks5_udp":
-      return "socks5-udp";
-    default:
-      throw new Error(
-        `network rule protocol must be one of http, https, socks5_tcp, socks5_udp (got ${value})`,
-      );
-  }
+  return parseNetworkRuleProtocol(value);
 }
 
 function parseExecPolicyNetworkDecision(
@@ -1020,22 +1004,7 @@ function parseExecPolicyNetworkDecision(
 }
 
 function normalizeExecPolicyNetworkRuleHost(raw: string): string {
-  let host = raw.trim();
-  if (host.length === 0) {
-    throw new Error("network rule host cannot be empty");
-  }
-  if (host.includes("://") || /[/?#]/u.test(host)) {
-    throw new Error("network rule host must be a hostname or IP literal");
-  }
-  host = normalizeHost(host);
-  if (host.length === 0) throw new Error("network rule host cannot be empty");
-  if (host.includes("*")) {
-    throw new Error("network rule host must be a specific host");
-  }
-  if (/\s/u.test(host)) {
-    throw new Error("network rule host cannot contain whitespace");
-  }
-  return host;
+  return normalizeNetworkRuleHost(raw);
 }
 
 function parseDomainPattern(input: string): DomainPattern {

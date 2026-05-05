@@ -58,7 +58,7 @@
       "edgeCases": [
         "empty blocked host returns the generic blocked-by-policy message",
         "permission-layer network_policy_amendment values are accepted without a second canonical amendment type",
-        "socks5 UDP justifications use the socks5_udp label"
+        "socks5 TCP and UDP amendments return exec-policy underscore protocol strings and justifications"
       ],
       "tests": [
         "runtime/src/sandbox/network-policy.test.ts"
@@ -128,6 +128,7 @@
         "exact deny blocks wildcard allow",
         "wildcard deny blocks exact allow",
         "malformed domain glob patterns fail closed during config-state construction",
+        "malformed bracketed explicit exec-policy hosts reject unsupported suffixes before host normalization",
         "http allow plus socks5 deny projects to host denied in the domain-only config projection",
         "prompt rules neither allow nor deny and do not erase existing host-protocol rules"
       ],
