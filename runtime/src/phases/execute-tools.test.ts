@@ -1371,7 +1371,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
       kind: "continue",
       hookPermissionResult: {
         behavior: "allow",
-        updatedInput: { redacted: true },
+        updatedInput: { redacted: true, file_path: "src/redacted.txt" },
         hookName: "PreToolUse:test",
       },
     });
@@ -1437,7 +1437,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     const call: LLMToolCall = {
       id: "c-allow",
       name: "Write",
-      arguments: "{}",
+      arguments: JSON.stringify({ file_path: "src/allowed.txt" }),
     };
     const state = mkState({ toolCalls: [call] });
 

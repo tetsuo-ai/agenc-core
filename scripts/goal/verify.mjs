@@ -957,7 +957,24 @@ const ITEM_EVIDENCE = {
     tests: [{ globUnder: "runtime/src", matching: /tool-registry.*\.test\.tsx?$/ }],
   },
   "TL-21": {
-    files: [{ globUnder: "runtime/src/tools/runtimes", matching: /\.tsx?$/, minCount: 1 }],
+    files: [
+      "runtime/src/tools/runtimes/context.ts",
+      "runtime/src/tools/runtimes/parallel.ts",
+      "runtime/src/tools/runtimes/sandboxing.ts",
+      "runtime/src/tools/runtimes/PARITY.md",
+      "parity/tool-runtimes-split-parity.json",
+    ],
+    grepPresent: [
+      { pattern: "buildToolRuntimeAttemptContext", scope: "runtime/src/tools/router.ts" },
+      { pattern: "executeToolDispatch", scope: "runtime/src/tools/router.ts" },
+      { pattern: "enforceRuntimeSandboxAttempt", scope: "runtime/src/tools/execution.ts" },
+      { pattern: "ToolRuntimeScheduler|runToolRuntimeCall", scope: "runtime/src/tools/streaming-executor.ts" },
+      { pattern: "createToolExecutionRuntime", scope: "runtime/src/phases/execute-tools.ts" },
+    ],
+    tests: [
+      "runtime/src/tools/runtimes/runtime.test.ts",
+      "runtime/src/phases/execute-tools.test.ts",
+    ],
   },
   "TL-22": {
     files: [{ globUnder: "runtime/src/agents/v2", matching: /\.tsx?$/, minCount: 2 }],

@@ -123,7 +123,7 @@ export function enforceRuntimeSandboxAttempt(
       `sandbox ${policy.kind} could not verify write targets for ${input.tool.name}`,
       {
         denial: "filesystem",
-        target: input.tool.name,
+        target: writes.targets[0] ?? input.tool.name,
         policy,
       },
     );
@@ -161,9 +161,10 @@ function analyzeWrites(
 ): WriteAnalysis {
   const shell = shellWriteAnalysis(tool, args, cwd);
   if (shell !== null) return shell;
+  const targets = writeTargets(args, cwd);
   return {
-    targets: writeTargets(args, cwd),
-    indeterminate: false,
+    targets,
+    indeterminate: targets.length === 0,
     knownSafeWhenTargetless: false,
   };
 }
@@ -203,10 +204,13 @@ function shellWriteAnalysis(
     },
     workspaceRoot: cwd,
   });
+  const knownReadOnly = isShellCommandKnownReadOnly(command);
   return {
     targets: decision.observedTargets,
-    indeterminate: decision.indeterminate,
-    knownSafeWhenTargetless: true,
+    indeterminate:
+      decision.indeterminate ||
+      (decision.observedTargets.length === 0 && !knownReadOnly),
+    knownSafeWhenTargetless: knownReadOnly,
   };
 }
 
@@ -218,7 +222,6 @@ function runtimeCwd(context: ToolRuntimeAttemptContext): string {
 function toolMayMutate(tool: Tool): boolean {
   if (tool.isReadOnly === true) return false;
   if (tool.metadata?.mutating === true) return true;
-  if (tool.requiresApproval === true) return true;
   if (
     tool.recoveryCategory === "side-effecting" ||
     tool.recoveryCategory === "interactive"
@@ -246,32 +249,167 @@ const SHELL_TOOL_NAMES = new Set([
   "write_stdin",
 ]);
 
+const READ_ONLY_SHELL_COMMANDS = new Set([
+  "awk",
+  "basename",
+  "cat",
+  "cut",
+  "dirname",
+  "find",
+  "grep",
+  "head",
+  "ls",
+  "pwd",
+  "rg",
+  "sed",
+  "sort",
+  "stat",
+  "tail",
+  "test",
+  "true",
+  "uniq",
+  "wc",
+]);
+
+const READ_ONLY_GIT_SUBCOMMANDS = new Set([
+  "branch",
+  "diff",
+  "log",
+  "merge-base",
+  "rev-parse",
+  "show",
+  "status",
+]);
+
 const WRITE_PATH_ARG_KEYS = new Set([
-  "cwd",
+  "dest",
+  "destination",
+  "dir",
+  "directory",
   "file_path",
+  "filepath",
   "filename",
+  "file_name",
   "path",
-  "workdir",
+  "target",
+  "target_path",
+  "targetpath",
+  "new_path",
+  "newpath",
+  "old_path",
+  "oldpath",
+  "output",
+  "output_path",
+  "outputpath",
 ]);
 
 function writeTargets(
   args: Record<string, unknown>,
   cwd: string,
 ): readonly string[] {
-  const targets: string[] = [];
-  for (const [key, value] of Object.entries(args)) {
-    if (WRITE_PATH_ARG_KEYS.has(key) && typeof value === "string") {
-      targets.push(resolveTarget(value, cwd));
-    } else if (
-      (key === "paths" || key === "file_paths") &&
-      Array.isArray(value)
-    ) {
-      for (const entry of value) {
-        if (typeof entry === "string") targets.push(resolveTarget(entry, cwd));
-      }
+  const targets = new Set<string>();
+  const baseCwd = argWorkingDirectory(args, cwd);
+  collectWriteTargets(args, baseCwd, undefined, targets);
+  return [...targets];
+}
+
+function collectWriteTargets(
+  value: unknown,
+  cwd: string,
+  key: string | undefined,
+  targets: Set<string>,
+): void {
+  if (typeof value === "string") {
+    if (key !== undefined && isWritePathArgKey(key)) {
+      targets.add(resolveTarget(value, cwd));
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectWriteTargets(entry, cwd, key, targets);
+    }
+    return;
+  }
+  if (value === null || typeof value !== "object") return;
+  for (const [childKey, childValue] of Object.entries(value)) {
+    collectWriteTargets(childValue, cwd, childKey, targets);
+  }
+}
+
+function argWorkingDirectory(
+  args: Record<string, unknown>,
+  cwd: string,
+): string {
+  const value = typeof args["workdir"] === "string"
+    ? args["workdir"]
+    : typeof args["cwd"] === "string"
+      ? args["cwd"]
+      : undefined;
+  return value === undefined ? cwd : resolveTarget(value, cwd);
+}
+
+function isWritePathArgKey(key: string): boolean {
+  const normalized = key.replace(/[-_]/g, "").toLowerCase();
+  return WRITE_PATH_ARG_KEYS.has(normalized) || normalized.endsWith("path");
+}
+
+function isShellCommandKnownReadOnly(command: string): boolean {
+  const segments = tokenizeShellLike(command);
+  return segments.length > 0 && segments.every(isShellSegmentKnownReadOnly);
+}
+
+function isShellSegmentKnownReadOnly(segment: readonly string[]): boolean {
+  const command = shellSegmentCommand(segment);
+  if (command === undefined) return true;
+  const basename = path.basename(command);
+  if (basename === "git") {
+    const subcommand = gitSubcommand(segment);
+    return subcommand !== undefined && READ_ONLY_GIT_SUBCOMMANDS.has(subcommand);
+  }
+  return READ_ONLY_SHELL_COMMANDS.has(basename);
+}
+
+function tokenizeShellLike(command: string): string[][] {
+  const segments: string[][] = [];
+  let current: string[] = [];
+  for (const token of command.split(/\s+/).filter(Boolean)) {
+    if (token === "&&" || token === "||" || token === ";" || token === "|") {
+      segments.push(current);
+      current = [];
+      continue;
+    }
+    current.push(token);
+  }
+  segments.push(current);
+  return segments.filter((segment) => segment.length > 0);
+}
+
+function shellSegmentCommand(segment: readonly string[]): string | undefined {
+  let index = 0;
+  while (index < segment.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(segment[index] ?? "")) {
+    index += 1;
+  }
+  if (segment[index] === "env") {
+    index += 1;
+    while (index < segment.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(segment[index] ?? "")) {
+      index += 1;
     }
   }
-  return targets;
+  if (segment[index] === "command" || segment[index] === "builtin") {
+    index += 1;
+  }
+  return segment[index];
+}
+
+function gitSubcommand(segment: readonly string[]): string | undefined {
+  const gitIndex = segment.findIndex((token) => path.basename(token) === "git");
+  if (gitIndex < 0) return undefined;
+  for (const token of segment.slice(gitIndex + 1)) {
+    if (token.startsWith("-")) continue;
+    return token;
+  }
+  return undefined;
 }
 
 function resolveTarget(value: string, cwd: string): string {

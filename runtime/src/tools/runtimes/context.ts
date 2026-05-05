@@ -50,7 +50,7 @@ export function runtimeKindForPayload(payload: ToolPayload): ToolRuntimeKind {
 }
 
 export function buildToolRuntimeCallContext(params: {
-  readonly toolCall: LLMToolCall;
+  readonly toolCall: Pick<LLMToolCall, "id" | "name">;
   readonly payload: ToolPayload;
   readonly tool: Tool;
   readonly args: Record<string, unknown>;

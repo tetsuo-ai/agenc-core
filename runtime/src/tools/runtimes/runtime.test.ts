@@ -223,6 +223,38 @@ describe("tools/runtimes", () => {
       }),
     ).toThrow(/workspace_write blocked/);
 
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "workspace_write",
+          sandboxMode: "workspace_write",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation,
+        },
+        tool: mutatingTool,
+        args: { destination: { path: "src/nested-file.txt" } },
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "workspace_write",
+          sandboxMode: "workspace_write",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation,
+        },
+        tool: mutatingTool,
+        args: { contents: "no target arg" },
+      }),
+    ).toThrow(/could not verify write targets/);
+
     const shellTool: Tool = {
       name: "exec_command",
       description: "",
@@ -277,6 +309,54 @@ describe("tools/runtimes", () => {
         args: { cmd: "echo blocked > /etc/agenc-outside" },
       }),
     ).toThrow(/workspace_write blocked/);
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "workspace_write",
+          sandboxMode: "workspace_write",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation,
+        },
+        tool: shellTool,
+        args: { cmd: "echo allowed > src/generated.txt" },
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "read_only",
+          sandboxMode: "read_only",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation,
+        },
+        tool: shellTool,
+        args: { cmd: "node -e \"require('fs').writeFileSync('/etc/agenc-outside','x')\"" },
+      }),
+    ).toThrow(/could not verify write targets/);
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "workspace_write",
+          sandboxMode: "workspace_write",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation,
+        },
+        tool: shellTool,
+        args: { cmd: "python -c \"open('/etc/agenc-outside', 'w').write('x')\"" },
+      }),
+    ).toThrow(/could not verify write targets/);
   });
 
   test("router injects selected sandbox attempt context without breaking schemas", async () => {
@@ -409,5 +489,114 @@ describe("tools/runtimes", () => {
     expect(result.content).toBe("danger_full_access");
     expect(executedSandboxMode).toBe("danger_full_access");
     expect(approvals).toBe(1);
+  });
+
+  test("direct dispatch uses runtime context and sandbox enforcement", async () => {
+    let executed = false;
+    const tool: Tool = {
+      name: "Write",
+      description: "",
+      inputSchema: {
+        type: "object",
+        properties: { file_path: { type: "string" } },
+        required: ["file_path"],
+        additionalProperties: false,
+      },
+      metadata: { mutating: true },
+      execute: async () => {
+        executed = true;
+        return { content: "not reached" };
+      },
+    };
+    const router = new ToolRouter([
+      { tool, supportsParallelToolCalls: false },
+    ]);
+
+    const result = await router.dispatchToolCall(
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: {
+          subId: "turn-direct-runtime",
+          cwd: "/repo",
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "workspace_write" },
+        } as never,
+        tracker: tracker() as never,
+        callId: "call-direct-runtime",
+        toolName: { name: "Write" },
+        payload: { kind: "function", arguments: '{"file_path":"/etc/passwd"}' },
+        source: "direct",
+      },
+      { file_path: "/etc/passwd" },
+      { sandboxMode: "workspace_write" },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("workspace_write blocked");
+    expect(executed).toBe(false);
+  });
+
+  test("code-mode dispatch carries runtime source and selected sandbox", async () => {
+    let observedSource: string | undefined;
+    let observedSandboxMode: string | undefined;
+    const tool: Tool = {
+      name: "js_repl",
+      description: "",
+      inputSchema: {
+        type: "object",
+        properties: { code: { type: "string" } },
+        required: ["code"],
+        additionalProperties: false,
+      },
+      isReadOnly: true,
+      execute: async (args) => {
+        const context = readToolRuntimeContext(args);
+        observedSource = context?.source;
+        observedSandboxMode = context?.sandboxMode;
+        return {
+          content: JSON.stringify({
+            source: context?.source,
+            sandboxMode: context?.sandboxMode,
+          }),
+        };
+      },
+    };
+    const router = new ToolRouter([
+      { tool, supportsParallelToolCalls: true },
+    ]);
+
+    const result = await router.dispatchToolCallWithCodeMode(
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: {
+          subId: "turn-code-mode-runtime",
+          cwd: "/repo",
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "read_only" },
+        } as never,
+        tracker: tracker() as never,
+        callId: "call-code-mode-runtime",
+        toolName: { name: "js_repl" },
+        payload: { kind: "function", arguments: '{"code":"1+1"}' },
+        source: "direct",
+      },
+      { code: "1+1" },
+      "code_mode",
+      { sandboxMode: "read_only" },
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(observedSource).toBe("code_mode");
+    expect(observedSandboxMode).toBe("read_only");
+    expect(JSON.parse(result.content)).toEqual({
+      source: "code_mode",
+      sandboxMode: "read_only",
+    });
   });
 });

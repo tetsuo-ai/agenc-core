@@ -510,10 +510,34 @@ export class ToolRouter {
           permissionAlreadyAllowed = true;
         }
       }
+      const effectiveApprovalPolicy = permissionAlreadyAllowed
+        ? "never"
+        : forcedApprovalReason !== undefined
+          ? "untrusted"
+          : opts.approvalPolicy ?? directDispatchApprovalPolicy(invocation);
+      const requestedSandboxMode =
+        opts.sandboxMode ?? directDispatchSandboxMode(invocation);
+      const executionPayload = buildPayloadForArgs(invocation.payload, executionArgs);
+      const executionInvocation: ToolInvocation = {
+        ...invocation,
+        payload: executionPayload,
+      };
+      const executionRawArgs = JSON.stringify(executionArgs);
+      const runtimeCallContext = buildToolRuntimeCallContext({
+        toolCall: {
+          id: invocation.callId,
+          name: nameDisplay(invocation.toolName),
+        },
+        payload: executionPayload,
+        tool: spec.tool,
+        args: executionArgs,
+        source: invocation.source,
+        supportsParallelToolCalls: spec.supportsParallelToolCalls,
+      });
       return await orchestrateToolCall({
         tool: spec.tool,
         approvalCtx: {
-          invocation,
+          invocation: executionInvocation,
           callId: invocation.callId,
           toolName: nameDisplay(invocation.toolName),
           turnId: directDispatchTurnId(invocation),
@@ -523,13 +547,9 @@ export class ToolRouter {
           ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
         },
         ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
-        approvalPolicy: permissionAlreadyAllowed
-          ? "never"
-          : forcedApprovalReason !== undefined
-            ? "untrusted"
-            : opts.approvalPolicy ?? directDispatchApprovalPolicy(invocation),
-        sandboxMode: opts.sandboxMode ?? directDispatchSandboxMode(invocation),
-        payload: invocation.payload,
+        approvalPolicy: effectiveApprovalPolicy,
+        sandboxMode: requestedSandboxMode,
+        payload: executionPayload,
         approvalArgs: executionArgs,
         ...(opts.granular !== undefined ? { granular: opts.granular } : {}),
         ...(opts.permissionHooks !== undefined
@@ -552,15 +572,35 @@ export class ToolRouter {
           : {}),
         ...(opts.toolAllowlist !== undefined ? { toolAllowlist: opts.toolAllowlist } : {}),
         ...(opts.toolDenylist !== undefined ? { toolDenylist: opts.toolDenylist } : {}),
-        dispatch: async () => {
-          const result = await spec.tool.execute(executionArgs);
-          return {
-            content: result.content,
-            isError: result.isError,
-            codeModeResult: result.codeModeResult,
-            contentItems: result.contentItems,
-            metadata: result.metadata,
-          };
+        dispatch: async (sandbox, dispatchContext) => {
+          const runtimeAttemptContext = buildToolRuntimeAttemptContext(
+            runtimeCallContext,
+            {
+              approvalPolicy: effectiveApprovalPolicy,
+              requestedSandboxMode,
+              sandboxMode: sandbox,
+              approvalResolved: dispatchContext.approvalResolved,
+              rawArgs: executionRawArgs,
+              invocation: executionInvocation,
+            },
+          );
+          return executeToolDispatch({
+            rawArgs: executionRawArgs,
+            ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+            currentTurnId: directDispatchTurnId(invocation),
+            eventLog: invocation.session.eventLog,
+            subId: invocation.callId,
+            tool: spec.tool,
+            invocation: executionInvocation,
+            approvalAlreadyResolved: dispatchContext.approvalResolved,
+            runtimeAttemptContext,
+            ...(opts.permissionAuditLogger !== undefined
+              ? { permissionAuditLogger: opts.permissionAuditLogger }
+              : {}),
+            ...(opts.onPermissionAuditError !== undefined
+              ? { onPermissionAuditError: opts.onPermissionAuditError }
+              : {}),
+          });
         },
       });
     } catch (err) {
@@ -595,7 +635,7 @@ export class ToolRouter {
         isError: true,
       };
     }
-    return this.dispatchToolCall(invocation, args, opts);
+    return this.dispatchToolCall({ ...invocation, source }, args, opts);
   }
 
   async dispatchModelToolCall(

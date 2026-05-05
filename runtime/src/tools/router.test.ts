@@ -921,7 +921,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       {
         id: "call-auto-approved",
         name: "Write",
-        arguments: "{}",
+        arguments: JSON.stringify({ file_path: "src/auto-approved.txt" }),
       },
       {
         session: {

@@ -18,7 +18,7 @@ Source commit: `c8c30d9d75556ecbe94991af22380d2a4e9d6589`
 
 - `parallel.rs` -> `parallel.ts` plus the existing `runtime/src/tools/concurrency.ts` guard implementation.
 - `sandboxing.rs` -> `sandboxing.ts`, `context.ts`, and the existing `runtime/src/tools/orchestrator.ts` approval/escalation flow.
-- `runtimes/mod.rs` -> `index.ts`, `context.ts`, and `sandboxing.ts`.
+- `runtimes/mod.rs` -> `context.ts`, `parallel.ts`, and `sandboxing.ts`; TL-21 intentionally has no re-export-only `index.ts`.
 - `runtimes/{shell,unified_exec,apply_patch}.rs` -> existing AgenC tool handlers under `runtime/src/tools/system/` and `runtime/src/tools/apply-patch/`, now receiving per-attempt runtime context from this item instead of being duplicated under `tools/runtimes`.
 - `orchestrator.rs`, `router.rs`, `registry.rs`, `events.rs`, and `context.rs` were already represented in AgenC-owned tool modules before TL-21. This item stitches the runtime split into those live modules rather than copying duplicate versions into this directory.
 - `handlers/*` remains mapped to the existing AgenC tool handler families (`system`, `apply-patch`, `tasks`, `ask-user-question`, model-facing registry tools). TL-21 does not relocate every handler because the item scope is the orchestrator/runtimes split, not a handler directory move.
