@@ -195,7 +195,7 @@ export function normalizeNetworkRuleHost(raw: string): string {
     }
   }
 
-  const normalized = host.trim().replace(/\.+$/u, "").trim().toLowerCase();
+  const normalized = toAsciiLowercase(host.trim().replace(/\.+$/u, "").trim());
   if (normalized.length === 0) {
     throw invalidRule("network_rule host cannot be empty");
   }
@@ -315,6 +315,10 @@ function countChar(value: string, needle: string): number {
 
 function isAsciiDigit(char: string): boolean {
   return char >= "0" && char <= "9";
+}
+
+function toAsciiLowercase(raw: string): string {
+  return raw.replace(/[A-Z]/gu, (char) => char.toLowerCase());
 }
 
 export function attachValidationLocation(

@@ -85,6 +85,7 @@
       "requiredBehaviors": [
         "parse prefix_rule, network_rule, and host_executable calls",
         "parse strings, nested lists, comments, whitespace, and trailing commas",
+        "parse top-level assignments, identifier references, string/list + expressions, parenthesized expressions, positional arguments, and simple f-string substitutions from string variables",
         "validate match and not_match examples at parse time",
         "carry source locations on parse and validation failures"
       ],
@@ -92,6 +93,7 @@
         "empty patterns are rejected",
         "empty string examples are rejected",
         "unknown policy builtins are rejected",
+        "unsupported general Starlark statements remain outside the AgenC parser boundary and are rejected",
         "negative examples fail when any rule matches them",
         "the carried example corpus parses and evaluates representative commands"
       ],
@@ -123,6 +125,7 @@
       ],
       "edgeCases": [
         "wildcard hosts are rejected",
+        "host and Windows executable lookup lowercasing is ASCII-only",
         "bracketed IPv6 hosts with ports normalize to the literal",
         "explicit empty host executable allowlists block basename fallback",
         "exact absolute-path prefix rules take precedence over host executable resolution"

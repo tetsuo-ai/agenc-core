@@ -31,8 +31,15 @@ type DslValue = string | DslValue[];
 
 interface CallStatement {
   readonly name: string;
+  readonly positionalArgs: readonly DslValue[];
   readonly args: ReadonlyMap<string, DslValue>;
   readonly location: ErrorLocation;
+}
+
+interface ParserPosition {
+  readonly offset: number;
+  readonly line: number;
+  readonly column: number;
 }
 
 interface PendingExampleValidation {
@@ -149,7 +156,14 @@ export class PolicyParser {
     }
   }
 
-  private applyPrefixRule(statement: CallStatement): void {
+  private applyPrefixRule(rawStatement: CallStatement): void {
+    const statement = bindPositionalArgs(rawStatement, [
+      "pattern",
+      "decision",
+      "match",
+      "not_match",
+      "justification",
+    ]);
     assertAllowedArgs(statement, ["pattern", "decision", "justification", "match", "not_match"]);
     const decision = optionalStringArg(statement, "decision", null);
     const parsedDecision = decision === null ? "allow" : parseDecision(decision);
@@ -184,7 +198,13 @@ export class PolicyParser {
     }
   }
 
-  private applyNetworkRule(statement: CallStatement): void {
+  private applyNetworkRule(rawStatement: CallStatement): void {
+    const statement = bindPositionalArgs(rawStatement, [
+      "host",
+      "protocol",
+      "decision",
+      "justification",
+    ]);
     assertAllowedArgs(statement, ["host", "protocol", "decision", "justification"]);
     const host = normalizeNetworkRuleHost(requiredStringArg(statement, "host"));
     const protocol = parseNetworkRuleProtocol(requiredStringArg(statement, "protocol"));
@@ -199,7 +219,8 @@ export class PolicyParser {
     });
   }
 
-  private applyHostExecutable(statement: CallStatement): void {
+  private applyHostExecutable(rawStatement: CallStatement): void {
+    const statement = bindPositionalArgs(rawStatement, ["name", "paths"]);
     assertAllowedArgs(statement, ["name", "paths"]);
     const name = requiredStringArg(statement, "name");
     assertBareExecutableName(name);
@@ -218,6 +239,32 @@ export class PolicyParser {
   }
 }
 
+function bindPositionalArgs(
+  statement: CallStatement,
+  positionalNames: readonly string[],
+): CallStatement {
+  if (statement.positionalArgs.length > positionalNames.length) {
+    throw invalidRule(
+      `${statement.name} got ${statement.positionalArgs.length} positional arguments; expected at most ${positionalNames.length}`,
+    );
+  }
+  const args = new Map(statement.args);
+  for (let index = 0; index < statement.positionalArgs.length; index += 1) {
+    const name = positionalNames[index];
+    if (name === undefined) continue;
+    if (args.has(name)) {
+      throw invalidRule(`${statement.name} got multiple values for argument ${name}`);
+    }
+    const value = statement.positionalArgs[index];
+    if (value !== undefined) args.set(name, cloneDslValue(value));
+  }
+  return {
+    ...statement,
+    positionalArgs: [],
+    args,
+  };
+}
+
 function assertAllowedArgs(statement: CallStatement, allowed: readonly string[]): void {
   const allowedSet = new Set(allowed);
   for (const key of statement.args.keys()) {
@@ -225,6 +272,10 @@ function assertAllowedArgs(statement: CallStatement, allowed: readonly string[])
       throw invalidRule(`${statement.name} got unexpected argument ${key}`);
     }
   }
+}
+
+function cloneDslValue(value: DslValue): DslValue {
+  return typeof value === "string" ? value : value.map(cloneDslValue);
 }
 
 function parsePattern(value: DslValue): PatternToken[] {
@@ -402,6 +453,7 @@ class DeclarativePolicyParser {
   private offset = 0;
   private line = 1;
   private column = 1;
+  private readonly variables = new Map<string, DslValue>();
 
   constructor(
     private readonly policyIdentifier: string,
@@ -413,26 +465,56 @@ class DeclarativePolicyParser {
     while (true) {
       this.skipTrivia();
       if (this.eof()) return statements;
-      statements.push(this.parseCallStatement());
+      const statement = this.parseTopLevelStatement();
+      if (statement !== null) statements.push(statement);
     }
   }
 
-  private parseCallStatement(): CallStatement {
+  private parseTopLevelStatement(): CallStatement | null {
     const start = this.position();
     const name = this.parseIdentifier();
     this.skipTrivia();
+    if (this.consume("=")) {
+      this.variables.set(name, cloneDslValue(this.parseExpression()));
+      return null;
+    }
     this.expect("(");
+    return this.parseCallStatement(name, start);
+  }
+
+  private parseCallStatement(name: string, start: TextPosition): CallStatement {
     const args = new Map<string, DslValue>();
+    const positionalArgs: DslValue[] = [];
+    let sawNamedArg = false;
     this.skipTrivia();
     while (!this.consume(")")) {
-      const key = this.parseIdentifier();
-      this.skipTrivia();
-      this.expect("=");
-      this.skipTrivia();
-      if (args.has(key)) {
-        throw this.error(`duplicate argument ${key}`);
+      const checkpoint = this.snapshot();
+      const first = this.peek();
+      if (first !== null && isIdentifierStart(first)) {
+        const key = this.parseIdentifier();
+        this.skipTrivia();
+        if (this.consume("=")) {
+          sawNamedArg = true;
+          this.skipTrivia();
+          if (args.has(key)) {
+            throw this.error(`duplicate argument ${key}`);
+          }
+          args.set(key, this.parseExpression());
+          this.skipTrivia();
+          if (this.consume(",")) {
+            this.skipTrivia();
+            continue;
+          }
+          this.expect(")");
+          break;
+        }
       }
-      args.set(key, this.parseValue());
+
+      if (sawNamedArg) {
+        throw this.error("positional argument cannot follow keyword argument");
+      }
+      this.restore(checkpoint);
+      positionalArgs.push(this.parseExpression());
       this.skipTrivia();
       if (this.consume(",")) {
         this.skipTrivia();
@@ -444,6 +526,7 @@ class DeclarativePolicyParser {
     const end = this.position();
     return {
       name,
+      positionalArgs,
       args,
       location: {
         path: this.policyIdentifier,
@@ -452,12 +535,48 @@ class DeclarativePolicyParser {
     };
   }
 
-  private parseValue(): DslValue {
+  private parseExpression(): DslValue {
+    let left = this.parseTerm();
+    while (true) {
+      this.skipTrivia();
+      if (!this.consume("+")) return left;
+      const right = this.parseTerm();
+      left = this.addValues(left, right);
+    }
+  }
+
+  private parseTerm(): DslValue {
     this.skipTrivia();
     const char = this.peek();
+    if ((char === "f" || char === "F") && (this.peekNext() === "\"" || this.peekNext() === "'")) {
+      return this.parseFString();
+    }
     if (char === "\"" || char === "'") return this.parseString();
     if (char === "[") return this.parseList();
-    throw this.error("expected string or list value");
+    if (char === "(") {
+      this.advance();
+      const value = this.parseExpression();
+      this.skipTrivia();
+      this.expect(")");
+      return value;
+    }
+    if (char !== null && isIdentifierStart(char)) {
+      const name = this.parseIdentifier();
+      const value = this.variables.get(name);
+      if (value === undefined) {
+        throw this.error(`unknown policy variable ${name}`);
+      }
+      return cloneDslValue(value);
+    }
+    throw this.error("expected string, list, or expression value");
+  }
+
+  private addValues(left: DslValue, right: DslValue): DslValue {
+    if (typeof left === "string" && typeof right === "string") return left + right;
+    if (Array.isArray(left) && Array.isArray(right)) {
+      return [...left.map(cloneDslValue), ...right.map(cloneDslValue)];
+    }
+    throw this.error("operator + requires two strings or two lists");
   }
 
   private parseList(): DslValue[] {
@@ -465,7 +584,7 @@ class DeclarativePolicyParser {
     const values: DslValue[] = [];
     this.skipTrivia();
     while (!this.consume("]")) {
-      values.push(this.parseValue());
+      values.push(this.parseExpression());
       this.skipTrivia();
       if (this.consume(",")) {
         this.skipTrivia();
@@ -519,6 +638,92 @@ class DeclarativePolicyParser {
     throw this.error("unterminated string");
   }
 
+  private parseFString(): string {
+    this.advance();
+    const quote = this.peek();
+    if (quote !== "\"" && quote !== "'") throw this.error("expected f-string");
+    this.advance();
+    let out = "";
+    while (!this.eof()) {
+      const char = this.advance();
+      if (char === quote) return out;
+      if (char === "\n" || char === "\r") {
+        throw this.error("raw newline in string literal");
+      }
+      if (char === "{") {
+        if (this.peek() === "{") {
+          this.advance();
+          out += "{";
+          continue;
+        }
+        out += this.parseFStringReplacement();
+        continue;
+      }
+      if (char === "}") {
+        if (this.peek() === "}") {
+          this.advance();
+          out += "}";
+          continue;
+        }
+        throw this.error("single `}` is not allowed in f-string literal");
+      }
+      if (char === "\\") {
+        const escaped = this.advance();
+        if (escaped === "\n" || escaped === "\r") {
+          throw this.error("raw newline in string literal");
+        }
+        switch (escaped) {
+          case "n":
+            out += "\n";
+            break;
+          case "r":
+            out += "\r";
+            break;
+          case "t":
+            out += "\t";
+            break;
+          case "\\":
+          case "\"":
+          case "'":
+            out += escaped;
+            break;
+          default:
+            out += escaped;
+            break;
+        }
+        continue;
+      }
+      out += char;
+    }
+    throw this.error("unterminated string");
+  }
+
+  private parseFStringReplacement(): string {
+    let expression = "";
+    while (!this.eof()) {
+      const char = this.advance();
+      if (char === "}") {
+        const name = expression.trim();
+        if (!isIdentifier(name)) {
+          throw this.error("f-string replacement must be a string variable");
+        }
+        const value = this.variables.get(name);
+        if (value === undefined) {
+          throw this.error(`unknown policy variable ${name}`);
+        }
+        if (typeof value !== "string") {
+          throw this.error(`f-string replacement ${name} must be a string`);
+        }
+        return value;
+      }
+      if (char === "\n" || char === "\r") {
+        throw this.error("raw newline in string literal");
+      }
+      expression += char;
+    }
+    throw this.error("unterminated f-string replacement");
+  }
+
   private parseIdentifier(): string {
     this.skipTrivia();
     const start = this.offset;
@@ -562,8 +767,27 @@ class DeclarativePolicyParser {
     }
   }
 
+  private snapshot(): ParserPosition {
+    return {
+      offset: this.offset,
+      line: this.line,
+      column: this.column,
+    };
+  }
+
+  private restore(position: ParserPosition): void {
+    this.offset = position.offset;
+    this.line = position.line;
+    this.column = position.column;
+  }
+
   private peek(): string | null {
     return this.eof() ? null : this.source[this.offset] ?? null;
+  }
+
+  private peekNext(): string | null {
+    const nextOffset = this.offset + 1;
+    return nextOffset >= this.source.length ? null : this.source[nextOffset] ?? null;
   }
 
   private advance(): string {
@@ -597,4 +821,12 @@ class DeclarativePolicyParser {
       },
     });
   }
+}
+
+function isIdentifierStart(char: string): boolean {
+  return /[A-Za-z_]/u.test(char);
+}
+
+function isIdentifier(value: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/u.test(value);
 }

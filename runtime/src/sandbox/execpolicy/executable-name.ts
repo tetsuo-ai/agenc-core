@@ -4,8 +4,11 @@ const WINDOWS_EXECUTABLE_SUFFIXES = [".exe", ".cmd", ".bat", ".com"] as const;
 
 export function executableLookupKey(raw: string): string {
   if (process.platform !== "win32") return raw;
+  return windowsExecutableLookupKey(raw);
+}
 
-  const lower = raw.toLowerCase();
+export function windowsExecutableLookupKey(raw: string): string {
+  const lower = toAsciiLowercase(raw);
   for (const suffix of WINDOWS_EXECUTABLE_SUFFIXES) {
     if (lower.endsWith(suffix)) {
       return lower.slice(0, -suffix.length);
@@ -20,4 +23,8 @@ export function executablePathLookupKey(rawPath: string): string | null {
     return null;
   }
   return executableLookupKey(basename);
+}
+
+function toAsciiLowercase(raw: string): string {
+  return raw.replace(/[A-Z]/gu, (char) => char.toLowerCase());
 }

@@ -31,4 +31,5 @@ This directory owns AgenC's TypeScript port of the execpolicy command-pattern en
 - `examples/example.agencpolicy` carries the donor example corpus with the AgenC policy filename.
 
 Shape difference:
-- AgenC uses a dedicated declarative parser for the policy builtins instead of embedding a general Starlark runtime. The accepted policy surface is the executable policy DSL in the source corpus: function calls, keyword arguments, strings, lists, comments, and trailing commas.
+- AgenC uses a dedicated policy parser for the executable policy builtins instead of embedding a general Starlark runtime. The accepted policy surface covers the source corpus plus common Starlark-style conveniences used to build those calls: top-level assignments, identifier references, string/list `+`, parenthesized expressions, positional and keyword builtin arguments, comments, trailing commas, and simple f-string substitutions from string variables.
+- General Starlark execution is intentionally outside this item boundary: user-defined functions, control flow, comprehensions, imports, and arbitrary standard globals are rejected as unsupported syntax. The parser tests include both accepted computed-policy forms and the unsupported boundary.

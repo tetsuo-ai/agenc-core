@@ -15,11 +15,13 @@ import {
   blockingAppendNetworkRule,
   formatMatchesJson,
   loadPolicies,
+  normalizeNetworkRuleHost,
   parseExecPolicyArgv,
   parsePolicy,
   type Decision,
   type Evaluation,
 } from "./index.js";
+import { windowsExecutableLookupKey } from "./executable-name.js";
 
 function tokens(command: readonly string[]): string[] {
   return [...command];
@@ -84,6 +86,7 @@ network_rule(host = "127.0.0.1", protocol = "socks5_tcp", decision = "prompt")
     expect(policy.networkRules()).toHaveLength(6);
     expect(policy.networkRules()[1]?.protocol).toBe("https");
     expect(policy.networkRules()[2]?.host).toBe("::1");
+    expect(normalizeNetworkRuleHost("MÜNICH.")).toBe("mÜnich");
     expect(policy.compiledNetworkDomains()).toEqual([
       ["127.0.0.1", "localhost"],
       ["::1"],
@@ -235,6 +238,43 @@ prefix_rule(pattern = ["npm", ["i", "install"], ["--legacy-peer-deps", "--no-sav
           },
         ],
       });
+  });
+
+  test("parses Starlark-style variables, expressions, positional args, and f-strings", () => {
+    const gitPath = hostAbsolutePath(["usr", "bin", hostExecutableName("git")]);
+    const escapedGitPath = escapedPolicyString(gitPath);
+    const policy = parsePolicy(
+      "computed.agencpolicy",
+      `
+verb = "stat" + "us"
+base = ["git"]
+tail = [f"{verb}", "--short"]
+prefix_rule(base + tail, "prompt", justification = "computed rule")
+network_host = "LOCALHOST"
+network_rule(network_host, "http", "allow")
+git_path = "${escapedGitPath}"
+host_executable("git", [git_path])
+`,
+    );
+
+    expect(policy.check(tokens(["git", "status", "--short"]), allowAll)).toEqual({
+      decision: "prompt",
+      matchedRules: [
+        {
+          type: "prefix_rule_match",
+          matchedPrefix: tokens(["git", "status", "--short"]),
+          decision: "prompt",
+          resolvedProgram: null,
+          justification: "computed rule",
+        },
+      ],
+    });
+    expect(policy.networkRules()[0]).toMatchObject({
+      host: "localhost",
+      protocol: "http",
+      decision: "allow",
+    });
+    expect(policy.hostExecutables().get("git")).toEqual([gitPath]);
   });
 
   test("match and not_match examples validate at parse time", () => {
@@ -395,6 +435,11 @@ host_executable(
         ]))}"])`,
       ),
     ).toThrow(/must have basename/u);
+  });
+
+  test("Windows executable lookup parity lowercases ASCII only", () => {
+    expect(windowsExecutableLookupKey("TÜLIP.EXE")).toBe("tÜlip");
+    expect(windowsExecutableLookupKey("Git.CMD")).toBe("git");
   });
 
   test("host executable last definition wins", () => {
@@ -616,6 +661,20 @@ host_executable(name = "git", paths = [])
         ['prefix_rule(pattern = ["git', 'status"])'].join("\n"),
       ),
     ).toThrow(/raw newline in string literal/u);
+  });
+
+  test("parser rejects unsupported general Starlark statements", () => {
+    expect(() =>
+      parsePolicy(
+        "bad.agencpolicy",
+        `
+def make_pattern():
+  return ["git"]
+
+prefix_rule(make_pattern())
+`,
+      ),
+    ).toThrow(/expected `\(`/u);
   });
 
   test("parse errors carry source locations", () => {
