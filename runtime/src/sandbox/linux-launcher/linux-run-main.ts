@@ -1,0 +1,375 @@
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import {
+  createBwrapCommandArgs,
+  insertInnerCommandArgv0,
+  type BwrapNetworkMode,
+} from "./bwrap.js";
+import {
+  parseLinuxSandboxLauncherArgs,
+  type LinuxSandboxLauncherOptions,
+} from "./cli.js";
+import { LINUX_SANDBOX_ARG0, SECCOMP_STDIN_FD } from "./config.js";
+import {
+  networkSeccompMode,
+  shouldInstallNetworkSeccomp,
+} from "./landlock.js";
+import {
+  preferredBubblewrapLauncher,
+  spawnBubblewrap,
+  type BubblewrapLauncher,
+} from "./launcher.js";
+import {
+  activateProxyRoutesInNetns,
+  prepareHostProxyRoutes,
+} from "./proxy-routing.js";
+import {
+  type FileSystemSandboxPolicy,
+  permissionProfileToRuntimePermissions,
+} from "../engine/index.js";
+
+const ACTIVE_INNER_ENV = "AGENC_LINUX_SANDBOX_ACTIVE";
+
+export interface LinuxSandboxRunDeps {
+  readonly env?: NodeJS.ProcessEnv;
+  readonly argv?: readonly string[];
+  readonly selfCommand?: readonly string[];
+  readonly preferredLauncher?: () => BubblewrapLauncher | null;
+  readonly onStderr?: (line: string) => void;
+}
+
+export async function runLinuxSandboxMain(
+  argv: readonly string[] = process.argv.slice(2),
+  deps: LinuxSandboxRunDeps = {},
+): Promise<number> {
+  try {
+    const options = parseLinuxSandboxLauncherArgs(argv);
+    return await runLinuxSandboxOptions(options, deps);
+  } catch (error) {
+    deps.onStderr?.(error instanceof Error ? error.message : String(error));
+    return 2;
+  }
+}
+
+export async function runLinuxSandboxOptions(
+  options: LinuxSandboxLauncherOptions,
+  deps: LinuxSandboxRunDeps = {},
+): Promise<number> {
+  if (options.useLegacyLandlock) {
+    throw new Error(
+      "legacy Landlock mode is unavailable in the TypeScript launcher; use bubblewrap mode",
+    );
+  }
+  if (options.applySeccompThenExec) {
+    const env = deps.env ?? process.env;
+    if (env[ACTIVE_INNER_ENV] !== "1") {
+      throw new Error("inner Linux sandbox stage must run inside bubblewrap");
+    }
+    const activatedProxy = options.allowNetworkForProxy
+      ? await activateProxyRoutesInNetns(requireProxyRouteSpec(options.proxyRouteSpec), env)
+      : null;
+    try {
+      return await runCommandWithSupervision(options.command, {
+        cwd: options.commandCwd,
+        env: activatedProxy?.env ?? env,
+        argv0: LINUX_SANDBOX_ARG0,
+      });
+    } finally {
+      activatedProxy?.cleanup();
+    }
+  }
+
+  const env = deps.env ?? process.env;
+  const { fileSystem, network } =
+    permissionProfileToRuntimePermissions(options.permissionProfile);
+  const preparedProxy = options.allowNetworkForProxy
+    ? await prepareHostProxyRoutes(env)
+    : null;
+  const selfCommand = deps.selfCommand ?? defaultSelfCommand();
+  const innerCommand = createInnerLauncherCommand(
+    options,
+    selfCommand,
+    preparedProxy?.serializedSpec ?? null,
+  );
+  const extraBindRoots = [
+    ...inferredInnerLauncherBindRoots(selfCommand),
+    ...(preparedProxy === null ? [] : [preparedProxy.socketDir]),
+  ];
+  const proxyRoutedNetwork = options.allowNetworkForProxy;
+  const seccompMode = networkSeccompMode(
+    network,
+    options.allowNetworkForProxy,
+    proxyRoutedNetwork,
+  );
+  const bwrapSeccompMode = options.allowNetworkForProxy ? null : seccompMode;
+  const networkMode = bwrapNetworkMode(network, options.allowNetworkForProxy);
+  try {
+    let bwrapArgs = createBwrapCommandArgs(
+      innerCommand,
+      fileSystem,
+      options.sandboxPolicyCwd,
+      options.commandCwd,
+      {
+        mountProc: options.mountProc,
+        networkMode,
+        ...(bwrapSeccompMode !== null ? { seccompFd: SECCOMP_STDIN_FD } : {}),
+        extraBindRoots,
+      },
+    );
+    if (!bwrapArgs.usesBubblewrap) {
+      return await runCommandWithSupervision(options.command, {
+        cwd: options.commandCwd,
+        env,
+        argv0: LINUX_SANDBOX_ARG0,
+      });
+    }
+    const launcher = (deps.preferredLauncher ?? preferredBubblewrapLauncher)();
+    if (launcher === null) {
+      throw new Error(
+        "AgenC could not find bubblewrap on PATH; install bubblewrap or configure agenc-linux-sandbox to a valid helper",
+      );
+    }
+    if (
+      options.mountProc &&
+      !preflightProcMountSupport({
+        launcher,
+        fileSystem,
+        sandboxPolicyCwd: options.sandboxPolicyCwd,
+        commandCwd: options.commandCwd,
+        networkMode,
+      })
+    ) {
+      bwrapArgs = createBwrapCommandArgs(
+        innerCommand,
+        fileSystem,
+        options.sandboxPolicyCwd,
+        options.commandCwd,
+        {
+          mountProc: false,
+          networkMode,
+          ...(bwrapSeccompMode !== null ? { seccompFd: SECCOMP_STDIN_FD } : {}),
+          extraBindRoots,
+        },
+      );
+    }
+    const finalArgs = insertInnerCommandArgv0(
+      bwrapArgs.args,
+      launcher.supportsArgv0,
+      selfCommand[0] ?? process.execPath,
+    );
+    const protectedMonitor = startProtectedCreateMonitor(
+      bwrapArgs.protectedCreateTargets,
+    );
+    const spawned = spawnBubblewrap(launcher, finalArgs, {
+      cwd: options.commandCwd,
+      env: { ...env, [ACTIVE_INNER_ENV]: "1" },
+      stdio: "inherit",
+      ...(bwrapSeccompMode !== null ? { seccompMode: bwrapSeccompMode } : {}),
+    });
+    try {
+      return await waitForChild(spawned.child);
+    } finally {
+      protectedMonitor.stop();
+      spawned.cleanup();
+    }
+  } finally {
+    preparedProxy?.cleanup();
+  }
+}
+
+function createInnerLauncherCommand(
+  options: LinuxSandboxLauncherOptions,
+  selfCommand: readonly string[],
+  proxyRouteSpec: string | null,
+): string[] {
+  return [
+    ...selfCommand,
+    "--apply-seccomp-then-exec",
+    "--sandbox-policy-cwd",
+    options.sandboxPolicyCwd,
+    "--command-cwd",
+    options.commandCwd,
+    "--permission-profile",
+    JSON.stringify(options.permissionProfile),
+    ...(options.mountProc ? [] : ["--no-proc"]),
+    ...(options.allowNetworkForProxy ? ["--allow-network-for-proxy"] : []),
+    ...(proxyRouteSpec === null ? [] : ["--proxy-route-spec", proxyRouteSpec]),
+    "--",
+    ...options.command,
+  ];
+}
+
+function defaultSelfCommand(): readonly string[] {
+  return [
+    process.execPath,
+    fileURLToPath(new URL("./main.js", import.meta.url)),
+  ];
+}
+
+function inferredInnerLauncherBindRoots(selfCommand: readonly string[]): string[] {
+  const roots = new Set<string>();
+  for (const arg of selfCommand) {
+    if (!path.isAbsolute(arg) || !fs.existsSync(arg)) continue;
+    const distRoot = runtimeDistRootForPath(arg);
+    if (distRoot !== null) {
+      roots.add(distRoot);
+      continue;
+    }
+    const stat = fs.statSync(arg);
+    roots.add(stat.isDirectory() ? arg : path.dirname(arg));
+  }
+  return [...roots];
+}
+
+function runtimeDistRootForPath(filePath: string): string | null {
+  const normalized = path.normalize(filePath);
+  const marker = `${path.sep}dist${path.sep}`;
+  const index = normalized.lastIndexOf(marker);
+  if (index === -1) return null;
+  return normalized.slice(0, index + marker.length - 1);
+}
+
+function requireProxyRouteSpec(value: string | null): string {
+  if (value === null || value.trim().length === 0) {
+    throw new Error("managed proxy inner stage is missing a proxy route spec");
+  }
+  return value;
+}
+
+export function bwrapNetworkMode(
+  network: "enabled" | "disabled" | "restricted",
+  allowNetworkForProxy: boolean,
+): BwrapNetworkMode {
+  if (allowNetworkForProxy) return "proxy-only";
+  return network === "enabled" ? "full-access" : "isolated";
+}
+
+export function needsBwrapSeccomp(
+  network: "enabled" | "disabled" | "restricted",
+  allowNetworkForProxy: boolean,
+): boolean {
+  return !allowNetworkForProxy && shouldInstallNetworkSeccomp(network, false);
+}
+
+export async function runCommandWithSupervision(
+  command: readonly string[],
+  options: {
+    readonly cwd: string;
+    readonly env: NodeJS.ProcessEnv;
+    readonly argv0: string;
+  },
+): Promise<number> {
+  const [program, ...args] = command;
+  if (program === undefined) {
+    throw new Error("Linux sandbox command is missing");
+  }
+  const child = spawn(program, args, {
+    cwd: options.cwd,
+    env: options.env,
+    stdio: "inherit",
+    argv0: options.argv0,
+  });
+  return await waitForChildWithSignalRelay(child);
+}
+
+export function waitForChildWithSignalRelay(child: ChildProcess): Promise<number> {
+  const relays = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const;
+  const listeners = relays.map((signal) => {
+    const listener = () => child.kill(signal);
+    process.once(signal, listener);
+    return { signal, listener };
+  });
+  return waitForChild(child).finally(() => {
+    for (const { signal, listener } of listeners) {
+      process.off(signal, listener);
+    }
+  });
+}
+
+export function waitForChild(child: ChildProcess): Promise<number> {
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (typeof code === "number") {
+        resolve(code);
+        return;
+      }
+      resolve(signalExitCode(signal));
+    });
+  });
+}
+
+function signalExitCode(signal: NodeJS.Signals | null): number {
+  switch (signal) {
+    case "SIGINT":
+      return 130;
+    case "SIGTERM":
+      return 143;
+    case "SIGHUP":
+      return 129;
+    case "SIGQUIT":
+      return 131;
+    default:
+      return 1;
+  }
+}
+
+function preflightProcMountSupport(options: {
+  readonly launcher: BubblewrapLauncher;
+  readonly fileSystem: FileSystemSandboxPolicy;
+  readonly sandboxPolicyCwd: string;
+  readonly commandCwd: string;
+  readonly networkMode: BwrapNetworkMode;
+}): boolean {
+  const args = createBwrapCommandArgs(
+    [resolveTrueCommand()],
+    options.fileSystem,
+    options.sandboxPolicyCwd,
+    options.commandCwd,
+    {
+      mountProc: true,
+      networkMode: options.networkMode,
+    },
+  );
+  if (!args.usesBubblewrap) return true;
+  const output = spawnSync(options.launcher.program, args.args, {
+    cwd: options.commandCwd,
+    encoding: "utf8",
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  return output.status === 0 || !isProcMountFailure(output.stderr ?? "");
+}
+
+function resolveTrueCommand(): string {
+  return "/bin/true";
+}
+
+function isProcMountFailure(stderr: string): boolean {
+  return /proc|permission denied|operation not permitted|not permitted/i.test(stderr);
+}
+
+function startProtectedCreateMonitor(
+  targets: readonly string[],
+): { readonly stop: () => void } {
+  if (targets.length === 0) return { stop() {} };
+  const cleanup = () => {
+    for (const target of targets) {
+      try {
+        fs.rmSync(target, { recursive: true, force: true });
+      } catch {
+        // Best-effort cleanup for protected metadata created during launch.
+      }
+    }
+  };
+  cleanup();
+  const interval = setInterval(cleanup, 100);
+  return {
+    stop() {
+      clearInterval(interval);
+      cleanup();
+    },
+  };
+}

@@ -6,7 +6,7 @@
  * Cut 6.2 of the AgenC runtime refactor (TODO.MD).
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
@@ -15,6 +15,8 @@ import { fileURLToPath } from "node:url";
 const runtimeDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const distDir = path.join(runtimeDir, "dist");
 const versionPath = path.join(distDir, "VERSION");
+const policySourceDir = path.join(runtimeDir, "src/sandbox/engine/policies");
+const linuxLauncherPolicyDir = path.join(distDir, "sandbox/linux-launcher/policies");
 
 function tryGitRevParse() {
   const result = spawnSync("git", ["rev-parse", "HEAD"], {
@@ -44,6 +46,10 @@ function readRuntimePackageVersion() {
 async function main() {
   if (!existsSync(distDir)) {
     mkdirSync(distDir, { recursive: true });
+  }
+  if (existsSync(policySourceDir)) {
+    mkdirSync(linuxLauncherPolicyDir, { recursive: true });
+    cpSync(policySourceDir, linuxLauncherPolicyDir, { recursive: true });
   }
 
   const commit = process.env.AGENC_BUILD_COMMIT ?? tryGitRevParse() ?? "unknown";

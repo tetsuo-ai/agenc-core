@@ -1,0 +1,288 @@
+import net from "node:net";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { AGENC_PROXY_SOCKET_DIR_PREFIX } from "./config.js";
+
+export interface ProxyRoute {
+  readonly envKey: string;
+  readonly host: string;
+  readonly port: number;
+}
+
+export interface ProxyRoutePlan {
+  readonly hasProxyConfig: boolean;
+  readonly routes: readonly ProxyRoute[];
+}
+
+export interface PreparedProxyRouteSpec {
+  readonly socketDir: string;
+  readonly routes: readonly {
+    readonly envKey: string;
+    readonly udsPath: string;
+  }[];
+}
+
+export interface PreparedProxyRoutes {
+  readonly spec: PreparedProxyRouteSpec;
+  readonly serializedSpec: string;
+  readonly socketDir: string;
+  cleanup(): void;
+}
+
+export interface ActivatedProxyRoutes {
+  readonly env: NodeJS.ProcessEnv;
+  cleanup(): void;
+}
+
+const PROXY_ENV_KEYS = new Set([
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "all_proxy",
+]);
+
+export function isProxyEnvKey(key: string): boolean {
+  return PROXY_ENV_KEYS.has(key);
+}
+
+export function planProxyRoutes(env: NodeJS.ProcessEnv): ProxyRoutePlan {
+  let hasProxyConfig = false;
+  const routes: ProxyRoute[] = [];
+  for (const [key, value] of Object.entries(env)) {
+    if (!isProxyEnvKey(key)) continue;
+    const trimmed = String(value ?? "").trim();
+    if (trimmed.length === 0) continue;
+    hasProxyConfig = true;
+    const endpoint = parseLoopbackProxyEndpoint(trimmed);
+    if (endpoint === null) continue;
+    routes.push({ envKey: key, host: endpoint.host, port: endpoint.port });
+  }
+  return { hasProxyConfig, routes };
+}
+
+export function prepareHostProxyRouteSpec(
+  env: NodeJS.ProcessEnv,
+): PreparedProxyRouteSpec {
+  const plan = planProxyRoutes(env);
+  if (plan.routes.length === 0) {
+    const detail = plan.hasProxyConfig
+      ? "managed proxy mode requires parseable loopback proxy endpoints"
+      : "managed proxy mode requires proxy environment variables";
+    throw new Error(detail);
+  }
+  const socketDir = path.join(
+    os.tmpdir(),
+    `${AGENC_PROXY_SOCKET_DIR_PREFIX}${process.pid}-${Date.now()}`,
+  );
+  return {
+    socketDir,
+    routes: plan.routes.map((route, index) => ({
+      envKey: route.envKey,
+      udsPath: path.join(socketDir, `proxy-route-${index}.sock`),
+    })),
+  };
+}
+
+export async function prepareHostProxyRoutes(
+  env: NodeJS.ProcessEnv,
+): Promise<PreparedProxyRoutes> {
+  const spec = prepareHostProxyRouteSpec(env);
+  fs.mkdirSync(spec.socketDir, { recursive: true, mode: 0o700 });
+  const plan = planProxyRoutes(env);
+  const servers: net.Server[] = [];
+  try {
+    await Promise.all(spec.routes.map(async (route, index) => {
+      const endpoint = plan.routes[index];
+      if (endpoint === undefined) {
+        throw new Error(`missing proxy route endpoint for ${route.envKey}`);
+      }
+      const server = net.createServer((unixSocket) => {
+        const tcp = net.connect({ host: endpoint.host, port: endpoint.port });
+        void createProxyPair(tcp, unixSocket);
+      });
+      servers.push(server);
+      await listen(server, route.udsPath);
+    }));
+  } catch (error) {
+    closeServers(servers);
+    fs.rmSync(spec.socketDir, { recursive: true, force: true });
+    throw error;
+  }
+  return {
+    spec,
+    serializedSpec: JSON.stringify(spec),
+    socketDir: spec.socketDir,
+    cleanup() {
+      closeServers(servers);
+      fs.rmSync(spec.socketDir, { recursive: true, force: true });
+    },
+  };
+}
+
+export async function activateProxyRoutesInNetns(
+  serializedSpec: string,
+  env: NodeJS.ProcessEnv,
+): Promise<ActivatedProxyRoutes> {
+  const spec = parseProxyRouteSpec(serializedSpec);
+  if (spec.routes.length === 0) {
+    throw new Error("proxy routing spec contained no routes");
+  }
+  const nextEnv: NodeJS.ProcessEnv = { ...env };
+  const servers: net.Server[] = [];
+  try {
+    await Promise.all(spec.routes.map(async (route) => {
+      const original = nextEnv[route.envKey];
+      if (original === undefined) {
+        throw new Error(`missing proxy env key ${route.envKey}`);
+      }
+      const server = net.createServer((tcpSocket) => {
+        const unixSocket = net.connect(route.udsPath);
+        void createProxyPair(tcpSocket, unixSocket);
+      });
+      servers.push(server);
+      await listen(server, "127.0.0.1", 0);
+      const address = server.address();
+      if (typeof address !== "object" || address === null) {
+        throw new Error(`failed to allocate proxy route port for ${route.envKey}`);
+      }
+      const rewritten = rewriteProxyEnvValue(original, address.port);
+      if (rewritten === null) {
+        throw new Error(`could not rewrite proxy URL for env key ${route.envKey}`);
+      }
+      nextEnv[route.envKey] = rewritten;
+    }));
+  } catch (error) {
+    closeServers(servers);
+    throw error;
+  }
+  return {
+    env: nextEnv,
+    cleanup() {
+      closeServers(servers);
+    },
+  };
+}
+
+export function rewriteProxyEnvValue(
+  proxyUrl: string,
+  localPort: number,
+): string | null {
+  const candidate = proxyUrl.includes("://") ? proxyUrl : `http://${proxyUrl}`;
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return null;
+  }
+  parsed.hostname = "127.0.0.1";
+  parsed.port = String(localPort);
+  const value = parsed.toString();
+  return proxyUrl.includes("://") ? value : value.replace(/^http:\/\//u, "");
+}
+
+export function parseLoopbackProxyEndpoint(
+  proxyUrl: string,
+): { readonly host: string; readonly port: number } | null {
+  const candidate = proxyUrl.includes("://") ? proxyUrl : `http://${proxyUrl}`;
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return null;
+  }
+  const host = parsed.hostname;
+  if (!isLoopbackHost(host)) return null;
+  const port = parsed.port.length > 0
+    ? Number.parseInt(parsed.port, 10)
+    : defaultProxyPort(parsed.protocol);
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) return null;
+  return { host, port };
+}
+
+export function defaultProxyPort(protocol: string): number {
+  switch (protocol.replace(/:$/u, "")) {
+    case "https":
+      return 443;
+    case "socks5":
+    case "socks5h":
+      return 1080;
+    default:
+      return 80;
+  }
+}
+
+export function createProxyPair(
+  tcp: net.Socket,
+  unix: net.Socket,
+): Promise<void> {
+  const destroyBoth = () => {
+    tcp.destroy();
+    unix.destroy();
+  };
+  tcp.once("error", destroyBoth);
+  unix.once("error", destroyBoth);
+  tcp.pipe(unix);
+  unix.pipe(tcp);
+  return new Promise((resolve) => {
+    let pending = 2;
+    const done = () => {
+      pending -= 1;
+      if (pending === 0) resolve();
+    };
+    tcp.once("close", done);
+    unix.once("close", done);
+  });
+}
+
+function isLoopbackHost(host: string): boolean {
+  return host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host === "[::1]";
+}
+
+function parseProxyRouteSpec(serializedSpec: string): PreparedProxyRouteSpec {
+  const parsed = JSON.parse(serializedSpec) as Partial<PreparedProxyRouteSpec>;
+  if (!Array.isArray(parsed.routes)) {
+    throw new Error("proxy routing spec is missing routes");
+  }
+  return {
+    socketDir: String(parsed.socketDir ?? ""),
+    routes: parsed.routes.map((route) => ({
+      envKey: String(route.envKey),
+      udsPath: String(route.udsPath),
+    })),
+  };
+}
+
+function listen(server: net.Server, pathOrHost: string, port?: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onError = (error: Error) => {
+      reject(error);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      resolve();
+    };
+    server.once("error", onError);
+    if (port === undefined) {
+      server.listen(pathOrHost, onListening);
+    } else {
+      server.listen(port, pathOrHost, onListening);
+    }
+  });
+}
+
+function closeServers(servers: readonly net.Server[]): void {
+  for (const server of servers) {
+    try {
+      server.close();
+    } catch {
+      // Best effort; the process is exiting or the socket is already closed.
+    }
+  }
+}
