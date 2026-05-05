@@ -363,13 +363,46 @@ function walkExistingFiles(
 }
 
 function globLikeMatcher(pattern: string): RegExp {
-  const escaped = pattern
-    .split("**")
-    .map((chunk) =>
-      chunk.replace(/[.+^${}()|[\]\\]/gu, "\\$&").replace(/\*/gu, "[^/]*"),
-    )
-    .join(".*");
-  return new RegExp(`^${escaped}$`, "u");
+  let source = "";
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index] ?? "";
+    if (char === "*") {
+      if (pattern[index + 1] === "*") {
+        source += ".*";
+        index += 1;
+      } else {
+        source += "[^/]*";
+      }
+      continue;
+    }
+    if (char === "?") {
+      source += "[^/]";
+      continue;
+    }
+    if (char === "[") {
+      const end = pattern.indexOf("]", index + 1);
+      if (end !== -1) {
+        source += globCharacterClass(pattern.slice(index + 1, end));
+        index = end;
+        continue;
+      }
+    }
+    source += escapeRegexChar(char);
+  }
+  return new RegExp(`^${source}$`, "u");
+}
+
+function globCharacterClass(raw: string): string {
+  if (raw.length === 0) return "\\[\\]";
+  const negated = raw[0] === "!" || raw[0] === "^";
+  const body = (negated ? raw.slice(1) : raw)
+    .replace(/\\/gu, "\\\\")
+    .replace(/\]/gu, "\\]");
+  return negated ? `[^/${body}]` : `[${body}]`;
+}
+
+function escapeRegexChar(char: string): string {
+  return /[.+^${}()|[\]\\]/u.test(char) ? `\\${char}` : char;
 }
 
 function globSearchRoot(pattern: string, cwd: string): string {

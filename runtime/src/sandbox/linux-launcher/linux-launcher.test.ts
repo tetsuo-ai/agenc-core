@@ -193,15 +193,62 @@ describe("Linux sandbox launcher", () => {
     expect(args.args).not.toContain(path.join(child, ".git"));
   });
 
+  it("fails an otherwise successful launch when protected metadata is created", async () => {
+    const parent = withTempDir("agenc-linux-launcher-protected-parent-");
+    fs.mkdirSync(path.join(parent, ".git"));
+    const child = path.join(parent, "child");
+    const bin = path.join(parent, "bin");
+    fs.mkdirSync(child);
+    fs.mkdirSync(bin);
+    const fakeBwrap = path.join(bin, "bwrap");
+    const protectedTarget = path.join(child, ".git");
+    writeExecutable(
+      fakeBwrap,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "fs.mkdirSync(process.env.AGENC_PROTECTED_TARGET, { recursive: true });",
+        "process.exit(0);",
+      ].join("\n") + "\n",
+    );
+
+    const exitCode = await runLinuxSandboxMain([
+      "--sandbox-policy-cwd",
+      child,
+      "--command-cwd",
+      child,
+      "--permission-profile",
+      JSON.stringify(workspaceWriteProfile(child, "disabled")),
+      "--",
+      "/bin/true",
+    ], {
+      env: {
+        ...process.env,
+        AGENC_PROTECTED_TARGET: protectedTarget,
+      },
+      selfCommand: [process.execPath, path.join(child, "inner.js")],
+      preferredLauncher: () => ({ program: fakeBwrap, supportsArgv0: false }),
+    });
+
+    expect(exitCode).toBe(1);
+    expect(fs.existsSync(protectedTarget)).toBe(false);
+  });
+
   it("expands unreadable absolute globs from their static root", () => {
     const workspace = withTempDir("agenc-linux-launcher-glob-work-");
     const external = withTempDir("agenc-linux-launcher-glob-external-");
     const secret = path.join(external, "blocked.secret");
+    const questionSecret = path.join(external, "blocked-a.secret");
+    const classSecret = path.join(external, "blocked-b.secret");
     fs.writeFileSync(secret, "sensitive");
+    fs.writeFileSync(questionSecret, "sensitive");
+    fs.writeFileSync(classSecret, "sensitive");
     const policy = restrictedFileSystemPolicy([
       { path: { kind: "path", path: workspace }, access: "write" },
       { path: { kind: "path", path: external }, access: "read" },
       { path: { kind: "glob", pattern: path.join(external, "*.secret") }, access: "none" },
+      { path: { kind: "glob", pattern: path.join(external, "blocked-?.secret") }, access: "none" },
+      { path: { kind: "glob", pattern: path.join(external, "blocked-[bc].secret") }, access: "none" },
     ]);
 
     const args = createBwrapCommandArgs(["/bin/true"], policy, workspace, workspace, {
@@ -210,6 +257,8 @@ describe("Linux sandbox launcher", () => {
     });
 
     expect(args.args).toContain(secret);
+    expect(args.args).toContain(questionSecret);
+    expect(args.args).toContain(classSecret);
   });
 
   it("inserts argv0 support before the inner command separator", () => {
@@ -235,6 +284,11 @@ describe("Linux sandbox launcher", () => {
     expect(networkSeccompMode("disabled", false, false)).toBe("restricted");
     expect(networkSeccompMode("enabled", false, false)).toBeNull();
     expect(networkSeccompMode("enabled", true, true)).toBe("proxy-routed");
+    const proxyDenied = deniedSyscalls(createNetworkSeccompProgram("proxy-routed", "x64"));
+    expect(proxyDenied).toContain(53);
+    expect(proxyDenied).not.toContain(42);
+    expect(proxyDenied).not.toContain(49);
+    expect(proxyDenied).not.toContain(50);
     expect(() =>
       createNetworkSeccompProgram("restricted", "ppc64" as NodeJS.Architecture),
     ).toThrow(/does not support/u);
@@ -420,6 +474,7 @@ describe("Linux sandbox launcher", () => {
   it("validates managed proxy route inputs without accepting non-loopback endpoints", () => {
     const plan = planProxyRoutes({
       HTTP_PROXY: "http://127.0.0.1:3128",
+      NPM_CONFIG_PROXY: "socks4://127.0.0.1",
       npm_config_http_proxy: "http://localhost:4873",
       PIP_PROXY: "127.0.0.1:1081",
       HTTPS_PROXY: "http://203.0.113.12:4444",
@@ -429,11 +484,18 @@ describe("Linux sandbox launcher", () => {
     expect(plan.hasProxyConfig).toBe(true);
     expect(plan.routes).toEqual([
       { envKey: "HTTP_PROXY", host: "127.0.0.1", port: 3128 },
+      { envKey: "NPM_CONFIG_PROXY", host: "127.0.0.1", port: 1080 },
       { envKey: "npm_config_http_proxy", host: "localhost", port: 4873 },
       { envKey: "PIP_PROXY", host: "127.0.0.1", port: 1081 },
     ]);
+    expect(rewriteProxyEnvValue("http://127.0.0.1:8080", 43210)).toBe(
+      "http://127.0.0.1:43210",
+    );
     expect(rewriteProxyEnvValue("socks5h://127.0.0.1:8081", 43210)).toBe(
       "socks5h://127.0.0.1:43210",
+    );
+    expect(rewriteProxyEnvValue("socks4a://127.0.0.1", 43210)).toBe(
+      "socks4a://127.0.0.1:43210",
     );
     expect(() => prepareHostProxyRouteSpec({ PATH: "/usr/bin" })).toThrow(
       /requires proxy environment variables/u,
@@ -658,4 +720,18 @@ function onceSocket(socket: net.Socket, event: "connect" | "close"): Promise<voi
       resolve();
     });
   });
+}
+
+function deniedSyscalls(program: Buffer): number[] {
+  const denied: number[] = [];
+  for (let offset = 0; offset + 15 < program.length; offset += 8) {
+    const code = program.readUInt16LE(offset);
+    const syscall = program.readUInt32LE(offset + 4);
+    const nextCode = program.readUInt16LE(offset + 8);
+    const nextValue = program.readUInt32LE(offset + 12);
+    if (code === 0x15 && nextCode === 0x06 && nextValue === 0x00050001) {
+      denied.push(syscall);
+    }
+  }
+  return denied;
 }

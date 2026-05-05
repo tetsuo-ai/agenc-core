@@ -140,9 +140,6 @@ export function createNetworkSeccompProgram(
   } else {
     program.allowIpSocketOnly(table.socket);
     program.denySyscall(table.socketpair);
-    for (const syscall of restrictedNetworkDeniedSyscalls(table)) {
-      program.denySyscall(syscall);
-    }
   }
 
   program.ret(SECCOMP_RET_ALLOW);

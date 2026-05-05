@@ -43,6 +43,7 @@ const PROXY_ENV_KEYS = new Set([
   "FTP_PROXY",
   "YARN_HTTP_PROXY",
   "YARN_HTTPS_PROXY",
+  "NPM_CONFIG_PROXY",
   "NPM_CONFIG_HTTP_PROXY",
   "NPM_CONFIG_HTTPS_PROXY",
   "BUNDLE_HTTP_PROXY",
@@ -81,14 +82,26 @@ export function prepareHostProxyRouteSpec(
       : "managed proxy mode requires proxy environment variables";
     throw new Error(detail);
   }
+  cleanupStaleProxySocketDirs();
   const socketDir = fs.mkdtempSync(path.join(os.tmpdir(), AGENC_PROXY_SOCKET_DIR_PREFIX));
   fs.chmodSync(socketDir, 0o700);
+  const socketByEndpoint = new Map<string, string>();
+  let nextSocketIndex = 0;
   return {
     socketDir,
-    routes: plan.routes.map((route, index) => ({
-      envKey: route.envKey,
-      udsPath: path.join(socketDir, `proxy-route-${index}.sock`),
-    })),
+    routes: plan.routes.map((route) => {
+      const endpoint = endpointKey(route.host, route.port);
+      let udsPath = socketByEndpoint.get(endpoint);
+      if (udsPath === undefined) {
+        udsPath = path.join(socketDir, `proxy-route-${nextSocketIndex}.sock`);
+        nextSocketIndex += 1;
+        socketByEndpoint.set(endpoint, udsPath);
+      }
+      return {
+        envKey: route.envKey,
+        udsPath,
+      };
+    }),
   };
 }
 
@@ -99,12 +112,15 @@ export async function prepareHostProxyRoutes(
   const plan = planProxyRoutes(env);
   const servers: net.Server[] = [];
   const activeSockets = new Set<net.Socket>();
+  const endpointBySocket = new Map<string, ProxyRoute>();
+  spec.routes.forEach((route, index) => {
+    const endpoint = plan.routes[index];
+    if (endpoint !== undefined && !endpointBySocket.has(route.udsPath)) {
+      endpointBySocket.set(route.udsPath, endpoint);
+    }
+  });
   try {
-    await Promise.all(spec.routes.map(async (route, index) => {
-      const endpoint = plan.routes[index];
-      if (endpoint === undefined) {
-        throw new Error(`missing proxy route endpoint for ${route.envKey}`);
-      }
+    await Promise.all([...endpointBySocket.entries()].map(async ([udsPath, endpoint]) => {
       const server = net.createServer((unixSocket) => {
         trackSocket(activeSockets, unixSocket);
         const tcp = trackSocket(
@@ -114,7 +130,7 @@ export async function prepareHostProxyRoutes(
         void createProxyPair(tcp, unixSocket);
       });
       servers.push(server);
-      await listen(server, route.udsPath);
+      await listen(server, udsPath);
     }));
   } catch (error) {
     closeServers(servers);
@@ -196,7 +212,10 @@ export function rewriteProxyEnvValue(
   parsed.hostname = "127.0.0.1";
   parsed.port = String(localPort);
   const value = parsed.toString();
-  return proxyUrl.includes("://") ? value : value.replace(/^http:\/\//u, "");
+  const rewritten = proxyUrl.includes("://") ? value : value.replace(/^http:\/\//u, "");
+  return proxyUrlHasNoPathQueryOrFragment(proxyUrl) && rewritten.endsWith("/")
+    ? rewritten.slice(0, -1)
+    : rewritten;
 }
 
 export function parseLoopbackProxyEndpoint(
@@ -222,6 +241,8 @@ export function defaultProxyPort(protocol: string): number {
   switch (protocol.replace(/:$/u, "")) {
     case "https":
       return 443;
+    case "socks4":
+    case "socks4a":
     case "socks5":
     case "socks5h":
       return 1080;
@@ -258,6 +279,39 @@ function isLoopbackHost(host: string): boolean {
     host === "127.0.0.1" ||
     host === "::1" ||
     host === "[::1]";
+}
+
+function endpointKey(host: string, port: number): string {
+  return `${host}:${port}`;
+}
+
+function proxyUrlHasNoPathQueryOrFragment(proxyUrl: string): boolean {
+  const authority = proxyUrl.includes("://")
+    ? proxyUrl.slice(proxyUrl.indexOf("://") + 3)
+    : proxyUrl;
+  return !/[/?#]/u.test(authority);
+}
+
+function cleanupStaleProxySocketDirs(now: number = Date.now()): void {
+  const tmp = os.tmpdir();
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(tmp);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.startsWith(AGENC_PROXY_SOCKET_DIR_PREFIX)) continue;
+    const candidate = path.join(tmp, entry);
+    try {
+      const stat = fs.statSync(candidate);
+      if (now - stat.mtimeMs > 24 * 60 * 60 * 1000) {
+        fs.rmSync(candidate, { recursive: true, force: true });
+      }
+    } catch {
+      // Ignore stale cleanup races; new route creation remains fail-closed.
+    }
+  }
 }
 
 function parseProxyRouteSpec(serializedSpec: string): PreparedProxyRouteSpec {

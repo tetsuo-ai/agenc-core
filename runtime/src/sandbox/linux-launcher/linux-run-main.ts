@@ -179,10 +179,13 @@ export async function runLinuxSandboxOptions(
       stdio: "inherit",
       ...(bwrapSeccompMode !== null ? { seccompMode: bwrapSeccompMode } : {}),
     });
+    let protectedCreateViolation = false;
     try {
-      return await waitForChild(spawned.child);
+      const exitCode = await waitForChild(spawned.child);
+      protectedCreateViolation = protectedMonitor.stop();
+      return protectedCreateViolation && exitCode === 0 ? 1 : exitCode;
     } finally {
-      protectedMonitor.stop();
+      if (!protectedCreateViolation) protectedMonitor.stop();
       spawned.cleanup();
     }
   } finally {
@@ -437,10 +440,14 @@ function isProcMountFailure(stderr: string): boolean {
 
 function startProtectedCreateMonitor(
   targets: readonly string[],
-): { readonly stop: () => void } {
-  if (targets.length === 0) return { stop() {} };
-  const cleanup = () => {
+): { readonly stop: () => boolean } {
+  if (targets.length === 0) return { stop() { return false; } };
+  let violation = false;
+  const scan = () => {
     for (const target of targets) {
+      if (fs.existsSync(target)) {
+        violation = true;
+      }
       try {
         fs.rmSync(target, { recursive: true, force: true });
       } catch {
@@ -448,12 +455,13 @@ function startProtectedCreateMonitor(
       }
     }
   };
-  cleanup();
-  const interval = setInterval(cleanup, 100);
+  scan();
+  const interval = setInterval(scan, 100);
   return {
-    stop() {
+    stop(): boolean {
       clearInterval(interval);
-      cleanup();
+      scan();
+      return violation;
     },
   };
 }

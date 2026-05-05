@@ -20,7 +20,7 @@ Target mapping:
 - `cli.ts` parses the manager handoff arguments and permission profile JSON.
 - `linux-run-main.ts` resolves the profile, builds the outer bubblewrap invocation, re-enters the helper for the inner command stage, uses `execve` for the non-proxy final command, applies an inner seccomp bubblewrap wrapper for managed proxy commands, and relays termination signals when a child process must remain supervised.
 - `launcher.ts` discovers the real `bwrap` / `bubblewrap` binary, probes `--argv0` support, and spawns the platform binary with an inherited seccomp FD.
-- `bwrap.ts` builds the bubblewrap filesystem, namespace, proc, argv0, and seccomp flags from AgenC's sandbox policy model.
+- `bwrap.ts` builds the bubblewrap filesystem, namespace, proc, argv0, glob-deny, protected metadata, and seccomp flags from AgenC's sandbox policy model.
 - `landlock.ts` carries the Linux network hardening path in TypeScript by generating a cBPF seccomp program and passing it to bubblewrap with `--seccomp FD`.
 - `proxy-routing.ts` ports proxy environment recognition, loopback endpoint validation, host-side UDS route preparation, namespace-local loopback activation, URL rewrite helpers, and stream-pairing primitives.
 - `vendored-bwrap.ts` records the build-shape divergence: the TypeScript runtime requires a system bubblewrap binary instead of linking an embedded C helper.
@@ -32,3 +32,4 @@ Documented divergences:
 - Embedded bubblewrap C compilation is not carried. AgenC ships a Node executable that discovers and launches the platform `bwrap` / `bubblewrap` binary, matching the system-binary execution path.
 - Managed proxy mode uses a Node TCP/UDS route pair instead of the donor's lower-level helper. The outer launcher prepares loopback proxy routes on host-owned UDS sockets, bind-mounts the socket directory into bubblewrap, and the inner stage activates namespace-local loopback listeners before applying a proxy-routed seccomp filter to the user command through an inner bubblewrap invocation.
 - Proxy mode keeps the inner Node process alive while the proxied command runs so the namespace-local TCP listeners can continue to serve the command. Non-proxy inner launches use `process.execve` so the Node helper is replaced by the final command.
+- The package engine floor is Node 25 because the non-proxy inner stage depends on `process.execve`.

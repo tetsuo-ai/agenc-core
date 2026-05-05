@@ -30,19 +30,6 @@ function tryGitRevParse() {
   return null;
 }
 
-function readRuntimePackageVersion() {
-  try {
-    const packageJsonPath = path.join(runtimeDir, "package.json");
-    const raw = JSON.parse(
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      require("node:fs").readFileSync(packageJsonPath, "utf8"),
-    );
-    return typeof raw.version === "string" ? raw.version : "unknown";
-  } catch {
-    return "unknown";
-  }
-}
-
 async function main() {
   if (!existsSync(distDir)) {
     mkdirSync(distDir, { recursive: true });

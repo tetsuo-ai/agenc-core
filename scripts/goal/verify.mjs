@@ -2475,6 +2475,9 @@ async function donorRuntimePortGates(item) {
     if (packageJson?.bin?.["agenc-linux-sandbox"] !== "bin/agenc-linux-sandbox") {
       failGate("C-01b: runtime/package.json must expose bin.agenc-linux-sandbox");
     }
+    if (packageJson?.engines?.node !== ">=25.0.0") {
+      failGate("C-01b: runtime/package.json must require a Node runtime with process.execve");
+    }
     if ((statSync(binPath).mode & 0o111) === 0) {
       failGate("C-01b: runtime/bin/agenc-linux-sandbox must be executable");
     }
@@ -2487,11 +2490,17 @@ async function donorRuntimePortGates(item) {
     if (!/\bexecve\b/.test(runMainSource) || !/runCommandWithInnerSeccomp/.test(runMainSource)) {
       failGate("C-01b: launcher must use execve for the inner non-proxy stage and an inner seccomp wrapper for proxy mode");
     }
-    if (!/mkdtempSync/.test(proxySource) || !/FTP_PROXY/.test(proxySource) || !/NPM_CONFIG_HTTP_PROXY/.test(proxySource)) {
+    if (!/mkdtempSync/.test(proxySource) || !/FTP_PROXY/.test(proxySource) || !/NPM_CONFIG_PROXY/.test(proxySource)) {
       failGate("C-01b: proxy routing must use atomic socket dirs and the donor proxy env-key set");
+    }
+    if (!/socks4a/.test(proxySource) || !/proxyUrlHasNoPathQueryOrFragment/.test(proxySource) || !/trackSocket/.test(proxySource)) {
+      failGate("C-01b: proxy routing must preserve URL formatting and clean active sockets");
     }
     if (!/trustedDirectories/.test(launcherSource) || !/TRUSTED_BWRAP_DIRECTORIES/.test(launcherSource)) {
       failGate("C-01b: bubblewrap discovery must reject untrusted PATH entries by default");
+    }
+    if (!/globCharacterClass/.test(bwrapSource) || !/escapeRegexChar/.test(bwrapSource)) {
+      failGate("C-01b: unreadable glob matching must support ? and character classes");
     }
     if (!/\bspawn\(/.test(testsSource) || !/runLinuxSandboxMain/.test(testsSource)) {
       failGate("C-01b: tests must exercise the launcher through subprocess execution");
@@ -2504,6 +2513,9 @@ async function donorRuntimePortGates(item) {
     }
     if (!/proxy-routed seccomp/.test(testsSource) || !/destroys active managed proxy sockets/.test(testsSource)) {
       failGate("C-01b: tests must exercise proxy-routed seccomp and proxy cleanup");
+    }
+    if (!/deniedSyscalls/.test(testsSource) || !/protected metadata is created/.test(testsSource)) {
+      failGate("C-01b: tests must exercise proxy-routed BPF behavior and protected metadata violations");
     }
     const buildRun = run("npm", ["run", "build", "--workspace=@tetsuo-ai/runtime"]);
     if (buildRun.status !== 0) {
