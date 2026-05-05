@@ -1,0 +1,149 @@
+{
+  "contractName": "tl-22-multi-agent-v2-surface",
+  "scope": "AgenC model-facing Multi-Agent V2 tool surface backed by the live agent control plane.",
+  "sourceRoot": "/home/tetsuo/git/codex",
+  "targetRoot": "..",
+  "sourceCommit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
+  "sourceFiles": [
+    "codex-rs/core/src/tools/handlers/multi_agents_v2.rs",
+    "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
+    "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
+    "codex-rs/core/src/tools/handlers/multi_agents_v2/close_agent.rs",
+    "codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs",
+    "codex-rs/core/src/tools/handlers/multi_agents_v2/send_message.rs",
+    "codex-rs/core/src/tools/handlers/multi_agents_v2/followup_task.rs",
+    "codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs"
+  ],
+  "targetFiles": [
+    "runtime/src/agents/v2/index.ts",
+    "runtime/src/agents/v2/common.ts",
+    "runtime/src/agents/v2/spawn.ts",
+    "runtime/src/agents/v2/wait.ts",
+    "runtime/src/agents/v2/close-agent.ts",
+    "runtime/src/agents/v2/message-tool.ts",
+    "runtime/src/agents/v2/send-message.ts",
+    "runtime/src/agents/v2/followup-task.ts",
+    "runtime/src/agents/v2/list-agents.ts",
+    "runtime/src/agents/v2/PARITY.md",
+    "runtime/src/bin/model-facing-tools.ts"
+  ],
+  "testFiles": [
+    "runtime/src/bin/model-facing-tools.test.ts",
+    "runtime/src/agents/control.test.ts",
+    "runtime/src/agents/run-agent.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "registered-v2-tool-set",
+      "source": "codex-rs/core/src/tools/handlers/multi_agents_v2.rs",
+      "target": "runtime/src/agents/v2/index.ts",
+      "requiredBehaviors": [
+        "The model-facing registry exposes spawn_agent, wait_agent, close_agent, followup_task, send_message, and list_agents through the v2 handler factory.",
+        "Legacy aliases are not reintroduced.",
+        "Each handler keeps strict argument validation and rejects removed compatibility fields."
+      ],
+      "edgeCases": [
+        "Execution-injected call/session ids remain accepted by strict argument validation.",
+        "The extraction preserves the existing tool order before agent job tools."
+      ],
+      "tests": [
+        "runtime/src/bin/model-facing-tools.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "spawn-agent",
+      "source": "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
+      "target": "runtime/src/agents/v2/spawn.ts",
+      "requiredBehaviors": [
+        "spawn_agent requires message and task_name, rejects fork_context, and parses fork_turns as none, all, or a positive integer string.",
+        "Full-history forks reject role/model/reasoning overrides.",
+        "Role, model, reasoning effort, task name, and depth limits are validated before lifecycle events and delegation.",
+        "Successful async launches emit spawn begin/end events, register background task lifecycle output, increment telemetry, and return task_name plus optional nickname metadata."
+      ],
+      "edgeCases": [
+        "Unknown models and unsupported reasoning efforts return model-facing errors before delegation.",
+        "Over-depth spawns return a model-facing error without emitting lifecycle events.",
+        "Configured metadata hiding returns only task_name."
+      ],
+      "tests": [
+        "runtime/src/bin/model-facing-tools.test.ts",
+        "runtime/src/agents/run-agent.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "wait-agent",
+      "source": "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
+      "target": "runtime/src/agents/v2/wait.ts",
+      "requiredBehaviors": [
+        "wait_agent emits waiting begin/end events and returns Wait completed or Wait timed out.",
+        "timeout_ms is optional, must be positive when provided, and is clamped by session minimum and maximum bounds.",
+        "Mailbox-change waiting is owned by the tool handler rather than the generic executor."
+      ],
+      "edgeCases": [
+        "Sessions without waitForMailboxChange fall back to checking pending mailbox state after the timeout."
+      ],
+      "tests": [
+        "runtime/src/bin/model-facing-tools.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "close-agent",
+      "source": "codex-rs/core/src/tools/handlers/multi_agents_v2/close_agent.rs",
+      "target": "runtime/src/agents/v2/close-agent.ts",
+      "requiredBehaviors": [
+        "close_agent resolves targets through the current agent path, rejects root, emits close begin/end events, shuts down the target, and returns previous_status.",
+        "Receiver nickname and role metadata are included when available."
+      ],
+      "edgeCases": [
+        "Status subscription failures fall back to the control-plane status lookup before shutdown."
+      ],
+      "tests": [
+        "runtime/src/bin/model-facing-tools.test.ts",
+        "runtime/src/agents/control.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "message-delivery",
+      "source": "codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs",
+      "target": "runtime/src/agents/v2/message-tool.ts",
+      "requiredBehaviors": [
+        "send_message and followup_task share a text-only delivery path.",
+        "send_message queues delivery without triggering a target turn.",
+        "followup_task triggers the target turn and rejects assignments to the root agent.",
+        "Interaction begin/end events are emitted around delivery, including after delivery failures."
+      ],
+      "edgeCases": [
+        "Empty messages are rejected before target resolution.",
+        "Unresolved targets and missing receiver agent paths return model-facing errors."
+      ],
+      "tests": [
+        "runtime/src/bin/model-facing-tools.test.ts",
+        "runtime/src/agents/control.test.ts",
+        "runtime/src/agents/run-agent.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "list-agents",
+      "source": "codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs",
+      "target": "runtime/src/agents/v2/list-agents.ts",
+      "requiredBehaviors": [
+        "list_agents returns AgenC snake_case entries with agent_name, agent_status, and optional last_task_message.",
+        "Optional path_prefix is resolved relative to the current agent path.",
+        "Unsupported role filters and other removed fields are rejected."
+      ],
+      "edgeCases": [
+        "Completed statuses are rendered in the model-facing status shape."
+      ],
+      "tests": [
+        "runtime/src/bin/model-facing-tools.test.ts",
+        "runtime/src/agents/control.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}
