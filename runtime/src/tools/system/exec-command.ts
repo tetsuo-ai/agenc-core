@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
@@ -6,12 +8,23 @@ import {
   UnifiedExecError,
   UnifiedExecProcessManager,
   type UnifiedExecProcessManagerLike,
+  type UnifiedExecRuntimeSandbox,
 } from "../../unified-exec/index.js";
+import type {
+  NetworkSandboxPolicy,
+  WindowsSandboxLevel,
+} from "../../sandbox/engine/index.js";
 import {
   formatUnifiedExecToolContent,
   unifiedExecCodeModeResult,
 } from "./exec-result-format.js";
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
+import { readToolRuntimeContext } from "../runtimes/context.js";
+import {
+  permissionProfileForRuntimeContext,
+  runtimePlatformSandboxStatus,
+  sandboxModeRequiresPlatformIsolation,
+} from "../runtimes/sandboxing.js";
 
 export interface ExecCommandToolConfig extends BashToolConfig {
   readonly allowedPaths?: readonly string[];
@@ -39,6 +52,102 @@ function asBoolean(value: unknown): boolean | undefined {
 
 function isPlainInteractiveShellCommand(command: string): boolean {
   return PLAIN_INTERACTIVE_SHELL_RE.test(command);
+}
+
+export function runtimeSandboxForExec(
+  args: Record<string, unknown>,
+  fallbackCwd: string,
+): UnifiedExecRuntimeSandbox | undefined {
+  const context = readToolRuntimeContext(args);
+  if (
+    context === undefined ||
+    !sandboxModeRequiresPlatformIsolation(context.sandboxMode)
+  ) {
+    return undefined;
+  }
+  const platformSandbox = runtimePlatformSandboxStatus(context);
+  if (!platformSandbox.available) return undefined;
+  const turn = context.invocation.turn as {
+    readonly agencLinuxSandboxExe?: unknown;
+    readonly config?: {
+      readonly agencLinuxSandboxExe?: unknown;
+      readonly features?: unknown;
+      readonly permissions?: {
+        readonly windowsSandboxPrivateDesktop?: unknown;
+      };
+    };
+    readonly features?: unknown;
+    readonly networkSandboxPolicy?: unknown;
+    readonly cwd?: unknown;
+    readonly windowsSandboxLevel?: unknown;
+    readonly windowsSandboxPrivateDesktop?: unknown;
+  };
+  const sandboxPolicyCwd = resolve(
+    stringValue(turn.cwd) ?? fallbackCwd,
+  );
+  const network = networkPolicy(turn.networkSandboxPolicy);
+  return {
+    permissionProfile: permissionProfileForRuntimeContext(context, {
+      cwd: sandboxPolicyCwd,
+      ...(network !== undefined ? { network } : {}),
+    }),
+    sandboxPolicyCwd,
+    preference: "require",
+    useLegacyLandlock: useLegacyLandlock(turn.features ?? turn.config?.features),
+    windowsSandboxLevel: windowsSandboxLevel(turn.windowsSandboxLevel),
+    windowsSandboxPrivateDesktop: booleanValue(
+      turn.windowsSandboxPrivateDesktop,
+    ) ?? booleanValue(turn.config?.permissions?.windowsSandboxPrivateDesktop) ?? false,
+    ...(platformSandbox.agencLinuxSandboxExe !== undefined
+      ? { agencLinuxSandboxExe: platformSandbox.agencLinuxSandboxExe }
+      : {}),
+  };
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function booleanValue(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function networkPolicy(value: unknown): NetworkSandboxPolicy | undefined {
+  return value === "enabled" || value === "disabled" || value === "restricted"
+    ? value
+    : undefined;
+}
+
+function windowsSandboxLevel(value: unknown): WindowsSandboxLevel {
+  switch (value) {
+    case "low":
+    case "medium":
+    case "high":
+      return value;
+    case "permissive":
+      return "low";
+    case "strict":
+      return "high";
+    case "none":
+    case "disabled":
+    default:
+      return "disabled";
+  }
+}
+
+function useLegacyLandlock(features: unknown): boolean {
+  if (typeof features !== "object" || features === null) return false;
+  const candidate = features as {
+    readonly useLegacyLandlock?: unknown;
+    readonly enabled?: unknown;
+  };
+  if (typeof candidate.useLegacyLandlock === "function") {
+    return candidate.useLegacyLandlock() === true;
+  }
+  if (typeof candidate.enabled === "function") {
+    return candidate.enabled("use_legacy_landlock") === true;
+  }
+  return false;
 }
 
 function errorResult(error: unknown): ToolResult {
@@ -192,6 +301,10 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       }
 
       try {
+        const runtimeSandbox = runtimeSandboxForExec(
+          args,
+          config?.cwd ?? process.cwd(),
+        );
         const output = await manager.execCommand({
           cmd,
           callId: asString(args.__callId),
@@ -215,6 +328,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           ...(config?.execObserver !== undefined
             ? { observer: config.execObserver }
             : {}),
+          ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
         });
         const isError = output.exitCode !== null && output.exitCode !== 0;
         return {

@@ -12,6 +12,8 @@ export {
   type UnifiedExecManagerOptions,
   type UnifiedExecObserver,
   type UnifiedExecProcessManagerLike,
+  type UnifiedExecRuntimeSandbox,
+  type UnifiedExecSandboxManager,
   type UnifiedExecProgressEvent,
   type UnifiedExecStream,
   type WriteStdinRequest,

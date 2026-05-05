@@ -113,6 +113,7 @@ export interface ToolExecutionInjectedArgs {
   }) => void;
   readonly __abortSignal?: AbortSignal;
   readonly __callId?: string;
+  readonly __toolRuntimeContext?: import("./runtimes/context.js").ToolRuntimeAttemptContext;
 }
 
 /**

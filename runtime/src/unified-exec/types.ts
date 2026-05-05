@@ -1,4 +1,11 @@
 import type { ToolExecutionInjectedArgs } from "../tools/types.js";
+import type {
+  NetworkProxyConfig,
+  PermissionProfile,
+  SandboxManager,
+  SandboxablePreference,
+  WindowsSandboxLevel,
+} from "../sandbox/engine/index.js";
 
 export type UnifiedExecStream = "stdout" | "stderr";
 
@@ -28,11 +35,29 @@ export interface UnifiedExecObserver {
   }) => void;
 }
 
+export type UnifiedExecSandboxManager = Pick<
+  SandboxManager,
+  "selectInitial" | "transform"
+>;
+
+export interface UnifiedExecRuntimeSandbox {
+  readonly permissionProfile: PermissionProfile;
+  readonly sandboxPolicyCwd: string;
+  readonly preference?: SandboxablePreference;
+  readonly enforceManagedNetwork?: boolean;
+  readonly network?: NetworkProxyConfig;
+  readonly agencLinuxSandboxExe?: string;
+  readonly useLegacyLandlock?: boolean;
+  readonly windowsSandboxLevel?: WindowsSandboxLevel;
+  readonly windowsSandboxPrivateDesktop?: boolean;
+}
+
 export interface UnifiedExecManagerOptions {
   readonly cwd?: string;
   readonly env?: Record<string, string>;
   readonly maxTimeoutMs?: number;
   readonly maxProcesses?: number;
+  readonly sandboxManager?: UnifiedExecSandboxManager;
 }
 
 export interface ExecCommandRequest extends ToolExecutionInjectedArgs {
@@ -46,6 +71,7 @@ export interface ExecCommandRequest extends ToolExecutionInjectedArgs {
   readonly max_output_tokens?: number;
   readonly timeoutMs?: number;
   readonly observer?: UnifiedExecObserver;
+  readonly runtimeSandbox?: UnifiedExecRuntimeSandbox;
 }
 
 export interface WriteStdinRequest extends ToolExecutionInjectedArgs {
@@ -54,6 +80,7 @@ export interface WriteStdinRequest extends ToolExecutionInjectedArgs {
   readonly chars?: string;
   readonly yield_time_ms?: number;
   readonly max_output_tokens?: number;
+  readonly runtimeSandbox?: UnifiedExecRuntimeSandbox;
 }
 
 export interface ExecCommandToolOutput {

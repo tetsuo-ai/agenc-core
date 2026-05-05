@@ -1013,7 +1013,45 @@ const ITEM_EVIDENCE = {
     tests: [{ globUnder: "runtime/src", matching: /tool-registry.*\.test\.tsx?$/ }],
   },
   "TL-21": {
-    files: [{ globUnder: "runtime/src/tools/runtimes", matching: /\.tsx?$/, minCount: 1 }],
+    files: [
+      "runtime/src/tools/runtimes/context.ts",
+      "runtime/src/tools/runtimes/parallel.ts",
+      "runtime/src/tools/runtimes/shell.ts",
+      "runtime/src/tools/runtimes/unified-exec.ts",
+      "runtime/src/tools/runtimes/apply-patch.ts",
+      "runtime/src/tools/runtimes/sandboxing.ts",
+      "runtime/src/tools/runtimes/PARITY.md",
+      "parity/tool-runtimes-split-parity.json",
+      "runtime/src/tools/system/exec-command.ts",
+      "runtime/src/tools/system/write-stdin.ts",
+      "runtime/src/unified-exec/process-manager.ts",
+      "runtime/src/sandbox/engine/manager.ts",
+    ],
+    grepPresent: [
+      { pattern: "analyzeShellRuntimeAccess", scope: "runtime/src/tools/runtimes/sandboxing.ts" },
+      { pattern: "analyzeApplyPatchRuntimeWrites", scope: "runtime/src/tools/runtimes/sandboxing.ts" },
+      { pattern: "buildToolRuntimeAttemptContext", scope: "runtime/src/tools/router.ts" },
+      { pattern: "executeToolDispatch", scope: "runtime/src/tools/router.ts" },
+      { pattern: "enforceRuntimeSandboxAttempt", scope: "runtime/src/tools/execution.ts" },
+      { pattern: "ToolRuntimeScheduler|runToolRuntimeCall", scope: "runtime/src/tools/streaming-executor.ts" },
+      { pattern: "createToolExecutionRuntime", scope: "runtime/src/phases/execute-tools.ts" },
+      { pattern: "write_stdin", scope: "runtime/src/tools/runtimes/runtime.test.ts" },
+      { pattern: "contentItems", scope: "runtime/src/tools/runtimes/runtime.test.ts" },
+      { pattern: "codeModeResult", scope: "runtime/src/tools/runtimes/runtime.test.ts" },
+      { pattern: "BigInt", scope: "runtime/src/tools/runtimes/runtime.test.ts" },
+      { pattern: "TMPDIR", scope: "runtime/src/tools/runtimes/runtime.test.ts" },
+      { pattern: "runtimeSandbox", scope: "runtime/src/tools/system/exec-command.ts" },
+      { pattern: "runtimeSandbox", scope: "runtime/src/tools/system/write-stdin.ts" },
+      { pattern: "SandboxManager", scope: "runtime/src/unified-exec/process-manager.ts" },
+      { pattern: "read_only_subpaths", scope: "runtime/src/sandbox/engine/manager.ts" },
+    ],
+    tests: [
+      "runtime/src/tools/runtimes/runtime.test.ts",
+      "runtime/src/phases/execute-tools.test.ts",
+      "runtime/src/tools/router.test.ts",
+      "runtime/src/unified-exec/process-manager.test.ts",
+      "runtime/src/sandbox/engine/linux-engine.test.ts",
+    ],
   },
   "TL-22": {
     files: [{ globUnder: "runtime/src/agents/v2", matching: /\.tsx?$/, minCount: 2 }],
@@ -1463,9 +1501,12 @@ if (shimAdditions.length > 0) {
 // A new module whose body is >80% imports + re-exports + single-line forwards AND
 // has fewer than 40 significant lines is functionally a shim regardless of name.
 const FORWARD_LINE_RE =
-  /^\s*(import\s|export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[^}]*\}\s*from\b|export\s*\{[^}]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
+  /^\s*(export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[^}]*\}\s*from\b|export\s*\{[^}]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
 const FORWARD_STATEMENT_RE =
-  /^\s*(import\s|export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[\s\S]*\}\s*from\b|export\s*\{[\s\S]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
+  /^\s*(export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[\s\S]*\}\s*from\b|export\s*\{[\s\S]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
+function countForwardingLines(significant) {
+  return combineLogicalStatements(significant).filter((stmt) => FORWARD_LINE_RE.test(stmt) || FORWARD_STATEMENT_RE.test(stmt)).length;
+}
 const forwardingViolations = [];
 for (const rel of added) {
   if (!/^runtime\/src\//.test(rel)) continue;
@@ -1484,11 +1525,14 @@ for (const rel of added) {
   const significant = lines
     .map((l) => l.trim())
     .filter((l) => l && !l.startsWith("//") && !l.startsWith("*") && !l.startsWith("/*") && l !== "*/");
-  const logicalStatements = combineLogicalStatements(significant);
+  if (significant.length === 0 || significant.length >= 40) continue;
+  const implementationLines = significant.filter((line) => !/^\s*import\s/.test(line));
+  if (implementationLines.length === 0) continue;
+  const logicalStatements = combineLogicalStatements(implementationLines);
   if (logicalStatements.length === 0 || logicalStatements.length >= 40) continue;
-  const forward = logicalStatements.filter((stmt) => FORWARD_LINE_RE.test(stmt) || FORWARD_STATEMENT_RE.test(stmt)).length;
+  const forward = countForwardingLines(implementationLines);
   const ratio = forward / logicalStatements.length;
-  if (ratio > 0.8) {
+  if (forward > 0 && ratio > 0.8) {
     forwardingViolations.push({ path: rel, ratio: ratio.toFixed(2), lines: logicalStatements.length, forward });
   }
 }

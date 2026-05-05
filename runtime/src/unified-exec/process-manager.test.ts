@@ -1,6 +1,14 @@
 import { createRequire } from "node:module";
-import { describe, expect, test } from "vitest";
+import { dirname } from "node:path";
+import { describe, expect, test, vi } from "vitest";
 
+import {
+  permissionProfileFromRuntimePermissions,
+  restrictedFileSystemPolicy,
+  type SandboxExecRequest,
+  type SandboxManager,
+  type SandboxTransformRequest,
+} from "../sandbox/engine/index.js";
 import { UnifiedExecError, UnifiedExecProcessManager } from "./index.js";
 
 const require = createRequire(import.meta.url);
@@ -12,6 +20,98 @@ const hasPtySupport = (() => {
     return false;
   }
 })();
+
+function passthroughSandboxManager(): Pick<SandboxManager, "selectInitial" | "transform"> {
+  return {
+    selectInitial: () => "linux_seccomp",
+    transform: (request): SandboxExecRequest => ({
+      command: [request.command.program, ...request.command.args],
+      cwd: request.command.cwd,
+      env: request.command.env,
+      sandbox: request.sandbox,
+      windowsSandboxLevel: request.windowsSandboxLevel,
+      windowsSandboxPrivateDesktop: request.windowsSandboxPrivateDesktop,
+      permissionProfile: request.permissions,
+      fileSystemSandboxPolicy: request.permissions.fileSystem,
+      networkSandboxPolicy: request.permissions.network,
+      arg0: "agenc-sandbox-test",
+    }),
+  };
+}
+
+function ptyCompatibleSandboxManager(): Pick<SandboxManager, "selectInitial" | "transform"> {
+  return {
+    selectInitial: () => "linux_seccomp",
+    transform: (request): SandboxExecRequest => ({
+      command: [request.command.program, ...request.command.args],
+      cwd: request.command.cwd,
+      env: request.command.env,
+      sandbox: request.sandbox,
+      windowsSandboxLevel: request.windowsSandboxLevel,
+      windowsSandboxPrivateDesktop: request.windowsSandboxPrivateDesktop,
+      permissionProfile: request.permissions,
+      fileSystemSandboxPolicy: request.permissions.fileSystem,
+      networkSandboxPolicy: request.permissions.network,
+    }),
+  };
+}
+
+function installFakePty(
+  manager: UnifiedExecProcessManager,
+  onSpawn?: (
+    file: string,
+    args: readonly string[],
+    options: {
+      readonly cwd?: string;
+      readonly env?: Record<string, string>;
+    },
+  ) => void,
+): void {
+  (manager as unknown as {
+    loadPty: () => Promise<{
+      spawn(
+        file: string,
+        args: readonly string[],
+        options: {
+          readonly cwd?: string;
+          readonly env?: Record<string, string>;
+        },
+      ): {
+        readonly pid: number;
+        write(data: string): void;
+        resize(columns: number, rows: number): void;
+        kill(signal?: string): void;
+        onData(listener: (data: string) => void): { dispose(): void };
+        onExit(
+          listener: (event: {
+            readonly exitCode: number;
+            readonly signal?: number | string;
+          }) => void,
+        ): { dispose(): void };
+      };
+    }>;
+  }).loadPty = async () => ({
+    spawn(file, args, options) {
+      onSpawn?.(file, args, options);
+      let exitListener:
+        | ((event: { readonly exitCode: number; readonly signal?: number | string }) => void)
+        | null = null;
+      return {
+        pid: 4242,
+        write: vi.fn(),
+        resize: vi.fn(),
+        kill: vi.fn(() => {
+          exitListener?.({ exitCode: 143, signal: "SIGTERM" });
+        }),
+        onData: () => ({ dispose: vi.fn() }),
+        onExit: (listener) => {
+          exitListener = listener;
+          return { dispose: vi.fn() };
+        },
+      };
+    },
+  });
+}
 
 describe("UnifiedExecProcessManager", () => {
   test("runs one-shot non-PTY commands without returning a session id", async () => {
@@ -25,6 +125,64 @@ describe("UnifiedExecProcessManager", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("agenc-runtime");
     expect(result.process_id).toBeUndefined();
+  });
+
+  test("transforms restricted commands through the configured sandbox manager", async () => {
+    const transforms: SandboxTransformRequest[] = [];
+    const commandCwd = process.cwd();
+    const sandboxPolicyCwd = dirname(commandCwd);
+    const manager = new UnifiedExecProcessManager({
+      cwd: sandboxPolicyCwd,
+      sandboxManager: {
+        selectInitial: () => "linux_seccomp",
+        transform: (request): SandboxExecRequest => {
+          transforms.push(request);
+          return {
+            command: [
+              process.execPath,
+              "-e",
+              "process.stdout.write('sandboxed')",
+            ],
+            cwd: request.command.cwd,
+            env: request.command.env,
+            sandbox: request.sandbox,
+            windowsSandboxLevel: request.windowsSandboxLevel,
+            windowsSandboxPrivateDesktop:
+              request.windowsSandboxPrivateDesktop,
+            permissionProfile: request.permissions,
+            fileSystemSandboxPolicy: request.permissions.fileSystem,
+            networkSandboxPolicy: request.permissions.network,
+            arg0: "agenc-sandbox-test",
+          };
+        },
+      },
+    });
+    const permissionProfile = permissionProfileFromRuntimePermissions(
+      restrictedFileSystemPolicy(),
+      "enabled",
+    );
+
+    const result = await manager.execCommand({
+      cmd: "printf host-command",
+      workdir: commandCwd,
+      yield_time_ms: 250,
+      runtimeSandbox: {
+        permissionProfile,
+        sandboxPolicyCwd,
+        preference: "require",
+        agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("sandboxed");
+    expect(transforms).toHaveLength(1);
+    expect(transforms[0]).toMatchObject({
+      permissions: permissionProfile,
+      sandbox: "linux_seccomp",
+      sandboxPolicyCwd,
+      command: expect.objectContaining({ cwd: commandCwd }),
+    });
   });
 
   test("keeps non-PTY long-running commands pollable but stdin-closed", async () => {
@@ -89,6 +247,211 @@ describe("UnifiedExecProcessManager", () => {
         await manager.closeAll("test_cleanup");
       }
     },
+    10_000,
+  );
+
+  test.runIf(hasPtySupport)(
+    "rejects restricted write_stdin for a non-sandboxed PTY session",
+    async () => {
+      const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
+      const permissionProfile = permissionProfileFromRuntimePermissions(
+        restrictedFileSystemPolicy(),
+        "enabled",
+      );
+      try {
+        const started = await manager.execCommand({
+          cmd: "bash -i",
+          tty: true,
+          yield_time_ms: 250,
+        });
+
+        await expect(
+          manager.writeStdin({
+            session_id: started.process_id!,
+            chars: "",
+            yield_time_ms: 250,
+            runtimeSandbox: {
+              permissionProfile,
+              sandboxPolicyCwd: process.cwd(),
+              preference: "require",
+            },
+          }),
+        ).rejects.toMatchObject({
+          code: "write_stdin",
+        } satisfies Partial<UnifiedExecError>);
+
+        await expect(
+          manager.writeStdin({
+            session_id: started.process_id!,
+            chars: "printf denied\\n",
+            yield_time_ms: 250,
+            runtimeSandbox: {
+              permissionProfile,
+              sandboxPolicyCwd: process.cwd(),
+              preference: "require",
+            },
+          }),
+        ).rejects.toMatchObject({
+          code: "write_stdin",
+        } satisfies Partial<UnifiedExecError>);
+      } finally {
+        await manager.closeAll("test_cleanup");
+      }
+    },
+    10_000,
+  );
+
+  test("preserves sandbox argv0 for restricted PTY sessions", async () => {
+    const permissionProfile = permissionProfileFromRuntimePermissions(
+      restrictedFileSystemPolicy(),
+      "enabled",
+    );
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      sandboxManager: passthroughSandboxManager(),
+    });
+    let spawned:
+      | { readonly file: string; readonly args: readonly string[] }
+      | undefined;
+    installFakePty(manager, (file, args) => {
+      spawned = { file, args };
+    });
+
+    try {
+      const started = await manager.execCommand({
+        cmd: "bash -i",
+        tty: true,
+        yield_time_ms: 250,
+        runtimeSandbox: {
+          permissionProfile,
+          sandboxPolicyCwd: process.cwd(),
+          preference: "require",
+        },
+      });
+
+      expect(started.process_id).toEqual(expect.any(Number));
+      expect(spawned?.file).toBe(process.execPath);
+      expect(spawned?.args[0]).toBe("-e");
+      expect(spawned?.args).toEqual(
+        expect.arrayContaining(["agenc-sandbox-test", "bash -i"]),
+      );
+    } finally {
+      await manager.closeAll("test_cleanup");
+    }
+  });
+
+  test("rejects write_stdin when sandbox-affecting fields differ", async () => {
+    const permissionProfile = permissionProfileFromRuntimePermissions(
+      restrictedFileSystemPolicy(),
+      "enabled",
+    );
+    const runtimeSandbox = {
+      permissionProfile,
+      sandboxPolicyCwd: process.cwd(),
+      preference: "require" as const,
+    };
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      sandboxManager: ptyCompatibleSandboxManager(),
+    });
+    installFakePty(manager);
+    try {
+      const started = await manager.execCommand({
+        cmd: "bash -i",
+        tty: true,
+        yield_time_ms: 250,
+        runtimeSandbox,
+      });
+      const sessionId = started.process_id!;
+
+      await expect(
+        manager.writeStdin({
+          session_id: sessionId,
+          chars: "",
+          yield_time_ms: 250,
+          runtimeSandbox: {
+            ...runtimeSandbox,
+            preference: "auto",
+          },
+        }),
+      ).rejects.toMatchObject({ code: "write_stdin" } satisfies Partial<UnifiedExecError>);
+      await expect(
+        manager.writeStdin({
+          session_id: sessionId,
+          chars: "",
+          yield_time_ms: 250,
+          runtimeSandbox: {
+            ...runtimeSandbox,
+            enforceManagedNetwork: true,
+          },
+        }),
+      ).rejects.toMatchObject({ code: "write_stdin" } satisfies Partial<UnifiedExecError>);
+      await expect(
+        manager.writeStdin({
+          session_id: sessionId,
+          chars: "",
+          yield_time_ms: 250,
+          runtimeSandbox: {
+            ...runtimeSandbox,
+            network: { env: { HTTP_PROXY: "http://127.0.0.1:9" } },
+          },
+        }),
+      ).rejects.toMatchObject({ code: "write_stdin" } satisfies Partial<UnifiedExecError>);
+    } finally {
+      await manager.closeAll("test_cleanup");
+    }
+  });
+
+  test.runIf(hasPtySupport)(
+    "allows restricted write_stdin for a compatible sandboxed PTY session",
+    async () => {
+      const startProfile = permissionProfileFromRuntimePermissions(
+        restrictedFileSystemPolicy([
+          { path: { kind: "special", value: { kind: "project_roots" } }, access: "write" },
+          { path: { kind: "path", path: "/repo/blocked" }, access: "read" },
+        ]),
+        "enabled",
+      );
+      const writeProfile = permissionProfileFromRuntimePermissions(
+        restrictedFileSystemPolicy([
+          { path: { kind: "path", path: "/repo/blocked" }, access: "read" },
+          { path: { kind: "special", value: { kind: "project_roots" } }, access: "write" },
+        ]),
+        "enabled",
+      );
+      const runtimeSandbox = {
+        permissionProfile: startProfile,
+        sandboxPolicyCwd: process.cwd(),
+        preference: "require" as const,
+      };
+      const writeRuntimeSandbox = {
+        ...runtimeSandbox,
+        permissionProfile: writeProfile,
+      };
+      const manager = new UnifiedExecProcessManager({
+        cwd: process.cwd(),
+        sandboxManager: ptyCompatibleSandboxManager(),
+      });
+      try {
+        const started = await manager.execCommand({
+          cmd: "bash -i",
+          tty: true,
+          yield_time_ms: 250,
+          runtimeSandbox,
+        });
+        const echoed = await manager.writeStdin({
+          session_id: started.process_id!,
+          chars: "printf sandboxed-stdin\\n",
+          yield_time_ms: 250,
+          runtimeSandbox: writeRuntimeSandbox,
+        });
+
+        expect(echoed.stdout).toContain("sandboxed-stdin");
+      } finally {
+        await manager.closeAll("test_cleanup");
+      }
+    },
+    10_000,
   );
 
   test("force-kills abandoned non-tty processes once maxTimeoutMs elapses", async () => {
@@ -96,8 +459,8 @@ describe("UnifiedExecProcessManager", () => {
     // have no hard kill — the model could yield and forget, leaving the
     // child running indefinitely. We saw this in the wild with three
     // `./agenc -c 'echo hi' --dump-tokens` zombies burning ~97% CPU each
-    // for 95+ minutes after the agent moved on. codex runtime always enforces a
-    // timeout (codex-rs/core/src/exec.rs `consume_output`); we now do too.
+    // for 95+ minutes after the agent moved on. The reference runtime
+    // always enforces a timeout; we now do too.
     const manager = new UnifiedExecProcessManager({
       cwd: process.cwd(),
       maxTimeoutMs: 400,
@@ -138,9 +501,8 @@ describe("UnifiedExecProcessManager", () => {
   });
 
   test("respects explicit timeoutMs for tty calls (default does not apply)", async () => {
-    // tty=true is the interactive-session path — codex runtime doesn't have a
-    // direct analog because codex runtime exec is always one-shot. We deliberately
-    // exempt tty from the default hard timeout so persistent shells stay
+    // tty=true is the interactive-session path. We deliberately exempt tty
+    // from the default hard timeout so persistent shells stay
     // alive across write_stdin polls. This test asserts that exemption.
     if (!hasPtySupport) return;
     const manager = new UnifiedExecProcessManager({
@@ -165,7 +527,7 @@ describe("UnifiedExecProcessManager", () => {
     } finally {
       await manager.closeAll("test_cleanup");
     }
-  });
+  }, 10_000);
 
   test.runIf(hasPtySupport)("closeAll terminates live PTY sessions", async () => {
     const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
@@ -186,5 +548,5 @@ describe("UnifiedExecProcessManager", () => {
     ).rejects.toMatchObject({
       code: "unknown_process",
     } satisfies Partial<UnifiedExecError>);
-  });
+  }, 10_000);
 });

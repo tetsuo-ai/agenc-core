@@ -66,6 +66,7 @@ import {
 } from "../session/event-log.js";
 import type { ToolDispatchResult } from "../tool-registry.js";
 import type {
+  FunctionCallOutputContentItem,
   ToolInvocation,
   ToolName,
   ToolOutput,
@@ -74,6 +75,7 @@ import type {
 import {
   codeModeResult,
   functionToolOutput,
+  functionToolOutputFromContent,
   toolNameDisplay,
 } from "./context.js";
 import type { Tool } from "./types.js";
@@ -126,6 +128,11 @@ import {
   type PermissionAuditErrorHandler,
   type PermissionAuditLogger,
 } from "../permissions/permission-audit-log.js";
+import {
+  attachToolRuntimeContext,
+  type ToolRuntimeAttemptContext,
+} from "./runtimes/context.js";
+import { enforceRuntimeSandboxAttempt } from "./runtimes/sandboxing.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -139,6 +146,11 @@ export const DEFAULT_TOOL_TIMEOUT_MS = 30_000;
  * Per-tool override via `tool.maxResultBytes`.
  */
 export const DEFAULT_MAX_TOOL_RESULT_BYTES = 400_000;
+const RICH_OUTPUT_CONTENT_ITEMS = new WeakMap<
+  ToolOutput,
+  readonly FunctionCallOutputContentItem[]
+>();
+const STRUCTURED_CODE_MODE_RESULTS = new WeakMap<ToolOutput, unknown>();
 
 /** Appended marker when a result is truncated. */
 const TRUNCATION_MARKER_TEMPLATE =
@@ -937,6 +949,8 @@ export interface RunToolUseOptions {
    * forwarded so the executor's user-message includes it.
    */
   readonly onMcpToolCallError?: (mcpMeta: unknown) => void;
+  /** Hidden per-call runtime context selected by router/orchestrator. */
+  readonly runtimeAttemptContext?: ToolRuntimeAttemptContext;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1015,6 +1029,9 @@ export async function runToolUse(
       content: message,
       elapsedMs: performance.now() - startedAt,
     });
+  }
+  if (opts.runtimeAttemptContext !== undefined) {
+    attachToolRuntimeContext(parsedArgs, opts.runtimeAttemptContext);
   }
 
   // Step 2: JSON Schema validation (+ humanized prose override + hint).
@@ -1447,6 +1464,14 @@ export async function runToolUse(
       });
     }
   }
+  if (opts.runtimeAttemptContext !== undefined) {
+    attachToolRuntimeContext(argsForTool, opts.runtimeAttemptContext);
+    enforceRuntimeSandboxAttempt({
+      context: opts.runtimeAttemptContext,
+      tool,
+      args: inputForTool,
+    });
+  }
 
   // Step 5: I-9 timeout + abort race.
   const timeoutMs = resolveTimeoutMs(tool, inputForTool);
@@ -1499,6 +1524,12 @@ export async function runToolUse(
         return {
           content: result.content,
           isError: result.isError,
+          ...(result.contentItems !== undefined
+            ? { contentItems: result.contentItems }
+            : {}),
+          ...(result.codeModeResult !== undefined
+            ? { codeModeResult: result.codeModeResult }
+            : {}),
           metadata: result.metadata,
         } satisfies ToolDispatchResult;
       },
@@ -1694,7 +1725,25 @@ export async function runToolUse(
   }
 
   cleanupModeSub();
-  return functionToolOutput({
+  if (finalDispatch.contentItems !== undefined && !capped.truncated) {
+    const output = functionToolOutputFromContent({
+      callId: invocation.callId,
+      toolName: invocation.toolName,
+      payload: invocation.payload,
+      body: finalDispatch.contentItems,
+      isError: finalDispatch.isError === true,
+      durationMs: performance.now() - startedAt,
+      ...(finalDispatch.metadata !== undefined
+        ? { metadata: finalDispatch.metadata }
+        : {}),
+    });
+    RICH_OUTPUT_CONTENT_ITEMS.set(output, finalDispatch.contentItems);
+    if (finalDispatch.codeModeResult !== undefined) {
+      STRUCTURED_CODE_MODE_RESULTS.set(output, finalDispatch.codeModeResult);
+    }
+    return output;
+  }
+  const output = functionToolOutput({
     callId: invocation.callId,
     toolName: invocation.toolName,
     payload: invocation.payload,
@@ -1705,6 +1754,10 @@ export async function runToolUse(
       ? { metadata: finalDispatch.metadata }
       : {}),
   });
+  if (finalDispatch.codeModeResult !== undefined) {
+    STRUCTURED_CODE_MODE_RESULTS.set(output, finalDispatch.codeModeResult);
+  }
+  return output;
 }
 
 export interface ExecuteToolDispatchOptions extends RunToolUseOptions {
@@ -1728,7 +1781,12 @@ export async function executeToolDispatch(
   return {
     content: output.content,
     isError: output.isError,
-    codeModeResult: codeModeResult(output),
+    codeModeResult: STRUCTURED_CODE_MODE_RESULTS.has(output)
+      ? STRUCTURED_CODE_MODE_RESULTS.get(output)
+      : codeModeResult(output),
+    ...(RICH_OUTPUT_CONTENT_ITEMS.get(output) !== undefined
+      ? { contentItems: RICH_OUTPUT_CONTENT_ITEMS.get(output)! }
+      : {}),
     metadata: output.metadata ? { ...output.metadata } : undefined,
   };
 }
