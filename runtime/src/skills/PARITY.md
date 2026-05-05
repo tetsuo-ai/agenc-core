@@ -15,7 +15,7 @@ listing, skill rendering, invocation tracking, plugin roots, dynamic path discov
 cache invalidation behind one runtime service boundary.
 
 Carried behavior:
-- user, project, managed, plugin, bundled, and MCP-oriented skill roots
+- user, project, managed, plugin, and bundled skill roots
 - nested `SKILL.md` discovery with symlink loop protection and duplicate-realpath suppression
 - legacy command-directory loading for user-invocable markdown commands
 - frontmatter parsing for descriptions, tools, arguments, path activation, shell, effort, agent,
@@ -35,3 +35,5 @@ Intentional reductions:
 - Remote skill download/listing is not implemented in this local loader. AgenC's remote package and
   marketplace flows live under the plugin/auth surfaces and should be reconciled by the dedicated
   remote skills/plugin coverage rows.
+- MCP skill roots and builders are not loaded by `local-loader.ts`; runtime MCP integration owns those
+  sources until a dedicated skills/MCP row wires a concrete loader into this service.

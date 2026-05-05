@@ -1,6 +1,6 @@
 # Conversation Manager Parity
 
-Upstream reference: `/home/tetsuo/git/codex` at commit `35aaa5d9fcb606fb6f27dd5747ecab3f4ba0c07e`. <!-- branding-scan: allow upstream source root -->
+Upstream reference: `/home/tetsuo/git/codex` at commit `c8c30d9d75556ecbe94991af22380d2a4e9d6589`. <!-- branding-scan: allow upstream source root -->
 
 Primary source anchors:
 

@@ -4560,6 +4560,101 @@ function assertZc24UnusedDependenciesRemoved() {
   }
 }
 
+function assertZc29AuditEvidence() {
+  const ledgerRel = "parity/ZC-29-parity.json";
+  const ledgerPath = path.join(root, ledgerRel);
+  if (!existsSync(ledgerPath)) failGate(`ZC-29: missing audit ledger ${ledgerRel}`);
+
+  let ledger;
+  try {
+    ledger = JSON.parse(readFileSync(ledgerPath, "utf8"));
+  } catch (error) {
+    failGate(`ZC-29: ${ledgerRel} is not valid JSON: ${error.message}`);
+  }
+
+  if (ledger.item !== "ZC-29" || ledger.status !== "audited") {
+    failGate(`ZC-29: ${ledgerRel} must identify item ZC-29 with audited status`);
+  }
+
+  const specs = [
+    {
+      key: "fileWatcher",
+      decision: "implemented",
+      files: [
+        "runtime/src/file-watcher/index.ts",
+        "runtime/src/file-watcher/index.test.ts",
+        "runtime/src/file-watcher/PARITY.md",
+      ],
+    },
+    {
+      key: "skills",
+      decision: "scope-documented",
+      files: [
+        "runtime/src/skills/local-loader.ts",
+        "runtime/src/skills/local-loader.test.ts",
+        "runtime/src/skills/PARITY.md",
+      ],
+    },
+    {
+      key: "conversation",
+      decision: "implemented-with-neighboring-ownership",
+      files: [
+        "runtime/src/conversation/thread-manager.ts",
+        "runtime/src/conversation/thread-manager.contract.test.ts",
+        "runtime/src/conversation/PARITY.md",
+      ],
+    },
+  ];
+
+  const validationDocs = ledger.validation?.documentation ?? [];
+  const validationTests = ledger.validation?.existingTests ?? [];
+  const missing = [];
+
+  for (const spec of specs) {
+    const subsystem = ledger.subsystems?.[spec.key];
+    if (!subsystem) {
+      missing.push(`subsystem entry: ${spec.key}`);
+      continue;
+    }
+    if (subsystem.decision !== spec.decision) {
+      failGate(`ZC-29: ${spec.key} decision must be ${spec.decision}; found ${subsystem.decision ?? "<missing>"}`);
+    }
+    if (!Array.isArray(subsystem.carriedBehavior) || subsystem.carriedBehavior.length === 0) {
+      failGate(`ZC-29: ${spec.key} needs explicit carriedBehavior audit evidence`);
+    }
+    if (!Array.isArray(subsystem.intentionalReductions) || subsystem.intentionalReductions.length === 0) {
+      failGate(`ZC-29: ${spec.key} needs explicit intentionalReductions audit evidence`);
+    }
+    for (const rel of spec.files) {
+      if (!existsSync(path.join(root, rel))) missing.push(`file: ${rel}`);
+      if (!subsystem.agencFiles?.includes(rel)) missing.push(`${spec.key}.agencFiles: ${rel}`);
+    }
+
+    const parityDoc = spec.files.find((rel) => rel.endsWith("/PARITY.md"));
+    if (!validationDocs.includes(parityDoc)) missing.push(`validation.documentation: ${parityDoc}`);
+    const testFile = spec.files.find((rel) => rel.includes(".test."));
+    if (testFile && !validationTests.includes(testFile)) missing.push(`validation.existingTests: ${testFile}`);
+
+    const docSource = readFileSync(path.join(root, parityDoc), "utf8");
+    for (const marker of ["## ZC-29 breadth audit", "Decision:", "Carried behavior:", "Intentional reductions:"]) {
+      if (!docSource.includes(marker)) missing.push(`${parityDoc}: ${marker}`);
+    }
+  }
+
+  const skillsCarried = (ledger.subsystems?.skills?.carriedBehavior ?? []).join("\n");
+  if (/\bMCP\b/i.test(skillsCarried)) {
+    failGate("ZC-29: skills MCP roots must be documented as a reduction until local-loader.ts implements them");
+  }
+  const skillsParity = readFileSync(path.join(root, "runtime/src/skills/PARITY.md"), "utf8");
+  if (/MCP-oriented skill roots/i.test(skillsParity)) {
+    failGate("ZC-29: skills PARITY.md still claims MCP-oriented roots as carried behavior");
+  }
+
+  if (missing.length > 0) {
+    failGate(`ZC-29: audit evidence is incomplete:\n  ${missing.join("\n  ")}`);
+  }
+}
+
 function listSourceFiles(dir) {
   const out = [];
   for (const entry of readdirSync(dir)) {
@@ -4949,12 +5044,7 @@ async function cleanupGates(item) {
         grepNotPresent: { pattern: "@ts-nocheck", scope: "runtime/src" },
       },
       "ZC-28": { gone: ["runtime/src/utils/attachments.ts", "runtime/src/utils/teamMemoryOps.ts", "runtime/src/components/FeedbackSurvey/useMemorySurvey.tsx"] },
-      "ZC-29": {
-        grepPresent: {
-          pattern: '"decision": "scope-documented"',
-          scope: "parity/ZC-29-parity.json",
-        },
-      },
+      "ZC-29": { custom: assertZc29AuditEvidence },
     };
     const expectations = zcMap[id];
     if (!expectations) {
