@@ -17,7 +17,7 @@
 //      Skip with --skip-validate for iteration but never skip for completion.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { findItem, repoRoot, fail } from "./checklist-utils.mjs";
@@ -487,7 +487,37 @@ const ITEM_EVIDENCE = {
     ],
   },
   "C-01b": {
-    files: [{ globUnder: "runtime/src/sandbox/hardening", matching: /\.tsx?$/, minCount: 1 }],
+    files: [
+      "runtime/bin/agenc-linux-sandbox",
+      "runtime/src/sandbox/linux-launcher/main.ts",
+      "runtime/src/sandbox/linux-launcher/lib.ts",
+      "runtime/src/sandbox/linux-launcher/cli.ts",
+      "runtime/src/sandbox/linux-launcher/linux-run-main.ts",
+      "runtime/src/sandbox/linux-launcher/launcher.ts",
+      "runtime/src/sandbox/linux-launcher/bwrap.ts",
+      "runtime/src/sandbox/linux-launcher/landlock.ts",
+      "runtime/src/sandbox/linux-launcher/proxy-routing.ts",
+      "runtime/src/sandbox/linux-launcher/vendored-bwrap.ts",
+      "runtime/src/sandbox/linux-launcher/build.ts",
+      "runtime/src/sandbox/linux-launcher/PARITY.md",
+      "runtime/package.json",
+      "parity/linux-sandbox-launcher-parity.json",
+    ],
+    grepPresent: [
+      { pattern: "spawn\\(", scope: "runtime/src/sandbox/linux-launcher/launcher.ts" },
+      { pattern: "spawn\\(", scope: "runtime/src/sandbox/linux-launcher/linux-run-main.ts" },
+      { pattern: "\\-\\-unshare-user", scope: "runtime/src/sandbox/linux-launcher/bwrap.ts" },
+      { pattern: "\\-\\-unshare-pid", scope: "runtime/src/sandbox/linux-launcher/bwrap.ts" },
+      { pattern: "\\-\\-unshare-net", scope: "runtime/src/sandbox/linux-launcher/bwrap.ts" },
+      { pattern: "\\-\\-seccomp", scope: "runtime/src/sandbox/linux-launcher/bwrap.ts" },
+      { pattern: "createNetworkSeccompProgram", scope: "runtime/src/sandbox/linux-launcher/landlock.ts" },
+      { pattern: "\\-\\-apply-seccomp-then-exec", scope: "runtime/src/sandbox/linux-launcher/cli.ts" },
+      { pattern: "agenc-linux-sandbox", scope: "runtime/package.json" },
+      { pattern: "activateProxyRoutesInNetns", scope: "runtime/src/sandbox/linux-launcher/linux-run-main.ts" },
+      { pattern: "\\-\\-proxy-route-spec", scope: "runtime/src/sandbox/linux-launcher/linux-run-main.ts" },
+      { pattern: "AGENC_LINUX_SANDBOX_ACTIVE", scope: "runtime/src/sandbox/linux-launcher/linux-run-main.ts" },
+    ],
+    tests: ["runtime/src/sandbox/linux-launcher/linux-launcher.test.ts"],
   },
   "C-01c": {
     files: [{ globUnder: "runtime/src/sandbox/policy", matching: /\.tsx?$/, minCount: 1 }],
@@ -2412,6 +2442,101 @@ async function permissionGates(item) {
 }
 
 async function donorRuntimePortGates(item) {
+  if (id === "C-01b") {
+    const dir = path.join(root, "runtime/src/sandbox/linux-launcher");
+    if (!existsSync(dir)) failGate("C-01b: runtime/src/sandbox/linux-launcher/ missing");
+    const testRun = run("npm", [
+      "exec",
+      "--workspace=@tetsuo-ai/runtime",
+      "vitest",
+      "run",
+      "src/sandbox/linux-launcher/linux-launcher.test.ts",
+    ]);
+    if (testRun.status !== 0) {
+      failGate("C-01b Linux sandbox launcher tests failed");
+    }
+    const launcherSource = readFileSync(path.join(dir, "launcher.ts"), "utf8");
+    const runMainSource = readFileSync(path.join(dir, "linux-run-main.ts"), "utf8");
+    const bwrapSource = readFileSync(path.join(dir, "bwrap.ts"), "utf8");
+    const landlockSource = readFileSync(path.join(dir, "landlock.ts"), "utf8");
+    const proxySource = readFileSync(path.join(dir, "proxy-routing.ts"), "utf8");
+    const testsSource = readFileSync(path.join(dir, "linux-launcher.test.ts"), "utf8");
+    const packageJson = JSON.parse(readFileSync(path.join(root, "runtime/package.json"), "utf8"));
+    const binPath = path.join(root, "runtime/bin/agenc-linux-sandbox");
+    if (!/\bspawn(Sync)?\(/.test(launcherSource) || !/\bspawn\(/.test(runMainSource)) {
+      failGate("C-01b: launcher must spawn real subprocesses");
+    }
+    if (!/--seccomp/.test(bwrapSource) || !/--unshare-net/.test(bwrapSource)) {
+      failGate("C-01b: bwrap command builder must pass seccomp and network namespace flags");
+    }
+    if (!/createNetworkSeccompProgram/.test(landlockSource) || !/SECCOMP_RET_ERRNO/.test(landlockSource)) {
+      failGate("C-01b: landlock/seccomp port must generate a real cBPF seccomp program");
+    }
+    if (packageJson?.bin?.["agenc-linux-sandbox"] !== "bin/agenc-linux-sandbox") {
+      failGate("C-01b: runtime/package.json must expose bin.agenc-linux-sandbox");
+    }
+    if (packageJson?.engines?.node !== ">=25.0.0") {
+      failGate("C-01b: runtime/package.json must require a Node runtime with process.execve");
+    }
+    if ((statSync(binPath).mode & 0o111) === 0) {
+      failGate("C-01b: runtime/bin/agenc-linux-sandbox must be executable");
+    }
+    if (!/--apply-seccomp-then-exec/.test(runMainSource) || !/AGENC_LINUX_SANDBOX_ACTIVE/.test(runMainSource)) {
+      failGate("C-01b: launcher must reenter an inner apply-seccomp stage inside bubblewrap");
+    }
+    if (!/prepareHostProxyRoutes/.test(runMainSource) || !/activateProxyRoutesInNetns/.test(runMainSource)) {
+      failGate("C-01b: managed proxy mode must prepare host routes and activate them inside the namespace");
+    }
+    if (!/\bexecve\b/.test(runMainSource) || !/runCommandWithInnerSeccomp/.test(runMainSource)) {
+      failGate("C-01b: launcher must use execve for the inner non-proxy stage and an inner seccomp wrapper for proxy mode");
+    }
+    if (!/waitForChildWithSignalRelay\(spawned\.child\)/.test(runMainSource) || !/insertFinalCommandArgv0/.test(runMainSource)) {
+      failGate("C-01b: launcher must relay signals to outer bwrap and preserve final command argv0");
+    }
+    if (!/mkdtempSync/.test(proxySource) || !/FTP_PROXY/.test(proxySource) || !/NPM_CONFIG_PROXY/.test(proxySource)) {
+      failGate("C-01b: proxy routing must use atomic socket dirs and the donor proxy env-key set");
+    }
+    if (!/socks4a/.test(proxySource) || !/proxyUrlHasNoPathQueryOrFragment/.test(proxySource) || !/trackSocket/.test(proxySource)) {
+      failGate("C-01b: proxy routing must preserve URL formatting and clean active sockets");
+    }
+    if (!/trustedDirectories/.test(launcherSource) || !/TRUSTED_BWRAP_DIRECTORIES/.test(launcherSource)) {
+      failGate("C-01b: bubblewrap discovery must reject untrusted PATH entries by default");
+    }
+    if (!/globCharacterClass/.test(bwrapSource) || !/escapeRegexChar/.test(bwrapSource)) {
+      failGate("C-01b: unreadable glob matching must support ? and character classes");
+    }
+    if (!/unreadable glob expansion root is too broad/.test(bwrapSource) || !/\/nix\/store/.test(bwrapSource)) {
+      failGate("C-01b: bwrap defaults must include donor platform roots and reject root-level glob scans");
+    }
+    if (!/\bspawn\(/.test(testsSource) || !/runLinuxSandboxMain/.test(testsSource)) {
+      failGate("C-01b: tests must exercise the launcher through subprocess execution");
+    }
+    if (!/agenc-linux-sandbox/.test(testsSource) || !/AGENC_LINUX_SANDBOX_ACTIVE/.test(testsSource)) {
+      failGate("C-01b: tests must cover package bin exposure and inner-stage reentry");
+    }
+    if (!/activateProxyRoutesInNetns/.test(testsSource) || !/tcpRoundTrip/.test(testsSource)) {
+      failGate("C-01b: tests must exercise managed proxy route activation");
+    }
+    if (!/proxy-routed seccomp/.test(testsSource) || !/destroys active managed proxy sockets/.test(testsSource)) {
+      failGate("C-01b: tests must exercise proxy-routed seccomp and proxy cleanup");
+    }
+    if (!/deniedSyscalls/.test(testsSource) || !/protected metadata is created/.test(testsSource)) {
+      failGate("C-01b: tests must exercise proxy-routed BPF behavior and protected metadata violations");
+    }
+    if (!/malformed managed proxy route specs/.test(testsSource) || !/unreadable ancestors/.test(testsSource)) {
+      failGate("C-01b: tests must cover route-spec validation and unreadable ancestor ordering");
+    }
+    const buildRun = run("npm", ["run", "build", "--workspace=@tetsuo-ai/runtime"]);
+    if (buildRun.status !== 0) {
+      failGate("C-01b runtime package build failed");
+    }
+    const binRun = run("node", ["runtime/bin/agenc-linux-sandbox"], { silent: true });
+    if (binRun.status !== 2 || !/Linux sandbox command is missing/.test(binRun.stderr ?? "")) {
+      failGate("C-01b: built package bin must execute the Linux launcher entrypoint");
+    }
+    pass("C-01b: Linux launcher subprocess, package bin, reentry, proxy routes, bwrap, seccomp, and tests present");
+    return;
+  }
   // C-01a..C-01e: sandboxing.
   if (/^C-01/.test(id)) {
     const dir = path.join(root, "runtime/src/sandbox");
