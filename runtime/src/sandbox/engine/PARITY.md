@@ -7,8 +7,13 @@ Primary source anchors:
 - `sandboxing/src/manager.rs`
 - `sandboxing/src/policy_transforms.rs`
 - `sandboxing/src/seatbelt.rs`
+- `sandboxing/src/seatbelt_tests.rs`
 - `sandboxing/src/landlock.rs`
+- `sandboxing/src/landlock_tests.rs`
 - `sandboxing/src/bwrap.rs`
+- `sandboxing/src/bwrap_tests.rs`
+- `sandboxing/src/manager_tests.rs`
+- `sandboxing/src/policy_transforms_tests.rs`
 - `sandboxing/src/seatbelt_base_policy.sbpl`
 - `sandboxing/src/seatbelt_network_policy.sbpl`
 - `sandboxing/src/restricted_read_only_platform_defaults.sbpl`
@@ -24,6 +29,18 @@ model and platform backend argument generation:
   child-process spawn surface for the helper executable.
 - `bwrap.ts` probes host bubblewrap support and user namespace diagnostics.
 - `policies/` contains the macOS seatbelt policy templates.
+
+ZC-33 coverage lock:
+- The engine source set listed above remains represented by AgenC-owned
+  TypeScript counterparts in this directory.
+- Platform backends are not shape-only ports: `seatbelt.ts` spawns
+  `/usr/bin/sandbox-exec`, `landlock.ts` spawns the Linux helper executable,
+  and `bwrap.ts` probes the real host bubblewrap binary with `spawnSync`.
+- Source test anchors map to `linux-engine.test.ts`, `seatbelt.test.ts`, and
+  `policy-transforms.test.ts`; the ZC-33 verifier runs those suites instead of
+  only checking that the files exist.
+- `runtime/src/permissions/sandbox.ts` is intentionally policy math only. The
+  OS-backed execution layer lives here and in `runtime/src/sandbox/linux-launcher`.
 
 Security-critical parity notes:
 - Restricted read-only policies do not implicitly make the sandbox cwd

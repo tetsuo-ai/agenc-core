@@ -2,6 +2,9 @@
   "item": "ZC-32",
   "status": "implemented",
   "sourceCommit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
+  "mergeResolutions": [
+    "The final main integration conflicted in scripts/goal/verify.mjs because main added the ZC-33 sandbox coverage gate while this branch added the ZC-32 shell-command coverage gate. Resolution kept main's ZC-33 helper and map entry intact, then added the ZC-32 helper and map entry beside them."
+  ],
   "sourceFiles": [
     "src/lib.rs",
     "src/shell_detect.rs",

@@ -1,52 +1,35 @@
 /**
- * SandboxPolicy — AgenC filesystem + network permission surface.
+ * SandboxPolicy - AgenC filesystem + network permission surface.
  *
- * Hand-port of codex runtime `protocol/src/protocol.rs:986-1310` (T11 Wave 1,
- * Agent C).
+ * AgenC sandboxing has two cooperating layers:
+ *   1. This file defines policy shape and pure resolution helpers used by the
+ *      permission evaluator before tool dispatch.
+ *   2. `runtime/src/sandbox/engine` and
+ *      `runtime/src/sandbox/linux-launcher` perform platform-backed execution
+ *      through macOS seatbelt, Linux bubblewrap, seccomp, and helper
+ *      subprocesses.
  *
- * AgenC vs codex runtime sandboxing
- * ─────────────────────────
- * codex runtime enforces sandboxing through OS-level primitives:
- *   - macOS Seatbelt (`sandbox-exec`)
- *   - Linux Landlock + seccomp-bpf
- *   - Windows AppContainer
- *
- * AgenC **does not** use any of those primitives directly. Instead,
- * the runtime relies on:
- *   1. **Worktree isolation** — model-facing work happens under a
- *      checked-out worktree / session workspace rooted at cwd.
- *   2. **Permission evaluator** — every tool call is classified by
- *      the permissions layer (approval-policy + allowlist + denylist)
- *      before dispatch; the executor never invokes a forbidden tool.
- *   3. **cwd jail** — shell/exec runtimes validate that file-writing
- *      arguments resolve under `getWritableRootsWithCwd(policy, cwd)`
- *      before delegating to the system. Paths outside writable roots
- *      raise `SandboxDeniedError` and escalate through the approval
- *      path (see `tools/orchestrator.ts`).
- *
- * This file only carries **policy shape + resolution helpers**. Zero
- * OS calls live here. The runtime is free to layer an external
- * sandbox (`ExternalSandbox`) on top when the operator opts in, but
- * the policy resolution math is identical regardless.
+ * This module intentionally has no subprocess calls or filesystem mutation.
+ * It is policy math only. The backend modules own the real OS calls and the
+ * command arguments passed to those sandbox helpers.
  *
  * Wire format note
- * ────────────────
- * codex runtime serializes the tag using `kebab-case`: `"danger-full-access"`,
- * `"read-only"`, `"workspace-write"`, `"external-sandbox"`. AgenC keeps
- * the runtime-internal type tags in `snake_case` (`{ kind: "read_only" }`)
- * because the TypeScript switch statements already use that form across
- * the codebase. Wire parsers/serializers live in the config layer and
- * translate between `kebab-case` (user-facing) and `snake_case`
- * (runtime-internal).
+ * ----------------
+ * External config serializes tags as `kebab-case`: `"danger-full-access"`,
+ * `"read-only"`, `"workspace-write"`, `"external-sandbox"`. AgenC keeps the
+ * runtime-internal type tags in `snake_case` (`{ kind: "read_only" }`) because
+ * TypeScript switch statements already use that form across the codebase.
+ * Wire parsers and serializers live in the config layer and translate between
+ * `kebab-case` and `snake_case`.
  *
  * @module
  */
 
 import path from "node:path";
 
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 // Leaf types
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 /**
  * High-level sandbox mode selector. The full policy shape is
@@ -61,7 +44,7 @@ export type SandboxMode =
   | "workspace_write"
   | "danger_full_access";
 
-/** Port of codex runtime `NetworkAccess` (protocol.rs:898-914). */
+/** Network access mode used by sandbox policies. */
 export interface NetworkAccess {
   readonly mode: "enabled" | "disabled";
 }
@@ -70,8 +53,7 @@ export const NETWORK_DISABLED: NetworkAccess = { mode: "disabled" };
 export const NETWORK_ENABLED: NetworkAccess = { mode: "enabled" };
 
 /**
- * Port of codex runtime `ReadOnlyAccess` (protocol.rs:925-943). Controls how
- * restricted read access is scoped inside a sandboxed policy.
+ * Controls how restricted read access is scoped inside a sandboxed policy.
  */
 export type ReadOnlyAccess =
   | { readonly kind: "full_access" }
@@ -85,21 +67,20 @@ export const READ_ONLY_ACCESS_FULL: ReadOnlyAccess = { kind: "full_access" };
 
 /**
  * A writable root with the subpaths inside it that must remain
- * read-only. Port of codex runtime `WritableRoot` (protocol.rs:1059-1083).
+ * read-only.
  *
  * Typical `read_only_subpaths` examples:
- *   - `<root>/.git/hooks`  — prevents hook injection escalation
- *   - `<root>/.agenc`      — runtime state directory (parity for
- *                             codex runtime `.codex runtime`)
+ *   - `<root>/.git/hooks` - prevents hook injection escalation
+ *   - `<root>/.agenc` - runtime state directory
  */
 export interface WritableRoot {
   readonly root: string;
   readonly read_only_subpaths: readonly string[];
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// SandboxPolicy — 4 variants, AgenC behavior.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
+// SandboxPolicy - 4 variants, AgenC behavior.
+// ---------------------------------------------------------------------
 
 export type SandboxPolicy =
   | { readonly kind: "danger_full_access" }
@@ -121,9 +102,9 @@ export type SandboxPolicy =
       readonly network_access: NetworkAccess;
     };
 
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 // Convenience constructors
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 export function newDangerFullAccessPolicy(): SandboxPolicy {
   return { kind: "danger_full_access" };
@@ -168,17 +149,14 @@ export function newExternalSandboxPolicy(network?: NetworkAccess): SandboxPolicy
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Query helpers — AgenC behavior
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
+// Query helpers - AgenC behavior
+// ---------------------------------------------------------------------
 
 /**
- * Default read-only blacklist subpaths for a writable root. Port of
- * codex runtime `default_read_only_subpaths_for_writable_root`
- * (protocol.rs:1294-1325). Kept conservative at T11 Wave 1 —
- * filesystem inspection (`is_dir`/`is_file`) is deferred to the
- * caller where needed. This function returns the standard "always
- * blacklist inside a writable root" paths.
+ * Default read-only blacklist subpaths for a writable root. Filesystem
+ * inspection is deferred to callers where needed. This function returns the
+ * standard paths that must remain read-only inside a writable root.
  */
 export function defaultReadOnlySubpathsFor(
   rootPath: string,
@@ -192,9 +170,6 @@ export function defaultReadOnlySubpathsFor(
 }
 
 /**
- * Port of codex runtime `SandboxPolicy::get_writable_roots_with_cwd`
- * (protocol.rs:1203-1291).
- *
  * Resolution order:
  *   1. Start from `policy.writable_roots` (when applicable).
  *   2. Always push `cwd`.
@@ -255,7 +230,7 @@ export function getWritableRootsWithCwd(
  *     path resolves under one of the writable roots AND is not under
  *     any `read_only_subpaths` of that root.
  *
- * No filesystem calls. No OS primitives.
+ * No filesystem calls. Backend modules invoke platform primitives.
  */
 export function isPathWritable(
   policy: SandboxPolicy,
@@ -289,8 +264,7 @@ export function isPathWritable(
 }
 
 /**
- * Does the policy permit outbound network access? Port of codex runtime
- * `SandboxPolicy::has_full_network_access` (protocol.rs:1151-1158).
+ * Does the policy permit outbound network access?
  */
 export function sandboxAllowsNetwork(policy: SandboxPolicy): boolean {
   switch (policy.kind) {
@@ -308,9 +282,9 @@ export function sandboxAllowsNetwork(policy: SandboxPolicy): boolean {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// SandboxDeniedError — thrown when a tool invocation violates policy.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
+// SandboxDeniedError - thrown when a tool invocation violates policy.
+// ---------------------------------------------------------------------
 
 export type SandboxDenialKind = "filesystem" | "network";
 
@@ -341,9 +315,9 @@ export class SandboxDeniedError extends Error {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 // Internal path helpers
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 function isPosix(): boolean {
   return path.sep === "/";
