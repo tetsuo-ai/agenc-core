@@ -555,7 +555,14 @@ const ITEM_EVIDENCE = {
     grepPresent: [{ pattern: "sandbox.*bypass|bypass.*sandbox", scope: "runtime/src/sandbox" }],
   },
   "C-01f": {
-    files: ["runtime/src/sandbox/environment-selection.ts"],
+    files: [
+      "runtime/src/sandbox/environment-selection.ts",
+      "runtime/src/sandbox/sandbox-tags.ts",
+    ],
+    tests: [
+      "runtime/src/sandbox/environment-selection.test.ts",
+      "runtime/src/sandbox/sandbox-tags.test.ts",
+    ],
   },
   "C-01g": {
     files: ["runtime/src/sandbox/network-policy.ts"],
