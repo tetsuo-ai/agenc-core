@@ -2,10 +2,10 @@ import { describe, expect, test } from "vitest";
 
 import {
   pickToolResultDispatch,
-  resultTextForBridgeTool,
+  resultTextForTuiTool,
 } from "../agenc/adapters/upstream-tool-result-dispatch.js";
 
-describe("pickToolResultDispatch — TUI bridge tool routing", () => {
+describe("pickToolResultDispatch — TUI tool routing", () => {
   test("Bash tool with <bash-stdout> envelope routes to bash-output-view", () => {
     const target = pickToolResultDispatch(
       "Bash",
@@ -162,13 +162,13 @@ describe("pickToolResultDispatch — TUI bridge tool routing", () => {
   });
 });
 
-describe("resultTextForBridgeTool — content shape coercion", () => {
+describe("resultTextForTuiTool — content shape coercion", () => {
   test("returns strings unchanged", () => {
-    expect(resultTextForBridgeTool("hello")).toBe("hello");
+    expect(resultTextForTuiTool("hello")).toBe("hello");
   });
 
   test("joins arrays with newlines (recursive)", () => {
-    expect(resultTextForBridgeTool(["a", "b", "c"])).toBe("a\nb\nc");
+    expect(resultTextForTuiTool(["a", "b", "c"])).toBe("a\nb\nc");
   });
 
   test("flattens the structured-content-block array shape (the shape formatStructuredToolResult produces) by joining .text fields with newlines", () => {
@@ -176,30 +176,30 @@ describe("resultTextForBridgeTool — content shape coercion", () => {
       { type: "text", text: "<bash-stdout>line</bash-stdout>" },
       { type: "text", text: "[exit_code=0]" },
     ];
-    expect(resultTextForBridgeTool(blocks)).toBe(
+    expect(resultTextForTuiTool(blocks)).toBe(
       "<bash-stdout>line</bash-stdout>\n[exit_code=0]",
     );
   });
 
   test("extracts the .content field of an object-shaped result", () => {
-    expect(resultTextForBridgeTool({ content: "extracted" })).toBe("extracted");
+    expect(resultTextForTuiTool({ content: "extracted" })).toBe("extracted");
   });
 
   test("falls back to short JSON for arbitrary objects", () => {
-    expect(resultTextForBridgeTool({ foo: 1, bar: "baz" })).toContain("baz");
+    expect(resultTextForTuiTool({ foo: 1, bar: "baz" })).toContain("baz");
   });
 
   test("never throws on null", () => {
-    expect(() => resultTextForBridgeTool(null)).not.toThrow();
+    expect(() => resultTextForTuiTool(null)).not.toThrow();
   });
 
   test("never throws on undefined", () => {
-    expect(() => resultTextForBridgeTool(undefined)).not.toThrow();
+    expect(() => resultTextForTuiTool(undefined)).not.toThrow();
   });
 
   test("never throws on a circular-reference object — short JSON has no infinite recursion path", () => {
     const cyc: Record<string, unknown> = {};
     cyc.self = cyc;
-    expect(() => resultTextForBridgeTool(cyc)).not.toThrow();
+    expect(() => resultTextForTuiTool(cyc)).not.toThrow();
   });
 });

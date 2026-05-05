@@ -10,8 +10,7 @@ vi.mock("./ink.js", () => {
   return { Box, Text };
 });
 
-// branding-scan: allow compatibility bridge directory path
-import { GlobPathsView } from "./bridges/tool-stubs.js";
+import { GlobPathsView } from "./tool-rendering.js";
 
 interface ChildProps {
   readonly children?: unknown;

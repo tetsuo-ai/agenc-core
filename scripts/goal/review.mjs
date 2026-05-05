@@ -105,7 +105,7 @@ Your job: read the diff against main on the current port/${id} branch and judge 
                   -proxy, -glue, -forwarder, -passthrough, -stub, -indirect,
                   -dispatch, -barrel
         extensions: .ts .tsx .mts .cts .mjs .cjs .js .jsx
-        legitimate dirs: runtime/src/tui/bridges/ , runtime/src/mcp-client/
+        legitimate dir: runtime/src/mcp-client/
    c. New directory whose name is openclaude, codex, claude, OpenClaude, Codex, or Claude in any AgenC-owned tree. ${'' /* branding-scan: allow rule explainer enumerates the banned donor dir names */}
    d. New directory whose name is a donor-evasion alias: donor, mirror, vendored, external, _oc, _cx, _donor, _mirror, _vendored, _external. (No legitimate AgenC code uses these names.)
    e. New module whose body is overwhelmingly forwarders — all of \`export * from\`, \`export { foo } from\`, \`export type * from\`, \`export default X\`, single-line wrapper functions, or bare \`import\` + \`export\`. A barrel file or index.ts that only re-exports counts. Threshold: <40 significant lines AND >80% forward-pattern lines.

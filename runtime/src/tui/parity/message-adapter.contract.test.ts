@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
 
-import { adaptTranscriptEvents } from "../bridges/message-adapter.js";
+import { adaptTranscriptEvents } from "../session-transcript.js";
 
-// Contract: begin/end branches in message-adapter must drop events whose
+// Contract: begin/end branches in session-transcript must drop events whose
 // payload.callId is not a string, mirroring the pre-existing tool_progress
 // precedent. Without this guard, randomUUID() fallbacks gave the begin and
 // end of a pair different ids and orphaned the tool-use card in the UI.

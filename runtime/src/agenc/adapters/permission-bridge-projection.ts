@@ -22,8 +22,7 @@ import {
   recordAskUserQuestionUpdatedInput,
   type AskUserQuestionPlanInterviewAction,
 } from "../../tools/ask-user-question/index.js";
-// branding-scan: allow existing TUI adapter directory name
-import { makeToolUseMessage } from "../../tui/bridges/message-adapter.js";
+import { makeToolUseMessage } from "../../tui/session-transcript.js";
 
 export interface PendingRequest {
   readonly id: string;

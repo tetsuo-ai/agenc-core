@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import type { StreamingToolUse } from "../../llm/types.js";
-import { adaptTranscriptEvents } from "../bridges/message-adapter.js";
+import { adaptTranscriptEvents } from "../session-transcript.js";
 
 type Evt = { id: string; msg: { type: string; payload?: Record<string, unknown> } };
 
@@ -55,7 +55,7 @@ function complete(callId: string): Evt {
   };
 }
 
-describe("R5 streamingToolUses accumulator (message-adapter)", () => {
+describe("R5 streamingToolUses accumulator (session-transcript)", () => {
   test("E5.1 empty event sequence yields streamingToolUses=[]", () => {
     const t = adaptTranscriptEvents([]);
     expect(t.streamingToolUses).toEqual([]);
@@ -214,7 +214,7 @@ describe("R5 streamingToolUses accumulator (message-adapter)", () => {
     expect(t.streamingToolUses[0]?.unparsedToolInput).toBe("");
   });
 
-  test("B5.3 deltas missing a known index are dropped; deltas with non-string partialJson are dropped (parity with the upstream `if (!element) return _` and Anthropic adapter's `typeof partial_json === 'string'` guard)", () => {
+  test("B5.3 deltas missing a known index are dropped; deltas with non-string partialJson are dropped (parity with the provider `if (!element) return _` and `typeof partial_json === 'string'` guards)", () => {
     const t = adaptTranscriptEvents([
       turnStart(),
       blockStart("c1", 0, "Bash"),
@@ -234,7 +234,7 @@ describe("R5 streamingToolUses accumulator (message-adapter)", () => {
     expect(t.streamingToolUses[0]?.unparsedToolInput).toBe("real");
   });
 
-  test("B5.5 input_json_delta with snake_case partial_json field is also accepted (Anthropic native field name)", () => {
+  test("B5.5 input_json_delta with snake_case partial_json field is also accepted (provider-native field name)", () => {
     const t = adaptTranscriptEvents([
       turnStart(),
       blockStart("c1", 0, "Bash"),

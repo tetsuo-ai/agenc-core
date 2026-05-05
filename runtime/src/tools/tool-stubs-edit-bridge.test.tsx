@@ -1,7 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 
-// Mirror of the AgenC ink stub used by tool-stubs-bash-bridge.test.tsx
-// — see that file for why this is required.
+// Mirror of the AgenC ink stub used by the bash renderer test.
 vi.mock("../tui/ink.js", () => {
   function Box(_props: { readonly children?: unknown }) {
     return null;
@@ -12,8 +11,7 @@ vi.mock("../tui/ink.js", () => {
   return { Box, Text };
 });
 
-// branding-scan: allow existing compatibility-island path
-import { createBridgeTool, EditDiffView } from "../tui/bridges/tool-stubs.js";
+import { createTuiTool, EditDiffView } from "../tui/tool-rendering.js";
 
 interface ChildProps {
   readonly children?: unknown;
@@ -38,9 +36,9 @@ function flattenChildren(node: unknown): ChildElement[] {
     );
 }
 
-describe("createBridgeTool('Edit').renderToolResultMessage — end-to-end dispatch", () => {
+describe("createTuiTool('Edit').renderToolResultMessage — end-to-end dispatch", () => {
   test("Edit tool with <edit-diff> envelope produces a React element whose type is EditDiffView", () => {
-    const tool = createBridgeTool("Edit");
+    const tool = createTuiTool("Edit");
     const node = tool.renderToolResultMessage(
       "<edit-file>src/foo.ts</edit-file>\n<edit-diff>--- a\n+new</edit-diff>",
       [],
@@ -50,7 +48,7 @@ describe("createBridgeTool('Edit').renderToolResultMessage — end-to-end dispat
   });
 
   test("Edit tool with structured-content-blocks array (the shape formatStructuredToolResult emits) is collapsed and dispatches to EditDiffView", () => {
-    const tool = createBridgeTool("Edit");
+    const tool = createTuiTool("Edit");
     const blocks = [
       { type: "text", text: "<edit-file>src/foo.ts</edit-file>" },
       { type: "text", text: "<edit-diff>--- a\n+++ b\n@@ ... @@\n-old\n+new</edit-diff>" },
@@ -63,7 +61,7 @@ describe("createBridgeTool('Edit').renderToolResultMessage — end-to-end dispat
   });
 
   test("Edit tool with no <edit-diff> envelope (e.g. error-path payload) falls through to generic", () => {
-    const tool = createBridgeTool("Edit");
+    const tool = createTuiTool("Edit");
     const node = tool.renderToolResultMessage(
       "permission denied",
       [],
@@ -73,7 +71,7 @@ describe("createBridgeTool('Edit').renderToolResultMessage — end-to-end dispat
   });
 
   test("Edit dispatch is exact-case — 'edit' does NOT route to EditDiffView", () => {
-    const tool = createBridgeTool("edit");
+    const tool = createTuiTool("edit");
     const node = tool.renderToolResultMessage(
       "<edit-diff>diff</edit-diff>",
       [],
@@ -83,7 +81,7 @@ describe("createBridgeTool('Edit').renderToolResultMessage — end-to-end dispat
   });
 
   test("Edit with null content falls through to generic — does not throw on tag extraction", () => {
-    const tool = createBridgeTool("Edit");
+    const tool = createTuiTool("Edit");
     const node = tool.renderToolResultMessage(null, [], { verbose: false });
     expect((node as { type: unknown }).type).not.toBe(EditDiffView);
   });
@@ -195,8 +193,7 @@ describe("EditDiffView — local renderer fidelity to upstream visual contract",
 
 describe("formatStructuredToolResult ⇄ EditDiffView wire-shape lock", () => {
   test("the tags formatStructuredToolResult emits for Edit are the exact tags EditDiffView consumes (so a future flip to upstream FileEditToolDiff requires no shape changes here)", async () => {
-    // branding-scan: allow existing compatibility-island path
-    const adapter = await import("../tui/bridges/message-adapter.js");
+    const adapter = await import("../tui/session-transcript.js");
     const blocks = adapter.formatStructuredToolResult(
       "Edit",
       "tool_call_completed",
