@@ -515,7 +515,11 @@ const ITEM_EVIDENCE = {
     ],
   },
   "C-03": {
-    files: ["runtime/src/utils/terminal-detection.ts"],
+    files: [
+      "runtime/src/utils/terminal-detection.ts",
+      "runtime/src/utils/terminal-detection.test.ts",
+      "parity/terminal-detection-parity.json",
+    ],
   },
   "C-04": {
     files: [{ globUnder: "runtime/src", matching: /file-search|git-utils/, minCount: 1 }],
@@ -2447,6 +2451,16 @@ async function donorRuntimePortGates(item) {
   if (id === "C-03") {
     const f = path.join(root, "runtime/src/utils/terminal-detection.ts");
     if (!existsSync(f)) failGate("runtime/src/utils/terminal-detection.ts missing");
+    const testRun = run("npm", [
+      "exec",
+      "--workspace=@tetsuo-ai/runtime",
+      "vitest",
+      "run",
+      "src/utils/terminal-detection.test.ts",
+    ]);
+    if (testRun.status !== 0) {
+      failGate("C-03 terminal detection tests failed");
+    }
     pass("terminal-detection.ts present");
     return;
   }
