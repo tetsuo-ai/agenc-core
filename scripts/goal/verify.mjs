@@ -659,6 +659,19 @@ const ITEM_EVIDENCE = {
   "SK-02": {
     files: [{ globUnder: "runtime/src/skills", matching: /change.*detector|hot.?reload/i, minCount: 1 }],
   },
+  "ZC-31": {
+    files: [
+      "runtime/src/skills/PARITY.md",
+      "runtime/src/skills/local-loader.ts",
+      "runtime/src/skills/local-loader.test.ts",
+      "runtime/src/prompts/attachments/skill-listing.ts",
+      "runtime/src/bin/model-facing-tools.ts",
+      "runtime/src/commands/skills.ts",
+    ],
+    grepPresent: [
+      { pattern: "ZC-31 coverage lock", scope: "runtime/src/skills/PARITY.md" },
+    ],
+  },
   "ST-01": {
     grepPresent: [{ pattern: "CREATE TABLE.*agent_runs|agent_runs.*CREATE TABLE|table.*agent_runs", scope: "runtime/src/state" }],
   },
@@ -1266,6 +1279,15 @@ const ITEM_EVIDENCE = {
       { pattern: "npm view", scope: "scripts/check-sibling-package-pins.mjs" },
     ],
     tests: ["scripts/check-sibling-package-pins.test.mjs"],
+  },
+  "ZC-30": {
+    files: [
+      "runtime/src/plugins/PARITY.md",
+      "runtime/src/plugins/marketplace/PARITY.md",
+    ],
+    grepPresent: [
+      { pattern: "ZC-30 coverage lock", scope: "runtime/src/plugins/PARITY.md" },
+    ],
   },
   "MG-01": {
     files: ["runtime/src/bin/agenc.ts"],
@@ -4540,6 +4562,249 @@ function assertZc24UnusedDependenciesRemoved() {
   }
 }
 
+function assertZc29AuditEvidence() {
+  const ledgerRel = "parity/ZC-29-parity.json";
+  const ledgerPath = path.join(root, ledgerRel);
+  if (!existsSync(ledgerPath)) failGate(`ZC-29: missing audit ledger ${ledgerRel}`);
+
+  let ledger;
+  try {
+    ledger = JSON.parse(readFileSync(ledgerPath, "utf8"));
+  } catch (error) {
+    failGate(`ZC-29: ${ledgerRel} is not valid JSON: ${error.message}`);
+  }
+
+  if (ledger.item !== "ZC-29" || ledger.status !== "audited") {
+    failGate(`ZC-29: ${ledgerRel} must identify item ZC-29 with audited status`);
+  }
+
+  const specs = [
+    {
+      key: "fileWatcher",
+      decision: "implemented",
+      files: [
+        "runtime/src/file-watcher/index.ts",
+        "runtime/src/file-watcher/index.test.ts",
+        "runtime/src/file-watcher/PARITY.md",
+      ],
+    },
+    {
+      key: "skills",
+      decision: "scope-documented",
+      files: [
+        "runtime/src/skills/local-loader.ts",
+        "runtime/src/skills/local-loader.test.ts",
+        "runtime/src/skills/PARITY.md",
+      ],
+    },
+    {
+      key: "conversation",
+      decision: "implemented-with-neighboring-ownership",
+      files: [
+        "runtime/src/conversation/thread-manager.ts",
+        "runtime/src/conversation/thread-manager.contract.test.ts",
+        "runtime/src/conversation/PARITY.md",
+      ],
+    },
+  ];
+
+  const validationDocs = ledger.validation?.documentation ?? [];
+  const validationTests = ledger.validation?.existingTests ?? [];
+  const missing = [];
+
+  for (const spec of specs) {
+    const subsystem = ledger.subsystems?.[spec.key];
+    if (!subsystem) {
+      missing.push(`subsystem entry: ${spec.key}`);
+      continue;
+    }
+    if (subsystem.decision !== spec.decision) {
+      failGate(`ZC-29: ${spec.key} decision must be ${spec.decision}; found ${subsystem.decision ?? "<missing>"}`);
+    }
+    if (!Array.isArray(subsystem.carriedBehavior) || subsystem.carriedBehavior.length === 0) {
+      failGate(`ZC-29: ${spec.key} needs explicit carriedBehavior audit evidence`);
+    }
+    if (!Array.isArray(subsystem.intentionalReductions) || subsystem.intentionalReductions.length === 0) {
+      failGate(`ZC-29: ${spec.key} needs explicit intentionalReductions audit evidence`);
+    }
+    for (const rel of spec.files) {
+      if (!existsSync(path.join(root, rel))) missing.push(`file: ${rel}`);
+      if (!subsystem.agencFiles?.includes(rel)) missing.push(`${spec.key}.agencFiles: ${rel}`);
+    }
+
+    const parityDoc = spec.files.find((rel) => rel.endsWith("/PARITY.md"));
+    if (!validationDocs.includes(parityDoc)) missing.push(`validation.documentation: ${parityDoc}`);
+    const testFile = spec.files.find((rel) => rel.includes(".test."));
+    if (testFile && !validationTests.includes(testFile)) missing.push(`validation.existingTests: ${testFile}`);
+
+    const docSource = readFileSync(path.join(root, parityDoc), "utf8");
+    for (const marker of ["## ZC-29 breadth audit", "Decision:", "Carried behavior:", "Intentional reductions:"]) {
+      if (!docSource.includes(marker)) missing.push(`${parityDoc}: ${marker}`);
+    }
+  }
+
+  const skillsCarried = (ledger.subsystems?.skills?.carriedBehavior ?? []).join("\n");
+  if (/\bMCP\b/i.test(skillsCarried)) {
+    failGate("ZC-29: skills MCP roots must be documented as a reduction until local-loader.ts implements them");
+  }
+  const skillsParity = readFileSync(path.join(root, "runtime/src/skills/PARITY.md"), "utf8");
+  if (/MCP-oriented skill roots/i.test(skillsParity)) {
+    failGate("ZC-29: skills PARITY.md still claims MCP-oriented roots as carried behavior");
+  }
+
+  if (missing.length > 0) {
+    failGate(`ZC-29: audit evidence is incomplete:\n  ${missing.join("\n  ")}`);
+  }
+}
+
+function assertZc30PluginCoverage() {
+  const sourceRoot = `${["co", "dex-rs"].join("")}/core-plugins/src`;
+  const requiredSourceAnchors = [
+    `${sourceRoot}/loader.rs`,
+    `${sourceRoot}/manifest.rs`,
+    `${sourceRoot}/manager.rs`,
+    `${sourceRoot}/marketplace.rs`,
+    `${sourceRoot}/marketplace_add.rs`,
+    `${sourceRoot}/marketplace_add/install.rs`,
+    `${sourceRoot}/marketplace_add/metadata.rs`,
+    `${sourceRoot}/marketplace_add/source.rs`,
+    `${sourceRoot}/marketplace_remove.rs`,
+    `${sourceRoot}/marketplace_upgrade.rs`,
+    `${sourceRoot}/marketplace_upgrade/activation.rs`,
+    `${sourceRoot}/marketplace_upgrade/git.rs`,
+    `${sourceRoot}/installed_marketplaces.rs`,
+    `${sourceRoot}/remote_bundle.rs`,
+    `${sourceRoot}/startup_remote_sync.rs`,
+    `${sourceRoot}/store.rs`,
+    `${sourceRoot}/toggles.rs`,
+  ];
+  const parityFiles = [
+    "runtime/src/plugins/PARITY.md",
+    "runtime/src/plugins/marketplace/PARITY.md",
+  ];
+  const parityText = parityFiles
+    .map((rel) => readFileSync(path.join(root, rel), "utf8"))
+    .join("\n");
+  const missingAnchors = requiredSourceAnchors.filter((anchor) => !parityText.includes(anchor));
+  if (missingAnchors.length > 0) {
+    failGate(`ZC-30: plugin parity is missing source anchor(s):\n  ${missingAnchors.join("\n  ")}`);
+  }
+
+  const requiredCounterparts = [
+    "runtime/src/plugins/loader.ts",
+    "runtime/src/plugins/manifest.ts",
+    "runtime/src/plugins/manifest-schema.ts",
+    "runtime/src/plugins/registration/manager.ts",
+    "runtime/src/plugins/toggles.ts",
+    "runtime/src/plugins/cli/marketplace-add.ts",
+    "runtime/src/plugins/cli/marketplace-remove.ts",
+    "runtime/src/plugins/cli/marketplace-upgrade.ts",
+    "runtime/src/plugins/marketplace/marketplace.ts",
+    "runtime/src/plugins/marketplace/installed_marketplaces.ts",
+    "runtime/src/plugins/marketplace/remote_bundle.ts",
+    "runtime/src/plugins/marketplace/startup_remote_sync.ts",
+    "runtime/src/plugins/resolution.ts",
+  ];
+  const missingCounterparts = requiredCounterparts.filter((rel) => !existsSync(path.join(root, rel)));
+  if (missingCounterparts.length > 0) {
+    failGate(`ZC-30: plugin counterpart file(s) missing:\n  ${missingCounterparts.join("\n  ")}`);
+  }
+
+  const rootParity = readFileSync(path.join(root, "runtime/src/plugins/PARITY.md"), "utf8");
+  const requiredSections = ["PK-01", "PK-02", "PK-03", "PK-04", "PK-06", "PK-07", "PK-09"];
+  const missingSections = requiredSections.filter((section) => !rootParity.includes(`${section} scope carried into AgenC:`));
+  if (missingSections.length > 0) {
+    failGate(`ZC-30: root plugin parity is missing carried-scope section(s): ${missingSections.join(", ")}`);
+  }
+  if (!rootParity.includes("ZC-30 coverage lock:")) {
+    failGate("ZC-30: root plugin parity is missing the ZC-30 coverage lock note.");
+  }
+}
+
+function assertZc31SkillsCoverage() {
+  const sourceRoot = `${["co", "dex-rs"].join("")}/core-skills/src`;
+  const requiredSourceAnchors = [
+    `${sourceRoot}/injection.rs`,
+    `${sourceRoot}/env_var_dependencies.rs`,
+    `${sourceRoot}/invocation_utils.rs`,
+    `${sourceRoot}/loader.rs`,
+    `${sourceRoot}/manager.rs`,
+    `${sourceRoot}/mention_counts.rs`,
+    `${sourceRoot}/model.rs`,
+    `${sourceRoot}/remote.rs`,
+    `${sourceRoot}/render.rs`,
+    `${sourceRoot}/system.rs`,
+  ];
+  const parityPath = path.join(root, "runtime/src/skills/PARITY.md");
+  const parityText = readFileSync(parityPath, "utf8");
+  const missingAnchors = requiredSourceAnchors.filter((anchor) => !parityText.includes(anchor));
+  if (missingAnchors.length > 0) {
+    failGate(`ZC-31: skills parity is missing source anchor(s):\n  ${missingAnchors.join("\n  ")}`);
+  }
+
+  const requiredCounterparts = [
+    "runtime/src/skills/local-loader.ts",
+    "runtime/src/skills/local-loader.test.ts",
+    "runtime/src/prompts/attachments/skill-listing.ts",
+    "runtime/src/bin/model-facing-tools.ts",
+    "runtime/src/commands/skills.ts",
+    "runtime/src/commands/skills.test.ts",
+    "runtime/src/bin/model-facing-tools.test.ts",
+  ];
+  const missingCounterparts = requiredCounterparts.filter((rel) => !existsSync(path.join(root, rel)));
+  if (missingCounterparts.length > 0) {
+    failGate(`ZC-31: skills counterpart file(s) missing:\n  ${missingCounterparts.join("\n  ")}`);
+  }
+
+  const localLoader = readFileSync(path.join(root, "runtime/src/skills/local-loader.ts"), "utf8");
+  const localLoaderSymbols = [
+    "discoverSkillRoots",
+    "loadLocalSkillsSnapshot",
+    "formatSkillListingWithinBudget",
+    "recordInvokedSkill",
+    "BUNDLED_SKILLS",
+    "AGENC_MANAGED_HOME",
+    "pathsActivateSkill",
+    "renderSkill",
+  ];
+  const missingLocalLoaderSymbols = localLoaderSymbols.filter((symbol) => !localLoader.includes(symbol));
+  if (missingLocalLoaderSymbols.length > 0) {
+    failGate(`ZC-31: local skills loader is missing symbol(s): ${missingLocalLoaderSymbols.join(", ")}`);
+  }
+
+  const skillListing = readFileSync(
+    path.join(root, "runtime/src/prompts/attachments/skill-listing.ts"),
+    "utf8",
+  );
+  if (!skillListing.includes("formatSkillListingWithinBudget")) {
+    failGate("ZC-31: skill listing attachment no longer uses the shared listing budget helper.");
+  }
+
+  const modelFacingTools = readFileSync(path.join(root, "runtime/src/bin/model-facing-tools.ts"), "utf8");
+  for (const pattern of ['name: "Skill"', "renderSkill", "recordInvokedSkill"]) {
+    if (!modelFacingTools.includes(pattern)) {
+      failGate(`ZC-31: model-facing Skill tool is missing ${pattern}.`);
+    }
+  }
+
+  const requiredReductionNotes = [
+    "Sidecar `agents/openai.yaml` metadata is not carried.",
+    "Automatic text mention injection is not carried.",
+    "Implicit shell-script and skill-doc command detection is not carried.",
+    "Product-surface filtering is not carried",
+    "Remote skill listing/export is not carried",
+    "Disk-installed system skill cache management is not carried.",
+    "Rich root-alias rendering from the donor renderer is reduced",
+  ];
+  const missingReductions = requiredReductionNotes.filter((note) => !parityText.includes(note));
+  if (missingReductions.length > 0) {
+    failGate(`ZC-31: skills parity is missing reduction note(s):\n  ${missingReductions.join("\n  ")}`);
+  }
+  if (!parityText.includes("ZC-31 coverage lock:")) {
+    failGate("ZC-31: skills parity is missing the ZC-31 coverage lock note.");
+  }
+}
+
 function listSourceFiles(dir) {
   const out = [];
   for (const entry of readdirSync(dir)) {
@@ -4930,6 +5195,9 @@ async function cleanupGates(item) {
         grepNotPresent: { pattern: "@ts-nocheck", scope: "runtime/src" },
       },
       "ZC-28": { gone: ["runtime/src/utils/attachments.ts", "runtime/src/utils/teamMemoryOps.ts", "runtime/src/components/FeedbackSurvey/useMemorySurvey.tsx"] },
+      "ZC-29": { custom: assertZc29AuditEvidence },
+      "ZC-30": { custom: assertZc30PluginCoverage },
+      "ZC-31": { custom: assertZc31SkillsCoverage },
     };
     const expectations = zcMap[id];
     if (!expectations) {
