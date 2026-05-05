@@ -101,6 +101,32 @@ enabled = "yes"
 `)),
     ).toThrow(/enabled must be a boolean/);
   });
+
+  test("permission network TOML ignores unsupported mitm field", () => {
+    const parsed = networkTablesFromToml(rawToml(`
+default_permissions = "workspace"
+
+[permissions.workspace.network]
+enabled = true
+mitm = true
+`));
+
+    const config = defaultNetworkProxyConfig();
+    applyNetworkTables(config, parsed);
+    expect(config.network.enabled).toBe(true);
+    expect(config.network.mitm).toBe(false);
+  });
+
+  test("permission network TOML rejects unsupported domain none value", () => {
+    expect(() =>
+      networkTablesFromToml(rawToml(`
+default_permissions = "workspace"
+
+[permissions.workspace.network.domains]
+"api.agenc.tech" = "none"
+`)),
+    ).toThrow(/must be allow or deny/);
+  });
 });
 
 describe("domain overlays and host decisions", () => {
@@ -220,11 +246,11 @@ default_permissions = "workspace"
       expected: { kind: "blocked" as const, reason: "not_allowed" as const },
     },
     {
-      label: "malformed bracket pattern does not match",
-      allowed: ["[unterminated"],
+      label: "internal wildcard exact pattern",
+      allowed: ["region*.v2.agenc.tech"],
       denied: [],
-      host: "api.agenc.tech",
-      expected: { kind: "blocked" as const, reason: "not_allowed" as const },
+      host: "region3.v2.agenc.tech",
+      expected: { kind: "allowed" as const },
     },
     {
       label: "exact deny wins over wildcard allow",
@@ -252,6 +278,20 @@ default_permissions = "workspace"
       );
     },
   );
+
+  test("malformed domain glob patterns fail closed during state build", () => {
+    const allowed = defaultNetworkProxyConfig();
+    setAllowedDomains(allowed, ["[unterminated"]);
+    expect(() => buildConfigState(allowed)).toThrow(
+      /valid domain glob pattern/,
+    );
+
+    const denied = defaultNetworkProxyConfig();
+    setDeniedDomains(denied, ["[unterminated"]);
+    expect(() => buildConfigState(denied)).toThrow(
+      /valid domain glob pattern/,
+    );
+  });
 });
 
 describe("trusted constraints", () => {

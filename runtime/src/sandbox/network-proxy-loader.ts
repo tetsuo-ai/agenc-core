@@ -1,3 +1,4 @@
+// Source parity for C-01g is tracked in ../../../parity/C-01g-parity.json.
 import path from "node:path";
 import { stat } from "node:fs/promises";
 
@@ -109,7 +110,6 @@ export interface NetworkToml {
   readonly domains?: NetworkDomainPermissions;
   readonly unixSockets?: NetworkUnixSocketPermissions;
   readonly allowLocalBinding?: boolean;
-  readonly mitm?: boolean;
 }
 
 export interface ExecPolicyNetworkRule {
@@ -398,7 +398,6 @@ export function applyNetworkTomlToConfig(
   if (network.allowLocalBinding !== undefined) {
     config.network.allowLocalBinding = network.allowLocalBinding;
   }
-  if (network.mitm !== undefined) config.network.mitm = network.mitm;
 }
 
 export function applyNetworkTables(
@@ -490,17 +489,25 @@ export function buildConfigState(
   config: NetworkProxyConfig,
   constraints: NetworkProxyConstraints = {},
 ): ConfigState {
+  const configAllowedDomains = allowedDomains(config);
+  const configDeniedDomains = deniedDomains(config);
   validateUnixSocketAllowlistPaths(config);
+  validateDomainGlobPatterns("network.allowed_domains", configAllowedDomains, {
+    allowGlobalWildcard: true,
+  });
+  validateDomainGlobPatterns("network.denied_domains", configDeniedDomains, {
+    allowGlobalWildcard: false,
+  });
   validateNonGlobalWildcardDomainPatterns(
     "network.denied_domains",
-    deniedDomains(config),
+    configDeniedDomains,
   );
   validatePolicyAgainstConstraints(config, constraints);
   return {
     config: cloneNetworkProxyConfig(config),
     constraints: freezeConstraints({ ...constraints }),
-    allowedDomains: [...allowedDomains(config)],
-    deniedDomains: [...deniedDomains(config)],
+    allowedDomains: [...configAllowedDomains],
+    deniedDomains: [...configDeniedDomains],
   };
 }
 
@@ -548,6 +555,12 @@ export function validatePolicyAgainstConstraints(
     "network.denied_domains",
     configDeniedDomains,
   );
+  validateDomainGlobPatterns("network.allowed_domains", configAllowedDomains, {
+    allowGlobalWildcard: true,
+  });
+  validateDomainGlobPatterns("network.denied_domains", configDeniedDomains, {
+    allowGlobalWildcard: false,
+  });
 
   if (constraints.enabled !== undefined && network.enabled && !constraints.enabled) {
     invalidValue("network.enabled", "true", "false (disabled by managed config)");
@@ -613,6 +626,11 @@ export function validatePolicyAgainstConstraints(
       "network.allowed_domains",
       constraints.allowedDomains,
     );
+    validateDomainGlobPatterns(
+      "network.allowed_domains",
+      constraints.allowedDomains,
+      { allowGlobalWildcard: false },
+    );
     validateAllowedDomainsConstraint(
       configAllowedDomains,
       constraints.allowedDomains,
@@ -625,6 +643,11 @@ export function validatePolicyAgainstConstraints(
     validateNonGlobalWildcardDomainPatterns(
       "network.denied_domains",
       constraints.deniedDomains,
+    );
+    validateDomainGlobPatterns(
+      "network.denied_domains",
+      constraints.deniedDomains,
+      { allowGlobalWildcard: false },
     );
     validateDeniedDomainsConstraint(
       configDeniedDomains,
@@ -849,7 +872,6 @@ function networkTomlFromRaw(value: unknown, field: string): NetworkToml {
     ...optionalDomainPermissionsEntry(value),
     ...optionalUnixSocketPermissionsEntry(value),
     ...optionalBooleanEntry(value, "allow_local_binding", "allowLocalBinding"),
-    ...optionalBooleanEntry(value, "mitm", "mitm"),
   };
 }
 
@@ -1066,15 +1088,9 @@ function domainPatternAllows(
 }
 
 function hostMatchesPattern(pattern: string, normalizedHost: string): boolean {
-  const parsed = parseDomainPatternForConstraints(pattern);
-  if (parsed.kind === "exact") {
-    return parsed.domain === "*" || domainEq(normalizedHost, parsed.domain);
-  }
-  if (parsed.kind === "subdomains_only") {
-    return isStrictSubdomain(normalizedHost, parsed.domain);
-  }
-  return parsed.domain === "*" ||
-    isSubdomainOrEqual(normalizedHost, parsed.domain);
+  return compileDomainPattern(pattern, { allowGlobalWildcard: true }).some(
+    (candidate) => candidate.test(normalizedHost),
+  );
 }
 
 function isGlobalWildcardDomainPattern(pattern: string): boolean {
@@ -1082,6 +1098,98 @@ function isGlobalWildcardDomainPattern(pattern: string): boolean {
   if (parsed.kind === "exact") return parsed.domain === "*";
   if (parsed.kind === "apex_and_subdomains") return parsed.domain === "*";
   return false;
+}
+
+function validateDomainGlobPatterns(
+  fieldName: string,
+  patterns: readonly string[],
+  options: { readonly allowGlobalWildcard: boolean },
+): void {
+  for (const pattern of patterns) {
+    compileDomainPattern(pattern, options, fieldName);
+  }
+}
+
+function compileDomainPattern(
+  input: string,
+  options: { readonly allowGlobalWildcard: boolean },
+  fieldName = "network.domains",
+): readonly RegExp[] {
+  const normalized = normalizeDomainPattern(input);
+  const candidates = expandDomainPattern(normalized);
+  if (!options.allowGlobalWildcard && candidates.some((entry) => entry === "*")) {
+    invalidValue(
+      fieldName,
+      input,
+      "exact hosts or scoped wildcards like *.agenc.tech or **.agenc.tech",
+    );
+  }
+
+  return candidates.map((candidate) => {
+    const source = globCandidateToRegex(candidate, fieldName);
+    try {
+      return new RegExp(`^${source}$`, "iu");
+    } catch {
+      invalidValue(fieldName, candidate, "valid domain glob pattern");
+    }
+  });
+}
+
+function normalizeDomainPattern(pattern: string): string {
+  const trimmed = pattern.trim();
+  if (trimmed === "*") return "*";
+
+  if (trimmed.startsWith("**.")) {
+    return `**.${normalizeHost(trimmed.slice(3))}`;
+  }
+  if (trimmed.startsWith("*.")) {
+    return `*.${normalizeHost(trimmed.slice(2))}`;
+  }
+  return normalizeHost(trimmed);
+}
+
+function expandDomainPattern(pattern: string): readonly string[] {
+  if (pattern.startsWith("**.")) {
+    const domain = pattern.slice(3);
+    return [domain, `?*.${domain}`];
+  }
+  if (pattern.startsWith("*.")) {
+    return [`?*.${pattern.slice(2)}`];
+  }
+  return [pattern];
+}
+
+function globCandidateToRegex(candidate: string, fieldName: string): string {
+  let result = "";
+  for (let index = 0; index < candidate.length; index += 1) {
+    const char = candidate[index];
+    if (char === "*") {
+      result += ".*";
+      continue;
+    }
+    if (char === "?") {
+      result += ".";
+      continue;
+    }
+    if (char === "[") {
+      const end = candidate.indexOf("]", index + 1);
+      if (end < 0 || end === index + 1) {
+        invalidValue(fieldName, candidate, "valid domain glob pattern");
+      }
+      result += candidate.slice(index, end + 1);
+      index = end;
+      continue;
+    }
+    if (char === "]") {
+      invalidValue(fieldName, candidate, "valid domain glob pattern");
+    }
+    result += regexEscape(char);
+  }
+  return result;
+}
+
+function regexEscape(char: string): string {
+  return /[\\^$+?.()|{}]/u.test(char) ? `\\${char}` : char;
 }
 
 function parseDomainForConstraints(domain: string): string {
@@ -1255,13 +1363,9 @@ function optionalDomainPermissionsEntry(
   return {
     domains: {
       entries: Object.entries(raw).map(([pattern, permission]) => {
-        if (
-          permission !== "allow" &&
-          permission !== "deny" &&
-          permission !== "none"
-        ) {
+        if (permission !== "allow" && permission !== "deny") {
           throw new Error(
-            `network.domains.${pattern} must be allow, deny, or none`,
+            `network.domains.${pattern} must be allow or deny`,
           );
         }
         return { pattern, permission };
