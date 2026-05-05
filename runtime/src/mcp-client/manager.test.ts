@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MCPManager } from "./manager.js";
 import type { MCPServerConfig } from "./types.js";
+import type { MCPToolBridgePermissionOptions } from "./tool-bridge.js";
 
 // Mock the connection and tool-bridge modules
 vi.mock("./connection.js", () => ({
@@ -362,6 +363,33 @@ describe("MCPManager", () => {
       "mcp.srv1.toolB",
       "mcp.srv1.toolC",
     ]);
+  });
+
+  it("passes permission options into initial and reconnected tool bridges", async () => {
+    const initialBridge = makeMockBridge("srv1", ["toolA"]);
+    const nextBridge = makeMockBridge("srv1", ["toolB"]);
+    const permissionOptions: MCPToolBridgePermissionOptions = {
+      getActiveTurnId: () => "turn-1",
+    };
+
+    mockCreateMCPConnection
+      .mockResolvedValueOnce("client1")
+      .mockResolvedValueOnce("client2");
+    mockCreateToolBridge
+      .mockResolvedValueOnce(initialBridge)
+      .mockResolvedValueOnce(nextBridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    manager.setPermissionOptions(permissionOptions);
+    await manager.start();
+    await manager.reconnectServer("srv1");
+
+    expect(mockCreateToolBridge.mock.calls[0]?.[3]).toEqual(
+      expect.objectContaining({ permissions: permissionOptions }),
+    );
+    expect(mockCreateToolBridge.mock.calls[1]?.[3]).toEqual(
+      expect.objectContaining({ permissions: permissionOptions }),
+    );
   });
 
   it("rejects reconnect for unknown or disabled servers", async () => {
