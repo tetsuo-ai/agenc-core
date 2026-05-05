@@ -2,8 +2,7 @@
  * AgenC terminal detection utilities.
  *
  * The detector feeds terminal metadata into user-agent logging and TUI
- * behavior without taking a dependency on UI modules. Donor citations for
- * the source behavior live in `parity/terminal-detection-parity.json`.
+ * behavior without taking a dependency on UI modules.
  */
 
 import { execFileSync } from "node:child_process";

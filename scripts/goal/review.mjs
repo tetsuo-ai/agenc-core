@@ -316,7 +316,10 @@ const issuesBody = issuesSectionMatch[1];
 // or items per severity), OR (b) the body explicitly says "none" /
 // "no issues" indicating a blanket no-findings result.
 const sayNoneAtAll = /\b(none|no issues|no findings)\b/i.test(issuesBody);
-const missingSeverities = REQUIRED_SEVERITIES.filter((s) => !issuesBody.includes(s));
+const missingSeverities = REQUIRED_SEVERITIES.filter((s) => {
+  const severity = s.replace(/:$/, "");
+  return !new RegExp(`\\b${severity}\\b\\s*[:,-]?`, "i").test(issuesBody);
+});
 if (missingSeverities.length > 0 && !sayNoneAtAll) {
   process.stderr.write(`${BOLD}${RED}✗${RESET} reviewer's "Issues:" section is missing per-severity marker(s): ${missingSeverities.join(", ")}\n`);
   process.stderr.write(`Either each severity must appear (with "none" if no findings), or the body must explicitly say "none" / "no issues" to indicate a blanket no-findings result.\n`);

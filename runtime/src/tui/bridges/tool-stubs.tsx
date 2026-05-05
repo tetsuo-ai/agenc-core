@@ -473,9 +473,7 @@ export function createBridgeTool(name: string): any {
  * intentionally absent: AgenC's agent layer uses `spawn_agent` (a
  * different lifecycle than upstream's Task), and MCP tools are
  * registered with dynamic `mcp__<server>__<tool>` names. Both require
- * a separate dispatch contract beyond exact-case routing, scoped out
- * of this matrix and documented in `parity/tool-result-renderer-dispatch.json`
- * under `scopeOuts.agentTaskTools` and `scopeOuts.mcpTools`.
+ * a separate dispatch contract beyond exact-case routing.
  */
 export function createBridgeTools(names: Iterable<string>): readonly any[] {
   const unique = new Set<string>([

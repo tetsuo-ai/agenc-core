@@ -1,4 +1,3 @@
-// Source parity for C-01g is tracked in ../../../parity/C-01g-parity.json.
 import type { NetworkPolicyAmendment } from "../permissions/review-decision.js";
 
 export type NetworkPolicyDecision = "ask" | "deny";
