@@ -4416,6 +4416,10 @@ async function cleanupGates(item) {
       "ZC-13": { gone: ["runtime/src/tui/bridges"] },
       "ZC-14": { gone: ["runtime/src/llm/grok/adapter.ts", "runtime/src/llm/grok/adapter-utils.ts"] },
       "ZC-16": { gone: ["runtime/src/agenc/adapters/dynamic-loaders.js", "runtime/src/agenc/adapters/dynamic-loaders.d.ts"] },
+      "ZC-17": {
+        gone: ["runtime/src/config/upstream-init.ts", "runtime/src/config/upstream-init.test.ts"],
+        grepNotPresent: { pattern: "upstream-init", scope: "runtime/src" },
+      },
       "ZC-18": { gone: ["runtime/parity/agenc-compaction-context.json"] },
       "ZC-19": { grepPresent: { pattern: "openai-compatible.*OpenAI HTTP API protocol.*not a port-era shim", scope: "runtime/src/llm/providers/openai-compatible/README.md" } }, // branding-scan: allow real OpenAI protocol name in ZC-19 evidence
       "ZC-22": { gone: ["runtime/src/tui/elicitation-bridge.tsx"] },

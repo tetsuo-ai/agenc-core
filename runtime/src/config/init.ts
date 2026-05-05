@@ -11,7 +11,7 @@ let configsEnabled = false;
 let startupComplete = false;
 
 /**
- * Startup gate for config reads used by the mirrored TUI/config layer.
+ * Startup gate for config reads used by the TUI/config layer.
  * Idempotent. CLI bootstrap calls this before any Ink tree or provider
  * setup path can touch global settings.
  */
