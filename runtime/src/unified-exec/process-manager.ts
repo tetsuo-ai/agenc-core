@@ -128,8 +128,8 @@ function runtimeSandboxesCompatible(
 ): boolean {
   if (active === undefined) return false;
   return active.sandboxPolicyCwd === requested.sandboxPolicyCwd &&
-    JSON.stringify(active.permissionProfile) ===
-      JSON.stringify(requested.permissionProfile) &&
+    canonicalPermissionProfile(active.permissionProfile) ===
+      canonicalPermissionProfile(requested.permissionProfile) &&
     (active.agencLinuxSandboxExe ?? "") ===
       (requested.agencLinuxSandboxExe ?? "") &&
     (active.useLegacyLandlock ?? false) ===
@@ -138,6 +138,33 @@ function runtimeSandboxesCompatible(
       (requested.windowsSandboxLevel ?? "disabled") &&
     (active.windowsSandboxPrivateDesktop ?? false) ===
       (requested.windowsSandboxPrivateDesktop ?? false);
+}
+
+function canonicalPermissionProfile(
+  profile: UnifiedExecRuntimeSandbox["permissionProfile"],
+): string {
+  return stableStringify({
+    ...profile,
+    fileSystem: {
+      ...profile.fileSystem,
+      entries: [...profile.fileSystem.entries].sort((left, right) =>
+        stableStringify(left).localeCompare(stableStringify(right)),
+      ),
+    },
+  });
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => `${JSON.stringify(key)}:${stableStringify(child)}`);
+    return `{${entries.join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
 }
 
 interface ProcessEntry {
@@ -367,16 +394,16 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       );
     }
     const input = request.chars ?? "";
+    if (
+      request.runtimeSandbox !== undefined &&
+      !runtimeSandboxesCompatible(entry.runtimeSandbox, request.runtimeSandbox)
+    ) {
+      throw new UnifiedExecError(
+        "write_stdin",
+        "write_stdin requires an existing session with a compatible sandbox profile",
+      );
+    }
     if (input.length > 0) {
-      if (
-        request.runtimeSandbox !== undefined &&
-        !runtimeSandboxesCompatible(entry.runtimeSandbox, request.runtimeSandbox)
-      ) {
-        throw new UnifiedExecError(
-          "write_stdin",
-          "write_stdin requires an existing session with a compatible sandbox profile",
-        );
-      }
       if (!entry.tty) {
         throw new UnifiedExecError(
           "stdin_closed",

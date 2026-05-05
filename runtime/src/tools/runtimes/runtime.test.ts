@@ -408,6 +408,42 @@ describe("tools/runtimes", () => {
       }),
     ).toThrow(/could not verify write targets/);
 
+    const sandboxedWorkspaceContext = {
+      ...base,
+      approvalPolicy: "never" as const,
+      requestedSandboxMode: "workspace_write" as const,
+      sandboxMode: "workspace_write" as const,
+      approvalResolved: false,
+      rawArgs: "{}",
+      invocation: {
+        ...invocation,
+        turn: {
+          cwd: "/repo",
+          agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
+        } as never,
+      },
+    };
+    for (const cmd of ["npm test", "node script.js", "python -m pytest", "make"]) {
+      expect(() =>
+        enforceRuntimeSandboxAttempt({
+          context: sandboxedWorkspaceContext,
+          tool: shellTool,
+          args: { cmd },
+        }),
+      ).not.toThrow();
+    }
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...sandboxedWorkspaceContext,
+          invocation,
+        },
+        tool: shellTool,
+        args: { cmd: "node script.js" },
+      }),
+    ).toThrow(/could not verify write targets/);
+
     expect(() =>
       enforceRuntimeSandboxAttempt({
         context: {
@@ -773,6 +809,7 @@ describe("tools/runtimes", () => {
         turn: {
           subId: "turn-exec-generated-write",
           cwd: workspaceRoot,
+          agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
           approvalPolicy: { value: "never" },
           sandboxPolicy: { value: "workspace_write" },
         } as never,
@@ -814,6 +851,7 @@ describe("tools/runtimes", () => {
         turn: {
           subId: "turn-exec-root-scoped-read",
           cwd: workspaceRoot,
+          agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
           fileSystemSandboxPolicy: {
             allowWrite: [],
             denyWrite: [workspaceRoot],
@@ -867,6 +905,7 @@ describe("tools/runtimes", () => {
         turn: {
           subId: "turn-stdin-read-only",
           cwd: workspaceRoot,
+          agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
           approvalPolicy: { value: "never" },
           sandboxPolicy: { value: "read_only" },
         } as never,
@@ -903,6 +942,7 @@ describe("tools/runtimes", () => {
         turn: {
           subId: "turn-stdin-continue",
           cwd: workspaceRoot,
+          agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
           approvalPolicy: { value: "never" },
           sandboxPolicy: { value: "workspace_write" },
         } as never,
@@ -957,6 +997,48 @@ describe("tools/runtimes", () => {
     expect(writeStdin.mock.calls.at(-1)?.[0]).not.toHaveProperty(
       "runtimeSandbox",
     );
+  });
+
+  test("actual exec_command runs statically safe workspace-write commands without a platform helper", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-runtime-real-exec-"));
+    const router = new ToolRouter([
+      {
+        tool: createExecCommandTool({
+          cwd: workspaceRoot,
+          allowedPaths: [workspaceRoot],
+        }),
+        supportsParallelToolCalls: false,
+      },
+    ]);
+
+    const result = await router.dispatchModelToolCall(
+      {
+        id: "call-real-exec-no-helper",
+        name: "exec_command",
+        arguments: JSON.stringify({
+          cmd: "pwd",
+          yield_time_ms: 250,
+        }),
+      },
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: {
+          subId: "turn-real-exec-no-helper",
+          cwd: workspaceRoot,
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "workspace_write" },
+        } as never,
+        tracker: tracker() as never,
+        approvalPolicy: "never",
+        sandboxMode: "workspace_write",
+      },
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain(workspaceRoot);
   });
 
   test("actual Write handler obeys per-attempt workspace-write preflight", async () => {

@@ -1449,7 +1449,7 @@ if (shimAdditions.length > 0) {
 // A new module whose body is >80% imports + re-exports + single-line forwards AND
 // has fewer than 40 significant lines is functionally a shim regardless of name.
 const FORWARD_LINE_RE =
-  /^\s*(import\s|export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[^}]*\}\s*from\b|export\s*\{[^}]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
+  /^\s*(export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[^}]*\}\s*from\b|export\s*\{[^}]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
 function countForwardingLines(significant) {
   let forward = 0;
   let inMultilineExport = false;
@@ -1487,10 +1487,12 @@ for (const rel of added) {
     .map((l) => l.trim())
     .filter((l) => l && !l.startsWith("//") && !l.startsWith("*") && !l.startsWith("/*") && l !== "*/");
   if (significant.length === 0 || significant.length >= 40) continue;
-  const forward = countForwardingLines(significant);
-  const ratio = forward / significant.length;
-  if (ratio > 0.8) {
-    forwardingViolations.push({ path: rel, ratio: ratio.toFixed(2), lines: significant.length, forward });
+  const implementationLines = significant.filter((line) => !/^\s*import\s/.test(line));
+  if (implementationLines.length === 0) continue;
+  const forward = countForwardingLines(implementationLines);
+  const ratio = forward / implementationLines.length;
+  if (forward > 0 && ratio > 0.8) {
+    forwardingViolations.push({ path: rel, ratio: ratio.toFixed(2), lines: implementationLines.length, forward });
   }
 }
 if (forwardingViolations.length > 0) {

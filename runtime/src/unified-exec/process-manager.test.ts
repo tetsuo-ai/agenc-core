@@ -194,6 +194,21 @@ describe("UnifiedExecProcessManager", () => {
         await expect(
           manager.writeStdin({
             session_id: started.process_id!,
+            chars: "",
+            yield_time_ms: 250,
+            runtimeSandbox: {
+              permissionProfile,
+              sandboxPolicyCwd: process.cwd(),
+              preference: "require",
+            },
+          }),
+        ).rejects.toMatchObject({
+          code: "write_stdin",
+        } satisfies Partial<UnifiedExecError>);
+
+        await expect(
+          manager.writeStdin({
+            session_id: started.process_id!,
             chars: "printf denied\\n",
             yield_time_ms: 250,
             runtimeSandbox: {
@@ -215,14 +230,28 @@ describe("UnifiedExecProcessManager", () => {
   test.runIf(hasPtySupport)(
     "allows restricted write_stdin for a compatible sandboxed PTY session",
     async () => {
-      const permissionProfile = permissionProfileFromRuntimePermissions(
-        restrictedFileSystemPolicy(),
+      const startProfile = permissionProfileFromRuntimePermissions(
+        restrictedFileSystemPolicy([
+          { path: { kind: "special", value: { kind: "project_roots" } }, access: "write" },
+          { path: { kind: "path", path: "/repo/blocked" }, access: "read" },
+        ]),
+        "enabled",
+      );
+      const writeProfile = permissionProfileFromRuntimePermissions(
+        restrictedFileSystemPolicy([
+          { path: { kind: "path", path: "/repo/blocked" }, access: "read" },
+          { path: { kind: "special", value: { kind: "project_roots" } }, access: "write" },
+        ]),
         "enabled",
       );
       const runtimeSandbox = {
-        permissionProfile,
+        permissionProfile: startProfile,
         sandboxPolicyCwd: process.cwd(),
         preference: "require" as const,
+      };
+      const writeRuntimeSandbox = {
+        ...runtimeSandbox,
+        permissionProfile: writeProfile,
       };
       const manager = new UnifiedExecProcessManager({
         cwd: process.cwd(),
@@ -239,7 +268,7 @@ describe("UnifiedExecProcessManager", () => {
           session_id: started.process_id!,
           chars: "printf sandboxed-stdin\\n",
           yield_time_ms: 250,
-          runtimeSandbox,
+          runtimeSandbox: writeRuntimeSandbox,
         });
 
         expect(echoed.stdout).toContain("sandboxed-stdin");

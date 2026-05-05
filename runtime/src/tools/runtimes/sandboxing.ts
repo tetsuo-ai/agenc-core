@@ -97,6 +97,33 @@ export function sandboxModeRequiresPlatformIsolation(mode: SandboxMode): boolean
   return mode === "read_only" || mode === "workspace_write";
 }
 
+export function runtimePlatformSandboxAvailable(
+  context: ToolRuntimeAttemptContext,
+): boolean {
+  const turn = context.invocation.turn as {
+    readonly agencLinuxSandboxExe?: unknown;
+    readonly config?: { readonly agencLinuxSandboxExe?: unknown };
+    readonly windowsSandboxLevel?: unknown;
+  };
+  switch (process.platform) {
+    case "linux":
+      return typeof turn.agencLinuxSandboxExe === "string" &&
+        turn.agencLinuxSandboxExe.length > 0 ||
+        typeof turn.config?.agencLinuxSandboxExe === "string" &&
+        turn.config.agencLinuxSandboxExe.length > 0;
+    case "darwin":
+      return true;
+    case "win32":
+      return turn.windowsSandboxLevel === "permissive" ||
+        turn.windowsSandboxLevel === "strict" ||
+        turn.windowsSandboxLevel === "low" ||
+        turn.windowsSandboxLevel === "medium" ||
+        turn.windowsSandboxLevel === "high";
+    default:
+      return false;
+  }
+}
+
 export function permissionProfileForRuntimeContext(
   context: ToolRuntimeAttemptContext,
   options: RuntimeSandboxProfileOptions,
@@ -146,6 +173,12 @@ export function enforceRuntimeSandboxAttempt(
   if (!toolMayMutate(input.tool)) return;
   const writes = analyzeWrites(input.tool, input.args, cwd);
   if (writes.indeterminate) {
+    if (
+      policy.kind === "workspace_write" &&
+      canDeferIndeterminateWritesToPlatformSandbox(input, cwd)
+    ) {
+      return;
+    }
     throw new SandboxDeniedError(
       `sandbox ${policy.kind} could not verify write targets for ${input.tool.name}`,
       {
@@ -179,6 +212,14 @@ export function enforceRuntimeSandboxAttempt(
       );
     }
   }
+}
+
+function canDeferIndeterminateWritesToPlatformSandbox(
+  input: RuntimeSandboxEnforcementInput,
+  cwd: string,
+): boolean {
+  if (!runtimePlatformSandboxAvailable(input.context)) return false;
+  return analyzeShellRuntimeAccess(input.tool, input.args, cwd) !== null;
 }
 
 function enforceRuntimeReadSandboxAttempt(

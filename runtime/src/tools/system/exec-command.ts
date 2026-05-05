@@ -22,6 +22,7 @@ import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 import { readToolRuntimeContext } from "../runtimes/context.js";
 import {
   permissionProfileForRuntimeContext,
+  runtimePlatformSandboxAvailable,
   sandboxModeRequiresPlatformIsolation,
 } from "../runtimes/sandboxing.js";
 
@@ -60,7 +61,8 @@ export function runtimeSandboxForExec(
   const context = readToolRuntimeContext(args);
   if (
     context === undefined ||
-    !sandboxModeRequiresPlatformIsolation(context.sandboxMode)
+    !sandboxModeRequiresPlatformIsolation(context.sandboxMode) ||
+    !runtimePlatformSandboxAvailable(context)
   ) {
     return undefined;
   }
