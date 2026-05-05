@@ -1,10 +1,9 @@
 /**
  * Hook dispatcher.
  *
- * Ports the Rust hook runtime and engine dispatcher sources listed in
- * `PARITY.md` onto AgenC's configured-hook runtime. The dispatcher selects
- * matching handlers once, runs command hooks as subprocesses, and records
- * sanitized diagnostics while preserving raw stdout/stderr for parser callers.
+ * Dispatches AgenC command hooks by selecting matching handlers once, running
+ * subprocesses, and recording sanitized diagnostics while preserving raw
+ * stdout/stderr for parser callers.
  */
 
 import { randomUUID } from "node:crypto";

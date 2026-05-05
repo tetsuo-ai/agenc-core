@@ -57,21 +57,17 @@
     "src/utils/swarm/teammatePromptAddendum.ts"
   ],
   "targetFiles": [
-    "runtime/src/agents/v2/PARITY.md",
     "runtime/src/agents/v2/index.ts",
     "runtime/src/agents/v2/spawn.ts",
     "runtime/src/agents/v2/wait.ts",
     "runtime/src/agents/mailbox.ts",
-    "runtime/src/hooks/engine/PARITY.md",
     "runtime/src/hooks/configured-hooks.ts",
     "runtime/src/hooks/engine/dispatcher.ts",
     "runtime/src/hooks/engine/command-runner.ts",
     "runtime/src/hooks/engine/output-parser.ts",
-    "runtime/src/secrets/PARITY.md",
     "runtime/src/secrets/sanitizer.ts",
     "runtime/src/auth/backends/local.ts",
     "runtime/src/auth/backends/remote.ts",
-    "runtime/src/conversation/PARITY.md",
     "runtime/src/conversation/thread-manager.ts",
     "runtime/src/bin/bootstrap.ts"
   ],
@@ -146,12 +142,7 @@
     }
   },
   "validation": {
-    "coverageLockNotes": [
-      "runtime/src/agents/v2/PARITY.md",
-      "runtime/src/hooks/engine/PARITY.md",
-      "runtime/src/secrets/PARITY.md",
-      "runtime/src/conversation/PARITY.md"
-    ],
+    "runtimeDocsRetiredBy": "ZC-40",
     "customGate": "assertZc35OcCoverage in scripts/goal/verify.mjs"
   }
 }

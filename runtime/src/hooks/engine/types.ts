@@ -1,8 +1,7 @@
 /**
  * Hook engine shared shapes.
  *
- * Ports the Rust hook runtime and engine dispatcher sources listed in
- * `PARITY.md` onto AgenC's configured-hook runtime.
+ * Shared shapes for AgenC's configured-hook runtime.
  */
 
 import type { HookCommand, HookEventName } from "../../config/schema.js";
