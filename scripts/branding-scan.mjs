@@ -101,6 +101,12 @@ const ALLOW_FILE_LINE_PATTERNS = [
     file: /(^|\/)\.gitignore$/,
     line: /\b(?:OpenClaude\w*|openclaude|Claude\w*|claude|Codex\w*|codex|Cursor)\b|\.openclaude\//, // branding-scan: allow gitignore exception pattern
   },
+  {
+    // Existing runtime package scripts still carry historical parity-task names.
+    // Keep this exact-key list narrow so new donor-branded package keys still fail.
+    file: /^runtime\/package\.json$/,
+    line: /"(?:check:codex-control-parity|check:codex-registry-parity|check:codex-mailbox-parity|check:codex-status-parity|check:codex-role-parity|check:codex-thread-manager-parity|check:codex-fork-context-parity|check:codex-thread-parity|check:codex-run-agent-parity|check:codex-agents-parity|check:codex-v2-agent-contract|test:codex-v2-agent-contract|validate:codex-v2-agent-contract|check:openclaude-tui-replacement|test:openclaude-tui-replacement|validate:openclaude-tui-replacement|check:tui-openclaude-core-parity|check:openclaude-tui-renderer-parity|test:tui-openclaude-core-parity|validate:tui-openclaude-core-parity|check:openclaude-footer-live-parity|test:openclaude-footer-live-parity|validate:openclaude-footer-live-parity|test:tui-yolo-openclaude-parity|validate:required)"\s*:/i, // branding-scan: allow exact existing package parity script keys
+  },
 ];
 
 const OVERRIDE_RE = /branding-scan:\s*allow\b/i;

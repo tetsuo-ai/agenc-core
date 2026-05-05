@@ -6,6 +6,7 @@ const entry = [
   'src/index.ts',
   'src/bin/agenc.ts',
   'src/bin/tui-trust-prompt.tsx',
+  'src/sandbox/linux-launcher/main.ts',
   'src/tui/main.tsx',
 ];
 
