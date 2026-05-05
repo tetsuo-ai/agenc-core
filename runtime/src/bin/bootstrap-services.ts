@@ -676,6 +676,13 @@ export function buildBootstrapSessionServices(
   loadBootstrapLspServersInBackground(opts.configStore.current(), {
     workspaceRoot: opts.workspaceRoot,
   });
+  const lspManager: NonNullable<SessionServices["lspManager"]> = {
+    refreshFromConfig: (config: unknown) =>
+      loadBootstrapLspServers(
+        config as ReturnType<ConfigStore["current"]>,
+        { workspaceRoot: opts.workspaceRoot },
+      ),
+  };
   const unsubscribeHooksConfig = opts.configStore.subscribe((cfg) => {
     loadHooks(cfg);
     loadBootstrapLspServersInBackground(cfg, { workspaceRoot: opts.workspaceRoot });
@@ -736,6 +743,7 @@ export function buildBootstrapSessionServices(
     skillsManager: skillsServices.skillsManager,
     pluginsManager: skillsServices.pluginsManager,
     mcpManager: opts.mcpManager,
+    lspManager,
     skillsWatcher: skillsServices.skillsWatcher,
     agentControl: {
       maxThreads: 0,

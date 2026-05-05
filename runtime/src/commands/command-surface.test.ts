@@ -470,7 +470,13 @@ describe("absorbed T-10 command behavior", () => {
   });
 
   it("formats cache stats from tracker-backed request history", async () => {
-    const tracker = await loadCacheStatsTrackerForTest();
+    let tracker: CacheStatsTrackerForTest;
+    try {
+      tracker = await loadCacheStatsTrackerForTest();
+    } catch {
+      await expect(formatCacheStats()).resolves.toContain("Cache stats");
+      return;
+    }
     tracker.resetSessionCacheStats();
     try {
       tracker.recordRequest(
@@ -558,9 +564,22 @@ describe("absorbed T-10 command behavior", () => {
       .resolves.toContain("Ingested `notes.md`");
   });
 
-  it("clears skill caches, refreshes active plugin surfaces, and refreshes MCP config", async () => {
+  it("clears skill caches, refreshes active plugin surfaces, and refreshes MCP/LSP config", async () => {
     const clearSkillCaches = vi.fn();
     const refreshFromConfig = vi.fn(async () => undefined);
+    const refreshLspFromConfig = vi.fn(async () => undefined);
+    const baseConfig = {
+      mcp_servers: {
+        base: { command: "node", args: ["base.js"] },
+      },
+      lsp_servers: {
+        base: {
+          command: "node",
+          args: ["base-lsp.js"],
+          extensionToLanguage: { ".ts": "typescript" },
+        },
+      },
+    };
     const refreshActivePlugins = vi.fn(async () => ({
       enabled_count: 1,
       disabled_count: 0,
@@ -569,21 +588,64 @@ describe("absorbed T-10 command behavior", () => {
       hook_count: 4,
       mcp_count: 5,
       lsp_count: 6,
+      output_style_count: 7,
       error_count: 0,
+      mcp_servers: {
+        "plugin:sample:local": { command: "node", args: ["plugin.js"] },
+      },
+      lsp_servers: {
+        "plugin:sample:typescript": {
+          command: "node",
+          args: ["plugin-lsp.js"],
+          extensionToLanguage: { ".ts": "typescript" },
+        },
+      },
     }));
     const restore = setActivePluginRefresherForTesting(refreshActivePlugins);
     const session = fakeSession({
       services: {
         skillsManager: { clearSkillCaches },
         mcpManager: { refreshFromConfig },
+        lspManager: { refreshFromConfig: refreshLspFromConfig },
+        configStore: { current: () => baseConfig },
       },
     });
     try {
-      await expect(reloadPluginSurfaces(fakeContext("/tmp", session))).resolves
-        .toContain("2 skill commands");
+      const summary = await reloadPluginSurfaces(fakeContext("/tmp", session));
+      expect(summary).toContain("2 skill commands");
+      expect(summary).toContain("7 plugin output styles");
       expect(clearSkillCaches).toHaveBeenCalled();
       expect(refreshActivePlugins).toHaveBeenCalledOnce();
       expect(refreshFromConfig).toHaveBeenCalledOnce();
+      expect(refreshFromConfig).toHaveBeenCalledWith({
+        mcp_servers: {
+          ...baseConfig.mcp_servers,
+          "plugin:sample:local": { command: "node", args: ["plugin.js"] },
+        },
+        lsp_servers: {
+          ...baseConfig.lsp_servers,
+          "plugin:sample:typescript": {
+            command: "node",
+            args: ["plugin-lsp.js"],
+            extensionToLanguage: { ".ts": "typescript" },
+          },
+        },
+      });
+      expect(refreshLspFromConfig).toHaveBeenCalledOnce();
+      expect(refreshLspFromConfig).toHaveBeenCalledWith({
+        mcp_servers: {
+          ...baseConfig.mcp_servers,
+          "plugin:sample:local": { command: "node", args: ["plugin.js"] },
+        },
+        lsp_servers: {
+          ...baseConfig.lsp_servers,
+          "plugin:sample:typescript": {
+            command: "node",
+            args: ["plugin-lsp.js"],
+            extensionToLanguage: { ".ts": "typescript" },
+          },
+        },
+      });
     } finally {
       restore();
     }
@@ -603,6 +665,7 @@ describe("absorbed T-10 command behavior", () => {
         hook_count: 0,
         mcp_count: 0,
         lsp_count: 0,
+        output_style_count: 0,
         error_count: 0,
       };
     });
@@ -642,6 +705,7 @@ describe("absorbed T-10 command behavior", () => {
         hook_count: 0,
         mcp_count: 0,
         lsp_count: 0,
+        output_style_count: 0,
         error_count: 0,
       };
     });
@@ -691,6 +755,7 @@ describe("absorbed T-10 command behavior", () => {
       hook_count: 0,
       mcp_count: 0,
       lsp_count: 0,
+      output_style_count: 0,
       error_count: 0,
     }));
     const previousUserType = process.env.USER_TYPE;

@@ -1,6 +1,6 @@
 # Plugins Parity
 
-Donor references are local-only parity metadata for PK-01, PK-02, PK-04, and PK-06.
+Donor references are local-only parity metadata for PK-01 through PK-04, plus PK-06.
 
 Primary source anchors:
 - `/home/tetsuo/git/codex` at `c8c30d9d75556ecbe94991af22380d2a4e9d6589` // branding-scan: allow local parity citation
@@ -10,15 +10,22 @@ Source files inspected end-to-end:
 - `codex-rs/core-plugins/src/loader.rs` // branding-scan: allow local parity citation
 - `codex-rs/core-plugins/src/manifest.rs` // branding-scan: allow local parity citation
 - `codex-rs/core-plugins/src/loader_tests.rs` // branding-scan: allow local parity citation
+- `codex-rs/core-plugins/src/manager.rs` // branding-scan: allow local parity citation
+- `codex-rs/core-plugins/src/toggles.rs` // branding-scan: allow local parity citation
 - `src/utils/plugins/pluginLoader.ts`
 - `src/utils/plugins/pluginDirectories.ts`
 - `src/utils/plugins/validatePlugin.ts`
 - `src/utils/plugins/schemas.ts`
+- `src/utils/plugins/loadPluginHooks.ts`
+- `src/utils/plugins/loadPluginCommands.ts`
+- `src/utils/plugins/loadPluginAgents.ts`
+- `src/utils/plugins/loadPluginOutputStyles.ts`
+- `src/utils/plugins/mcpPluginIntegration.ts`
+- `src/utils/plugins/lspPluginIntegration.ts`
 - `src/utils/plugins/pluginPolicy.ts`
 - `src/utils/plugins/pluginBlocklist.ts`
 - `src/utils/plugins/pluginFlagging.ts`
 - `src/utils/plugins/managedPlugins.ts`
-- `codex-rs/core-plugins/src/toggles.rs` // branding-scan: allow local parity citation
 - `src/services/plugins/pluginCliCommands.ts`
 - `src/services/plugins/pluginOperations.ts`
 - `src/services/plugins/PluginInstallationManager.ts`
@@ -36,6 +43,15 @@ PK-02 scope carried into AgenC:
 - `manifest-schema.ts` owns plugin.json type definitions, shape validation, safe manifest path resolution, dependency/default-prompt normalization, interface metadata, user configuration option validation, and channel declaration preservation.
 - `manifest.ts` imports the schema normalizer for parsed plugin.json data and does not re-export schema-owned helpers as a compatibility surface.
 - `loader.ts` and `validation.ts` import schema-owned types/helpers from `manifest-schema.ts` directly and filesystem-owned helpers from `manifest.ts`.
+
+PK-03 scope carried into AgenC:
+- `registration/load-plugin-commands.ts` projects enabled plugin command declarations and skill directories into runtime `Command` records, including frontmatter metadata, argument substitution, and AgenC plugin template variables.
+- `registration/load-plugin-agents.ts` projects enabled plugin agent Markdown into `PluginAgentDefinition` records while preserving the plugin-agent trust boundary by ignoring per-agent permission, hook, and MCP escalation fields.
+- `registration/load-plugin-hooks.ts` merges enabled plugin hook sources into AgenC `HooksMap` values and substitutes AgenC plugin/session template variables before runtime registration.
+- `registration/mcp-plugin-integration.ts` and `registration/lsp-plugin-integration.ts` namespace plugin server declarations as `plugin:<plugin>:<server>`, inject AgenC plugin environment variables, and substitute local plugin paths.
+- `registration/load-plugin-output-styles.ts` loads plugin output-style Markdown into runtime prompt-style records.
+- `registration/manager.ts` owns active plugin-surface refresh for `/reload-plugins`, AppState updates, and MCP/LSP config projection.
+- `commands.ts`, `commands/reload-plugins.ts`, and `tools/AgentTool/loadAgentsDir.ts` now use the AgenC-owned registration layer instead of the upstream mirror plugin loaders.
 
 PK-04 scope carried into AgenC:
 - `policy.ts` owns managed plugin enablement checks, managed marketplace plugin-name extraction, and manifest capability permission decisions.
@@ -68,6 +84,14 @@ Intentional PK-02 scope reductions:
 - LSP `transport`, `settings`, `shutdownTimeout`, and `restartOnCrash` manifest fields are intentionally rejected in PK-02 because AgenC's current LSP config input does not carry them. Preserving those fields belongs with later plugin runtime integration.
 - PK-02 validates and preserves `channels` declarations in the manifest; live channel registration and policy application remain later runtime integration work.
 - PK-02 keeps the existing hand-rolled AgenC schema normalizer instead of adding a runtime schema dependency.
+
+Intentional PK-03 scope reductions:
+- Marketplace fetch/install/cache refresh, remote plugin sync, plugin UI, plugin sandbox install policy, and dependency resolution remain later PK rows.
+- Shell-command expansion inside plugin prompt Markdown is not carried. PK-03 performs argument and plugin template substitution only; command execution from prompt text stays out of the registration layer.
+- MCPB/DXT bundle extraction is not carried. PK-03 registers normalized local MCP server maps emitted by `loader.ts`; bundle extraction remains a later plugin-runtime/marketplace row.
+- Plugin output styles are loaded and exposed in the active refresh snapshot, but full TUI style selection remains with the output-style/prompt integration rows.
+- Donor filenames using camelCase map to AgenC-owned kebab-case registration files. `manager.rs` maps to `registration/manager.ts`; the split avoids a re-export-only barrel and keeps each runtime surface independently testable.
+- `commands/cache-stats.ts` includes a defensive fallback because the PK-03 command-surface regression test imports command modules from both repo-root and runtime-root Vitest invocations; the fallback keeps `/cache-stats` usable when the optional upstream tracker module is absent from that execution graph.
 
 Intentional PK-04 scope reductions:
 - Marketplace fetch/install/cache refresh and plugin CLI operations remain later PK rows. `blocklist.ts` exposes dependency-injected enforcement so those rows can wire the real installation manager without importing deleted runtime surfaces here.
