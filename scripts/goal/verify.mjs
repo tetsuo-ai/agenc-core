@@ -3963,6 +3963,90 @@ function assertNoZc06DeletedModuleImporters(deletedBases) {
   }
 }
 
+function assertZc12DonorPortArtifactsGone() {
+  const files = git("ls-files");
+  if (files.status !== 0) failGate("ZC-12: git ls-files failed");
+  const tracked = files.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  const openToolName = "open" + "clau" + "de";
+  const runtimeToolName = "co" + "dex";
+  const guideName = "clau" + "de";
+  const guideSnakeName = "clau" + "de_code";
+  const guideCompactName = "clau" + "decode";
+  const donorArtifactRe = new RegExp(
+    `^(?:(?:parity|docs/plan|scripts|runtime/scripts|runtime/parity|runtime/docs|runtime/tests)/.*(?:${openToolName}|${runtimeToolName}|${guideName}))`,
+    "i",
+  );
+  const donorPortArtifacts = tracked.filter((rel) => donorArtifactRe.test(rel));
+  if (donorPortArtifacts.length > 0) {
+    failGate(`ZC-12: tracked donor-named port artifact(s) remain:\n${donorPortArtifacts.join("\n")}`);
+  }
+
+  const sourceParityTestRe = new RegExp(`^runtime/src/.*\\.${openToolName}-parity\\.test\\.`, "i");
+  const sourceParityDirRe = new RegExp(`^runtime/src/tui/${openToolName}/`, "i");
+  const sourceParityTests = tracked.filter((rel) =>
+    sourceParityTestRe.test(rel) ||
+    sourceParityDirRe.test(rel),
+  );
+  if (sourceParityTests.length > 0) {
+    failGate(`ZC-12: tracked donor-named runtime parity test artifact(s) remain:\n${sourceParityTests.join("\n")}`);
+  }
+
+  const donorNameRe = new RegExp(
+    `(?:${openToolName}|${runtimeToolName}|${guideSnakeName}|${guideCompactName})`,
+    "i",
+  );
+  const remainingDonorNamed = tracked
+    .filter((rel) => donorNameRe.test(rel))
+    .filter((rel) => !rel.startsWith("runtime/src/agenc/upstream/"));
+  if (remainingDonorNamed.length > 0) {
+    failGate(`ZC-12: donor-named tracked path(s) remain outside the frozen upstream mirror:\n${remainingDonorNamed.join("\n")}`);
+  }
+
+  const packageRefRe = new RegExp(
+    `(check-[^"'\\s]*-parity|${openToolName}-parity|${runtimeToolName}[^"'\\s]*parity|${guideName}[^"'\\s]*parity)`,
+    "i",
+  );
+  const packageRefs = [];
+  for (const rel of ["package.json", "runtime/package.json"]) {
+    const abs = path.join(root, rel);
+    if (!existsSync(abs)) continue;
+    const source = readFileSync(abs, "utf8");
+    if (packageRefRe.test(source)) {
+      packageRefs.push(rel);
+    }
+  }
+  if (packageRefs.length > 0) {
+    failGate(`ZC-12: package script/reference(s) to deleted donor parity artifacts remain:\n${packageRefs.join("\n")}`);
+  }
+
+  const staleReferenceRe = new RegExp(
+    [
+      `${openToolName}-(?:diagnostics|ink|keybindings|markdown|search|selection)-(?:port|transform)\\.mjs`,
+      `install-tui-${openToolName}-parity-hook\\.sh`,
+      `runtime/src/tui/${openToolName}/`,
+      `\\.${openToolName}-parity\\.test\\.`,
+      `runtime/tests/${openToolName}-compact-loader\\.contract\\.test\\.ts`,
+      `docs/plan/${openToolName}-`,
+    ].join("|"),
+    "i",
+  );
+  const staleReferences = [];
+  for (const rel of tracked) {
+    const abs = path.join(root, rel);
+    if (!existsSync(abs)) continue;
+    let source;
+    try {
+      source = readFileSync(abs, "utf8");
+    } catch {
+      continue;
+    }
+    if (staleReferenceRe.test(source)) staleReferences.push(rel);
+  }
+  if (staleReferences.length > 0) {
+    failGate(`ZC-12: live file(s) still reference deleted donor-named artifacts:\n${staleReferences.join("\n")}`);
+  }
+}
+
 function listSourceFiles(dir) {
   const out = [];
   for (const entry of readdirSync(dir)) {
@@ -4328,6 +4412,7 @@ async function cleanupGates(item) {
       },
       "ZC-10": { gone: ["runtime/src/agenc/upstream", "runtime/src/types/runtime-ambient.d.ts"] },
       "ZC-11": { gone: ["runtime/src/tools/code-mode/response-adapter.ts"] },
+      "ZC-12": { custom: assertZc12DonorPortArtifactsGone },
       "ZC-13": { gone: ["runtime/src/tui/bridges"] },
       "ZC-14": { gone: ["runtime/src/llm/grok/adapter.ts", "runtime/src/llm/grok/adapter-utils.ts"] },
       "ZC-16": { gone: ["runtime/src/agenc/adapters/dynamic-loaders.js", "runtime/src/agenc/adapters/dynamic-loaders.d.ts"] },
@@ -4353,6 +4438,10 @@ async function cleanupGates(item) {
       const { pattern, scope, globs, excludeGlobs, caseInsensitive } = expectations.grepNotPresent;
       if (grepRepo(pattern, scope, { globs, excludeGlobs, caseInsensitive })) failGate(`${id}: pattern "${pattern}" still found in ${scope}; should return zero hits.`);
       pass(`${id}: no hits for "${pattern}" in ${scope}`);
+    }
+    if (expectations.custom) {
+      expectations.custom();
+      pass(`${id}: custom cleanup gate passed`);
     }
     if (id === "ZC-06") {
       const deletedBases = zc06DeletedModuleBases();
