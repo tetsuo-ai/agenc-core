@@ -1,6 +1,6 @@
 # Plugins Parity
 
-Donor references are local-only parity metadata for PK-01 and PK-02.
+Donor references are local-only parity metadata for PK-01, PK-02, and PK-04.
 
 Primary source anchors:
 - `/home/tetsuo/git/codex` at `c8c30d9d75556ecbe94991af22380d2a4e9d6589` // branding-scan: allow local parity citation
@@ -14,6 +14,11 @@ Source files inspected end-to-end:
 - `src/utils/plugins/pluginDirectories.ts`
 - `src/utils/plugins/validatePlugin.ts`
 - `src/utils/plugins/schemas.ts`
+- `src/utils/plugins/pluginPolicy.ts`
+- `src/utils/plugins/pluginBlocklist.ts`
+- `src/utils/plugins/pluginFlagging.ts`
+- `src/utils/plugins/managedPlugins.ts`
+- `codex-rs/core-plugins/src/toggles.rs` // branding-scan: allow local parity citation
 
 PK-01 scope carried into AgenC:
 - `manifest.ts` owns `.agenc-plugin/plugin.json` discovery, root `plugin.json` fallback, bounded JSON reads, and JSON parse errors.
@@ -25,6 +30,16 @@ PK-02 scope carried into AgenC:
 - `manifest-schema.ts` owns plugin.json type definitions, shape validation, safe manifest path resolution, dependency/default-prompt normalization, interface metadata, user configuration option validation, and channel declaration preservation.
 - `manifest.ts` imports the schema normalizer for parsed plugin.json data and does not re-export schema-owned helpers as a compatibility surface.
 - `loader.ts` and `validation.ts` import schema-owned types/helpers from `manifest-schema.ts` directly and filesystem-owned helpers from `manifest.ts`.
+
+PK-04 scope carried into AgenC:
+- `policy.ts` owns managed plugin enablement checks, managed marketplace plugin-name extraction, and manifest capability permission decisions.
+- `toggles.ts` owns extraction of pending plugin enabled-state edits from direct, per-plugin table, and root table config writes.
+- `blocklist.ts` owns marketplace delisting detection, injected delisted-plugin uninstall enforcement, flagged-plugin parsing, 48-hour seen expiry, and private atomic `flagged-plugins.json` writes.
+- `pluginPolicy.ts` maps to `policy.ts` via `isPluginBlockedByPolicy`.
+- `managedPlugins.ts` maps to `policy.ts` via `getManagedPluginNames`.
+- `pluginBlocklist.ts` maps to `blocklist.ts` via `detectDelistedPlugins` and `detectAndUninstallDelistedPlugins`.
+- `pluginFlagging.ts` maps to `blocklist.ts` via `FlaggedPluginStore` and pure flagged-plugin state helpers.
+- `core-plugins/src/toggles.rs` maps to `toggles.ts` via `collectPluginEnabledCandidates`. // branding-scan: allow local parity citation
 
 Intentional PK-01 scope reductions:
 - Marketplace fetch/install/cache refresh, signing, dependency demotion, plugin CLI, plugin sandboxing, policy/blocklist, MCP/LSP live registration, and remote sync are later PK rows.
@@ -40,3 +55,8 @@ Intentional PK-02 scope reductions:
 - LSP `transport`, `settings`, `shutdownTimeout`, and `restartOnCrash` manifest fields are intentionally rejected in PK-02 because AgenC's current LSP config input does not carry them. Preserving those fields belongs with later plugin runtime integration.
 - PK-02 validates and preserves `channels` declarations in the manifest; live channel registration and policy application remain later runtime integration work.
 - PK-02 keeps the existing hand-rolled AgenC schema normalizer instead of adding a runtime schema dependency.
+
+Intentional PK-04 scope reductions:
+- Marketplace fetch/install/cache refresh and plugin CLI operations remain later PK rows. `blocklist.ts` exposes dependency-injected enforcement so those rows can wire the real installation manager without importing deleted runtime surfaces here.
+- Managed settings are modeled as explicit function inputs rather than loading a global settings singleton. AgenC config normalization for the final `plugins.{enabled,allowlist,plugins}` shape belongs to CF-10.
+- Flagged-plugin storage writes under the caller-provided plugin directory. Directory selection remains owned by `directories.ts`.
