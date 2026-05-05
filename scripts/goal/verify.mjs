@@ -1231,6 +1231,14 @@ const ITEM_EVIDENCE = {
     ],
     tests: ["scripts/check-sdk-daemon-methods.test.mjs"],
   },
+  "PK-13": {
+    files: ["scripts/check-sibling-package-pins.mjs"],
+    grepPresent: [
+      { pattern: "@tetsuo-ai", scope: "scripts/check-sibling-package-pins.mjs" },
+      { pattern: "npm view", scope: "scripts/check-sibling-package-pins.mjs" },
+    ],
+    tests: ["scripts/check-sibling-package-pins.test.mjs"],
+  },
   "MG-01": {
     files: ["runtime/src/bin/agenc.ts"],
   },
@@ -3313,6 +3321,36 @@ async function pluginGates(item) {
       failGate("PK-11 protocol package schema export check failed");
     }
     pass("protocol package schema export resolves from a packed install");
+    return;
+  }
+  if (id === "PK-13") {
+    const test = run("node", ["scripts/check-sibling-package-pins.test.mjs"]);
+    if (test.status !== 0) {
+      failGate("PK-13 sibling package pin checker tests failed");
+    }
+    const check = run("node", ["scripts/check-sibling-package-pins.mjs"]);
+    if (check.status !== 0) {
+      failGate("PK-13 sibling package pin check failed");
+    }
+    const commonDir = git("rev-parse", "--git-common-dir");
+    if (commonDir.status !== 0) {
+      failGate("PK-13 could not locate main checkout for umbrella validation wiring");
+    }
+    const mainCheckout =
+      path.basename(path.resolve(root, commonDir.stdout.trim())) === ".git"
+        ? path.dirname(path.resolve(root, commonDir.stdout.trim()))
+        : root;
+    const umbrellaPkg = path.join(path.dirname(mainCheckout), "package.json");
+    const umbrella = JSON.parse(readFileSync(umbrellaPkg, "utf8"));
+    if (
+      !umbrella.scripts?.["check:sibling-package-pins"] ||
+      !umbrella.scripts?.["validate:umbrella"]?.includes(
+        "check:sibling-package-pins",
+      )
+    ) {
+      failGate("PK-13 umbrella validate script does not run check:sibling-package-pins");
+    }
+    pass("sibling package pin checker warns on stale pins");
     return;
   }
   // PK-01..PK-05, PK-07..PK-09: subsystem-shape items satisfied by the
