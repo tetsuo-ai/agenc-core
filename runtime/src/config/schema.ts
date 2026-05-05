@@ -273,12 +273,6 @@ export interface AttachmentsConfig {
   readonly allowedRoots?: readonly string[];
 }
 
-export interface VoiceInputConfig {
-  readonly enabled?: boolean;
-  readonly command?: string;
-  readonly timeout_ms?: number;
-}
-
 export interface TuiLayoutConfig {
   readonly mode?: "single" | "multi-pane";
   readonly sidePane?: "status" | "context" | "none";
@@ -444,7 +438,6 @@ export interface AgenCConfig {
   readonly outputStyle?: PartialOutputStyleConfig;
   readonly attachments?: AttachmentsConfig;
   readonly editorMode?: EditorMode;
-  readonly voiceInput?: VoiceInputConfig;
   readonly tuiLayout?: TuiLayoutConfig;
   readonly telemetryOptIn?: boolean;
   readonly autoFix?: unknown;
@@ -508,7 +501,6 @@ export interface AgenCConfig {
  *
  * Lit up by runtime/TUI upstream closeout:
  *   - editorMode       → see `EditorMode` above.
- *   - voiceInput       → see `VoiceInputConfig` above.
  *   - tuiLayout        → see `TuiLayoutConfig` above.
  *
  * Lit up by S-05:
@@ -585,7 +577,6 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "outputStyle",
   "attachments",
   "editorMode",
-  "voiceInput",
   "tuiLayout",
   "telemetryOptIn",
   "autoFix",
@@ -637,9 +628,6 @@ export function defaultConfig(): AgenCConfig {
     max_turns: 50,
     autoUpdates: false,
     editorMode: "default" as EditorMode,
-    voiceInput: Object.freeze({
-      enabled: false,
-    }) as VoiceInputConfig,
     tuiLayout: Object.freeze({
       mode: "single",
       sidePane: "status",

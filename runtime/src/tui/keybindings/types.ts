@@ -127,7 +127,6 @@ export const KEYBINDING_ACTION_NAMES = [
   'settings:search',
   'settings:retry',
   'settings:close',
-  'voice:pushToTalk',
 ] as const
 
 export type KeybindingAction = (typeof KEYBINDING_ACTION_NAMES)[number]

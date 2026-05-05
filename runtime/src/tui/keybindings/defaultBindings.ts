@@ -88,9 +88,6 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       ...(feature('MESSAGE_ACTIONS')
         ? { 'shift+up': 'chat:messageActions' as const }
         : {}),
-      // Voice activation (hold-to-talk). Registered so getShortcutDisplay
-      // can resolve it from the same config table as other shortcuts.
-      ...(feature('VOICE_MODE') ? { space: 'voice:pushToTalk' } : {}),
     },
   },
   {

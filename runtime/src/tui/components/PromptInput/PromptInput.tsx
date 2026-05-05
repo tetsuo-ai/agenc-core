@@ -471,15 +471,6 @@ type Props = {
   setHelpOpen: React.Dispatch<React.SetStateAction<boolean>>;
   hasSuppressedDialogs?: boolean;
   isLocalJSXCommandActive?: boolean;
-  insertTextRef?: React.MutableRefObject<{
-    insert: (text: string) => void;
-    setInputWithCursor: (value: string, cursor: number) => void;
-    cursorOffset: number;
-  } | null>;
-  voiceInterimRange?: {
-    start: number;
-    end: number;
-  } | null;
 };
 
 // Bottom slot has maxHeight="50%"; reserve lines for footer, border, status.
@@ -525,9 +516,7 @@ function PromptInput({
   helpOpen,
   setHelpOpen,
   hasSuppressedDialogs,
-  isLocalJSXCommandActive = false,
-  insertTextRef,
-  voiceInterimRange
+  isLocalJSXCommandActive = false
 }: Props): React.ReactNode {
   const mainLoopModel = useMainLoopModel();
   // A local-jsx command (e.g., /mcp while agent is running) renders a full-
@@ -567,26 +556,6 @@ function PromptInput({
     lastInternalInputRef.current = value;
     onInputChange(value);
   }, [onInputChange]);
-  // Expose an insertText function so callers (e.g. STT) can splice text at the
-  // current cursor position instead of replacing the entire input.
-  if (insertTextRef) {
-    insertTextRef.current = {
-      cursorOffset,
-      insert: (text: string) => {
-        const needsSpace = cursorOffset === input.length && input.length > 0 && !/\s$/.test(input);
-        const insertText = needsSpace ? ' ' + text : text;
-        const newValue = input.slice(0, cursorOffset) + insertText + input.slice(cursorOffset);
-        lastInternalInputRef.current = newValue;
-        onInputChange(newValue);
-        setCursorOffset(cursorOffset + insertText.length);
-      },
-      setInputWithCursor: (value: string, cursor: number) => {
-        lastInternalInputRef.current = value;
-        onInputChange(value);
-        setCursorOffset(cursor);
-      }
-    };
-  }
   const store = useAppStateStore();
   const setAppState = useSetAppState();
   const tasks = useAppState(s => s.tasks);
@@ -975,17 +944,6 @@ function PromptInput({
       });
     }
 
-    // Dim interim voice dictation text
-    if (voiceInterimRange) {
-      highlights.push({
-        start: voiceInterimRange.start,
-        end: voiceInterimRange.end,
-        color: undefined,
-        dimColor: true,
-        priority: 1
-      });
-    }
-
     // Rainbow highlighting for ultrathink keyword (per-character cycling colors)
     if (isUltrathinkEnabled()) {
       for (const trigger of thinkTriggers) {
@@ -1042,7 +1000,7 @@ function PromptInput({
       }
     }
     return highlights;
-  }, [isSearchingHistory, historyQuery, historyMatch, historyFailedMatch, cursorOffset, btwTriggers, imageRefPositions, memberMentionHighlights, slashCommandTriggers, tokenBudgetTriggers, slackChannelTriggers, displayedValue, voiceInterimRange, thinkTriggers, ultraplanTriggers, ultrareviewTriggers, buddyTriggers]);
+  }, [isSearchingHistory, historyQuery, historyMatch, historyFailedMatch, cursorOffset, btwTriggers, imageRefPositions, memberMentionHighlights, slashCommandTriggers, tokenBudgetTriggers, slackChannelTriggers, displayedValue, thinkTriggers, ultraplanTriggers, ultrareviewTriggers, buddyTriggers]);
   const {
     addNotification,
     removeNotification

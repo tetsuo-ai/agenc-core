@@ -1,5 +1,4 @@
 const copiedTreeFeatureFlags: Readonly<Record<string, boolean>> = {
-  VOICE_MODE: false,
   PROACTIVE: false,
   KAIROS: false,
   BRIDGE_MODE: false,
