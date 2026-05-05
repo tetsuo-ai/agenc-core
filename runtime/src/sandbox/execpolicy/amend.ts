@@ -1,8 +1,5 @@
 import fs from "node:fs";
-import { createRequire } from "node:module";
 import path from "node:path";
-
-type Lockfile = typeof import("proper-lockfile");
 
 import type { Decision } from "./decision.js";
 import {
@@ -10,6 +7,7 @@ import {
   normalizeNetworkRuleHost,
   type NetworkRuleProtocol,
 } from "./rule.js";
+import { lockSync } from "../../utils/lockfile.js";
 
 export class AmendError extends Error {
   readonly code: string;
@@ -19,14 +17,6 @@ export class AmendError extends Error {
     this.name = "AmendError";
     this.code = code;
   }
-}
-
-const requireCjs = createRequire(import.meta.url);
-let cachedLockfile: Lockfile | null = null;
-
-function getLockfile(): Lockfile {
-  cachedLockfile ??= requireCjs("proper-lockfile") as Lockfile;
-  return cachedLockfile;
 }
 
 export function blockingAppendAllowPrefixRule(
@@ -107,7 +97,7 @@ function appendLockedLine(policyPath: string, line: string): void {
 
   let release: (() => void) | null = null;
   try {
-    release = getLockfile().lockSync(policyPath, { realpath: false });
+    release = lockSync(policyPath, { realpath: false });
   } catch (error) {
     throw new AmendError(
       "lock_policy_file",

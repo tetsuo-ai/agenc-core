@@ -10,8 +10,6 @@
  * underlying package is only loaded the first time a lock function is
  * actually called.
  *
- * Verbatim port of openclaude `src/utils/lockfile.ts`.
- *
  * @module
  */
 
@@ -36,6 +34,10 @@ export function lock(
   options?: LockOptions,
 ): Promise<() => Promise<void>> {
   return getLockfile().lock(file, options);
+}
+
+export function lockSync(file: string, options?: LockOptions): () => void {
+  return getLockfile().lockSync(file, options);
 }
 
 export function unlock(file: string, options?: UnlockOptions): Promise<void> {

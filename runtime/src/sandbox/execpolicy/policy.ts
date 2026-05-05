@@ -1,9 +1,10 @@
 import path from "node:path";
 
 import { type Decision, maxDecision } from "./decision.js";
-import { executablePathLookupKey } from "./executable-name.js";
+import { executableLookupKey, executablePathLookupKey } from "./executable-name.js";
 import { invalidPattern, invalidRule } from "./error.js";
 import {
+  assertBareExecutableName,
   normalizeNetworkRuleHost,
   prefixRuleMatches,
   singleToken,
@@ -119,7 +120,8 @@ export class Policy {
   }
 
   setHostExecutablePaths(name: string, paths: readonly string[]): void {
-    this.hostExecutablesByName.set(name, [...paths]);
+    const key = validateHostExecutableName(name);
+    this.hostExecutablesByName.set(key, validateHostExecutablePaths(key, paths));
   }
 
   mergeOverlay(overlay: Policy): Policy {
@@ -257,7 +259,8 @@ export class Policy {
   }
 
   addHostExecutable(name: string, paths: readonly string[]): void {
-    this.hostExecutablesByName.set(name, [...paths]);
+    const key = validateHostExecutableName(name);
+    this.hostExecutablesByName.set(key, validateHostExecutablePaths(key, paths));
   }
 
   private matchExactRules(command: readonly string[]): RuleMatch[] {
@@ -298,6 +301,10 @@ export function EvaluationFromMatches(matches: readonly RuleMatch[]): Evaluation
     decision,
     matchedRules: [...matches],
   };
+}
+
+export function evaluationIsMatch(evaluation: Evaluation): boolean {
+  return evaluation.matchedRules.some((match) => match.type !== "heuristics_rule_match");
 }
 
 function cloneRulesByProgram(source: ReadonlyMap<string, readonly Rule[]>): Map<string, Rule[]> {
@@ -356,6 +363,26 @@ function dedupeStringArrays(values: readonly (readonly string[])[]): string[][] 
     if (key === previous) continue;
     out.push([...value]);
     previous = key;
+  }
+  return out;
+}
+
+function validateHostExecutableName(name: string): string {
+  assertBareExecutableName(name);
+  return executableLookupKey(name);
+}
+
+function validateHostExecutablePaths(name: string, paths: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const raw of paths) {
+    if (!path.isAbsolute(raw)) {
+      throw invalidRule(`host_executable paths must be absolute (got ${raw})`);
+    }
+    const pathName = executablePathLookupKey(raw);
+    if (pathName === null || pathName !== name) {
+      throw invalidRule(`host_executable path \`${raw}\` must have basename \`${name}\``);
+    }
+    if (!out.includes(raw)) out.push(raw);
   }
   return out;
 }

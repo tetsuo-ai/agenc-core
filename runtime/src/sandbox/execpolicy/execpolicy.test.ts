@@ -13,6 +13,7 @@ import {
   PolicyParser,
   blockingAppendAllowPrefixRule,
   blockingAppendNetworkRule,
+  evaluationIsMatch,
   formatMatchesJson,
   loadPolicies,
   normalizeNetworkRuleHost,
@@ -127,7 +128,9 @@ prefix_rule(
 `,
     );
 
-    expect(policy.check(tokens(["git", "status"]), allowAll)).toEqual({
+    const statusEvaluation = policy.check(tokens(["git", "status"]), allowAll);
+    expect(evaluationIsMatch(statusEvaluation)).toBe(true);
+    expect(statusEvaluation).toEqual({
       decision: "allow",
       matchedRules: [
         {
@@ -248,8 +251,12 @@ prefix_rule(pattern = ["npm", ["i", "install"], ["--legacy-peer-deps", "--no-sav
       `
 verb = "stat" + "us"
 base = ["git"]
-tail = [f"{verb}", "--short"]
-prefix_rule(base + tail, "prompt", justification = "computed rule")
+def make_tail(flag):
+  return [f"{verb}", flag]
+for flag in ["--short"]:
+  prefix_rule(base + make_tail(flag), "prompt", justification = "computed rule")
+extra = [f"{item}" for item in ["safe"]]
+prefix_rule(["echo"] + extra)
 network_host = "LOCALHOST"
 network_rule(network_host, "http", "allow")
 git_path = "${escapedGitPath}"
@@ -275,6 +282,7 @@ host_executable("git", [git_path])
       decision: "allow",
     });
     expect(policy.hostExecutables().get("git")).toEqual([gitPath]);
+    expect(policy.check(tokens(["echo", "safe"]), allowAll).decision).toBe("allow");
   });
 
   test("match and not_match examples validate at parse time", () => {
@@ -372,7 +380,9 @@ host_executable(name = "git", paths = ["${escapedGitPath}"])
   });
 
   test("heuristics fallback is returned when no policy matches", () => {
-    expect(Policy.empty().check(tokens(["python"]), promptAll)).toEqual({
+    const evaluation = Policy.empty().check(tokens(["python"]), promptAll);
+    expect(evaluationIsMatch(evaluation)).toBe(false);
+    expect(evaluation).toEqual({
       decision: "prompt",
       matchedRules: [
         {
@@ -416,6 +426,17 @@ host_executable(
     );
 
     expect(policy.hostExecutables().get("git")).toEqual([firstGit, secondGit]);
+    const mutablePolicy = Policy.empty();
+    mutablePolicy.setHostExecutablePaths("git", [firstGit, firstGit]);
+    expect(mutablePolicy.hostExecutables().get("git")).toEqual([firstGit]);
+    expect(() => mutablePolicy.setHostExecutablePaths("git", ["git"])).toThrow(
+      /paths must be absolute/u,
+    );
+    expect(() =>
+      mutablePolicy.addHostExecutable("git", [
+        hostAbsolutePath(["usr", "bin", hostExecutableName("rg")]),
+      ]),
+    ).toThrow(/must have basename/u);
     expect(() =>
       parsePolicy("bad.agencpolicy", 'host_executable(name = "git", paths = ["git"])'),
     ).toThrow(/paths must be absolute/u);
@@ -661,20 +682,6 @@ host_executable(name = "git", paths = [])
         ['prefix_rule(pattern = ["git', 'status"])'].join("\n"),
       ),
     ).toThrow(/raw newline in string literal/u);
-  });
-
-  test("parser rejects unsupported general Starlark statements", () => {
-    expect(() =>
-      parsePolicy(
-        "bad.agencpolicy",
-        `
-def make_pattern():
-  return ["git"]
-
-prefix_rule(make_pattern())
-`,
-      ),
-    ).toThrow(/expected `\(`/u);
   });
 
   test("parse errors carry source locations", () => {

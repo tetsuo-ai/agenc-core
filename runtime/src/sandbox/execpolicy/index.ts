@@ -29,6 +29,7 @@ export { PolicyParser } from "./parser.js";
 export {
   EvaluationFromMatches,
   Policy,
+  evaluationIsMatch,
   type Evaluation,
   type HeuristicsFallback,
   type MatchOptions,

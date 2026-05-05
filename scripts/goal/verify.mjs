@@ -546,7 +546,7 @@ const ITEM_EVIDENCE = {
       { pattern: "host_executable", scope: "runtime/src/sandbox/execpolicy/parser.ts" },
       { pattern: "matchesForCommandWithOptions", scope: "runtime/src/sandbox/execpolicy/policy.ts" },
       { pattern: "normalizeNetworkRuleHost", scope: "runtime/src/sandbox/execpolicy/rule.ts" },
-      { pattern: "proper-lockfile", scope: "runtime/src/sandbox/execpolicy/amend.ts" },
+      { pattern: "lockSync", scope: "runtime/src/sandbox/execpolicy/amend.ts" },
       { pattern: "formatMatchesJson", scope: "runtime/src/sandbox/execpolicy/execpolicycheck.ts" },
     ],
     tests: ["runtime/src/sandbox/execpolicy/execpolicy.test.ts"],
@@ -2665,7 +2665,7 @@ async function donorRuntimePortGates(item) {
     if (!/normalizeNetworkRuleHost/.test(ruleSource) || !/parseNetworkRuleProtocol/.test(ruleSource)) {
       failGate("C-01d: rule layer must normalize network hosts and protocols");
     }
-    if (!/proper-lockfile/.test(amendSource) || !/blockingAppendNetworkRule/.test(amendSource)) {
+    if (!/lockSync/.test(amendSource) || !/blockingAppendNetworkRule/.test(amendSource)) {
       failGate("C-01d: amendment helpers must lock and append prefix/network rules");
     }
     if (!/formatMatchesJson/.test(checkerSource) || !/loadPolicies/.test(checkerSource)) {

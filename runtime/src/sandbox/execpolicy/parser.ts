@@ -42,6 +42,11 @@ interface ParserPosition {
   readonly column: number;
 }
 
+interface UserFunction {
+  readonly params: readonly string[];
+  readonly bodyExpression: string;
+}
+
 interface PendingExampleValidation {
   readonly rules: readonly Rule[];
   readonly matches: readonly (readonly string[])[];
@@ -453,12 +458,20 @@ class DeclarativePolicyParser {
   private offset = 0;
   private line = 1;
   private column = 1;
-  private readonly variables = new Map<string, DslValue>();
+  private readonly variables: Map<string, DslValue>;
+  private readonly functions: Map<string, UserFunction>;
 
   constructor(
     private readonly policyIdentifier: string,
     private readonly source: string,
-  ) {}
+    variables: ReadonlyMap<string, DslValue> = new Map(),
+    functions: Map<string, UserFunction> = new Map(),
+  ) {
+    this.variables = new Map(
+      [...variables.entries()].map(([key, value]) => [key, cloneDslValue(value)]),
+    );
+    this.functions = functions;
+  }
 
   parse(): CallStatement[] {
     const statements: CallStatement[] = [];
@@ -466,13 +479,21 @@ class DeclarativePolicyParser {
       this.skipTrivia();
       if (this.eof()) return statements;
       const statement = this.parseTopLevelStatement();
-      if (statement !== null) statements.push(statement);
+      if (Array.isArray(statement)) statements.push(...statement);
+      else if (statement !== null) statements.push(statement);
     }
   }
 
-  private parseTopLevelStatement(): CallStatement | null {
+  private parseTopLevelStatement(): CallStatement | CallStatement[] | null {
     const start = this.position();
     const name = this.parseIdentifier();
+    if (name === "def") {
+      this.parseFunctionDefinition();
+      return null;
+    }
+    if (name === "for") {
+      return this.parseForLoop();
+    }
     this.skipTrivia();
     if (this.consume("=")) {
       this.variables.set(name, cloneDslValue(this.parseExpression()));
@@ -535,6 +556,76 @@ class DeclarativePolicyParser {
     };
   }
 
+  private parseFunctionDefinition(): void {
+    this.skipHorizontalTrivia();
+    const name = this.parseIdentifier();
+    this.skipTrivia();
+    this.expect("(");
+    const params: string[] = [];
+    this.skipTrivia();
+    while (!this.consume(")")) {
+      params.push(this.parseIdentifier());
+      this.skipTrivia();
+      if (this.consume(",")) {
+        this.skipTrivia();
+        continue;
+      }
+      this.expect(")");
+      break;
+    }
+    this.skipHorizontalTrivia();
+    this.expect(":");
+    const body = this.readIndentedBlockSource();
+    const statements = body
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith("#"));
+    if (statements.length !== 1 || !statements[0]?.startsWith("return ")) {
+      throw this.error("policy helper functions must contain a single return expression");
+    }
+    this.functions.set(name, {
+      params,
+      bodyExpression: statements[0].slice("return ".length),
+    });
+  }
+
+  private parseForLoop(): CallStatement[] {
+    this.skipHorizontalTrivia();
+    const variableName = this.parseIdentifier();
+    this.skipHorizontalTrivia();
+    const inKeyword = this.parseIdentifier();
+    if (inKeyword !== "in") {
+      throw this.error("expected `in` in for loop");
+    }
+    const iterable = this.parseExpression();
+    if (!Array.isArray(iterable)) {
+      throw this.error("for loop iterable must be a list");
+    }
+    this.skipHorizontalTrivia();
+    this.expect(":");
+    const body = this.readIndentedBlockSource();
+    const hadPrevious = this.variables.has(variableName);
+    const previous = this.variables.get(variableName);
+    const statements: CallStatement[] = [];
+    try {
+      for (const value of iterable) {
+        this.variables.set(variableName, cloneDslValue(value));
+        statements.push(
+          ...new DeclarativePolicyParser(
+            this.policyIdentifier,
+            body,
+            this.variables,
+            this.functions,
+          ).parse(),
+        );
+      }
+    } finally {
+      if (hadPrevious && previous !== undefined) this.variables.set(variableName, previous);
+      else this.variables.delete(variableName);
+    }
+    return statements;
+  }
+
   private parseExpression(): DslValue {
     let left = this.parseTerm();
     while (true) {
@@ -562,6 +653,10 @@ class DeclarativePolicyParser {
     }
     if (char !== null && isIdentifierStart(char)) {
       const name = this.parseIdentifier();
+      this.skipTrivia();
+      if (this.peek() === "(") {
+        return this.parseFunctionCall(name);
+      }
       const value = this.variables.get(name);
       if (value === undefined) {
         throw this.error(`unknown policy variable ${name}`);
@@ -581,6 +676,8 @@ class DeclarativePolicyParser {
 
   private parseList(): DslValue[] {
     this.expect("[");
+    const comprehension = this.tryParseListComprehension();
+    if (comprehension !== null) return comprehension;
     const values: DslValue[] = [];
     this.skipTrivia();
     while (!this.consume("]")) {
@@ -593,6 +690,71 @@ class DeclarativePolicyParser {
       this.expect("]");
       break;
     }
+    return values;
+  }
+
+  private parseFunctionCall(name: string): DslValue {
+    const fn = this.functions.get(name);
+    if (fn === undefined) {
+      throw this.error(`unknown policy function ${name}`);
+    }
+    this.expect("(");
+    const args: DslValue[] = [];
+    this.skipTrivia();
+    while (!this.consume(")")) {
+      args.push(this.parseExpression());
+      this.skipTrivia();
+      if (this.consume(",")) {
+        this.skipTrivia();
+        continue;
+      }
+      this.expect(")");
+      break;
+    }
+    if (args.length !== fn.params.length) {
+      throw this.error(`policy function ${name} expected ${fn.params.length} arguments but got ${args.length}`);
+    }
+    const locals = new Map(this.variables);
+    for (let index = 0; index < fn.params.length; index += 1) {
+      const param = fn.params[index];
+      const arg = args[index];
+      if (param !== undefined && arg !== undefined) {
+        locals.set(param, cloneDslValue(arg));
+      }
+    }
+    return this.evaluateExpressionSnippet(fn.bodyExpression, locals);
+  }
+
+  private tryParseListComprehension(): DslValue[] | null {
+    const start = this.offset;
+    const end = this.findClosingListBracket(start - 1);
+    if (end === null) return null;
+    const content = this.source.slice(start, end);
+    const match = /^([\s\S]+?)\s+for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([\s\S]+)$/u.exec(
+      content.trim(),
+    );
+    if (match === null) return null;
+    const [, itemExpression, variableName, iterableExpression] = match;
+    if (itemExpression === undefined || variableName === undefined || iterableExpression === undefined) {
+      return null;
+    }
+    const iterable = this.evaluateExpressionSnippet(iterableExpression, this.variables);
+    if (!Array.isArray(iterable)) {
+      throw this.error("list comprehension iterable must be a list");
+    }
+    const hadPrevious = this.variables.has(variableName);
+    const previous = this.variables.get(variableName);
+    const values: DslValue[] = [];
+    try {
+      for (const value of iterable) {
+        this.variables.set(variableName, cloneDslValue(value));
+        values.push(this.evaluateExpressionSnippet(itemExpression, this.variables));
+      }
+    } finally {
+      if (hadPrevious && previous !== undefined) this.variables.set(variableName, previous);
+      else this.variables.delete(variableName);
+    }
+    this.advanceTo(end + 1);
     return values;
   }
 
@@ -724,6 +886,96 @@ class DeclarativePolicyParser {
     throw this.error("unterminated f-string replacement");
   }
 
+  private evaluateExpressionSnippet(
+    source: string,
+    variables: ReadonlyMap<string, DslValue>,
+  ): DslValue {
+    const parser = new DeclarativePolicyParser(
+      this.policyIdentifier,
+      source,
+      variables,
+      this.functions,
+    );
+    const value = parser.parseExpression();
+    parser.skipTrivia();
+    if (!parser.eof()) {
+      throw this.error(`unsupported expression syntax: ${source.trim()}`);
+    }
+    return value;
+  }
+
+  private readIndentedBlockSource(): string {
+    this.skipHorizontalTrivia();
+    if (this.peek() !== "\n") {
+      throw this.error("expected newline before indented block");
+    }
+    this.advance();
+    const blockStart = this.offset;
+    let scan = this.offset;
+    let indent: number | null = null;
+    let blockEnd = this.offset;
+    while (scan < this.source.length) {
+      const lineStart = scan;
+      const newline = this.source.indexOf("\n", lineStart);
+      const lineEnd = newline === -1 ? this.source.length : newline;
+      const line = this.source.slice(lineStart, lineEnd);
+      if (line.trim().length === 0 || line.trimStart().startsWith("#")) {
+        scan = newline === -1 ? this.source.length : newline + 1;
+        if (indent !== null) blockEnd = scan;
+        continue;
+      }
+      const lineIndent = leadingWhitespaceWidth(line);
+      if (indent === null) {
+        if (lineIndent === 0) {
+          throw this.error("expected indented block");
+        }
+        indent = lineIndent;
+      }
+      if (lineIndent < indent) break;
+      blockEnd = newline === -1 ? this.source.length : newline + 1;
+      scan = blockEnd;
+    }
+    if (indent === null) {
+      throw this.error("expected indented block");
+    }
+    const block = this.source
+      .slice(blockStart, blockEnd)
+      .split("\n")
+      .map((line) => stripIndent(line, indent))
+      .join("\n");
+    this.advanceTo(blockEnd);
+    return block;
+  }
+
+  private findClosingListBracket(openOffset: number): number | null {
+    let depth = 0;
+    let quote: "'" | "\"" | null = null;
+    for (let index = openOffset; index < this.source.length; index += 1) {
+      const char = this.source[index] ?? "";
+      if (quote !== null) {
+        if (char === "\\") {
+          index += 1;
+          continue;
+        }
+        if (char === quote) quote = null;
+        continue;
+      }
+      if (char === "'" || char === "\"") {
+        quote = char;
+        continue;
+      }
+      if (char === "[") {
+        depth += 1;
+        continue;
+      }
+      if (char === "]") {
+        depth -= 1;
+        if (depth === 0) return index;
+      }
+    }
+    return null;
+  }
+
   private parseIdentifier(): string {
     this.skipTrivia();
     const start = this.offset;
@@ -744,6 +996,21 @@ class DeclarativePolicyParser {
     while (!this.eof()) {
       const char = this.peek();
       if (char !== null && /\s/u.test(char)) {
+        this.advance();
+        continue;
+      }
+      if (char === "#") {
+        while (!this.eof() && this.peek() !== "\n") this.advance();
+        continue;
+      }
+      return;
+    }
+  }
+
+  private skipHorizontalTrivia(): void {
+    while (!this.eof()) {
+      const char = this.peek();
+      if (char === " " || char === "\t") {
         this.advance();
         continue;
       }
@@ -803,6 +1070,10 @@ class DeclarativePolicyParser {
     return char;
   }
 
+  private advanceTo(targetOffset: number): void {
+    while (this.offset < targetOffset) this.advance();
+  }
+
   private eof(): boolean {
     return this.offset >= this.source.length;
   }
@@ -829,4 +1100,26 @@ function isIdentifierStart(char: string): boolean {
 
 function isIdentifier(value: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/u.test(value);
+}
+
+function leadingWhitespaceWidth(line: string): number {
+  let count = 0;
+  for (const char of line) {
+    if (char === " ") count += 1;
+    else if (char === "\t") count += 1;
+    else break;
+  }
+  return count;
+}
+
+function stripIndent(line: string, indent: number): string {
+  let offset = 0;
+  let remaining = indent;
+  while (remaining > 0 && offset < line.length) {
+    const char = line[offset];
+    if (char !== " " && char !== "\t") break;
+    offset += 1;
+    remaining -= 1;
+  }
+  return line.slice(offset);
 }
