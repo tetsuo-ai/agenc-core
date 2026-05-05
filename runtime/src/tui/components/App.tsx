@@ -24,14 +24,14 @@ import {
 } from "../ink.js";
 import type { LLMMessage } from "../../llm/types.js";
 import type { ToolPermissionContext } from "../../permissions/types.js";
-import { createBridgeTools } from "../bridges/tool-stubs.js";
-import { useSessionTranscript } from "../bridges/use-session-transcript.js";
-import { useToolJSX } from "../bridges/use-tool-jsx.js";
+import { createTuiTools } from "../tool-rendering.js";
+import { useSessionTranscript } from "../session-transcript.js";
+import { useToolJSX } from "../tool-jsx-state.js";
 import {
   AgenCPermissionOverlay as PermissionOverlay,
   buildToolUseConfirmQueue,
-  usePermissionBridge,
-} from "../bridges/permission-bridge.js";
+  usePermissionRequests,
+} from "../permission-requests.js";
 import {
   ElicitationOverlay,
   useElicitationBridge,
@@ -248,7 +248,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     },
     [setAppState],
   );
-  const permissionRequests = usePermissionBridge(
+  const permissionRequests = usePermissionRequests(
     props.session,
     setModel,
     setExpandedView,
@@ -261,7 +261,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     if (firstPermission) names.add(firstPermission.ctx.toolName);
     return names;
   }, [permissionRequests, transcript.toolNames]);
-  const tools = useMemo(() => createBridgeTools(toolNames), [toolNames]);
+  const tools = useMemo(() => createTuiTools(toolNames), [toolNames]);
   const commands = useMemo(() => loadUpstreamCommandList(), []);
   const agents = useMemo(() => loadUpstreamAgentList(), []);
 

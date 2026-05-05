@@ -1,20 +1,22 @@
 import { randomUUID } from "node:crypto";
+import { useEffect, useMemo, useReducer } from "react";
 
 import type { LLMMessage, StreamingToolUse } from "../../llm/types.js";
 import type { Event } from "../../session/event-log.js";
+import type { AgenCBridgeSession } from "./session-types.js";
 
 /**
  * Hardcoded copy of `FILE_EDIT_TOOL_NAME` from
  * `runtime/src/tools/system/file-edit.ts`. Kept in sync by hand
  * because importing the live constant pulls `tools/system/file-edit.ts`
  * → `tools/result-metadata.ts` → the `diff` npm package into this
- * module's resolution chain, which breaks transcript-bridge tests
+ * module's resolution chain, which breaks focused transcript tests
  * that should not depend on the diff library. If the live constant
  * ever changes, update this value in lockstep.
  */
 const FILE_EDIT_TOOL_NAME = "Edit";
 
-type BridgeEvent =
+export type SessionTranscriptEvent =
   | Event
   | { readonly type: string; readonly payload?: unknown; readonly [key: string]: unknown };
 
@@ -33,7 +35,7 @@ export interface AdaptedTranscript {
    * `<Messages>` component (`components/Messages.tsx:222`) to render
    * synthetic streaming-tool-use cells while the model emits partial
    * arguments. Populated by row R5 of the streaming-tool-use parity
-   * contract (`message-adapter` accumulator). Empty until R5 lands.
+   * contract. Empty until R5 lands.
    */
   readonly streamingToolUses: readonly StreamingToolUse[];
 }
@@ -243,7 +245,7 @@ export function makeSystemMessage(
   };
 }
 
-function eventKey(event: BridgeEvent): string {
+function eventKey(event: SessionTranscriptEvent): string {
   if ("seq" in event && typeof event.seq === "number") return `seq:${event.seq}`;
   if ("id" in event && typeof event.id === "string") return `id:${event.id}`;
   try {
@@ -253,7 +255,7 @@ function eventKey(event: BridgeEvent): string {
   }
 }
 
-function unwrap(event: BridgeEvent): {
+function unwrap(event: SessionTranscriptEvent): {
   readonly type: string;
   readonly payload: unknown;
   readonly key: string;
@@ -357,7 +359,7 @@ function formatElicitationSummary(type: string, payload: Record<string, unknown>
  * Tool-result content formatter. Replaces the previous fallback of
  * always running everything through `stringResult` so that callers
  * who want structured rendering (Bash stdout/stderr, FileEdit diffs)
- * can preserve shape. Returns an array of Anthropic-style content
+ * can preserve shape. Returns an array of provider-style content
  * blocks the upstream renderer can dispatch on; falls back to a
  * single `{type:'text', text:stringResult(...)}` block for tools we
  * do not have a structured projection for.
@@ -375,7 +377,7 @@ export function formatStructuredToolResult(
     const durationMs =
       typeof payload.durationMs === "number" ? payload.durationMs : null;
     // Wrap in upstream's `<bash-stdout>...</bash-stdout>` /
-    // `<bash-stderr>...</bash-stderr>` envelope so the bridge Bash tool
+    // `<bash-stderr>...</bash-stderr>` envelope so the Bash renderer
     // can hand the joined text directly to the upstream
     // `UserBashOutputMessage` component, which extracts these tags via
     // `extractTag(content, "bash-stdout")`. The exit_code / duration_ms
@@ -414,8 +416,8 @@ export function formatStructuredToolResult(
           ? (result as { readonly path: string }).path
           : null;
       // Tagged envelope (same pattern as `<bash-stdout>...</bash-stdout>`)
-      // so the bridge tool's `EditDiffView` can pull file path and diff
-      // body out of the joined content via `extractBridgeTag`. Keeps
+      // so the tool renderer's `EditDiffView` can pull file path and diff
+      // body out of the joined content via `extractToolTag`. Keeps
       // Bash and Edit on the same wire-shape pattern.
       const blocks: { type: "text"; text: string }[] = [];
       if (path !== null) {
@@ -624,9 +626,9 @@ export function formatStructuredToolResult(
 
 /**
  * Tool-error content formatter. Wraps an error message and an
- * optional tool name in a `<tool-error>` envelope so the bridge's
- * cross-cutting error renderer can dispatch on it regardless of
- * which tool emitted the error. The bridge's `pickToolResultDispatch`
+ * optional tool name in a `<tool-error>` envelope so the cross-cutting
+ * error renderer can dispatch on it regardless of which tool emitted
+ * the error. `pickToolResultDispatch`
  * checks for this envelope BEFORE per-tool routing, so any tool that
  * surfaces a result through the error channel renders consistently.
  */
@@ -649,7 +651,7 @@ export function formatStructuredToolError(
 }
 
 export function adaptTranscriptEvents(
-  events: readonly BridgeEvent[],
+  events: readonly SessionTranscriptEvent[],
   startupMessages: readonly LLMMessage[] = [],
 ): AdaptedTranscript {
   const out: any[] = startupMessages.map((message) => makeUserMessage(message.content));
@@ -785,7 +787,7 @@ export function adaptTranscriptEvents(
         break;
       }
       case "tool_input_block_start": {
-        // Provider-emitted (R6: Anthropic adapter) when a tool_use content
+        // Provider-emitted (R6) when a tool_use content
         // block begins streaming. Mirrors the upstream content_block_start
         // case in messages.ts:3024-3037 that appends a new element to the
         // streamingToolUses array. The upstream Messages.tsx:446 filter
@@ -829,7 +831,7 @@ export function adaptTranscriptEvents(
         break;
       }
       case "tool_input_delta": {
-        // Provider-emitted (R6) for each Anthropic input_json_delta. Mirrors
+        // Provider-emitted (R6) for each input_json_delta. Mirrors
         // messages.ts:3062-3079: locate the element with the matching index
         // and append the partial JSON; if no element is found, return the
         // array unchanged (the upstream `if (!element) return _` early
@@ -953,4 +955,74 @@ export function adaptTranscriptEvents(
     currentTurnId,
     streamingToolUses,
   };
+}
+
+interface TranscriptState {
+  readonly events: readonly SessionTranscriptEvent[];
+  readonly keys: ReadonlySet<string>;
+}
+
+type TranscriptAction =
+  | { readonly kind: "reset"; readonly events: readonly SessionTranscriptEvent[] }
+  | { readonly kind: "append"; readonly event: SessionTranscriptEvent };
+
+function reducer(state: TranscriptState, action: TranscriptAction): TranscriptState {
+  switch (action.kind) {
+    case "reset": {
+      const keys = new Set<string>();
+      const events: SessionTranscriptEvent[] = [];
+      for (const event of action.events) {
+        const key = eventKey(event);
+        if (keys.has(key)) continue;
+        keys.add(key);
+        events.push(event);
+      }
+      return { events, keys };
+    }
+    case "append": {
+      const key = eventKey(action.event);
+      if (state.keys.has(key)) return state;
+      return {
+        events: [...state.events, action.event],
+        keys: new Set([...state.keys, key]),
+      };
+    }
+  }
+}
+
+function initialEvents(session: AgenCBridgeSession): readonly SessionTranscriptEvent[] {
+  const fromGetter = session.getInitialTranscriptEvents?.();
+  const fromProperty = session.initialTranscriptEvents;
+  return [...((fromGetter ?? fromProperty ?? []) as readonly SessionTranscriptEvent[])];
+}
+
+export function useSessionTranscript(
+  session: AgenCBridgeSession,
+  startupMessages: readonly LLMMessage[] = [],
+) {
+  const [state, dispatch] = useReducer(reducer, { events: [], keys: new Set() });
+
+  useEffect(() => {
+    dispatch({ kind: "reset", events: initialEvents(session) });
+  }, [session]);
+
+  useEffect(() => {
+    const unsubscribeLog = session.eventLog?.subscribe((event) => {
+      dispatch({ kind: "append", event });
+    });
+    const unsubscribePhase = session.subscribeToEvents?.((event) => {
+      if (event && typeof event === "object" && "type" in event) {
+        dispatch({ kind: "append", event: event as SessionTranscriptEvent });
+      }
+    });
+    return () => {
+      unsubscribeLog?.();
+      unsubscribePhase?.();
+    };
+  }, [session]);
+
+  return useMemo(
+    () => adaptTranscriptEvents(state.events, startupMessages),
+    [state.events, startupMessages],
+  );
 }

@@ -10,16 +10,15 @@ vi.mock("../tui/ink.js", () => {
   return { Box, Text };
 });
 
-// branding-scan: allow existing TUI adapter directory name
 import {
-  createBridgeTool,
-  createBridgeTools,
-} from "../tui/bridges/tool-stubs.js"; // branding-scan: allow existing TUI adapter directory name
+  createTuiTool,
+  createTuiTools,
+} from "../tui/tool-rendering.js";
 import { AskUserQuestionTool } from "./ask-user-question/tui-tool.js";
 
 describe("AskUserQuestion bridge routing", () => {
   test("uses the AgenC tool object so PermissionRequest selects the structured question UI", () => {
-    expect(createBridgeTool("AskUserQuestion")).toBe(AskUserQuestionTool);
-    expect(createBridgeTools([])).toContain(AskUserQuestionTool);
+    expect(createTuiTool("AskUserQuestion")).toBe(AskUserQuestionTool);
+    expect(createTuiTools([])).toContain(AskUserQuestionTool);
   });
 });

@@ -1,11 +1,11 @@
 import React from "react";
 
-import { Box, Text } from "../ink.js";
-import { AskUserQuestionTool } from "../../tools/ask-user-question/tui-tool.js";
+import { Box, Text } from "./ink.js";
+import { AskUserQuestionTool } from "../tools/ask-user-question/tui-tool.js";
 import {
   pickToolResultDispatch,
-  resultTextForBridgeTool,
-} from "../../agenc/adapters/upstream-tool-result-dispatch.js";
+  resultTextForTuiTool,
+} from "../agenc/adapters/upstream-tool-result-dispatch.js";
 
 /**
  * Tag extractor mirroring upstream `extractTag` semantics — pulls
@@ -13,10 +13,10 @@ import {
  * instead of imported from `agenc/upstream/utils/messages.ts` because
  * that module pulls a `bun:bundle` feature gate + provider chain in
  * at module-load time, which the vitest source resolver cannot follow.
- * The bridge only needs the regex extraction; nothing else from that
+ * The TUI renderer only needs the regex extraction; nothing else from that
  * file is in scope.
  */
-function extractBridgeTag(content: string, tagName: string): string | null {
+function extractToolTag(content: string, tagName: string): string | null {
   const open = `<${tagName}>`;
   const close = `</${tagName}>`;
   const startIdx = content.indexOf(open);
@@ -38,7 +38,7 @@ function extractBridgeTag(content: string, tagName: string): string | null {
  * runtime CAN later be flipped to dispatch to the real upstream
  * component once the dist is in scope; the wire shape
  * (`<bash-stdout>` envelope produced by
- * `message-adapter.formatStructuredToolResult`) is already the
+ * `session-transcript.formatStructuredToolResult`) is already the
  * upstream-compatible one. Until then this local renderer is the
  * dispatch target for `pickToolResultDispatch === 'bash-output-view'`.
  */
@@ -62,7 +62,7 @@ function truncateForDisplay(value: string, limit: number): string {
  * `loadDiffData(file_path, edits)` (which reads the file from disk).
  * AgenC's tool result already contains the computed diff string, so
  * this local renderer parses the diff lines directly. Production
- * runtime can later flip to the upstream component once the bridge
+ * runtime can later flip to the upstream component once the TUI
  * propagates the original `edits[]` from the matching tool_use input
  * (`UserToolSuccessMessage` already passes `options.input` to
  * `renderToolResultMessage`).
@@ -72,8 +72,8 @@ export function EditDiffView({
 }: {
   readonly content: string;
 }): React.ReactElement {
-  const file = extractBridgeTag(content, "edit-file") ?? "";
-  const diff = extractBridgeTag(content, "edit-diff") ?? "";
+  const file = extractToolTag(content, "edit-file") ?? "";
+  const diff = extractToolTag(content, "edit-diff") ?? "";
   if (diff.length === 0) {
     return (
       <Box flexDirection="column">
@@ -120,9 +120,9 @@ export function FileReadView({
 }: {
   readonly content: string;
 }): React.ReactElement {
-  const file = extractBridgeTag(content, "read-file") ?? "";
-  const lines = extractBridgeTag(content, "read-lines") ?? "";
-  const body = extractBridgeTag(content, "read-content") ?? "";
+  const file = extractToolTag(content, "read-file") ?? "";
+  const lines = extractToolTag(content, "read-lines") ?? "";
+  const body = extractToolTag(content, "read-content") ?? "";
   const truncatedBody = truncateForDisplay(body, BASH_OUTPUT_TRUNCATION_LIMIT);
   const headerText =
     lines.length > 0 ? `${file} [${lines}]` : file;
@@ -147,8 +147,8 @@ export function FileWriteView({
 }: {
   readonly content: string;
 }): React.ReactElement {
-  const file = extractBridgeTag(content, "write-file") ?? "";
-  const summary = extractBridgeTag(content, "write-summary") ?? "Wrote file";
+  const file = extractToolTag(content, "write-file") ?? "";
+  const summary = extractToolTag(content, "write-summary") ?? "Wrote file";
   return (
     <Box flexDirection="column">
       {file.length > 0 ? <Text bold>{file}</Text> : null}
@@ -167,8 +167,8 @@ export function GrepMatchesView({
 }: {
   readonly content: string;
 }): React.ReactElement {
-  const pattern = extractBridgeTag(content, "grep-pattern") ?? "";
-  const matchesBlock = extractBridgeTag(content, "grep-matches") ?? "";
+  const pattern = extractToolTag(content, "grep-pattern") ?? "";
+  const matchesBlock = extractToolTag(content, "grep-matches") ?? "";
   const matchLines = matchesBlock.length > 0 ? matchesBlock.split("\n") : [];
   if (matchLines.length === 0) {
     const emptyHeader = pattern.length > 0 ? `Grep: ${pattern}` : null;
@@ -210,9 +210,9 @@ export function GlobPathsView({
 }: {
   readonly content: string;
 }): React.ReactElement {
-  const pattern = extractBridgeTag(content, "glob-pattern") ?? "";
-  const pathsBlock = extractBridgeTag(content, "glob-paths") ?? "";
-  const truncated = extractBridgeTag(content, "glob-truncated") === "true";
+  const pattern = extractToolTag(content, "glob-pattern") ?? "";
+  const pathsBlock = extractToolTag(content, "glob-paths") ?? "";
+  const truncated = extractToolTag(content, "glob-truncated") === "true";
   const paths = pathsBlock.length > 0 ? pathsBlock.split("\n") : [];
   if (paths.length === 0) {
     const emptyHeader = pattern.length > 0 ? `Glob: ${pattern}` : null;
@@ -258,8 +258,8 @@ export function ToolErrorView({
 }: {
   readonly content: string;
 }): React.ReactElement {
-  const toolName = extractBridgeTag(content, "tool-error-name") ?? "";
-  const message = extractBridgeTag(content, "tool-error") ?? content;
+  const toolName = extractToolTag(content, "tool-error-name") ?? "";
+  const message = extractToolTag(content, "tool-error") ?? content;
   return (
     <Box flexDirection="column">
       <Text bold color="red">
@@ -277,8 +277,8 @@ export function BashOutputView({
   readonly content: string;
   readonly verbose?: boolean;
 }): React.ReactElement {
-  const stdoutRaw = extractBridgeTag(content, "bash-stdout") ?? "";
-  const stderrRaw = extractBridgeTag(content, "bash-stderr") ?? "";
+  const stdoutRaw = extractToolTag(content, "bash-stdout") ?? "";
+  const stderrRaw = extractToolTag(content, "bash-stderr") ?? "";
   const stdout = truncateForDisplay(stdoutRaw, BASH_OUTPUT_TRUNCATION_LIMIT);
   const stderr = truncateForDisplay(stderrRaw, BASH_OUTPUT_TRUNCATION_LIMIT);
   // Surface the metadata block (e.g. "[exit_code=0 duration_ms=42]")
@@ -342,7 +342,7 @@ function resultText(value: unknown): string {
   return shortJson(value);
 }
 
-export function createBridgeTool(name: string): any {
+export function createTuiTool(name: string): any {
   if (name === "AskUserQuestion") {
     return AskUserQuestionTool;
   }
@@ -362,7 +362,7 @@ export function createBridgeTool(name: string): any {
       return name;
     },
     async prompt() {
-      return `${name} is provided by the AgenC runtime bridge.`;
+      return `${name} is provided by the AgenC runtime.`;
     },
     async checkPermissions() {
       return { behavior: "ask", message: `Permission required to use ${name}` };
@@ -404,7 +404,7 @@ export function createBridgeTool(name: string): any {
       // `agenc/adapters/upstream-tool-result-dispatch.ts` so unit tests
       // can exercise the routing logic without dragging the upstream
       // component chain into vitest.
-      const joined = resultTextForBridgeTool(content);
+      const joined = resultTextForTuiTool(content);
       const target = pickToolResultDispatch(name, joined);
       switch (target) {
         case "tool-error-view":
@@ -453,29 +453,29 @@ export function createBridgeTool(name: string): any {
       return {
         type: "tool_result",
         tool_use_id: toolUseID,
-        content: resultTextForBridgeTool(content),
+        content: resultTextForTuiTool(content),
       };
     },
   };
 }
 
 /**
- * Pre-seed names for tools the bridge dispatches to a structured
+ * Pre-seed names for tools the TUI dispatches to a structured
  * renderer. These match the live registered tool names in
  * `runtime/src/tools/system/*.ts` (NOT the upstream-product naming —
  * e.g. AgenC's read tool is `FileRead`, not `Read`). If a tool is
- * pre-seeded that the live runtime never registers, the bridge entry
+ * pre-seeded that the live runtime never registers, the TUI entry
  * is harmless (just unused). If a tool the runtime DOES register is
- * NOT pre-seeded, `createBridgeTools` still adds it on the fly when
+ * NOT pre-seeded, `createTuiTools` still adds it on the fly when
  * its name flows through `transcript.toolNames`.
  *
- * `Task`, `Agent`, and `mcp__*` names from the previous bridge are
+ * `Task`, `Agent`, and `mcp__*` names from the previous TUI-only list are
  * intentionally absent: AgenC's agent layer uses `spawn_agent` (a
  * different lifecycle than upstream's Task), and MCP tools are
  * registered with dynamic `mcp__<server>__<tool>` names. Both require
  * a separate dispatch contract beyond exact-case routing.
  */
-export function createBridgeTools(names: Iterable<string>): readonly any[] {
+export function createTuiTools(names: Iterable<string>): readonly any[] {
   const unique = new Set<string>([
     "AskUserQuestion",
     "Bash",
@@ -488,5 +488,5 @@ export function createBridgeTools(names: Iterable<string>): readonly any[] {
   for (const name of names) {
     if (name.trim().length > 0) unique.add(name);
   }
-  return [...unique].sort().map(createBridgeTool);
+  return [...unique].sort().map(createTuiTool);
 }

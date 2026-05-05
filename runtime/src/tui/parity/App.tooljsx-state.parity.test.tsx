@@ -6,7 +6,7 @@ import {
   applyToolJSXUpdate,
   type ToolJSXArgs,
   type ToolJSXState,
-} from "../bridges/use-tool-jsx.js";
+} from "../tool-jsx-state.js";
 
 const APP_SOURCE_PATH = path.resolve(import.meta.dirname, "../components/App.tsx");
 

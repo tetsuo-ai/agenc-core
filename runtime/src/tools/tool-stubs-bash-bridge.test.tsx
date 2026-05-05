@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 
-// Stub AgenC ink before tool-stubs.tsx imports it. The real AgenC ink
+// Stub AgenC ink before tool-rendering.tsx imports it. The real AgenC ink
 // transitively pulls `agenc/upstream/utils/config.ts` which runs a
 // `feature('TEAMMEM') ? require('../memdir/teamMemPaths.js') : null`
 // branch — vitest's source resolver cannot follow the .js → .ts mapping
@@ -17,12 +17,11 @@ vi.mock("../tui/ink.js", () => {
   return { Box, Text };
 });
 
-// branding-scan: allow existing compatibility-island path
-import { createBridgeTool, BashOutputView } from "../tui/bridges/tool-stubs.js";
+import { createTuiTool, BashOutputView } from "../tui/tool-rendering.js";
 
-describe("createBridgeTool('Bash').renderToolResultMessage — end-to-end dispatch", () => {
+describe("createTuiTool('Bash').renderToolResultMessage — end-to-end dispatch", () => {
   test("Bash content with <bash-stdout> envelope produces a React element whose type is BashOutputView", () => {
-    const tool = createBridgeTool("Bash");
+    const tool = createTuiTool("Bash");
     const node = tool.renderToolResultMessage(
       "<bash-stdout>hello</bash-stdout>[exit_code=0]",
       [],
@@ -32,7 +31,7 @@ describe("createBridgeTool('Bash').renderToolResultMessage — end-to-end dispat
   });
 
   test("Bash content WITHOUT <bash-stdout> envelope (legacy plain string) falls through to the generic Box/Text fallback — element type is the Box stub, NOT BashOutputView", () => {
-    const tool = createBridgeTool("Bash");
+    const tool = createTuiTool("Bash");
     const node = tool.renderToolResultMessage(
       "raw legacy string with no envelope",
       [],
@@ -42,7 +41,7 @@ describe("createBridgeTool('Bash').renderToolResultMessage — end-to-end dispat
   });
 
   test("Bash with the structured-content-blocks array shape (the real shape formatStructuredToolResult emits) is collapsed to joined text and dispatches to BashOutputView", () => {
-    const tool = createBridgeTool("Bash");
+    const tool = createTuiTool("Bash");
     const blocks = [
       { type: "text", text: "<bash-stdout>line</bash-stdout>" },
       { type: "text", text: "<bash-stderr>warn</bash-stderr>" },
@@ -57,8 +56,8 @@ describe("createBridgeTool('Bash').renderToolResultMessage — end-to-end dispat
     expect(props.content).toContain("[exit_code=0 duration_ms=42]");
   });
 
-  test("Bash dispatch is exact-case — the bridge for tool name 'bash' (lowercase) does NOT route to BashOutputView", () => {
-    const tool = createBridgeTool("bash");
+  test("Bash dispatch is exact-case — the TUI tool name 'bash' (lowercase) does NOT route to BashOutputView", () => {
+    const tool = createTuiTool("bash");
     const node = tool.renderToolResultMessage(
       "<bash-stdout>x</bash-stdout>",
       [],
@@ -68,7 +67,7 @@ describe("createBridgeTool('Bash').renderToolResultMessage — end-to-end dispat
   });
 
   test("Non-Bash tool name with content that happens to contain <bash-stdout> does NOT route to BashOutputView", () => {
-    const tool = createBridgeTool("XYZUnknown");
+    const tool = createTuiTool("XYZUnknown");
     const node = tool.renderToolResultMessage(
       "<bash-stdout>x</bash-stdout>",
       [],
@@ -78,13 +77,13 @@ describe("createBridgeTool('Bash').renderToolResultMessage — end-to-end dispat
   });
 
   test("Bash with null content falls through to generic — does not throw on tag extraction", () => {
-    const tool = createBridgeTool("Bash");
+    const tool = createTuiTool("Bash");
     const node = tool.renderToolResultMessage(null, [], { verbose: false });
     expect((node as { type: unknown }).type).not.toBe(BashOutputView);
   });
 
-  test("Bash bridge tool's mapToolResultToToolResultBlockParam emits a tool_result block whose content is the joined text (preserves wire shape downstream)", () => {
-    const tool = createBridgeTool("Bash");
+  test("Bash TUI tool's mapToolResultToToolResultBlockParam emits a tool_result block whose content is the joined text (preserves wire shape downstream)", () => {
+    const tool = createTuiTool("Bash");
     const blocks = [
       { type: "text", text: "<bash-stdout>output</bash-stdout>" },
       { type: "text", text: "[exit_code=0]" },
@@ -236,10 +235,8 @@ describe("BashOutputView — local renderer fidelity to upstream visual contract
 
 describe("formatStructuredToolResult ⇄ BashOutputView wire-shape lock", () => {
   test("the tags formatStructuredToolResult emits are the exact tags BashOutputView consumes (so a future flip to the upstream UserBashOutputMessage component requires no shape changes)", async () => {
-    // branding-scan: allow existing compatibility-island path
     const adapterModule = await import(
-      // branding-scan: allow existing compatibility-island path
-      "../tui/bridges/message-adapter.js"
+      "../tui/session-transcript.js"
     );
     const blocks = adapterModule.formatStructuredToolResult(
       "Bash",

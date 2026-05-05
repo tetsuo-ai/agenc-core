@@ -2,11 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 
-import { adaptTranscriptEvents } from "../bridges/message-adapter.js";
+import { adaptTranscriptEvents } from "../session-transcript.js";
 
 const MESSAGE_ADAPTER_PATH = path.resolve(
   import.meta.dirname,
-  "../bridges/message-adapter.ts",
+  "../session-transcript.ts",
 );
 const TUI_OPENCLAUDE_DIR = path.resolve(import.meta.dirname);
 const RUNTIME_SRC_DIR = path.resolve(import.meta.dirname, "..", "..");
@@ -36,8 +36,8 @@ function listTsFilesRecursive(root: string): string[] {
   return out;
 }
 
-describe("R4 runningToolProgress / RunningToolProgress removal from message-adapter", () => {
-  test("B4.4 RunningToolProgress interface is no longer exported from message-adapter.ts", () => {
+describe("R4 runningToolProgress / RunningToolProgress removal from session-transcript", () => {
+  test("B4.4 RunningToolProgress interface is no longer exported from session-transcript.ts", () => {
     const source = readSource(MESSAGE_ADAPTER_PATH);
     expect(source).not.toMatch(/export\s+interface\s+RunningToolProgress\b/);
     expect(source).not.toMatch(/export\s+type\s+RunningToolProgress\b/);
@@ -61,7 +61,7 @@ describe("R4 runningToolProgress / RunningToolProgress removal from message-adap
     expect(transcript).not.toHaveProperty("runningToolProgress");
   });
 
-  test("E4.2 no other file under runtime/src references runningToolProgress (consumers were limited to App.tsx + message-adapter; both now clean)", () => {
+  test("E4.2 no other file under runtime/src references runningToolProgress (consumers were limited to App.tsx + session-transcript; both now clean)", () => {
     const offenders: string[] = [];
     for (const file of listTsFilesRecursive(RUNTIME_SRC_DIR)) {
       // Ignore anything inside the upstream mirror at runtime/src/agenc/upstream
@@ -72,7 +72,7 @@ describe("R4 runningToolProgress / RunningToolProgress removal from message-adap
       }
       // Tests are verifiers, not production consumers; they may refer to the
       // removed symbol in descriptions or assertion strings (e.g.,
-      // message-adapter.test.ts asserts that a transcript no longer carries
+      // session-transcript.test.ts asserts that a transcript no longer carries
       // the runningToolProgress field). Restrict the scan to production code.
       if (file.endsWith(".test.ts") || file.endsWith(".test.tsx")) {
         continue;
@@ -85,7 +85,7 @@ describe("R4 runningToolProgress / RunningToolProgress removal from message-adap
     expect(offenders).toEqual([]);
   });
 
-  test("E4.4 RunningToolProgress symbol absence is asserted across the full bridge directory", () => {
+  test("E4.4 RunningToolProgress symbol absence is asserted across the transcript test source", () => {
     const offenders: string[] = [];
     for (const file of listTsFilesRecursive(TUI_OPENCLAUDE_DIR)) {
       // Same exclusion as E4.2: tests are verifiers, not production consumers.

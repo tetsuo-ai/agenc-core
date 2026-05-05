@@ -20,7 +20,7 @@ describe("R4 RunningToolProgressIndicator removal from App.tsx", () => {
     expect(source).not.toMatch(/progress\s*=\s*\{\s*transcript\.runningToolProgress\s*\}/);
   });
 
-  test("B4.3 App.tsx no longer imports RunningToolProgress from message-adapter", () => {
+  test("B4.3 App.tsx no longer imports RunningToolProgress from session-transcript", () => {
     const source = readSource();
     expect(source).not.toMatch(/RunningToolProgress(?!Indicator)/);
   });

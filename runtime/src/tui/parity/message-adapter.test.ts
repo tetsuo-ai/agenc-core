@@ -4,7 +4,7 @@ import {
   adaptTranscriptEvents,
   formatStructuredToolError,
   formatStructuredToolResult,
-} from "../bridges/message-adapter.js";
+} from "../session-transcript.js";
 import { pickToolResultDispatch } from "../../agenc/adapters/upstream-tool-result-dispatch.js";
 
 describe("AgenC TUI transcript bridge", () => {
@@ -428,7 +428,7 @@ describe("AgenC TUI transcript bridge", () => {
     );
   });
 
-  test("formatStructuredToolResult Glob envelopes plain runtime path text for bridge dispatch", () => {
+  test("formatStructuredToolResult Glob envelopes plain runtime path text for TUI dispatch", () => {
     const blocks = formatStructuredToolResult("Glob", "tool_call_completed", {
       result:
         "src/foo.ts\nsrc/bar.ts\n(Results are truncated. Consider using a more specific path or pattern.)",
@@ -451,7 +451,7 @@ describe("AgenC TUI transcript bridge", () => {
     expect(blocks[1]?.text).toBe("<glob-paths> leading.ts\ntrailing.ts </glob-paths>");
   });
 
-  test("adaptTranscriptEvents bridges completed truncated plain Glob results into structured content blocks", () => {
+  test("adaptTranscriptEvents maps completed truncated plain Glob results into structured content blocks", () => {
     const transcript = adaptTranscriptEvents([
       {
         id: "glob-start",

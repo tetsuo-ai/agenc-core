@@ -1,17 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 
-import { PermissionRequest } from "../components/permissions/PermissionRequest.js";
-import type { ApprovalCtx } from "../../tools/orchestrator.js";
-import type { ReviewDecision } from "../../permissions/review-decision.js";
-import { ABORT } from "../../permissions/review-decision.js";
+import { PermissionRequest } from "./components/permissions/PermissionRequest.js";
+import type { ApprovalCtx } from "../tools/orchestrator.js";
+import type { ReviewDecision } from "../permissions/review-decision.js";
+import { ABORT } from "../permissions/review-decision.js";
 import {
   buildToolUseConfirm,
   buildToolUseConfirmQueue,
   type PendingRequest,
-} from "../../agenc/adapters/permission-bridge-projection.js";
-import { createSessionAppStateBridge } from "../../agenc/adapters/app-state-bridge.js";
-import type { AgenCBridgeSession } from "../session-types.js";
-import type { AppState } from "../state/AppState.js";
+} from "../agenc/adapters/permission-bridge-projection.js";
+import { createSessionAppStateBridge } from "../agenc/adapters/app-state-bridge.js";
+import type { AgenCBridgeSession } from "./session-types.js";
+import type { AppState } from "./state/AppState.js";
 
 export { buildToolUseConfirmQueue, type PendingRequest };
 
@@ -61,7 +61,7 @@ function deriveInput(ctx: ApprovalCtx): Record<string, unknown> {
   }
 }
 
-export function usePermissionBridge(
+export function usePermissionRequests(
   session: AgenCBridgeSession,
   setModel: (next: string) => void,
   setExpandedView: (next: "none" | "tasks") => void,

@@ -180,14 +180,14 @@ function toolUseConfirmFor(tool: Tool, input: Record<string, unknown> = {}): Too
 
 describe("PermissionRequest absorb wiring", () => {
   test("routes the live overlay through the absorbed TUI component", () => {
-    const bridge = readRuntime(
-      ["src", "tui", "bridges", "permission-bridge.tsx"].join("/"),
+    const permissionRequests = readRuntime(
+      ["src", "tui", "permission-requests.tsx"].join("/"),
     );
 
-    expect(bridge).toContain(
-      '../components/permissions/PermissionRequest.js',
+    expect(permissionRequests).toContain(
+      './components/permissions/PermissionRequest.js',
     );
-    expect(bridge).not.toContain(
+    expect(permissionRequests).not.toContain(
       "../../agenc/upstream/components/permissions/" +
         "PermissionRequest.js",
     );

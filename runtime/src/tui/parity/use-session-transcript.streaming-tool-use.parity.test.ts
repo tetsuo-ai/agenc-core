@@ -2,11 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 
-import { adaptTranscriptEvents } from "../bridges/message-adapter.js";
+import { adaptTranscriptEvents } from "../session-transcript.js";
 
 const HOOK_SOURCE_PATH = path.resolve(
   import.meta.dirname,
-  "../bridges/use-session-transcript.ts",
+  "../session-transcript.ts",
 );
 
 function readSource(): string {
@@ -14,7 +14,7 @@ function readSource(): string {
 }
 
 describe("R5 useSessionTranscript exposes streamingToolUses on transcript snapshot", () => {
-  test("B5.6 use-session-transcript.ts memoizes the adaptTranscriptEvents result, so any field added to AdaptedTranscript (including streamingToolUses) is automatically surfaced to App.tsx", () => {
+  test("B5.6 session-transcript.ts memoizes the adaptTranscriptEvents result, so any field added to AdaptedTranscript (including streamingToolUses) is automatically surfaced to App.tsx", () => {
     const source = readSource();
     expect(source).toMatch(
       /useMemo\s*\(\s*\(\)\s*=>\s*adaptTranscriptEvents\s*\(\s*state\.events\s*,\s*startupMessages\s*\)/,
