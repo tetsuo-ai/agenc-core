@@ -23,7 +23,7 @@ import {
 } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
-import { resolveAgencHome } from "../../config/index.js";
+import { resolveAgencHome } from "../../config/env.js";
 import { findProjectRootSync } from "../../session/session-store.js";
 import type { ProjectTrust } from "../approval-policy.js";
 

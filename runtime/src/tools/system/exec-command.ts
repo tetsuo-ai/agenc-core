@@ -4,12 +4,9 @@ import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 import type { BashToolConfig } from "./types.js";
-import {
-  UnifiedExecError,
-  UnifiedExecProcessManager,
-  type UnifiedExecProcessManagerLike,
-  type UnifiedExecRuntimeSandbox,
-} from "../../unified-exec/index.js";
+import { UnifiedExecError } from "../../unified-exec/types.js";
+import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
+import type { UnifiedExecProcessManagerLike, UnifiedExecRuntimeSandbox } from "../../unified-exec/types.js";
 import type {
   NetworkSandboxPolicy,
   WindowsSandboxLevel,

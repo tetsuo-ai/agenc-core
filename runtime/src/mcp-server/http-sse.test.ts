@@ -2,14 +2,10 @@ import { request as httpRequest, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { describe, expect, test } from "vitest";
 
-import {
-  MCP_ERROR_NOT_INITIALIZED,
-  MCP_ERROR_PARSE,
-  McpHttpSseServerTransport,
-  McpServerFramework,
-  McpToolRegistry,
-  encodeSseEvent,
-} from "./index.js";
+import { MCP_ERROR_NOT_INITIALIZED, MCP_ERROR_PARSE } from "./types.js";
+import { McpHttpSseServerTransport, encodeSseEvent } from "./http-sse.js";
+import { McpServerFramework } from "./framework.js";
+import { McpToolRegistry } from "./tools.js";
 import type { McpCallToolResult } from "./types.js";
 
 function request(id: number, method: string, params?: unknown) {

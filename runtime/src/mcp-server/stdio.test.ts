@@ -2,13 +2,10 @@ import { createInterface } from "node:readline";
 import { PassThrough } from "node:stream";
 import { describe, expect, test } from "vitest";
 
-import {
-  MCP_ERROR_PARSE,
-  McpServerFramework,
-  McpStdioServerTransport,
-  McpToolRegistry,
-  encodeMcpJsonLine,
-} from "./index.js";
+import { MCP_ERROR_PARSE } from "./types.js";
+import { McpServerFramework } from "./framework.js";
+import { McpStdioServerTransport, encodeMcpJsonLine } from "./stdio.js";
+import { McpToolRegistry } from "./tools.js";
 import type { McpCallToolResult } from "./types.js";
 
 function request(id: number, method: string, params?: unknown) {

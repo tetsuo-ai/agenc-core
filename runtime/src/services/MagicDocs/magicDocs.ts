@@ -16,10 +16,8 @@ import { readFile, stat } from "node:fs/promises";
 import type { LLMMessage } from "../../llm/types.js";
 import type { Session } from "../../session/session.js";
 import type { Tool } from "../../tools/types.js";
-import {
-  FILE_EDIT_TOOL_NAME,
-  registerFileReadListener,
-} from "../../tools/system/index.js";
+import { FILE_EDIT_TOOL_NAME } from "../../tools/system/file-edit.js";
+import { registerFileReadListener } from "../../tools/system/file-read.js";
 import {
   forEachSessionRead,
   recordSessionRead,

@@ -1,16 +1,16 @@
 import { describe, expect, test } from "vitest";
 import type { AuthBackend } from "../auth/backend.js";
 import { AgenCProvider } from "./providers/agenc/index.js";
-import { AnthropicProvider } from "./providers/anthropic/index.js";
+import { AnthropicProvider } from "./providers/anthropic/adapter.js";
 import { DeepSeekProvider } from "./providers/deepseek/index.js";
 import { GeminiProvider } from "./providers/gemini/index.js";
-import { GrokProvider } from "./providers/grok/index.js";
+import { GrokProvider } from "./providers/grok/adapter.js";
 import { GroqProvider } from "./providers/groq/index.js";
 import { LMStudioProvider } from "./providers/lmstudio/index.js";
-import { OllamaProvider } from "./providers/ollama/index.js";
+import { OllamaProvider } from "./providers/ollama/adapter.js";
 import { OpenAICompatibleProvider } from "./providers/openai-compatible/index.js";
-import { OpenAIProvider } from "./providers/openai/index.js";
-import type { OpenAIProviderConfig } from "./providers/openai/index.js";
+import { OpenAIProvider } from "./providers/openai/adapter.js";
+import type { OpenAIProviderConfig } from "./providers/openai/types.js";
 import { OpenRouterProvider } from "./providers/openrouter/index.js";
 import {
   createProvider,
@@ -180,7 +180,7 @@ describe("createProvider", () => {
     expect(isFactoryProvider(provider)).toBe(true);
   });
 
-  test("preserves OpenAI-compatible context budget metadata", async () => {
+  test("preserves openai-compatible context budget metadata", async () => {
     const provider = withEnv(
       {
         OPENAI_API_KEY: "local-token",
@@ -210,7 +210,7 @@ describe("createProvider", () => {
     });
   });
 
-  test("preserves the live provider identity on OpenAI-compatible providers", () => {
+  test("preserves the live provider identity on openai-compatible providers", () => {
     const provider = withEnv(
       {
         OPENROUTER_API_KEY: "or-test",
@@ -225,7 +225,7 @@ describe("createProvider", () => {
     expect(readProviderIdentity(provider)).toBe("openrouter");
   });
 
-  test("routes OpenAI-compatible providers through dedicated adapter classes", () => {
+  test("routes openai-compatible providers through dedicated adapter classes", () => {
     const compatible = withEnv(
       { OPENAI_COMPATIBLE_BASE_URL: "http://127.0.0.1:8000/v1" },
       () => createProvider("openai-compatible", { model: "self-hosted-coder" }),
@@ -249,7 +249,7 @@ describe("createProvider", () => {
     expect(deepseek).toBeInstanceOf(DeepSeekProvider);
   });
 
-  test("normalizes generic OpenAI-compatible provider aliases", () => {
+  test("normalizes generic openai-compatible provider aliases", () => {
     expect(normalizeProviderName("custom")).toBe("openai-compatible");
     expect(normalizeProviderName("openai_compatible")).toBe("openai-compatible");
     expect(normalizeProviderName("openai-compatible")).toBe("openai-compatible");
@@ -270,7 +270,7 @@ describe("createProvider", () => {
     });
   });
 
-  test("uses the documented OpenAI default model when no model override is supplied", () => {
+  test("uses the documented openai default model when no model override is supplied", () => {
     const provider = withEnv(
       {
         OPENAI_API_KEY: "sk-test",
@@ -298,7 +298,7 @@ describe("createProvider", () => {
     expect(isFactoryProvider(provider)).toBe(true);
   });
 
-  test("preserves Anthropic context-management config in factory state", () => {
+  test("preserves anthropic context-management config in factory state", () => {
     const provider = withEnv(
       {
         ANTHROPIC_API_KEY: "anthropic-test",
@@ -324,7 +324,7 @@ describe("createProvider", () => {
     });
   });
 
-  test("uses the documented Anthropic default model when no model override is supplied", () => {
+  test("uses the documented anthropic default model when no model override is supplied", () => {
     const provider = withEnv(
       {
         ANTHROPIC_API_KEY: "anthropic-test",
@@ -573,7 +573,7 @@ describe("createProvider", () => {
     },
   );
 
-  test("tracks the canonical provider identity and rebuild options on OpenAI-compatible providers", () => {
+  test("tracks the canonical provider identity and rebuild options on openai-compatible providers", () => {
     const provider = withEnv(
       {
         OPENROUTER_API_KEY: "or-test",
@@ -593,7 +593,7 @@ describe("createProvider", () => {
     });
   });
 
-  test("tracks generic OpenAI-compatible provider identity and rebuild options", () => {
+  test("tracks generic openai-compatible provider identity and rebuild options", () => {
     const provider = withEnv(
       {
         OPENAI_COMPATIBLE_API_KEY: "local-token",
@@ -613,7 +613,7 @@ describe("createProvider", () => {
     });
   });
 
-  test("rebuilds OpenAI provider state from OAuth runtime config without requiring OPENAI_API_KEY", () => {
+  test("rebuilds openai provider state from OAuth runtime config without requiring OPENAI_API_KEY", () => {
     const provider = withEnv(
       {
         OPENAI_API_KEY: undefined,
@@ -804,7 +804,7 @@ describe("resolveProviderNameFromEnv", () => {
   test("lowercases and trims AGENC_PROVIDER", () => {
     withEnv(
       {
-        AGENC_PROVIDER: "  OpenAI  ",
+        AGENC_PROVIDER: "  openai  ",
       },
       () => {
         expect(resolveProviderNameFromEnv()).toBe("openai");

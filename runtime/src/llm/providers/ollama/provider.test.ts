@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { OllamaProvider } from "./index.js";
+import { OllamaProvider } from "./adapter.js";
 import { withOllamaHealthSidecar } from "./health.js";
 
 function setClient(

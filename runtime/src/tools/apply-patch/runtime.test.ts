@@ -4,11 +4,8 @@ import { tmpdir } from "node:os";
 
 import { describe, expect, test } from "vitest";
 
-import {
-  applyPatchText,
-  parsePatch,
-  unifiedDiffFromChunks,
-} from "./index.js";
+import { applyPatchText, unifiedDiffFromChunks } from "./runtime.js";
+import { parsePatch } from "./parser.js";
 
 async function tempRoot(): Promise<string> {
   return mkdtemp(join(tmpdir(), "agenc-apply-patch-"));

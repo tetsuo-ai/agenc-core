@@ -32,47 +32,29 @@ import type {
 } from "./tools/types.js";
 import { safeStringify } from "./tools/types.js";
 import type { ToolsConfig } from "./config/schema.js";
-import {
-  createFilesystemTools,
-  createCodingTools,
-  createBashTool,
-  createExecCommandTool,
-  createWriteStdinTool,
-  createPlanningTools,
-  createAskUserQuestionTool,
-  createSleepTool,
-  createMonitorTool,
-  createEnterWorktreeTool,
-  createExitWorktreeTool,
-  // AgenC-owned file/search tools (lifted into AgenC).
-  // These are the canonical file-content and search surface.
-  createFileReadTool,
-  createFileEditTool,
-  createFileMultiEditTool,
-  createFileWriteTool,
-  createGlobTool,
-  createGrepTool,
-  FILE_READ_TOOL_NAME,
-  FILE_EDIT_TOOL_NAME,
-  FILE_MULTI_EDIT_TOOL_NAME,
-  FILE_WRITE_TOOL_NAME,
-  GLOB_TOOL_NAME,
-  GREP_TOOL_NAME,
-  SESSION_ADVERTISED_TOOL_NAMES_ARG,
-} from "./tools/system/index.js";
+import { createFilesystemTools } from "./tools/system/filesystem.js";
+import { createCodingTools, SESSION_ADVERTISED_TOOL_NAMES_ARG } from "./tools/system/coding.js";
+import { createBashTool } from "./tools/system/bash.js";
+import { createExecCommandTool } from "./tools/system/exec-command.js";
+import { createWriteStdinTool } from "./tools/system/write-stdin.js";
+import { createPlanningTools } from "./tools/system/planning.js";
+import { createAskUserQuestionTool } from "./tools/ask-user-question/tool.js";
+import { createSleepTool } from "./tools/system/sleep.js";
+import { createMonitorTool } from "./tools/system/monitor.js";
+import { createEnterWorktreeTool, createExitWorktreeTool } from "./tools/system/worktree.js";
+import { createFileReadTool, FILE_READ_TOOL_NAME } from "./tools/system/file-read.js";
+import { createFileEditTool, createFileMultiEditTool, FILE_EDIT_TOOL_NAME, FILE_MULTI_EDIT_TOOL_NAME } from "./tools/system/file-edit.js";
+import { createFileWriteTool, FILE_WRITE_TOOL_NAME } from "./tools/system/file-write.js";
+import { createGlobTool, GLOB_TOOL_NAME } from "./tools/system/glob.js";
+import { createGrepTool, GREP_TOOL_NAME } from "./tools/system/grep.js";
 import type { BashExecObserver } from "./tools/system/types.js";
-import type { WorkflowToolController } from "./tools/system/index.js";
-import {
-  UnifiedExecProcessManager,
-  type UnifiedExecProcessManagerLike,
-} from "./unified-exec/index.js";
+import type { WorkflowToolController } from "./tools/system/planning.js";
+import { UnifiedExecProcessManager } from "./unified-exec/process-manager.js";
+import type { UnifiedExecProcessManagerLike } from "./unified-exec/types.js";
 import { createCodeModeTools } from "./tools/code-mode/tools.js";
 import type { CodeModeService } from "./tools/code-mode/types.js";
 import { isCodeModeNestedToolName } from "./tools/code-mode/policy.js";
-import {
-  APPLY_PATCH_TOOL_NAME,
-  createApplyPatchTool,
-} from "./tools/apply-patch/index.js";
+import { APPLY_PATCH_TOOL_NAME, createApplyPatchTool } from "./tools/apply-patch/tool.js";
 import {
   defaultConcurrencyClassFor,
   isBashTool,

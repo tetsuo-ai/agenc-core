@@ -51,7 +51,7 @@ import {
   SESSION_ALLOWED_ROOTS_ARG,
   SESSION_ID_ARG,
 } from "../tools/system/filesystem.js";
-import { createApplyPatchTool } from "../tools/apply-patch/index.js";
+import { createApplyPatchTool } from "../tools/apply-patch/tool.js";
 import { cloneFileStateCache } from "../agenc/upstream/utils/fileStateCache.js";
 
 // ─────────────────────────────────────────────────────────────────────

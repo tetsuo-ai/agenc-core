@@ -42,11 +42,8 @@ import {
   resolveSimpleMode,
   applyEnvOverrides,
 } from "./env.js";
-import {
-  buildProviderModelCatalog,
-  configuredModelForProvider,
-  resolveProviderSettings,
-} from "./index.js";
+import { buildProviderModelCatalog, resolveProviderSettings } from "./resolve-provider.js";
+import { configuredModelForProvider } from "./resolve-model.js";
 import { ConfigStore } from "./store.js";
 
 // ─────────────────────────────────────────────────────────────────────
