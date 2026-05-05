@@ -93,6 +93,11 @@ import {
   type PlanFileContext,
 } from "../planning/plan-files.js";
 import { markLoadedToolNamesDiscovered } from "./deferred-discovery.js";
+import {
+  buildToolRuntimeAttemptContext,
+  buildToolRuntimeCallContext,
+  type ToolRuntimeAttemptContext,
+} from "./runtimes/context.js";
 
 export interface ToolCall {
   readonly toolName: ToolName;
@@ -505,10 +510,34 @@ export class ToolRouter {
           permissionAlreadyAllowed = true;
         }
       }
+      const effectiveApprovalPolicy = permissionAlreadyAllowed
+        ? "never"
+        : forcedApprovalReason !== undefined
+          ? "untrusted"
+          : opts.approvalPolicy ?? directDispatchApprovalPolicy(invocation);
+      const requestedSandboxMode =
+        opts.sandboxMode ?? directDispatchSandboxMode(invocation);
+      const executionPayload = buildPayloadForArgs(invocation.payload, executionArgs);
+      const executionInvocation: ToolInvocation = {
+        ...invocation,
+        payload: executionPayload,
+      };
+      const executionRawArgs = stringifyToolArgsWithBigInt(executionArgs);
+      const runtimeCallContext = buildToolRuntimeCallContext({
+        toolCall: {
+          id: invocation.callId,
+          name: nameDisplay(invocation.toolName),
+        },
+        payload: executionPayload,
+        tool: spec.tool,
+        args: executionArgs,
+        source: invocation.source,
+        supportsParallelToolCalls: spec.supportsParallelToolCalls,
+      });
       return await orchestrateToolCall({
         tool: spec.tool,
         approvalCtx: {
-          invocation,
+          invocation: executionInvocation,
           callId: invocation.callId,
           toolName: nameDisplay(invocation.toolName),
           turnId: directDispatchTurnId(invocation),
@@ -518,13 +547,9 @@ export class ToolRouter {
           ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
         },
         ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
-        approvalPolicy: permissionAlreadyAllowed
-          ? "never"
-          : forcedApprovalReason !== undefined
-            ? "untrusted"
-            : opts.approvalPolicy ?? directDispatchApprovalPolicy(invocation),
-        sandboxMode: opts.sandboxMode ?? directDispatchSandboxMode(invocation),
-        payload: invocation.payload,
+        approvalPolicy: effectiveApprovalPolicy,
+        sandboxMode: requestedSandboxMode,
+        payload: executionPayload,
         approvalArgs: executionArgs,
         ...(opts.granular !== undefined ? { granular: opts.granular } : {}),
         ...(opts.permissionHooks !== undefined
@@ -547,15 +572,35 @@ export class ToolRouter {
           : {}),
         ...(opts.toolAllowlist !== undefined ? { toolAllowlist: opts.toolAllowlist } : {}),
         ...(opts.toolDenylist !== undefined ? { toolDenylist: opts.toolDenylist } : {}),
-        dispatch: async () => {
-          const result = await spec.tool.execute(executionArgs);
-          return {
-            content: result.content,
-            isError: result.isError,
-            codeModeResult: result.codeModeResult,
-            contentItems: result.contentItems,
-            metadata: result.metadata,
-          };
+        dispatch: async (sandbox, dispatchContext) => {
+          const runtimeAttemptContext = buildToolRuntimeAttemptContext(
+            runtimeCallContext,
+            {
+              approvalPolicy: effectiveApprovalPolicy,
+              requestedSandboxMode,
+              sandboxMode: sandbox,
+              approvalResolved: dispatchContext.approvalResolved,
+              rawArgs: executionRawArgs,
+              invocation: executionInvocation,
+            },
+          );
+          return executeToolDispatch({
+            rawArgs: executionRawArgs,
+            ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+            currentTurnId: directDispatchTurnId(invocation),
+            eventLog: invocation.session.eventLog,
+            subId: invocation.callId,
+            tool: spec.tool,
+            invocation: executionInvocation,
+            approvalAlreadyResolved: dispatchContext.approvalResolved,
+            runtimeAttemptContext,
+            ...(opts.permissionAuditLogger !== undefined
+              ? { permissionAuditLogger: opts.permissionAuditLogger }
+              : {}),
+            ...(opts.onPermissionAuditError !== undefined
+              ? { onPermissionAuditError: opts.onPermissionAuditError }
+              : {}),
+          });
         },
       });
     } catch (err) {
@@ -590,7 +635,7 @@ export class ToolRouter {
         isError: true,
       };
     }
-    return this.dispatchToolCall(invocation, args, opts);
+    return this.dispatchToolCall({ ...invocation, source }, args, opts);
   }
 
   async dispatchModelToolCall(
@@ -768,7 +813,9 @@ export class ToolRouter {
       payload: executionPayload,
     };
     const executionRawArgs =
-      executionArgs === parsedArgs ? rawArgs : JSON.stringify(executionArgs);
+      executionArgs === parsedArgs
+        ? rawArgs
+        : stringifyToolArgsWithBigInt(executionArgs);
     const approvalArgs = withPlanApprovalPreview(
       toolCall.name,
       executionArgs,
@@ -828,16 +875,26 @@ export class ToolRouter {
       });
     }
 
+    const effectiveApprovalPolicy =
+      permissionAlreadyAllowed || preHookPermissionDecision?.behavior === "allow"
+        ? "never"
+        : forcedApprovalReason !== undefined
+          ? "untrusted"
+          : opts.approvalPolicy;
+    const runtimeCallContext = buildToolRuntimeCallContext({
+      toolCall,
+      payload: executionPayload,
+      tool: spec.tool,
+      args: executionArgs,
+      source: opts.source ?? "direct",
+      supportsParallelToolCalls: spec.supportsParallelToolCalls,
+    });
+
     try {
       const result = await orchestrateToolCall({
         tool: spec.tool,
         approvalCtx,
-        approvalPolicy:
-          permissionAlreadyAllowed || preHookPermissionDecision?.behavior === "allow"
-            ? "never"
-            : forcedApprovalReason !== undefined
-              ? "untrusted"
-              : opts.approvalPolicy,
+        approvalPolicy: effectiveApprovalPolicy,
         sandboxMode: opts.sandboxMode,
         payload: executionPayload,
         approvalArgs,
@@ -875,8 +932,19 @@ export class ToolRouter {
           );
           void ctx;
         },
-        dispatch: async (_sandbox, dispatchContext) =>
-          executeToolDispatch(rawDispatchOptions(executionRawArgs, {
+        dispatch: async (sandbox, dispatchContext) => {
+          const runtimeAttemptContext = buildToolRuntimeAttemptContext(
+            runtimeCallContext,
+            {
+              approvalPolicy: effectiveApprovalPolicy,
+              requestedSandboxMode: opts.sandboxMode,
+              sandboxMode: sandbox,
+              approvalResolved: dispatchContext.approvalResolved,
+              rawArgs: executionRawArgs,
+              invocation: executionInvocation,
+            },
+          );
+          return executeToolDispatch(rawDispatchOptions(executionRawArgs, {
             ...withoutPermissionEvaluator(opts),
             tool: spec.tool,
             invocation: executionInvocation,
@@ -887,7 +955,9 @@ export class ToolRouter {
             approvalAlreadyResolved: dispatchContext.approvalResolved,
             abortController: toolAbortController,
             subId: toolCall.id,
-          })),
+            runtimeAttemptContext,
+          }));
+        },
       });
       markLoadedToolNamesDiscovered(
         toolCall.name,
@@ -982,7 +1052,7 @@ function buildPayloadForArgs(
   payload: ToolPayload,
   args: Record<string, unknown>,
 ): ToolPayload {
-  const serialized = JSON.stringify(args);
+  const serialized = stringifyToolArgsWithBigInt(args);
   switch (payload.kind) {
     case "function":
       return { kind: "function", arguments: serialized };
@@ -998,6 +1068,12 @@ function buildPayloadForArgs(
     case "local_shell":
       return payload;
   }
+}
+
+function stringifyToolArgsWithBigInt(args: Record<string, unknown>): string {
+  return JSON.stringify(args, (_key, value) =>
+    typeof value === "bigint" ? `__bigint__${value.toString()}` : value,
+  );
 }
 
 function planFileContextForApproval(
@@ -1043,6 +1119,7 @@ function rawDispatchOptions(
     readonly subId: string;
     readonly preHookPermissionDecision?: MergedHookPermissionDecision;
     readonly approvalAlreadyResolved?: boolean;
+    readonly runtimeAttemptContext?: ToolRuntimeAttemptContext;
   },
 ) {
   return {
@@ -1073,6 +1150,9 @@ function rawDispatchOptions(
       : {}),
     ...(opts.approvalAlreadyResolved !== undefined
       ? { approvalAlreadyResolved: opts.approvalAlreadyResolved }
+      : {}),
+    ...(opts.runtimeAttemptContext !== undefined
+      ? { runtimeAttemptContext: opts.runtimeAttemptContext }
       : {}),
     ...(opts.permissionAuditLogger !== undefined
       ? { permissionAuditLogger: opts.permissionAuditLogger }
