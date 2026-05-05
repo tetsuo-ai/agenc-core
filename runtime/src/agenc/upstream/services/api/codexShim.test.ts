@@ -7,7 +7,7 @@ import {
   convertAnthropicMessagesToResponsesInput,
   convertCodexResponseToAnthropicMessage,
   convertToolsToResponsesTools,
-} from './providerResponses.js'
+} from './codexShim.js'
 import { __test as webSearchToolTest } from '../../tools/WebSearchTool/WebSearchTool.js'
 
 const tempDirs: string[] = []

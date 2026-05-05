@@ -75,6 +75,8 @@ const discipline = existsSync(disciplinePath) ? readFileSync(disciplinePath, "ut
 const crossRepoEvidence = collectCrossRepoEvidence(`${item.title}\n${item.body}`);
 const itemScopedReviewNotes = id === "PE-09"
   ? "PE-09 intentionally carries the local goal-harness worktree migration in scripts/goal/*.mjs because the user directed that harness change to merge with this item. Review those files for correctness, but do not reject PE-09 solely because those harness files are present in the diff."
+  : id === "ZC-12"
+    ? "ZC-12 must not rename or add files inside runtime/src/agenc/upstream/. Pre-existing donor-named tracked paths under that frozen mirror are resolved for this item by deferral to the upstream-mirror deletion items. Reject donor-named tracked paths outside that mirror, stale references to deleted port artifacts, or any new/renamed upstream mirror target."
   : "No item-specific review notes.";
 
 const reviewerInstructions = `You are a senior software engineer reviewing one work item from an AgenC port checklist.

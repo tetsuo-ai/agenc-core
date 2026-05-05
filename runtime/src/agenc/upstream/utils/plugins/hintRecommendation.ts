@@ -20,7 +20,7 @@ import {
   type AgenCCodeHint,
   hasShownHintThisSession,
   setPendingHint,
-} from '../agencCodeHints.js'
+} from '../claudeCodeHints.js'
 import { getGlobalConfig, saveGlobalConfig } from '../config.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isPluginInstalled } from './installedPluginsManager.js'

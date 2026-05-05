@@ -141,6 +141,7 @@ const hasNumericPhase = [...phaseLabels].some((p) => /^\d/.test(p));
 assert("at least one numeric phase parsed", hasNumericPhase, `phases=${[...phaseLabels].join(",")}`);
 
 const completeSource = readFileSync(new URL("./complete.mjs", import.meta.url), "utf8");
+const verifySource = readFileSync(new URL("./verify.mjs", import.meta.url), "utf8");
 assert(
   "complete.mjs hard-fails worktree removal failures",
   /const wtRemove =[\s\S]*if \(wtRemove\.status !== 0\) \{\s*abort\(/.test(completeSource),
@@ -165,5 +166,30 @@ assert(
     /failIfInFlightJournalsFound\(\);/.test(completeSource),
 );
 
+const singleLineForwardFn = extractRegexFromSource(verifySource, "SINGLE_LINE_FORWARD_FN_RE");
+const singleLineForwardArrow = extractRegexFromSource(verifySource, "SINGLE_LINE_FORWARD_ARROW_RE");
+assert(
+  "verify.mjs detects exported one-line forwarding functions",
+  singleLineForwardFn.test("export function shim(input) { return realImpl(input); }"),
+);
+assert(
+  "verify.mjs detects exported one-line forwarding arrows",
+  singleLineForwardArrow.test("export const shim = (input) => realImpl(input);") &&
+    singleLineForwardArrow.test("export const shim = (input) => { return realImpl(input); };"),
+);
+
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
 process.exit(failed > 0 ? 1 : 0);
+
+function extractRegexFromSource(source, name) {
+  const marker = `const ${name} =`;
+  const start = source.indexOf(marker);
+  if (start === -1) return /a^/u;
+  const rest = source.slice(start + marker.length);
+  const end = rest.indexOf(";\n");
+  if (end === -1) return /a^/u;
+  const literal = rest.slice(0, end).trim();
+  const lastSlash = literal.lastIndexOf("/");
+  if (!literal.startsWith("/") || lastSlash <= 0) return /a^/u;
+  return new RegExp(literal.slice(1, lastSlash), literal.slice(lastSlash + 1));
+}

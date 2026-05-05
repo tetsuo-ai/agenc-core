@@ -257,7 +257,7 @@ function mockProviderManagerDependencies(
     readGithubModelsTokenAsync: githubAsyncRead,
   }))
 
-  mock.module('../utils/providerCredentials.js', () => ({
+  mock.module('../utils/codexCredentials.js', () => ({
     attachCodexProfileIdToStoredCredentials: () => ({ success: true }),
     clearCodexCredentials:
       options?.clearCodexCredentials ?? (() => ({ success: true })),
@@ -303,7 +303,7 @@ function mockProviderManagerDependencies(
     updateSettingsForSource: () => ({ error: null }),
   }))
 
-  mock.module('./useProviderOAuthFlow.js', () => ({
+  mock.module('./useCodexOAuthFlow.js', () => ({
     useCodexOAuthFlow:
       options?.useCodexOAuthFlow ??
       (() => ({

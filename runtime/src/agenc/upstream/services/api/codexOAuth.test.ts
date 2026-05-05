@@ -2,7 +2,7 @@ import { createServer } from 'node:http'
 
 import { afterEach, expect, mock, test } from 'bun:test'
 
-import { CodexOAuthService } from './providerOAuth.js'
+import { CodexOAuthService } from './codexOAuth.js'
 
 const originalFetch = globalThis.fetch
 const originalCallbackPort = process.env.CODEX_OAUTH_CALLBACK_PORT
