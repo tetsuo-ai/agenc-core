@@ -667,9 +667,6 @@ export function useVoiceKeybindingHandler({
   };
 }
 
-// TODO(onKeyDown-migration): temporary shim so existing JSX callers
-// (<VoiceKeybindingHandler .../>) keep compiling. Remove once REPL.tsx
-// wires handleKeyDown directly.
 export function VoiceKeybindingHandler(props) {
   useVoiceKeybindingHandler(props);
   return null;
