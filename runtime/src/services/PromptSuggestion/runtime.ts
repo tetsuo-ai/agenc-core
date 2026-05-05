@@ -15,7 +15,7 @@ import { isDangerousCommand } from '../../permissions/bash.js'
 import {
   parseCommand,
   parseShellCommand,
-} from '../../permissions/command-parser.js'
+} from '../../shell-command/parser.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import type { Message } from '../../types/message.js'
 

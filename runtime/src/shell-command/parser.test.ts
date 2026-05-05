@@ -9,11 +9,12 @@ import {
   getSimpleCommandPrefix,
   parseCommand,
   parseCommandArgvTree,
+  parseShellLcSingleCommandPrefix,
   parseShellCommand,
   parseShellWrapperSubcommandsForPermission,
   parseWordOnlyShellSequence,
   splitCommand,
-} from "./command-parser.js";
+} from "./parser.js";
 
 describe("shell string parsing", () => {
   test("keeps parseShellCommand as a conservative single-command tokenizer", () => {
@@ -78,6 +79,25 @@ describe("shell string parsing", () => {
       .toBeNull();
     expect(parseShellWrapperSubcommandsForPermission("rg TODO src")).toBeNull();
   });
+
+  test("recovers a single Bash command prefix before here-doc data", () => {
+    expect(
+      parseShellLcSingleCommandPrefix([
+        "bash",
+        "-lc",
+        "python3 <<'PY'\nprint('hello')\nPY",
+      ]),
+    ).toEqual(["python3"]);
+    expect(
+      parseShellLcSingleCommandPrefix(["bash", "-lc", "cat <<< 'literal'"]),
+    ).toEqual(["cat"]);
+    expect(
+      parseShellLcSingleCommandPrefix(["bash", "-lc", "cd src && cat <<EOF"]),
+    ).toBeNull();
+    expect(
+      parseShellLcSingleCommandPrefix(["bash", "-lc", "FOO=bar cat <<EOF"]),
+    ).toBeNull();
+  });
 });
 
 describe("wrapper extraction and argv tree", () => {
@@ -90,7 +110,7 @@ describe("wrapper extraction and argv tree", () => {
     expect(extractBashCommand(["bash", "-lc", "ls", "extra"])).toBeNull();
   });
 
-  test("recognizes PowerShell wrappers with donor flag behavior", () => {
+  test("recognizes PowerShell wrappers with strict flag behavior", () => {
     expect(
       extractPowerShellCommand([
         "pwsh",

@@ -1,13 +1,6 @@
 /**
  * ApprovalStore, session approval rules, and canonical shell approval keys.
  *
- * Ports donor runtime `core/src/tools/sandboxing.rs:40-116`
- * (`ApprovalStore`, `with_cached_approval`), the session-destination rule
- * behavior from `src/utils/permissions/PermissionUpdate.ts`, and a subset of
- * donor runtime `core/src/command_canonicalization.rs`.
- *
- * Purpose
- * -------
  * When the user answers an approval prompt with
  * `approved_for_session`, the runtime remembers that decision so the
  * next semantically-equivalent request doesn't re-prompt. For shell
@@ -18,18 +11,17 @@
  *
  * Scope of this file:
  *   - `ApprovalStore<K>` — serializable-key → `ReviewDecision` map,
- *     with a `withCachedApproval` wrapper that encodes the donor runtime
- *     multi-key semantics.
+ *     with a `withCachedApproval` wrapper that encodes multi-key semantics.
  *   - `SessionApprovalCache` — session-destination allow-rule cache for
  *     which tools/patterns were approved in the current session.
  *   - `ShellApprovalKey` + `buildShellApprovalKey` — the shape
  *     shell execution uses as its approval key. Command parsing and
- *     canonicalization live in `command-parser.ts`.
+ *     canonicalization live in `shell-command/parser.ts`.
  *
  * @module
  */
 
-import { canonicalizeCommandForApproval } from "./command-parser.js";
+import { canonicalizeCommandForApproval } from "../shell-command/parser.js";
 import type { ReviewDecision } from "./review-decision.js";
 import {
   applyPermissionUpdate,
@@ -99,7 +91,7 @@ function numberKey(value: number): number | string {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// ApprovalStore — donor runtime `tools/sandboxing.rs:40-62`
+// ApprovalStore
 // ─────────────────────────────────────────────────────────────────────
 
 export interface WithCachedApprovalOpts<K> {
@@ -149,11 +141,8 @@ export class ApprovalStore<K> {
   }
 
   /**
-   * Port of donor runtime `with_cached_approval` (tools/sandboxing.rs:70-116).
-   *
    * Behaviour:
    *   - Empty `keys` → skip the cache entirely; call `fetchDecision`.
-   *     (Matches donor runtime `if keys.is_empty()` branch.)
    *   - All keys already `approved_for_session` → return
    *     `approved_for_session` without fetching.
    *   - Otherwise fetch; if the fresh decision is
@@ -350,7 +339,7 @@ function normalizeRuleString(rule: PermissionRuleValue | string): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// ShellApprovalKey — donor runtime `tools/runtimes/shell.rs:131-213`
+// ShellApprovalKey
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -380,9 +369,8 @@ export interface BuildShellApprovalKeyOptions {
 /**
  * Build a `ShellApprovalKey` with the argv already canonicalized and
  * the permission lists sorted (so `["net","fs"]` and `["fs","net"]`
- * collide in the cache). The donor runtime uses `Hash` + `Eq` derives + a sorted
- * permissions struct to guarantee this — we replicate the sort
- * explicitly since JS doesn't normalize array order.
+ * collide in the cache). Sorting is explicit because JS does not normalize
+ * array order.
  */
 export function buildShellApprovalKey(
   opts: BuildShellApprovalKeyOptions,

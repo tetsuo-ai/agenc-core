@@ -667,6 +667,23 @@ const ITEM_EVIDENCE = {
       { pattern: "ZC-31 coverage lock", scope: "runtime/src/skills/PARITY.md" },
     ],
   },
+  "ZC-32": {
+    files: [
+      "runtime/src/shell-command/PARITY.md",
+      "runtime/src/shell-command/parser.ts",
+      "runtime/src/shell-command/safety.ts",
+      "runtime/src/shell-command/powershell-parser.ts",
+      "parity/ZC-32-parity.json",
+    ],
+    tests: [
+      "runtime/src/shell-command/parser.test.ts",
+      "runtime/src/shell-command/safety.test.ts",
+      "runtime/src/shell-command/powershell-parser.test.ts",
+    ],
+    grepPresent: [
+      { pattern: "ZC-32 coverage lock", scope: "runtime/src/shell-command/PARITY.md" },
+    ],
+  },
   "ST-01": {
     grepPresent: [{ pattern: "CREATE TABLE.*agent_runs|agent_runs.*CREATE TABLE|table.*agent_runs", scope: "runtime/src/state" }],
   },
@@ -1165,7 +1182,7 @@ const ITEM_EVIDENCE = {
     files: [{ globUnder: "runtime/src/permissions/guardian", matching: /\.tsx?$/, minCount: 1 }],
   },
   "PE-12": {
-    files: ["runtime/src/permissions/command-parser.ts"],
+    files: ["runtime/src/shell-command/parser.ts"],
   },
   "PE-13": {
     grepPresent: [
@@ -4825,6 +4842,121 @@ function assertZc31SkillsCoverage() {
   }
 }
 
+function assertZc32ShellCommandCoverage() {
+  const parityRel = "runtime/src/shell-command/PARITY.md";
+  const ledgerRel = "parity/ZC-32-parity.json";
+  const requiredFiles = [
+    "runtime/src/shell-command/parser.ts",
+    "runtime/src/shell-command/safety.ts",
+    "runtime/src/shell-command/powershell-parser.ts",
+    "runtime/src/shell-command/parser.test.ts",
+    "runtime/src/shell-command/safety.test.ts",
+    "runtime/src/shell-command/powershell-parser.test.ts",
+    parityRel,
+    ledgerRel,
+  ];
+  const missingFiles = requiredFiles.filter((rel) => !existsSync(path.join(root, rel)));
+  if (missingFiles.length > 0) {
+    failGate(`ZC-32: shell-command file(s) missing:\n  ${missingFiles.join("\n  ")}`);
+  }
+
+  if (
+    existsSync(path.join(root, "runtime/src/permissions/command-parser.ts")) ||
+    existsSync(path.join(root, "runtime/src/permissions/command-parser.test.ts"))
+  ) {
+    failGate("ZC-32: command parser still lives under runtime/src/permissions; move importers to runtime/src/shell-command.");
+  }
+
+  let ledger;
+  try {
+    ledger = JSON.parse(readFileSync(path.join(root, ledgerRel), "utf8"));
+  } catch (error) {
+    failGate(`ZC-32: ${ledgerRel} is not valid JSON: ${error.message}`);
+  }
+  if (ledger.item !== "ZC-32" || ledger.status !== "implemented") {
+    failGate(`ZC-32: ${ledgerRel} must identify item ZC-32 with implemented status`);
+  }
+  if (!Array.isArray(ledger.rows) || ledger.rows.length < 5) {
+    failGate("ZC-32: parity ledger must include parser, summary, Unix safety, dangerous safety, and Windows/PowerShell rows.");
+  }
+  const nonRequiredRows = ledger.rows.filter((row) => row?.status !== "required");
+  if (nonRequiredRows.length > 0) {
+    failGate(`ZC-32: parity rows must be required: ${nonRequiredRows.map((row) => row?.id ?? "<missing>").join(", ")}`);
+  }
+
+  const sourceRoot = `${["co", "dex-rs"].join("")}/shell-command/src`;
+  const requiredSourceAnchors = [
+    `${sourceRoot}/bash.rs`,
+    `${sourceRoot}/powershell.rs`,
+    `${sourceRoot}/parse_command.rs`,
+    `${sourceRoot}/command_safety/is_dangerous_command.rs`,
+    `${sourceRoot}/command_safety/is_safe_command.rs`,
+    `${sourceRoot}/command_safety/powershell_parser.rs`,
+    `${sourceRoot}/command_safety/powershell_parser.ps1`,
+    `${sourceRoot}/command_safety/windows_dangerous_commands.rs`,
+    `${sourceRoot}/command_safety/windows_safe_commands.rs`,
+  ];
+  const parityText = readFileSync(path.join(root, parityRel), "utf8");
+  const missingAnchors = requiredSourceAnchors.filter((anchor) => !parityText.includes(anchor));
+  if (missingAnchors.length > 0) {
+    failGate(`ZC-32: shell-command parity is missing source anchor(s):\n  ${missingAnchors.join("\n  ")}`);
+  }
+  if (!parityText.includes("ZC-32 coverage lock:")) {
+    failGate("ZC-32: shell-command parity is missing the ZC-32 coverage lock note.");
+  }
+
+  const parser = readFileSync(path.join(root, "runtime/src/shell-command/parser.ts"), "utf8");
+  const parserMarkers = [
+    "extractBashCommand",
+    "extractPowerShellCommand",
+    "parseWordOnlyShellSequence",
+    "parseShellLcSingleCommandPrefix",
+    "canonicalizeCommandForApproval",
+    "parseCommand",
+  ];
+  const missingParserMarkers = parserMarkers.filter((marker) => !parser.includes(marker));
+  if (missingParserMarkers.length > 0) {
+    failGate(`ZC-32: parser.ts is missing symbol(s): ${missingParserMarkers.join(", ")}`);
+  }
+
+  const safety = readFileSync(path.join(root, "runtime/src/shell-command/safety.ts"), "utf8");
+  const safetyMarkers = [
+    "isKnownSafeCommand",
+    "commandMightBeDangerous",
+    "isDangerousWindowsCommand",
+    "isSafePowerShellWords",
+    "--pre",
+    "--hostname-bin",
+    "--search-zip",
+    "--output",
+    "-exec",
+    "-delete",
+  ];
+  const missingSafetyMarkers = safetyMarkers.filter((marker) => !safety.includes(marker));
+  if (missingSafetyMarkers.length > 0) {
+    failGate(`ZC-32: safety.ts is missing marker(s): ${missingSafetyMarkers.join(", ")}`);
+  }
+
+  const psParser = readFileSync(path.join(root, "runtime/src/shell-command/powershell-parser.ts"), "utf8");
+  for (const marker of ["spawnSync", "-EncodedCommand", "parsePowerShellScriptWithNativeAst"]) {
+    if (!psParser.includes(marker)) {
+      failGate(`ZC-32: powershell-parser.ts is missing ${marker}.`);
+    }
+  }
+
+  const bashPermissions = readFileSync(path.join(root, "runtime/src/permissions/bash.ts"), "utf8");
+  for (const marker of [
+    "../shell-command/parser.js",
+    "../shell-command/safety.js",
+    "isKnownSafeCommand",
+    "commandMightBeDangerous",
+  ]) {
+    if (!bashPermissions.includes(marker)) {
+      failGate(`ZC-32: Bash permission integration is missing ${marker}.`);
+    }
+  }
+}
+
 function listSourceFiles(dir) {
   const out = [];
   for (const entry of readdirSync(dir)) {
@@ -5217,6 +5349,7 @@ async function cleanupGates(item) {
       "ZC-29": { custom: assertZc29AuditEvidence },
       "ZC-30": { custom: assertZc30PluginCoverage },
       "ZC-31": { custom: assertZc31SkillsCoverage },
+      "ZC-32": { custom: assertZc32ShellCommandCoverage },
     };
     const expectations = zcMap[id];
     if (!expectations) {

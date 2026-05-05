@@ -1,0 +1,151 @@
+{
+  "item": "ZC-32",
+  "status": "implemented",
+  "sourceCommit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
+  "sourceFiles": [
+    "src/lib.rs",
+    "src/shell_detect.rs",
+    "src/bash.rs",
+    "src/powershell.rs",
+    "src/parse_command.rs",
+    "src/command_safety/mod.rs",
+    "src/command_safety/is_dangerous_command.rs",
+    "src/command_safety/is_safe_command.rs",
+    "src/command_safety/powershell_parser.rs",
+    "src/command_safety/powershell_parser.ps1",
+    "src/command_safety/windows_dangerous_commands.rs",
+    "src/command_safety/windows_safe_commands.rs"
+  ],
+  "targetFiles": [
+    "runtime/src/shell-command/parser.ts",
+    "runtime/src/shell-command/safety.ts",
+    "runtime/src/shell-command/powershell-parser.ts",
+    "runtime/src/permissions/bash.ts",
+    "runtime/src/permissions/approval-cache.ts",
+    "runtime/src/sandbox/escalation/unix-escalation.ts",
+    "runtime/src/services/PromptSuggestion/runtime.ts",
+    "scripts/goal/verify.mjs"
+  ],
+  "testFiles": [
+    "runtime/src/shell-command/parser.test.ts",
+    "runtime/src/shell-command/safety.test.ts",
+    "runtime/src/shell-command/powershell-parser.test.ts",
+    "runtime/src/permissions/bash.test.ts",
+    "runtime/src/permissions/approval-cache.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "bash-parser",
+      "source": "src/bash.rs",
+      "target": "runtime/src/shell-command/parser.ts",
+      "requiredBehaviors": [
+        "recognizes bash, sh, and zsh -c/-lc wrappers by executable basename",
+        "parses literal word-only command sequences joined by &&, ||, |, semicolon, and newlines",
+        "rejects redirection, env assignment, substitutions, malformed operators, unterminated quotes, and background operators",
+        "recovers a single command prefix before heredoc bodies without tokenizing heredoc data"
+      ],
+      "edgeCases": [
+        "opaque bash wrappers canonicalize with an AgenC marker instead of granting a safe argv",
+        "multi-command wrappers are parsed for summaries but remain opaque for single-command approval cache matching",
+        "heredoc prefix recovery rejects env assignments and multi-command prefixes"
+      ],
+      "tests": [
+        "runtime/src/shell-command/parser.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "command-summary",
+      "source": "src/parse_command.rs",
+      "target": "runtime/src/shell-command/parser.ts",
+      "requiredBehaviors": [
+        "summarizes read, list-files, and search command families",
+        "tracks cd prefixes inside word-only shell wrappers",
+        "collapses the whole command to unknown when any retained segment is unknown"
+      ],
+      "edgeCases": [
+        "small formatting helpers can be dropped from summaries",
+        "PowerShell wrappers remain opaque for summaries until native AST parsing is explicitly used by safety"
+      ],
+      "tests": [
+        "runtime/src/shell-command/parser.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "unix-command-safety",
+      "source": "src/command_safety/is_safe_command.rs",
+      "target": "runtime/src/shell-command/safety.ts",
+      "requiredBehaviors": [
+        "allowlists read-only Unix commands",
+        "rejects git global options and output flags that alter lookup or write files",
+        "rejects find exec/delete/fprint, base64 output, and ripgrep pre/zip helper flags",
+        "recurses through word-only Bash wrappers and requires every child command to be safe"
+      ],
+      "edgeCases": [
+        "git branch is safe only for flag-only inspection forms",
+        "sed is safe only for -n print-range scripts",
+        "interpreter and package-manager commands from the older sandbox allowlist are no longer auto-approved"
+      ],
+      "tests": [
+        "runtime/src/shell-command/safety.test.ts",
+        "runtime/src/permissions/bash.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "dangerous-command-safety",
+      "source": "src/command_safety/is_dangerous_command.rs",
+      "target": "runtime/src/shell-command/safety.ts",
+      "requiredBehaviors": [
+        "flags forced rm invocations",
+        "recurses through sudo and word-only Bash wrappers",
+        "feeds the Bash permission hard-floor denial path"
+      ],
+      "edgeCases": [
+        "non-word-only shell scripts stay with the existing recursive shell-fragment detector",
+        "safe read-only commands do not become dangerous solely because they are parsed by the new layer"
+      ],
+      "tests": [
+        "runtime/src/shell-command/safety.test.ts",
+        "runtime/src/permissions/bash.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "windows-powershell-safety",
+      "source": [
+        "src/powershell.rs",
+        "src/command_safety/powershell_parser.rs",
+        "src/command_safety/powershell_parser.ps1",
+        "src/command_safety/windows_dangerous_commands.rs",
+        "src/command_safety/windows_safe_commands.rs"
+      ],
+      "target": [
+        "runtime/src/shell-command/powershell-parser.ts",
+        "runtime/src/shell-command/safety.ts"
+      ],
+      "requiredBehaviors": [
+        "parses literal PowerShell scripts with the real platform AST parser when available",
+        "rejects dynamic PowerShell constructs, redirection, invocation operators, and parser errors",
+        "detects Windows URL launchers and forced deletion commands",
+        "allows only literal read-only PowerShell commands and read-only git/rg forms"
+      ],
+      "edgeCases": [
+        "missing PowerShell executable returns a failed outcome instead of throwing or approving",
+        "URL launcher tests use the AgenC-owned domain",
+        "non-Windows hosts do not approximate PowerShell safe auto-approval"
+      ],
+      "tests": [
+        "runtime/src/shell-command/powershell-parser.test.ts",
+        "runtime/src/shell-command/safety.test.ts"
+      ],
+      "status": "required"
+    }
+  ],
+  "validation": {
+    "commands": [
+      "npm test --workspace=@tetsuo-ai/runtime -- shell-command/parser.test.ts shell-command/safety.test.ts shell-command/powershell-parser.test.ts permissions/bash.test.ts permissions/approval-cache.test.ts"
+    ]
+  }
+}

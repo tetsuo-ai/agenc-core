@@ -1,19 +1,11 @@
 /**
- * Ports donor runtime `core/src/command_canonicalization.rs`,
- * `protocol/src/parse_command.rs`, and the focused command-summary behavior
- * from `shell-command/src/{bash,powershell,parse_command}.rs` onto AgenC's
- * permission engine.
+ * Canonical shell-command parser for AgenC permission and audit surfaces.
  *
- * This module deliberately stops short of being a full shell AST. It exposes
- * conservative single-command tokenization for Bash rule matching, a separate
- * word-only sequence parser for shell wrapper canonicalization, and compact
- * parsed-command metadata for permission/audit surfaces.
- *
- * Cross-cuts deliberately NOT carried:
- *   - Native tree-sitter parsing. AgenC keeps a strict hand parser and falls
- *     back to opaque scripts when shell syntax is not word-only.
- *   - Full upstream display summarization breadth. This port covers the common
- *     read/list/search command families needed by the permission engine.
+ * This module intentionally fails closed. It exposes conservative
+ * single-command tokenization for Bash rule matching, a separate word-only
+ * sequence parser for wrapper canonicalization, and compact parsed-command
+ * metadata for read/list/search summaries. Syntax this parser cannot prove is
+ * literal remains opaque to callers.
  *
  * @module
  */
@@ -611,6 +603,79 @@ export function parseWordOnlyShellSequence(
     commands.push([...argv]);
   }
   return commands;
+}
+
+/**
+ * Recover the literal argv prefix for a recognized Bash wrapper when the
+ * script is exactly one command. Here-doc bodies are intentionally discarded:
+ * the executable prefix still matters to the sandbox policy, while the body is
+ * data and must not be tokenized as shell syntax.
+ */
+export function parseShellLcSingleCommandPrefix(
+  command: readonly string[],
+): readonly string[] | null {
+  const bash = extractBashCommand(command);
+  if (bash === null) return null;
+  return parseBashSingleCommandPrefix(bash.script);
+}
+
+export function parseBashSingleCommandPrefix(
+  script: string,
+): readonly string[] | null {
+  const trimmed = script.trim();
+  if (trimmed.length === 0) return null;
+
+  const commands = parseWordOnlyShellSequence(trimmed);
+  if (commands !== null && commands.length === 1) return commands[0]!.slice();
+
+  const hereDoc = findTopLevelHereDocOperator(trimmed);
+  if (hereDoc === null) return null;
+  const prefix = trimmed.slice(0, hereDoc.index).trim();
+  if (prefix.length === 0) return null;
+  if (splitWordOnlyCommandSequence(prefix)?.length !== 1) return null;
+  const argv = parseShellCommand(prefix);
+  if (argv === null || argv.length === 0) return null;
+  if (ENV_VAR_ASSIGN_RE.test(argv[0]!)) return null;
+  return argv;
+}
+
+function findTopLevelHereDocOperator(
+  script: string,
+): { readonly index: number; readonly operator: "<<" | "<<<" } | null {
+  let i = 0;
+  while (i < script.length) {
+    const c = script[i]!;
+    if (c === "'") {
+      const end = script.indexOf("'", i + 1);
+      if (end === -1) return null;
+      i = end + 1;
+      continue;
+    }
+    if (c === '"') {
+      let j = i + 1;
+      while (j < script.length) {
+        const d = script[j]!;
+        if (d === '"') break;
+        if (d === "\\" && j + 1 < script.length) {
+          j += 2;
+          continue;
+        }
+        j++;
+      }
+      if (j >= script.length) return null;
+      i = j + 1;
+      continue;
+    }
+    if (c === "\\" && i + 1 < script.length) {
+      i += 2;
+      continue;
+    }
+    if (script.startsWith("<<<", i)) return { index: i, operator: "<<<" };
+    if (script.startsWith("<<", i)) return { index: i, operator: "<<" };
+    if (c === ">") return null;
+    i++;
+  }
+  return null;
 }
 
 /**
