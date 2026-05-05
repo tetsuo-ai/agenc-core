@@ -431,8 +431,31 @@ const ITEM_EVIDENCE = {
     grepPresent: [{ pattern: "peerCred|peerUid|cookie", scope: "runtime/src/auth" }],
   },
   "C-01a": {
-    files: [{ globUnder: "runtime/src/sandbox/linux", matching: /\.tsx?$/, minCount: 1 }],
-    tests: [{ globUnder: "runtime/src/sandbox", matching: /linux.*\.test\.tsx?$/ }],
+    files: [
+      "runtime/src/sandbox/engine/index.ts",
+      "runtime/src/sandbox/engine/manager.ts",
+      "runtime/src/sandbox/engine/policy-transforms.ts",
+      "runtime/src/sandbox/engine/seatbelt.ts",
+      "runtime/src/sandbox/engine/landlock.ts",
+      "runtime/src/sandbox/engine/bwrap.ts",
+      "runtime/src/sandbox/engine/PARITY.md",
+      "runtime/src/sandbox/engine/policies/seatbelt_base_policy.sbpl",
+      "runtime/src/sandbox/engine/policies/seatbelt_network_policy.sbpl",
+      "runtime/src/sandbox/engine/policies/restricted_read_only_platform_defaults.sbpl",
+      "parity/cross-platform-sandbox-engine-parity.json",
+    ],
+    grepPresent: [
+      { pattern: "SandboxManager", scope: "runtime/src/sandbox/engine/manager.ts" },
+      { pattern: "createSeatbeltCommandArgs", scope: "runtime/src/sandbox/engine/seatbelt.ts" },
+      { pattern: "createLinuxSandboxCommandArgsForPermissionProfile", scope: "runtime/src/sandbox/engine/landlock.ts" },
+      { pattern: "systemBwrapWarning", scope: "runtime/src/sandbox/engine/bwrap.ts" },
+      { pattern: "cross-platform-sandbox-engine-parity", scope: "parity/cross-platform-sandbox-engine-parity.json" },
+    ],
+    tests: [
+      "runtime/src/sandbox/engine/linux-engine.test.ts",
+      "runtime/src/sandbox/engine/seatbelt.test.ts",
+      "runtime/src/sandbox/engine/policy-transforms.test.ts",
+    ],
   },
   "C-01b": {
     files: [{ globUnder: "runtime/src/sandbox/hardening", matching: /\.tsx?$/, minCount: 1 }],
