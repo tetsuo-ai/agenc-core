@@ -24,6 +24,7 @@ export interface PendingLSPDiagnostic {
 const MAX_DIAGNOSTICS_PER_FILE = 10;
 const MAX_TOTAL_DIAGNOSTICS = 30;
 const MAX_DELIVERED_FILES = 500;
+export const MAX_DELIVERED_DIAGNOSTICS_PER_FILE = 100;
 
 const pendingDiagnostics = new Map<string, PendingLSPDiagnostic>();
 const deliveredDiagnostics = new LRUCache<string, Set<string>>({
@@ -102,6 +103,20 @@ function deduplicateDiagnosticFiles(
   return Array.from(out.values()).filter((file) => file.diagnostics.length > 0);
 }
 
+function rememberDeliveredDiagnostic(fileUri: string, key: string): void {
+  const delivered = deliveredDiagnostics.get(fileUri) ?? new Set<string>();
+  if (delivered.has(key)) {
+    delivered.delete(key);
+  }
+  delivered.add(key);
+  while (delivered.size > MAX_DELIVERED_DIAGNOSTICS_PER_FILE) {
+    const oldest = delivered.values().next().value;
+    if (oldest === undefined) break;
+    delivered.delete(oldest);
+  }
+  deliveredDiagnostics.set(fileUri, delivered);
+}
+
 export function registerPendingLSPDiagnostic(input: {
   readonly serverName: string;
   readonly files: DiagnosticFile[];
@@ -153,10 +168,8 @@ export function checkForLSPDiagnostics(): Array<{
   deduped = deduped.filter((file) => file.diagnostics.length > 0);
 
   for (const file of deduped) {
-    const delivered = deliveredDiagnostics.get(file.uri) ?? new Set<string>();
-    deliveredDiagnostics.set(file.uri, delivered);
     for (const diagnostic of file.diagnostics) {
-      delivered.add(diagnosticKey(diagnostic));
+      rememberDeliveredDiagnostic(file.uri, diagnosticKey(diagnostic));
     }
   }
 

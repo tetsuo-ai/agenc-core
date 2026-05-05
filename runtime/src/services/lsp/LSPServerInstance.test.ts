@@ -198,7 +198,7 @@ describe("createLSPServerInstance", () => {
     expect(client.starts).toHaveLength(1);
   });
 
-  test("restarts after crash state is reported", async () => {
+  test("restarts after an owner-visible terminal event is reported", async () => {
     let crash: ((error: Error) => void) | undefined;
     const client = fakeClient();
     const instance = createLSPServerInstance(
@@ -217,7 +217,7 @@ describe("createLSPServerInstance", () => {
 
     await instance.start();
     expect(client.starts).toHaveLength(1);
-    crash?.(new Error("server exited"));
+    crash?.(new Error("server exited unexpectedly with code 0"));
     expect(instance.state).toBe("error");
 
     await instance.start();

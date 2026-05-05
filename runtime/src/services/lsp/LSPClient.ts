@@ -94,6 +94,7 @@ export function createLSPClient(
   let startFailed = false;
   let startError: Error | undefined;
   let stopping = false;
+  let terminalNotified = false;
   const notificationHandlers: Array<{
     readonly method: string;
     readonly handler: (params: unknown) => void;
@@ -124,15 +125,28 @@ export function createLSPClient(
     capabilities = undefined;
   };
 
-  const clearClosedRuntimeState = (): void => {
+  const clearClosedRuntimeState = (opts: { readonly killChild?: boolean } = {}): void => {
     clearConnectionState();
     if (child) {
+      const currentChild = child;
       child.removeAllListeners("error");
       child.removeAllListeners("exit");
       child.stdin?.removeAllListeners("error");
       child.stderr?.removeAllListeners("data");
+      if (opts.killChild === true && !currentChild.killed) {
+        currentChild.kill();
+      }
       child = undefined;
     }
+  };
+
+  const notifyUnexpectedTerminal = (error: Error): void => {
+    if (stopping || terminalNotified) return;
+    terminalNotified = true;
+    startFailed = false;
+    startError = undefined;
+    options.onCrash?.(error);
+    diagnostic(error.message);
   };
 
   const assertStarted = (): void => {
@@ -166,6 +180,7 @@ export function createLSPClient(
     async start(command, args, runOptions): Promise<void> {
       if (connection) return;
       stopping = false;
+      terminalNotified = false;
       startFailed = false;
       startError = undefined;
 
@@ -215,16 +230,20 @@ export function createLSPClient(
           if (stopping) return;
           clearClosedRuntimeState();
           if (code !== 0 && code !== null) {
-            const error = new Error(
-              `LSP server ${serverName} crashed with exit code ${code}`,
+            notifyUnexpectedTerminal(
+              new Error(`LSP server ${serverName} crashed with exit code ${code}`),
             );
-            startFailed = false;
-            startError = undefined;
-            options.onCrash?.(error);
-            diagnostic(error.message);
             return;
           }
-          if (signal) diagnostic(`process exited with signal ${signal}`);
+          if (signal) {
+            notifyUnexpectedTerminal(
+              new Error(`LSP server ${serverName} exited with signal ${signal}`),
+            );
+            return;
+          }
+          notifyUnexpectedTerminal(
+            new Error(`LSP server ${serverName} exited unexpectedly with code 0`),
+          );
         });
 
         child.stdin.on("error", (error: Error) => {
@@ -244,8 +263,10 @@ export function createLSPClient(
 
         connection.onClose(() => {
           if (stopping) return;
-          clearConnectionState();
-          diagnostic("connection closed");
+          clearClosedRuntimeState({ killChild: true });
+          notifyUnexpectedTerminal(
+            new Error(`LSP server ${serverName} connection closed unexpectedly`),
+          );
         });
 
         connection.listen();

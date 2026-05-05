@@ -7,6 +7,13 @@ import { describe, expect, test } from "vitest";
 import { createLSPClient } from "./LSPClient.js";
 
 const EXITING_SERVER = "setTimeout(() => process.exit(1), 10)";
+const CLEAN_EXIT_SERVER = "setTimeout(() => process.exit(0), 10)";
+const CLOSE_CONNECTION_SERVER = `
+setTimeout(() => {
+  process.stdout.end();
+}, 10);
+setInterval(() => {}, 1000);
+`;
 const JSON_RPC_SERVER = `
 let buffer = Buffer.alloc(0);
 function send(message) {
@@ -61,6 +68,42 @@ describe("createLSPClient", () => {
     await client.start(process.execPath, ["-e", EXITING_SERVER]);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(crashCount).toBe(2);
+  });
+
+  test("reports unexpected clean exits and can be started again", async () => {
+    const terminalEvents: string[] = [];
+    const client = createLSPClient("clean-exit", {
+      onCrash: (error) => {
+        terminalEvents.push(error.message);
+      },
+    });
+
+    await client.start(process.execPath, ["-e", CLEAN_EXIT_SERVER]);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(terminalEvents).toEqual([
+      "LSP server clean-exit connection closed unexpectedly",
+    ]);
+
+    await client.start(process.execPath, ["-e", CLEAN_EXIT_SERVER]);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(terminalEvents).toHaveLength(2);
+  });
+
+  test("reports unexpected JSON-RPC connection close", async () => {
+    const terminalEvents: string[] = [];
+    const client = createLSPClient("close", {
+      onCrash: (error) => {
+        terminalEvents.push(error.message);
+      },
+    });
+
+    await client.start(process.execPath, ["-e", CLOSE_CONNECTION_SERVER]);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(terminalEvents).toEqual([
+      "LSP server close connection closed unexpectedly",
+    ]);
+    expect(client.isInitialized).toBe(false);
   });
 
   test("scrubs inherited secrets while preserving explicit config env", async () => {

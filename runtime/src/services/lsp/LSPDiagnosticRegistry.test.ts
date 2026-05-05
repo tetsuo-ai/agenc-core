@@ -4,6 +4,7 @@ import {
   checkForLSPDiagnostics,
   clearDeliveredDiagnosticsForFile,
   getPendingLSPDiagnosticCount,
+  MAX_DELIVERED_DIAGNOSTICS_PER_FILE,
   peekLSPDiagnosticsForFile,
   registerPendingLSPDiagnostic,
   resetAllLSPDiagnosticState,
@@ -114,5 +115,36 @@ describe("LSPDiagnosticRegistry", () => {
     const diagnostics = checkForLSPDiagnostics()[0]!.files[0]!.diagnostics;
     expect(diagnostics).toHaveLength(10);
     expect(diagnostics[0]!.severity).toBe("Error");
+  });
+
+  test("bounds delivered diagnostic dedupe entries for one noisy file", () => {
+    for (let index = 0; index <= MAX_DELIVERED_DIAGNOSTICS_PER_FILE; index += 1) {
+      registerPendingLSPDiagnostic({
+        serverName: "ts",
+        files: [
+          {
+            uri: "/tmp/noisy.ts",
+            diagnostics: [{ ...baseDiagnostic, message: `diag ${index}` }],
+          },
+        ],
+      });
+      expect(checkForLSPDiagnostics()[0]!.files[0]!.diagnostics[0]!.message).toBe(
+        `diag ${index}`,
+      );
+    }
+
+    registerPendingLSPDiagnostic({
+      serverName: "ts",
+      files: [
+        {
+          uri: "/tmp/noisy.ts",
+          diagnostics: [{ ...baseDiagnostic, message: "diag 0" }],
+        },
+      ],
+    });
+
+    expect(checkForLSPDiagnostics()[0]!.files[0]!.diagnostics[0]!.message).toBe(
+      "diag 0",
+    );
   });
 });
