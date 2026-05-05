@@ -7,6 +7,7 @@ import type { LLMToolCall } from "../../llm/types.js";
 import { ToolRouter } from "../router.js";
 import type { Tool } from "../types.js";
 import { EXCLUSIVE, SHARED_READ } from "../concurrency.js";
+import { createApplyPatchTool } from "../apply-patch/tool.js";
 import { createExecCommandTool } from "../system/exec-command.js";
 import { createFileWriteTool } from "../system/file-write.js";
 import { createWriteStdinTool } from "../system/write-stdin.js";
@@ -517,6 +518,95 @@ describe("tools/runtimes", () => {
         args: { cmd: "ls", workdir: "/etc" },
       }),
     ).toThrow(/read outside workspace/);
+
+    const applyPatchTool: Tool = {
+      name: "apply_patch",
+      description: "",
+      inputSchema: { type: "object" },
+      metadata: { mutating: true },
+      execute: async () => ({ content: "not reached" }),
+    };
+    const applyPatchAttempt = (sandboxMode: "read_only" | "workspace_write") => ({
+      ...base,
+      approvalPolicy: "never" as const,
+      requestedSandboxMode: sandboxMode,
+      sandboxMode,
+      approvalResolved: false,
+      rawArgs: "{}",
+      invocation,
+    });
+    const insidePatch = [
+      "*** Begin Patch",
+      "*** Add File: generated/runtime-patch.txt",
+      "+hello",
+      "*** End Patch",
+      "",
+    ].join("\n");
+    const outsidePatch = [
+      "*** Begin Patch",
+      "*** Add File: /etc/agenc-runtime-patch",
+      "+blocked",
+      "*** End Patch",
+      "",
+    ].join("\n");
+    const moveOutsidePatch = [
+      "*** Begin Patch",
+      "*** Update File: generated/runtime-patch.txt",
+      "*** Move to: /etc/agenc-runtime-patch",
+      "@@",
+      "-hello",
+      "+hello",
+      "*** End Patch",
+      "",
+    ].join("\n");
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: applyPatchAttempt("read_only"),
+        tool: applyPatchTool,
+        args: { input: insidePatch },
+      }),
+    ).toThrow(/read_only blocked/);
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: applyPatchAttempt("workspace_write"),
+        tool: applyPatchTool,
+        args: { input: insidePatch },
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: applyPatchAttempt("workspace_write"),
+        tool: applyPatchTool,
+        args: { input: outsidePatch },
+      }),
+    ).toThrow(/workspace_write blocked/);
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: applyPatchAttempt("workspace_write"),
+        tool: applyPatchTool,
+        args: { input: moveOutsidePatch },
+      }),
+    ).toThrow(/workspace_write blocked/);
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: applyPatchAttempt("workspace_write"),
+        tool: applyPatchTool,
+        args: { input: "*** Begin Patch\n*** End Patch\n" },
+      }),
+    ).toThrow(/could not verify write targets/);
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: applyPatchAttempt("workspace_write"),
+        tool: applyPatchTool,
+        args: { input: "*** Begin Patch\nnot a hunk\n*** End Patch\n" },
+      }),
+    ).toThrow(/could not verify write targets/);
   });
 
   test("actual exec_command handler is preflighted by selected runtime sandbox", async () => {
@@ -622,6 +712,17 @@ describe("tools/runtimes", () => {
     );
     expect(tmpWrite.isError).toBeFalsy();
     expect(execCommand).toHaveBeenCalledOnce();
+    expect(execCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtimeSandbox: expect.objectContaining({
+          sandboxPolicyCwd: workspaceRoot,
+          preference: "require",
+          permissionProfile: expect.objectContaining({
+            fileSystem: expect.objectContaining({ kind: "restricted" }),
+          }),
+        }),
+      }),
+    );
 
     const readOnlyStdin = await router.dispatchModelToolCall(
       {
@@ -652,7 +753,7 @@ describe("tools/runtimes", () => {
     expect(readOnlyStdin.content).toContain("write_stdin");
     expect(writeStdin).not.toHaveBeenCalled();
 
-    const stdin = await router.dispatchModelToolCall(
+    const restrictedStdin = await router.dispatchModelToolCall(
       {
         id: "call-stdin-continue",
         name: "write_stdin",
@@ -677,7 +778,36 @@ describe("tools/runtimes", () => {
         sandboxMode: "workspace_write",
       },
     );
-    expect(stdin.isError).toBeFalsy();
+    expect(restrictedStdin.isError).toBe(true);
+    expect(restrictedStdin.content).toContain("write_stdin");
+    expect(writeStdin).not.toHaveBeenCalled();
+
+    const fullAccessStdin = await router.dispatchModelToolCall(
+      {
+        id: "call-stdin-full-access",
+        name: "write_stdin",
+        arguments: JSON.stringify({
+          session_id: 7,
+          chars: "printf agenc-pty\\n",
+        }),
+      },
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: {
+          subId: "turn-stdin-full-access",
+          cwd: workspaceRoot,
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "danger_full_access" },
+        } as never,
+        tracker: tracker() as never,
+        approvalPolicy: "never",
+        sandboxMode: "danger_full_access",
+      },
+    );
+    expect(fullAccessStdin.isError).toBeFalsy();
     expect(writeStdin).toHaveBeenCalledWith(
       expect.objectContaining({
         session_id: 7,
@@ -751,6 +881,106 @@ describe("tools/runtimes", () => {
     expect(allowed.isError).toBeFalsy();
     expect(existsSync(allowedPath)).toBe(true);
     expect(readFileSync(allowedPath, "utf8")).toBe("created by runtime sandbox\n");
+  });
+
+  test("actual apply_patch handler obeys per-attempt workspace-write preflight", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-runtime-patch-"));
+    const router = new ToolRouter([
+      {
+        tool: createApplyPatchTool({
+          cwd: workspaceRoot,
+          allowedPaths: [workspaceRoot],
+        }),
+        supportsParallelToolCalls: false,
+      },
+    ]);
+    const session = {
+      conversationId: "runtime-patch-session",
+      eventLog: new EventLog(),
+      services: {},
+    } as never;
+    const insidePatch = [
+      "*** Begin Patch",
+      "*** Add File: generated.txt",
+      "+created by apply_patch",
+      "*** End Patch",
+      "",
+    ].join("\n");
+    const outsidePatch = [
+      "*** Begin Patch",
+      "*** Add File: /etc/agenc-runtime-patch",
+      "+blocked",
+      "*** End Patch",
+      "",
+    ].join("\n");
+
+    const blockedReadOnly = await router.dispatchModelToolCall(
+      {
+        id: "call-patch-read-only",
+        name: "apply_patch",
+        arguments: JSON.stringify({ input: insidePatch }),
+      },
+      {
+        session,
+        turn: {
+          subId: "turn-patch-read-only",
+          cwd: workspaceRoot,
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "read_only" },
+        } as never,
+        tracker: tracker() as never,
+        approvalPolicy: "never",
+        sandboxMode: "read_only",
+      },
+    );
+    expect(blockedReadOnly.isError).toBe(true);
+    expect(blockedReadOnly.content).toContain("read_only blocked");
+
+    const blockedOutside = await router.dispatchModelToolCall(
+      {
+        id: "call-patch-outside",
+        name: "apply_patch",
+        arguments: JSON.stringify({ input: outsidePatch }),
+      },
+      {
+        session,
+        turn: {
+          subId: "turn-patch-outside",
+          cwd: workspaceRoot,
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "workspace_write" },
+        } as never,
+        tracker: tracker() as never,
+        approvalPolicy: "never",
+        sandboxMode: "workspace_write",
+      },
+    );
+    expect(blockedOutside.isError).toBe(true);
+    expect(blockedOutside.content).toContain("workspace_write blocked");
+
+    const allowed = await router.dispatchModelToolCall(
+      {
+        id: "call-patch-inside",
+        name: "apply_patch",
+        arguments: JSON.stringify({ input: insidePatch }),
+      },
+      {
+        session,
+        turn: {
+          subId: "turn-patch-inside",
+          cwd: workspaceRoot,
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "workspace_write" },
+        } as never,
+        tracker: tracker() as never,
+        approvalPolicy: "never",
+        sandboxMode: "workspace_write",
+      },
+    );
+    expect(allowed.isError).toBeFalsy();
+    expect(readFileSync(join(workspaceRoot, "generated.txt"), "utf8")).toBe(
+      "created by apply_patch\n",
+    );
   });
 
   test("router injects selected sandbox attempt context without breaking schemas", async () => {

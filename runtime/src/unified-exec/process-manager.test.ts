@@ -1,6 +1,12 @@
 import { createRequire } from "node:module";
 import { describe, expect, test } from "vitest";
 
+import {
+  permissionProfileFromRuntimePermissions,
+  restrictedFileSystemPolicy,
+  type SandboxExecRequest,
+  type SandboxTransformRequest,
+} from "../sandbox/engine/index.js";
 import { UnifiedExecError, UnifiedExecProcessManager } from "./index.js";
 
 const require = createRequire(import.meta.url);
@@ -25,6 +31,60 @@ describe("UnifiedExecProcessManager", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("agenc-runtime");
     expect(result.process_id).toBeUndefined();
+  });
+
+  test("transforms restricted commands through the configured sandbox manager", async () => {
+    const transforms: SandboxTransformRequest[] = [];
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      sandboxManager: {
+        selectInitial: () => "linux_seccomp",
+        transform: (request): SandboxExecRequest => {
+          transforms.push(request);
+          return {
+            command: [
+              process.execPath,
+              "-e",
+              "process.stdout.write('sandboxed')",
+            ],
+            cwd: request.command.cwd,
+            env: request.command.env,
+            sandbox: request.sandbox,
+            windowsSandboxLevel: request.windowsSandboxLevel,
+            windowsSandboxPrivateDesktop:
+              request.windowsSandboxPrivateDesktop,
+            permissionProfile: request.permissions,
+            fileSystemSandboxPolicy: request.permissions.fileSystem,
+            networkSandboxPolicy: request.permissions.network,
+            arg0: "agenc-sandbox-test",
+          };
+        },
+      },
+    });
+    const permissionProfile = permissionProfileFromRuntimePermissions(
+      restrictedFileSystemPolicy(),
+      "enabled",
+    );
+
+    const result = await manager.execCommand({
+      cmd: "printf host-command",
+      yield_time_ms: 250,
+      runtimeSandbox: {
+        permissionProfile,
+        sandboxPolicyCwd: process.cwd(),
+        preference: "require",
+        agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("sandboxed");
+    expect(transforms).toHaveLength(1);
+    expect(transforms[0]).toMatchObject({
+      permissions: permissionProfile,
+      sandbox: "linux_seccomp",
+      sandboxPolicyCwd: process.cwd(),
+    });
   });
 
   test("keeps non-PTY long-running commands pollable but stdin-closed", async () => {
@@ -96,8 +156,8 @@ describe("UnifiedExecProcessManager", () => {
     // have no hard kill — the model could yield and forget, leaving the
     // child running indefinitely. We saw this in the wild with three
     // `./agenc -c 'echo hi' --dump-tokens` zombies burning ~97% CPU each
-    // for 95+ minutes after the agent moved on. codex runtime always enforces a
-    // timeout (codex-rs/core/src/exec.rs `consume_output`); we now do too.
+    // for 95+ minutes after the agent moved on. The reference runtime
+    // always enforces a timeout; we now do too.
     const manager = new UnifiedExecProcessManager({
       cwd: process.cwd(),
       maxTimeoutMs: 400,
@@ -138,9 +198,8 @@ describe("UnifiedExecProcessManager", () => {
   });
 
   test("respects explicit timeoutMs for tty calls (default does not apply)", async () => {
-    // tty=true is the interactive-session path — codex runtime doesn't have a
-    // direct analog because codex runtime exec is always one-shot. We deliberately
-    // exempt tty from the default hard timeout so persistent shells stay
+    // tty=true is the interactive-session path. We deliberately exempt tty
+    // from the default hard timeout so persistent shells stay
     // alive across write_stdin polls. This test asserts that exemption.
     if (!hasPtySupport) return;
     const manager = new UnifiedExecProcessManager({

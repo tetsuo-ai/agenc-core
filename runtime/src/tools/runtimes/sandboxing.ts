@@ -5,6 +5,7 @@ import {
   restrictedFileSystemPolicy,
   unrestrictedFileSystemPolicy,
   type FileSystemSandboxEntry,
+  type FileSystemSandboxPolicy,
   type NetworkSandboxPolicy,
   type PermissionProfile,
 } from "../../sandbox/engine/index.js";
@@ -94,6 +95,23 @@ export function sandboxModeRequiresPlatformIsolation(mode: SandboxMode): boolean
   return mode === "read_only" || mode === "workspace_write";
 }
 
+export function permissionProfileForRuntimeContext(
+  context: ToolRuntimeAttemptContext,
+  options: RuntimeSandboxProfileOptions,
+): PermissionProfile {
+  if (!sandboxModeRequiresPlatformIsolation(context.sandboxMode)) {
+    return permissionProfileForSandboxMode(context.sandboxMode, options);
+  }
+  const fileSystem = fileSystemPolicyFromContext(context);
+  const network = networkPolicyFromContext(context) ?? options.network ?? "enabled";
+  return fileSystem === undefined
+    ? permissionProfileForSandboxMode(context.sandboxMode, {
+        cwd: options.cwd,
+        network,
+      })
+    : permissionProfileFromRuntimePermissions(fileSystem, network);
+}
+
 export function compatibilityPolicyForSandboxMode(
   mode: SandboxMode,
   options: RuntimeSandboxProfileOptions,
@@ -111,16 +129,24 @@ export function enforceRuntimeSandboxAttempt(
   input: RuntimeSandboxEnforcementInput,
 ): void {
   const cwd = runtimeCwd(input.context);
-  const policy = compatibilityPolicyForSandboxMode(input.context.sandboxMode, {
+  const profile = permissionProfileForRuntimeContext(input.context, { cwd });
+  const policy = compatibilitySandboxPolicyForPermissionProfile(
+    profile,
+    profile.fileSystem,
+    profile.network,
     cwd,
-  });
+  );
   if (policy.kind === "danger_full_access" || policy.kind === "external_sandbox") {
     return;
   }
   enforceRuntimeReadSandboxAttempt(input, policy, cwd);
-  if (input.tool.name === "write_stdin" && policy.kind === "read_only") {
+  if (
+    input.tool.name === "write_stdin" &&
+    typeof input.args["chars"] === "string" &&
+    input.args["chars"].length > 0
+  ) {
     throw new SandboxDeniedError(
-      "sandbox read_only blocked write_stdin without process sandbox context",
+      `sandbox ${policy.kind} blocked write_stdin without process sandbox context`,
       {
         denial: "filesystem",
         target: input.tool.name,
@@ -128,6 +154,7 @@ export function enforceRuntimeSandboxAttempt(
       },
     );
   }
+  if (input.tool.name === "write_stdin") return;
   if (!toolMayMutate(input.tool)) return;
   const writes = analyzeWrites(input.tool, input.args, cwd);
   if (writes.indeterminate) {
@@ -221,8 +248,8 @@ function analyzeWrites(
   if (tool.name === "write_stdin") {
     return {
       targets: [],
-      indeterminate: false,
-      knownSafeWhenTargetless: true,
+      indeterminate: true,
+      knownSafeWhenTargetless: false,
     };
   }
   const targets = writeTargets(args, cwd);
@@ -236,6 +263,45 @@ function analyzeWrites(
 function runtimeCwd(context: ToolRuntimeAttemptContext): string {
   const cwd = (context.invocation.turn as { readonly cwd?: unknown }).cwd;
   return typeof cwd === "string" && cwd.length > 0 ? cwd : process.cwd();
+}
+
+function fileSystemPolicyFromContext(
+  context: ToolRuntimeAttemptContext,
+): FileSystemSandboxPolicy | undefined {
+  const value = (context.invocation.turn as {
+    readonly fileSystemSandboxPolicy?: unknown;
+  }).fileSystemSandboxPolicy;
+  if (!isFileSystemSandboxPolicy(value)) return undefined;
+  return value;
+}
+
+function networkPolicyFromContext(
+  context: ToolRuntimeAttemptContext,
+): NetworkSandboxPolicy | undefined {
+  const value = (context.invocation.turn as {
+    readonly networkSandboxPolicy?: unknown;
+  }).networkSandboxPolicy;
+  return isNetworkSandboxPolicy(value) ? value : undefined;
+}
+
+function isFileSystemSandboxPolicy(
+  value: unknown,
+): value is FileSystemSandboxPolicy {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as {
+    readonly kind?: unknown;
+    readonly entries?: unknown;
+  };
+  return (
+    (candidate.kind === "restricted" ||
+      candidate.kind === "unrestricted" ||
+      candidate.kind === "external_sandbox") &&
+    Array.isArray(candidate.entries)
+  );
+}
+
+function isNetworkSandboxPolicy(value: unknown): value is NetworkSandboxPolicy {
+  return value === "enabled" || value === "disabled" || value === "restricted";
 }
 
 function toolMayMutate(tool: Tool): boolean {

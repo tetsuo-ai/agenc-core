@@ -970,6 +970,8 @@ const ITEM_EVIDENCE = {
       "runtime/src/tools/runtimes/sandboxing.ts",
       "runtime/src/tools/runtimes/PARITY.md",
       "parity/tool-runtimes-split-parity.json",
+      "runtime/src/tools/system/exec-command.ts",
+      "runtime/src/unified-exec/process-manager.ts",
     ],
     grepPresent: [
       { pattern: "analyzeShellRuntimeAccess", scope: "runtime/src/tools/runtimes/sandboxing.ts" },
@@ -984,10 +986,14 @@ const ITEM_EVIDENCE = {
       { pattern: "codeModeResult", scope: "runtime/src/tools/runtimes/runtime.test.ts" },
       { pattern: "BigInt", scope: "runtime/src/tools/runtimes/runtime.test.ts" },
       { pattern: "TMPDIR", scope: "runtime/src/tools/runtimes/runtime.test.ts" },
+      { pattern: "runtimeSandbox", scope: "runtime/src/tools/system/exec-command.ts" },
+      { pattern: "SandboxManager", scope: "runtime/src/unified-exec/process-manager.ts" },
     ],
     tests: [
       "runtime/src/tools/runtimes/runtime.test.ts",
       "runtime/src/phases/execute-tools.test.ts",
+      "runtime/src/tools/router.test.ts",
+      "runtime/src/unified-exec/process-manager.test.ts",
     ],
   },
   "TL-22": {

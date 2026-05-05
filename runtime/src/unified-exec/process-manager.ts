@@ -5,6 +5,10 @@ import type { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 
 import {
+  SandboxManager,
+  type SandboxType,
+} from "../sandbox/engine/index.js";
+import {
   approximateTokenCount,
   maxCharsForTokens,
   truncateHeadTail,
@@ -14,6 +18,8 @@ import {
   type ExecCommandToolOutput,
   type UnifiedExecManagerOptions,
   type UnifiedExecProcessManagerLike,
+  type UnifiedExecRuntimeSandbox,
+  type UnifiedExecSandboxManager,
   type UnifiedExecProgressEvent,
   type UnifiedExecStream,
   type WriteStdinRequest,
@@ -70,6 +76,14 @@ interface PtyModule {
 interface OutputChunk {
   readonly stream: UnifiedExecStream;
   readonly chunk: string;
+}
+
+interface SpawnCommand {
+  readonly program: string;
+  readonly args: readonly string[];
+  readonly cwd: string;
+  readonly env: Record<string, string>;
+  readonly argv0?: string;
 }
 
 class ProcessOutputBuffer {
@@ -213,6 +227,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private readonly cwd: string;
   private readonly env?: Record<string, string>;
   private readonly maxProcesses: number;
+  private readonly sandboxManager: UnifiedExecSandboxManager;
   private nextProcessId = 1;
   private readonly processes = new Map<number, ProcessEntry>();
 
@@ -222,6 +237,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     this.maxTimeoutMs =
       options.maxTimeoutMs ?? DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS;
     this.maxProcesses = options.maxProcesses ?? DEFAULT_MAX_PROCESSES;
+    this.sandboxManager = options.sandboxManager ?? new SandboxManager();
   }
 
   async execCommand(request: ExecCommandRequest): Promise<ExecCommandToolOutput> {
@@ -240,6 +256,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     const cwd = resolve(request.workdir ?? this.cwd);
     const shell = resolveShell(request.shell);
     const args = shellArgs(request.cmd, request.login);
+    const spawnCommand = this.buildSpawnCommand({
+      program: shell,
+      args,
+      cwd,
+      env: buildEnv(this.env),
+      ...(request.runtimeSandbox !== undefined
+        ? { runtimeSandbox: request.runtimeSandbox }
+        : {}),
+    });
     const startedAt = Date.now();
     const callId = request.callId ?? `exec-${processId}`;
     const tty = request.tty === true;
@@ -247,9 +272,13 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       processId,
       callId,
       command: request.cmd,
-      shell,
-      args,
-      cwd,
+      program: spawnCommand.program,
+      args: spawnCommand.args,
+      cwd: spawnCommand.cwd,
+      env: spawnCommand.env,
+      ...(spawnCommand.argv0 !== undefined
+        ? { argv0: spawnCommand.argv0 }
+        : {}),
       tty,
       startedAt,
       signal: request.__abortSignal,
@@ -258,16 +287,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     request.observer?.onBegin?.({
       callId,
       command: request.cmd,
-      cwd,
+      cwd: spawnCommand.cwd,
       processId,
       tty,
     });
 
     // Hard timeout: explicit `timeoutMs` always wins. When unset, non-tty
     // calls fall back to `maxTimeoutMs` so abandoned processes (yield-and-
-    // forget) eventually get reaped — codex runtime/exec.rs always enforces a
-    // timeout. Tty sessions are intentionally long-lived (write_stdin
-    // interaction) and stay opt-in.
+    // forget) eventually get reaped. Tty sessions are intentionally
+    // long-lived (write_stdin interaction) and stay opt-in.
     const explicitTimeoutMs =
       request.timeoutMs !== undefined && request.timeoutMs > 0
         ? Math.min(request.timeoutMs, this.maxTimeoutMs)
@@ -418,9 +446,11 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     readonly processId: number;
     readonly callId: string;
     readonly command: string;
-    readonly shell: string;
+    readonly program: string;
     readonly args: readonly string[];
     readonly cwd: string;
+    readonly env: Record<string, string>;
+    readonly argv0?: string;
     readonly tty: boolean;
     readonly startedAt: number;
     readonly signal?: AbortSignal;
@@ -466,12 +496,12 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       let processHandle: IPty;
       try {
         const pty = await this.loadPty();
-        processHandle = pty.spawn(params.shell, [...params.args], {
+        processHandle = pty.spawn(params.program, [...params.args], {
           name: "xterm-256color",
           cols: 80,
           rows: 24,
           cwd: params.cwd,
-          env: buildEnv(this.env),
+          env: params.env,
         });
       } catch (error) {
         throw new UnifiedExecError(
@@ -493,12 +523,12 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       return entry;
     }
 
-    const child = spawn(params.shell, [...params.args], {
+    const child = spawn(params.program, [...params.args], {
       cwd: params.cwd,
-      env: buildEnv(this.env),
+      env: params.env,
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32",
-      argv0: basename(params.shell),
+      argv0: params.argv0 ?? basename(params.program),
     });
     child.stdout.on("data", (data: Buffer) => notifyData("stdout", data.toString("utf8")));
     child.stderr.on("data", (data: Buffer) => notifyData("stderr", data.toString("utf8")));
@@ -518,6 +548,92 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     });
     child.unref();
     return entry;
+  }
+
+  private buildSpawnCommand(params: {
+    readonly program: string;
+    readonly args: readonly string[];
+    readonly cwd: string;
+    readonly env: Record<string, string>;
+    readonly runtimeSandbox?: UnifiedExecRuntimeSandbox;
+  }): SpawnCommand {
+    if (params.runtimeSandbox === undefined) {
+      return {
+        program: params.program,
+        args: params.args,
+        cwd: params.cwd,
+        env: params.env,
+        argv0: basename(params.program),
+      };
+    }
+
+    const permissions = params.runtimeSandbox.permissionProfile;
+    const windowsSandboxLevel =
+      params.runtimeSandbox.windowsSandboxLevel ?? "disabled";
+    let sandbox: SandboxType;
+    try {
+      sandbox = this.sandboxManager.selectInitial({
+        fileSystemPolicy: permissions.fileSystem,
+        networkPolicy: permissions.network,
+        preference: params.runtimeSandbox.preference ?? "require",
+        windowsSandboxLevel,
+        hasManagedNetworkRequirements:
+          params.runtimeSandbox.enforceManagedNetwork === true ||
+          params.runtimeSandbox.network !== undefined,
+      });
+      if (
+        sandbox === "none" &&
+        (params.runtimeSandbox.preference ?? "require") === "require"
+      ) {
+        throw new UnifiedExecError(
+          "create_process",
+          "sandbox isolation was required for exec_command but no platform sandbox is available",
+        );
+      }
+      const transformed = this.sandboxManager.transform({
+        command: {
+          program: params.program,
+          args: params.args,
+          cwd: params.cwd,
+          env: params.env,
+        },
+        permissions,
+        sandbox,
+        enforceManagedNetwork:
+          params.runtimeSandbox.enforceManagedNetwork ?? false,
+        ...(params.runtimeSandbox.network !== undefined
+          ? { network: params.runtimeSandbox.network }
+          : {}),
+        sandboxPolicyCwd: params.runtimeSandbox.sandboxPolicyCwd,
+        ...(params.runtimeSandbox.agencLinuxSandboxExe !== undefined
+          ? { agencLinuxSandboxExe: params.runtimeSandbox.agencLinuxSandboxExe }
+          : {}),
+        useLegacyLandlock: params.runtimeSandbox.useLegacyLandlock ?? false,
+        windowsSandboxLevel,
+        windowsSandboxPrivateDesktop:
+          params.runtimeSandbox.windowsSandboxPrivateDesktop ?? false,
+      });
+      const [program, ...args] = transformed.command;
+      if (program === undefined) {
+        throw new UnifiedExecError(
+          "create_process",
+          "sandbox transform returned an empty command",
+        );
+      }
+      return {
+        program,
+        args,
+        cwd: transformed.cwd,
+        env: { ...transformed.env },
+        argv0: transformed.arg0 ?? basename(program),
+      };
+    } catch (error) {
+      if (error instanceof UnifiedExecError) throw error;
+      throw new UnifiedExecError(
+        "create_process",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   }
 
   private async collect(

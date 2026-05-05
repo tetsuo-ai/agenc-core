@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
@@ -6,12 +8,22 @@ import {
   UnifiedExecError,
   UnifiedExecProcessManager,
   type UnifiedExecProcessManagerLike,
+  type UnifiedExecRuntimeSandbox,
 } from "../../unified-exec/index.js";
+import type {
+  NetworkSandboxPolicy,
+  WindowsSandboxLevel,
+} from "../../sandbox/engine/index.js";
 import {
   formatUnifiedExecToolContent,
   unifiedExecCodeModeResult,
 } from "./exec-result-format.js";
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
+import { readToolRuntimeContext } from "../runtimes/context.js";
+import {
+  permissionProfileForRuntimeContext,
+  sandboxModeRequiresPlatformIsolation,
+} from "../runtimes/sandboxing.js";
 
 export interface ExecCommandToolConfig extends BashToolConfig {
   readonly allowedPaths?: readonly string[];
@@ -39,6 +51,86 @@ function asBoolean(value: unknown): boolean | undefined {
 
 function isPlainInteractiveShellCommand(command: string): boolean {
   return PLAIN_INTERACTIVE_SHELL_RE.test(command);
+}
+
+function runtimeSandboxForExec(
+  args: Record<string, unknown>,
+  cwd: string,
+): UnifiedExecRuntimeSandbox | undefined {
+  const context = readToolRuntimeContext(args);
+  if (
+    context === undefined ||
+    !sandboxModeRequiresPlatformIsolation(context.sandboxMode)
+  ) {
+    return undefined;
+  }
+  const turn = context.invocation.turn as {
+    readonly agencLinuxSandboxExe?: unknown;
+    readonly config?: {
+      readonly agencLinuxSandboxExe?: unknown;
+      readonly features?: unknown;
+      readonly permissions?: {
+        readonly windowsSandboxPrivateDesktop?: unknown;
+      };
+    };
+    readonly features?: unknown;
+    readonly networkSandboxPolicy?: unknown;
+    readonly windowsSandboxLevel?: unknown;
+    readonly windowsSandboxPrivateDesktop?: unknown;
+  };
+  const network = networkPolicy(turn.networkSandboxPolicy);
+  const agencLinuxSandboxExe =
+    stringValue(turn.agencLinuxSandboxExe) ??
+    stringValue(turn.config?.agencLinuxSandboxExe);
+  return {
+    permissionProfile: permissionProfileForRuntimeContext(context, {
+      cwd,
+      ...(network !== undefined ? { network } : {}),
+    }),
+    sandboxPolicyCwd: cwd,
+    preference: "require",
+    useLegacyLandlock: useLegacyLandlock(turn.features ?? turn.config?.features),
+    windowsSandboxLevel: windowsSandboxLevel(turn.windowsSandboxLevel),
+    windowsSandboxPrivateDesktop: booleanValue(
+      turn.windowsSandboxPrivateDesktop,
+    ) ?? booleanValue(turn.config?.permissions?.windowsSandboxPrivateDesktop) ?? false,
+    ...(agencLinuxSandboxExe !== undefined ? { agencLinuxSandboxExe } : {}),
+  };
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function booleanValue(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function networkPolicy(value: unknown): NetworkSandboxPolicy | undefined {
+  return value === "enabled" || value === "disabled" || value === "restricted"
+    ? value
+    : undefined;
+}
+
+function windowsSandboxLevel(value: unknown): WindowsSandboxLevel {
+  return value === "low" || value === "medium" || value === "high"
+    ? value
+    : "disabled";
+}
+
+function useLegacyLandlock(features: unknown): boolean {
+  if (typeof features !== "object" || features === null) return false;
+  const candidate = features as {
+    readonly useLegacyLandlock?: unknown;
+    readonly enabled?: unknown;
+  };
+  if (typeof candidate.useLegacyLandlock === "function") {
+    return candidate.useLegacyLandlock() === true;
+  }
+  if (typeof candidate.enabled === "function") {
+    return candidate.enabled("use_legacy_landlock") === true;
+  }
+  return false;
 }
 
 function errorResult(error: unknown): ToolResult {
@@ -192,6 +284,8 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       }
 
       try {
+        const effectiveCwd = resolve(workdir ?? config?.cwd ?? process.cwd());
+        const runtimeSandbox = runtimeSandboxForExec(args, effectiveCwd);
         const output = await manager.execCommand({
           cmd,
           callId: asString(args.__callId),
@@ -215,6 +309,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           ...(config?.execObserver !== undefined
             ? { observer: config.execObserver }
             : {}),
+          ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
         });
         const isError = output.exitCode !== null && output.exitCode !== 0;
         return {

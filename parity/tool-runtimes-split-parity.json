@@ -18,6 +18,11 @@
     "runtime/src/tools/execution.ts",
     "runtime/src/tools/streaming-executor.ts",
     "runtime/src/phases/execute-tools.ts",
+    "runtime/src/tools/system/exec-command.ts",
+    "runtime/src/unified-exec/types.ts",
+    "runtime/src/unified-exec/index.ts",
+    "runtime/src/unified-exec/process-manager.ts",
+    "runtime/src/unified-exec/process-manager.test.ts",
     "scripts/goal/verify.mjs"
   ],
   "sourceFilesRead": [
@@ -31,12 +36,44 @@
     "runtimes/mod.rs",
     "runtimes/shell.rs",
     "runtimes/unified_exec.rs",
-    "runtimes/apply_patch.rs"
+    "runtimes/apply_patch.rs",
+    "handlers/mod.rs",
+    "handlers/shell.rs",
+    "handlers/unified_exec.rs",
+    "handlers/apply_patch.rs"
   ],
   "documentedOmissions": [
     {
-      "source": "handlers/*",
-      "reason": "Existing AgenC-owned tool handlers remain in their feature directories, while runtime-specific shell/unified-exec/apply-patch analysis now lives under tools/runtimes and is enforced before those handlers execute."
+      "source": "handlers/shell.rs",
+      "reason": "TL-21 carries the shell runtime split, sandbox preflight, and existing AgenC exec_command boundary integration. The broader shell handler lifecycle remains in runtime/src/tools/system/* and runtime/src/tools/orchestrator.ts rather than being relocated into tools/runtimes."
+    },
+    {
+      "source": "handlers/unified_exec.rs",
+      "reason": "TL-21 carries unified-exec command extraction plus selected sandbox profile threading into runtime/src/unified-exec/process-manager.ts. Handler formatting, session polling, and write_stdin tool shape remain in the existing AgenC unified-exec and system tool modules."
+    },
+    {
+      "source": "handlers/apply_patch.rs",
+      "reason": "TL-21 carries apply-patch write target extraction for runtime sandbox enforcement. Patch parsing/application and permission prompts remain owned by runtime/src/tools/apply-patch/*."
+    },
+    {
+      "source": "handlers/{agent_jobs,multi_agents,multi_agents_common,multi_agents_v2}.rs",
+      "reason": "Agent and delegation handlers do not define the runtime split being ported in TL-21; they stay in their existing AgenC agent/task tool owners."
+    },
+    {
+      "source": "handlers/{goal,plan,request_permissions,request_plugin_install,request_user_input}.rs",
+      "reason": "Goal, planning, permission request, plugin install, and elicitation handlers are control-surface tools outside the TL-21 runtime split. Their live AgenC owners are not relocated by this item."
+    },
+    {
+      "source": "handlers/{list_dir,mcp,mcp_resource,view_image,test_sync}.rs",
+      "reason": "Filesystem listing, MCP, image, and test-sync handlers are non-shell handler families. TL-21 only inserts shared runtime scheduling/context/sandbox enforcement before handler execution."
+    },
+    {
+      "source": "handlers/{dynamic,tool_search,unavailable_tool}.rs",
+      "reason": "Dynamic discovery, tool search, and unavailable-tool surfaces remain registry/tool-selection concerns, not runtime execution backends."
+    },
+    {
+      "source": "handlers/*_tests.rs",
+      "reason": "Donor handler test files are tracked as behavioral references only. Executable coverage for this item is in the AgenC test files listed under checks."
     },
     {
       "source": "registry.rs",
@@ -54,6 +91,7 @@
   "checks": [
     "runtime/src/tools/runtimes/runtime.test.ts",
     "runtime/src/phases/execute-tools.test.ts",
-    "runtime/src/tools/router.test.ts"
+    "runtime/src/tools/router.test.ts",
+    "runtime/src/unified-exec/process-manager.test.ts"
   ]
 }
