@@ -46,6 +46,23 @@ describe("macOS seatbelt policy generation", () => {
     expect(args).toContain("-DUNIX_SOCKET_PATH_0=/tmp/agenc.sock");
   });
 
+  it("treats bracketed IPv6 loopback proxy URLs as local proxy ports", () => {
+    const args = createSeatbeltCommandArgs({
+      command: ["/bin/echo", "ok"],
+      fileSystemSandboxPolicy: restrictedFileSystemPolicy(),
+      networkSandboxPolicy: "disabled",
+      sandboxPolicyCwd: "/repo",
+      enforceManagedNetwork: true,
+      network: {
+        env: { HTTPS_PROXY: "http://[::1]:9443" },
+      },
+    });
+
+    expect(args[1]).toContain(
+      `(allow network-outbound (remote ip "localhost:9443"))`,
+    );
+  });
+
   it("retains full-network behavior when no managed proxy is configured", () => {
     const args = createSeatbeltCommandArgs({
       command: ["true"],

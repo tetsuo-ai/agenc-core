@@ -13,12 +13,14 @@ import {
 import {
   canWritePathWithCwd,
   externalFileSystemPolicy,
+  getReadableRootsWithCwd,
   getUnreadableRootsWithCwd,
   getWritableRootsWithCwd,
   hasFullDiskReadAccess,
   hasFullDiskWriteAccess,
   includePlatformDefaults,
   restrictedFileSystemPolicy,
+  resolveAccessWithCwd,
   unrestrictedFileSystemPolicy,
 } from "./index.js";
 
@@ -171,6 +173,20 @@ describe("sandbox permission profile transforms", () => {
 
     expect(getWritableRootsWithCwd(readOnly, "/repo")).toEqual([]);
     expect(canWritePathWithCwd(readOnly, "/repo/package.json", "/repo")).toBe(false);
+  });
+
+  it("resolves relative base policy paths against the sandbox policy cwd", () => {
+    const relativeRead = restrictedFileSystemPolicy([
+      { path: { kind: "path", path: "src" }, access: "read" },
+    ]);
+
+    expect(getReadableRootsWithCwd(relativeRead, "/repo")).toEqual(["/repo/src"]);
+    expect(resolveAccessWithCwd(relativeRead, "/repo/src/index.ts", "/repo")).toBe(
+      "read",
+    );
+    expect(resolveAccessWithCwd(relativeRead, "/other/src/index.ts", "/repo")).toBe(
+      "none",
+    );
   });
 
   it("applies specific carveouts and protected metadata over broader writes", () => {

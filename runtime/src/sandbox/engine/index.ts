@@ -269,7 +269,7 @@ export function resolvePermissionPath(
 ): string | null {
   switch (target.kind) {
     case "path":
-      return normalizePathForPolicy(target.path);
+      return resolvePathAgainstBase(target.path, cwd);
     case "glob":
       return null;
     case "special":

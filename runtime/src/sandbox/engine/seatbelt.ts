@@ -238,7 +238,14 @@ function buildFileReadPolicyAndParams(
 }
 
 function isLoopbackHost(host: string): boolean {
-  return host.toLowerCase() === "localhost" || host === "127.0.0.1" || host === "::1";
+  const normalized = host.toLowerCase();
+  const bracketless =
+    normalized.startsWith("[") && normalized.endsWith("]")
+      ? normalized.slice(1, -1)
+      : normalized;
+  return bracketless === "localhost" ||
+    bracketless === "127.0.0.1" ||
+    bracketless === "::1";
 }
 
 function proxySchemeDefaultPort(scheme: string): number {
