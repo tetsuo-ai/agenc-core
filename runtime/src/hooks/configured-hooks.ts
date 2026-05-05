@@ -530,7 +530,7 @@ export class ConfiguredHooksRuntime {
     input: Record<string, unknown>,
     signal?: AbortSignal,
   ): Promise<HookCommandRunDiagnostic> {
-    return this.engine.runCommandHook(hook, input, signal);
+    return this.engine.runCommandHook(hook, input, signal, inputCwd(input));
   }
 
   private recordHookOutputIssue(
@@ -544,7 +544,10 @@ export class ConfiguredHooksRuntime {
     run: HookCommandRunDiagnostic,
   ): ReturnType<typeof readHookSpecificOutput> {
     const parsed = readHookSpecificOutput(run.rawStdout, run.event);
-    if (parsed.invalid) this.recordHookOutputIssue(run, parsed.invalid);
+    if (parsed.invalid) {
+      this.recordHookOutputIssue(run, parsed.invalid);
+      return { explicit: parsed.explicit, invalid: parsed.invalid };
+    }
     return parsed;
   }
 
@@ -601,6 +604,10 @@ function permissionDecisionHookInput(
     model: input.model ?? "unknown",
     permission_mode: input.permissionMode ?? "default",
   };
+}
+
+function inputCwd(input: Record<string, unknown>): string | undefined {
+  return stringValue(input.cwd);
 }
 
 function toolInvocationHookContext(

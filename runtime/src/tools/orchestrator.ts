@@ -522,6 +522,10 @@ function permissionDecisionHookContext(
     stringValue(asRecord(turn?.collaborationMode)?.model) ??
     stringValue(asRecord(turn?.config)?.model);
   const permissionMode = stringValue(turn?.permissionMode);
+  const matcherAliases = [
+    ...toolNameMatcherAliases(ctx.toolName),
+    ...stringArrayValue(asRecord(invocation.toolName)?.matcherAliases),
+  ];
   return {
     invocation,
     callId: ctx.callId,
@@ -531,8 +535,14 @@ function permissionDecisionHookContext(
     ...(transcriptPath !== undefined ? { transcriptPath } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
+    ...(matcherAliases.length > 0 ? { matcherAliases } : {}),
     ...(signal !== undefined ? { signal } : {}),
   };
+}
+
+function toolNameMatcherAliases(toolName: string): readonly string[] {
+  if (toolName === "apply_patch") return ["Write", "Edit"];
+  return [];
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -545,6 +555,12 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0
     ? value
     : undefined;
+}
+
+function stringArrayValue(value: unknown): readonly string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
 }
 
 /**

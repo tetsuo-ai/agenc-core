@@ -92,7 +92,7 @@ export class HookEngine {
     return Promise.all(
       handlers.map(async (hook) => ({
         hook,
-        run: await this.runCommandHook(hook, input, signal),
+        run: await this.runCommandHook(hook, input, signal, inputCwd(input)),
       })),
     );
   }
@@ -101,6 +101,7 @@ export class HookEngine {
     hook: IndividualHookConfig,
     input: Record<string, unknown>,
     signal?: AbortSignal,
+    cwd?: string,
   ): Promise<HookCommandRunDiagnostic> {
     const startedAtUnixMs = Date.now();
     if (this.disabled) {
@@ -117,7 +118,7 @@ export class HookEngine {
     }
     const result = await runHookCommand({
       command: hook.command.command,
-      cwd: this.opts.cwd,
+      cwd: cwd ?? this.opts.cwd,
       env: this.opts.env,
       shellPath: this.opts.shellPath,
       stdin: `${JSON.stringify(input)}\n`,
@@ -176,6 +177,11 @@ export class HookEngine {
       ...(result.error !== undefined ? { rawError: result.error } : {}),
     };
   }
+}
+
+function inputCwd(input: Record<string, unknown>): string | undefined {
+  const cwd = input.cwd;
+  return typeof cwd === "string" && cwd.trim().length > 0 ? cwd : undefined;
 }
 
 export function matchesPattern(matchQuery: string, matcher?: string): boolean {
