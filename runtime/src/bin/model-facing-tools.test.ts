@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderFactoryOptions } from "../llm/provider.js";
 import type { LLMProvider, LLMResponse } from "../llm/types.js";
 import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
@@ -16,6 +16,13 @@ import {
   registerPendingLSPDiagnostic,
   resetAllLSPDiagnosticState,
 } from "../services/lsp/LSPDiagnosticRegistry.js";
+import { normalizeLspServerConfig } from "../services/lsp/config.js";
+import {
+  _resetLspManagerForTesting,
+  initializeLspServerManager,
+  shutdownLspServerManager,
+} from "../services/lsp/manager.js";
+import type { LSPServerInstance } from "../services/lsp/LSPServerInstance.js";
 import {
   clearSessionReadState,
   getSessionReadSnapshot,
@@ -181,6 +188,12 @@ describe("model-facing tools", () => {
   beforeEach(() => {
     delegateMock.mockReset();
     resetAllLSPDiagnosticState();
+    _resetLspManagerForTesting();
+  });
+
+  afterEach(async () => {
+    await shutdownLspServerManager();
+    _resetLspManagerForTesting();
   });
 
   it("registers the requested product tools and omits raw system HTTP tools", () => {
@@ -315,6 +328,22 @@ describe("model-facing tools", () => {
       properties: {},
       additionalProperties: false,
     });
+    expect(allNames).toEqual(
+      expect.arrayContaining([
+        "system.symbolSearch",
+        "system.symbolDefinition",
+        "system.symbolReferences",
+      ]),
+    );
+    expect(
+      registry.tools.find((tool) => tool.name === "LSP")?.inputSchema,
+    ).toMatchObject({
+      required: ["operation", "file_path"],
+      additionalProperties: false,
+      properties: {
+        operation: { enum: ["diagnostics"] },
+      },
+    });
   });
 
   it("returns LSP diagnostics for one file without draining other pending diagnostics", async () => {
@@ -361,6 +390,140 @@ describe("model-facing tools", () => {
       expect(
         checkForLSPDiagnostics()[0]!.files.map((file) => file.uri).sort(),
       ).toEqual([a, b]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports when no language server is configured for diagnostics", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-lsp-tool-no-server-"));
+    try {
+      const file = join(root, "a.ts");
+      await writeFile(file, "const a = 1;\n", "utf8");
+      const tools = createModelFacingTools({
+        workspaceRoot: root,
+        getSession: () => null,
+      });
+      const lsp = tools.find((tool) => tool.name === "LSP")!;
+
+      const result = await lsp.execute({
+        operation: "diagnostics",
+        file_path: "a.ts",
+      });
+      const payload = JSON.parse(result.content);
+
+      expect(payload).toMatchObject({
+        file_path: file,
+        diagnostics: [],
+        server: null,
+        note: "No language server is configured for this file.",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns structured LSP initialization failures with pending diagnostics", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-lsp-tool-failed-init-"));
+    try {
+      const file = join(root, "a.ts");
+      await writeFile(file, "const a = 1;\n", "utf8");
+      initializeLspServerManager({
+        configSource: () => {
+          throw new Error("cannot load lsp config");
+        },
+      });
+      registerPendingLSPDiagnostic({
+        serverName: "ts",
+        files: [
+          {
+            uri: file,
+            diagnostics: [{ message: "pending diag", severity: "Error" }],
+          },
+        ],
+      });
+
+      const tools = createModelFacingTools({
+        workspaceRoot: root,
+        getSession: () => null,
+      });
+      const lsp = tools.find((tool) => tool.name === "LSP")!;
+      const result = await lsp.execute({
+        operation: "diagnostics",
+        file_path: "a.ts",
+      });
+      const payload = JSON.parse(result.content);
+
+      expect(payload).toMatchObject({
+        file_path: file,
+        server: null,
+        lsp_status: "failed",
+        server_error: { message: "cannot load lsp config" },
+        diagnostics: [{ message: "pending diag", severity: "Error" }],
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns structured LSP server startup failures with pending diagnostics", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-lsp-tool-start-failure-"));
+    try {
+      const file = join(root, "a.ts");
+      await writeFile(file, "const a = 1;\n", "utf8");
+      const config = normalizeLspServerConfig("ts", {
+        command: "typescript-language-server",
+        extensionToLanguage: { ".ts": "typescript" },
+      });
+      const server = {
+        name: "ts",
+        config,
+        get state() {
+          return "stopped";
+        },
+        start: async () => {
+          throw new Error("server start timed out");
+        },
+        stop: async () => {},
+        restart: async () => {},
+        isHealthy: () => false,
+        sendRequest: async () => ({}),
+        sendNotification: async () => {},
+        onNotification: () => {},
+        onRequest: () => {},
+      } as unknown as LSPServerInstance;
+      initializeLspServerManager({
+        configSource: () => ({ ts: config }),
+        instanceFactory: () => server,
+      });
+      registerPendingLSPDiagnostic({
+        serverName: "ts",
+        files: [
+          {
+            uri: file,
+            diagnostics: [{ message: "old diag", severity: "Warning" }],
+          },
+        ],
+      });
+
+      const tools = createModelFacingTools({
+        workspaceRoot: root,
+        getSession: () => null,
+      });
+      const lsp = tools.find((tool) => tool.name === "LSP")!;
+      const result = await lsp.execute({
+        operation: "diagnostics",
+        file_path: "a.ts",
+      });
+      const payload = JSON.parse(result.content);
+
+      expect(payload).toMatchObject({
+        file_path: file,
+        server: null,
+        lsp_status: "server_error",
+        server_error: { message: "server start timed out" },
+        diagnostics: [{ message: "old diag", severity: "Warning" }],
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

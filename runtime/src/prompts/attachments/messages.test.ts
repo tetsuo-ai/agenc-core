@@ -66,6 +66,42 @@ describe("attachmentsToMessages", () => {
     expect(out[0]?.content).toContain("<system-reminder>");
   });
 
+  test("renders LSP diagnostics with escaped and bounded fields", () => {
+    const out = attachmentsToMessages([
+      {
+        kind: "lsp_diagnostics",
+        serverName: "ts<server>",
+        files: [
+          {
+            uri: "/repo/src/a.ts",
+            diagnostics: [
+              {
+                severity: "Error",
+                message: `<bad>\n${"x".repeat(700)}`,
+                code: "E<&>",
+                source: "tsserver",
+                range: {
+                  start: { line: 2, character: 4 },
+                  end: { line: 2, character: 8 },
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+
+    expect(out).toHaveLength(1);
+    expect(out[0]?.content).toContain("<system-reminder>");
+    expect(out[0]?.content).toContain("<new-diagnostics>");
+    expect(out[0]?.content).toContain("ts&lt;server&gt;");
+    expect(out[0]?.content).toContain("Error [Line 3:5]");
+    expect(out[0]?.content).toContain("&lt;bad&gt;\\n");
+    expect(out[0]?.content).toContain("[E&lt;&amp;&gt;]");
+    expect(out[0]?.content).toContain("...[truncated]");
+    expect(out[0]?.content).not.toContain("<bad>");
+  });
+
   test("renders both plan_mode variants with the AGENC plan-file path", () => {
     const planFilePath = "/home/u/.agenc/plans/active.md";
     const full = attachmentsToMessages([

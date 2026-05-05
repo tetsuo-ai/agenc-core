@@ -14,6 +14,7 @@ import {
   _resetLspManagerForTesting,
   getInitializationStatus,
   getLspServerManager,
+  initializeLspServerManager,
   shutdownLspServerManager,
   waitForInitialization,
 } from "../services/lsp/manager.js";
@@ -108,6 +109,72 @@ describe("loadBootstrapLspServers", () => {
       );
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(getInitializationStatus().status).toBe("not-started");
+
+      await loadBootstrapLspServers(
+        { ...defaultConfig(), lsp_servers: undefined },
+        { workspaceRoot: "/workspace/project" },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(getInitializationStatus().status).toBe("not-started");
+    } finally {
+      await shutdownLspServerManager();
+      _resetLspManagerForTesting();
+    }
+  });
+
+  test("empty LSP config clears stale non-empty source", async () => {
+    _resetLspManagerForTesting();
+    try {
+      await loadBootstrapLspServers(
+        {
+          ...defaultConfig(),
+          lsp_servers: {
+            ts: {
+              command: "typescript-language-server",
+              extensionToLanguage: { ".ts": "typescript" },
+            },
+          },
+        },
+        { workspaceRoot: "/workspace/project" },
+      );
+      await waitForInitialization();
+      expect(getLspServerManager()?.getAllServers().has("ts")).toBe(true);
+
+      await loadBootstrapLspServers(
+        { ...defaultConfig(), lsp_servers: {} },
+        { workspaceRoot: "/workspace/project" },
+      );
+      expect(getInitializationStatus().status).toBe("not-started");
+      initializeLspServerManager({ workspaceRoot: "/workspace/project" });
+      await waitForInitialization();
+      expect(getInitializationStatus().status).toBe("success");
+      expect(getLspServerManager()?.getAllServers().size).toBe(0);
+      await shutdownLspServerManager();
+
+      await loadBootstrapLspServers(
+        {
+          ...defaultConfig(),
+          lsp_servers: {
+            broken: {
+              command: "",
+              extensionToLanguage: {},
+            },
+          },
+        },
+        { workspaceRoot: "/workspace/project" },
+      );
+      await waitForInitialization();
+      expect(getInitializationStatus().status).toBe("failed");
+
+      await loadBootstrapLspServers(
+        { ...defaultConfig(), lsp_servers: undefined },
+        { workspaceRoot: "/workspace/project" },
+      );
+      expect(getInitializationStatus().status).toBe("not-started");
+      initializeLspServerManager({ workspaceRoot: "/workspace/project" });
+      await waitForInitialization();
+      expect(getInitializationStatus().status).toBe("success");
+      expect(getLspServerManager()?.getAllServers().size).toBe(0);
     } finally {
       await shutdownLspServerManager();
       _resetLspManagerForTesting();

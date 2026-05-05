@@ -72,8 +72,11 @@ describe("createLSPClient", () => {
           PATH: process.env.PATH,
           HOME: "/home/test",
           OPENAI_API_KEY: "secret",
+          OPENROUTER_API_KEY: "openrouter-secret",
+          GOOGLE_API_KEY: "google-secret",
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc",
           INPUT_OPENAI_API_KEY: "duplicated",
+          INPUT_GEMINI_API_KEY: "duplicated-gemini",
         },
       });
 
@@ -92,7 +95,10 @@ describe("createLSPClient", () => {
       expect(env.HOME).toBe("/home/test");
       expect(env.LSP_EXPLICIT_ENV).toBe("kept");
       expect(env.OPENAI_API_KEY).toBeUndefined();
+      expect(env.OPENROUTER_API_KEY).toBeUndefined();
+      expect(env.GOOGLE_API_KEY).toBeUndefined();
       expect(env.INPUT_OPENAI_API_KEY).toBeUndefined();
+      expect(env.INPUT_GEMINI_API_KEY).toBeUndefined();
       expect(env.ACTIONS_ID_TOKEN_REQUEST_TOKEN).toBeUndefined();
     } finally {
       await rm(dir, { recursive: true, force: true });

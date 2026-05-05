@@ -5,8 +5,7 @@
  * `src/utils/attachments.ts:441-718`, restricted to the subset of variants
  * that have an AgenC analog. Variants tied to features AgenC doesn't ship
  * (`ultrathink_effort`, `bagel_console_errors`, `buddy_intro`,
- * `lsp_diagnostics`, `ide_selection`,
- * `structured_output`) are intentionally absent — when AgenC
+ * `ide_selection`, `structured_output`) are intentionally absent — when AgenC
  * adds the underlying feature, the variant lands here alongside its
  * producer. Provider-neutral usage/budget notices are upstream runtime
  * surfaces and intentionally do not mirror any provider account upsell.
@@ -16,6 +15,8 @@
  *
  * @module
  */
+
+import type { DiagnosticFile } from "../../services/lsp/types.js";
 
 /**
  * Memory file injection from the per-file 4-phase nested traversal.
@@ -310,6 +311,16 @@ export interface SkillListingAttachment {
 }
 
 /**
+ * Passive diagnostics published by configured LSP servers.
+ * Source: upstream attachment donor `attachments.ts:2912-2954`.
+ */
+export interface LspDiagnosticsAttachment {
+  readonly kind: "lsp_diagnostics";
+  readonly serverName: string;
+  readonly files: readonly DiagnosticFile[];
+}
+
+/**
  * Discriminated union of every attachment kind currently shipped by AgenC.
  *
  * To add a new kind: declare its interface above, append to this union,
@@ -341,7 +352,8 @@ export type Attachment =
   | FileMentionContextAttachment
   | ImageMentionContextAttachment
   | PdfMentionContextAttachment
-  | SkillListingAttachment;
+  | SkillListingAttachment
+  | LspDiagnosticsAttachment;
 
 /** All possible `Attachment.kind` values. */
 export type AttachmentKind = Attachment["kind"];

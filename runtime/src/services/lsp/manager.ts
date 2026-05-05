@@ -71,7 +71,7 @@ export function isLspConnected(): boolean {
   const manager = getLspServerManager();
   if (!manager) return false;
   for (const server of manager.getAllServers().values()) {
-    if (server.state !== "error") return true;
+    if (server.state === "running" || server.state === "starting") return true;
   }
   return false;
 }
@@ -132,7 +132,19 @@ export function reinitializeLspServerManager(
   const generation = ++initializationGeneration;
 
   initializationPromise = (async () => {
-    if (oldManager) await oldManager.shutdown();
+    if (oldManager) {
+      try {
+        await oldManager.shutdown();
+      } catch (error) {
+        // Old server cleanup is best-effort during config reload; a stale
+        // shutdown failure must not prevent the replacement config loading.
+        // eslint-disable-next-line no-console
+        console.warn(
+          "[lsp] previous manager shutdown failed during reinitialize:",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
     if (generation !== initializationGeneration) return;
     lspManagerInstance = createLSPServerManager(options);
     await lspManagerInstance.initialize();

@@ -489,6 +489,7 @@ export async function loadBootstrapLspServers(
     return;
   }
   if (Object.keys(parsed.servers).length === 0) {
+    configureLspServerSource(() => ({}));
     await shutdownLspServerManager();
     return;
   }
