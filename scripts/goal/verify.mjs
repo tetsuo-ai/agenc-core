@@ -1218,6 +1218,18 @@ const ITEM_EVIDENCE = {
   "PK-06": {
     grepPresent: [{ pattern: "agenc plugin", scope: "runtime/src" }],
   },
+  "PK-08": {
+    files: [
+      "scripts/check-plugin-kit-hello-example.mjs",
+      "parity/PK-08-parity.json",
+    ],
+    grepPresent: [
+      {
+        pattern: "hello-tool",
+        scope: "scripts/check-plugin-kit-hello-example.mjs",
+      },
+    ],
+  },
   "PK-09": {
     grepPresent: [
       { pattern: "plugin.*resolve|resolvePlugin", scope: "runtime/src/plugins" },
@@ -3309,6 +3321,16 @@ async function pluginGates(item) {
     const cliReferenced = grepRepo("agenc plugin", "runtime/src");
     if (!cliReferenced) failGate(`'agenc plugin' subcommand surface not found anywhere in runtime/src/`);
     pass("agenc plugin subcommand present");
+    return;
+  }
+  if (id === "PK-08") {
+    const helloExample = run("node", [
+      "scripts/check-plugin-kit-hello-example.mjs",
+    ]);
+    if (helloExample.status !== 0) {
+      failGate("PK-08 plugin-kit hello-tool example check failed");
+    }
+    pass("plugin-kit hello-tool example matches the live plugin contract");
     return;
   }
   if (id === "PK-10") {

@@ -1,0 +1,85 @@
+{
+  "contractName": "pk-08-plugin-kit-hello-tool-example",
+  "scope": "Repo-only plugin-kit hello-tool example aligned with AgenC's production plugin manifest contract",
+  "sourceRoots": [
+    {
+      "root": "/home/tetsuo/git/codex",
+      "commit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589"
+    },
+    {
+      "root": "/home/tetsuo/git/openclaude",
+      "commit": "0ca43335375beec6e58711b797d5b0c4bb5019b8"
+    }
+  ],
+  "sourceFiles": [
+    "codex-rs/core-plugins/src/test_support.rs",
+    "src/utils/plugins/pluginLoader.test.ts",
+    "src/utils/plugins/pluginLoader.ts",
+    "src/utils/plugins/schemas.ts"
+  ],
+  "targetFiles": [
+    "../agenc-plugin-kit/examples/hello-tool/.agenc-plugin/plugin.json",
+    "../agenc-plugin-kit/examples/hello-tool/commands/hello.md",
+    "../agenc-plugin-kit/examples/hello-tool/tools/hello-tool-server.mjs",
+    "../agenc-plugin-kit/examples/hello-tool/package.json",
+    "../agenc-plugin-kit/examples/hello-tool/README.md",
+    "../agenc-plugin-kit/scripts/check-hello-tool-example.mjs",
+    "scripts/check-plugin-kit-hello-example.mjs",
+    "scripts/goal/verify.mjs"
+  ],
+  "testFiles": [
+    "../agenc-plugin-kit/scripts/check-hello-tool-example.mjs",
+    "scripts/check-plugin-kit-hello-example.mjs"
+  ],
+  "decisions": [
+    {
+      "id": "removed-abi-not-reintroduced",
+      "reason": "PK-12 removed the dead public package ABI because agenc-core does not consume it. PK-08 therefore documents and verifies the live manifest-first plugin contract instead of reintroducing the removed ABI."
+    },
+    {
+      "id": "repo-only-example",
+      "reason": "The example lives in agenc-plugin-kit for authors, but it is not part of the published package files while the package root remains reserved."
+    }
+  ],
+  "rows": [
+    {
+      "id": "canonical-manifest-example",
+      "requiredBehaviors": [
+        "The example uses .agenc-plugin/plugin.json as the canonical manifest location",
+        "The manifest declares a prompt command through a normalized relative source path",
+        "The manifest declares user configuration consumed by the MCP server environment"
+      ],
+      "tests": [
+        "../agenc-plugin-kit/scripts/check-hello-tool-example.mjs",
+        "scripts/check-plugin-kit-hello-example.mjs"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "local-tool-server-example",
+      "requiredBehaviors": [
+        "The example supplies a local stdio MCP server entrypoint",
+        "The server has a dependency-free self-test so repository validation does not require installing example dependencies",
+        "The normal server path imports the AgenC SDK and MCP SDK when the example package is installed"
+      ],
+      "tests": [
+        "../agenc-plugin-kit/scripts/check-hello-tool-example.mjs",
+        "scripts/check-plugin-kit-hello-example.mjs"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "core-gate",
+      "requiredBehaviors": [
+        "The core verify gate fails PK-08 if the sibling hello-tool example is missing",
+        "The core verify gate checks the example against the live runtime manifest and MCP-template contract",
+        "The core verify gate keeps the removed plugin-kit ABI out of the PK-08 completion path"
+      ],
+      "tests": [
+        "scripts/check-plugin-kit-hello-example.mjs",
+        "node scripts/goal/verify.mjs PK-08 --skip-validate"
+      ],
+      "status": "required"
+    }
+  ]
+}
