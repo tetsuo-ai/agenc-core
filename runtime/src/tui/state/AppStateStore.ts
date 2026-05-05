@@ -8,7 +8,7 @@ import type {
   MCPServerConnection,
   ServerResource,
 } from '../../agenc/upstream/services/mcp/types.js'
-import { shouldEnablePromptSuggestion } from '../../agenc/upstream/services/PromptSuggestion/promptSuggestion.js'
+import { shouldEnablePromptSuggestion } from '../../services/PromptSuggestion/promptSuggestion.js'
 import {
   getEmptyToolPermissionContext,
   type Tool,
@@ -68,6 +68,8 @@ export type SpeculationState =
       suggestionLength: number
       toolUseCount: number
       isPipelined: boolean
+      speculationEnabled?: boolean
+      cwd: string
       contextRef: { current: REPLHookContext }
       pipelinedSuggestion?: {
         text: string
@@ -453,11 +455,18 @@ export type AppState = DeepImmutable<{
 export type AppStateStore = Store<AppState>
 
 export function getDefaultAppState(): AppState {
+  const initialSettings = getInitialSettings()
   // Determine initial permission mode for teammates spawned with plan_mode_required
   // Use lazy require to avoid circular dependency with teammate.ts
   /* eslint-disable @typescript-eslint/no-require-imports */
   const teammateUtils =
     require('../../agenc/upstream/utils/teammate.js') as typeof import('../../agenc/upstream/utils/teammate.js')
+  const bootstrapState =
+    require('../../agenc/upstream/bootstrap/state.js') as typeof import('../../agenc/upstream/bootstrap/state.js')
+  const growthbook =
+    require('../../agenc/upstream/services/analytics/growthbook.js') as typeof import('../../agenc/upstream/services/analytics/growthbook.js')
+  const agentSwarms =
+    require('../../agenc/upstream/utils/agentSwarmsEnabled.js') as typeof import('../../agenc/upstream/utils/agentSwarmsEnabled.js')
   /* eslint-enable @typescript-eslint/no-require-imports */
   const initialMode: PermissionMode =
     teammateUtils.isTeammate() && teammateUtils.isPlanModeRequired()
@@ -465,7 +474,7 @@ export function getDefaultAppState(): AppState {
       : 'default'
 
   return {
-    settings: getInitialSettings(),
+    settings: initialSettings,
     tasks: {},
     agentNameRegistry: new Map(),
     verbose: false,
@@ -536,7 +545,16 @@ export function getDefaultAppState(): AppState {
       queue: [],
     },
     thinkingEnabled: shouldEnableThinkingByDefault(),
-    promptSuggestionEnabled: shouldEnablePromptSuggestion(),
+    promptSuggestionEnabled: shouldEnablePromptSuggestion({
+      ...initialSettings,
+      promptSuggestionFeatureEnabled: growthbook.getFeatureValue_CACHED_MAY_BE_STALE(
+        'tengu_chomp_inflection',
+        false,
+      ),
+      agentSwarmsEnabled: agentSwarms.isAgentSwarmsEnabled(),
+      isNonInteractiveSession: bootstrapState.getIsNonInteractiveSession(),
+      isTeammateSession: teammateUtils.isTeammate(),
+    }),
     sessionHooks: new Map(),
     inbox: {
       messages: [],

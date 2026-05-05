@@ -22,7 +22,7 @@ vi.mock("../../agenc/upstream/hooks/useEffectEventCompat.js", () => ({
 vi.mock("../../agenc/upstream/hooks/useSettingsChange.js", () => ({
   useSettingsChange: () => {},
 }));
-vi.mock("../../agenc/upstream/services/PromptSuggestion/promptSuggestion.js", () => ({
+vi.mock("../../services/PromptSuggestion/promptSuggestion.js", () => ({
   shouldEnablePromptSuggestion: () => false,
 }));
 vi.mock("../../agenc/upstream/Tool.js", () => ({

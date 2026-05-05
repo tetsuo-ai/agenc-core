@@ -251,6 +251,16 @@ function assertSourceSnapshot() {
       "src/components/Spinner.tsx",
     ],
   ]);
+  // Source files intentionally absorbed into an existing live AgenC file
+  // instead of remaining as copied upstream modules. Each omission must
+  // include the reason because this inventory otherwise tracks the donor
+  // snapshot file-for-file.
+  const agencOmissions = new Map([
+    [
+      "src/hooks/usePromptSuggestion.ts",
+      "S-04 absorbs the donor prompt-suggestion hook into the live PromptInput component so it can call the AgenC-owned PromptSuggestion service without keeping a stale upstream hook module.",
+    ],
+  ]);
   // AgenC-only additions to the copied upstream tree. Each entry must
   // record why upstream's published source omits the file and why AgenC
   // cannot. Adding a new entry here is the explicit acknowledgement that
@@ -271,6 +281,14 @@ function assertSourceSnapshot() {
     [
       "src/components/PromptInput/proactiveAdapter.test.ts",
       "Focused coverage for the T-06 proactive adapter fallback when the optional proactive module is absent.",
+    ],
+    [
+      "src/components/PromptInput/promptSuggestionControl.ts",
+      "S-04 extracts PromptInput prompt-suggestion visibility and outcome decisions into a TUI-owned pure helper so the copied component behavior can be covered without mounting the full renderer graph.",
+    ],
+    [
+      "src/components/PromptInput/PromptInput.promptSuggestion.test.ts",
+      "Focused coverage for S-04 PromptInput prompt-suggestion visibility, acceptance telemetry, and placeholder suppression behavior.",
     ],
     [
       "src/components/messagesOptionalModules.ts",
@@ -326,6 +344,7 @@ function assertSourceSnapshot() {
     ],
   ]);
   const expected = sourceFiles
+    .filter((file) => !agencOmissions.has(file))
     .map((file) => substitutions.get(file) ?? file)
     .concat([...agencAdditions.keys()])
     .sort();
@@ -458,6 +477,10 @@ function assertNoDeletedAbsorbImporters() {
       "PermissionRequest component",
     ],
   ]);
+  const deletedPromptSuggestionHookEntrypoint = join(
+    copiedRoot,
+    "hooks/usePromptSuggestion",
+  );
   const deletedPromptInputRoot = join(copiedRoot, "components/PromptInput");
   const deletedMessagesEntrypoint = join(copiedRoot, "components/Messages");
   const deletedAppEntrypoint = join(copiedRoot, "components/App");
@@ -531,6 +554,12 @@ function assertNoDeletedAbsorbImporters() {
         specifier.startsWith("src/components/PromptInput/")
       ) {
         fail(`deleted PromptInput alias import remains: ${file} -> ${specifier}`);
+      }
+      if (
+        specifier === "src/hooks/usePromptSuggestion" ||
+        specifier === "src/hooks/usePromptSuggestion.js"
+      ) {
+        fail(`deleted prompt suggestion hook alias import remains: ${file} -> ${specifier}`);
       }
       if (
         specifier === "src/components/Messages" ||
@@ -638,6 +667,9 @@ function assertNoDeletedAbsorbImporters() {
         resolved.startsWith(`${deletedPromptInputRoot}/`)
       ) {
         fail(`deleted PromptInput relative import remains: ${file} -> ${specifier}`);
+      }
+      if (resolved === deletedPromptSuggestionHookEntrypoint) {
+        fail(`deleted prompt suggestion hook relative import remains: ${file} -> ${specifier}`);
       }
       if (resolved === deletedMessagesEntrypoint) {
         fail(`deleted Messages relative import remains: ${file} -> ${specifier}`);

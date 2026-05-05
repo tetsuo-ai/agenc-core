@@ -35,7 +35,7 @@
       "requiredBehaviors": [
         "copied upstream source snapshot is present",
         "source snapshot commit is verified",
-        "OpenClaude TUI inventory count matches the copied source snapshot with recorded AgenC brand filename substitutions"
+        "OpenClaude TUI inventory count matches the copied source snapshot with recorded AgenC brand filename substitutions and absorbed source omissions"
       ],
       "tests": ["scripts/check-openclaude-tui-replacement.mjs"],
       "commands": ["node scripts/check-openclaude-tui-replacement.mjs"],

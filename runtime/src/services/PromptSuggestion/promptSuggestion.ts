@@ -1,29 +1,36 @@
-import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
-import type { AppState } from '../../../../tui/state/AppState.js'
+/**
+ * Ports source-reference `src/services/PromptSuggestion/promptSuggestion.ts` onto
+ * AgenC's live prompt-suggestion service.
+ *
+ * Shape differences:
+ *   - Uses AgenC env naming and a local rate-limit view instead of importing
+ *     source-reference API limit modules.
+ *   - Keeps upstream analytics event names because downstream datasets key on
+ *     those event identifiers.
+ */
+
 import type { Message } from '../../types/message.js'
-import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
-import { count } from '../../utils/array.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/envUtils.js'
-import { toError } from '../../utils/errors.js'
-import {
-  type CacheSafeParams,
-  createCacheSafeParams,
-  runForkedAgent,
-} from '../../utils/forkedAgent.js'
-import type { REPLHookContext } from '../../utils/hooks/postSamplingHooks.js'
-import { logError } from '../../utils/log.js'
-import {
-  createUserMessage,
-  getLastAssistantMessage,
-} from '../../utils/messages.js'
-import { getInitialSettings } from '../../utils/settings/settings.js'
-import { isTeammate } from '../../utils/teammate.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+  type CacheSafeParams,
+  type PromptSuggestionAppState,
+  type PromptSuggestionRuntimeOptions,
+  type PromptSuggestionSettings,
+  type REPLHookContext,
+  count,
+  createCacheSafeParams,
+  createUserMessage,
+  getFeatureValue_CACHED_MAY_BE_STALE,
+  getInitialPromptSuggestionSettings,
+  getLastAssistantMessage,
+  isAgentSwarmsEnabled,
+  logError,
   logEvent,
-} from '../analytics/index.js'
-import { currentLimits } from '../claudeAiLimits.js'
+  runForkedAgent,
+  toError,
+} from './runtime.js'
+import { getPromptSuggestionLimits } from './limits.js'
 import { isSpeculationEnabled, startSpeculation } from './speculation.js'
 
 let currentAbortController: AbortController | null = null
@@ -34,7 +41,9 @@ export function getPromptVariant(): PromptVariant {
   return 'user_intent'
 }
 
-export function shouldEnablePromptSuggestion(): boolean {
+export function shouldEnablePromptSuggestion(
+  settings?: PromptSuggestionSettings | null,
+): boolean {
   // Env var overrides everything (for testing)
   const envOverride = process.env.AGENC_ENABLE_PROMPT_SUGGESTION
   if (isEnvDefinedFalsy(envOverride)) {
@@ -55,7 +64,10 @@ export function shouldEnablePromptSuggestion(): boolean {
   }
 
   // Keep default in sync with Config.tsx (settings toggle visibility)
-  if (!getFeatureValue_CACHED_MAY_BE_STALE('tengu_chomp_inflection', false)) {
+  const promptSuggestionFeatureEnabled =
+    settings?.promptSuggestionFeatureEnabled ??
+    getFeatureValue_CACHED_MAY_BE_STALE('tengu_chomp_inflection', false)
+  if (!promptSuggestionFeatureEnabled) {
     logEvent('tengu_prompt_suggestion_init', {
       enabled: false,
       source:
@@ -65,7 +77,7 @@ export function shouldEnablePromptSuggestion(): boolean {
   }
 
   // Disable in non-interactive mode (print mode, piped input, SDK)
-  if (getIsNonInteractiveSession()) {
+  if (settings?.isNonInteractiveSession) {
     logEvent('tengu_prompt_suggestion_init', {
       enabled: false,
       source:
@@ -75,7 +87,9 @@ export function shouldEnablePromptSuggestion(): boolean {
   }
 
   // Disable for swarm teammates (only leader should show suggestions)
-  if (isAgentSwarmsEnabled() && isTeammate()) {
+  const agentSwarmsEnabled =
+    settings?.agentSwarmsEnabled ?? isAgentSwarmsEnabled()
+  if (agentSwarmsEnabled && settings?.isTeammateSession) {
     logEvent('tengu_prompt_suggestion_init', {
       enabled: false,
       source:
@@ -84,7 +98,9 @@ export function shouldEnablePromptSuggestion(): boolean {
     return false
   }
 
-  const enabled = getInitialSettings()?.promptSuggestionEnabled !== false
+  const enabled =
+    getInitialPromptSuggestionSettings(settings).promptSuggestionEnabled !==
+    false
   logEvent('tengu_prompt_suggestion_init', {
     enabled,
     source:
@@ -104,7 +120,9 @@ export function abortPromptSuggestion(): void {
  * Returns a suppression reason if suggestions should not be generated,
  * or null if generation is allowed. Shared by main and pipelined paths.
  */
-export function getSuggestionSuppressReason(appState: AppState): string | null {
+export function getSuggestionSuppressReason(
+  appState: PromptSuggestionAppState,
+): string | null {
   if (!appState.promptSuggestionEnabled) return 'disabled'
   if (appState.pendingWorkerRequest || appState.pendingSandboxRequest)
     return 'pending_permission'
@@ -112,7 +130,7 @@ export function getSuggestionSuppressReason(appState: AppState): string | null {
   if (appState.toolPermissionContext.mode === 'plan') return 'plan_mode'
   if (
     process.env.USER_TYPE === 'external' &&
-    currentLimits.status !== 'allowed'
+    getPromptSuggestionLimits().status !== 'allowed'
   )
     return 'rate_limit'
   return null
@@ -125,7 +143,7 @@ export function getSuggestionSuppressReason(appState: AppState): string | null {
 export async function tryGenerateSuggestion(
   abortController: AbortController,
   messages: Message[],
-  getAppState: () => AppState,
+  getAppState: () => PromptSuggestionAppState,
   cacheSafeParams: CacheSafeParams,
   source?: 'cli' | 'sdk',
 ): Promise<{
@@ -183,6 +201,7 @@ export async function tryGenerateSuggestion(
 
 export async function executePromptSuggestion(
   context: REPLHookContext,
+  runtimeOptions?: PromptSuggestionRuntimeOptions,
 ): Promise<void> {
   if (context.querySource !== 'repl_main_thread') return
 
@@ -200,7 +219,10 @@ export async function executePromptSuggestion(
     )
     if (!result) return
 
-    context.toolUseContext.setAppState(prev => ({
+    const setAppState = context.toolUseContext.setAppState
+    if (!setAppState) return
+
+    setAppState(prev => ({
       ...prev,
       promptSuggestion: {
         text: result.suggestion,
@@ -211,13 +233,14 @@ export async function executePromptSuggestion(
       },
     }))
 
-    if (isSpeculationEnabled() && result.suggestion) {
+    if (isSpeculationEnabled(runtimeOptions?.speculationEnabled) && result.suggestion) {
       void startSpeculation(
         result.suggestion,
         context,
-        context.toolUseContext.setAppState,
+        setAppState,
         false,
         cacheSafeParams,
+        runtimeOptions,
       )
     }
   } catch (error) {
@@ -266,8 +289,8 @@ THE TEST: Would they think "I was just about to type that"?
 EXAMPLES:
 User asked "fix the bug and run tests", bug is fixed → "run the tests"
 After code written → "try it out"
-AgenC offers options → suggest the one the user would likely pick, based on conversation
-AgenC asks to continue → "yes" or "go ahead"
+The assistant offers options → suggest the one the user would likely pick, based on conversation
+The assistant asks to continue → "yes" or "go ahead"
 Task complete, obvious follow-up → "commit this" or "push it"
 After error or misunderstanding → silence (let them assess/correct)
 
@@ -276,7 +299,7 @@ Be specific: "run the tests" beats "continue".
 NEVER SUGGEST:
 - Evaluative ("looks good", "thanks")
 - Questions ("what about...?")
-- AgenC-voice ("Let me...", "I'll...", "Here's...")
+- Assistant-voice ("Let me...", "I'll...", "Here's...")
 - New ideas they didn't ask about
 - Multiple sentences
 
@@ -339,7 +362,16 @@ export async function generateSuggestion(
 
   for (const msg of result.messages) {
     if (msg.type !== 'assistant') continue
-    const textBlock = msg.message.content.find(b => b.type === 'text')
+    const content = (msg as { message?: { content?: unknown } }).message
+      ?.content
+    if (!Array.isArray(content)) continue
+    const textBlock = content.find(
+      (b: unknown): b is { type: 'text'; text: string } =>
+        typeof b === 'object' &&
+        b !== null &&
+        (b as { type?: unknown }).type === 'text' &&
+        typeof (b as { text?: unknown }).text === 'string',
+    )
     if (textBlock?.type === 'text') {
       const suggestion = textBlock.text.trim()
       if (suggestion) {
@@ -437,7 +469,7 @@ export function shouldFilterSuggestion(
         ),
     ],
     [
-      'claude_voice',
+      'agent_voice',
       () =>
         /^(let me|i'll|i've|i'm|i can|i would|i think|i notice|here's|here is|here are|that's|this is|this will|you can|you should|you could|sure,|of course|certainly)/i.test(
           suggestion,

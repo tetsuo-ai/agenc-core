@@ -93,7 +93,7 @@ vi.mock("../../agenc/upstream/hooks/useSettingsChange.js", () => ({
   useSettingsChange: () => {},
 }));
 
-vi.mock("../../agenc/upstream/services/PromptSuggestion/promptSuggestion.js", () => ({
+vi.mock("../../services/PromptSuggestion/promptSuggestion.js", () => ({
   shouldEnablePromptSuggestion: () => false,
 }));
 
@@ -210,6 +210,15 @@ vi.mock("../state/AppState.js", async () => {
       const context = React.useContext(StateContext);
       if (context === null) throw new Error("missing AppState test provider");
       return context.setState;
+    },
+    useAppStateStore: () => {
+      const context = React.useContext(StateContext);
+      if (context === null) throw new Error("missing AppState test provider");
+      return {
+        getState: () => context.state,
+        setState: context.setState,
+        subscribe: () => () => {},
+      };
     },
   };
 });
