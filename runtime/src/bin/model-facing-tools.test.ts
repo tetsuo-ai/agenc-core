@@ -179,6 +179,66 @@ function fakeEvaluatorContext(
   } as ToolEvaluatorContext;
 }
 
+function streamTextResponse(text: string, contentType = "text/plain") {
+  const encoder = new TextEncoder();
+  let consumed = false;
+  const cancel = vi.fn(async () => {
+    consumed = true;
+  });
+  const releaseLock = vi.fn();
+  const read = vi.fn(async () => {
+    if (consumed) return { done: true, value: undefined };
+    consumed = true;
+    return { done: false, value: encoder.encode(text) };
+  });
+  const textRead = vi.fn(async () => {
+    throw new Error("unbounded text read");
+  });
+  const response = {
+    ok: true,
+    status: 200,
+    url: "https://github.com/random-org/repo",
+    headers: {
+      get: (name: string) =>
+        name.toLowerCase() === "content-type" ? contentType : null,
+    },
+    body: {
+      getReader: () => ({ read, cancel, releaseLock }),
+    },
+    text: textRead,
+  } as unknown as Response;
+  return { response, cancel, textRead };
+}
+
+function fetchResponse(opts: {
+  readonly status?: number;
+  readonly url?: string;
+  readonly location?: string;
+  readonly text?: string;
+  readonly contentType?: string;
+  readonly bodyCancel?: boolean;
+}) {
+  const status = opts.status ?? 200;
+  const cancel = vi.fn(async () => undefined);
+  const textRead = vi.fn(async () => opts.text ?? "");
+  const response = {
+    ok: status >= 200 && status < 300,
+    status,
+    url: opts.url ?? "https://github.com/random-org/repo",
+    headers: {
+      get: (name: string) => {
+        const key = name.toLowerCase();
+        if (key === "location") return opts.location ?? null;
+        if (key === "content-type") return opts.contentType ?? "text/plain";
+        return null;
+      },
+    },
+    ...(opts.bodyCancel ? { body: { cancel } } : {}),
+    text: textRead,
+  } as unknown as Response;
+  return { response, textRead, cancel };
+}
+
 function codeMode<T>(result: { readonly codeModeResult?: unknown }): T {
   expect(result.codeModeResult).toBeDefined();
   return result.codeModeResult as T;
@@ -208,6 +268,7 @@ describe("model-facing tools", () => {
     const allNames = registry.tools.map((tool) => tool.name);
     expect(allNames).toEqual(
       expect.arrayContaining([
+        "web_fetch",
         "WebFetch",
         "WebSearch",
         "spawn_agent",
@@ -251,7 +312,7 @@ describe("model-facing tools", () => {
     const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
     expect(visibleNames).toEqual(
       expect.arrayContaining([
-        "WebFetch",
+        "web_fetch",
         "WebSearch",
         "Skill",
         "spawn_agent",
@@ -263,6 +324,7 @@ describe("model-facing tools", () => {
         "NotebookRead",
       ]),
     );
+    expect(visibleNames).not.toContain("WebFetch");
     expect(allNames).not.toContain("system.agent.delegate");
     expect(visibleNames).not.toContain("system.agent.delegate");
     expect(visibleNames).not.toContain("NotebookEdit");
@@ -846,21 +908,21 @@ describe("model-facing tools", () => {
     }
   });
 
-  it("WebFetch renders HTML through Turndown and reports preapproved hosts", async () => {
+  it("web_fetch renders HTML through Turndown and reports preapproved hosts", async () => {
     const html =
       "<!doctype html><html><head><title>x</title><style>body{}</style></head><body>" +
       "<h1>Hello</h1>" +
-      "<p>This is a <strong>test</strong> with a <a href=\"https://example.com\">link</a>.</p>" +
+      "<p>This is a <strong>test</strong> with a <a href=\"/docs\">link</a>.</p>" +
       "<ul><li>one</li><li>two</li></ul>" +
       "<script>alert('x')</script>" +
       "</body></html>";
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      url: "https://docs.python.org/3/library/asyncio.html",
+      url: "https://agenc.tech/docs",
       headers: {
         get: (name: string) =>
-          name.toLowerCase() === "content-type" ? "text/html; charset=utf-8" : null,
+          name.toLowerCase() === "content-type" ? "Text/HTML; charset=utf-8" : null,
       },
       text: async () => html,
     });
@@ -872,8 +934,8 @@ describe("model-facing tools", () => {
         getSession: () => null,
       });
       const byName = new Map(tools.map((tool) => [tool.name, tool]));
-      const result = await byName.get("WebFetch")!.execute({
-        url: "https://docs.python.org/3/library/asyncio.html",
+      const result = await byName.get("web_fetch")!.execute({
+        url: "https://agenc.tech/docs",
       });
       expect(result.isError).toBeUndefined();
       const parsed = JSON.parse(result.content);
@@ -881,7 +943,7 @@ describe("model-facing tools", () => {
       expect(parsed.rendered_as).toBe("markdown");
       expect(parsed.content).toContain("# Hello");
       expect(parsed.content).toContain("**test**");
-      expect(parsed.content).toContain("[link](https://example.com)");
+      expect(parsed.content).toContain("[link](/docs)");
       // List bullet rendered with the configured "-" marker.
       expect(parsed.content).toMatch(/-\s+one/);
       // Scripts and styles must not leak into the markdown.
@@ -892,11 +954,11 @@ describe("model-facing tools", () => {
     }
   });
 
-  it("WebFetch flags non-preapproved hosts as preapproved=false", async () => {
+  it("WebFetch legacy alias flags non-preapproved hosts as preapproved=false", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      url: "https://random.example.com/page",
+      url: "https://github.com/random-org/repo",
       headers: {
         get: (name: string) =>
           name.toLowerCase() === "content-type" ? "text/plain" : null,
@@ -912,7 +974,7 @@ describe("model-facing tools", () => {
       });
       const byName = new Map(tools.map((tool) => [tool.name, tool]));
       const result = await byName.get("WebFetch")!.execute({
-        url: "https://random.example.com/page",
+        url: "https://github.com/random-org/repo",
       });
       const parsed = JSON.parse(result.content);
       expect(parsed.preapproved).toBe(false);
@@ -921,6 +983,363 @@ describe("model-facing tools", () => {
     } finally {
       globalThis.fetch = previousFetch;
     }
+  });
+
+  it("web_fetch truncates streamed bodies before unbounded text reads", async () => {
+    const streamed = streamTextResponse("x".repeat(20_000));
+    const fetchMock = vi.fn().mockResolvedValue(streamed.response);
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    try {
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => null,
+      });
+      const byName = new Map(tools.map((tool) => [tool.name, tool]));
+      const result = await byName.get("web_fetch")!.execute({
+        url: "https://github.com/random-org/repo",
+        max_chars: 1_000,
+      });
+      const parsed = JSON.parse(result.content);
+      expect(result.isError).toBeUndefined();
+      expect(parsed.truncated).toBe(true);
+      expect(parsed.content).toContain("[truncated");
+      expect(streamed.textRead).not.toHaveBeenCalled();
+      expect(streamed.cancel).toHaveBeenCalledOnce();
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("web_fetch returns structured errors for invalid URLs and fetch failures", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error("network down"));
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    try {
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => null,
+      });
+      const byName = new Map(tools.map((tool) => [tool.name, tool]));
+
+      const ftp = await byName.get("web_fetch")!.execute({
+        url: "ftp://localhost/file",
+      });
+      expect(ftp.isError).toBe(true);
+      expect(JSON.parse(ftp.content).error).toContain("https");
+
+      const credentials = await byName.get("web_fetch")!.execute({
+        url: "https://user:pass@localhost/page",
+      });
+      expect(credentials.isError).toBe(true);
+      expect(JSON.parse(credentials.content).error).toContain("credentials");
+
+      const privateIp = await byName.get("web_fetch")!.execute({
+        url: "https://127.0.0.1/page",
+      });
+      expect(privateIp.isError).toBe(true);
+      expect(JSON.parse(privateIp.content).error).toContain("loopback");
+
+      const localHost = await byName.get("web_fetch")!.execute({
+        url: "https://localhost/page",
+      });
+      expect(localHost.isError).toBe(true);
+      expect(JSON.parse(localHost.content).error).toContain("loopback");
+
+      const subLocalHost = await byName.get("web_fetch")!.execute({
+        url: "https://foo.localhost/page",
+      });
+      expect(subLocalHost.isError).toBe(true);
+      expect(JSON.parse(subLocalHost.content).error).toContain("loopback");
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      const failed = await byName.get("web_fetch")!.execute({
+        url: "https://github.com/random-org/repo",
+      });
+      expect(failed.isError).toBe(true);
+      expect(JSON.parse(failed.content).error).toContain("network down");
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("web_fetch validates redirect targets before following them", async () => {
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => null,
+    });
+    const byName = new Map(tools.map((tool) => [tool.name, tool]));
+    const previousFetch = globalThis.fetch;
+    try {
+      const privateRedirect = fetchResponse({
+        status: 302,
+        url: "https://agenc.tech/start",
+        location: "https://169.254.169.254/latest",
+      });
+      globalThis.fetch = vi
+        .fn()
+        .mockResolvedValue(privateRedirect.response) as unknown as typeof globalThis.fetch;
+      const privateResult = await byName.get("web_fetch")!.execute({
+        url: "https://agenc.tech/start",
+      });
+      expect(privateResult.isError).toBe(true);
+      expect(JSON.parse(privateResult.content).error).toContain("private");
+      expect(globalThis.fetch).toHaveBeenCalledOnce();
+
+      const downgradeRedirect = fetchResponse({
+        status: 302,
+        url: "https://agenc.tech/start",
+        location: "http://agenc.tech/insecure",
+      });
+      globalThis.fetch = vi
+        .fn()
+        .mockResolvedValue(downgradeRedirect.response) as unknown as typeof globalThis.fetch;
+      const downgradeResult = await byName.get("web_fetch")!.execute({
+        url: "https://agenc.tech/start",
+      });
+      expect(downgradeResult.isError).toBe(true);
+      expect(JSON.parse(downgradeResult.content).error).toContain("https");
+      expect(globalThis.fetch).toHaveBeenCalledOnce();
+
+      const crossHostRedirect = fetchResponse({
+        status: 302,
+        url: "https://agenc.tech/start",
+        location: "https://react.dev/learn",
+      });
+      globalThis.fetch = vi
+        .fn()
+        .mockResolvedValue(crossHostRedirect.response) as unknown as typeof globalThis.fetch;
+      const crossHostResult = await byName.get("web_fetch")!.execute({
+        url: "https://agenc.tech/start",
+      });
+      expect(crossHostResult.isError).toBe(true);
+      expect(JSON.parse(crossHostResult.content).error).toContain("changes host");
+      expect(globalThis.fetch).toHaveBeenCalledOnce();
+
+      const safeRedirect = fetchResponse({
+        status: 302,
+        url: "https://github.com/modelcontextprotocol",
+        location: "/modelcontextprotocol/typescript-sdk",
+      });
+      const finalResponse = fetchResponse({
+        status: 200,
+        url: "https://github.com/modelcontextprotocol/typescript-sdk",
+        text: "redirected body",
+      });
+      globalThis.fetch = vi
+        .fn()
+        .mockResolvedValueOnce(safeRedirect.response)
+        .mockResolvedValueOnce(finalResponse.response) as unknown as typeof globalThis.fetch;
+      const safeResult = await byName.get("web_fetch")!.execute({
+        url: "https://github.com/modelcontextprotocol",
+      });
+      expect(safeResult.isError).toBeUndefined();
+      const safeParsed = JSON.parse(safeResult.content);
+      expect(safeParsed.content).toBe("redirected body");
+      expect(safeParsed.preapproved).toBe(true);
+      expect(safeParsed.final_url).toBe(
+        "https://github.com/modelcontextprotocol/typescript-sdk",
+      );
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+
+      const outOfScopeRedirect = fetchResponse({
+        status: 302,
+        url: "https://github.com/modelcontextprotocol",
+        location: "/other-org/repo",
+      });
+      globalThis.fetch = vi
+        .fn()
+        .mockResolvedValueOnce(outOfScopeRedirect.response) as unknown as typeof globalThis.fetch;
+      const outOfScopeResult = await byName.get("web_fetch")!.execute({
+        url: "https://github.com/modelcontextprotocol",
+      });
+      expect(outOfScopeResult.isError).toBe(true);
+      expect(JSON.parse(outOfScopeResult.content).error).toContain(
+        "outside the preapproved URL scope",
+      );
+      expect(globalThis.fetch).toHaveBeenCalledOnce();
+
+      const redirectChain = Array.from({ length: 6 }, (_, index) =>
+        fetchResponse({
+          status: 302,
+          url: `https://agenc.tech/r${index}`,
+          location: `/r${index + 1}`,
+          bodyCancel: true,
+        }),
+      );
+      const chainFetch = vi.fn();
+      for (const redirect of redirectChain) {
+        chainFetch.mockResolvedValueOnce(redirect.response);
+      }
+      globalThis.fetch = chainFetch as unknown as typeof globalThis.fetch;
+      const limitResult = await byName.get("web_fetch")!.execute({
+        url: "https://agenc.tech/r0",
+      });
+      expect(limitResult.isError).toBe(true);
+      expect(JSON.parse(limitResult.content).error).toContain("too many redirects");
+      expect(globalThis.fetch).toHaveBeenCalledTimes(6);
+      expect(redirectChain[5]!.cancel).toHaveBeenCalledOnce();
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("web_fetch permissions auto-allow preapproved hosts and honor domain rules", async () => {
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => null,
+    });
+    const tool = tools.find((candidate) => candidate.name === "web_fetch");
+    expect(tool).toBeDefined();
+
+    const preapproved = await tool!.checkPermissions?.(
+      { url: "HTTP://agenc.tech/docs" },
+      fakeEvaluatorContext(),
+    );
+    expect(preapproved).toMatchObject({
+      behavior: "allow",
+      updatedInput: { url: "https://agenc.tech/docs" },
+    });
+
+    const deniedPreapproved = await tool!.checkPermissions?.(
+      { url: "https://agenc.tech/docs" },
+      fakeEvaluatorContext(
+        createEmptyToolPermissionContext({
+          alwaysDenyRules: {
+            localSettings: ["web_fetch(domain:agenc.tech)"],
+          },
+        }),
+      ),
+    );
+    expect(deniedPreapproved).toMatchObject({
+      behavior: "deny",
+      message: "web_fetch denied access to domain:agenc.tech.",
+    });
+
+    const askPreapproved = await tool!.checkPermissions?.(
+      { url: "https://agenc.tech/docs" },
+      fakeEvaluatorContext(
+        createEmptyToolPermissionContext({
+          alwaysAskRules: {
+            localSettings: ["web_fetch(domain:agenc.tech)"],
+          },
+        }),
+      ),
+    );
+    expect(askPreapproved).toMatchObject({
+      behavior: "ask",
+      decisionReason: { type: "rule" },
+    });
+
+    const denied = await tool!.checkPermissions?.(
+      { url: "https://github.com/random-org/repo" },
+      fakeEvaluatorContext(
+        createEmptyToolPermissionContext({
+          alwaysDenyRules: {
+            localSettings: ["web_fetch(domain:github.com)"],
+          },
+        }),
+      ),
+    );
+    expect(denied).toMatchObject({
+      behavior: "deny",
+      message: "web_fetch denied access to domain:github.com.",
+    });
+
+    const blockedAddress = await tool!.checkPermissions?.(
+      { url: "https://169.254.169.254/latest" },
+      fakeEvaluatorContext(),
+    );
+    expect(blockedAddress).toMatchObject({
+      behavior: "deny",
+      message: expect.stringContaining("private, loopback, or link-local address"),
+    });
+
+    const blockedLoopback = await tool!.checkPermissions?.(
+      { url: "https://127.0.0.1/page" },
+      fakeEvaluatorContext(),
+    );
+    expect(blockedLoopback).toMatchObject({
+      behavior: "deny",
+      message: expect.stringContaining("loopback"),
+    });
+
+    for (const url of [
+      "https://localhost/page",
+      "https://foo.localhost/page",
+    ]) {
+      const blockedLocalhost = await tool!.checkPermissions?.(
+        { url },
+        fakeEvaluatorContext(),
+      );
+      expect(blockedLocalhost).toMatchObject({
+        behavior: "deny",
+        message: expect.stringContaining("private, loopback, or link-local address"),
+      });
+    }
+
+    for (const url of [
+      "https://[::1]/page",
+      "https://[fd00::1]/page",
+      "https://[fe80::1]/page",
+      "https://[::ffff:169.254.169.254]/page",
+    ]) {
+      const blockedIpv6 = await tool!.checkPermissions?.(
+        { url },
+        fakeEvaluatorContext(),
+      );
+      expect(blockedIpv6).toMatchObject({
+        behavior: "deny",
+        message: expect.stringContaining("private, loopback, or link-local address"),
+      });
+    }
+
+    const legacyAllowed = await tool!.checkPermissions?.(
+      { url: "https://github.com/random-org/repo" },
+      fakeEvaluatorContext(
+        createEmptyToolPermissionContext({
+          alwaysAllowRules: {
+            localSettings: ["WebFetch(domain:github.com)"],
+          },
+        }),
+      ),
+    );
+    expect(legacyAllowed).toMatchObject({
+      behavior: "allow",
+      decisionReason: { type: "rule" },
+    });
+
+    const legacyTool = tools.find((candidate) => candidate.name === "WebFetch");
+    const legacyDenied = await legacyTool!.checkPermissions?.(
+      { url: "https://github.com/random-org/repo" },
+      fakeEvaluatorContext(
+        createEmptyToolPermissionContext({
+          alwaysDenyRules: {
+            localSettings: ["web_fetch(domain:github.com)"],
+          },
+        }),
+      ),
+    );
+    expect(legacyDenied).toMatchObject({
+      behavior: "deny",
+      decisionReason: { type: "rule" },
+    });
+
+    const ask = await tool!.checkPermissions?.(
+      { url: "https://github.com/random-org/repo" },
+      fakeEvaluatorContext(),
+    );
+    expect(ask).toMatchObject({
+      behavior: "ask",
+      suggestions: [
+        {
+          type: "addRules",
+          destination: "localSettings",
+          behavior: "allow",
+          rules: [{ toolName: "web_fetch", ruleContent: "domain:github.com" }],
+        },
+      ],
+    });
   });
 
   it("WebSearch uses Grok provider-native web_search when the active model supports it", async () => {

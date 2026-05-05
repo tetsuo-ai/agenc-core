@@ -14,23 +14,28 @@ describe("web-fetch-preapproved", () => {
   });
 
   it("path-prefix entries enforce segment boundaries", () => {
-    expect(isPreapprovedHost("github.com", "/anthropics")).toBe(true);
-    expect(isPreapprovedHost("github.com", "/anthropics/foo")).toBe(true);
-    expect(isPreapprovedHost("github.com", "/anthropics-evil")).toBe(false);
+    expect(isPreapprovedHost("github.com", "/modelcontextprotocol")).toBe(true);
+    expect(isPreapprovedHost("github.com", "/modelcontextprotocol/foo")).toBe(true);
+    expect(isPreapprovedHost("github.com", "/modelcontextprotocol-evil")).toBe(false);
     expect(isPreapprovedHost("github.com", "/other-org")).toBe(false);
   });
 
   it("rejects unknown hosts", () => {
-    expect(isPreapprovedHost("malicious.example.com", "/")).toBe(false);
-    expect(isPreapprovedHost("nodejs.org.attacker.example", "/")).toBe(false);
+    expect(isPreapprovedHost("localhost", "/")).toBe(false);
+    expect(isPreapprovedHost("127.0.0.1", "/")).toBe(false);
   });
 
   it("isPreapprovedUrl parses and accepts valid HTTPS URLs", () => {
     expect(isPreapprovedUrl("https://react.dev/learn")).toBe(true);
     expect(
-      isPreapprovedUrl("https://github.com/anthropics/anthropic-sdk-typescript"),
+      isPreapprovedUrl("https://github.com/modelcontextprotocol/typescript-sdk"),
     ).toBe(true);
     expect(isPreapprovedUrl("https://github.com/random-org/repo")).toBe(false);
+  });
+
+  it("isPreapprovedUrl rejects non-HTTPS URLs on preapproved hosts", () => {
+    expect(isPreapprovedUrl("http://react.dev/learn")).toBe(false);
+    expect(isPreapprovedUrl("ftp://react.dev/learn")).toBe(false);
   });
 
   it("isPreapprovedUrl rejects malformed URLs", () => {
