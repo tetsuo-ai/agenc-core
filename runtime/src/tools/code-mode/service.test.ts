@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { codeModeRuntimeResponseToToolResult } from "./response-adapter.js";
 import { QuickJsCodeModeService } from "./service.js";
+import { codeModeRuntimeResponseToToolResult } from "./tools.js";
 import type { CodeModeExecuteRequest } from "./types.js";
 
 let services: QuickJsCodeModeService[] = [];
