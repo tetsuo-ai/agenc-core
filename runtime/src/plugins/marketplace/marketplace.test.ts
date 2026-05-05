@@ -11,6 +11,7 @@ import {
   normalizeSparsePath,
   readMarketplaceIndex,
   removeMarketplaceOp,
+  type Fetcher,
 } from "./marketplace.js";
 import { isSourceAllowedByPolicy } from "./marketplaceHelpers.js";
 import { getMarketplace } from "./marketplaceManager.js";
@@ -160,8 +161,44 @@ describe("plugin marketplace runtime", () => {
         path: "marketplaces/team",
       },
     });
+    await expect(parseMarketplaceInput("owner/repo/extra")).resolves.toEqual({
+      ok: false,
+      unrecognized: true,
+    });
+    await expect(parseMarketplaceInput("http://agenc.tech/marketplace.json")).resolves.toEqual({
+      ok: false,
+      error: "Marketplace URL must use HTTPS or loopback HTTP",
+    });
     expect(normalizeSparsePath("marketplaces/team")).toBe("marketplaces/team");
     expect(() => normalizeSparsePath("../team")).toThrow("--sparse must not contain");
+  });
+
+  it("requires safe URL marketplace transport and bounded manifest downloads", async () => {
+    const { agencHome, workspaceRoot } = await tempRuntime();
+    const fetcher: Fetcher = async () => {
+      throw new Error("fetch should not run for unsafe URL");
+    };
+
+    await expect(addMarketplaceOp({
+      agencHome,
+      workspaceRoot,
+      source: { source: "url", url: "http://agenc.tech/marketplace.json" },
+      fetcher,
+    })).rejects.toThrow("must use HTTPS or loopback HTTP");
+
+    const largeBody = "x".repeat(1024 * 1024 + 1);
+    await expect(addMarketplaceOp({
+      agencHome,
+      workspaceRoot,
+      source: { source: "url", url: "http://127.0.0.1/marketplace.json" },
+      fetcher: async () => ({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: async () => largeBody,
+        arrayBuffer: async () => exactArrayBuffer(Buffer.from(largeBody, "utf8")),
+      }),
+    })).rejects.toThrow("exceeded maximum size");
   });
 
   it("treats policy host and path patterns as a safe bounded subset", () => {
@@ -209,3 +246,7 @@ describe("plugin marketplace runtime", () => {
       .resolves.toMatchObject({ name: "team" });
   });
 });
+
+function exactArrayBuffer(bytes: Buffer): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}

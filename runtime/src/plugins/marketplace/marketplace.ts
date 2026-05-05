@@ -7,6 +7,12 @@ import { sanitizePluginId } from "../directories.js";
 import { loadPluginManifest } from "../manifest.js";
 import type { PluginManifest, PluginManifestInterface } from "../manifest-schema.js";
 import { validateMarketplaceManifest } from "../validation.js";
+import {
+  assertHttpsOrLoopbackUrl,
+  readResponseErrorText,
+  readResponseTextWithLimit,
+  redactUrlForError,
+} from "./fetchGuards.js";
 
 export type MarketplaceSourceType = "local" | "git" | "url" | "settings";
 
@@ -215,6 +221,7 @@ const MARKETPLACE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u;
 const DEFAULT_GIT_TIMEOUT_MS = 120_000;
 const DEFAULT_GIT_MAX_OUTPUT_BYTES = 1_048_576;
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
+const MARKETPLACE_URL_MANIFEST_MAX_BYTES = 1 * 1024 * 1024;
 
 export function marketplaceStoreRoot(options: MarketplaceOperationOptions = {}): string {
   return join(resolveMarketplaceAgencHome(options), "plugins", "marketplaces");
@@ -662,6 +669,7 @@ async function stageMarketplaceSource(
       }
       case "url": {
         await mkdir(root, { recursive: true, mode: 0o700 });
+        assertHttpsOrLoopbackUrl(source.url, "marketplace URL", { allowLoopbackHttp: true });
         const response = await fetchWithTimeout(
           source.url,
           {
@@ -673,10 +681,14 @@ async function stageMarketplaceSource(
           options,
         );
         if (!response.ok) {
-          const body = await response.text().catch(() => "");
-          throw new Error(`marketplace download failed with status ${response.status}: ${body}`);
+          const body = await readResponseErrorText(response);
+          throw new Error(`marketplace download from ${redactUrlForError(source.url)} failed with status ${response.status}: ${body}`);
         }
-        const body = await response.text();
+        const body = await readResponseTextWithLimit(
+          response,
+          MARKETPLACE_URL_MANIFEST_MAX_BYTES,
+          `marketplace download from ${redactUrlForError(source.url)}`,
+        );
         JSON.parse(body);
         await writeFile(join(root, MARKETPLACE_MANIFEST_FILE), body, "utf8");
         return { tempDir, root, sourceType: "url" };

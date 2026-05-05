@@ -7,6 +7,10 @@ import {
   defaultFetch,
   type Fetcher,
 } from "./marketplace.js";
+import {
+  readResponseErrorText,
+  redactUrlForError,
+} from "./fetchGuards.js";
 
 export interface ValidatedRemotePluginBundle {
   readonly pluginId: string;
@@ -23,7 +27,6 @@ export interface RemotePluginBundleInstallResult {
 }
 
 const REMOTE_PLUGIN_BUNDLE_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
-const REMOTE_PLUGIN_BUNDLE_ERROR_BODY_MAX_BYTES = 8 * 1024;
 const REMOTE_PLUGIN_BUNDLE_MAX_EXTRACTED_BYTES = 250 * 1024 * 1024;
 const REMOTE_PLUGIN_INSTALL_STAGING_DIR = "plugins/.remote-plugin-install-staging";
 
@@ -81,6 +84,7 @@ export async function installRemotePluginBundle(
   try {
     await extractPluginBundleTarGz(bundleBytes, extractDir);
     const pluginRoot = await findExtractedPluginRoot(extractDir);
+    await validateExtractedPluginManifest(pluginRoot, bundle);
     const installRoot = remotePluginInstallRoot(agencHome, bundle);
     const parent = dirname(installRoot);
     await mkdir(parent, { recursive: true, mode: 0o700 });
@@ -172,7 +176,7 @@ export function remotePluginInstallRoot(
     "cache",
     sanitizeMarketplaceInstallName(bundle.marketplaceName),
     sanitizeMarketplaceInstallName(bundle.pluginName),
-    sanitizeMarketplaceInstallName(bundle.pluginVersion),
+    sanitizeRemotePluginVersionSegment(bundle.pluginVersion),
   );
 }
 
@@ -183,10 +187,10 @@ async function downloadRemotePluginBundleWithLimit(
 ): Promise<Buffer> {
   const response = await fetcher(bundleDownloadUrl);
   if (!response.ok) {
-    const body = (await response.text()).slice(0, REMOTE_PLUGIN_BUNDLE_ERROR_BODY_MAX_BYTES);
-    throw new Error(`remote plugin bundle download from ${bundleDownloadUrl} failed with status ${response.status}: ${body}`);
+    const body = await readResponseErrorText(response);
+    throw new Error(`remote plugin bundle download from ${redactUrlForError(bundleDownloadUrl)} failed with status ${response.status}: ${body}`);
   }
-  return readResponseBytesWithLimit(response, maxBytes, `remote plugin bundle download from ${bundleDownloadUrl}`);
+  return readResponseBytesWithLimit(response, maxBytes, `remote plugin bundle download from ${redactUrlForError(bundleDownloadUrl)}`);
 }
 
 async function findExtractedPluginRoot(extractionRoot: string): Promise<string> {
@@ -206,13 +210,11 @@ async function findExtractedPluginRoot(extractionRoot: string): Promise<string> 
 
 function validatePluginVersionSegment(version: string): void {
   if (
-    version.length === 0 ||
-    version.includes("\0") ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9._+-]{0,127}$/u.test(version) ||
     version === "." ||
-    version === ".." ||
-    version.split(/[\\/]+/u).some((part) => part.length === 0 || part === "." || part === "..")
+    version === ".."
   ) {
-    throw new Error(`invalid remote plugin release version: ${version}`);
+    throw new Error(`invalid remote plugin release version segment: ${version}`);
   }
 }
 
@@ -227,6 +229,31 @@ function isLoopbackUrl(url: URL): boolean {
     host === "127.0.0.1" ||
     host === "::1" ||
     /^127\./u.test(host);
+}
+
+async function validateExtractedPluginManifest(
+  pluginRoot: string,
+  bundle: ValidatedRemotePluginBundle,
+): Promise<void> {
+  const manifestPath = await findPluginManifestPath(pluginRoot);
+  if (manifestPath === null) {
+    throw new Error("remote plugin bundle did not contain a plugin manifest");
+  }
+  const parsed = JSON.parse(await readFile(manifestPath, "utf8")) as {
+    readonly name?: unknown;
+    readonly version?: unknown;
+  };
+  if (parsed.name !== bundle.pluginName) {
+    throw new Error(`remote plugin bundle manifest name mismatch: expected '${bundle.pluginName}', got '${String(parsed.name)}'`);
+  }
+  if (parsed.version !== bundle.pluginVersion) {
+    throw new Error(`remote plugin bundle manifest version mismatch: expected '${bundle.pluginVersion}', got '${String(parsed.version)}'`);
+  }
+}
+
+function sanitizeRemotePluginVersionSegment(version: string): string {
+  validatePluginVersionSegment(version);
+  return version;
 }
 
 function readTarString(header: Buffer, offset: number, length: number): string {

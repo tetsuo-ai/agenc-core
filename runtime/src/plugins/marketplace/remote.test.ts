@@ -106,6 +106,25 @@ describe("remote plugin marketplace API", () => {
     await expect(fetchRemoteMarketplaces(config, auth, fetcher))
       .rejects.toThrow("repeated token");
   });
+
+  it("caps remote JSON response bodies before decoding", async () => {
+    const fetcher: Fetcher = async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(2 * 1024 * 1024 + 1));
+          controller.close();
+        },
+      }),
+      text: async () => "",
+      arrayBuffer: async () => new ArrayBuffer(0),
+    });
+
+    await expect(fetchRemoteInstalledPlugins(config, auth, fetcher))
+      .rejects.toThrow("exceeded maximum size");
+  });
 });
 
 function createRemoteFetcher(calls: string[] = []): Fetcher {
@@ -177,11 +196,16 @@ function remotePlugin() {
 
 function jsonResponse(body: unknown, ok = true, status = ok ? 200 : 500): FetchResponse {
   const text = JSON.stringify(body);
+  const bytes = Buffer.from(text, "utf8");
   return {
     ok,
     status,
     statusText: ok ? "OK" : "Error",
     text: async () => text,
-    arrayBuffer: async () => Buffer.from(text).buffer,
+    arrayBuffer: async () => exactArrayBuffer(bytes),
   };
+}
+
+function exactArrayBuffer(bytes: Buffer): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }

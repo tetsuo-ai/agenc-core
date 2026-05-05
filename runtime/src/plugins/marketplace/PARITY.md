@@ -35,10 +35,11 @@ PK-07 scope carried into AgenC:
 - `officialMarketplace.ts` declares the AgenC-owned official marketplace source.
 - `installed_marketplaces.ts` projects persistent marketplace index/config entries into installed marketplace roots.
 - `remote.ts` owns authenticated remote marketplace listing, installed-plugin listing, detail fetches, skill detail fetches, install/uninstall mutations, and remote cache cleanup.
-- `remote_bundle.ts` owns remote bundle validation, HTTPS/loopback download policy, size-limited download, safe tar.gz extraction, versioned cache activation, and manifest readback.
+- `fetchGuards.ts` owns shared HTTPS/loopback URL policy, bounded response reads, and credential-redacted URL formatting for marketplace network surfaces.
+- `remote_bundle.ts` owns remote bundle validation, HTTPS/loopback download policy, size-limited download, safe tar.gz extraction, manifest identity verification, versioned cache activation, and manifest readback.
 - `remote_legacy.ts` owns the older remote plugin status, featured-plugin, enable, and uninstall endpoints that the runtime may still need while the hosted service migrates.
-- `startup_sync.ts` owns startup curated marketplace sync through git, HTTP zipball, and backup archive fallbacks with private SHA tracking.
-- `startup_remote_sync.ts` owns one-shot startup remote plugin reconciliation after curated marketplace prerequisites are available.
+- `startup_sync.ts` owns startup curated marketplace sync through git, HTTP zipball, and backup archive fallbacks with private SHA tracking and existing-snapshot degradation.
+- `startup_remote_sync.ts` owns one-shot startup remote plugin reconciliation after curated marketplace prerequisites are available, including stale lock recovery.
 
 Intentional PK-07 scope reductions:
 - Hosted-service auth token vending is not owned here. Callers pass `RemoteAuth` headers from the auth layer so PK-07 never reads API key environment variables directly.

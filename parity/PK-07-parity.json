@@ -52,8 +52,9 @@
     "CLI and PluginInstallationManager marketplace methods call the canonical PK-07 layer directly.",
     "Marketplace manager helpers cover config persistence, source registration/removal, cache refresh, plugin lookup, auto-update flags, policy allow/block matching, graceful loading degradation, and empty-state reason selection.",
     "Remote marketplace helpers cover authenticated listing, installed-plugin listing, detail and skill fetches, install/uninstall mutations, and local cache cleanup.",
-    "Remote bundle helpers validate release metadata, require HTTPS or explicit loopback HTTP, cap download/extracted sizes, reject path traversal and link entries, and activate versioned cache installs atomically.",
-    "Startup sync helpers refresh curated marketplace snapshots through git first, then HTTP zipball, then backup archive, and gate one-shot remote plugin reconciliation on local curated prerequisites."
+    "Remote bundle helpers validate release metadata, require HTTPS or explicit loopback HTTP, cap download/extracted sizes, reject path traversal and link entries, verify extracted plugin manifest identity, and activate versioned cache installs atomically.",
+    "Startup sync helpers refresh curated marketplace snapshots through git first, then HTTP zipball, then backup archive, gate one-shot remote plugin reconciliation on local curated prerequisites, recover stale locks, and degrade to existing validated snapshots when refresh fails.",
+    "Marketplace fetch guards centralize HTTPS/loopback policy, bounded response reads, and credential-redacted URL error reporting for URL manifests, remote API JSON, remote bundles, and startup metadata."
   ],
   "intentionalReductions": [
     "Auth token vending remains outside PK-07; remote functions require caller-provided RemoteAuth headers and do not read API key environment variables directly.",
@@ -79,7 +80,7 @@
       "runtime/src/plugins/marketplace/ contains counterparts for every PK-07 named donor file.",
       "runtime/src/plugins/cli/pluginCliCommands.ts imports marketplace operations from ../marketplace/marketplace.js.",
       "runtime/src/plugins/cli/PluginInstallationManager.ts imports marketplace operations from ../marketplace/marketplace.js.",
-      "runtime/src/types/upstream-ambient.d.ts keeps inherited upstream-mirror type imports typecheck-clean without weakening .typecheck-baseline.json.",
+      "runtime/src/types/upstream-ambient.d.ts is a narrow type-only contract for inherited upstream-mirror imports that are already in the tsc graph; it defines the specific shapes needed here without adding runtime compatibility exports or widening the typecheck baseline.",
       "runtime/src/agenc/upstream/utils/protectedNamespace.ts now exports the helper name its existing caller already uses, removing the inherited typecheck/runtime mismatch without adding upstream mirror lines."
     ]
   }

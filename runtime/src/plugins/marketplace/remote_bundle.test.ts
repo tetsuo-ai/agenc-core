@@ -83,6 +83,51 @@ describe("remote plugin bundles", () => {
       .rejects.toThrow("escapes extraction root");
   });
 
+  it("rejects bundles whose manifest identity does not match remote metadata", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-bundle-mismatch-"));
+    const bundle = validateRemotePluginBundle(
+      "linear",
+      "agenc-global",
+      "linear",
+      "1.0.0",
+      "https://agenc.tech/plugins/linear.tgz",
+    );
+    const bytes = createTarGz({
+      "other/.agenc-plugin/plugin.json": JSON.stringify({
+        name: "other",
+        version: "1.0.0",
+        description: "Remote plugin",
+        commands: "./commands",
+      }),
+    });
+
+    await expect(installRemotePluginBundle(agencHome, bundle, bytes))
+      .rejects.toThrow("manifest name mismatch");
+  });
+
+  it("redacts signed bundle URL query strings in download errors", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-bundle-redact-"));
+    const bundle = validateRemotePluginBundle(
+      "linear",
+      "agenc-global",
+      "linear",
+      "1.0.0",
+      "https://agenc.tech/plugins/linear.tgz?token=secret",
+    );
+
+    await expect(downloadAndInstallRemotePluginBundle(
+      agencHome,
+      bundle,
+      async () => ({
+        ok: false,
+        status: 403,
+        statusText: "Forbidden",
+        text: async () => "denied",
+        arrayBuffer: async () => exactArrayBuffer(Buffer.from("denied", "utf8")),
+      }),
+    )).rejects.toThrow("https://agenc.tech/plugins/linear.tgz?<redacted>");
+  });
+
   it("rejects oversized streamed bundle downloads before extraction", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-bundle-large-"));
     const bundle = validateRemotePluginBundle(
@@ -144,6 +189,10 @@ function writeTarOctal(header: Buffer, offset: number, length: number, value: nu
 
 function padding(size: number): number {
   return (512 - (size % 512)) % 512;
+}
+
+function exactArrayBuffer(bytes: Buffer): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
 function oversizedBundleFetcher(): Fetcher {

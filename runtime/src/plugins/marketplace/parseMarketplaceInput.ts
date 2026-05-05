@@ -2,6 +2,7 @@ import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { MarketplaceSource } from "./marketplace.js";
+import { isLoopbackHostname } from "./fetchGuards.js";
 
 export type ParsedMarketplaceInput =
   | { readonly ok: true; readonly source: MarketplaceSource }
@@ -44,6 +45,9 @@ export async function parseMarketplaceInput(
     }
     try {
       const parsed = new URL(urlWithoutFragment);
+      if (parsed.protocol === "http:" && !isLoopbackHostname(parsed.hostname)) {
+        return { ok: false, error: "Marketplace URL must use HTTPS or loopback HTTP" };
+      }
       if (parsed.hostname === "github.com" || parsed.hostname === "www.github.com") {
         const source = parseGitHubUrl(parsed, ref);
         if (source !== null) {
@@ -63,7 +67,8 @@ export async function parseMarketplaceInput(
   if (local !== null) return local;
 
   if (trimmed.includes("/") && !trimmed.startsWith("@") && !trimmed.includes(":")) {
-    const fragmentMatch = /^([^#@]+)(?:[#@](.+))?$/u.exec(trimmed);
+    const fragmentMatch = /^([a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+)(?:[#@](.+))?$/u.exec(trimmed);
+    if (fragmentMatch === null) return { ok: false, unrecognized: true };
     const repo = fragmentMatch?.[1] ?? trimmed;
     const ref = fragmentMatch?.[2];
     return {

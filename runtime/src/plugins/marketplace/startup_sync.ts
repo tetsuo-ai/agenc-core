@@ -8,6 +8,13 @@ import {
   type MarketplaceOperationOptions,
   type ProcessRunner,
 } from "./marketplace.js";
+import {
+  assertHttpsOrLoopbackUrl,
+  readResponseBytesWithLimit,
+  readResponseErrorText,
+  readResponseTextWithLimit,
+  redactUrlForError,
+} from "./fetchGuards.js";
 
 export interface StartupSyncOptions extends MarketplaceOperationOptions {
   readonly gitUrl?: string;
@@ -25,6 +32,7 @@ const CURATED_PLUGINS_BACKUP_ARCHIVE_FALLBACK_VERSION = "export-backup";
 const CURATED_PLUGINS_MAX_ARCHIVE_BYTES = 50 * 1024 * 1024;
 const CURATED_PLUGINS_MAX_EXTRACTED_BYTES = 250 * 1024 * 1024;
 const CURATED_PLUGINS_MAX_ARCHIVE_ENTRIES = 20_000;
+const CURATED_PLUGINS_MAX_METADATA_BYTES = 64 * 1024;
 
 export function curatedPluginsRepoPath(agencHome: string): string {
   return join(agencHome, CURATED_PLUGINS_RELATIVE_DIR);
@@ -63,9 +71,7 @@ export async function syncCuratedPluginsRepo(
       );
     } catch (httpError) {
       if (await hasLocalCuratedPluginsSnapshot(agencHome)) {
-        throw new Error(
-          `curated plugin git sync failed: ${message(gitError)}; HTTP sync failed: ${message(httpError)}; backup archive skipped because a local snapshot exists`,
-        );
+        return await readCuratedPluginsSha(agencHome) ?? CURATED_PLUGINS_BACKUP_ARCHIVE_FALLBACK_VERSION;
       }
       return syncCuratedPluginsRepoViaBackupArchive(
         agencHome,
@@ -148,11 +154,18 @@ export async function syncCuratedPluginsRepoViaBackupArchive(
   const shaPath = curatedPluginsShaPath(agencHome);
   const stagedRepoDir = await prepareCuratedRepoParentAndTempDir(repoPath);
   try {
+    const archiveUrl = assertHttpsOrLoopbackUrl(backupArchiveUrl, "curated plugins backup metadata URL", {
+      allowLoopbackHttp: true,
+    });
     const archiveMetadata = await fetchText(backupArchiveUrl, fetcher);
     const parsed = JSON.parse(archiveMetadata) as { readonly download_url?: string; readonly downloadUrl?: string };
     const downloadUrl = parsed.download_url ?? parsed.downloadUrl;
     if (!downloadUrl) throw new Error("curated plugins backup archive response did not include a download URL");
-    const zipball = await fetchBytes(downloadUrl, fetcher);
+    const downloadParsed = assertHttpsOrLoopbackUrl(downloadUrl, "curated plugins backup download URL", {
+      allowLoopbackHttp: true,
+      ...(archiveUrl.hostname.toLowerCase() === "agenc.tech" ? { allowedHttpsHosts: ["agenc.tech"] } : {}),
+    });
+    const zipball = await fetchBytes(downloadParsed.toString(), fetcher);
     await extractZipballToDir(zipball, stagedRepoDir);
     await ensureMarketplaceManifestExists(stagedRepoDir);
     const version = await readExtractedBackupArchiveGitSha(stagedRepoDir) ??
@@ -261,19 +274,27 @@ async function fetchCuratedRepoZipball(
 }
 
 async function fetchText(url: string, fetcher: Fetcher): Promise<string> {
+  assertHttpsOrLoopbackUrl(url, "curated plugins metadata URL", { allowLoopbackHttp: true });
   const response = await fetcher(url);
-  const body = await response.text();
-  if (!response.ok) throw new Error(`request from ${url} failed with status ${response.status}: ${body}`);
-  return body;
+  if (!response.ok) {
+    const body = await readResponseErrorText(response);
+    throw new Error(`request from ${redactUrlForError(url)} failed with status ${response.status}: ${body}`);
+  }
+  return readResponseTextWithLimit(
+    response,
+    CURATED_PLUGINS_MAX_METADATA_BYTES,
+    `request from ${redactUrlForError(url)}`,
+  );
 }
 
 async function fetchBytes(url: string, fetcher: Fetcher): Promise<Buffer> {
+  assertHttpsOrLoopbackUrl(url, "curated plugins archive URL", { allowLoopbackHttp: true });
   const response = await fetcher(url);
   if (!response.ok) {
-    const body = Buffer.from(await response.arrayBuffer());
-    throw new Error(`request from ${url} failed with status ${response.status}: ${body.toString("utf8")}`);
+    const body = await readResponseErrorText(response);
+    throw new Error(`request from ${redactUrlForError(url)} failed with status ${response.status}: ${body}`);
   }
-  return readResponseBytesWithLimit(response, CURATED_PLUGINS_MAX_ARCHIVE_BYTES, `request from ${url}`);
+  return readResponseBytesWithLimit(response, CURATED_PLUGINS_MAX_ARCHIVE_BYTES, `request from ${redactUrlForError(url)}`);
 }
 
 async function extractZipballToDir(bytes: Buffer, destination: string): Promise<void> {
@@ -398,37 +419,6 @@ function checkedArchiveOutputPath(destination: string, entryName: string): strin
     throw new Error(`curated plugins archive entry '${entryName}' escapes extraction root`);
   }
   return output;
-}
-
-async function readResponseBytesWithLimit(
-  response: { readonly body?: ReadableStream<Uint8Array> | null; readonly arrayBuffer: () => Promise<ArrayBuffer> },
-  maxBytes: number,
-  label: string,
-): Promise<Buffer> {
-  if (response.body !== undefined && response.body !== null) {
-    const reader = response.body.getReader();
-    const chunks: Buffer[] = [];
-    let total = 0;
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        total += value.byteLength;
-        if (total > maxBytes) {
-          throw new Error(`${label} exceeded maximum size of ${maxBytes} bytes`);
-        }
-        chunks.push(Buffer.from(value));
-      }
-    } finally {
-      reader.releaseLock();
-    }
-    return Buffer.concat(chunks, total);
-  }
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.byteLength > maxBytes) {
-    throw new Error(`${label} exceeded maximum size of ${maxBytes} bytes`);
-  }
-  return bytes;
 }
 
 interface ZipEntry {

@@ -97,10 +97,11 @@ PK-07 scope carried into AgenC:
 - `marketplace/officialMarketplace.ts` declares the AgenC-owned official marketplace source.
 - `marketplace/installed_marketplaces.ts` projects persistent marketplace index/config entries into installed marketplace roots.
 - `marketplace/remote.ts` owns authenticated remote marketplace listing, installed-plugin listing, detail fetches, skill detail fetches, install/uninstall mutations, and remote cache cleanup.
-- `marketplace/remote_bundle.ts` owns remote bundle validation, HTTPS/loopback download policy, size-limited download, safe tar.gz extraction, versioned cache activation, and manifest readback.
+- `marketplace/fetchGuards.ts` owns shared HTTPS/loopback URL policy, bounded response reads, and credential-redacted URL formatting for marketplace network surfaces.
+- `marketplace/remote_bundle.ts` owns remote bundle validation, HTTPS/loopback download policy, size-limited download, safe tar.gz extraction, manifest identity verification, versioned cache activation, and manifest readback.
 - `marketplace/remote_legacy.ts` owns the older remote plugin status, featured-plugin, enable, and uninstall endpoints that the runtime may still need while the hosted service migrates.
-- `marketplace/startup_sync.ts` owns startup curated marketplace sync through git, HTTP zipball, and backup archive fallbacks with private SHA tracking.
-- `marketplace/startup_remote_sync.ts` owns one-shot startup remote plugin reconciliation after curated marketplace prerequisites are available.
+- `marketplace/startup_sync.ts` owns startup curated marketplace sync through git, HTTP zipball, and backup archive fallbacks with private SHA tracking and existing-snapshot degradation.
+- `marketplace/startup_remote_sync.ts` owns one-shot startup remote plugin reconciliation after curated marketplace prerequisites are available, including stale lock recovery.
 
 Intentional PK-01 scope reductions:
 - Marketplace fetch/install/cache refresh, signing, dependency demotion, plugin CLI, plugin sandboxing, policy/blocklist, MCP/LSP live registration, and remote sync are later PK rows.

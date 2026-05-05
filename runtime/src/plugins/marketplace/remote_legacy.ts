@@ -2,6 +2,12 @@ import {
   defaultFetch,
   type Fetcher,
 } from "./marketplace.js";
+import {
+  assertHttpsOrLoopbackUrl,
+  readResponseErrorText,
+  readResponseTextWithLimit,
+  redactUrlForError,
+} from "./fetchGuards.js";
 import type { RemoteAuth, RemotePluginServiceConfig } from "./remote.js";
 
 export interface RemotePluginStatusSummary {
@@ -16,6 +22,7 @@ interface RemotePluginMutationResponse {
 }
 
 const DEFAULT_REMOTE_MARKETPLACE_NAME = "agenc-curated";
+const REMOTE_LEGACY_JSON_MAX_BYTES = 2 * 1024 * 1024;
 
 export async function fetchRemotePluginStatus(
   config: RemotePluginServiceConfig,
@@ -96,15 +103,20 @@ async function remoteRequest(
     throw new Error("authentication required for remote plugin operation");
   }
   const url = `${config.baseUrl.replace(/\/+$/u, "")}${path}`;
+  assertHttpsOrLoopbackUrl(url, "legacy remote plugin API URL", { allowLoopbackHttp: true });
   const response = await fetcher(url, {
     method,
     ...(auth !== undefined ? { headers: auth.headers } : {}),
   });
-  const body = await response.text();
   if (!response.ok) {
-    throw new Error(`remote plugin operation failed with status ${response.status} from ${url}: ${body}`);
+    const body = await readResponseErrorText(response);
+    throw new Error(`remote plugin operation failed with status ${response.status} from ${redactUrlForError(url)}: ${body}`);
   }
-  return body;
+  return readResponseTextWithLimit(
+    response,
+    REMOTE_LEGACY_JSON_MAX_BYTES,
+    `legacy remote plugin request to ${redactUrlForError(url)}`,
+  );
 }
 
 function assertMutation(

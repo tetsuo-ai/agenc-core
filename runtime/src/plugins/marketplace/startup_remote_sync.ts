@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { hasLocalCuratedPluginsSnapshot } from "./startup_sync.js";
 
@@ -19,7 +19,9 @@ export interface StartupRemotePluginSyncOptions {
 
 const STARTUP_REMOTE_PLUGIN_SYNC_MARKER_FILE = "plugins/.app-server-remote-plugin-sync-v1";
 const STARTUP_REMOTE_PLUGIN_SYNC_LOCK_DIR = "plugins/.app-server-remote-plugin-sync-v1.lock";
+const STARTUP_REMOTE_PLUGIN_SYNC_LOCK_FILE = "owner.json";
 const STARTUP_REMOTE_PLUGIN_SYNC_PREREQUISITE_TIMEOUT_MS = 10_000;
+const STARTUP_REMOTE_PLUGIN_SYNC_STALE_LOCK_MS = 10 * 60 * 1000;
 
 export function startupRemotePluginSyncMarkerPath(agencHome: string): string {
   return join(agencHome, STARTUP_REMOTE_PLUGIN_SYNC_MARKER_FILE);
@@ -47,13 +49,8 @@ export async function startStartupRemotePluginSyncOnce(
   );
   if (!ready) return null;
   const lockPath = startupRemotePluginSyncLockPath(options.agencHome);
-  await mkdir(dirname(lockPath), { recursive: true, mode: 0o700 });
-  try {
-    await mkdir(lockPath, { mode: 0o700 });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") return null;
-    throw error;
-  }
+  const lockAcquired = await acquireStartupRemotePluginSyncLock(lockPath, options.now?.() ?? new Date());
+  if (!lockAcquired) return null;
   try {
     if (await hasStartupRemotePluginSyncMarker(options.agencHome)) {
       return null;
@@ -64,6 +61,31 @@ export async function startStartupRemotePluginSyncOnce(
   } finally {
     await rm(lockPath, { recursive: true, force: true });
   }
+}
+
+async function acquireStartupRemotePluginSyncLock(lockPath: string, now: Date): Promise<boolean> {
+  await mkdir(dirname(lockPath), { recursive: true, mode: 0o700 });
+  try {
+    await mkdir(lockPath, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    if (!await removeStaleStartupRemotePluginSyncLock(lockPath, now)) return false;
+    await mkdir(lockPath, { mode: 0o700 });
+  }
+  await writeFile(
+    join(lockPath, STARTUP_REMOTE_PLUGIN_SYNC_LOCK_FILE),
+    `${JSON.stringify({ pid: process.pid, createdAt: now.toISOString() })}\n`,
+    { mode: 0o600 },
+  );
+  return true;
+}
+
+async function removeStaleStartupRemotePluginSyncLock(lockPath: string, now: Date): Promise<boolean> {
+  const metadata = await stat(lockPath).catch(() => null);
+  if (metadata === null) return true;
+  if (now.getTime() - metadata.mtimeMs < STARTUP_REMOTE_PLUGIN_SYNC_STALE_LOCK_MS) return false;
+  await rm(lockPath, { recursive: true, force: true });
+  return true;
 }
 
 export async function waitForStartupRemotePluginSyncPrerequisites(

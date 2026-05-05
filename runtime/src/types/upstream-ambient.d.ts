@@ -47,8 +47,8 @@ declare module "src/entrypoints/agentSdkTypes.js" {
     | "WorktreeCreate"
     | "WorktreeRemove"
     | "InstructionsLoaded"
-      | "CwdChanged"
-      | "FileChanged";
+    | "CwdChanged"
+    | "FileChanged";
   export const HOOK_EVENTS: readonly HookEvent[];
   export type ModelUsage = {
     readonly inputTokens: number;
@@ -146,7 +146,7 @@ declare module "src/services/mcp/types.js" {
     | readonly JsonValue[]
     | { readonly [key: string]: JsonValue };
 
-  export type ConfigScope = "local" | "user" | "project" | "dynamic" | "enterprise" | "claudeai" | "managed";
+  export type ConfigScope = "local" | "user" | "project" | "dynamic" | "enterprise" | "managed";
 
   export type ScopedMcpServerConfig = {
     readonly scope: ConfigScope;

@@ -4,6 +4,12 @@ import {
   defaultFetch,
   type Fetcher,
 } from "./marketplace.js";
+import {
+  assertHttpsOrLoopbackUrl,
+  readResponseErrorText,
+  readResponseTextWithLimit,
+  redactUrlForError,
+} from "./fetchGuards.js";
 
 export const REMOTE_GLOBAL_MARKETPLACE_NAME = "agenc-global";
 export const REMOTE_WORKSPACE_MARKETPLACE_NAME = "agenc-workspace";
@@ -12,6 +18,7 @@ export const REMOTE_WORKSPACE_MARKETPLACE_DISPLAY_NAME = "AgenC Workspace Plugin
 
 const REMOTE_PLUGIN_MAX_PAGES = 100;
 const REMOTE_PLUGIN_MAX_ITEMS = 10_000;
+const REMOTE_PLUGIN_JSON_MAX_BYTES = 2 * 1024 * 1024;
 
 export interface RemotePluginServiceConfig {
   readonly baseUrl: string;
@@ -373,11 +380,17 @@ async function sendAndDecode<T>(
   fetcher: Fetcher,
   method = "GET",
 ): Promise<T> {
+  assertHttpsOrLoopbackUrl(url, "remote plugin API URL", { allowLoopbackHttp: true });
   const response = await fetcher(url, { method, headers });
-  const body = await response.text();
   if (!response.ok) {
-    throw new Error(`remote plugin request to ${url} failed with status ${response.status}: ${body}`);
+    const body = await readResponseErrorText(response);
+    throw new Error(`remote plugin request to ${redactUrlForError(url)} failed with status ${response.status}: ${body}`);
   }
+  const body = await readResponseTextWithLimit(
+    response,
+    REMOTE_PLUGIN_JSON_MAX_BYTES,
+    `remote plugin request to ${redactUrlForError(url)}`,
+  );
   return JSON.parse(body) as T;
 }
 

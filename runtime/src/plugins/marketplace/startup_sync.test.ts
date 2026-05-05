@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -7,12 +7,15 @@ import {
   curatedPluginsRepoPath,
   curatedPluginsShaPath,
   hasLocalCuratedPluginsSnapshot,
+  syncCuratedPluginsRepo,
+  syncCuratedPluginsRepoViaBackupArchive,
   syncCuratedPluginsRepoViaGit,
   syncCuratedPluginsRepoViaHttp,
 } from "./startup_sync.js";
 import {
   hasStartupRemotePluginSyncMarker,
   startStartupRemotePluginSyncOnce,
+  startupRemotePluginSyncLockPath,
 } from "./startup_remote_sync.js";
 
 describe("startup marketplace sync", () => {
@@ -89,6 +92,19 @@ describe("startup marketplace sync", () => {
     })).resolves.toBeNull();
   });
 
+  it("uses the existing curated snapshot when refresh mechanisms fail", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-startup-sync-existing-"));
+    await writeCuratedMarketplace(curatedPluginsRepoPath(agencHome));
+    await writeFile(curatedPluginsShaPath(agencHome), "abc123\n");
+
+    await expect(syncCuratedPluginsRepo(agencHome, {
+      runProcess: async () => {
+        throw new Error("git unavailable");
+      },
+      fetcher: async () => jsonResponse({ message: "offline" }, false, 503),
+    })).resolves.toBe("abc123");
+  });
+
   it("coalesces concurrent remote startup sync attempts with a filesystem lock", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-startup-sync-concurrent-"));
     await writeCuratedMarketplace(curatedPluginsRepoPath(agencHome));
@@ -139,6 +155,31 @@ describe("startup marketplace sync", () => {
     await expect(hasStartupRemotePluginSyncMarker(agencHome)).resolves.toBe(true);
   });
 
+  it("recovers stale remote startup sync lock directories", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-startup-sync-stale-"));
+    await writeCuratedMarketplace(curatedPluginsRepoPath(agencHome));
+    await writeFile(curatedPluginsShaPath(agencHome), "abc123\n");
+    const lockPath = startupRemotePluginSyncLockPath(agencHome);
+    await mkdir(lockPath, { recursive: true });
+    const stale = new Date("2026-05-05T00:00:00.000Z");
+    await utimes(lockPath, stale, stale);
+
+    const result = await startStartupRemotePluginSyncOnce({
+      agencHome,
+      prerequisiteTimeoutMs: 10,
+      pollMs: 1,
+      now: () => new Date("2026-05-05T00:20:00.000Z"),
+      syncPluginsFromRemote: async () => ({
+        installedPluginIds: ["linear"],
+        enabledPluginIds: ["linear"],
+        disabledPluginIds: [],
+        uninstalledPluginIds: [],
+      }),
+    });
+
+    expect(result?.installedPluginIds).toEqual(["linear"]);
+  });
+
   it("syncs curated marketplace zipballs without shelling out to unzip", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-http-startup-sync-"));
     const zipball = createZip({
@@ -180,6 +221,21 @@ describe("startup marketplace sync", () => {
       "https://agenc.tech/api/plugins/curated",
       createCuratedZipFetcher(zipball, "abc123"),
     )).rejects.toThrow("escapes extraction root");
+  });
+
+  it("rejects unsafe backup archive redirects", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-backup-startup-sync-redirect-"));
+
+    await expect(syncCuratedPluginsRepoViaBackupArchive(
+      agencHome,
+      "https://agenc.tech/api/plugins/curated/archive",
+      async (url) => {
+        if (url.endsWith("/archive")) {
+          return jsonResponse({ download_url: "http://agenc.tech/plugins/curated.zip?token=secret" });
+        }
+        return jsonResponse({ message: "not found" }, false, 404);
+      },
+    )).rejects.toThrow("must use HTTPS");
   });
 });
 
