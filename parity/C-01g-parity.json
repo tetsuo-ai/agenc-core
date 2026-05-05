@@ -1,0 +1,151 @@
+{
+  "contractName": "C-01g-network-policy-decision",
+  "scope": "Network policy decision payloads and sandbox network proxy config-loader behavior",
+  "generatedAt": "2026-05-05T00:00:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/codex",
+  "targetRoot": "..",
+  "sourceCommit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
+  "sourceFiles": [
+    "codex-rs/core/src/network_policy_decision.rs",
+    "codex-rs/core/src/network_policy_decision_tests.rs",
+    "codex-rs/core/src/network_proxy_loader.rs",
+    "codex-rs/core/src/network_proxy_loader_tests.rs",
+    "codex-rs/protocol/src/network_policy.rs"
+  ],
+  "targetFiles": [
+    "runtime/src/sandbox/network-policy.ts",
+    "runtime/src/sandbox/network-proxy-loader.ts"
+  ],
+  "testFiles": [
+    "runtime/src/sandbox/network-policy.test.ts",
+    "runtime/src/sandbox/network-proxy-loader.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "policy-decision-payload",
+      "source": [
+        "codex-rs/protocol/src/network_policy.rs",
+        "codex-rs/core/src/network_policy_decision.rs"
+      ],
+      "target": "runtime/src/sandbox/network-policy.ts",
+      "requiredBehaviors": [
+        "parse ask and deny policy decisions with source and protocol aliases",
+        "return approval context only for ask decisions produced by the decider",
+        "reject approval context creation when protocol or non-blank host is absent"
+      ],
+      "edgeCases": [
+        "https_connect and http-connect both normalize to the HTTPS approval protocol",
+        "socks5_tcp and socks5_udp normalize to AgenC protocol strings",
+        "unknown decision, source, or protocol values throw instead of defaulting"
+      ],
+      "tests": [
+        "runtime/src/sandbox/network-policy.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "blocked-message-and-amendment",
+      "source": [
+        "codex-rs/core/src/network_policy_decision.rs",
+        "codex-rs/core/src/network_policy_decision_tests.rs"
+      ],
+      "target": "runtime/src/sandbox/network-policy.ts",
+      "requiredBehaviors": [
+        "produce user-facing denial messages only for deny decisions",
+        "map known block reasons to explicit denial detail",
+        "map permission-layer network-policy amendments to exec-policy rule amendments"
+      ],
+      "edgeCases": [
+        "empty blocked host returns the generic blocked-by-policy message",
+        "permission-layer network_policy_amendment values are accepted without a second canonical amendment type",
+        "socks5 UDP justifications use the socks5_udp label"
+      ],
+      "tests": [
+        "runtime/src/sandbox/network-policy.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "network-proxy-config-loader",
+      "source": [
+        "codex-rs/core/src/network_proxy_loader.rs",
+        "codex-rs/core/src/network_proxy_loader_tests.rs"
+      ],
+      "target": "runtime/src/sandbox/network-proxy-loader.ts",
+      "requiredBehaviors": [
+        "read raw default_permissions and permissions.<profile>.network TOML tables",
+        "apply network config layers in precedence order",
+        "expose a minimal reloadable config-state wrapper without starting a proxy listener"
+      ],
+      "edgeCases": [
+        "malformed sandbox network TOML throws instead of falling back to defaults",
+        "missing user config is the only silent no-layer default path",
+        "mtime reload updates config state after a config.toml write"
+      ],
+      "tests": [
+        "runtime/src/sandbox/network-proxy-loader.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "trusted-constraints",
+      "source": [
+        "codex-rs/core/src/network_proxy_loader.rs",
+        "codex-rs/core/src/network_proxy_loader_tests.rs"
+      ],
+      "target": "runtime/src/sandbox/network-proxy-loader.ts",
+      "requiredBehaviors": [
+        "trusted layers are system, managed, and legacy_managed",
+        "user, project, and session_flags layers never contribute trusted constraints",
+        "trusted scalar constraints use last trusted layer wins",
+        "trusted domain constraints overlay by normalized pattern"
+      ],
+      "edgeCases": [
+        "trusted enabled=false rejects a user layer that enables the proxy",
+        "managed wildcard allow constraints only permit candidate allowlists covered by the managed pattern",
+        "global wildcard managed allow or deny constraints are rejected"
+      ],
+      "tests": [
+        "runtime/src/sandbox/network-proxy-loader.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "domain-and-exec-policy-projection",
+      "source": [
+        "codex-rs/core/src/network_proxy_loader.rs",
+        "codex-rs/core/src/network_proxy_loader_tests.rs"
+      ],
+      "target": "runtime/src/sandbox/network-proxy-loader.ts",
+      "requiredBehaviors": [
+        "domain decisions check deny patterns before allow patterns",
+        "exact, star-dot, double-star-dot, and global wildcard patterns follow the reference matching model",
+        "exec-policy network rules are accepted as explicit loader input"
+      ],
+      "edgeCases": [
+        "exact deny blocks wildcard allow",
+        "wildcard deny blocks exact allow",
+        "http allow plus socks5 deny projects to host denied in the domain-only config projection",
+        "prompt rules neither allow nor deny and do not erase existing host-protocol rules"
+      ],
+      "tests": [
+        "runtime/src/sandbox/network-proxy-loader.test.ts"
+      ],
+      "status": "required"
+    }
+  ],
+  "approvedDivergence": [
+    {
+      "id": "exec-policy-domain-only-fail-closed",
+      "reason": "AgenC's current network proxy config projection is domain-only. To avoid widening a protocol-specific deny into an allow, projection keeps host+protocol rule identity internally and collapses any forbidden protocol for a host to a host-wide deny. Example: http allow plus socks5 deny yields host denied in domain-only config projection."
+    },
+    {
+      "id": "config-loader-fail-closed",
+      "reason": "The sandbox-specific loader throws on malformed user network TOML instead of using the generic config loader warning fallback. Missing user config remains the only silent default path."
+    },
+    {
+      "id": "no-proxy-listener-runtime",
+      "reason": "C-01g owns policy decision and config-loader behavior only. Starting HTTP/SOCKS listeners is outside this item."
+    }
+  ]
+}
