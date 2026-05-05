@@ -1,7 +1,3 @@
-import {
-  hasUsedBackslashReturn,
-  isShiftEnterKeyBindingInstalled,
-} from '../../../agenc/adapters/prompt-input-terminal-setup.js'
 import type { Key } from '../../ink.js'
 import { getGlobalConfig } from '../../../agenc/upstream/utils/config.js'
 import { env } from '../../../agenc/upstream/utils/env.js'
@@ -21,12 +17,12 @@ export function getNewlineInstructions(): string {
   }
 
   // For iTerm2 and VSCode, show Shift+Enter instructions if installed
-  if (isShiftEnterKeyBindingInstalled()) {
+  if (getGlobalConfig().shiftEnterKeyBindingInstalled === true) {
     return 'shift + ⏎ for newline'
   }
 
   // Otherwise show backslash+return instructions
-  return hasUsedBackslashReturn()
+  return getGlobalConfig().hasUsedBackslashReturn === true
     ? '\\⏎ for newline'
     : 'backslash (\\) + return (⏎) for newline'
 }

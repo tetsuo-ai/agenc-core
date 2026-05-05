@@ -64,7 +64,7 @@ import type { EffortLevel } from '../../../agenc/upstream/utils/effort.js';
 import { env } from '../../../agenc/upstream/utils/env.js';
 import { errorMessage } from '../../../agenc/upstream/utils/errors.js';
 import { isBilledAsExtraUsage } from '../../../agenc/upstream/utils/extraUsage.js';
-import { getFastModeUnavailableReason, isFastModeAvailable, isFastModeCooldown, isFastModeEnabled, isFastModeSupportedByModel } from '../../../agenc/upstream/utils/fastMode.js';
+import { clearFastModeCooldown, FAST_MODE_MODEL_DISPLAY, getFastModeModel, getFastModeRuntimeState, getFastModeUnavailableReason, isFastModeAvailable, isFastModeCooldown, isFastModeEnabled, isFastModeSupportedByModel } from '../../../agenc/upstream/utils/fastMode.js';
 import { isFullscreenEnvEnabled } from '../../../agenc/upstream/utils/fullscreen.js';
 import type { PromptInputHelpers } from '../../../agenc/upstream/utils/handlePromptSubmit.js';
 import { extractDraggedFilePaths } from '../../../agenc/upstream/utils/dragDropPaths.js';
@@ -80,7 +80,7 @@ import { transitionPermissionMode } from '../../../agenc/upstream/utils/permissi
 import { getPlatform } from '../../../agenc/upstream/utils/platform.js';
 import type { ProcessUserInputContext } from '../../input/processUserInput.js';
 import { editPromptInEditor } from '../../../agenc/upstream/utils/promptEditor.js';
-import { hasAutoModeOptIn } from '../../../agenc/upstream/utils/settings/settings.js';
+import { hasAutoModeOptIn, updateSettingsForSource } from '../../../agenc/upstream/utils/settings/settings.js';
 import { findBtwTriggerPositions } from '../../../agenc/upstream/utils/sideQuestion.js';
 import { findSlashCommandPositions } from '../../../agenc/upstream/utils/suggestions/commandSuggestions.js';
 import { findSlackChannelPositions, getKnownChannelsVersion, hasSlackMcpServer, subscribeKnownChannels } from '../../../agenc/upstream/utils/suggestions/slackChannelSuggestions.js';
@@ -95,6 +95,7 @@ import type { Theme } from '../../../agenc/upstream/utils/theme.js';
 import { findThinkingTriggerPositions, getRainbowColor, isUltrathinkEnabled } from '../../../agenc/upstream/utils/thinking.js';
 import { findTokenBudgetPositions } from '../../../agenc/upstream/utils/tokenBudget.js';
 import { findUltraplanTriggerPositions, findUltrareviewTriggerPositions } from '../../../agenc/upstream/utils/ultraplan/keyword.js';
+import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../agenc/upstream/services/analytics/growthbook.js';
 import { AutoModeOptInDialog } from '../../../agenc/upstream/components/AutoModeOptInDialog.js';
 import { BridgeDialog } from '../../../agenc/upstream/components/BridgeDialog.js';
 import { ConfigurableShortcutHint } from '../../../agenc/upstream/components/ConfigurableShortcutHint.js';
@@ -112,7 +113,6 @@ import { shouldHideTasksFooter } from '../../../agenc/upstream/components/tasks/
 import { TeamsDialog } from '../../../agenc/upstream/components/teams/TeamsDialog.js';
 import VimTextInput from '../../../agenc/upstream/components/VimTextInput.js';
 import { detectModeEntry, getModeFromInput, getValueFromInput } from './inputModes.js';
-import { FastModePicker } from '../../../agenc/adapters/prompt-input-fast-mode.js';
 import { FOOTER_TEMPORARY_STATUS_TIMEOUT, Notifications } from './Notifications.js';
 import PromptInputFooter from './PromptInputFooter.js';
 import type { SuggestionItem } from './PromptInputFooterSuggestions.js';
@@ -123,14 +123,137 @@ import { useMaybeTruncateInput } from './useMaybeTruncateInput.js';
 import { usePromptInputPlaceholder } from './usePromptInputPlaceholder.js';
 import { useShowFastIconHint } from './useShowFastIconHint.js';
 import { useSwarmBanner } from './useSwarmBanner.js';
-import { getNativeCSIuTerminalDisplayName } from '../../../agenc/adapters/prompt-input-terminal-setup.js';
-import { isUltrareviewEnabled } from '../../../agenc/adapters/prompt-input-ultrareview.js';
 import { isNonSpacePrintable, isVimModeEnabled } from './utils.js';
 
 type PromptSuggestionHookProps = {
   inputValue: string;
   isAssistantResponding: boolean;
 };
+
+type FastModePickerProps = {
+  onDone: (result?: string, options?: { display?: 'system' | 'user' | 'skip' }) => void;
+  unavailableReason: string | null;
+};
+
+const NATIVE_CSIU_TERMINALS: Record<string, string> = {
+  ghostty: 'Ghostty',
+  kitty: 'Kitty',
+  'iTerm.app': 'iTerm2',
+  WezTerm: 'WezTerm',
+  WarpTerminal: 'Warp',
+};
+
+function getNativeCSIuTerminalDisplayName(): string | null {
+  if (!env.terminal || !(env.terminal in NATIVE_CSIU_TERMINALS)) {
+    return null;
+  }
+  return NATIVE_CSIU_TERMINALS[env.terminal] ?? null;
+}
+
+function applyFastMode(
+  enable: boolean,
+  setAppState: (updater: (prev: AppState) => AppState) => void,
+): void {
+  clearFastModeCooldown();
+  updateSettingsForSource('userSettings', {
+    fastMode: enable ? true : undefined,
+  });
+  setAppState(prev => {
+    if (!enable) {
+      return { ...prev, fastMode: false };
+    }
+    const needsModelSwitch = !isFastModeSupportedByModel(prev.mainLoopModel);
+    return {
+      ...prev,
+      ...(needsModelSwitch
+        ? {
+            mainLoopModel: getFastModeModel(),
+            mainLoopModelForSession: null,
+          }
+        : {}),
+      fastMode: true,
+    };
+  });
+}
+
+function FastModePicker({
+  onDone,
+  unavailableReason,
+}: FastModePickerProps): React.ReactNode {
+  const model = useAppState(state => state.mainLoopModel);
+  const initialFastMode = useAppState(state => state.fastMode);
+  const setAppState = useSetAppState();
+  const [enabled, setEnabled] = React.useState(initialFastMode ?? false);
+  const isUnavailable = unavailableReason !== null;
+  const runtimeState = getFastModeRuntimeState();
+
+  const confirm = React.useCallback(() => {
+    if (isUnavailable) return;
+    applyFastMode(enabled, setAppState);
+    if (enabled) {
+      const modelUpdated = !isFastModeSupportedByModel(model)
+        ? `; model set to ${FAST_MODE_MODEL_DISPLAY}`
+        : '';
+      onDone(`Fast mode ON${modelUpdated}`);
+    } else {
+      onDone('Fast mode OFF');
+    }
+  }, [enabled, isUnavailable, model, onDone, setAppState]);
+
+  const cancel = React.useCallback(() => {
+    if (isUnavailable && initialFastMode) {
+      applyFastMode(false, setAppState);
+      onDone('Fast mode OFF', { display: 'system' });
+      return;
+    }
+    onDone(initialFastMode ? 'Kept Fast mode ON' : 'Kept Fast mode OFF', {
+      display: 'system',
+    });
+  }, [initialFastMode, isUnavailable, onDone, setAppState]);
+
+  useInput((input, key) => {
+    if (key.escape) {
+      cancel();
+      return;
+    }
+    if (key.return) {
+      confirm();
+      return;
+    }
+    if (key.tab || input === ' ') {
+      if (!isUnavailable) setEnabled(value => !value);
+    }
+  });
+
+  return (
+    <Box flexDirection="column" marginLeft={2}>
+      <Box flexDirection="row" gap={2}>
+        <Text bold>Fast mode</Text>
+        <Text color={enabled ? 'fastMode' : undefined} bold={enabled}>
+          {enabled ? 'ON' : 'OFF'}
+        </Text>
+        <Text dimColor>for {FAST_MODE_MODEL_DISPLAY}</Text>
+      </Box>
+      {unavailableReason ? (
+        <Text color="error">{unavailableReason}</Text>
+      ) : runtimeState.status === 'cooldown' ? (
+        <Text color="warning">
+          Fast mode is temporarily unavailable; try again later.
+        </Text>
+      ) : (
+        <Text dimColor>Tab toggles, Enter confirms, Esc cancels</Text>
+      )}
+    </Box>
+  );
+}
+
+function isUltrareviewEnabled(): boolean {
+  const config = getFeatureValue_CACHED_MAY_BE_STALE<Record<string, unknown> | null>(
+    'tengu_review_bughunter_config',
+    null,
+  );
+  return config?.enabled === true;
+}
 
 /**
  * Ports source-reference `src/hooks/usePromptSuggestion.ts` into the absorbed
