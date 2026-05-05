@@ -1466,6 +1466,19 @@ const ITEM_EVIDENCE = {
     ],
     tests: ["runtime/src/agents/graph-store/local.test.ts"],
   },
+  "ZC-36": {
+    files: [
+      "runtime/src/test-parity/PARITY.md",
+      "runtime/src/test-parity/zc36-suite-coverage.test.ts",
+      "parity/ZC-36-parity.json",
+    ],
+    grepPresent: [
+      { pattern: "ZC-36 coverage lock", scope: "runtime/src/test-parity/PARITY.md" },
+      { pattern: "representative-subset", scope: "parity/ZC-36-parity.json" },
+      { pattern: "selectedCases", scope: "parity/ZC-36-parity.json" },
+    ],
+    tests: ["runtime/src/test-parity/zc36-suite-coverage.test.ts"],
+  },
 };
 
 function usage() {
@@ -5300,6 +5313,111 @@ function assertZc37UndefinedDirectoryGone() {
   pass("ZC-37: undefined/ directory absent, untracked, and ignored");
 }
 
+function assertZc36TestFixtureParityCoverage() {
+  const readRequired = (rel) => {
+    const abs = path.join(root, rel);
+    if (!existsSync(abs)) failGate(`ZC-36: missing required file ${rel}`);
+    return readFileSync(abs, "utf8");
+  };
+
+  const parity = readRequired("runtime/src/test-parity/PARITY.md");
+  const sourceRoot = `${["co", "dex-rs"].join("")}`;
+  const requiredAnchors = [
+    `${sourceRoot}/core/tests/suite/exec.rs`,
+    `${sourceRoot}/core/tests/suite/exec_policy.rs`,
+    `${sourceRoot}/core/tests/suite/fork_thread.rs`,
+    `${sourceRoot}/core/tests/suite/hierarchical_agents.rs`,
+    `${sourceRoot}/core/tests/suite/request_permissions.rs`,
+    `${sourceRoot}/core/tests/suite/request_user_input.rs`,
+    `${sourceRoot}/core/tests/suite/sqlite_state.rs`,
+    `${sourceRoot}/core/tests/suite/shell_command.rs`,
+    `${sourceRoot}/core/tests/suite/tool_parallelism.rs`,
+    `${sourceRoot}/app-server/tests/suite/v2/initialize.rs`,
+    `${sourceRoot}/app-server/tests/suite/v2/command_exec.rs`,
+    `${sourceRoot}/app-server/tests/suite/v2/request_permissions.rs`,
+    `${sourceRoot}/app-server/tests/suite/v2/request_user_input.rs`,
+    `${sourceRoot}/app-server/tests/suite/v2/thread_start.rs`,
+    `${sourceRoot}/app-server/tests/suite/v2/thread_read.rs`,
+    `${sourceRoot}/app-server/tests/suite/v2/thread_list.rs`,
+    `${sourceRoot}/app-server/tests/suite/v2/thread_fork.rs`,
+    `${sourceRoot}/app-server/tests/suite/v2/turn_interrupt.rs`,
+    `${sourceRoot}/app-server/tests/suite/v2/turn_steer.rs`,
+    `${sourceRoot}/apply-patch/tests/fixtures/scenarios/`,
+    `${sourceRoot}/apply-patch/tests/suite/scenarios.rs`,
+  ];
+  const missingAnchors = requiredAnchors.filter((anchor) => !parity.includes(anchor));
+  if (missingAnchors.length > 0) {
+    failGate(`ZC-36: test-suite parity is missing source anchor(s):\n  ${missingAnchors.join("\n  ")}`);
+  }
+
+  const matrixText = readRequired("parity/ZC-36-parity.json");
+  let matrix;
+  try {
+    matrix = JSON.parse(matrixText);
+  } catch (error) {
+    failGate(`ZC-36: parity matrix is not valid JSON: ${error?.message || error}`);
+  }
+
+  if (matrix.item !== "ZC-36" || matrix.status !== "representative-subset") {
+    failGate("ZC-36: parity matrix must record the representative-subset decision.");
+  }
+  if (!Array.isArray(matrix.selectedCases) || matrix.selectedCases.length < 20) {
+    failGate("ZC-36: parity matrix must select at least 20 source-suite behaviors.");
+  }
+  if (!Array.isArray(matrix.targetTestFiles) || matrix.targetTestFiles.length < 10) {
+    failGate("ZC-36: parity matrix must list the AgenC target test files.");
+  }
+
+  const targetTests = new Set(matrix.targetTestFiles);
+  for (const target of targetTests) {
+    if (typeof target !== "string" || !target.startsWith("runtime/src/") || !target.endsWith(".test.ts")) {
+      failGate(`ZC-36: invalid target test path ${String(target)}`);
+    }
+    if (!existsSync(path.join(root, target))) {
+      failGate(`ZC-36: mapped target test does not exist: ${target}`);
+    }
+  }
+  for (const selected of matrix.selectedCases) {
+    if (!selected || typeof selected.id !== "string" || !/^[a-z0-9-]+$/.test(selected.id)) {
+      failGate("ZC-36: each selected case needs a stable kebab-case id.");
+    }
+    if (!Array.isArray(selected.targetTests) || selected.targetTests.length === 0) {
+      failGate(`ZC-36: selected case ${selected.id} has no target tests.`);
+    }
+    for (const target of selected.targetTests) {
+      if (!targetTests.has(target)) {
+        failGate(`ZC-36: selected case ${selected.id} references unlisted target test ${target}.`);
+      }
+    }
+  }
+
+  const expectedScenarios = matrix.applyPatchFixtureCoverage?.expectedScenarioDirectories;
+  if (!Array.isArray(expectedScenarios) || expectedScenarios.length < 22) {
+    failGate("ZC-36: apply-patch fixture corpus must list every numbered scenario.");
+  }
+  const scenariosRoot = path.join(root, "runtime/src/tools/apply-patch/__fixtures__/scenarios");
+  const actualScenarios = readdirSync(scenariosRoot)
+    .filter((entry) => statSync(path.join(scenariosRoot, entry)).isDirectory())
+    .sort();
+  const expectedSorted = [...expectedScenarios].sort();
+  if (JSON.stringify(actualScenarios) !== JSON.stringify(expectedSorted)) {
+    failGate("ZC-36: apply-patch scenario fixture directories do not match the parity matrix.");
+  }
+
+  const testRun = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    ...matrix.targetTestFiles.map((target) => target.replace(/^runtime\//, "")),
+  ]);
+  if (testRun.status !== 0) {
+    failGate("ZC-36: representative suite parity tests failed.");
+  }
+
+  pass("ZC-36: representative test/fixture parity coverage locked");
+}
+
 function listSourceFiles(dir) {
   const out = [];
   for (const entry of readdirSync(dir)) {
@@ -5697,6 +5815,7 @@ async function cleanupGates(item) {
       "ZC-34": { custom: assertZc34AgentGraphStoreCoverage },
       "ZC-35": { custom: assertZc35OcCoverage },
       "ZC-37": { custom: assertZc37UndefinedDirectoryGone },
+      "ZC-36": { custom: assertZc36TestFixtureParityCoverage },
     };
     const expectations = zcMap[id];
     if (!expectations) {
