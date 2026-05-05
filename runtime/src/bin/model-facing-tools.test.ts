@@ -197,7 +197,7 @@ function streamTextResponse(text: string, contentType = "text/plain") {
   const response = {
     ok: true,
     status: 200,
-    url: "https://localhost/page",
+    url: "https://github.com/random-org/repo",
     headers: {
       get: (name: string) =>
         name.toLowerCase() === "content-type" ? contentType : null,
@@ -224,7 +224,7 @@ function fetchResponse(opts: {
   const response = {
     ok: status >= 200 && status < 300,
     status,
-    url: opts.url ?? "https://localhost/page",
+    url: opts.url ?? "https://github.com/random-org/repo",
     headers: {
       get: (name: string) => {
         const key = name.toLowerCase();
@@ -958,7 +958,7 @@ describe("model-facing tools", () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      url: "https://localhost/page",
+      url: "https://github.com/random-org/repo",
       headers: {
         get: (name: string) =>
           name.toLowerCase() === "content-type" ? "text/plain" : null,
@@ -974,7 +974,7 @@ describe("model-facing tools", () => {
       });
       const byName = new Map(tools.map((tool) => [tool.name, tool]));
       const result = await byName.get("WebFetch")!.execute({
-        url: "https://localhost/page",
+        url: "https://github.com/random-org/repo",
       });
       const parsed = JSON.parse(result.content);
       expect(parsed.preapproved).toBe(false);
@@ -997,7 +997,7 @@ describe("model-facing tools", () => {
       });
       const byName = new Map(tools.map((tool) => [tool.name, tool]));
       const result = await byName.get("web_fetch")!.execute({
-        url: "https://localhost/page",
+        url: "https://github.com/random-org/repo",
         max_chars: 1_000,
       });
       const parsed = JSON.parse(result.content);
@@ -1039,10 +1039,22 @@ describe("model-facing tools", () => {
       });
       expect(privateIp.isError).toBe(true);
       expect(JSON.parse(privateIp.content).error).toContain("loopback");
+
+      const localHost = await byName.get("web_fetch")!.execute({
+        url: "https://localhost/page",
+      });
+      expect(localHost.isError).toBe(true);
+      expect(JSON.parse(localHost.content).error).toContain("loopback");
+
+      const subLocalHost = await byName.get("web_fetch")!.execute({
+        url: "https://foo.localhost/page",
+      });
+      expect(subLocalHost.isError).toBe(true);
+      expect(JSON.parse(subLocalHost.content).error).toContain("loopback");
       expect(fetchMock).not.toHaveBeenCalled();
 
       const failed = await byName.get("web_fetch")!.execute({
-        url: "https://localhost/page",
+        url: "https://github.com/random-org/repo",
       });
       expect(failed.isError).toBe(true);
       expect(JSON.parse(failed.content).error).toContain("network down");
@@ -1135,15 +1147,9 @@ describe("model-facing tools", () => {
         url: "https://github.com/modelcontextprotocol",
         location: "/other-org/repo",
       });
-      const outOfScopeFinal = fetchResponse({
-        status: 200,
-        url: "https://github.com/other-org/repo",
-        text: "redirected body",
-      });
       globalThis.fetch = vi
         .fn()
-        .mockResolvedValueOnce(outOfScopeRedirect.response)
-        .mockResolvedValueOnce(outOfScopeFinal.response) as unknown as typeof globalThis.fetch;
+        .mockResolvedValueOnce(outOfScopeRedirect.response) as unknown as typeof globalThis.fetch;
       const outOfScopeResult = await byName.get("web_fetch")!.execute({
         url: "https://github.com/modelcontextprotocol",
       });
@@ -1151,7 +1157,7 @@ describe("model-facing tools", () => {
       expect(JSON.parse(outOfScopeResult.content).error).toContain(
         "outside the preapproved URL scope",
       );
-      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+      expect(globalThis.fetch).toHaveBeenCalledOnce();
 
       const redirectChain = Array.from({ length: 6 }, (_, index) =>
         fetchResponse({
@@ -1226,18 +1232,18 @@ describe("model-facing tools", () => {
     });
 
     const denied = await tool!.checkPermissions?.(
-      { url: "https://localhost/page" },
+      { url: "https://github.com/random-org/repo" },
       fakeEvaluatorContext(
         createEmptyToolPermissionContext({
           alwaysDenyRules: {
-            localSettings: ["web_fetch(domain:localhost)"],
+            localSettings: ["web_fetch(domain:github.com)"],
           },
         }),
       ),
     );
     expect(denied).toMatchObject({
       behavior: "deny",
-      message: "web_fetch denied access to domain:localhost.",
+      message: "web_fetch denied access to domain:github.com.",
     });
 
     const blockedAddress = await tool!.checkPermissions?.(
@@ -1259,6 +1265,20 @@ describe("model-facing tools", () => {
     });
 
     for (const url of [
+      "https://localhost/page",
+      "https://foo.localhost/page",
+    ]) {
+      const blockedLocalhost = await tool!.checkPermissions?.(
+        { url },
+        fakeEvaluatorContext(),
+      );
+      expect(blockedLocalhost).toMatchObject({
+        behavior: "deny",
+        message: expect.stringContaining("private, loopback, or link-local address"),
+      });
+    }
+
+    for (const url of [
       "https://[::1]/page",
       "https://[fd00::1]/page",
       "https://[fe80::1]/page",
@@ -1275,11 +1295,11 @@ describe("model-facing tools", () => {
     }
 
     const legacyAllowed = await tool!.checkPermissions?.(
-      { url: "https://localhost/page" },
+      { url: "https://github.com/random-org/repo" },
       fakeEvaluatorContext(
         createEmptyToolPermissionContext({
           alwaysAllowRules: {
-            localSettings: ["WebFetch(domain:localhost)"],
+            localSettings: ["WebFetch(domain:github.com)"],
           },
         }),
       ),
@@ -1291,11 +1311,11 @@ describe("model-facing tools", () => {
 
     const legacyTool = tools.find((candidate) => candidate.name === "WebFetch");
     const legacyDenied = await legacyTool!.checkPermissions?.(
-      { url: "https://localhost/page" },
+      { url: "https://github.com/random-org/repo" },
       fakeEvaluatorContext(
         createEmptyToolPermissionContext({
           alwaysDenyRules: {
-            localSettings: ["web_fetch(domain:localhost)"],
+            localSettings: ["web_fetch(domain:github.com)"],
           },
         }),
       ),
@@ -1306,7 +1326,7 @@ describe("model-facing tools", () => {
     });
 
     const ask = await tool!.checkPermissions?.(
-      { url: "https://localhost/page" },
+      { url: "https://github.com/random-org/repo" },
       fakeEvaluatorContext(),
     );
     expect(ask).toMatchObject({
@@ -1316,7 +1336,7 @@ describe("model-facing tools", () => {
           type: "addRules",
           destination: "localSettings",
           behavior: "allow",
-          rules: [{ toolName: "web_fetch", ruleContent: "domain:localhost" }],
+          rules: [{ toolName: "web_fetch", ruleContent: "domain:github.com" }],
         },
       ],
     });

@@ -279,13 +279,22 @@ function htmlToText(input: string): string {
 }
 
 function isRedirectStatus(status: number): boolean {
-  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+  return (
+    status === 301 ||
+    status === 302 ||
+    status === 303 ||
+    status === 307 ||
+    status === 308
+  );
 }
 
 async function fetchWithTimeout(
   url: string,
   timeoutMs = DEFAULT_TIMEOUT_MS,
-  opts: { readonly validateWebFetchUrls?: boolean } = {},
+  opts: {
+    readonly validateWebFetchUrls?: boolean;
+    readonly allowWebFetchRedirect?: (nextUrl: string) => boolean;
+  } = {},
 ): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -327,7 +336,14 @@ async function fetchWithTimeout(
         return response;
       }
       await response.body?.cancel().catch(() => undefined);
-      currentUrl = normalizeWebFetchRedirectUrl(currentUrl, location);
+      const nextUrl = normalizeWebFetchRedirectUrl(currentUrl, location);
+      if (
+        opts.allowWebFetchRedirect !== undefined &&
+        !opts.allowWebFetchRedirect(nextUrl)
+      ) {
+        throw new Error("redirect target is outside the preapproved URL scope");
+      }
+      currentUrl = nextUrl;
       redirects += 1;
     }
   } finally {
@@ -746,6 +762,8 @@ function isBlockedWebFetchHostname(hostname: string): boolean {
     hostname.startsWith("[") && hostname.endsWith("]")
       ? hostname.slice(1, -1)
       : hostname;
+  const lower = unwrapped.toLowerCase().replace(/\.$/, "");
+  if (lower === "localhost" || lower.endsWith(".localhost")) return true;
   const ipVersion = isIP(unwrapped);
   if (ipVersion === 4) return isBlockedWebFetchIPv4(unwrapped);
   if (ipVersion === 6) return isBlockedWebFetchIPv6(unwrapped);
@@ -1715,7 +1733,14 @@ function createWebFetchTool(toolName: string): Tool {
         const response = await fetchWithTimeout(
           normalized,
           numberValue(args.timeout_ms) ?? DEFAULT_TIMEOUT_MS,
-          { validateWebFetchUrls: true },
+          {
+            validateWebFetchUrls: true,
+            allowWebFetchRedirect: (nextUrl) => {
+              if (!initialPreapproved) return true;
+              const next = new URL(nextUrl);
+              return isPreapprovedHost(next.hostname, next.pathname);
+            },
+          },
         );
         const finalUrl = validateWebFetchFinalUrl(response.url || normalized);
         const finalParsed = new URL(finalUrl);

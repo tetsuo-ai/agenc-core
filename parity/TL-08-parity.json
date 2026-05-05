@@ -108,7 +108,8 @@
         "derive content rules as domain:<hostname>",
         "honor deny, ask, and allow rules for both web_fetch and legacy WebFetch spellings",
         "offer localSettings allow-rule suggestions for new domain approvals",
-        "block direct private, loopback, and link-local IP literal targets before fetch"
+        "block direct private, loopback, and link-local IP literal targets before fetch",
+        "block deterministic localhost hostnames before permission approval or fetch"
       ],
       "tests": ["runtime/src/bin/model-facing-tools.test.ts"],
       "commands": [
