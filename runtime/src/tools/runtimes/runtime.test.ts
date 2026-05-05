@@ -449,6 +449,22 @@ describe("tools/runtimes", () => {
         context: {
           ...base,
           approvalPolicy: "never",
+          requestedSandboxMode: "workspace_write",
+          sandboxMode: "workspace_write",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation,
+        },
+        tool: shellTool,
+        args: { cmd: "ls", shell: "/bin/sh" },
+      }),
+    ).toThrow(/shell execution envelope/);
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
           requestedSandboxMode: "read_only",
           sandboxMode: "read_only",
           approvalResolved: false,
@@ -888,6 +904,35 @@ describe("tools/runtimes", () => {
       }),
     );
 
+    const noHelperStdin = await router.dispatchModelToolCall(
+      {
+        id: "call-stdin-no-helper",
+        name: "write_stdin",
+        arguments: JSON.stringify({
+          session_id: 7,
+          chars: "",
+        }),
+      },
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: {
+          subId: "turn-stdin-no-helper",
+          cwd: workspaceRoot,
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "read_only" },
+        } as never,
+        tracker: tracker() as never,
+        approvalPolicy: "never",
+        sandboxMode: "read_only",
+      },
+    );
+    expect(noHelperStdin.isError).toBe(true);
+    expect(noHelperStdin.content).toContain("write_stdin");
+    expect(writeStdin).not.toHaveBeenCalled();
+
     const readOnlyStdin = await router.dispatchModelToolCall(
       {
         id: "call-stdin-read-only",
@@ -1039,6 +1084,75 @@ describe("tools/runtimes", () => {
 
     expect(result.isError).toBeFalsy();
     expect(result.content).toContain(workspaceRoot);
+  });
+
+  test("actual exec_command denies custom shell envelopes without a platform helper", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-runtime-shell-env-"));
+    const execCommand = vi.fn(async () => ({
+      output: "ok\n",
+      stdout: "ok\n",
+      stderr: "",
+      exitCode: 0,
+      exit_code: 0,
+      durationMs: 1,
+      wall_time_seconds: 0.001,
+      timedOut: false,
+      truncated: false,
+      original_token_count: 1,
+    }));
+    const router = new ToolRouter([
+      {
+        tool: createExecCommandTool({
+          cwd: workspaceRoot,
+          allowedPaths: [workspaceRoot],
+          unifiedExecManager: {
+            maxTimeoutMs: 30_000,
+            execCommand,
+            writeStdin: vi.fn(),
+            closeAll: vi.fn(),
+          },
+        }),
+        supportsParallelToolCalls: false,
+      },
+    ]);
+    const baseOpts = {
+      session: {
+        eventLog: new EventLog(),
+        services: {},
+      } as never,
+      turn: {
+        subId: "turn-shell-envelope",
+        cwd: workspaceRoot,
+        approvalPolicy: { value: "never" },
+        sandboxPolicy: { value: "workspace_write" },
+      } as never,
+      tracker: tracker() as never,
+      approvalPolicy: "never" as const,
+      sandboxMode: "workspace_write" as const,
+    };
+
+    const customShell = await router.dispatchModelToolCall(
+      {
+        id: "call-custom-shell-no-helper",
+        name: "exec_command",
+        arguments: JSON.stringify({ cmd: "ls", shell: "/bin/sh" }),
+      },
+      baseOpts,
+    );
+    expect(customShell.isError).toBe(true);
+    expect(customShell.content).toContain("shell execution envelope");
+
+    const loginShell = await router.dispatchModelToolCall(
+      {
+        id: "call-login-shell-no-helper",
+        name: "exec_command",
+        arguments: JSON.stringify({ cmd: "ls", login: true }),
+      },
+      baseOpts,
+    );
+    expect(loginShell.isError).toBe(true);
+    expect(loginShell.content).toContain("shell execution envelope");
+    expect(execCommand).not.toHaveBeenCalled();
   });
 
   test("actual Write handler obeys per-attempt workspace-write preflight", async () => {

@@ -168,8 +168,33 @@ export function enforceRuntimeSandboxAttempt(
   if (policy.kind === "danger_full_access" || policy.kind === "external_sandbox") {
     return;
   }
+  if (
+    shellEnvelopeRequiresPlatformSandbox(input.tool, input.args) &&
+    !runtimePlatformSandboxAvailable(input.context)
+  ) {
+    throw new SandboxDeniedError(
+      `sandbox ${policy.kind} could not verify shell execution envelope for ${input.tool.name}`,
+      {
+        denial: "filesystem",
+        target: input.tool.name,
+        policy,
+      },
+    );
+  }
   enforceRuntimeReadSandboxAttempt(input, policy, cwd, profile.fileSystem);
-  if (input.tool.name === "write_stdin") return;
+  if (input.tool.name === "write_stdin") {
+    if (!runtimePlatformSandboxAvailable(input.context)) {
+      throw new SandboxDeniedError(
+        `sandbox ${policy.kind} blocked write_stdin without platform sandbox context`,
+        {
+          denial: "filesystem",
+          target: input.tool.name,
+          policy,
+        },
+      );
+    }
+    return;
+  }
   if (!toolMayMutate(input.tool)) return;
   const writes = analyzeWrites(input.tool, input.args, cwd);
   if (writes.indeterminate) {
@@ -220,6 +245,15 @@ function canDeferIndeterminateWritesToPlatformSandbox(
 ): boolean {
   if (!runtimePlatformSandboxAvailable(input.context)) return false;
   return analyzeShellRuntimeAccess(input.tool, input.args, cwd) !== null;
+}
+
+function shellEnvelopeRequiresPlatformSandbox(
+  tool: Tool,
+  args: Record<string, unknown>,
+): boolean {
+  if (analyzeShellRuntimeAccess(tool, args, process.cwd()) === null) return false;
+  const shell = typeof args["shell"] === "string" ? args["shell"].trim() : "";
+  return shell.length > 0 || args["login"] === true || args["tty"] === true;
 }
 
 function enforceRuntimeReadSandboxAttempt(
