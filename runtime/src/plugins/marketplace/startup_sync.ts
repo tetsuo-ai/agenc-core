@@ -17,6 +17,7 @@ import {
   readResponseTextWithLimit,
   redactUrlForError,
 } from "./fetchGuards.js";
+import { validateMarketplaceManifest } from "../validation.js";
 
 export interface StartupSyncOptions extends MarketplaceOperationOptions {
   readonly gitUrl?: string;
@@ -51,7 +52,9 @@ export function curatedPluginsShaPath(agencHome: string): string {
 
 export async function hasLocalCuratedPluginsSnapshot(agencHome: string): Promise<boolean> {
   const manifest = join(curatedPluginsRepoPath(agencHome), ".agents", "plugins", "marketplace.json");
-  return await isFile(manifest) && await isFile(curatedPluginsShaPath(agencHome));
+  return await isFile(manifest) &&
+    await isFile(curatedPluginsShaPath(agencHome)) &&
+    await marketplaceManifestValid(manifest);
 }
 
 export async function syncCuratedPluginsRepo(
@@ -101,7 +104,7 @@ export async function syncCuratedPluginsRepoViaGit(
   const shaPath = curatedPluginsShaPath(agencHome);
   const remoteSha = await gitLsRemoteHeadSha(gitBinary, gitUrl, run);
   const localSha = await readLocalGitOrShaFile(repoPath, shaPath, gitBinary, run);
-  if (localSha === remoteSha && await isDirectory(join(repoPath, ".git"))) {
+  if (localSha === remoteSha && await isDirectory(join(repoPath, ".git")) && await hasLocalCuratedPluginsSnapshot(agencHome)) {
     return remoteSha;
   }
   const stagedRepoDir = await prepareCuratedRepoParentAndTempDir(repoPath);
@@ -131,7 +134,7 @@ export async function syncCuratedPluginsRepoViaHttp(
   const shaPath = curatedPluginsShaPath(agencHome);
   const remoteSha = await fetchCuratedRepoRemoteSha(apiBaseUrl, fetcher);
   const localSha = await readShaFile(shaPath);
-  if (localSha === remoteSha && await isDirectory(repoPath)) {
+  if (localSha === remoteSha && await isDirectory(repoPath) && await hasLocalCuratedPluginsSnapshot(agencHome)) {
     return remoteSha;
   }
   const stagedRepoDir = await prepareCuratedRepoParentAndTempDir(repoPath);
@@ -523,6 +526,11 @@ async function readShaFile(shaPath: string): Promise<string | null> {
 
 async function isFile(path: string): Promise<boolean> {
   return stat(path).then((value) => value.isFile(), () => false);
+}
+
+async function marketplaceManifestValid(path: string): Promise<boolean> {
+  return validateMarketplaceManifest(path)
+    .then((result) => result.success, () => false);
 }
 
 async function isDirectory(path: string): Promise<boolean> {

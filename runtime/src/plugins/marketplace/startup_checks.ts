@@ -14,6 +14,7 @@ import {
   AGENC_OFFICIAL_MARKETPLACE_SOURCE,
 } from "./officialMarketplace.js";
 import {
+  hasLocalCuratedPluginsSnapshot,
   readCuratedPluginsSha,
   syncCuratedPluginsRepo,
   type StartupSyncOptions,
@@ -130,9 +131,11 @@ async function syncCuratedSnapshot(
   agencHome: string,
   options: PerformStartupMarketplaceChecksOptions,
 ): Promise<boolean> {
-  const before = await readCuratedPluginsSha(agencHome).catch(() => null);
+  const beforeSha = await readCuratedPluginsSha(agencHome).catch(() => null);
+  const hadSnapshot = await hasLocalCuratedPluginsSnapshot(agencHome);
   const after = await syncCuratedPluginsRepo(agencHome, { ...options, agencHome });
-  return before !== after;
+  const hasSnapshot = await hasLocalCuratedPluginsSnapshot(agencHome);
+  return beforeSha !== after || hadSnapshot !== hasSnapshot;
 }
 
 async function maybeSyncRemoteInstalledPlugins(

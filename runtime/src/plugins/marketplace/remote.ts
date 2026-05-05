@@ -295,10 +295,12 @@ export async function syncRemoteInstalledPluginBundlesOnce(
     }
   }
 
-  const removedCachePluginIds = await removeStaleRemotePluginCaches(
-    agencHome,
-    installedPluginNamesByMarketplace,
-  );
+  const removedCachePluginIds = failedRemotePluginIds.size === 0
+    ? await removeStaleRemotePluginCaches(
+      agencHome,
+      installedPluginNamesByMarketplace,
+    )
+    : [];
   return {
     installedPluginIds: [...installedPluginIds].sort((a, b) => a.localeCompare(b)),
     removedCachePluginIds,

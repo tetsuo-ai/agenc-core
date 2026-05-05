@@ -244,6 +244,38 @@ describe("startup marketplace sync", () => {
     await expect(hasLocalCuratedPluginsSnapshot(agencHome)).resolves.toBe(true);
   });
 
+  it("marks refresh when trusted startup rematerializes a missing curated snapshot with the same SHA", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-startup-checks-same-sha-missing-snapshot-"));
+    await mkdir(join(agencHome, "plugins", "marketplaces"), { recursive: true });
+    await writeFile(curatedPluginsShaPath(agencHome), "abc123\n");
+    let state = { plugins: { needsRefresh: false } };
+    const setAppState = (update: (prev: typeof state) => typeof state) => {
+      state = update(state);
+    };
+
+    await performStartupChecks(setAppState, {
+      trustAccepted: true,
+      agencHome,
+      runProcess: async (_command, args) => {
+        if (args[0] === "ls-remote") {
+          return { stdout: "abc123\tHEAD\n", stderr: "" };
+        }
+        if (args[0] === "clone") {
+          const destination = args[args.length - 1]!;
+          await writeCuratedMarketplace(destination);
+          return { stdout: "", stderr: "" };
+        }
+        if (args.includes("rev-parse")) {
+          return { stdout: "abc123\n", stderr: "" };
+        }
+        throw new Error(`unexpected git command: ${args.join(" ")}`);
+      },
+    });
+
+    expect(state.plugins.needsRefresh).toBe(true);
+    await expect(hasLocalCuratedPluginsSnapshot(agencHome)).resolves.toBe(true);
+  });
+
   it("skips all startup install work until workspace trust is accepted", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-startup-checks-untrusted-"));
     let state = { plugins: { needsRefresh: false } };

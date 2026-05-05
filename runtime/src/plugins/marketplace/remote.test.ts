@@ -199,6 +199,54 @@ describe("remote plugin marketplace API", () => {
     await expect(readFile(staleManifest, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("retains stale remote caches when any installed bundle fails", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-bundle-sync-partial-failure-"));
+    const staleManifest = join(
+      agencHome,
+      "plugins",
+      "cache",
+      "agenc-global",
+      "stale",
+      "1.0.0",
+      ".agenc-plugin",
+      "plugin.json",
+    );
+    await mkdir(join(staleManifest, ".."), { recursive: true });
+    await writeFile(staleManifest, JSON.stringify({ name: "stale", version: "1.0.0" }));
+
+    const outcome = await syncRemoteInstalledPluginBundlesOnce(
+      agencHome,
+      config,
+      auth,
+      {
+        fetcher: async (url) => {
+          const parsed = new URL(url);
+          if (parsed.pathname === "/ps/plugins/installed") {
+            const scope = parsed.searchParams.get("scope");
+            return jsonResponse({
+              plugins: scope === "GLOBAL"
+                ? [{
+                    plugin: { ...remotePlugin(), name: "../linear" },
+                    enabled: true,
+                    disabled_skill_names: [],
+                  }]
+                : [],
+              pagination: {},
+            });
+          }
+          return jsonResponse({ message: "not found" }, false, 404);
+        },
+      },
+    );
+
+    expect(outcome).toEqual({
+      installedPluginIds: [],
+      removedCachePluginIds: [],
+      failedRemotePluginIds: ["linear"],
+    });
+    await expect(readFile(staleManifest, "utf8")).resolves.toContain("\"stale\"");
+  });
+
   it("removes older cached versions after installing the current remote bundle", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-version-prune-"));
     const oldManifest = join(
