@@ -75,7 +75,29 @@ export interface RunAgentParams {
   readonly reasoningEffort?: ReasoningEffort;
   /** Optional AbortSignal merged with the live agent's controller. */
   readonly externalSignal?: AbortSignal;
+  /** Optional per-call child tool policy layered after allowlist filtering. */
+  readonly childToolPolicy?: ChildToolPolicy;
+  /** Optional per-child turn cap. */
+  readonly maxTurns?: number;
+  /** Suppress parent mailbox notifications and child rollout recording. */
+  readonly silent?: boolean;
 }
+
+export type ChildToolPolicyDecision =
+  | {
+      readonly behavior: "allow";
+      readonly updatedInput?: Record<string, unknown>;
+    }
+  | {
+      readonly behavior: "deny";
+      readonly message: string;
+      readonly metadata?: Record<string, unknown>;
+    };
+
+export type ChildToolPolicy = (
+  tool: Pick<Tool, "name">,
+  input: Record<string, unknown>,
+) => ChildToolPolicyDecision | Promise<ChildToolPolicyDecision>;
 
 export type RunAgentProgressEvent =
   | { readonly kind: "status"; readonly text: string }
@@ -93,6 +115,7 @@ export type RunAgentProgressEvent =
       readonly toolName: string;
       readonly result: string;
       readonly isError: boolean;
+      readonly metadata?: Record<string, unknown>;
     }
   | {
       readonly kind: "usage_update";
@@ -452,6 +475,7 @@ export function buildFilteredRegistry(
     readonly childConversationId: string;
     readonly worktree?: WorktreeHandle;
     readonly disabledTools?: ReadonlySet<string>;
+    readonly childToolPolicy?: ChildToolPolicy;
   },
 ): ToolRegistry {
   const allowed = opts.allowlist ? new Set(opts.allowlist) : null;
@@ -525,13 +549,22 @@ export function buildFilteredRegistry(
         return {
           content: result.content,
           ...(result.isError !== undefined ? { isError: result.isError } : {}),
+          ...(result.metadata !== undefined ? { metadata: result.metadata } : {}),
         };
       }
 
+      const policyResult = await applyChildToolPolicy(
+        { name: toolCall.name },
+        parsedArgs,
+        opts,
+      );
+      if ("result" in policyResult) {
+        return policyResult.result;
+      }
       return base.dispatch({
         ...toolCall,
         arguments: safeStringify(
-          injectChildToolArgs(parsedArgs, toolCall.name, opts),
+          injectChildToolArgs(policyResult.args, toolCall.name, opts),
         ),
       });
     },
@@ -621,8 +654,21 @@ function injectChildToolArgs(
     ...parsedArgs,
     [SESSION_ID_ARG]: opts.childConversationId,
   };
+  const existingAllowedRoots = Array.isArray(
+    injectedArgs[SESSION_ALLOWED_ROOTS_ARG],
+  )
+    ? (injectedArgs[SESSION_ALLOWED_ROOTS_ARG] as unknown[]).filter(
+        (entry): entry is string =>
+          typeof entry === "string" && entry.length > 0,
+      )
+    : [];
   if (opts.worktree?.path) {
-    injectedArgs[SESSION_ALLOWED_ROOTS_ARG] = [opts.worktree.path];
+    existingAllowedRoots.push(opts.worktree.path);
+  }
+  if (existingAllowedRoots.length > 0) {
+    injectedArgs[SESSION_ALLOWED_ROOTS_ARG] = [
+      ...new Set(existingAllowedRoots),
+    ];
   }
   if (
     opts.worktree?.path &&
@@ -636,17 +682,51 @@ function injectChildToolArgs(
   return injectedArgs;
 }
 
+async function applyChildToolPolicy(
+  tool: Pick<Tool, "name">,
+  args: Record<string, unknown>,
+  opts: {
+    readonly childToolPolicy?: ChildToolPolicy;
+  },
+): Promise<
+  | { readonly args: Record<string, unknown> }
+  | { readonly result: ToolDispatchResult }
+> {
+  if (!opts.childToolPolicy) {
+    return { args };
+  }
+  const decision = await opts.childToolPolicy(tool, args);
+  if (decision.behavior === "deny") {
+    return {
+      result: {
+        content: safeStringify({ error: decision.message }),
+        isError: true,
+        metadata: {
+          ...(decision.metadata ?? {}),
+          childPolicyDenied: true,
+        },
+      },
+    };
+  }
+  return { args: decision.updatedInput ?? args };
+}
+
 function wrapToolForChild(
   tool: Tool,
   opts: {
     readonly childConversationId: string;
     readonly worktree?: WorktreeHandle;
+    readonly childToolPolicy?: ChildToolPolicy;
   },
 ): Tool {
   return {
     ...tool,
-    execute(args) {
-      return tool.execute(injectChildToolArgs(args, tool.name, opts));
+    async execute(args) {
+      const policyResult = await applyChildToolPolicy(tool, args, opts);
+      if ("result" in policyResult) {
+        return policyResult.result;
+      }
+      return tool.execute(injectChildToolArgs(policyResult.args, tool.name, opts));
     },
   };
 }
@@ -819,6 +899,9 @@ function buildChildSession(
         depth: params.live.depth,
         maxDepth: resolveSessionMaxAgentDepth(params.parent),
       }),
+      ...(params.childToolPolicy !== undefined
+        ? { childToolPolicy: params.childToolPolicy }
+        : {}),
     },
   );
 
@@ -843,23 +926,25 @@ function buildChildSession(
   });
   params.live.configSnapshot = threadConfigSnapshot(sessionConfiguration) as unknown as Record<string, unknown>;
 
-  try {
-    const childRolloutStore = createChildRolloutStore(
-      params.parent,
-      sessionConfiguration,
-      params.live.agentId,
-    );
-    if (childRolloutStore) {
-      childSession.mountRolloutStore(childRolloutStore);
-      params.live.rolloutPath = childRolloutStore.rolloutPath;
+  if (!params.silent) {
+    try {
+      const childRolloutStore = createChildRolloutStore(
+        params.parent,
+        sessionConfiguration,
+        params.live.agentId,
+      );
+      if (childRolloutStore) {
+        childSession.mountRolloutStore(childRolloutStore);
+        params.live.rolloutPath = childRolloutStore.rolloutPath;
+      }
+    } catch (err) {
+      emitWarning(
+        params.parent.eventLog,
+        params.parent.nextInternalSubId(),
+        "subagent_rollout_init_failed",
+        err instanceof Error ? err.message : String(err),
+      );
     }
-  } catch (err) {
-    emitWarning(
-      params.parent.eventLog,
-      params.parent.nextInternalSubId(),
-      "subagent_rollout_init_failed",
-      err instanceof Error ? err.message : String(err),
-    );
   }
 
   return childSession;
@@ -876,6 +961,16 @@ export async function* runAgent(
 ): AsyncGenerator<RunAgentProgressEvent, RunAgentResult, void> {
   const startedAt = Date.now();
   const { live, parent } = params;
+  const relayAgentEvent = (
+    event: Omit<Parameters<typeof relayToParentMailbox>[0], "live" | "parent">,
+  ): void => {
+    if (params.silent) return;
+    relayToParentMailbox({ live, parent, ...event });
+  };
+  const sendParentNotification = (): void => {
+    if (params.silent) return;
+    sendSubagentNotificationToParent({ live, parent });
+  };
 
   // Merge parent's + external signal with the live agent's controller.
   const merged = new AbortController();
@@ -886,26 +981,28 @@ export async function* runAgent(
     if (!merged.signal.aborted)
       merged.abort(String(live.abortController.signal.reason ?? "interrupted"));
   };
+  const onExternalAbort = params.externalSignal
+    ? () => {
+        if (!merged.signal.aborted) {
+          merged.abort(
+            String(
+              (params.externalSignal as AbortSignal & { reason?: unknown }).reason ??
+                "external_aborted",
+            ),
+          );
+        }
+      }
+    : null;
   parent.abortController.signal.addEventListener("abort", onParentAbort, {
     once: true,
   });
   live.abortController.signal.addEventListener("abort", onLiveAbort, {
     once: true,
   });
-  if (params.externalSignal) {
-    params.externalSignal.addEventListener(
-      "abort",
-      () =>
-        merged.signal.aborted
-          ? null
-          : merged.abort(
-              String(
-                (params.externalSignal as AbortSignal & { reason?: unknown }).reason ??
-                  "external_aborted",
-              ),
-            ),
-      { once: true },
-    );
+  if (params.externalSignal && onExternalAbort !== null) {
+    params.externalSignal.addEventListener("abort", onExternalAbort, {
+      once: true,
+    });
   }
 
   const turnId = crypto.randomUUID();
@@ -914,9 +1011,7 @@ export async function* runAgent(
   let roleTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
   try {
-    relayToParentMailbox({
-      live,
-      parent,
+    relayAgentEvent({
       content: `spawned subagent ${live.agentPath} (role=${live.role.name})`,
       triggerTurn: false,
       metadata: {
@@ -978,7 +1073,7 @@ export async function* runAgent(
         "subagent has no provider on parent.services.provider",
       );
       live.status.markErrored(turnId, err.message);
-      sendSubagentNotificationToParent({ live, parent });
+      sendParentNotification();
       yield { kind: "run_error", error: err.message };
       return {
         threadId: live.agentId,
@@ -1061,6 +1156,9 @@ export async function* runAgent(
       const iter = childSession.runTurn(nextUserMessage, {
         ...(firstTurn ? { history } : {}),
         signal: chatOptions.signal,
+        ...(params.maxTurns !== undefined
+          ? { configOverrides: { maxTurns: params.maxTurns } }
+          : {}),
       });
       // eslint-disable-next-line no-constant-condition
       while (true) {
@@ -1088,9 +1186,7 @@ export async function* runAgent(
             childSession.services.registry,
             event.toolCall.name,
           );
-          relayToParentMailbox({
-            live,
-            parent,
+          relayAgentEvent({
             content: `${event.toolCall.name} (${event.toolCall.id})`,
             triggerTurn: false,
             metadata: {
@@ -1117,6 +1213,9 @@ export async function* runAgent(
             toolName: event.toolCall.name,
             result: event.result.content,
             isError: event.result.isError ?? false,
+            ...(event.result.metadata !== undefined
+              ? { metadata: event.result.metadata }
+              : {}),
           };
           continue;
         }
@@ -1144,18 +1243,20 @@ export async function* runAgent(
         if (merged.signal.aborted) break;
       }
 
-      if (stopReason === "error") {
-        const message =
-          terminalError instanceof Error
-            ? terminalError.message
-            : typeof terminalError === "string"
-              ? terminalError
-              : assistantText || "subagent turn failed";
+      if (stopReason === "error" || stopReason === "max_turns") {
+        let message: string;
+        if (stopReason === "max_turns") {
+          message = `subagent exceeded maxTurns${params.maxTurns !== undefined ? ` (${params.maxTurns})` : ""}`;
+        } else if (terminalError instanceof Error) {
+          message = terminalError.message;
+        } else if (typeof terminalError === "string") {
+          message = terminalError;
+        } else {
+          message = assistantText || "subagent turn failed";
+        }
         live.status.markErrored(turnId, message);
-        sendSubagentNotificationToParent({ live, parent });
-        relayToParentMailbox({
-          live,
-          parent,
+        sendParentNotification();
+        relayAgentEvent({
           content: message,
           triggerTurn: false,
           metadata: {
@@ -1193,9 +1294,7 @@ export async function* runAgent(
             ? nextUserMessage
             : [...nextUserMessage],
         });
-        relayToParentMailbox({
-          live,
-          parent,
+        relayAgentEvent({
           content: `accepted follow-up input for ${live.agentPath}`,
           triggerTurn: false,
           metadata: {
@@ -1215,9 +1314,7 @@ export async function* runAgent(
     if (merged.signal.aborted) {
       const reason = String(merged.signal.reason ?? "aborted");
       live.status.markInterrupted(turnId, reason);
-      relayToParentMailbox({
-        live,
-        parent,
+      relayAgentEvent({
         content: reason,
         triggerTurn: false,
         metadata: {
@@ -1236,10 +1333,8 @@ export async function* runAgent(
     if (roleTimeoutFired) {
       const message = `role_timeout after ${roleTimeoutMs}ms`;
       live.status.markErrored(turnId, message);
-      sendSubagentNotificationToParent({ live, parent });
-      relayToParentMailbox({
-        live,
-        parent,
+      sendParentNotification();
+      relayAgentEvent({
         content: message,
         triggerTurn: false,
         metadata: {
@@ -1258,7 +1353,7 @@ export async function* runAgent(
     }
 
     live.status.markCompleted(turnId, assistantText);
-    sendSubagentNotificationToParent({ live, parent });
+    sendParentNotification();
     yield {
       kind: "run_complete",
       ...(assistantText !== undefined ? { finalMessage: assistantText } : {}),
@@ -1278,9 +1373,7 @@ export async function* runAgent(
     if (merged.signal.aborted) {
       const reason = String(merged.signal.reason ?? "aborted");
       live.status.markInterrupted(turnId, reason);
-      relayToParentMailbox({
-        live,
-        parent,
+      relayAgentEvent({
         content: reason,
         triggerTurn: false,
         metadata: {
@@ -1298,10 +1391,8 @@ export async function* runAgent(
     }
     const message = err instanceof Error ? err.message : String(err);
     live.status.markErrored(turnId, message);
-    sendSubagentNotificationToParent({ live, parent });
-    relayToParentMailbox({
-      live,
-      parent,
+    sendParentNotification();
+    relayAgentEvent({
       content: message,
       triggerTurn: false,
       metadata: {
@@ -1326,6 +1417,9 @@ export async function* runAgent(
     }
     parent.abortController.signal.removeEventListener("abort", onParentAbort);
     live.abortController.signal.removeEventListener("abort", onLiveAbort);
+    if (params.externalSignal && onExternalAbort !== null) {
+      params.externalSignal.removeEventListener("abort", onExternalAbort);
+    }
   }
 }
 

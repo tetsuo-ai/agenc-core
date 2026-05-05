@@ -466,6 +466,7 @@ export interface Config {
   readonly agentRoles: ReadonlyArray<{ name: string; description: string }>;
   readonly agent_max_threads?: number;
   readonly agent_max_depth?: number;
+  readonly maxTurns?: number;
   /** Stage 2 (tool-result budgeting) thresholds. Falls back to defaults
    *  in `applyToolResultBudgeting` when absent. */
   readonly toolBudget?: ConfigToolBudget;

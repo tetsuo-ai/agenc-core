@@ -441,6 +441,14 @@ function recordCompletedToolCall(
     turnId: ctx.subId,
     toolResultBytes,
   });
+  state.completedToolResults.push({
+    callId: toolCall.id,
+    toolName: toolCall.name,
+    arguments: toolCall.arguments,
+    content: result.content,
+    isError: result.isError === true,
+    ...(result.metadata !== undefined ? { metadata: result.metadata } : {}),
+  });
   state.toolResults.push(
     toolResultUserRecord(toolCall.id, toolCall.name, result),
   );

@@ -1,10 +1,19 @@
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import { EventLog } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { TurnState } from "../session/turn-state.js";
+import {
+  ensureExtractMemoriesInitialized,
+  executeExtractMemories,
+} from "../services/extractMemories/extractMemories.js";
 import { commit } from "./commit.js";
 import { MAX_STOP_HOOK_BLOCKS } from "./stop-hooks.js";
+
+vi.mock("../services/extractMemories/extractMemories.js", () => ({
+  ensureExtractMemoriesInitialized: vi.fn(),
+  executeExtractMemories: vi.fn(async () => {}),
+}));
 
 function mkCtx(): TurnContext {
   return {
@@ -35,6 +44,7 @@ function mkState(opts: Partial<TurnState> = {}): TurnState {
     toolUseBlocks: [],
     needsFollowUp: true,
     toolResults: [],
+    completedToolResults: [],
     hasAttemptedReactiveCompact: false,
     maxOutputTokensOverride: undefined,
     maxOutputTokensRecoveryCount: 0,
@@ -68,6 +78,10 @@ function mkSession(): Session {
 }
 
 describe("commit", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   test("keeps resolved tool-use summaries out of model-visible history", async () => {
     const upstreamSummary = {
       type: "tool_use_summary",
@@ -160,6 +174,7 @@ describe("commit", () => {
       role: "user",
       content: "fix lint",
     });
+    expect(executeExtractMemories).not.toHaveBeenCalled();
   });
 
   test("third blocking stop hook hits the cap without re-entering", async () => {
@@ -202,5 +217,61 @@ describe("commit", () => {
         },
       },
     ]);
+  });
+
+  test("schedules memory extraction after a natural terminal turn", async () => {
+    const session = mkSession();
+    const ctx = mkCtx();
+    const state = mkState({
+      needsFollowUp: false,
+      toolUseBlocks: [],
+      messages: [
+        { role: "user", content: "remember terminal scheduling" },
+        { role: "assistant", content: "ok" },
+      ],
+      completedToolResults: [
+        {
+          callId: "write-1",
+          toolName: "Write",
+          arguments: "{}",
+          content: "ok",
+          isError: false,
+        },
+      ],
+    });
+
+    await commit(state, ctx, session);
+
+    expect(ensureExtractMemoriesInitialized).toHaveBeenCalledOnce();
+    expect(executeExtractMemories).toHaveBeenCalledOnce();
+    expect(executeExtractMemories).toHaveBeenCalledWith(
+      {
+        messages: state.messages,
+        completedToolResults: state.completedToolResults,
+        ctx,
+        session,
+        signal: undefined,
+      },
+      expect.any(Function),
+    );
+  });
+
+  test("does not schedule memory extraction while tools are pending", async () => {
+    const state = mkState({
+      needsFollowUp: true,
+      toolUseBlocks: [
+        {
+          type: "tool_use",
+          id: "tool-1",
+          name: "Write",
+          input: {},
+        },
+      ],
+    });
+
+    await commit(state, mkCtx(), mkSession());
+
+    expect(ensureExtractMemoriesInitialized).not.toHaveBeenCalled();
+    expect(executeExtractMemories).not.toHaveBeenCalled();
   });
 });

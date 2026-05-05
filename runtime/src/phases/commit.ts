@@ -33,7 +33,15 @@
 
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
-import type { TurnState } from "../session/turn-state.js";
+import type {
+  CompletedToolResultRecord,
+  TurnState,
+} from "../session/turn-state.js";
+import type { LLMMessage } from "../llm/types.js";
+import {
+  ensureExtractMemoriesInitialized,
+  executeExtractMemories,
+} from "../services/extractMemories/extractMemories.js";
 import { evaluateStopHooks } from "./stop-hooks.js";
 
 /**
@@ -56,6 +64,50 @@ function toolUseSummaryText(summary: unknown): string | null {
         : "";
   if (text.length === 0) return null;
   return text;
+}
+
+function cloneMessage(message: LLMMessage): LLMMessage {
+  return {
+    ...message,
+    content: Array.isArray(message.content)
+      ? message.content.map((part) => ({ ...part }))
+      : message.content,
+    ...(message.toolCalls !== undefined
+      ? { toolCalls: message.toolCalls.map((call) => ({ ...call })) }
+      : {}),
+    ...(message.runtimeOnly !== undefined
+      ? { runtimeOnly: { ...message.runtimeOnly } }
+      : {}),
+  };
+}
+
+function cloneCompletedToolResult(
+  record: CompletedToolResultRecord,
+): CompletedToolResultRecord {
+  return {
+    ...record,
+    ...(record.metadata !== undefined
+      ? { metadata: { ...record.metadata } }
+      : {}),
+  };
+}
+
+function emitSavedMemoryMessage(
+  session: Session,
+  paths: readonly string[],
+): void {
+  if (paths.length === 0) return;
+  const message =
+    paths.length === 1
+      ? `Saved memory: ${paths[0]}`
+      : `Saved memories: ${paths.join(", ")}`;
+  session.emit({
+    id: session.nextInternalSubId(),
+    msg: {
+      type: "agent_message",
+      payload: { message },
+    },
+  });
 }
 
 export async function commit(
@@ -170,6 +222,21 @@ export async function commit(
     } else {
       state.stopHookActive = false;
       state.stopHookBlockingCount = 0;
+      const messages = state.messages.map(cloneMessage);
+      const completedToolResults = state.completedToolResults.map(
+        cloneCompletedToolResult,
+      );
+      ensureExtractMemoriesInitialized();
+      void executeExtractMemories(
+        {
+          messages,
+          completedToolResults,
+          ctx,
+          session,
+          signal,
+        },
+        (paths) => emitSavedMemoryMessage(session, paths),
+      ).catch(() => {});
     }
   }
 

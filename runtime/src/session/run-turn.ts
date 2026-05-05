@@ -64,6 +64,7 @@ import { commit } from "../phases/commit.js";
 import { continuationNudge } from "../phases/continuation-nudge.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { executeTools } from "../phases/execute-tools.js";
+import { drainPendingExtraction } from "../services/extractMemories/extractMemories.js";
 import { postSampleRecovery } from "../phases/post-sample-recovery.js";
 import { getAttachments } from "../prompts/attachments/orchestrator.js";
 import { attachmentsToMessages } from "../prompts/attachments/messages.js";
@@ -1368,8 +1369,8 @@ function resolveMaxTurns(ctx: TurnContext): number {
  * stream and appended to `state.messages` / `state.toolResults` so
  * every orphan `tool_use` block sent by the model during the
  * abort/error window has a paired `tool_result`. Without this, the
- * next turn's provider request would fail the Anthropic/openai
- * tool-use-id pairing contract.
+   * next turn's provider request would fail the tool-use-id pairing
+   * contract enforced by chat-completion providers.
  *
  * The executor's internal abort + discard logic is responsible for
  * generating the synthetic terminal results themselves. This helper
@@ -2271,6 +2272,7 @@ async function* runTurnKernelInner(
         usage,
         stopReason,
       };
+      await drainPendingExtraction();
       return terminal;
     }
 
@@ -2283,16 +2285,25 @@ async function* runTurnKernelInner(
     }
     await executeTools(state, ctx, session, signal);
     if (lastAssistant) {
+      const completedByCallId = new Map(
+        state.completedToolResults.map((record) => [record.callId, record]),
+      );
       for (let i = 0; i < lastAssistant.toolCalls.length; i += 1) {
         const call = lastAssistant.toolCalls[i];
         const userRec = state.toolResults[i];
         if (!call || !userRec) continue;
+        const completed = completedByCallId.get(call.id);
         yield {
           type: "tool_result",
           toolCall: call,
           result: {
-            content: typeof userRec.content === "string" ? userRec.content : "",
-            isError: false,
+            content:
+              completed?.content ??
+              (typeof userRec.content === "string" ? userRec.content : ""),
+            isError: completed?.isError ?? false,
+            ...(completed?.metadata !== undefined
+              ? { metadata: completed.metadata }
+              : {}),
           },
         };
       }

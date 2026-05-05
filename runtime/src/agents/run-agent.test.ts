@@ -361,6 +361,31 @@ describe("runAgent", () => {
     }
   });
 
+  it("removes the external abort listener after completion", async () => {
+    const provider = makeProvider([{ content: "ok" }]);
+    const session = makeStubSession({ services: { provider } });
+    const { live } = await spawnLive(session);
+    const external = new AbortController();
+    const addListener = vi.spyOn(external.signal, "addEventListener");
+    const removeListener = vi.spyOn(external.signal, "removeEventListener");
+
+    await collectRun(
+      runAgent({
+        live,
+        parent: session as unknown as Parameters<typeof runAgent>[0]["parent"],
+        initialMessages: [{ role: "user", content: "go" }],
+        taskPrompt: "go",
+        externalSignal: external.signal,
+      }),
+    );
+
+    const abortListener = addListener.mock.calls.find(
+      (call) => call[0] === "abort",
+    )?.[1];
+    expect(abortListener).toBeDefined();
+    expect(removeListener).toHaveBeenCalledWith("abort", abortListener);
+  });
+
   it("runs child turns through the session turn loop and counts tool calls", async () => {
     const provider = makeProvider([
       {
@@ -410,6 +435,63 @@ describe("runAgent", () => {
     expect(provider.chatStream).toHaveBeenCalledTimes(2);
     expect(result.finalMessage).toBe("tool work complete");
     expect(result.toolCallCount).toBe(1);
+  });
+
+  it("treats child maxTurns termination as an errored run", async () => {
+    const provider = makeProvider([
+      {
+        content: "",
+        toolCalls: [{ id: "call-1", name: "system.echo", arguments: "{}" }],
+        finishReason: "tool_calls",
+      },
+      {
+        content: "",
+        toolCalls: [{ id: "call-2", name: "system.echo", arguments: "{}" }],
+        finishReason: "tool_calls",
+      },
+    ]);
+    const session = makeStubSession({
+      services: {
+        provider,
+        registry: {
+          tools: [
+            {
+              name: "system.echo",
+              description: "echo",
+              inputSchema: { type: "object" },
+              execute: async () => ({ content: JSON.stringify({ ok: true }) }),
+            },
+          ],
+          toLLMTools: () => [
+            {
+              type: "function",
+              function: {
+                name: "system.echo",
+                description: "echo",
+                parameters: { type: "object" },
+              },
+            },
+          ],
+          dispatch: async () => ({ content: JSON.stringify({ ok: true }) }),
+        } satisfies ToolRegistry,
+      },
+    });
+    const { live } = await spawnLive(session);
+
+    const { result } = await collectRun(
+      runAgent({
+        live,
+        parent: session,
+        initialMessages: [{ role: "user", content: "go" }],
+        taskPrompt: "go",
+        maxTurns: 1,
+      }),
+    );
+
+    expect(result.outcome).toBe("errored");
+    expect(result.error).toBeInstanceOf(Error);
+    expect((result.error as Error).message).toBe("subagent exceeded maxTurns (1)");
+    expect(provider.chatStream).toHaveBeenCalledTimes(1);
   });
 
   it("drains triggerTurn messages from the child downInbox into a follow-up turn", async () => {
@@ -486,6 +568,210 @@ describe("runAgent", () => {
     expect(parsed[SESSION_ID_ARG]).toBe("child-123");
     expect(parsed[SESSION_ALLOWED_ROOTS_ARG]).toEqual(["/tmp/subagent-wt"]);
     expect(parsed.value).toBe("hello");
+  });
+
+  it("layers child tool policy before wrapped child tool execution", async () => {
+    const execute = vi.fn(async () => ({
+      content: JSON.stringify({ ok: true }),
+      isError: false,
+    }));
+    const registry = buildFilteredRegistry(
+      {
+        tools: [
+          {
+            name: "Write",
+            description: "write",
+            inputSchema: { type: "object" },
+            execute,
+          },
+        ],
+        toLLMTools: () => [],
+        dispatch: async () => ({
+          content: JSON.stringify({ ok: true }),
+          isError: false,
+        }),
+      },
+      {
+        childConversationId: "child-123",
+        worktree: {
+          path: "/tmp/subagent-wt",
+          branch: "worktree-child",
+          gitRoot: "/repo",
+          created: false,
+        },
+        childToolPolicy: (_tool, input) => ({
+          behavior: "allow",
+          updatedInput: {
+            ...input,
+            file_path: "/tmp/memory/feedback.md",
+            [SESSION_ALLOWED_ROOTS_ARG]: ["/tmp/memory"],
+          },
+        }),
+      },
+    );
+
+    await registry.tools[0]!.execute({ file_path: "feedback.md" });
+
+    expect(execute).toHaveBeenCalledOnce();
+    const parsed = execute.mock.calls[0]![0] as Record<string, unknown>;
+    expect(parsed.file_path).toBe("/tmp/memory/feedback.md");
+    expect(parsed[SESSION_ALLOWED_ROOTS_ARG]).toEqual([
+      "/tmp/memory",
+      "/tmp/subagent-wt",
+    ]);
+    expect(parsed[SESSION_ID_ARG]).toBe("child-123");
+  });
+
+  it("returns child policy denials with metadata", async () => {
+    const execute = vi.fn(async () => ({
+      content: JSON.stringify({ ok: true }),
+      isError: false,
+    }));
+    const registry = buildFilteredRegistry(
+      {
+        tools: [
+          {
+            name: "Write",
+            description: "write",
+            inputSchema: { type: "object" },
+            execute,
+          },
+        ],
+        toLLMTools: () => [],
+        dispatch: async () => ({
+          content: JSON.stringify({ ok: true }),
+          isError: false,
+        }),
+      },
+      {
+        childConversationId: "child-123",
+        childToolPolicy: () => ({
+          behavior: "deny",
+          message: "outside memory",
+          metadata: { reason: "write_outside_memory" },
+        }),
+      },
+    );
+
+    const result = await registry.tools[0]!.execute({
+      file_path: "/tmp/other.md",
+    });
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      content: JSON.stringify({ error: "outside memory" }),
+      isError: true,
+      metadata: {
+        reason: "write_outside_memory",
+        childPolicyDenied: true,
+      },
+    });
+  });
+
+  it("preserves child policy denial metadata through registry dispatch", async () => {
+    const execute = vi.fn(async () => ({
+      content: JSON.stringify({ ok: true }),
+      isError: false,
+    }));
+    const registry = buildFilteredRegistry(
+      {
+        tools: [
+          {
+            name: "Write",
+            description: "write",
+            inputSchema: { type: "object" },
+            execute,
+          },
+        ],
+        toLLMTools: () => [
+          {
+            type: "function",
+            function: {
+              name: "Write",
+              description: "write",
+              parameters: { type: "object" },
+            },
+          },
+        ],
+        dispatch: async () => ({
+          content: JSON.stringify({ ok: true }),
+          isError: false,
+        }),
+      },
+      {
+        childConversationId: "child-123",
+        childToolPolicy: () => ({
+          behavior: "deny",
+          message: "outside memory",
+          metadata: { reason: "write_outside_memory" },
+        }),
+      },
+    );
+
+    const result = await registry.dispatch({
+      id: "call-write",
+      name: "Write",
+      arguments: JSON.stringify({ file_path: "/tmp/other.md" }),
+    });
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      content: JSON.stringify({ error: "outside memory" }),
+      isError: true,
+      metadata: {
+        reason: "write_outside_memory",
+        childPolicyDenied: true,
+      },
+    });
+  });
+
+  it("applies child tool policy on fallback dispatch", async () => {
+    const dispatch = vi.fn(async () => ({
+      content: JSON.stringify({ ok: true }),
+      isError: false,
+    }));
+    const registry = buildFilteredRegistry(
+      {
+        tools: [],
+        toLLMTools: () => [
+          {
+            type: "function",
+            function: {
+              name: "VirtualTool",
+              description: "virtual",
+              parameters: { type: "object" },
+            },
+          },
+        ],
+        dispatch,
+      },
+      {
+        childConversationId: "child-123",
+        childToolPolicy: (_tool, input) => ({
+          behavior: "allow",
+          updatedInput: {
+            ...input,
+            [SESSION_ALLOWED_ROOTS_ARG]: ["/tmp/memory"],
+          },
+        }),
+      },
+    );
+
+    await registry.dispatch({
+      id: "call-virtual",
+      name: "VirtualTool",
+      arguments: JSON.stringify({ value: 1 }),
+    });
+
+    expect(dispatch).toHaveBeenCalledOnce();
+    const forwarded = dispatch.mock.calls[0]![0] as {
+      readonly arguments: string;
+    };
+    expect(JSON.parse(forwarded.arguments)).toEqual({
+      value: 1,
+      __agencSessionAllowedRoots: ["/tmp/memory"],
+      __agencSessionId: "child-123",
+    });
   });
 
   it("runs child apply_patch calls relative to the child worktree", async () => {
@@ -799,6 +1085,68 @@ describe("runAgent", () => {
     }
   });
 
+  it("suppresses parent mailbox notifications and child rollout in silent mode", async () => {
+    const provider = makeProvider([{ content: "silent complete" }]);
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-run-agent-silent-"));
+    const session = makeStubSession({
+      services: { provider },
+      sessionConfiguration: mkSessionConfiguration({
+        cwd,
+        provider: provider as unknown as SessionConfiguration["provider"],
+      }),
+      config: {
+        ...mkConfig(),
+        cwd,
+      },
+    });
+    const parentRolloutStore = new RolloutStore({
+      cwd,
+      sessionId: session.conversationId,
+      agencVersion: "0.2.0",
+    });
+    parentRolloutStore.open({
+      sessionId: session.conversationId,
+      timestamp: new Date().toISOString(),
+      cwd,
+      originator: "run-agent-test",
+      agencVersion: "0.2.0",
+      model: session.modelInfo.slug,
+      modelProvider: provider.name,
+    });
+    session.mountRolloutStore(parentRolloutStore);
+
+    const { live } = await spawnLive(session);
+    const childSessionDir = join(
+      dirname(parentRolloutStore.store.sessionDir),
+      live.agentId,
+    );
+
+    try {
+      const { result } = await collectRun(
+        runAgent({
+          live,
+          parent: session,
+          initialMessages: [{ role: "user", content: "go" }],
+          taskPrompt: "go",
+          silent: true,
+        }),
+      );
+
+      expect(result.outcome).toBe("completed");
+      expect(session.mailbox.drain()).toHaveLength(0);
+      expect(live.rolloutPath).toBeUndefined();
+      expect(existsSync(childSessionDir)).toBe(false);
+    } finally {
+      parentRolloutStore.close();
+      rmSync(childSessionDir, { recursive: true, force: true });
+      rmSync(parentRolloutStore.store.sessionDir, {
+        recursive: true,
+        force: true,
+      });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("marks errored when the provider rejects", async () => {
     const provider: LLMProvider = {
       name: "fake",
@@ -868,8 +1216,9 @@ describe("runAgent", () => {
       }
     })();
 
-    // Wait a macrotask so runAgent has a chance to hit `provider.chatStream`.
-    await new Promise((r) => setTimeout(r, 0));
+    for (let attempt = 0; attempt < 20 && chatReject === undefined; attempt += 1) {
+      await new Promise((r) => setTimeout(r, 0));
+    }
     expect(chatReject).toBeDefined();
     live.abortController.abort("user_interrupt");
     await runPromise;

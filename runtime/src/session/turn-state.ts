@@ -171,6 +171,15 @@ export interface UserMessage {
   readonly toolName?: string;
 }
 
+export interface CompletedToolResultRecord {
+  readonly callId: string;
+  readonly toolName: string;
+  readonly arguments: string;
+  readonly content: string;
+  readonly isError: boolean;
+  readonly metadata?: Record<string, unknown>;
+}
+
 /**
  * Single attachment-injection message (skills, memory, system reminders,
  * etc.). Appears in `toolResults` to be sent with the next request.
@@ -302,6 +311,14 @@ export interface TurnState {
    *  the next request. AgenC query.ts:562. */
   toolResults: Array<UserMessage | AttachmentMessage>;
 
+  /**
+   * Runtime-only completed tool ledger for the current user turn. Unlike
+   * `toolResults`, this preserves dispatch success/error metadata so
+   * observers that run after tool execution can distinguish attempted
+   * writes from successful writes without sending that metadata to the model.
+   */
+  completedToolResults: CompletedToolResultRecord[];
+
   // ── Phase 3 — post-sample recovery (AgenC query.ts:1082-1299) ─
   /** Whether reactive compact has already fired this turn. Prevents
    *  infinite compact-retry loop when context stays over threshold.
@@ -424,6 +441,7 @@ export function buildInitialTurnState(
     toolUseBlocks: [],
     needsFollowUp: false,
     toolResults: [],
+    completedToolResults: [],
     // Phase 3
     hasAttemptedReactiveCompact: false,
     maxOutputTokensOverride: opts?.initialMaxOutputTokensOverride,
