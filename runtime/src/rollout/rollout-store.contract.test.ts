@@ -13,23 +13,33 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TraceWriter } from "../session/rollout-trace.js";
 import {
   AGENC_ROLLOUT_SESSION_INDEX_FILE,
+  AgenCRolloutSessionIndex,
+} from "./session-index.js";
+import {
   AGENC_ROLLOUT_SESSIONS_DIR,
   AGENC_ROLLOUT_TRACE_DIR,
-  AGENC_ROLLOUT_TRACE_REDUCED_STATE_FILE,
-  AgenCRolloutRecorder,
-  AgenCRolloutSessionIndex,
-  AgenCRolloutTraceBundle,
   buildAgenCRolloutFileName,
   buildAgenCRolloutMetadata,
+} from "./metadata.js";
+import {
   findAgenCRolloutSession,
   listAgenCRolloutSessions,
   pruneAgenCRollouts,
+} from "./list.js";
+import {
+  AgenCRolloutRecorder,
   readAgenCRolloutLines,
-  readAgenCRolloutTraceReducedState,
+} from "./recorder.js";
+import {
+  AGENC_ROLLOUT_TRACE_REDUCED_STATE_FILE,
+  AgenCRolloutTraceBundle,
   readAgenCRolloutTraceBundle,
+  readAgenCRolloutTraceReducedState,
   replayAgenCRolloutTraceBundle,
+} from "./trace.js";
+import {
   shouldPersistRolloutItem,
-} from "./index.js";
+} from "./policy.js";
 
 let rootDir = "";
 

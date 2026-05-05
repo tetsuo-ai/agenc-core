@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { RolloutStore } from "../session/rollout-store.js";
-import { FileThreadStore } from "../thread-store/index.js";
+import { FileThreadStore } from "../thread-store/store.js";
 import {
   AgenCDaemonSessionManager,
   AgenCSessionLifecycleError,

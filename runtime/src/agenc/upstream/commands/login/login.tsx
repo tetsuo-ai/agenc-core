@@ -6,7 +6,7 @@ import {
   clearTrustedDeviceToken,
   enrollTrustedDevice,
 } from '../../bridge/trustedDevice.js'
-import type { LocalJSXCommandContext } from '../../commands.js'
+import type { LocalJSXCommandContext } from '../../../../commands.js'
 import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutHint.js'
 import {
   ConsoleOAuthFlow,

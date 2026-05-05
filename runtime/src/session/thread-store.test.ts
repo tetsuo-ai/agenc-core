@@ -17,7 +17,7 @@ import {
   type ThreadSource,
   ThreadNotFoundError,
   ThreadStoreInvalidRequestError,
-} from "./thread-store.js";
+} from "../thread-store/store.js";
 
 let agencHome = "";
 let originalAgencHome = "";

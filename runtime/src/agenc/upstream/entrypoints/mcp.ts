@@ -17,7 +17,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { getDefaultAppState } from '../../../tui/state/AppStateStore.js'
 import review from '../commands/review.js'
-import type { Command } from '../commands.js'
+import type { Command } from '../../../commands.js'
 import { getMcpToolsCommandsAndResources } from '../services/mcp/client.js'
 import type { MCPServerConnection } from '../services/mcp/types.js'
 import {

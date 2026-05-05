@@ -7,7 +7,7 @@ import {
   clearInvokedSkills,
   setLastEmittedDate,
 } from '../../bootstrap/state.js'
-import { clearCommandsCache } from '../../commands.js'
+import { clearCommandsCache } from '../../../../commands.js'
 import { getSessionStartDate } from '../../constants/common.js'
 import {
   getGitStatus,

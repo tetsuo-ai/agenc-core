@@ -1,6 +1,6 @@
 import figures from 'figures';
 import React, { useState } from 'react';
-import type { CommandResultDisplay } from '../../commands.js';
+import type { CommandResultDisplay } from '../../../../commands.js';
 import { useExitOnCtrlCDWithKeybindings } from '../../hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, color, Text, useTheme } from '../../../../tui/ink.js';
 import { getMcpConfigByName } from '../../services/mcp/config.js';
@@ -10,7 +10,7 @@ import { useAppState } from '../../../../tui/state/AppState.js';
 import { errorMessage } from '../../utils/errors.js';
 import { capitalize } from '../../utils/stringUtils.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
-import { Select } from '../CustomSelect/index.js';
+import { Select } from '../CustomSelect/select.js';
 import { Byline } from '../design-system/Byline.js';
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js';
 import { Spinner } from '../../../../tui/components/spinner/Spinner.js';

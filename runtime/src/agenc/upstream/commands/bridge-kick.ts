@@ -1,5 +1,5 @@
 import { getBridgeDebugHandle } from '../bridge/bridgeDebug.js'
-import type { Command } from '../commands.js'
+import type { Command } from '../../../commands.js'
 import type { LocalCommandCall } from '../types/command.js'
 
 /**

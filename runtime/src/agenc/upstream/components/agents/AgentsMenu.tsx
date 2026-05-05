@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import * as React from 'react';
 import { useCallback, useMemo, useState } from 'react';
 import type { SettingSource } from 'src/utils/settings/constants.js';
-import type { CommandResultDisplay } from '../../commands.js';
+import type { CommandResultDisplay } from '../../../../commands.js';
 import { useExitOnCtrlCDWithKeybindings } from '../../hooks/useExitOnCtrlCDWithKeybindings.js';
 import { useMergedTools } from '../../hooks/useMergedTools.js';
 import { Box, Text } from '../../../../tui/ink.js';

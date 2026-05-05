@@ -5,7 +5,7 @@ import {
   extractTraceToolNames,
   slimTools,
   toSlimTool,
-} from "./adapter-utils.js";
+} from "../providers/grok/adapter-utils.js";
 
 describe("grok adapter utils", () => {
   it("extracts trace tool names from mixed provider tool shapes", () => {

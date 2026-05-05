@@ -9,7 +9,7 @@ import { logForDebugging } from 'src/utils/debug.js';
 import { detectCurrentRepository } from '../utils/detectRepository.js';
 import { formatRelativeTime } from '../utils/format.js';
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js';
-import { Select } from './CustomSelect/index.js';
+import { Select } from './CustomSelect/select.js';
 import { Byline } from './design-system/Byline.js';
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js';
 import { Spinner } from '../../../tui/components/spinner/Spinner.js';

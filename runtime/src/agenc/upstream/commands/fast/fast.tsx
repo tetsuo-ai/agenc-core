@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { useState } from 'react';
-import type { CommandResultDisplay, LocalJSXCommandContext } from '../../commands.js';
+import type { CommandResultDisplay, LocalJSXCommandContext } from '../../../../commands.js';
 import { Dialog } from '../../components/design-system/Dialog.js';
 import { FastIcon, getFastIconString } from '../../components/FastIcon.js';
 import { Box, Link, Text } from '../../../../tui/ink.js';

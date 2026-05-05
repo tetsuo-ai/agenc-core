@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
-import type { Command } from '../commands.js';
+import type { Command } from '../../../commands.js';
 import { Box } from '../../../tui/ink.js';
 import type { Screen } from '../screens/REPL.js';
 import type { Tools } from '../Tool.js';

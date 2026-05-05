@@ -1,5 +1,5 @@
 import * as React from 'react';
-import type { LocalJSXCommandContext } from '../../commands.js';
+import type { LocalJSXCommandContext } from '../../../../commands.js';
 import { getOauthProfileFromOauthToken } from '../../services/oauth/getOauthProfile.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
 import { getAgenCAIOAuthTokens, isAgenCAISubscriber } from '../../utils/auth.js';

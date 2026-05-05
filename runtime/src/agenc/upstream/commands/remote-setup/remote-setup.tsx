@@ -1,7 +1,7 @@
 import { execa } from 'execa';
 import * as React from 'react';
 import { useEffect, useState } from 'react';
-import { Select } from '../../components/CustomSelect/index.js';
+import { Select } from '../../components/CustomSelect/select.js';
 import { Dialog } from '../../components/design-system/Dialog.js';
 import { LoadingState } from '../../components/design-system/LoadingState.js';
 import { Box, Text } from '../../../../tui/ink.js';

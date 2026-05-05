@@ -52,7 +52,7 @@ import { updateSettingsForSource } from '../utils/settings/settings.js'
 import {
   type OptionWithDescription,
   Select,
-} from './CustomSelect/index.js'
+} from './CustomSelect/select.js'
 import { Pane } from './design-system/Pane.js'
 import TextInput from './TextInput.js'
 import { useCodexOAuthFlow } from './useCodexOAuthFlow.js'
