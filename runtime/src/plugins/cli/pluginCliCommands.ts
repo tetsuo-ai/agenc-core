@@ -237,6 +237,9 @@ export async function runAgenCPluginCli(
           ...(command.name !== undefined ? { name: command.name } : {}),
         });
         io.stdout.write(`Upgraded ${result.upgraded.length} marketplace(s)\n`);
+        for (const skipped of result.skipped) {
+          io.stdout.write(`Skipped marketplace ${skipped.marketplace.name}: ${skipped.reason}\n`);
+        }
         return 0;
       }
     }

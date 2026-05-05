@@ -24,7 +24,12 @@ export type MarketplaceSource =
   | { readonly source: "directory"; readonly path: string }
   | { readonly source: "git"; readonly url: string; readonly ref?: string; readonly sparse?: string }
   | { readonly source: "github"; readonly repo: string; readonly ref?: string; readonly path?: string; readonly sparsePaths?: readonly string[] }
-  | { readonly source: "url"; readonly url: string; readonly headers?: Readonly<Record<string, string>> }
+  | {
+      readonly source: "url";
+      readonly url: string;
+      readonly headers?: Readonly<Record<string, string>>;
+      readonly refreshable?: boolean;
+    }
   | { readonly source: "settings"; readonly name: string; readonly plugins: readonly RawMarketplaceManifestPlugin[] };
 
 export interface MarketplaceRecord {
@@ -184,8 +189,14 @@ export interface UpgradeMarketplaceEntryResult {
   readonly changed: boolean;
 }
 
+export interface SkippedMarketplaceUpgradeResult {
+  readonly marketplace: MarketplaceRecord;
+  readonly reason: string;
+}
+
 export interface UpgradeMarketplaceResult {
   readonly upgraded: readonly UpgradeMarketplaceEntryResult[];
+  readonly skipped: readonly SkippedMarketplaceUpgradeResult[];
 }
 
 export interface RawMarketplaceManifest {
@@ -370,8 +381,14 @@ export async function upgradeMarketplaceOp(
     ? [findRequiredMarketplaceName(index, input.name)]
     : Object.keys(index.marketplaces).sort((a, b) => a.localeCompare(b));
   const upgraded: UpgradeMarketplaceEntryResult[] = [];
+  const skipped: SkippedMarketplaceUpgradeResult[] = [];
   for (const name of names) {
     const existing = index.marketplaces[name]!;
+    const skipReason = marketplaceUpgradeSkipReason(existing);
+    if (skipReason !== undefined) {
+      skipped.push({ marketplace: existing, reason: skipReason });
+      continue;
+    }
     const result = await addMarketplaceOp({
       ...input,
       source: existing.sourceDescriptor,
@@ -388,7 +405,7 @@ export async function upgradeMarketplaceOp(
         result.marketplace.sourceType === "local",
     });
   }
-  return { upgraded };
+  return { upgraded, skipped };
 }
 
 export async function listMarketplaces(
@@ -1240,10 +1257,28 @@ function displayMarketplaceSource(source: MarketplaceSource): string {
 
 function persistedMarketplaceSource(source: MarketplaceSource): MarketplaceSource {
   if (source.source !== "url") return source;
+  const url = redactSensitiveText(source.url);
+  const refreshable = url === source.url && !hasMarketplaceUrlHeaders(source);
   return {
     source: "url",
-    url: redactSensitiveText(source.url),
+    url,
+    ...(refreshable ? {} : { refreshable: false }),
   };
+}
+
+function hasMarketplaceUrlHeaders(
+  source: Extract<MarketplaceSource, { readonly source: "url" }>,
+): boolean {
+  return source.headers !== undefined && Object.keys(source.headers).length > 0;
+}
+
+function marketplaceUpgradeSkipReason(record: MarketplaceRecord): string | undefined {
+  const source = record.sourceDescriptor;
+  if (source.source !== "url") return undefined;
+  if (source.refreshable === false || source.url.includes("<redacted>") || hasMarketplaceUrlHeaders(source)) {
+    return "URL marketplace source requires credentials that are not stored; re-add the marketplace with fresh credentials to refresh it";
+  }
+  return undefined;
 }
 
 function resolveMarketplaceAgencHome(options: MarketplaceOperationOptions = {}): string {

@@ -11,6 +11,7 @@ import {
   normalizeSparsePath,
   readMarketplaceIndex,
   removeMarketplaceOp,
+  upgradeMarketplaceOp,
   type Fetcher,
 } from "./marketplace.js";
 import {
@@ -352,6 +353,42 @@ describe("plugin marketplace runtime", () => {
     expect(index.marketplaces["url-team"]?.sourceDescriptor).toEqual({
       source: "url",
       url: "https://agenc.tech/marketplace.json?token=<redacted>",
+      refreshable: false,
+    });
+  });
+
+  it("skips credential-bearing URL marketplace upgrades instead of fetching redacted URLs", async () => {
+    const { agencHome, workspaceRoot } = await tempRuntime();
+
+    await addMarketplaceOp({
+      agencHome,
+      workspaceRoot,
+      source: {
+        source: "url",
+        url: "https://agenc.tech/marketplace.json?token=secret-token",
+        headers: {
+          Authorization: "Bearer secret-token",
+        },
+      },
+      fetcher: async () => jsonResponse({
+        metadata: { name: "url-team" },
+        plugins: [],
+      }),
+    });
+
+    const result = await upgradeMarketplaceOp({
+      agencHome,
+      workspaceRoot,
+      fetcher: async () => {
+        throw new Error("fetch should not run for non-refreshable URL marketplaces");
+      },
+    });
+
+    expect(result.upgraded).toEqual([]);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0]).toMatchObject({
+      marketplace: { name: "url-team" },
+      reason: expect.stringContaining("credentials that are not stored"),
     });
   });
 
