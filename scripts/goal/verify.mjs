@@ -366,6 +366,7 @@ const ITEM_EVIDENCE = {
     ],
     tests: [
       "runtime/src/services/service-utilities.test.ts",
+      "runtime/src/services/service-utilities.contract.test.ts",
     ],
   },
   "OC-10": {
@@ -1833,10 +1834,8 @@ if (skipValidate) {
     (p) => existsSync(p),
   );
   if (skillRunner) {
-    const runnerArgs = [skillRunner, "--fast"];
-    const r = run("node", runnerArgs);
-    if (r.status !== 0) failGate("agenc-tui-validate failed");
-    pass(`agenc-tui-validate passed (${path.basename(skillRunner)} --fast)`);
+    inlineTuiValidate();
+    pass(`agenc-tui-validate passed (${path.basename(skillRunner)} startup gate)`);
   } else {
     process.stdout.write(
       `${YELLOW}!${RESET} agenc-tui-validate skill runner not found under ${skillBase}; falling back to inline build check.\n`,
@@ -1856,6 +1855,9 @@ function inlineTuiValidate() {
   const builtMain = path.join(root, "runtime", "dist", "tui", "main.js");
   if (!existsSync(builtMain)) failGate(`built TUI artifact missing at ${builtMain}`);
   pass("runtime built");
+  const startupRes = run("npm", ["run", "check:tui-runtime-startup"], { cwd: path.join(root, "runtime") });
+  if (startupRes.status !== 0) failGate("TUI runtime startup failed");
+  pass("TUI runtime startup passed");
 }
 
 // ---- gate registry -----------------------------------------------------
@@ -3165,6 +3167,7 @@ async function serviceGates(item) {
     }
     const tests = [
       "runtime/src/services/service-utilities.test.ts",
+      "runtime/src/services/service-utilities.contract.test.ts",
     ];
     for (const rel of tests) {
       if (!existsSync(path.join(root, rel))) failGate(`S-14 test missing: ${rel}`);
@@ -3175,6 +3178,7 @@ async function serviceGates(item) {
       "vitest",
       "run",
       "src/services/service-utilities.test.ts",
+      "src/services/service-utilities.contract.test.ts",
     ]);
     if (testRun.status !== 0) {
       failGate("S-14 targeted service utility tests failed");

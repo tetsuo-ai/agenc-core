@@ -30,7 +30,7 @@
     "check:executor-baseline": "node scripts/check-executor-baseline.mjs",
     "check:tui-runtime-startup": "node scripts/check-tui-runtime-startup.mjs",
     "test": "vitest run",
-    "validate:required": "npm run typecheck && npm run test",
+    "validate:required": "npm run typecheck && npm run test && npm run check:tui-runtime-startup",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

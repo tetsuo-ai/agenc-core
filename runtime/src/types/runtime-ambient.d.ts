@@ -1,3 +1,9 @@
+/**
+ * Temporary declarations for upstream-mirror files that are still imported by
+ * production code until the Z-02 cleanup removes runtime/src/agenc/upstream.
+ * Keep this file narrow and delete it with that mirror.
+ */
+
 declare module "@opentelemetry/sdk-metrics" {
   export type MeterProvider = unknown;
 }
@@ -7,7 +13,7 @@ declare module "@opentelemetry/sdk-trace-base" {
 }
 
 declare module "src/entrypoints/agentSdkTypes.js" {
-  export type HookEvent = string;
+  export type HookEvent = any;
   export type ModelUsage = Record<string, unknown>;
   export const HOOK_EVENTS: readonly HookEvent[];
 }
