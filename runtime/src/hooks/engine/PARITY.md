@@ -25,3 +25,32 @@ The event adapters live at AgenC call sites:
 - `runtime/src/hooks/configured-hooks.ts` maps configured commands onto the six event surfaces.
 - `runtime/src/permissions/hook-event-schedule.ts` owns matcher policy for those permission-facing lifecycle events.
 - `runtime/src/hooks/user-prompt-submit.ts`, `runtime/src/phases/stop-hooks.ts`, and `runtime/src/llm/hooks/types.ts` carry the local input/result contracts those adapters feed.
+
+## ZC-35 Coverage Lock
+
+Source anchors: `/home/tetsuo/git/openclaude` at commit
+`0ca43335375beec6e58711b797d5b0c4bb5019b8`, `src/utils/hooks/**`.
+
+Decision: the TypeScript hook utility subsystem is carried only where it maps to
+AgenC's configured command-hook runtime. AgenC does not duplicate the donor's
+prompt, HTTP, agent, file-change, or skill-improvement hook transports because
+those are not live AgenC extension surfaces.
+
+Carried behavior:
+- command-hook discovery, grouping, matcher priority, subprocess execution,
+  timeouts, aborts, diagnostics, and structured output parsing
+- event adapters for `PreToolUse`, `PostToolUse`, `PostToolUseFailure`,
+  `PermissionRequest`, `UserPromptSubmit`, `Stop`, `StopFailure`,
+  `PreCompact`, `PostCompact`, and `SessionStart`
+- secret redaction for command diagnostics and hook-returned user/model-facing
+  strings
+
+Intentional reductions:
+- prompt, HTTP, and agent hook transports are not carried; AgenC exposes
+  command hooks as the supported hook transport.
+- file-change and cwd-change hook watchers are not carried because AgenC has no
+  live environment-file hook surface.
+- skill-improvement and frontmatter registration belong to the skills and
+  prompt-assembly surfaces, not this engine.
+- network SSRF policy is not folded into the hook engine; network-facing tools
+  and provider adapters own endpoint validation.

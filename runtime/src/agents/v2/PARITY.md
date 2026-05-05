@@ -36,3 +36,29 @@ The lower-level runtime ownership remains in `runtime/src/agents/control.ts`,
 `runtime/src/agents/delegate.ts`, `runtime/src/agents/thread.ts`, and
 `runtime/src/agents/run-agent.ts`; this directory is the model-facing handler
 layer over those primitives.
+
+## ZC-35 Coverage Lock
+
+Source anchors: `/home/tetsuo/git/openclaude` at commit
+`0ca43335375beec6e58711b797d5b0c4bb5019b8`, `src/utils/swarm/**`.
+
+Decision: the TypeScript swarm/teammate subsystem is a documented scope
+reduction for AgenC's live runtime. AgenC carries the equivalent user-facing
+coordination contract through Multi-Agent V2 tools, the thread manager, and the
+agent mailbox rather than a separate visible pane/team runtime.
+
+Carried behavior:
+- model-facing spawn, wait, close, send-message, follow-up, and list tools
+- root/child thread registration and parent-child routing
+- mailbox delivery between agent threads without terminal pane coupling
+- background task lifecycle output for spawned agents
+
+Intentional reductions:
+- tmux and iTerm pane orchestration, hidden-pane state, and pane layout
+  management are not carried until AgenC has a user-visible team/pane surface.
+- in-process teammate runner state is not duplicated because AgenC agent
+  execution already flows through `delegate()`, `ThreadManager`, and
+  `run-agent`.
+- team files and teammate permission-sync mailboxes are not carried because
+  AgenC's permission and background-agent policy are owned by the daemon,
+  permissions, and agent-control subsystems.

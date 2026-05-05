@@ -1383,6 +1383,29 @@ const ITEM_EVIDENCE = {
     files: ["scripts/goal/shim-behavior.mjs", "parity/ZC-20-parity.json"],
     tests: ["scripts/goal/shim-behavior.test.mjs"],
   },
+  "ZC-35": {
+    files: [
+      "parity/ZC-35-parity.json",
+      "runtime/src/agents/v2/PARITY.md",
+      "runtime/src/hooks/engine/PARITY.md",
+      "runtime/src/secrets/PARITY.md",
+      "runtime/src/conversation/PARITY.md",
+    ],
+    grepPresent: [
+      { pattern: "ZC-35 Coverage Lock", scope: "runtime/src/agents/v2/PARITY.md" },
+      { pattern: "ZC-35 Coverage Lock", scope: "runtime/src/hooks/engine/PARITY.md" },
+      { pattern: "ZC-35 Coverage Lock", scope: "runtime/src/secrets/PARITY.md" },
+      { pattern: "ZC-35 Coverage Lock", scope: "runtime/src/conversation/PARITY.md" },
+    ],
+    tests: [
+      "runtime/src/agents/mailbox.test.ts",
+      "runtime/src/hooks/configured-hooks.test.ts",
+      "runtime/src/secrets/sanitizer.test.ts",
+      "runtime/src/auth/backends/local.contract.test.ts",
+      "runtime/src/auth/backends/remote.contract.test.ts",
+      "runtime/src/conversation/thread-manager.contract.test.ts",
+    ],
+  },
   "ZC-33": {
     files: [
       "runtime/src/permissions/sandbox.ts",
@@ -5169,6 +5192,147 @@ function assertZc33SandboxCoverage() {
   pass("ZC-33: sandbox engine and Linux launcher coverage locked");
 }
 
+function assertZc35OcCoverage() {
+  const readRequired = (rel) => {
+    const abs = path.join(root, rel);
+    if (!existsSync(abs)) failGate(`ZC-35: missing required file ${rel}`);
+    return readFileSync(abs, "utf8");
+  };
+
+  const parity = JSON.parse(readRequired("parity/ZC-35-parity.json"));
+  const sourceFiles = Array.isArray(parity.sourceFiles) ? parity.sourceFiles : [];
+  const requiredSourceAnchors = [
+    "src/utils/conversationRecovery.ts",
+    "src/utils/hooks/AsyncHookRegistry.ts",
+    "src/utils/hooks/apiQueryHookHelper.ts",
+    "src/utils/hooks/execAgentHook.ts",
+    "src/utils/hooks/execHttpHook.ts",
+    "src/utils/hooks/execPromptHook.ts",
+    "src/utils/hooks/fileChangedWatcher.ts",
+    "src/utils/hooks/hookEvents.ts",
+    "src/utils/hooks/hookHelpers.ts",
+    "src/utils/hooks/hooksConfigManager.ts",
+    "src/utils/hooks/hooksConfigSnapshot.ts",
+    "src/utils/hooks/hooksSettings.ts",
+    "src/utils/hooks/postSamplingHooks.ts",
+    "src/utils/hooks/registerFrontmatterHooks.ts",
+    "src/utils/hooks/registerSkillHooks.ts",
+    "src/utils/hooks/sessionHooks.ts",
+    "src/utils/hooks/skillImprovement.ts",
+    "src/utils/hooks/ssrfGuard.ts",
+    "src/utils/secureStorage/fallbackStorage.ts",
+    "src/utils/secureStorage/index.ts",
+    "src/utils/secureStorage/keychainPrefetch.ts",
+    "src/utils/secureStorage/linuxSecretStorage.ts",
+    "src/utils/secureStorage/macOsKeychainHelpers.ts",
+    "src/utils/secureStorage/macOsKeychainStorage.ts",
+    "src/utils/secureStorage/plainTextStorage.ts",
+    "src/utils/secureStorage/platformStorage.test.ts",
+    "src/utils/secureStorage/windowsCredentialStorage.ts",
+    "src/utils/swarm/It2SetupPrompt.tsx",
+    "src/utils/swarm/backends/ITermBackend.ts",
+    "src/utils/swarm/backends/InProcessBackend.ts",
+    "src/utils/swarm/backends/PaneBackendExecutor.ts",
+    "src/utils/swarm/backends/TmuxBackend.ts",
+    "src/utils/swarm/backends/detection.ts",
+    "src/utils/swarm/backends/it2Setup.ts",
+    "src/utils/swarm/backends/registry.ts",
+    "src/utils/swarm/backends/teammateModeSnapshot.ts",
+    "src/utils/swarm/backends/types.ts",
+    "src/utils/swarm/constants.ts",
+    "src/utils/swarm/inProcessRunner.ts",
+    "src/utils/swarm/leaderPermissionBridge.ts",
+    "src/utils/swarm/permissionSync.ts",
+    "src/utils/swarm/reconnection.ts",
+    "src/utils/swarm/spawnInProcess.ts",
+    "src/utils/swarm/spawnUtils.test.ts",
+    "src/utils/swarm/spawnUtils.ts",
+    "src/utils/swarm/teamHelpers.ts",
+    "src/utils/swarm/teammateInit.ts",
+    "src/utils/swarm/teammateLayoutManager.ts",
+    "src/utils/swarm/teammateModel.ts",
+    "src/utils/swarm/teammatePromptAddendum.ts",
+  ];
+  const missingAnchors = requiredSourceAnchors.filter((anchor) => !sourceFiles.includes(anchor));
+  if (missingAnchors.length > 0) {
+    failGate(`ZC-35: parity artifact is missing source anchor(s):\n  ${missingAnchors.join("\n  ")}`);
+  }
+  if (typeof parity.sourceCommits?.typescriptRuntimeSource !== "string") {
+    failGate("ZC-35: parity artifact is missing the TypeScript source commit.");
+  }
+
+  const decisions = parity.decisions ?? {};
+  const requiredDecisionKeys = ["swarm", "hooks", "secureStorage", "conversationRecovery"];
+  const missingDecisions = requiredDecisionKeys.filter((key) => decisions[key] === undefined);
+  if (missingDecisions.length > 0) {
+    failGate(`ZC-35: parity artifact is missing decision section(s): ${missingDecisions.join(", ")}`);
+  }
+
+  const requiredTargets = [
+    "runtime/src/agents/v2/index.ts",
+    "runtime/src/agents/v2/spawn.ts",
+    "runtime/src/agents/v2/wait.ts",
+    "runtime/src/agents/mailbox.ts",
+    "runtime/src/hooks/configured-hooks.ts",
+    "runtime/src/hooks/engine/dispatcher.ts",
+    "runtime/src/hooks/engine/command-runner.ts",
+    "runtime/src/hooks/engine/output-parser.ts",
+    "runtime/src/secrets/sanitizer.ts",
+    "runtime/src/auth/backends/local.ts",
+    "runtime/src/auth/backends/remote.ts",
+    "runtime/src/conversation/thread-manager.ts",
+    "runtime/src/bin/bootstrap.ts",
+  ];
+  const missingTargets = requiredTargets.filter((rel) => !existsSync(path.join(root, rel)));
+  if (missingTargets.length > 0) {
+    failGate(`ZC-35: AgenC target coverage file(s) missing:\n  ${missingTargets.join("\n  ")}`);
+  }
+
+  const lockFiles = [
+    {
+      rel: "runtime/src/agents/v2/PARITY.md",
+      required: ["ZC-35 Coverage Lock", "Multi-Agent V2", "mailbox"],
+    },
+    {
+      rel: "runtime/src/hooks/engine/PARITY.md",
+      required: ["ZC-35 Coverage Lock", "configured command-hook runtime", "structured output parsing"],
+    },
+    {
+      rel: "runtime/src/secrets/PARITY.md",
+      required: ["ZC-35 Coverage Lock", "platform credential vault storage", "LocalAuthBackend"],
+    },
+    {
+      rel: "runtime/src/conversation/PARITY.md",
+      required: ["ZC-35 Coverage Lock", "rollout-backed thread recovery", "SessionStart"],
+    },
+  ];
+  for (const { rel, required } of lockFiles) {
+    const text = readRequired(rel);
+    const missing = required.filter((needle) => !text.includes(needle));
+    if (missing.length > 0) {
+      failGate(`ZC-35: ${rel} is missing coverage lock text: ${missing.join(", ")}`);
+    }
+  }
+
+  const testRun = run("npm", [
+    "run",
+    "test",
+    "--workspace=@tetsuo-ai/runtime",
+    "--",
+    "src/agents/mailbox.test.ts",
+    "src/hooks/configured-hooks.test.ts",
+    "src/secrets/sanitizer.test.ts",
+    "src/auth/backends/local.contract.test.ts",
+    "src/auth/backends/remote.contract.test.ts",
+    "src/conversation/thread-manager.contract.test.ts",
+  ]);
+  if (testRun.status !== 0) {
+    failGate("ZC-35: coverage-lock test suites failed.");
+  }
+
+  pass("ZC-35: coverage anchors, reductions, and target tests locked");
+}
+
 function assertZc34AgentGraphStoreCoverage() {
   const readRequired = (rel) => {
     const abs = path.join(root, rel);
@@ -5644,6 +5808,7 @@ async function cleanupGates(item) {
       "ZC-32": { custom: assertZc32ShellCommandCoverage },
       "ZC-33": { custom: assertZc33SandboxCoverage },
       "ZC-34": { custom: assertZc34AgentGraphStoreCoverage },
+      "ZC-35": { custom: assertZc35OcCoverage },
     };
     const expectations = zcMap[id];
     if (!expectations) {
