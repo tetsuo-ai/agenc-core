@@ -19,6 +19,10 @@
 import type { LLMProvider } from "../llm/types.js";
 import type { PermissionMode } from "../permissions/types.js";
 import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import type {
+  BlockedRequestObserver,
+  NetworkPolicyDecider,
+} from "../sandbox/network-policy.js";
 import type { PendingWorktreeState } from "./pending-worktree.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -140,6 +144,8 @@ export interface NetworkSandboxPolicy {
 /** agenc runtime `NetworkProxy`. Managed network transport remains deferred. */
 export interface NetworkProxy {
   readonly httpsProxy?: string;
+  readonly policyDecider?: NetworkPolicyDecider;
+  readonly blockedRequestObserver?: BlockedRequestObserver;
 }
 
 /** agenc runtime `WindowsSandboxLevel`. T11 lands real impl. */

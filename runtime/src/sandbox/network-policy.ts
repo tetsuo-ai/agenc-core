@@ -31,6 +31,34 @@ export interface NetworkApprovalContext {
   readonly protocol: NetworkApprovalProtocol;
 }
 
+export interface NetworkPolicyRequest {
+  readonly protocol: NetworkApprovalProtocol;
+  readonly host: string;
+  readonly port: number;
+  readonly clientAddr?: string | null;
+  readonly method?: string | null;
+  readonly command?: string | null;
+  readonly execPolicyHint?: string | null;
+}
+
+export type NetworkDecision =
+  | { readonly decision: "allow" }
+  | {
+      readonly decision: NetworkPolicyDecision;
+      readonly source: NetworkDecisionSource;
+      readonly reason: string;
+    };
+
+export type NetworkPolicyDeciderFunction = (
+  request: NetworkPolicyRequest,
+) => NetworkDecision | Promise<NetworkDecision>;
+
+export interface NetworkPolicyDecider {
+  decide(
+    request: NetworkPolicyRequest,
+  ): NetworkDecision | Promise<NetworkDecision>;
+}
+
 export interface BlockedRequest {
   readonly host: string;
   readonly reason: string;
@@ -44,10 +72,101 @@ export interface BlockedRequest {
   readonly timestamp?: number;
 }
 
+export type BlockedRequestObserverFunction = (
+  request: BlockedRequest,
+) => void | Promise<void>;
+
+export interface BlockedRequestObserver {
+  onBlockedRequest(request: BlockedRequest): void | Promise<void>;
+}
+
+export const noopBlockedRequestObserver: BlockedRequestObserver = {
+  onBlockedRequest: () => undefined,
+};
+
 export interface ExecPolicyNetworkRuleAmendment {
   readonly protocol: ExecPolicyNetworkRuleProtocol;
   readonly decision: "allow" | "forbidden";
   readonly justification: string;
+}
+
+export function networkPolicyDeciderFrom(
+  decider: NetworkPolicyDecider | NetworkPolicyDeciderFunction,
+): NetworkPolicyDecider {
+  if (typeof decider === "function") {
+    return { decide: decider };
+  }
+  return decider;
+}
+
+export function blockedRequestObserverFrom(
+  observer: BlockedRequestObserver | BlockedRequestObserverFunction,
+): BlockedRequestObserver {
+  if (typeof observer === "function") {
+    return { onBlockedRequest: observer };
+  }
+  return observer;
+}
+
+export function allowNetworkDecision(): NetworkDecision {
+  return { decision: "allow" };
+}
+
+export function denyNetworkDecision(
+  reason: string,
+  source: NetworkDecisionSource = "decider",
+): NetworkDecision {
+  return {
+    decision: "deny",
+    source,
+    reason: normalizeDecisionReason(reason),
+  };
+}
+
+export function askNetworkDecision(
+  reason: string,
+  source: NetworkDecisionSource = "decider",
+): NetworkDecision {
+  return {
+    decision: "ask",
+    source,
+    reason: normalizeDecisionReason(reason),
+  };
+}
+
+export function networkPolicyDecisionPayloadFromDecision(
+  decision: NetworkDecision,
+  request?: Pick<NetworkPolicyRequest, "protocol" | "host" | "port">,
+): NetworkPolicyDecisionPayload | null {
+  if (decision.decision === "allow") return null;
+  return {
+    decision: decision.decision,
+    source: decision.source,
+    reason: decision.reason,
+    ...(request !== undefined
+      ? {
+          protocol: request.protocol,
+          host: request.host,
+          port: request.port,
+        }
+      : {}),
+  };
+}
+
+export function blockedRequest(args: Omit<BlockedRequest, "timestamp"> & {
+  readonly timestamp?: number;
+}): BlockedRequest {
+  return {
+    ...args,
+    timestamp: args.timestamp ?? Math.floor(Date.now() / 1000),
+  };
+}
+
+export async function notifyBlockedRequest(
+  observer: BlockedRequestObserver | undefined,
+  request: BlockedRequest,
+): Promise<void> {
+  await observer?.onBlockedRequest(request);
 }
 
 export function parseNetworkPolicyDecision(
@@ -178,6 +297,11 @@ export function execpolicyNetworkRuleAmendment(
       `${actionVerb} ${protocolLabel} ` +
       `access to ${host}`,
   };
+}
+
+function normalizeDecisionReason(reason: string): string {
+  const normalized = reason.trim();
+  return normalized.length === 0 ? "denied" : normalized;
 }
 
 function deniedReasonDetail(reason: string): string {

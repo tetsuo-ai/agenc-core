@@ -1,0 +1,83 @@
+{
+  "item": "ZC-43",
+  "status": "no-op-interface-port",
+  "sourceCommit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
+  "sourceRootLabel": "rust runtime reference checkout",
+  "targetRoot": "..",
+  "decision": "Chose option (a): carry the network policy decider and blocked request observer interface shapes into AgenC without adding managed proxy transport logic. Existing call sites keep optional network proxy threading and can attach these no-op-compatible interfaces when the later transport surface exists.",
+  "sourceFiles": [
+    "network-proxy/src/network_policy.rs",
+    "network-proxy/src/runtime.rs",
+    "core/src/exec.rs",
+    "core/src/spawn.rs"
+  ],
+  "targetFiles": [
+    "runtime/src/sandbox/network-policy.ts",
+    "runtime/src/session/turn-context.ts"
+  ],
+  "testFiles": [
+    "runtime/src/sandbox/network-policy.test.ts"
+  ],
+  "requiredBehaviors": [
+    {
+      "id": "network-policy-decider-shape",
+      "sourceSymbols": [
+        "NetworkPolicyDecider",
+        "NetworkPolicyRequest",
+        "NetworkDecision"
+      ],
+      "targetSymbols": [
+        "NetworkPolicyDecider",
+        "NetworkPolicyRequest",
+        "NetworkDecision",
+        "networkPolicyDeciderFrom",
+        "askNetworkDecision",
+        "denyNetworkDecision",
+        "allowNetworkDecision"
+      ],
+      "behavior": "A synchronous or async decider can return allow, ask, or deny decisions. Ask and deny carry a decision source and reason; allow maps to no decision payload because it does not request approval.",
+      "tests": [
+        "runtime/src/sandbox/network-policy.test.ts"
+      ]
+    },
+    {
+      "id": "blocked-request-observer-shape",
+      "sourceSymbols": [
+        "BlockedRequest",
+        "BlockedRequestObserver"
+      ],
+      "targetSymbols": [
+        "BlockedRequest",
+        "BlockedRequestObserver",
+        "blockedRequest",
+        "blockedRequestObserverFrom",
+        "noopBlockedRequestObserver",
+        "notifyBlockedRequest"
+      ],
+      "behavior": "A blocked request record carries host, reason, protocol, decision metadata, and a unix timestamp. Function and object observers receive records; the exported no-op observer completes without changing policy behavior.",
+      "tests": [
+        "runtime/src/sandbox/network-policy.test.ts"
+      ]
+    },
+    {
+      "id": "session-network-proxy-threading",
+      "sourceSymbols": [
+        "NetworkProxy"
+      ],
+      "targetSymbols": [
+        "NetworkProxy.policyDecider",
+        "NetworkProxy.blockedRequestObserver"
+      ],
+      "behavior": "The session turn context can thread the interface shapes through the optional network proxy carrier without requiring a transport implementation.",
+      "tests": [
+        "runtime/src/sandbox/network-policy.test.ts"
+      ]
+    }
+  ],
+  "intentionalReductions": [
+    "No managed proxy process, MITM state, socket listener, or config reload loop is introduced by this cleanup item.",
+    "Existing AgenC network approval and sandbox policy behavior remains unchanged; this item only prevents ported call sites from losing the decider and blocked-request-observer surface.",
+    "The source checkout did not contain core/src/session.rs at the cited checklist location; the live AgenC session carrier is runtime/src/session/turn-context.ts and runtime/src/session/session.ts."
+  ],
+  "mergeResolutions": []
+}

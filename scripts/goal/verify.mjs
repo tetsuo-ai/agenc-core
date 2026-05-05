@@ -1496,6 +1496,25 @@ const ITEM_EVIDENCE = {
       { pattern: "PARITY\\.md", scope: "runtime/src" },
     ],
   },
+  "ZC-43": {
+    files: [
+      "runtime/src/sandbox/network-policy.ts",
+      "runtime/src/sandbox/network-policy.test.ts",
+      "runtime/src/session/turn-context.ts",
+      "parity/ZC-43-parity.json",
+      "scripts/goal/verify.mjs",
+    ],
+    grepPresent: [
+      { pattern: "NetworkPolicyDecider", scope: "runtime/src/sandbox/network-policy.ts" },
+      { pattern: "BlockedRequestObserver", scope: "runtime/src/sandbox/network-policy.ts" },
+      { pattern: "networkPolicyDeciderFrom", scope: "runtime/src/sandbox/network-policy.ts" },
+      { pattern: "notifyBlockedRequest", scope: "runtime/src/sandbox/network-policy.ts" },
+      { pattern: "policyDecider", scope: "runtime/src/session/turn-context.ts" },
+      { pattern: "blockedRequestObserver", scope: "runtime/src/session/turn-context.ts" },
+      { pattern: "no-op-interface-port", scope: "parity/ZC-43-parity.json" },
+    ],
+    tests: ["runtime/src/sandbox/network-policy.test.ts"],
+  },
 };
 
 function usage() {
@@ -5508,6 +5527,90 @@ function assertZc40RuntimeParityDocsGone() {
   pass("ZC-40: runtime PARITY.md scaffolding is gone");
 }
 
+function assertZc43NetworkPolicyInterfaces() {
+  const readRequired = (rel) => {
+    const abs = path.join(root, rel);
+    if (!existsSync(abs)) failGate(`ZC-43: missing required file ${rel}`);
+    return readFileSync(abs, "utf8");
+  };
+
+  const policySource = readRequired("runtime/src/sandbox/network-policy.ts");
+  for (const marker of [
+    "export interface NetworkPolicyRequest",
+    "export type NetworkDecision",
+    "export interface NetworkPolicyDecider",
+    "export interface BlockedRequestObserver",
+    "networkPolicyDeciderFrom",
+    "blockedRequestObserverFrom",
+    "noopBlockedRequestObserver",
+    "notifyBlockedRequest",
+  ]) {
+    if (!policySource.includes(marker)) {
+      failGate(`ZC-43: network-policy.ts is missing ${marker}.`);
+    }
+  }
+
+  const turnContextSource = readRequired("runtime/src/session/turn-context.ts");
+  for (const marker of [
+    "NetworkPolicyDecider",
+    "BlockedRequestObserver",
+    "policyDecider?: NetworkPolicyDecider",
+    "blockedRequestObserver?: BlockedRequestObserver",
+  ]) {
+    if (!turnContextSource.includes(marker)) {
+      failGate(`ZC-43: turn-context.ts is missing ${marker}.`);
+    }
+  }
+
+  const ledger = JSON.parse(readRequired("parity/ZC-43-parity.json"));
+  if (ledger.item !== "ZC-43" || ledger.status !== "no-op-interface-port") {
+    failGate("ZC-43: parity ledger must identify the no-op interface port decision.");
+  }
+  for (const required of [
+    "network-proxy/src/network_policy.rs",
+    "network-proxy/src/runtime.rs",
+    "core/src/exec.rs",
+    "core/src/spawn.rs",
+  ]) {
+    if (!ledger.sourceFiles?.includes(required)) {
+      failGate(`ZC-43: parity ledger is missing source file ${required}.`);
+    }
+  }
+  for (const required of [
+    "runtime/src/sandbox/network-policy.ts",
+    "runtime/src/session/turn-context.ts",
+  ]) {
+    if (!ledger.targetFiles?.includes(required)) {
+      failGate(`ZC-43: parity ledger is missing target file ${required}.`);
+    }
+  }
+
+  const testSource = readRequired("runtime/src/sandbox/network-policy.test.ts");
+  for (const marker of [
+    "network policy decider contracts",
+    "blocked request observers",
+    "allowNetworkDecision",
+    "noopBlockedRequestObserver",
+  ]) {
+    if (!testSource.includes(marker)) {
+      failGate(`ZC-43: network-policy tests are missing ${marker}.`);
+    }
+  }
+
+  const testRun = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/sandbox/network-policy.test.ts",
+  ]);
+  if (testRun.status !== 0) {
+    failGate("ZC-43: network-policy interface tests failed.");
+  }
+
+  pass("ZC-43: network policy decider and blocked-request observer interfaces are locked");
+}
+
 function listSourceFiles(dir) {
   const out = [];
   for (const entry of readdirSync(dir)) {
@@ -5910,6 +6013,7 @@ async function cleanupGates(item) {
       "ZC-36": { custom: assertZc36TestFixtureParityCoverage },
       "ZC-38": { custom: assertZc38DistBuildArtifactsIgnored },
       "ZC-40": { custom: assertZc40RuntimeParityDocsGone },
+      "ZC-43": { custom: assertZc43NetworkPolicyInterfaces },
     };
     const expectations = zcMap[id];
     if (!expectations) {
