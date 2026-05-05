@@ -1,6 +1,6 @@
 # Plugins Parity
 
-Donor references are local-only parity metadata for PK-01 through PK-04, plus PK-06 and PK-07.
+Donor references are local-only parity metadata for PK-01 through PK-04, plus PK-06, PK-07, and PK-09.
 
 Primary source anchors:
 - `/home/tetsuo/git/codex` at `c8c30d9d75556ecbe94991af22380d2a4e9d6589` // branding-scan: allow local parity citation
@@ -52,6 +52,11 @@ Source files inspected end-to-end:
 - `src/utils/plugins/performStartupChecks.tsx`
 - `src/utils/plugins/dependencyResolver.ts`
 - `src/utils/plugins/pluginVersioning.ts`
+- `codex-rs/core-plugins/src/store.rs` // branding-scan: allow local parity citation
+- `src/utils/plugins/pluginIdentifier.ts`
+- `src/utils/plugins/cacheUtils.ts`
+- `src/utils/plugins/zipCache.ts`
+- `src/utils/plugins/fetchTelemetry.ts`
 
 PK-01 scope carried into AgenC:
 - `manifest.ts` owns `.agenc-plugin/plugin.json` discovery, root `plugin.json` fallback, bounded JSON reads, and JSON parse errors.
@@ -108,6 +113,20 @@ PK-07 scope carried into AgenC:
 PK-07 typecheck boundary:
 - `runtime/src/types/upstream-ambient.d.ts` is a type-only contract for inherited upstream-mirror imports pulled into the tsc graph by the live REPL startup path. It declares only the exact upstream module contracts and platform globals already referenced by that graph, exports no runtime values, and is listed in `parity/PK-07-parity.json` so later upstream cleanup can remove it with a visible contract change.
 
+PK-09 scope carried into AgenC:
+- `resolution.ts` owns plugin source classification and resolution for local directories, npm package specs, git URLs, registry tarballs, and local or remote `.mcpb` bundles.
+- `resolution.ts` owns remote materialization through real `npm pack`, `git clone`, `tar`, and `unzip` subprocesses, with bounded stdout/stderr and timeouts.
+- `resolution.ts` owns source validation for npm package specs and git repository specs before subprocess launch; npm and git calls pass remote specs after `--` separators.
+- `resolution.ts` owns archive listing checks, pre-extraction tar/link/device/FIFO/socket and zip metadata checks, extraction-root containment checks, unsupported extracted entry rejection, extracted file/count/depth quotas, bounded downloads with same-origin redirect enforcement, and plugin cache activation under `$AGENC_HOME/plugins/cache/` using redacted source labels plus source-hash cache keys, VCS metadata stripping, lock directories, stale-lock expiry, refresh bypasses, concurrent same-source serialization, and cache-hit telemetry.
+- `resolution.ts` owns Ed25519 plugin signature verification using `.agenc-plugin/signature.json`, manifest digests, payload file digests, and trusted publisher keys from `$HOME/.agenc/plugin-publishers.json` or an injected keyring path. Remote resolver paths require signatures by default unless the caller explicitly opts out for trusted fixture/local policy flows. AgenC-owned install metadata is excluded from publisher payload digests so installed signed plugins remain auditable after `.agenc-plugin/agenc-install.json` is written, and signature payload hashing enforces the same count/size/depth quotas as archive extraction.
+- `resolution.ts` owns dependency ID qualification, dependency version-constraint preservation for caret, exact, tilde, and comparison operators, semver-compatible prerelease/build metadata comparison, transitive dependency closure with cycle/cross-marketplace/version checks, load-time dependency demotion decisions, and reverse-dependent lookup as pure functions.
+- `manifest-schema.ts` preserves dependency version constraints from both string dependencies and object-form `version` / `versionConstraint` entries so downstream dependency demotion enforces the normalized constraint instead of silently dropping it.
+- `loader.ts` applies dependency demotion to actual load results so plugins with missing or disabled dependencies do not remain enabled at runtime.
+- `cli/pluginOperations.ts` now routes non-directory install sources through the resolver before copying into the user/project/local plugin store, requires trusted signatures for remote installs by default, strips VCS metadata from install copies, reserves internal plugin-store names such as `cache` and `data`, records resolution metadata and dependency identity in `.agenc-plugin/agenc-install.json`, and forces cache refresh for plugin updates.
+- `loader.ts` reads installed plugin metadata when discovering user/project/local plugin roots so installed remote plugins retain the dependency identity they were installed from instead of falling back to filesystem paths.
+- `registration/manager.ts` serializes dependency-load issues into the active plugin snapshot for UI/runtime consumers.
+- `resolution.test.ts` and `loader.test.ts` cover npm resolution priority for ambiguous package-like names, installed remote dependency identity retention, source hardening before subprocess launch, credential redaction in metadata/telemetry/process errors/cache labels, resolver and install-operation default remote signature enforcement, signed git resolution with cache VCS metadata stripping, installed signed-plugin re-verification after install metadata is written, install-copy VCS metadata stripping, internal install-name rejection, install-operation resolver wiring and update refresh, object-form dependency version-constraint preservation/rejection, git cache hits, corrupt-cache rematerialization when signatures are optional, stale-lock expiry, concurrent same-source cache serialization, real gzip/plain tar and zip extraction, cross-origin archive redirect rejection, archive traversal rejection, zip symlink and unsupported tar entry rejection, pre-extraction and post-extraction quota rejection, signature payload quota rejection, remote `.mcpb` extraction, loader dependency demotion/cycle demotion, local path dependency identities when workspace paths contain `@`, duplicate-name dependency ambiguity, dependency version mismatch handling including zero-major caret boundaries, prerelease/build/malformed versions, dependency closure/demotion, Ed25519 payload verification, telemetry outcomes, and source classification.
+
 Intentional PK-01 scope reductions:
 - Marketplace fetch/install/cache refresh, signing, dependency demotion, plugin CLI, plugin sandboxing, policy/blocklist, MCP/LSP live registration, and remote sync are later PK rows.
 - Marketplace schema policy and remote registry validation remain later PK rows; PK-01 validates local plugin manifests and local Markdown component metadata.
@@ -150,3 +169,12 @@ Intentional PK-07 scope reductions:
 - Full plugin reload/MCP reconnect after startup marketplace reconciliation remains owned by the existing reload/registration path. PK-07 carries marketplace install-status updates and marks plugins for refresh when startup changes local plugin or marketplace cache state.
 - The GCS mirror helper is reduced to AgenC-owned startup HTTP/backup fallbacks under `agenc.tech`; no public donor bucket or donor product domain is retained in runtime source.
 - Existing PK-06 CLI marketplace modules remain in place as already-merged main work. Live CLI and manager callers now import the canonical PK-07 marketplace layer directly, with no re-export wrapper.
+
+Intentional PK-09 scope reductions:
+- Dependency closure and load-time demotion are enforced in PK-09, including rejecting cross-marketplace dependencies before already-enabled shortcuts, preserving manifest dependency version constraints, and demoting live plugins whose enabled dependency version does not satisfy the declared caret/exact/tilde/comparison constraint. This item does not mutate user settings to auto-install dependency closures because the final tiered settings writer is still owned by later config rows.
+- Registry tarball support is implemented as URL tarball materialization. Marketplace search/discovery and hosted registry APIs remain outside `agenc-core`.
+- `.mcpb` support extracts local bundle files and fetched remote bundles through the system `unzip` command.
+- Signature verification trusts explicit publisher keys and requires signed payload digests. Full marketplace publisher policy and revocation remain local data concerns for later remote-sync rows.
+- `runtime/src/agenc/upstream/utils/protectedNamespace.ts` and `runtime/src/agenc/upstream/utils/settings/constants.ts` carry minimal no-growth compile-fix compatibility for existing upstream-mirror callers until Z-02 deletes that tree. PK-09 does not add new mirror files, does not import the mirror from live plugin code, and leaves ownership of the temporary mirror surface with the pre-existing mirror cleanup track.
+- The previous broad compile-only ambient declaration file was removed after review. The May 5, 2026 `main` merge now owns the remaining temporary upstream-mirror ambient declarations in `runtime/src/types/runtime-ambient.d.ts`; PK-09 does not add separate type shim modules.
+- Merge conflict note: the May 5, 2026 merge from `main` also changed `runtime/src/llm/api/http.ts` to derive request-body typing from `RequestInit`; PK-09 took `main`'s direct `RequestInit["body"]` / `NonNullable<RequestInit["body"]>` form for the same-line conflict.

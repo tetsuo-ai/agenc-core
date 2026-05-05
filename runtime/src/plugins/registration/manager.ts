@@ -196,6 +196,13 @@ function pluginErrorFromIssue(issue: PluginLoadIssue): Record<string, unknown> {
         path: issue.path ?? issue.source,
         reason: issue.message,
       };
+    case "dependency":
+      return {
+        type: "plugin-dependency-invalid",
+        source: issue.source,
+        plugin: issue.plugin ?? "unknown",
+        reason: issue.message,
+      };
   }
 }
 
