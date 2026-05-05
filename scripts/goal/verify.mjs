@@ -4414,6 +4414,7 @@ async function cleanupGates(item) {
       "ZC-11": { gone: ["runtime/src/tools/code-mode/response-adapter.ts"] },
       "ZC-12": { custom: assertZc12DonorPortArtifactsGone },
       "ZC-13": { gone: ["runtime/src/tui/bridges"] },
+      "ZC-14": { gone: ["runtime/src/llm/grok/adapter.ts", "runtime/src/llm/grok/adapter-utils.ts"] },
       "ZC-22": { gone: ["runtime/src/tui/elicitation-bridge.tsx"] },
       "ZC-26": { grepNotPresent: { pattern: "/home/claude/.agenc/remote", scope: "runtime/src" } }, // branding-scan: allow donor-leak path that ZC-26 is removing
       "ZC-27": { grepNotPresent: { pattern: "@ts-nocheck", scope: "runtime/src/types" } },
