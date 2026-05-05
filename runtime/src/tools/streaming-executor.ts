@@ -74,6 +74,14 @@ import {
   terminalToolCauseFromError,
   type TerminalToolCause,
 } from "../recovery/terminal-tool-result.js";
+import {
+  runtimeKindForPayload,
+  type ToolRuntimeCallContext,
+} from "./runtimes/context.js";
+import {
+  runToolRuntimeCall,
+  type ToolRuntimeScheduler,
+} from "./runtimes/parallel.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Types
@@ -167,9 +175,9 @@ export interface StreamingToolExecutorOptions {
    * REJECT_MESSAGE back to the model (#21056 regression).
    */
   readonly parentAbortController?: AbortController;
-  /** Optional ToolCallRuntime; when present, dispatch is wrapped by
-   *  the concurrency gate (RwLock / SharedServer semaphore). */
-  readonly runtime?: ToolCallRuntime;
+  /** Optional runtime; when present, dispatch is wrapped by the
+   *  per-call runtime scheduler (concurrency guard + call context). */
+  readonly runtime?: ToolCallRuntime | ToolRuntimeScheduler;
   /** Fires on Bash sibling-abort cascade or other diagnostic events. */
   readonly onSiblingAbort?: (reason: string) => void;
   /** Fired per progress event (TUI rendering hook). */
@@ -206,7 +214,7 @@ export class StreamingToolExecutor {
   private readonly maxConcurrency: number;
   private readonly siblingAbortController: AbortController;
   private readonly bashToolName: string;
-  private readonly runtime?: ToolCallRuntime;
+  private readonly runtime?: ToolCallRuntime | ToolRuntimeScheduler;
   private readonly runToolUseFn?: (
     toolCall: LLMToolCall,
     signal: AbortSignal,
@@ -283,9 +291,7 @@ export class StreamingToolExecutor {
     if (this.closed || this.isAborting) return;
 
     // Unknown-tool short-circuit (AgenC StreamingToolExecutor.ts:77-102).
-    const isKnown =
-      this.concurrencyClassOverrides.has(toolCall.name) ||
-      this.registry.tools.some((t) => t.name === toolCall.name);
+    const isKnown = this.isKnownToolCall(toolCall);
     if (!isKnown) {
       const syntheticResult: ToolDispatchResult = {
         content: JSON.stringify({
@@ -603,6 +609,12 @@ export class StreamingToolExecutor {
 
   private readonly concurrencyClassOverrides = new Map<string, ConcurrencyClass>();
 
+  private isKnownToolCall(toolCall: LLMToolCall): boolean {
+    if (this.concurrencyClassOverrides.has(toolCall.name)) return true;
+    if (this.registry.tools.some((t) => t.name === toolCall.name)) return true;
+    return this.liveToolDispatch?.router.findSpec(toolCall.name) !== undefined;
+  }
+
   private resolveClassifiable(toolCall: LLMToolCall): ConcurrencyClassifiable {
     const override = this.concurrencyClassOverrides.get(toolCall.name);
     const tool = this.registry.tools.find((candidate) => candidate.name === toolCall.name);
@@ -835,8 +847,9 @@ export class StreamingToolExecutor {
         };
       };
 
+      const runtimeContext = this.buildRuntimeCallContext(tool, startedAtMs);
       const result = this.runtime
-        ? await this.runtime.run(tool.classification, dispatch)
+        ? await runToolRuntimeCall(this.runtime, runtimeContext, dispatch)
         : await dispatch();
 
       tool.result = result;
@@ -877,6 +890,30 @@ export class StreamingToolExecutor {
 
     const durationMs = performance.now() - startedAtMs;
     void durationMs;
+  }
+
+  private buildRuntimeCallContext(
+    tool: TrackedTool,
+    submittedAtMs: number,
+  ): ToolRuntimeCallContext {
+    const routed = toolCallFromLLMToolCall(tool.toolCall, {
+      session: this.liveToolDispatch?.options.session,
+    });
+    const definition = this.registry.tools.find(
+      (candidate) => candidate.name === tool.toolCall.name,
+    );
+    const supportsParallelToolCalls = this.liveToolDispatch
+      ? this.liveToolDispatch.router.toolSupportsParallel(routed)
+      : definition?.supportsParallelToolCalls ?? tool.isConcurrencySafe;
+    return {
+      callId: tool.toolCall.id,
+      toolName: tool.toolCall.name,
+      runtimeKind: runtimeKindForPayload(routed.payload),
+      classification: tool.classification,
+      supportsParallelToolCalls,
+      source: this.liveToolDispatch?.options.source ?? "direct",
+      submittedAtMs,
+    };
   }
 
   /**

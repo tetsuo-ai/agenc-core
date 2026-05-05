@@ -46,11 +46,13 @@ import {
   StreamingToolExecutor,
 } from "../tools/streaming-executor.js";
 import {
+  SHARED_READ,
   ToolCallRuntime,
 } from "../tools/concurrency.js";
 import {
   routerFromRegistry,
 } from "../tools/router.js";
+import { readToolRuntimeContext } from "../tools/runtimes/context.js";
 
 function mkCtx(overrides: Record<string, unknown> = {}): TurnContext {
   return {
@@ -257,6 +259,64 @@ afterEach(() => {
 });
 
 describe("executeTools — T7 gap #109 pipeline", () => {
+  test("executeTools dispatches batched calls through per-call runtime context", async () => {
+    const observedSandboxModes: Array<string | undefined> = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const tool: Tool = {
+      name: "RuntimeProbe",
+      description: "observes runtime context",
+      inputSchema: { type: "object" },
+      isReadOnly: true,
+      supportsParallelToolCalls: true,
+      concurrencyClass: SHARED_READ,
+      execute: async (args) => {
+        observedSandboxModes.push(readToolRuntimeContext(args)?.sandboxMode);
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        inFlight -= 1;
+        return { content: readToolRuntimeContext(args)?.runtimeKind ?? "missing" };
+      },
+    };
+    const registry = mkRegistry([tool]);
+    const session = mkSession({
+      log: new EventLog(),
+      registry,
+    });
+    const state = mkState({
+      toolCalls: [
+        {
+          id: "runtime-a",
+          name: "RuntimeProbe",
+          arguments: "{}",
+        },
+        {
+          id: "runtime-b",
+          name: "RuntimeProbe",
+          arguments: "{}",
+        },
+      ],
+    });
+
+    await executeTools(
+      state,
+      mkCtx({
+        cwd: "/repo",
+        approvalPolicy: { value: "never" },
+        sandboxPolicy: { value: "read_only" },
+      }),
+      session,
+    );
+
+    expect(observedSandboxModes).toEqual(["read_only", "read_only"]);
+    expect(maxInFlight).toBe(2);
+    expect(state.messages.map((message) => message.content)).toEqual([
+      "function",
+      "function",
+    ]);
+  });
+
   test("pre-hook fires before runToolUse and can mutate args", async () => {
     const observedArgs: Array<Record<string, unknown>> = [];
     const tool: Tool & { supportsParallelToolCalls?: boolean } = {
@@ -430,6 +490,103 @@ describe("executeTools — T7 gap #109 pipeline", () => {
 
     expect(observedPayloadKinds).toEqual(["mcp"]);
     expect(state.messages[0]!.content).toBe("ok");
+  });
+
+  test("streaming live path accepts MCP bare registry tools resolved from namespaced calls", async () => {
+    const observedPayloadKinds: string[] = [];
+    const tool: Tool & { serverId: string } = {
+      name: "listIssues",
+      serverId: "github",
+      description: "mcp-backed tool",
+      inputSchema: { type: "object" },
+      execute: async () => ({ content: "streaming-mcp-ok" }),
+    };
+    const preHook: PreToolUseHook = async ({ invocation }) => {
+      observedPayloadKinds.push(invocation.payload.kind);
+      return { kind: "continue" };
+    };
+    const log = new EventLog();
+    const registry = mkRegistry([tool]);
+    const session = mkSession({
+      log,
+      registry,
+      preToolUseHooks: [preHook],
+      mcpManager: {
+        resolveMcpToolInfo: (toolName: string) =>
+          toolName === "github.listIssues"
+            ? { serverName: "github", toolName: "listIssues" }
+            : undefined,
+      },
+    });
+    const state = mkState({
+      toolCalls: [
+        {
+          id: "stream-mcp-1",
+          name: "github.listIssues",
+          arguments: "{}",
+        },
+      ],
+    });
+
+    await executeTools(state, mkCtx(), session);
+
+    expect(observedPayloadKinds).toEqual(["mcp"]);
+    expect(state.messages[0]!.content).toBe("streaming-mcp-ok");
+  });
+
+  test("streaming live path serializes MCP calls from non-allowlisted servers", async () => {
+    let active = 0;
+    let peak = 0;
+    const makeTool = (name: string): Tool & {
+      serverId: string;
+      supportsParallelToolCalls: boolean;
+    } => ({
+      name,
+      serverId: "github",
+      supportsParallelToolCalls: true,
+      description: "mcp-backed tool",
+      inputSchema: { type: "object" },
+      execute: async () => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        active -= 1;
+        return { content: `${name}-ok` };
+      },
+    });
+    const registry = mkRegistry([
+      makeTool("listIssues"),
+      makeTool("getIssue"),
+    ]);
+    const session = mkSession({
+      log: new EventLog(),
+      registry,
+      mcpManager: {
+        resolveMcpToolInfo: (toolName: string) => {
+          if (toolName === "github.listIssues") {
+            return { serverName: "github", toolName: "listIssues" };
+          }
+          if (toolName === "github.getIssue") {
+            return { serverName: "github", toolName: "getIssue" };
+          }
+          return undefined;
+        },
+      },
+    });
+    const state = mkState({
+      toolCalls: [
+        { id: "stream-mcp-a", name: "github.listIssues", arguments: "{}" },
+        { id: "stream-mcp-b", name: "github.getIssue", arguments: "{}" },
+      ],
+    });
+
+    await executeTools(state, mkCtx(), session);
+
+    expect(peak).toBe(1);
+    expect(state.messages.map((message) => message.content)).toEqual([
+      "listIssues-ok",
+      "getIssue-ok",
+    ]);
   });
 
   test("AGENC_MAX_TOOL_USE_CONCURRENCY=2 limits parallel dispatch", async () => {
@@ -1311,7 +1468,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
       kind: "continue",
       hookPermissionResult: {
         behavior: "allow",
-        updatedInput: { redacted: true },
+        updatedInput: { redacted: true, file_path: "src/redacted.txt" },
         hookName: "PreToolUse:test",
       },
     });
@@ -1377,7 +1534,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     const call: LLMToolCall = {
       id: "c-allow",
       name: "Write",
-      arguments: "{}",
+      arguments: JSON.stringify({ file_path: "src/allowed.txt" }),
     };
     const state = mkState({ toolCalls: [call] });
 

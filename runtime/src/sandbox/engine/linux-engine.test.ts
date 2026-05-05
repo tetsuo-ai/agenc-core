@@ -344,6 +344,31 @@ describe("Linux sandbox engine", () => {
         "/repo",
       ),
     ).toMatchObject({ kind: "workspace_write" });
+    const narrowedFileSystem = restrictedFileSystemPolicy([
+      { path: { kind: "special", value: { kind: "project_roots" } }, access: "write" },
+      { path: { kind: "path", path: "/repo/blocked" }, access: "read" },
+    ]);
+    const narrowed = compatibilitySandboxPolicyForPermissionProfile(
+      {
+        fileSystem: narrowedFileSystem,
+        network: "disabled",
+      },
+      narrowedFileSystem,
+      "disabled",
+      "/repo",
+    );
+    expect(narrowed).toMatchObject({ kind: "workspace_write" });
+    if (narrowed.kind !== "workspace_write") {
+      throw new Error("expected workspace-write compatibility projection");
+    }
+    expect(narrowed.writable_roots).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          root: "/repo",
+          read_only_subpaths: expect.arrayContaining(["/repo/blocked"]),
+        }),
+      ]),
+    );
   });
 });
 

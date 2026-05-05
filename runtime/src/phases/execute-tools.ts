@@ -41,8 +41,8 @@ import {
   StreamingToolExecutor,
 } from "../tools/streaming-executor.js";
 import {
-  ToolCallRuntime,
-} from "../tools/concurrency.js";
+  createToolExecutionRuntime,
+} from "../tools/runtimes/parallel.js";
 import {
   ToolHookRegistry,
   type PermissionDecisionHook,
@@ -298,7 +298,7 @@ export function ensureStreamingToolExecutor(
   let executor = state.streamingToolExecutor as StreamingToolExecutor | null;
   if (executor) return executor;
 
-  const runtime = new ToolCallRuntime();
+  const runtime = createToolExecutionRuntime();
   const router = routerFromRegistry(session.services.registry);
   const hookRegistry = resolveHookRegistry(session);
   const preHooks = hookRegistry.getPre();
