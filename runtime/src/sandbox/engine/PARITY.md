@@ -1,0 +1,45 @@
+# Cross-Platform Sandbox Engine Parity
+
+Donor source commit: `c8c30d9d75556ecbe94991af22380d2a4e9d6589`.
+
+Primary source anchors:
+- `sandboxing/src/lib.rs`
+- `sandboxing/src/manager.rs`
+- `sandboxing/src/policy_transforms.rs`
+- `sandboxing/src/seatbelt.rs`
+- `sandboxing/src/landlock.rs`
+- `sandboxing/src/bwrap.rs`
+- `sandboxing/src/seatbelt_base_policy.sbpl`
+- `sandboxing/src/seatbelt_network_policy.sbpl`
+- `sandboxing/src/restricted_read_only_platform_defaults.sbpl`
+
+This directory owns AgenC's TypeScript port of the sandbox engine's policy
+model and platform backend argument generation:
+- `index.ts` defines shared policy/profile types and path access helpers.
+- `manager.ts` selects and transforms sandboxed command requests.
+- `policy-transforms.ts` merges, normalizes, intersects, and applies
+  additional permission profiles.
+- `seatbelt.ts` builds macOS `sandbox-exec` policy payloads.
+- `landlock.ts` serializes the Linux launcher argv handoff and exposes the
+  child-process spawn surface for the helper executable.
+- `bwrap.ts` probes host bubblewrap support and user namespace diagnostics.
+- `policies/` contains the macOS seatbelt policy templates.
+
+Security-critical parity notes:
+- Restricted read-only policies do not implicitly make the sandbox cwd
+  writable.
+- More-specific read/deny entries and protected metadata paths override
+  broader writable roots unless an explicit write entry targets the metadata
+  path.
+- Restricted filesystem-root read/write grants are recognized as full-disk
+  access only when not narrowed by deny/read carveouts.
+- Read-deny glob entries participate in permission-profile intersection before
+  accepting granted paths.
+- The Linux test suite drives generated launcher arguments through a real
+  helper subprocess.
+
+Cross-cuts deliberately not carried:
+- The Linux launcher executable is covered by C-01b.
+- Runtime approval escalation is covered by C-01e.
+- Windows restricted-token execution remains data-modeled here for manager
+  selection parity, but the platform executor is out of this item.
