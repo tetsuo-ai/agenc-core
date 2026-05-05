@@ -3,6 +3,98 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("./ink.js", () => ({
   Box: () => null,
   Text: () => null,
+  useApp: () => ({ exit: () => {} }),
+  useTerminalFocus: () => true,
+  useTerminalTitle: () => {},
+}));
+
+vi.mock("bun:bundle", () => ({
+  feature: () => false,
+}));
+
+vi.mock("../agenc/adapters/upstream-commands.js", () => ({
+  loadUpstreamCommandList: () => [],
+}));
+
+vi.mock("../agenc/adapters/upstream-agent-list.js", () => ({
+  loadUpstreamAgentList: () => [],
+}));
+
+vi.mock("../agenc/adapters/upstream-model-switch.js", () => ({
+  buildPendingProviderSwitch: () => null,
+}));
+
+vi.mock("../agenc/adapters/upstream-attachments.js", () => ({
+  pastedContentsToLLMMessage: () => null,
+}));
+
+vi.mock("../agenc/upstream/tools.js", () => ({
+  assembleToolPool: () => [],
+  filterToolsByDenyRules: (tools: unknown) => tools,
+  getAllBaseTools: () => [],
+  getTools: () => [],
+  getToolsForDefaultPreset: () => [],
+  parseToolPreset: () => [],
+}));
+
+vi.mock("src/tools.js", () => ({
+  assembleToolPool: () => [],
+  filterToolsByDenyRules: (tools: unknown) => tools,
+  getAllBaseTools: () => [],
+  getTools: () => [],
+}));
+
+vi.mock("../agenc/upstream/context/fpsMetrics.js", () => ({
+  FpsMetricsProvider: ({ children }: { children: unknown }) => children,
+}));
+
+vi.mock("../agenc/upstream/context/stats.js", () => ({
+  StatsProvider: ({ children }: { children: unknown }) => children,
+}));
+
+vi.mock("../agenc/upstream/state/onChangeAppState.js", () => ({
+  onChangeAppState: () => {},
+}));
+
+vi.mock("./components/Messages.js", () => ({
+  Messages: () => null,
+}));
+
+vi.mock("./components/PromptInput/PromptInput.js", () => ({
+  default: () => null,
+}));
+
+vi.mock("./context/promptOverlayContext.js", () => ({
+  PromptOverlayProvider: ({ children }: { children: unknown }) => children,
+}));
+
+vi.mock("./keybindings/KeybindingProviderSetup.js", () => ({
+  KeybindingSetup: ({ children }: { children: unknown }) => children,
+}));
+
+vi.mock("./permission-requests.js", () => ({
+  AgenCPermissionOverlay: () => null,
+  buildToolUseConfirmQueue: () => [],
+  usePermissionRequests: () => [],
+}));
+
+vi.mock("./session-transcript.js", () => ({
+  useSessionTranscript: () => ({
+    messages: [],
+    toolNames: [],
+    isStreaming: false,
+    inProgressToolUseIDs: [],
+    streamingToolUses: [],
+    streamingText: "",
+  }),
+}));
+
+vi.mock("./tool-jsx-state.js", () => ({
+  useToolJSX: () => [null, () => {}],
+}));
+
+vi.mock("./tool-rendering.js", () => ({
+  createTuiTools: () => [],
 }));
 
 import {
@@ -17,7 +109,7 @@ import {
 import {
   installElicitationResolvers,
   subscribeToMcpUrlCompletions,
-} from "./elicitation-bridge.js";
+} from "./components/App.js";
 import type {
   AgenCDaemonMethod,
   AgenCDaemonResultByMethod,
