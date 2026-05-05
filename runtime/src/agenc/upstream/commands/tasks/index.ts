@@ -1,4 +1,4 @@
-import type { Command } from '../../commands.js'
+import type { Command } from '../../../../commands.js'
 
 const tasks = {
   type: 'local-jsx',

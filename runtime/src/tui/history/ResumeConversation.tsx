@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 import React from 'react';
 import { useTerminalSize } from '../../agenc/upstream/hooks/useTerminalSize.js';
 import { getOriginalCwd, switchSession } from '../../agenc/upstream/bootstrap/state.js';
-import type { Command } from '../../agenc/upstream/commands.js';
+import type { Command } from '../../commands.js';
 import { LogSelector } from '../../agenc/upstream/components/LogSelector.js';
 import { Spinner } from '../components/spinner/Spinner.js';
 import { restoreCostStateForSession, setActiveCostSessionId } from '../../cost/tracker.js';

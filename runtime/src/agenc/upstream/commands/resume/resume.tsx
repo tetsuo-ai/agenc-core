@@ -4,7 +4,7 @@ import type { UUID } from 'crypto';
 import figures from 'figures';
 import * as React from 'react';
 import { getOriginalCwd, getSessionId } from '../../bootstrap/state.js';
-import type { CommandResultDisplay, ResumeEntrypoint } from '../../commands.js';
+import type { CommandResultDisplay, ResumeEntrypoint } from '../../../../commands.js';
 import { LogSelector } from '../../components/LogSelector.js';
 import { MessageResponse } from '../../components/MessageResponse.js';
 import { Spinner } from '../../../../tui/components/spinner/Spinner.js';

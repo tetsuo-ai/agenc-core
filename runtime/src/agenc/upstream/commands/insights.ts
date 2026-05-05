@@ -8,7 +8,7 @@ import {
   writeFile,
 } from 'fs/promises'
 import { extname, join } from 'path'
-import type { Command } from '../commands.js'
+import type { Command } from '../../../commands.js'
 import { queryWithModel } from '../services/api/claude.js'
 import {
   AGENT_TOOL_NAME,

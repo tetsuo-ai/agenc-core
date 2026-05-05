@@ -1,4 +1,4 @@
-import type { Command } from '../../commands.js'
+import type { Command } from '../../../../commands.js'
 
 const rewind = {
   description: `Restore the code and/or conversation to a previous point`,

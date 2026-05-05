@@ -18,8 +18,8 @@ import { accumulateUsage, updateUsage } from 'src/services/api/claude.js' // bra
 import type { NonNullableUsage } from 'src/services/api/logging.js'
 import { EMPTY_USAGE } from 'src/services/api/logging.js'
 import stripAnsi from 'strip-ansi'
-import type { Command } from './commands.js'
-import { getSlashCommandToolSkills } from './commands.js'
+import type { Command } from '../../commands.js'
+import { getSlashCommandToolSkills } from '../../commands.js'
 import {
   LOCAL_COMMAND_STDERR_TAG,
   LOCAL_COMMAND_STDOUT_TAG,

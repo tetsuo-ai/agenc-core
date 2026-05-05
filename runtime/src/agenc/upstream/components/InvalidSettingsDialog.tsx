@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { Text } from '../../../tui/ink.js';
 import type { ValidationError } from '../utils/settings/validation.js';
-import { Select } from './CustomSelect/index.js';
+import { Select } from './CustomSelect/select.js';
 import { Dialog } from './design-system/Dialog.js';
 import { ValidationErrorsList } from './ValidationErrorsList.js';
 type Props = {

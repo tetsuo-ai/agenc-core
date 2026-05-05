@@ -5,7 +5,7 @@ import chalk from 'chalk';
 import figures from 'figures';
 import React, { Suspense, use, useEffect, useMemo, useState } from 'react';
 import stripAnsi from 'strip-ansi';
-import type { CommandResultDisplay } from '../../agenc/upstream/commands.js';
+import type { CommandResultDisplay } from '../../commands.js';
 import { useTerminalSize } from '../../agenc/upstream/hooks/useTerminalSize.js';
 import { applyColor } from '../ink/colorize.js';
 import { stringWidth as getStringWidth } from '../ink/stringWidth.js';

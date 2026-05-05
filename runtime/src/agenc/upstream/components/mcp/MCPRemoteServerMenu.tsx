@@ -1,7 +1,7 @@
 import figures from 'figures';
 import React, { useEffect, useRef, useState } from 'react';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from 'src/services/analytics/index.js';
-import type { CommandResultDisplay } from '../../commands.js';
+import type { CommandResultDisplay } from '../../../../commands.js';
 import { getOauthConfig } from '../../constants/oauth.js';
 import { useExitOnCtrlCDWithKeybindings } from '../../hooks/useExitOnCtrlCDWithKeybindings.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
@@ -20,7 +20,7 @@ import { errorMessage } from '../../utils/errors.js';
 import { logMCPDebug } from '../../utils/log.js';
 import { capitalize } from '../../utils/stringUtils.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
-import { Select } from '../CustomSelect/index.js';
+import { Select } from '../CustomSelect/select.js';
 import { Byline } from '../design-system/Byline.js';
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js';
 import { Spinner } from '../../../../tui/components/spinner/Spinner.js';

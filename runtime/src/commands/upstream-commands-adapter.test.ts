@@ -1,13 +1,13 @@
 import { describe, it, expect } from "vitest";
 
 import { buildDefaultRegistry } from "./registry.js";
-import type * as RuntimeCommands from "../commands.js";
+import {
+  builtInCommandNames,
+  clearCommandMemoizationCaches,
+  filterCommandsForRemoteMode,
+  getCommandsSync,
+} from "../commands.js";
 import { loadUpstreamCommandList } from "../agenc/adapters/upstream-commands.js";
-
-async function importLegacyCommandShim(): Promise<typeof RuntimeCommands> {
-  const legacyPrefix = "../agenc/upstream/";
-  return import(legacyPrefix + "commands.js") as Promise<typeof RuntimeCommands>;
-}
 
 describe("loadUpstreamCommandList (TUI slash-command wiring)", () => {
   it("returns exactly the user-invocable subset of the registry", () => {
@@ -107,22 +107,21 @@ describe("loadUpstreamCommandList (TUI slash-command wiring)", () => {
     }
   });
 
-  it("legacy command-module shim re-exports the tested runtime command surface", async () => {
+  it("canonical command module exposes the tested runtime command surface", async () => {
     const previousUserType = process.env.USER_TYPE;
     try {
       delete process.env.USER_TYPE;
-      const shim = await importLegacyCommandShim();
-      expect(shim.builtInCommandNames().has("help")).toBe(true);
-      expect(typeof shim.clearCommandMemoizationCaches).toBe("function");
+      expect(builtInCommandNames().has("help")).toBe(true);
+      expect(typeof clearCommandMemoizationCaches).toBe("function");
 
-      const commands = shim.getCommandsSync();
+      const commands = getCommandsSync();
       const reloadPlugins = commands.find((cmd) => cmd.name === "reload-plugins");
       const files = commands.find((cmd) => cmd.name === "files");
       expect(reloadPlugins?.supportsNonInteractive).toBe(false);
       expect(files?.supportsNonInteractive).toBe(true);
       expect(files?.isEnabled?.()).toBe(false);
       expect(
-        shim.filterCommandsForRemoteMode(commands).map((cmd) => cmd.name),
+        filterCommandsForRemoteMode(commands).map((cmd) => cmd.name),
       ).not.toContain("reload-plugins");
     } finally {
       if (previousUserType === undefined) {

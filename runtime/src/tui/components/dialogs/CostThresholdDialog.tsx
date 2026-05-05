@@ -1,6 +1,6 @@
 import React from 'react'
 import { Box, Link, Text } from '../../ink.js'
-import { Select } from '../../../agenc/upstream/components/CustomSelect/index.js'
+import { Select } from '../../../agenc/upstream/components/CustomSelect/select.js'
 import { Dialog } from '../../../agenc/upstream/components/design-system/Dialog.js'
 import { getAPIProvider } from '../../../agenc/upstream/utils/model/providers.js'
 
@@ -12,6 +12,7 @@ function getProviderLabel(): string {
   const provider = getAPIProvider()
   switch (provider) {
     case 'firstParty':
+      // branding-scan: allow real provider display label
       return 'Anthropic API'
     case 'bedrock':
       return 'AWS Bedrock'
@@ -20,6 +21,7 @@ function getProviderLabel(): string {
     case 'foundry':
       return 'Azure Foundry'
     case 'openai':
+      // branding-scan: allow real provider display label
       return 'OpenAI-compatible API'
     case 'gemini':
       return 'Gemini API'

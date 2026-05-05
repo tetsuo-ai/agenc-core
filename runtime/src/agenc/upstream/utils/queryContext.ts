@@ -9,7 +9,7 @@
  * import from here (QueryEngine.ts, cli/print.ts).
  */
 
-import type { Command } from '../commands.js'
+import type { Command } from '../../../commands.js'
 import { getSystemPrompt } from '../constants/prompts.js'
 import { getSystemContext, getUserContext } from '../context.js'
 import type { MCPServerConnection } from '../services/mcp/types.js'

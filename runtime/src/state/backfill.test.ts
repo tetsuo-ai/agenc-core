@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ROLLOUT_SCHEMA_VERSION } from "../session/event-log.js";
 import { serializeRolloutItem } from "../session/rollout-item.js";
-import { FileThreadStore } from "../thread-store/index.js";
+import { FileThreadStore } from "../thread-store/store.js";
 import { backfillProjectRollouts } from "./backfill.js";
 import { openStateDatabases, type StateSqliteDriver } from "./sqlite-driver.js";
 

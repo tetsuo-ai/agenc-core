@@ -4,7 +4,7 @@ import { checkIsGitClean, checkNeedsAgenCAiLogin } from 'src/utils/background/re
 import { gracefulShutdownSync } from 'src/utils/gracefulShutdown.js';
 import { Box, Text } from '../../../tui/ink.js';
 import { ConsoleOAuthFlow } from './ConsoleOAuthFlow.js';
-import { Select } from './CustomSelect/index.js';
+import { Select } from './CustomSelect/select.js';
 import { Dialog } from './design-system/Dialog.js';
 import { TeleportStash } from './TeleportStash.js';
 export type TeleportLocalErrorType = 'needsLogin' | 'needsGitStash';

@@ -84,7 +84,7 @@ import {
   type StateDatabasePaths,
   type StateSqliteDriver,
 } from "../state/sqlite-driver.js";
-import { FileThreadStore } from "../thread-store/index.js";
+import { FileThreadStore } from "../thread-store/store.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 
 export const AGENC_DAEMON_PID_FILENAME = "daemon.pid";

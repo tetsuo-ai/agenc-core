@@ -41,8 +41,8 @@ import type {
 } from "../session/session.js";
 import {
   createCodeModeService,
-  type CodeModeService,
-} from "../tools/code-mode/index.js";
+} from "../tools/code-mode/service.js";
+import type { CodeModeService } from "../tools/code-mode/types.js";
 import { initMagicDocs } from "../services/MagicDocs/magicDocs.js";
 import { configurePolicyLimitsService } from "../services/policyLimits/index.js";
 import type { RolloutItem } from "../session/rollout-item.js";
@@ -50,12 +50,12 @@ import type { RolloutStore } from "../session/rollout-store.js";
 import {
   FileThreadStore,
   ThreadNotFoundError,
-} from "../thread-store/index.js";
+} from "../thread-store/store.js";
 import {
   createLiveThread,
   resumeLiveThread,
   type LiveThread,
-} from "../thread-store/index.js";
+} from "../thread-store/live-thread.js";
 import type { RegisteredAgentTask } from "../session/agent-task-lifecycle.js";
 import { BehaviorSubject } from "../utils/behavior-subject.js";
 import {

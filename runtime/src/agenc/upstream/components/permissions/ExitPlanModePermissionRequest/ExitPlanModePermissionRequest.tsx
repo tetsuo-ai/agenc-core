@@ -33,7 +33,7 @@ import { getPlan, getPlanFilePath } from '../../../utils/plans.js';
 import { editFileInEditor, editPromptInEditor } from '../../../utils/promptEditor.js';
 import { getCurrentSessionTitle, getTranscriptPath, saveAgentName, saveCustomTitle } from '../../../utils/sessionStorage.js';
 import { getSettings_DEPRECATED } from '../../../utils/settings/settings.js';
-import { type OptionWithDescription, Select } from '../../CustomSelect/index.js';
+import { type OptionWithDescription, Select } from '../../CustomSelect/select.js';
 import { Markdown } from '../../../../../tui/components/markdown/Markdown.js';
 import { PermissionDialog } from '../PermissionDialog.js';
 import type { PermissionRequestProps } from '../../../../../tui/components/permissions/PermissionRequest.js';

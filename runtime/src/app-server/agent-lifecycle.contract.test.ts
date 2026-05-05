@@ -6,7 +6,7 @@ import { AgenCSessionSnapshotPolicy } from "../state/snapshot-policy.js";
 import { upsertAgentRun } from "../state/agent-runs.js";
 import { RolloutStore } from "../session/rollout-store.js";
 import type { RolloutItem } from "../session/rollout-item.js";
-import { FileThreadStore } from "../thread-store/index.js";
+import { FileThreadStore } from "../thread-store/store.js";
 import {
   openStateDatabases,
   type StateSqliteDriver,

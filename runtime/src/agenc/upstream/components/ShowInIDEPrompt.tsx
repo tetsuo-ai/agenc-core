@@ -4,7 +4,7 @@ import React from 'react';
 import { Box, Text } from '../../../tui/ink.js';
 import { getCwd } from '../utils/cwd.js';
 import { isSupportedVSCodeTerminal } from '../utils/ide.js';
-import { Select } from './CustomSelect/index.js';
+import { Select } from './CustomSelect/select.js';
 import { Pane } from './design-system/Pane.js';
 import type { PermissionOption, PermissionOptionWithLabel } from './permissions/FilePermissionDialog/permissionOptions.js';
 type Props<A> = {

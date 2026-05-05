@@ -16,7 +16,7 @@ export type {
   SandboxSettings,
 } from '../sandboxTypes.js'
 // Re-export all generated types
-export * from './coreTypes.generated.js'
+export type * from './coreTypes.generated.js'
 
 // Re-export utility types that can't be expressed as Zod schemas
 export type { NonNullableUsage } from './sdkUtilityTypes.js'

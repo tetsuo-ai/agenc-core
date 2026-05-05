@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { useMemo, useState } from 'react';
-import type { CommandResultDisplay, LocalJSXCommandContext } from '../../commands.js';
+import type { CommandResultDisplay, LocalJSXCommandContext } from '../../../../commands.js';
 import { type OptionWithDescription, Select } from '../../components/CustomSelect/select.js';
 import { Dialog } from '../../components/design-system/Dialog.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js';

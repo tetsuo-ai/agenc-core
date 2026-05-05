@@ -59,7 +59,7 @@ import {
   type StoredThread,
   type ThreadSource,
   type ThreadStore,
-} from "../thread-store/index.js";
+} from "../thread-store/store.js";
 import type { Event } from "../session/event-log.js";
 import type { ResponseItem, RolloutItem } from "../session/rollout-item.js";
 import type { AgenCStateAgentRunRecord } from "../state/agent-runs.js";

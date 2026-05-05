@@ -1,4 +1,4 @@
-import type { Command } from '../commands.js'
+import type { Command } from '../../../commands.js'
 import { maybeMarkProjectOnboardingComplete } from '../projectOnboardingState.js'
 import { isNewInitEnabled } from './initMode.js'
 

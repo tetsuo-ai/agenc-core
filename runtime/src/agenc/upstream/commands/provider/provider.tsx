@@ -10,7 +10,7 @@ import TextInput from '../../components/TextInput.js'
 import {
   Select,
   type OptionWithDescription,
-} from '../../components/CustomSelect/index.js'
+} from '../../components/CustomSelect/select.js'
 import { Dialog } from '../../components/design-system/Dialog.js'
 import { LoadingState } from '../../components/design-system/LoadingState.js'
 import { useCodexOAuthFlow } from '../../components/useCodexOAuthFlow.js'

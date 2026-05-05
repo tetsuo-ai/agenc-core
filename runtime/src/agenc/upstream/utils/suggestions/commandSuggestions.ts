@@ -4,7 +4,7 @@ import {
   formatDescriptionWithSource,
   getCommand,
   getCommandName,
-} from '../../commands.js'
+} from '../../../../commands.js'
 import type { SuggestionItem } from '../../../../tui/components/PromptInput/PromptInputFooterSuggestions.js'
 import { getSkillUsageScore } from './skillUsageTracking.js'
 

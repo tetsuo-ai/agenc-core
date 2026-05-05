@@ -4,7 +4,7 @@ import { getAdditionalDirectoriesForAgenCMd } from '../../bootstrap/state.js'
 import {
   clearCommandMemoizationCaches,
   clearCommandsCache,
-} from '../../commands.js'
+} from '../../../../commands.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,

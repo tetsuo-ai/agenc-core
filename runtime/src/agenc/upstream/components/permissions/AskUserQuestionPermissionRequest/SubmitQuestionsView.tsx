@@ -4,7 +4,7 @@ import React from 'react';
 import { Box, Text } from '../../../../../tui/ink.js';
 import type { Question } from 'src/tools/AskUserQuestionTool/AskUserQuestionTool.js';
 import type { PermissionDecision } from '../../../utils/permissions/PermissionResult.js';
-import { Select } from '../../CustomSelect/index.js';
+import { Select } from '../../CustomSelect/select.js';
 import { Divider } from '../../design-system/Divider.js';
 import { PermissionRequestTitle } from '../PermissionRequestTitle.js';
 import { PermissionRuleExplanation } from '../PermissionRuleExplanation.js';
