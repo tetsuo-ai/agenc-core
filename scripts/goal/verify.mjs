@@ -5015,6 +5015,8 @@ function assertZc32ShellCommandCoverage() {
     "del,-Force,C:\\\\foo",
     "[\"git\", \"grep\", \"needle\"]",
     "[\"git\", \"ls-files\"]",
+    "Windows known-safe checks do not fall through to Unix allowlists",
+    "isKnownSafeCommandForPlatform([\"ls\"], \"win32\")",
   ];
   const missingSafetyRegressionMarkers = requiredSafetyRegressionMarkers.filter((marker) => !safetyTests.includes(marker));
   if (missingSafetyRegressionMarkers.length > 0) {
@@ -5022,10 +5024,13 @@ function assertZc32ShellCommandCoverage() {
   }
 
   const psParser = readFileSync(path.join(root, "runtime/src/shell-command/powershell-parser.ts"), "utf8");
-  for (const marker of ["spawnSync", "-EncodedCommand", "parsePowerShellScriptWithNativeAst"]) {
+  for (const marker of ["spawn(", "-EncodedCommand", "PowerShellParserProcess", "parsePowerShellScriptWithNativeAst"]) {
     if (!psParser.includes(marker)) {
       failGate(`ZC-32: powershell-parser.ts is missing ${marker}.`);
     }
+  }
+  if (/spawnSync/.test(psParser)) {
+    failGate("ZC-32: PowerShell parser must use the cached parser process, not spawnSync per parse.");
   }
 
   const bashPermissions = readFileSync(path.join(root, "runtime/src/permissions/bash.ts"), "utf8");

@@ -1,6 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { describe, expect, test } from "vitest";
-import { parsePowerShellScriptWithNativeAst } from "./powershell-parser.js";
+import { afterEach, describe, expect, test } from "vitest";
+import {
+  clearPowerShellParserCacheForTests,
+  parsePowerShellScriptWithNativeAst,
+} from "./powershell-parser.js";
 
 function findPowerShellExecutable(): string | null {
   for (const candidate of ["pwsh", "powershell"]) {
@@ -14,6 +17,10 @@ function findPowerShellExecutable(): string | null {
 }
 
 describe("parsePowerShellScriptWithNativeAst", () => {
+  afterEach(() => {
+    clearPowerShellParserCacheForTests();
+  });
+
   test("returns a failed outcome when the platform executable is unavailable", () => {
     const outcome = parsePowerShellScriptWithNativeAst(
       "__agenc_missing_powershell_executable__",
@@ -41,6 +48,15 @@ describe("parsePowerShellScriptWithNativeAst", () => {
     expect(outcome).toEqual({
       ok: true,
       commands: [["Get-ChildItem", "."], ["Select-Object", "Name"]],
+    });
+
+    const second = parsePowerShellScriptWithNativeAst(
+      executable,
+      "Write-Output foo | Measure-Object",
+    );
+    expect(second).toEqual({
+      ok: true,
+      commands: [["Write-Output", "foo"], ["Measure-Object"]],
     });
   });
 });

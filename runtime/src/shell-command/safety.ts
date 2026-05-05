@@ -122,15 +122,23 @@ export function isKnownSafeCommand(
   command: readonly string[],
   depth = 0,
 ): boolean {
+  return isKnownSafeCommandForPlatform(command, process.platform, depth);
+}
+
+export function isKnownSafeCommandForPlatform(
+  command: readonly string[],
+  platform: NodeJS.Platform,
+  depth = 0,
+): boolean {
   if (depth > 8) return false;
   const stripped = stripSafeEnvironment(command);
   if (stripped.length === 0) return false;
 
-  if (process.platform === "win32" && isSafeWindowsCommand(stripped)) {
-    return true;
+  if (platform === "win32") {
+    return isSafeWindowsCommand(stripped);
   }
 
-  if (isSafeToCallWithExec(stripped)) return true;
+  if (isSafeToCallWithExec(stripped, platform)) return true;
 
   const bash = extractBashCommand(stripped);
   if (bash !== null) {
@@ -138,7 +146,9 @@ export function isKnownSafeCommand(
     return (
       commands !== null &&
       commands.length > 0 &&
-      commands.every((subcommand) => isKnownSafeCommand(subcommand, depth + 1))
+      commands.every((subcommand) =>
+        isKnownSafeCommandForPlatform(subcommand, platform, depth + 1),
+      )
     );
   }
 
@@ -295,12 +305,15 @@ function stripSafeEnvironment(command: readonly string[]): readonly string[] {
   return stripped === null ? [] : stripped;
 }
 
-function isSafeToCallWithExec(command: readonly string[]): boolean {
+function isSafeToCallWithExec(
+  command: readonly string[],
+  platform: NodeJS.Platform,
+): boolean {
   const name = executableBasename(command[0]!);
   const args = command.slice(1);
 
   if (SIMPLE_SAFE_EXECUTABLES.has(name)) return true;
-  if (process.platform === "linux" && LINUX_ONLY_SAFE_EXECUTABLES.has(name)) {
+  if (platform === "linux" && LINUX_ONLY_SAFE_EXECUTABLES.has(name)) {
     return true;
   }
 

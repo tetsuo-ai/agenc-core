@@ -4,6 +4,7 @@ import {
   isDangerousPowerShellWords,
   isDangerousWindowsCommand,
   isKnownSafeCommand,
+  isKnownSafeCommandForPlatform,
   isSafePowerShellWords,
   isSafeWindowsCommand,
   shellCommandIsKnownSafe,
@@ -56,6 +57,14 @@ describe("isKnownSafeCommand", () => {
     expect(isKnownSafeCommand(["bash", "-lc", "git ls-files"])).toBe(false);
     expect(shellCommandIsKnownSafe("bash -lc 'git status && rg TODO runtime'"))
       .toBe(true);
+  });
+
+  test("Windows known-safe checks do not fall through to Unix allowlists", () => {
+    expect(isKnownSafeCommandForPlatform(["ls"], "win32")).toBe(false);
+    expect(isKnownSafeCommandForPlatform(["cat", "file.txt"], "win32")).toBe(false);
+    expect(isKnownSafeCommandForPlatform(["find", "."], "win32")).toBe(false);
+    expect(isKnownSafeCommandForPlatform(["git", "status"], "win32")).toBe(false);
+    expect(isKnownSafeCommandForPlatform(["bash", "-lc", "ls"], "win32")).toBe(false);
   });
 });
 
