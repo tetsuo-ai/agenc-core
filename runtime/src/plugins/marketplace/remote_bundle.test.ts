@@ -147,6 +147,12 @@ describe("remote plugin bundles", () => {
     )).rejects.toThrow("must use HTTPS or loopback HTTP");
   });
 
+  it("reports invalid bundle download URL strings with remote plugin context", () => {
+    expect(() =>
+      validateRemotePluginBundle("linear", "agenc-global", "linear", "1.0.0", "not a url"),
+    ).toThrow("invalid download URL for remote plugin 'linear'");
+  });
+
   it("rejects oversized streamed bundle downloads before extraction", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-bundle-large-"));
     const bundle = validateRemotePluginBundle(
@@ -169,6 +175,16 @@ describe("remote plugin bundles", () => {
     await expect(extractPluginBundleTarGz(createTarGz({ "linear/file.txt": "hello" }), destination, 4))
       .rejects.toThrow(/decompressed|extracted size/u);
   });
+
+  it("rejects truncated or corrupt tar members before writing files", async () => {
+    const truncatedDestination = await mkdtemp(join(tmpdir(), "agenc-remote-extract-truncated-"));
+    await expect(extractPluginBundleTarGz(createTruncatedTarGz(), truncatedDestination))
+      .rejects.toThrow("is truncated");
+
+    const corruptDestination = await mkdtemp(join(tmpdir(), "agenc-remote-extract-corrupt-"));
+    await expect(extractPluginBundleTarGz(createChecksumCorruptTarGz(), corruptDestination))
+      .rejects.toThrow("invalid checksum");
+  });
 });
 
 function createTarGz(files: Readonly<Record<string, string>>): Buffer {
@@ -179,6 +195,26 @@ function createTarGz(files: Readonly<Record<string, string>>): Buffer {
   }
   chunks.push(Buffer.alloc(1024));
   return gzipSync(Buffer.concat(chunks));
+}
+
+function createTruncatedTarGz(): Buffer {
+  const body = Buffer.from("hello", "utf8");
+  return gzipSync(Buffer.concat([
+    createTarHeader("linear/file.txt", body.length + 10),
+    body,
+  ]));
+}
+
+function createChecksumCorruptTarGz(): Buffer {
+  const body = Buffer.from("x", "utf8");
+  const header = createTarHeader("linear/file.txt", body.length);
+  header[0] = "X".charCodeAt(0);
+  return gzipSync(Buffer.concat([
+    header,
+    body,
+    Buffer.alloc(padding(body.length)),
+    Buffer.alloc(1024),
+  ]));
 }
 
 function createTarHeader(name: string, size: number): Buffer {

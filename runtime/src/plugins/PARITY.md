@@ -90,7 +90,7 @@ PK-06 scope carried into AgenC:
 - `bin/agenc.ts` routes `agenc plugin ...` before prompt/TUI routing so plugin commands never get treated as user prompts.
 
 PK-07 scope carried into AgenC:
-- `marketplace/marketplace.ts` owns canonical marketplace source parsing, local/git/url/settings staging, validation, atomic activation, persistent marketplace index reads/writes, plugin entry resolution, and safe removal by computed install root. String add/CLI inputs use `parseMarketplaceInput.ts`, and malformed plugin entries fail explicitly instead of being silently skipped.
+- `marketplace/marketplace.ts` owns canonical marketplace source parsing, local/git/url/settings staging, validation, atomic activation, persistent marketplace index reads/writes, plugin entry resolution, and safe removal by computed install root. String add/CLI inputs use `parseMarketplaceInput.ts`, malformed plugin entries fail explicitly instead of being silently skipped, and git clone transports reject non-loopback HTTP.
 - `marketplace/marketplaceManager.ts` owns marketplace cache refresh, config persistence, source registration/removal, plugin lookup, auto-update toggles, and runtime refresh entry points.
 - `marketplace/marketplaceHelpers.ts` owns policy allow/block matching, host/path pattern handling, marketplace loading degradation, empty-marketplace reason detection, and display formatting.
 - `marketplace/parseMarketplaceInput.ts` owns user input normalization for local paths, git URLs, SSH/file git URLs, HTTP(S) manifests, GitHub shorthand, and GitHub tree refs with slash-bearing branch names when the marketplace path starts at a known marker.
@@ -98,8 +98,8 @@ PK-07 scope carried into AgenC:
 - `marketplace/installed_marketplaces.ts` projects persistent marketplace index/config entries into installed marketplace roots.
 - `marketplace/remote.ts` owns authenticated remote marketplace listing, installed-plugin listing, detail fetches, skill detail fetches, install/uninstall mutations, remote cache cleanup, and remote JSON response-shape validation.
 - `marketplace/fetchGuards.ts` owns shared HTTPS/loopback URL policy, timeout/abort handling, stream cancellation on size-limit failures, bounded response reads, and credential-redacted URL formatting for marketplace network surfaces.
-- `marketplace/remote_bundle.ts` owns remote bundle validation, download-boundary HTTPS/loopback revalidation, size-limited download, safe tar.gz extraction, manifest identity verification, versioned cache activation, and manifest readback.
-- `marketplace/remote_legacy.ts` owns the older remote plugin status, featured-plugin, enable, and uninstall endpoints that the runtime may still need while the hosted service migrates.
+- `marketplace/remote_bundle.ts` owns remote bundle validation, download-boundary HTTPS/loopback revalidation, size-limited download, safe tar.gz extraction with traversal/link/truncation/checksum rejection, manifest identity verification, versioned cache activation, and manifest readback.
+- `marketplace/remote_legacy.ts` owns the older remote plugin status, featured-plugin, enable, and uninstall endpoints that the runtime may still need while the hosted service migrates, including response-shape validation before mapping.
 - `marketplace/startup_sync.ts` owns startup curated marketplace sync through git, HTTP zipball, and backup archive fallbacks with private SHA tracking and existing-snapshot degradation.
 - `marketplace/startup_remote_sync.ts` owns one-shot startup remote plugin reconciliation after curated marketplace prerequisites are available, including stale lock recovery.
 

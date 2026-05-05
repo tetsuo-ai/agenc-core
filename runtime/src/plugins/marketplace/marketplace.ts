@@ -691,6 +691,7 @@ async function stageMarketplaceSource(
         const gitUrl = source.source === "github"
           ? `https://github.com/${source.repo.replace(/\.git$/u, "")}.git`
           : source.url;
+        assertAllowedGitTransportUrl(gitUrl, "marketplace git URL");
         const ref = source.ref;
         const sparse = source.source === "github"
           ? source.path ?? source.sparsePaths?.[0]
@@ -844,7 +845,7 @@ function resolvePluginSource(
     }
     return {
       type: "git",
-      url: normalizeGitPluginSourceUrl(marketplacePath, source.url),
+      url: normalizeMarketplacePluginGitUrl(marketplacePath, source.url),
       ...(path !== undefined ? { path } : {}),
       ...(typeof source.ref === "string" && source.ref.trim() ? { ref: source.ref.trim() } : {}),
       ...(typeof source.sha === "string" && source.sha.trim() ? { sha: source.sha.trim() } : {}),
@@ -909,6 +910,18 @@ function normalizeGitPluginSourceUrl(marketplacePath: string, url: string): stri
   const shorthand = normalizeGithubShorthandUrl(trimmed);
   if (shorthand !== null) return shorthand;
   throw new Error(`invalid git plugin source url: ${trimmed}`);
+}
+
+function normalizeMarketplacePluginGitUrl(marketplacePath: string, url: string): string {
+  const normalized = normalizeGitPluginSourceUrl(marketplacePath, url);
+  assertAllowedGitTransportUrl(normalized, "marketplace plugin git URL");
+  return normalized;
+}
+
+function assertAllowedGitTransportUrl(url: string, label: string): void {
+  if (url.startsWith("http://") || url.startsWith("https://")) {
+    assertHttpsOrLoopbackUrl(url, label, { allowLoopbackHttp: true });
+  }
 }
 
 function normalizeRelativeGitPluginSourceUrl(marketplacePath: string, url: string): string {

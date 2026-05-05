@@ -178,6 +178,10 @@ describe("plugin marketplace runtime", () => {
       ok: false,
       error: "Marketplace URL must use HTTPS or loopback HTTP",
     });
+    await expect(parseMarketplaceInput("http://agenc.tech/plugins.git")).resolves.toEqual({
+      ok: false,
+      error: "Marketplace URL must use HTTPS or loopback HTTP",
+    });
     expect(normalizeSparsePath("marketplaces/team")).toBe("marketplaces/team");
     expect(() => normalizeSparsePath("../team")).toThrow("--sparse must not contain");
   });
@@ -227,6 +231,14 @@ describe("plugin marketplace runtime", () => {
       source: { source: "url", url: "http://agenc.tech/marketplace.json" },
       fetcher,
     })).rejects.toThrow("must use HTTPS or loopback HTTP");
+    await expect(addMarketplaceOp({
+      agencHome,
+      workspaceRoot,
+      source: "http://agenc.tech/plugins.git",
+      runProcess: async () => {
+        throw new Error("git should not run for unsafe HTTP git sources");
+      },
+    })).rejects.toThrow("must use HTTPS or loopback HTTP");
 
     const largeBody = "x".repeat(1024 * 1024 + 1);
     await expect(addMarketplaceOp({
@@ -267,6 +279,16 @@ describe("plugin marketplace runtime", () => {
     );
     await expect(loadMarketplace(join(marketplaceRoot, "marketplace.json")))
       .rejects.toThrow("git-subdir marketplace plugin source must include a path");
+
+    await writeFile(
+      join(marketplaceRoot, "marketplace.json"),
+      JSON.stringify({
+        metadata: { name: "bad" },
+        plugins: [{ name: "alpha", source: { source: "git", url: "http://agenc.tech/plugins.git" } }],
+      }),
+    );
+    await expect(loadMarketplace(join(marketplaceRoot, "marketplace.json")))
+      .rejects.toThrow("marketplace plugin git URL must use HTTPS or loopback HTTP");
 
     await writeFile(
       join(marketplaceRoot, "marketplace.json"),

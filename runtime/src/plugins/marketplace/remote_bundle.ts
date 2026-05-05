@@ -55,9 +55,12 @@ export function validateRemotePluginBundle(
       allowLoopbackHttp: options.allowLoopbackHttp === true,
     });
   } catch (error) {
-    const protocol = new URL(url).protocol.replace(/:$/u, "");
+    const protocol = parseUrlProtocol(url);
     if (error instanceof Error && error.message.includes("must use HTTPS")) {
       throw new Error(`backend returned an unsupported download URL scheme for remote plugin '${remotePluginId}': ${protocol}`);
+    }
+    if (error instanceof TypeError) {
+      throw new Error(`backend returned an invalid download URL for remote plugin '${remotePluginId}'`);
     }
     throw error;
   }
@@ -138,6 +141,7 @@ export async function extractPluginBundleTarGz(
     const header = tar.subarray(offset, offset + 512);
     offset += 512;
     if (header.every((byte) => byte === 0)) break;
+    assertTarHeaderChecksum(header);
     const name = readTarString(header, 0, 100);
     const prefix = readTarString(header, 345, 155);
     const path = prefix ? `${prefix}/${name}` : name;
@@ -145,6 +149,9 @@ export async function extractPluginBundleTarGz(
     const mode = readTarOctal(header, 100, 8);
     const typeFlag = String.fromCharCode(header[156] ?? 0) || "0";
     const outputPath = checkedTarOutputPath(destination, path);
+    if (offset + size > tar.length) {
+      throw new Error(`remote plugin bundle tar entry '${path}' is truncated`);
+    }
     if (typeFlag === "5") {
       await mkdir(outputPath, { recursive: true, mode: 0o700 });
     } else if (typeFlag === "0" || typeFlag === "\0") {
@@ -160,6 +167,14 @@ export async function extractPluginBundleTarGz(
       throw new Error(`remote plugin bundle tar entry '${path}' has unsupported type ${typeFlag}`);
     }
     offset += Math.ceil(size / 512) * 512;
+  }
+}
+
+function parseUrlProtocol(url: string): string {
+  try {
+    return new URL(url).protocol.replace(/:$/u, "");
+  } catch {
+    return "invalid";
   }
 }
 
@@ -269,7 +284,22 @@ function readTarString(header: Buffer, offset: number, length: number): string {
 
 function readTarOctal(header: Buffer, offset: number, length: number): number {
   const raw = readTarString(header, offset, length).trim();
-  return raw.length === 0 ? 0 : Number.parseInt(raw, 8);
+  if (raw.length === 0) return 0;
+  if (!/^[0-7]+$/u.test(raw)) {
+    throw new Error("remote plugin bundle tar entry has an invalid octal header");
+  }
+  return Number.parseInt(raw, 8);
+}
+
+function assertTarHeaderChecksum(header: Buffer): void {
+  const expected = readTarOctal(header, 148, 8);
+  let actual = 0;
+  for (let index = 0; index < header.length; index += 1) {
+    actual += index >= 148 && index < 156 ? 0x20 : header[index]!;
+  }
+  if (expected !== actual) {
+    throw new Error("remote plugin bundle tar entry has an invalid checksum");
+  }
 }
 
 function gunzipTarWithLimit(bytes: Buffer, maxTotalBytes: number): Buffer {

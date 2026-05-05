@@ -48,20 +48,20 @@ export async function parseMarketplaceInput(
     const fragmentMatch = /^([^#]+)(#(.+))?$/u.exec(trimmed);
     const urlWithoutFragment = fragmentMatch?.[1] ?? trimmed;
     const ref = fragmentMatch?.[3];
-    if (urlWithoutFragment.endsWith(".git") || urlWithoutFragment.includes("/_git/")) {
-      return {
-        ok: true,
-        source: {
-          source: "git",
-          url: urlWithoutFragment,
-          ...(ref !== undefined ? { ref } : {}),
-        },
-      };
-    }
     try {
       const parsed = new URL(urlWithoutFragment);
       if (parsed.protocol === "http:" && !isLoopbackHostname(parsed.hostname)) {
         return { ok: false, error: "Marketplace URL must use HTTPS or loopback HTTP" };
+      }
+      if (urlWithoutFragment.endsWith(".git") || urlWithoutFragment.includes("/_git/")) {
+        return {
+          ok: true,
+          source: {
+            source: "git",
+            url: urlWithoutFragment,
+            ...(ref !== undefined ? { ref } : {}),
+          },
+        };
       }
       if (parsed.hostname === "github.com" || parsed.hostname === "www.github.com") {
         const source = parseGitHubUrl(parsed, ref);

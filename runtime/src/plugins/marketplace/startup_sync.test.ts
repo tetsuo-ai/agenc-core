@@ -180,6 +180,49 @@ describe("startup marketplace sync", () => {
     expect(result?.installedPluginIds).toEqual(["linear"]);
   });
 
+  it("does not throw when concurrent attempts race over a stale lock", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-startup-sync-stale-race-"));
+    await writeCuratedMarketplace(curatedPluginsRepoPath(agencHome));
+    await writeFile(curatedPluginsShaPath(agencHome), "abc123\n");
+    const lockPath = startupRemotePluginSyncLockPath(agencHome);
+    await mkdir(lockPath, { recursive: true });
+    const stale = new Date("2026-05-05T00:00:00.000Z");
+    await utimes(lockPath, stale, stale);
+
+    const attempts = await Promise.allSettled([
+      startStartupRemotePluginSyncOnce({
+        agencHome,
+        prerequisiteTimeoutMs: 10,
+        pollMs: 1,
+        now: () => new Date("2026-05-05T00:20:00.000Z"),
+        syncPluginsFromRemote: async () => ({
+          installedPluginIds: ["first"],
+          enabledPluginIds: ["first"],
+          disabledPluginIds: [],
+          uninstalledPluginIds: [],
+        }),
+      }),
+      startStartupRemotePluginSyncOnce({
+        agencHome,
+        prerequisiteTimeoutMs: 10,
+        pollMs: 1,
+        now: () => new Date("2026-05-05T00:20:00.000Z"),
+        syncPluginsFromRemote: async () => ({
+          installedPluginIds: ["second"],
+          enabledPluginIds: ["second"],
+          disabledPluginIds: [],
+          uninstalledPluginIds: [],
+        }),
+      }),
+    ]);
+
+    expect(attempts.every((attempt) => attempt.status === "fulfilled")).toBe(true);
+    expect(attempts
+      .filter((attempt): attempt is PromiseFulfilledResult<Awaited<ReturnType<typeof startStartupRemotePluginSyncOnce>>> =>
+        attempt.status === "fulfilled")
+      .filter((attempt) => attempt.value !== null)).toHaveLength(1);
+  });
+
   it("syncs curated marketplace zipballs without shelling out to unzip", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-http-startup-sync-"));
     const zipball = createZip({

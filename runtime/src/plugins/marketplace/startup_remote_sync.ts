@@ -70,7 +70,12 @@ async function acquireStartupRemotePluginSyncLock(lockPath: string, now: Date): 
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     if (!await removeStaleStartupRemotePluginSyncLock(lockPath, now)) return false;
-    await mkdir(lockPath, { mode: 0o700 });
+    try {
+      await mkdir(lockPath, { mode: 0o700 });
+    } catch (retryError) {
+      if ((retryError as NodeJS.ErrnoException).code === "EEXIST") return false;
+      throw retryError;
+    }
   }
   await writeFile(
     join(lockPath, STARTUP_REMOTE_PLUGIN_SYNC_LOCK_FILE),
