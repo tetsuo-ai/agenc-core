@@ -75,6 +75,8 @@ const discipline = existsSync(disciplinePath) ? readFileSync(disciplinePath, "ut
 const crossRepoEvidence = collectCrossRepoEvidence(`${item.title}\n${item.body}`);
 const itemScopedReviewNotes = id === "PE-09"
   ? "PE-09 intentionally carries the local goal-harness worktree migration in scripts/goal/*.mjs because the user directed that harness change to merge with this item. Review those files for correctness, but do not reject PE-09 solely because those harness files are present in the diff."
+  : id === "ZC-12"
+    ? "ZC-12 must not rename or add files inside runtime/src/agenc/upstream/. Pre-existing donor-named tracked paths under that frozen mirror are resolved for this item by deferral to the upstream-mirror deletion items. Reject donor-named tracked paths outside that mirror, stale references to deleted port artifacts, or any new/renamed upstream mirror target."
   : "No item-specific review notes.";
 
 const reviewerInstructions = `You are a senior software engineer reviewing one work item from an AgenC port checklist.
@@ -175,6 +177,12 @@ Before that line, write a structured report:
 - 1-3 sentence summary of the diff
 - "Files reviewed:" — explicit list of every changed file path you read in full. The runner WILL grep-verify this list against \`git diff main...HEAD --name-only\`; if your list omits a changed source file, the run is rejected.
 - "Issues:" — numbered list, each with severity (CRITICAL / HIGH / MEDIUM / LOW), file path + line if known, and the specific change needed. Include EVERY issue you found at EVERY severity. If no issues at a severity, write "  CRITICAL: none" / etc.
+  The Issues section MUST include all four severity markers exactly once even when empty, using this shape:
+    CRITICAL: none
+    HIGH: none
+    MEDIUM: none
+    LOW: none
+  Replace "none" with the findings for that severity when findings exist.
 - "Cross-cutting:" — issues that span multiple files or aren't tied to one location
 - "Security/supply-chain:" — findings from pass 4. If no findings, write exactly:
   "Security/supply-chain: none".

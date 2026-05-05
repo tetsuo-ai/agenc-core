@@ -87,17 +87,12 @@ const ALLOW_LINE_PATTERNS = [
   // npm package names that legitimately contain these strings
   /["'@][\w-]*claude[\w-]*["']/i, // branding-scan: allow allow-list pattern
   /["']codex[-/][\w@/-]+["']/i, // branding-scan: allow allow-list pattern
-  /^openclaude-(?:ink|markdown)-transform\.mjs$/i, // branding-scan: allow source-transform helper filenames
 ];
 
 const ALLOW_FILE_LINE_PATTERNS = [
   {
     file: /(^|\/)PARITY\.md$/,
     line: /\b(?:OpenClaude\w*|openclaude|Claude\w*|claude|Codex\w*|codex|Anthropic)\b|\.openclaude\//, // branding-scan: allow source citation files
-  },
-  {
-    file: /^scripts\/openclaude-(?:ink|markdown)-transform\.mjs$/, // branding-scan: allow source transform helper path
-    line: /\b(?:OpenClaude\w*|openclaude|Claude\w*|claude|Anthropic)\b|\.claude\//, // branding-scan: allow source transform rules
   },
   {
     // .gitignore must literally name the external assistant/IDE config
