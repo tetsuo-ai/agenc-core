@@ -16,6 +16,7 @@ import { LINUX_SANDBOX_ARG0, SECCOMP_STDIN_FD } from "./config.js";
 import {
   networkSeccompMode,
   shouldInstallNetworkSeccomp,
+  type NetworkSeccompMode,
 } from "./landlock.js";
 import {
   preferredBubblewrapLauncher,
@@ -72,9 +73,18 @@ export async function runLinuxSandboxOptions(
       ? await activateProxyRoutesInNetns(requireProxyRouteSpec(options.proxyRouteSpec), env)
       : null;
     try {
-      return await runCommandWithSupervision(options.command, {
+      if (activatedProxy !== null) {
+        return await runCommandWithInnerSeccomp(options.command, {
+          cwd: options.commandCwd,
+          env: activatedProxy.env,
+          argv0: LINUX_SANDBOX_ARG0,
+          seccompMode: "proxy-routed",
+          preferredLauncher: deps.preferredLauncher,
+        });
+      }
+      return execCommand(options.command, {
         cwd: options.commandCwd,
-        env: activatedProxy?.env ?? env,
+        env,
         argv0: LINUX_SANDBOX_ARG0,
       });
     } finally {
@@ -120,7 +130,7 @@ export async function runLinuxSandboxOptions(
       },
     );
     if (!bwrapArgs.usesBubblewrap) {
-      return await runCommandWithSupervision(options.command, {
+      return execCommand(options.command, {
         cwd: options.commandCwd,
         env,
         argv0: LINUX_SANDBOX_ARG0,
@@ -275,6 +285,72 @@ export async function runCommandWithSupervision(
   return await waitForChildWithSignalRelay(child);
 }
 
+export function execCommand(
+  command: readonly string[],
+  options: {
+    readonly cwd: string;
+    readonly env: NodeJS.ProcessEnv;
+    readonly argv0: string;
+  },
+): never {
+  const [program, ...args] = command;
+  if (program === undefined) {
+    throw new Error("Linux sandbox command is missing");
+  }
+  const execve = (process as NodeJS.Process & {
+    readonly execve?: (
+      file: string,
+      args: readonly string[],
+      env: Readonly<Record<string, string>>,
+    ) => never;
+  }).execve;
+  if (typeof execve !== "function") {
+    throw new Error("Linux sandbox execve is unavailable on this Node runtime");
+  }
+  process.chdir(options.cwd);
+  execve(program, [options.argv0, ...args], stringOnlyEnv(options.env));
+  throw new Error("Linux sandbox execve returned unexpectedly");
+}
+
+export async function runCommandWithInnerSeccomp(
+  command: readonly string[],
+  options: {
+    readonly cwd: string;
+    readonly env: NodeJS.ProcessEnv;
+    readonly argv0: string;
+    readonly seccompMode: NetworkSeccompMode;
+    readonly preferredLauncher?: () => BubblewrapLauncher | null;
+  },
+): Promise<number> {
+  const launcher = (options.preferredLauncher ?? preferredBubblewrapLauncher)();
+  if (launcher === null) {
+    throw new Error(
+      "AgenC could not find bubblewrap on PATH for inner seccomp application",
+    );
+  }
+  const args = insertInnerCommandArgv0([
+    "--die-with-parent",
+    "--bind",
+    "/",
+    "/",
+    "--seccomp",
+    String(SECCOMP_STDIN_FD),
+    "--",
+    ...command,
+  ], launcher.supportsArgv0, command[0] ?? process.execPath);
+  const spawned = spawnBubblewrap(launcher, args, {
+    cwd: options.cwd,
+    env: options.env,
+    stdio: "inherit",
+    seccompMode: options.seccompMode,
+  });
+  try {
+    return await waitForChildWithSignalRelay(spawned.child);
+  } finally {
+    spawned.cleanup();
+  }
+}
+
 export function waitForChildWithSignalRelay(child: ChildProcess): Promise<number> {
   const relays = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const;
   const listeners = relays.map((signal) => {
@@ -315,6 +391,14 @@ function signalExitCode(signal: NodeJS.Signals | null): number {
     default:
       return 1;
   }
+}
+
+function stringOnlyEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined) result[key] = value;
+  }
+  return result;
 }
 
 function preflightProcMountSupport(options: {

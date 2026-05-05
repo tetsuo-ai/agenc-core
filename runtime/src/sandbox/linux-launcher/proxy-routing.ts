@@ -40,13 +40,20 @@ const PROXY_ENV_KEYS = new Set([
   "HTTP_PROXY",
   "HTTPS_PROXY",
   "ALL_PROXY",
-  "http_proxy",
-  "https_proxy",
-  "all_proxy",
+  "FTP_PROXY",
+  "YARN_HTTP_PROXY",
+  "YARN_HTTPS_PROXY",
+  "NPM_CONFIG_HTTP_PROXY",
+  "NPM_CONFIG_HTTPS_PROXY",
+  "BUNDLE_HTTP_PROXY",
+  "BUNDLE_HTTPS_PROXY",
+  "PIP_PROXY",
+  "DOCKER_HTTP_PROXY",
+  "DOCKER_HTTPS_PROXY",
 ]);
 
 export function isProxyEnvKey(key: string): boolean {
-  return PROXY_ENV_KEYS.has(key);
+  return PROXY_ENV_KEYS.has(key.toUpperCase());
 }
 
 export function planProxyRoutes(env: NodeJS.ProcessEnv): ProxyRoutePlan {
@@ -74,10 +81,8 @@ export function prepareHostProxyRouteSpec(
       : "managed proxy mode requires proxy environment variables";
     throw new Error(detail);
   }
-  const socketDir = path.join(
-    os.tmpdir(),
-    `${AGENC_PROXY_SOCKET_DIR_PREFIX}${process.pid}-${Date.now()}`,
-  );
+  const socketDir = fs.mkdtempSync(path.join(os.tmpdir(), AGENC_PROXY_SOCKET_DIR_PREFIX));
+  fs.chmodSync(socketDir, 0o700);
   return {
     socketDir,
     routes: plan.routes.map((route, index) => ({
@@ -91,9 +96,9 @@ export async function prepareHostProxyRoutes(
   env: NodeJS.ProcessEnv,
 ): Promise<PreparedProxyRoutes> {
   const spec = prepareHostProxyRouteSpec(env);
-  fs.mkdirSync(spec.socketDir, { recursive: true, mode: 0o700 });
   const plan = planProxyRoutes(env);
   const servers: net.Server[] = [];
+  const activeSockets = new Set<net.Socket>();
   try {
     await Promise.all(spec.routes.map(async (route, index) => {
       const endpoint = plan.routes[index];
@@ -101,7 +106,11 @@ export async function prepareHostProxyRoutes(
         throw new Error(`missing proxy route endpoint for ${route.envKey}`);
       }
       const server = net.createServer((unixSocket) => {
-        const tcp = net.connect({ host: endpoint.host, port: endpoint.port });
+        trackSocket(activeSockets, unixSocket);
+        const tcp = trackSocket(
+          activeSockets,
+          net.connect({ host: endpoint.host, port: endpoint.port }),
+        );
         void createProxyPair(tcp, unixSocket);
       });
       servers.push(server);
@@ -109,6 +118,7 @@ export async function prepareHostProxyRoutes(
     }));
   } catch (error) {
     closeServers(servers);
+    destroySockets(activeSockets);
     fs.rmSync(spec.socketDir, { recursive: true, force: true });
     throw error;
   }
@@ -118,6 +128,7 @@ export async function prepareHostProxyRoutes(
     socketDir: spec.socketDir,
     cleanup() {
       closeServers(servers);
+      destroySockets(activeSockets);
       fs.rmSync(spec.socketDir, { recursive: true, force: true });
     },
   };
@@ -133,6 +144,7 @@ export async function activateProxyRoutesInNetns(
   }
   const nextEnv: NodeJS.ProcessEnv = { ...env };
   const servers: net.Server[] = [];
+  const activeSockets = new Set<net.Socket>();
   try {
     await Promise.all(spec.routes.map(async (route) => {
       const original = nextEnv[route.envKey];
@@ -140,7 +152,8 @@ export async function activateProxyRoutesInNetns(
         throw new Error(`missing proxy env key ${route.envKey}`);
       }
       const server = net.createServer((tcpSocket) => {
-        const unixSocket = net.connect(route.udsPath);
+        trackSocket(activeSockets, tcpSocket);
+        const unixSocket = trackSocket(activeSockets, net.connect(route.udsPath));
         void createProxyPair(tcpSocket, unixSocket);
       });
       servers.push(server);
@@ -157,12 +170,14 @@ export async function activateProxyRoutesInNetns(
     }));
   } catch (error) {
     closeServers(servers);
+    destroySockets(activeSockets);
     throw error;
   }
   return {
     env: nextEnv,
     cleanup() {
       closeServers(servers);
+      destroySockets(activeSockets);
     },
   };
 }
@@ -285,4 +300,22 @@ function closeServers(servers: readonly net.Server[]): void {
       // Best effort; the process is exiting or the socket is already closed.
     }
   }
+}
+
+function trackSocket<T extends net.Socket>(
+  activeSockets: Set<net.Socket>,
+  socket: T,
+): T {
+  activeSockets.add(socket);
+  socket.once("close", () => {
+    activeSockets.delete(socket);
+  });
+  return socket;
+}
+
+function destroySockets(activeSockets: Set<net.Socket>): void {
+  for (const socket of activeSockets) {
+    socket.destroy();
+  }
+  activeSockets.clear();
 }

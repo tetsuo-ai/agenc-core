@@ -244,19 +244,28 @@ describe("Linux sandbox launcher", () => {
     const root = withTempDir("agenc-linux-launcher-path-");
     const cwd = path.join(root, "workspace");
     const trusted = path.join(root, "trusted-bin");
+    const attacker = path.join(root, "attacker-bin");
     fs.mkdirSync(cwd);
     fs.mkdirSync(trusted);
+    fs.mkdirSync(attacker);
     writeExecutable(path.join(cwd, "bwrap"), "#!/bin/sh\nexit 0\n");
+    writeExecutable(path.join(attacker, "bwrap"), "#!/bin/sh\nexit 0\n");
     const trustedBwrap = path.join(trusted, "bwrap");
     writeExecutable(trustedBwrap, "#!/bin/sh\necho --argv0\n");
 
-    expect(findSystemBubblewrapInPath([cwd, trusted].join(path.delimiter), cwd)).toBe(
-      fs.realpathSync(trustedBwrap),
-    );
+    expect(findSystemBubblewrapInPath([cwd, attacker].join(path.delimiter), cwd)).toBeNull();
+    expect(
+      findSystemBubblewrapInPath(
+        [cwd, attacker, trusted].join(path.delimiter),
+        cwd,
+        [trusted],
+      ),
+    ).toBe(fs.realpathSync(trustedBwrap));
     expect(
       preferredBubblewrapLauncher({
         searchPath: trusted,
         cwd,
+        trustedDirectories: [trusted],
       }),
     ).toEqual({ program: fs.realpathSync(trustedBwrap), supportsArgv0: true });
   });
@@ -411,6 +420,8 @@ describe("Linux sandbox launcher", () => {
   it("validates managed proxy route inputs without accepting non-loopback endpoints", () => {
     const plan = planProxyRoutes({
       HTTP_PROXY: "http://127.0.0.1:3128",
+      npm_config_http_proxy: "http://localhost:4873",
+      PIP_PROXY: "127.0.0.1:1081",
       HTTPS_PROXY: "http://203.0.113.12:4444",
       PATH: "/usr/bin",
     });
@@ -418,6 +429,8 @@ describe("Linux sandbox launcher", () => {
     expect(plan.hasProxyConfig).toBe(true);
     expect(plan.routes).toEqual([
       { envKey: "HTTP_PROXY", host: "127.0.0.1", port: 3128 },
+      { envKey: "npm_config_http_proxy", host: "localhost", port: 4873 },
+      { envKey: "PIP_PROXY", host: "127.0.0.1", port: 1081 },
     ]);
     expect(rewriteProxyEnvValue("socks5h://127.0.0.1:8081", 43210)).toBe(
       "socks5h://127.0.0.1:43210",
@@ -452,6 +465,69 @@ describe("Linux sandbox launcher", () => {
     expect(stderr.join("\n")).toMatch(/must run inside bubblewrap/u);
   });
 
+  it("applies proxy-routed seccomp through inner bubblewrap after route activation", async () => {
+    const root = withTempDir("agenc-linux-launcher-inner-proxy-");
+    const bin = path.join(root, "bin");
+    fs.mkdirSync(bin);
+    const capture = path.join(root, "inner-seccomp.json");
+    const fakeBwrap = path.join(bin, "bwrap");
+    writeExecutable(
+      fakeBwrap,
+      [
+        "#!/usr/bin/env node",
+        "const cp = require('node:child_process');",
+        "const fs = require('node:fs');",
+        "const argv = process.argv.slice(2);",
+        "let fd3Open = false;",
+        "try { fs.fstatSync(3); fd3Open = true; } catch {}",
+        "fs.writeFileSync(process.env.AGENC_INNER_SECCOMP_CAPTURE, JSON.stringify({ argv, fd3Open }, null, 2));",
+        "const separator = argv.indexOf('--');",
+        "const command = separator === -1 ? [] : argv.slice(separator + 1);",
+        "if (command.length === 0) process.exit(97);",
+        "const child = cp.spawnSync(command[0], command.slice(1), { stdio: 'inherit', env: process.env, cwd: process.cwd() });",
+        "process.exit(child.status ?? 1);",
+      ].join("\n") + "\n",
+    );
+    const env = {
+      ...process.env,
+      HTTP_PROXY: "http://127.0.0.1:3128",
+      AGENC_LINUX_SANDBOX_ACTIVE: "1",
+      AGENC_INNER_SECCOMP_CAPTURE: capture,
+    };
+    const prepared = await prepareHostProxyRoutes(env);
+    try {
+      const exitCode = await runLinuxSandboxMain([
+        "--sandbox-policy-cwd",
+        root,
+        "--command-cwd",
+        root,
+        "--permission-profile",
+        JSON.stringify(workspaceWriteProfile(root, "enabled")),
+        "--apply-seccomp-then-exec",
+        "--allow-network-for-proxy",
+        "--proxy-route-spec",
+        prepared.serializedSpec,
+        "--",
+        "/bin/true",
+      ], {
+        env,
+        preferredLauncher: () => ({ program: fakeBwrap, supportsArgv0: true }),
+      });
+
+      expect(exitCode).toBe(0);
+      const recorded = JSON.parse(fs.readFileSync(capture, "utf8")) as {
+        argv: string[];
+        fd3Open: boolean;
+      };
+      expect(recorded.fd3Open).toBe(true);
+      expect(recorded.argv).toContain("--seccomp");
+      expect(recorded.argv).toContain(String(SECCOMP_STDIN_FD));
+      expect(recorded.argv).toContain("/bin/true");
+    } finally {
+      prepared.cleanup();
+    }
+  });
+
   it("bridges managed proxy routes across host and sandbox namespace endpoints", async () => {
     const hostServer = net.createServer((socket) => {
       socket.once("data", (chunk) => {
@@ -479,6 +555,33 @@ describe("Linux sandbox launcher", () => {
       prepared.cleanup();
       hostServer.close();
     }
+  });
+
+  it("destroys active managed proxy sockets during cleanup", async () => {
+    const hostServer = net.createServer();
+    await listenOn(hostServer, "127.0.0.1", 0);
+    const address = hostServer.address();
+    if (typeof address !== "object" || address === null) {
+      throw new Error("proxy cleanup server did not bind to a TCP port");
+    }
+    const env = {
+      ...process.env,
+      HTTP_PROXY: `http://127.0.0.1:${address.port}`,
+    };
+    const prepared = await prepareHostProxyRoutes(env);
+    const activated = await activateProxyRoutesInNetns(prepared.serializedSpec, env);
+    const rewritten = new URL(activated.env.HTTP_PROXY ?? "");
+    const socket = net.connect({
+      host: "127.0.0.1",
+      port: Number.parseInt(rewritten.port, 10),
+    });
+    await onceSocket(socket, "connect");
+    const closed = onceSocket(socket, "close");
+    activated.cleanup();
+    prepared.cleanup();
+    hostServer.close();
+    await closed;
+    expect(socket.destroyed).toBe(true);
   });
 });
 
@@ -543,6 +646,16 @@ function tcpRoundTrip(port: number, payload: string): Promise<string> {
     });
     socket.once("end", () => {
       resolve(Buffer.concat(chunks).toString("utf8"));
+    });
+  });
+}
+
+function onceSocket(socket: net.Socket, event: "connect" | "close"): Promise<void> {
+  return new Promise((resolve, reject) => {
+    socket.once("error", reject);
+    socket.once(event, () => {
+      socket.off("error", reject);
+      resolve();
     });
   });
 }

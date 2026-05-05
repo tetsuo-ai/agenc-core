@@ -31,11 +31,13 @@ export interface SpawnBubblewrapOptions extends SpawnOptions {
 export function preferredBubblewrapLauncher(options: {
   readonly searchPath?: string;
   readonly cwd?: string;
+  readonly trustedDirectories?: readonly string[];
   readonly probeArgv0?: (program: string) => boolean;
 } = {}): BubblewrapLauncher | null {
   const program = findSystemBubblewrapInPath(
     options.searchPath ?? process.env["PATH"],
     options.cwd ?? process.cwd(),
+    options.trustedDirectories,
   );
   if (program === null) return null;
   const probe = options.probeArgv0 ?? systemBubblewrapSupportsArgv0;
@@ -81,9 +83,11 @@ export function spawnBubblewrap(
 export function findSystemBubblewrapInPath(
   searchPath: string | undefined = process.env["PATH"],
   cwd: string = process.cwd(),
+  trustedDirectories: readonly string[] = TRUSTED_BWRAP_DIRECTORIES,
 ): string | null {
   if (!searchPath) return null;
   const cwdReal = realpathOrSelf(cwd);
+  const trusted = trustedDirectories.map((directory) => realpathOrSelf(directory));
   for (const segment of searchPath.split(path.delimiter)) {
     if (!segment) continue;
     for (const program of [DEFAULT_BWRAP_PROGRAM, FALLBACK_BWRAP_PROGRAM]) {
@@ -91,11 +95,20 @@ export function findSystemBubblewrapInPath(
       if (!isExecutableFile(candidate)) continue;
       const real = realpathOrSelf(candidate);
       if (real === cwdReal || real.startsWith(cwdReal + path.sep)) continue;
+      if (!trusted.some((directory) => path.dirname(real) === directory)) continue;
       return real;
     }
   }
   return null;
 }
+
+const TRUSTED_BWRAP_DIRECTORIES = [
+  "/usr/bin",
+  "/bin",
+  "/usr/local/bin",
+  "/usr/sbin",
+  "/sbin",
+];
 
 function stdioWithSeccompFd(
   stdio: SpawnOptions["stdio"],

@@ -43,7 +43,8 @@
       "target": "runtime/src/sandbox/linux-launcher/cli.ts",
       "requiredBehaviors": [
         "parses sandbox cwd, command cwd, serialized permission profile, hidden hardening flags, and command separator",
-        "rejects missing command and malformed permission profile input"
+        "rejects missing command and malformed permission profile input",
+        "uses execve for the non-proxy inner command stage"
       ],
       "edgeCases": [
         "command arguments after -- are preserved byte-for-byte as argv strings",
@@ -113,16 +114,18 @@
       "source": "linux-sandbox/src/proxy_routing.rs",
       "target": "runtime/src/sandbox/linux-launcher/proxy-routing.ts",
       "requiredBehaviors": [
-        "recognizes proxy environment keys case-sensitively for upper and lower case variables",
+        "recognizes the donor proxy environment key set case-insensitively",
         "accepts only loopback proxy endpoints",
         "rewrites proxy URLs to local loopback ports",
         "prepares host-side UDS routes for loopback proxies",
-        "activates namespace-local loopback proxy listeners from the serialized route spec"
+        "activates namespace-local loopback proxy listeners from the serialized route spec",
+        "runs managed proxy commands through an inner proxy-routed seccomp bubblewrap wrapper"
       ],
       "edgeCases": [
         "non-loopback proxy endpoints are ignored by the route plan",
         "missing proxy configuration fails closed for managed proxy mode",
-        "route activation rewrites only the proxy variables present in the serialized spec"
+        "route activation rewrites only the proxy variables present in the serialized spec",
+        "active TCP and UDS proxy sockets are destroyed when route cleanup runs"
       ],
       "tests": [
         "runtime/src/sandbox/linux-launcher/linux-launcher.test.ts"

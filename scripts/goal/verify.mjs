@@ -2459,6 +2459,7 @@ async function donorRuntimePortGates(item) {
     const runMainSource = readFileSync(path.join(dir, "linux-run-main.ts"), "utf8");
     const bwrapSource = readFileSync(path.join(dir, "bwrap.ts"), "utf8");
     const landlockSource = readFileSync(path.join(dir, "landlock.ts"), "utf8");
+    const proxySource = readFileSync(path.join(dir, "proxy-routing.ts"), "utf8");
     const testsSource = readFileSync(path.join(dir, "linux-launcher.test.ts"), "utf8");
     const packageJson = JSON.parse(readFileSync(path.join(root, "runtime/package.json"), "utf8"));
     const binPath = path.join(root, "runtime/bin/agenc-linux-sandbox");
@@ -2483,6 +2484,15 @@ async function donorRuntimePortGates(item) {
     if (!/prepareHostProxyRoutes/.test(runMainSource) || !/activateProxyRoutesInNetns/.test(runMainSource)) {
       failGate("C-01b: managed proxy mode must prepare host routes and activate them inside the namespace");
     }
+    if (!/\bexecve\b/.test(runMainSource) || !/runCommandWithInnerSeccomp/.test(runMainSource)) {
+      failGate("C-01b: launcher must use execve for the inner non-proxy stage and an inner seccomp wrapper for proxy mode");
+    }
+    if (!/mkdtempSync/.test(proxySource) || !/FTP_PROXY/.test(proxySource) || !/NPM_CONFIG_HTTP_PROXY/.test(proxySource)) {
+      failGate("C-01b: proxy routing must use atomic socket dirs and the donor proxy env-key set");
+    }
+    if (!/trustedDirectories/.test(launcherSource) || !/TRUSTED_BWRAP_DIRECTORIES/.test(launcherSource)) {
+      failGate("C-01b: bubblewrap discovery must reject untrusted PATH entries by default");
+    }
     if (!/\bspawn\(/.test(testsSource) || !/runLinuxSandboxMain/.test(testsSource)) {
       failGate("C-01b: tests must exercise the launcher through subprocess execution");
     }
@@ -2491,6 +2501,9 @@ async function donorRuntimePortGates(item) {
     }
     if (!/activateProxyRoutesInNetns/.test(testsSource) || !/tcpRoundTrip/.test(testsSource)) {
       failGate("C-01b: tests must exercise managed proxy route activation");
+    }
+    if (!/proxy-routed seccomp/.test(testsSource) || !/destroys active managed proxy sockets/.test(testsSource)) {
+      failGate("C-01b: tests must exercise proxy-routed seccomp and proxy cleanup");
     }
     const buildRun = run("npm", ["run", "build", "--workspace=@tetsuo-ai/runtime"]);
     if (buildRun.status !== 0) {
