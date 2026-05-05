@@ -327,6 +327,27 @@ export async function createPluginFromPath(
   },
 ): Promise<{ plugin: LoadedPlugin; errors: readonly PluginLoadIssue[] }> {
   const errors: PluginLoadIssue[] = [];
+  if (!(await pathIsDirectory(pluginPath))) {
+    const manifest = fallbackManifest(pluginPath, opts.fallbackName, opts.source);
+    errors.push({
+      type: "path-not-found",
+      source: opts.source,
+      plugin: opts.fallbackName,
+      path: pluginPath,
+      message: `Plugin root not found: ${pluginPath}`,
+    });
+    return {
+      plugin: emptyPlugin(pluginPath, opts.source, false, manifest),
+      errors,
+    };
+  }
+  if (!opts.enabled) {
+    const manifest = fallbackManifest(pluginPath, opts.fallbackName, opts.source);
+    return {
+      plugin: emptyPlugin(pluginPath, opts.source, false, manifest),
+      errors,
+    };
+  }
   let manifest: PluginManifest;
   let manifestPath: string | undefined;
   try {
@@ -390,7 +411,7 @@ export async function createPluginFromPath(
     opts.source,
     manifest.name,
   );
-  const appConnectorIds = await loadAppConnectorIds(pluginPath, errors, opts.source, manifest.name);
+  const appConnectorIds = await loadAppConnectorIds(pluginPath, manifest, errors, opts.source, manifest.name);
 
   const plugin: LoadedPlugin = {
     name: manifest.name,
@@ -426,6 +447,45 @@ export async function createPluginFromPath(
     errors,
   };
   return { plugin, errors };
+}
+
+function fallbackManifest(
+  pluginPath: string,
+  fallbackName: string,
+  source: string,
+): PluginManifest {
+  return normalizePluginManifest(
+    { name: fallbackName, description: `Plugin from ${source}` },
+    pluginPath,
+    fallbackName,
+  );
+}
+
+function emptyPlugin(
+  pluginPath: string,
+  source: string,
+  enabled: boolean,
+  manifest: PluginManifest,
+): LoadedPlugin {
+  return {
+    name: manifest.name,
+    ...(manifest.version !== undefined ? { version: manifest.version } : {}),
+    ...(manifest.description !== undefined ? { description: manifest.description } : {}),
+    root: pluginPath,
+    source,
+    enabled,
+    manifest,
+    commandsPaths: [],
+    commands: [],
+    agentsPaths: [],
+    skillsPaths: [],
+    outputStylesPaths: [],
+    hookSources: [],
+    mcpServers: nullProtoRecord<McpServerConfig>(),
+    lspServers: nullProtoRecord<LspServerConfigInput>(),
+    appConnectorIds: [],
+    errors: [],
+  };
 }
 
 async function loadCommands(
@@ -592,6 +652,7 @@ function componentFromField(field: string): PluginComponentKind | undefined {
   if (field.startsWith("hooks")) return "hooks";
   if (field.startsWith("mcp")) return "mcp";
   if (field.startsWith("lsp")) return "lsp";
+  if (field.startsWith("apps")) return "apps";
   if (field.startsWith("output")) return "output-styles";
   return undefined;
 }
@@ -702,7 +763,18 @@ async function appendHookFile(
   try {
     const parsed = JSON.parse(await readFile(path, "utf8"));
     const hooks = normalizeHooksMap(parsed);
-    if (hooks === null || Object.keys(hooks).length === 0) return;
+    if (hooks === null) {
+      errors.push({
+        type: "hooks",
+        source,
+        plugin: pluginName,
+        path,
+        component: "hooks",
+        message: "Hook map contains an unsafe key or invalid matcher list",
+      });
+      return;
+    }
+    if (Object.keys(hooks).length === 0) return;
     sources.push({
       pluginName,
       pluginRoot,
@@ -725,8 +797,9 @@ async function appendHookFile(
 function normalizeHooksMap(value: unknown): HooksMap | null {
   const hooks = isRecord(value) && isRecord(value.hooks) ? value.hooks : value;
   if (!isRecord(hooks)) return null;
-  const out: Record<string, unknown> = {};
+  const out = nullProtoRecord<unknown>();
   for (const [event, matchers] of Object.entries(hooks)) {
+    if (isUnsafeObjectKey(event)) return null;
     if (Array.isArray(matchers)) out[event] = matchers;
   }
   return out as HooksMap;
@@ -945,12 +1018,38 @@ function normalizeLspServer(
 
 async function loadAppConnectorIds(
   pluginRoot: string,
+  manifest: PluginManifest,
   errors: PluginLoadIssue[],
   source: string,
   pluginName: string,
 ): Promise<readonly string[]> {
-  const path = join(pluginRoot, DEFAULT_APP_FILE);
-  if (!(await pathIsFile(path))) return [];
+  const paths = manifest.apps === undefined
+    ? await pathIsFile(join(pluginRoot, DEFAULT_APP_FILE))
+      ? [join(pluginRoot, DEFAULT_APP_FILE)]
+      : []
+    : await resolveExistingPaths(
+        pluginRoot,
+        "apps",
+        manifest.apps,
+        source,
+        pluginName,
+        errors,
+      );
+  const ids = new Set<string>();
+  for (const path of paths) {
+    for (const id of await loadAppConnectorIdsFromFile(path, errors, source, pluginName)) {
+      ids.add(id);
+    }
+  }
+  return [...ids].sort((a, b) => a.localeCompare(b));
+}
+
+async function loadAppConnectorIdsFromFile(
+  path: string,
+  errors: PluginLoadIssue[],
+  source: string,
+  pluginName: string,
+): Promise<readonly string[]> {
   try {
     const parsed = JSON.parse(await readFile(path, "utf8"));
     if (!isRecord(parsed) || !isRecord(parsed.apps)) return [];

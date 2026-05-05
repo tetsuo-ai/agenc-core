@@ -22,6 +22,7 @@ export type PluginComponentKind =
   | "hooks"
   | "mcp"
   | "lsp"
+  | "apps"
   | "output-styles";
 
 export type PluginPathDeclaration = string | readonly string[];
@@ -87,6 +88,7 @@ export interface PluginManifest {
   readonly agents?: PluginPathDeclaration;
   readonly skills?: PluginPathDeclaration;
   readonly outputStyles?: PluginPathDeclaration;
+  readonly apps?: PluginPathDeclaration;
   readonly hooks?: PluginHookDeclaration;
   readonly mcpServers?: PluginServerDeclaration;
   readonly lspServers?: PluginServerDeclaration;
@@ -188,6 +190,7 @@ export function normalizePluginManifest(
     ...normalizePathDeclarationProperty("agents", value.agents, issues),
     ...normalizePathDeclarationProperty("skills", value.skills, issues),
     ...normalizePathDeclarationProperty("outputStyles", value.outputStyles, issues),
+    ...normalizePathDeclarationProperty("apps", value.apps, issues),
     ...normalizeHooks(value.hooks, issues),
     ...normalizeServerDeclaration("mcpServers", value.mcpServers, issues),
     ...normalizeServerDeclaration("lspServers", value.lspServers, issues),
@@ -309,7 +312,7 @@ function optionalAuthor(
 }
 
 function normalizePathDeclarationProperty(
-  key: "agents" | "skills" | "outputStyles",
+  key: "agents" | "skills" | "outputStyles" | "apps",
   value: unknown,
   issues: ManifestIssue[],
 ): Record<string, PluginPathDeclaration> {

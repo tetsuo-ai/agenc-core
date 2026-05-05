@@ -98,6 +98,7 @@ describe("plugin loader", () => {
       await writePluginManifest(pluginRoot, {
         name: "toolbox",
         version: "1.0.0",
+        apps: "./config/apps.json",
         settings: { mode: "local" },
       });
       await writeFileAt(join(pluginRoot, "skills", "planner", "SKILL.md"), "---\nname: planner\n---\n");
@@ -127,7 +128,7 @@ describe("plugin loader", () => {
           },
         },
       });
-      await writeJson(join(pluginRoot, ".app.json"), {
+      await writeJson(join(pluginRoot, "config", "apps.json"), {
         apps: {
           calendar: { id: "calendar" },
         },
@@ -176,6 +177,59 @@ describe("plugin loader", () => {
     });
   });
 
+  test("reports missing configured roots without enabling phantom plugins", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const workspaceRoot = join(root, "workspace");
+
+      const result = await loadPlugins({
+        agencHome,
+        workspaceRoot,
+        config: {
+          plugins: {
+            enabled: {
+              missing: { path: "vendor/missing" },
+            },
+          },
+        },
+      });
+
+      expect(result.enabled).toEqual([]);
+      expect(result.disabled.map((plugin) => plugin.name)).toEqual(["missing"]);
+      expect(result.errors).toMatchObject([
+        { type: "path-not-found", plugin: "missing" },
+      ]);
+    });
+  });
+
+  test("does not read component files for disabled configured plugins", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const workspaceRoot = join(root, "workspace");
+      const pluginRoot = join(workspaceRoot, "vendor", "disabled");
+      await writePluginManifest(pluginRoot, {
+        name: "disabled",
+        hooks: "./missing-hooks.json",
+      });
+
+      const result = await loadPlugins({
+        agencHome,
+        workspaceRoot,
+        config: {
+          plugins: {
+            enabled: {
+              disabled: { path: "vendor/disabled", enabled: false },
+            },
+          },
+        },
+      });
+
+      expect(result.enabled).toEqual([]);
+      expect(result.disabled.map((plugin) => plugin.name)).toEqual(["disabled"]);
+      expect(result.errors).toEqual([]);
+    });
+  });
+
   test("rejects unsafe server keys and working directories", async () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");
@@ -221,6 +275,34 @@ describe("plugin loader", () => {
           expect.stringContaining("Unsafe lsp server key"),
           expect.stringContaining("path must be normalized"),
         ]),
+      );
+    });
+  });
+
+  test("rejects unsafe hook event keys", async () => {
+    await withTempDir(async (root) => {
+      const pluginRoot = join(root, "plugins", "hook-safety");
+      await writePluginManifest(pluginRoot, { name: "hook-safety" });
+      await writeFileAt(
+        join(pluginRoot, "hooks", "hooks.json"),
+        `{
+  "hooks": {
+    "__proto__": [{ "hooks": [{ "type": "command", "command": "true" }] }]
+  }
+}
+`,
+      );
+
+      const { plugin, errors } = await createPluginFromPath(pluginRoot, {
+        source: "test",
+        enabled: true,
+        fallbackName: "hook-safety",
+      });
+
+      expect(Object.getPrototypeOf(plugin.hookSources)).toBe(Array.prototype);
+      expect(plugin.hookSources).toEqual([]);
+      expect(errors.map((error) => error.message)).toContain(
+        "Hook map contains an unsafe key or invalid matcher list",
       );
     });
   });
@@ -351,6 +433,59 @@ describe("plugin validation", () => {
         expect.arrayContaining(["description", "allowed-tools"]),
       );
       expect(skillResult?.warnings.map((warning) => warning.path)).toContain("unknown-field");
+    });
+  });
+
+  test("validates path-bearing manifest fields", async () => {
+    await withTempDir(async (root) => {
+      const pluginRoot = join(root, "plugins", "bad-paths");
+      await writePluginManifest(pluginRoot, {
+        name: "bad-paths",
+        commands: {
+          bad: { source: "../outside.md" },
+        },
+        outputStyles: "./styles/../outside",
+        apps: "apps.json",
+        hooks: "../hooks.json",
+        mcpServers: "./mcp/../servers.json",
+        lspServers: "../lsp.json",
+      });
+
+      const result = await validateManifest(pluginRoot);
+
+      expect(result.success).toBe(false);
+      expect(result.errors.map((error) => error.path)).toEqual(
+        expect.arrayContaining([
+          "commands.bad.source",
+          "outputStyles",
+          "apps",
+          "hooks",
+          "mcpServers",
+          "lspServers",
+        ]),
+      );
+    });
+  });
+
+  test("bounds markdown component validation scans", async () => {
+    await withTempDir(async (root) => {
+      const pluginRoot = join(root, "plugins", "many-components");
+      await writePluginManifest(pluginRoot, { name: "many-components" });
+      for (let index = 0; index < 520; index += 1) {
+        await writeFileAt(join(pluginRoot, "commands", `cmd-${index}.md`), "# command\n");
+      }
+      await writeFileAt(
+        join(pluginRoot, "commands", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8", "d9", "deep.md"),
+        "# deep\n",
+      );
+
+      const results = await validatePluginContents(pluginRoot);
+      const commandFiles = results
+        .filter((result) => result.fileType === "command")
+        .map((result) => result.filePath);
+
+      expect(commandFiles).toHaveLength(512);
+      expect(commandFiles.some((file) => file.endsWith("deep.md"))).toBe(false);
     });
   });
 });

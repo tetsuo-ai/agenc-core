@@ -1,4 +1,4 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { load as loadYaml } from "js-yaml";
 import {
@@ -9,6 +9,7 @@ import {
   PLUGIN_MANIFEST_DIR,
   PLUGIN_MANIFEST_FILE,
   PluginManifestError,
+  resolveManifestRelativePath,
 } from "./manifest.js";
 
 export interface ValidationError {
@@ -37,6 +38,8 @@ const MARKETPLACE_ONLY_MANIFEST_FIELDS = new Set([
   "strict",
   "id",
 ]);
+const MAX_VALIDATION_MARKDOWN_FILES = 512;
+const MAX_VALIDATION_SCAN_DEPTH = 8;
 
 function errno(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error
@@ -108,15 +111,7 @@ export async function validatePluginManifest(
   }
 
   if (isRecord(parsed)) {
-    for (const key of ["commands", "agents", "skills"] as const) {
-      const value = parsed[key];
-      const entries = Array.isArray(value) ? value : [value];
-      for (const [index, entry] of entries.entries()) {
-        if (typeof entry === "string") {
-          checkPathTraversal(entry, `${key}[${index}]`, errors);
-        }
-      }
-    }
+    validateManifestPathFields(parsed, pluginRootForManifestPath(absolutePath), errors);
     for (const key of Object.keys(parsed)) {
       if (MARKETPLACE_ONLY_MANIFEST_FIELDS.has(key)) {
         warnings.push({
@@ -144,6 +139,62 @@ export async function validatePluginManifest(
     filePath: absolutePath,
     fileType: "plugin",
   };
+}
+
+function validateManifestPathFields(
+  manifest: Readonly<Record<string, unknown>>,
+  pluginRoot: string,
+  errors: ValidationError[],
+): void {
+  for (const key of ["agents", "skills", "outputStyles", "apps", "hooks", "mcpServers", "lspServers"] as const) {
+    validatePathDeclaration(manifest[key], key, pluginRoot, errors);
+  }
+  const commands = manifest.commands;
+  if (typeof commands === "string" || Array.isArray(commands)) {
+    validatePathDeclaration(commands, "commands", pluginRoot, errors);
+  } else if (isRecord(commands)) {
+    for (const [name, metadata] of Object.entries(commands)) {
+      if (isRecord(metadata) && typeof metadata.source === "string") {
+        validateManifestPath(metadata.source, `commands.${name}.source`, pluginRoot, errors);
+      }
+    }
+  }
+}
+
+function validatePathDeclaration(
+  value: unknown,
+  field: string,
+  pluginRoot: string,
+  errors: ValidationError[],
+): void {
+  if (typeof value === "string") {
+    validateManifestPath(value, field, pluginRoot, errors);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const [index, entry] of value.entries()) {
+      if (typeof entry === "string") {
+        validateManifestPath(entry, `${field}[${index}]`, pluginRoot, errors);
+      }
+    }
+  }
+}
+
+function validateManifestPath(
+  value: string,
+  field: string,
+  pluginRoot: string,
+  errors: ValidationError[],
+): void {
+  checkPathTraversal(value, field, errors);
+  try {
+    resolveManifestRelativePath(pluginRoot, field, value);
+  } catch (error) {
+    errors.push({
+      path: field,
+      message: errorMessage(error),
+    });
+  }
 }
 
 export async function validateMarketplaceManifest(
@@ -273,19 +324,38 @@ export async function validatePluginContents(
 }
 
 async function collectMarkdown(dir: string, skillsDir: boolean): Promise<string[]> {
-  const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
   if (skillsDir) {
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
     return entries
       .filter((entry) => entry.isDirectory())
       .map((entry) => join(dir, entry.name, "SKILL.md"));
   }
   const out: string[] = [];
-  for (const entry of entries) {
-    const fullPath = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      out.push(...(await collectMarkdown(fullPath, false)));
-    } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
-      out.push(fullPath);
+  const queue: Array<{ readonly path: string; readonly depth: number }> = [
+    { path: dir, depth: 0 },
+  ];
+  const visited = new Set<string>();
+  while (queue.length > 0) {
+    if (out.length >= MAX_VALIDATION_MARKDOWN_FILES) break;
+    const current = queue.shift()!;
+    if (current.depth > MAX_VALIDATION_SCAN_DEPTH) continue;
+    let identity = current.path;
+    try {
+      identity = await realpath(current.path);
+    } catch {
+      // Keep walking best-effort if a path disappears during validation.
+    }
+    if (visited.has(identity)) continue;
+    visited.add(identity);
+    const currentEntries = await readdir(current.path, { withFileTypes: true }).catch(() => []);
+    for (const entry of currentEntries) {
+      if (out.length >= MAX_VALIDATION_MARKDOWN_FILES) break;
+      const fullPath = join(current.path, entry.name);
+      if (entry.isDirectory()) {
+        queue.push({ path: fullPath, depth: current.depth + 1 });
+      } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
+        out.push(fullPath);
+      }
     }
   }
   return out;
