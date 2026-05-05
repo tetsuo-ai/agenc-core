@@ -34,6 +34,12 @@ describe("remote plugin bundles", () => {
     expect(() =>
       validateRemotePluginBundle("linear", "agenc-global", "linear", "../1.0.0", "https://agenc.tech/linear.tgz"),
     ).toThrow("invalid remote plugin release version");
+    expect(() =>
+      validateRemotePluginBundle("linear", "agenc-global", "../linear", "1.0.0", "https://agenc.tech/linear.tgz"),
+    ).toThrow("invalid local plugin id");
+    expect(() =>
+      validateRemotePluginBundle("linear", "../agenc-global", "linear", "1.0.0", "https://agenc.tech/linear.tgz"),
+    ).toThrow("invalid local plugin id");
     expect(validateRemotePluginBundle(
       "linear",
       "agenc-global",

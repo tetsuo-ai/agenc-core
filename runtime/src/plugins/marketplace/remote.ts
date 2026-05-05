@@ -1,9 +1,17 @@
-import { rm } from "node:fs/promises";
-import { join } from "node:path";
+import { readdir, rm } from "node:fs/promises";
+import { resolve, sep } from "node:path";
 import {
   defaultFetch,
   type Fetcher,
 } from "./marketplace.js";
+import {
+  downloadAndInstallRemotePluginBundle,
+  readInstalledRemotePluginManifest,
+  remotePluginInstallRoot,
+  validateRemotePluginBundle,
+  validateRemotePluginCacheSegment,
+  type ValidatedRemotePluginBundle,
+} from "./remote_bundle.js";
 import {
   assertHttpsOrLoopbackUrl,
   fetchWithTimeout,
@@ -100,6 +108,38 @@ export interface RemotePluginSkillDetail {
   readonly contents?: string;
 }
 
+export interface RemoteInstalledPluginBundleSyncOutcome {
+  readonly installedPluginIds: readonly string[];
+  readonly removedCachePluginIds: readonly string[];
+  readonly failedRemotePluginIds: readonly string[];
+}
+
+export interface RemoteInstalledPluginBundleSyncOptions {
+  readonly fetcher?: Fetcher;
+  readonly allowLoopbackHttp?: boolean;
+}
+
+export class RemotePluginCacheMutationGuard {
+  private released = false;
+
+  constructor(private readonly key: string) {}
+
+  dispose(): void {
+    if (this.released) return;
+    this.released = true;
+    const count = remotePluginCacheMutationsInFlight.get(this.key);
+    if (count === undefined) return;
+    if (count <= 1) {
+      remotePluginCacheMutationsInFlight.delete(this.key);
+    } else {
+      remotePluginCacheMutationsInFlight.set(this.key, count - 1);
+    }
+  }
+}
+
+const remoteInstalledPluginBundleSyncInFlight = new Set<string>();
+const remotePluginCacheMutationsInFlight = new Map<string, number>();
+
 export function isValidRemotePluginId(pluginId: string): boolean {
   return pluginId.length > 0 &&
     [...pluginId].every((ch) => /[a-zA-Z0-9_\-~]/u.test(ch));
@@ -173,6 +213,100 @@ export async function fetchRemoteInstalledPlugins(
       installed.map((plugin) => remoteInstalledPluginToInfo(scope, plugin)),
     )
     .sort((a, b) => a.marketplaceName.localeCompare(b.marketplaceName) || a.id.localeCompare(b.id));
+}
+
+export async function syncRemoteInstalledPluginBundles(
+  agencHome: string,
+  config: RemotePluginServiceConfig,
+  auth: RemoteAuth | undefined,
+  options: RemoteInstalledPluginBundleSyncOptions = {},
+): Promise<RemoteInstalledPluginBundleSyncOutcome | null> {
+  const key = remotePluginCacheRoot(agencHome);
+  if (remoteInstalledPluginBundleSyncInFlight.has(key)) return null;
+  remoteInstalledPluginBundleSyncInFlight.add(key);
+  try {
+    return await syncRemoteInstalledPluginBundlesOnce(agencHome, config, auth, options);
+  } finally {
+    remoteInstalledPluginBundleSyncInFlight.delete(key);
+  }
+}
+
+export async function syncRemoteInstalledPluginBundlesOnce(
+  agencHome: string,
+  config: RemotePluginServiceConfig,
+  auth: RemoteAuth | undefined,
+  options: RemoteInstalledPluginBundleSyncOptions = {},
+): Promise<RemoteInstalledPluginBundleSyncOutcome> {
+  const headers = requireRemoteAuth(auth);
+  const fetcher = options.fetcher ?? defaultFetch;
+  const scopedInstalled = await Promise.all(
+    remoteScopes().map(async (scope) => ({
+      scope,
+      installed: await fetchInstalledPluginsForScope(config, headers, scope, true, fetcher),
+    })),
+  );
+  const installedPluginNamesByMarketplace = new Map<string, Set<string>>(
+    remoteScopes().map((scope) => [scope.marketplaceName, new Set<string>()]),
+  );
+  const installedPluginIds = new Set<string>();
+  const failedRemotePluginIds = new Set<string>();
+
+  for (const { scope, installed } of scopedInstalled) {
+    for (const installedPlugin of installed) {
+      const plugin = installedPlugin.plugin;
+      const marketplaceName = scope.marketplaceName;
+      let bundle: ValidatedRemotePluginBundle;
+      try {
+        const pluginName = validateRemotePluginCacheSegment(plugin.name, "plugin name", plugin.id);
+        installedPluginNamesByMarketplace.get(marketplaceName)?.add(pluginName);
+        bundle = validateRemotePluginBundle(
+          plugin.id,
+          marketplaceName,
+          pluginName,
+          nonEmptyString(plugin.release.version),
+          plugin.release.bundle_download_url,
+          { allowLoopbackHttp: options.allowLoopbackHttp === true },
+        );
+      } catch {
+        failedRemotePluginIds.add(plugin.id);
+        continue;
+      }
+
+      if (await isRemotePluginBundleInstalled(agencHome, bundle)) {
+        continue;
+      }
+
+      const guard = markRemotePluginCacheMutationInFlight(agencHome, bundle.marketplaceName, bundle.pluginName);
+      try {
+        const result = await downloadAndInstallRemotePluginBundle(agencHome, bundle, fetcher);
+        installedPluginIds.add(result.pluginId);
+      } catch {
+        failedRemotePluginIds.add(plugin.id);
+      } finally {
+        guard.dispose();
+      }
+    }
+  }
+
+  const removedCachePluginIds = await removeStaleRemotePluginCaches(
+    agencHome,
+    installedPluginNamesByMarketplace,
+  );
+  return {
+    installedPluginIds: [...installedPluginIds].sort((a, b) => a.localeCompare(b)),
+    removedCachePluginIds,
+    failedRemotePluginIds: [...failedRemotePluginIds].sort((a, b) => a.localeCompare(b)),
+  };
+}
+
+export function markRemotePluginCacheMutationInFlight(
+  agencHome: string,
+  marketplaceName: string,
+  pluginName: string,
+): RemotePluginCacheMutationGuard {
+  const key = remotePluginCacheMutationKey(agencHome, marketplaceName, pluginName);
+  remotePluginCacheMutationsInFlight.set(key, (remotePluginCacheMutationsInFlight.get(key) ?? 0) + 1);
+  return new RemotePluginCacheMutationGuard(key);
 }
 
 export async function fetchRemotePluginDetail(
@@ -261,9 +395,12 @@ export async function uninstallRemotePlugin(
   fetcher: Fetcher = defaultFetch,
 ): Promise<void> {
   const detail = await fetchPluginDetail(config, requireRemoteAuth(auth), pluginId, false, fetcher);
+  const marketplaceName = scopeFromMarketplaceName(detail.scope)?.marketplaceName ?? REMOTE_GLOBAL_MARKETPLACE_NAME;
+  validateRemotePluginCacheSegment(marketplaceName, "marketplace name", pluginId);
+  validateRemotePluginCacheSegment(detail.name, "plugin name", pluginId);
   const response = await postRemotePluginMutation(config, auth, pluginId, "uninstall", fetcher);
   assertMutation(pluginId, false, response);
-  await removeRemotePluginCache(agencHome, scopeFromMarketplaceName(detail.scope)?.marketplaceName ?? REMOTE_GLOBAL_MARKETPLACE_NAME, detail.name, pluginId);
+  await removeRemotePluginCache(agencHome, marketplaceName, detail.name, pluginId);
 }
 
 async function postRemotePluginMutation(
@@ -288,12 +425,91 @@ async function removeRemotePluginCache(
   pluginName: string,
   remotePluginId: string,
 ): Promise<void> {
+  const safeMarketplaceName = validateRemotePluginCacheSegment(marketplaceName, "marketplace name", remotePluginId);
+  const safePluginName = validateRemotePluginCacheSegment(pluginName, "plugin name", remotePluginId);
   const candidates = [
-    join(agencHome, "plugins", "cache", marketplaceName, pluginName),
-    join(agencHome, "plugins", "cache", marketplaceName, remotePluginId),
-  ];
+    checkedRemotePluginCachePath(agencHome, safeMarketplaceName, safePluginName),
+  ] as string[];
+  if (isValidRemotePluginCacheSegment(remotePluginId)) {
+    candidates.push(checkedRemotePluginCachePath(agencHome, safeMarketplaceName, remotePluginId));
+  }
   for (const candidate of candidates) {
     await rm(candidate, { recursive: true, force: true });
+  }
+}
+
+async function isRemotePluginBundleInstalled(
+  agencHome: string,
+  bundle: ValidatedRemotePluginBundle,
+): Promise<boolean> {
+  const manifest = await readInstalledRemotePluginManifest(remotePluginInstallRoot(agencHome, bundle))
+    .catch(() => null);
+  return isRecord(manifest) &&
+    manifest.name === bundle.pluginName &&
+    manifest.version === bundle.pluginVersion;
+}
+
+async function removeStaleRemotePluginCaches(
+  agencHome: string,
+  installedPluginNamesByMarketplace: ReadonlyMap<string, ReadonlySet<string>>,
+): Promise<readonly string[]> {
+  const removed = new Set<string>();
+  for (const scope of remoteScopes()) {
+    const marketplaceName = validateRemotePluginCacheSegment(scope.marketplaceName, "marketplace name", scope.marketplaceName);
+    const marketplaceRoot = checkedRemotePluginCachePath(agencHome, marketplaceName);
+    const entries = await readdir(marketplaceRoot, { withFileTypes: true }).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    });
+    const installedPluginNames = installedPluginNamesByMarketplace.get(marketplaceName) ?? new Set<string>();
+    for (const entry of entries) {
+      const pluginName = entry.name;
+      if (installedPluginNames.has(pluginName)) continue;
+      if (remotePluginCacheMutationsInFlight.has(remotePluginCacheMutationKey(agencHome, marketplaceName, pluginName))) {
+        continue;
+      }
+      const cachePath = checkedRemotePluginCachePath(agencHome, marketplaceName, pluginName);
+      await rm(cachePath, { recursive: true, force: true });
+      removed.add(`${pluginName}@${marketplaceName}`);
+    }
+  }
+  return [...removed].sort((a, b) => a.localeCompare(b));
+}
+
+function remotePluginCacheMutationKey(
+  agencHome: string,
+  marketplaceName: string,
+  pluginName: string,
+): string {
+  return [
+    remotePluginCacheRoot(agencHome),
+    validateRemotePluginCacheSegment(marketplaceName, "marketplace name", marketplaceName),
+    pluginName,
+  ].join("\0");
+}
+
+function remotePluginCacheRoot(agencHome: string): string {
+  return resolve(agencHome, "plugins", "cache");
+}
+
+function checkedRemotePluginCachePath(
+  agencHome: string,
+  ...segments: readonly string[]
+): string {
+  const root = remotePluginCacheRoot(agencHome);
+  const candidate = resolve(root, ...segments);
+  if (candidate !== root && !candidate.startsWith(`${root}${sep}`)) {
+    throw new Error(`remote plugin cache path escapes cache root: ${candidate}`);
+  }
+  return candidate;
+}
+
+function isValidRemotePluginCacheSegment(segment: string): boolean {
+  try {
+    validateRemotePluginCacheSegment(segment, "plugin name", segment);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -672,6 +888,10 @@ function requireRecord(value: unknown, label: string): Readonly<Record<string, u
     throw new Error(`${label} must be an object`);
   }
   return value as Readonly<Record<string, unknown>>;
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function requireString(value: unknown, label: string): string {

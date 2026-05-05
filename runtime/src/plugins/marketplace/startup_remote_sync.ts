@@ -1,6 +1,12 @@
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { hasLocalCuratedPluginsSnapshot } from "./startup_sync.js";
+import {
+  syncRemoteInstalledPluginBundles,
+  type RemoteAuth,
+  type RemotePluginServiceConfig,
+} from "./remote.js";
+import type { Fetcher } from "./marketplace.js";
 
 export interface StartupRemotePluginSyncResult {
   readonly installedPluginIds: readonly string[];
@@ -11,7 +17,11 @@ export interface StartupRemotePluginSyncResult {
 
 export interface StartupRemotePluginSyncOptions {
   readonly agencHome: string;
-  readonly syncPluginsFromRemote: (additiveOnly: boolean) => Promise<StartupRemotePluginSyncResult>;
+  readonly syncPluginsFromRemote?: (additiveOnly: boolean) => Promise<StartupRemotePluginSyncResult>;
+  readonly remotePluginServiceConfig?: RemotePluginServiceConfig;
+  readonly remoteAuth?: RemoteAuth;
+  readonly fetcher?: Fetcher;
+  readonly allowLoopbackHttp?: boolean;
   readonly prerequisiteTimeoutMs?: number;
   readonly pollMs?: number;
   readonly now?: () => Date;
@@ -55,7 +65,7 @@ export async function startStartupRemotePluginSyncOnce(
     if (await hasStartupRemotePluginSyncMarker(options.agencHome)) {
       return null;
     }
-    const result = await options.syncPluginsFromRemote(true);
+    const result = await syncStartupRemotePlugins(options);
     await writeStartupRemotePluginSyncMarker(options.agencHome, options.now?.() ?? new Date());
     return result;
   } finally {
@@ -113,4 +123,30 @@ export async function writeStartupRemotePluginSyncMarker(
   const path = startupRemotePluginSyncMarkerPath(agencHome);
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   await writeFile(path, `${at.toISOString()}\n`, { mode: 0o600 });
+}
+
+async function syncStartupRemotePlugins(
+  options: StartupRemotePluginSyncOptions,
+): Promise<StartupRemotePluginSyncResult> {
+  if (options.syncPluginsFromRemote !== undefined) {
+    return options.syncPluginsFromRemote(true);
+  }
+  if (options.remotePluginServiceConfig === undefined || options.remoteAuth === undefined) {
+    throw new Error("startup remote plugin sync requires remote service config and auth when no sync callback is provided");
+  }
+  const outcome = await syncRemoteInstalledPluginBundles(
+    options.agencHome,
+    options.remotePluginServiceConfig,
+    options.remoteAuth,
+    {
+      ...(options.fetcher !== undefined ? { fetcher: options.fetcher } : {}),
+      ...(options.allowLoopbackHttp !== undefined ? { allowLoopbackHttp: options.allowLoopbackHttp } : {}),
+    },
+  );
+  return {
+    installedPluginIds: outcome?.installedPluginIds ?? [],
+    enabledPluginIds: [],
+    disabledPluginIds: [],
+    uninstalledPluginIds: outcome?.removedCachePluginIds ?? [],
+  };
 }

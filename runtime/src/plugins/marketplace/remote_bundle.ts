@@ -32,6 +32,7 @@ export interface RemotePluginBundleInstallResult {
 const REMOTE_PLUGIN_BUNDLE_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
 const REMOTE_PLUGIN_BUNDLE_MAX_EXTRACTED_BYTES = 250 * 1024 * 1024;
 const REMOTE_PLUGIN_INSTALL_STAGING_DIR = "plugins/.remote-plugin-install-staging";
+const REMOTE_PLUGIN_CACHE_SEGMENT_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/u;
 
 export function validateRemotePluginBundle(
   remotePluginId: string,
@@ -41,6 +42,8 @@ export function validateRemotePluginBundle(
   bundleDownloadUrl: string | undefined,
   options: { readonly allowLoopbackHttp?: boolean } = {},
 ): ValidatedRemotePluginBundle {
+  const localMarketplaceName = validateRemotePluginCacheSegment(remoteMarketplaceName, "marketplace name", remotePluginId);
+  const localPluginName = validateRemotePluginCacheSegment(pluginName, "plugin name", remotePluginId);
   const pluginVersion = releaseVersion?.trim();
   if (!pluginVersion) {
     throw new Error(`backend did not return a release version for remote plugin '${remotePluginId}'`);
@@ -65,9 +68,9 @@ export function validateRemotePluginBundle(
     throw error;
   }
   return {
-    pluginId: `${pluginName}@${remoteMarketplaceName}`,
-    marketplaceName: remoteMarketplaceName,
-    pluginName,
+    pluginId: `${localPluginName}@${localMarketplaceName}`,
+    marketplaceName: localMarketplaceName,
+    pluginName: localPluginName,
     pluginVersion,
     bundleDownloadUrl: url,
   };
@@ -198,14 +201,30 @@ export function remotePluginInstallRoot(
   agencHome: string,
   bundle: ValidatedRemotePluginBundle,
 ): string {
+  const marketplaceName = validateRemotePluginCacheSegment(bundle.marketplaceName, "marketplace name", bundle.pluginId);
+  const pluginName = validateRemotePluginCacheSegment(bundle.pluginName, "plugin name", bundle.pluginId);
   return join(
     agencHome,
     "plugins",
     "cache",
-    sanitizeMarketplaceInstallName(bundle.marketplaceName),
-    sanitizeMarketplaceInstallName(bundle.pluginName),
+    sanitizeMarketplaceInstallName(marketplaceName),
+    sanitizeMarketplaceInstallName(pluginName),
     sanitizeRemotePluginVersionSegment(bundle.pluginVersion),
   );
+}
+
+export function validateRemotePluginCacheSegment(
+  segment: string,
+  kind: "plugin name" | "marketplace name",
+  remotePluginId: string,
+): string {
+  const trimmed = segment.trim();
+  if (!REMOTE_PLUGIN_CACHE_SEGMENT_RE.test(trimmed)) {
+    throw new Error(
+      `backend returned an invalid local plugin id for remote plugin '${remotePluginId}': invalid ${kind}; only ASCII letters, digits, '_' and '-' are allowed`,
+    );
+  }
+  return trimmed;
 }
 
 async function downloadRemotePluginBundleWithLimit(

@@ -10,6 +10,7 @@ Source files inspected end-to-end:
 - `codex-rs/core-plugins/src/marketplace.rs` // branding-scan: allow local parity citation
 - `codex-rs/core-plugins/src/installed_marketplaces.rs` // branding-scan: allow local parity citation
 - `codex-rs/core-plugins/src/remote.rs` // branding-scan: allow local parity citation
+- `codex-rs/core-plugins/src/remote/remote_installed_plugin_sync.rs` // branding-scan: allow local parity citation
 - `codex-rs/core-plugins/src/remote_bundle.rs` // branding-scan: allow local parity citation
 - `codex-rs/core-plugins/src/remote_legacy.rs` // branding-scan: allow local parity citation
 - `codex-rs/core-plugins/src/startup_sync.rs` // branding-scan: allow local parity citation
@@ -35,12 +36,12 @@ PK-07 scope carried into AgenC:
 - `officialMarketplace.ts` declares the AgenC-owned official marketplace source.
 - `installed_marketplaces.ts` projects persistent marketplace index/config entries into installed marketplace roots.
 - `marketplace.ts` rejects malformed plugin entries, missing source fields, unsupported source shapes, traversal sources, non-loopback HTTP plugin git URLs, and duplicate plugin names instead of silently dropping invalid catalog data.
-- `remote.ts` owns authenticated remote marketplace listing, installed-plugin listing, detail fetches, skill detail fetches, install/uninstall mutations, remote cache cleanup, and JSON response-shape validation before mapping.
+- `remote.ts` owns authenticated remote marketplace listing, installed-plugin listing, detail fetches, skill detail fetches, install/uninstall mutations, path-jailed remote cache cleanup, installed remote bundle reconciliation, stale cache removal, in-flight sync dedupe, cache mutation guards, and JSON response-shape validation before mapping.
 - `fetchGuards.ts` owns shared HTTPS/loopback URL policy, timeout/abort handling, stream cancellation on size-limit failures, bounded response reads, and credential-redacted URL formatting for marketplace network surfaces.
-- `remote_bundle.ts` owns remote bundle validation, download-boundary HTTPS/loopback revalidation, size-limited download, safe tar.gz extraction with traversal/link/truncation/checksum rejection, manifest identity verification, versioned cache activation, and manifest readback.
+- `remote_bundle.ts` owns remote bundle validation, local plugin/marketplace cache identity validation, download-boundary HTTPS/loopback revalidation, size-limited download, safe tar.gz extraction with traversal/link/truncation/checksum rejection, manifest identity verification, versioned cache activation, and manifest readback.
 - `remote_legacy.ts` owns the older remote plugin status, featured-plugin, enable, and uninstall endpoints that the runtime may still need while the hosted service migrates, including response-shape validation before mapping.
-- `startup_sync.ts` owns startup curated marketplace sync through git, HTTP zipball, and backup archive fallbacks with private SHA tracking and existing-snapshot degradation.
-- `startup_remote_sync.ts` owns one-shot startup remote plugin reconciliation after curated marketplace prerequisites are available, including stale lock recovery.
+- `startup_sync.ts` owns startup curated marketplace sync through guarded git, HTTP zipball, and backup archive fallbacks with private SHA tracking and existing-snapshot degradation.
+- `startup_remote_sync.ts` owns one-shot startup remote plugin reconciliation after curated marketplace prerequisites are available, including stale lock recovery and concrete remote bundle reconciliation when no injected manager sync callback is supplied.
 
 Intentional PK-07 scope reductions:
 - Hosted-service auth token vending is not owned here. Callers pass `RemoteAuth` headers from the auth layer so PK-07 never reads API key environment variables directly.

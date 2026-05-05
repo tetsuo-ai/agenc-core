@@ -57,6 +57,23 @@ describe("startup marketplace sync", () => {
     expect(calls.filter((call) => call.startsWith("clone "))).toHaveLength(1);
   });
 
+  it("rejects unsafe curated marketplace git transports before running git", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-startup-sync-unsafe-git-"));
+    const calls: string[] = [];
+
+    await expect(syncCuratedPluginsRepoViaGit(
+      agencHome,
+      "ssh://git@agenc.tech/plugins/curated.git",
+      "git",
+      async (_command, args) => {
+        calls.push(args.join(" "));
+        return { stdout: "", stderr: "" };
+      },
+    )).rejects.toThrow("must use HTTPS or loopback HTTP");
+
+    expect(calls).toEqual([]);
+  });
+
   it("runs remote plugin sync once after curated marketplace prerequisites exist", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-startup-sync-"));
     await writeCuratedMarketplace(curatedPluginsRepoPath(agencHome));
@@ -90,6 +107,39 @@ describe("startup marketplace sync", () => {
         throw new Error("should not run twice");
       },
     })).resolves.toBeNull();
+  });
+
+  it("can run startup remote plugin sync through the concrete remote bundle reconciler", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-startup-sync-concrete-"));
+    await writeCuratedMarketplace(curatedPluginsRepoPath(agencHome));
+    await writeFile(curatedPluginsShaPath(agencHome), "abc123\n");
+    const calls: string[] = [];
+
+    const result = await startStartupRemotePluginSyncOnce({
+      agencHome,
+      prerequisiteTimeoutMs: 10,
+      pollMs: 1,
+      now: () => new Date("2026-05-05T00:00:00.000Z"),
+      remotePluginServiceConfig: { baseUrl: "https://agenc.tech" },
+      remoteAuth: { headers: { Authorization: "Bearer test" } },
+      fetcher: async (url) => {
+        const parsed = new URL(url);
+        calls.push(parsed.pathname);
+        if (parsed.pathname === "/ps/plugins/installed") {
+          return jsonResponse({ plugins: [], pagination: {} });
+        }
+        return jsonResponse({ message: "not found" }, false, 404);
+      },
+    });
+
+    expect(result).toEqual({
+      installedPluginIds: [],
+      enabledPluginIds: [],
+      disabledPluginIds: [],
+      uninstalledPluginIds: [],
+    });
+    expect(calls).toEqual(["/ps/plugins/installed", "/ps/plugins/installed"]);
+    await expect(hasStartupRemotePluginSyncMarker(agencHome)).resolves.toBe(true);
   });
 
   it("uses the existing curated snapshot when refresh mechanisms fail", async () => {

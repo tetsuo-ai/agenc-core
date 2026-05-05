@@ -94,6 +94,7 @@ export async function syncCuratedPluginsRepoViaGit(
   gitBinary: string,
   run: ProcessRunner = defaultRunProcess,
 ): Promise<string> {
+  assertHttpsOrLoopbackUrl(gitUrl, "curated plugins git URL", { allowLoopbackHttp: true });
   const repoPath = curatedPluginsRepoPath(agencHome);
   const shaPath = curatedPluginsShaPath(agencHome);
   const remoteSha = await gitLsRemoteHeadSha(gitBinary, gitUrl, run);
