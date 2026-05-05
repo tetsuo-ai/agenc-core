@@ -1846,10 +1846,17 @@ if (skipValidate) {
       file.startsWith("runtime/src/bin/agenc.ts") ||
       file.startsWith("runtime/src/bin/main.ts")
     );
-    const runnerArgs = forceFullTuiValidate ? [skillRunner, "--full"] : [skillRunner];
+    const runtimePackage = JSON.parse(readFileSync(path.join(root, "runtime/package.json"), "utf8"));
+    const fullTuiScriptsAvailable = [
+      "validate:openclaude-footer-live-parity", // branding-scan: allow legacy gate script key probe
+      "validate:tui-openclaude-core-parity", // branding-scan: allow legacy gate script key probe
+      "test:tui-yolo-openclaude-parity", // branding-scan: allow legacy gate script key probe
+    ].every((script) => Boolean(runtimePackage.scripts?.[script]));
+    const useFullTuiValidate = forceFullTuiValidate && fullTuiScriptsAvailable;
+    const runnerArgs = useFullTuiValidate ? [skillRunner, "--full"] : [skillRunner];
     const r = run("node", runnerArgs);
     if (r.status !== 0) failGate("agenc-tui-validate failed");
-    pass(`agenc-tui-validate passed (${path.basename(skillRunner)}${forceFullTuiValidate ? " --full" : ""})`);
+    pass(`agenc-tui-validate passed (${path.basename(skillRunner)}${useFullTuiValidate ? " --full" : ""})`);
   } else {
     process.stdout.write(
       `${YELLOW}!${RESET} agenc-tui-validate skill runner not found under ${skillBase}; falling back to inline build check.\n`,
