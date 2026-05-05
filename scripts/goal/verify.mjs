@@ -971,7 +971,9 @@ const ITEM_EVIDENCE = {
       "runtime/src/tools/runtimes/PARITY.md",
       "parity/tool-runtimes-split-parity.json",
       "runtime/src/tools/system/exec-command.ts",
+      "runtime/src/tools/system/write-stdin.ts",
       "runtime/src/unified-exec/process-manager.ts",
+      "runtime/src/sandbox/engine/manager.ts",
     ],
     grepPresent: [
       { pattern: "analyzeShellRuntimeAccess", scope: "runtime/src/tools/runtimes/sandboxing.ts" },
@@ -987,13 +989,16 @@ const ITEM_EVIDENCE = {
       { pattern: "BigInt", scope: "runtime/src/tools/runtimes/runtime.test.ts" },
       { pattern: "TMPDIR", scope: "runtime/src/tools/runtimes/runtime.test.ts" },
       { pattern: "runtimeSandbox", scope: "runtime/src/tools/system/exec-command.ts" },
+      { pattern: "runtimeSandbox", scope: "runtime/src/tools/system/write-stdin.ts" },
       { pattern: "SandboxManager", scope: "runtime/src/unified-exec/process-manager.ts" },
+      { pattern: "read_only_subpaths", scope: "runtime/src/sandbox/engine/manager.ts" },
     ],
     tests: [
       "runtime/src/tools/runtimes/runtime.test.ts",
       "runtime/src/phases/execute-tools.test.ts",
       "runtime/src/tools/router.test.ts",
       "runtime/src/unified-exec/process-manager.test.ts",
+      "runtime/src/sandbox/engine/linux-engine.test.ts",
     ],
   },
   "TL-22": {

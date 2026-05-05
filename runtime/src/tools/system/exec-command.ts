@@ -53,7 +53,7 @@ function isPlainInteractiveShellCommand(command: string): boolean {
   return PLAIN_INTERACTIVE_SHELL_RE.test(command);
 }
 
-function runtimeSandboxForExec(
+export function runtimeSandboxForExec(
   args: Record<string, unknown>,
   fallbackCwd: string,
 ): UnifiedExecRuntimeSandbox | undefined {
@@ -117,9 +117,20 @@ function networkPolicy(value: unknown): NetworkSandboxPolicy | undefined {
 }
 
 function windowsSandboxLevel(value: unknown): WindowsSandboxLevel {
-  return value === "low" || value === "medium" || value === "high"
-    ? value
-    : "disabled";
+  switch (value) {
+    case "low":
+    case "medium":
+    case "high":
+      return value;
+    case "permissive":
+      return "low";
+    case "strict":
+      return "high";
+    case "none":
+    case "disabled":
+    default:
+      return "disabled";
+  }
 }
 
 function useLegacyLandlock(features: unknown): boolean {

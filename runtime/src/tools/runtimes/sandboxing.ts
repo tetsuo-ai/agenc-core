@@ -1,11 +1,13 @@
 import path from "node:path";
 import {
   externalFileSystemPolicy,
+  canReadPathWithCwd,
   permissionProfileFromRuntimePermissions,
   restrictedFileSystemPolicy,
   unrestrictedFileSystemPolicy,
   type FileSystemSandboxEntry,
-  type FileSystemSandboxPolicy,
+  type FileSystemSandboxPolicy as EngineFileSystemSandboxPolicy,
+  type FileSystemPath,
   type NetworkSandboxPolicy,
   type PermissionProfile,
 } from "../../sandbox/engine/index.js";
@@ -102,7 +104,7 @@ export function permissionProfileForRuntimeContext(
   if (!sandboxModeRequiresPlatformIsolation(context.sandboxMode)) {
     return permissionProfileForSandboxMode(context.sandboxMode, options);
   }
-  const fileSystem = fileSystemPolicyFromContext(context);
+  const fileSystem = fileSystemPolicyFromContext(context, options.cwd);
   const network = networkPolicyFromContext(context) ?? options.network ?? "enabled";
   return fileSystem === undefined
     ? permissionProfileForSandboxMode(context.sandboxMode, {
@@ -139,21 +141,7 @@ export function enforceRuntimeSandboxAttempt(
   if (policy.kind === "danger_full_access" || policy.kind === "external_sandbox") {
     return;
   }
-  enforceRuntimeReadSandboxAttempt(input, policy, cwd);
-  if (
-    input.tool.name === "write_stdin" &&
-    typeof input.args["chars"] === "string" &&
-    input.args["chars"].length > 0
-  ) {
-    throw new SandboxDeniedError(
-      `sandbox ${policy.kind} blocked write_stdin without process sandbox context`,
-      {
-        denial: "filesystem",
-        target: input.tool.name,
-        policy,
-      },
-    );
-  }
+  enforceRuntimeReadSandboxAttempt(input, policy, cwd, profile.fileSystem);
   if (input.tool.name === "write_stdin") return;
   if (!toolMayMutate(input.tool)) return;
   const writes = analyzeWrites(input.tool, input.args, cwd);
@@ -197,6 +185,7 @@ function enforceRuntimeReadSandboxAttempt(
   input: RuntimeSandboxEnforcementInput,
   policy: SandboxPolicy,
   cwd: string,
+  fileSystemPolicy: EngineFileSystemSandboxPolicy,
 ): void {
   if (policy.kind !== "read_only") return;
   const shell = analyzeShellRuntimeAccess(input.tool, input.args, cwd);
@@ -212,7 +201,9 @@ function enforceRuntimeReadSandboxAttempt(
     );
   }
   for (const target of shell.readTargets) {
-    if (isPathUnder(target, cwd)) continue;
+    if (isPathUnder(target, cwd) && canReadPathWithCwd(fileSystemPolicy, target, cwd)) {
+      continue;
+    }
     throw new SandboxDeniedError(
       `sandbox read_only blocked read outside workspace: ${target}`,
       {
@@ -267,12 +258,16 @@ function runtimeCwd(context: ToolRuntimeAttemptContext): string {
 
 function fileSystemPolicyFromContext(
   context: ToolRuntimeAttemptContext,
-): FileSystemSandboxPolicy | undefined {
+  cwd: string,
+): EngineFileSystemSandboxPolicy | undefined {
   const value = (context.invocation.turn as {
     readonly fileSystemSandboxPolicy?: unknown;
   }).fileSystemSandboxPolicy;
-  if (!isFileSystemSandboxPolicy(value)) return undefined;
-  return value;
+  if (isEngineFileSystemSandboxPolicy(value)) return value;
+  if (isLiveFileSystemSandboxPolicy(value)) {
+    return adaptLiveFileSystemPolicy(value, context.sandboxMode, cwd);
+  }
+  return undefined;
 }
 
 function networkPolicyFromContext(
@@ -281,12 +276,14 @@ function networkPolicyFromContext(
   const value = (context.invocation.turn as {
     readonly networkSandboxPolicy?: unknown;
   }).networkSandboxPolicy;
-  return isNetworkSandboxPolicy(value) ? value : undefined;
+  return isNetworkSandboxPolicy(value)
+    ? value
+    : liveNetworkPolicyToEngine(value);
 }
 
-function isFileSystemSandboxPolicy(
+function isEngineFileSystemSandboxPolicy(
   value: unknown,
-): value is FileSystemSandboxPolicy {
+): value is EngineFileSystemSandboxPolicy {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as {
     readonly kind?: unknown;
@@ -302,6 +299,90 @@ function isFileSystemSandboxPolicy(
 
 function isNetworkSandboxPolicy(value: unknown): value is NetworkSandboxPolicy {
   return value === "enabled" || value === "disabled" || value === "restricted";
+}
+
+interface LiveFileSystemSandboxPolicy {
+  readonly allowWrite: readonly string[];
+  readonly denyWrite: readonly string[];
+  readonly allowRead: readonly string[];
+  readonly denyRead: readonly string[];
+}
+
+interface LiveNetworkSandboxPolicy {
+  readonly allowlist: readonly string[];
+  readonly denylist: readonly string[];
+  readonly allowManagedDomainsOnly: boolean;
+  readonly enabled?: boolean;
+}
+
+function isLiveFileSystemSandboxPolicy(
+  value: unknown,
+): value is LiveFileSystemSandboxPolicy {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<LiveFileSystemSandboxPolicy>;
+  return Array.isArray(candidate.allowWrite) &&
+    Array.isArray(candidate.denyWrite) &&
+    Array.isArray(candidate.allowRead) &&
+    Array.isArray(candidate.denyRead);
+}
+
+function adaptLiveFileSystemPolicy(
+  policy: LiveFileSystemSandboxPolicy,
+  mode: SandboxMode,
+  cwd: string,
+): EngineFileSystemSandboxPolicy {
+  const denyWrite = new Set(policy.denyWrite.map((value) => path.resolve(cwd, value)));
+  const denyRead = new Set(policy.denyRead.map((value) => path.resolve(cwd, value)));
+  const entries: FileSystemSandboxEntry[] = [];
+
+  if (mode === "read_only") {
+    entries.push(projectRootEntry("read"));
+  } else if (mode === "workspace_write") {
+    entries.push(projectRootEntry("write"), tmpdirEntry());
+  }
+
+  for (const target of policy.allowRead) {
+    entries.push({ path: pathPolicyEntry(target), access: "read" });
+  }
+  for (const target of policy.allowWrite) {
+    const resolved = path.resolve(cwd, target);
+    if (denyWrite.has(resolved) || denyRead.has(resolved)) continue;
+    entries.push({ path: pathPolicyEntry(target), access: "write" });
+  }
+  for (const target of policy.denyWrite) {
+    if (denyRead.has(path.resolve(cwd, target))) continue;
+    entries.push({ path: pathPolicyEntry(target), access: "read" });
+  }
+  for (const target of policy.denyRead) {
+    entries.push({ path: pathPolicyEntry(target), access: "none" });
+  }
+
+  return restrictedFileSystemPolicy(entries, {
+    includePlatformDefaults: true,
+  });
+}
+
+function pathPolicyEntry(target: string): FileSystemPath {
+  return { kind: "path", path: target };
+}
+
+function liveNetworkPolicyToEngine(
+  value: unknown,
+): NetworkSandboxPolicy | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const candidate = value as Partial<LiveNetworkSandboxPolicy>;
+  if (!Array.isArray(candidate.allowlist) || !Array.isArray(candidate.denylist)) {
+    return undefined;
+  }
+  if (candidate.enabled === false) return "disabled";
+  if (
+    candidate.allowManagedDomainsOnly === true ||
+    candidate.allowlist.length > 0 ||
+    candidate.denylist.length > 0
+  ) {
+    return "restricted";
+  }
+  return candidate.enabled === true ? "enabled" : undefined;
 }
 
 function toolMayMutate(tool: Tool): boolean {

@@ -202,6 +202,10 @@ function permissionProfileToCompatibilitySandboxPolicy(
       : newExternalSandboxPolicy(NETWORK_DISABLED);
   }
 
+  const hasWriteEntries = fileSystem.entries.some((entry) => entry.access === "write");
+  const hasNarrowingEntries = fileSystem.entries.some((entry) => entry.access !== "write");
+  if (hasWriteEntries && hasNarrowingEntries) return null;
+
   const writableProjection = projectRestrictedWrites(fileSystem.entries, cwd);
   if (writableProjection === null) return null;
   if (writableProjection.workspaceRootWritable) {
@@ -288,9 +292,7 @@ function compatibilityWorkspaceWritePolicy(
   networkPolicy: NetworkSandboxPolicy,
   cwd: string,
 ): CompatibilitySandboxPolicy {
-  const writableRoots = getWritableRootsWithCwd(fileSystemPolicy, cwd)
-    .map((root) => root.root)
-    .filter((root) => path.resolve(root) !== path.resolve(cwd));
+  const writableRoots = getWritableRootsWithCwd(fileSystemPolicy, cwd);
   const tmpdir = process.env["TMPDIR"];
   const tmpdirWritable =
     typeof tmpdir === "string" &&
@@ -302,8 +304,8 @@ function compatibilityWorkspaceWritePolicy(
 
   return newWorkspaceWritePolicy({
     writable_roots: writableRoots.map((root) => ({
-      root,
-      read_only_subpaths: [],
+      root: root.root,
+      read_only_subpaths: root.readOnlySubpaths,
     })),
     network: networkPolicyEnabled(networkPolicy)
       ? NETWORK_ENABLED

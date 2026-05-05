@@ -122,11 +122,30 @@ class ProcessOutputBuffer {
   }
 }
 
+function runtimeSandboxesCompatible(
+  active: UnifiedExecRuntimeSandbox | undefined,
+  requested: UnifiedExecRuntimeSandbox,
+): boolean {
+  if (active === undefined) return false;
+  return active.sandboxPolicyCwd === requested.sandboxPolicyCwd &&
+    JSON.stringify(active.permissionProfile) ===
+      JSON.stringify(requested.permissionProfile) &&
+    (active.agencLinuxSandboxExe ?? "") ===
+      (requested.agencLinuxSandboxExe ?? "") &&
+    (active.useLegacyLandlock ?? false) ===
+      (requested.useLegacyLandlock ?? false) &&
+    (active.windowsSandboxLevel ?? "disabled") ===
+      (requested.windowsSandboxLevel ?? "disabled") &&
+    (active.windowsSandboxPrivateDesktop ?? false) ===
+      (requested.windowsSandboxPrivateDesktop ?? false);
+}
+
 interface ProcessEntry {
   readonly processId: number;
   readonly command: string;
   readonly cwd: string;
   readonly tty: boolean;
+  readonly runtimeSandbox?: UnifiedExecRuntimeSandbox;
   readonly startedAt: number;
   readonly output: ProcessOutputBuffer;
   readonly stored: StoredProcess;
@@ -276,6 +295,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       args: spawnCommand.args,
       cwd: spawnCommand.cwd,
       env: spawnCommand.env,
+      ...(request.runtimeSandbox !== undefined
+        ? { runtimeSandbox: request.runtimeSandbox }
+        : {}),
       ...(spawnCommand.argv0 !== undefined
         ? { argv0: spawnCommand.argv0 }
         : {}),
@@ -346,6 +368,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     }
     const input = request.chars ?? "";
     if (input.length > 0) {
+      if (
+        request.runtimeSandbox !== undefined &&
+        !runtimeSandboxesCompatible(entry.runtimeSandbox, request.runtimeSandbox)
+      ) {
+        throw new UnifiedExecError(
+          "write_stdin",
+          "write_stdin requires an existing session with a compatible sandbox profile",
+        );
+      }
       if (!entry.tty) {
         throw new UnifiedExecError(
           "stdin_closed",
@@ -450,6 +481,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     readonly args: readonly string[];
     readonly cwd: string;
     readonly env: Record<string, string>;
+    readonly runtimeSandbox?: UnifiedExecRuntimeSandbox;
     readonly argv0?: string;
     readonly tty: boolean;
     readonly startedAt: number;
@@ -466,6 +498,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       command: params.command,
       cwd: params.cwd,
       tty: params.tty,
+      ...(params.runtimeSandbox !== undefined
+        ? { runtimeSandbox: params.runtimeSandbox }
+        : {}),
       startedAt: params.startedAt,
       output,
       callId: params.callId,

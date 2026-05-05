@@ -13,6 +13,7 @@ import { createFileWriteTool } from "../system/file-write.js";
 import { createWriteStdinTool } from "../system/write-stdin.js";
 import {
   enforceRuntimeSandboxAttempt,
+  permissionProfileForRuntimeContext,
   permissionProfileForSandboxMode,
 } from "./sandboxing.js";
 import {
@@ -519,6 +520,76 @@ describe("tools/runtimes", () => {
       }),
     ).toThrow(/read outside workspace/);
 
+    const livePolicyInvocation = {
+      ...invocation,
+      turn: {
+        cwd: "/repo",
+        fileSystemSandboxPolicy: {
+          allowWrite: ["/repo"],
+          denyWrite: ["/repo/blocked"],
+          allowRead: ["/repo"],
+          denyRead: ["/repo/private"],
+        },
+        networkSandboxPolicy: {
+          allowlist: [],
+          denylist: [],
+          allowManagedDomainsOnly: false,
+          enabled: false,
+        },
+      } as never,
+    };
+    const livePolicyContext = {
+      ...base,
+      approvalPolicy: "never" as const,
+      requestedSandboxMode: "workspace_write" as const,
+      sandboxMode: "workspace_write" as const,
+      approvalResolved: false,
+      rawArgs: "{}",
+      invocation: livePolicyInvocation,
+    };
+    const liveProfile = permissionProfileForRuntimeContext(livePolicyContext, {
+      cwd: "/repo",
+    });
+    expect(liveProfile.network).toBe("disabled");
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: livePolicyContext,
+        tool: mutatingTool,
+        args: { file_path: "blocked/file.txt" },
+      }),
+    ).toThrow(/workspace_write blocked/);
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...livePolicyContext,
+          requestedSandboxMode: "read_only",
+          sandboxMode: "read_only",
+          invocation: {
+            ...livePolicyInvocation,
+            turn: {
+              cwd: "/repo",
+              fileSystemSandboxPolicy: {
+                allowWrite: [],
+                denyWrite: ["/repo"],
+                allowRead: ["/repo"],
+                denyRead: ["/repo/private"],
+              },
+              networkSandboxPolicy: {
+                allowlist: [],
+                denylist: [],
+                allowManagedDomainsOnly: false,
+                enabled: false,
+              },
+            } as never,
+          },
+        },
+        tool: shellTool,
+        args: { cmd: "cat /repo/private/secret.txt" },
+      }),
+    ).toThrow(/read outside workspace|could not verify read targets/);
+
     const applyPatchTool: Tool = {
       name: "apply_patch",
       description: "",
@@ -743,6 +814,19 @@ describe("tools/runtimes", () => {
         turn: {
           subId: "turn-exec-root-scoped-read",
           cwd: workspaceRoot,
+          fileSystemSandboxPolicy: {
+            allowWrite: [],
+            denyWrite: [workspaceRoot],
+            allowRead: [workspaceRoot],
+            denyRead: [],
+          },
+          networkSandboxPolicy: {
+            allowlist: [],
+            denylist: [],
+            allowManagedDomainsOnly: false,
+            enabled: false,
+          },
+          windowsSandboxLevel: "strict",
           approvalPolicy: { value: "never" },
           sandboxPolicy: { value: "read_only" },
         } as never,
@@ -757,7 +841,9 @@ describe("tools/runtimes", () => {
         workdir: nestedWorkdir,
         runtimeSandbox: expect.objectContaining({
           sandboxPolicyCwd: workspaceRoot,
+          windowsSandboxLevel: "high",
           permissionProfile: expect.objectContaining({
+            network: "disabled",
             fileSystem: expect.objectContaining({ kind: "restricted" }),
           }),
         }),
@@ -789,9 +875,16 @@ describe("tools/runtimes", () => {
         sandboxMode: "read_only",
       },
     );
-    expect(readOnlyStdin.isError).toBe(true);
-    expect(readOnlyStdin.content).toContain("write_stdin");
-    expect(writeStdin).not.toHaveBeenCalled();
+    expect(readOnlyStdin.isError).toBeFalsy();
+    expect(writeStdin).toHaveBeenCalledWith(
+      expect.objectContaining({
+        session_id: 7,
+        chars: "printf should-not-run\\n",
+        runtimeSandbox: expect.objectContaining({
+          sandboxPolicyCwd: workspaceRoot,
+        }),
+      }),
+    );
 
     const restrictedStdin = await router.dispatchModelToolCall(
       {
@@ -818,9 +911,16 @@ describe("tools/runtimes", () => {
         sandboxMode: "workspace_write",
       },
     );
-    expect(restrictedStdin.isError).toBe(true);
-    expect(restrictedStdin.content).toContain("write_stdin");
-    expect(writeStdin).not.toHaveBeenCalled();
+    expect(restrictedStdin.isError).toBeFalsy();
+    expect(writeStdin).toHaveBeenCalledWith(
+      expect.objectContaining({
+        session_id: 7,
+        chars: "printf agenc-pty\\n",
+        runtimeSandbox: expect.objectContaining({
+          sandboxPolicyCwd: workspaceRoot,
+        }),
+      }),
+    );
 
     const fullAccessStdin = await router.dispatchModelToolCall(
       {
@@ -853,6 +953,9 @@ describe("tools/runtimes", () => {
         session_id: 7,
         chars: "printf agenc-pty\\n",
       }),
+    );
+    expect(writeStdin.mock.calls.at(-1)?.[0]).not.toHaveProperty(
+      "runtimeSandbox",
     );
   });
 

@@ -19,10 +19,12 @@
     "runtime/src/tools/streaming-executor.ts",
     "runtime/src/phases/execute-tools.ts",
     "runtime/src/tools/system/exec-command.ts",
+    "runtime/src/tools/system/write-stdin.ts",
     "runtime/src/unified-exec/types.ts",
     "runtime/src/unified-exec/index.ts",
     "runtime/src/unified-exec/process-manager.ts",
     "runtime/src/unified-exec/process-manager.test.ts",
+    "runtime/src/sandbox/engine/manager.ts",
     "scripts/goal/verify.mjs"
   ],
   "sourceFilesRead": [
@@ -92,6 +94,7 @@
     "runtime/src/tools/runtimes/runtime.test.ts",
     "runtime/src/phases/execute-tools.test.ts",
     "runtime/src/tools/router.test.ts",
-    "runtime/src/unified-exec/process-manager.test.ts"
+    "runtime/src/unified-exec/process-manager.test.ts",
+    "runtime/src/sandbox/engine/linux-engine.test.ts"
   ]
 }

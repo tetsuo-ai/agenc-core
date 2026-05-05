@@ -6,6 +6,7 @@ import {
   permissionProfileFromRuntimePermissions,
   restrictedFileSystemPolicy,
   type SandboxExecRequest,
+  type SandboxManager,
   type SandboxTransformRequest,
 } from "../sandbox/engine/index.js";
 import { UnifiedExecError, UnifiedExecProcessManager } from "./index.js";
@@ -19,6 +20,24 @@ const hasPtySupport = (() => {
     return false;
   }
 })();
+
+function passthroughSandboxManager(): Pick<SandboxManager, "selectInitial" | "transform"> {
+  return {
+    selectInitial: () => "linux_seccomp",
+    transform: (request): SandboxExecRequest => ({
+      command: [request.command.program, ...request.command.args],
+      cwd: request.command.cwd,
+      env: request.command.env,
+      sandbox: request.sandbox,
+      windowsSandboxLevel: request.windowsSandboxLevel,
+      windowsSandboxPrivateDesktop: request.windowsSandboxPrivateDesktop,
+      permissionProfile: request.permissions,
+      fileSystemSandboxPolicy: request.permissions.fileSystem,
+      networkSandboxPolicy: request.permissions.network,
+      arg0: "agenc-sandbox-test",
+    }),
+  };
+}
 
 describe("UnifiedExecProcessManager", () => {
   test("runs one-shot non-PTY commands without returning a session id", async () => {
@@ -154,6 +173,81 @@ describe("UnifiedExecProcessManager", () => {
         await manager.closeAll("test_cleanup");
       }
     },
+    10_000,
+  );
+
+  test.runIf(hasPtySupport)(
+    "rejects restricted write_stdin for a non-sandboxed PTY session",
+    async () => {
+      const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
+      const permissionProfile = permissionProfileFromRuntimePermissions(
+        restrictedFileSystemPolicy(),
+        "enabled",
+      );
+      try {
+        const started = await manager.execCommand({
+          cmd: "bash -i",
+          tty: true,
+          yield_time_ms: 250,
+        });
+
+        await expect(
+          manager.writeStdin({
+            session_id: started.process_id!,
+            chars: "printf denied\\n",
+            yield_time_ms: 250,
+            runtimeSandbox: {
+              permissionProfile,
+              sandboxPolicyCwd: process.cwd(),
+              preference: "require",
+            },
+          }),
+        ).rejects.toMatchObject({
+          code: "write_stdin",
+        } satisfies Partial<UnifiedExecError>);
+      } finally {
+        await manager.closeAll("test_cleanup");
+      }
+    },
+    10_000,
+  );
+
+  test.runIf(hasPtySupport)(
+    "allows restricted write_stdin for a compatible sandboxed PTY session",
+    async () => {
+      const permissionProfile = permissionProfileFromRuntimePermissions(
+        restrictedFileSystemPolicy(),
+        "enabled",
+      );
+      const runtimeSandbox = {
+        permissionProfile,
+        sandboxPolicyCwd: process.cwd(),
+        preference: "require" as const,
+      };
+      const manager = new UnifiedExecProcessManager({
+        cwd: process.cwd(),
+        sandboxManager: passthroughSandboxManager(),
+      });
+      try {
+        const started = await manager.execCommand({
+          cmd: "bash -i",
+          tty: true,
+          yield_time_ms: 250,
+          runtimeSandbox,
+        });
+        const echoed = await manager.writeStdin({
+          session_id: started.process_id!,
+          chars: "printf sandboxed-stdin\\n",
+          yield_time_ms: 250,
+          runtimeSandbox,
+        });
+
+        expect(echoed.stdout).toContain("sandboxed-stdin");
+      } finally {
+        await manager.closeAll("test_cleanup");
+      }
+    },
+    10_000,
   );
 
   test("force-kills abandoned non-tty processes once maxTimeoutMs elapses", async () => {
@@ -229,7 +323,7 @@ describe("UnifiedExecProcessManager", () => {
     } finally {
       await manager.closeAll("test_cleanup");
     }
-  });
+  }, 10_000);
 
   test.runIf(hasPtySupport)("closeAll terminates live PTY sessions", async () => {
     const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
@@ -250,5 +344,5 @@ describe("UnifiedExecProcessManager", () => {
     ).rejects.toMatchObject({
       code: "unknown_process",
     } satisfies Partial<UnifiedExecError>);
-  });
+  }, 10_000);
 });

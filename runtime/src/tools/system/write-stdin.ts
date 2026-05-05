@@ -11,6 +11,7 @@ import {
   unifiedExecCodeModeResult,
 } from "./exec-result-format.js";
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
+import { runtimeSandboxForExec } from "./exec-command.js";
 
 export interface WriteStdinToolConfig {
   readonly cwd?: string;
@@ -133,6 +134,10 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
       }
 
       try {
+        const runtimeSandbox = runtimeSandboxForExec(
+          args,
+          config?.cwd ?? process.cwd(),
+        );
         const output = await manager.writeStdin({
           session_id: sessionId,
           callId: asString(args.__callId),
@@ -149,6 +154,7 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           ...(args.__onProgress !== undefined
             ? { __onProgress: args.__onProgress }
             : {}),
+          ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
         });
         const isError = output.exitCode !== null && output.exitCode !== 0;
         return {

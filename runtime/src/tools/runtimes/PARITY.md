@@ -17,7 +17,9 @@ Source commit: `c8c30d9d75556ecbe94991af22380d2a4e9d6589`
 - `runtime/src/tools/execution.ts` attaches the context as a non-enumerable injected argument before schema validation, enforces the runtime sandbox attempt, and still lets strict tool schemas validate.
 - `runtime/src/phases/execute-tools.ts` constructs the live scheduler from `runtime/src/tools/runtimes/parallel.ts`.
 - `runtime/src/tools/system/exec-command.ts` passes the selected runtime sandbox profile into unified exec for restricted attempts.
-- `runtime/src/unified-exec/process-manager.ts` transforms restricted exec commands through the C-01 sandbox manager before spawning a child process or PTY.
+- `runtime/src/tools/system/write-stdin.ts` passes the selected runtime sandbox profile to the existing unified-exec session for restricted PTY input.
+- `runtime/src/unified-exec/process-manager.ts` transforms restricted exec commands through the C-01 sandbox manager before spawning a child process or PTY, stores the sandbox profile on live sessions, and rejects restricted `write_stdin` unless the session profile is compatible.
+- `runtime/src/sandbox/engine/manager.ts` preserves read-only subpaths when projecting engine writable roots to the compatibility policy used by runtime preflight.
 
 ## Donor Mapping
 
@@ -40,6 +42,7 @@ Source commit: `c8c30d9d75556ecbe94991af22380d2a4e9d6589`
 
 ## Behavioral Checks
 
-- `runtime/src/tools/runtimes/runtime.test.ts` verifies parallel scheduling, sandbox-profile mapping, sandbox enforcement, approval-gated sandbox escalation, live router injection of selected sandbox attempt context through `executeToolDispatch`, actual `exec_command` / `Write` / `apply_patch` handler preflight under runtime-selected sandbox modes, and restricted-mode `write_stdin` denial for non-empty input.
+- `runtime/src/tools/runtimes/runtime.test.ts` verifies parallel scheduling, sandbox-profile mapping, sandbox enforcement, approval-gated sandbox escalation, live router injection of selected sandbox attempt context through `executeToolDispatch`, actual `exec_command` / `Write` / `apply_patch` handler preflight under runtime-selected sandbox modes, and restricted-mode `write_stdin` profile propagation.
 - `runtime/src/phases/execute-tools.test.ts` verifies batched model tool calls flow through `executeTools`, the runtime scheduler, and per-call runtime context.
-- `runtime/src/unified-exec/process-manager.test.ts` verifies restricted exec calls are transformed through the configured sandbox manager before spawn.
+- `runtime/src/unified-exec/process-manager.test.ts` verifies restricted exec calls are transformed through the configured sandbox manager before spawn and restricted `write_stdin` requires a compatible sandboxed PTY session.
+- `runtime/src/sandbox/engine/linux-engine.test.ts` covers sandbox engine projection behavior used by TL-21's compatibility preflight.
