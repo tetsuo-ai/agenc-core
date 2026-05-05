@@ -116,8 +116,8 @@ export interface PerToolConfig {
   readonly default_permission_mode?: PermissionDefaultMode;
   readonly defaultPermissionMode?: PermissionDefaultMode;
   /**
-   * Compatibility with donor/plugin manifests that call this
-   * approval_mode. `auto` means "use the session policy".
+   * Compatibility with plugin manifests that call this approval_mode.
+   * `auto` means "use the session policy".
    */
   readonly approval_mode?: "auto" | "prompt" | "approve";
 }
@@ -221,6 +221,7 @@ export interface McpServerConfig {
   readonly command?: string;
   readonly args?: readonly string[];
   readonly env?: Readonly<Record<string, string>>;
+  readonly cwd?: string;
   readonly transport?: McpTransport;
   readonly endpoint?: string;
   readonly headers?: Readonly<Record<string, string>>;
@@ -380,6 +381,20 @@ export interface LspServerConfigInput {
   readonly maxRestarts?: number;
 }
 
+export interface PluginEntryConfig {
+  readonly enabled?: boolean;
+  readonly path?: string;
+  readonly source?: string;
+  readonly version?: string;
+  readonly required?: boolean;
+  readonly options?: Readonly<Record<string, unknown>>;
+}
+
+export interface PluginsConfig {
+  readonly dirs?: readonly string[];
+  readonly enabled?: Readonly<Record<string, boolean | PluginEntryConfig>>;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Canonical AgenCConfig
 // ─────────────────────────────────────────────────────────────────────
@@ -413,11 +428,13 @@ export interface AgenCConfig {
   readonly mcp_servers?: Readonly<Record<string, McpServerConfig>>;
   readonly daemon?: DaemonConfig;
   readonly lsp_servers?: Readonly<Record<string, LspServerConfigInput>>;
+  readonly plugins?: PluginsConfig;
 
   // ── Settings fields ────────────────────────────────────────────────
   readonly autoUpdates?: boolean;
   readonly remoteControlAtStartup?: boolean;
   readonly bypassPermissionsModeAcceptedIn?: readonly string[];
+  readonly enabledPlugins?: Readonly<Record<string, boolean | PluginEntryConfig>>;
   readonly experiments?: ExperimentsConfig;
   readonly ideConnector?: IdeConnectorConfig;
   readonly managedWorkspaces?: ManagedWorkspacesConfig;
@@ -465,7 +482,6 @@ export interface AgenCConfig {
  * Runtime deferred:
  *   - notify           → T11 (hook-style post-turn notifications)
  *   - otel             → T12 (OTel exporters — depends on observability)
- *   - plugins          → T11 (plugin loader)
  *   - history          → T11 (rollout/history retention policy)
  *   - log_dir          → T11 (operator-overridable log root)
  *   - file_opener      → T11 (editor integration)
@@ -475,7 +491,10 @@ export interface AgenCConfig {
  *   - env              → T11 (shell env injection policy)
  *   - apiKeyHelper     → T11 (external API-key resolver hook)
  *   - cleanupPeriodDays → T11 (rollout/history retention)
- *   - enabledPlugins   → T11 (plugin loader)
+ *
+ * Lit up by PK-01 (no longer deferred):
+ *   - plugins          → see `PluginsConfig` above.
+ *   - enabledPlugins   → see `PluginEntryConfig` above.
  *
  * Lit up by T11 (no longer deferred):
  *   - permissions      → see `PermissionsConfig` above.
@@ -507,7 +526,6 @@ export interface AgenCConfig {
 export const DEFERRED_RUNTIME_KEYS: readonly string[] = Object.freeze([
   "notify",
   "otel",
-  "plugins",
   "history",
   "log_dir",
   "file_opener",
@@ -518,7 +536,6 @@ export const DEFERRED_SETTINGS_KEYS: readonly string[] = Object.freeze([
   "env",
   "apiKeyHelper",
   "cleanupPeriodDays",
-  "enabledPlugins",
 ]);
 
 // Known top-level keys — anything else goes into `_unknown` (I-26).
@@ -554,9 +571,11 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "mcp_servers",
   "daemon",
   "lsp_servers",
+  "plugins",
   "autoUpdates",
   "remoteControlAtStartup",
   "bypassPermissionsModeAcceptedIn",
+  "enabledPlugins",
   "experiments",
   "ideConnector",
   "managedWorkspaces",
