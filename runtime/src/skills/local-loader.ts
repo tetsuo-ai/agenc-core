@@ -1054,6 +1054,8 @@ export function createLocalSkillsServices(
     readonly key: string;
     readonly value: Promise<LocalSkillsSnapshot>;
   } | null = null;
+  let lastPluginConfig: Pick<AgenCConfig, "plugins" | "enabledPlugins"> | undefined =
+    options.config;
   let activePaths = new Set<string>();
   let watchers: readonly FSWatcher[] = [];
   const load = (
@@ -1081,14 +1083,15 @@ export function createLocalSkillsServices(
       for (const path of extractActivePaths(input, fsArg)) {
         activePaths.add(path);
       }
-      const snapshot = await load(pluginConfigView(input));
+      lastPluginConfig = pluginConfigView(input) ?? options.config;
+      const snapshot = await load(lastPluginConfig);
       return {
         invokedSkills: [...getInvokedSkillsForAgent().keys()],
         availableSkills: snapshot.skills,
       };
     },
     async resolveSkill(name: string): Promise<LocalSkillMetadata | null> {
-      const snapshot = await load();
+      const snapshot = await load(lastPluginConfig);
       return snapshotFindSkill(snapshot, name) ?? null;
     },
     async renderSkill(opts: {
@@ -1096,7 +1099,7 @@ export function createLocalSkillsServices(
       readonly args?: string;
       readonly sessionId?: string;
     }): Promise<RenderedSkill | null> {
-      const snapshot = await load();
+      const snapshot = await load(lastPluginConfig);
       const skill = snapshotFindSkill(snapshot, opts.name);
       if (!skill) return null;
       return loadSkillContent(

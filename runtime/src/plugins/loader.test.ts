@@ -243,7 +243,8 @@ describe("plugin loader", () => {
     "__proto__": { "command": "node" },
     "constructor": { "command": "node" },
     "valid": { "command": "node", "cwd": "bin" },
-    "escape": { "command": "node", "cwd": "../outside" }
+    "escape": { "command": "node", "cwd": "../outside" },
+    "absolute": { "command": "node", "cwd": ${JSON.stringify(join(root, "outside"))} }
   }
 }
 `,
@@ -258,6 +259,11 @@ describe("plugin loader", () => {
             command: "server",
             extensionToLanguage: { ".ts": "typescript" },
             workspaceFolder: "../outside",
+          },
+          absolute: {
+            command: "server",
+            extensionToLanguage: { ".js": "javascript" },
+            workspaceFolder: join(root, "outside"),
           },
         },
       });
@@ -274,8 +280,64 @@ describe("plugin loader", () => {
           expect.stringContaining("Unsafe mcp server key"),
           expect.stringContaining("Unsafe lsp server key"),
           expect.stringContaining("path must be normalized"),
+          expect.stringContaining("path must be relative to the plugin root"),
         ]),
       );
+    });
+  });
+
+  test("disables auto-discovered plugins by manifest name", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const workspaceRoot = join(root, "workspace");
+      const pluginRoot = join(agencHome, "plugins", "directory-name");
+      await writePluginManifest(pluginRoot, {
+        name: "manifest-name",
+        hooks: "./missing-hooks.json",
+      });
+
+      const result = await loadPlugins({
+        agencHome,
+        workspaceRoot,
+        config: {
+          plugins: {
+            enabled: {
+              "manifest-name": false,
+            },
+          },
+        },
+      });
+
+      expect(result.enabled).toEqual([]);
+      expect(result.disabled.map((plugin) => plugin.name)).toEqual(["manifest-name"]);
+      expect(result.errors).toEqual([]);
+    });
+  });
+
+  test("loads command map content and metadata sources", async () => {
+    await withTempDir(async (root) => {
+      const pluginRoot = join(root, "plugins", "mapped-commands");
+      await writePluginManifest(pluginRoot, {
+        name: "mapped-commands",
+        commands: {
+          inline: { content: "Inline command", description: "Inline" },
+          file: { source: "./commands/file.md", argumentHint: "<topic>" },
+        },
+      });
+      await writeFileAt(join(pluginRoot, "commands", "file.md"), "# file\n");
+
+      const { plugin, errors } = await createPluginFromPath(pluginRoot, {
+        source: "test",
+        enabled: true,
+        fallbackName: "mapped-commands",
+      });
+
+      expect(errors).toEqual([]);
+      expect(plugin.commands.map((command) => command.name)).toEqual(["file", "inline"]);
+      expect(plugin.commands.find((command) => command.name === "inline")?.content)
+        .toBe("Inline command");
+      expect(plugin.commands.find((command) => command.name === "file")?.metadata.argumentHint)
+        .toBe("<topic>");
     });
   });
 
@@ -530,6 +592,38 @@ describe("plugin validation", () => {
           "hooks",
           "mcpServers",
           "lspServers",
+        ]),
+      );
+    });
+  });
+
+  test("validates inline and external server working directories", async () => {
+    await withTempDir(async (root) => {
+      const pluginRoot = join(root, "plugins", "bad-server-paths");
+      await writePluginManifest(pluginRoot, {
+        name: "bad-server-paths",
+        mcpServers: {
+          inline: { command: "node", cwd: "../outside" },
+        },
+        lspServers: "./lsp.json",
+      });
+      await writeJson(join(pluginRoot, "lsp.json"), {
+        lspServers: {
+          ts: {
+            command: "server",
+            extensionToLanguage: { ".ts": "typescript" },
+            workspaceFolder: join(root, "outside"),
+          },
+        },
+      });
+
+      const result = await validateManifest(pluginRoot);
+
+      expect(result.success).toBe(false);
+      expect(result.errors.map((error) => error.path)).toEqual(
+        expect.arrayContaining([
+          "mcpServers.inline.cwd",
+          "lspServers.ts.workspaceFolder",
         ]),
       );
     });

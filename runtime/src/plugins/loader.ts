@@ -270,12 +270,18 @@ export async function loadPlugins(
   options: PluginLoaderOptions,
 ): Promise<PluginLoadResult> {
   const roots = await discoverPluginRoots(options);
+  const configured = configuredPluginEntries(options.config);
   const loaded = await Promise.all(
     roots.map((root) =>
       createPluginFromPath(root.path, {
         source: root.source,
         enabled: root.enabled,
         fallbackName: basename(root.path),
+        isEnabled: (manifestName) => configEntryEnabled(
+          configured[root.key ?? ""] ??
+            configured[manifestName] ??
+            configured[basename(root.path)],
+        ),
       }),
     ),
   );
@@ -327,6 +333,7 @@ export async function createPluginFromPath(
     readonly source: string;
     readonly enabled: boolean;
     readonly fallbackName: string;
+    readonly isEnabled?: (manifestName: string) => boolean;
   },
 ): Promise<{ plugin: LoadedPlugin; errors: readonly PluginLoadIssue[] }> {
   const errors: PluginLoadIssue[] = [];
@@ -378,6 +385,12 @@ export async function createPluginFromPath(
       path: join(pluginPath, PLUGIN_MANIFEST_RELATIVE_PATH),
       message: error instanceof Error ? error.message : String(error),
     });
+  }
+  if (!opts.enabled || opts.isEnabled?.(manifest.name) === false) {
+    return {
+      plugin: emptyPlugin(pluginPath, opts.source, false, manifest),
+      errors,
+    };
   }
 
   const commands = await loadCommands(pluginPath, manifest, opts.source, errors);
@@ -1100,7 +1113,9 @@ function resolveServerWorkingDir(
   value: string,
 ): string {
   if (value === "." || value === "./") return pluginRoot;
-  if (isAbsolute(value)) return value;
+  if (isAbsolute(value)) {
+    throw new Error(`${field} path must be relative to the plugin root`);
+  }
   const relativeValue = value.startsWith("./") ? value : `./${value}`;
   return resolveManifestRelativePath(pluginRoot, field, relativeValue);
 }

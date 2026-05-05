@@ -1,5 +1,5 @@
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { load as loadYaml } from "js-yaml";
 import {
   findPluginManifestPath,
@@ -112,6 +112,7 @@ export async function validatePluginManifest(
 
   if (isRecord(parsed)) {
     validateManifestPathFields(parsed, pluginRootForManifestPath(absolutePath), errors);
+    await validateServerDeclarationFiles(parsed, pluginRootForManifestPath(absolutePath), errors);
     for (const key of Object.keys(parsed)) {
       if (MARKETPLACE_ONLY_MANIFEST_FIELDS.has(key)) {
         warnings.push({
@@ -149,6 +150,8 @@ function validateManifestPathFields(
   for (const key of ["agents", "skills", "outputStyles", "apps", "hooks", "mcpServers", "lspServers"] as const) {
     validatePathDeclaration(manifest[key], key, pluginRoot, errors);
   }
+  validateServerMapPaths(manifest.mcpServers, "mcpServers", pluginRoot, errors);
+  validateServerMapPaths(manifest.lspServers, "lspServers", pluginRoot, errors);
   const commands = manifest.commands;
   if (typeof commands === "string" || Array.isArray(commands)) {
     validatePathDeclaration(commands, "commands", pluginRoot, errors);
@@ -159,6 +162,89 @@ function validateManifestPathFields(
       }
     }
   }
+}
+
+async function validateServerDeclarationFiles(
+  manifest: Readonly<Record<string, unknown>>,
+  pluginRoot: string,
+  errors: ValidationError[],
+): Promise<void> {
+  await validateServerFilesForKey(manifest.mcpServers, "mcpServers", pluginRoot, errors);
+  await validateServerFilesForKey(manifest.lspServers, "lspServers", pluginRoot, errors);
+}
+
+async function validateServerFilesForKey(
+  value: unknown,
+  wrapperKey: "mcpServers" | "lspServers",
+  pluginRoot: string,
+  errors: ValidationError[],
+): Promise<void> {
+  const paths = typeof value === "string"
+    ? [value]
+    : Array.isArray(value)
+      ? value.filter((entry): entry is string => typeof entry === "string")
+      : [];
+  for (const [index, entry] of paths.entries()) {
+    let resolved: string;
+    const field = paths.length === 1 ? wrapperKey : `${wrapperKey}[${index}]`;
+    try {
+      resolved = resolveManifestRelativePath(pluginRoot, field, entry);
+    } catch {
+      continue;
+    }
+    const parsed = await readJsonFile(resolved, field, errors);
+    const map = isRecord(parsed) && isRecord(parsed[wrapperKey])
+      ? parsed[wrapperKey]
+      : parsed;
+    validateServerMapPaths(map, wrapperKey, pluginRoot, errors);
+  }
+}
+
+async function readJsonFile(
+  filePath: string,
+  field: string,
+  errors: ValidationError[],
+): Promise<unknown> {
+  try {
+    return JSON.parse(await readFile(filePath, "utf8"));
+  } catch (error) {
+    errors.push({
+      path: field,
+      message: `Failed to read server config: ${errorMessage(error)}`,
+    });
+    return undefined;
+  }
+}
+
+function validateServerMapPaths(
+  value: unknown,
+  wrapperKey: "mcpServers" | "lspServers",
+  pluginRoot: string,
+  errors: ValidationError[],
+): void {
+  if (!isRecord(value)) return;
+  const fieldName = wrapperKey === "mcpServers" ? "cwd" : "workspaceFolder";
+  for (const [name, server] of Object.entries(value)) {
+    if (!isRecord(server)) continue;
+    const pathValue = server[fieldName];
+    if (typeof pathValue !== "string") continue;
+    validateServerWorkingDir(pathValue, `${wrapperKey}.${name}.${fieldName}`, pluginRoot, errors);
+  }
+}
+
+function validateServerWorkingDir(
+  value: string,
+  field: string,
+  pluginRoot: string,
+  errors: ValidationError[],
+): void {
+  if (value === "." || value === "./") return;
+  if (isAbsolute(value)) {
+    errors.push({ path: field, message: "Path must be relative to the plugin root." });
+    return;
+  }
+  const relativeValue = value.startsWith("./") ? value : `./${value}`;
+  validateManifestPath(relativeValue, field, pluginRoot, errors);
 }
 
 function validatePathDeclaration(

@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import {
   basename,
   isAbsolute,
@@ -126,8 +126,8 @@ export async function findPluginManifestPath(
   ]) {
     const candidate = join(pluginRoot, relativePath);
     try {
-      const file = await readFile(candidate, "utf8");
-      if (file.length >= 0) return candidate;
+      await access(candidate);
+      return candidate;
     } catch {
       // Try the next supported location.
     }

@@ -305,6 +305,19 @@ All=$ARGUMENTS
         },
       },
     }, null);
+
+    expect(enabled.availableSkills?.map((skill) => skill.name)).toContain(
+      "configured-skill",
+    );
+    await expect(services.skillsManager.resolveSkill?.("configured-skill"))
+      .resolves.toMatchObject({ name: "configured-skill" });
+    await expect(services.skillsManager.renderSkill?.({
+      name: "configured-skill",
+      args: "",
+    })).resolves.toMatchObject({
+      skill: expect.objectContaining({ name: "configured-skill" }),
+    });
+
     const disabled = await services.skillsManager.skillsForConfig({
       plugins: {
         enabled: {
@@ -313,12 +326,11 @@ All=$ARGUMENTS
       },
     }, null);
 
-    expect(enabled.availableSkills?.map((skill) => skill.name)).toContain(
-      "configured-skill",
-    );
     expect(disabled.availableSkills?.map((skill) => skill.name)).not.toContain(
       "configured-skill",
     );
+    await expect(services.skillsManager.resolveSkill?.("configured-skill"))
+      .resolves.toBeNull();
   });
 
   it("supports listing budgets and argument substitution", () => {
