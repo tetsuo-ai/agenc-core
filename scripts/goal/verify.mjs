@@ -34,6 +34,8 @@ import process from "node:process";
 import { findItem, repoRoot, fail } from "./checklist-utils.mjs";
 import {
   SHIM_BEHAVIOR_RATIO_LIMIT,
+  ZC20_RUNTIME_SHIM_ALLOWLIST,
+  isAllowedZc20RuntimeShimPath,
   measureShimBehavior,
 } from "./shim-behavior.mjs";
 
@@ -1340,7 +1342,7 @@ const ITEM_EVIDENCE = {
     runStrict: true,
   },
   "ZC-20": {
-    files: ["scripts/goal/shim-behavior.mjs"],
+    files: ["scripts/goal/shim-behavior.mjs", "parity/ZC-20-parity.json"],
     tests: ["scripts/goal/shim-behavior.test.mjs"],
   },
 };
@@ -4011,8 +4013,8 @@ function assertZc20NoRuntimeShimCruft() {
   const forwardingHits = [];
   for (const rel of listSourceFiles(path.join(root, "runtime/src"))) {
     if (!rel.startsWith("runtime/src/")) continue;
-    if (rel.startsWith("runtime/src/agenc/upstream/")) continue;
     if (SHIM_ALLOW_DIRS.some((dir) => rel.startsWith(dir))) continue;
+    if (isAllowedZc20RuntimeShimPath(rel)) continue;
     if (/\.test\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(rel)) continue;
     if (/\.d\.ts$/.test(rel)) continue;
 
@@ -4042,7 +4044,13 @@ function assertZc20NoRuntimeShimCruft() {
     );
   }
   if (failures.length > 0) {
-    failGate(`ZC-20: runtime/src shim cruft remains:\n${failures.join("\n\n")}`);
+    const allowed = [...ZC20_RUNTIME_SHIM_ALLOWLIST]
+      .map(([rel, reason]) => `- ${rel}: ${reason}`)
+      .join("\n");
+    failGate(
+      `ZC-20: runtime/src shim cruft remains:\n${failures.join("\n\n")}` +
+      (allowed ? `\n\nDocumented ZC-20 allowlist:\n${allowed}` : ""),
+    );
   }
 }
 

@@ -3,6 +3,7 @@
 import process from "node:process";
 import {
   SHIM_BEHAVIOR_RATIO_LIMIT,
+  isAllowedZc20RuntimeShimPath,
   measureShimBehavior,
 } from "./shim-behavior.mjs";
 
@@ -47,6 +48,22 @@ assert(
   "flags import-plus-default-export singleton wrappers",
   singletonForwarder.violates && singletonForwarder.ratio > SHIM_BEHAVIOR_RATIO_LIMIT,
   JSON.stringify(singletonForwarder),
+);
+
+const upstreamIndexForwarder = measure(`
+export { Something } from './Something.js'
+`);
+assert(
+  "non-allowlisted upstream forwarding fixture remains a ZC-20 failure",
+  upstreamIndexForwarder.violates &&
+    !isAllowedZc20RuntimeShimPath("runtime/src/agenc/upstream/not-allowed/index.ts"),
+  JSON.stringify(upstreamIndexForwarder),
+);
+
+assert(
+  "documented upstream mirror exceptions are explicit paths only",
+  isAllowedZc20RuntimeShimPath("runtime/src/agenc/upstream/commands/dream/index.ts") &&
+    !isAllowedZc20RuntimeShimPath("runtime/src/agenc/upstream/commands/dream/other-index.ts"),
 );
 
 const boundary = measure(`

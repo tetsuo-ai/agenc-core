@@ -1,0 +1,54 @@
+{
+  "item": "ZC-20",
+  "runtimeShimSweep": {
+    "scope": "runtime/src, including the frozen upstream mirror",
+    "threshold": ">50% imports plus forwarding statements across fewer than 40 significant source lines",
+    "resolved": [
+      "runtime/src/agenc/upstream/commands/agents-platform/index.ts",
+      "runtime/src/agenc/upstream/commands/assistant/AssistantSessionChooser.ts",
+      "runtime/src/agenc/upstream/components/mcp/index.ts"
+    ],
+    "allowlist": [
+      {
+        "path": "runtime/src/agenc/upstream/commands/assistant/assistant.ts",
+        "reason": "Frozen upstream assistant installer placeholder retained until the mirror deletion item removes this subtree."
+      },
+      {
+        "path": "runtime/src/agenc/upstream/commands/dream/index.ts",
+        "reason": "Frozen upstream command entrypoint retained for command discovery shape until the mirror deletion item removes this subtree."
+      },
+      {
+        "path": "runtime/src/agenc/upstream/commands/skills/skills.tsx",
+        "reason": "Frozen upstream JSX command entrypoint; import-heavy but owns its UI call implementation."
+      },
+      {
+        "path": "runtime/src/agenc/upstream/commands/status/status.tsx",
+        "reason": "Frozen upstream JSX command entrypoint; import-heavy but owns its UI call implementation."
+      },
+      {
+        "path": "runtime/src/agenc/upstream/commands/tasks/tasks.tsx",
+        "reason": "Frozen upstream JSX command entrypoint; import-heavy but owns its UI call implementation."
+      },
+      {
+        "path": "runtime/src/agenc/upstream/hooks/useCommandQueue.ts",
+        "reason": "Frozen upstream React subscription hook; small import-heavy module with owned hook behavior."
+      },
+      {
+        "path": "runtime/src/agenc/upstream/services/agencAiLimitsHook.ts",
+        "reason": "AgenC-named upstream mirror facade keeps donor-named rate-limit internals out of AgenC-owned TUI imports until mirror deletion."
+      },
+      {
+        "path": "runtime/src/agenc/upstream/services/api/openaiSchemaSanitizer.ts",
+        "reason": "Frozen upstream provider-protocol sanitizer entrypoint retained to avoid touching the large provider translation module."
+      },
+      {
+        "path": "runtime/src/agenc/upstream/utils/sandbox/sandbox-adapter.ts",
+        "reason": "Large frozen upstream sandbox-runtime integration; suffix is historical but the file contains the real implementation."
+      },
+      {
+        "path": "runtime/src/agenc/upstream/utils/crypto.ts",
+        "reason": "Upstream browser-build indirection for package replacement; not an AgenC-owned compatibility shim."
+      }
+    ]
+  }
+}
