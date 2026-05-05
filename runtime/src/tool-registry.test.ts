@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { buildToolRegistry } from "./tool-registry.js";
+import { createModelFacingTools } from "./bin/model-facing-tools.js";
 import { PermissionModeRegistry } from "./permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "./permissions/types.js";
 import {
@@ -266,6 +267,147 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(visibleNames).toContain("wait");
   });
 
+  test("code mode nested dispatch runs enabled tools with object input and cancellation", async () => {
+    const controller = new AbortController();
+    let seenArgs: Record<string, unknown> | undefined;
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      extraTools: [
+        {
+          name: "custom.echo",
+          description: "Echoes input.",
+          inputSchema: { type: "object" },
+          metadata: { mutating: false },
+          isReadOnly: true,
+          recoveryCategory: "idempotent",
+          execute: async (args) => {
+            seenArgs = args;
+            return {
+              content: '{"ok":true}',
+              codeModeResult: { echoed: args["value"] },
+            };
+          },
+        } satisfies Tool,
+      ],
+    });
+
+    const result = await registry.dispatchCodeModeNestedTool?.({
+      id: "exec-nested-1",
+      name: "custom.echo",
+      input: { value: "hello" },
+      abortSignal: controller.signal,
+    });
+
+    expect(result?.isError).toBeUndefined();
+    expect(result?.codeModeResult).toEqual({ echoed: "hello" });
+    expect(seenArgs?.["value"]).toBe("hello");
+    expect(seenArgs?.["__callId"]).toBe("exec-nested-1");
+    expect(seenArgs?.["__abortSignal"]).toBe(controller.signal);
+    expect(Object.keys(seenArgs ?? {})).toEqual(["value"]);
+  });
+
+  test("code mode nested dispatch supports string input for string-argument tools", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-code-mode-glob-"));
+    try {
+      await writeFile(join(root, "hit.txt"), "hello\n");
+      const registry = buildToolRegistry({ workspaceRoot: root });
+
+      const result = await registry.dispatchCodeModeNestedTool?.({
+        id: "exec-nested-2",
+        name: "Glob",
+        input: "*.txt",
+      });
+
+      expect(result?.isError).toBeUndefined();
+      expect(result?.content).toContain("hit.txt");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("code mode nested dispatch rejects side-effecting and malformed string calls", async () => {
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      extraTools: [
+        {
+          name: "custom.objectOnly",
+          description: "Accepts object input only.",
+          inputSchema: { type: "object" },
+          metadata: { mutating: false },
+          isReadOnly: true,
+          recoveryCategory: "idempotent",
+          execute: async () => ({ content: "should not run" }),
+        } satisfies Tool,
+      ],
+    });
+
+    await expect(
+      registry.dispatchCodeModeNestedTool?.({
+        id: "exec-nested-write",
+        name: "Write",
+        input: { file_path: "out.txt", content: "unsafe" },
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        isError: true,
+        content: expect.stringContaining("requires permission-aware dispatch"),
+      }),
+    );
+    await expect(
+      registry.dispatchCodeModeNestedTool?.({
+        id: "exec-nested-string",
+        name: "custom.objectOnly",
+        input: "raw text",
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        isError: true,
+        content: expect.stringContaining("expects a JSON object"),
+      }),
+    );
+  });
+
+  test("code mode nested dispatch rejects read-only side-effecting tools and control tools", async () => {
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      extraTools: [
+        {
+          name: "custom.readSideEffect",
+          description: "Looks read-only but lacks a replay-safe contract.",
+          inputSchema: { type: "object" },
+          metadata: { mutating: false },
+          isReadOnly: true,
+          execute: async () => ({ content: "should not run" }),
+        } satisfies Tool,
+      ],
+    });
+
+    await expect(
+      registry.dispatchCodeModeNestedTool?.({
+        id: "exec-nested-side-effect",
+        name: "custom.readSideEffect",
+        input: {},
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        isError: true,
+        content: expect.stringContaining("requires permission-aware dispatch"),
+      }),
+    );
+    await expect(
+      registry.dispatchCodeModeNestedTool?.({
+        id: "exec-nested-search",
+        name: "system.searchTools",
+        input: { query: "select:Glob" },
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        isError: true,
+        content: expect.stringContaining("not available to code-mode"),
+      }),
+    );
+  });
+
   test("searchTools supports AgenC-style select:<tool> loading", async () => {
     const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
 
@@ -406,6 +548,108 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(registry.toLLMTools().map((tool) => tool.function.name)).toContain(
       "ProductDeferred",
     );
+  });
+
+  test("AgentTool delegation is registered as the strict spawn_agent surface", () => {
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      modelFacingTools: createModelFacingTools({
+        workspaceRoot: "/tmp",
+        getSession: () => null,
+      }),
+    });
+    const registeredNames = registry.tools.map((tool) => tool.name);
+
+    expect(registeredNames).toContain("spawn_agent");
+    expect(registeredNames).not.toContain("AgentTool");
+    expect(registeredNames).not.toContain("agent_tool");
+    expect(registry.tools.find((tool) => tool.name === "spawn_agent")).toMatchObject({
+      metadata: expect.objectContaining({ family: "agent" }),
+      inputSchema: expect.objectContaining({
+        required: ["message", "task_name"],
+        additionalProperties: false,
+      }),
+    });
+  });
+
+  test("spawn_agent dispatch maps string arguments and rejects retired AgentTool aliases", async () => {
+    const receivedArgs: Record<string, unknown>[] = [];
+    const spawnAgentTool: Tool = {
+      name: "spawn_agent",
+      description: "Controlled delegation tool for registry dispatch tests.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          message: { type: "string" },
+          task_name: { type: "string" },
+        },
+        required: ["message", "task_name"],
+        additionalProperties: false,
+      },
+      metadata: {
+        family: "agent",
+        source: "builtin",
+        mutating: true,
+        deferred: false,
+      },
+      recoveryCategory: "side-effecting",
+      execute: async (args) => {
+        receivedArgs.push(args);
+        if (typeof args.message !== "string") {
+          return { content: "missing message", isError: true };
+        }
+        if (typeof args.task_name !== "string") {
+          return { content: "missing task_name", isError: true };
+        }
+        return { content: `spawned ${args.task_name}: ${args.message}` };
+      },
+    };
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      modelFacingTools: [spawnAgentTool],
+    });
+
+    const registeredNames = registry.tools.map((tool) => tool.name);
+    expect(registeredNames).toContain("spawn_agent");
+    expect(registeredNames).not.toContain("AgentTool");
+    expect(registeredNames).not.toContain("agent_tool");
+
+    for (const retiredName of ["AgentTool", "agent_tool"] as const) {
+      const result = await registry.dispatch({
+        id: `${retiredName}-call`,
+        name: retiredName,
+        arguments: JSON.stringify({
+          message: "delegate this",
+          task_name: "worker",
+        }),
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain(`unknown tool: ${retiredName}`);
+    }
+
+    const rawStringResult = await registry.dispatch({
+      id: "spawn-agent-raw-string",
+      name: "spawn_agent",
+      arguments: "delegate this raw text",
+    });
+    expect(rawStringResult.isError).toBe(true);
+    expect(rawStringResult.content).toContain("missing task_name");
+    expect(receivedArgs[0]).toMatchObject({
+      message: "delegate this raw text",
+    });
+    expect(receivedArgs[0]).not.toHaveProperty("task_name");
+
+    const jsonStringResult = await registry.dispatch({
+      id: "spawn-agent-json-string",
+      name: "spawn_agent",
+      arguments: JSON.stringify("delegate this JSON string"),
+    });
+    expect(jsonStringResult.isError).toBe(true);
+    expect(jsonStringResult.content).toContain("missing task_name");
+    expect(receivedArgs[1]).toMatchObject({
+      message: "delegate this JSON string",
+    });
+    expect(receivedArgs[1]).not.toHaveProperty("task_name");
   });
 
   test("builtin model-facing tools must explicitly declare recovery category", () => {

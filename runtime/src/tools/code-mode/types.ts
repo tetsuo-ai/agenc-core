@@ -94,4 +94,5 @@ export interface CodeModeToolFactoryOptions {
   readonly service: CodeModeService;
   readonly getEnabledTools: () => readonly Tool[];
   readonly descriptionTools?: readonly Tool[];
+  readonly stringArgumentFields?: Readonly<Record<string, string>>;
 }
