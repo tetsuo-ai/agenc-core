@@ -5,6 +5,9 @@
     "rustRuntimeSource": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
     "typescriptRuntimeSource": "0ca43335375beec6e58711b797d5b0c4bb5019b8"
   },
+  "mergeResolutions": [
+    "The final main integration conflicted in scripts/goal/verify.mjs because main added the ZC-30 plugin coverage gate while this branch added the ZC-29 audit evidence gate. Resolution kept main's ZC-30 helper and map entry intact, then added the ZC-29 helper and map entry beside them."
+  ],
   "inspectedSourceGroups": [
     "runtime file watcher implementation and tests",
     "runtime thread lifecycle manager and conduit",

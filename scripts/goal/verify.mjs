@@ -1262,6 +1262,15 @@ const ITEM_EVIDENCE = {
     ],
     tests: ["scripts/check-sibling-package-pins.test.mjs"],
   },
+  "ZC-30": {
+    files: [
+      "runtime/src/plugins/PARITY.md",
+      "runtime/src/plugins/marketplace/PARITY.md",
+    ],
+    grepPresent: [
+      { pattern: "ZC-30 coverage lock", scope: "runtime/src/plugins/PARITY.md" },
+    ],
+  },
   "MG-01": {
     files: ["runtime/src/bin/agenc.ts"],
   },
@@ -4655,6 +4664,70 @@ function assertZc29AuditEvidence() {
   }
 }
 
+function assertZc30PluginCoverage() {
+  const sourceRoot = `${["co", "dex-rs"].join("")}/core-plugins/src`;
+  const requiredSourceAnchors = [
+    `${sourceRoot}/loader.rs`,
+    `${sourceRoot}/manifest.rs`,
+    `${sourceRoot}/manager.rs`,
+    `${sourceRoot}/marketplace.rs`,
+    `${sourceRoot}/marketplace_add.rs`,
+    `${sourceRoot}/marketplace_add/install.rs`,
+    `${sourceRoot}/marketplace_add/metadata.rs`,
+    `${sourceRoot}/marketplace_add/source.rs`,
+    `${sourceRoot}/marketplace_remove.rs`,
+    `${sourceRoot}/marketplace_upgrade.rs`,
+    `${sourceRoot}/marketplace_upgrade/activation.rs`,
+    `${sourceRoot}/marketplace_upgrade/git.rs`,
+    `${sourceRoot}/installed_marketplaces.rs`,
+    `${sourceRoot}/remote_bundle.rs`,
+    `${sourceRoot}/startup_remote_sync.rs`,
+    `${sourceRoot}/store.rs`,
+    `${sourceRoot}/toggles.rs`,
+  ];
+  const parityFiles = [
+    "runtime/src/plugins/PARITY.md",
+    "runtime/src/plugins/marketplace/PARITY.md",
+  ];
+  const parityText = parityFiles
+    .map((rel) => readFileSync(path.join(root, rel), "utf8"))
+    .join("\n");
+  const missingAnchors = requiredSourceAnchors.filter((anchor) => !parityText.includes(anchor));
+  if (missingAnchors.length > 0) {
+    failGate(`ZC-30: plugin parity is missing source anchor(s):\n  ${missingAnchors.join("\n  ")}`);
+  }
+
+  const requiredCounterparts = [
+    "runtime/src/plugins/loader.ts",
+    "runtime/src/plugins/manifest.ts",
+    "runtime/src/plugins/manifest-schema.ts",
+    "runtime/src/plugins/registration/manager.ts",
+    "runtime/src/plugins/toggles.ts",
+    "runtime/src/plugins/cli/marketplace-add.ts",
+    "runtime/src/plugins/cli/marketplace-remove.ts",
+    "runtime/src/plugins/cli/marketplace-upgrade.ts",
+    "runtime/src/plugins/marketplace/marketplace.ts",
+    "runtime/src/plugins/marketplace/installed_marketplaces.ts",
+    "runtime/src/plugins/marketplace/remote_bundle.ts",
+    "runtime/src/plugins/marketplace/startup_remote_sync.ts",
+    "runtime/src/plugins/resolution.ts",
+  ];
+  const missingCounterparts = requiredCounterparts.filter((rel) => !existsSync(path.join(root, rel)));
+  if (missingCounterparts.length > 0) {
+    failGate(`ZC-30: plugin counterpart file(s) missing:\n  ${missingCounterparts.join("\n  ")}`);
+  }
+
+  const rootParity = readFileSync(path.join(root, "runtime/src/plugins/PARITY.md"), "utf8");
+  const requiredSections = ["PK-01", "PK-02", "PK-03", "PK-04", "PK-06", "PK-07", "PK-09"];
+  const missingSections = requiredSections.filter((section) => !rootParity.includes(`${section} scope carried into AgenC:`));
+  if (missingSections.length > 0) {
+    failGate(`ZC-30: root plugin parity is missing carried-scope section(s): ${missingSections.join(", ")}`);
+  }
+  if (!rootParity.includes("ZC-30 coverage lock:")) {
+    failGate("ZC-30: root plugin parity is missing the ZC-30 coverage lock note.");
+  }
+}
+
 function listSourceFiles(dir) {
   const out = [];
   for (const entry of readdirSync(dir)) {
@@ -5045,6 +5118,7 @@ async function cleanupGates(item) {
       },
       "ZC-28": { gone: ["runtime/src/utils/attachments.ts", "runtime/src/utils/teamMemoryOps.ts", "runtime/src/components/FeedbackSurvey/useMemorySurvey.tsx"] },
       "ZC-29": { custom: assertZc29AuditEvidence },
+      "ZC-30": { custom: assertZc30PluginCoverage },
     };
     const expectations = zcMap[id];
     if (!expectations) {
