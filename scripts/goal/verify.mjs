@@ -2404,6 +2404,10 @@ async function stateGates(item) {
 
 async function toolGates(item) {
   // TL-* items: tool surface. Each tool must be registered in the tool registry.
+  if (id === "TL-12") {
+    agentToolDelegationGate();
+    return;
+  }
   const toolNameMatch = /\b(bash|edit|read|write|grep|glob|web_fetch|web_search|TodoWrite|Plan|AgentTool|SkillCreate|NotebookRead|NotebookEdit|file mention|attachments?|multi-edit)\b/i.exec(
     item.title,
   );
@@ -2447,6 +2451,38 @@ async function toolGates(item) {
     if (tests.length === 0) failGate(`no test files anywhere under runtime/src/tools/`);
     pass(`${tests.length} test file(s) under tools/`);
   }
+}
+
+function agentToolDelegationGate() {
+  const registryPath = path.join(root, "runtime/src/tool-registry.ts");
+  const testPath = path.join(root, "runtime/src/tool-registry.test.ts");
+  if (!existsSync(registryPath)) failGate("runtime/src/tool-registry.ts missing");
+  if (!existsSync(testPath)) failGate("runtime/src/tool-registry.test.ts missing");
+
+  const registrySource = readFileSync(registryPath, "utf8");
+  const testSource = readFileSync(testPath, "utf8");
+  if (!/\bspawnAgentToolName\s*=\s*["']spawn_agent["']/.test(registrySource)) {
+    failGate("TL-12: registry must map the canonical spawn_agent delegation tool");
+  }
+  if (!/AgentTool\s*\/\s*agent_tool/.test(registrySource)) {
+    failGate("TL-12: registry must document the retired AgentTool/agent_tool aliases");
+  }
+  if (!/spawn_agent dispatch maps string arguments/.test(testSource)) {
+    failGate("TL-12: missing dispatch-level spawn_agent string-argument regression test");
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "--",
+    "vitest",
+    "run",
+    "src/tool-registry.test.ts",
+    "--testNamePattern",
+    "AgentTool delegation|spawn_agent dispatch",
+  ]);
+  if (vitest.status !== 0) failGate("TL-12 targeted tool-registry tests failed");
+  pass("TL-12 targeted delegation registry tests passed");
 }
 
 async function permissionGates(item) {
