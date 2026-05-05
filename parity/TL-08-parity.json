@@ -86,6 +86,7 @@
         "upgrade http URLs to https before fetching",
         "reject non-https URLs and embedded URL credentials",
         "validate every redirect target and final response URL before reading",
+        "reject redirects that change hostname so domain permission decisions cannot be bypassed",
         "read response bodies through a bounded stream before markdown conversion",
         "convert HTML responses to markdown while removing scripts and styles",
         "fall back to text cleanup when markdown conversion fails",
@@ -137,6 +138,7 @@
         "keep hostname-only preapproved checks O(1)",
         "preserve path-prefix matching with path segment boundaries",
         "treat only HTTPS URLs as preapproved when parsing full URLs",
+        "report preapproved status for the final fetched URL after redirects",
         "use the allowed AgenC service domain for AgenC-owned preapproval entries"
       ],
       "tests": ["runtime/src/bin/web-fetch-preapproved.test.ts"],

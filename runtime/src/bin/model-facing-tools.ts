@@ -302,7 +302,8 @@ async function fetchWithTimeout(
     }
 
     let currentUrl = validateWebFetchFinalUrl(url);
-    for (let redirects = 0; redirects <= MAX_FETCH_REDIRECTS; redirects += 1) {
+    let redirects = 0;
+    while (true) {
       const response = await fetch(currentUrl, {
         signal: controller.signal,
         redirect: "manual",
@@ -316,6 +317,9 @@ async function fetchWithTimeout(
         return response;
       }
 
+      if (redirects >= MAX_FETCH_REDIRECTS) {
+        throw new Error(`too many redirects; limit is ${MAX_FETCH_REDIRECTS}`);
+      }
       const location = response.headers.get("location");
       if (!location) {
         validateWebFetchFinalUrl(response.url || currentUrl);
@@ -323,8 +327,8 @@ async function fetchWithTimeout(
       }
       await response.body?.cancel().catch(() => undefined);
       currentUrl = normalizeWebFetchRedirectUrl(currentUrl, location);
+      redirects += 1;
     }
-    throw new Error(`too many redirects; limit is ${MAX_FETCH_REDIRECTS}`);
   } finally {
     clearTimeout(timer);
   }
@@ -704,14 +708,23 @@ function validateWebFetchFinalUrl(raw: string): string {
 }
 
 function normalizeWebFetchRedirectUrl(currentUrl: string, location: string): string {
-  return validateWebFetchFinalUrl(new URL(location, currentUrl).toString());
+  const current = new URL(currentUrl);
+  const next = new URL(location, currentUrl);
+  const validated = validateWebFetchFinalUrl(next.toString());
+  const validatedNext = new URL(validated);
+  if (validatedNext.hostname !== current.hostname) {
+    throw new Error(
+      `redirect target changes host from ${current.hostname} to ${validatedNext.hostname}`,
+    );
+  }
+  return validated;
 }
 
 function validateWebFetchUrl(
   raw: string,
   opts: { readonly upgradeHttp: boolean },
 ): string {
-  const input = opts.upgradeHttp && raw.startsWith("http://")
+  const input = opts.upgradeHttp && raw.slice(0, "http://".length).toLowerCase() === "http://"
     ? `https://${raw.slice("http://".length)}`
     : raw;
   const url = new URL(input);
@@ -1684,8 +1697,6 @@ function createWebFetchTool(toolName: string): Tool {
       } catch (error) {
         return json({ error: errorMessage(error) }, true);
       }
-      const parsed = new URL(normalized);
-      const preapproved = isPreapprovedHost(parsed.hostname, parsed.pathname);
       const maxChars = Math.max(
         1_000,
         Math.min(numberValue(args.max_chars) ?? MAX_FETCH_CHARS, MAX_FETCH_CHARS),
@@ -1700,9 +1711,15 @@ function createWebFetchTool(toolName: string): Tool {
           numberValue(args.timeout_ms) ?? DEFAULT_TIMEOUT_MS,
           { validateWebFetchUrls: true },
         );
+        const finalUrl = validateWebFetchFinalUrl(response.url || normalized);
+        const finalParsed = new URL(finalUrl);
+        const preapproved = isPreapprovedHost(
+          finalParsed.hostname,
+          finalParsed.pathname,
+        );
         const contentType = response.headers.get("content-type") ?? "";
         const raw = await readResponseTextBounded(response, maxBytes);
-        const isHtml = contentType.includes("html");
+        const isHtml = contentType.toLowerCase().includes("html");
         let body: string;
         let renderedAs: "markdown" | "text" | "passthrough";
         if (isHtml) {
@@ -1729,7 +1746,7 @@ function createWebFetchTool(toolName: string): Tool {
           status: response.status,
           ok: response.ok,
           url: normalized,
-          final_url: response.url,
+          final_url: finalUrl,
           content_type: contentType,
           preapproved,
           rendered_as: renderedAs,

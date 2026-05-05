@@ -919,7 +919,7 @@ describe("model-facing tools", () => {
       url: "https://agenc.tech/docs",
       headers: {
         get: (name: string) =>
-          name.toLowerCase() === "content-type" ? "text/html; charset=utf-8" : null,
+          name.toLowerCase() === "content-type" ? "Text/HTML; charset=utf-8" : null,
       },
       text: async () => html,
     });
@@ -1086,14 +1086,29 @@ describe("model-facing tools", () => {
       expect(JSON.parse(downgradeResult.content).error).toContain("https");
       expect(globalThis.fetch).toHaveBeenCalledOnce();
 
-      const safeRedirect = fetchResponse({
+      const crossHostRedirect = fetchResponse({
         status: 302,
         url: "https://agenc.tech/start",
-        location: "/final",
+        location: "https://react.dev/learn",
+      });
+      globalThis.fetch = vi
+        .fn()
+        .mockResolvedValue(crossHostRedirect.response) as unknown as typeof globalThis.fetch;
+      const crossHostResult = await byName.get("web_fetch")!.execute({
+        url: "https://agenc.tech/start",
+      });
+      expect(crossHostResult.isError).toBe(true);
+      expect(JSON.parse(crossHostResult.content).error).toContain("changes host");
+      expect(globalThis.fetch).toHaveBeenCalledOnce();
+
+      const safeRedirect = fetchResponse({
+        status: 302,
+        url: "https://github.com/modelcontextprotocol",
+        location: "/other-org/repo",
       });
       const finalResponse = fetchResponse({
         status: 200,
-        url: "https://agenc.tech/final",
+        url: "https://github.com/other-org/repo",
         text: "redirected body",
       });
       globalThis.fetch = vi
@@ -1101,11 +1116,33 @@ describe("model-facing tools", () => {
         .mockResolvedValueOnce(safeRedirect.response)
         .mockResolvedValueOnce(finalResponse.response) as unknown as typeof globalThis.fetch;
       const safeResult = await byName.get("web_fetch")!.execute({
-        url: "https://agenc.tech/start",
+        url: "https://github.com/modelcontextprotocol",
       });
       expect(safeResult.isError).toBeUndefined();
-      expect(JSON.parse(safeResult.content).content).toBe("redirected body");
+      const safeParsed = JSON.parse(safeResult.content);
+      expect(safeParsed.content).toBe("redirected body");
+      expect(safeParsed.preapproved).toBe(false);
+      expect(safeParsed.final_url).toBe("https://github.com/other-org/repo");
       expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+
+      const redirectChain = Array.from({ length: 6 }, (_, index) =>
+        fetchResponse({
+          status: 302,
+          url: `https://agenc.tech/r${index}`,
+          location: `/r${index + 1}`,
+        }),
+      );
+      const chainFetch = vi.fn();
+      for (const redirect of redirectChain) {
+        chainFetch.mockResolvedValueOnce(redirect.response);
+      }
+      globalThis.fetch = chainFetch as unknown as typeof globalThis.fetch;
+      const limitResult = await byName.get("web_fetch")!.execute({
+        url: "https://agenc.tech/r0",
+      });
+      expect(limitResult.isError).toBe(true);
+      expect(JSON.parse(limitResult.content).error).toContain("too many redirects");
+      expect(globalThis.fetch).toHaveBeenCalledTimes(6);
     } finally {
       globalThis.fetch = previousFetch;
     }
@@ -1120,7 +1157,7 @@ describe("model-facing tools", () => {
     expect(tool).toBeDefined();
 
     const preapproved = await tool!.checkPermissions?.(
-      { url: "http://agenc.tech/docs" },
+      { url: "HTTP://agenc.tech/docs" },
       fakeEvaluatorContext(),
     );
     expect(preapproved).toMatchObject({
