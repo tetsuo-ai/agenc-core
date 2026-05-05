@@ -10,17 +10,11 @@
  *     local profile secrets.
  */
 
-import type {
-  AuthBackend,
-  AuthBackendKind,
-  AuthSubscriptionTier,
-} from "../../auth/index.js";
-import {
-  loadConfig,
-  resolveAgencHome,
-  resolveProviderSettings,
-  type AgenCConfig,
-} from "../../config/index.js";
+import type { AuthBackend, AuthBackendKind, AuthSubscriptionTier } from "../../auth/backend.js";
+import { loadConfig } from "../../config/loader.js";
+import { resolveAgencHome } from "../../config/env.js";
+import { resolveProviderSettings } from "../../config/resolve-provider.js";
+import type { AgenCConfig } from "../../config/schema.js";
 import {
   BUILT_IN_PROVIDER_API_KEY_ENVS,
   BUILT_IN_PROVIDER_BASE_URLS,

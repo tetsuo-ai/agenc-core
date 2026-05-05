@@ -1,18 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { defaultConfig } from "../config/index.js";
+import { defaultConfig } from "../config/schema.js";
 import { resolveProviderCapabilityEntry } from "./capabilities.js";
 import { StaticModelsManager } from "./models-manager.js";
 import { createProvider, readProviderIdentity, type ProviderName } from "./provider.js";
-import { AnthropicProvider } from "./providers/anthropic/index.js";
+import { AnthropicProvider } from "./providers/anthropic/adapter.js";
 import { DeepSeekProvider } from "./providers/deepseek/index.js";
 import { GeminiProvider } from "./providers/gemini/index.js";
-import { GrokProvider } from "./providers/grok/index.js";
+import { GrokProvider } from "./providers/grok/adapter.js";
 import { GroqProvider } from "./providers/groq/index.js";
 import { LMStudioProvider } from "./providers/lmstudio/index.js";
-import { OllamaProvider } from "./providers/ollama/index.js";
+import { OllamaProvider } from "./providers/ollama/adapter.js";
 import { OpenAICompatibleProvider } from "./providers/openai-compatible/index.js";
-import { OpenAIProvider } from "./providers/openai/index.js";
+import { OpenAIProvider } from "./providers/openai/adapter.js";
 import { OpenRouterProvider } from "./providers/openrouter/index.js";
 import type {
   LLMChatOptions,

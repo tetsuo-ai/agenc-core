@@ -19,11 +19,7 @@ import {
 
 import type { LLMMessage } from "../../llm/types.js";
 import type { RunAgentParams } from "../../agents/run-agent.js";
-import {
-  clearFileReadListenersForTests,
-  createFileReadTool,
-  registerFileReadListener,
-} from "../../tools/system/index.js";
+import { clearFileReadListenersForTests, createFileReadTool, registerFileReadListener } from "../../tools/system/file-read.js";
 import {
   clearSessionReadState,
   getSessionReadSnapshot,

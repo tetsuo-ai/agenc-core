@@ -1,4 +1,4 @@
-import type { ConfigStore } from "../../config/index.js";
+import type { ConfigStore } from "../../config/store.js";
 import {
   getSettingsFilePathForSource,
   readSettingsFileLenient,

@@ -67,9 +67,7 @@ import {
   type ToolRegistry,
 } from "../tool-registry.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
-import {
-  UnifiedExecProcessManager,
-} from "../unified-exec/index.js";
+import { UnifiedExecProcessManager } from "../unified-exec/process-manager.js";
 import { createCodeModeService } from "../tools/code-mode/service.js";
 import {
   clearCurrentRuntimeSession,
@@ -77,13 +75,10 @@ import {
 } from "./_deps/current-session.js";
 import { resolveTransportMode } from "../transport/fallback-ladder.js";
 import type { ProviderFallbackLadderOptions } from "../llm/api/fallback-ladder.js";
-import {
-  ConfigStore,
-  resolveAgencHome as resolveAgencHomeFromEnv,
-  resolveProviderSettings,
-  resolveWorkspace as resolveWorkspaceFromEnv,
-  type AgenCConfig,
-} from "../config/index.js";
+import { ConfigStore } from "../config/store.js";
+import { resolveAgencHome as resolveAgencHomeFromEnv, resolveWorkspace as resolveWorkspaceFromEnv } from "../config/env.js";
+import { resolveProviderSettings } from "../config/resolve-provider.js";
+import type { AgenCConfig } from "../config/schema.js";
 import { runStartupConfigMigrations } from "../state/migrations/config-migrations.js";
 import type { ResolvedProviderSettings } from "../config/resolve-provider.js";
 import type {

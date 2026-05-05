@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, test } from "vitest";
 
-import { applyPatchText } from "./index.js";
+import { applyPatchText } from "./runtime.js";
 
 const SCENARIOS_ROOT = fileURLToPath(
   new URL("./__fixtures__/scenarios/", import.meta.url),

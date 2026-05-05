@@ -1,5 +1,5 @@
 import type { LLMMessage } from "../llm/types.js";
-import type { AgenCConfig } from "../config/index.js";
+import type { AgenCConfig } from "../config/schema.js";
 import type { Event } from "../session/event-log.js";
 import type { ApprovalResolver } from "../tools/orchestrator.js";
 import type { ToolPermissionContext } from "../permissions/types.js";

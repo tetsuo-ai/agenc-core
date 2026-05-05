@@ -15,10 +15,7 @@
  */
 
 import type { Session } from "../session/session.js";
-import {
-  configuredModelForProvider,
-  defaultModelForProvider,
-} from "../config/index.js";
+import { configuredModelForProvider, defaultModelForProvider } from "../config/resolve-model.js";
 import { normalizeProviderName } from "../llm/provider.js";
 import {
   checkModelHistoryCompat,

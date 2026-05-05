@@ -39,15 +39,11 @@ function key(overrides: Partial<Key> = {}): Key {
 }
 
 describe("useKeybinding exports and resolver contract", () => {
-  test("keeps the AgenC plural hook shim wired to the aggregate hook", async () => {
+  test("exports singular and aggregate hooks from the canonical module", async () => {
     const { useKeybinding, useKeybindings } = await import("./useKeybinding.js");
-    const {
-      useKeybinding: shimUseKeybinding,
-      useKeybindings: shimUseKeybindings,
-    } = await import("./useKeybindings.js");
 
-    expect(shimUseKeybinding).toBe(useKeybinding);
-    expect(shimUseKeybindings).toBe(useKeybindings);
+    expect(typeof useKeybinding).toBe("function");
+    expect(typeof useKeybindings).toBe("function");
   });
 
   test("resolves display text and chord state for aggregate hook callers", () => {

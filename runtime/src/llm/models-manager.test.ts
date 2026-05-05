@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { mergeConfigs, defaultConfig } from "../config/index.js";
+import { mergeConfigs, defaultConfig } from "../config/schema.js";
 import { StaticModelsManager } from "./models-manager.js";
 import { CONSERVATIVE_CONTEXT_WINDOW_TOKENS } from "./model-metadata.js";
 
@@ -40,7 +40,7 @@ describe("StaticModelsManager", () => {
     const listed = await manager.listModels();
     expect(listed.map((entry) => entry.slug)).toContain("gpt-5.4");
     expect(listed.map((entry) => entry.slug)).not.toContain(
-      "codex-auto-review", // branding-scan: allow OpenAI model identifier
+      "codex-auto-review", // branding-scan: allow openai model identifier
     );
 
     const info = await manager.getModelInfo("gpt-5.4");
@@ -59,10 +59,10 @@ describe("StaticModelsManager", () => {
     ]);
 
     const hidden = await manager.getModelInfo(
-      "codex-auto-review", // branding-scan: allow OpenAI model identifier
+      "codex-auto-review", // branding-scan: allow openai model identifier
     );
     expect(hidden).toMatchObject({
-      slug: "codex-auto-review", // branding-scan: allow OpenAI model identifier
+      slug: "codex-auto-review", // branding-scan: allow openai model identifier
       visibility: "hide",
       showInPicker: false,
     });
@@ -120,7 +120,7 @@ describe("StaticModelsManager", () => {
     );
   });
 
-  it("lists the built-in generic OpenAI-compatible route", async () => {
+  it("lists the built-in generic openai-compatible route", async () => {
     const manager = new StaticModelsManager({
       config: defaultConfig(),
       fallbackProvider: "openai-compatible",
@@ -244,7 +244,7 @@ describe("StaticModelsManager", () => {
     expect(info.maxOutputTokensCappedDefault).toBe(false);
   });
 
-  it("reads live OpenAI-compatible endpoint metadata for vLLM-style models", async () => {
+  it("reads live openai-compatible endpoint metadata for vLLM-style models", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       expect(String(input)).toBe("http://127.0.0.1:8000/v1/models");
       expect((init?.headers as Record<string, string>).Authorization).toBe(
@@ -286,7 +286,7 @@ describe("StaticModelsManager", () => {
     expect(info.usedFallbackModelMetadata).toBe(false);
   });
 
-  it("reads default generic OpenAI-compatible endpoint metadata without requiring auth", async () => {
+  it("reads default generic openai-compatible endpoint metadata without requiring auth", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       expect(String(input)).toBe("http://localhost:8000/v1/models");
       expect(init?.headers).toBeUndefined();
@@ -314,7 +314,7 @@ describe("StaticModelsManager", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it("uses registry provider defaults for OpenAI-compatible metadata auth", async () => {
+  it("uses registry provider defaults for openai-compatible metadata auth", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       expect(String(input)).toBe("http://localhost:8000/v1/models");
       expect((init?.headers as Record<string, string>).Authorization).toBe(

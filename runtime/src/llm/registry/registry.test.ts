@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { defaultConfig } from "../../config/index.js";
+import { defaultConfig } from "../../config/schema.js";
 import { buildPrompt } from "../../session/run-turn.js";
 import type { TurnContext } from "../../session/turn-context.js";
 import { StaticModelsManager } from "../models-manager.js";

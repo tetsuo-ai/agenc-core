@@ -1,5 +1,5 @@
 import type { ThreadId } from "../agents/registry.js";
-import type { ThreadSource } from "../thread-store/types.js";
+import type { ThreadSource } from "../thread-store/store.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 
 export interface IndexedThreadRecord {

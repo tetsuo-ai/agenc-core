@@ -12,7 +12,7 @@ import type { IDESelection } from '../../../agenc/upstream/hooks/useIdeSelection
 import { useMainLoopModel } from '../../../agenc/upstream/hooks/useMainLoopModel.js';
 import { useVoiceEnabled } from '../../../agenc/upstream/hooks/useVoiceEnabled.js';
 import { Box, Text } from '../../ink.js';
-import { useAgenCAiLimits } from './agencAiLimitsHook.js';
+import { useAgenCAiLimits } from "../../../agenc/upstream/services/agencAiLimitsHook.js";
 import { calculateTokenWarningState } from '../../../services/compact/autoCompact.js';
 import type { MCPServerConnection } from '../../../agenc/upstream/services/mcp/types.js';
 import type { Message } from '../../../agenc/upstream/types/message.js';
