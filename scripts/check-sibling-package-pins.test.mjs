@@ -2,7 +2,7 @@
 // Contract tests for scripts/check-sibling-package-pins.mjs.
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -163,6 +163,43 @@ try {
     });
     assert("CLI reports clean pins", clean.stdout.includes("no stale pins found"), clean.stdout);
 
+    mkdirSync(path.join(root, "agenc-core"), { recursive: true });
+    symlinkSync(path.dirname(scriptPath), path.join(root, "agenc-core/scripts"), "dir");
+    writePackage(root, "package.json", {
+      name: "umbrella",
+      private: true,
+      scripts: {
+        "check:sibling-package-pins":
+          "node agenc-core/scripts/check-sibling-package-pins.mjs --root . --latest-json latest.json",
+        "validate:umbrella": "npm run check:sibling-package-pins",
+      },
+    });
+    writeFileSync(
+      path.join(root, "latest.json"),
+      `${JSON.stringify(
+        {
+          "@tetsuo-ai/sdk": "1.4.0",
+          "@tetsuo-ai/protocol": "0.2.0",
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    const umbrellaCli = spawnSync(
+      "npm",
+      ["run", "check:sibling-package-pins"],
+      {
+        cwd: root,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    assert(
+      "umbrella package script runs checker",
+      umbrellaCli.status === 0 && umbrellaCli.stdout.includes("stale pin(s) warned"),
+      umbrellaCli.stderr || umbrellaCli.stdout,
+    );
+
     writePackage(root, "repo-c/package.json", {
       dependencies: {
         "@tetsuo-ai/sdk": "1.4.0-beta.1",
@@ -203,6 +240,46 @@ try {
       "npm view timeout has clear failure message",
       timeoutMessage.includes("timed out after 7ms"),
       timeoutMessage,
+    );
+
+    let failedStatusMessage = "";
+    try {
+      getLatestPublishedVersion("@tetsuo-ai/sdk", {
+        spawnSyncFn() {
+          return {
+            status: 1,
+            stdout: "",
+            stderr: "registry unavailable",
+          };
+        },
+      });
+    } catch (error) {
+      failedStatusMessage = error.message;
+    }
+    assert(
+      "npm view nonzero status has clear failure message",
+      failedStatusMessage.includes("registry unavailable"),
+      failedStatusMessage,
+    );
+
+    let invalidVersionMessage = "";
+    try {
+      getLatestPublishedVersion("@tetsuo-ai/sdk", {
+        spawnSyncFn() {
+          return {
+            status: 0,
+            stdout: "not-a-version\n",
+            stderr: "",
+          };
+        },
+      });
+    } catch (error) {
+      invalidVersionMessage = error.message;
+    }
+    assert(
+      "npm view invalid version has clear failure message",
+      invalidVersionMessage.includes("returned invalid version"),
+      invalidVersionMessage,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });

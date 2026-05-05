@@ -6,6 +6,7 @@ import {
   existsSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   statSync,
 } from "node:fs";
 import path from "node:path";
@@ -331,9 +332,18 @@ async function main() {
   }
 }
 
-if (
-  process.argv[1] &&
-  fileURLToPath(import.meta.url) === path.resolve(process.argv[1])
-) {
+function isMainModule() {
+  if (!process.argv[1]) return false;
+  try {
+    return (
+      realpathSync(fileURLToPath(import.meta.url)) ===
+      realpathSync(path.resolve(process.argv[1]))
+    );
+  } catch {
+    return fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+  }
+}
+
+if (isMainModule()) {
   await main();
 }

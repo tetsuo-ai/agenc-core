@@ -17,7 +17,18 @@
 //      Skip with --skip-validate for iteration but never skip for completion.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { findItem, repoRoot, fail } from "./checklist-utils.mjs";
@@ -3369,6 +3380,57 @@ async function pluginGates(item) {
       )
     ) {
       failGate("PK-13 umbrella validate script does not run check:sibling-package-pins");
+    }
+    const fixtureRoot = mkdtempSync(path.join(tmpdir(), "agenc-pk13-umbrella-"));
+    try {
+      writeFileSync(
+        path.join(fixtureRoot, "package.json"),
+        `${JSON.stringify(
+          {
+            name: "pk13-umbrella-fixture",
+            private: true,
+            scripts: {
+              "check:sibling-package-pins":
+                umbrella.scripts["check:sibling-package-pins"],
+              "validate:umbrella": "npm run check:sibling-package-pins",
+            },
+          },
+          null,
+          2,
+        )}\n`,
+      );
+      symlinkSync(root, path.join(fixtureRoot, "agenc-core"), "dir");
+      const adminToolsDir = path.join(fixtureRoot, "agenc-prover", "admin-tools");
+      mkdirSync(adminToolsDir, { recursive: true });
+      writeFileSync(
+        path.join(adminToolsDir, "package.json"),
+        `${JSON.stringify(
+          {
+            name: "admin-tools",
+            dependencies: {
+              "@tetsuo-ai/protocol": "0.1.1",
+              "@tetsuo-ai/sdk": "1.3.1",
+            },
+          },
+          null,
+          2,
+        )}\n`,
+      );
+      const umbrellaCheck = run(
+        "npm",
+        ["run", "check:sibling-package-pins"],
+        { cwd: fixtureRoot, silent: true },
+      );
+      if (umbrellaCheck.status !== 0) {
+        failGate(
+          `PK-13 umbrella check:sibling-package-pins script failed:\n${umbrellaCheck.stderr || umbrellaCheck.stdout}`,
+        );
+      }
+      if (!umbrellaCheck.stdout.includes("stale pin(s) warned")) {
+        failGate("PK-13 umbrella check:sibling-package-pins script did not warn on stale pins");
+      }
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
     }
     pass("sibling package pin checker warns on stale pins");
     return;
