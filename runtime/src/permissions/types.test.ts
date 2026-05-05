@@ -9,6 +9,7 @@ import {
   createEmptyToolPermissionContext,
   deepFreeze,
   isPermissionMode,
+  isUserAddressablePermissionMode,
 } from "./types.js";
 
 describe("permissions/types constants", () => {
@@ -57,13 +58,22 @@ describe("permissions/types constants", () => {
     expect(Object.isFrozen(PERMISSION_BEHAVIORS)).toBe(true);
   });
 
-  test("USER_ADDRESSABLE_PERMISSION_MODES excludes bubble", () => {
+  test("USER_ADDRESSABLE_PERMISSION_MODES excludes internal-only modes", () => {
+    expect([...USER_ADDRESSABLE_PERMISSION_MODES]).toEqual([
+      "default",
+      "acceptEdits",
+      "plan",
+      "bypassPermissions",
+      "dontAsk",
+      "auto",
+    ]);
+    expect([...USER_ADDRESSABLE_PERMISSION_MODES]).not.toContain("unattended");
     expect([...USER_ADDRESSABLE_PERMISSION_MODES]).not.toContain("bubble");
     expect(USER_ADDRESSABLE_PERMISSION_MODES.length).toBe(6);
   });
 
-  test("ALL_PERMISSION_MODES has exactly 7 variants", () => {
-    expect(ALL_PERMISSION_MODES.length).toBe(7);
+  test("ALL_PERMISSION_MODES has exactly 8 variants", () => {
+    expect(ALL_PERMISSION_MODES.length).toBe(8);
     for (const mode of [
       "default",
       "acceptEdits",
@@ -71,6 +81,7 @@ describe("permissions/types constants", () => {
       "bypassPermissions",
       "dontAsk",
       "auto",
+      "unattended",
       "bubble",
     ] as const) {
       expect(ALL_PERMISSION_MODES).toContain(mode);
@@ -97,6 +108,17 @@ describe("isPermissionMode", () => {
     expect(isPermissionMode(null)).toBe(false);
     expect(isPermissionMode(undefined)).toBe(false);
     expect(isPermissionMode({})).toBe(false);
+  });
+});
+
+describe("isUserAddressablePermissionMode", () => {
+  test("returns true only for settings and CLI modes", () => {
+    for (const mode of USER_ADDRESSABLE_PERMISSION_MODES) {
+      expect(isUserAddressablePermissionMode(mode)).toBe(true);
+    }
+    expect(isUserAddressablePermissionMode("unattended")).toBe(false);
+    expect(isUserAddressablePermissionMode("bubble")).toBe(false);
+    expect(isUserAddressablePermissionMode("unknown")).toBe(false);
   });
 });
 

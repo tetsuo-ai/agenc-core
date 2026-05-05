@@ -74,7 +74,7 @@ function baseCtx(
 }
 
 describe("mode constants", () => {
-  it("EXTERNAL_PERMISSION_MODES excludes dontAsk and bubble", () => {
+  it("EXTERNAL_PERMISSION_MODES excludes internal-only modes", () => {
     expect(EXTERNAL_PERMISSION_MODES).toEqual([
       "default",
       "acceptEdits",
@@ -83,11 +83,12 @@ describe("mode constants", () => {
       "auto",
     ]);
     expect(EXTERNAL_PERMISSION_MODES).not.toContain("dontAsk");
+    expect(EXTERNAL_PERMISSION_MODES).not.toContain("unattended");
     expect(EXTERNAL_PERMISSION_MODES).not.toContain("bubble");
   });
 
-  it("INTERNAL_PERMISSION_MODES lists all 7 modes", () => {
-    expect(INTERNAL_PERMISSION_MODES).toHaveLength(7);
+  it("INTERNAL_PERMISSION_MODES lists all 8 modes", () => {
+    expect(INTERNAL_PERMISSION_MODES).toHaveLength(8);
     for (const m of [
       "default",
       "acceptEdits",
@@ -95,6 +96,7 @@ describe("mode constants", () => {
       "bypassPermissions",
       "dontAsk",
       "auto",
+      "unattended",
       "bubble",
     ] as PermissionMode[]) {
       expect(INTERNAL_PERMISSION_MODES).toContain(m);
@@ -106,6 +108,7 @@ describe("mode constants", () => {
       expect(isExternalPermissionMode(m)).toBe(true);
     }
     expect(isExternalPermissionMode("dontAsk")).toBe(false);
+    expect(isExternalPermissionMode("unattended")).toBe(false);
     expect(isExternalPermissionMode("bubble")).toBe(false);
   });
 });
@@ -181,9 +184,10 @@ describe("getNextPermissionMode (Shift+Tab cycle)", () => {
     expect(getNextPermissionMode("bypassPermissions", ctx)).toBe("default");
   });
 
-  it("dontAsk and bubble fall back to default", () => {
+  it("dontAsk, unattended, and bubble fall back to default", () => {
     const ctx = baseCtx();
     expect(getNextPermissionMode("dontAsk", ctx)).toBe("default");
+    expect(getNextPermissionMode("unattended", ctx)).toBe("default");
     expect(getNextPermissionMode("bubble", ctx)).toBe("default");
   });
 });

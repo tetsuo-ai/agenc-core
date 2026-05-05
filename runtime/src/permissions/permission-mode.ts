@@ -43,8 +43,8 @@ import {
 /**
  * External modes — addressable via CLI / settings / SDK control messages.
  * These are the modes cycled through by Shift+Tab. Excludes the internal
- * `dontAsk` and `bubble` modes. `auto` is external-visible when the live
- * classifier gate is enabled.
+ * `dontAsk`, `unattended`, and `bubble` modes. `auto` is
+ * external-visible when the live classifier gate is enabled.
  */
 export const EXTERNAL_PERMISSION_MODES: readonly PermissionMode[] =
   Object.freeze([
@@ -67,6 +67,7 @@ export const INTERNAL_PERMISSION_MODES: readonly PermissionMode[] =
     "bypassPermissions",
     "dontAsk",
     "auto",
+    "unattended",
     "bubble",
   ] as const);
 
@@ -125,7 +126,8 @@ export function canCycleToAuto(ctx: ToolPermissionContext): boolean {
  * when `canCycleToAuto(ctx)` is true. Either may be skipped; both may be
  * skipped.
  *
- * Non-cycle modes (`dontAsk`, `bubble`) all fall back to `default`.
+ * Non-cycle modes (`dontAsk`, `unattended`, `bubble`) all fall back to
+ * `default`.
  */
 export function getNextPermissionMode(
   fromMode: PermissionMode,
@@ -145,6 +147,7 @@ export function getNextPermissionMode(
       return "default";
     case "auto":
       return "default";
+    case "unattended":
     case "dontAsk":
     case "bubble":
     default:

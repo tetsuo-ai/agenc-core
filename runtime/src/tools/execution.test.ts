@@ -41,7 +41,7 @@ import {
 
 function makeInvocation(callId: string, toolName: string): ToolInvocation {
   return {
-    session: {} as never,
+    session: { services: {} } as never,
     turn: {} as never,
     tracker: {
       appendFileDiff: () => {},
@@ -1066,6 +1066,60 @@ describe("T11 W3-B — permission evaluator integration", () => {
     expect(executed).toBe(0);
     expect(errorCauses.some((c) => c.startsWith("permission_denied:"))).toBe(
       true,
+    );
+  });
+
+  test("unlisted unattended tools ask and flow to the approval bridge", async () => {
+    const { context } = buildEvaluatorContext("unattended", {
+      shouldAvoidPermissionPrompts: true,
+      unattendedPolicy: {
+        allowlist: ["FileRead"],
+        denylist: [],
+      },
+    });
+    const log = new EventLog();
+    const recorded: Array<{ type: string; payload: unknown }> = [];
+    log.subscribe((event) => {
+      recorded.push({ type: event.msg.type, payload: event.msg.payload });
+    });
+    let executed = 0;
+    const requestApproval = vi.fn(async () => ({
+      behavior: "allow" as const,
+      decisionAtTurnId: "t1",
+    }));
+    const tool: Tool = {
+      name: "Bash",
+      description: "",
+      inputSchema: {},
+      execute: async () => {
+        executed += 1;
+        return { content: "ran" };
+      },
+    };
+
+    const out = await runToolUse('{"command":"pwd"}', {
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c1", "Bash"),
+      canUseTool: hasPermissionsToUseTool,
+      permissionContext: context,
+      requestApproval,
+      eventLog: log,
+    });
+
+    expect(out.isError).toBe(false);
+    expect(executed).toBe(1);
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+    expect(recorded).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "request_permissions",
+          payload: expect.objectContaining({
+            callId: "c1",
+            toolName: "Bash",
+          }),
+        }),
+      ]),
     );
   });
 

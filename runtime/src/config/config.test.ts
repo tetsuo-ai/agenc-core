@@ -461,6 +461,7 @@ describe("provider resolution (T13)", () => {
           fallback_models: ["grok-2", "grok-2"],
           fallback: {
             targets: [
+              // branding-scan: allow provider normalization fixture
               { provider: " OpenAI ", model: " gpt-5 ", reason: " burst " },
               { provider: "openai", model: "gpt-5" },
               { provider: " XAI ", model: "grok-3" },
@@ -633,6 +634,12 @@ describe("schema: permissions block (T11)", () => {
     ).toThrow(InvalidPermissionsConfigError);
   });
 
+  test("validatePermissionsConfig rejects unattended as a config defaultMode", () => {
+    expect(() =>
+      validatePermissionsConfig({ defaultMode: "unattended" }),
+    ).toThrow(InvalidPermissionsConfigError);
+  });
+
   test("validatePermissionsConfig rejects an invalid default_mode", () => {
     expect(() =>
       validatePermissionsConfig({ default_mode: "nonsense" }),
@@ -651,7 +658,7 @@ describe("schema: permissions block (T11)", () => {
     ).toThrow(InvalidPermissionsConfigError);
   });
 
-  test("isValidPermissionMode matches all seven mode variants and rejects garbage", () => {
+  test("isValidPermissionMode matches config mode variants and rejects garbage", () => {
     for (const m of [
       "default",
       "acceptEdits",
@@ -663,6 +670,7 @@ describe("schema: permissions block (T11)", () => {
     ]) {
       expect(isValidPermissionMode(m)).toBe(true);
     }
+    expect(isValidPermissionMode("unattended")).toBe(false);
     expect(isValidPermissionMode("nonsense")).toBe(false);
     expect(isValidPermissionMode(null)).toBe(false);
     expect(isValidPermissionMode(42)).toBe(false);
@@ -1376,6 +1384,7 @@ describe("env: resolvers", () => {
 
   test("resolveProvider / resolveProfileName / resolveModel / resolveWorkspace / resolveSimpleMode", () => {
     expect(resolveProvider({ AGENC_PROVIDER: "xai" })).toBe("grok");
+    // branding-scan: allow provider normalization fixture
     expect(resolveProvider({ AGENC_PROVIDER: "  OpenAI  " })).toBe("openai");
     expect(resolveProvider({})).toBeUndefined();
     expect(resolveProfileName({ AGENC_PROFILE: "fast" })).toBe("fast");

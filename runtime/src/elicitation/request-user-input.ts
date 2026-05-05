@@ -52,6 +52,7 @@ const MODE_DISPLAY_NAMES: Readonly<Record<PermissionMode, string>> = {
   bypassPermissions: "Bypass Permissions",
   dontAsk: "Don't Ask",
   auto: "Auto",
+  unattended: "Unattended",
   bubble: "Bubble",
 };
 const MIN_QUESTIONS = 1;

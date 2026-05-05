@@ -367,12 +367,14 @@ describe("permissionsCommand — mode", () => {
     expect(registry.current().mode).toBe("default");
   });
 
-  it("'/permissions mode bubble' rejects internal-only modes", async () => {
+  it("'/permissions mode <internal>' rejects internal-only modes", async () => {
     const registry = new PermissionModeRegistry(createEmptyToolPermissionContext());
-    const r = await permissionsCommand.execute(
-      stubCtx({ registry, argsRaw: "mode bubble" }),
-    );
-    expect(r.kind).toBe("error");
+    for (const mode of ["unattended", "bubble"]) {
+      const r = await permissionsCommand.execute(
+        stubCtx({ registry, argsRaw: `mode ${mode}` }),
+      );
+      expect(r.kind).toBe("error");
+    }
   });
 
   it("'/permissions mode default' when already default is a no-op with confirmation", async () => {

@@ -53,13 +53,14 @@ export type ApprovalsReviewer = "user" | "auto_review" | "guardian_subagent";
 export type EditorMode = "default" | "vim";
 
 /**
- * Permission mode variants accepted by the runtime. Mirrors the
- * `PermissionMode` union in `src/permissions/types.ts` — kept inline here
- * to avoid a `config → permissions → config` import cycle (permissions
- * settings.ts already depends on `config/schema.ts`).
+ * Permission mode variants accepted by config files. This intentionally
+ * excludes the background-agent-only `unattended` runtime mode from
+ * `src/permissions/types.ts` so users cannot make it a global default.
+ * Kept inline here to avoid a `config → permissions → config` import
+ * cycle (permissions settings.ts already depends on `config/schema.ts`).
  *
- * If a variant is ever added or removed in `src/permissions/types.ts`,
- * update this union in lockstep.
+ * If a user-addressable variant is ever added or removed in
+ * `src/permissions/types.ts`, update this union in lockstep.
  */
 export type PermissionMode =
   | "default"

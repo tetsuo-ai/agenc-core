@@ -1188,6 +1188,7 @@ describe("isPlanMode via sessionConfiguration.permissionContext.mode", () => {
       "bypassPermissions",
       "dontAsk",
       "auto",
+      "unattended",
       "bubble",
     ] as const) {
       const ctx = {

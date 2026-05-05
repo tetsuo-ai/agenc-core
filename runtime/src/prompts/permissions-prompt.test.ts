@@ -33,6 +33,16 @@ function ctxForMode(mode: PermissionMode): ToolPermissionContext {
   return createEmptyToolPermissionContext({ mode });
 }
 
+function unattendedCtx(
+  allowlist: readonly string[],
+  denylist: readonly string[],
+): ToolPermissionContext {
+  return createEmptyToolPermissionContext({
+    mode: "unattended",
+    unattendedPolicy: { allowlist, denylist },
+  });
+}
+
 describe("approval-policy constants", () => {
   test("never.md", () => {
     expect(APPROVAL_POLICY_NEVER).toBe(
@@ -148,6 +158,24 @@ describe("getPermissionsSection", () => {
     expect(getPermissionsSection(ctxForMode("auto"))).toBeNull();
     expect(getPermissionsSection(ctxForMode("dontAsk"))).toBeNull();
     expect(getPermissionsSection(ctxForMode("bubble"))).toBeNull();
+  });
+
+  test("unattended mode describes allow, deny, and pause behavior", () => {
+    const out = getPermissionsSection(
+      unattendedCtx(["FileRead", "system.grep"], ["system.bash"]),
+    );
+    expect(out).not.toBeNull();
+    expect(out).toContain("# Permission Mode: unattended");
+    expect(out).toContain("Unattended allowlist: FileRead, system.grep");
+    expect(out).toContain("Unattended denylist: system.bash");
+    expect(out).toContain("Any other tool pauses the agent");
+  });
+
+  test("unattended mode uses the default policy when context has no policy", () => {
+    const out = getPermissionsSection(ctxForMode("unattended"));
+    expect(out).not.toBeNull();
+    expect(out).toContain("Unattended allowlist: FileRead, system.grep");
+    expect(out).toContain("Unattended denylist: (none)");
   });
 
   test("composition uses a blank line between heading, sandbox, and approval", () => {

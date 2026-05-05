@@ -1,10 +1,9 @@
 /**
  * T11 Wave 2-A — permission evaluator (5-step decision tree).
  *
- * Ports openclaude's `hasPermissionsToUseTool` +
- * `hasPermissionsToUseToolInner` + `checkRuleBasedPermissions` from
- * `src/utils/permissions/permissions.ts`. Every step is numbered in
- * comments to make it easy to cross-reference the source.
+ * Implements the `hasPermissionsToUseTool` +
+ * `hasPermissionsToUseToolInner` + `checkRuleBasedPermissions` flow. Every
+ * step is numbered in comments to make it easy to cross-reference the source.
  *
  * 5-step flow (paraphrased from AgenC lines ~1058-1319):
  *
@@ -53,6 +52,12 @@ import {
   getDenyRuleForTool,
   toolAlwaysAllowedRule,
 } from "./rules.js";
+import {
+  resolveUnattendedPermissionDecision,
+  unattendedAllowDecision,
+  unattendedDenyDecision,
+  unattendedPauseDecision,
+} from "./unattended-policy.js";
 import type { Session } from "../session/session.js";
 import {
   classifyYoloAction,
@@ -235,7 +240,7 @@ function readClassifierTranscriptMessages(
 // ---------------------------------------------------------------------------
 
 /**
- * Ports openclaude's `checkRuleBasedPermissions` — runs steps 1a–1g and
+ * Runs `checkRuleBasedPermissions` steps 1a–1g and
  * returns the first bypass-immune rule-based decision that fires, or
  * `null` when nothing in steps 1a–1g blocks the mode gate from running.
  * Does NOT run the mode gate or the classifier. Generic tool asks from
@@ -434,6 +439,15 @@ export async function hasPermissionsToUseToolInner(
   if (ruleBased && ruleBased.behavior === "deny") {
     return ruleBased;
   }
+  const unattendedResult = checkUnattendedPolicy(
+    tool,
+    input,
+    context,
+    ruleBased,
+  );
+  if (unattendedResult) {
+    return unattendedResult;
+  }
   if (ruleBased && ruleBased.behavior === "ask") {
     // checkRuleBasedPermissions only returns ask for
     // requiresUserInteraction / content ask rule / safetyCheck — all
@@ -518,6 +532,44 @@ export async function hasPermissionsToUseToolInner(
   return toolResult as PermissionAllowDecision;
 }
 
+function checkUnattendedPolicy(
+  tool: ToolLike,
+  input: unknown,
+  context: ToolEvaluatorContext,
+  ruleBased:
+    | PermissionAskDecision
+    | PermissionDenyDecision
+    | PermissionAllowDecision
+    | null,
+): PermissionDecision | null {
+  const appState = context.getAppState();
+  const permissionContext = context.toolPermissionContext
+    ? context.toolPermissionContext(appState)
+    : appState.toolPermissionContext;
+  if (permissionContext.mode !== "unattended") return null;
+
+  const unattended = resolveUnattendedPermissionDecision(
+    permissionContext,
+    tool.name,
+  );
+  if (unattended.behavior === "deny") {
+    return unattendedDenyDecision(unattended.toolName);
+  }
+  if (ruleBased?.behavior === "ask") {
+    return unattendedPauseDecision(unattended.toolName, ruleBased);
+  }
+  if (unattended.behavior === "allow") {
+    return unattendedAllowDecision(
+      unattended.toolName,
+      input,
+      ruleBased?.behavior === "allow"
+        ? getUpdatedInputOrFallback(ruleBased, input)
+        : undefined,
+    );
+  }
+  return unattendedPauseDecision(unattended.toolName, null);
+}
+
 // ---------------------------------------------------------------------------
 // Step 4/5 — outer wrapper
 // ---------------------------------------------------------------------------
@@ -577,6 +629,11 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
       );
       context.onDecision?.(classifierDecision, "autoClassifier");
       return classifierDecision;
+    }
+
+    if (mode === "unattended") {
+      context.onDecision?.(result, "ask");
+      return result;
     }
 
     // shouldAvoidPermissionPrompts: no interactive path; rely on
