@@ -1520,7 +1520,7 @@ if (donorNamedDirAdditions.length > 0) {
 const upstreamNumstatRes = git(
   "diff",
   "--numstat",
-  "main",
+  "main...HEAD",
   "--",
   "runtime/src/agenc/upstream",
 );
@@ -4477,6 +4477,89 @@ function assertZc22ElicitationRendererInlined() {
   }
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function assertZc24UnusedDependenciesRemoved() {
+  const packagePath = path.join(root, "runtime/package.json");
+  const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
+  const dependencies = pkg.dependencies ?? {};
+  const devDependencies = pkg.devDependencies ?? {};
+  const forbiddenRuntimeDependencies = [
+    "@types/better-sqlite3",
+    "eventsource",
+  ];
+  const runtimeSurvivors = forbiddenRuntimeDependencies.filter((name) =>
+    Object.hasOwn(dependencies, name),
+  );
+  if (runtimeSurvivors.length > 0) {
+    failGate(`ZC-24: unused runtime dependencies still listed:\n  ${runtimeSurvivors.join("\n  ")}`);
+  }
+
+  if (Object.hasOwn(devDependencies, "tsx")) {
+    failGate("ZC-24: devDependency tsx is still listed in runtime/package.json");
+  }
+
+  if (!Object.hasOwn(devDependencies, "@types/better-sqlite3")) {
+    failGate(
+      "ZC-24: @types/better-sqlite3 should remain as a devDependency because runtime/src/state/sqlite-driver.ts imports better-sqlite3.",
+    );
+  }
+
+  const packagesWithRuntimeImporters = [
+    "@ant/computer-use-mcp",
+    "jimp",
+    "markdown-it",
+  ];
+  const missingRetainedDependencies = packagesWithRuntimeImporters.filter((name) =>
+    !Object.hasOwn(dependencies, name),
+  );
+  if (missingRetainedDependencies.length > 0) {
+    failGate(
+      `ZC-24: package(s) still imported by runtime source must remain listed:\n  ${missingRetainedDependencies.join("\n  ")}`,
+    );
+  }
+
+  const scannedPackages = [
+    "eventsource",
+    "tsx",
+  ];
+  const runtimeSourceImportGlobs = [
+    "*.ts",
+    "*.tsx",
+    "*.mts",
+    "*.cts",
+    "*.js",
+    "*.jsx",
+    "*.mjs",
+    "*.cjs",
+  ];
+  const offenders = [];
+  for (const packageName of scannedPackages) {
+    const escaped = escapeRegExp(packageName);
+    const packageRef = `${escaped}(?:["'/]|$)`;
+    const pattern =
+      `(?:from\\s+["']${packageRef}|require\\(\\s*["']${packageRef}|import\\(\\s*["']${packageRef})`;
+    const globArgs = runtimeSourceImportGlobs.flatMap((glob) => ["-g", glob]);
+    const scan = run("rg", [
+      "--no-messages",
+      "-n",
+      pattern,
+      "runtime/src",
+      ...globArgs,
+    ], { silent: true });
+    if (scan.status === 0) {
+      offenders.push(scan.stdout.trim());
+    } else if (scan.status !== 1) {
+      failGate(`ZC-24: failed to scan runtime source imports for ${packageName}`);
+    }
+  }
+  if (offenders.length > 0) {
+    failGate(`ZC-24: package(s) marked unused are still imported by runtime source:\n${offenders.join("\n")}`);
+  }
+}
+
 function listSourceFiles(dir) {
   const out = [];
   for (const entry of readdirSync(dir)) {
@@ -4859,6 +4942,7 @@ async function cleanupGates(item) {
         custom: assertZc22ElicitationRendererInlined,
       },
       "ZC-23": { custom: assertNoRuntimeForwarderOnlyModules },
+      "ZC-24": { custom: assertZc24UnusedDependenciesRemoved },
       "ZC-26": { grepNotPresent: { pattern: "/home/claude/.agenc/remote", scope: "runtime/src" } }, // branding-scan: allow donor-leak path that ZC-26 is removing
       "ZC-27": { grepNotPresent: { pattern: "@ts-nocheck", scope: "runtime/src/types" } },
       "ZC-28": { gone: ["runtime/src/utils/attachments.ts", "runtime/src/utils/teamMemoryOps.ts", "runtime/src/components/FeedbackSurvey/useMemorySurvey.tsx"] },
