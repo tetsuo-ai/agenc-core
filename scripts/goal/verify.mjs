@@ -552,7 +552,41 @@ const ITEM_EVIDENCE = {
     tests: ["runtime/src/sandbox/execpolicy/execpolicy.test.ts"],
   },
   "C-01e": {
-    grepPresent: [{ pattern: "sandbox.*bypass|bypass.*sandbox", scope: "runtime/src/sandbox" }],
+    files: [
+      "runtime/src/sandbox/escalation/sandboxing.ts",
+      "runtime/src/sandbox/escalation/unix-escalation.ts",
+      "runtime/src/sandbox/escalation/approvals.ts",
+      "runtime/src/sandbox/escalation/network-approval.ts",
+      "runtime/src/sandbox/escalation/on-request.ts",
+      "runtime/src/sandbox/escalation/on-failure.ts",
+      "runtime/src/sandbox/escalation/on-request-rule-request-permission.ts",
+      "runtime/src/tools/orchestrator.ts",
+      "runtime/src/tools/router.ts",
+      "runtime/src/bin/bootstrap-services.ts",
+      "runtime/src/tools/system/exec-command.ts",
+      "parity/C-01e-parity.json",
+    ],
+    tests: [
+      "runtime/src/sandbox/escalation/escalation.test.ts",
+      "runtime/src/tools/orchestrator.test.ts",
+      "runtime/src/tools/runtimes/runtime.test.ts",
+      "runtime/src/permissions/guardian/approval-request.test.ts",
+    ],
+    grepPresent: [
+      { pattern: "sandbox.*bypass|bypass.*sandbox", scope: "runtime/src/sandbox/escalation" },
+      { pattern: "execvePromptRejectedByPolicy", scope: "runtime/src/sandbox/escalation" },
+      { pattern: "renderDecisionForUnmatchedCommand", scope: "runtime/src/sandbox/escalation" },
+      { pattern: "kind: \"prompt\"", scope: "runtime/src/sandbox/escalation" },
+      { pattern: "requestManagedNetworkApprovalForSandbox", scope: "runtime/src/sandbox/escalation" },
+      { pattern: "defaultAvailableApprovalDecisions", scope: "runtime/src/sandbox/escalation" },
+      { pattern: "proposedNetworkPolicyAmendments", scope: "runtime/src/sandbox/escalation" },
+      { pattern: "with_additional_permissions", scope: "runtime/src/sandbox/escalation" },
+      { pattern: "sandboxPermissionsFromArgs", scope: "runtime/src/tools/orchestrator.ts" },
+      { pattern: "evaluateLocalShellExecPolicyAction", scope: "runtime/src/tools/orchestrator.ts" },
+      { pattern: "currentExecPolicyFromSession", scope: "runtime/src/tools/router.ts" },
+      { pattern: "requestManagedNetworkApprovalForSandbox", scope: "runtime/src/bin/bootstrap-services.ts" },
+      { pattern: "require_escalated", scope: "runtime/src/tools/system/exec-command.ts" },
+    ],
   },
   "C-01f": {
     files: [
@@ -2724,6 +2758,90 @@ async function donorRuntimePortGates(item) {
       failGate("C-01d: parity/execpolicy-dsl-parity.json missing");
     }
     pass("C-01d: execpolicy parser, policy engine, amendment helpers, checker, tests, and parity present");
+    return;
+  }
+  if (id === "C-01e") {
+    const dir = path.join(root, "runtime/src/sandbox/escalation");
+    if (!existsSync(dir)) failGate("C-01e: runtime/src/sandbox/escalation/ missing");
+    const testRun = run("npm", [
+      "exec",
+      "--workspace=@tetsuo-ai/runtime",
+      "vitest",
+      "run",
+      "src/sandbox/escalation/escalation.test.ts",
+      "src/tools/orchestrator.test.ts",
+      "src/tools/runtimes/runtime.test.ts",
+      "src/permissions/guardian/approval-request.test.ts",
+    ]);
+    if (testRun.status !== 0) {
+      failGate("C-01e escalation tests failed");
+    }
+    const sandboxingSource = readFileSync(path.join(dir, "sandboxing.ts"), "utf8");
+    const unixSource = readFileSync(path.join(dir, "unix-escalation.ts"), "utf8");
+    const approvalsSource = readFileSync(path.join(dir, "approvals.ts"), "utf8");
+    const networkSource = readFileSync(path.join(dir, "network-approval.ts"), "utf8");
+    const testsSource = readFileSync(path.join(dir, "escalation.test.ts"), "utf8");
+    const orchestratorSource = readFileSync(path.join(root, "runtime/src/tools/orchestrator.ts"), "utf8");
+    const routerSource = readFileSync(path.join(root, "runtime/src/tools/router.ts"), "utf8");
+    const bootstrapSource = readFileSync(path.join(root, "runtime/src/bin/bootstrap-services.ts"), "utf8");
+    const execCommandSource = readFileSync(path.join(root, "runtime/src/tools/system/exec-command.ts"), "utf8");
+    const orchestratorTestsSource = readFileSync(path.join(root, "runtime/src/tools/orchestrator.test.ts"), "utf8");
+    const runtimeTestsSource = readFileSync(path.join(root, "runtime/src/tools/runtimes/runtime.test.ts"), "utf8");
+    if (!/sandboxOverrideForFirstAttempt/.test(sandboxingSource) || !/selectFirstAttemptSandbox/.test(sandboxingSource)) {
+      failGate("C-01e: sandboxing port must select first-attempt sandbox overrides");
+    }
+    if (!/toolWantsNoSandboxApproval/.test(sandboxingSource) || !/toolEscalatesOnFailure/.test(sandboxingSource)) {
+      failGate("C-01e: sandboxing port must expose approval-driven retry policy");
+    }
+    if (!/execvePromptRejectedByPolicy/.test(unixSource) || !/determineInterceptedExecAction/.test(unixSource)) {
+      failGate("C-01e: unix escalation port must reject disallowed prompts and determine intercepted exec action");
+    }
+    if (!/renderDecisionForUnmatchedCommand/.test(unixSource) || !/kind: "prompt"/.test(unixSource)) {
+      failGate("C-01e: unix escalation port must classify unmatched commands and keep prompt separate from run");
+    }
+    if (!/checkMultipleWithOptions/.test(unixSource) || !/resolveHostExecutables:\s*true/.test(unixSource)) {
+      failGate("C-01e: unix escalation port must evaluate exec-policy with host executable resolution");
+    }
+    if (!/effectiveApprovalId/.test(approvalsSource) || !/defaultAvailableApprovalDecisions/.test(approvalsSource) || !/proposedNetworkPolicyAmendments/.test(approvalsSource)) {
+      failGate("C-01e: approvals port must implement effective ids and default decision sets");
+    }
+    if (!/requestManagedNetworkApprovalForSandbox/.test(networkSource) || !/not_allowed_in_sandbox_mode/.test(networkSource)) {
+      failGate("C-01e: network approval port must enforce sandbox-mode approval gating");
+    }
+    if (!/sandboxPermissionsFromArgs/.test(orchestratorSource) || !/selectFirstAttemptSandbox/.test(orchestratorSource)) {
+      failGate("C-01e: live orchestrator must apply sandbox_permissions to first-attempt sandbox selection");
+    }
+    if (!/evaluateLocalShellExecPolicyAction/.test(orchestratorSource) || !/determineInterceptedExecAction/.test(orchestratorSource)) {
+      failGate("C-01e: live orchestrator must apply exec-policy interception decisions");
+    }
+    if (!/currentExecPolicyFromSession/.test(routerSource) || !/execPolicy/.test(routerSource)) {
+      failGate("C-01e: tool router must pass the current exec policy into orchestration");
+    }
+    if (!/requestManagedNetworkApprovalForSandbox/.test(bootstrapSource)) {
+      failGate("C-01e: bootstrap network approval service must route through sandbox approval gate");
+    }
+    if (!/require_escalated/.test(execCommandSource) || !/with_additional_permissions/.test(execCommandSource)) {
+      failGate("C-01e: exec-command schema must advertise sandbox escalation permission modes");
+    }
+    if (!/sandbox_permissions=require_escalated/.test(orchestratorTestsSource) || !/exec-policy prefix allow drives unsandboxed local-shell dispatch/.test(orchestratorTestsSource)) {
+      failGate("C-01e: orchestrator tests must exercise live sandbox_permissions and exec-policy routing");
+    }
+    if (!/skip policies still require approval/.test(orchestratorTestsSource) || !/skipped tools do not receive free grants/.test(orchestratorTestsSource)) {
+      failGate("C-01e: sandbox permission tests must reject free opt-out paths");
+    }
+    if (!/REJECT_RULES_APPROVAL_REASON/.test(orchestratorTestsSource)) {
+      failGate("C-01e: exec-policy tests must preserve granular rejection reasons");
+    }
+    if (!/additionalPermissions/.test(runtimeTestsSource) || !/permissionProfileForRuntimeContext/.test(runtimeTestsSource)) {
+      failGate("C-01e: runtime tests must prove scoped additional permissions affect sandbox profiles");
+    }
+    if (!/\bexecFile\b/.test(testsSource) || !/NetworkApprovalService/.test(testsSource) || !/Policy\.empty/.test(testsSource)) {
+      failGate("C-01e: tests must exercise subprocess, network approval, and exec-policy paths");
+    }
+    if (!existsSync(path.join(root, "parity/C-01e-parity.json"))) {
+      failGate("C-01e: parity/C-01e-parity.json missing");
+    }
+    pass("C-01e: approval-driven sandbox escalation, exec-policy interception, network approval, tests, and parity present");
     return;
   }
   // C-01a..C-01e: sandboxing.

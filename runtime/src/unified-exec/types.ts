@@ -1,5 +1,6 @@
 import type { ToolExecutionInjectedArgs } from "../tools/types.js";
 import type {
+  AdditionalPermissionProfile,
   NetworkProxyConfig,
   PermissionProfile,
   SandboxManager,
@@ -42,6 +43,7 @@ export type UnifiedExecSandboxManager = Pick<
 
 export interface UnifiedExecRuntimeSandbox {
   readonly permissionProfile: PermissionProfile;
+  readonly additionalPermissions?: AdditionalPermissionProfile;
   readonly sandboxPolicyCwd: string;
   readonly preference?: SandboxablePreference;
   readonly enforceManagedNetwork?: boolean;
