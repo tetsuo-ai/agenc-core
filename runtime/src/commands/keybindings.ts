@@ -58,7 +58,6 @@ export const DEFAULT_KEYBINDINGS = {
         "ctrl+x ctrl+e": "chat:externalEditor",
         "ctrl+v": "chat:imagePaste",
         "alt+v": "chat:imagePaste",
-        "ctrl+shift+v": "chat:voiceInput",
       },
     },
     {
