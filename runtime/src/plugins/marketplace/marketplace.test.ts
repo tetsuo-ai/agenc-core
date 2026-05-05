@@ -12,6 +12,8 @@ import {
   readMarketplaceIndex,
   removeMarketplaceOp,
 } from "./marketplace.js";
+import { isSourceAllowedByPolicy } from "./marketplaceHelpers.js";
+import { getMarketplace } from "./marketplaceManager.js";
 import { parseMarketplaceInput } from "./parseMarketplaceInput.js";
 
 async function tempRuntime(): Promise<{
@@ -149,7 +151,61 @@ describe("plugin marketplace runtime", () => {
       ok: true,
       source: { source: "github", repo: "agenc-org/plugins", ref: "stable" },
     });
+    await expect(parseMarketplaceInput("https://github.com/agenc-org/plugins/tree/stable/marketplaces/team")).resolves.toEqual({
+      ok: true,
+      source: {
+        source: "github",
+        repo: "agenc-org/plugins",
+        ref: "stable",
+        path: "marketplaces/team",
+      },
+    });
     expect(normalizeSparsePath("marketplaces/team")).toBe("marketplaces/team");
     expect(() => normalizeSparsePath("../team")).toThrow("--sparse must not contain");
+  });
+
+  it("treats policy host and path patterns as a safe bounded subset", () => {
+    expect(isSourceAllowedByPolicy(
+      { source: "github", repo: "agenc-org/plugins" },
+      {
+        strictKnownMarketplaces: [{
+          source: "settings",
+          name: String.raw`hostPattern:^github\.com$`,
+          plugins: [],
+        }],
+      },
+    )).toBe(true);
+    expect(isSourceAllowedByPolicy(
+      { source: "directory", path: "/opt/approved/team-marketplace" },
+      {
+        strictKnownMarketplaces: [{
+          source: "settings",
+          name: "pathPattern:^/opt/approved/",
+          plugins: [],
+        }],
+      },
+    )).toBe(true);
+    expect(isSourceAllowedByPolicy(
+      { source: "git", url: "https://github.com/agenc-org/plugins.git" },
+      {
+        strictKnownMarketplaces: [{
+          source: "settings",
+          name: "hostPattern:(a+)+$",
+          plugins: [],
+        }],
+      },
+    )).toBe(false);
+  });
+
+  it("evicts rejected marketplace cache entries before retrying", async () => {
+    const { agencHome, workspaceRoot } = await tempRuntime();
+    await expect(getMarketplace("team", { agencHome, workspaceRoot }))
+      .rejects.toThrow("not found");
+
+    const marketplaceRoot = await writeMarketplace(join(workspaceRoot, "team-marketplace"), "team");
+    await addMarketplaceOp({ agencHome, workspaceRoot, source: marketplaceRoot });
+
+    await expect(getMarketplace("team", { agencHome, workspaceRoot }))
+      .resolves.toMatchObject({ name: "team" });
   });
 });

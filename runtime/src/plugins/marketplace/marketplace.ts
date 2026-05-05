@@ -119,6 +119,7 @@ export type FetchResponse = {
   readonly ok: boolean;
   readonly status: number;
   readonly statusText: string;
+  readonly body?: ReadableStream<Uint8Array> | null;
   readonly text: () => Promise<string>;
   readonly arrayBuffer: () => Promise<ArrayBuffer>;
 };

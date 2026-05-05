@@ -5,12 +5,14 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   checkedTarOutputPath,
+  downloadAndInstallRemotePluginBundle,
   extractPluginBundleTarGz,
   installRemotePluginBundle,
   readInstalledRemotePluginManifest,
   remotePluginInstallRoot,
   validateRemotePluginBundle,
 } from "./remote_bundle.js";
+import type { FetchResponse, Fetcher } from "./marketplace.js";
 
 describe("remote plugin bundles", () => {
   it("validates remote bundle metadata and only permits secure download URLs", () => {
@@ -80,6 +82,29 @@ describe("remote plugin bundles", () => {
     await expect(extractPluginBundleTarGz(createTarGz({ "../escape.txt": "x" }), destination))
       .rejects.toThrow("escapes extraction root");
   });
+
+  it("rejects oversized streamed bundle downloads before extraction", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-bundle-large-"));
+    const bundle = validateRemotePluginBundle(
+      "linear",
+      "agenc-global",
+      "linear",
+      "1.0.0",
+      "https://agenc.tech/plugins/linear.tgz",
+    );
+
+    await expect(downloadAndInstallRemotePluginBundle(
+      agencHome,
+      bundle,
+      oversizedBundleFetcher(),
+    )).rejects.toThrow("exceeded maximum size");
+  });
+
+  it("caps decompressed bundle size before walking tar entries", async () => {
+    const destination = await mkdtemp(join(tmpdir(), "agenc-remote-extract-small-limit-"));
+    await expect(extractPluginBundleTarGz(createTarGz({ "linear/file.txt": "hello" }), destination, 4))
+      .rejects.toThrow(/decompressed|extracted size/u);
+  });
 });
 
 function createTarGz(files: Readonly<Record<string, string>>): Buffer {
@@ -119,4 +144,27 @@ function writeTarOctal(header: Buffer, offset: number, length: number, value: nu
 
 function padding(size: number): number {
   return (512 - (size % 512)) % 512;
+}
+
+function oversizedBundleFetcher(): Fetcher {
+  return async () => {
+    let chunks = 0;
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      body: new ReadableStream<Uint8Array>({
+        pull(controller) {
+          chunks += 1;
+          if (chunks > 51) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(new Uint8Array(1024 * 1024));
+        },
+      }),
+      text: async () => "",
+      arrayBuffer: async () => new ArrayBuffer(0),
+    } satisfies FetchResponse;
+  };
 }

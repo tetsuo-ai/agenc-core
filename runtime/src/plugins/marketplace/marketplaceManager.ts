@@ -138,7 +138,11 @@ export function getMarketplace(
   name: string,
   options: MarketplaceOperationOptions = {},
 ): Promise<Marketplace> {
-  const cacheKey = `${options.agencHome ?? ""}:${name.toLowerCase()}`;
+  const cacheKey = [
+    marketplaceInstalledPath("cache-key", options).replace(/[/\\]cache-key$/u, ""),
+    options.workspaceRoot ?? process.cwd(),
+    name.toLowerCase(),
+  ].join("\0");
   const cached = marketplaceCache.get(cacheKey);
   if (cached !== undefined) return cached;
   const promise = (async () => {
@@ -162,6 +166,11 @@ export function getMarketplace(
       return loadMarketplace(result.marketplace.manifestPath);
     }
   })();
+  promise.catch(() => {
+    if (marketplaceCache.get(cacheKey) === promise) {
+      marketplaceCache.delete(cacheKey);
+    }
+  });
   marketplaceCache.set(cacheKey, promise);
   return promise;
 }

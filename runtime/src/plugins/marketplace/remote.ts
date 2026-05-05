@@ -10,6 +10,9 @@ export const REMOTE_WORKSPACE_MARKETPLACE_NAME = "agenc-workspace";
 export const REMOTE_GLOBAL_MARKETPLACE_DISPLAY_NAME = "AgenC Plugins";
 export const REMOTE_WORKSPACE_MARKETPLACE_DISPLAY_NAME = "AgenC Workspace Plugins";
 
+const REMOTE_PLUGIN_MAX_PAGES = 100;
+const REMOTE_PLUGIN_MAX_ITEMS = 10_000;
+
 export interface RemotePluginServiceConfig {
   readonly baseUrl: string;
 }
@@ -288,13 +291,28 @@ async function fetchDirectoryPluginsForScope(
 ): Promise<RemotePluginDirectoryItem[]> {
   const plugins: RemotePluginDirectoryItem[] = [];
   let pageToken: string | undefined;
+  const seenTokens = new Set<string>();
+  let pages = 0;
   do {
+    pages += 1;
+    if (pages > REMOTE_PLUGIN_MAX_PAGES) {
+      throw new Error(`remote plugin directory pagination exceeded ${REMOTE_PLUGIN_MAX_PAGES} pages for ${scope.apiValue}`);
+    }
+    if (pageToken !== undefined) {
+      if (seenTokens.has(pageToken)) {
+        throw new Error(`remote plugin directory pagination repeated token '${pageToken}' for ${scope.apiValue}`);
+      }
+      seenTokens.add(pageToken);
+    }
     const url = new URL(`${config.baseUrl.replace(/\/+$/u, "")}/ps/plugins/list`);
     url.searchParams.set("scope", scope.apiValue);
     url.searchParams.set("limit", "200");
     if (pageToken !== undefined) url.searchParams.set("pageToken", pageToken);
     const response = await sendAndDecode<RemotePluginListResponse>(url.toString(), headers, fetcher);
     plugins.push(...response.plugins);
+    if (plugins.length > REMOTE_PLUGIN_MAX_ITEMS) {
+      throw new Error(`remote plugin directory exceeded ${REMOTE_PLUGIN_MAX_ITEMS} items for ${scope.apiValue}`);
+    }
     pageToken = response.pagination.next_page_token;
   } while (pageToken !== undefined);
   return plugins;
@@ -309,13 +327,28 @@ async function fetchInstalledPluginsForScope(
 ): Promise<RemotePluginInstalledItem[]> {
   const plugins: RemotePluginInstalledItem[] = [];
   let pageToken: string | undefined;
+  const seenTokens = new Set<string>();
+  let pages = 0;
   do {
+    pages += 1;
+    if (pages > REMOTE_PLUGIN_MAX_PAGES) {
+      throw new Error(`remote installed plugin pagination exceeded ${REMOTE_PLUGIN_MAX_PAGES} pages for ${scope.apiValue}`);
+    }
+    if (pageToken !== undefined) {
+      if (seenTokens.has(pageToken)) {
+        throw new Error(`remote installed plugin pagination repeated token '${pageToken}' for ${scope.apiValue}`);
+      }
+      seenTokens.add(pageToken);
+    }
     const url = new URL(`${config.baseUrl.replace(/\/+$/u, "")}/ps/plugins/installed`);
     url.searchParams.set("scope", scope.apiValue);
     if (includeDownloadUrls) url.searchParams.set("includeDownloadUrls", "true");
     if (pageToken !== undefined) url.searchParams.set("pageToken", pageToken);
     const response = await sendAndDecode<RemotePluginInstalledResponse>(url.toString(), headers, fetcher);
     plugins.push(...response.plugins);
+    if (plugins.length > REMOTE_PLUGIN_MAX_ITEMS) {
+      throw new Error(`remote installed plugin list exceeded ${REMOTE_PLUGIN_MAX_ITEMS} items for ${scope.apiValue}`);
+    }
     pageToken = response.pagination.next_page_token;
   } while (pageToken !== undefined);
   return plugins;

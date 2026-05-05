@@ -18,13 +18,7 @@ export async function installedMarketplaceRootsFromIndex(
 ): Promise<readonly string[]> {
   const index = await readMarketplaceIndex(options);
   return Object.values(index.marketplaces)
-    .map((marketplace) =>
-      marketplace.sourceType === "local"
-        ? marketplace.sourceDescriptor.source === "file"
-          ? marketplace.installedPath
-          : marketplace.installedPath
-        : marketplace.installedPath,
-    )
+    .map((marketplace) => marketplace.installedPath)
     .sort((a, b) => a.localeCompare(b));
 }
 

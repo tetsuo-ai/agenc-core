@@ -79,8 +79,8 @@
       "runtime/src/plugins/marketplace/ contains counterparts for every PK-07 named donor file.",
       "runtime/src/plugins/cli/pluginCliCommands.ts imports marketplace operations from ../marketplace/marketplace.js.",
       "runtime/src/plugins/cli/PluginInstallationManager.ts imports marketplace operations from ../marketplace/marketplace.js.",
-      "runtime/src/types/typecheck-shims.d.ts keeps inherited upstream-mirror type imports typecheck-clean without weakening .typecheck-baseline.json.",
-      "runtime/src/agenc/upstream/utils/envUtils.ts now calls its existing protected-namespace helper export, removing the inherited typecheck/runtime mismatch without adding upstream mirror lines."
+      "runtime/src/types/upstream-ambient.d.ts keeps inherited upstream-mirror type imports typecheck-clean without weakening .typecheck-baseline.json.",
+      "runtime/src/agenc/upstream/utils/protectedNamespace.ts now exports the helper name its existing caller already uses, removing the inherited typecheck/runtime mismatch without adding upstream mirror lines."
     ]
   }
 }

@@ -45,18 +45,11 @@ export async function parseMarketplaceInput(
     try {
       const parsed = new URL(urlWithoutFragment);
       if (parsed.hostname === "github.com" || parsed.hostname === "www.github.com") {
-        const match = /^\/([^/]+\/[^/]+?)(\/|\.git|$)/u.exec(parsed.pathname);
-        if (match?.[1]) {
-          const gitUrl = urlWithoutFragment.endsWith(".git")
-            ? urlWithoutFragment
-            : `${urlWithoutFragment}.git`;
+        const source = parseGitHubUrl(parsed, ref);
+        if (source !== null) {
           return {
             ok: true,
-            source: {
-              source: "git",
-              url: gitUrl,
-              ...(ref !== undefined ? { ref } : {}),
-            },
+            source,
           };
         }
       }
@@ -84,6 +77,28 @@ export async function parseMarketplaceInput(
   }
 
   return { ok: false, unrecognized: true };
+}
+
+function parseGitHubUrl(parsed: URL, fragmentRef: string | undefined): MarketplaceSource | null {
+  const parts = parsed.pathname.split("/").filter((part) => part.length > 0);
+  const owner = parts[0];
+  const repoPart = parts[1];
+  if (owner === undefined || repoPart === undefined) return null;
+  const repo = `${owner}/${repoPart.replace(/\.git$/u, "")}`;
+  if (!repo.includes("/") || repo.endsWith("/")) return null;
+  if (parts.length >= 4 && (parts[2] === "tree" || parts[2] === "blob")) {
+    return {
+      source: "github",
+      repo,
+      ref: parts[3],
+      ...(parts.length > 4 ? { path: parts.slice(4).join("/") } : {}),
+    };
+  }
+  return {
+    source: "github",
+    repo,
+    ...(fragmentRef !== undefined ? { ref: fragmentRef } : {}),
+  };
 }
 
 async function parseLocalPath(value: string): Promise<ParsedMarketplaceInput | null> {

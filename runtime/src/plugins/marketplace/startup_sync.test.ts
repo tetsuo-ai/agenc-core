@@ -2,12 +2,13 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { ProcessRunner } from "./marketplace.js";
+import type { FetchResponse, Fetcher, ProcessRunner } from "./marketplace.js";
 import {
   curatedPluginsRepoPath,
   curatedPluginsShaPath,
   hasLocalCuratedPluginsSnapshot,
   syncCuratedPluginsRepoViaGit,
+  syncCuratedPluginsRepoViaHttp,
 } from "./startup_sync.js";
 import {
   hasStartupRemotePluginSyncMarker,
@@ -87,6 +88,99 @@ describe("startup marketplace sync", () => {
       },
     })).resolves.toBeNull();
   });
+
+  it("coalesces concurrent remote startup sync attempts with a filesystem lock", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-startup-sync-concurrent-"));
+    await writeCuratedMarketplace(curatedPluginsRepoPath(agencHome));
+    await writeFile(curatedPluginsShaPath(agencHome), "abc123\n");
+    const additiveValues: boolean[] = [];
+    let releaseSync = () => {};
+    const syncGate = new Promise<void>((resolve) => {
+      releaseSync = resolve;
+    });
+
+    const first = startStartupRemotePluginSyncOnce({
+      agencHome,
+      prerequisiteTimeoutMs: 10,
+      pollMs: 1,
+      now: () => new Date("2026-05-05T00:00:00.000Z"),
+      syncPluginsFromRemote: async (additiveOnly) => {
+        additiveValues.push(additiveOnly);
+        await syncGate;
+        return {
+          installedPluginIds: ["linear"],
+          enabledPluginIds: ["linear"],
+          disabledPluginIds: [],
+          uninstalledPluginIds: [],
+        };
+      },
+    });
+    const second = startStartupRemotePluginSyncOnce({
+      agencHome,
+      prerequisiteTimeoutMs: 10,
+      pollMs: 1,
+      syncPluginsFromRemote: async (additiveOnly) => {
+        additiveValues.push(additiveOnly);
+        return {
+          installedPluginIds: ["second"],
+          enabledPluginIds: ["second"],
+          disabledPluginIds: [],
+          uninstalledPluginIds: [],
+        };
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    releaseSync();
+    const results = await Promise.all([first, second]);
+
+    expect(results.filter((result) => result !== null)).toHaveLength(1);
+    expect(additiveValues).toEqual([true]);
+    await expect(hasStartupRemotePluginSyncMarker(agencHome)).resolves.toBe(true);
+  });
+
+  it("syncs curated marketplace zipballs without shelling out to unzip", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-http-startup-sync-"));
+    const zipball = createZip({
+      "repo/.agents/plugins/marketplace.json": JSON.stringify({
+        metadata: { name: "agenc-curated" },
+        plugins: [],
+      }),
+      "repo/.git/HEAD": "abc123\n",
+    });
+    const runCalls: string[] = [];
+
+    await expect(syncCuratedPluginsRepoViaHttp(
+      agencHome,
+      "https://agenc.tech/api/plugins/curated",
+      createCuratedZipFetcher(zipball, "abc123"),
+      async (command, args) => {
+        runCalls.push(`${command} ${args.join(" ")}`);
+        return { stdout: "", stderr: "" };
+      },
+    )).resolves.toBe("abc123");
+
+    expect(runCalls).toEqual([]);
+    await expect(readFile(join(curatedPluginsRepoPath(agencHome), ".agents", "plugins", "marketplace.json"), "utf8"))
+      .resolves.toContain("agenc-curated");
+  });
+
+  it("rejects curated marketplace zipballs that escape the extraction root", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-http-startup-sync-slip-"));
+    const zipball = createZip({
+      "repo/.agents/plugins/marketplace.json": JSON.stringify({
+        metadata: { name: "agenc-curated" },
+        plugins: [],
+      }),
+      "repo/../escape.txt": "x",
+    });
+
+    await expect(syncCuratedPluginsRepoViaHttp(
+      agencHome,
+      "https://agenc.tech/api/plugins/curated",
+      createCuratedZipFetcher(zipball, "abc123"),
+    )).rejects.toThrow("escapes extraction root");
+  });
 });
 
 async function writeCuratedMarketplace(destination: string): Promise<void> {
@@ -99,4 +193,77 @@ async function writeCuratedMarketplace(destination: string): Promise<void> {
       plugins: [],
     }, null, 2)}\n`,
   );
+}
+
+function createCuratedZipFetcher(zipball: Buffer, sha: string): Fetcher {
+  return async (url) => {
+    if (url.endsWith("/sha")) return jsonResponse({ sha });
+    if (url.includes("/zipball/")) return binaryResponse(zipball);
+    return jsonResponse({ message: "not found" }, false, 404);
+  };
+}
+
+function createZip(files: Readonly<Record<string, string>>): Buffer {
+  const localChunks: Buffer[] = [];
+  const centralChunks: Buffer[] = [];
+  let offset = 0;
+  for (const [name, content] of Object.entries(files)) {
+    const nameBytes = Buffer.from(name, "utf8");
+    const body = Buffer.from(content, "utf8");
+    const localHeader = Buffer.alloc(30);
+    localHeader.writeUInt32LE(0x04034b50, 0);
+    localHeader.writeUInt16LE(20, 4);
+    localHeader.writeUInt32LE(0, 14);
+    localHeader.writeUInt32LE(body.byteLength, 18);
+    localHeader.writeUInt32LE(body.byteLength, 22);
+    localHeader.writeUInt16LE(nameBytes.byteLength, 26);
+    localChunks.push(localHeader, nameBytes, body);
+
+    const centralHeader = Buffer.alloc(46);
+    centralHeader.writeUInt32LE(0x02014b50, 0);
+    centralHeader.writeUInt16LE(20, 4);
+    centralHeader.writeUInt16LE(20, 6);
+    centralHeader.writeUInt32LE(0, 16);
+    centralHeader.writeUInt32LE(body.byteLength, 20);
+    centralHeader.writeUInt32LE(body.byteLength, 24);
+    centralHeader.writeUInt16LE(nameBytes.byteLength, 28);
+    centralHeader.writeUInt32LE(offset, 42);
+    centralChunks.push(centralHeader, nameBytes);
+
+    offset += localHeader.byteLength + nameBytes.byteLength + body.byteLength;
+  }
+  const centralDirectory = Buffer.concat(centralChunks);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(Object.keys(files).length, 8);
+  eocd.writeUInt16LE(Object.keys(files).length, 10);
+  eocd.writeUInt32LE(centralDirectory.byteLength, 12);
+  eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...localChunks, centralDirectory, eocd]);
+}
+
+function jsonResponse(body: unknown, ok = true, status = ok ? 200 : 500): FetchResponse {
+  const text = JSON.stringify(body);
+  const bytes = Buffer.from(text, "utf8");
+  return {
+    ok,
+    status,
+    statusText: ok ? "OK" : "Error",
+    text: async () => text,
+    arrayBuffer: async () => exactArrayBuffer(bytes),
+  };
+}
+
+function binaryResponse(bytes: Buffer, ok = true, status = ok ? 200 : 500): FetchResponse {
+  return {
+    ok,
+    status,
+    statusText: ok ? "OK" : "Error",
+    text: async () => bytes.toString("utf8"),
+    arrayBuffer: async () => exactArrayBuffer(bytes),
+  };
+}
+
+function exactArrayBuffer(bytes: Buffer): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }

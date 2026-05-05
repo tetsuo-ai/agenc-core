@@ -1,5 +1,6 @@
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { inflateRawSync } from "node:zlib";
+import { dirname, join, resolve, sep } from "node:path";
 import {
   defaultFetch,
   defaultRunProcess,
@@ -21,6 +22,9 @@ const CURATED_PLUGINS_GIT_URL = "https://agenc.tech/plugins/curated.git";
 const CURATED_PLUGINS_API_BASE_URL = "https://agenc.tech/api/plugins/curated";
 const CURATED_PLUGINS_BACKUP_ARCHIVE_URL = "https://agenc.tech/api/plugins/curated/archive";
 const CURATED_PLUGINS_BACKUP_ARCHIVE_FALLBACK_VERSION = "export-backup";
+const CURATED_PLUGINS_MAX_ARCHIVE_BYTES = 50 * 1024 * 1024;
+const CURATED_PLUGINS_MAX_EXTRACTED_BYTES = 250 * 1024 * 1024;
+const CURATED_PLUGINS_MAX_ARCHIVE_ENTRIES = 20_000;
 
 export function curatedPluginsRepoPath(agencHome: string): string {
   return join(agencHome, CURATED_PLUGINS_RELATIVE_DIR);
@@ -111,7 +115,7 @@ export async function syncCuratedPluginsRepoViaHttp(
   agencHome: string,
   apiBaseUrl: string,
   fetcher: Fetcher = defaultFetch,
-  run: ProcessRunner = defaultRunProcess,
+  _run: ProcessRunner = defaultRunProcess,
 ): Promise<string> {
   const repoPath = curatedPluginsRepoPath(agencHome);
   const shaPath = curatedPluginsShaPath(agencHome);
@@ -123,7 +127,7 @@ export async function syncCuratedPluginsRepoViaHttp(
   const stagedRepoDir = await prepareCuratedRepoParentAndTempDir(repoPath);
   try {
     const zipball = await fetchCuratedRepoZipball(apiBaseUrl, remoteSha, fetcher);
-    await extractZipballToDir(zipball, stagedRepoDir, run);
+    await extractZipballToDir(zipball, stagedRepoDir);
     await ensureMarketplaceManifestExists(stagedRepoDir);
     await activateCuratedRepo(repoPath, stagedRepoDir);
     await writeCuratedPluginsSha(shaPath, remoteSha);
@@ -138,7 +142,7 @@ export async function syncCuratedPluginsRepoViaBackupArchive(
   agencHome: string,
   backupArchiveUrl: string,
   fetcher: Fetcher = defaultFetch,
-  run: ProcessRunner = defaultRunProcess,
+  _run: ProcessRunner = defaultRunProcess,
 ): Promise<string> {
   const repoPath = curatedPluginsRepoPath(agencHome);
   const shaPath = curatedPluginsShaPath(agencHome);
@@ -149,7 +153,7 @@ export async function syncCuratedPluginsRepoViaBackupArchive(
     const downloadUrl = parsed.download_url ?? parsed.downloadUrl;
     if (!downloadUrl) throw new Error("curated plugins backup archive response did not include a download URL");
     const zipball = await fetchBytes(downloadUrl, fetcher);
-    await extractZipballToDir(zipball, stagedRepoDir, run);
+    await extractZipballToDir(zipball, stagedRepoDir);
     await ensureMarketplaceManifestExists(stagedRepoDir);
     const version = await readExtractedBackupArchiveGitSha(stagedRepoDir) ??
       CURATED_PLUGINS_BACKUP_ARCHIVE_FALLBACK_VERSION;
@@ -265,20 +269,175 @@ async function fetchText(url: string, fetcher: Fetcher): Promise<string> {
 
 async function fetchBytes(url: string, fetcher: Fetcher): Promise<Buffer> {
   const response = await fetcher(url);
-  const body = Buffer.from(await response.arrayBuffer());
   if (!response.ok) {
+    const body = Buffer.from(await response.arrayBuffer());
     throw new Error(`request from ${url} failed with status ${response.status}: ${body.toString("utf8")}`);
   }
-  return body;
+  return readResponseBytesWithLimit(response, CURATED_PLUGINS_MAX_ARCHIVE_BYTES, `request from ${url}`);
 }
 
-async function extractZipballToDir(bytes: Buffer, destination: string, run: ProcessRunner): Promise<void> {
+async function extractZipballToDir(bytes: Buffer, destination: string): Promise<void> {
   await mkdir(destination, { recursive: true, mode: 0o700 });
-  const zipPath = join(destination, ".archive.zip");
-  await writeFile(zipPath, bytes);
-  await run("unzip", ["-q", zipPath, "-d", destination], {});
-  await rm(zipPath, { force: true });
+  await extractZipEntries(bytes, destination);
   await stripSingleArchiveRoot(destination);
+}
+
+async function extractZipEntries(bytes: Buffer, destination: string): Promise<void> {
+  const entries = readZipCentralDirectory(bytes);
+  let totalExtracted = 0;
+  for (const entry of entries) {
+    const outputPath = checkedArchiveOutputPath(destination, entry.name);
+    if (entry.isDirectory) {
+      await mkdir(outputPath, { recursive: true, mode: 0o700 });
+      continue;
+    }
+    totalExtracted += entry.uncompressedSize;
+    if (totalExtracted > CURATED_PLUGINS_MAX_EXTRACTED_BYTES) {
+      throw new Error(`curated plugins archive extracted size exceeded ${CURATED_PLUGINS_MAX_EXTRACTED_BYTES} bytes`);
+    }
+    const content = inflateZipEntry(bytes, entry);
+    if (content.byteLength !== entry.uncompressedSize) {
+      throw new Error(`curated plugins archive entry '${entry.name}' size mismatch`);
+    }
+    await mkdir(dirname(outputPath), { recursive: true, mode: 0o700 });
+    await writeFile(outputPath, content, { mode: 0o600 });
+  }
+}
+
+function readZipCentralDirectory(bytes: Buffer): readonly ZipEntry[] {
+  const eocdOffset = findEndOfCentralDirectory(bytes);
+  const entryCount = bytes.readUInt16LE(eocdOffset + 10);
+  const centralDirectorySize = bytes.readUInt32LE(eocdOffset + 12);
+  let offset = bytes.readUInt32LE(eocdOffset + 16);
+  if (entryCount > CURATED_PLUGINS_MAX_ARCHIVE_ENTRIES) {
+    throw new Error(`curated plugins archive has too many entries: ${entryCount}`);
+  }
+  if (offset + centralDirectorySize > bytes.byteLength) {
+    throw new Error("curated plugins archive central directory is truncated");
+  }
+  const entries: ZipEntry[] = [];
+  for (let index = 0; index < entryCount; index += 1) {
+    if (offset + 46 > bytes.byteLength) {
+      throw new Error("curated plugins archive central directory entry is truncated");
+    }
+    if (bytes.readUInt32LE(offset) !== 0x02014b50) {
+      throw new Error("curated plugins archive central directory is malformed");
+    }
+    const method = bytes.readUInt16LE(offset + 10);
+    const compressedSize = bytes.readUInt32LE(offset + 20);
+    const uncompressedSize = bytes.readUInt32LE(offset + 24);
+    const nameLength = bytes.readUInt16LE(offset + 28);
+    const extraLength = bytes.readUInt16LE(offset + 30);
+    const commentLength = bytes.readUInt16LE(offset + 32);
+    const externalAttributes = bytes.readUInt32LE(offset + 38);
+    const localHeaderOffset = bytes.readUInt32LE(offset + 42);
+    if (compressedSize === 0xffffffff || uncompressedSize === 0xffffffff || localHeaderOffset === 0xffffffff) {
+      throw new Error("curated plugins archive uses unsupported zip64 entries");
+    }
+    if (offset + 46 + nameLength + extraLength + commentLength > bytes.byteLength) {
+      throw new Error("curated plugins archive central directory entry is truncated");
+    }
+    const name = bytes.subarray(offset + 46, offset + 46 + nameLength).toString("utf8");
+    if ((externalAttributes >>> 16 & 0o170000) === 0o120000) {
+      throw new Error(`curated plugins archive entry '${name}' is a symlink`);
+    }
+    if (method !== 0 && method !== 8) {
+      throw new Error(`curated plugins archive entry '${name}' uses unsupported compression method ${method}`);
+    }
+    entries.push({
+      name,
+      method,
+      compressedSize,
+      uncompressedSize,
+      localHeaderOffset,
+      isDirectory: name.endsWith("/"),
+    });
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+  return entries;
+}
+
+function findEndOfCentralDirectory(bytes: Buffer): number {
+  const minOffset = Math.max(0, bytes.byteLength - 65_557);
+  for (let offset = bytes.byteLength - 22; offset >= minOffset; offset -= 1) {
+    if (bytes.readUInt32LE(offset) === 0x06054b50) return offset;
+  }
+  throw new Error("curated plugins archive is missing a zip central directory");
+}
+
+function inflateZipEntry(bytes: Buffer, entry: ZipEntry): Buffer {
+  if (entry.localHeaderOffset + 30 > bytes.byteLength) {
+    throw new Error(`curated plugins archive local header is truncated for '${entry.name}'`);
+  }
+  if (bytes.readUInt32LE(entry.localHeaderOffset) !== 0x04034b50) {
+    throw new Error(`curated plugins archive local header is malformed for '${entry.name}'`);
+  }
+  const localNameLength = bytes.readUInt16LE(entry.localHeaderOffset + 26);
+  const localExtraLength = bytes.readUInt16LE(entry.localHeaderOffset + 28);
+  const dataStart = entry.localHeaderOffset + 30 + localNameLength + localExtraLength;
+  const dataEnd = dataStart + entry.compressedSize;
+  if (dataEnd > bytes.byteLength) {
+    throw new Error(`curated plugins archive entry '${entry.name}' is truncated`);
+  }
+  const compressed = bytes.subarray(dataStart, dataEnd);
+  if (entry.method === 0) return Buffer.from(compressed);
+  return inflateRawSync(compressed, { maxOutputLength: entry.uncompressedSize + 1 });
+}
+
+function checkedArchiveOutputPath(destination: string, entryName: string): string {
+  const root = resolve(destination);
+  const parts = entryName.split(/[\\/]+/u).filter((part) => part.length > 0 && part !== ".");
+  if (parts.length === 0) {
+    throw new Error("curated plugins archive entry has an empty path");
+  }
+  if (parts.some((part) => part === "..") || entryName.startsWith("/") || /^[a-zA-Z]:[\\/]/u.test(entryName)) {
+    throw new Error(`curated plugins archive entry '${entryName}' escapes extraction root`);
+  }
+  const output = resolve(root, ...parts);
+  if (output !== root && !output.startsWith(`${root}${sep}`)) {
+    throw new Error(`curated plugins archive entry '${entryName}' escapes extraction root`);
+  }
+  return output;
+}
+
+async function readResponseBytesWithLimit(
+  response: { readonly body?: ReadableStream<Uint8Array> | null; readonly arrayBuffer: () => Promise<ArrayBuffer> },
+  maxBytes: number,
+  label: string,
+): Promise<Buffer> {
+  if (response.body !== undefined && response.body !== null) {
+    const reader = response.body.getReader();
+    const chunks: Buffer[] = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > maxBytes) {
+          throw new Error(`${label} exceeded maximum size of ${maxBytes} bytes`);
+        }
+        chunks.push(Buffer.from(value));
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    return Buffer.concat(chunks, total);
+  }
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.byteLength > maxBytes) {
+    throw new Error(`${label} exceeded maximum size of ${maxBytes} bytes`);
+  }
+  return bytes;
+}
+
+interface ZipEntry {
+  readonly name: string;
+  readonly method: number;
+  readonly compressedSize: number;
+  readonly uncompressedSize: number;
+  readonly localHeaderOffset: number;
+  readonly isDirectory: boolean;
 }
 
 async function stripSingleArchiveRoot(destination: string): Promise<void> {

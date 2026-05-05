@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { hasLocalCuratedPluginsSnapshot } from "./startup_sync.js";
 
@@ -18,10 +18,15 @@ export interface StartupRemotePluginSyncOptions {
 }
 
 const STARTUP_REMOTE_PLUGIN_SYNC_MARKER_FILE = "plugins/.app-server-remote-plugin-sync-v1";
+const STARTUP_REMOTE_PLUGIN_SYNC_LOCK_DIR = "plugins/.app-server-remote-plugin-sync-v1.lock";
 const STARTUP_REMOTE_PLUGIN_SYNC_PREREQUISITE_TIMEOUT_MS = 10_000;
 
 export function startupRemotePluginSyncMarkerPath(agencHome: string): string {
   return join(agencHome, STARTUP_REMOTE_PLUGIN_SYNC_MARKER_FILE);
+}
+
+export function startupRemotePluginSyncLockPath(agencHome: string): string {
+  return join(agencHome, STARTUP_REMOTE_PLUGIN_SYNC_LOCK_DIR);
 }
 
 export async function hasStartupRemotePluginSyncMarker(agencHome: string): Promise<boolean> {
@@ -41,9 +46,24 @@ export async function startStartupRemotePluginSyncOnce(
     options.pollMs ?? 50,
   );
   if (!ready) return null;
-  const result = await options.syncPluginsFromRemote(true);
-  await writeStartupRemotePluginSyncMarker(options.agencHome, options.now?.() ?? new Date());
-  return result;
+  const lockPath = startupRemotePluginSyncLockPath(options.agencHome);
+  await mkdir(dirname(lockPath), { recursive: true, mode: 0o700 });
+  try {
+    await mkdir(lockPath, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return null;
+    throw error;
+  }
+  try {
+    if (await hasStartupRemotePluginSyncMarker(options.agencHome)) {
+      return null;
+    }
+    const result = await options.syncPluginsFromRemote(true);
+    await writeStartupRemotePluginSyncMarker(options.agencHome, options.now?.() ?? new Date());
+    return result;
+  } finally {
+    await rm(lockPath, { recursive: true, force: true });
+  }
 }
 
 export async function waitForStartupRemotePluginSyncPrerequisites(

@@ -3,6 +3,9 @@ import {
   type MarketplaceSource,
 } from "./marketplace.js";
 
+const MAX_POLICY_PATTERN_LENGTH = 256;
+const MAX_POLICY_PATTERN_VALUE_LENGTH = 2048;
+
 export interface MarketplacePolicy {
   readonly strictKnownMarketplaces?: readonly MarketplaceSource[];
   readonly blockedMarketplaces?: readonly MarketplaceSource[];
@@ -151,14 +154,14 @@ export function isSourceAllowedByPolicy(
     if (hostPattern !== null) {
       const host = extractHostFromSource(source);
       if (host === null) return false;
-      return new RegExp(hostPattern).test(host);
+      return matchesPolicyPattern(hostPattern, host);
     }
     const pathPattern = getSettingsPattern(allowed, "pathPattern:");
     if (pathPattern !== null) {
       const path = source.source === "file" || source.source === "directory" || source.source === "local"
         ? source.path
         : null;
-      return path !== null && new RegExp(pathPattern).test(path);
+      return path !== null && matchesPolicyPattern(pathPattern, path);
     }
     return areSourcesEqual(source, allowed);
   });
@@ -274,4 +277,96 @@ function optionalEq(left: string | undefined, right: string | undefined): boolea
 function getSettingsPattern(source: MarketplaceSource, prefix: string): string | null {
   if (source.source !== "settings" || !source.name.startsWith(prefix)) return null;
   return source.name.slice(prefix.length);
+}
+
+function matchesPolicyPattern(pattern: string, value: string): boolean {
+  if (
+    pattern.length === 0 ||
+    pattern.length > MAX_POLICY_PATTERN_LENGTH ||
+    value.length > MAX_POLICY_PATTERN_VALUE_LENGTH
+  ) {
+    return false;
+  }
+  const compiled = compileSafePolicyPattern(pattern);
+  if (compiled === null) return false;
+  const starts = compiled.anchorStart ? [0] : [...Array(value.length + 1).keys()];
+  return starts.some((start) => matchSafePolicyTokens(value, compiled.tokens, start, compiled.anchorEnd));
+}
+
+type PolicyPatternToken =
+  | { readonly type: "literal"; readonly value: string }
+  | { readonly type: "any" }
+  | { readonly type: "many" };
+
+function compileSafePolicyPattern(pattern: string): {
+  readonly anchorStart: boolean;
+  readonly anchorEnd: boolean;
+  readonly tokens: readonly PolicyPatternToken[];
+} | null {
+  const anchorStart = pattern.startsWith("^");
+  const anchorEnd = hasTrailingAnchor(pattern);
+  const end = anchorEnd ? pattern.length - 1 : pattern.length;
+  const tokens: PolicyPatternToken[] = [];
+  for (let index = anchorStart ? 1 : 0; index < end; index += 1) {
+    const ch = pattern[index]!;
+    if (ch === "\\") {
+      const escaped = pattern[index + 1];
+      if (escaped === undefined || index + 1 >= end) return null;
+      tokens.push({ type: "literal", value: escaped });
+      index += 1;
+      continue;
+    }
+    if (ch === "." && pattern[index + 1] === "*" && index + 1 < end) {
+      tokens.push({ type: "many" });
+      index += 1;
+      continue;
+    }
+    if (ch === ".") {
+      tokens.push({ type: "any" });
+      continue;
+    }
+    if ("+*?()[]{}|".includes(ch)) return null;
+    tokens.push({ type: "literal", value: ch });
+  }
+  return { anchorStart, anchorEnd, tokens };
+}
+
+function hasTrailingAnchor(pattern: string): boolean {
+  if (!pattern.endsWith("$")) return false;
+  let escapes = 0;
+  for (let index = pattern.length - 2; index >= 0 && pattern[index] === "\\"; index -= 1) {
+    escapes += 1;
+  }
+  return escapes % 2 === 0;
+}
+
+function matchSafePolicyTokens(
+  value: string,
+  tokens: readonly PolicyPatternToken[],
+  start: number,
+  anchorEnd: boolean,
+): boolean {
+  const memo = new Map<string, boolean>();
+  const match = (valueIndex: number, tokenIndex: number): boolean => {
+    const key = `${valueIndex}:${tokenIndex}`;
+    const cached = memo.get(key);
+    if (cached !== undefined) return cached;
+    let result: boolean;
+    const token = tokens[tokenIndex];
+    if (token === undefined) {
+      result = anchorEnd ? valueIndex === value.length : valueIndex <= value.length;
+    } else if (token.type === "many") {
+      result = match(valueIndex, tokenIndex + 1) ||
+        (valueIndex < value.length && match(valueIndex + 1, tokenIndex));
+    } else if (valueIndex >= value.length) {
+      result = false;
+    } else if (token.type === "any") {
+      result = match(valueIndex + 1, tokenIndex + 1);
+    } else {
+      result = value[valueIndex] === token.value && match(valueIndex + 1, tokenIndex + 1);
+    }
+    memo.set(key, result);
+    return result;
+  };
+  return match(start, 0);
 }

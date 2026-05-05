@@ -114,7 +114,7 @@ export async function extractPluginBundleTarGz(
   maxTotalBytes = REMOTE_PLUGIN_BUNDLE_MAX_EXTRACTED_BYTES,
 ): Promise<void> {
   await mkdir(destination, { recursive: true, mode: 0o700 });
-  const tar = gunzipSync(bytes);
+  const tar = gunzipTarWithLimit(bytes, maxTotalBytes);
   let offset = 0;
   let extractedBytes = 0;
   while (offset + 512 <= tar.length) {
@@ -186,11 +186,7 @@ async function downloadRemotePluginBundleWithLimit(
     const body = (await response.text()).slice(0, REMOTE_PLUGIN_BUNDLE_ERROR_BODY_MAX_BYTES);
     throw new Error(`remote plugin bundle download from ${bundleDownloadUrl} failed with status ${response.status}: ${body}`);
   }
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.byteLength > maxBytes) {
-    throw new Error(`remote plugin bundle download from ${bundleDownloadUrl} exceeded maximum size of ${maxBytes} bytes`);
-  }
-  return bytes;
+  return readResponseBytesWithLimit(response, maxBytes, `remote plugin bundle download from ${bundleDownloadUrl}`);
 }
 
 async function findExtractedPluginRoot(extractionRoot: string): Promise<string> {
@@ -244,6 +240,19 @@ function readTarOctal(header: Buffer, offset: number, length: number): number {
   return raw.length === 0 ? 0 : Number.parseInt(raw, 8);
 }
 
+function gunzipTarWithLimit(bytes: Buffer, maxTotalBytes: number): Buffer {
+  try {
+    const output = gunzipSync(bytes, { maxOutputLength: maxTotalBytes + 1 });
+    if (output.byteLength > maxTotalBytes) {
+      throw new Error(`remote plugin bundle decompressed size exceeded maximum size of ${maxTotalBytes} bytes`);
+    }
+    return output;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("maximum size")) throw error;
+    throw new Error(`remote plugin bundle could not be decompressed within ${maxTotalBytes} bytes`);
+  }
+}
+
 function enforceTotalExtractedSize(
   entrySize: number,
   extractedBytes: number,
@@ -264,6 +273,37 @@ async function pathExists(path: string): Promise<boolean> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
   }
+}
+
+async function readResponseBytesWithLimit(
+  response: { readonly body?: ReadableStream<Uint8Array> | null; readonly arrayBuffer: () => Promise<ArrayBuffer> },
+  maxBytes: number,
+  label: string,
+): Promise<Buffer> {
+  if (response.body !== undefined && response.body !== null) {
+    const reader = response.body.getReader();
+    const chunks: Buffer[] = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > maxBytes) {
+          throw new Error(`${label} exceeded maximum size of ${maxBytes} bytes`);
+        }
+        chunks.push(Buffer.from(value));
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    return Buffer.concat(chunks, total);
+  }
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.byteLength > maxBytes) {
+    throw new Error(`${label} exceeded maximum size of ${maxBytes} bytes`);
+  }
+  return bytes;
 }
 
 export async function readInstalledRemotePluginManifest(installPath: string): Promise<unknown> {

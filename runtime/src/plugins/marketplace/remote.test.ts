@@ -87,6 +87,25 @@ describe("remote plugin marketplace API", () => {
     expect(() => validateRemotePluginId("linear")).not.toThrow();
     expect(() => validateRemotePluginId("bad/id")).toThrow("invalid remote plugin id");
   });
+
+  it("rejects repeated remote pagination tokens", async () => {
+    const fetcher: Fetcher = async (url) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/ps/plugins/list") {
+        return jsonResponse({
+          plugins: [],
+          pagination: { next_page_token: "same-token" },
+        });
+      }
+      if (parsed.pathname === "/ps/plugins/installed") {
+        return jsonResponse({ plugins: [], pagination: {} });
+      }
+      return jsonResponse({ message: "not found" }, false, 404);
+    };
+
+    await expect(fetchRemoteMarketplaces(config, auth, fetcher))
+      .rejects.toThrow("repeated token");
+  });
 });
 
 function createRemoteFetcher(calls: string[] = []): Fetcher {
