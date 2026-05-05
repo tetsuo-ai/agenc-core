@@ -1,4 +1,4 @@
-type ConfigScope = string
+import type { ConfigScope } from 'src/services/mcp/types.js'
 import type { ZodError, ZodIssue } from 'zod/v4'
 import { jsonParse } from '../slowOperations.js'
 import { plural } from '../stringUtils.js'

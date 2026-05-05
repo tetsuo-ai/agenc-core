@@ -118,7 +118,7 @@ export interface PluginDependencyIssue {
   readonly source: string;
   readonly plugin: string;
   readonly dependency: string;
-  readonly reason: "cross-marketplace" | "cycle" | "not-enabled" | "not-found";
+  readonly reason: "ambiguous" | "cross-marketplace" | "cycle" | "not-enabled" | "not-found";
 }
 
 interface SignatureFile {
@@ -324,12 +324,8 @@ export function verifyPluginDependencyState(plugins: readonly LoadedPlugin[]): {
   const idBySource = new Map(plugins.map((plugin) => [plugin.source, pluginDependencyIdentifier(plugin)] as const));
   const known = new Set(idBySource.values());
   const enabled = new Set(plugins.filter((plugin) => plugin.enabled).map((plugin) => idBySource.get(plugin.source)!));
-  const knownByName = new Set([...known].map((id) => parsePluginIdentifier(id).name));
-  const enabledByName = new Map<string, number>();
-  for (const id of enabled) {
-    const name = parsePluginIdentifier(id).name;
-    enabledByName.set(name, (enabledByName.get(name) ?? 0) + 1);
-  }
+  const knownByName = pluginIdsByName(plugins, idBySource, () => true);
+  const enabledByName = pluginIdsByName(plugins, idBySource, (plugin) => plugin.enabled);
 
   const errors: PluginDependencyIssue[] = [];
   let changed = true;
@@ -346,27 +342,24 @@ export function verifyPluginDependencyState(plugins: readonly LoadedPlugin[]): {
             enabledByName,
             errors,
             plugin,
+            pluginId,
             dep,
             reason: "cross-marketplace",
           });
           changed = true;
           break;
         }
-        const isBare = parsePluginIdentifier(dep).marketplace === undefined;
-        const satisfied = isBare
-          ? (enabledByName.get(dep) ?? 0) > 0
-          : enabled.has(dep);
-        if (satisfied) continue;
+        const dependencyState = dependencySatisfactionState(dep, enabled, enabledByName, knownByName, known);
+        if (dependencyState.ok) continue;
 
         demotePluginForDependency({
           enabled,
           enabledByName,
           errors,
           plugin,
+          pluginId,
           dep,
-          reason: (isBare ? knownByName.has(dep) : known.has(dep))
-            ? "not-enabled"
-            : "not-found",
+          reason: dependencyState.reason,
         });
         changed = true;
         break;
@@ -390,7 +383,7 @@ export function verifyPluginDependencyState(plugins: readonly LoadedPlugin[]): {
         if (enabled.has(dep)) deps.push(dep);
         continue;
       }
-      const matchingEnabled = [...enabled].filter((candidate) => parsePluginIdentifier(candidate).name === dep);
+      const matchingEnabled = [...(enabledByName.get(dep) ?? [])];
       if (matchingEnabled.length === 1) deps.push(matchingEnabled[0]!);
     }
     dependencyIdsById.set(id, deps);
@@ -422,9 +415,9 @@ export function verifyPluginDependencyState(plugins: readonly LoadedPlugin[]): {
     if (!enabled.delete(id)) continue;
     const plugin = pluginById.get(id);
     if (!plugin) continue;
-    const count = enabledByName.get(plugin.name) ?? 0;
-    if (count <= 1) enabledByName.delete(plugin.name);
-    else enabledByName.set(plugin.name, count - 1);
+    const byName = enabledByName.get(plugin.name);
+    byName?.delete(id);
+    if (byName?.size === 0) enabledByName.delete(plugin.name);
     errors.push({
       source: plugin.source,
       plugin: plugin.name,
@@ -446,27 +439,24 @@ export function verifyPluginDependencyState(plugins: readonly LoadedPlugin[]): {
             enabledByName,
             errors,
             plugin,
+            pluginId,
             dep,
             reason: "cross-marketplace",
           });
           changed = true;
           break;
         }
-        const isBare = parsePluginIdentifier(dep).marketplace === undefined;
-        const satisfied = isBare
-          ? (enabledByName.get(dep) ?? 0) > 0
-          : enabled.has(dep);
-        if (satisfied) continue;
+        const dependencyState = dependencySatisfactionState(dep, enabled, enabledByName, knownByName, known);
+        if (dependencyState.ok) continue;
 
         demotePluginForDependency({
           enabled,
           enabledByName,
           errors,
           plugin,
+          pluginId,
           dep,
-          reason: (isBare ? knownByName.has(dep) : known.has(dep))
-            ? "not-enabled"
-            : "not-found",
+          reason: dependencyState.reason,
         });
         changed = true;
         break;
@@ -491,16 +481,17 @@ function isCrossMarketplaceDependency(pluginId: string, dependencyId: string): b
 
 function demotePluginForDependency(options: {
   readonly enabled: Set<string>;
-  readonly enabledByName: Map<string, number>;
+  readonly enabledByName: Map<string, Set<string>>;
   readonly errors: PluginDependencyIssue[];
   readonly plugin: LoadedPlugin;
+  readonly pluginId: string;
   readonly dep: string;
   readonly reason: PluginDependencyIssue["reason"];
 }): void {
-  if (!options.enabled.delete(pluginDependencyIdentifier(options.plugin))) return;
-  const count = options.enabledByName.get(options.plugin.name) ?? 0;
-  if (count <= 1) options.enabledByName.delete(options.plugin.name);
-  else options.enabledByName.set(options.plugin.name, count - 1);
+  if (!options.enabled.delete(options.pluginId)) return;
+  const byName = options.enabledByName.get(options.plugin.name);
+  byName?.delete(options.pluginId);
+  if (byName?.size === 0) options.enabledByName.delete(options.plugin.name);
   options.errors.push({
     source: options.plugin.source,
     plugin: options.plugin.name,
@@ -509,11 +500,46 @@ function demotePluginForDependency(options: {
   });
 }
 
+function pluginIdsByName(
+  plugins: readonly LoadedPlugin[],
+  idBySource: ReadonlyMap<string, string>,
+  include: (plugin: LoadedPlugin) => boolean,
+): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const plugin of plugins) {
+    if (!include(plugin)) continue;
+    const id = idBySource.get(plugin.source);
+    if (!id) continue;
+    const ids = out.get(plugin.name) ?? new Set<string>();
+    ids.add(id);
+    out.set(plugin.name, ids);
+  }
+  return out;
+}
+
+function dependencySatisfactionState(
+  dependencyId: string,
+  enabled: ReadonlySet<string>,
+  enabledByName: ReadonlyMap<string, ReadonlySet<string>>,
+  knownByName: ReadonlyMap<string, ReadonlySet<string>>,
+  known: ReadonlySet<string>,
+): { readonly ok: true } | { readonly ok: false; readonly reason: PluginDependencyIssue["reason"] } {
+  if (parsePluginIdentifier(dependencyId).marketplace !== undefined) {
+    return enabled.has(dependencyId)
+      ? { ok: true }
+      : { ok: false, reason: known.has(dependencyId) ? "not-enabled" : "not-found" };
+  }
+  const enabledMatches = enabledByName.get(dependencyId)?.size ?? 0;
+  if (enabledMatches === 1) return { ok: true };
+  if (enabledMatches > 1) return { ok: false, reason: "ambiguous" };
+  return {
+    ok: false,
+    reason: knownByName.has(dependencyId) ? "not-enabled" : "not-found",
+  };
+}
+
 export function pluginDependencyIdentifier(plugin: LoadedPlugin): string {
-  const sourceId = parsePluginIdentifier(plugin.source);
-  return sourceId.name === plugin.name && sourceId.marketplace
-    ? plugin.source
-    : plugin.name;
+  return plugin.source || plugin.name;
 }
 
 export function findPluginReverseDependents(
@@ -749,11 +775,9 @@ async function assertZipSafe(
   options: PluginResolverOptions,
 ): Promise<void> {
   const listing = await runProcess(options, "unzip", ["-Z1", bundlePath]);
-  for (const entry of listing.stdout.split("\n")) {
-    assertArchiveEntryPathSafe(entry);
-  }
+  assertArchiveListingSafe(listing.stdout, options);
   const verbose = await runProcess(options, "unzip", ["-Z", "-v", bundlePath]);
-  assertZipMetadataSafe(verbose.stdout);
+  assertZipMetadataSafe(verbose.stdout, options);
 }
 
 async function assertTarballSafe(
@@ -761,18 +785,31 @@ async function assertTarballSafe(
   options: PluginResolverOptions,
 ): Promise<void> {
   const listing = await runProcess(options, "tar", tarListArgs(tarballPath));
-  for (const entry of listing.stdout.split("\n")) {
-    assertArchiveEntryPathSafe(entry);
-  }
+  assertArchiveListingSafe(listing.stdout, options);
   const verbose = await runProcess(options, "tar", tarVerboseListArgs(tarballPath));
-  for (const line of verbose.stdout.split("\n")) {
+  assertTarMetadataSafe(verbose.stdout, options);
+}
+
+function assertTarMetadataSafe(
+  verboseListing: string,
+  options: Pick<PluginResolverOptions, "maxExtractDepth" | "maxExtractedBytes" | "maxExtractedFiles">,
+): void {
+  const entries: ArchivePreflightEntry[] = [];
+  for (const line of verboseListing.split("\n")) {
     if (/^[lh]/u.test(line)) {
       throw new Error("plugin archive contains a symlink or hardlink entry");
     }
+    const parsed = parseTarVerboseLine(line);
+    if (parsed) entries.push(parsed);
   }
+  assertArchivePreExtractionQuotas(entries, options);
 }
 
-function assertZipMetadataSafe(verboseListing: string): void {
+function assertZipMetadataSafe(
+  verboseListing: string,
+  options: Pick<PluginResolverOptions, "maxExtractedBytes">,
+): void {
+  let byteCount = 0;
   for (const match of verboseListing.matchAll(/Unix file attributes \(([0-7]+) octal\):\s*(\S+)/gu)) {
     const mode = Number.parseInt(match[1]!, 8);
     const kind = mode & 0o170000;
@@ -780,6 +817,70 @@ function assertZipMetadataSafe(verboseListing: string): void {
       throw new Error(`plugin archive contains an unsafe zip entry type: ${match[2]}`);
     }
   }
+  for (const match of verboseListing.matchAll(/uncompressed size:\s*([0-9]+)\s+bytes/giu)) {
+    byteCount += Number.parseInt(match[1]!, 10);
+  }
+  const maxBytes = options.maxExtractedBytes ?? DEFAULT_MAX_EXTRACTED_BYTES;
+  if (byteCount > maxBytes) throw new Error(`plugin archive exceeds maximum extracted size: ${byteCount} > ${maxBytes}`);
+}
+
+interface ArchivePreflightEntry {
+  readonly path: string;
+  readonly kind: "directory" | "file";
+  readonly size?: number;
+}
+
+function assertArchiveListingSafe(
+  listing: string,
+  options: Pick<PluginResolverOptions, "maxExtractDepth" | "maxExtractedFiles">,
+): void {
+  const entries: ArchivePreflightEntry[] = [];
+  for (const entry of listing.split("\n")) {
+    assertArchiveEntryPathSafe(entry);
+    const path = entry.trim();
+    if (!path) continue;
+    entries.push({
+      path,
+      kind: path.endsWith("/") ? "directory" : "file",
+    });
+  }
+  assertArchivePreExtractionQuotas(entries, options);
+}
+
+function assertArchivePreExtractionQuotas(
+  entries: readonly ArchivePreflightEntry[],
+  options: Pick<PluginResolverOptions, "maxExtractDepth" | "maxExtractedBytes" | "maxExtractedFiles">,
+): void {
+  const maxDepth = options.maxExtractDepth ?? DEFAULT_MAX_EXTRACT_DEPTH;
+  const maxFiles = options.maxExtractedFiles ?? DEFAULT_MAX_EXTRACTED_FILES;
+  const maxBytes = options.maxExtractedBytes ?? DEFAULT_MAX_EXTRACTED_BYTES;
+  let fileCount = 0;
+  let byteCount = 0;
+  for (const entry of entries) {
+    const depth = archiveEntryDepth(entry.path);
+    if (depth > maxDepth) throw new Error(`plugin archive exceeds maximum extraction depth: ${depth} > ${maxDepth}`);
+    if (entry.kind === "directory") continue;
+    fileCount += 1;
+    if (entry.size !== undefined) byteCount += entry.size;
+    if (fileCount > maxFiles) throw new Error(`plugin archive exceeds maximum extracted file count: ${fileCount} > ${maxFiles}`);
+    if (byteCount > maxBytes) throw new Error(`plugin archive exceeds maximum extracted size: ${byteCount} > ${maxBytes}`);
+  }
+}
+
+function parseTarVerboseLine(line: string): ArchivePreflightEntry | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  const match = /^([d-])\S*\s+\S+\s+([0-9]+)\s+\S+\s+\S+\s+(.+)$/u.exec(trimmed);
+  if (!match) return null;
+  return {
+    kind: match[1] === "d" ? "directory" : "file",
+    path: match[3]!,
+    size: Number.parseInt(match[2]!, 10),
+  };
+}
+
+function archiveEntryDepth(path: string): number {
+  return path.trim().replace(/\\/g, "/").split("/").filter(Boolean).length;
 }
 
 function tarListArgs(tarballPath: string): string[] {
@@ -968,12 +1069,18 @@ export async function defaultPluginProcessRunner(
     let stdoutBytes = 0;
     let stderrBytes = 0;
     let timedOut = false;
+    let killTimeout: NodeJS.Timeout | undefined;
     const timeout = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), 2_000).unref();
+      killTimeout = setTimeout(() => child.kill("SIGKILL"), 2_000);
+      killTimeout.unref();
     }, timeoutMs);
     timeout.unref();
+    const clearProcessTimers = () => {
+      clearTimeout(timeout);
+      if (killTimeout) clearTimeout(killTimeout);
+    };
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
@@ -987,11 +1094,11 @@ export async function defaultPluginProcessRunner(
       stderrBytes = appended.bytes;
     });
     child.on("error", (error) => {
-      clearTimeout(timeout);
+      clearProcessTimers();
       reject(error);
     });
     child.on("close", (code, signal) => {
-      clearTimeout(timeout);
+      clearProcessTimers();
       if (timedOut) {
         reject(new Error(`${command} timed out after ${timeoutMs}ms`));
         return;

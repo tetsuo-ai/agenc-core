@@ -378,6 +378,72 @@ describe("plugin source resolution", () => {
     });
   });
 
+  test("rejects archive quota metadata before extraction", async () => {
+    await withTempDir(async (root) => {
+      const calls: string[] = [];
+      const runProcess: PluginProcessRunner = async (command, args) => {
+        calls.push(`${command} ${args.join(" ")}`);
+        if (command === "tar") {
+          if (args[0] === "-tzf") return { stdout: safeTarListing("package"), stderr: "" };
+          if (args[0] === "-tvzf") {
+            return {
+              stdout: [
+                "-rw-r--r-- 0/0 2048 2026-05-05 00:00 package/.agenc-plugin/plugin.json",
+                "-rw-r--r-- 0/0 2048 2026-05-05 00:00 package/commands/hello.md",
+              ].join("\n"),
+              stderr: "",
+            };
+          }
+        }
+        throw new Error(`unexpected process: ${command} ${args.join(" ")}`);
+      };
+
+      await expect(
+        resolvePluginSource("https://agenc.tech/plugins/quota.tgz", {
+          agencHome: join(root, "home"),
+          workspaceRoot: root,
+          fetchBytes: async () => Buffer.from("fixture"),
+          runProcess,
+          maxExtractedBytes: 128,
+        }),
+      ).rejects.toThrow(/maximum extracted size/u);
+      expect(calls.some((call) => call.startsWith("tar -xzf"))).toBe(false);
+    });
+  });
+
+  test("rejects bundle quota metadata before extraction", async () => {
+    await withTempDir(async (root) => {
+      const calls: string[] = [];
+      const runProcess: PluginProcessRunner = async (command, args) => {
+        calls.push(`${command} ${args.join(" ")}`);
+        if (command === "unzip") {
+          if (args[0] === "-Z1") return { stdout: safeZipListing(), stderr: "" };
+          if (args[0] === "-Z" && args[1] === "-v") {
+            return {
+              stdout: [
+                safeZipVerboseListing(),
+                "  uncompressed size:                            2048 bytes",
+              ].join("\n"),
+              stderr: "",
+            };
+          }
+        }
+        throw new Error(`unexpected process: ${command} ${args.join(" ")}`);
+      };
+
+      await expect(
+        resolvePluginSource("https://agenc.tech/plugins/quota.mcpb", {
+          agencHome: join(root, "home"),
+          workspaceRoot: root,
+          fetchBytes: async () => Buffer.from("fixture"),
+          runProcess,
+          maxExtractedBytes: 128,
+        }),
+      ).rejects.toThrow(/maximum extracted size/u);
+      expect(calls.some((call) => call.startsWith("unzip -q"))).toBe(false);
+    });
+  });
+
   test("resolves dependency closures and demotes plugins with unsatisfied dependencies", async () => {
     const lookup = async (id: string) => {
       const dependencies: Record<string, readonly string[]> = {
@@ -438,6 +504,17 @@ describe("plugin source resolution", () => {
       source: "app@main",
       dependency: "lib@other",
       reason: "cross-marketplace",
+    }));
+    const duplicateNameState = verifyPluginDependencyState([
+      loadedPlugin("app", "local-app", true, ["lib"]),
+      loadedPlugin("lib", "local-lib-a", true),
+      loadedPlugin("lib", "local-lib-b", true),
+    ]);
+    expect([...duplicateNameState.demoted]).toEqual(["local-app"]);
+    expect(duplicateNameState.errors).toContainEqual(expect.objectContaining({
+      source: "local-app",
+      dependency: "lib",
+      reason: "ambiguous",
     }));
     expect(findPluginReverseDependents("app@main", [
       loadedPlugin("app", "app@main", true),

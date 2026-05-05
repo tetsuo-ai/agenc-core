@@ -218,7 +218,7 @@ export const jsonParse: typeof JSON.parse = (text, reviver) => {
  * import { clone } from './slowOperations.js'
  * const copy = clone(originalObject)
  */
-export function clone<T>(value: T, options?: Parameters<typeof structuredClone>[1]): T {
+export function clone<T>(value: T, options?: StructuredSerializeOptions): T {
   using _ = slowLogging`structuredClone(${value})`
   return structuredClone(value, options)
 }
