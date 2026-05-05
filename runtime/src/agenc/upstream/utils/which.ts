@@ -56,9 +56,8 @@ function whichNodeSync(command: string): string | null {
 }
 
 const bunWhich =
-  typeof Bun !== 'undefined' && typeof Bun.which === 'function'
-    ? Bun.which
-    : null
+  (globalThis as typeof globalThis & { readonly Bun?: { readonly which?: (command: string) => string | null } }).Bun?.which ??
+  null
 
 /**
  * Finds the full path to a command executable.

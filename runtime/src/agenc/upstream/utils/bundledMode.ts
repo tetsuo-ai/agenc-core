@@ -14,9 +14,7 @@ export function isRunningWithBun(): boolean {
  * This checks for embedded files which are present in compiled binaries.
  */
 export function isInBundledMode(): boolean {
-  return (
-    typeof Bun !== 'undefined' &&
-    Array.isArray(Bun.embeddedFiles) &&
-    Bun.embeddedFiles.length > 0
+  return Boolean(
+    (globalThis as typeof globalThis & { readonly Bun?: { readonly embeddedFiles?: readonly string[] } }).Bun?.embeddedFiles?.length,
   )
 }

@@ -7,6 +7,13 @@ import { createPluginFromPath, loadPlugins, type LoadedPlugin } from "../loader.
 import { findPluginManifestPath } from "../manifest.js";
 import { validateMarketplaceManifest, validatePluginManifest, type ValidationResult } from "../validation.js";
 import { deletePluginDataDir, sanitizePluginId } from "../directories.js";
+import {
+  resolvePluginSource,
+  type PluginFetchTelemetry,
+  type PluginProcessRunner,
+  type PluginResolutionKind,
+  type ResolvedPluginSource,
+} from "../resolution.js";
 
 export type PluginScope = "user" | "project" | "local";
 
@@ -42,12 +49,20 @@ export interface InstallPluginInput extends PluginOperationOptions {
   readonly scope?: PluginScope;
   readonly name?: string;
   readonly force?: boolean;
+  readonly refreshCache?: boolean;
+  readonly requireSignature?: boolean;
+  readonly publishersPath?: string;
+  readonly runResolutionProcess?: PluginProcessRunner;
+  readonly fetchResolutionBytes?: (url: string) => Promise<Uint8Array>;
+  readonly onPluginFetchTelemetry?: (event: PluginFetchTelemetry) => void;
 }
 
 export interface InstallPluginResult {
   readonly plugin: InstalledPluginSummary;
   readonly destination: string;
   readonly scope: PluginScope;
+  readonly resolutionKind: PluginResolutionKind;
+  readonly signatureVerified: boolean;
 }
 
 export interface UninstallPluginInput extends PluginOperationOptions {
@@ -84,6 +99,11 @@ export interface UpdatePluginInput extends PluginOperationOptions {
   readonly pluginId: string;
   readonly scope?: PluginScope;
   readonly source?: string;
+  readonly requireSignature?: boolean;
+  readonly publishersPath?: string;
+  readonly runResolutionProcess?: PluginProcessRunner;
+  readonly fetchResolutionBytes?: (url: string) => Promise<Uint8Array>;
+  readonly onPluginFetchTelemetry?: (event: PluginFetchTelemetry) => void;
 }
 
 export interface UpdatePluginResult extends InstallPluginResult {
@@ -208,45 +228,74 @@ export async function installPluginOp(
   input: InstallPluginInput,
 ): Promise<InstallPluginResult> {
   const scope = input.scope ?? "user";
-  const source = resolvePath(input.source, resolvePluginWorkspaceRoot(input));
-  await requireDirectory(source, "plugin source");
-  if (!(await hasInstallablePluginShape(source))) {
-    throw new Error(`plugin source has no ${".agenc-plugin/plugin.json"} or component directories: ${source}`);
+  const workspaceRoot = resolvePluginWorkspaceRoot(input);
+  const localSource = resolvePath(input.source, workspaceRoot);
+  let resolved: ResolvedPluginSource | null = null;
+  let source = localSource;
+  let resolutionKind: PluginResolutionKind = "local";
+  let signatureVerified = false;
+  if (!(await pathIsDirectory(localSource))) {
+    resolved = await resolvePluginSource(input.source, {
+      agencHome: resolvePluginAgencHome(input),
+      workspaceRoot,
+      refreshCache: input.refreshCache,
+      requireSignature: input.requireSignature ?? true,
+      publishersPath: input.publishersPath,
+      runProcess: input.runResolutionProcess,
+      fetchBytes: input.fetchResolutionBytes,
+      onTelemetry: input.onPluginFetchTelemetry,
+    });
+    source = resolved.pluginRoot;
+    resolutionKind = resolved.kind;
+    signatureVerified = resolved.signature?.verified === true;
   }
-  const loaded = await createPluginFromPath(source, {
-    source,
-    enabled: true,
-    fallbackName: basename(source),
-  });
-  if (loaded.errors.length > 0) {
-    throw new Error(
-      `plugin source failed validation: ${loaded.errors.map((issue) => issue.message).join("; ")}`,
-    );
+  try {
+    await requireDirectory(source, "plugin source");
+    if (!(await hasInstallablePluginShape(source))) {
+      throw new Error(`plugin source has no ${".agenc-plugin/plugin.json"} or component directories: ${source}`);
+    }
+    const loaded = await createPluginFromPath(source, {
+      source,
+      enabled: true,
+      fallbackName: basename(source),
+    });
+    if (loaded.errors.length > 0) {
+      throw new Error(
+        `plugin source failed validation: ${loaded.errors.map((issue) => issue.message).join("; ")}`,
+      );
+    }
+    const pluginName = input.name?.trim() || loaded.plugin.name || basename(source);
+    const safeName = sanitizeInstallName(pluginName);
+    const installRoot = pluginScopeRoot(scope, input);
+    await mkdir(installRoot, { recursive: true, mode: 0o700 });
+    const destination = join(installRoot, safeName);
+    await copyDirectoryAtomically(source, destination, {
+      force: input.force === true,
+    });
+    await writeInstallMetadata(destination, {
+      name: pluginName,
+      source: resolutionKind === "local" ? source : input.source,
+      sourceRoot: source,
+      scope,
+      resolutionKind,
+      signatureVerified,
+      installedAt: (input.now ?? (() => new Date()))().toISOString(),
+    });
+    const plugin = await createPluginFromPath(destination, {
+      source: scope,
+      enabled: true,
+      fallbackName: safeName,
+    });
+    return {
+      plugin: summarizeLoadedPlugin(plugin.plugin),
+      destination,
+      scope,
+      resolutionKind,
+      signatureVerified,
+    };
+  } finally {
+    await resolved?.cleanup();
   }
-  const pluginName = input.name?.trim() || loaded.plugin.name || basename(source);
-  const safeName = sanitizeInstallName(pluginName);
-  const installRoot = pluginScopeRoot(scope, input);
-  await mkdir(installRoot, { recursive: true, mode: 0o700 });
-  const destination = join(installRoot, safeName);
-  await copyDirectoryAtomically(source, destination, {
-    force: input.force === true,
-  });
-  await writeInstallMetadata(destination, {
-    name: pluginName,
-    source,
-    scope,
-    installedAt: (input.now ?? (() => new Date()))().toISOString(),
-  });
-  const plugin = await createPluginFromPath(destination, {
-    source: scope,
-    enabled: true,
-    fallbackName: safeName,
-  });
-  return {
-    plugin: summarizeLoadedPlugin(plugin.plugin),
-    destination,
-    scope,
-  };
 }
 
 export async function uninstallPluginOp(
@@ -312,6 +361,7 @@ export async function updatePluginOp(
   input: UpdatePluginInput,
 ): Promise<UpdatePluginResult> {
   const scope = input.scope ?? "user";
+  const workspaceRoot = resolvePluginWorkspaceRoot(input);
   const roots = await resolvePluginRootsForRemoval(input.pluginId, scope, input);
   if (roots.length === 0) {
     throw new Error(`plugin is not installed in ${scope} scope: ${input.pluginId}`);
@@ -321,17 +371,20 @@ export async function updatePluginOp(
   }
   const previousRoot = roots[0]!;
   const source = input.source !== undefined
-    ? resolvePath(input.source, resolvePluginWorkspaceRoot(input))
+    ? input.source
     : await readInstalledPluginSource(previousRoot);
   if (source === undefined) {
     throw new Error(
       `plugin ${input.pluginId} has no recorded source; rerun with --source <path>`,
     );
   }
-  const sourceReal = await realpath(source);
-  const rootReal = await realpath(previousRoot);
-  if (sourceReal === rootReal || sourceReal.startsWith(`${rootReal}/`)) {
-    throw new Error(`plugin update source cannot be the installed plugin root: ${source}`);
+  const localSource = resolvePath(source, workspaceRoot);
+  if (await pathExists(localSource)) {
+    const sourceReal = await realpath(localSource);
+    const rootReal = await realpath(previousRoot);
+    if (sourceReal === rootReal || sourceReal.startsWith(`${rootReal}/`)) {
+      throw new Error(`plugin update source cannot be the installed plugin root: ${source}`);
+    }
   }
   const installed = await installPluginOp({
     ...input,
@@ -339,6 +392,7 @@ export async function updatePluginOp(
     name: input.pluginId,
     scope,
     force: true,
+    refreshCache: true,
   });
   return {
     ...installed,
@@ -422,6 +476,23 @@ async function requireDirectory(path: string, label: string): Promise<void> {
   }
 }
 
+async function pathIsDirectory(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function hasInstallablePluginShape(path: string): Promise<boolean> {
   return (await findPluginManifestPath(path)) !== null ||
     await hasComponentOnlyPluginShape(path);
@@ -489,7 +560,10 @@ async function writeInstallMetadata(
   metadata: {
     readonly name: string;
     readonly source: string;
+    readonly sourceRoot?: string;
     readonly scope: PluginScope;
+    readonly resolutionKind?: PluginResolutionKind;
+    readonly signatureVerified?: boolean;
     readonly installedAt: string;
   },
 ): Promise<void> {

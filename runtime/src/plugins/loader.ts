@@ -2,6 +2,7 @@ import { readdir, realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { validateHooksConfig } from "../config/schema.js";
 import type { AgenCConfig, HooksMap, LspServerConfigInput, McpServerConfig } from "../config/schema.js";
+import { verifyPluginDependencyState } from "./resolution.js";
 import {
   findPluginManifestPath,
   loadPluginManifest,
@@ -72,6 +73,7 @@ export type PluginLoadIssueType =
   | "hooks"
   | "mcp"
   | "lsp"
+  | "dependency"
   | "settings";
 
 export interface PluginLoadIssue {
@@ -316,10 +318,39 @@ export async function loadPlugins(
     ),
   );
   const plugins = loaded.map((entry) => entry.plugin);
+  const dependencyState = verifyPluginDependencyState(plugins);
+  const dependencyErrors: PluginLoadIssue[] = dependencyState.errors.map((issue) => ({
+    type: "dependency",
+    source: issue.source,
+    plugin: issue.plugin,
+    message: `Plugin dependency ${issue.dependency} is ${issue.reason}`,
+  }));
+  const dependencyErrorsBySource = new Map<string, PluginLoadIssue[]>();
+  for (const issue of dependencyErrors) {
+    dependencyErrorsBySource.set(issue.source, [
+      ...(dependencyErrorsBySource.get(issue.source) ?? []),
+      issue,
+    ]);
+  }
+  const finalPlugins = plugins.map((plugin) =>
+    dependencyState.demoted.has(plugin.source)
+      ? {
+          ...plugin,
+          enabled: false,
+          errors: [
+            ...plugin.errors,
+            ...(dependencyErrorsBySource.get(plugin.source) ?? []),
+          ],
+        }
+      : plugin
+  );
   return {
-    enabled: plugins.filter((plugin) => plugin.enabled),
-    disabled: plugins.filter((plugin) => !plugin.enabled),
-    errors: loaded.flatMap((entry) => entry.errors),
+    enabled: finalPlugins.filter((plugin) => plugin.enabled),
+    disabled: finalPlugins.filter((plugin) => !plugin.enabled),
+    errors: [
+      ...loaded.flatMap((entry) => entry.errors),
+      ...dependencyErrors,
+    ],
   };
 }
 

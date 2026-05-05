@@ -22,6 +22,7 @@ import {
 
 const RETRYABLE_FETCH_ERROR_PATTERN =
   /socket connection was closed unexpectedly|ECONNRESET|EPIPE|socket hang up|Connection reset by peer|fetch failed/i;
+type NativeRequestBody = NonNullable<RequestInit["body"]>;
 
 export interface AgenCApiHttpClientConfig {
   readonly baseURL: string;
@@ -168,7 +169,7 @@ export class AgenCApiHttpClient {
       headers.set(key, value);
     }
 
-    let body: BodyInit | undefined;
+    let body: NativeRequestBody | undefined;
     if (options.body !== undefined) {
       if (isNativeBodyInit(options.body)) {
         body = options.body;
@@ -227,7 +228,7 @@ export function isRetryableHttpApiError(error: unknown): boolean {
   return shouldRetryApiError(error);
 }
 
-function isNativeBodyInit(value: unknown): value is BodyInit {
+function isNativeBodyInit(value: unknown): value is NativeRequestBody {
   return (
     typeof value === "string" ||
     (typeof FormData !== "undefined" && value instanceof FormData) ||
