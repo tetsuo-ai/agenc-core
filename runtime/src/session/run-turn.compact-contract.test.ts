@@ -63,10 +63,9 @@ describe("runTurn compact contract", () => {
 
     await drain(runTurn(session, mkCtx(), "new request"));
 
-    expect(seen[0]?.[0]?.content).toBe("compact summary");
-    expect(seen[0]?.some((message) => message.content === "compact summary")).toBe(
-      true,
-    );
+    expect(seen[0]?.[0]?.content).toBe("<summary>\ncompact summary\n</summary>");
+    expect(seen[0]?.some((message) =>
+      message.content === "<summary>\ncompact summary\n</summary>")).toBe(true);
     expect(JSON.stringify(seen[0])).not.toContain("old-0");
     expect(state.history[0]?.content).toContain("<compact>");
   });

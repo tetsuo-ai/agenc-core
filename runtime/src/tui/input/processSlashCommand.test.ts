@@ -45,11 +45,11 @@ vi.mock("../../agenc/upstream/services/api/dumpPrompts.js", () => ({
   getDumpPromptsPath: vi.fn(() => "/tmp/prompts"),
 }));
 
-vi.mock("../../agenc/upstream/services/compact/compact.js", () => ({
+vi.mock("../../services/compact/compact.js", () => ({
   buildPostCompactMessages: vi.fn(() => []),
 }));
 
-vi.mock("../../agenc/upstream/services/compact/microCompact.js", () => ({
+vi.mock("../../services/compact/microCompact.js", () => ({
   resetMicrocompactState: vi.fn(),
 }));
 

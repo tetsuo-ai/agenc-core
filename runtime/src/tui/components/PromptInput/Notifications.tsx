@@ -13,7 +13,7 @@ import { useMainLoopModel } from '../../../agenc/upstream/hooks/useMainLoopModel
 import { useVoiceEnabled } from '../../../agenc/upstream/hooks/useVoiceEnabled.js';
 import { Box, Text } from '../../ink.js';
 import { useAgenCAiLimits } from './agencAiLimitsHook.js';
-import { calculateTokenWarningState } from '../../../agenc/upstream/services/compact/autoCompact.js';
+import { calculateTokenWarningState } from '../../../services/compact/autoCompact.js';
 import type { MCPServerConnection } from '../../../agenc/upstream/services/mcp/types.js';
 import type { Message } from '../../../agenc/upstream/types/message.js';
 import { getApiKeyHelperElapsedMs, getConfiguredApiKeyHelper, getSubscriptionType } from '../../../agenc/upstream/utils/auth.js';

@@ -6,7 +6,7 @@ export function loadContextCollapseModule(): Promise<{
   ) => Promise<{ messages: unknown[]; committed: number }>;
   recoverFromOverflow: (
     messages: unknown[],
-  ) => { messages: unknown[]; committed: number };
+  ) => Promise<{ messages: unknown[]; committed: number }>;
 }>;
 
 export function loadAutoCompactModule(): Promise<{
@@ -43,7 +43,7 @@ export function loadToolResultStorageModule(): Promise<{
     state?: unknown,
     writeToTranscript?: unknown,
     skipToolNames?: ReadonlySet<string>,
-  ) => Promise<{ messages: unknown[]; newlyReplaced: unknown[] }>;
+  ) => Promise<{ messages: unknown[]; newlyReplaced: readonly unknown[] }>;
 }>;
 
 export function loadMessageUtilityModule(): Promise<{

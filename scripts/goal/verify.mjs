@@ -238,6 +238,31 @@ const ITEM_EVIDENCE = {
     ],
     tests: ["scripts/check-upstream-import-growth.test.mjs"],
   },
+  "S-01": {
+    files: [
+      "runtime/src/services/compact/compact.ts",
+      "runtime/src/services/compact/autoCompact.ts",
+      "runtime/src/services/compact/microCompact.ts",
+      "runtime/src/services/compact/sessionMemoryCompact.ts",
+      "runtime/src/services/compact/cachedMicrocompact.ts",
+      "runtime/src/services/compact/PARITY.md",
+      "parity/compact-service-parity.json",
+      "scripts/check-compact-service-parity.mjs",
+    ],
+    tests: [
+      "runtime/src/services/compact/compact.test.ts",
+      "runtime/src/services/compact/autoCompact.test.ts",
+      "runtime/src/services/compact/microCompact.test.ts",
+      "runtime/src/services/compact/compact-surfaces.test.ts",
+      "runtime/tests/compact-loader-service.contract.test.ts",
+    ],
+    grepNotPresent: [
+      {
+        pattern: "agenc/upstream/services/compact",
+        scope: "runtime/src/tui",
+      },
+    ],
+  },
   "S-03": {
     files: [
       "runtime/src/services/extractMemories/extractMemories.ts",
@@ -2209,6 +2234,20 @@ async function serviceGates(item) {
   const tests = walkFiles(dir).filter((p) => /\.test\.(ts|tsx)$/.test(p));
   if (tests.length === 0) failGate(`no test files in runtime/src/services/${serviceMatch[1]}/`);
   pass(`${tests.length} test file(s)`);
+
+  if (id === "S-01") {
+    const parity = run("node", [
+      "scripts/check-compact-service-parity.mjs",
+      "--require-source-snapshot",
+      "--require-inventory",
+      "--require-commands",
+      "--run-commands",
+      "--command-timeout-ms",
+      "180000",
+    ]);
+    if (parity.status !== 0) failGate("S-01 compact-service parity contract failed");
+    pass("S-01 compact-service parity contract passed");
+  }
 
   if (id === "S-03") {
     const parity = run("node", ["scripts/check-extract-memories-parity.mjs"]);

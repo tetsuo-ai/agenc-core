@@ -2629,6 +2629,41 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     expect(firstInitialContextInjection).toBe("do_not_inject");
   });
 
+  test("pre-sampling context-limit compact runs from context-window data without a local token limit", async () => {
+    const ctx = mkCtx();
+    delete (ctx.modelInfo as unknown as { autoCompactTokenLimit?: number })
+      .autoCompactTokenLimit;
+    (ctx.modelInfo as unknown as { contextWindow: number }).contextWindow = 64;
+
+    const { session } = mkSession({
+      provider: mkProvider({ content: "ok" }),
+      registry: mkRegistry(),
+    });
+    (session as unknown as { state: unknown }).state = {
+      unsafePeek: () => ({ history: [], totalTokenUsage: 999 }),
+      with: async (fn: (s: unknown) => unknown) =>
+        fn({ history: [], totalTokenUsage: 999 }),
+    };
+
+    const calls: Array<unknown[]> = [];
+    setAutoCompactImplForTests(async (...args) => {
+      calls.push(args);
+      return { wasCompacted: false };
+    });
+
+    await drain(session.runTurn("hello", { ctx }));
+
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    expect(calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        session,
+        ctx,
+        querySource: "repl_main_thread",
+      }),
+    );
+    expect(calls[0]?.[4]).toBe("do_not_inject");
+  });
+
   test("autoCompactIfNeeded is NOT called when total usage is below the threshold", async () => {
     const ctx = mkCtx();
     (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })

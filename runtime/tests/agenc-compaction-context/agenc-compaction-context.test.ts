@@ -169,7 +169,6 @@ describe('copied upstream compact/context code', () => {
       'bootstrap/state.ts',
       'utils/config.ts',
       'Tool.ts',
-      'commands.ts',
       `services/api/${sourceProductName}.ts`,
       'proto/agenc.proto',
     ]) {
@@ -255,12 +254,15 @@ describe('AgenC runtime integration', () => {
     expect(target).toContain('app:toggleTranscript');
   });
 
-  it('exposes runtime-session adapter hooks backed by upstream compaction modules', () => {
+  it('exposes runtime-session adapter hooks backed by AgenC compact service modules', () => {
     const target = readTarget('adapter-runtime-session');
     const loaders = readTarget('adapter-dynamic-loaders');
     const compactRuntime = readRelative(
       'runtime/src/agenc/adapters/compact-runtime.ts',
     );
+    const compactService = readRelative('runtime/src/services/compact/compact.ts');
+    const autoCompactService = readRelative('runtime/src/services/compact/autoCompact.ts');
+    const microCompactService = readRelative('runtime/src/services/compact/microCompact.ts');
 
     expectExports('adapter-runtime-session', [
       'prepareAgenCTurnContext',
@@ -279,14 +281,23 @@ describe('AgenC runtime integration', () => {
     expect(loaders).toContain('autoCompactIfNeeded');
     expect(loaders).toContain('recoverFromOverflow');
     expect(loaders).toContain('./compact-runtime.js');
+    expect(loaders).toContain('../../services/compact/autoCompact.js');
+    expect(loaders).toContain('../../services/compact/compact.js');
+    expect(loaders).toContain('../../services/compact/microCompact.js');
     expect(loaders).not.toContain('../upstream/services/compact');
     expect(loaders).not.toContain('../upstream/services/contextCollapse');
     expect(loaders).not.toContain('../upstream/commands/compact');
     expect(loaders).not.toContain('../upstream/commands/context');
-    expect(compactRuntime).toContain('autoCompactIfNeeded');
-    expect(compactRuntime).toContain('manualCompactCall');
     expect(compactRuntime).toContain('contextUsageCall');
-    expect(compactRuntime).toContain('microcompactMessages');
+    expect(compactRuntime).toContain('applyToolResultBudget');
+    expect(compactRuntime).toContain('applyCollapsesIfNeeded');
+    expect(compactRuntime).not.toContain('function autoCompactIfNeeded');
+    expect(compactRuntime).not.toContain('function manualCompactCall');
+    expect(compactRuntime).not.toContain('function microcompactMessages');
+    expect(compactService).toContain('manualCompactCall');
+    expect(compactService).toContain('buildPostCompactMessages');
+    expect(autoCompactService).toContain('autoCompactIfNeeded');
+    expect(microCompactService).toContain('microcompactMessages');
     expect(target).not.toContain('return { kind: "pass" };');
   });
 

@@ -11,8 +11,8 @@ import { COMMAND_MESSAGE_TAG, COMMAND_NAME_TAG } from '../../agenc/upstream/cons
 import type { CanUseToolFn } from '../../agenc/upstream/hooks/useCanUseTool.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, type AnalyticsMetadata_I_VERIFIED_THIS_IS_PII_TAGGED, logEvent } from '../../agenc/upstream/services/analytics/index.js';
 import { getDumpPromptsPath } from '../../agenc/upstream/services/api/dumpPrompts.js';
-import { buildPostCompactMessages } from '../../agenc/upstream/services/compact/compact.js';
-import { resetMicrocompactState } from '../../agenc/upstream/services/compact/microCompact.js';
+import { buildPostCompactMessages } from '../../services/compact/compact.js';
+import { resetMicrocompactState } from '../../services/compact/microCompact.js';
 import type { Progress as AgentProgress } from '../../agenc/upstream/tools/AgentTool/AgentTool.js';
 import { runAgent } from '../../agenc/upstream/tools/AgentTool/runAgent.js';
 import { renderToolUseProgressMessage } from '../../agenc/upstream/tools/AgentTool/UI.js';
