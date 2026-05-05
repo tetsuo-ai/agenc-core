@@ -103,6 +103,7 @@ PK-07 scope carried into AgenC:
 - `marketplace/remote_legacy.ts` owns the older remote plugin status, featured-plugin, enable, and uninstall endpoints that the runtime may still need while the hosted service migrates, including response-shape validation before mapping.
 - `marketplace/startup_sync.ts` owns startup curated marketplace sync through guarded git, HTTP zipball, and backup archive fallbacks with private SHA tracking and existing-snapshot degradation.
 - `marketplace/startup_remote_sync.ts` owns one-shot startup remote plugin reconciliation after curated marketplace prerequisites are available, including stale lock recovery and concrete remote bundle reconciliation when no injected manager sync callback is supplied.
+- `marketplace/startup_checks.ts` owns the live REPL startup entrypoint for seed marketplace registration, curated marketplace sync, cache invalidation, and remote installed-plugin reconciliation when auth/config inputs are available. `runtime/src/agenc/upstream/screens/REPL.tsx` imports this AgenC-owned module directly; the old upstream `performStartupChecks.tsx` path is removed so startup no longer routes through upstream marketplace utilities.
 
 Intentional PK-01 scope reductions:
 - Marketplace fetch/install/cache refresh, signing, dependency demotion, plugin CLI, plugin sandboxing, policy/blocklist, MCP/LSP live registration, and remote sync are later PK rows.

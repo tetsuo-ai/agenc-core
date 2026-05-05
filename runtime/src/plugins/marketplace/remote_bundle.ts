@@ -21,6 +21,7 @@ export interface ValidatedRemotePluginBundle {
   readonly pluginName: string;
   readonly pluginVersion: string;
   readonly bundleDownloadUrl: string;
+  readonly allowLoopbackHttp?: boolean;
 }
 
 export interface RemotePluginBundleInstallResult {
@@ -73,6 +74,7 @@ export function validateRemotePluginBundle(
     pluginName: localPluginName,
     pluginVersion,
     bundleDownloadUrl: url,
+    ...(options.allowLoopbackHttp === true ? { allowLoopbackHttp: true } : {}),
   };
 }
 
@@ -82,7 +84,7 @@ export async function downloadAndInstallRemotePluginBundle(
   fetcher: Fetcher = defaultFetch,
 ): Promise<RemotePluginBundleInstallResult> {
   assertHttpsOrLoopbackUrl(bundle.bundleDownloadUrl, "remote plugin bundle download URL", {
-    allowLoopbackHttp: true,
+    allowLoopbackHttp: bundle.allowLoopbackHttp === true,
   });
   const bytes = await downloadRemotePluginBundleWithLimit(
     bundle.bundleDownloadUrl,

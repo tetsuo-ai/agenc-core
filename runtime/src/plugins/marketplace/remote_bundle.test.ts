@@ -150,7 +150,26 @@ describe("remote plugin bundles", () => {
       async () => {
         throw new Error("fetch should not run for forged bundle URLs");
       },
-    )).rejects.toThrow("must use HTTPS or loopback HTTP");
+    )).rejects.toThrow("must use HTTPS");
+  });
+
+  it("does not trust forged loopback bundle URLs without explicit validation state", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-bundle-forged-loopback-"));
+    const forged = {
+      pluginId: "linear@agenc-global",
+      marketplaceName: "agenc-global",
+      pluginName: "linear",
+      pluginVersion: "1.0.0",
+      bundleDownloadUrl: "http://127.0.0.1/linear.tgz",
+    };
+
+    await expect(downloadAndInstallRemotePluginBundle(
+      agencHome,
+      forged,
+      async () => {
+        throw new Error("fetch should not run for forged loopback bundle URLs");
+      },
+    )).rejects.toThrow("must use HTTPS");
   });
 
   it("reports invalid bundle download URL strings with remote plugin context", () => {

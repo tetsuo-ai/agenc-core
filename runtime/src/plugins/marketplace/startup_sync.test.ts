@@ -17,6 +17,7 @@ import {
   startStartupRemotePluginSyncOnce,
   startupRemotePluginSyncLockPath,
 } from "./startup_remote_sync.js";
+import { performStartupChecks } from "./startup_checks.js";
 
 describe("startup marketplace sync", () => {
   it("clones the curated marketplace only when the remote HEAD changed", async () => {
@@ -140,6 +141,42 @@ describe("startup marketplace sync", () => {
     });
     expect(calls).toEqual(["/ps/plugins/installed", "/ps/plugins/installed"]);
     await expect(hasStartupRemotePluginSyncMarker(agencHome)).resolves.toBe(true);
+  });
+
+  it("runs the live startup checks through the AgenC-owned marketplace layer", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-startup-checks-owned-"));
+    let state = { plugins: { needsRefresh: false } };
+    const setAppState = (update: (prev: typeof state) => typeof state) => {
+      state = update(state);
+    };
+
+    await performStartupChecks(setAppState, {
+      agencHome,
+      runProcess: async (_command, args) => {
+        if (args[0] === "ls-remote") {
+          return { stdout: "abc123\tHEAD\n", stderr: "" };
+        }
+        if (args[0] === "clone") {
+          const destination = args[args.length - 1]!;
+          await writeCuratedMarketplace(destination);
+          return { stdout: "", stderr: "" };
+        }
+        if (args.includes("rev-parse")) {
+          return { stdout: "abc123\n", stderr: "" };
+        }
+        throw new Error(`unexpected git command: ${args.join(" ")}`);
+      },
+    });
+
+    expect(state.plugins.needsRefresh).toBe(true);
+    await expect(hasLocalCuratedPluginsSnapshot(agencHome)).resolves.toBe(true);
+  });
+
+  it("keeps the live REPL startup import on the AgenC-owned marketplace path", async () => {
+    const repl = await readFile(join(process.cwd(), "src/agenc/upstream/screens/REPL.tsx"), "utf8");
+
+    expect(repl).toContain("src/plugins/marketplace/startup_checks.js");
+    expect(repl).not.toContain("src/utils/plugins/performStartupChecks.js");
   });
 
   it("uses the existing curated snapshot when refresh mechanisms fail", async () => {
