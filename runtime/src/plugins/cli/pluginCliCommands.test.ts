@@ -317,6 +317,9 @@ describe("agenc plugin CLI", () => {
     expect(gitExit).toBe(0);
     expect(cloneCalls[0]).toContain("https://github.com/agenc-org/plugins.git");
     expect(cloneCalls[0]).toContain("stable");
+    const repositorySeparator = cloneCalls[0]!.indexOf("--");
+    expect(repositorySeparator).toBeGreaterThan(-1);
+    expect(cloneCalls[0]![repositorySeparator + 1]).toBe("https://github.com/agenc-org/plugins.git");
   });
 
   it("updates an installed plugin from its recorded source", async () => {
@@ -391,6 +394,26 @@ describe("agenc plugin CLI", () => {
     });
     expect(sparseExit).toBe(1);
     expect(sparseIo.stderrText()).toContain("--sparse must not contain");
+  });
+
+  it("rejects leading-dash git marketplace CLI sources before spawning git", async () => {
+    const { agencHome, workspaceRoot } = await tempRuntime();
+    const io = createIo();
+
+    const exitCode = await runAgenCPluginCli({
+      kind: "marketplace-add",
+      source: "--upload-pack=x.git",
+      name: "team",
+      force: false,
+    }, {
+      ...options(agencHome, workspaceRoot, io),
+      runProcess: async () => {
+        throw new Error("git should not run for unsafe leading-dash sources");
+      },
+    });
+
+    expect(exitCode).toBe(1);
+    expect(io.stderrText()).toContain("must not start with '-'");
   });
 
   it("removes marketplaces by computed install root instead of trusted index paths", async () => {

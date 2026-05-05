@@ -697,6 +697,9 @@ async function stageMarketplaceSource(
           ? `https://github.com/${source.repo.replace(/\.git$/u, "")}.git`
           : source.url;
         assertAllowedGitTransportUrl(gitUrl, "marketplace git URL");
+        if (source.ref !== undefined) {
+          assertSafeGitRef(source.ref, "marketplace git ref");
+        }
         const ref = source.ref;
         const sparse = source.source === "github"
           ? source.path ?? source.sparsePaths?.[0]
@@ -710,6 +713,7 @@ async function stageMarketplaceSource(
             "1",
             "--filter=blob:none",
             "--no-checkout",
+            "--",
             gitUrl,
             root,
           ], {});
@@ -718,7 +722,7 @@ async function stageMarketplaceSource(
         } else {
           const args = ["clone", "--depth", "1"];
           if (ref !== undefined) args.push("--branch", ref);
-          args.push(gitUrl, root);
+          args.push("--", gitUrl, root);
           await run("git", args, {});
         }
         const revision = (await run("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim();
@@ -940,8 +944,38 @@ function normalizeMarketplacePluginGitUrl(marketplacePath: string, url: string):
 }
 
 function assertAllowedGitTransportUrl(url: string, label: string): void {
-  if (url.startsWith("http://") || url.startsWith("https://")) {
-    assertHttpsOrLoopbackUrl(url, label, { allowLoopbackHttp: true });
+  const trimmed = url.trim();
+  if (trimmed.length === 0 || trimmed !== url || trimmed.includes("\0")) {
+    throw new Error(`${label} must be a non-empty Git repository URL`);
+  }
+  if (trimmed.startsWith("-")) {
+    throw new Error(`${label} must not start with '-'`);
+  }
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    assertHttpsOrLoopbackUrl(trimmed, label, { allowLoopbackHttp: true });
+    return;
+  }
+  if (trimmed.startsWith("ssh://") || trimmed.startsWith("file://")) {
+    return;
+  }
+  if (/^[a-zA-Z]:[\\/]/u.test(trimmed)) {
+    return;
+  }
+  if (/^[a-zA-Z0-9._-]+@[^:\s]+:[^\s]+$/u.test(trimmed)) {
+    return;
+  }
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/u.test(trimmed)) {
+    throw new Error(`${label} uses an unsupported Git transport`);
+  }
+}
+
+function assertSafeGitRef(ref: string, label: string): void {
+  const trimmed = ref.trim();
+  if (trimmed.length === 0 || trimmed !== ref || trimmed.includes("\0")) {
+    throw new Error(`${label} must be a non-empty Git ref`);
+  }
+  if (trimmed.startsWith("-")) {
+    throw new Error(`${label} must not start with '-'`);
   }
 }
 

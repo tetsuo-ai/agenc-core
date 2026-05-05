@@ -21,6 +21,7 @@ import {
 } from "./startup_sync.js";
 import {
   startStartupRemotePluginSyncOnce,
+  type StartupRemotePluginSyncOptions,
   type StartupRemotePluginSyncResult,
 } from "./startup_remote_sync.js";
 import type { RemoteAuth, RemotePluginServiceConfig } from "./remote.js";
@@ -71,6 +72,7 @@ export interface PerformStartupMarketplaceChecksOptions extends StartupSyncOptio
   readonly allowLoopbackHttp?: boolean;
   readonly prerequisiteTimeoutMs?: number;
   readonly pollMs?: number;
+  readonly syncPluginsFromRemote?: StartupRemotePluginSyncOptions["syncPluginsFromRemote"];
   readonly onWarn?: (message: string) => void;
 }
 
@@ -142,8 +144,11 @@ async function maybeSyncRemoteInstalledPlugins(
   agencHome: string,
   options: PerformStartupMarketplaceChecksOptions,
 ): Promise<StartupRemotePluginSyncResult | null> {
-  const remoteAuth = options.remoteAuth ?? await remoteAuthFromAuthLayer(agencHome, options);
-  if (remoteAuth === null) {
+  const remoteAuth = options.remoteAuth ??
+    (options.syncPluginsFromRemote === undefined
+      ? await remoteAuthFromAuthLayer(agencHome, options)
+      : null);
+  if (remoteAuth === null && options.syncPluginsFromRemote === undefined) {
     return null;
   }
   const remotePluginServiceConfig = options.remotePluginServiceConfig ??
@@ -151,7 +156,8 @@ async function maybeSyncRemoteInstalledPlugins(
   return startStartupRemotePluginSyncOnce({
     agencHome,
     remotePluginServiceConfig,
-    remoteAuth,
+    ...(remoteAuth !== null ? { remoteAuth } : {}),
+    ...(options.syncPluginsFromRemote !== undefined ? { syncPluginsFromRemote: options.syncPluginsFromRemote } : {}),
     ...(options.remoteFetcher !== undefined ? { fetcher: options.remoteFetcher } : {}),
     ...(options.allowLoopbackHttp !== undefined ? { allowLoopbackHttp: options.allowLoopbackHttp } : {}),
     ...(options.prerequisiteTimeoutMs !== undefined ? { prerequisiteTimeoutMs: options.prerequisiteTimeoutMs } : {}),
@@ -188,6 +194,8 @@ function marketplaceResultChangedLocalCache(result: MarketplaceReconcileResult):
 function remoteResultChangedLocalCache(result: StartupRemotePluginSyncResult | null): boolean {
   return result !== null && (
     result.installedPluginIds.length > 0 ||
+    result.enabledPluginIds.length > 0 ||
+    result.disabledPluginIds.length > 0 ||
     result.uninstalledPluginIds.length > 0
   );
 }

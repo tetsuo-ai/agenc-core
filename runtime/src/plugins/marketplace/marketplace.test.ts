@@ -18,7 +18,7 @@ import {
   isSourceAllowedByPolicy,
   loadMarketplacesWithGracefulDegradation,
 } from "./marketplaceHelpers.js";
-import { getMarketplace } from "./marketplaceManager.js";
+import { getMarketplace, reconcileMarketplaces } from "./marketplaceManager.js";
 import { parseMarketplaceInput } from "./parseMarketplaceInput.js";
 
 async function tempRuntime(): Promise<{
@@ -249,6 +249,35 @@ describe("plugin marketplace runtime", () => {
     expect(cloneCalls[0]).toContain("https://github.com/agenc-org/plugins.git");
     expect(cloneCalls[0]).toContain("--branch");
     expect(cloneCalls[0]).toContain("stable");
+    const repositorySeparator = cloneCalls[0]!.indexOf("--");
+    expect(repositorySeparator).toBeGreaterThan(-1);
+    expect(cloneCalls[0]![repositorySeparator + 1]).toBe("https://github.com/agenc-org/plugins.git");
+  });
+
+  it("rejects leading-dash object-form git marketplace sources before running git", async () => {
+    const { agencHome, workspaceRoot } = await tempRuntime();
+    const calls: string[][] = [];
+
+    const result = await reconcileMarketplaces({
+      agencHome,
+      workspaceRoot,
+      declaredMarketplaces: {
+        team: {
+          source: { source: "git", url: "--upload-pack=x.git" },
+        },
+      },
+      runProcess: async (_command, args) => {
+        calls.push([...args]);
+        throw new Error("git should not run for unsafe object-form git sources");
+      },
+    });
+
+    expect(calls).toEqual([]);
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0]).toMatchObject({
+      name: "team",
+      error: expect.stringContaining("must not start with '-'"),
+    });
   });
 
   it("requires safe URL marketplace transport and bounded manifest downloads", async () => {

@@ -479,6 +479,33 @@ describe("startup marketplace sync", () => {
     expect(warnings.join("\n")).toContain("startup plugin checks failed");
   });
 
+  it("marks plugins for refresh when remote startup sync only changes enablement", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-startup-checks-remote-enable-"));
+    await writeCuratedMarketplace(curatedPluginsRepoPath(agencHome));
+    await writeFile(curatedPluginsShaPath(agencHome), "abc123\n");
+    let state = { plugins: { needsRefresh: false } };
+    const setAppState = (update: (prev: typeof state) => typeof state) => {
+      state = update(state);
+    };
+
+    await performStartupChecks(setAppState, {
+      trustAccepted: true,
+      agencHome,
+      runProcess: curatedGitRunner("abc123"),
+      prerequisiteTimeoutMs: 10,
+      pollMs: 1,
+      syncPluginsFromRemote: async () => ({
+        installedPluginIds: [],
+        failedRemotePluginIds: [],
+        enabledPluginIds: ["alpha"],
+        disabledPluginIds: ["beta"],
+        uninstalledPluginIds: [],
+      }),
+    });
+
+    expect(state.plugins.needsRefresh).toBe(true);
+  });
+
   it("uses remote auth state from the auth layer for live startup remote sync", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-startup-checks-remote-auth-"));
     let state = { plugins: { needsRefresh: false } };
