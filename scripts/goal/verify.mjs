@@ -4420,6 +4420,7 @@ async function cleanupGates(item) {
         gone: ["runtime/src/config/upstream-init.ts", "runtime/src/config/upstream-init.test.ts"],
         grepNotPresent: { pattern: "upstream-init", scope: "runtime/src" },
       },
+      "ZC-18": { gone: ["runtime/parity/agenc-compaction-context.json"] },
       "ZC-22": { gone: ["runtime/src/tui/elicitation-bridge.tsx"] },
       "ZC-26": { grepNotPresent: { pattern: "/home/claude/.agenc/remote", scope: "runtime/src" } }, // branding-scan: allow donor-leak path that ZC-26 is removing
       "ZC-27": { grepNotPresent: { pattern: "@ts-nocheck", scope: "runtime/src/types" } },
