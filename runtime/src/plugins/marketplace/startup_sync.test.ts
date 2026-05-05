@@ -252,6 +252,42 @@ describe("startup marketplace sync", () => {
       .toContainEqual({ name: "team", status: "installed" });
   });
 
+  it("registers marketplaces from AGENC_PLUGIN_SEED_DIR during trusted startup checks", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-startup-checks-seed-"));
+    const seedDir = await mkdtemp(join(tmpdir(), "agenc-plugin-seed-"));
+    const seededMarketplaceRoot = join(seedDir, "marketplaces", "seeded");
+    await writeLocalMarketplace(seededMarketplaceRoot, "seeded");
+    await writeFile(
+      join(seedDir, "known_marketplaces.json"),
+      `${JSON.stringify({
+        seeded: {
+          source: { source: "local", path: "/build-time/seeded" },
+          installLocation: "/build-time/seeded",
+          lastUpdated: "2026-05-05T00:00:00.000Z",
+        },
+      }, null, 2)}\n`,
+    );
+    let state = { plugins: { needsRefresh: false } };
+    const setAppState = (update: (prev: typeof state) => typeof state) => {
+      state = update(state);
+    };
+
+    await performStartupChecks(setAppState, {
+      trustAccepted: true,
+      agencHome,
+      env: { AGENC_PLUGIN_SEED_DIR: seedDir },
+      runProcess: curatedGitRunner("abc123"),
+    });
+
+    const index = JSON.parse(await readFile(marketplaceIndexPath({ agencHome }), "utf8")) as {
+      marketplaces: Record<string, { autoUpdate?: boolean; manifestPath?: string; installedPath?: string }>;
+    };
+    expect(index.marketplaces.seeded?.manifestPath).toBe(join(seededMarketplaceRoot, "marketplace.json"));
+    expect(index.marketplaces.seeded?.installedPath).toBe(seededMarketplaceRoot);
+    expect(index.marketplaces.seeded?.autoUpdate).toBe(false);
+    expect(state.plugins.needsRefresh).toBe(true);
+  });
+
   it("marks plugins for refresh when later startup work fails after marketplace reconciliation", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-startup-checks-partial-failure-"));
     const marketplaceRoot = join(agencHome, "team-marketplace");

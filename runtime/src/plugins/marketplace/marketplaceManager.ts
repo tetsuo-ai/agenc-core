@@ -1,3 +1,6 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { getPluginSeedDirs } from "../directories.js";
 import {
   addMarketplaceOp,
   findMarketplaceName,
@@ -12,6 +15,7 @@ import {
   type MarketplaceOperationOptions,
   type MarketplaceRecord,
   type MarketplaceSource,
+  type MarketplaceSourceType,
   type RawMarketplaceManifestPlugin,
 } from "./marketplace.js";
 
@@ -19,6 +23,12 @@ export type KnownMarketplace = MarketplaceRecord;
 export type KnownMarketplacesConfig = MarketplaceIndex["marketplaces"];
 
 const marketplaceCache = new Map<string, Promise<Marketplace>>();
+const SEED_MARKETPLACE_INDEX_FILE = "known_marketplaces.json";
+const SEED_MARKETPLACE_MANIFEST_RELATIVE_PATHS = [
+  "marketplace.json",
+  ".agents/plugins/marketplace.json",
+  ".agenc-plugin/marketplace.json",
+] as const;
 
 export interface DeclaredMarketplace {
   readonly source: string | MarketplaceSource;
@@ -81,13 +91,14 @@ export async function saveKnownMarketplacesConfig(
 }
 
 export async function registerSeedMarketplaces(
-  seedMarketplaces: Readonly<Record<string, KnownMarketplace>> = {},
+  seedMarketplaces: Readonly<Record<string, KnownMarketplace>> | undefined = undefined,
   options: MarketplaceOperationOptions = {},
 ): Promise<boolean> {
+  const seeds = seedMarketplaces ?? await loadSeedMarketplaces(options);
   const current = await loadKnownMarketplacesConfig(options);
   let changed = false;
   const next: Record<string, KnownMarketplace> = { ...current };
-  for (const [name, entry] of Object.entries(seedMarketplaces).sort(([a], [b]) => a.localeCompare(b))) {
+  for (const [name, entry] of Object.entries(seeds).sort(([a], [b]) => a.localeCompare(b))) {
     if (JSON.stringify(next[name]) === JSON.stringify(entry)) continue;
     next[name] = {
       ...entry,
@@ -100,6 +111,48 @@ export async function registerSeedMarketplaces(
     clearMarketplacesCache();
   }
   return changed;
+}
+
+export async function loadSeedMarketplaces(
+  options: MarketplaceOperationOptions = {},
+): Promise<Readonly<Record<string, KnownMarketplace>>> {
+  const seedDirs = getPluginSeedDirs(options.env);
+  const seeds: Record<string, KnownMarketplace> = {};
+  const claimed = new Set<string>();
+  for (const seedDir of seedDirs) {
+    const config = await readSeedKnownMarketplaces(seedDir);
+    if (config === null) continue;
+    for (const [name, rawEntry] of Object.entries(config)) {
+      if (claimed.has(name)) continue;
+      const location = await findSeedMarketplaceLocation(seedDir, name);
+      if (location === null) continue;
+      const sourceDescriptor = normalizeSeedMarketplaceSource(rawEntry, location.installedPath);
+      seeds[name] = {
+        name,
+        source: displaySeedMarketplaceSource(sourceDescriptor),
+        sourceType: seedMarketplaceSourceType(sourceDescriptor),
+        sourceDescriptor,
+        installedPath: location.installedPath,
+        manifestPath: location.manifestPath,
+        ...(sourceDescriptor.source === "git" && sourceDescriptor.ref !== undefined
+          ? { ref: sourceDescriptor.ref }
+          : {}),
+        ...(sourceDescriptor.source === "git" && sourceDescriptor.sparse !== undefined
+          ? { sparse: sourceDescriptor.sparse }
+          : {}),
+        ...(sourceDescriptor.source === "github" && sourceDescriptor.ref !== undefined
+          ? { ref: sourceDescriptor.ref }
+          : {}),
+        ...(sourceDescriptor.source === "github" && sourceDescriptor.path !== undefined
+          ? { sparse: sourceDescriptor.path }
+          : {}),
+        autoUpdate: false,
+        updatedAt: seedMarketplaceUpdatedAt(rawEntry),
+      };
+      claimed.add(name);
+    }
+  }
+  return seeds;
 }
 
 export function getDeclaredMarketplaces(
@@ -397,6 +450,116 @@ async function readRawPluginFromManifest(
   return null;
 }
 
+async function readSeedKnownMarketplaces(
+  seedDir: string,
+): Promise<Readonly<Record<string, unknown>> | null> {
+  try {
+    const parsed = JSON.parse(
+      await readFile(join(seedDir, SEED_MARKETPLACE_INDEX_FILE), "utf8"),
+    ) as unknown;
+    if (isRecord(parsed) && isRecord(parsed.marketplaces)) {
+      return objectEntriesOnly(parsed.marketplaces);
+    }
+    if (isRecord(parsed)) {
+      return objectEntriesOnly(parsed);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      // Seed dirs are administrator-managed and optional. Ignore invalid seeds
+      // so a later seed dir can still provide a working marketplace.
+    }
+  }
+  return null;
+}
+
+async function findSeedMarketplaceLocation(
+  seedDir: string,
+  name: string,
+): Promise<{ readonly installedPath: string; readonly manifestPath: string } | null> {
+  const marketplaceRoot = join(seedDir, "marketplaces", name);
+  for (const relativePath of SEED_MARKETPLACE_MANIFEST_RELATIVE_PATHS) {
+    const manifestPath = join(marketplaceRoot, relativePath);
+    if (await marketplaceManifestLoads(manifestPath)) {
+      return { installedPath: marketplaceRoot, manifestPath };
+    }
+  }
+  const jsonMarketplace = join(seedDir, "marketplaces", `${name}.json`);
+  if (await marketplaceManifestLoads(jsonMarketplace)) {
+    return { installedPath: jsonMarketplace, manifestPath: jsonMarketplace };
+  }
+  return null;
+}
+
+async function marketplaceManifestLoads(manifestPath: string): Promise<boolean> {
+  try {
+    await loadMarketplace(manifestPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeSeedMarketplaceSource(rawEntry: unknown, installedPath: string): MarketplaceSource {
+  if (isRecord(rawEntry)) {
+    if (isMarketplaceSource(rawEntry.sourceDescriptor)) return rawEntry.sourceDescriptor;
+    if (isMarketplaceSource(rawEntry.source)) return rawEntry.source;
+  }
+  return { source: "local", path: installedPath };
+}
+
+function displaySeedMarketplaceSource(source: MarketplaceSource): string {
+  switch (source.source) {
+    case "local":
+    case "file":
+    case "directory":
+      return source.path;
+    case "git":
+      return source.url;
+    case "github":
+      return source.repo;
+    case "url":
+      return source.url;
+    case "settings":
+      return source.name;
+  }
+}
+
+function seedMarketplaceSourceType(source: MarketplaceSource): MarketplaceSourceType {
+  switch (source.source) {
+    case "git":
+    case "github":
+      return "git";
+    case "url":
+      return "url";
+    case "settings":
+      return "settings";
+    case "local":
+    case "file":
+    case "directory":
+      return "local";
+  }
+}
+
+function seedMarketplaceUpdatedAt(rawEntry: unknown): string {
+  if (isRecord(rawEntry)) {
+    if (typeof rawEntry.updatedAt === "string" && rawEntry.updatedAt.trim().length > 0) {
+      return rawEntry.updatedAt;
+    }
+    if (typeof rawEntry.lastUpdated === "string" && rawEntry.lastUpdated.trim().length > 0) {
+      return rawEntry.lastUpdated;
+    }
+  }
+  return "1970-01-01T00:00:00.000Z";
+}
+
+function objectEntriesOnly(
+  value: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => isRecord(entry)),
+  );
+}
+
 function parsePluginId(pluginId: string): { readonly name: string; readonly marketplace: string } | null {
   const at = pluginId.lastIndexOf("@");
   if (at <= 0 || at === pluginId.length - 1) return null;
@@ -412,6 +575,15 @@ function marketplaceDeclarationMatches(
 ): boolean {
   return JSON.stringify(existing.sourceDescriptor) === JSON.stringify(declaration.source) &&
     (declaration.autoUpdate === undefined || existing.autoUpdate === declaration.autoUpdate);
+}
+
+function isMarketplaceSource(value: unknown): value is MarketplaceSource {
+  if (!isRecord(value) || typeof value.source !== "string") return false;
+  return ["local", "file", "directory", "git", "github", "url", "settings"].includes(value.source);
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function message(error: unknown): string {

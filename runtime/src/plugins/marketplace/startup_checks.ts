@@ -82,7 +82,7 @@ export async function performStartupChecks(
   let changedLocalCache = false;
   try {
     const seedChanged = await registerSeedMarketplaces(
-      options.seedMarketplaces ?? {},
+      options.seedMarketplaces,
       { ...options, agencHome },
     );
     changedLocalCache ||= seedChanged;
