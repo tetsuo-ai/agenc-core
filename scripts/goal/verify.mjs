@@ -238,6 +238,19 @@ const ITEM_EVIDENCE = {
     ],
     tests: ["scripts/check-upstream-import-growth.test.mjs"],
   },
+  "PK-11": {
+    files: [
+      "scripts/check-protocol-package-schema-export.mjs",
+      "runtime/src/app-server/protocol/schema.json",
+    ],
+    grepPresent: [
+      {
+        pattern: "daemon-json-rpc\\.schema\\.json",
+        scope: "runtime/src/app-server/protocol",
+      },
+    ],
+    tests: ["runtime/src/app-server/protocol.contract.test.ts"],
+  },
   "S-01": {
     files: [
       "runtime/src/services/compact/compact.ts",
@@ -1211,6 +1224,13 @@ const ITEM_EVIDENCE = {
       { pattern: "verifySignature|signature.*verify", scope: "runtime/src/plugins" },
     ],
   },
+  "PK-10": {
+    files: ["scripts/check-sdk-daemon-methods.mjs"],
+    grepPresent: [
+      { pattern: "AGENC_DAEMON_NOTIFICATION_METHODS", scope: "scripts/check-sdk-daemon-methods.mjs" },
+    ],
+    tests: ["scripts/check-sdk-daemon-methods.test.mjs"],
+  },
   "MG-01": {
     files: ["runtime/src/bin/agenc.ts"],
   },
@@ -1586,6 +1606,27 @@ if (forwardingViolations.length > 0) {
   );
 }
 pass("no new upstream/ files, no new shim-pattern additions, no forwarding-only modules");
+
+// --- Gate 2.7: daemon protocol <-> sibling SDK method drift --------------
+//
+// This runs as a standard verification gate whenever the daemon protocol
+// registry changes, and for checklist rows that explicitly name agenc-sdk.
+// PK-10 adds the checker; future protocol edits inherit the same guard.
+
+header("daemon SDK method drift");
+const sdkDaemonDriftRelevant =
+  id === "PK-10" ||
+  candidates.has("runtime/src/app-server/protocol/index.ts") ||
+  item.body.includes("agenc-sdk");
+if (sdkDaemonDriftRelevant) {
+  const r = run("node", ["scripts/check-sdk-daemon-methods.mjs"]);
+  if (r.status !== 0) {
+    failGate("daemon SDK method drift check failed");
+  }
+  pass("daemon SDK method drift check passed");
+} else {
+  pass("daemon SDK method drift check not required for this diff");
+}
 
 function combineLogicalStatements(significant) {
   const statements = [];
@@ -3258,6 +3299,20 @@ async function pluginGates(item) {
     const cliReferenced = grepRepo("agenc plugin", "runtime/src");
     if (!cliReferenced) failGate(`'agenc plugin' subcommand surface not found anywhere in runtime/src/`);
     pass("agenc plugin subcommand present");
+    return;
+  }
+  if (id === "PK-10") {
+    pass("PK-10 SDK daemon method drift check is enforced by the standard gate");
+    return;
+  }
+  if (id === "PK-11") {
+    const packageExport = run("node", [
+      "scripts/check-protocol-package-schema-export.mjs",
+    ]);
+    if (packageExport.status !== 0) {
+      failGate("PK-11 protocol package schema export check failed");
+    }
+    pass("protocol package schema export resolves from a packed install");
     return;
   }
   // PK-01..PK-05, PK-07..PK-09: subsystem-shape items satisfied by the
