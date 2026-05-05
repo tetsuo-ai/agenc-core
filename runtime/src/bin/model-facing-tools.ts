@@ -130,6 +130,7 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_FETCH_CHARS = 120_000;
 const MAX_FETCH_BYTES = 512_000;
 const MIN_FETCH_BYTES = 16_384;
+const MAX_FETCH_REDIRECTS = 5;
 const MAX_SEARCH_RESULTS = 8;
 const WEB_FETCH_TOOL_NAME = "web_fetch";
 const LEGACY_WEB_FETCH_TOOL_NAME = "WebFetch";
@@ -277,18 +278,53 @@ function htmlToText(input: string): string {
     .trim();
 }
 
-async function fetchWithTimeout(url: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<Response> {
+function isRedirectStatus(status: number): boolean {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+}
+
+async function fetchWithTimeout(
+  url: string,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  opts: { readonly validateWebFetchUrls?: boolean } = {},
+): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, {
-      signal: controller.signal,
-      redirect: "follow",
-      headers: {
-        "user-agent": "agenc-runtime/0.2",
-        accept: "text/html,text/plain,application/json,*/*",
-      },
-    });
+    if (opts.validateWebFetchUrls !== true) {
+      return await fetch(url, {
+        signal: controller.signal,
+        redirect: "follow",
+        headers: {
+          "user-agent": "agenc-runtime/0.2",
+          accept: "text/html,text/plain,application/json,*/*",
+        },
+      });
+    }
+
+    let currentUrl = validateWebFetchFinalUrl(url);
+    for (let redirects = 0; redirects <= MAX_FETCH_REDIRECTS; redirects += 1) {
+      const response = await fetch(currentUrl, {
+        signal: controller.signal,
+        redirect: "manual",
+        headers: {
+          "user-agent": "agenc-runtime/0.2",
+          accept: "text/html,text/plain,application/json,*/*",
+        },
+      });
+      if (!isRedirectStatus(response.status)) {
+        validateWebFetchFinalUrl(response.url || currentUrl);
+        return response;
+      }
+
+      const location = response.headers.get("location");
+      if (!location) {
+        validateWebFetchFinalUrl(response.url || currentUrl);
+        return response;
+      }
+      await response.body?.cancel().catch(() => undefined);
+      currentUrl = normalizeWebFetchRedirectUrl(currentUrl, location);
+    }
+    throw new Error(`too many redirects; limit is ${MAX_FETCH_REDIRECTS}`);
   } finally {
     clearTimeout(timer);
   }
@@ -660,7 +696,22 @@ async function runGrokNativeWebSearch(
 }
 
 function normalizeUrl(raw: string): string {
-  const input = raw.startsWith("http://")
+  return validateWebFetchUrl(raw, { upgradeHttp: true });
+}
+
+function validateWebFetchFinalUrl(raw: string): string {
+  return validateWebFetchUrl(raw, { upgradeHttp: false });
+}
+
+function normalizeWebFetchRedirectUrl(currentUrl: string, location: string): string {
+  return validateWebFetchFinalUrl(new URL(location, currentUrl).toString());
+}
+
+function validateWebFetchUrl(
+  raw: string,
+  opts: { readonly upgradeHttp: boolean },
+): string {
+  const input = opts.upgradeHttp && raw.startsWith("http://")
     ? `https://${raw.slice("http://".length)}`
     : raw;
   const url = new URL(input);
@@ -1647,6 +1698,7 @@ function createWebFetchTool(toolName: string): Tool {
         const response = await fetchWithTimeout(
           normalized,
           numberValue(args.timeout_ms) ?? DEFAULT_TIMEOUT_MS,
+          { validateWebFetchUrls: true },
         );
         const contentType = response.headers.get("content-type") ?? "";
         const raw = await readResponseTextBounded(response, maxBytes);

@@ -167,6 +167,7 @@ export function isPreapprovedHost(hostname: string, pathname: string): boolean {
 export function isPreapprovedUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
+    if (parsed.protocol !== "https:") return false;
     return isPreapprovedHost(parsed.hostname, parsed.pathname);
   } catch {
     return false;

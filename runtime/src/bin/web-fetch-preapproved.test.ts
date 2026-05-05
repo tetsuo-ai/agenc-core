@@ -33,6 +33,11 @@ describe("web-fetch-preapproved", () => {
     expect(isPreapprovedUrl("https://github.com/random-org/repo")).toBe(false);
   });
 
+  it("isPreapprovedUrl rejects non-HTTPS URLs on preapproved hosts", () => {
+    expect(isPreapprovedUrl("http://react.dev/learn")).toBe(false);
+    expect(isPreapprovedUrl("ftp://react.dev/learn")).toBe(false);
+  });
+
   it("isPreapprovedUrl rejects malformed URLs", () => {
     expect(isPreapprovedUrl("not-a-url")).toBe(false);
     expect(isPreapprovedUrl("")).toBe(false);

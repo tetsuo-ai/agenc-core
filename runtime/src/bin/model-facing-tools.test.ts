@@ -210,6 +210,32 @@ function streamTextResponse(text: string, contentType = "text/plain") {
   return { response, cancel, textRead };
 }
 
+function fetchResponse(opts: {
+  readonly status?: number;
+  readonly url?: string;
+  readonly location?: string;
+  readonly text?: string;
+  readonly contentType?: string;
+}) {
+  const status = opts.status ?? 200;
+  const textRead = vi.fn(async () => opts.text ?? "");
+  const response = {
+    ok: status >= 200 && status < 300,
+    status,
+    url: opts.url ?? "https://localhost/page",
+    headers: {
+      get: (name: string) => {
+        const key = name.toLowerCase();
+        if (key === "location") return opts.location ?? null;
+        if (key === "content-type") return opts.contentType ?? "text/plain";
+        return null;
+      },
+    },
+    text: textRead,
+  } as unknown as Response;
+  return { response, textRead };
+}
+
 function codeMode<T>(result: { readonly codeModeResult?: unknown }): T {
   expect(result.codeModeResult).toBeDefined();
   return result.codeModeResult as T;
@@ -1005,11 +1031,81 @@ describe("model-facing tools", () => {
       expect(credentials.isError).toBe(true);
       expect(JSON.parse(credentials.content).error).toContain("credentials");
 
+      const privateIp = await byName.get("web_fetch")!.execute({
+        url: "https://127.0.0.1/page",
+      });
+      expect(privateIp.isError).toBe(true);
+      expect(JSON.parse(privateIp.content).error).toContain("loopback");
+      expect(fetchMock).not.toHaveBeenCalled();
+
       const failed = await byName.get("web_fetch")!.execute({
         url: "https://localhost/page",
       });
       expect(failed.isError).toBe(true);
       expect(JSON.parse(failed.content).error).toContain("network down");
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("web_fetch validates redirect targets before following them", async () => {
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => null,
+    });
+    const byName = new Map(tools.map((tool) => [tool.name, tool]));
+    const previousFetch = globalThis.fetch;
+    try {
+      const privateRedirect = fetchResponse({
+        status: 302,
+        url: "https://agenc.tech/start",
+        location: "https://169.254.169.254/latest",
+      });
+      globalThis.fetch = vi
+        .fn()
+        .mockResolvedValue(privateRedirect.response) as unknown as typeof globalThis.fetch;
+      const privateResult = await byName.get("web_fetch")!.execute({
+        url: "https://agenc.tech/start",
+      });
+      expect(privateResult.isError).toBe(true);
+      expect(JSON.parse(privateResult.content).error).toContain("private");
+      expect(globalThis.fetch).toHaveBeenCalledOnce();
+
+      const downgradeRedirect = fetchResponse({
+        status: 302,
+        url: "https://agenc.tech/start",
+        location: "http://agenc.tech/insecure",
+      });
+      globalThis.fetch = vi
+        .fn()
+        .mockResolvedValue(downgradeRedirect.response) as unknown as typeof globalThis.fetch;
+      const downgradeResult = await byName.get("web_fetch")!.execute({
+        url: "https://agenc.tech/start",
+      });
+      expect(downgradeResult.isError).toBe(true);
+      expect(JSON.parse(downgradeResult.content).error).toContain("https");
+      expect(globalThis.fetch).toHaveBeenCalledOnce();
+
+      const safeRedirect = fetchResponse({
+        status: 302,
+        url: "https://agenc.tech/start",
+        location: "/final",
+      });
+      const finalResponse = fetchResponse({
+        status: 200,
+        url: "https://agenc.tech/final",
+        text: "redirected body",
+      });
+      globalThis.fetch = vi
+        .fn()
+        .mockResolvedValueOnce(safeRedirect.response)
+        .mockResolvedValueOnce(finalResponse.response) as unknown as typeof globalThis.fetch;
+      const safeResult = await byName.get("web_fetch")!.execute({
+        url: "https://agenc.tech/start",
+      });
+      expect(safeResult.isError).toBeUndefined();
+      expect(JSON.parse(safeResult.content).content).toBe("redirected body");
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
     } finally {
       globalThis.fetch = previousFetch;
     }
