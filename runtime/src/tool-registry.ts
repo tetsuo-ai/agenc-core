@@ -70,6 +70,7 @@ import {
   createCodeModeTools,
   type CodeModeService,
 } from "./tools/code-mode/index.js";
+import { isCodeModeNestedToolName } from "./tools/code-mode/policy.js";
 import {
   APPLY_PATCH_TOOL_NAME,
   createApplyPatchTool,
@@ -104,10 +105,20 @@ export interface ToolDispatchResult {
   readonly metadata?: Record<string, unknown>;
 }
 
+export interface CodeModeNestedToolDispatch {
+  readonly id: string;
+  readonly name: string;
+  readonly input?: unknown;
+  readonly abortSignal?: AbortSignal;
+}
+
 export interface ToolRegistry {
   readonly tools: readonly Tool[];
   toLLMTools(): LLMTool[];
   dispatch(toolCall: LLMToolCall): Promise<ToolDispatchResult>;
+  dispatchCodeModeNestedTool?(
+    toolCall: CodeModeNestedToolDispatch,
+  ): Promise<ToolDispatchResult>;
   getDiscoveredToolNames?(): ReadonlySet<string>;
 }
 
@@ -359,6 +370,33 @@ function parseToolCallArguments(
     }
     return {};
   }
+}
+
+function parseCodeModeNestedToolArguments(
+  toolName: string,
+  input: unknown,
+  stringArgumentFields: Readonly<Record<string, string>>,
+): Record<string, unknown> {
+  if (input === undefined) return {};
+  if (typeof input === "string") {
+    const field = stringArgumentFields[toolName];
+    if (field === undefined) {
+      throw new Error(`tool \`${toolName}\` expects a JSON object for arguments`);
+    }
+    return { [field]: input };
+  }
+  if (input && typeof input === "object" && !Array.isArray(input)) {
+    return { ...(input as Record<string, unknown>) };
+  }
+  throw new Error(`tool \`${toolName}\` expects a JSON object or string input`);
+}
+
+function canDirectDispatchFromCodeMode(tool: Tool): boolean {
+  return (
+    tool.requiresApproval !== true &&
+    tool.isReadOnly === true &&
+    tool.recoveryCategory === "idempotent"
+  );
 }
 
 export interface BuildToolRegistryOptions {
@@ -641,9 +679,8 @@ export function buildToolRegistry(
       stringArgumentFields: modelFacingStringArgumentFields,
     },
   ];
-  const rawDefaultBuiltinTools = buildBuiltinToolSurface(
-    baseBuiltinSurfaceGroups,
-  ).tools;
+  const baseBuiltinSurface = buildBuiltinToolSurface(baseBuiltinSurfaceGroups);
+  const rawDefaultBuiltinTools = baseBuiltinSurface.tools;
   const configuredRawDefaultBuiltinTools = configuredTools(
     rawDefaultBuiltinTools,
   );
@@ -653,6 +690,7 @@ export function buildToolRegistry(
           service: options.codeModeService,
           getEnabledTools: () => allSpecs().map((spec) => spec.tool),
           descriptionTools: configuredRawDefaultBuiltinTools,
+          stringArgumentFields: baseBuiltinSurface.stringArgumentFields,
         })
       : [];
   const builtinSurface = buildBuiltinToolSurface([
@@ -770,7 +808,42 @@ export function buildToolRegistry(
     return allSpecs().filter(
       (spec) =>
         spec.deferred !== true || discoveredToolNames.has(spec.tool.name),
-    );
+      );
+  }
+
+  async function executeConfiguredTool(
+    spec: ConfiguredToolSpec,
+    callId: string,
+    args: Record<string, unknown>,
+    opts: { readonly abortSignal?: AbortSignal } = {},
+  ): Promise<ToolDispatchResult> {
+    Object.defineProperty(args, "__callId", {
+      value: callId,
+      enumerable: false,
+      configurable: true,
+    });
+    if (opts.abortSignal !== undefined) {
+      Object.defineProperty(args, "__abortSignal", {
+        value: opts.abortSignal,
+        enumerable: false,
+        configurable: true,
+      });
+    }
+    if (spec.tool.name === "system.searchTools") {
+      Object.defineProperty(args, SESSION_ADVERTISED_TOOL_NAMES_ARG, {
+        value: visibleSpecs().map((visible) => visible.tool.name),
+        enumerable: false,
+        configurable: true,
+      });
+    }
+    const result = await spec.tool.execute(args);
+    return {
+      content: result.content,
+      isError: result.isError,
+      codeModeResult: result.codeModeResult,
+      contentItems: result.contentItems,
+      metadata: result.metadata,
+    };
   }
 
   return {
@@ -799,26 +872,56 @@ export function buildToolRegistry(
           toolCall,
           builtinSurface.stringArgumentFields,
         );
-        Object.defineProperty(args, "__callId", {
-          value: toolCall.id,
-          enumerable: false,
-          configurable: true,
-        });
-        if (spec.tool.name === "system.searchTools") {
-          Object.defineProperty(args, SESSION_ADVERTISED_TOOL_NAMES_ARG, {
-            value: visibleSpecs().map((visible) => visible.tool.name),
-            enumerable: false,
-            configurable: true,
-          });
-        }
-        const result = await spec.tool.execute(args);
+        return await executeConfiguredTool(spec, toolCall.id, args);
+      } catch (error) {
         return {
-          content: result.content,
-          isError: result.isError,
-          codeModeResult: result.codeModeResult,
-          contentItems: result.contentItems,
-          metadata: result.metadata,
+          content: safeStringify({
+            error: error instanceof Error ? error.message : String(error),
+          }),
+          isError: true,
         };
+      }
+    },
+    async dispatchCodeModeNestedTool(
+      toolCall: CodeModeNestedToolDispatch,
+    ): Promise<ToolDispatchResult> {
+      if (!isCodeModeNestedToolName(toolCall.name)) {
+        return {
+          content: safeStringify({
+            error: `tool ${toolCall.name} is not available to code-mode nested calls`,
+          }),
+          isError: true,
+        };
+      }
+      const router = buildRouter();
+      const spec = router.findSpec(toolCall.name);
+      if (!spec) {
+        return {
+          content: safeStringify({
+            error: `unknown tool: ${toolCall.name}`,
+          }),
+          isError: true,
+        };
+      }
+      if (!canDirectDispatchFromCodeMode(spec.tool)) {
+        return {
+          content: safeStringify({
+            error:
+              `code-mode nested tool \`${toolCall.name}\` requires ` +
+              "permission-aware dispatch and cannot run through the registry fallback",
+          }),
+          isError: true,
+        };
+      }
+      try {
+        const args = parseCodeModeNestedToolArguments(
+          toolCall.name,
+          toolCall.input,
+          builtinSurface.stringArgumentFields,
+        );
+        return await executeConfiguredTool(spec, toolCall.id, args, {
+          abortSignal: toolCall.abortSignal,
+        });
       } catch (error) {
         return {
           content: safeStringify({
