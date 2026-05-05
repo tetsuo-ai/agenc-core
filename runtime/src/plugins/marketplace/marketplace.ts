@@ -287,6 +287,7 @@ export async function addMarketplaceOp(
     const name = normalizeMarketplaceName(
       input.name ?? inferMarketplaceName(manifest, source),
     );
+    await validateMarketplacePluginSources(manifestPath, name, manifest);
     const index = await readMarketplaceIndex(input);
     const duplicate = findMarketplaceName(index, name);
     if (duplicate !== undefined && duplicate !== name) {
@@ -798,6 +799,16 @@ async function activateMarketplaceStaging(
       await rename(backupPath, installedPath);
     }
     throw error;
+  }
+}
+
+async function validateMarketplacePluginSources(
+  marketplacePath: string,
+  marketplaceName: string,
+  manifest: RawMarketplaceManifest,
+): Promise<void> {
+  for (const plugin of manifest.plugins) {
+    await resolveMarketplacePluginEntry(marketplacePath, marketplaceName, plugin);
   }
 }
 

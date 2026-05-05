@@ -387,6 +387,95 @@ describe("plugin marketplace runtime", () => {
       .rejects.toThrow("duplicate plugin names");
   });
 
+  it("rejects invalid plugin source metadata during marketplace add before persistence", async () => {
+    async function expectAtomicAddRejection(
+      source: unknown,
+      expectedError: string,
+      setup?: (paths: {
+        readonly marketplaceRoot: string;
+        readonly workspaceRoot: string;
+      }) => Promise<void>,
+    ): Promise<void> {
+      const { agencHome, workspaceRoot } = await tempRuntime();
+      const marketplaceRoot = join(workspaceRoot, "bad-marketplace");
+      await mkdir(marketplaceRoot, { recursive: true });
+      await setup?.({ marketplaceRoot, workspaceRoot });
+      await writeFile(
+        join(marketplaceRoot, "marketplace.json"),
+        JSON.stringify({
+          metadata: { name: "bad" },
+          plugins: [{ name: "alpha", source }],
+        }, null, 2),
+      );
+
+      await expect(addMarketplaceOp({
+        agencHome,
+        workspaceRoot,
+        source: marketplaceRoot,
+      })).rejects.toThrow(expectedError);
+      await expect(readFile(marketplaceIndexPath({ agencHome }), "utf8"))
+        .rejects.toMatchObject({ code: "ENOENT" });
+      await expect(stat(marketplaceInstalledPath("bad", { agencHome })))
+        .rejects.toMatchObject({ code: "ENOENT" });
+    }
+
+    await expectAtomicAddRejection(
+      { source: "npm", package: "alpha" },
+      "unsupported marketplace plugin source",
+    );
+    await expectAtomicAddRejection(
+      { source: "local", path: "./../outside" },
+      "must stay within the marketplace root",
+    );
+    await expectAtomicAddRejection(
+      { source: "git", url: "http://agenc.tech/plugin.git" },
+      "marketplace plugin git URL must use HTTPS or loopback HTTP",
+    );
+    await expectAtomicAddRejection(
+      "./alpha",
+      "must stay within the marketplace root",
+      async ({ marketplaceRoot, workspaceRoot }) => {
+        const outsidePlugin = await writePlugin(join(workspaceRoot, "outside"), "alpha");
+        await symlink(outsidePlugin, join(marketplaceRoot, "alpha"));
+      },
+    );
+  });
+
+  it("keeps marketplace reconciliation atomic when plugin source metadata is invalid", async () => {
+    const { agencHome, workspaceRoot } = await tempRuntime();
+    const marketplaceRoot = join(workspaceRoot, "bad-marketplace");
+    await mkdir(marketplaceRoot, { recursive: true });
+    await writeFile(
+      join(marketplaceRoot, "marketplace.json"),
+      JSON.stringify({
+        metadata: { name: "bad" },
+        plugins: [{
+          name: "alpha",
+          source: { source: "git", url: "http://agenc.tech/plugin.git" },
+        }],
+      }, null, 2),
+    );
+
+    const result = await reconcileMarketplaces({
+      agencHome,
+      workspaceRoot,
+      declaredMarketplaces: {
+        bad: { source: { source: "directory", path: marketplaceRoot } },
+      },
+    });
+
+    expect(result.installed).toEqual([]);
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0]).toMatchObject({
+      name: "bad",
+      error: expect.stringContaining("must use HTTPS or loopback HTTP"),
+    });
+    await expect(readFile(marketplaceIndexPath({ agencHome }), "utf8"))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(marketplaceInstalledPath("bad", { agencHome })))
+      .rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("treats policy host and path patterns as a safe bounded subset", () => {
     expect(isSourceAllowedByPolicy(
       { source: "github", repo: "agenc-org/plugins" },
