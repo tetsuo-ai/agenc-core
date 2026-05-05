@@ -1,0 +1,198 @@
+{
+  "item": "ZC-36",
+  "status": "representative-subset",
+  "coverageDecision": "Port and lock a representative top-20 test/fixture subset. Carry the full apply-patch fixture corpus, and map high-value core plus app-server suite behaviors to existing AgenC Vitest tests instead of copying the full Rust harness.",
+  "sourceCommit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
+  "sourceRootLabel": "rust runtime reference checkout",
+  "targetRoot": "..",
+  "applyPatchFixtureCoverage": {
+    "decision": "complete fixture corpus carried",
+    "expectedScenarioDirectories": [
+      "001_add_file",
+      "002_multiple_operations",
+      "003_multiple_chunks",
+      "004_move_to_new_directory",
+      "005_rejects_empty_patch",
+      "006_rejects_missing_context",
+      "007_rejects_missing_file_delete",
+      "008_rejects_empty_update_hunk",
+      "009_requires_existing_file_for_update",
+      "010_move_overwrites_existing_destination",
+      "011_add_overwrites_existing_file",
+      "012_delete_directory_fails",
+      "013_rejects_invalid_hunk_header",
+      "014_update_file_appends_trailing_newline",
+      "015_failure_after_partial_success_leaves_changes",
+      "016_pure_addition_update_chunk",
+      "017_whitespace_padded_hunk_header",
+      "018_whitespace_padded_patch_markers",
+      "019_unicode_simple",
+      "020_delete_file_success",
+      "020_whitespace_padded_patch_marker_lines",
+      "021_update_file_deletion_only",
+      "022_update_file_end_of_file_marker"
+    ]
+  },
+  "targetTestFiles": [
+    "runtime/src/test-parity/zc36-suite-coverage.test.ts",
+    "runtime/src/tools/apply-patch/scenarios.test.ts",
+    "runtime/src/phases/execute-tools.test.ts",
+    "runtime/src/permissions/evaluator.test.ts",
+    "runtime/src/permissions/rpc/request-permissions.test.ts",
+    "runtime/src/elicitation/request-user-input.test.ts",
+    "runtime/src/agents/fork-context.test.ts",
+    "runtime/src/agents/control.test.ts",
+    "runtime/src/state/backfill.test.ts",
+    "runtime/src/state/export-import.test.ts",
+    "runtime/src/app-server/protocol.contract.test.ts",
+    "runtime/src/app-server/agent-lifecycle.contract.test.ts",
+    "runtime/src/app-server/command-exec.contract.test.ts",
+    "runtime/src/app-server/cancellation-preemption.contract.test.ts",
+    "runtime/src/app-server/elicitation-dispatcher.contract.test.ts"
+  ],
+  "selectedCases": [
+    {
+      "id": "apply-patch-fixture-corpus",
+      "sourceFile": "apply-patch/tests/fixtures/scenarios",
+      "requiredBehavior": "Replay every numbered patch fixture scenario against AgenC's parser and filesystem runtime.",
+      "targetTests": ["runtime/src/tools/apply-patch/scenarios.test.ts"]
+    },
+    {
+      "id": "core-exec-dispatch",
+      "sourceFile": "core/tests/suite/exec.rs",
+      "requiredBehavior": "Command execution returns structured output, honors caps, and surfaces terminal tool results.",
+      "targetTests": ["runtime/src/phases/execute-tools.test.ts"]
+    },
+    {
+      "id": "core-exec-policy-deny",
+      "sourceFile": "core/tests/suite/exec_policy.rs",
+      "requiredBehavior": "Policy denials short-circuit execution before tool side effects.",
+      "targetTests": ["runtime/src/permissions/evaluator.test.ts", "runtime/src/phases/execute-tools.test.ts"]
+    },
+    {
+      "id": "core-exec-policy-empty-input",
+      "sourceFile": "core/tests/suite/exec_policy.rs",
+      "requiredBehavior": "Empty or whitespace shell commands are rejected or handled without crashing.",
+      "targetTests": ["runtime/src/phases/execute-tools.test.ts", "runtime/src/app-server/command-exec.contract.test.ts"]
+    },
+    {
+      "id": "core-fork-thread-context",
+      "sourceFile": "core/tests/suite/fork_thread.rs",
+      "requiredBehavior": "Forked subagent context is built from the correct parent rollout history.",
+      "targetTests": ["runtime/src/agents/fork-context.test.ts", "runtime/src/agents/control.test.ts"]
+    },
+    {
+      "id": "core-hierarchical-agent-tree",
+      "sourceFile": "core/tests/suite/hierarchical_agents.rs",
+      "requiredBehavior": "Child agents are tracked as a bounded tree and can be listed or resumed by path.",
+      "targetTests": ["runtime/src/agents/control.test.ts"]
+    },
+    {
+      "id": "core-request-permissions-normalization",
+      "sourceFile": "core/tests/suite/request_permissions.rs",
+      "requiredBehavior": "Additional permission requests normalize path scopes and reject malformed profiles.",
+      "targetTests": ["runtime/src/permissions/rpc/request-permissions.test.ts"]
+    },
+    {
+      "id": "core-request-permissions-grants",
+      "sourceFile": "core/tests/suite/request_permissions.rs",
+      "requiredBehavior": "Permission grants influence later tool dispatch without leaking across unsafe boundaries.",
+      "targetTests": ["runtime/src/permissions/evaluator.test.ts", "runtime/src/phases/execute-tools.test.ts"]
+    },
+    {
+      "id": "core-request-user-input-round-trip",
+      "sourceFile": "core/tests/suite/request_user_input.rs",
+      "requiredBehavior": "Interactive user-input requests normalize choices, wait for responses, and reject unsupported modes.",
+      "targetTests": ["runtime/src/elicitation/request-user-input.test.ts"]
+    },
+    {
+      "id": "core-sqlite-rollout-backfill",
+      "sourceFile": "core/tests/suite/sqlite_state.rs",
+      "requiredBehavior": "Existing rollout files are indexed idempotently into durable state.",
+      "targetTests": ["runtime/src/state/backfill.test.ts"]
+    },
+    {
+      "id": "core-sqlite-export-import",
+      "sourceFile": "core/tests/suite/sqlite_state.rs",
+      "requiredBehavior": "Durable state exports and imports preserve sessions while rejecting malformed payloads.",
+      "targetTests": ["runtime/src/state/export-import.test.ts"]
+    },
+    {
+      "id": "core-shell-command-permission-path",
+      "sourceFile": "core/tests/suite/shell_command.rs",
+      "requiredBehavior": "Shell-command dispatch uses the permission evaluator before execution.",
+      "targetTests": ["runtime/src/permissions/evaluator.test.ts", "runtime/src/phases/execute-tools.test.ts"]
+    },
+    {
+      "id": "core-tool-parallelism",
+      "sourceFile": "core/tests/suite/tool_parallelism.rs",
+      "requiredBehavior": "Tool dispatch honors concurrency limits and drains queued terminal results.",
+      "targetTests": ["runtime/src/phases/execute-tools.test.ts"]
+    },
+    {
+      "id": "app-initialize-handshake",
+      "sourceFile": "app-server/tests/suite/v2/initialize.rs",
+      "requiredBehavior": "JSON-RPC connections require initialize and publish protocol version metadata.",
+      "targetTests": ["runtime/src/app-server/protocol.contract.test.ts", "runtime/src/app-server/agent-lifecycle.contract.test.ts"]
+    },
+    {
+      "id": "app-command-exec",
+      "sourceFile": "app-server/tests/suite/v2/command_exec.rs",
+      "requiredBehavior": "Command exec start/write/resize/terminate methods route through initialized daemon connections.",
+      "targetTests": ["runtime/src/app-server/command-exec.contract.test.ts"]
+    },
+    {
+      "id": "app-command-exec-cancel",
+      "sourceFile": "app-server/tests/suite/v2/turn_interrupt.rs",
+      "requiredBehavior": "Request and tool cancellation terminate active process-backed work.",
+      "targetTests": ["runtime/src/app-server/cancellation-preemption.contract.test.ts"]
+    },
+    {
+      "id": "app-request-permissions-round-trip",
+      "sourceFile": "app-server/tests/suite/v2/request_permissions.rs",
+      "requiredBehavior": "Daemon permission requests surface to clients and resolve with normalized decisions.",
+      "targetTests": ["runtime/src/permissions/rpc/request-permissions.test.ts", "runtime/src/app-server/agent-lifecycle.contract.test.ts"]
+    },
+    {
+      "id": "app-request-user-input-round-trip",
+      "sourceFile": "app-server/tests/suite/v2/request_user_input.rs",
+      "requiredBehavior": "Daemon user-input elicitation dispatches through initialized clients and resolves pending requests.",
+      "targetTests": ["runtime/src/app-server/elicitation-dispatcher.contract.test.ts", "runtime/src/elicitation/request-user-input.test.ts"]
+    },
+    {
+      "id": "app-thread-start",
+      "sourceFile": "app-server/tests/suite/v2/thread_start.rs",
+      "requiredBehavior": "AgenC session or agent creation seeds durable lifecycle state and rejects malformed starts.",
+      "targetTests": ["runtime/src/app-server/agent-lifecycle.contract.test.ts"]
+    },
+    {
+      "id": "app-thread-read",
+      "sourceFile": "app-server/tests/suite/v2/thread_read.rs",
+      "requiredBehavior": "Stored thread history and logs can be read back after daemon recreation.",
+      "targetTests": ["runtime/src/app-server/agent-lifecycle.contract.test.ts"]
+    },
+    {
+      "id": "app-thread-list",
+      "sourceFile": "app-server/tests/suite/v2/thread_list.rs",
+      "requiredBehavior": "Stored threads or agents list with stable pagination and active-state filtering.",
+      "targetTests": ["runtime/src/app-server/agent-lifecycle.contract.test.ts"]
+    },
+    {
+      "id": "app-thread-fork",
+      "sourceFile": "app-server/tests/suite/v2/thread_fork.rs",
+      "requiredBehavior": "Forked threads preserve source context and record fork metadata.",
+      "targetTests": ["runtime/src/agents/fork-context.test.ts", "runtime/src/agents/control.test.ts"]
+    },
+    {
+      "id": "app-turn-steer",
+      "sourceFile": "app-server/tests/suite/v2/turn_steer.rs",
+      "requiredBehavior": "Interactive steering and follow-up input paths validate active session state.",
+      "targetTests": ["runtime/src/app-server/agent-lifecycle.contract.test.ts"]
+    }
+  ],
+  "intentionalReductions": [
+    "The full core integration harness is not copied wholesale because AgenC's runtime is TypeScript/Vitest and already owns narrower behavior tests for tool execution, permissions, agents, state, and elicitation.",
+    "The full app-server v2 method suite is not copied wholesale because AgenC protocol names and daemon lifecycle surfaces differ from the Rust reference. The selected rows map equivalent behavior to AgenC-owned JSON-RPC and lifecycle contract tests.",
+    "Provider simulator, WebSocket-specific, marketplace, and remote-service-only cases stay out of this cleanup item unless a later feature row ports those production surfaces."
+  ]
+}
