@@ -1314,6 +1314,13 @@ describe("model-facing tools", () => {
     expect(JSON.parse(zeroTimeout.content).error).toBe(
       "timeout_ms must be greater than zero",
     );
+    for (const timeout_ms of ["1000", {}, []]) {
+      const invalidTimeout = await wait.execute({ timeout_ms });
+      expect(invalidTimeout.isError).toBe(true);
+      expect(JSON.parse(invalidTimeout.content).error).toBe(
+        "timeout_ms must be a number",
+      );
+    }
 
     const invalidRole = await spawnAgent.execute({
       message: "inspect",
@@ -1724,6 +1731,15 @@ describe("model-facing tools", () => {
       });
       expect(roleFiltered.isError).toBe(true);
       expect(JSON.parse(roleFiltered.content).error).toBe("unknown field `role`");
+      for (const path_prefix of [0, {}, []]) {
+        const invalidPathPrefix = await byName.get("list_agents")!.execute({
+          path_prefix,
+        });
+        expect(invalidPathPrefix.isError).toBe(true);
+        expect(JSON.parse(invalidPathPrefix.content).error).toBe(
+          "path_prefix must be a string",
+        );
+      }
 
       const result = await byName.get("list_agents")!.execute({});
       expect(result.isError).toBeUndefined();
