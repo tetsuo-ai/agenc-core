@@ -201,6 +201,14 @@ describe("remote plugin bundles", () => {
       .rejects.toThrow(/decompressed|extracted size/u);
   });
 
+  it("caps tar entry counts before excessive filesystem writes", async () => {
+    const destination = await mkdtemp(join(tmpdir(), "agenc-remote-extract-entry-limit-"));
+    await expect(extractPluginBundleTarGz(createTarGz({
+      "linear/one.txt": "",
+      "linear/two.txt": "",
+    }), destination, undefined, 1)).rejects.toThrow("too many entries");
+  });
+
   it("rejects truncated or corrupt tar members before writing files", async () => {
     const truncatedDestination = await mkdtemp(join(tmpdir(), "agenc-remote-extract-truncated-"));
     await expect(extractPluginBundleTarGz(createTruncatedTarGz(), truncatedDestination))

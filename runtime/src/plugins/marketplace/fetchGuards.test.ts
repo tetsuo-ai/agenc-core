@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { Fetcher, FetchResponse } from "./marketplace.js";
 import {
+  assertHttpsOrLoopbackUrl,
   fetchWithTimeout,
+  isLoopbackHostname,
   readResponseTextWithLimit,
 } from "./fetchGuards.js";
 
@@ -37,5 +39,14 @@ describe("marketplace fetch guards", () => {
       {},
       { timeoutMs: 1, label: "slow marketplace fetch" },
     )).rejects.toThrow("slow marketplace fetch timed out after 1ms");
+  });
+
+  it("accepts bracketed IPv6 loopback hosts when loopback HTTP is explicitly allowed", () => {
+    expect(isLoopbackHostname("[::1]")).toBe(true);
+    expect(assertHttpsOrLoopbackUrl(
+      "http://[::1]/marketplace.json",
+      "marketplace URL",
+      { allowLoopbackHttp: true },
+    ).hostname).toBe("[::1]");
   });
 });

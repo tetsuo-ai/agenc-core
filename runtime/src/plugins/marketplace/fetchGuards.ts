@@ -4,11 +4,19 @@ const DEFAULT_ERROR_BODY_MAX_BYTES = 8 * 1024;
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
 
 export function isLoopbackHostname(hostname: string): boolean {
-  const host = hostname.toLowerCase();
+  const host = normalizeUrlHostname(hostname);
   return host === "localhost" ||
     host === "127.0.0.1" ||
     host === "::1" ||
     /^127\./u.test(host);
+}
+
+function normalizeUrlHostname(hostname: string): string {
+  const host = hostname.toLowerCase();
+  if (host.startsWith("[") && host.endsWith("]")) {
+    return host.slice(1, -1);
+  }
+  return host;
 }
 
 export function assertHttpsOrLoopbackUrl(

@@ -219,6 +219,7 @@ describe("agenc plugin CLI", () => {
     const { agencHome, workspaceRoot, root } = await tempRuntime();
     const marketplaceRoot = join(root, "marketplace");
     await mkdir(marketplaceRoot, { recursive: true });
+    await writePlugin(marketplaceRoot, "alpha");
     await writeFile(
       join(marketplaceRoot, "marketplace.json"),
       JSON.stringify({

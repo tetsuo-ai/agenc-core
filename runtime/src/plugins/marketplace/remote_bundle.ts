@@ -33,6 +33,7 @@ export interface RemotePluginBundleInstallResult {
 
 const REMOTE_PLUGIN_BUNDLE_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
 const REMOTE_PLUGIN_BUNDLE_MAX_EXTRACTED_BYTES = 250 * 1024 * 1024;
+const REMOTE_PLUGIN_BUNDLE_MAX_TAR_ENTRIES = 20_000;
 const REMOTE_PLUGIN_INSTALL_STAGING_DIR = "plugins/.remote-plugin-install-staging";
 const REMOTE_PLUGIN_CACHE_SEGMENT_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/u;
 const gunzipAsync = promisify(gunzip);
@@ -139,15 +140,21 @@ export async function extractPluginBundleTarGz(
   bytes: Buffer,
   destination: string,
   maxTotalBytes = REMOTE_PLUGIN_BUNDLE_MAX_EXTRACTED_BYTES,
+  maxEntries = REMOTE_PLUGIN_BUNDLE_MAX_TAR_ENTRIES,
 ): Promise<void> {
   await mkdir(destination, { recursive: true, mode: 0o700 });
   const tar = await gunzipTarWithLimit(bytes, maxTotalBytes);
   let offset = 0;
   let extractedBytes = 0;
+  let entryCount = 0;
   while (offset + 512 <= tar.length) {
     const header = tar.subarray(offset, offset + 512);
     offset += 512;
     if (header.every((byte) => byte === 0)) break;
+    entryCount += 1;
+    if (entryCount > maxEntries) {
+      throw new Error(`remote plugin bundle tar has too many entries: ${entryCount}`);
+    }
     assertTarHeaderChecksum(header);
     const name = readTarString(header, 0, 100);
     const prefix = readTarString(header, 345, 155);

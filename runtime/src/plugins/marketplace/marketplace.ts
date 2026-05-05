@@ -820,7 +820,7 @@ async function resolveMarketplacePluginEntry(
 ): Promise<ResolvedMarketplacePlugin> {
   const source = await resolvePluginSource(marketplacePath, plugin.source);
   const manifest = source.type === "local"
-    ? (await loadPluginManifest(source.path).catch(() => null))?.manifest
+    ? await loadLocalMarketplacePluginManifest(source.path)
     : undefined;
   const pluginInterface = withMarketplaceCategory(manifest?.interface, plugin.category);
   return {
@@ -897,13 +897,23 @@ async function resolveLocalPluginSourcePath(
   const candidate = join(root, ...parts);
   const rootReal = await realpath(root);
   const candidateReal = await realpath(candidate).catch((error) => {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error("local plugin source path must exist within the marketplace root");
+    }
     throw error;
   });
-  if (candidateReal !== null && !pathIsInside(candidateReal, rootReal)) {
+  if (!pathIsInside(candidateReal, rootReal)) {
     throw new Error("local plugin source path must stay within the marketplace root");
   }
-  return candidateReal ?? candidate;
+  return candidateReal;
+}
+
+async function loadLocalMarketplacePluginManifest(pluginPath: string): Promise<PluginManifest> {
+  const loaded = await loadPluginManifest(pluginPath);
+  if (loaded === null) {
+    throw new Error("local marketplace plugin source must contain a valid plugin manifest");
+  }
+  return loaded.manifest;
 }
 
 function normalizeRemotePluginSubdir(

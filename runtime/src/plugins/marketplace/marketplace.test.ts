@@ -459,6 +459,18 @@ describe("plugin marketplace runtime", () => {
     }
 
     await expectAtomicAddRejection(
+      "./alpha",
+      "must exist within the marketplace root",
+    );
+    await expectAtomicAddRejection(
+      "./alpha",
+      "Plugin manifest has invalid JSON",
+      async ({ marketplaceRoot }) => {
+        await mkdir(join(marketplaceRoot, "alpha", ".agenc-plugin"), { recursive: true });
+        await writeFile(join(marketplaceRoot, "alpha", ".agenc-plugin", "plugin.json"), "{invalid");
+      },
+    );
+    await expectAtomicAddRejection(
       { source: "npm", package: "alpha" },
       "unsupported marketplace plugin source",
     );
