@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderFactoryOptions } from "../llm/provider.js";
 import type { LLMProvider, LLMResponse } from "../llm/types.js";
 import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
@@ -11,6 +11,18 @@ import { backgroundTaskLifecycle } from "../tasks/index.js";
 import { createModelFacingTools } from "./model-facing-tools.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
 import { _clearAgentControlCacheForTesting, _setAgentControlForTesting } from "./delegate-tool.js";
+import {
+  checkForLSPDiagnostics,
+  registerPendingLSPDiagnostic,
+  resetAllLSPDiagnosticState,
+} from "../services/lsp/LSPDiagnosticRegistry.js";
+import { normalizeLspServerConfig } from "../services/lsp/config.js";
+import {
+  _resetLspManagerForTesting,
+  initializeLspServerManager,
+  shutdownLspServerManager,
+} from "../services/lsp/manager.js";
+import type { LSPServerInstance } from "../services/lsp/LSPServerInstance.js";
 import {
   clearSessionReadState,
   getSessionReadSnapshot,
@@ -175,6 +187,13 @@ function codeMode<T>(result: { readonly codeModeResult?: unknown }): T {
 describe("model-facing tools", () => {
   beforeEach(() => {
     delegateMock.mockReset();
+    resetAllLSPDiagnosticState();
+    _resetLspManagerForTesting();
+  });
+
+  afterEach(async () => {
+    await shutdownLspServerManager();
+    _resetLspManagerForTesting();
   });
 
   it("registers the requested product tools and omits raw system HTTP tools", () => {
@@ -309,6 +328,306 @@ describe("model-facing tools", () => {
       properties: {},
       additionalProperties: false,
     });
+    expect(allNames).toEqual(
+      expect.arrayContaining([
+        "system.symbolSearch",
+        "system.symbolDefinition",
+        "system.symbolReferences",
+      ]),
+    );
+    expect(
+      registry.tools.find((tool) => tool.name === "LSP")?.inputSchema,
+    ).toMatchObject({
+      required: ["operation"],
+      additionalProperties: false,
+      properties: {
+        operation: {
+          enum: ["diagnostics", "definition", "references", "symbols"],
+        },
+      },
+    });
+  });
+
+  it("returns LSP diagnostics for one file without draining other pending diagnostics", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-lsp-tool-"));
+    try {
+      const a = join(root, "a.ts");
+      const b = join(root, "b.ts");
+      await writeFile(a, "const a = 1;\n", "utf8");
+      await writeFile(b, "const b = 1;\n", "utf8");
+      registerPendingLSPDiagnostic({
+        serverName: "ts",
+        files: [
+          {
+            uri: a,
+            diagnostics: [{
+              message: "a diag",
+              severity: "Error",
+            }],
+          },
+          {
+            uri: b,
+            diagnostics: [{
+              message: "b diag",
+              severity: "Warning",
+            }],
+          },
+        ],
+      });
+
+      const tools = createModelFacingTools({
+        workspaceRoot: root,
+        getSession: () => null,
+      });
+      const lsp = tools.find((tool) => tool.name === "LSP")!;
+
+      const result = await lsp.execute({
+        operation: "diagnostics",
+        file_path: "a.ts",
+      });
+
+      expect(JSON.parse(result.content).diagnostics).toEqual([
+        { message: "a diag", severity: "Error" },
+      ]);
+      expect(
+        checkForLSPDiagnostics()[0]!.files.map((file) => file.uri).sort(),
+      ).toEqual([a, b]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds model-facing LSP diagnostics for noisy pending files", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-lsp-tool-noisy-"));
+    try {
+      const file = join(root, "a.ts");
+      await writeFile(file, "const a = 1;\n", "utf8");
+      registerPendingLSPDiagnostic({
+        serverName: "ts",
+        files: [
+          {
+            uri: file,
+            diagnostics: Array.from({ length: 40 }, (_, index) => ({
+              message: `diag ${index}`,
+              severity: index % 2 === 0 ? "Warning" : "Error",
+            })),
+          },
+        ],
+      });
+
+      const tools = createModelFacingTools({
+        workspaceRoot: root,
+        getSession: () => null,
+      });
+      const lsp = tools.find((tool) => tool.name === "LSP")!;
+      const result = await lsp.execute({
+        operation: "diagnostics",
+        file_path: "a.ts",
+      });
+      const payload = JSON.parse(result.content);
+
+      expect(payload.diagnostics).toHaveLength(10);
+      expect(payload.diagnostics[0]!.severity).toBe("Error");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps native semantic definition, references, and symbols operations available", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-lsp-tool-code-intel-"));
+    try {
+      await writeFile(
+        join(root, "app.ts"),
+        [
+          "export function greet(name: string) {",
+          "  return `hello ${name}`;",
+          "}",
+          "export const message = greet('Ada');",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      const tools = createModelFacingTools({
+        workspaceRoot: root,
+        getSession: () => null,
+      });
+      const lsp = tools.find((tool) => tool.name === "LSP")!;
+
+      const definition = JSON.parse(
+        (
+          await lsp.execute({
+            operation: "definition",
+            symbol: "greet",
+          })
+        ).content,
+      );
+      expect(definition.definition).toMatchObject({
+        name: "greet",
+        filePath: "app.ts",
+      });
+
+      const references = JSON.parse(
+        (
+          await lsp.execute({
+            operation: "references",
+            symbol: "greet",
+          })
+        ).content,
+      );
+      expect(references.references.map((entry: { line: number }) => entry.line)).toEqual([
+        1,
+        4,
+      ]);
+
+      const symbols = JSON.parse(
+        (
+          await lsp.execute({
+            operation: "symbols",
+            query: "greet",
+          })
+        ).content,
+      );
+      expect(symbols.symbols[0]).toMatchObject({
+        name: "greet",
+        filePath: "app.ts",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports when no language server is configured for diagnostics", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-lsp-tool-no-server-"));
+    try {
+      const file = join(root, "a.ts");
+      await writeFile(file, "const a = 1;\n", "utf8");
+      const tools = createModelFacingTools({
+        workspaceRoot: root,
+        getSession: () => null,
+      });
+      const lsp = tools.find((tool) => tool.name === "LSP")!;
+
+      const result = await lsp.execute({
+        operation: "diagnostics",
+        file_path: "a.ts",
+      });
+      const payload = JSON.parse(result.content);
+
+      expect(payload).toMatchObject({
+        file_path: file,
+        diagnostics: [],
+        server: null,
+        note: "No language server is configured for this file.",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns structured LSP initialization failures with pending diagnostics", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-lsp-tool-failed-init-"));
+    try {
+      const file = join(root, "a.ts");
+      await writeFile(file, "const a = 1;\n", "utf8");
+      initializeLspServerManager({
+        configSource: () => {
+          throw new Error("cannot load lsp config");
+        },
+      });
+      registerPendingLSPDiagnostic({
+        serverName: "ts",
+        files: [
+          {
+            uri: file,
+            diagnostics: [{ message: "pending diag", severity: "Error" }],
+          },
+        ],
+      });
+
+      const tools = createModelFacingTools({
+        workspaceRoot: root,
+        getSession: () => null,
+      });
+      const lsp = tools.find((tool) => tool.name === "LSP")!;
+      const result = await lsp.execute({
+        operation: "diagnostics",
+        file_path: "a.ts",
+      });
+      const payload = JSON.parse(result.content);
+
+      expect(payload).toMatchObject({
+        file_path: file,
+        server: null,
+        lsp_status: "failed",
+        server_error: { message: "cannot load lsp config" },
+        diagnostics: [{ message: "pending diag", severity: "Error" }],
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns structured LSP server startup failures with pending diagnostics", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-lsp-tool-start-failure-"));
+    try {
+      const file = join(root, "a.ts");
+      await writeFile(file, "const a = 1;\n", "utf8");
+      const config = normalizeLspServerConfig("ts", {
+        command: "typescript-language-server",
+        extensionToLanguage: { ".ts": "typescript" },
+      });
+      const server = {
+        name: "ts",
+        config,
+        get state() {
+          return "stopped";
+        },
+        start: async () => {
+          throw new Error("server start timed out");
+        },
+        stop: async () => {},
+        restart: async () => {},
+        isHealthy: () => false,
+        sendRequest: async () => ({}),
+        sendNotification: async () => {},
+        onNotification: () => {},
+        onRequest: () => {},
+      } as unknown as LSPServerInstance;
+      initializeLspServerManager({
+        configSource: () => ({ ts: config }),
+        instanceFactory: () => server,
+      });
+      registerPendingLSPDiagnostic({
+        serverName: "ts",
+        files: [
+          {
+            uri: file,
+            diagnostics: [{ message: "old diag", severity: "Warning" }],
+          },
+        ],
+      });
+
+      const tools = createModelFacingTools({
+        workspaceRoot: root,
+        getSession: () => null,
+      });
+      const lsp = tools.find((tool) => tool.name === "LSP")!;
+      const result = await lsp.execute({
+        operation: "diagnostics",
+        file_path: "a.ts",
+      });
+      const payload = JSON.parse(result.content);
+
+      expect(payload).toMatchObject({
+        file_path: file,
+        server: null,
+        lsp_status: "server_error",
+        server_error: { message: "server start timed out" },
+        diagnostics: [{ message: "old diag", severity: "Warning" }],
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("persists TaskCreate/TaskGet/TaskUpdate/TaskList against the per-project task board", async () => {

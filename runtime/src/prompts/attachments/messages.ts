@@ -287,6 +287,11 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
         runtimeOnly: { mergeBoundary: "user_context" },
       };
     }
+    case "lsp_diagnostics": {
+      const body = renderLspDiagnosticsAttachment(attachment);
+      if (body.length === 0) return null;
+      return userContextMessage(wrapSystemReminder(body));
+    }
     case "skill_listing": {
       return userContextMessage(
         wrapSystemReminder(
@@ -346,6 +351,92 @@ function escapeAttribute(value: string): string {
     .replace(/"/g, "&quot;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+const LSP_DIAGNOSTIC_MAX_FILES = 10;
+const LSP_DIAGNOSTIC_MAX_PER_FILE = 10;
+const LSP_DIAGNOSTIC_MAX_CHARS = 8_000;
+const LSP_DIAGNOSTIC_MAX_FIELD_CHARS = 500;
+
+function renderLspDiagnosticsAttachment(
+  attachment: Extract<Attachment, { kind: "lsp_diagnostics" }>,
+): string {
+  const files = attachment.files.filter((file) => file.diagnostics.length > 0);
+  if (files.length === 0) return "";
+
+  const lines: string[] = [
+    "<new-diagnostics>The following new language-server diagnostics were detected:",
+    "",
+    `Server: ${sanitizeDiagnosticField(attachment.serverName)}`,
+  ];
+
+  for (const file of files.slice(0, LSP_DIAGNOSTIC_MAX_FILES)) {
+    lines.push("", `${sanitizeDiagnosticField(file.uri)}:`);
+    for (const diagnostic of file.diagnostics.slice(
+      0,
+      LSP_DIAGNOSTIC_MAX_PER_FILE,
+    )) {
+      const location = formatDiagnosticLocation(diagnostic.range);
+      const code =
+        diagnostic.code !== undefined
+          ? ` [${sanitizeDiagnosticField(diagnostic.code)}]`
+          : "";
+      const source =
+        diagnostic.source !== undefined
+          ? ` (${sanitizeDiagnosticField(diagnostic.source)})`
+          : "";
+      lines.push(
+        `  ${diagnostic.severity ?? "Info"}${location}: ${sanitizeDiagnosticField(diagnostic.message)}${code}${source}`,
+      );
+    }
+    if (file.diagnostics.length > LSP_DIAGNOSTIC_MAX_PER_FILE) {
+      lines.push(
+        `  ...[truncated ${file.diagnostics.length - LSP_DIAGNOSTIC_MAX_PER_FILE} additional diagnostic(s)]`,
+      );
+    }
+  }
+
+  if (files.length > LSP_DIAGNOSTIC_MAX_FILES) {
+    lines.push(
+      "",
+      `...[truncated ${files.length - LSP_DIAGNOSTIC_MAX_FILES} additional file(s)]`,
+    );
+  }
+  lines.push("</new-diagnostics>");
+
+  const rendered = lines.join("\n");
+  if (rendered.length <= LSP_DIAGNOSTIC_MAX_CHARS) return rendered;
+  const suffix = "\n...[truncated: maximum diagnostic attachment size reached]";
+  return `${rendered.slice(0, Math.max(0, LSP_DIAGNOSTIC_MAX_CHARS - suffix.length))}${suffix}`;
+}
+
+function formatDiagnosticLocation(
+  range: Extract<
+    Attachment,
+    { kind: "lsp_diagnostics" }
+  >["files"][number]["diagnostics"][number]["range"],
+): string {
+  if (range === undefined) return "";
+  const line = Number.isFinite(range.start.line) ? range.start.line + 1 : null;
+  const column = Number.isFinite(range.start.character)
+    ? range.start.character + 1
+    : null;
+  if (line === null || column === null) return "";
+  return ` [Line ${line}:${column}]`;
+}
+
+function sanitizeDiagnosticField(value: unknown): string {
+  const normalized = String(value)
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .replace(/\t/g, "  ")
+    .replace(/\n/g, "\\n");
+  const escaped = normalized
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  if (escaped.length <= LSP_DIAGNOSTIC_MAX_FIELD_CHARS) return escaped;
+  return `${escaped.slice(0, LSP_DIAGNOSTIC_MAX_FIELD_CHARS - 14)}...[truncated]`;
 }
 
 function formatNumber(value: number): string {

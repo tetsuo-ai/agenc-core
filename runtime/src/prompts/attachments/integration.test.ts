@@ -8,7 +8,7 @@
  * and the conversion from {@link Attachment} to {@link LLMMessage}
  * preserves the wire shape downstream prompt-build code depends on.
  */
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,6 +29,11 @@ import {
   PDF_MENTION_MAX_FILE_BYTES,
 } from "./file-mentions.js";
 import { PDF_TEXT_EXTRACTION_MAX_BYTES } from "./user-pdf-input.js";
+import {
+  checkForLSPDiagnostics,
+  registerPendingLSPDiagnostic,
+  resetAllLSPDiagnosticState,
+} from "../../services/lsp/LSPDiagnosticRegistry.js";
 
 function makeOpts(
   partial?: Partial<GetAttachmentsOptions>,
@@ -79,6 +84,10 @@ function installFakePdfTextExtractor(cwd: string, text: string): () => void {
 }
 
 describe("attachments orchestrator — live producer registry", () => {
+  afterEach(() => {
+    resetAllLSPDiagnosticState();
+  });
+
   test("file mentions resolve to attached file context through the live pipeline", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-file-mention-pipeline-"));
     mkdirSync(join(cwd, "src"));
@@ -408,6 +417,43 @@ describe("attachments orchestrator — live producer registry", () => {
     }
 
     _resetAttachmentTrackingStateForTest(sessionKey);
+  });
+
+  test("LSP diagnostics are delivered as next-turn attachments and drained", async () => {
+    registerPendingLSPDiagnostic({
+      serverName: "ts",
+      files: [
+        {
+          uri: "/repo/src/a.ts",
+          diagnostics: [
+            {
+              message: "type mismatch",
+              severity: "Error",
+              range: {
+                start: { line: 0, character: 2 },
+                end: { line: 0, character: 4 },
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    const out = await getAttachments(makeOpts());
+    expect(out.some((attachment) => attachment.kind === "lsp_diagnostics")).toBe(
+      true,
+    );
+    const messages = attachmentsToMessages(out);
+    expect(
+      messages.some(
+        (message) =>
+          typeof message.content === "string" &&
+          message.content.includes("<new-diagnostics>") &&
+          message.content.includes("type mismatch") &&
+          message.content.includes("Line 1:3"),
+      ),
+    ).toBe(true);
+    expect(checkForLSPDiagnostics()).toEqual([]);
   });
 
   test("aborted signal short-circuits without emitting attachments or throwing", async () => {

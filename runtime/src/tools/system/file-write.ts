@@ -31,7 +31,6 @@
  *
  * Source couplings intentionally not carried:
  *   - analytics / growthbook / `logEvent` calls
- *   - LSP didChange/didSave notifications
  *   - VS Code MCP file-update notifications
  *   - `lazySchema` / Zod (AgenC tools use plain JSON Schema POJOs)
  *   - Skill-discovery side effects from the written path
@@ -59,6 +58,7 @@ import {
   type SessionReadViewKind,
 } from "./filesystem.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
+import { notifyLspFileChanged } from "../../services/lsp/fileNotifications.js";
 
 export const FILE_WRITE_TOOL_NAME = "Write";
 
@@ -366,9 +366,11 @@ export function createFileWriteTool(
         return errorResult(
           code
             ? `${code}: failed to write ${filePath}`
-            : `failed to write ${filePath}`,
+          : `failed to write ${filePath}`,
         );
       }
+
+      notifyLspFileChanged(absolutePath, content);
 
       // Record the post-write content as the session's view of the
       // file so subsequent overwrites/edits in the same session do

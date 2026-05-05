@@ -65,6 +65,16 @@ import {
 } from "../llm/hooks/index.js";
 import { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
 import { createAutoFixPostToolHook } from "../services/autoFix/autoFixHook.js";
+import {
+  configureLspServerSource,
+  parseLspServersConfig,
+} from "../services/lsp/config.js";
+import {
+  getInitializationStatus as getLspInitializationStatus,
+  initializeLspServerManager,
+  reinitializeLspServerManager,
+  shutdownLspServerManager,
+} from "../services/lsp/manager.js";
 import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
 import {
   evaluateStopHooks,
@@ -135,7 +145,7 @@ export interface BootstrapSessionServicesHandle {
   readonly threadStore: FileThreadStore;
   bindSession(session: Session): void;
   bindRolloutStore(binding: BootstrapRolloutBinding): LiveThread;
-  shutdown(): void;
+  shutdown(): Promise<void>;
 }
 
 export class BootstrapAnalyticsEventsClient
@@ -455,6 +465,68 @@ export function loadBootstrapHooks(opts: {
   }
 }
 
+function readConfiguredLspServers(
+  cfg: ReturnType<ConfigStore["current"]>,
+): ReturnType<typeof parseLspServersConfig> {
+  return parseLspServersConfig(cfg.lsp_servers);
+}
+
+export async function loadBootstrapLspServers(
+  cfg: ReturnType<ConfigStore["current"]>,
+  opts: { readonly workspaceRoot?: string } = {},
+): Promise<void> {
+  const parsed = readConfiguredLspServers(cfg);
+  const managerOptions =
+    opts.workspaceRoot !== undefined ? { workspaceRoot: opts.workspaceRoot } : {};
+  if (!parsed.success) {
+    configureLspServerSource(() => {
+      throw new Error(`Invalid LSP server config: ${parsed.reason}`);
+    });
+    const status = getLspInitializationStatus().status;
+    if (status === "not-started" || status === "failed") {
+      initializeLspServerManager(managerOptions);
+      return;
+    }
+    reinitializeLspServerManager(managerOptions);
+    return;
+  }
+  if (Object.keys(parsed.servers).length === 0) {
+    configureLspServerSource(() => ({}));
+    await shutdownLspServerManager();
+    return;
+  }
+  configureLspServerSource(() => parsed.servers);
+  const status = getLspInitializationStatus().status;
+  if (status === "not-started" || status === "failed") {
+    initializeLspServerManager(managerOptions);
+    return;
+  }
+  reinitializeLspServerManager(managerOptions);
+}
+
+function lspErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function loadBootstrapLspServersInBackground(
+  cfg: ReturnType<ConfigStore["current"]>,
+  opts: { readonly workspaceRoot?: string } = {},
+): void {
+  void loadBootstrapLspServers(cfg, opts).catch((error) => {
+    // eslint-disable-next-line no-console
+    console.warn("[lsp] bootstrap config reload failed:", lspErrorMessage(error));
+  });
+}
+
+export async function shutdownBootstrapLspServers(): Promise<void> {
+  try {
+    await shutdownLspServerManager();
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn("[lsp] bootstrap shutdown failed:", lspErrorMessage(error));
+  }
+}
+
 function createShellSnapshotTx(
   workspaceRoot: string,
   env: NodeJS.ProcessEnv,
@@ -594,8 +666,12 @@ export function buildBootstrapSessionServices(
     });
   };
   loadHooks(opts.configStore.current());
+  loadBootstrapLspServersInBackground(opts.configStore.current(), {
+    workspaceRoot: opts.workspaceRoot,
+  });
   const unsubscribeHooksConfig = opts.configStore.subscribe((cfg) => {
     loadHooks(cfg);
+    loadBootstrapLspServersInBackground(cfg, { workspaceRoot: opts.workspaceRoot });
   });
 
   const services: SessionServices = {
@@ -733,8 +809,9 @@ export function buildBootstrapSessionServices(
       });
       return liveThread;
     },
-    shutdown: () => {
+    shutdown: async () => {
       unsubscribeHooksConfig();
+      await shutdownBootstrapLspServers();
       hooksService.clearConfiguredLifecycleHooks();
       rolloutTrace.flush();
       rolloutTrace.close();

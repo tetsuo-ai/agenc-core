@@ -1,0 +1,26 @@
+/**
+ * Best-effort file mutation notifications for the LSP service.
+ */
+
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+import { clearDeliveredDiagnosticsForFile } from "./LSPDiagnosticRegistry.js";
+import { getLspServerManager } from "./manager.js";
+
+export function notifyLspFileChanged(filePath: string, content: string): void {
+  const absolutePath = resolve(filePath);
+  clearDeliveredDiagnosticsForFile(absolutePath);
+  clearDeliveredDiagnosticsForFile(pathToFileURL(absolutePath).href);
+  const manager = getLspServerManager();
+  if (!manager) return;
+  void (async () => {
+    try {
+      await manager.changeFile(filePath, content);
+      await manager.saveFile(filePath);
+    } catch {
+      // LSP notifications are best-effort. File mutation tools must never fail
+      // because an optional language server is unavailable.
+    }
+  })();
+}
