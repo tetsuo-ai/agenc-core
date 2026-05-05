@@ -1389,6 +1389,13 @@ const ITEM_EVIDENCE = {
       "runtime/src/conversation/thread-manager.contract.test.ts",
     ],
   },
+  "ZC-37": {
+    files: [".gitignore"],
+    grepPresent: [
+      { pattern: "^undefined/$", scope: ".gitignore" },
+      { pattern: "^\\*\\*/undefined/$", scope: ".gitignore" },
+    ],
+  },
   "ZC-33": {
     files: [
       "runtime/src/permissions/sandbox.ts",
@@ -5289,6 +5296,34 @@ function assertZc34AgentGraphStoreCoverage() {
   pass("ZC-34: agent graph store coverage locked");
 }
 
+function assertZc37UndefinedDirectoryGone() {
+  const rootUndefined = path.join(root, "undefined");
+  if (existsSync(rootUndefined)) {
+    failGate("ZC-37: repo-root undefined/ directory still exists; delete it.");
+  }
+
+  const tracked = run("git", ["ls-files", "undefined", ":(glob)**/undefined/**"], { silent: true });
+  if (tracked.status !== 0) {
+    failGate(`ZC-37: failed to inspect tracked undefined/ paths:\n${tracked.stderr || tracked.stdout}`);
+  }
+  if (tracked.stdout.trim()) {
+    failGate(`ZC-37: tracked undefined/ path(s) remain:\n${tracked.stdout.trim()}`);
+  }
+
+  const gitignorePath = path.join(root, ".gitignore");
+  if (!existsSync(gitignorePath)) failGate("ZC-37: .gitignore is missing.");
+  const gitignore = readFileSync(gitignorePath, "utf8");
+  for (const required of ["undefined/", "**/undefined/"]) {
+    const escaped = required.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const linePattern = new RegExp(`(^|\\n)${escaped}(\\n|$)`);
+    if (!linePattern.test(gitignore)) {
+      failGate(`ZC-37: .gitignore is missing required rule ${required}`);
+    }
+  }
+
+  pass("ZC-37: undefined/ directory absent, untracked, and ignored");
+}
+
 function assertZc36TestFixtureParityCoverage() {
   const readRequired = (rel) => {
     const abs = path.join(root, rel);
@@ -5844,6 +5879,7 @@ async function cleanupGates(item) {
       "ZC-33": { custom: assertZc33SandboxCoverage },
       "ZC-34": { custom: assertZc34AgentGraphStoreCoverage },
       "ZC-35": { custom: assertZc35OcCoverage },
+      "ZC-37": { custom: assertZc37UndefinedDirectoryGone },
       "ZC-36": { custom: assertZc36TestFixtureParityCoverage },
       "ZC-38": { custom: assertZc38DistBuildArtifactsIgnored },
     };
