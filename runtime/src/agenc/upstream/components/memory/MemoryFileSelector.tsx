@@ -16,8 +16,7 @@ import { readLastConsolidatedAt } from '../../services/autoDream/consolidationLo
 import { useAppState } from '../../../../tui/state/AppState.js';
 import { getAgentMemoryDir } from '../../tools/AgentTool/agentMemory.js';
 import { openPath } from '../../utils/browser.js';
-// branding-scan: allow upstream memory filename pending absorb
-import { getMemoryFiles, type MemoryFileInfo } from '../../utils/claudemd.js';
+import { getMemoryFiles, type MemoryFileInfo } from '../../utils/claudemd.js'; // branding-scan: allow upstream memory filename pending absorb
 import { getAgenCConfigHomeDir } from '../../utils/envUtils.js';
 import { getDisplayPath } from '../../utils/file.js';
 import { formatRelativeTimeAgo } from '../../utils/format.js';
