@@ -99,6 +99,11 @@ describe("sandbox tags", () => {
         platform: "win32",
       }),
     ).toBe("windows_sandbox");
+    expect(
+      permissionProfileSandboxTag(profile, "high", false, {
+        platform: "win32",
+      }),
+    ).toBe("windows_sandbox");
   });
 
   test("policy tags report the closest legacy sandbox mode", () => {
@@ -148,5 +153,40 @@ describe("sandbox tags", () => {
       ),
     ).toBe("workspace-write");
   });
-});
 
+  test("restricted filesystem-root write reports danger-full-access", () => {
+    const profile = permissionProfileFromRuntimePermissions(
+      restrictedFileSystemPolicy([
+        { path: { kind: "special", value: { kind: "root" } }, access: "write" },
+      ]),
+      "disabled",
+      "managed",
+    );
+
+    expect(permissionProfilePolicyTag(profile, "/workspace")).toBe(
+      "danger-full-access",
+    );
+  });
+
+  test("policy tags are independent of network mode", () => {
+    const fileSystem = restrictedFileSystemPolicy([
+      {
+        path: { kind: "special", value: { kind: "project_roots" } },
+        access: "write",
+      },
+    ]);
+    const tags = (["enabled", "disabled", "restricted"] as const).map(
+      (network) =>
+        permissionProfilePolicyTag(
+          permissionProfileFromRuntimePermissions(fileSystem, network, "managed"),
+          "/workspace",
+        ),
+    );
+
+    expect(tags).toEqual([
+      "workspace-write",
+      "workspace-write",
+      "workspace-write",
+    ]);
+  });
+});

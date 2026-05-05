@@ -170,5 +170,5 @@ function windowsSandboxEnabled(level: WindowsSandboxTagLevel): boolean {
 }
 
 function isElevatedWindowsSandbox(level: WindowsSandboxTagLevel): boolean {
-  return level === "elevated" || level === "high";
+  return level === "elevated";
 }
