@@ -8,7 +8,7 @@ import {
   runAgenCAuthCli,
   type AgenCAuthCliIo,
 } from "./auth-cli.js";
-import { RemoteAuthBackend } from "../auth/index.js";
+import { RemoteAuthBackend } from "../auth/backends/remote.js";
 
 function createIo(): AgenCAuthCliIo & {
   readonly stdoutText: () => string;

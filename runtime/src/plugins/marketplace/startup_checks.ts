@@ -1,5 +1,5 @@
-import { resolveAgencHome } from "../../config/index.js";
-import { resolveRemoteAuthHeaders, type RemoteAuthBackendOptions } from "../../auth/index.js";
+import { resolveRemoteAuthHeaders, type RemoteAuthBackendOptions } from "../../auth/backends/remote.js";
+import { resolveAgencHome } from "../../config/env.js";
 import { clearPluginRegistrationCaches } from "../registration/manager.js";
 import {
   clearMarketplacesCache,

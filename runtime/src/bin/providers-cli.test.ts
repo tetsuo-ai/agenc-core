@@ -1,11 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { defaultConfig } from "../config/index.js";
-import type {
-  AuthBackend,
-  AuthProviderSlug,
-  AuthSessionId,
-  AuthSubscriptionTier,
-} from "../auth/index.js";
+import { defaultConfig } from "../config/schema.js";
+import type { AuthBackend, AuthProviderSlug, AuthSessionId, AuthSubscriptionTier } from "../auth/backend.js";
 import {
   collectProviderAvailability,
   formatAgenCProvidersCliHelpText,

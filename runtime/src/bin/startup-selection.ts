@@ -6,21 +6,12 @@ import {
   isUserAddressablePermissionMode,
   type PermissionMode,
 } from "../permissions/types.js";
-import {
-  AmbiguousModelError,
-  BUILT_IN_PROVIDER_DEFAULT_MODELS,
-  BUILT_IN_PROVIDER_MODEL_CATALOG,
-  UnknownModelError,
-  buildProviderModelCatalog,
-  configuredModelForProvider,
-  defaultModelForProvider,
-  resolveDisambiguatedModelSelection,
-  resolveProfile,
-  resolveProfileName,
-  resolveProviderSelection,
-  resolveProviderSettings,
-  type AgenCConfig,
-} from "../config/index.js";
+import { AmbiguousModelError, UnknownModelError } from "../config/schema.js";
+import { BUILT_IN_PROVIDER_DEFAULT_MODELS, BUILT_IN_PROVIDER_MODEL_CATALOG, buildProviderModelCatalog, resolveProviderSelection, resolveProviderSettings } from "../config/resolve-provider.js";
+import { configuredModelForProvider, defaultModelForProvider, resolveDisambiguatedModelSelection } from "../config/resolve-model.js";
+import { resolveProfile } from "../config/profiles.js";
+import { resolveProfileName } from "../config/env.js";
+import type { AgenCConfig } from "../config/schema.js";
 import { extractFlagValue } from "./route.js";
 
 export const DEFAULT_MODEL = "grok-4-fast";

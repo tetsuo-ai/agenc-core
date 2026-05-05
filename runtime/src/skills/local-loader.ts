@@ -22,7 +22,7 @@ import {
 
 import { load as loadYaml } from "js-yaml";
 
-import type { AgenCConfig } from "../config/index.js";
+import type { AgenCConfig } from "../config/schema.js";
 import { discoverPluginSkillRoots as discoverLoadedPluginSkillRoots } from "../plugins/loader.js";
 import type { SessionServices } from "../session/session.js";
 import type { SkillLoadOutcome } from "../session/turn-context.js";

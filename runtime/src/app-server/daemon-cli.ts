@@ -44,21 +44,16 @@ import {
   ensureAgenCDaemonCookie,
 } from "./transport/auth.js";
 import { AgenCDaemonHealthService } from "./health.js";
-import {
-  AgenCCleanupRegistry,
-  installAgenCShutdownSignalHandlers,
-  summarizeAgenCShutdown,
-  type AgenCSignalProcess,
-} from "../lifecycle/index.js";
-import { createAuthBackend } from "../auth/index.js";
+import { AgenCCleanupRegistry } from "../lifecycle/cleanup-registry.js";
+import { installAgenCShutdownSignalHandlers } from "../lifecycle/signal-handlers.js";
+import { summarizeAgenCShutdown } from "../lifecycle/shutdown-message.js";
+import type { AgenCSignalProcess } from "../lifecycle/signal-handlers.js";
+import { createAuthBackend } from "../auth/selection.js";
 import type { AuthBackend } from "../auth/backend.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
 import { createPermissionAuditFileLogger } from "../permissions/permission-audit-log.js";
-import {
-  loadConfig,
-  type AgenCConfig,
-  type AgentRunRetentionConfig,
-} from "../config/index.js";
+import { loadConfig } from "../config/loader.js";
+import type { AgenCConfig, AgentRunRetentionConfig } from "../config/schema.js";
 import {
   recoverDaemonStateOnStartup,
   type DaemonStartupRecoveryReport,

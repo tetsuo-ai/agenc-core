@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { resolveAgencHome } from "../../config/index.js";
+import { resolveAgencHome } from "../../config/env.js";
 import {
   readMarketplaceIndex,
   type MarketplaceOperationOptions,

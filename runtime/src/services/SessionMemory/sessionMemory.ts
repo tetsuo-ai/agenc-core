@@ -25,10 +25,8 @@ import type {
 import type { LLMMessage } from "../../llm/types.js";
 import { roughTokenCountEstimationForMessages } from "../../llm/token-estimation.js";
 import type { Session } from "../../session/session.js";
-import {
-  FILE_EDIT_TOOL_NAME,
-  createFileReadTool,
-} from "../../tools/system/index.js";
+import { FILE_EDIT_TOOL_NAME } from "../../tools/system/file-edit.js";
+import { createFileReadTool } from "../../tools/system/file-read.js";
 import {
   SESSION_ALLOWED_ROOTS_ARG,
   SESSION_ID_ARG,

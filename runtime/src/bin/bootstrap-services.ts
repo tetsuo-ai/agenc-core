@@ -58,16 +58,8 @@ import {
 } from "../thread-store/live-thread.js";
 import type { RegisteredAgentTask } from "../session/agent-task-lifecycle.js";
 import { BehaviorSubject } from "../utils/behavior-subject.js";
-import {
-  dispatchPostCompact,
-  dispatchPreCompact,
-  dispatchSessionStart,
-} from "../llm/hooks/index.js";
-import {
-  registerPostCompactHook,
-  registerPreCompactHook,
-  registerSessionStartHook,
-} from "../llm/hooks/index.js";
+import { dispatchPostCompact, dispatchPreCompact, dispatchSessionStart } from "../llm/hooks/dispatcher.js";
+import { registerPostCompactHook, registerPreCompactHook, registerSessionStartHook } from "../llm/hooks/registry.js";
 import { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
 import { createAutoFixPostToolHook } from "../services/autoFix/autoFixHook.js";
 import {
@@ -94,7 +86,7 @@ import type {
 } from "../tools/hooks.js";
 import type { ConfigStore } from "../config/store.js";
 import type { ToolRegistry } from "../tool-registry.js";
-import type { UnifiedExecProcessManagerLike } from "../unified-exec/index.js";
+import type { UnifiedExecProcessManagerLike } from "../unified-exec/types.js";
 import type {
   AuthBackend,
   AuthSubscriptionTier,

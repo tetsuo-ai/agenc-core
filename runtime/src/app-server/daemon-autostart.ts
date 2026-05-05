@@ -16,7 +16,7 @@ import {
   type AgenCDaemonCliHost,
   type AgenCDaemonCliIo,
 } from "./daemon-cli.js";
-import { loadConfig } from "../config/index.js";
+import { loadConfig } from "../config/loader.js";
 
 export type AgenCDaemonAutostartStatus = "already-running" | "started";
 

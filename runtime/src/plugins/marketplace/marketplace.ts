@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { statSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { resolveAgencHome } from "../../config/index.js";
+import { resolveAgencHome } from "../../config/env.js";
 import { sanitizePluginId } from "../directories.js";
 import { loadPluginManifest } from "../manifest.js";
 import type { PluginManifest, PluginManifestInterface } from "../manifest-schema.js";

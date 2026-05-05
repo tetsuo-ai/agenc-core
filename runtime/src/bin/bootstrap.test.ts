@@ -14,7 +14,7 @@ import {
   readStartupCliFlags,
   resolveStartupSelection,
 } from "./bootstrap.js";
-import { defaultConfig, mergeConfigs } from "../config/index.js";
+import { defaultConfig, mergeConfigs } from "../config/schema.js";
 import { trustProjectSync } from "../permissions/trust/project-trust.js";
 import type { AuthBackend } from "../auth/backend.js";
 import type { Tool } from "../tools/types.js";
