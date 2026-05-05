@@ -797,7 +797,7 @@ async function resolveMarketplacePluginEntry(
   marketplaceName: string,
   plugin: RawMarketplaceManifestPlugin,
 ): Promise<ResolvedMarketplacePlugin> {
-  const source = resolvePluginSource(marketplacePath, plugin.source);
+  const source = await resolvePluginSource(marketplacePath, plugin.source);
   const manifest = source.type === "local"
     ? (await loadPluginManifest(source.path).catch(() => null))?.manifest
     : undefined;
@@ -817,18 +817,18 @@ async function resolveMarketplacePluginEntry(
   };
 }
 
-function resolvePluginSource(
+async function resolvePluginSource(
   marketplacePath: string,
   source: unknown,
-): MarketplacePluginSource {
+): Promise<MarketplacePluginSource> {
   if (typeof source === "string") {
-    return { type: "local", path: resolveLocalPluginSourcePath(marketplacePath, source) };
+    return { type: "local", path: await resolveLocalPluginSourcePath(marketplacePath, source) };
   }
   if (!isRecord(source)) {
     throw new Error("marketplace plugin source must be a string or object");
   }
   if (source.source === "local" && typeof source.path === "string") {
-    return { type: "local", path: resolveLocalPluginSourcePath(marketplacePath, source.path) };
+    return { type: "local", path: await resolveLocalPluginSourcePath(marketplacePath, source.path) };
   }
   if (source.source === "local") {
     throw new Error("local marketplace plugin source must include a string path");
@@ -860,10 +860,10 @@ function resolvePluginSource(
   throw new Error("unsupported marketplace plugin source");
 }
 
-function resolveLocalPluginSourcePath(
+async function resolveLocalPluginSourcePath(
   marketplacePath: string,
   path: string,
-): string {
+): Promise<string> {
   const stripped = path.startsWith("./") ? path.slice(2) : "";
   if (stripped.length === 0) {
     throw new Error("local plugin source path must start with './' and not be empty");
@@ -872,7 +872,17 @@ function resolveLocalPluginSourcePath(
   if (parts.some((part) => part.length === 0 || part === "." || part === "..")) {
     throw new Error("local plugin source path must stay within the marketplace root");
   }
-  return join(marketplaceRootDir(marketplacePath), ...parts);
+  const root = marketplaceRootDir(marketplacePath);
+  const candidate = join(root, ...parts);
+  const rootReal = await realpath(root);
+  const candidateReal = await realpath(candidate).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  });
+  if (candidateReal !== null && !pathIsInside(candidateReal, rootReal)) {
+    throw new Error("local plugin source path must stay within the marketplace root");
+  }
+  return candidateReal ?? candidate;
 }
 
 function normalizeRemotePluginSubdir(
@@ -889,6 +899,12 @@ function normalizeRemotePluginSubdir(
   }
   void marketplacePath;
   return parts.join("/");
+}
+
+function pathIsInside(candidate: string, root: string): boolean {
+  const relativePath = relative(root, candidate);
+  return relativePath.length === 0 ||
+    (!relativePath.startsWith("..") && !isAbsolute(relativePath));
 }
 
 function normalizeGitPluginSourceUrl(marketplacePath: string, url: string): string {

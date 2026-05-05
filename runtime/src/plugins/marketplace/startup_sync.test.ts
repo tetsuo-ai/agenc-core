@@ -252,6 +252,37 @@ describe("startup marketplace sync", () => {
       .toContainEqual({ name: "team", status: "installed" });
   });
 
+  it("marks plugins for refresh when later startup work fails after marketplace reconciliation", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-startup-checks-partial-failure-"));
+    const marketplaceRoot = join(agencHome, "team-marketplace");
+    await writeLocalMarketplace(marketplaceRoot, "team");
+    let state = { plugins: { needsRefresh: false } };
+    const setAppState = (update: (prev: typeof state) => typeof state) => {
+      state = update(state);
+    };
+    const warnings: string[] = [];
+
+    await performStartupChecks(setAppState, {
+      trustAccepted: true,
+      agencHome,
+      declaredMarketplaces: {
+        team: { source: { source: "local", path: marketplaceRoot } },
+      },
+      runProcess: async () => {
+        throw new Error("git unavailable");
+      },
+      fetcher: async () => jsonResponse({ message: "offline" }, false, 503),
+      onWarn: (message) => warnings.push(message),
+    });
+
+    const index = JSON.parse(await readFile(marketplaceIndexPath({ agencHome }), "utf8")) as {
+      marketplaces: Record<string, unknown>;
+    };
+    expect(index.marketplaces.team).toBeDefined();
+    expect(state.plugins.needsRefresh).toBe(true);
+    expect(warnings.join("\n")).toContain("startup plugin checks failed");
+  });
+
   it("uses remote auth state from the auth layer for live startup remote sync", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-startup-checks-remote-auth-"));
     let state = { plugins: { needsRefresh: false } };
@@ -454,6 +485,23 @@ describe("startup marketplace sync", () => {
     expect(runCalls).toEqual([]);
     await expect(readFile(join(curatedPluginsRepoPath(agencHome), ".agents", "plugins", "marketplace.json"), "utf8"))
       .resolves.toContain("agenc-curated");
+  });
+
+  it("rejects curated marketplace zipballs whose embedded git identity differs from advertised SHA", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-http-startup-sync-sha-mismatch-"));
+    const zipball = createZip({
+      "repo/.agents/plugins/marketplace.json": JSON.stringify({
+        metadata: { name: "agenc-curated" },
+        plugins: [],
+      }),
+      "repo/.git/HEAD": "different-sha\n",
+    });
+
+    await expect(syncCuratedPluginsRepoViaHttp(
+      agencHome,
+      "https://agenc.tech/api/plugins/curated",
+      createCuratedZipFetcher(zipball, "abc123"),
+    )).rejects.toThrow("archive git identity mismatch");
   });
 
   it("rejects curated marketplace zipballs that escape the extraction root", async () => {

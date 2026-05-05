@@ -137,6 +137,7 @@ export async function syncCuratedPluginsRepoViaHttp(
     const zipball = await fetchCuratedRepoZipball(apiBaseUrl, remoteSha, fetcher);
     await extractZipballToDir(zipball, stagedRepoDir);
     await ensureMarketplaceManifestExists(stagedRepoDir);
+    await verifyExtractedCuratedRepoSha(stagedRepoDir, remoteSha);
     await activateCuratedRepo(repoPath, stagedRepoDir);
     await writeCuratedPluginsSha(shaPath, remoteSha);
     return remoteSha;
@@ -465,6 +466,19 @@ async function readExtractedBackupArchiveGitSha(repoPath: string): Promise<strin
   }
   const refSha = await readFile(join(repoPath, ".git", reference), "utf8").then((value) => value.trim(), () => null);
   return refSha && refSha.length > 0 ? refSha : null;
+}
+
+async function verifyExtractedCuratedRepoSha(
+  repoPath: string,
+  expectedSha: string,
+): Promise<void> {
+  const extractedSha = await readExtractedBackupArchiveGitSha(repoPath);
+  if (extractedSha === null) {
+    throw new Error("curated plugins archive is missing embedded git identity");
+  }
+  if (extractedSha !== expectedSha) {
+    throw new Error(`curated plugins archive git identity mismatch: expected ${expectedSha}, got ${extractedSha}`);
+  }
 }
 
 async function readShaFile(shaPath: string): Promise<string | null> {

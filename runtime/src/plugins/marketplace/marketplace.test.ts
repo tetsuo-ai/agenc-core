@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -299,6 +299,18 @@ describe("plugin marketplace runtime", () => {
     );
     await expect(loadMarketplace(join(marketplaceRoot, "marketplace.json")))
       .rejects.toThrow("must start with './'");
+
+    const outsidePlugin = await writePlugin(join(workspaceRoot, "outside"), "alpha");
+    await symlink(outsidePlugin, join(marketplaceRoot, "alpha"));
+    await writeFile(
+      join(marketplaceRoot, "marketplace.json"),
+      JSON.stringify({
+        metadata: { name: "bad" },
+        plugins: [{ name: "alpha", source: "./alpha" }],
+      }),
+    );
+    await expect(loadMarketplace(join(marketplaceRoot, "marketplace.json")))
+      .rejects.toThrow("must stay within the marketplace root");
 
     await writeFile(
       join(marketplaceRoot, "marketplace.json"),

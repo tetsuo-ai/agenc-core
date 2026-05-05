@@ -153,6 +153,42 @@ describe("remote plugin marketplace API", () => {
     await expect(readFile(staleManifest, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("removes older cached versions after installing the current remote bundle", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-version-prune-"));
+    const oldManifest = join(
+      agencHome,
+      "plugins",
+      "cache",
+      "agenc-global",
+      "linear",
+      "1.0.0",
+      ".agenc-plugin",
+      "plugin.json",
+    );
+    await mkdir(join(oldManifest, ".."), { recursive: true });
+    await writeFile(oldManifest, JSON.stringify({ name: "linear", version: "1.0.0" }));
+
+    const outcome = await syncRemoteInstalledPluginBundlesOnce(
+      agencHome,
+      config,
+      auth,
+      { fetcher: createRemoteBundleSyncFetcher(undefined, "2.0.0") },
+    );
+
+    expect(outcome.installedPluginIds).toEqual(["linear@agenc-global"]);
+    await expect(readFile(join(
+      agencHome,
+      "plugins",
+      "cache",
+      "agenc-global",
+      "linear",
+      "2.0.0",
+      ".agenc-plugin",
+      "plugin.json",
+    ), "utf8")).resolves.toContain("\"2.0.0\"");
+    await expect(readFile(oldManifest, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("skips stale remote cache cleanup while a cache mutation guard is active", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-cache-guard-"));
     const cachedManifest = join(
@@ -329,7 +365,7 @@ function createEmptyRemoteInstalledFetcher(): Fetcher {
   };
 }
 
-function createRemoteBundleSyncFetcher(bundleGate?: Promise<void>): Fetcher {
+function createRemoteBundleSyncFetcher(bundleGate?: Promise<void>, version = "1.0.0"): Fetcher {
   return async (url) => {
     const parsed = new URL(url);
     if (parsed.pathname === "/ps/plugins/installed") {
@@ -337,7 +373,7 @@ function createRemoteBundleSyncFetcher(bundleGate?: Promise<void>): Fetcher {
       return jsonResponse({
         plugins: scope === "GLOBAL"
           ? [{
-              plugin: remotePlugin(),
+              plugin: remotePlugin(version),
               enabled: true,
               disabled_skill_names: [],
             }]
@@ -347,13 +383,13 @@ function createRemoteBundleSyncFetcher(bundleGate?: Promise<void>): Fetcher {
     }
     if (url === "https://agenc.tech/plugins/linear.tgz") {
       await bundleGate;
-      return binaryResponse(createPluginBundleTarGz());
+      return binaryResponse(createPluginBundleTarGz(version));
     }
     return jsonResponse({ message: "not found" }, false, 404);
   };
 }
 
-function remotePlugin() {
+function remotePlugin(version = "1.0.0") {
   return {
     id: "linear",
     name: "linear",
@@ -362,7 +398,7 @@ function remotePlugin() {
     authentication_policy: "ON_INSTALL",
     status: "AVAILABLE",
     release: {
-      version: "1.0.0",
+      version,
       display_name: "Linear",
       description: "Issue tracking",
       bundle_download_url: "https://agenc.tech/plugins/linear.tgz",
@@ -409,11 +445,11 @@ function exactArrayBuffer(bytes: Buffer): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
-function createPluginBundleTarGz(): Buffer {
+function createPluginBundleTarGz(version = "1.0.0"): Buffer {
   return createTarGz({
     "linear/.agenc-plugin/plugin.json": JSON.stringify({
       name: "linear",
-      version: "1.0.0",
+      version,
       description: "Remote plugin",
       commands: "./commands",
     }),

@@ -279,6 +279,7 @@ export async function syncRemoteInstalledPluginBundlesOnce(
       const guard = markRemotePluginCacheMutationInFlight(agencHome, bundle.marketplaceName, bundle.pluginName);
       try {
         const result = await downloadAndInstallRemotePluginBundle(agencHome, bundle, fetcher);
+        await removeNonCurrentRemotePluginVersions(agencHome, bundle);
         installedPluginIds.add(result.pluginId);
       } catch {
         failedRemotePluginIds.add(plugin.id);
@@ -474,6 +475,26 @@ async function removeStaleRemotePluginCaches(
     }
   }
   return [...removed].sort((a, b) => a.localeCompare(b));
+}
+
+async function removeNonCurrentRemotePluginVersions(
+  agencHome: string,
+  bundle: ValidatedRemotePluginBundle,
+): Promise<void> {
+  const marketplaceName = validateRemotePluginCacheSegment(bundle.marketplaceName, "marketplace name", bundle.pluginId);
+  const pluginName = validateRemotePluginCacheSegment(bundle.pluginName, "plugin name", bundle.pluginId);
+  const pluginRoot = checkedRemotePluginCachePath(agencHome, marketplaceName, pluginName);
+  const entries = await readdir(pluginRoot, { withFileTypes: true }).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  });
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === bundle.pluginVersion) continue;
+    await rm(checkedRemotePluginCachePath(agencHome, marketplaceName, pluginName, entry.name), {
+      recursive: true,
+      force: true,
+    });
+  }
 }
 
 function remotePluginCacheMutationKey(

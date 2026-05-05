@@ -79,28 +79,29 @@ export async function performStartupChecks(
 ): Promise<void> {
   const agencHome = options.agencHome ?? resolveAgencHome(options.env);
   if (!startupTrustAccepted(options.trustAccepted)) return;
+  let changedLocalCache = false;
   try {
     const seedChanged = await registerSeedMarketplaces(
       options.seedMarketplaces ?? {},
       { ...options, agencHome },
     );
+    changedLocalCache ||= seedChanged;
     const marketplaceResult = await reconcileDeclaredMarketplaces(
       agencHome,
       setAppState,
       options,
     );
+    changedLocalCache ||= marketplaceResultChangedLocalCache(marketplaceResult);
     const curatedChanged = await syncCuratedSnapshot(agencHome, options);
+    changedLocalCache ||= curatedChanged;
     const remoteResult = await maybeSyncRemoteInstalledPlugins(agencHome, options);
-    if (
-      seedChanged ||
-      marketplaceResultChangedLocalCache(marketplaceResult) ||
-      curatedChanged ||
-      remoteResultChangedLocalCache(remoteResult)
-    ) {
-      markPluginsNeedRefresh(setAppState);
-    }
+    changedLocalCache ||= remoteResultChangedLocalCache(remoteResult);
   } catch (error) {
     options.onWarn?.(`startup plugin checks failed: ${message(error)}`);
+  } finally {
+    if (changedLocalCache) {
+      markPluginsNeedRefresh(setAppState);
+    }
   }
 }
 
