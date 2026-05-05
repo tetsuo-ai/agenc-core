@@ -1,11 +1,7 @@
 /**
  * Pure transform applied to every openclaude src/ink/ file when porting
- * it into AgenC runtime/src/tui/ink/. Imported by both the port script
- * (wholesale-port.mjs) and the parity gate
- * (check-openclaude-ink-wholesale-parity.mjs) so they cannot drift.
- *
- * The transformation rules are documented in
- * parity/openclaude-ink-wholesale-parity.json under transformationRules.
+ * it into AgenC runtime/src/tui/ink/. Imported by the wholesale port helper
+ * so transformation rules stay centralized.
  */
 import path from "node:path";
 
