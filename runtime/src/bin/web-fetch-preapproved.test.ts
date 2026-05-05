@@ -14,9 +14,9 @@ describe("web-fetch-preapproved", () => {
   });
 
   it("path-prefix entries enforce segment boundaries", () => {
-    expect(isPreapprovedHost("github.com", "/anthropics")).toBe(true);
-    expect(isPreapprovedHost("github.com", "/anthropics/foo")).toBe(true);
-    expect(isPreapprovedHost("github.com", "/anthropics-evil")).toBe(false);
+    expect(isPreapprovedHost("github.com", "/modelcontextprotocol")).toBe(true);
+    expect(isPreapprovedHost("github.com", "/modelcontextprotocol/foo")).toBe(true);
+    expect(isPreapprovedHost("github.com", "/modelcontextprotocol-evil")).toBe(false);
     expect(isPreapprovedHost("github.com", "/other-org")).toBe(false);
   });
 
@@ -28,7 +28,7 @@ describe("web-fetch-preapproved", () => {
   it("isPreapprovedUrl parses and accepts valid HTTPS URLs", () => {
     expect(isPreapprovedUrl("https://react.dev/learn")).toBe(true);
     expect(
-      isPreapprovedUrl("https://github.com/anthropics/anthropic-sdk-typescript"),
+      isPreapprovedUrl("https://github.com/modelcontextprotocol/typescript-sdk"),
     ).toBe(true);
     expect(isPreapprovedUrl("https://github.com/random-org/repo")).toBe(false);
   });

@@ -21,6 +21,16 @@
     "runtime/src/bin/web-fetch-preapproved.test.ts",
     "runtime/src/tool-registry.test.ts"
   ],
+  "gateSupportFiles": [
+    {
+      "path": "runtime/scripts/write-build-version.mjs",
+      "reason": "Full verify for this item runs the TUI startup smoke because model-facing tool changes touch the TUI tool surface. The built CLI imports bundled sandbox chunks that load seatbelt policy files from runtime/dist/policies, so the build script must copy sandbox policy assets there as well as beside the launcher entrypoint."
+    },
+    {
+      "path": "runtime/src/sandbox/linux-launcher/PARITY.md",
+      "reason": "Documents the build-asset copy contract required by the same startup gate; this is local parity documentation, not a donor citation in public commit text."
+    }
+  ],
   "omissions": [
     {
       "id": "firecrawl-scrape-provider",
@@ -49,7 +59,7 @@
     {
       "id": "dns-lookup-ssrf-hook",
       "sourceFiles": ["src/tools/WebFetchTool/utils.ts"],
-      "reason": "The live AgenC path uses Node fetch, which does not expose an axios-style lookup hook. This item blocks direct private/link-local IP literals and leaves DNS-level rebinding protection to a future HTTP-client hardening item."
+      "reason": "The live AgenC path uses Node fetch, which does not expose an axios-style lookup hook. This item blocks direct private, loopback, and link-local IP literals and leaves DNS-level rebinding protection to a future HTTP-client hardening item."
     }
   ],
   "rows": [
@@ -75,6 +85,7 @@
       "requiredBehaviors": [
         "upgrade http URLs to https before fetching",
         "reject non-https URLs and embedded URL credentials",
+        "read response bodies through a bounded stream before markdown conversion",
         "convert HTML responses to markdown while removing scripts and styles",
         "fall back to text cleanup when markdown conversion fails",
         "truncate very large returned content with an explicit truncation marker"
@@ -94,7 +105,7 @@
         "derive content rules as domain:<hostname>",
         "honor deny, ask, and allow rules for both web_fetch and legacy WebFetch spellings",
         "offer localSettings allow-rule suggestions for new domain approvals",
-        "block direct private/link-local IP literal targets before fetch"
+        "block direct private, loopback, and link-local IP literal targets before fetch"
       ],
       "tests": ["runtime/src/bin/model-facing-tools.test.ts"],
       "commands": [

@@ -19,7 +19,7 @@ export const PREAPPROVED_HOSTS: ReadonlySet<string> = new Set([
   // AgenC + protocol surfaces
   "agenc.tech",
   "modelcontextprotocol.io",
-  "github.com/anthropics",
+  "github.com/modelcontextprotocol",
   "agentskills.io",
 
   // Top programming languages
@@ -134,7 +134,7 @@ export const PREAPPROVED_HOSTS: ReadonlySet<string> = new Set([
 
 // Split once at module load so lookups are O(1) Set.has() for the
 // common hostname-only case, falling back to a small per-host
-// path-prefix list for path-scoped entries (e.g. "github.com/anthropics").
+// path-prefix list for path-scoped entries (e.g. "github.com/modelcontextprotocol").
 const HOSTNAME_ONLY = new Set<string>();
 const PATH_PREFIXES = new Map<string, string[]>();
 for (const entry of PREAPPROVED_HOSTS) {
@@ -155,8 +155,8 @@ export function isPreapprovedHost(hostname: string, pathname: string): boolean {
   const prefixes = PATH_PREFIXES.get(hostname);
   if (prefixes) {
     for (const prefix of prefixes) {
-      // Path segment boundaries: "/anthropics" must not match
-      // "/anthropics-evil/malware". Only exact match or the prefix
+      // Path segment boundaries: "/modelcontextprotocol" must not match
+      // "/modelcontextprotocol-evil/malware". Only exact match or the prefix
       // followed by "/".
       if (pathname === prefix || pathname.startsWith(`${prefix}/`)) return true;
     }

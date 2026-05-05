@@ -179,6 +179,37 @@ function fakeEvaluatorContext(
   } as ToolEvaluatorContext;
 }
 
+function streamTextResponse(text: string, contentType = "text/plain") {
+  const encoder = new TextEncoder();
+  let consumed = false;
+  const cancel = vi.fn(async () => {
+    consumed = true;
+  });
+  const releaseLock = vi.fn();
+  const read = vi.fn(async () => {
+    if (consumed) return { done: true, value: undefined };
+    consumed = true;
+    return { done: false, value: encoder.encode(text) };
+  });
+  const textRead = vi.fn(async () => {
+    throw new Error("unbounded text read");
+  });
+  const response = {
+    ok: true,
+    status: 200,
+    url: "https://localhost/page",
+    headers: {
+      get: (name: string) =>
+        name.toLowerCase() === "content-type" ? contentType : null,
+    },
+    body: {
+      getReader: () => ({ read, cancel, releaseLock }),
+    },
+    text: textRead,
+  } as unknown as Response;
+  return { response, cancel, textRead };
+}
+
 function codeMode<T>(result: { readonly codeModeResult?: unknown }): T {
   expect(result.codeModeResult).toBeDefined();
   return result.codeModeResult as T;
@@ -925,6 +956,65 @@ describe("model-facing tools", () => {
     }
   });
 
+  it("web_fetch truncates streamed bodies before unbounded text reads", async () => {
+    const streamed = streamTextResponse("x".repeat(20_000));
+    const fetchMock = vi.fn().mockResolvedValue(streamed.response);
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    try {
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => null,
+      });
+      const byName = new Map(tools.map((tool) => [tool.name, tool]));
+      const result = await byName.get("web_fetch")!.execute({
+        url: "https://localhost/page",
+        max_chars: 1_000,
+      });
+      const parsed = JSON.parse(result.content);
+      expect(result.isError).toBeUndefined();
+      expect(parsed.truncated).toBe(true);
+      expect(parsed.content).toContain("[truncated");
+      expect(streamed.textRead).not.toHaveBeenCalled();
+      expect(streamed.cancel).toHaveBeenCalledOnce();
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("web_fetch returns structured errors for invalid URLs and fetch failures", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error("network down"));
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    try {
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => null,
+      });
+      const byName = new Map(tools.map((tool) => [tool.name, tool]));
+
+      const ftp = await byName.get("web_fetch")!.execute({
+        url: "ftp://localhost/file",
+      });
+      expect(ftp.isError).toBe(true);
+      expect(JSON.parse(ftp.content).error).toContain("https");
+
+      const credentials = await byName.get("web_fetch")!.execute({
+        url: "https://user:pass@localhost/page",
+      });
+      expect(credentials.isError).toBe(true);
+      expect(JSON.parse(credentials.content).error).toContain("credentials");
+
+      const failed = await byName.get("web_fetch")!.execute({
+        url: "https://localhost/page",
+      });
+      expect(failed.isError).toBe(true);
+      expect(JSON.parse(failed.content).error).toContain("network down");
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
   it("web_fetch permissions auto-allow preapproved hosts and honor domain rules", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
@@ -940,6 +1030,36 @@ describe("model-facing tools", () => {
     expect(preapproved).toMatchObject({
       behavior: "allow",
       updatedInput: { url: "https://agenc.tech/docs" },
+    });
+
+    const deniedPreapproved = await tool!.checkPermissions?.(
+      { url: "https://agenc.tech/docs" },
+      fakeEvaluatorContext(
+        createEmptyToolPermissionContext({
+          alwaysDenyRules: {
+            localSettings: ["web_fetch(domain:agenc.tech)"],
+          },
+        }),
+      ),
+    );
+    expect(deniedPreapproved).toMatchObject({
+      behavior: "deny",
+      message: "web_fetch denied access to domain:agenc.tech.",
+    });
+
+    const askPreapproved = await tool!.checkPermissions?.(
+      { url: "https://agenc.tech/docs" },
+      fakeEvaluatorContext(
+        createEmptyToolPermissionContext({
+          alwaysAskRules: {
+            localSettings: ["web_fetch(domain:agenc.tech)"],
+          },
+        }),
+      ),
+    );
+    expect(askPreapproved).toMatchObject({
+      behavior: "ask",
+      decisionReason: { type: "rule" },
     });
 
     const denied = await tool!.checkPermissions?.(
@@ -963,7 +1083,16 @@ describe("model-facing tools", () => {
     );
     expect(blockedAddress).toMatchObject({
       behavior: "deny",
-      message: expect.stringContaining("private or link-local address"),
+      message: expect.stringContaining("private, loopback, or link-local address"),
+    });
+
+    const blockedLoopback = await tool!.checkPermissions?.(
+      { url: "https://127.0.0.1/page" },
+      fakeEvaluatorContext(),
+    );
+    expect(blockedLoopback).toMatchObject({
+      behavior: "deny",
+      message: expect.stringContaining("loopback"),
     });
 
     const legacyAllowed = await tool!.checkPermissions?.(
@@ -978,6 +1107,22 @@ describe("model-facing tools", () => {
     );
     expect(legacyAllowed).toMatchObject({
       behavior: "allow",
+      decisionReason: { type: "rule" },
+    });
+
+    const legacyTool = tools.find((candidate) => candidate.name === "WebFetch");
+    const legacyDenied = await legacyTool!.checkPermissions?.(
+      { url: "https://localhost/page" },
+      fakeEvaluatorContext(
+        createEmptyToolPermissionContext({
+          alwaysDenyRules: {
+            localSettings: ["web_fetch(domain:localhost)"],
+          },
+        }),
+      ),
+    );
+    expect(legacyDenied).toMatchObject({
+      behavior: "deny",
       decisionReason: { type: "rule" },
     });
 

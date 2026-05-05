@@ -128,6 +128,8 @@ interface WebSearchResultEntry {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_FETCH_CHARS = 120_000;
+const MAX_FETCH_BYTES = 512_000;
+const MIN_FETCH_BYTES = 16_384;
 const MAX_SEARCH_RESULTS = 8;
 const WEB_FETCH_TOOL_NAME = "web_fetch";
 const LEGACY_WEB_FETCH_TOOL_NAME = "WebFetch";
@@ -289,6 +291,65 @@ async function fetchWithTimeout(url: string, timeoutMs = DEFAULT_TIMEOUT_MS): Pr
     });
   } finally {
     clearTimeout(timer);
+  }
+}
+
+function parseContentLength(value: string | null): number | undefined {
+  if (value === null) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+interface BoundedResponseText {
+  readonly text: string;
+  readonly bytesRead: number;
+  readonly truncated: boolean;
+}
+
+async function readResponseTextBounded(
+  response: Response,
+  maxBytes: number,
+): Promise<BoundedResponseText> {
+  const byteLimit = Math.max(1, Math.floor(maxBytes));
+  const contentLength = parseContentLength(response.headers.get("content-length"));
+  const reader = response.body?.getReader();
+  if (!reader) {
+    if (contentLength !== undefined && contentLength > byteLimit) {
+      throw new Error(`response body exceeds ${byteLimit} byte fetch limit`);
+    }
+    const text = await response.text();
+    return { text, bytesRead: new TextEncoder().encode(text).byteLength, truncated: false };
+  }
+
+  const decoder = new TextDecoder();
+  let bytesRead = 0;
+  let text = "";
+  let truncated = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      const remaining = byteLimit - bytesRead;
+      if (remaining <= 0) {
+        truncated = true;
+        await reader.cancel().catch(() => undefined);
+        break;
+      }
+      const chunk =
+        value.byteLength > remaining ? value.slice(0, remaining) : value;
+      text += decoder.decode(chunk, { stream: true });
+      bytesRead += chunk.byteLength;
+      if (value.byteLength > remaining) {
+        truncated = true;
+        await reader.cancel().catch(() => undefined);
+        break;
+      }
+    }
+    text += decoder.decode();
+    return { text, bytesRead, truncated };
+  } finally {
+    reader.releaseLock();
   }
 }
 
@@ -610,7 +671,7 @@ function normalizeUrl(raw: string): string {
     throw new Error("URL must not include embedded credentials");
   }
   if (isBlockedWebFetchHostname(url.hostname)) {
-    throw new Error("URL targets a private or link-local address");
+    throw new Error("URL targets a private, loopback, or link-local address");
   }
   return url.toString();
 }
@@ -637,7 +698,7 @@ function isBlockedWebFetchIPv4(address: string): boolean {
   ) {
     return false;
   }
-  if (a === 127) return false;
+  if (a === 127) return true;
   if (a === 0) return true;
   if (a === 10) return true;
   if (a === 169 && b === 254) return true;
@@ -649,7 +710,7 @@ function isBlockedWebFetchIPv4(address: string): boolean {
 
 function isBlockedWebFetchIPv6(address: string): boolean {
   const lower = address.toLowerCase();
-  if (lower === "::1") return false;
+  if (lower === "::1") return true;
   if (lower === "::") return true;
 
   const mappedV4 = webFetchMappedIPv4(lower);
@@ -1473,14 +1534,6 @@ function checkWebFetchPermissions(
     };
   }
 
-  if (isPreapprovedHost(parsed.hostname, parsed.pathname)) {
-    return {
-      behavior: "allow",
-      updatedInput: { ...(input as Record<string, unknown>), url: normalized },
-      decisionReason: { type: "other", reason: "preapproved host" },
-    };
-  }
-
   const permissionContext = context.getAppState().toolPermissionContext;
   const ruleContent = webFetchInputToPermissionRuleContent({ url: normalized });
   const denyRule = getMatchingWebFetchRule(
@@ -1524,6 +1577,14 @@ function checkWebFetchPermissions(
       behavior: "allow",
       updatedInput: { ...(input as Record<string, unknown>), url: normalized },
       decisionReason: { type: "rule", rule: allowRule },
+    };
+  }
+
+  if (isPreapprovedHost(parsed.hostname, parsed.pathname)) {
+    return {
+      behavior: "allow",
+      updatedInput: { ...(input as Record<string, unknown>), url: normalized },
+      decisionReason: { type: "other", reason: "preapproved host" },
     };
   }
 
@@ -1574,48 +1635,59 @@ function createWebFetchTool(toolName: string): Tool {
       }
       const parsed = new URL(normalized);
       const preapproved = isPreapprovedHost(parsed.hostname, parsed.pathname);
-      const response = await fetchWithTimeout(
-        normalized,
-        numberValue(args.timeout_ms) ?? DEFAULT_TIMEOUT_MS,
-      );
-      const contentType = response.headers.get("content-type") ?? "";
-      const raw = await response.text();
-      const isHtml = contentType.includes("html");
-      let body: string;
-      let renderedAs: "markdown" | "text" | "passthrough";
-      if (isHtml) {
-        try {
-          body = await htmlToMarkdown(raw);
-          renderedAs = "markdown";
-        } catch {
-          // Parser failure falls back to a conservative tag strip so a
-          // single malformed page does not break the fetch tool entirely.
-          body = htmlToText(raw);
-          renderedAs = "text";
-        }
-      } else {
-        body = raw;
-        renderedAs = "passthrough";
-      }
       const maxChars = Math.max(
         1_000,
         Math.min(numberValue(args.max_chars) ?? MAX_FETCH_CHARS, MAX_FETCH_CHARS),
       );
-      const textBody =
-        body.length > maxChars
-          ? `${body.slice(0, maxChars)}\n\n[truncated ${body.length - maxChars} chars]`
-          : body;
-      return json({
-        status: response.status,
-        ok: response.ok,
-        url: normalized,
-        final_url: response.url,
-        content_type: contentType,
-        preapproved,
-        rendered_as: renderedAs,
-        prompt: stringValue(args.prompt),
-        content: textBody,
-      }, response.ok ? undefined : true);
+      const maxBytes = Math.max(
+        MIN_FETCH_BYTES,
+        Math.min(MAX_FETCH_BYTES, maxChars * 4),
+      );
+      try {
+        const response = await fetchWithTimeout(
+          normalized,
+          numberValue(args.timeout_ms) ?? DEFAULT_TIMEOUT_MS,
+        );
+        const contentType = response.headers.get("content-type") ?? "";
+        const raw = await readResponseTextBounded(response, maxBytes);
+        const isHtml = contentType.includes("html");
+        let body: string;
+        let renderedAs: "markdown" | "text" | "passthrough";
+        if (isHtml) {
+          try {
+            body = await htmlToMarkdown(raw.text);
+            renderedAs = "markdown";
+          } catch {
+            // Parser failure falls back to a conservative tag strip so a
+            // single malformed page does not break the fetch tool entirely.
+            body = htmlToText(raw.text);
+            renderedAs = "text";
+          }
+        } else {
+          body = raw.text;
+          renderedAs = "passthrough";
+        }
+        let textBody = body;
+        if (body.length > maxChars) {
+          textBody = `${body.slice(0, maxChars)}\n\n[truncated ${body.length - maxChars} chars]`;
+        } else if (raw.truncated) {
+          textBody = `${body}\n\n[truncated response after ${raw.bytesRead} bytes]`;
+        }
+        return json({
+          status: response.status,
+          ok: response.ok,
+          url: normalized,
+          final_url: response.url,
+          content_type: contentType,
+          preapproved,
+          rendered_as: renderedAs,
+          truncated: raw.truncated || body.length > maxChars,
+          prompt: stringValue(args.prompt),
+          content: textBody,
+        }, response.ok ? undefined : true);
+      } catch (error) {
+        return json({ error: `fetch failed: ${errorMessage(error)}` }, true);
+      }
     },
   };
 }
