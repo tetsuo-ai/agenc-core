@@ -7,21 +7,21 @@ export async function loadContextCollapseModule() {
 }
 
 export async function loadAutoCompactModule() {
-  const module = await import("./compact-runtime.js");
+  const module = await import("../../services/compact/autoCompact.js");
   return {
     autoCompactIfNeeded: module.autoCompactIfNeeded,
   };
 }
 
 export async function loadCompactModule() {
-  const module = await import("./compact-runtime.js");
+  const module = await import("../../services/compact/compact.js");
   return {
     buildPostCompactMessages: module.buildPostCompactMessages,
   };
 }
 
 export async function loadMicroCompactModule() {
-  const module = await import("./compact-runtime.js");
+  const module = await import("../../services/compact/microCompact.js");
   return {
     microcompactMessages: module.microcompactMessages,
     resetMicrocompactState: module.resetMicrocompactState,
@@ -36,7 +36,7 @@ export async function loadToolResultStorageModule() {
 }
 
 export async function loadMessageUtilityModule() {
-  const module = await import("./compact-runtime.js");
+  const module = await import("../../services/compact/compact.js");
   return {
     createSyntheticUserCaveatMessage: module.createSyntheticUserCaveatMessage,
     createUserMessage: module.createUserMessage,
@@ -45,7 +45,7 @@ export async function loadMessageUtilityModule() {
 }
 
 export async function loadManualCompactCommand() {
-  const module = await import("./compact-runtime.js");
+  const module = await import("../../services/compact/compact.js");
   return {
     call: module.manualCompactCall,
   };

@@ -1,0 +1,230 @@
+{
+  "contractName": "compact-service-parity",
+  "scope": "AgenC-owned compact service port",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
+  "targetRoot": ".",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/services/compact/apiMicrocompact.ts",
+    "src/services/compact/autoCompact.ts",
+    "src/services/compact/cachedMicrocompact.ts",
+    "src/services/compact/compact.ts",
+    "src/services/compact/compactWarningHook.ts",
+    "src/services/compact/compactWarningState.ts",
+    "src/services/compact/grouping.ts",
+    "src/services/compact/microCompact.ts",
+    "src/services/compact/postCompactCleanup.ts",
+    "src/services/compact/prompt.ts",
+    "src/services/compact/sessionMemoryCompact.ts",
+    "src/services/compact/snipCompact.ts",
+    "src/services/compact/timeBasedMCConfig.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/services/compact/PARITY.md",
+    "runtime/src/services/compact/_deps/runtime.ts",
+    "runtime/src/services/compact/apiMicrocompact.ts",
+    "runtime/src/services/compact/autoCompact.ts",
+    "runtime/src/services/compact/cachedMicrocompact.ts",
+    "runtime/src/services/compact/compact.ts",
+    "runtime/src/services/compact/compactWarningHook.ts",
+    "runtime/src/services/compact/compactWarningState.ts",
+    "runtime/src/services/compact/grouping.ts",
+    "runtime/src/services/compact/microCompact.ts",
+    "runtime/src/services/compact/postCompactCleanup.ts",
+    "runtime/src/services/compact/prompt.ts",
+    "runtime/src/services/compact/sessionMemoryCompact.ts",
+    "runtime/src/services/compact/snipCompact.ts",
+    "runtime/src/services/compact/timeBasedMCConfig.ts",
+    "runtime/src/services/compact/types.ts",
+    "runtime/src/agenc/adapters/compact-runtime.ts",
+    "runtime/src/agenc/adapters/dynamic-loaders.js",
+    "runtime/src/agenc/adapters/dynamic-loaders.d.ts"
+  ],
+  "testFiles": [
+    "runtime/src/services/compact/autoCompact.test.ts",
+    "runtime/src/services/compact/compact-surfaces.test.ts",
+    "runtime/src/services/compact/compact.test.ts",
+    "runtime/src/services/compact/microCompact.test.ts",
+    "runtime/tests/compact-loader-service.contract.test.ts",
+    "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts",
+    "runtime/src/session/run-turn.test.ts",
+    "runtime/src/session/run-turn.compact-contract.test.ts",
+    "runtime/tests/runtime-session.compact-contract.test.ts"
+  ],
+  "forbiddenFiles": [
+    "runtime/src/services/compact/cachedMCConfig.ts"
+  ],
+  "forbiddenRuntimePatterns": [
+    {
+      "id": "no-non-mirror-compact-imports",
+      "scope": "runtime/src",
+      "excludePrefix": "runtime/src/agenc/upstream/",
+      "pattern": "agenc/upstream/services/compact"
+    }
+  ],
+  "loaderImports": [
+    "../../services/compact/autoCompact.js",
+    "../../services/compact/compact.js",
+    "../../services/compact/microCompact.js"
+  ],
+  "runtimeAdapterRetainedExports": [
+    "contextUsageCall",
+    "applyToolResultBudget",
+    "applyCollapsesIfNeeded",
+    "recoverFromOverflow"
+  ],
+  "runtimeAdapterRetiredExports": [
+    "autoCompactIfNeeded",
+    "manualCompactCall",
+    "buildPostCompactMessages",
+    "microcompactMessages",
+    "resetMicrocompactState",
+    "createUserMessage",
+    "createSyntheticUserCaveatMessage",
+    "formatCommandInputTags"
+  ],
+  "requiredImplementationMarkers": [
+    {
+      "id": "compact-preserves-runtime-artifacts",
+      "file": "runtime/src/services/compact/compact.ts",
+      "markers": [
+        "MAX_SUMMARY_INPUT_CHARS",
+        "stripImagesFromMessages",
+        "createAttachments",
+        "createHookResults",
+        "runPostCompactCleanup"
+      ]
+    },
+    {
+      "id": "auto-compact-session-memory-cleanup",
+      "file": "runtime/src/services/compact/autoCompact.ts",
+      "markers": [
+        "trySessionMemoryCompaction",
+        "runPostCompactCleanup",
+        "DEFAULT_CONTEXT_WINDOW_TOKENS = 32_000"
+      ]
+    },
+    {
+      "id": "micro-compact-api-and-time",
+      "file": "runtime/src/services/compact/microCompact.ts",
+      "markers": [
+        "getAPIContextManagement",
+        "getTimeBasedMicrocompactClearAfterMs",
+        "isWithinTimeWindow"
+      ]
+    },
+    {
+      "id": "session-memory-real-result",
+      "file": "runtime/src/services/compact/sessionMemoryCompact.ts",
+      "markers": [
+        "Conversation compacted with session memory",
+        "preserveToolPairsFromIndex",
+        "sessionMemory.getContent"
+      ]
+    },
+    {
+      "id": "snip-compact-real-trim",
+      "file": "runtime/src/services/compact/snipCompact.ts",
+      "markers": [
+        "targetTokenCount",
+        "tokensFreed: Math.max",
+        "[Earlier conversation snipped before compaction]"
+      ]
+    }
+  ],
+  "commands": [
+    {
+      "cmd": "npm",
+      "args": [
+        "run",
+        "test",
+        "--workspace=@tetsuo-ai/runtime",
+        "--",
+        "src/services/compact",
+        "tests/compact-loader-service.contract.test.ts",
+        "tests/agenc-compaction-context/agenc-compaction-context.test.ts",
+        "tests/openclaude-compact-loader.contract.test.ts",
+        "src/session/run-turn.test.ts",
+        "src/session/run-turn.compact-contract.test.ts",
+        "tests/runtime-session.compact-contract.test.ts"
+      ]
+    }
+  ],
+  "rows": [
+    {
+      "id": "service-inventory",
+      "source": "src/services/compact/compact.ts",
+      "target": "runtime/src/services/compact/compact.ts",
+      "requiredBehaviors": [
+        "manual compact returns replacement history",
+        "summary input is bounded before provider calls",
+        "attachments and hook results are preserved in the replacement history",
+        "post-compact message ordering is deterministic",
+        "prefix and suffix compact projection preserves order"
+      ],
+      "tests": [
+        "runtime/src/services/compact/compact.test.ts"
+      ]
+    },
+    {
+      "id": "auto-compact",
+      "source": "src/services/compact/autoCompact.ts",
+      "target": "runtime/src/services/compact/autoCompact.ts",
+      "requiredBehaviors": [
+        "thresholds use AgenC context-window data",
+        "warning state uses conservative model fallback",
+        "session-memory compaction is preferred when enabled",
+        "cleanup callbacks run after automatic compaction",
+        "disable switches prevent automatic compact"
+      ],
+      "tests": [
+        "runtime/src/services/compact/autoCompact.test.ts",
+        "runtime/src/session/run-turn.test.ts",
+        "runtime/src/session/run-turn.compact-contract.test.ts"
+      ]
+    },
+    {
+      "id": "micro-compact",
+      "source": "src/services/compact/microCompact.ts",
+      "target": "runtime/src/services/compact/microCompact.ts",
+      "requiredBehaviors": [
+        "older compactable tool results are cleared",
+        "recent tool results remain available",
+        "time-based clear window preserves fresh tool results",
+        "API context-management settings are surfaced",
+        "MCP-prefixed tools are compactable"
+      ],
+      "tests": [
+        "runtime/src/services/compact/microCompact.test.ts"
+      ]
+    },
+    {
+      "id": "supporting-surfaces",
+      "source": "src/services/compact/apiMicrocompact.ts",
+      "target": "runtime/src/services/compact/apiMicrocompact.ts",
+      "requiredBehaviors": [
+        "API context-management config is emitted only when active",
+        "cached micro-compact exposes stable disabled state without cachedMCConfig target",
+        "session-memory and snip compact produce real compact results when configured",
+        "cleanup and warning state callbacks remain deterministic"
+      ],
+      "tests": [
+        "runtime/src/services/compact/compact-surfaces.test.ts"
+      ]
+    },
+    {
+      "id": "live-loader-wiring",
+      "source": "src/services/compact/compact.ts",
+      "target": "runtime/src/agenc/adapters/dynamic-loaders.js",
+      "requiredBehaviors": [
+        "compact loaders resolve service functions by identity",
+        "context-collapse and tool-result budget remain on the runtime adapter",
+        "non-mirror runtime source no longer imports compact mirror paths"
+      ],
+      "tests": [
+        "runtime/tests/compact-loader-service.contract.test.ts",
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ]
+    }
+  ]
+}

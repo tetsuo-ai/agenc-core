@@ -1,7 +1,7 @@
 import { AsyncQueue } from "../src/utils/async-queue.js";
 import type { LLMMessage, LLMProvider, LLMResponse } from "../src/llm/types.js";
 import { ProviderHttpClient } from "../src/llm/client.js";
-import { PermissionModeRegistry } from "../src/permissions/mode.js";
+import { PermissionModeRegistry } from "../src/permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../src/permissions/types.js";
 import {
   Session,
