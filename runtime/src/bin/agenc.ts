@@ -854,12 +854,7 @@ function appendUserPromptSubmitContexts(
   contexts: readonly string[],
 ): string | readonly LLMContentPart[] {
   if (contexts.length === 0) return input;
-  const contextText = contexts
-    .map(
-      (context) =>
-        `<hook_additional_context>\n${truncateUserPromptSubmitContext(context)}\n</hook_additional_context>`,
-    )
-    .join("\n\n");
+  const contextText = formatUserPromptSubmitContexts(contexts);
   if (typeof input === "string") {
     return input.trim().length > 0 ? `${input}\n\n${contextText}` : contextText;
   }
@@ -874,6 +869,23 @@ function appendUserPromptSubmitContexts(
   }
   next.push({ type: "text", text: contextText });
   return next;
+}
+
+function formatUserPromptSubmitContexts(contexts: readonly string[]): string {
+  return contexts
+    .map(
+      (context) =>
+        `<hook_additional_context>\n${truncateUserPromptSubmitContext(context)}\n</hook_additional_context>`,
+    )
+    .join("\n\n");
+}
+
+function appendUserPromptSubmitContextsToMessage(
+  message: string,
+  contexts: readonly string[],
+): string {
+  if (contexts.length === 0) return message;
+  return `${message}\n\n${formatUserPromptSubmitContexts(contexts)}`;
 }
 
 function emitUserPromptSubmitHookThrown(
@@ -915,9 +927,16 @@ async function collectUserPromptSubmitHookOutcome(params: {
     undefined,
     (err, idx) => emitUserPromptSubmitHookThrown(params.session, err, idx),
   )) {
+    if (hookResult.additionalContexts) {
+      additionalContexts.push(...hookResult.additionalContexts);
+    }
     if (hookResult.blockingError) {
       const message = getUserPromptSubmitHookBlockingMessage(
         hookResult.blockingError,
+      );
+      const messageWithContext = appendUserPromptSubmitContextsToMessage(
+        message,
+        additionalContexts,
       );
       params.session.emit({
         id: params.session.nextInternalSubId(),
@@ -925,30 +944,39 @@ async function collectUserPromptSubmitHookOutcome(params: {
           type: "error",
           payload: {
             cause: "user_prompt_submit_hook_blocked",
-            message,
+            message: messageWithContext,
           },
         },
       });
-      return { blocked: true, additionalContexts: [], blockMessage: message };
+      return {
+        blocked: true,
+        additionalContexts,
+        blockMessage: messageWithContext,
+      };
     }
     if (hookResult.preventContinuation) {
       const message = hookResult.stopReason
         ? `Operation stopped by hook: ${hookResult.stopReason}`
         : "Operation stopped by hook";
+      const messageWithContext = appendUserPromptSubmitContextsToMessage(
+        message,
+        additionalContexts,
+      );
       params.session.emit({
         id: params.session.nextInternalSubId(),
         msg: {
           type: "warning",
           payload: {
             cause: "user_prompt_submit_hook_stopped",
-            message,
+            message: messageWithContext,
           },
         },
       });
-      return { blocked: true, additionalContexts: [], blockMessage: message };
-    }
-    if (hookResult.additionalContexts) {
-      additionalContexts.push(...hookResult.additionalContexts);
+      return {
+        blocked: true,
+        additionalContexts,
+        blockMessage: messageWithContext,
+      };
     }
     const attachment = hookResult.message?.attachment;
     if (

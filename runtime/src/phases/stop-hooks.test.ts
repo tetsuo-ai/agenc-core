@@ -1,4 +1,12 @@
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, test } from "vitest";
+import {
+  ConfiguredHooksRuntime,
+  type HookInstallTarget,
+} from "../hooks/configured-hooks.js";
 import { EventLog } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -10,7 +18,7 @@ import {
   type StopHookHandler,
 } from "./stop-hooks.js";
 
-function mkCtx(): TurnContext {
+function mkCtx(opts: Partial<TurnContext> = {}): TurnContext {
   return {
     subId: "t1",
     realtimeActive: false,
@@ -45,6 +53,8 @@ function mkCtx(): TurnContext {
     },
     cwd: "/tmp",
     depth: 0,
+    permissionMode: "default",
+    ...opts,
   } as unknown as TurnContext;
 }
 
@@ -193,7 +203,7 @@ describe("evaluateStopHooks", () => {
     const result = await evaluateStopHooks(state, mkCtx(), session);
     expect(result.allowStop).toBe(true);
     expect(result.blocking).toBe(false);
-    expect(result.reason).toBe("stop_hook_shouldstop_wins");
+    expect(result.reason).toBe("done");
     expect(state.stopHookBlockingCount).toBe(0);
     expect(state.stopHookActive).toBeUndefined();
   });
@@ -224,7 +234,7 @@ describe("evaluateStopHooks", () => {
     const result = await evaluateStopHooks(state, mkCtx(), session);
     expect(result.allowStop).toBe(true);
     expect(result.blocking).toBe(false);
-    expect(result.reason).toBe("stop_hook_shouldstop_wins");
+    expect(result.reason).toBe("done");
     expect(state.stopHookBlockingCount).toBe(0);
   });
 
@@ -311,6 +321,73 @@ describe("evaluateStopHooks", () => {
     expect(result.allowStop).toBe(true);
     expect(result.blocking).toBe(false);
     expect(result.reason).toBe("api_error_stop_guard");
+  });
+
+  test("configured Stop stdin uses live permission mode and turn metadata", async () => {
+    const captureDir = await mkdtemp(join(tmpdir(), "agenc-stop-hook-"));
+    const capturePath = join(captureDir, "stdin.json");
+    const command =
+      `node -e 'const fs=require("fs");let s="";` +
+      `process.stdin.on("data",c=>s+=c);` +
+      `process.stdin.on("end",()=>{fs.writeFileSync(${JSON.stringify(
+        capturePath,
+      )},s);process.stdout.write(JSON.stringify({decision:"block",reason:"captured"}));})'`;
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: "/tmp",
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      Stop: [
+        {
+          hooks: [{ type: "command", command }],
+        },
+      ],
+    });
+    const log = new EventLog();
+    const session = {
+      conversationId: "conv-1",
+      eventLog: log,
+      services: {
+        hooks: target,
+        permissionModeRegistry: {
+          current: () => ({ mode: "plan" }),
+        },
+      },
+      rolloutStore: {
+        rolloutPath: "/tmp/transcript.jsonl",
+      },
+      nextInternalSubId: () => "s-1",
+    } as unknown as Session;
+
+    const result = await evaluateStopHooks(
+      mkState(),
+      mkCtx({ permissionMode: "acceptEdits" }),
+      session,
+    );
+    const stdin = JSON.parse(await readFile(capturePath, "utf8"));
+
+    expect(result.blocking).toBe(true);
+    expect(stdin).toMatchObject({
+      hook_event_name: "Stop",
+      session_id: "conv-1",
+      turn_id: "t1",
+      transcript_path: "/tmp/transcript.jsonl",
+      cwd: "/tmp",
+      model: "stub",
+      permission_mode: "plan",
+    });
   });
 });
 

@@ -176,7 +176,8 @@ describe("configured hooks runtime", () => {
           hooks: [
             {
               type: "command",
-              command: "printf 'sk-proj-abcdefghijklmnopqrstuvwxyz123456-'; exit 2",
+              command:
+                "printf 'sk-proj-abcdefghijklmnopqrstuvwxyz123456-' >&2; exit 2",
             },
           ],
         },
@@ -1178,6 +1179,40 @@ describe("configured hooks runtime", () => {
     expect(decision).toEqual({ kind: "deny", reason: "blocked by hook" });
   });
 
+  test("PreToolUse exit code 2 requires stderr before blocking", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = makeTarget();
+    runtime.attachTarget(target);
+    runtime.load({
+      PreToolUse: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command: "printf stdout-only; printf '   ' >&2; exit 2",
+            },
+          ],
+        },
+      ],
+    });
+
+    const decision = await target.preToolUseHooks[0]!({
+      invocation: { callId: "c-pre" } as never,
+      tool: { name: "Write" } as never,
+      args: {},
+    });
+
+    expect(decision).toEqual({ kind: "continue" });
+    expect(runtime.latestDiagnostics()[0]?.error).toContain(
+      "PreToolUse hook exited with code 2 but did not write a blocking reason to stderr",
+    );
+  });
+
   test.each([
     [
       "permissionDecision allow",
@@ -1328,6 +1363,74 @@ describe("configured hooks runtime", () => {
     });
   });
 
+  test("PostToolUse exit code 2 surfaces stderr feedback", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = makeTarget();
+    runtime.attachTarget(target);
+    runtime.load({
+      PostToolUse: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command: "printf 'post hook says pause' >&2; exit 2",
+            },
+          ],
+        },
+      ],
+    });
+
+    const decision = await target.postToolUseHooks[0]!({
+      invocation: { callId: "c-post" } as never,
+      tool: { name: "Read" } as never,
+      args: {},
+      result: "ok",
+    });
+
+    expect(decision).toEqual({
+      kind: "hook_blocking_error",
+      blockingError: "post hook says pause",
+    });
+  });
+
+  test.each([
+    ["blank stderr", "printf '   ' >&2; exit 2"],
+    ["stdout only", "printf stdout-only; exit 2"],
+  ])("PostToolUse exit code 2 with %s continues with diagnostic", async (_name, command) => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = makeTarget();
+    runtime.attachTarget(target);
+    runtime.load({
+      PostToolUse: [
+        {
+          hooks: [{ type: "command", command }],
+        },
+      ],
+    });
+
+    const decision = await target.postToolUseHooks[0]!({
+      invocation: { callId: "c-post" } as never,
+      tool: { name: "Read" } as never,
+      args: {},
+      result: "ok",
+    });
+
+    expect(decision).toEqual({ kind: "continue" });
+    expect(runtime.latestDiagnostics()[0]?.error).toContain(
+      "PostToolUse hook exited with code 2 but did not write feedback to stderr",
+    );
+  });
+
   test("PreToolUse stdin includes invocation context fields", async () => {
     const runtime = new ConfiguredHooksRuntime({
       cwd: "/tmp",
@@ -1444,7 +1547,9 @@ describe("configured hooks runtime", () => {
       Stop: [
         {
           matcher: "never-matches",
-          hooks: [{ type: "command", command: "printf stop-blocked; exit 2" }],
+          hooks: [
+            { type: "command", command: "printf stop-blocked >&2; exit 2" },
+          ],
         },
       ],
     });
@@ -1462,6 +1567,302 @@ describe("configured hooks runtime", () => {
     expect(outcome.shouldBlock).toBe(true);
     expect(outcome.blockReason).toBe("stop-blocked");
     expect(runtime.latestDiagnostics()).toHaveLength(1);
+  });
+
+  test("Stop exit code 2 requires stderr continuation prompt", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = makeTarget();
+    runtime.attachTarget(target);
+    runtime.load({
+      Stop: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command: "printf stdout-only; printf '   ' >&2; exit 2",
+            },
+          ],
+        },
+      ],
+    });
+
+    const outcome = await target.stopHooks[0]!.run(stopRequest());
+
+    expect(outcome).toEqual({
+      shouldStop: true,
+      shouldBlock: false,
+      continuationFragments: [],
+    });
+    expect(runtime.latestDiagnostics()[0]?.error).toContain(
+      "Stop hook exited with code 2 but did not write a continuation prompt to stderr",
+    );
+  });
+
+  test("Stop structured continue false allows stop with reason", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = makeTarget();
+    runtime.attachTarget(target);
+    runtime.load({
+      Stop: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command: jsonStdoutCommand({
+                continue: false,
+                stopReason: "done by hook",
+              }),
+            },
+          ],
+        },
+      ],
+    });
+
+    const outcome = await target.stopHooks[0]!.run(stopRequest());
+
+    expect(outcome).toEqual({
+      shouldStop: true,
+      stopReason: "done by hook",
+      shouldBlock: false,
+      continuationFragments: [],
+    });
+  });
+
+  test("Stop plain stdout records invalid-output diagnostic", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = makeTarget();
+    runtime.attachTarget(target);
+    runtime.load({
+      Stop: [
+        {
+          hooks: [{ type: "command", command: "printf plain-text" }],
+        },
+      ],
+    });
+
+    const outcome = await target.stopHooks[0]!.run(stopRequest());
+
+    expect(outcome.shouldStop).toBe(true);
+    expect(outcome.shouldBlock).toBe(false);
+    expect(runtime.latestDiagnostics()[0]?.error).toContain(
+      "hook returned invalid stop hook JSON output",
+    );
+  });
+
+  test("UserPromptSubmit blocking decisions preserve additional context", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = makeTarget();
+    runtime.attachTarget(target);
+    runtime.load({
+      UserPromptSubmit: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command: jsonStdoutCommand({
+                decision: "block",
+                reason: "slow down",
+                hookSpecificOutput: {
+                  hookEventName: "UserPromptSubmit",
+                  additionalContext: "keep this context",
+                },
+              }),
+            },
+          ],
+        },
+      ],
+    });
+
+    const decision = await target.userPromptSubmitHooks[0]!({
+      prompt: "ship PE-15",
+      permissionMode: "default",
+      cwd: process.cwd(),
+    });
+
+    expect(decision).toEqual({
+      blockingError: { blockingError: "slow down" },
+      additionalContexts: ["keep this context"],
+    });
+  });
+
+  test("UserPromptSubmit continue false preserves additional context", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = makeTarget();
+    runtime.attachTarget(target);
+    runtime.load({
+      UserPromptSubmit: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command: jsonStdoutCommand({
+                continue: false,
+                stopReason: "pause",
+                hookSpecificOutput: {
+                  hookEventName: "UserPromptSubmit",
+                  additionalContext: "preserved context",
+                },
+              }),
+            },
+          ],
+        },
+      ],
+    });
+
+    const decision = await target.userPromptSubmitHooks[0]!({
+      prompt: "ship PE-15",
+      permissionMode: "default",
+      cwd: process.cwd(),
+    });
+
+    expect(decision).toEqual({
+      preventContinuation: true,
+      stopReason: "pause",
+      additionalContexts: ["preserved context"],
+    });
+  });
+
+  test("SessionStart source matcher and stdout context are honored", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target = makeLifecycleTarget();
+    runtime.attachTarget(target);
+    runtime.load({
+      SessionStart: [
+        {
+          matcher: "resume",
+          hooks: [{ type: "command", command: "printf resume-context" }],
+        },
+        {
+          matcher: "startup",
+          hooks: [{ type: "command", command: "printf startup-context" }],
+        },
+      ],
+    });
+
+    const results = await Promise.all(
+      target.sessionStartHooks.map((hook) =>
+        hook({
+          hook_event_name: "SessionStart",
+          source: "startup",
+          cwd: process.cwd(),
+          model: "model-a",
+          permission_mode: "default",
+        }),
+      ),
+    );
+
+    expect(results.map((result) => result.additionalContexts ?? [])).toEqual([
+      [],
+      ["startup-context"],
+    ]);
+  });
+
+  test("SessionStart malformed JSON-like stdout is diagnostic-only", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target = makeLifecycleTarget();
+    runtime.attachTarget(target);
+    runtime.load({
+      SessionStart: [
+        {
+          hooks: [{ type: "command", command: "printf '{not-json'" }],
+        },
+      ],
+    });
+
+    const result = await target.sessionStartHooks[0]!({
+      hook_event_name: "SessionStart",
+      source: "startup",
+      cwd: process.cwd(),
+      model: "model-a",
+      permission_mode: "default",
+    });
+
+    expect(result.additionalContexts).toBeUndefined();
+    expect(runtime.latestDiagnostics()[0]?.error).toContain(
+      "hook returned invalid session start JSON output",
+    );
+  });
+
+  test("SessionStart continue false returns a stopped message and context", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target = makeLifecycleTarget();
+    runtime.attachTarget(target);
+    runtime.load({
+      SessionStart: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command: jsonStdoutCommand({
+                continue: false,
+                stopReason: "pause session",
+                hookSpecificOutput: {
+                  hookEventName: "SessionStart",
+                  additionalContext: "session context",
+                },
+              }),
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = await target.sessionStartHooks[0]!({
+      hook_event_name: "SessionStart",
+      source: "startup",
+      cwd: process.cwd(),
+      model: "model-a",
+      permission_mode: "default",
+    });
+
+    expect(result.succeeded).toBe(false);
+    expect(result.output).toBe("pause session");
+    expect(result.additionalContexts).toEqual(["session context"]);
+    expect(result.message).toMatchObject({
+      type: "hook_stopped_continuation",
+      hookEvent: "SessionStart",
+      message: "pause session",
+    });
   });
 
   test("uses permission_mode in default UserPromptSubmit test input", async () => {
@@ -1550,6 +1951,48 @@ describe("configured hooks runtime", () => {
     expect(signal.listenerCount).toBe(0);
   });
 });
+
+function makeTarget(): HookInstallTarget {
+  return {
+    preToolUseHooks: [],
+    postToolUseHooks: [],
+    failureToolUseHooks: [],
+    permissionDecisionHooks: [],
+    userPromptSubmitHooks: [],
+    stopHooks: [],
+    stopFailureHooks: [],
+  };
+}
+
+function makeLifecycleTarget(): HookInstallTarget & {
+  readonly sessionStartHooks: Parameters<
+    NonNullable<HookInstallTarget["addSessionStartHook"]>
+  >[0][];
+} {
+  const sessionStartHooks: Parameters<
+    NonNullable<HookInstallTarget["addSessionStartHook"]>
+  >[0][] = [];
+  return {
+    ...makeTarget(),
+    sessionStartHooks,
+    addSessionStartHook: (hook) => {
+      sessionStartHooks.push(hook);
+    },
+  };
+}
+
+function stopRequest() {
+  return {
+    sessionId: "sess-1",
+    turnId: "turn-1",
+    cwd: process.cwd(),
+    model: "test-model",
+    permissionMode: "default",
+    stopHookActive: false,
+    lastAssistantMessage: "",
+    lastIsApiErrorMessage: false,
+  };
+}
 
 function jsonStdoutCommand(value: unknown): string {
   return `node -e 'process.stdout.write(${JSON.stringify(

@@ -10,6 +10,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { HookEventName, HooksMap } from "../../config/schema.js";
+import { hookEventIgnoresConfiguredMatcher } from "../../permissions/hook-event-schedule.js";
 import { redactSecrets } from "../../secrets/index.js";
 import { runHookCommand } from "./command-runner.js";
 import { flattenHooks } from "./discovery.js";
@@ -72,7 +73,7 @@ export class HookEngine {
       .filter((hook) => hook.enabled)
       .filter((hook) => hook.event === event)
       .filter((hook) => {
-        if (event === "UserPromptSubmit" || event === "Stop") {
+        if (hookEventIgnoresConfiguredMatcher(event)) {
           return true;
         }
         if (matcherInputs.length === 0) {

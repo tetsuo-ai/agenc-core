@@ -256,6 +256,61 @@ describe("processUserInput", () => {
     expect(JSON.stringify(result.messages)).toContain("policy denied");
   });
 
+  it("preserves UserPromptSubmit additional context when blocking", async () => {
+    const result = await processUserInput({
+      input: "delete everything",
+      mode: "prompt",
+      setToolJSX: vi.fn(),
+      context: context({
+        session: {
+          services: {
+            hooks: {
+              userPromptSubmitHooks: [
+                () => ({
+                  additionalContexts: ["policy context"],
+                  blockingError: { blockingError: "policy denied" },
+                }),
+              ],
+            },
+          },
+        },
+      }),
+      pastedContents: {},
+    });
+
+    expect(result.shouldQuery).toBe(false);
+    expect(JSON.stringify(result.messages)).toContain("policy context");
+    expect(JSON.stringify(result.messages)).toContain("policy denied");
+  });
+
+  it("preserves UserPromptSubmit additional context when stopping", async () => {
+    const result = await processUserInput({
+      input: "pause here",
+      mode: "prompt",
+      setToolJSX: vi.fn(),
+      context: context({
+        session: {
+          services: {
+            hooks: {
+              userPromptSubmitHooks: [
+                () => ({
+                  additionalContexts: ["stopped context"],
+                  preventContinuation: true,
+                  stopReason: "pause",
+                }),
+              ],
+            },
+          },
+        },
+      }),
+      pastedContents: {},
+    });
+
+    expect(result.shouldQuery).toBe(false);
+    expect(JSON.stringify(result.messages)).toContain("stopped context");
+    expect(JSON.stringify(result.messages)).toContain("Operation stopped by hook");
+  });
+
   it("emits a warning when a configured UserPromptSubmit hook throws", async () => {
     const emitted: unknown[] = [];
     const result = await processUserInput({

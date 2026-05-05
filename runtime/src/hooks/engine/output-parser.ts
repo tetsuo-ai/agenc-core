@@ -82,6 +82,7 @@ export function readHookSpecificOutput(
     });
     if (rawSpecific !== parsed) {
       mergeCommonOutputFields(parsed, output, invalid);
+      mergeRootEventOutputFields(parsed, output, invalid, expectedEvent);
     }
     return {
       explicit: true,
@@ -93,6 +94,45 @@ export function readHookSpecificOutput(
       explicit: true,
       invalid: "hook output JSON could not be parsed",
     };
+  }
+}
+
+function mergeRootEventOutputFields(
+  raw: Record<string, unknown>,
+  output: {
+    legacyDecision?: string;
+    reason?: string;
+    decision?: {
+      behavior?: string;
+      updatedInput?: Record<string, unknown>;
+      updatedPermissions?: Record<string, unknown>;
+      interrupt?: boolean;
+      message?: string;
+    };
+  },
+  invalid: string[],
+  expectedEvent?: string,
+): void {
+  if (expectedEvent === "PermissionRequest") return;
+  if (raw.reason !== undefined && output.reason === undefined) {
+    if (typeof raw.reason === "string") {
+      output.reason = raw.reason;
+    } else {
+      invalid.push("reason must be a string");
+    }
+  }
+  if (
+    raw.decision !== undefined &&
+    output.legacyDecision === undefined &&
+    output.decision === undefined
+  ) {
+    if (typeof raw.decision === "string") {
+      output.legacyDecision = raw.decision;
+    } else if (isRecord(raw.decision)) {
+      output.decision = normalizeDecisionObject(raw.decision, invalid);
+    } else {
+      invalid.push("decision must be an object");
+    }
   }
 }
 
@@ -275,55 +315,68 @@ function normalizeHookSpecificOutput(
       return { output, invalid };
     }
     if (isRecord(raw.decision)) {
-      const decision: {
-        behavior?: string;
-        updatedInput?: Record<string, unknown>;
-        updatedPermissions?: Record<string, unknown>;
-        interrupt?: boolean;
-        message?: string;
-      } = {};
-      if (raw.decision.behavior !== undefined) {
-        if (typeof raw.decision.behavior === "string") {
-          decision.behavior = raw.decision.behavior;
-        } else {
-          invalid.push("decision.behavior must be a string");
-        }
-      }
-      if (raw.decision.updatedInput !== undefined) {
-        if (isRecord(raw.decision.updatedInput)) {
-          decision.updatedInput = raw.decision.updatedInput;
-        } else {
-          invalid.push("decision.updatedInput must be an object");
-        }
-      }
-      if (raw.decision.updatedPermissions !== undefined) {
-        if (isRecord(raw.decision.updatedPermissions)) {
-          decision.updatedPermissions = raw.decision.updatedPermissions;
-        } else {
-          invalid.push("decision.updatedPermissions must be an object");
-        }
-      }
-      if (raw.decision.interrupt !== undefined) {
-        if (typeof raw.decision.interrupt === "boolean") {
-          decision.interrupt = raw.decision.interrupt;
-        } else {
-          invalid.push("decision.interrupt must be a boolean");
-        }
-      }
-      if (raw.decision.message !== undefined) {
-        if (typeof raw.decision.message === "string") {
-          decision.message = raw.decision.message;
-        } else {
-          invalid.push("decision.message must be a string");
-        }
-      }
-      output.decision = decision;
+      output.decision = normalizeDecisionObject(raw.decision, invalid);
     } else {
       invalid.push("decision must be an object");
     }
   }
 
   return { output, invalid };
+}
+
+function normalizeDecisionObject(
+  raw: Record<string, unknown>,
+  invalid: string[],
+): {
+  behavior?: string;
+  updatedInput?: Record<string, unknown>;
+  updatedPermissions?: Record<string, unknown>;
+  interrupt?: boolean;
+  message?: string;
+} {
+  const decision: {
+    behavior?: string;
+    updatedInput?: Record<string, unknown>;
+    updatedPermissions?: Record<string, unknown>;
+    interrupt?: boolean;
+    message?: string;
+  } = {};
+  if (raw.behavior !== undefined) {
+    if (typeof raw.behavior === "string") {
+      decision.behavior = raw.behavior;
+    } else {
+      invalid.push("decision.behavior must be a string");
+    }
+  }
+  if (raw.updatedInput !== undefined) {
+    if (isRecord(raw.updatedInput)) {
+      decision.updatedInput = raw.updatedInput;
+    } else {
+      invalid.push("decision.updatedInput must be an object");
+    }
+  }
+  if (raw.updatedPermissions !== undefined) {
+    if (isRecord(raw.updatedPermissions)) {
+      decision.updatedPermissions = raw.updatedPermissions;
+    } else {
+      invalid.push("decision.updatedPermissions must be an object");
+    }
+  }
+  if (raw.interrupt !== undefined) {
+    if (typeof raw.interrupt === "boolean") {
+      decision.interrupt = raw.interrupt;
+    } else {
+      invalid.push("decision.interrupt must be a boolean");
+    }
+  }
+  if (raw.message !== undefined) {
+    if (typeof raw.message === "string") {
+      decision.message = raw.message;
+    } else {
+      invalid.push("decision.message must be a string");
+    }
+  }
+  return decision;
 }
 
 function mergeCommonOutputFields(

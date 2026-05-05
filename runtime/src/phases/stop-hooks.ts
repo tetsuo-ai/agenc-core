@@ -58,6 +58,7 @@ export interface StopRequest {
   readonly sessionId: string;
   readonly turnId: string;
   readonly cwd: string;
+  readonly transcriptPath?: string;
   readonly model: string;
   readonly permissionMode: string;
   readonly stopHookActive: boolean;
@@ -123,8 +124,11 @@ export async function evaluateStopHooks(
     sessionId: session.conversationId,
     turnId: ctx.subId,
     cwd: ctx.cwd,
+    ...(session.rolloutStore?.rolloutPath !== undefined
+      ? { transcriptPath: session.rolloutStore.rolloutPath }
+      : {}),
     model: ctx.modelInfo.slug,
-    permissionMode: String(ctx.config.permissions?.allowLoginShell ?? ""),
+    permissionMode: currentPermissionMode(ctx, session),
     stopHookActive: state.stopHookActive === true,
     ...(lastAssistant?.text !== undefined
       ? { lastAssistantMessage: lastAssistant.text }
@@ -173,6 +177,9 @@ export async function evaluateStopHooks(
 
     if (outcome.shouldStop) {
       anyShouldStop = true;
+      if (outcome.stopReason) {
+        (aggregate as { stopReason?: string }).stopReason = outcome.stopReason;
+      }
     }
 
     if (outcome.shouldBlock) {
@@ -216,7 +223,7 @@ export async function evaluateStopHooks(
     return {
       allowStop: true,
       blocking: false,
-      reason: "stop_hook_shouldstop_wins",
+      reason: aggregate.stopReason ?? "stop_hook_shouldstop_wins",
     };
   }
 
@@ -285,8 +292,11 @@ export async function executeStopFailureHooks(
         sessionId: session.conversationId,
         turnId: ctx.subId,
         cwd: ctx.cwd,
+        ...(session.rolloutStore?.rolloutPath !== undefined
+          ? { transcriptPath: session.rolloutStore.rolloutPath }
+          : {}),
         model: ctx.modelInfo.slug,
-        permissionMode: "",
+        permissionMode: currentPermissionMode(ctx, session),
         stopHookActive: state.stopHookActive === true,
         ...(lastAssistant?.text !== undefined
           ? { lastAssistantMessage: lastAssistant.text }
@@ -336,4 +346,27 @@ function isApiErrorAssistantMessage(
   // Fallback check: starts with sentinel PTL phrase.
   const text = msg.text ?? "";
   return text.startsWith("Prompt is too long");
+}
+
+function currentPermissionMode(ctx: TurnContext, session: Session): string {
+  const sessionSurface = session as {
+    readonly permissionModeRegistry?: {
+      current?: () => { readonly mode?: unknown };
+    };
+    readonly services?: {
+      readonly permissionModeRegistry?: {
+        current?: () => { readonly mode?: unknown };
+      };
+    };
+  };
+  return (
+    stringValue(sessionSurface.permissionModeRegistry?.current?.()?.mode) ??
+    stringValue(sessionSurface.services?.permissionModeRegistry?.current?.()?.mode) ??
+    stringValue(ctx.permissionMode) ??
+    "default"
+  );
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }

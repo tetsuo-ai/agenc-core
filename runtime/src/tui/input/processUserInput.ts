@@ -178,6 +178,22 @@ export async function processUserInput({
   // Execute UserPromptSubmit hooks and handle blocking
   queryCheckpoint('query_hooks_start')
   const inputMessage = getContentText(input) || ''
+  const blockingContextMessages: AttachmentMessage[] = []
+
+  const appendUserPromptSubmitContexts = (
+    contexts: readonly string[] | undefined,
+  ) => {
+    if (!contexts || contexts.length === 0) return
+    const message = createAttachmentMessage({
+      type: 'hook_additional_context',
+      content: contexts.map(applyTruncation),
+      hookName: 'UserPromptSubmit',
+      toolUseID: `hook-${randomUUID()}`,
+      hookEvent: 'UserPromptSubmit',
+    })
+    result.messages.push(message)
+    blockingContextMessages.push(message)
+  }
 
   for await (const hookResult of executeUserPromptSubmitHooks(
     inputMessage,
@@ -191,6 +207,8 @@ export async function processUserInput({
       continue
     }
 
+    appendUserPromptSubmitContexts(hookResult.additionalContexts)
+
     // Return only a system-level error message, erasing the original user input
     if (hookResult.blockingError) {
       const blockingMessage = getUserPromptSubmitHookBlockingMessage(
@@ -198,6 +216,7 @@ export async function processUserInput({
       )
       return {
         messages: [
+          ...blockingContextMessages,
           // TODO: Make this an attachment message
           createSystemMessage(
             `${blockingMessage}\n\nOriginal prompt: ${input}`,
@@ -222,22 +241,6 @@ export async function processUserInput({
       )
       result.shouldQuery = false
       return result
-    }
-
-    // Collect additional contexts
-    if (
-      hookResult.additionalContexts &&
-      hookResult.additionalContexts.length > 0
-    ) {
-      result.messages.push(
-        createAttachmentMessage({
-          type: 'hook_additional_context',
-          content: hookResult.additionalContexts.map(applyTruncation),
-          hookName: 'UserPromptSubmit',
-          toolUseID: `hook-${randomUUID()}`,
-          hookEvent: 'UserPromptSubmit',
-        }),
-      )
     }
 
     // TODO: Clean this up

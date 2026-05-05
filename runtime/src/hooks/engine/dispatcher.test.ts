@@ -91,6 +91,27 @@ describe("HookEngine dispatcher", () => {
     expect(engine.selectHandlersForMatcherInputs("Stop", ["skip"])).toHaveLength(1);
   });
 
+  test("selects SessionStart handlers by source matcher", () => {
+    const engine = makeEngine({
+      SessionStart: [
+        {
+          matcher: "resume",
+          hooks: [{ type: "command", command: "printf resume" }],
+        },
+        {
+          matcher: "startup",
+          hooks: [{ type: "command", command: "printf startup" }],
+        },
+      ],
+    });
+
+    const selected = engine.selectHandlers("SessionStart", "startup");
+
+    expect(selected.map((hook) => hook.command.command)).toEqual([
+      "printf startup",
+    ]);
+  });
+
   test("dispatches matching command hooks with JSON stdin", async () => {
     const engine = makeEngine({
       PermissionRequest: [

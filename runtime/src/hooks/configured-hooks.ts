@@ -18,6 +18,7 @@ import type {
   StopHookOutcome,
   StopRequest,
 } from "../phases/stop-hooks.js";
+import { hookMatcherInputsForToolName } from "../permissions/hook-event-schedule.js";
 import type { UserPromptSubmitHook } from "./user-prompt-submit.js";
 import type {
   HookResult,
@@ -229,7 +230,14 @@ export class ConfiguredHooksRuntime {
         tool_use_id: invocation.callId,
       });
       if (result.status === "blocking") {
-        return { kind: "deny", reason: result.stderr || result.stdout };
+        const reason = this.exitCodeTwoStderr(
+          result,
+          "PreToolUse",
+          "a blocking reason",
+        );
+        return reason === undefined
+          ? { kind: "continue" }
+          : { kind: "deny", reason };
       }
       if (result.status !== "success") return { kind: "continue" };
       const parsed = this.readStructuredOutput(result);
@@ -274,9 +282,15 @@ export class ConfiguredHooksRuntime {
         response: result,
       });
       if (run.status === "blocking") {
+        const feedback = this.exitCodeTwoStderr(
+          run,
+          "PostToolUse",
+          "feedback",
+        );
+        if (feedback === undefined) return { kind: "continue" };
         return {
           kind: "hook_blocking_error",
-          blockingError: run.stderr || run.stdout,
+          blockingError: feedback,
         };
       }
       if (run.status !== "success") return { kind: "continue" };
@@ -339,7 +353,7 @@ export class ConfiguredHooksRuntime {
       }
       const runs = await this.engine.dispatch(
         "PermissionRequest",
-        [toolName, ...(input.matcherAliases ?? [])],
+        hookMatcherInputsForToolName(toolName, input.matcherAliases ?? []),
         {
           ...permissionDecisionHookInput(input, this.opts.cwd),
           hook_event_name: "PermissionRequest",
@@ -351,7 +365,7 @@ export class ConfiguredHooksRuntime {
       let allow: PermissionDecisionResult | undefined;
       for (const { run } of runs) {
         if (run.status === "blocking") {
-          const reason = trimmedReason(run.stderr);
+          const reason = trimmedReason(run.rawStderr);
           if (reason === undefined) {
             this.recordHookOutputIssue(
               run,
@@ -374,36 +388,61 @@ export class ConfiguredHooksRuntime {
   private createUserPromptSubmitHook(
     hook: IndividualHookConfig,
   ): UserPromptSubmitHook {
-    return async ({ prompt, permissionMode, cwd, signal }) => {
+    return async (input) => {
+      const { prompt, permissionMode, cwd, signal } = input;
       if (this.isDisabled()) {
         return undefined;
       }
       const run = await this.runCommandHook(
         hook,
         {
+          session_id: input.sessionId ?? "",
+          turn_id: input.turnId ?? "",
+          transcript_path: input.transcriptPath ?? null,
           hook_event_name: "UserPromptSubmit",
           prompt,
-          permission_mode: permissionMode,
+          permission_mode: permissionMode ?? "default",
           cwd,
+          model: input.model ?? "unknown",
         },
         signal,
       );
       if (run.status === "blocking") {
+        const reason = this.exitCodeTwoStderr(
+          run,
+          "UserPromptSubmit",
+          "a blocking reason",
+        );
+        if (reason === undefined) return undefined;
         return {
           blockingError: {
-            blockingError: run.stderr || run.stdout || "Prompt blocked by hook.",
+            blockingError: reason,
           },
         };
       }
       if (run.status !== "success") return undefined;
       const parsed = this.readStructuredOutput(run);
+      const additionalContext = userPromptSubmitAdditionalContext(
+        parsed,
+        run.rawStdout,
+      );
+      const additionalContexts =
+        additionalContext === undefined
+          ? undefined
+          : [redactSecrets(additionalContext)];
       const legacyBlockReason = legacyBlockReasonFor(
         parsed.output,
         "UserPromptSubmit",
         (message) => this.recordHookOutputIssue(run, message),
       );
       if (legacyBlockReason !== null) {
-        return { blockingError: { blockingError: legacyBlockReason } };
+        return {
+          blockingError: { blockingError: legacyBlockReason },
+          ...(additionalContexts !== undefined ? { additionalContexts } : {}),
+        };
+      }
+      if (parsed.output?.legacyDecision !== undefined) {
+        return undefined;
       }
       if (parsed.output?.continueProcessing === false) {
         return {
@@ -411,14 +450,12 @@ export class ConfiguredHooksRuntime {
           ...(parsed.output.stopReason !== undefined
             ? { stopReason: redactSecrets(parsed.output.stopReason) }
             : {}),
+          ...(additionalContexts !== undefined ? { additionalContexts } : {}),
         };
       }
-      const additionalContext = parsed.explicit
-        ? parsed.output?.additionalContext
-        : run.stdout.trim() || undefined;
-      if (additionalContext === undefined) return undefined;
+      if (additionalContexts === undefined) return undefined;
       return {
-        additionalContexts: [redactSecrets(additionalContext)],
+        additionalContexts,
       };
     };
   }
@@ -432,7 +469,12 @@ export class ConfiguredHooksRuntime {
         }
         const run = await this.runCommandHook(hook, stopInput("Stop", request));
         if (run.status === "blocking") {
-          const reason = run.stderr || run.stdout || "Stop hook blocked.";
+          const reason = this.exitCodeTwoStderr(
+            run,
+            "Stop",
+            "a continuation prompt",
+          );
+          if (reason === undefined) return allowStopOutcome();
           return {
             shouldStop: false,
             shouldBlock: true,
@@ -454,6 +496,28 @@ export class ConfiguredHooksRuntime {
               blockReason: firstLine(legacyBlockReason),
               continuationFragments: [legacyBlockReason],
             };
+          }
+          if (parsed.output?.legacyDecision !== undefined) {
+            return allowStopOutcome();
+          }
+          if (parsed.output?.continueProcessing === false) {
+            return {
+              shouldStop: true,
+              ...(parsed.output.stopReason !== undefined
+                ? { stopReason: redactSecrets(parsed.output.stopReason) }
+                : {}),
+              shouldBlock: false,
+              continuationFragments: [],
+            };
+          }
+          if (
+            run.rawStdout.trim().length > 0 &&
+            parsed.output === undefined
+          ) {
+            this.recordHookOutputIssue(
+              run,
+              "hook returned invalid stop hook JSON output",
+            );
           }
         }
         return allowStopOutcome();
@@ -484,6 +548,12 @@ export class ConfiguredHooksRuntime {
     input: PreCompactHookInput | PostCompactHookInput | SessionStartHookInput,
     signal?: AbortSignal,
   ) => Promise<HookResult> {
+    if (hook.event === "SessionStart") {
+      return this.createSessionStartHook(hook) as (
+        input: PreCompactHookInput | PostCompactHookInput | SessionStartHookInput,
+        signal?: AbortSignal,
+      ) => Promise<HookResult>;
+    }
     return async (input, signal) => {
       const matchQuery =
         input.hook_event_name === "SessionStart" ? input.source : input.trigger;
@@ -515,6 +585,69 @@ export class ConfiguredHooksRuntime {
     };
   }
 
+  private createSessionStartHook(
+    hook: IndividualHookConfig,
+  ): (input: SessionStartHookInput, signal?: AbortSignal) => Promise<HookResult> {
+    return async (input, signal) => {
+      if (this.isDisabled() || !matchesPattern(input.source, hook.matcher)) {
+        return { succeeded: true, output: "", command: hook.command.command };
+      }
+      const run = await this.runCommandHook(
+        hook,
+        sessionStartInput(input, this.opts.cwd),
+        signal,
+      );
+      const parsed =
+        run.status === "success" ? this.readStructuredOutput(run) : undefined;
+      const specific = parsed?.output;
+      const additionalContexts = sessionStartAdditionalContexts(
+        parsed,
+        run.rawStdout,
+      );
+      if (
+        run.status === "success" &&
+        run.rawStdout.trim().length > 0 &&
+        parsed?.output === undefined &&
+        parsed?.explicit === true
+      ) {
+        this.recordHookOutputIssue(
+          run,
+          "hook returned invalid session start JSON output",
+        );
+      }
+      if (run.status === "success" && specific?.continueProcessing === false) {
+        const message = redactSecrets(
+          specific.stopReason ?? "SessionStart hook stopped execution",
+        );
+        return {
+          succeeded: false,
+          output: message,
+          command: hookCommandLabel(hook),
+          message: {
+            type: "hook_stopped_continuation",
+            hookEvent: "SessionStart",
+            hookName: hookCommandLabel(hook),
+            message,
+          },
+          ...(additionalContexts.length > 0 ? { additionalContexts } : {}),
+        };
+      }
+      if (run.status === "success") {
+        return {
+          succeeded: true,
+          output: "",
+          command: hookCommandLabel(hook),
+          ...(additionalContexts.length > 0 ? { additionalContexts } : {}),
+        };
+      }
+      return {
+        succeeded: false,
+        output: redactSecrets(run.rawStderr.trim() || run.rawStdout.trim()),
+        command: hookCommandLabel(hook),
+      };
+    };
+  }
+
   private async runCommandHook(
     hook: IndividualHookConfig,
     input: Record<string, unknown>,
@@ -528,6 +661,22 @@ export class ConfiguredHooksRuntime {
     message: string,
   ): void {
     this.engine.recordHookOutputIssue(run, message);
+  }
+
+  private exitCodeTwoStderr(
+    run: HookCommandRunDiagnostic,
+    event: string,
+    missingDescription: string,
+  ): string | undefined {
+    const reason = trimmedReason(run.rawStderr);
+    if (reason === undefined) {
+      this.recordHookOutputIssue(
+        run,
+        `${event} hook exited with code 2 but did not write ${missingDescription} to stderr`,
+      );
+      return undefined;
+    }
+    return redactSecrets(reason);
   }
 
   private readStructuredOutput(
@@ -583,12 +732,9 @@ function hookCommandLabel(hook: IndividualHookConfig): string {
 }
 
 function matchesToolMatcher(toolName: string, matcher?: string): boolean {
-  return toolMatcherInputs(toolName).some((input) => matchesPattern(input, matcher));
-}
-
-function toolMatcherInputs(toolName: string): readonly string[] {
-  if (toolName === "apply_patch") return ["apply_patch", "Write", "Edit"];
-  return [toolName];
+  return hookMatcherInputsForToolName(toolName).some((input) =>
+    matchesPattern(input, matcher),
+  );
 }
 
 function permissionDecisionHookInput(
@@ -646,11 +792,27 @@ function stopInput(
     hook_event_name: event,
     session_id: request.sessionId,
     turn_id: request.turnId,
+    transcript_path: request.transcriptPath ?? null,
     cwd: request.cwd,
     model: request.model,
     permission_mode: request.permissionMode,
     stop_hook_active: request.stopHookActive,
     last_assistant_message: request.lastAssistantMessage ?? "",
+  };
+}
+
+function sessionStartInput(
+  input: SessionStartHookInput,
+  fallbackCwd: string,
+): Record<string, unknown> {
+  return {
+    hook_event_name: "SessionStart",
+    session_id: input.session_id ?? "",
+    transcript_path: input.transcript_path ?? null,
+    cwd: input.cwd ?? fallbackCwd,
+    model: input.model ?? "unknown",
+    permission_mode: input.permission_mode ?? "default",
+    source: input.source,
   };
 }
 
@@ -688,7 +850,15 @@ function defaultHookInput(
         cwd,
       };
     case "SessionStart":
-      return { hook_event_name: event, source: "startup", cwd };
+      return {
+        hook_event_name: event,
+        session_id: "",
+        transcript_path: null,
+        source: "startup",
+        cwd,
+        model: "unknown",
+        permission_mode: "default",
+      };
     case "Stop":
     case "StopFailure":
       return { hook_event_name: event, cwd, error: "unknown" };
@@ -709,6 +879,26 @@ function defaultHookInput(
 
 function firstLine(text: string): string {
   return text.split(/\r?\n/, 1)[0]?.trim() || "Hook blocked.";
+}
+
+function userPromptSubmitAdditionalContext(
+  parsed: ReturnType<typeof readHookSpecificOutput>,
+  stdout: string,
+): string | undefined {
+  if (parsed.invalid !== undefined) return undefined;
+  if (parsed.explicit) return parsed.output?.additionalContext;
+  return trimmedReason(stdout);
+}
+
+function sessionStartAdditionalContexts(
+  parsed: ReturnType<typeof readHookSpecificOutput> | undefined,
+  stdout: string,
+): readonly string[] {
+  if (parsed === undefined || parsed.invalid !== undefined) return [];
+  const context = parsed.explicit
+    ? parsed.output?.additionalContext
+    : trimmedReason(stdout);
+  return context === undefined ? [] : [redactSecrets(context)];
 }
 
 function legacyBlockReasonFor(

@@ -203,4 +203,37 @@ describe("dispatchSessionStart", () => {
       content: ["ctx-b1", "ctx-b2", "ctx-c"],
     });
   });
+
+  it("returns stopped session-start hook messages with context envelope", async () => {
+    const hook: SessionStartHook = () => ({
+      succeeded: false,
+      output: "pause session",
+      message: {
+        type: "hook_stopped_continuation",
+        hookEvent: "SessionStart",
+        hookName: "SessionStart",
+        message: "pause session",
+      },
+      additionalContexts: ["ctx-before-stop"],
+    });
+    registerSessionStartHook(hook);
+
+    const r = await dispatchSessionStart({
+      hook_event_name: "SessionStart",
+      source: "startup",
+      model: "test-model",
+    });
+
+    expect(r).toHaveLength(2);
+    expect(r[0]).toMatchObject({
+      type: "hook_stopped_continuation",
+      hookEvent: "SessionStart",
+      message: "pause session",
+    });
+    expect(r[1]).toMatchObject({
+      type: "hook_additional_context",
+      hookEvent: "SessionStart",
+      content: ["ctx-before-stop"],
+    });
+  });
 });
