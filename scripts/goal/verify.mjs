@@ -238,6 +238,19 @@ const ITEM_EVIDENCE = {
     ],
     tests: ["scripts/check-upstream-import-growth.test.mjs"],
   },
+  "PK-11": {
+    files: [
+      "scripts/check-protocol-package-schema-export.mjs",
+      "runtime/src/app-server/protocol/schema.json",
+    ],
+    grepPresent: [
+      {
+        pattern: "daemon-json-rpc\\.schema\\.json",
+        scope: "runtime/src/app-server/protocol",
+      },
+    ],
+    tests: ["runtime/src/app-server/protocol.contract.test.ts"],
+  },
   "S-01": {
     files: [
       "runtime/src/services/compact/compact.ts",
@@ -3258,6 +3271,16 @@ async function pluginGates(item) {
     const cliReferenced = grepRepo("agenc plugin", "runtime/src");
     if (!cliReferenced) failGate(`'agenc plugin' subcommand surface not found anywhere in runtime/src/`);
     pass("agenc plugin subcommand present");
+    return;
+  }
+  if (id === "PK-11") {
+    const packageExport = run("node", [
+      "scripts/check-protocol-package-schema-export.mjs",
+    ]);
+    if (packageExport.status !== 0) {
+      failGate("PK-11 protocol package schema export check failed");
+    }
+    pass("protocol package schema export resolves from a packed install");
     return;
   }
   // PK-01..PK-05, PK-07..PK-09: subsystem-shape items satisfied by the
