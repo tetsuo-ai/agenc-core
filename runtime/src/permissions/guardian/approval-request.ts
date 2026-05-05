@@ -40,6 +40,13 @@ export interface GuardianApprovalRequestBase {
   readonly turnId: string;
   readonly toolName: string;
   readonly retryReason?: string;
+  readonly availableDecisions?: ApprovalCtx["availableDecisions"];
+  readonly networkApprovalContext?: ApprovalCtx["networkApprovalContext"];
+  readonly additionalPermissions?: ApprovalCtx["additionalPermissions"];
+  readonly proposedExecPolicyAmendment?: ApprovalCtx["proposedExecPolicyAmendment"];
+  readonly proposedNetworkPolicyAmendments?: ApprovalCtx[
+    "proposedNetworkPolicyAmendments"
+  ];
   readonly cwd?: string;
   readonly approvalPolicy?: string;
   readonly sandboxPolicy?: string;
@@ -226,6 +233,21 @@ function guardianApprovalRequestBase(ctx: ApprovalCtx): GuardianApprovalRequestB
     turnId: ctx.turnId || turn.subId,
     toolName: ctx.toolName,
     ...(ctx.retryReason !== undefined ? { retryReason: ctx.retryReason } : {}),
+    ...(ctx.availableDecisions !== undefined
+      ? { availableDecisions: ctx.availableDecisions }
+      : {}),
+    ...(ctx.networkApprovalContext !== undefined
+      ? { networkApprovalContext: ctx.networkApprovalContext }
+      : {}),
+    ...(ctx.additionalPermissions !== undefined
+      ? { additionalPermissions: ctx.additionalPermissions }
+      : {}),
+    ...(ctx.proposedExecPolicyAmendment !== undefined
+      ? { proposedExecPolicyAmendment: ctx.proposedExecPolicyAmendment }
+      : {}),
+    ...(ctx.proposedNetworkPolicyAmendments !== undefined
+      ? { proposedNetworkPolicyAmendments: ctx.proposedNetworkPolicyAmendments }
+      : {}),
     ...(typeof turn.cwd === "string" ? { cwd: turn.cwd } : {}),
     ...(turn.approvalPolicy?.value !== undefined
       ? { approvalPolicy: turn.approvalPolicy.value }

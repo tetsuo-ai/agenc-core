@@ -1,0 +1,195 @@
+{
+  "contractName": "c-01e-approval-driven-sandbox-escalation",
+  "scope": "Approval-gated sandbox escalation, exec-policy driven shell escalation, network approval gating, and approval decision defaults.",
+  "sourceRoot": "/home/tetsuo/git/codex/codex-rs",
+  "_sourceRootBrandingAllow": "branding-scan: allow local source root path in parity artifact",
+  "targetRoot": "..",
+  "sourceCommit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
+  "sourceFiles": [
+    "core/src/tools/sandboxing.rs",
+    "core/src/tools/runtimes/shell/unix_escalation.rs",
+    "core/src/tools/network_approval.rs",
+    "core/src/context/prompts/permissions/approval_policy/on_request.md",
+    "core/src/context/prompts/permissions/approval_policy/on_failure.md",
+    "core/src/context/prompts/permissions/approval_policy/on_request_rule_request_permission.md",
+    "protocol/src/approvals.rs"
+  ],
+  "targetFiles": [
+    "runtime/src/sandbox/escalation/sandboxing.ts",
+    "runtime/src/sandbox/escalation/unix-escalation.ts",
+    "runtime/src/sandbox/escalation/approvals.ts",
+    "runtime/src/sandbox/escalation/network-approval.ts",
+    "runtime/src/sandbox/escalation/on-request.ts",
+    "runtime/src/sandbox/escalation/on-failure.ts",
+    "runtime/src/sandbox/escalation/on-request-rule-request-permission.ts",
+    "runtime/src/tools/orchestrator.ts",
+    "runtime/src/tools/router.ts",
+    "runtime/src/tools/runtimes/context.ts",
+    "runtime/src/tools/runtimes/sandboxing.ts",
+    "runtime/src/bin/bootstrap-services.ts",
+    "runtime/src/tools/system/exec-command.ts",
+    "runtime/src/permissions/guardian/arbiter.ts",
+    "runtime/src/permissions/guardian/approval-request.ts",
+    "runtime/src/unified-exec/types.ts",
+    "runtime/src/unified-exec/process-manager.ts",
+    "runtime/src/permissions/network-approval.ts"
+  ],
+  "testFiles": [
+    "runtime/src/sandbox/escalation/escalation.test.ts",
+    "runtime/src/tools/orchestrator.test.ts",
+    "runtime/src/tools/runtimes/runtime.test.ts",
+    "runtime/src/permissions/guardian/approval-request.test.ts",
+    "runtime/src/permissions/guardian/arbiter.test.ts",
+    "runtime/src/permissions/network-approval.test.ts"
+  ],
+  "documentedPathNormalizations": [
+    {
+      "checklistSource": "protocol/src/approvals/",
+      "actualSource": "protocol/src/approvals.rs",
+      "reason": "The current source checkout stores the approvals protocol as a single Rust file rather than a directory. C-01e read and mapped that file."
+    }
+  ],
+  "documentedOmissions": [
+    {
+      "source": "core/src/tools/runtimes/shell/unix_escalation.rs",
+      "reason": "The zsh fork/socket interception server is not copied as a new subprocess backend because AgenC already owns subprocess isolation through runtime/src/sandbox/linux-launcher/ and runtime/src/tools/orchestrator.ts. C-01e ports the approval, exec-policy, command segmentation, and escalation action decisions that feed those existing runtime owners."
+    },
+    {
+      "source": "core/src/tools/network_approval.rs",
+      "reason": "The full session-scoped network approval service was already ported to runtime/src/permissions/network-approval.ts. C-01e adds the destination-scoped sandbox escalation facade that enforces sandbox-mode and approval-policy gates before delegating to that live service."
+    }
+  ],
+  "rows": [
+    {
+      "id": "sandbox-approval-requirement-and-bypass",
+      "source": "core/src/tools/sandboxing.rs",
+      "target": "runtime/src/sandbox/escalation/sandboxing.ts",
+      "requiredBehaviors": [
+        "default sandbox approval requirements delegate to the canonical approval policy table",
+        "first attempts bypass the sandbox only when sandbox permissions require escalation or the resolved requirement carries an explicit bypass bit",
+        "managed network settings are cleared when full escalation is requested",
+        "sandbox-denied retry prompts are allowed only for on-failure, untrusted, or granular policies with sandbox approval enabled"
+      ],
+      "edgeCases": [
+        "additional sandbox permissions are stripped after they have already been preapproved",
+        "tools can opt out of sandbox-denial escalation with an explicit structural capability",
+        "with_additional_permissions without requested network/read/write grants falls back to the default sandbox"
+      ],
+      "tests": [
+        "runtime/src/sandbox/escalation/escalation.test.ts",
+        "runtime/src/tools/orchestrator.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "intercepted-exec-policy-actions",
+      "source": "core/src/tools/runtimes/shell/unix_escalation.rs",
+      "target": "runtime/src/sandbox/escalation/unix-escalation.ts",
+      "requiredBehaviors": [
+        "intercepted commands are normalized by joining the resolved program with argv",
+        "word-only shell wrapper scripts can be segmented into independent commands for policy evaluation",
+        "exec-policy prefix allow rules drive unsandboxed execution",
+        "granular policies reject rule or sandbox prompts when the corresponding approval class is disabled"
+      ],
+      "edgeCases": [
+        "opaque shell syntax falls back to evaluating the original program argv",
+        "host executable resolution is enabled for policy checks",
+        "forbidden policy decisions deny without asking for approval"
+      ],
+      "tests": [
+        "runtime/src/sandbox/escalation/escalation.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "approval-event-decision-defaults",
+      "source": "protocol/src/approvals.rs",
+      "target": "runtime/src/sandbox/escalation/approvals.ts",
+      "requiredBehaviors": [
+        "approval ids fall back to call ids when no explicit approval id is present",
+        "network approval contexts expose one-shot, session, and abort decisions, plus a network-policy amendment only when an explicit allow amendment was proposed",
+        "additional sandbox permissions expose only approve or abort decisions",
+        "exec-policy amendment proposals expose the persisted-rule approval decision"
+      ],
+      "edgeCases": [
+        "explicit available decision lists override defaults",
+        "network policy deny amendments are not exposed as execution approval decisions",
+        "network-policy deny decisions are not treated as execution approval"
+      ],
+      "tests": [
+        "runtime/src/sandbox/escalation/escalation.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "network-approval-sandbox-gate",
+      "source": "core/src/tools/network_approval.rs",
+      "target": "runtime/src/sandbox/escalation/network-approval.ts",
+      "requiredBehaviors": [
+        "danger-full-access and external sandbox modes deny managed network approval requests before invoking a resolver",
+        "approval policy never denies network approval requests before invoking a resolver",
+        "allowed sandbox modes delegate to the live network approval service and preserve session approval behavior"
+      ],
+      "edgeCases": [
+        "host names are normalized before approval cache key generation",
+        "resolver approval-for-session is exposed to the caller as an allow decision",
+        "denied sandbox gates map to explicit deny reasons"
+      ],
+      "tests": [
+        "runtime/src/sandbox/escalation/escalation.test.ts",
+        "runtime/src/permissions/network-approval.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "production-orchestration-wiring",
+      "source": "core/src/tools/sandboxing.rs",
+      "target": "runtime/src/tools/orchestrator.ts",
+      "requiredBehaviors": [
+        "live tool orchestration parses sandbox_permissions from approval arguments and applies first-attempt sandbox selection",
+        "non-default sandbox permission requests are denied or approval-gated before any sandbox bypass or scoped grant is applied",
+        "live local-shell calls evaluate the current exec policy before dispatch",
+        "the tool router passes the current session exec policy into orchestration",
+        "approved scoped additional permissions flow into runtime attempt context and effective permission profiles",
+        "live approval contexts carry available decision sets and scoped permission metadata to resolvers and guardian requests",
+        "bootstrap network approvals route through the sandbox-mode approval gate before the backing network approval service",
+        "the exec command schema advertises require_escalated and with_additional_permissions request modes"
+      ],
+      "edgeCases": [
+        "denied full-escalation approvals do not dispatch the tool",
+        "skip-classified tools cannot use sandbox permission requests as a free opt-out",
+        "approved read/write/network grants are applied without widening unrelated paths",
+        "exec-policy prefix allow rules run the local shell without an extra approval resolver",
+        "granular policies with rule approvals disabled deny prefix prompt rules before dispatch"
+      ],
+      "tests": [
+        "runtime/src/tools/orchestrator.test.ts",
+        "runtime/src/tools/runtimes/runtime.test.ts",
+        "runtime/src/permissions/guardian/approval-request.test.ts",
+        "runtime/src/permissions/guardian/arbiter.test.ts",
+        "runtime/src/sandbox/escalation/escalation.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "approval-policy-prompt-guidance",
+      "source": "core/src/context/prompts/permissions/approval_policy",
+      "target": "runtime/src/sandbox/escalation/on-request.ts",
+      "requiredBehaviors": [
+        "on-request guidance tells callers how to request full sandbox escalation with justification",
+        "on-failure guidance describes first sandboxed attempt followed by approval-gated unsandboxed retry",
+        "rule-request guidance prefers scoped additional sandbox permissions before full escalation"
+      ],
+      "edgeCases": [
+        "destructive commands do not receive reusable prefix-rule suggestions",
+        "heredoc/herestring commands do not receive reusable prefix-rule suggestions",
+        "additional permission names are constrained to network.enabled, file_system.read, and file_system.write"
+      ],
+      "tests": [
+        "runtime/src/sandbox/escalation/escalation.test.ts"
+      ],
+      "status": "required"
+    }
+  ],
+  "generatedAt": "2026-05-05T00:00:00.000Z"
+}
