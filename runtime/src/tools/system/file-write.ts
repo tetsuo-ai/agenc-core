@@ -9,7 +9,7 @@
  *
  * Behavior preserved from upstream:
  *   - Creates a new file or overwrites an existing one.
- *   - Read-before-overwrite: existing files require a prior
+ *   - Read-before-overwrite: existing files require a prior full
  *     `FileRead` (or equivalent session read) in the same
  *     session before the write is accepted. This is the same
  *     structural defense `Edit` and `Write` use against
@@ -306,23 +306,28 @@ export function createFileWriteTool(
           typeof snapshot?.rawContent === "string"
             ? snapshot.rawContent
             : snapshot?.content;
-        if (snapshotContent != null && snapshot?.viewKind === "full") {
-          let onDisk: string;
-          try {
-            const buffer = await readFile(absolutePath);
-            onDisk = normalizeNewlines(buffer.toString("utf-8"));
-            existingContentForUi = onDisk;
-          } catch (err) {
-            const code = (err as NodeJS.ErrnoException)?.code;
-            return errorResult(
-              code
-                ? `${code}: failed to re-read ${filePath} before overwrite`
+        if (
+          snapshot?.viewKind !== "full" ||
+          typeof snapshotContent !== "string"
+        ) {
+          return errorResult(READ_REQUIRED_MESSAGE);
+        }
+
+        let onDisk: string;
+        try {
+          const buffer = await readFile(absolutePath);
+          onDisk = normalizeNewlines(buffer.toString("utf-8"));
+          existingContentForUi = onDisk;
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException)?.code;
+          return errorResult(
+            code
+              ? `${code}: failed to re-read ${filePath} before overwrite`
               : `failed to re-read ${filePath} before overwrite`,
-            );
-          }
-          if (onDisk !== normalizeNewlines(snapshotContent)) {
-            return errorResult(FILE_UNEXPECTEDLY_MODIFIED_MESSAGE);
-          }
+          );
+        }
+        if (onDisk !== normalizeNewlines(snapshotContent)) {
+          return errorResult(FILE_UNEXPECTEDLY_MODIFIED_MESSAGE);
         }
       } else if (existed && existingStat !== null) {
         try {

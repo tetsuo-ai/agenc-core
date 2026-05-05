@@ -1,7 +1,7 @@
 {
   "contractName": "file-write-tool-parity",
   "scope": "AgenC first-class Write tool port, read-before-overwrite guard, permission flow, and registry surface.",
-  "sourceRoot": "donor-ui-snapshot",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
   "targetRoot": "..",
   "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
   "sourceFiles": [
@@ -53,6 +53,7 @@
       "target": "runtime/src/tools/system/file-write.ts",
       "requiredBehaviors": [
         "existing files require a prior session read before Write may overwrite them",
+        "the prior session read must be a full-file snapshot, not an offset/limit partial view",
         "unread existing files return the source-compatible read-first error message",
         "a file changed since the recorded read returns the source-compatible modified-since-read message",
         "full read snapshots compare raw disk content when rendered read content differs",
@@ -61,6 +62,7 @@
       "edgeCases": [
         "direct headless tool invocations without a session id keep the established test harness bypass",
         "live dispatch injects conversationId as __agencSessionId so session-scoped guards are active outside direct tests",
+        "a live offset FileRead followed by Write is rejected without mutating the file",
         "external drift leaves the on-disk file unchanged after rejection"
       ],
       "tests": [
