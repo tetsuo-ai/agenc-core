@@ -1,18 +1,20 @@
 import { describe, expect, test } from "vitest";
 import {
   BASH_TOOL_NAME,
-  MAX_SUBCOMMANDS_FOR_SECURITY_CHECK,
-  SAFE_ENV_VARS,
   bashToolHasPermission,
-  getFirstWordPrefix,
-  getSimpleCommandPrefix,
   isDangerousCommand,
   matchedDangerousLabel,
-  parseShellCommand,
   shouldUseSandbox,
-  splitCommand,
 } from "./bash.js";
 import type { ToolEvaluatorContext } from "./bash.js";
+import {
+  MAX_SUBCOMMANDS_FOR_SECURITY_CHECK,
+  SAFE_ENV_VARS,
+  getFirstWordPrefix,
+  getSimpleCommandPrefix,
+  parseShellCommand,
+  splitCommand,
+} from "./command-parser.js";
 import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,
@@ -325,6 +327,34 @@ describe("bashToolHasPermission", () => {
     expect(result.behavior).toBe("allow");
   });
 
+  test("allow rule by prefix sees a shell-wrapped word-only command", async () => {
+    const ctx = makeCtx({
+      alwaysAllowRules: {
+        userSettings: ["Bash(rg:*)"],
+      },
+    });
+    const evalCtx = makeEvaluatorCtx(ctx);
+    const result = await bashToolHasPermission(
+      { command: "bash -lc 'rg TODO src'" },
+      evalCtx,
+    );
+    expect(result.behavior).toBe("allow");
+  });
+
+  test("deny rule by prefix sees a shell-wrapped word-only command", async () => {
+    const ctx = makeCtx({
+      alwaysDenyRules: {
+        userSettings: ["Bash(rm:*)"],
+      },
+    });
+    const evalCtx = makeEvaluatorCtx(ctx);
+    const result = await bashToolHasPermission(
+      { command: "bash -lc 'rm scratch.txt'" },
+      evalCtx,
+    );
+    expect(result.behavior).toBe("deny");
+  });
+
   test("allow rule with wildcard glob matches variable command suffixes", async () => {
     const ctx = makeCtx({
       alwaysAllowRules: {
@@ -587,6 +617,15 @@ describe("bashToolHasPermission", () => {
         expect(result.decisionReason.reason).toBe("bash_parse_unavailable");
       }
     }
+  });
+
+  test("shell metacharacter command remains conservative after parser move", async () => {
+    const evalCtx = makeEvaluatorCtx(makeCtx());
+    const result = await bashToolHasPermission(
+      { command: "echo hi > /tmp/x" },
+      evalCtx,
+    );
+    expect(result.behavior).toBe("ask");
   });
 
   test.each([
