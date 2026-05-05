@@ -1,5 +1,12 @@
-import { describe, expect, test } from "vitest";
-import { CostSidecar } from "../session/cost.js";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, test, vi } from "vitest";
+import {
+  COST_TOTALS_FILENAME,
+  CostSidecar,
+  type CostTotalsFile,
+} from "../session/cost.js";
 import {
   addToTotalDurationState,
   addToTotalSessionCost,
@@ -27,6 +34,34 @@ import {
   recordUsageCacheStats,
   resetSessionCacheStats,
 } from "../agenc/upstream/services/api/cacheStatsTracker.js";
+
+vi.mock("src/utils/modelCost.js", () => ({
+  calculateUSDCost: () => 0.1234,
+}));
+vi.mock("../agenc/upstream/utils/modelCost.js", () => ({
+  calculateUSDCost: () => 0.1234,
+}));
+vi.mock("../agenc/upstream/utils/cwd.js", () => ({
+  getCwd: () => process.cwd(),
+}));
+vi.mock("../agenc/upstream/utils/env.js", () => ({
+  env: { isCI: false },
+}));
+vi.mock("../agenc/upstream/utils/envUtils.js", () => ({
+  getAgenCConfigHomeDir: () => process.cwd(),
+  isEnvTruthy: (value: string | boolean | undefined) =>
+    value === true || value === "1" || value === "true",
+}));
+vi.mock("../agenc/upstream/utils/errors.js", () => ({
+  getErrnoCode: (error: { code?: string }) => error.code,
+}));
+vi.mock("../agenc/upstream/utils/messages.js", () => ({
+  normalizeMessagesForAPI: (messages: unknown) => messages,
+}));
+vi.mock("../agenc/upstream/utils/slowOperations.js", () => ({
+  jsonParse: JSON.parse,
+  jsonStringify: JSON.stringify,
+}));
 
 describe("cost tracker facade", () => {
   test("returns zero defaults without an active sidecar", () => {
@@ -97,7 +132,7 @@ describe("cost tracker facade", () => {
     dispose();
   });
 
-  test("token-dollar producer records explicit API cost and cache usage", () => {
+  test("token-dollar facade records explicit API cost", () => {
     resetStateForTests();
     resetSessionCacheStats();
     const sidecar = new CostSidecar({
@@ -113,11 +148,47 @@ describe("cost tracker facade", () => {
       server_tool_use: { web_search_requests: 2 },
     };
 
-    recordUsageCacheStats(usage, "gpt-4o");
     const returned = addToTotalSessionCost(0.1234, usage, "gpt-4o");
 
     expect(returned).toBeCloseTo(0.1234, 6);
     expect(getTotalCost()).toBeCloseTo(0.1234, 6);
+    expect(getTotalInputTokens()).toBe(1000);
+    expect(getModelUsage()["openai:gpt-4o"]).toMatchObject({
+      inputTokens: 1000,
+      outputTokens: 250,
+      cacheReadInputTokens: 400,
+      cacheCreationInputTokens: 25,
+      webSearchRequests: 2,
+      costUSD: 0.1234,
+    });
+    dispose();
+  });
+
+  test("cached VCR producer records cost and cache usage together", async () => {
+    resetStateForTests();
+    resetSessionCacheStats();
+    const { addCachedCostToTotalSessionCost } = await import(
+      "../agenc/upstream/services/vcr.js"
+    );
+    const sidecar = new CostSidecar({
+      defaultProvider: "openai",
+      defaultModel: "gpt-4o",
+    });
+    const dispose = bindActiveCostSidecar(sidecar);
+    const usage = {
+      input_tokens: 1000,
+      output_tokens: 250,
+      cache_read_input_tokens: 400,
+      cache_creation_input_tokens: 25,
+      server_tool_use: { web_search_requests: 2 },
+    };
+
+    addCachedCostToTotalSessionCost({
+      type: "assistant",
+      message: { model: "gpt-4o", usage },
+    } as Parameters<typeof addCachedCostToTotalSessionCost>[0]);
+
+    expect(getTotalCost()).toBeGreaterThan(0);
     expect(getTotalInputTokens()).toBe(1000);
     expect(getCurrentTurnCacheMetrics()).toMatchObject({
       read: 400,
@@ -132,7 +203,6 @@ describe("cost tracker facade", () => {
       cacheReadInputTokens: 400,
       cacheCreationInputTokens: 25,
       webSearchRequests: 2,
-      costUSD: 0.1234,
     });
     dispose();
   });
@@ -234,6 +304,55 @@ describe("cost tracker facade", () => {
     expect(handlers).toHaveLength(1);
     handlers[0]!();
     expect(writes).toEqual([]);
+
+    disposeFallback();
+    disposeBinding();
+  });
+
+  test("fallback hook registered before bootstrap still supplies FPS metrics", async () => {
+    resetStateForTests();
+    const handlers: Array<() => void> = [];
+    const processLike = {
+      stdout: { write: () => undefined },
+      on: (event: "exit", handler: () => void) => {
+        handlers.push(handler);
+        return processLike;
+      },
+      off: (event: "exit", handler: () => void) => {
+        const index = handlers.indexOf(handler);
+        if (index >= 0) handlers.splice(index, 1);
+        return processLike;
+      },
+    };
+    const projectDir = mkdtempSync(join(tmpdir(), "agenc-cost-hook-"));
+    const disposeFallback = registerCostSummaryFallbackOnExit(
+      () => ({ averageFps: 58, low1PctFps: 41 }),
+      { processLike, shouldPrint: () => true },
+    );
+    const sidecar = new CostSidecar({
+      projectDir,
+      sessionId: "fps-session",
+      defaultProvider: "openai",
+      defaultModel: "gpt-4o",
+    });
+    await sidecar.loadFromDisk();
+    const disposeBinding = bindActiveCostSidecar(sidecar);
+
+    addToTotalSessionCost(
+      0.01,
+      { input_tokens: 10, output_tokens: 5 },
+      "gpt-4o",
+    );
+    await sidecar.saveCurrentSessionCosts();
+
+    const parsed = JSON.parse(
+      readFileSync(join(projectDir, COST_TOTALS_FILENAME), "utf8"),
+    ) as CostTotalsFile;
+    expect(parsed.sessions[0]).toMatchObject({
+      sessionId: "fps-session",
+      fpsAverage: 58,
+      fpsLow1Pct: 41,
+    });
 
     disposeFallback();
     disposeBinding();

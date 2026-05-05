@@ -72,7 +72,7 @@ import { buildEffectiveSystemPrompt } from '../utils/systemPrompt.js';
 import { getSystemContext, getUserContext } from '../context.js';
 import { getMemoryFiles } from '../utils/claudemd.js'; // branding-scan: allow upstream mirror import path
 import { startBackgroundHousekeeping } from '../utils/backgroundHousekeeping.js';
-import { getTotalCost, saveCurrentSessionCosts, resetCostState, restoreCostStateForSession, bindCacheStatsResetHook } from '../../../cost/tracker.js';
+import { getTotalCost, saveCurrentSessionCosts, resetCostState, restoreCostStateForSession, bindCacheStatsResetHook, setActiveCostSessionId } from '../../../cost/tracker.js';
 import { useCostSummary } from '../../../cost/hook.js';
 import { useFpsMetrics } from '../context/fpsMetrics.js';
 import { useAfterFirstRender } from '../hooks/useAfterFirstRender.js';
@@ -1933,7 +1933,7 @@ export function REPL({
         saveMode(isCoordinatorMode() ? 'coordinator' : 'normal');
       }
 
-      // Restore target session's costs from the loaded per-session ledger
+      setActiveCostSessionId(sessionId);
       restoreCostStateForSession(sessionId);
 
       // Reconstruct replacement state for the resumed session. Runs after

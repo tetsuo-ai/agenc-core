@@ -11,6 +11,7 @@ import {
   formatDuration,
   formatTokenCount,
   formatUsdCost,
+  type CostFpsMetrics,
   type ModelUsage,
   type SessionCostRecord,
 } from "../session/cost.js";
@@ -48,11 +49,19 @@ let activeCostSidecar: CostSidecar | null = null;
 let detachedLinesAdded = 0;
 let detachedLinesRemoved = 0;
 let cacheStatsResetHook: (() => void) | null = null;
+let fpsMetricsProvider: (() => CostFpsMetrics | undefined) | null = null;
+let disposeActiveFpsMetricsProvider: (() => void) | null = null;
 
 export function bindActiveCostSidecar(
   sidecar: CostSidecar | null,
 ): () => void {
+  disposeActiveFpsMetricsProvider?.();
+  disposeActiveFpsMetricsProvider = null;
   activeCostSidecar = sidecar;
+  if (sidecar !== null && fpsMetricsProvider !== null) {
+    disposeActiveFpsMetricsProvider =
+      sidecar.setFpsMetricsProvider(fpsMetricsProvider);
+  }
   if (sidecar !== null && (detachedLinesAdded > 0 || detachedLinesRemoved > 0)) {
     sidecar.addToTotalLinesChanged(detachedLinesAdded, detachedLinesRemoved);
     detachedLinesAdded = 0;
@@ -60,6 +69,8 @@ export function bindActiveCostSidecar(
   }
   return () => {
     if (activeCostSidecar === sidecar) {
+      disposeActiveFpsMetricsProvider?.();
+      disposeActiveFpsMetricsProvider = null;
       activeCostSidecar = null;
     }
   };
@@ -76,6 +87,29 @@ export function bindCacheStatsResetHook(hook: (() => void) | null): () => void {
       cacheStatsResetHook = null;
     }
   };
+}
+
+export function bindCostFpsMetricsProvider(
+  provider: (() => CostFpsMetrics | undefined) | null,
+): () => void {
+  disposeActiveFpsMetricsProvider?.();
+  disposeActiveFpsMetricsProvider = null;
+  fpsMetricsProvider = provider;
+  if (activeCostSidecar !== null && provider !== null) {
+    disposeActiveFpsMetricsProvider =
+      activeCostSidecar.setFpsMetricsProvider(provider);
+  }
+  return () => {
+    if (fpsMetricsProvider === provider) {
+      disposeActiveFpsMetricsProvider?.();
+      disposeActiveFpsMetricsProvider = null;
+      fpsMetricsProvider = null;
+    }
+  };
+}
+
+export function setActiveCostSessionId(sessionId: string): void {
+  activeCostSidecar?.setCurrentSessionId(sessionId);
 }
 
 export function getTotalCost(): number {
@@ -235,8 +269,11 @@ export function resetCostState(): void {
 
 export function resetStateForTests(): void {
   resetCostState();
+  disposeActiveFpsMetricsProvider?.();
   activeCostSidecar = null;
   cacheStatsResetHook = null;
+  fpsMetricsProvider = null;
+  disposeActiveFpsMetricsProvider = null;
 }
 
 export function restoreCostStateForSession(sessionId: string): boolean {

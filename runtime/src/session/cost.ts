@@ -59,6 +59,11 @@ export interface CostSummaryExitHookOptions {
   readonly getSummary?: () => string;
 }
 
+export interface CostFpsMetrics {
+  readonly averageFps?: number;
+  readonly low1PctFps?: number;
+}
+
 export const DEFAULT_UNKNOWN_MODEL_COST: Readonly<ModelCostEntry> =
   Object.freeze({
     inputUsdPer1K: 0.005,
@@ -888,6 +893,7 @@ export class CostSidecar implements Sidecar {
   private apiDurationObservedThisTurn = false;
   private fpsAverage: number | undefined;
   private fpsLow1Pct: number | undefined;
+  private fpsMetricsProvider: (() => CostFpsMetrics | undefined) | null = null;
   /** True once loadFromDisk has run (success or absent-file). */
   private loaded = false;
   private saveDegraded = false;
@@ -1205,12 +1211,20 @@ export class CostSidecar implements Sidecar {
     return this.restoredLinesRemoved + this.currentLinesRemoved;
   }
 
-  setFpsMetrics(metrics: {
-    readonly averageFps?: number;
-    readonly low1PctFps?: number;
-  } | undefined): void {
+  setFpsMetrics(metrics: CostFpsMetrics | undefined): void {
     this.fpsAverage = metrics?.averageFps;
     this.fpsLow1Pct = metrics?.low1PctFps;
+  }
+
+  setFpsMetricsProvider(
+    provider: (() => CostFpsMetrics | undefined) | null,
+  ): () => void {
+    this.fpsMetricsProvider = provider;
+    return () => {
+      if (this.fpsMetricsProvider === provider) {
+        this.fpsMetricsProvider = null;
+      }
+    };
   }
 
   /** One-line session cost summary for `/status`. */
@@ -1316,6 +1330,11 @@ export class CostSidecar implements Sidecar {
   }): void {
     this.projectDir = opts.projectDir;
     this.sessionId = opts.sessionId;
+  }
+
+  setCurrentSessionId(sessionId: string): void {
+    this.sessionId = sessionId;
+    this.sessionStartedAtWallMs = Date.now();
   }
 
   private get totalsPath(): string | null {
@@ -1571,6 +1590,7 @@ export class CostSidecar implements Sidecar {
 
   async saveCurrentSessionCosts(): Promise<void> {
     if (!this.projectDir || !this.sessionId) return;
+    this.setFpsMetrics(this.fpsMetricsProvider?.());
     if (!this.loaded) await this.loadFromDisk();
     const record = this.buildSessionRecord();
     if (!record) return;

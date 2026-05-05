@@ -700,6 +700,76 @@ describe("CostSidecar.restoreSessionCostsForSession", () => {
     });
     expect(dirty.restoreSessionCostsForSession("one")).toBe(false);
   });
+
+  test("missing restored session still becomes the active save target", async () => {
+    const projectDir = makeProjectDir();
+    writeFileSync(
+      join(projectDir, COST_TOTALS_FILENAME),
+      JSON.stringify({
+        version: COST_TOTALS_SCHEMA_VERSION,
+        totalUsage: {
+          inputTokens: 20,
+          outputTokens: 10,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          reasoningOutputTokens: 0,
+          webSearchRequests: 0,
+          totalTokens: 30,
+        },
+        totalCostUsd: 0.02,
+        sessions: [
+          {
+            sessionId: "old-session",
+            startedAtMs: 0,
+            endedAtMs: 1,
+            usage: {
+              inputTokens: 20,
+              outputTokens: 10,
+              cacheReadTokens: 0,
+              cacheCreationTokens: 0,
+              reasoningOutputTokens: 0,
+              webSearchRequests: 0,
+              totalTokens: 30,
+            },
+            costUsd: 0.02,
+          },
+        ],
+        updatedAtMs: 2,
+      } satisfies CostTotalsFile),
+    );
+    const sidecar = new CostSidecar({
+      projectDir,
+      sessionId: "old-session",
+      defaultProvider: "openai",
+      defaultModel: "gpt-4o",
+    });
+    await sidecar.loadFromDisk();
+
+    sidecar.setCurrentSessionId("new-session");
+    expect(sidecar.restoreSessionCostsForSession("new-session")).toBe(false);
+    sidecar.addTokenUsage({
+      provider: "openai",
+      model: "gpt-4o",
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+      costUsd: 0.01,
+    });
+    await sidecar.saveCurrentSessionCosts();
+
+    const parsed = JSON.parse(
+      readFileSync(join(projectDir, COST_TOTALS_FILENAME), "utf8"),
+    ) as CostTotalsFile;
+    expect(parsed.sessions.map((record) => record.sessionId).sort()).toEqual([
+      "new-session",
+      "old-session",
+    ]);
+    expect(
+      parsed.sessions.find((record) => record.sessionId === "new-session")
+        ?.usage.inputTokens,
+    ).toBe(10);
+    expect(parsed.totalUsage.inputTokens).toBe(30);
+  });
 });
 
 describe("CostSidecar.stop (lifecycle)", () => {
@@ -744,6 +814,37 @@ describe("CostSidecar.stop (lifecycle)", () => {
     expect(parsed.sessions[0]!.usage.inputTokens).toBe(100);
     expect(parsed.sessions[0]!.usage.outputTokens).toBe(50);
     expect(parsed.totalUsage.inputTokens).toBe(100);
+  });
+
+  test("stop snapshots FPS metrics from the registered provider", async () => {
+    const projectDir = makeProjectDir();
+    const sidecar = new CostSidecar({
+      projectDir,
+      sessionId: "sess-fps",
+      defaultProvider: "openai",
+      defaultModel: "gpt-4o",
+    });
+    await sidecar.loadFromDisk();
+    sidecar.setFpsMetricsProvider(() => ({ averageFps: 60, low1PctFps: 44 }));
+    sidecar.addTokenUsage({
+      provider: "openai",
+      model: "gpt-4o",
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+      costUsd: 0.01,
+    });
+
+    await sidecar.stop();
+
+    const parsed = JSON.parse(
+      readFileSync(join(projectDir, COST_TOTALS_FILENAME), "utf8"),
+    ) as CostTotalsFile;
+    expect(parsed.sessions[0]).toMatchObject({
+      sessionId: "sess-fps",
+      fpsAverage: 60,
+      fpsLow1Pct: 44,
+    });
   });
 
   test("persists per-session provider and model buckets", async () => {

@@ -81,12 +81,14 @@
       "target": "runtime/src/session/cost.ts + runtime/src/cost/tracker.ts + runtime/src/tui/history/ResumeConversation.tsx",
       "requiredBehaviors": [
         "restore a matching persisted session into the current sidecar",
+        "update the active sidecar's session id before restore so missing historical records still save under the resumed id",
         "remove the restored record from loaded lifetime totals before treating it as current-session baseline",
         "replace the restored session record on shutdown instead of appending a duplicate",
         "preserve duration, API duration, line counters, aggregate legacy totals, and per-provider model buckets"
       ],
       "edgeCases": [
         "legacy records without modelUsage",
+        "resume target has no stored cost record yet",
         "repeated restore of the same session id",
         "restore attempted after current in-memory usage already exists",
         "malformed nested modelUsage rows from a previous cost-totals file"
@@ -105,12 +107,14 @@
         "bootstrap binds the active CostSidecar for status-line cost getters",
         "shutdown clears the active binding so future getters do not read stale sessions",
         "the hook fallback does not add a duplicate exit listener while bootstrap owns the active CostSidecar summary",
+        "the hook FPS metrics provider is bound into CostSidecar so shutdown persistence captures frame metrics",
         "status-line cost input reads AgenC-owned cost/tracker.ts instead of the upstream mirror"
       ],
       "edgeCases": [
         "bootstrap-managed sidecar",
         "fallback hook with no active sidecar",
         "fallback hook registered before bootstrap binds a sidecar",
+        "shutdown save runs after the hook supplies FPS metrics",
         "live tree import scan for retired cost-tracker mirror imports",
         "retired upstream cost mirror files deleted"
       ],

@@ -160,7 +160,7 @@ export async function withVCR(
   return results
 }
 
-function addCachedCostToTotalSessionCost(
+export function addCachedCostToTotalSessionCost(
   message: AssistantMessage | StreamEvent,
 ): void {
   if (message.type === 'stream_event') {

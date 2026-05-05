@@ -7,6 +7,7 @@
 
 import { useEffect } from "react";
 import {
+  bindCostFpsMetricsProvider,
   formatTotalCost,
   getActiveCostSidecar,
 } from "./tracker.js";
@@ -28,11 +29,14 @@ export interface CostSummaryFallbackOptions {
 }
 
 export function registerCostSummaryFallbackOnExit(
-  _getFpsMetrics?: () => CostFpsMetrics | undefined,
+  getFpsMetrics?: () => CostFpsMetrics | undefined,
   options: CostSummaryFallbackOptions = {},
 ): () => void {
+  const disposeFpsMetricsProvider = bindCostFpsMetricsProvider(
+    getFpsMetrics ?? null,
+  );
   if (getActiveCostSidecar() !== null) {
-    return () => {};
+    return disposeFpsMetricsProvider;
   }
 
   const processLike = options.processLike ?? process;
@@ -45,6 +49,7 @@ export function registerCostSummaryFallbackOnExit(
   };
   processLike.on("exit", onExit);
   return () => {
+    disposeFpsMetricsProvider();
     processLike.off("exit", onExit);
   };
 }
