@@ -150,6 +150,7 @@ export class PolicyParser {
   }
 
   private applyPrefixRule(statement: CallStatement): void {
+    assertAllowedArgs(statement, ["pattern", "decision", "justification", "match", "not_match"]);
     const decision = optionalStringArg(statement, "decision", null);
     const parsedDecision = decision === null ? "allow" : parseDecision(decision);
     const justification = optionalJustification(statement);
@@ -184,6 +185,7 @@ export class PolicyParser {
   }
 
   private applyNetworkRule(statement: CallStatement): void {
+    assertAllowedArgs(statement, ["host", "protocol", "decision", "justification"]);
     const host = normalizeNetworkRuleHost(requiredStringArg(statement, "host"));
     const protocol = parseNetworkRuleProtocol(requiredStringArg(statement, "protocol"));
     const rawDecision = requiredStringArg(statement, "decision");
@@ -198,6 +200,7 @@ export class PolicyParser {
   }
 
   private applyHostExecutable(statement: CallStatement): void {
+    assertAllowedArgs(statement, ["name", "paths"]);
     const name = requiredStringArg(statement, "name");
     assertBareExecutableName(name);
     const paths = requiredListArg(statement, "paths").map((value) => {
@@ -212,6 +215,15 @@ export class PolicyParser {
       return raw;
     });
     this.builder.addHostExecutable(executableLookupKey(name), dedupe(paths));
+  }
+}
+
+function assertAllowedArgs(statement: CallStatement, allowed: readonly string[]): void {
+  const allowedSet = new Set(allowed);
+  for (const key of statement.args.keys()) {
+    if (!allowedSet.has(key)) {
+      throw invalidRule(`${statement.name} got unexpected argument ${key}`);
+    }
   }
 }
 
@@ -473,8 +485,14 @@ class DeclarativePolicyParser {
     while (!this.eof()) {
       const char = this.advance();
       if (char === quote) return out;
+      if (char === "\n" || char === "\r") {
+        throw this.error("raw newline in string literal");
+      }
       if (char === "\\") {
         const escaped = this.advance();
+        if (escaped === "\n" || escaped === "\r") {
+          throw this.error("raw newline in string literal");
+        }
         switch (escaped) {
           case "n":
             out += "\n";

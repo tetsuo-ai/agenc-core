@@ -585,6 +585,39 @@ host_executable(name = "git", paths = [])
     );
   });
 
+  test("parser rejects unknown keyword arguments for every builtin", () => {
+    const gitPath = hostAbsolutePath(["usr", "bin", hostExecutableName("git")]);
+    const escapedGitPath = escapedPolicyString(gitPath);
+
+    expect(() =>
+      parsePolicy(
+        "bad.agencpolicy",
+        'prefix_rule(pattern = ["rm"], decisoin = "forbidden")',
+      ),
+    ).toThrow(/unexpected argument decisoin/u);
+    expect(() =>
+      parsePolicy(
+        "bad.agencpolicy",
+        'network_rule(host = "localhost", protocol = "http", decision = "allow", extra = "x")',
+      ),
+    ).toThrow(/unexpected argument extra/u);
+    expect(() =>
+      parsePolicy(
+        "bad.agencpolicy",
+        `host_executable(name = "git", paths = ["${escapedGitPath}"], extra = "x")`,
+      ),
+    ).toThrow(/unexpected argument extra/u);
+  });
+
+  test("parser rejects raw newlines in quoted strings", () => {
+    expect(() =>
+      parsePolicy(
+        "bad.agencpolicy",
+        ['prefix_rule(pattern = ["git', 'status"])'].join("\n"),
+      ),
+    ).toThrow(/raw newline in string literal/u);
+  });
+
   test("parse errors carry source locations", () => {
     try {
       parsePolicy("bad.agencpolicy", 'prefix_rule(pattern = ["ls"]');
