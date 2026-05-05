@@ -22,19 +22,26 @@ const SKIP_DIRS = new Set([
   "coverage",
   "node_modules",
 ]);
+const NPM_VIEW_TIMEOUT_MS = 15_000;
 
 export function isExactVersion(spec) {
-  return typeof spec === "string" && /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(spec);
+  if (typeof spec !== "string") return false;
+  try {
+    parseVersion(spec);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function compareVersions(left, right) {
   const a = parseVersion(left);
   const b = parseVersion(right);
   for (let i = 0; i < 3; i += 1) {
-    if (a[i] < b[i]) return -1;
-    if (a[i] > b[i]) return 1;
+    if (a.core[i] < b.core[i]) return -1;
+    if (a.core[i] > b.core[i]) return 1;
   }
-  return 0;
+  return comparePrerelease(a.prerelease, b.prerelease);
 }
 
 export function findPackageJsonFiles(root) {
@@ -73,13 +80,21 @@ export function collectPinnedTetsuoDependencies(root) {
 
 export function buildPinStalenessReport(options = {}) {
   const root = path.resolve(options.root ?? resolveUmbrellaRoot(process.cwd()));
-  const latestVersions = options.latestVersions ?? new Map();
+  const seededLatestVersions = options.latestVersions ?? new Map();
+  const latestVersions =
+    seededLatestVersions instanceof Map
+      ? new Map(seededLatestVersions)
+      : new Map(Object.entries(seededLatestVersions));
+  const lookupLatest = options.lookupLatest ?? getLatestPublishedVersion;
   const pins = collectPinnedTetsuoDependencies(root);
   const stalePins = [];
 
   for (const pin of pins) {
-    const latest =
-      latestVersions.get(pin.name) ?? getLatestPublishedVersion(pin.name);
+    let latest = latestVersions.get(pin.name);
+    if (!latest) {
+      latest = lookupLatest(pin.name);
+      latestVersions.set(pin.name, latest);
+    }
     if (compareVersions(pin.spec, latest) < 0) {
       stalePins.push({
         ...pin,
@@ -99,9 +114,45 @@ export function buildPinStalenessReport(options = {}) {
 }
 
 function parseVersion(version) {
-  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
+  const match =
+    /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(
+      version,
+    );
   if (!match) throw new Error(`not a semver version: ${version}`);
-  return [Number(match[1]), Number(match[2]), Number(match[3])];
+  return {
+    core: [Number(match[1]), Number(match[2]), Number(match[3])],
+    prerelease: match[4] ? match[4].split(".") : [],
+  };
+}
+
+function comparePrerelease(left, right) {
+  if (left.length === 0 && right.length === 0) return 0;
+  if (left.length === 0) return 1;
+  if (right.length === 0) return -1;
+
+  const max = Math.max(left.length, right.length);
+  for (let i = 0; i < max; i += 1) {
+    const a = left[i];
+    const b = right[i];
+    if (a === undefined) return -1;
+    if (b === undefined) return 1;
+    if (a === b) continue;
+
+    const aNumeric = /^\d+$/.test(a);
+    const bNumeric = /^\d+$/.test(b);
+    if (aNumeric && bNumeric) {
+      const aNumber = Number(a);
+      const bNumber = Number(b);
+      if (aNumber < bNumber) return -1;
+      if (aNumber > bNumber) return 1;
+      continue;
+    }
+    if (aNumeric) return -1;
+    if (bNumeric) return 1;
+    return a < b ? -1 : 1;
+  }
+
+  return 0;
 }
 
 function walk(dir, out) {
@@ -124,11 +175,20 @@ function walk(dir, out) {
   }
 }
 
-function getLatestPublishedVersion(packageName) {
-  const result = spawnSync("npm", ["view", packageName, "version", "--silent"], {
+export function getLatestPublishedVersion(packageName, options = {}) {
+  const timeoutMs = options.timeoutMs ?? NPM_VIEW_TIMEOUT_MS;
+  const spawn = options.spawnSyncFn ?? spawnSync;
+  const result = spawn("npm", ["view", packageName, "version", "--silent"], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    timeout: timeoutMs,
   });
+  if (result.error) {
+    if (result.error.code === "ETIMEDOUT" || result.signal === "SIGTERM") {
+      throw new Error(`npm view ${packageName} version timed out after ${timeoutMs}ms`);
+    }
+    throw new Error(`npm view ${packageName} version failed to start: ${result.error.message}`);
+  }
   if (result.status !== 0) {
     throw new Error(
       `npm view ${packageName} version failed: ${(result.stderr || result.stdout).trim()}`,

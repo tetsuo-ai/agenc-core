@@ -11,6 +11,7 @@ import {
   buildPinStalenessReport,
   collectPinnedTetsuoDependencies,
   compareVersions,
+  getLatestPublishedVersion,
   isExactVersion,
 } from "./check-sibling-package-pins.mjs";
 
@@ -87,10 +88,15 @@ function runChecker(root, latest) {
 
 try {
   assert("exact version accepts plain semver", isExactVersion("1.2.3"));
+  assert("exact version accepts prerelease semver", isExactVersion("1.2.3-beta.1"));
   assert("exact version rejects ranges", !isExactVersion("^1.2.3"));
   assert("exact version rejects file specs", !isExactVersion("file:../pkg"));
   assert("version compare detects older", compareVersions("1.3.1", "1.4.0") < 0);
   assert("version compare detects equal", compareVersions("1.4.0", "1.4.0") === 0);
+  assert(
+    "version compare orders prerelease before stable",
+    compareVersions("1.4.0-beta.1", "1.4.0") < 0,
+  );
 
   const root = createFixture();
   try {
@@ -123,6 +129,20 @@ try {
       report.stalePins[0]?.fixCommand,
     );
 
+    let lookups = 0;
+    const cachedReport = buildPinStalenessReport({
+      root,
+      lookupLatest(name) {
+        lookups += 1;
+        return new Map([
+          ["@tetsuo-ai/sdk", "1.4.0"],
+          ["@tetsuo-ai/protocol", "0.2.0"],
+        ]).get(name);
+      },
+    });
+    assert("report caches latest lookups per package", lookups === 2, String(lookups));
+    assert("cached report still finds stale pins", cachedReport.stalePins.length === 2);
+
     const cli = runChecker(root, {
       "@tetsuo-ai/sdk": "1.4.0",
       "@tetsuo-ai/protocol": "0.2.0",
@@ -142,6 +162,48 @@ try {
       "@tetsuo-ai/protocol": "0.1.1",
     });
     assert("CLI reports clean pins", clean.stdout.includes("no stale pins found"), clean.stdout);
+
+    writePackage(root, "repo-c/package.json", {
+      dependencies: {
+        "@tetsuo-ai/sdk": "1.4.0-beta.1",
+      },
+    });
+    const prerelease = buildPinStalenessReport({
+      root,
+      latestVersions: new Map([
+        ["@tetsuo-ai/sdk", "1.4.0"],
+        ["@tetsuo-ai/protocol", "0.2.0"],
+      ]),
+    });
+    assert(
+      "report warns when prerelease pin is older than stable latest",
+      prerelease.stalePins.some((pin) => pin.spec === "1.4.0-beta.1"),
+    );
+
+    let timeoutMessage = "";
+    try {
+      getLatestPublishedVersion("@tetsuo-ai/sdk", {
+        timeoutMs: 7,
+        spawnSyncFn() {
+          const error = new Error("spawnSync npm ETIMEDOUT");
+          error.code = "ETIMEDOUT";
+          return {
+            error,
+            signal: "SIGTERM",
+            status: null,
+            stdout: "",
+            stderr: "",
+          };
+        },
+      });
+    } catch (error) {
+      timeoutMessage = error.message;
+    }
+    assert(
+      "npm view timeout has clear failure message",
+      timeoutMessage.includes("timed out after 7ms"),
+      timeoutMessage,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
