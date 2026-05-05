@@ -1501,6 +1501,7 @@ const ITEM_EVIDENCE = {
       "runtime/src/sandbox/network-policy.ts",
       "runtime/src/sandbox/network-policy.test.ts",
       "runtime/src/session/turn-context.ts",
+      "runtime/src/session/turn-context.test.ts",
       "parity/ZC-43-parity.json",
       "scripts/goal/verify.mjs",
     ],
@@ -1511,9 +1512,13 @@ const ITEM_EVIDENCE = {
       { pattern: "notifyBlockedRequest", scope: "runtime/src/sandbox/network-policy.ts" },
       { pattern: "policyDecider", scope: "runtime/src/session/turn-context.ts" },
       { pattern: "blockedRequestObserver", scope: "runtime/src/session/turn-context.ts" },
+      { pattern: "turn-builder helpers preserve network policy decider", scope: "runtime/src/session/turn-context.test.ts" },
       { pattern: "no-op-interface-port", scope: "parity/ZC-43-parity.json" },
     ],
-    tests: ["runtime/src/sandbox/network-policy.test.ts"],
+    tests: [
+      "runtime/src/sandbox/network-policy.test.ts",
+      "runtime/src/session/turn-context.test.ts",
+    ],
   },
 };
 
@@ -5569,8 +5574,11 @@ function assertZc43NetworkPolicyInterfaces() {
   for (const required of [
     "network-proxy/src/network_policy.rs",
     "network-proxy/src/runtime.rs",
+    "core/src/session/session.rs",
     "core/src/exec.rs",
     "core/src/spawn.rs",
+    "core/src/network_policy_decision.rs",
+    "core/src/guardian/review.rs",
   ]) {
     if (!ledger.sourceFiles?.includes(required)) {
       failGate(`ZC-43: parity ledger is missing source file ${required}.`);
@@ -5579,9 +5587,40 @@ function assertZc43NetworkPolicyInterfaces() {
   for (const required of [
     "runtime/src/sandbox/network-policy.ts",
     "runtime/src/session/turn-context.ts",
+    "runtime/src/session/session.ts",
+    "runtime/src/tools/system/exec-command.ts",
+    "runtime/src/tools/runtimes/sandboxing.ts",
+    "runtime/src/unified-exec/process-manager.ts",
+    "runtime/src/permissions/guardian/approval-request.ts",
+    "runtime/src/permissions/guardian/arbiter.ts",
   ]) {
     if (!ledger.targetFiles?.includes(required)) {
       failGate(`ZC-43: parity ledger is missing target file ${required}.`);
+    }
+  }
+  const siteRows = ledger.checklistPortSites;
+  if (!Array.isArray(siteRows)) {
+    failGate("ZC-43: parity ledger must include checklistPortSites.");
+  }
+  for (const required of [
+    "core/src/session.rs",
+    "core/src/exec.rs",
+    "core/src/spawn.rs",
+    "core/src/network_policy_decision.rs",
+    "core/src/guardian/review.rs",
+  ]) {
+    const row = siteRows.find((candidate) => candidate?.checklistFile === required);
+    if (!row) {
+      failGate(`ZC-43: parity ledger is missing checklist port site ${required}.`);
+    }
+    if (!Array.isArray(row.targetFiles) || row.targetFiles.length === 0) {
+      failGate(`ZC-43: checklist port site ${required} must list target files.`);
+    }
+    if (
+      typeof row.resolution !== "string" ||
+      !/\b(thread|threaded|threading|removal|removed)\b/i.test(row.resolution)
+    ) {
+      failGate(`ZC-43: checklist port site ${required} must document threading or parameter removal.`);
     }
   }
 
@@ -5596,6 +5635,16 @@ function assertZc43NetworkPolicyInterfaces() {
       failGate(`ZC-43: network-policy tests are missing ${marker}.`);
     }
   }
+  const turnContextTestSource = readRequired("runtime/src/session/turn-context.test.ts");
+  for (const marker of [
+    "buildTurnContext preserves network policy decider and observer",
+    "turn-builder helpers preserve network policy decider and observer",
+    "mkNetworkProxy",
+  ]) {
+    if (!turnContextTestSource.includes(marker)) {
+      failGate(`ZC-43: turn-context tests are missing ${marker}.`);
+    }
+  }
 
   const testRun = run("npm", [
     "exec",
@@ -5603,9 +5652,10 @@ function assertZc43NetworkPolicyInterfaces() {
     "vitest",
     "run",
     "src/sandbox/network-policy.test.ts",
+    "src/session/turn-context.test.ts",
   ]);
   if (testRun.status !== 0) {
-    failGate("ZC-43: network-policy interface tests failed.");
+    failGate("ZC-43: network policy interface threading tests failed.");
   }
 
   pass("ZC-43: network policy decider and blocked-request observer interfaces are locked");

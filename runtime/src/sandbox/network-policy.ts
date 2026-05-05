@@ -300,8 +300,7 @@ export function execpolicyNetworkRuleAmendment(
 }
 
 function normalizeDecisionReason(reason: string): string {
-  const normalized = reason.trim();
-  return normalized.length === 0 ? "denied" : normalized;
+  return reason.length === 0 ? "denied" : reason;
 }
 
 function deniedReasonDetail(reason: string): string {

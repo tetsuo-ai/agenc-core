@@ -8,15 +8,71 @@
   "sourceFiles": [
     "network-proxy/src/network_policy.rs",
     "network-proxy/src/runtime.rs",
+    "core/src/session/session.rs",
     "core/src/exec.rs",
-    "core/src/spawn.rs"
+    "core/src/spawn.rs",
+    "core/src/network_policy_decision.rs",
+    "core/src/guardian/review.rs"
   ],
   "targetFiles": [
     "runtime/src/sandbox/network-policy.ts",
-    "runtime/src/session/turn-context.ts"
+    "runtime/src/session/turn-context.ts",
+    "runtime/src/session/session.ts",
+    "runtime/src/tools/system/exec-command.ts",
+    "runtime/src/tools/runtimes/sandboxing.ts",
+    "runtime/src/unified-exec/process-manager.ts",
+    "runtime/src/permissions/guardian/approval-request.ts",
+    "runtime/src/permissions/guardian/arbiter.ts"
   ],
   "testFiles": [
-    "runtime/src/sandbox/network-policy.test.ts"
+    "runtime/src/sandbox/network-policy.test.ts",
+    "runtime/src/session/turn-context.test.ts"
+  ],
+  "checklistPortSites": [
+    {
+      "checklistFile": "core/src/session.rs",
+      "sourceFile": "core/src/session/session.rs",
+      "targetFiles": [
+        "runtime/src/session/session.ts",
+        "runtime/src/session/turn-context.ts"
+      ],
+      "resolution": "Threaded through the optional NetworkProxy carrier on TurnContext. The source checkout stores the checklist's session file at core/src/session/session.rs, so that actual path is cited here."
+    },
+    {
+      "checklistFile": "core/src/exec.rs",
+      "sourceFile": "core/src/exec.rs",
+      "targetFiles": [
+        "runtime/src/tools/system/exec-command.ts",
+        "runtime/src/tools/runtimes/sandboxing.ts"
+      ],
+      "resolution": "Managed proxy process parameters are removed in the current AgenC exec path; exec tools use the per-turn networkSandboxPolicy while the optional NetworkProxy carrier preserves the decider/observer interface shape for later transport work."
+    },
+    {
+      "checklistFile": "core/src/spawn.rs",
+      "sourceFile": "core/src/spawn.rs",
+      "targetFiles": [
+        "runtime/src/unified-exec/process-manager.ts",
+        "runtime/src/tools/system/exec-command.ts"
+      ],
+      "resolution": "Managed proxy environment application is removed from AgenC's process-spawn path until a transport implementation lands; child process execution is driven by the runtime sandbox policy and the NetworkProxy interface remains available on the turn carrier."
+    },
+    {
+      "checklistFile": "core/src/network_policy_decision.rs",
+      "sourceFile": "core/src/network_policy_decision.rs",
+      "targetFiles": [
+        "runtime/src/sandbox/network-policy.ts"
+      ],
+      "resolution": "Threaded into runtime/src/sandbox/network-policy.ts as decision payload parsing, approval context extraction, blocked-message rendering, and exec-policy network rule amendment helpers."
+    },
+    {
+      "checklistFile": "core/src/guardian/review.rs",
+      "sourceFile": "core/src/guardian/review.rs",
+      "targetFiles": [
+        "runtime/src/permissions/guardian/approval-request.ts",
+        "runtime/src/permissions/guardian/arbiter.ts"
+      ],
+      "resolution": "Managed proxy config input is removed from AgenC guardian review until the transport exists; guardian review receives network approval amendment context through the permissions approval request surface."
+    }
   ],
   "requiredBehaviors": [
     {

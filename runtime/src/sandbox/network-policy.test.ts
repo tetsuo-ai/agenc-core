@@ -211,13 +211,16 @@ describe("network policy decider contracts", () => {
       port: 443,
     });
 
-    const deny = networkPolicyDeciderFrom(() =>
-      denyNetworkDecision("   "),
-    );
+    const deny = networkPolicyDeciderFrom(() => denyNetworkDecision(""));
     expect(await deny.decide(request)).toEqual({
       decision: "deny",
       source: "decider",
       reason: "denied",
+    });
+    expect(denyNetworkDecision("   ")).toEqual({
+      decision: "deny",
+      source: "decider",
+      reason: "   ",
     });
 
     const allow = networkPolicyDeciderFrom(() => allowNetworkDecision());
