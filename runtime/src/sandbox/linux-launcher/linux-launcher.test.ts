@@ -82,6 +82,14 @@ describe("Linux sandbox launcher", () => {
         "/bin/true",
       ]),
     ).toThrow(/cannot be combined/u);
+    expect(() =>
+      parseLinuxSandboxLauncherArgs([
+        "--permission-profile",
+        JSON.stringify({ fileSystem: { kind: "restricted", entries: "bad" }, network: "bad" }),
+        "--",
+        "/bin/true",
+      ]),
+    ).toThrow(/network must be enabled, disabled, or restricted/u);
   });
 
   it("builds full-filesystem bubblewrap flags for network-isolated full-write policies", () => {
@@ -193,6 +201,30 @@ describe("Linux sandbox launcher", () => {
     expect(args.args).not.toContain(path.join(child, ".git"));
   });
 
+  it("masks unreadable ancestors before reopening writable descendants", () => {
+    const parent = withTempDir("agenc-linux-launcher-mask-parent-");
+    const child = path.join(parent, "child");
+    fs.mkdirSync(child);
+    const policy = restrictedFileSystemPolicy([
+      { path: { kind: "path", path: parent }, access: "none" },
+      { path: { kind: "path", path: child }, access: "write" },
+    ]);
+
+    const args = createBwrapCommandArgs(["/bin/true"], policy, child, child, {
+      mountProc: true,
+      networkMode: "isolated",
+    }).args;
+
+    const parentMask = args.findIndex((value, index) =>
+      value === "--tmpfs" && args[index + 1] === parent,
+    );
+    const childBind = args.findIndex((value, index) =>
+      value === "--bind" && args[index + 1] === child && args[index + 2] === child,
+    );
+    expect(parentMask).toBeGreaterThanOrEqual(0);
+    expect(childBind).toBeGreaterThan(parentMask);
+  });
+
   it("fails an otherwise successful launch when protected metadata is created", async () => {
     const parent = withTempDir("agenc-linux-launcher-protected-parent-");
     fs.mkdirSync(path.join(parent, ".git"));
@@ -249,6 +281,7 @@ describe("Linux sandbox launcher", () => {
       { path: { kind: "glob", pattern: path.join(external, "*.secret") }, access: "none" },
       { path: { kind: "glob", pattern: path.join(external, "blocked-?.secret") }, access: "none" },
       { path: { kind: "glob", pattern: path.join(external, "blocked-[bc].secret") }, access: "none" },
+      { path: { kind: "glob", pattern: path.join(external, "blocked-[z-a].secret") }, access: "none" },
     ]);
 
     const args = createBwrapCommandArgs(["/bin/true"], policy, workspace, workspace, {
@@ -259,6 +292,21 @@ describe("Linux sandbox launcher", () => {
     expect(args.args).toContain(secret);
     expect(args.args).toContain(questionSecret);
     expect(args.args).toContain(classSecret);
+  });
+
+  it("fails closed for root-level unreadable glob scans", () => {
+    const workspace = withTempDir("agenc-linux-launcher-root-glob-");
+    const policy = restrictedFileSystemPolicy([
+      { path: { kind: "path", path: workspace }, access: "write" },
+      { path: { kind: "glob", pattern: "/*.secret" }, access: "none" },
+    ]);
+
+    expect(() =>
+      createBwrapCommandArgs(["/bin/true"], policy, workspace, workspace, {
+        mountProc: true,
+        networkMode: "isolated",
+      }),
+    ).toThrow(/too broad/u);
   });
 
   it("inserts argv0 support before the inner command separator", () => {
@@ -584,6 +632,8 @@ describe("Linux sandbox launcher", () => {
       expect(recorded.fd3Open).toBe(true);
       expect(recorded.argv).toContain("--seccomp");
       expect(recorded.argv).toContain(String(SECCOMP_STDIN_FD));
+      const argv0Index = recorded.argv.indexOf("--argv0");
+      expect(recorded.argv[argv0Index + 1]).toBe("/bin/true");
       expect(recorded.argv).toContain("/bin/true");
     } finally {
       prepared.cleanup();
@@ -644,6 +694,28 @@ describe("Linux sandbox launcher", () => {
     hostServer.close();
     await closed;
     expect(socket.destroyed).toBe(true);
+  });
+
+  it("rejects malformed managed proxy route specs", async () => {
+    const root = withTempDir("agenc-linux-launcher-bad-proxy-spec-");
+    await expect(
+      activateProxyRoutesInNetns(
+        JSON.stringify({
+          socketDir: root,
+          routes: [{ envKey: "BAD_PROXY", udsPath: path.join(root, "x.sock") }],
+        }),
+        { BAD_PROXY: "http://127.0.0.1:3128" },
+      ),
+    ).rejects.toThrow(/unsupported env key/u);
+    await expect(
+      activateProxyRoutesInNetns(
+        JSON.stringify({
+          socketDir: root,
+          routes: [{ envKey: "HTTP_PROXY", udsPath: path.join(path.dirname(root), "x.sock") }],
+        }),
+        { HTTP_PROXY: "http://127.0.0.1:3128" },
+      ),
+    ).rejects.toThrow(/must stay under socketDir/u);
   });
 });
 

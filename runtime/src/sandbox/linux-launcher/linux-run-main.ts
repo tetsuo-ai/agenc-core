@@ -77,7 +77,6 @@ export async function runLinuxSandboxOptions(
         return await runCommandWithInnerSeccomp(options.command, {
           cwd: options.commandCwd,
           env: activatedProxy.env,
-          argv0: LINUX_SANDBOX_ARG0,
           seccompMode: "proxy-routed",
           preferredLauncher: deps.preferredLauncher,
         });
@@ -85,7 +84,7 @@ export async function runLinuxSandboxOptions(
       return execCommand(options.command, {
         cwd: options.commandCwd,
         env,
-        argv0: LINUX_SANDBOX_ARG0,
+        argv0: options.command[0] ?? LINUX_SANDBOX_ARG0,
       });
     } finally {
       activatedProxy?.cleanup();
@@ -133,7 +132,7 @@ export async function runLinuxSandboxOptions(
       return execCommand(options.command, {
         cwd: options.commandCwd,
         env,
-        argv0: LINUX_SANDBOX_ARG0,
+        argv0: options.command[0] ?? LINUX_SANDBOX_ARG0,
       });
     }
     const launcher = (deps.preferredLauncher ?? preferredBubblewrapLauncher)();
@@ -181,7 +180,7 @@ export async function runLinuxSandboxOptions(
     });
     let protectedCreateViolation = false;
     try {
-      const exitCode = await waitForChild(spawned.child);
+      const exitCode = await waitForChildWithSignalRelay(spawned.child);
       protectedCreateViolation = protectedMonitor.stop();
       return protectedCreateViolation && exitCode === 0 ? 1 : exitCode;
     } finally {
@@ -320,7 +319,6 @@ export async function runCommandWithInnerSeccomp(
   options: {
     readonly cwd: string;
     readonly env: NodeJS.ProcessEnv;
-    readonly argv0: string;
     readonly seccompMode: NetworkSeccompMode;
     readonly preferredLauncher?: () => BubblewrapLauncher | null;
   },
@@ -331,7 +329,7 @@ export async function runCommandWithInnerSeccomp(
       "AgenC could not find bubblewrap on PATH for inner seccomp application",
     );
   }
-  const args = insertInnerCommandArgv0([
+  const args = insertFinalCommandArgv0([
     "--die-with-parent",
     "--bind",
     "/",
@@ -352,6 +350,22 @@ export async function runCommandWithInnerSeccomp(
   } finally {
     spawned.cleanup();
   }
+}
+
+function insertFinalCommandArgv0(
+  bwrapArgs: readonly string[],
+  supportsArgv0: boolean,
+  argv0: string,
+): string[] {
+  const args = [...bwrapArgs];
+  const separatorIndex = args.indexOf("--");
+  if (separatorIndex === -1) {
+    throw new Error("bubblewrap argv is missing command separator");
+  }
+  if (supportsArgv0) {
+    args.splice(separatorIndex, 0, "--argv0", argv0);
+  }
+  return args;
 }
 
 export function waitForChildWithSignalRelay(child: ChildProcess): Promise<number> {

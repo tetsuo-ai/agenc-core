@@ -292,6 +292,11 @@ function proxyUrlHasNoPathQueryOrFragment(proxyUrl: string): boolean {
   return !/[/?#]/u.test(authority);
 }
 
+function pathWithin(candidate: string, root: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative.length === 0 || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
 function cleanupStaleProxySocketDirs(now: number = Date.now()): void {
   const tmp = os.tmpdir();
   let entries: string[];
@@ -316,15 +321,26 @@ function cleanupStaleProxySocketDirs(now: number = Date.now()): void {
 
 function parseProxyRouteSpec(serializedSpec: string): PreparedProxyRouteSpec {
   const parsed = JSON.parse(serializedSpec) as Partial<PreparedProxyRouteSpec>;
+  const socketDir = String(parsed.socketDir ?? "");
+  if (!path.isAbsolute(socketDir)) {
+    throw new Error("proxy routing spec socketDir must be absolute");
+  }
   if (!Array.isArray(parsed.routes)) {
     throw new Error("proxy routing spec is missing routes");
   }
   return {
-    socketDir: String(parsed.socketDir ?? ""),
-    routes: parsed.routes.map((route) => ({
-      envKey: String(route.envKey),
-      udsPath: String(route.udsPath),
-    })),
+    socketDir,
+    routes: parsed.routes.map((route) => {
+      const envKey = String(route.envKey);
+      const udsPath = String(route.udsPath);
+      if (!isProxyEnvKey(envKey)) {
+        throw new Error(`proxy routing spec contains unsupported env key ${envKey}`);
+      }
+      if (!path.isAbsolute(udsPath) || !pathWithin(udsPath, socketDir)) {
+        throw new Error("proxy routing spec route path must stay under socketDir");
+      }
+      return { envKey, udsPath };
+    }),
   };
 }
 

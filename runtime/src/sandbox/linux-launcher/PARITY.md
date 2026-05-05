@@ -18,11 +18,11 @@ Target mapping:
 - `main.ts` is the executable Node entrypoint.
 - `lib.ts` owns reusable entrypoint helpers for bin startup and programmatic tests.
 - `cli.ts` parses the manager handoff arguments and permission profile JSON.
-- `linux-run-main.ts` resolves the profile, builds the outer bubblewrap invocation, re-enters the helper for the inner command stage, uses `execve` for the non-proxy final command, applies an inner seccomp bubblewrap wrapper for managed proxy commands, and relays termination signals when a child process must remain supervised.
+- `linux-run-main.ts` resolves the profile, builds the outer bubblewrap invocation, re-enters the helper for the inner command stage, uses `execve` for the non-proxy final command while preserving command argv0, applies an inner seccomp bubblewrap wrapper for managed proxy commands, and relays termination signals when a child process must remain supervised.
 - `launcher.ts` discovers the real `bwrap` / `bubblewrap` binary, probes `--argv0` support, and spawns the platform binary with an inherited seccomp FD.
 - `bwrap.ts` builds the bubblewrap filesystem, namespace, proc, argv0, glob-deny, protected metadata, and seccomp flags from AgenC's sandbox policy model.
 - `landlock.ts` carries the Linux network hardening path in TypeScript by generating a cBPF seccomp program and passing it to bubblewrap with `--seccomp FD`.
-- `proxy-routing.ts` ports proxy environment recognition, loopback endpoint validation, host-side UDS route preparation, namespace-local loopback activation, URL rewrite helpers, and stream-pairing primitives.
+- `proxy-routing.ts` ports proxy environment recognition, loopback endpoint validation, host-side UDS route preparation, serialized route validation, namespace-local loopback activation, URL rewrite helpers, and stream-pairing primitives.
 - `vendored-bwrap.ts` records the build-shape divergence: the TypeScript runtime requires a system bubblewrap binary instead of linking an embedded C helper.
 - `build.ts` records the launcher build contract exposed to tests and package validation.
 - `runtime/scripts/write-build-version.mjs` copies sandbox policy assets beside the built launcher entrypoint so package-bin smoke execution can import the bundled sandbox modules.

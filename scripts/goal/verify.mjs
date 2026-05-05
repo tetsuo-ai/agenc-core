@@ -2490,6 +2490,9 @@ async function donorRuntimePortGates(item) {
     if (!/\bexecve\b/.test(runMainSource) || !/runCommandWithInnerSeccomp/.test(runMainSource)) {
       failGate("C-01b: launcher must use execve for the inner non-proxy stage and an inner seccomp wrapper for proxy mode");
     }
+    if (!/waitForChildWithSignalRelay\(spawned\.child\)/.test(runMainSource) || !/insertFinalCommandArgv0/.test(runMainSource)) {
+      failGate("C-01b: launcher must relay signals to outer bwrap and preserve final command argv0");
+    }
     if (!/mkdtempSync/.test(proxySource) || !/FTP_PROXY/.test(proxySource) || !/NPM_CONFIG_PROXY/.test(proxySource)) {
       failGate("C-01b: proxy routing must use atomic socket dirs and the donor proxy env-key set");
     }
@@ -2501,6 +2504,9 @@ async function donorRuntimePortGates(item) {
     }
     if (!/globCharacterClass/.test(bwrapSource) || !/escapeRegexChar/.test(bwrapSource)) {
       failGate("C-01b: unreadable glob matching must support ? and character classes");
+    }
+    if (!/unreadable glob expansion root is too broad/.test(bwrapSource) || !/\/nix\/store/.test(bwrapSource)) {
+      failGate("C-01b: bwrap defaults must include donor platform roots and reject root-level glob scans");
     }
     if (!/\bspawn\(/.test(testsSource) || !/runLinuxSandboxMain/.test(testsSource)) {
       failGate("C-01b: tests must exercise the launcher through subprocess execution");
@@ -2516,6 +2522,9 @@ async function donorRuntimePortGates(item) {
     }
     if (!/deniedSyscalls/.test(testsSource) || !/protected metadata is created/.test(testsSource)) {
       failGate("C-01b: tests must exercise proxy-routed BPF behavior and protected metadata violations");
+    }
+    if (!/malformed managed proxy route specs/.test(testsSource) || !/unreadable ancestors/.test(testsSource)) {
+      failGate("C-01b: tests must cover route-spec validation and unreadable ancestor ordering");
     }
     const buildRun = run("npm", ["run", "build", "--workspace=@tetsuo-ai/runtime"]);
     if (buildRun.status !== 0) {

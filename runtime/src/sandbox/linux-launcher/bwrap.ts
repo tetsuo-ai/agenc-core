@@ -158,10 +158,13 @@ function createFilesystemArgs(
     args.push("--tmpfs", "/");
     if (includePlatformDefaults(policy)) {
       appendReadOnlyIfExists(args, "/bin");
+      appendReadOnlyIfExists(args, "/sbin");
       appendReadOnlyIfExists(args, "/lib");
       appendReadOnlyIfExists(args, "/lib64");
       appendReadOnlyIfExists(args, "/usr");
       appendReadOnlyIfExists(args, "/etc");
+      appendReadOnlyIfExists(args, "/nix/store");
+      appendReadOnlyIfExists(args, "/run/current-system/sw");
     }
     for (const root of getReadableRootsWithCwd(policy, sandboxPolicyCwd)) {
       appendReadOnlyIfExists(args, root);
@@ -170,20 +173,26 @@ function createFilesystemArgs(
 
   args.push("--dev", "/dev");
 
+  const unreadableTargets = [
+    ...getUnreadableRootsWithCwd(policy, sandboxPolicyCwd),
+    ...expandUnreadableGlobMatches(
+      getUnreadableGlobsWithCwd(policy, sandboxPolicyCwd),
+      sandboxPolicyCwd,
+      policy.globScanMaxDepth,
+    ),
+  ];
+  const isNestedUnreadable = (target: string) =>
+    writableRoots.some((root) => pathStartsWith(target, root.root));
+  for (const root of unreadableTargets.filter((target) => !isNestedUnreadable(target))) {
+    appendMask(args, root, writableRoots);
+  }
   for (const root of writableRoots) {
     appendWritableRoot(args, root, protectedCreateTargets);
   }
   for (const root of options.extraBindRoots ?? []) {
     appendBindIfExists(args, root);
   }
-  for (const root of getUnreadableRootsWithCwd(policy, sandboxPolicyCwd)) {
-    appendMask(args, root, writableRoots);
-  }
-  for (const root of expandUnreadableGlobMatches(
-    getUnreadableGlobsWithCwd(policy, sandboxPolicyCwd),
-    sandboxPolicyCwd,
-    policy.globScanMaxDepth,
-  )) {
+  for (const root of unreadableTargets.filter(isNestedUnreadable)) {
     appendMask(args, root, writableRoots);
   }
   return args;
@@ -302,6 +311,9 @@ function expandUnreadableGlobMatches(
     root: globSearchRoot(pattern, cwd),
   }));
   for (const spec of specs) {
+    if (spec.root === path.parse(spec.root).root) {
+      throw new Error(`unreadable glob expansion root is too broad: ${spec.root}`);
+    }
     for (const candidate of walkExistingFiles(
       spec.root,
       maxDepth,
@@ -397,6 +409,7 @@ function globCharacterClass(raw: string): string {
   const negated = raw[0] === "!" || raw[0] === "^";
   const body = (negated ? raw.slice(1) : raw)
     .replace(/\\/gu, "\\\\")
+    .replace(/-/gu, "\\-")
     .replace(/\]/gu, "\\]");
   return negated ? `[^/${body}]` : `[${body}]`;
 }

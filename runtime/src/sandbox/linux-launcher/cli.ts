@@ -1,6 +1,8 @@
 import path from "node:path";
 
 import {
+  type FileSystemAccessMode,
+  type FileSystemPath,
   type PermissionProfile,
   permissionProfileToRuntimePermissions,
 } from "../engine/index.js";
@@ -122,6 +124,8 @@ function assertPermissionProfile(value: unknown): asserts value is PermissionPro
     throw new LinuxSandboxCliError("permission profile must be an object");
   }
   const candidate = value as Partial<PermissionProfile>;
+  assertNetwork(candidate.network);
+  assertFileSystem(candidate.fileSystem);
   try {
     permissionProfileToRuntimePermissions(candidate as PermissionProfile);
   } catch (error) {
@@ -129,14 +133,120 @@ function assertPermissionProfile(value: unknown): asserts value is PermissionPro
       `permission profile has an invalid shape: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  if (
-    candidate.fileSystem === undefined ||
-    typeof candidate.fileSystem !== "object" ||
-    candidate.network === undefined
-  ) {
+  if (candidate.fileSystem === undefined || candidate.network === undefined) {
     throw new LinuxSandboxCliError(
       "permission profile must include fileSystem and network permissions",
     );
+  }
+}
+
+function assertNetwork(value: unknown): void {
+  if (value !== "enabled" && value !== "disabled" && value !== "restricted") {
+    throw new LinuxSandboxCliError("permission profile network must be enabled, disabled, or restricted");
+  }
+}
+
+function assertFileSystem(value: unknown): void {
+  if (typeof value !== "object" || value === null) {
+    throw new LinuxSandboxCliError("permission profile fileSystem must be an object");
+  }
+  const candidate = value as {
+    kind?: unknown;
+    entries?: unknown;
+    globScanMaxDepth?: unknown;
+    includePlatformDefaults?: unknown;
+  };
+  if (
+    candidate.kind !== "restricted" &&
+    candidate.kind !== "unrestricted" &&
+    candidate.kind !== "external_sandbox"
+  ) {
+    throw new LinuxSandboxCliError("permission profile fileSystem kind is invalid");
+  }
+  if (!Array.isArray(candidate.entries)) {
+    throw new LinuxSandboxCliError("permission profile fileSystem entries must be an array");
+  }
+  const globScanMaxDepth = candidate.globScanMaxDepth;
+  if (
+    globScanMaxDepth !== undefined &&
+    (typeof globScanMaxDepth !== "number" ||
+      !Number.isInteger(globScanMaxDepth) ||
+      globScanMaxDepth < 0)
+  ) {
+    throw new LinuxSandboxCliError("permission profile globScanMaxDepth must be a non-negative integer");
+  }
+  if (
+    candidate.includePlatformDefaults !== undefined &&
+    typeof candidate.includePlatformDefaults !== "boolean"
+  ) {
+    throw new LinuxSandboxCliError("permission profile includePlatformDefaults must be a boolean");
+  }
+  for (const entry of candidate.entries) {
+    assertFileSystemEntry(entry);
+  }
+}
+
+function assertFileSystemEntry(value: unknown): void {
+  if (typeof value !== "object" || value === null) {
+    throw new LinuxSandboxCliError("permission profile fileSystem entry must be an object");
+  }
+  const entry = value as { access?: unknown; path?: unknown };
+  assertAccess(entry.access);
+  assertFileSystemPath(entry.path);
+}
+
+function assertAccess(value: unknown): asserts value is FileSystemAccessMode {
+  if (value !== "none" && value !== "read" && value !== "write") {
+    throw new LinuxSandboxCliError("permission profile fileSystem entry access is invalid");
+  }
+}
+
+function assertFileSystemPath(value: unknown): asserts value is FileSystemPath {
+  if (typeof value !== "object" || value === null) {
+    throw new LinuxSandboxCliError("permission profile fileSystem entry path must be an object");
+  }
+  const pathSpec = value as { kind?: unknown; path?: unknown; pattern?: unknown; value?: unknown };
+  if (pathSpec.kind === "path") {
+    if (typeof pathSpec.path !== "string" || pathSpec.path.length === 0) {
+      throw new LinuxSandboxCliError("permission profile path entry must include a non-empty path");
+    }
+    return;
+  }
+  if (pathSpec.kind === "glob") {
+    if (typeof pathSpec.pattern !== "string" || pathSpec.pattern.length === 0) {
+      throw new LinuxSandboxCliError("permission profile glob entry must include a non-empty pattern");
+    }
+    return;
+  }
+  if (pathSpec.kind === "special") {
+    assertSpecialPath(pathSpec.value);
+    return;
+  }
+  throw new LinuxSandboxCliError("permission profile fileSystem entry path kind is invalid");
+}
+
+function assertSpecialPath(value: unknown): void {
+  if (typeof value !== "object" || value === null) {
+    throw new LinuxSandboxCliError("permission profile special path must be an object");
+  }
+  const special = value as { kind?: unknown; path?: unknown; subpath?: unknown };
+  switch (special.kind) {
+    case "root":
+    case "project_roots":
+    case "tmpdir":
+    case "slash_tmp":
+    case "minimal":
+      break;
+    case "unknown":
+      if (typeof special.path !== "string" || special.path.length === 0) {
+        throw new LinuxSandboxCliError("permission profile unknown special path must include a path");
+      }
+      break;
+    default:
+      throw new LinuxSandboxCliError("permission profile special path kind is invalid");
+  }
+  if (special.subpath !== undefined && typeof special.subpath !== "string") {
+    throw new LinuxSandboxCliError("permission profile special path subpath must be a string");
   }
 }
 
