@@ -72,6 +72,9 @@ export class HookEngine {
       .filter((hook) => hook.enabled)
       .filter((hook) => hook.event === event)
       .filter((hook) => {
+        if (event === "UserPromptSubmit" || event === "Stop") {
+          return true;
+        }
         if (matcherInputs.length === 0) {
           return matchesPattern("", hook.matcher);
         }
@@ -179,6 +182,9 @@ export function matchesPattern(matchQuery: string, matcher?: string): boolean {
   if (matcher === undefined || matcher.trim() === "" || matcher === "*") {
     return true;
   }
+  if (isUnsafeMatcherRegex(matcher)) {
+    return false;
+  }
   if (/^[a-zA-Z0-9_.|-]+$/.test(matcher)) {
     if (matcher.includes("|")) {
       return matcher.split("|").map((p) => p.trim()).includes(matchQuery);
@@ -190,6 +196,13 @@ export function matchesPattern(matchQuery: string, matcher?: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isUnsafeMatcherRegex(matcher: string): boolean {
+  if (matcher.length > 512) return true;
+  return /\((?:[^()\\]|\\.|\([^)]*\))*[+*](?:[^()\\]|\\.)*\)[+*{]/.test(
+    matcher,
+  );
 }
 
 function sanitizeCommandRunResult(result: CommandRunResult): CommandRunResult {

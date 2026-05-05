@@ -9,13 +9,21 @@ export type HookPermissionBehavior = "allow" | "deny" | "ask";
 
 export type HookSpecificOutput = {
   readonly hookEventName?: string;
+  readonly continueProcessing?: boolean;
+  readonly stopReason?: string;
+  readonly suppressOutput?: boolean;
+  readonly systemMessage?: string;
   readonly permissionDecision?: HookPermissionBehavior;
   readonly permissionDecisionReason?: string;
   readonly updatedInput?: Record<string, unknown>;
   readonly additionalContext?: string;
+  readonly legacyDecision?: string;
+  readonly reason?: string;
   readonly decision?: {
     readonly behavior?: string;
     readonly updatedInput?: Record<string, unknown>;
+    readonly updatedPermissions?: Record<string, unknown>;
+    readonly interrupt?: boolean;
     readonly message?: string;
   };
 };
@@ -56,6 +64,9 @@ export function readHookSpecificOutput(stdout: string): ParsedHookSpecificOutput
       };
     }
     const { output, invalid } = normalizeHookSpecificOutput(rawSpecific);
+    if (rawSpecific !== parsed) {
+      mergeCommonOutputFields(parsed, output, invalid);
+    }
     return {
       explicit: true,
       output,
@@ -75,13 +86,21 @@ function normalizeHookSpecificOutput(
   const invalid: string[] = [];
   const output: {
     hookEventName?: string;
+    continueProcessing?: boolean;
+    stopReason?: string;
+    suppressOutput?: boolean;
+    systemMessage?: string;
     permissionDecision?: HookPermissionBehavior;
     permissionDecisionReason?: string;
     updatedInput?: Record<string, unknown>;
     additionalContext?: string;
+    legacyDecision?: string;
+    reason?: string;
     decision?: {
       behavior?: string;
       updatedInput?: Record<string, unknown>;
+      updatedPermissions?: Record<string, unknown>;
+      interrupt?: boolean;
       message?: string;
     };
   } = {};
@@ -89,6 +108,7 @@ function normalizeHookSpecificOutput(
   if (typeof raw.hookEventName === "string") {
     output.hookEventName = raw.hookEventName;
   }
+  mergeCommonOutputFields(raw, output, invalid);
   if (raw.permissionDecision !== undefined) {
     if (isHookPermissionBehavior(raw.permissionDecision)) {
       output.permissionDecision = raw.permissionDecision;
@@ -117,21 +137,52 @@ function normalizeHookSpecificOutput(
       invalid.push("additionalContext must be a string");
     }
   }
+  if (raw.reason !== undefined) {
+    if (typeof raw.reason === "string") {
+      output.reason = raw.reason;
+    } else {
+      invalid.push("reason must be a string");
+    }
+  }
   if (raw.decision !== undefined) {
+    if (typeof raw.decision === "string") {
+      output.legacyDecision = raw.decision;
+      return { output, invalid };
+    }
     if (isRecord(raw.decision)) {
       const decision: {
         behavior?: string;
         updatedInput?: Record<string, unknown>;
+        updatedPermissions?: Record<string, unknown>;
+        interrupt?: boolean;
         message?: string;
       } = {};
-      if (typeof raw.decision.behavior === "string") {
-        decision.behavior = raw.decision.behavior;
+      if (raw.decision.behavior !== undefined) {
+        if (typeof raw.decision.behavior === "string") {
+          decision.behavior = raw.decision.behavior;
+        } else {
+          invalid.push("decision.behavior must be a string");
+        }
       }
       if (raw.decision.updatedInput !== undefined) {
         if (isRecord(raw.decision.updatedInput)) {
           decision.updatedInput = raw.decision.updatedInput;
         } else {
           invalid.push("decision.updatedInput must be an object");
+        }
+      }
+      if (raw.decision.updatedPermissions !== undefined) {
+        if (isRecord(raw.decision.updatedPermissions)) {
+          decision.updatedPermissions = raw.decision.updatedPermissions;
+        } else {
+          invalid.push("decision.updatedPermissions must be an object");
+        }
+      }
+      if (raw.decision.interrupt !== undefined) {
+        if (typeof raw.decision.interrupt === "boolean") {
+          decision.interrupt = raw.decision.interrupt;
+        } else {
+          invalid.push("decision.interrupt must be a boolean");
         }
       }
       if (raw.decision.message !== undefined) {
@@ -148,6 +199,46 @@ function normalizeHookSpecificOutput(
   }
 
   return { output, invalid };
+}
+
+function mergeCommonOutputFields(
+  raw: Record<string, unknown>,
+  output: {
+    continueProcessing?: boolean;
+    stopReason?: string;
+    suppressOutput?: boolean;
+    systemMessage?: string;
+  },
+  invalid: string[],
+): void {
+  if (raw["continue"] !== undefined) {
+    if (typeof raw["continue"] === "boolean") {
+      output.continueProcessing = raw["continue"];
+    } else {
+      invalid.push("continue must be a boolean");
+    }
+  }
+  if (raw.stopReason !== undefined) {
+    if (typeof raw.stopReason === "string") {
+      output.stopReason = raw.stopReason;
+    } else {
+      invalid.push("stopReason must be a string");
+    }
+  }
+  if (raw.suppressOutput !== undefined) {
+    if (typeof raw.suppressOutput === "boolean") {
+      output.suppressOutput = raw.suppressOutput;
+    } else {
+      invalid.push("suppressOutput must be a boolean");
+    }
+  }
+  if (raw.systemMessage !== undefined) {
+    if (typeof raw.systemMessage === "string") {
+      output.systemMessage = raw.systemMessage;
+    } else {
+      invalid.push("systemMessage must be a string");
+    }
+  }
 }
 
 function isHookPermissionBehavior(

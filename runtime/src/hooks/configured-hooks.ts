@@ -28,8 +28,8 @@ import { redactSecrets } from "../secrets/index.js";
 import { HookEngine, matchesPattern } from "./engine/dispatcher.js";
 import { flattenHooks, groupHooksByEvent } from "./engine/discovery.js";
 import {
-  parseHookSpecificOutput,
   readHookSpecificOutput,
+  type HookSpecificOutput,
 } from "./engine/output-parser.js";
 import type {
   HookCommandRunDiagnostic,
@@ -226,9 +226,18 @@ export class ConfiguredHooksRuntime {
         return { kind: "deny", reason: result.stderr || result.stdout };
       }
       if (result.status !== "success") return { kind: "continue" };
-      const parsed = readHookSpecificOutput(result.rawStdout);
-      if (parsed.invalid) this.recordHookOutputIssue(result, parsed.invalid);
+      const parsed = this.readStructuredOutput(result);
       const specific = parsed.output;
+      const legacyBlockReason = legacyBlockReasonFor(
+        specific,
+        "PreToolUse",
+        (message) => this.recordHookOutputIssue(result, message),
+      );
+      if (legacyBlockReason !== null) {
+        return { kind: "deny", reason: legacyBlockReason };
+      }
+      const unsupported = unsupportedPreToolUseOutput(specific);
+      if (unsupported !== null) this.recordHookOutputIssue(result, unsupported);
       const decision = specific?.permissionDecision;
       const updatedInput = specific?.updatedInput;
       return {
@@ -274,7 +283,29 @@ export class ConfiguredHooksRuntime {
         };
       }
       if (run.status !== "success") return { kind: "continue" };
-      const specific = parseHookSpecificOutput(run.rawStdout);
+      const specific = this.readStructuredOutput(run).output;
+      const legacyBlockReason = legacyBlockReasonFor(
+        specific,
+        "PostToolUse",
+        (message) => this.recordHookOutputIssue(run, message),
+      );
+      if (legacyBlockReason !== null) {
+        return { kind: "hook_blocking_error", blockingError: legacyBlockReason };
+      }
+      if (specific?.continueProcessing === false) {
+        return {
+          kind: "preventContinuation",
+          ...(specific.stopReason !== undefined
+            ? { stopReason: redactSecrets(specific.stopReason) }
+            : {}),
+        };
+      }
+      if (specific?.suppressOutput === true) {
+        this.recordHookOutputIssue(
+          run,
+          "PostToolUse hook returned unsupported suppressOutput",
+        );
+      }
       if (specific?.additionalContext) {
         return {
           kind: "additionalContext",
@@ -315,7 +346,7 @@ export class ConfiguredHooksRuntime {
         tool_input: args,
       });
       if (run.status !== "success") return { kind: "pass" };
-      const decision = parsePermissionDecision(run.rawStdout);
+      const decision = this.parsePermissionDecision(run);
       if (!decision) return { kind: "pass" };
       return decision;
     };
@@ -325,7 +356,7 @@ export class ConfiguredHooksRuntime {
     hook: IndividualHookConfig,
   ): UserPromptSubmitHook {
     return async ({ prompt, permissionMode, cwd, signal }) => {
-      if (this.isDisabled() || !matchesPattern(prompt, hook.matcher)) {
+      if (this.isDisabled()) {
         return undefined;
       }
       const run = await this.runCommandHook(
@@ -346,8 +377,23 @@ export class ConfiguredHooksRuntime {
         };
       }
       if (run.status !== "success") return undefined;
-      const parsed = readHookSpecificOutput(run.rawStdout);
-      if (parsed.invalid) this.recordHookOutputIssue(run, parsed.invalid);
+      const parsed = this.readStructuredOutput(run);
+      const legacyBlockReason = legacyBlockReasonFor(
+        parsed.output,
+        "UserPromptSubmit",
+        (message) => this.recordHookOutputIssue(run, message),
+      );
+      if (legacyBlockReason !== null) {
+        return { blockingError: { blockingError: legacyBlockReason } };
+      }
+      if (parsed.output?.continueProcessing === false) {
+        return {
+          preventContinuation: true,
+          ...(parsed.output.stopReason !== undefined
+            ? { stopReason: redactSecrets(parsed.output.stopReason) }
+            : {}),
+        };
+      }
       const additionalContext = parsed.explicit
         ? parsed.output?.additionalContext
         : run.stdout.trim() || undefined;
@@ -362,7 +408,7 @@ export class ConfiguredHooksRuntime {
     return {
       name: hookCommandLabel(hook),
       run: async (request) => {
-        if (this.isDisabled() || !matchesPattern("", hook.matcher)) {
+        if (this.isDisabled()) {
           return allowStopOutcome();
         }
         const run = await this.runCommandHook(hook, stopInput("Stop", request));
@@ -374,6 +420,22 @@ export class ConfiguredHooksRuntime {
             blockReason: firstLine(reason),
             continuationFragments: [reason],
           };
+        }
+        if (run.status === "success") {
+          const parsed = this.readStructuredOutput(run);
+          const legacyBlockReason = legacyBlockReasonFor(
+            parsed.output,
+            "Stop",
+            (message) => this.recordHookOutputIssue(run, message),
+          );
+          if (legacyBlockReason !== null) {
+            return {
+              shouldStop: false,
+              shouldBlock: true,
+              blockReason: firstLine(legacyBlockReason),
+              continuationFragments: [legacyBlockReason],
+            };
+          }
         }
         return allowStopOutcome();
       },
@@ -414,10 +476,18 @@ export class ConfiguredHooksRuntime {
         input as unknown as Record<string, unknown>,
         signal,
       );
-      const specific = parseHookSpecificOutput(run.rawStdout);
+      const parsed = this.readStructuredOutput(run);
+      const specific = parsed.output;
+      const output =
+        specific?.suppressOutput === true
+          ? ""
+          : run.status === "success"
+            ? run.stdout
+            : run.stderr || run.stdout;
       return {
-        succeeded: run.status === "success",
-        output: run.status === "success" ? run.stdout : run.stderr || run.stdout,
+        succeeded:
+          run.status === "success" && specific?.continueProcessing !== false,
+        output,
         command: hookCommandLabel(hook),
         ...(specific?.additionalContext !== undefined
           ? { additionalContexts: [redactSecrets(specific.additionalContext)] }
@@ -440,6 +510,46 @@ export class ConfiguredHooksRuntime {
   ): void {
     this.engine.recordHookOutputIssue(run, message);
   }
+
+  private readStructuredOutput(
+    run: HookCommandRunDiagnostic,
+  ): ReturnType<typeof readHookSpecificOutput> {
+    const parsed = readHookSpecificOutput(run.rawStdout);
+    if (parsed.invalid) this.recordHookOutputIssue(run, parsed.invalid);
+    return parsed;
+  }
+
+  private parsePermissionDecision(
+    run: HookCommandRunDiagnostic,
+  ): PermissionDecisionResult | undefined {
+    const specific = this.readStructuredOutput(run).output;
+    const unsupported = unsupportedPermissionRequestOutput(specific);
+    if (unsupported !== null) {
+      this.recordHookOutputIssue(run, unsupported);
+      return undefined;
+    }
+    const decision = specific?.decision;
+    if (!decision) return undefined;
+    if (decision.behavior === "allow") {
+      return {
+        kind: "allow",
+      };
+    }
+    if (decision.behavior === "deny") {
+      return {
+        kind: "deny",
+        reason: redactSecrets(
+          trimmedReason(decision.message) ??
+            "PermissionRequest hook denied approval",
+        ),
+      };
+    }
+    this.recordHookOutputIssue(
+      run,
+      "PermissionRequest hook returned unsupported decision behavior",
+    );
+    return undefined;
+  }
 }
 
 export function hookDisplayText(hook: IndividualHookConfig): string {
@@ -448,32 +558,6 @@ export function hookDisplayText(hook: IndividualHookConfig): string {
 
 function hookCommandLabel(hook: IndividualHookConfig): string {
   return redactSecrets(hook.command.statusMessage ?? hook.command.command);
-}
-
-
-function parsePermissionDecision(
-  stdout: string,
-): PermissionDecisionResult | undefined {
-  const specific = parseHookSpecificOutput(stdout);
-  const decision = specific?.decision;
-  if (!decision) return undefined;
-  if (decision.behavior === "allow") {
-    return {
-      kind: "allow",
-      ...(decision.updatedInput !== undefined
-        ? { updatedArgs: decision.updatedInput }
-        : {}),
-    };
-  }
-  if (decision.behavior === "deny") {
-    return {
-      kind: "deny",
-      ...(decision.message !== undefined
-        ? { reason: redactSecrets(decision.message) }
-        : {}),
-    };
-  }
-  return undefined;
 }
 
 function allowStopOutcome(): StopHookOutcome {
@@ -555,4 +639,76 @@ function defaultHookInput(
 
 function firstLine(text: string): string {
   return text.split(/\r?\n/, 1)[0]?.trim() || "Hook blocked.";
+}
+
+function legacyBlockReasonFor(
+  output: HookSpecificOutput | undefined,
+  event: "PreToolUse" | "PostToolUse" | "UserPromptSubmit" | "Stop",
+  recordIssue: (message: string) => void,
+): string | null {
+  const decision = output?.legacyDecision;
+  const reason = trimmedReason(output?.reason);
+  if (decision === "block") {
+    if (reason === undefined) {
+      recordIssue(`${event} hook returned decision:block without a non-empty reason`);
+      return null;
+    }
+    return redactSecrets(reason);
+  }
+  if (decision !== undefined) {
+    recordIssue(`${event} hook returned unsupported decision:${decision}`);
+    return null;
+  }
+  if (
+    reason !== undefined &&
+    (event === "PreToolUse" || event === "PostToolUse")
+  ) {
+    recordIssue(`${event} hook returned reason without decision`);
+  }
+  return null;
+}
+
+function unsupportedPreToolUseOutput(
+  output: HookSpecificOutput | undefined,
+): string | null {
+  if (output?.continueProcessing === false) {
+    return "PreToolUse hook returned unsupported continue:false";
+  }
+  if (output?.stopReason !== undefined) {
+    return "PreToolUse hook returned unsupported stopReason";
+  }
+  if (output?.suppressOutput === true) {
+    return "PreToolUse hook returned unsupported suppressOutput";
+  }
+  return null;
+}
+
+function unsupportedPermissionRequestOutput(
+  output: HookSpecificOutput | undefined,
+): string | null {
+  if (output?.continueProcessing === false) {
+    return "PermissionRequest hook returned unsupported continue:false";
+  }
+  if (output?.stopReason !== undefined) {
+    return "PermissionRequest hook returned unsupported stopReason";
+  }
+  if (output?.suppressOutput === true) {
+    return "PermissionRequest hook returned unsupported suppressOutput";
+  }
+  const decision = output?.decision;
+  if (decision?.updatedInput !== undefined) {
+    return "PermissionRequest hook returned unsupported updatedInput";
+  }
+  if (decision?.updatedPermissions !== undefined) {
+    return "PermissionRequest hook returned unsupported updatedPermissions";
+  }
+  if (decision?.interrupt === true) {
+    return "PermissionRequest hook returned unsupported interrupt:true";
+  }
+  return null;
+}
+
+function trimmedReason(reason: string | undefined): string | undefined {
+  const trimmed = reason?.trim();
+  return trimmed !== undefined && trimmed.length > 0 ? trimmed : undefined;
 }

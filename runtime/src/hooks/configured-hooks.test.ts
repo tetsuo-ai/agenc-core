@@ -221,7 +221,7 @@ describe("configured hooks runtime", () => {
     );
   });
 
-  test("preserves permission hook updated input while redacting diagnostics", async () => {
+  test("rejects permission hook updated input while redacting diagnostics", async () => {
     const runtime = new ConfiguredHooksRuntime({
       cwd: process.cwd(),
       env: process.env,
@@ -257,13 +257,97 @@ describe("configured hooks runtime", () => {
       args: {},
     });
 
-    expect(decision).toEqual({
-      kind: "allow",
-      updatedArgs: { token: "opaque-value-12345" },
-    });
+    expect(decision).toEqual({ kind: "pass" });
     const diagnostic = runtime.latestDiagnostics()[0]!;
+    expect(diagnostic.error).toContain(
+      "PermissionRequest hook returned unsupported updatedInput",
+    );
     expect(diagnostic.stdout).not.toContain("opaque-value-12345");
     expect(diagnostic.stdout).toContain("[REDACTED_SECRET]");
+  });
+
+  test("permission hook denies with sanitized reason", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      PermissionRequest: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command:
+                "node -e \"console.log(JSON.stringify({hookSpecificOutput:{decision:{behavior:'deny',message:'api_key=opaque-value-12345'}}}))\"",
+            },
+          ],
+        },
+      ],
+    });
+
+    const decision = await target.permissionDecisionHooks[0]!({
+      toolName: "Write",
+      args: {},
+    });
+
+    expect(decision).toEqual({
+      kind: "deny",
+      reason: "api_key=[REDACTED_SECRET]",
+    });
+  });
+
+  test("permission hook records unsupported structured output and passes", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      PermissionRequest: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command:
+                "node -e \"console.log(JSON.stringify({continue:false,hookSpecificOutput:{decision:{behavior:'deny',message:'blocked'}}}))\"",
+            },
+          ],
+        },
+      ],
+    });
+
+    const decision = await target.permissionDecisionHooks[0]!({
+      toolName: "Write",
+      args: {},
+    });
+
+    expect(decision).toEqual({ kind: "pass" });
+    expect(runtime.latestDiagnostics()[0]?.error).toContain(
+      "PermissionRequest hook returned unsupported continue:false",
+    );
   });
 
   test("wires UserPromptSubmit hooks with prompt and permission mode input", async () => {
@@ -309,7 +393,7 @@ describe("configured hooks runtime", () => {
     ]);
   });
 
-  test("ignores non-matching UserPromptSubmit hooks", async () => {
+  test("runs UserPromptSubmit hooks regardless of matcher", async () => {
     const runtime = new ConfiguredHooksRuntime({
       cwd: process.cwd(),
       env: process.env,
@@ -330,7 +414,7 @@ describe("configured hooks runtime", () => {
       UserPromptSubmit: [
         {
           matcher: "ship",
-          hooks: [{ type: "command", command: "printf should-not-run" }],
+          hooks: [{ type: "command", command: "printf matcher-ignored" }],
         },
       ],
     });
@@ -341,8 +425,8 @@ describe("configured hooks runtime", () => {
       cwd: process.cwd(),
     });
 
-    expect(decision).toBeUndefined();
-    expect(runtime.latestDiagnostics()).toHaveLength(0);
+    expect(decision?.additionalContexts).toEqual(["matcher-ignored"]);
+    expect(runtime.latestDiagnostics()).toHaveLength(1);
   });
 
   test("ignores malformed UserPromptSubmit hook output", async () => {
@@ -460,6 +544,88 @@ describe("configured hooks runtime", () => {
     expect(runtime.latestDiagnostics()[0]?.status).toBe("non_blocking_error");
   });
 
+  test("records malformed PostToolUse structured output", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      PostToolUse: [
+        {
+          hooks: [{ type: "command", command: "printf '{not-json'" }],
+        },
+      ],
+    });
+
+    const decision = await target.postToolUseHooks[0]!({
+      invocation: { callId: "c-post" } as never,
+      tool: { name: "Read" } as never,
+      args: {},
+      result: "ok",
+    });
+
+    expect(decision).toEqual({ kind: "continue" });
+    expect(runtime.latestDiagnostics()[0]?.error).toContain(
+      "could not be parsed",
+    );
+  });
+
+  test("records invalid PostToolUse hookSpecificOutput shape", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      PostToolUse: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command:
+                "node -e \"console.log(JSON.stringify({hookSpecificOutput:{additionalContext:{bad:true}}}))\"",
+            },
+          ],
+        },
+      ],
+    });
+
+    const decision = await target.postToolUseHooks[0]!({
+      invocation: { callId: "c-post" } as never,
+      tool: { name: "Read" } as never,
+      args: {},
+      result: "ok",
+    });
+
+    expect(decision).toEqual({ kind: "continue" });
+    expect(runtime.latestDiagnostics()[0]?.error).toContain(
+      "additionalContext must be a string",
+    );
+  });
+
   test("ignores invalid PreToolUse permissionDecision output", async () => {
     const runtime = new ConfiguredHooksRuntime({
       cwd: process.cwd(),
@@ -505,6 +671,47 @@ describe("configured hooks runtime", () => {
     expect(runtime.latestDiagnostics()[0]?.error).toContain(
       "permissionDecision must be allow, deny, or ask",
     );
+  });
+
+  test("runs Stop hooks regardless of matcher", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      Stop: [
+        {
+          matcher: "never-matches",
+          hooks: [{ type: "command", command: "printf stop-blocked; exit 2" }],
+        },
+      ],
+    });
+
+    const outcome = await target.stopHooks[0]!.run({
+      sessionId: "sess-1",
+      turnId: "turn-1",
+      cwd: process.cwd(),
+      model: "test-model",
+      permissionMode: "default",
+      stopHookActive: false,
+      lastAssistantMessage: "",
+    });
+
+    expect(outcome.shouldBlock).toBe(true);
+    expect(outcome.blockReason).toBe("stop-blocked");
+    expect(runtime.latestDiagnostics()).toHaveLength(1);
   });
 
   test("uses permission_mode in default UserPromptSubmit test input", async () => {

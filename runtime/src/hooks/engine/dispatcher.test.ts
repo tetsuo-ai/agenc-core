@@ -22,6 +22,7 @@ describe("HookEngine dispatcher", () => {
     expect(matchesPattern("Read", "*")).toBe(true);
     expect(matchesPattern("Read", "^Re")).toBe(true);
     expect(matchesPattern("Read", "Write")).toBe(false);
+    expect(matchesPattern("aaaaaaaaaaaaaaaa!", "(a+)+$")).toBe(false);
   });
 
   test("selects each handler once when several matcher aliases match", () => {
@@ -58,6 +59,28 @@ describe("HookEngine dispatcher", () => {
       "printf edit",
       "printf combined",
     ]);
+  });
+
+  test("selects UserPromptSubmit and Stop handlers without applying matchers", () => {
+    const engine = makeEngine({
+      UserPromptSubmit: [
+        {
+          matcher: "ship",
+          hooks: [{ type: "command", command: "printf prompt" }],
+        },
+      ],
+      Stop: [
+        {
+          matcher: "never",
+          hooks: [{ type: "command", command: "printf stop" }],
+        },
+      ],
+    });
+
+    expect(
+      engine.selectHandlersForMatcherInputs("UserPromptSubmit", ["skip"]),
+    ).toHaveLength(1);
+    expect(engine.selectHandlersForMatcherInputs("Stop", ["skip"])).toHaveLength(1);
   });
 
   test("dispatches matching command hooks with JSON stdin", async () => {
@@ -121,6 +144,50 @@ describe("HookEngine dispatcher", () => {
     expect(skipped.status).toBe("skipped");
     expect(engine.latestDiagnostics()[0]?.status).toBe("skipped");
   });
+
+  test("does not spawn hooks when the signal is already aborted", async () => {
+    const engine = makeEngine({
+      UserPromptSubmit: [
+        {
+          hooks: [{ type: "command", command: "printf should-not-run" }],
+        },
+      ],
+    });
+    const controller = new AbortController();
+    controller.abort("done");
+
+    const result = await engine.runCommandHook(
+      engine.listHooks()[0]!,
+      {},
+      controller.signal,
+    );
+
+    expect(result.status).toBe("skipped");
+    expect(result.stdout).toBe("");
+    expect(result.error).toBe("hook aborted");
+  });
+
+  test("escalates timed-out hooks that ignore SIGTERM", async () => {
+    const engine = makeEngine({
+      PreToolUse: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command:
+                "node -e \"process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)\"",
+              timeout_ms: 20,
+            },
+          ],
+        },
+      ],
+    });
+
+    const timedOut = await engine.runCommandHook(engine.listHooks()[0]!, {});
+
+    expect(timedOut.status).toBe("timeout");
+    expect(timedOut.error).toContain("hook timed out");
+  });
 });
 
 describe("hook output parser", () => {
@@ -155,5 +222,22 @@ describe("hook output parser", () => {
         JSON.stringify({ hookSpecificOutput: { permissionDecision: "block" } }),
       ).invalid,
     ).toBe("permissionDecision must be allow, deny, or ask");
+  });
+
+  test("merges universal fields with nested hookSpecificOutput", () => {
+    const parsed = readHookSpecificOutput(
+      JSON.stringify({
+        continue: false,
+        stopReason: "halt",
+        hookSpecificOutput: {
+          hookEventName: "PostToolUse",
+          additionalContext: "details",
+        },
+      }),
+    );
+
+    expect(parsed.output?.continueProcessing).toBe(false);
+    expect(parsed.output?.stopReason).toBe("halt");
+    expect(parsed.output?.additionalContext).toBe("details");
   });
 });

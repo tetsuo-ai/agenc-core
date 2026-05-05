@@ -562,7 +562,11 @@ export async function requestApproval(
       return { decision: { kind: "approved" }, source: hookDispatcherApprovalSource };
     }
     if (decision.kind === "deny") {
-      return { decision: { kind: "denied" }, source: hookDispatcherApprovalSource };
+      return {
+        decision: { kind: "denied" },
+        source: hookDispatcherApprovalSource,
+        ...(decision.reason !== undefined ? { reason: decision.reason } : {}),
+      };
     }
     // `ask` / `pass` → fall through to resolver.
   }

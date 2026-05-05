@@ -526,11 +526,12 @@ describe("requestApproval — permissionDecisionHooks wiring", () => {
   test("deny hook bypasses resolver", async () => {
     const res = await requestApproval({
       ctx: mkCtx(),
-      permissionDecisionHooks: [() => ({ kind: "deny" })],
+      permissionDecisionHooks: [() => ({ kind: "deny", reason: "blocked" })],
       resolver: { request: async () => ({ kind: "approved" }) },
     });
     expect(res.decision.kind).toBe("denied");
     expect(res.source).toBe("permission_hook");
+    expect(res.reason).toBe("blocked");
   });
 
   test("ask hook falls through to resolver", async () => {

@@ -23,22 +23,37 @@ export async function runHookCommand(
   opts: RunHookCommandOptions,
 ): Promise<CommandRunResult> {
   const started = Date.now();
+  if (opts.signal?.aborted === true) {
+    return {
+      status: "skipped",
+      stdout: "",
+      stderr: "",
+      durationMs: Date.now() - started,
+      error: "hook aborted",
+    };
+  }
   return new Promise((resolve) => {
     const child = spawn(opts.shellPath, ["-c", opts.command], {
       cwd: opts.cwd,
       env: opts.env,
       stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32",
     });
     let stdout = "";
     let stderr = "";
     let settled = false;
     let abortListener: (() => void) | null = null;
+    let terminationResult:
+      | Omit<CommandRunResult, "durationMs" | "stdout" | "stderr">
+      | null = null;
+    let killEscalation: NodeJS.Timeout | null = null;
     const finish = (
       result: Omit<CommandRunResult, "durationMs" | "stdout" | "stderr">,
     ) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      if (killEscalation !== null) clearTimeout(killEscalation);
       if (abortListener !== null && opts.signal !== undefined) {
         opts.signal.removeEventListener("abort", abortListener);
         abortListener = null;
@@ -50,17 +65,25 @@ export async function runHookCommand(
         durationMs: Date.now() - started,
       });
     };
+    const requestTermination = (
+      result: Omit<CommandRunResult, "durationMs" | "stdout" | "stderr">,
+    ) => {
+      if (settled || terminationResult !== null) return;
+      terminationResult = result;
+      signalChild(child.pid, "SIGTERM");
+      killEscalation = setTimeout(() => {
+        signalChild(child.pid, "SIGKILL");
+      }, 250);
+    };
     const timeout = setTimeout(() => {
-      child.kill("SIGTERM");
-      finish({
+      requestTermination({
         status: "timeout",
         error: `hook timed out after ${Math.max(1, Math.ceil(opts.timeoutMs / 1000))}s`,
       });
     }, opts.timeoutMs);
     if (opts.signal !== undefined) {
       abortListener = () => {
-        child.kill("SIGTERM");
-        finish({ status: "skipped", error: "hook aborted" });
+        requestTermination({ status: "skipped", error: "hook aborted" });
       };
       opts.signal.addEventListener("abort", abortListener, { once: true });
     }
@@ -79,6 +102,10 @@ export async function runHookCommand(
       });
     });
     child.on("close", (code) => {
+      if (terminationResult !== null) {
+        finish(terminationResult);
+        return;
+      }
       if (code === 0) {
         finish({ status: "success", exitCode: 0 });
         return;
@@ -98,4 +125,21 @@ export async function runHookCommand(
     });
     child.stdin.end(opts.stdin);
   });
+}
+
+function signalChild(pid: number | undefined, signal: NodeJS.Signals): void {
+  if (pid === undefined) return;
+  try {
+    if (process.platform === "win32") {
+      process.kill(pid, signal);
+    } else {
+      process.kill(-pid, signal);
+    }
+  } catch {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      // Best effort; close/error events remain authoritative.
+    }
+  }
 }
