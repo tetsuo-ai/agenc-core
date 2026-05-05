@@ -8,6 +8,8 @@ import { findPluginManifestPath } from "../manifest.js";
 import { validateMarketplaceManifest, validatePluginManifest, type ValidationResult } from "../validation.js";
 import { deletePluginDataDir, sanitizePluginId } from "../directories.js";
 import {
+  pluginSourceNeedsRedaction,
+  redactPluginSource,
   resolvePluginSource,
   type PluginFetchTelemetry,
   type PluginProcessRunner,
@@ -274,7 +276,8 @@ export async function installPluginOp(
     });
     await writeInstallMetadata(destination, {
       name: pluginName,
-      source: resolutionKind === "local" ? source : input.source,
+      source: resolutionKind === "local" ? source : redactPluginSource(input.source),
+      ...(resolutionKind !== "local" && pluginSourceNeedsRedaction(input.source) ? { sourceRedacted: true } : {}),
       sourceRoot: source,
       scope,
       resolutionKind,
@@ -560,6 +563,7 @@ async function writeInstallMetadata(
   metadata: {
     readonly name: string;
     readonly source: string;
+    readonly sourceRedacted?: boolean;
     readonly sourceRoot?: string;
     readonly scope: PluginScope;
     readonly resolutionKind?: PluginResolutionKind;
@@ -578,7 +582,7 @@ async function readInstalledPluginSource(
     join(pluginRoot, ".agenc-plugin", INSTALL_METADATA_FILE),
     null,
   );
-  return isRecord(metadata) && typeof metadata.source === "string"
+  return isRecord(metadata) && typeof metadata.source === "string" && metadata.sourceRedacted !== true
     ? metadata.source
     : undefined;
 }

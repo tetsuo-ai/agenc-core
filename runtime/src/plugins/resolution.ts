@@ -22,6 +22,7 @@ import {
   verify as verifySignatureBytes,
 } from "node:crypto";
 import { pathToFileURL } from "node:url";
+import { redactSecrets } from "../secrets/index.js";
 import { findPluginManifestPath, loadPluginManifest } from "./manifest.js";
 import { sanitizePluginId } from "./directories.js";
 import type { LoadedPlugin } from "./loader.js";
@@ -180,7 +181,7 @@ export async function resolvePluginSource(
     ...options,
     requireSignature: options.requireSignature ?? kind !== "local",
   };
-  const telemetrySource = source;
+  const safeSource = redactPluginSource(source);
   let tempRoot: string | undefined;
   try {
     const cacheRoot = pluginSourceCacheRoot(options.agencHome, source);
@@ -196,14 +197,14 @@ export async function resolvePluginSource(
       tempRoot = undefined;
       emitTelemetry(options, {
         kind,
-        source: telemetrySource,
+        source: safeSource,
         host: telemetryHost(source),
         outcome: "success",
         durationMs: Date.now() - startedAt,
       });
       return {
         kind,
-        requestedSource: source,
+        requestedSource: safeSource,
         pluginRoot,
         ...(options.cache !== false && kind !== "local" ? { cacheRoot } : {}),
         signature,
@@ -218,14 +219,14 @@ export async function resolvePluginSource(
         const signature = await verifyResolvedPluginSignature(cacheRoot, signatureOptions);
         emitTelemetry(options, {
           kind,
-          source: telemetrySource,
+          source: safeSource,
           host: telemetryHost(source),
           outcome: "cache_hit",
           durationMs: Date.now() - startedAt,
         });
         return {
           kind,
-          requestedSource: source,
+          requestedSource: safeSource,
           pluginRoot: cacheRoot,
           cacheRoot,
           signature,
@@ -240,7 +241,7 @@ export async function resolvePluginSource(
     }
     emitTelemetry(options, {
       kind,
-      source: telemetrySource,
+      source: safeSource,
       host: telemetryHost(source),
       outcome: "failure",
       durationMs: Date.now() - startedAt,
@@ -343,6 +344,14 @@ export async function resolvePluginDependencyClosure(
   const error = await walk(rootId, rootId);
   if (error) return error;
   return { ok: true, closure };
+}
+
+export function redactPluginSource(source: string): string {
+  return redactSecrets(redactCredentialUrls(source));
+}
+
+export function pluginSourceNeedsRedaction(source: string): boolean {
+  return redactPluginSource(source) !== source;
 }
 
 export function verifyPluginDependencyState(plugins: readonly LoadedPlugin[]): {
@@ -608,7 +617,7 @@ function pluginVersionSatisfies(version: string | undefined, constraint: string 
   const operator = /^(>=|<=|>|<|=|\^|~)/u.exec(trimmed)?.[1] ?? "=";
   const target = parsePluginVersion(trimmed.slice(operator === "=" ? 1 : operator.length));
   const actual = parsePluginVersion(version);
-  if (!actual || !target) return version === trimmed || version === trimmed.replace(/^=/u, "");
+  if (!actual || !target) return operator === "=" && version === trimmed.slice(1);
   const cmp = comparePluginVersions(actual, target);
   switch (operator) {
     case ">=":
@@ -628,21 +637,55 @@ function pluginVersionSatisfies(version: string | undefined, constraint: string 
   }
 }
 
-function parsePluginVersion(version: string): { readonly major: number; readonly minor: number; readonly patch: number } | null {
-  const match = /^v?([0-9]+)(?:\.([0-9]+))?(?:\.([0-9]+))?/u.exec(version.trim());
+interface ParsedPluginVersion {
+  readonly major: number;
+  readonly minor: number;
+  readonly patch: number;
+  readonly prerelease: readonly string[];
+}
+
+function parsePluginVersion(version: string): ParsedPluginVersion | null {
+  const match = /^v?(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*))?(?:\.(0|[1-9][0-9]*))?(?:-([0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*))?(?:\+[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$/u.exec(version.trim());
   if (!match) return null;
   return {
     major: Number.parseInt(match[1]!, 10),
     minor: Number.parseInt(match[2] ?? "0", 10),
     patch: Number.parseInt(match[3] ?? "0", 10),
+    prerelease: match[4]?.split(".") ?? [],
   };
 }
 
 function comparePluginVersions(
-  a: { readonly major: number; readonly minor: number; readonly patch: number },
-  b: { readonly major: number; readonly minor: number; readonly patch: number },
+  a: ParsedPluginVersion,
+  b: ParsedPluginVersion,
 ): number {
-  return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
+  return a.major - b.major ||
+    a.minor - b.minor ||
+    a.patch - b.patch ||
+    comparePrereleaseVersions(a.prerelease, b.prerelease);
+}
+
+function comparePrereleaseVersions(a: readonly string[], b: readonly string[]): number {
+  if (a.length === 0 && b.length === 0) return 0;
+  if (a.length === 0) return 1;
+  if (b.length === 0) return -1;
+  const length = Math.max(a.length, b.length);
+  for (let index = 0; index < length; index += 1) {
+    const left = a[index];
+    const right = b[index];
+    if (left === undefined) return -1;
+    if (right === undefined) return 1;
+    const leftNumber = /^[0-9]+$/u.test(left) ? Number.parseInt(left, 10) : null;
+    const rightNumber = /^[0-9]+$/u.test(right) ? Number.parseInt(right, 10) : null;
+    if (leftNumber !== null && rightNumber !== null && leftNumber !== rightNumber) {
+      return leftNumber - rightNumber;
+    }
+    if (leftNumber !== null && rightNumber === null) return -1;
+    if (leftNumber === null && rightNumber !== null) return 1;
+    const compared = left.localeCompare(right);
+    if (compared !== 0) return compared;
+  }
+  return 0;
 }
 
 export function pluginDependencyIdentifier(plugin: LoadedPlugin): string {
@@ -1149,10 +1192,14 @@ async function runProcess(
   args: readonly string[],
 ): Promise<PluginProcessResult> {
   const runner = options.runProcess ?? defaultPluginProcessRunner;
-  return runner(command, args, {
-    timeoutMs: DEFAULT_PROCESS_TIMEOUT_MS,
-    maxOutputBytes: DEFAULT_PROCESS_MAX_OUTPUT_BYTES,
-  });
+  try {
+    return await runner(command, args, {
+      timeoutMs: DEFAULT_PROCESS_TIMEOUT_MS,
+      maxOutputBytes: DEFAULT_PROCESS_MAX_OUTPUT_BYTES,
+    });
+  } catch (error) {
+    throw redactPluginProcessError(error);
+  }
 }
 
 export async function defaultPluginProcessRunner(
@@ -1211,7 +1258,7 @@ export async function defaultPluginProcessRunner(
         return;
       }
       if (code !== 0) {
-        reject(new Error(`${command} failed (${code ?? signal}): ${stderr || stdout}`));
+        reject(new Error(`${command} failed (${code ?? signal}): ${redactPluginSource(stderr || stdout)}`));
         return;
       }
       resolvePromise({ stdout, stderr });
@@ -1403,6 +1450,15 @@ function sha256Hex(data: Uint8Array | string): string {
   return createHash("sha256").update(data).digest("hex");
 }
 
+function redactPluginProcessError(error: unknown): Error {
+  if (error instanceof Error) {
+    const redacted = new Error(redactPluginSource(error.message));
+    redacted.name = error.name;
+    return redacted;
+  }
+  return new Error(redactPluginSource(String(error)));
+}
+
 async function readPublisherPublicKey(path: string, publisher: string): Promise<string> {
   const parsed = JSON.parse(await readFile(path, "utf8")) as PublisherKeyring;
   const entry = parsed.publishers?.[publisher];
@@ -1418,7 +1474,26 @@ function defaultPublishersPath(): string {
 
 function cacheKeyForSource(source: string): string {
   const hash = createHash("sha256").update(source).digest("hex").slice(0, 16);
-  return `${source.replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 48)}-${hash}`;
+  const safeSource = redactPluginSource(source);
+  return `${safeSource.replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 48)}-${hash}`;
+}
+
+function redactCredentialUrls(input: string): string {
+  return input.replace(/\b(?:git\+)?(?:https?|ssh):\/\/[^\s"'<>]+/giu, (raw) => {
+    const prefix = raw.startsWith("git+") ? "git+" : "";
+    const urlText = prefix ? raw.slice("git+".length) : raw;
+    try {
+      const url = new URL(urlText);
+      if (url.username || url.password) {
+        url.username = "redacted";
+        url.password = "";
+      }
+      if (url.search) url.search = "?redacted=1";
+      return `${prefix}${url.toString()}`;
+    } catch {
+      return raw;
+    }
+  });
 }
 
 function assertSafeNpmPackageSource(source: string): void {

@@ -12,6 +12,7 @@ import {
   pluginSignaturePayloadBytes,
   pluginSourceCacheRoot,
   qualifyPluginDependency,
+  redactPluginSource,
   resolvePluginSource,
   resolvePluginDependencyClosure,
   verifyResolvedPluginSignature,
@@ -186,6 +187,72 @@ describe("plugin source resolution", () => {
       expect(updated.source).toBe("@tetsuo-ai/remote-demo");
       expect(updated.resolutionKind).toBe("npm");
       expect(npmPacks).toBe(2);
+    });
+  });
+
+  test("redacts credential-bearing remote sources from metadata, telemetry, and errors", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const credentialSource = "https://opaque-token@agenc.tech/plugins/private.tgz?access_token=secretvalue";
+      const events: PluginFetchTelemetry[] = [];
+      const runProcess: PluginProcessRunner = async (command, args) => {
+        if (command === "tar") {
+          if (args[0] === "-tzf") return { stdout: safeTarListing("package"), stderr: "" };
+          if (args[0] === "-tvzf") return { stdout: safeTarVerboseListing("package"), stderr: "" };
+          const extractRoot = String(args[args.indexOf("-C") + 1]);
+          await writePlugin(join(extractRoot, "package"), "private-demo");
+          return { stdout: "", stderr: "" };
+        }
+        throw new Error(`unexpected process: ${command}`);
+      };
+
+      const installed = await installPluginOp({
+        source: credentialSource,
+        agencHome,
+        workspaceRoot: root,
+        runResolutionProcess: runProcess,
+        fetchResolutionBytes: async () => Buffer.from("fixture"),
+        onPluginFetchTelemetry: (event) => events.push(event),
+        requireSignature: false,
+      });
+      const metadata = await readFile(
+        join(installed.destination, ".agenc-plugin", "agenc-install.json"),
+        "utf8",
+      );
+
+      expect(redactPluginSource(credentialSource)).toBe("https://redacted@agenc.tech/plugins/private.tgz?redacted=1");
+      expect(metadata).toContain('"sourceRedacted": true');
+      expect(metadata).toContain('"source": "https://redacted@agenc.tech/plugins/private.tgz?redacted=1"');
+      expect(metadata).not.toContain("opaque-token");
+      expect(metadata).not.toContain("secretvalue");
+      expect(events.at(-1)?.source).toBe("https://redacted@agenc.tech/plugins/private.tgz?redacted=1");
+      await expect(
+        updatePluginOp({
+          pluginId: "private-demo",
+          agencHome,
+          workspaceRoot: root,
+          runResolutionProcess: runProcess,
+        }),
+      ).rejects.toThrow(/no recorded source/u);
+
+      const failingEvents: PluginFetchTelemetry[] = [];
+      let errorMessage = "";
+      try {
+        await resolvePluginSource("git+https://opaque-token@agenc.tech/private/repo.git?access_token=secretvalue", {
+          agencHome,
+          workspaceRoot: root,
+          runProcess: async () => {
+            throw new Error("fatal: https://opaque-token@agenc.tech/private/repo.git?access_token=secretvalue denied");
+          },
+          onTelemetry: (event) => failingEvents.push(event),
+        });
+      } catch (error) {
+        errorMessage = String((error as Error).message);
+      }
+      expect(errorMessage).toContain("https://redacted@agenc.tech/private/repo.git?redacted=1");
+      expect(errorMessage).not.toContain("opaque-token");
+      expect(errorMessage).not.toContain("secretvalue");
+      expect(failingEvents.at(-1)?.source).toBe("git+https://redacted@agenc.tech/private/repo.git?redacted=1");
     });
   });
 
@@ -631,6 +698,18 @@ describe("plugin source resolution", () => {
     await expect(
       resolvePluginDependencyClosure("app@main", async (id) => {
         const entries: Record<string, { dependencies: readonly string[]; version: string }> = {
+          "app@main": { dependencies: ["lib@=1.5.0+build.1"], version: "1.0.0" },
+          "lib@main": { dependencies: [], version: "1.5.0+build.2" },
+        };
+        return entries[id] ?? null;
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      closure: ["lib@main", "app@main"],
+    });
+    await expect(
+      resolvePluginDependencyClosure("app@main", async (id) => {
+        const entries: Record<string, { dependencies: readonly string[]; version: string }> = {
           "app@main": { dependencies: ["lib@^2.0.0"], version: "1.0.0" },
           "lib@main": { dependencies: [], version: "1.5.0" },
         };
@@ -657,6 +736,36 @@ describe("plugin source resolution", () => {
       dependency: "lib@main",
       requiredVersion: "<1.5.0",
       actualVersion: "1.5.0",
+    });
+    await expect(
+      resolvePluginDependencyClosure("app@main", async (id) => {
+        const entries: Record<string, { dependencies: readonly string[]; version: string }> = {
+          "app@main": { dependencies: ["lib@>=1.5.0"], version: "1.0.0" },
+          "lib@main": { dependencies: [], version: "1.5.0-beta.1" },
+        };
+        return entries[id] ?? null;
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      reason: "version-mismatch",
+      dependency: "lib@main",
+      requiredVersion: ">=1.5.0",
+      actualVersion: "1.5.0-beta.1",
+    });
+    await expect(
+      resolvePluginDependencyClosure("app@main", async (id) => {
+        const entries: Record<string, { dependencies: readonly string[]; version: string }> = {
+          "app@main": { dependencies: ["lib@>=1.0.0"], version: "1.0.0" },
+          "lib@main": { dependencies: [], version: "1.5.0-invalid!" },
+        };
+        return entries[id] ?? null;
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      reason: "version-mismatch",
+      dependency: "lib@main",
+      requiredVersion: ">=1.0.0",
+      actualVersion: "1.5.0-invalid!",
     });
 
     expect(qualifyPluginDependency("lib", "app@main")).toBe("lib@main");
