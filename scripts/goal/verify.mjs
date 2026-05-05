@@ -560,6 +560,10 @@ const ITEM_EVIDENCE = {
       "runtime/src/sandbox/escalation/on-request.ts",
       "runtime/src/sandbox/escalation/on-failure.ts",
       "runtime/src/sandbox/escalation/on-request-rule-request-permission.ts",
+      "runtime/src/tools/orchestrator.ts",
+      "runtime/src/tools/router.ts",
+      "runtime/src/bin/bootstrap-services.ts",
+      "runtime/src/tools/system/exec-command.ts",
       "parity/C-01e-parity.json",
     ],
     tests: ["runtime/src/sandbox/escalation/escalation.test.ts"],
@@ -572,6 +576,11 @@ const ITEM_EVIDENCE = {
       { pattern: "defaultAvailableApprovalDecisions", scope: "runtime/src/sandbox/escalation" },
       { pattern: "proposedNetworkPolicyAmendments", scope: "runtime/src/sandbox/escalation" },
       { pattern: "with_additional_permissions", scope: "runtime/src/sandbox/escalation" },
+      { pattern: "sandboxPermissionsFromArgs", scope: "runtime/src/tools/orchestrator.ts" },
+      { pattern: "evaluateLocalShellExecPolicyAction", scope: "runtime/src/tools/orchestrator.ts" },
+      { pattern: "currentExecPolicyFromSession", scope: "runtime/src/tools/router.ts" },
+      { pattern: "requestManagedNetworkApprovalForSandbox", scope: "runtime/src/bin/bootstrap-services.ts" },
+      { pattern: "require_escalated", scope: "runtime/src/tools/system/exec-command.ts" },
     ],
   },
   "C-01f": {
@@ -2765,6 +2774,11 @@ async function donorRuntimePortGates(item) {
     const approvalsSource = readFileSync(path.join(dir, "approvals.ts"), "utf8");
     const networkSource = readFileSync(path.join(dir, "network-approval.ts"), "utf8");
     const testsSource = readFileSync(path.join(dir, "escalation.test.ts"), "utf8");
+    const orchestratorSource = readFileSync(path.join(root, "runtime/src/tools/orchestrator.ts"), "utf8");
+    const routerSource = readFileSync(path.join(root, "runtime/src/tools/router.ts"), "utf8");
+    const bootstrapSource = readFileSync(path.join(root, "runtime/src/bin/bootstrap-services.ts"), "utf8");
+    const execCommandSource = readFileSync(path.join(root, "runtime/src/tools/system/exec-command.ts"), "utf8");
+    const orchestratorTestsSource = readFileSync(path.join(root, "runtime/src/tools/orchestrator.test.ts"), "utf8");
     if (!/sandboxOverrideForFirstAttempt/.test(sandboxingSource) || !/selectFirstAttemptSandbox/.test(sandboxingSource)) {
       failGate("C-01e: sandboxing port must select first-attempt sandbox overrides");
     }
@@ -2785,6 +2799,24 @@ async function donorRuntimePortGates(item) {
     }
     if (!/requestManagedNetworkApprovalForSandbox/.test(networkSource) || !/not_allowed_in_sandbox_mode/.test(networkSource)) {
       failGate("C-01e: network approval port must enforce sandbox-mode approval gating");
+    }
+    if (!/sandboxPermissionsFromArgs/.test(orchestratorSource) || !/selectFirstAttemptSandbox/.test(orchestratorSource)) {
+      failGate("C-01e: live orchestrator must apply sandbox_permissions to first-attempt sandbox selection");
+    }
+    if (!/evaluateLocalShellExecPolicyAction/.test(orchestratorSource) || !/determineInterceptedExecAction/.test(orchestratorSource)) {
+      failGate("C-01e: live orchestrator must apply exec-policy interception decisions");
+    }
+    if (!/currentExecPolicyFromSession/.test(routerSource) || !/execPolicy/.test(routerSource)) {
+      failGate("C-01e: tool router must pass the current exec policy into orchestration");
+    }
+    if (!/requestManagedNetworkApprovalForSandbox/.test(bootstrapSource)) {
+      failGate("C-01e: bootstrap network approval service must route through sandbox approval gate");
+    }
+    if (!/require_escalated/.test(execCommandSource) || !/with_additional_permissions/.test(execCommandSource)) {
+      failGate("C-01e: exec-command schema must advertise sandbox escalation permission modes");
+    }
+    if (!/sandbox_permissions=require_escalated/.test(orchestratorTestsSource) || !/exec-policy prefix allow drives unsandboxed local-shell dispatch/.test(orchestratorTestsSource)) {
+      failGate("C-01e: orchestrator tests must exercise live sandbox_permissions and exec-policy routing");
     }
     if (!/\bexecFile\b/.test(testsSource) || !/NetworkApprovalService/.test(testsSource) || !/Policy\.empty/.test(testsSource)) {
       failGate("C-01e: tests must exercise subprocess, network approval, and exec-policy paths");

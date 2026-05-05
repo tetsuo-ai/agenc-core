@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { NetworkApprovalService } from "../../permissions/network-approval.js";
 import { Policy } from "../execpolicy/policy.js";
@@ -333,6 +333,20 @@ describe("network approval escalation", () => {
     });
 
     const service = new NetworkApprovalService();
+    const blockedResolver = vi.fn(async () => ({ kind: "approved" as const }));
+    const blockedDecision = await requestManagedNetworkApprovalForSandbox({
+      service,
+      key: { host: "registry.npmjs.org", protocol: "https", port: 443 },
+      sandboxPolicy: { kind: "danger_full_access" },
+      approvalPolicy: "on_request",
+      resolver: { requestNetworkApproval: blockedResolver },
+    });
+    expect(blockedDecision).toEqual({
+      kind: "deny",
+      reason: "not_allowed_in_sandbox_mode",
+    });
+    expect(blockedResolver).not.toHaveBeenCalled();
+
     const decision = await requestManagedNetworkApprovalForSandbox({
       service,
       key: { host: "Registry.NPMJS.org.", protocol: "https", port: 443 },

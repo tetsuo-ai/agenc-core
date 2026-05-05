@@ -21,6 +21,7 @@ import {
 } from "./orchestrator.js";
 import type { Tool } from "./types.js";
 import { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
+import { Policy } from "../sandbox/execpolicy/policy.js";
 
 const readTool: Tool = {
   name: "FileRead",
@@ -797,6 +798,133 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
     });
     expect(result).toBe("ok");
     expect(ran).toBe(1);
+  });
+
+  test("sandbox_permissions=require_escalated: approval drives first attempt with sandbox off", async () => {
+    const dispatches: string[] = [];
+    const result = await orchestrateToolCall<string>({
+      tool: mkTool(),
+      approvalCtx: mkCtx(),
+      approvalPolicy: "untrusted",
+      sandboxMode: "workspace_write",
+      approvalArgs: {
+        sandbox_permissions: "require_escalated",
+        justification: "needs full workspace access",
+      },
+      dispatch: async (sandbox) => {
+        dispatches.push(sandbox);
+        return "ok";
+      },
+      approvalResolver: {
+        request: async () => ({ kind: "approved" }),
+      },
+    });
+
+    expect(result).toBe("ok");
+    expect(dispatches).toEqual(["danger_full_access"]);
+  });
+
+  test("sandbox_permissions=require_escalated: denied approval blocks dispatch", async () => {
+    const dispatched = vi.fn(async () => "ok");
+    await expect(
+      orchestrateToolCall<string>({
+        tool: mkTool(),
+        approvalCtx: mkCtx(),
+        approvalPolicy: "untrusted",
+        sandboxMode: "workspace_write",
+        approvalArgs: { sandbox_permissions: "require_escalated" },
+        dispatch: dispatched,
+        approvalResolver: {
+          request: async () => ({ kind: "denied" }),
+        },
+      }),
+    ).rejects.toBeInstanceOf(ApprovalRejectedError);
+
+    expect(dispatched).not.toHaveBeenCalled();
+  });
+
+  test("sandbox_permissions=with_additional_permissions stays sandboxed after approval", async () => {
+    const dispatches: string[] = [];
+    const result = await orchestrateToolCall<string>({
+      tool: mkTool(),
+      approvalCtx: mkCtx(),
+      approvalPolicy: "untrusted",
+      sandboxMode: "workspace_write",
+      approvalArgs: {
+        sandbox_permissions: "with_additional_permissions",
+        additional_permissions: { network: { enabled: true } },
+      },
+      dispatch: async (sandbox) => {
+        dispatches.push(sandbox);
+        return "ok";
+      },
+      approvalResolver: {
+        request: async () => ({ kind: "approved" }),
+      },
+    });
+
+    expect(result).toBe("ok");
+    expect(dispatches).toEqual(["workspace_write"]);
+  });
+
+  test("exec-policy prefix allow drives unsandboxed local-shell dispatch without resolver", async () => {
+    const policy = Policy.empty();
+    policy.addPrefixRule(["git", "status"], "allow");
+    const dispatches: string[] = [];
+    const result = await orchestrateToolCall<string>({
+      tool: mkTool(),
+      approvalCtx: mkCtx(),
+      approvalPolicy: "on_request",
+      sandboxMode: "workspace_write",
+      execPolicy: policy,
+      payload: {
+        kind: "local_shell",
+        params: { command: ["git", "status"] },
+      },
+      dispatch: async (sandbox) => {
+        dispatches.push(sandbox);
+        return "ok";
+      },
+    });
+
+    expect(result).toBe("ok");
+    expect(dispatches).toEqual(["danger_full_access"]);
+  });
+
+  test("exec-policy prompt is rejected when granular rule approvals are disabled", async () => {
+    const policy = Policy.empty();
+    policy.addPrefixRule(["git"], "prompt");
+    const dispatched = vi.fn(async () => "ok");
+    const resolver: ApprovalResolver = {
+      request: vi.fn(async () => ({ kind: "approved" })),
+    };
+    const granular: GranularApprovalConfig = {
+      sandbox_approval: true,
+      rules: false,
+      skill_approval: true,
+      request_permissions: true,
+      mcp_elicitations: true,
+    };
+
+    await expect(
+      orchestrateToolCall<string>({
+        tool: mkTool(),
+        approvalCtx: mkCtx(),
+        approvalPolicy: "granular",
+        sandboxMode: "workspace_write",
+        granular,
+        execPolicy: policy,
+        payload: {
+          kind: "local_shell",
+          params: { command: ["git", "status"] },
+        },
+        dispatch: dispatched,
+        approvalResolver: resolver,
+      }),
+    ).rejects.toBeInstanceOf(ApprovalRejectedError);
+
+    expect(dispatched).not.toHaveBeenCalled();
+    expect(resolver.request).not.toHaveBeenCalled();
   });
 
   test("needs_approval path records sanitized policy audit", async () => {

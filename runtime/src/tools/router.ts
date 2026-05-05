@@ -40,6 +40,7 @@ import {
 import type { Session } from "../session/session.js";
 import type { GuardianApprovalReviewer } from "../permissions/guardian/reviewer.js";
 import { arbitratePermissionMode } from "../permissions/guardian/arbiter.js";
+import type { Policy } from "../sandbox/execpolicy/policy.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type {
   CanUseToolFn,
@@ -146,6 +147,7 @@ export interface LiveToolDispatchOptions {
   readonly source?: ToolCallSource;
   readonly approvalPolicy: ApprovalPolicy;
   readonly sandboxMode: SandboxMode;
+  readonly execPolicy?: Policy;
   /**
    * Optional `GranularApprovalConfig` paired with
    * `approvalPolicy === "granular"`. Piped through to
@@ -182,6 +184,7 @@ export interface LiveToolDispatchOptions {
 export interface DirectToolDispatchOptions {
   readonly approvalPolicy?: ApprovalPolicy;
   readonly sandboxMode?: SandboxMode;
+  readonly execPolicy?: Policy;
   readonly granular?: GranularApprovalConfig;
   readonly permissionHooks?: ReadonlyArray<PermissionRequestHook>;
   readonly permissionDecisionHooks?: ReadonlyArray<PermissionDecisionHook>;
@@ -522,6 +525,8 @@ export class ToolRouter {
         ...invocation,
         payload: executionPayload,
       };
+      const activeExecPolicy =
+        opts.execPolicy ?? currentExecPolicyFromSession(executionInvocation.session);
       const executionRawArgs = stringifyToolArgsWithBigInt(executionArgs);
       const runtimeCallContext = buildToolRuntimeCallContext({
         toolCall: {
@@ -550,6 +555,7 @@ export class ToolRouter {
         approvalPolicy: effectiveApprovalPolicy,
         sandboxMode: requestedSandboxMode,
         payload: executionPayload,
+        ...(activeExecPolicy !== undefined ? { execPolicy: activeExecPolicy } : {}),
         approvalArgs: executionArgs,
         ...(opts.granular !== undefined ? { granular: opts.granular } : {}),
         ...(opts.permissionHooks !== undefined
@@ -881,6 +887,8 @@ export class ToolRouter {
         : forcedApprovalReason !== undefined
           ? "untrusted"
           : opts.approvalPolicy;
+    const activeExecPolicy =
+      opts.execPolicy ?? currentExecPolicyFromSession(opts.session);
     const runtimeCallContext = buildToolRuntimeCallContext({
       toolCall,
       payload: executionPayload,
@@ -897,6 +905,7 @@ export class ToolRouter {
         approvalPolicy: effectiveApprovalPolicy,
         sandboxMode: opts.sandboxMode,
         payload: executionPayload,
+        ...(activeExecPolicy !== undefined ? { execPolicy: activeExecPolicy } : {}),
         approvalArgs,
         ...(opts.granular !== undefined ? { granular: opts.granular } : {}),
         ...(opts.permissionHooks !== undefined
@@ -1031,6 +1040,35 @@ function isSandboxMode(value: unknown): value is SandboxMode {
     value === "workspace_write" ||
     value === "external_sandbox"
   );
+}
+
+function currentExecPolicyFromSession(
+  session: Session | undefined,
+): Policy | undefined {
+  const current = session?.services?.execPolicy?.current?.();
+  return execPolicyFromUnknown(current);
+}
+
+function execPolicyFromUnknown(value: unknown): Policy | undefined {
+  if (isExecPolicy(value)) return value;
+  if (isRecord(value)) {
+    const policy = value["policy"] ?? value["execPolicy"];
+    if (isExecPolicy(policy)) return policy;
+  }
+  return undefined;
+}
+
+function isExecPolicy(value: unknown): value is Policy {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { readonly checkMultipleWithOptions?: unknown })
+      .checkMultipleWithOptions === "function"
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function rawPayloadArguments(payload: ToolPayload): string {

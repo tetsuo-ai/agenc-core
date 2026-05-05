@@ -241,9 +241,19 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
             "Shell executable to run the command through. Defaults to the user's shell.",
         },
         sandbox_permissions: {
-          type: "object",
+          anyOf: [
+            {
+              type: "string",
+              enum: [
+                "default",
+                "require_escalated",
+                "with_additional_permissions",
+              ],
+            },
+            { type: "object" },
+          ],
           description:
-            "Permissions field accepted for request shape parity.",
+            "Sandbox escalation mode or scoped permission request.",
         },
         additional_permissions: {
           type: "object",

@@ -7,6 +7,11 @@ import { createPermissionAuditFileLogger } from "../permissions/permission-audit
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { ApprovalStore as RuntimeApprovalStore } from "../permissions/approval-cache.js";
 import { NetworkApprovalService as RuntimeNetworkApprovalService } from "../permissions/network-approval.js";
+import {
+  requestManagedNetworkApprovalForSandbox,
+  type ManagedNetworkApprovalOptions,
+} from "../sandbox/escalation/network-approval.js";
+import { Policy } from "../sandbox/execpolicy/policy.js";
 import { createLocalSkillsServices } from "../skills/local-loader.js";
 import { createGuardianRejectionCircuitBreaker } from "../permissions/guardian/rejection-circuit-breaker.js";
 import { createDefaultGuardianApprovalReviewer } from "../permissions/guardian/reviewer.js";
@@ -228,6 +233,7 @@ export class BootstrapModelClient implements ModelClient {
 
 export class BootstrapExecPolicyManager implements ExecPolicyManager {
   private session: Session | null = null;
+  private readonly policy = Policy.empty();
 
   constructor(
     private readonly permissionModeRegistry: PermissionModeRegistry,
@@ -252,6 +258,7 @@ export class BootstrapExecPolicyManager implements ExecPolicyManager {
       windowsSandboxLevel: configuration.windowsSandboxLevel,
       bypassPermissionsAcceptedIn:
         permissionContext.bypassPermissionsAcceptedIn ?? [],
+      policy: this.policy,
     };
   }
 }
@@ -741,11 +748,7 @@ export function buildBootstrapSessionServices(
         opts.networkApproval.clearSessionHosts();
       },
       requestNetworkApproval: (request: unknown) =>
-        opts.networkApproval.requestNetworkApproval(
-          request as Parameters<
-            typeof opts.networkApproval.requestNetworkApproval
-          >[0],
-        ),
+        requestBootstrapNetworkApproval(opts.networkApproval, request),
       requestDeferredApproval: (request: unknown) =>
         opts.networkApproval.requestDeferredApproval(
           request as Parameters<
@@ -840,6 +843,44 @@ function recordOrEmpty(value: unknown): Record<string, unknown> {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requestBootstrapNetworkApproval(
+  service: RuntimeNetworkApprovalService,
+  request: unknown,
+): Promise<unknown> {
+  if (isManagedNetworkApprovalRequest(request)) {
+    return requestManagedNetworkApprovalForSandbox({
+      ...request,
+      service,
+    });
+  }
+  return service.requestNetworkApproval(
+    request as Parameters<RuntimeNetworkApprovalService["requestNetworkApproval"]>[0],
+  );
+}
+
+function isManagedNetworkApprovalRequest(
+  value: unknown,
+): value is Omit<ManagedNetworkApprovalOptions, "service"> {
+  if (!isRecord(value)) return false;
+  return (
+    isRecord(value["key"]) &&
+    isRecord(value["sandboxPolicy"]) &&
+    isBootstrapApprovalPolicy(value["approvalPolicy"])
+  );
+}
+
+function isBootstrapApprovalPolicy(
+  value: unknown,
+): value is ManagedNetworkApprovalOptions["approvalPolicy"] {
+  return (
+    value === "never" ||
+    value === "on_failure" ||
+    value === "on_request" ||
+    value === "granular" ||
+    value === "untrusted"
+  );
 }
 
 function readRecord(value: unknown): Record<string, unknown> | undefined {
