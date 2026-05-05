@@ -47,6 +47,7 @@ function callId(args: Record<string, unknown>): string {
 async function executeCodeMode(
   service: CodeModeService,
   enabledTools: readonly Tool[],
+  stringArgumentFields: Readonly<Record<string, string>> | undefined,
   args: Record<string, unknown>,
 ): Promise<ToolResult> {
   const source = readStringArg(args, ["code", "source", "input"]);
@@ -54,7 +55,9 @@ async function executeCodeMode(
   const response = await service.execute({
     cellId: service.allocateCellId(),
     toolCallId: callId(args),
-    enabledTools: codeModeToolDefinitionsFromTools(enabledTools),
+    enabledTools: codeModeToolDefinitionsFromTools(enabledTools, {
+      stringArgumentFields,
+    }),
     source: parsed.code,
     storedValues: await service.storedValues(),
     yieldTimeMs: parsed.yieldTimeMs ?? DEFAULT_EXEC_YIELD_TIME_MS,
@@ -95,6 +98,7 @@ export function createCodeModeTools(
     description: buildExecToolDescription(
       codeModeToolDefinitionsFromTools(
         opts.descriptionTools ?? opts.getEnabledTools(),
+        { stringArgumentFields: opts.stringArgumentFields },
       ),
     ),
     inputSchema: {
@@ -119,7 +123,12 @@ export function createCodeModeTools(
     recoveryCategory: "side-effecting",
     interruptBehavior: () => "cancel",
     execute: (args) =>
-      executeCodeMode(opts.service, opts.getEnabledTools(), args),
+      executeCodeMode(
+        opts.service,
+        opts.getEnabledTools(),
+        opts.stringArgumentFields,
+        args,
+      ),
   };
 
   const waitTool: Tool = {

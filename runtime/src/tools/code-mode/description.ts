@@ -1,8 +1,8 @@
 import type { Tool } from "../types.js";
-import {
-  CODE_MODE_EXEC_TOOL_NAME,
-  CODE_MODE_WAIT_TOOL_NAME,
-  type CodeModeToolDefinition,
+import { isCodeModeNestedToolName } from "./policy.js";
+import type {
+  CodeModeToolDefinition,
+  CodeModeToolKind,
 } from "./types.js";
 
 const MAX_JS_SAFE_INTEGER = 2 ** 53 - 1;
@@ -137,21 +137,41 @@ export function normalizeCodeModeIdentifier(toolKey: string): string {
 }
 
 export function isCodeModeNestedTool(toolName: string): boolean {
-  return toolName !== CODE_MODE_EXEC_TOOL_NAME && toolName !== CODE_MODE_WAIT_TOOL_NAME;
+  return isCodeModeNestedToolName(toolName);
 }
 
 export function codeModeToolDefinitionsFromTools(
   tools: readonly Tool[],
+  opts: {
+    readonly stringArgumentFields?: Readonly<Record<string, string>>;
+  } = {},
 ): CodeModeToolDefinition[] {
-  return tools
+  const definitions = tools
     .filter((tool) => isCodeModeNestedTool(tool.name))
-    .map((tool) => ({
-      name: tool.name,
-      globalName: normalizeCodeModeIdentifier(tool.name),
-      description: tool.description,
-      kind: "function",
-      inputSchema: tool.inputSchema,
-    }));
+    .map((tool) => {
+      const kind: CodeModeToolKind =
+        opts.stringArgumentFields?.[tool.name] !== undefined
+          ? "freeform"
+          : "function";
+      return {
+        name: tool.name,
+        globalName: normalizeCodeModeIdentifier(tool.name),
+        description: tool.description,
+        kind,
+        inputSchema: tool.inputSchema,
+      };
+    });
+  definitions.sort(
+    (left, right) =>
+      left.globalName.localeCompare(right.globalName) ||
+      left.name.localeCompare(right.name),
+  );
+  const seenGlobals = new Set<string>();
+  return definitions.filter((definition) => {
+    if (seenGlobals.has(definition.globalName)) return false;
+    seenGlobals.add(definition.globalName);
+    return true;
+  });
 }
 
 export function buildExecToolDescription(
@@ -164,7 +184,11 @@ export function buildExecToolDescription(
         tool.globalName === tool.name
           ? `### \`${tool.globalName}\``
           : `### \`${tool.globalName}\` (\`${tool.name}\`)`;
-      const declaration = `declare const tools: { ${tool.globalName}(args: unknown): Promise<unknown>; };`;
+      const inputType =
+        tool.kind === "freeform"
+          ? "string | Record<string, unknown>"
+          : "Record<string, unknown>";
+      const declaration = `declare const tools: { ${tool.globalName}(args: ${inputType}): Promise<unknown>; };`;
       return `${heading}\n${tool.description}\n\nexec tool declaration:\n\`\`\`ts\n${declaration}\n\`\`\``;
     })
     .join("\n\n");
