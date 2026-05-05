@@ -101,6 +101,9 @@ describe("plugin manifest schema", () => {
           name: "schema-plugin",
           dependencies: [
             "base-plugin@^1.2",
+            "exact-plugin@=1.2.3",
+            "tilde-plugin@~1.2.0",
+            "range-plugin@>=2.0.0",
             { name: "team-plugin", marketplace: "team-marketplace" },
             { name: "local-plugin" },
           ],
@@ -144,6 +147,9 @@ describe("plugin manifest schema", () => {
 
       expect(manifest.dependencies).toEqual([
         "base-plugin@^1.2",
+        "exact-plugin@=1.2.3",
+        "tilde-plugin@~1.2.0",
+        "range-plugin@>=2.0.0",
         "team-plugin@team-marketplace",
         "local-plugin",
       ]);
@@ -346,6 +352,9 @@ describe("plugin manifest schema", () => {
           dependencies: [
             "base-plugin@^1.2",
             "qualified@team@^2",
+            "exact-plugin@=1.2.3",
+            "tilde-plugin@~1.2.0",
+            "range-plugin@>=2.0.0",
             { name: "object-plugin", marketplace: "team_marketplace" },
           ],
         },
@@ -369,6 +378,9 @@ describe("plugin manifest schema", () => {
       expect(manifest.dependencies).toEqual([
         "base-plugin@^1.2",
         "qualified@team@^2",
+        "exact-plugin@=1.2.3",
+        "tilde-plugin@~1.2.0",
+        "range-plugin@>=2.0.0",
         "object-plugin@team_marketplace",
       ]);
       expect(issues).toEqual(

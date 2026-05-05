@@ -852,7 +852,7 @@ function validateOptionalNonNegativeInteger(
 }
 
 const DEPENDENCY_REF_PATTERN =
-  /^[a-z0-9][-a-z0-9._]*(?:@[a-z0-9][-a-z0-9._]*)?(?:@\^[^@]*)?$/iu;
+  /^[a-z0-9][-a-z0-9._]*(?:@[a-z0-9][-a-z0-9._]*)?(?:@(?:\^|~|>=|<=|>|<|=)[0-9a-z][0-9a-z._+-]*)?$/iu;
 const DEPENDENCY_NAME_PATTERN = /^[a-z0-9][-a-z0-9._]*$/iu;
 const LSP_SERVER_KEYS = new Set([
   "command",

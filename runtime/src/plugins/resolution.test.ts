@@ -266,6 +266,56 @@ describe("plugin source resolution", () => {
     });
   });
 
+  test("verifies signed git resolutions while ignoring repository metadata", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+      const publishersPath = join(root, "plugin-publishers.json");
+      await writeJson(publishersPath, {
+        publishers: {
+          tetsuo: {
+            publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64"),
+          },
+        },
+      });
+      const runProcess: PluginProcessRunner = async (command, args) => {
+        if (command !== "git") throw new Error(`unexpected process: ${command}`);
+        const target = String(args.at(-1));
+        const manifestPath = await writePlugin(target, "signed-git");
+        const files = await pluginPayloadFiles(target);
+        const signature = sign(
+          null,
+          pluginSignaturePayloadBytes(await readFile(manifestPath), files),
+          privateKey,
+        ).toString("base64");
+        await writeJson(join(target, ".agenc-plugin", "signature.json"), {
+          publisher: "tetsuo",
+          signature,
+          files,
+        });
+        await mkdir(join(target, ".git"), { recursive: true });
+        await writeFile(join(target, ".git", "config"), "[core]\nrepositoryformatversion = 0\n");
+        return { stdout: "", stderr: "" };
+      };
+
+      const resolved = await resolvePluginSource("git@github.com:tetsuo-ai/signed-plugin.git", {
+        agencHome,
+        workspaceRoot: root,
+        runProcess,
+        publishersPath,
+      });
+
+      expect(resolved.kind).toBe("git");
+      expect(resolved.signature).toMatchObject({
+        required: true,
+        present: true,
+        verified: true,
+        publisher: "tetsuo",
+      });
+      await resolved.cleanup();
+    });
+  });
+
   test("resolves registry tarballs and remote bundle archives", async () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");
@@ -545,6 +595,42 @@ describe("plugin source resolution", () => {
     await expect(
       resolvePluginDependencyClosure("app@main", async (id) => {
         const entries: Record<string, { dependencies: readonly string[]; version: string }> = {
+          "app@main": { dependencies: ["lib@=1.5.0"], version: "1.0.0" },
+          "lib@main": { dependencies: [], version: "1.5.0" },
+        };
+        return entries[id] ?? null;
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      closure: ["lib@main", "app@main"],
+    });
+    await expect(
+      resolvePluginDependencyClosure("app@main", async (id) => {
+        const entries: Record<string, { dependencies: readonly string[]; version: string }> = {
+          "app@main": { dependencies: ["lib@~1.5.0"], version: "1.0.0" },
+          "lib@main": { dependencies: [], version: "1.5.3" },
+        };
+        return entries[id] ?? null;
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      closure: ["lib@main", "app@main"],
+    });
+    await expect(
+      resolvePluginDependencyClosure("app@main", async (id) => {
+        const entries: Record<string, { dependencies: readonly string[]; version: string }> = {
+          "app@main": { dependencies: ["lib@>=1.4.0"], version: "1.0.0" },
+          "lib@main": { dependencies: [], version: "1.5.0" },
+        };
+        return entries[id] ?? null;
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      closure: ["lib@main", "app@main"],
+    });
+    await expect(
+      resolvePluginDependencyClosure("app@main", async (id) => {
+        const entries: Record<string, { dependencies: readonly string[]; version: string }> = {
           "app@main": { dependencies: ["lib@^2.0.0"], version: "1.0.0" },
           "lib@main": { dependencies: [], version: "1.5.0" },
         };
@@ -555,6 +641,21 @@ describe("plugin source resolution", () => {
       reason: "version-mismatch",
       dependency: "lib@main",
       requiredVersion: "^2.0.0",
+      actualVersion: "1.5.0",
+    });
+    await expect(
+      resolvePluginDependencyClosure("app@main", async (id) => {
+        const entries: Record<string, { dependencies: readonly string[]; version: string }> = {
+          "app@main": { dependencies: ["lib@<1.5.0"], version: "1.0.0" },
+          "lib@main": { dependencies: [], version: "1.5.0" },
+        };
+        return entries[id] ?? null;
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      reason: "version-mismatch",
+      dependency: "lib@main",
+      requiredVersion: "<1.5.0",
       actualVersion: "1.5.0",
     });
 
@@ -803,9 +904,12 @@ describe("plugin source resolution", () => {
   test("classifies local, bundle, git, tarball, and npm sources", async () => {
     await withTempDir(async (root) => {
       await mkdir(join(root, "local"), { recursive: true });
+      await writeFile(join(root, "plugin.mcpb"), "fixture");
 
       await expect(classifyPluginSource("local", root)).resolves.toBe("local");
       await expect(classifyPluginSource("plugin.mcpb", root)).resolves.toBe("mcpb");
+      await expect(classifyPluginSource("package-like.git", root)).resolves.toBe("npm");
+      await expect(classifyPluginSource("package-like.mcpb", root)).resolves.toBe("npm");
       await expect(classifyPluginSource("https://agenc.tech/plugin.mcpb", root)).resolves.toBe("mcpb");
       await expect(classifyPluginSource("git@github.com:tetsuo-ai/plugin.git", root)).resolves.toBe("git");
       await expect(classifyPluginSource("https://github.com/tetsuo-ai/plugin", root)).resolves.toBe("git");

@@ -107,7 +107,14 @@ export interface PluginDependencyLookupResult {
 export type PluginDependencyResolutionResult =
   | { readonly ok: true; readonly closure: readonly string[] }
   | { readonly ok: false; readonly reason: "cycle"; readonly chain: readonly string[] }
-  | { readonly ok: false; readonly reason: "version-mismatch"; readonly dependency: string; readonly requiredBy: string; readonly requiredVersion: string; readonly actualVersion?: string }
+  | {
+    readonly ok: false;
+    readonly reason: "version-mismatch";
+    readonly dependency: string;
+    readonly requiredBy: string;
+    readonly requiredVersion: string;
+    readonly actualVersion?: string;
+  }
   | { readonly ok: false; readonly reason: "not-found"; readonly missing: string; readonly requiredBy: string }
   | {
     readonly ok: false;
@@ -251,7 +258,7 @@ export async function classifyPluginSource(
   if (await pathIsDirectory(localPath)) return "local";
   if (isGitSource(source)) return "git";
   if (isTarballSource(source)) return "tarball";
-  if (isMcpbSource(source)) return "mcpb";
+  if (isMcpbSource(source) || (source.endsWith(".mcpb") && await pathIsFile(localPath))) return "mcpb";
   return "npm";
 }
 
@@ -269,8 +276,7 @@ export function buildPluginIdentifier(name: string, marketplace?: string): strin
 }
 
 export function qualifyPluginDependency(dep: string, declaringPluginId: string): string {
-  const versionMarker = dep.lastIndexOf("@^");
-  const dependencyId = versionMarker === -1 ? dep : dep.slice(0, versionMarker);
+  const { id: dependencyId } = splitPluginDependencyVersion(dep);
   if (parsePluginIdentifier(dependencyId).marketplace) return dependencyId;
   const marketplace = parsePluginIdentifier(declaringPluginId).marketplace;
   if (!marketplace || marketplace === "inline") return dependencyId;
@@ -508,15 +514,21 @@ function parsePluginDependencyReference(
   dependency: string,
   declaringPluginId: string,
 ): { readonly id: string; readonly versionConstraint?: string } {
-  const versionMarker = dependency.lastIndexOf("@^");
-  if (versionMarker === -1) {
-    return { id: qualifyPluginDependency(dependency, declaringPluginId) };
-  }
-  const id = dependency.slice(0, versionMarker);
-  const version = dependency.slice(versionMarker + 2).trim();
+  const { id, versionConstraint } = splitPluginDependencyVersion(dependency);
   return {
     id: qualifyPluginDependency(id, declaringPluginId),
-    ...(version.length > 0 ? { versionConstraint: `^${version}` } : {}),
+    ...(versionConstraint !== undefined ? { versionConstraint } : {}),
+  };
+}
+
+function splitPluginDependencyVersion(
+  dependency: string,
+): { readonly id: string; readonly versionConstraint?: string } {
+  const match = /@((?:\^|~|>=|<=|>|<|=)[0-9A-Za-z][0-9A-Za-z._+-]*)$/u.exec(dependency);
+  if (!match) return { id: dependency };
+  return {
+    id: dependency.slice(0, match.index),
+    versionConstraint: match[1]!,
   };
 }
 
@@ -1338,6 +1350,7 @@ async function collectPluginPayloadDigests(
       if (childStat.isSymbolicLink()) {
         throw new Error(`plugin signature cannot cover symlink payloads: ${entry.name}`);
       }
+      if (entry.isDirectory() && isIgnoredSignaturePayloadDirectory(entry.name)) continue;
       const childReal = await realpath(child);
       if (!isPathInside(childReal, rootReal)) {
         throw new Error(`plugin payload escapes plugin root: ${entry.name}`);
@@ -1355,6 +1368,10 @@ async function collectPluginPayloadDigests(
 
   await walk(pluginRoot);
   return out;
+}
+
+function isIgnoredSignaturePayloadDirectory(name: string): boolean {
+  return name === ".git" || name === ".hg" || name === ".svn";
 }
 
 function assertSignedPayloadMatches(
@@ -1442,8 +1459,7 @@ function assertNotOptionLikeSource(source: string, label: string): void {
 function isGitSource(source: string): boolean {
   if (source.startsWith("git+") ||
     source.startsWith("git@") ||
-    source.startsWith("ssh://") ||
-    source.endsWith(".git")) {
+    source.startsWith("ssh://")) {
     return true;
   }
   try {
@@ -1468,7 +1484,6 @@ function isTarballSource(source: string): boolean {
 }
 
 function isMcpbSource(source: string): boolean {
-  if (source.endsWith(".mcpb")) return true;
   try {
     const url = new URL(source);
     return ["http:", "https:"].includes(url.protocol) && url.pathname.endsWith(".mcpb");
@@ -1494,6 +1509,14 @@ function tarballExtension(source: string): string {
 async function pathIsDirectory(path: string): Promise<boolean> {
   try {
     return (await stat(path)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function pathIsFile(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isFile();
   } catch {
     return false;
   }
