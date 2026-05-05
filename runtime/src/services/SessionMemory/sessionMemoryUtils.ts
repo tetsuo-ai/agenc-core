@@ -1,207 +1,339 @@
 /**
- * Session Memory utility functions that can be imported without circular dependencies.
- * These are separate from the main sessionMemory.ts to avoid importing runAgent.
+ * Source-aligned with `src/services/SessionMemory/sessionMemoryUtils.ts` at
+ * donor commit 0ca43335375beec6e58711b797d5b0c4bb5019b8.
+ *
+ * This module keeps the extraction thresholds and notes-file path helpers
+ * independent from the agent runner so compaction and commands can read the
+ * notes state without importing subagent orchestration.
  */
 
-import { isFsInaccessible } from '../../utils/errors.js'
-import { getFsImplementation } from '../../utils/fsOperations.js'
-import { getSessionMemoryPath } from '../../utils/permissions/filesystem.js'
-import { sleep } from '../../utils/sleep.js'
-import { logEvent } from '../analytics/index.js'
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join, normalize, sep } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
-const EXTRACTION_WAIT_TIMEOUT_MS = 15000
-const EXTRACTION_STALE_THRESHOLD_MS = 60000 // 1 minute
+import { findGitRoot as findCanonicalGitRoot } from "../../agents/worktree.js";
+import { findProjectRootSync } from "../../session/session-store.js";
+import {
+  isEnvDefinedFalsy,
+  isEnvTruthy,
+  resolveAgenCConfigHomeDir,
+} from "../../utils/envUtils.js";
+import { sanitizePathForProjectKey } from "../extractMemories/memory-paths.js";
+
+const EXTRACTION_WAIT_TIMEOUT_MS = 15_000;
+const EXTRACTION_STALE_THRESHOLD_MS = 60_000;
+
+export type SessionMemoryEnv = Readonly<Record<string, string | undefined>>;
 
 /**
- * Configuration for session memory extraction thresholds
+ * Configuration for session memory extraction thresholds.
  */
-export type SessionMemoryConfig = {
-  /** Minimum context window tokens before initializing session memory.
-   * Uses the same token counting as autocompact (input + output + cache tokens)
-   * to ensure consistent behavior between the two features. */
-  minimumMessageTokensToInit: number
-  /** Minimum context window growth (in tokens) between session memory updates.
-   * Uses the same token counting as autocompact (tokenCountWithEstimation)
-   * to measure actual context growth, not cumulative API usage. */
-  minimumTokensBetweenUpdate: number
-  /** Number of tool calls between session memory updates */
-  toolCallsBetweenUpdates: number
+export interface SessionMemoryConfig {
+  /** Minimum context-window tokens before initializing session memory. */
+  readonly minimumMessageTokensToInit: number;
+  /** Minimum context-window growth between session memory updates. */
+  readonly minimumTokensBetweenUpdate: number;
+  /** Number of assistant tool calls between session memory updates. */
+  readonly toolCallsBetweenUpdates: number;
 }
 
-// Default configuration values
 export const DEFAULT_SESSION_MEMORY_CONFIG: SessionMemoryConfig = {
-  minimumMessageTokensToInit: 10000,
-  minimumTokensBetweenUpdate: 5000,
+  minimumMessageTokensToInit: 10_000,
+  minimumTokensBetweenUpdate: 5_000,
   toolCallsBetweenUpdates: 3,
+};
+
+export interface SessionMemoryState {
+  sessionMemoryConfig: SessionMemoryConfig;
+  lastSummarizedMessageId: string | undefined;
+  lastSummarizedMessageCount: number;
+  extractionStartedAt: number | undefined;
+  tokensAtLastExtraction: number;
+  sessionMemoryInitialized: boolean;
 }
 
-// Current session memory configuration
-let sessionMemoryConfig: SessionMemoryConfig = {
-  ...DEFAULT_SESSION_MEMORY_CONFIG,
+export interface SessionMemoryPathOptions {
+  readonly cwd: string;
+  readonly sessionId: string;
+  readonly env?: SessionMemoryEnv;
+  readonly configHomeDir?: string;
+  readonly homeDir?: string;
 }
 
-// Track the last summarized message ID (shared state)
-let lastSummarizedMessageId: string | undefined
+const defaultState: SessionMemoryState = createSessionMemoryState();
 
-// Track extraction state with timestamp (set by sessionMemory.ts)
-let extractionStartedAt: number | undefined
+function effectiveEnv(env: SessionMemoryEnv | undefined): SessionMemoryEnv {
+  return env ?? process.env;
+}
 
-// Track context size at last memory extraction (for minimumTokensBetweenUpdate)
-let tokensAtLastExtraction = 0
+function normalizeWithTrailingSep(path: string): string {
+  return `${normalize(path).replace(/[/\\]+$/u, "")}${sep}`.normalize("NFC");
+}
 
-// Track whether session memory has been initialized (met minimumMessageTokensToInit)
-let sessionMemoryInitialized = false
+function projectRootForSession(cwd: string): string {
+  const stableRoot = findProjectRootSync(cwd)?.rootDir ?? cwd;
+  return findCanonicalGitRoot(stableRoot) ?? stableRoot;
+}
+
+function safeSessionId(sessionId: string): string {
+  const trimmed = sessionId.trim();
+  return sanitizePathForProjectKey(trimmed.length > 0 ? trimmed : "default");
+}
+
+export function createSessionMemoryState(
+  config: Partial<SessionMemoryConfig> = {},
+): SessionMemoryState {
+  return {
+    sessionMemoryConfig: {
+      ...DEFAULT_SESSION_MEMORY_CONFIG,
+      ...positiveConfig(config),
+    },
+    lastSummarizedMessageId: undefined,
+    lastSummarizedMessageCount: 0,
+    extractionStartedAt: undefined,
+    tokensAtLastExtraction: 0,
+    sessionMemoryInitialized: false,
+  };
+}
+
+function positiveConfig(
+  config: Partial<SessionMemoryConfig>,
+): Partial<SessionMemoryConfig> {
+  const next: {
+    minimumMessageTokensToInit?: number;
+    minimumTokensBetweenUpdate?: number;
+    toolCallsBetweenUpdates?: number;
+  } = {};
+  if (
+    typeof config.minimumMessageTokensToInit === "number" &&
+    config.minimumMessageTokensToInit > 0
+  ) {
+    next.minimumMessageTokensToInit = config.minimumMessageTokensToInit;
+  }
+  if (
+    typeof config.minimumTokensBetweenUpdate === "number" &&
+    config.minimumTokensBetweenUpdate > 0
+  ) {
+    next.minimumTokensBetweenUpdate = config.minimumTokensBetweenUpdate;
+  }
+  if (
+    typeof config.toolCallsBetweenUpdates === "number" &&
+    config.toolCallsBetweenUpdates > 0
+  ) {
+    next.toolCallsBetweenUpdates = config.toolCallsBetweenUpdates;
+  }
+  return next;
+}
+
+export function resolveSessionMemoryDirectory(
+  options: SessionMemoryPathOptions,
+): string {
+  const env = effectiveEnv(options.env);
+  const configHome =
+    options.configHomeDir ??
+    resolveAgenCConfigHomeDir({
+      configDirEnv: env.AGENC_CONFIG_DIR,
+      agencHomeEnv: env.AGENC_HOME,
+      homeDir: options.homeDir ?? homedir(),
+    });
+  return normalizeWithTrailingSep(
+    join(
+      configHome,
+      "projects",
+      sanitizePathForProjectKey(projectRootForSession(options.cwd)),
+      safeSessionId(options.sessionId),
+      "session-memory",
+    ),
+  );
+}
+
+export function resolveSessionMemoryPath(
+  options: SessionMemoryPathOptions,
+): string {
+  return join(resolveSessionMemoryDirectory(options), "summary.md");
+}
+
+export function isSessionMemoryEnabled(
+  env: SessionMemoryEnv | undefined = undefined,
+): boolean {
+  const source = effectiveEnv(env);
+  if (isEnvTruthy(source.AGENC_DISABLE_SESSION_MEMORY)) return false;
+  if (isEnvDefinedFalsy(source.AGENC_SESSION_MEMORY_ENABLED)) return false;
+  if (isEnvTruthy(source.AGENC_SESSION_MEMORY_ENABLED)) return true;
+  if (isEnvTruthy(source.AGENC_SIMPLE)) return false;
+  if (
+    isEnvTruthy(source.AGENC_REMOTE) &&
+    !source.AGENC_REMOTE_MEMORY_DIR
+  ) {
+    return false;
+  }
+  const autoCompactDisabled =
+    source.DISABLE_AUTO_COMPACT ?? source.AGENC_DISABLE_AUTO_COMPACT;
+  if (isEnvTruthy(autoCompactDisabled)) return false;
+  return true;
+}
 
 /**
- * Get the message ID up to which the session memory is current
+ * Get the message marker up to which the session memory is current.
  */
-export function getLastSummarizedMessageId(): string | undefined {
-  return lastSummarizedMessageId
+export function getLastSummarizedMessageId(
+  state: SessionMemoryState = defaultState,
+): string | undefined {
+  return state.lastSummarizedMessageId;
+}
+
+export function getLastSummarizedMessageCount(
+  state: SessionMemoryState = defaultState,
+): number {
+  return state.lastSummarizedMessageCount;
 }
 
 /**
- * Set the last summarized message ID (called from sessionMemory.ts)
+ * Set the last summarized message marker.
  */
 export function setLastSummarizedMessageId(
   messageId: string | undefined,
+  state: SessionMemoryState = defaultState,
 ): void {
-  lastSummarizedMessageId = messageId
+  state.lastSummarizedMessageId = messageId;
+}
+
+export function setLastSummarizedMessageCount(
+  messageCount: number,
+  state: SessionMemoryState = defaultState,
+): void {
+  state.lastSummarizedMessageCount = Math.max(0, Math.trunc(messageCount));
+}
+
+export function markExtractionStarted(
+  state: SessionMemoryState = defaultState,
+): void {
+  state.extractionStartedAt = Date.now();
+}
+
+export function markExtractionCompleted(
+  state: SessionMemoryState = defaultState,
+): void {
+  state.extractionStartedAt = undefined;
 }
 
 /**
- * Mark extraction as started (called from sessionMemory.ts)
+ * Wait for any in-progress session memory extraction to complete.
  */
-export function markExtractionStarted(): void {
-  extractionStartedAt = Date.now()
-}
-
-/**
- * Mark extraction as completed (called from sessionMemory.ts)
- */
-export function markExtractionCompleted(): void {
-  extractionStartedAt = undefined
-}
-
-/**
- * Wait for any in-progress session memory extraction to complete (with 15s timeout)
- * Returns immediately if no extraction is in progress or if extraction is stale (>1min old).
- */
-export async function waitForSessionMemoryExtraction(): Promise<void> {
-  const startTime = Date.now()
-  while (extractionStartedAt) {
-    const extractionAge = Date.now() - extractionStartedAt
-    if (extractionAge > EXTRACTION_STALE_THRESHOLD_MS) {
-      // Extraction is stale, don't wait
-      return
-    }
-
-    if (Date.now() - startTime > EXTRACTION_WAIT_TIMEOUT_MS) {
-      // Timeout - continue anyway
-      return
-    }
-
-    await sleep(1000)
+export async function waitForSessionMemoryExtraction(
+  state: SessionMemoryState = defaultState,
+): Promise<void> {
+  const startTime = Date.now();
+  while (state.extractionStartedAt !== undefined) {
+    const extractionAge = Date.now() - state.extractionStartedAt;
+    if (extractionAge > EXTRACTION_STALE_THRESHOLD_MS) return;
+    if (Date.now() - startTime > EXTRACTION_WAIT_TIMEOUT_MS) return;
+    await delay(1_000);
   }
 }
 
 /**
- * Get the current session memory content
+ * Get the current session memory content.
  */
-export async function getSessionMemoryContent(): Promise<string | null> {
-  const fs = getFsImplementation()
-  const memoryPath = getSessionMemoryPath()
-
+export async function getSessionMemoryContent(
+  options?: SessionMemoryPathOptions | string,
+): Promise<string | null> {
+  const memoryPath =
+    typeof options === "string"
+      ? options
+      : options
+        ? resolveSessionMemoryPath(options)
+        : null;
+  if (memoryPath === null) return null;
   try {
-    const content = await fs.readFile(memoryPath, { encoding: 'utf-8' })
-
-    logEvent('tengu_session_memory_loaded', {
-      content_length: content.length,
-    })
-
-    return content
-  } catch (e: any) {
-    if (isFsInaccessible(e)) return null
-    throw e
+    return await readFile(memoryPath, { encoding: "utf8" });
+  } catch (error) {
+    const code =
+      typeof error === "object" &&
+      error !== null &&
+      typeof (error as { code?: unknown }).code === "string"
+        ? (error as { code: string }).code
+        : undefined;
+    if (
+      code === "ENOENT" ||
+      code === "ENOTDIR" ||
+      code === "EACCES" ||
+      code === "EPERM"
+    ) {
+      return null;
+    }
+    throw error;
   }
 }
 
-/**
- * Set the session memory configuration
- */
 export function setSessionMemoryConfig(
-  config: Incomplete<SessionMemoryConfig>,
+  config: Partial<SessionMemoryConfig>,
+  state: SessionMemoryState = defaultState,
 ): void {
-  sessionMemoryConfig = {
-    ...sessionMemoryConfig,
-    ...config,
-  }
+  state.sessionMemoryConfig = {
+    ...state.sessionMemoryConfig,
+    ...positiveConfig(config),
+  };
 }
 
-/**
- * Get the current session memory configuration
- */
-export function getSessionMemoryConfig(): SessionMemoryConfig {
-  return { ...sessionMemoryConfig }
+export function getSessionMemoryConfig(
+  state: SessionMemoryState = defaultState,
+): SessionMemoryConfig {
+  return { ...state.sessionMemoryConfig };
 }
 
-/**
- * Record the context size at the time of extraction.
- * Used to measure context growth for minimumTokensBetweenUpdate threshold.
- */
-export function recordExtractionTokenCount(currentTokenCount: number): void {
-  tokensAtLastExtraction = currentTokenCount
+export function recordExtractionTokenCount(
+  currentTokenCount: number,
+  state: SessionMemoryState = defaultState,
+): void {
+  state.tokensAtLastExtraction = Math.max(0, Math.trunc(currentTokenCount));
 }
 
-/**
- * Check if session memory has been initialized (met minimumTokensToInit threshold)
- */
-export function isSessionMemoryInitialized(): boolean {
-  return sessionMemoryInitialized
+export function isSessionMemoryInitialized(
+  state: SessionMemoryState = defaultState,
+): boolean {
+  return state.sessionMemoryInitialized;
 }
 
-/**
- * Mark session memory as initialized
- */
-export function markSessionMemoryInitialized(): void {
-  sessionMemoryInitialized = true
+export function markSessionMemoryInitialized(
+  state: SessionMemoryState = defaultState,
+): void {
+  state.sessionMemoryInitialized = true;
 }
 
-/**
- * Check if we've met the threshold to initialize session memory.
- * Uses total context window tokens (same as autocompact) for consistent behavior.
- */
 export function hasMetInitializationThreshold(
   currentTokenCount: number,
+  state: SessionMemoryState = defaultState,
 ): boolean {
-  return currentTokenCount >= sessionMemoryConfig.minimumMessageTokensToInit
+  return currentTokenCount >= state.sessionMemoryConfig.minimumMessageTokensToInit;
 }
 
-/**
- * Check if we've met the threshold for the next update.
- * Measures actual context window growth since last extraction
- * (same metric as autocompact and initialization threshold).
- */
-export function hasMetUpdateThreshold(currentTokenCount: number): boolean {
-  const tokensSinceLastExtraction = currentTokenCount - tokensAtLastExtraction
+export function hasMetUpdateThreshold(
+  currentTokenCount: number,
+  state: SessionMemoryState = defaultState,
+): boolean {
+  const tokensSinceLastExtraction =
+    currentTokenCount - state.tokensAtLastExtraction;
   return (
-    tokensSinceLastExtraction >= sessionMemoryConfig.minimumTokensBetweenUpdate
-  )
+    tokensSinceLastExtraction >=
+    state.sessionMemoryConfig.minimumTokensBetweenUpdate
+  );
 }
 
-/**
- * Get the configured number of tool calls between updates
- */
-export function getToolCallsBetweenUpdates(): number {
-  return sessionMemoryConfig.toolCallsBetweenUpdates
+export function getToolCallsBetweenUpdates(
+  state: SessionMemoryState = defaultState,
+): number {
+  return state.sessionMemoryConfig.toolCallsBetweenUpdates;
 }
 
-/**
- * Reset session memory state (useful for testing)
- */
-export function resetSessionMemoryState(): void {
-  sessionMemoryConfig = { ...DEFAULT_SESSION_MEMORY_CONFIG }
-  tokensAtLastExtraction = 0
-  sessionMemoryInitialized = false
-  lastSummarizedMessageId = undefined
-  extractionStartedAt = undefined
+export function resetSessionMemoryState(
+  state: SessionMemoryState = defaultState,
+): void {
+  state.sessionMemoryConfig = { ...DEFAULT_SESSION_MEMORY_CONFIG };
+  state.tokensAtLastExtraction = 0;
+  state.sessionMemoryInitialized = false;
+  state.lastSummarizedMessageId = undefined;
+  state.lastSummarizedMessageCount = 0;
+  state.extractionStartedAt = undefined;
 }

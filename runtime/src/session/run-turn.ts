@@ -67,6 +67,7 @@ import type { PhaseEvent } from "../phases/events.js";
 import { executeTools } from "../phases/execute-tools.js";
 import { drainPendingExtraction } from "../services/extractMemories/extractMemories.js";
 import { runMagicDocsPostSamplingHook } from "../services/MagicDocs/magicDocs.js";
+import { runSessionMemoryPostSamplingHook } from "../services/SessionMemory/sessionMemory.js";
 import { postSampleRecovery } from "../phases/post-sample-recovery.js";
 import { getAttachments } from "../prompts/attachments/orchestrator.js";
 import { attachmentsToMessages } from "../prompts/attachments/messages.js";
@@ -520,6 +521,42 @@ function launchMagicDocsPostSampling(
         type: "warning",
         payload: {
           cause: "magic_docs_update_failed",
+          message:
+            error instanceof Error
+              ? error.message
+              : String(error),
+        },
+      },
+    });
+  });
+}
+
+function launchSessionMemoryPostSampling(
+  state: TurnState,
+  session: Session,
+  ctx: TurnContext,
+  signal?: AbortSignal,
+): void {
+  const baseInstructions =
+    typeof (ctx as TurnContext & { baseInstructions?: unknown })
+      .baseInstructions === "string"
+      ? (ctx as TurnContext & { baseInstructions: string }).baseInstructions
+      : undefined;
+  const messages =
+    state.messagesForQuery.length > 0 ? state.messagesForQuery : state.messages;
+  void runSessionMemoryPostSamplingHook({
+    messages,
+    ...(baseInstructions !== undefined ? { baseInstructions } : {}),
+    querySource: sessionQuerySourceForPostSampling(session),
+    session,
+    ...(signal !== undefined ? { signal } : {}),
+  }).catch((error) => {
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "warning",
+        payload: {
+          cause: "session_memory_update_failed",
           message:
             error instanceof Error
               ? error.message
@@ -2321,6 +2358,7 @@ async function* runTurnKernelInner(
       }
       const stopReason = assistantText.length === 0 ? "empty_response" : "completed";
       launchMagicDocsPostSampling(state, session, signal);
+      launchSessionMemoryPostSampling(state, session, ctx, signal);
       // T6 gap #119: canonical happy-path `turn_complete` so rollouts
       // record the close of this turn's lifecycle.
       emitTurnComplete(lastContent);
