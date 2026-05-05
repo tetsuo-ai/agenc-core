@@ -550,8 +550,13 @@ export function buildToolRegistry(
     taskOutput: "TaskOutput",
     taskStop: "TaskStop",
   } as const;
+  // The retired AgentTool / agent_tool spellings are intentionally not
+  // registered. The canonical delegation surface is the TL-22 spawn_agent
+  // tool; this registry entry only preserves its plain-string argument field.
+  const spawnAgentToolName = "spawn_agent";
   const modelFacingStringArgumentFieldCandidates = {
     [modelFacingProviderNativeSurface.webSearch]: "query",
+    [spawnAgentToolName]: "message",
     NotebookRead: "notebook_path",
     NotebookEdit: "notebook_path",
     [modelFacingTaskSurface.taskGet]: "taskId",
