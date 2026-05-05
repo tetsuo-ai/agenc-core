@@ -543,6 +543,8 @@ function readAuthSubscriptionTierExtra(
     case "team":
     case "enterprise":
       return value;
+    case "c4e":
+      return "enterprise";
     default:
       return undefined;
   }

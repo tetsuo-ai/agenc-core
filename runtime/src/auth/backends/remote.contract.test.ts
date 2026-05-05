@@ -676,6 +676,27 @@ describe("RemoteAuthBackend", () => {
     await expect(backend.getSubscriptionTier()).rejects.toThrow(/invalid tier/);
   });
 
+  it("normalizes C4E subscription responses to enterprise entitlement", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ subscriptionTier: "c4e" }), {
+        status: 200,
+      }),
+    );
+    const backend = new RemoteAuthBackend({
+      agencHome,
+      env: { [REMOTE_AUTH_TOKEN_ENV]: "remote-token" },
+      fetchImpl,
+      tierEndpoint: "https://api.agenc.tech/test/subscription-tier",
+    });
+
+    try {
+      await expect(backend.getSubscriptionTier()).resolves.toBe("enterprise");
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("clears persisted remote auth state on logout", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
     const backend = new RemoteAuthBackend({

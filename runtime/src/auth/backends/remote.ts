@@ -768,6 +768,8 @@ function normalizeSubscriptionTier(
     case "team":
     case "enterprise":
       return value.trim() as AuthSubscriptionTier;
+    case "c4e":
+      return "enterprise";
     default:
       return undefined;
   }

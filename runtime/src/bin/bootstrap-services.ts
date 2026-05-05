@@ -39,6 +39,7 @@ import {
   type CodeModeService,
 } from "../tools/code-mode/index.js";
 import { initMagicDocs } from "../services/MagicDocs/magicDocs.js";
+import { configurePolicyLimitsService } from "../services/policyLimits/index.js";
 import type { RolloutItem } from "../session/rollout-item.js";
 import type { RolloutStore } from "../session/rollout-store.js";
 import {
@@ -537,6 +538,26 @@ export function buildBootstrapSessionServices(
     opts.sessionConfiguration,
   );
   const modelClient = new BootstrapModelClient(opts.provider);
+  const providerOptions = readProviderFactoryOptions(opts.provider);
+  const policyApiKey = opts.apiKey ?? providerOptions.apiKey;
+  const policyLimits = configurePolicyLimitsService({
+    agencHome: opts.agencHome,
+    providerName: opts.providerName,
+    ...(providerOptions.baseURL !== undefined
+      ? { baseURL: providerOptions.baseURL }
+      : {}),
+    ...(policyApiKey !== undefined ? { apiKey: policyApiKey } : {}),
+    ...(opts.authBackend !== undefined
+      ? { authBackend: opts.authBackend }
+      : {}),
+    ...(opts.authSubscriptionTier !== undefined
+      ? { authSubscriptionTier: opts.authSubscriptionTier }
+      : {}),
+    sessionId: opts.conversationId,
+    env: opts.env,
+  });
+  policyLimits.initializePolicyLimitsLoadingPromise();
+  void policyLimits.loadPolicyLimits();
   const codeModeService =
     opts.codeModeService ?? createCodeModeService({ env: opts.env });
   const rolloutRecorder = new BootstrapRolloutRecorderFacade();
@@ -666,6 +687,7 @@ export function buildBootstrapSessionServices(
     }),
     permissionModeRegistry: opts.permissionModeRegistry,
     configStore: opts.configStore,
+    policyLimits,
   };
 
   return {
@@ -717,6 +739,7 @@ export function buildBootstrapSessionServices(
       rolloutTrace.flush();
       rolloutTrace.close();
       services.shellSnapshotTx.complete();
+      policyLimits.stopBackgroundPolling();
       fileThreadStore.close();
     },
   };

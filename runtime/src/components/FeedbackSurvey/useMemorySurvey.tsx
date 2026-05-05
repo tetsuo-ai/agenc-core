@@ -3,7 +3,7 @@ import { isFeedbackSurveyDisabled } from 'src/services/analytics/config.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from 'src/services/analytics/index.js';
 import { isAutoMemoryEnabled } from '../../memdir/paths.js';
-import { isPolicyAllowed } from '../../services/policyLimits/index.js';
+import { isProductFeedbackAllowedByPolicy } from '../../services/policyLimits/index.js';
 import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js';
 import type { Message } from '../../types/message.js';
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js';
@@ -96,7 +96,7 @@ export function useMemorySurvey(messages: Message[], isLoading: boolean, hasActi
     if (getGlobalConfig().transcriptShareDismissed) {
       return false;
     }
-    if (!isPolicyAllowed('allow_product_feedback')) {
+    if (!isProductFeedbackAllowedByPolicy()) {
       return false;
     }
     return true;
@@ -175,7 +175,7 @@ export function useMemorySurvey(messages: Message[], isLoading: boolean, hasActi
     if (isFeedbackSurveyDisabled()) {
       return;
     }
-    if (!isPolicyAllowed('allow_product_feedback')) {
+    if (!isProductFeedbackAllowedByPolicy()) {
       return;
     }
     if (isEnvTruthy(process.env.AGENC_DISABLE_FEEDBACK_SURVEY)) {
