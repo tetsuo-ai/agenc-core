@@ -38,6 +38,22 @@ export interface BackgroundTaskOutputRef {
   readonly bytes: number;
 }
 
+export interface AgentToolActivity {
+  readonly toolName: string;
+  readonly input: Readonly<Record<string, unknown>>;
+  readonly activityDescription?: string;
+  readonly isSearch?: boolean;
+  readonly isRead?: boolean;
+}
+
+export interface AgentProgress {
+  readonly toolUseCount: number;
+  readonly tokenCount: number;
+  readonly lastActivity?: AgentToolActivity;
+  readonly recentActivities?: readonly AgentToolActivity[];
+  readonly summary?: string;
+}
+
 export interface BackgroundTaskSnapshot {
   readonly id: string;
   readonly type: BackgroundTaskType;
@@ -51,6 +67,7 @@ export interface BackgroundTaskSnapshot {
   readonly notified: boolean;
   readonly source?: string;
   readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly progress?: AgentProgress;
   readonly error?: string;
 }
 
@@ -69,6 +86,7 @@ export interface RegisterBackgroundTaskInput {
   readonly toolUseId?: string;
   readonly source?: string;
   readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly progress?: AgentProgress;
   readonly status?: Extract<BackgroundTaskStatus, "pending" | "running">;
   readonly outputUri?: string;
   readonly aliases?: readonly string[];
@@ -103,6 +121,7 @@ interface MutableTaskRecord {
   notified: boolean;
   source?: string;
   metadata?: Readonly<Record<string, unknown>>;
+  progress?: AgentProgress;
   error?: string;
   abortController?: AbortController;
   onStop?: (reason: string) => Promise<void> | void;
@@ -201,6 +220,7 @@ export class BackgroundTaskLifecycle {
       ...(input.toolUseId !== undefined ? { toolUseId: input.toolUseId } : {}),
       ...(input.source !== undefined ? { source: input.source } : {}),
       ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
+      ...(input.progress !== undefined ? { progress: input.progress } : {}),
       ...(input.abortController !== undefined
         ? { abortController: input.abortController }
         : {}),
@@ -263,6 +283,33 @@ export class BackgroundTaskLifecycle {
       if (metadata !== undefined) {
         record.metadata = { ...(record.metadata ?? {}), ...metadata };
       }
+    }
+    return this.snapshot(record);
+  }
+
+  updateAgentProgress(taskId: string, progress: AgentProgress): BackgroundTaskSnapshot {
+    const record = this.requireTask(taskId);
+    if (!isTerminalTaskStatus(record.status)) {
+      const summary = record.progress?.summary;
+      record.progress = summary ? { ...progress, summary } : progress;
+    }
+    return this.snapshot(record);
+  }
+
+  updateAgentSummary(taskId: string, summary: string): BackgroundTaskSnapshot {
+    const record = this.requireTask(taskId);
+    if (!isTerminalTaskStatus(record.status)) {
+      record.progress = {
+        ...record.progress,
+        toolUseCount: record.progress?.toolUseCount ?? 0,
+        tokenCount: record.progress?.tokenCount ?? 0,
+        summary,
+      };
+      this.pushNotification(
+        "progress",
+        record,
+        `Task "${record.description}" summary updated`,
+      );
     }
     return this.snapshot(record);
   }
@@ -450,6 +497,7 @@ export class BackgroundTaskLifecycle {
       ...(record.endedAtMs !== undefined ? { endedAtMs: record.endedAtMs } : {}),
       ...(record.source !== undefined ? { source: record.source } : {}),
       ...(record.metadata !== undefined ? { metadata: record.metadata } : {}),
+      ...(record.progress !== undefined ? { progress: record.progress } : {}),
       ...(record.error !== undefined ? { error: record.error } : {}),
     };
   }

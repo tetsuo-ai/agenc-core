@@ -1,0 +1,188 @@
+{
+  "contractName": "agent-summary-service-parity",
+  "scope": "AgenC AgentSummary service port for periodic subagent progress summarization.",
+  "sourceRoot": "/home/tetsuo/git/openclaude", "sourceRootBrandingScanOverride": "branding-scan: allow upstream source path",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/services/AgentSummary/agentSummary.ts",
+    "src/tasks/LocalAgentTask/LocalAgentTask.tsx",
+    "src/tools/AgentTool/AgentTool.tsx",
+    "src/tools/AgentTool/runAgent.ts",
+    "src/utils/forkedAgent.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/services/AgentSummary/agentSummary.ts",
+    "runtime/src/services/AgentSummary/transcript.ts",
+    "runtime/src/services/AgentSummary/PARITY.md",
+    "runtime/src/agents/run-agent.ts",
+    "runtime/src/agents/thread.ts",
+    "runtime/src/agents/delegate.ts",
+    "runtime/src/tasks/lifecycle.ts",
+    "runtime/src/tasks/agent-thread.ts",
+    "runtime/src/tasks/index.ts",
+    "scripts/goal/verify.mjs"
+  ],
+  "testFiles": [
+    "runtime/src/services/AgentSummary/agentSummary.test.ts",
+    "runtime/src/services/AgentSummary/transcript.test.ts",
+    "runtime/src/tasks/lifecycle.test.ts",
+    "runtime/src/agents/run-agent.test.ts",
+    "runtime/src/agents/delegate.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "summary-scheduling",
+      "sourceAnchors": [
+        "src/services/AgentSummary/agentSummary.ts"
+      ],
+      "targetAnchors": [
+        "runtime/src/services/AgentSummary/agentSummary.ts"
+      ],
+      "requiredBehaviors": [
+        "Schedule the first summary tick after the interval rather than immediately.",
+        "Schedule the next tick only after the current summary attempt completes.",
+        "Ask for a 1-2 sentence present-tense progress summary.",
+        "Skip missing or too-short transcripts and reschedule.",
+        "Do not reschedule after stop."
+      ],
+      "edgeCases": [
+        "A long-running fork does not overlap with a second fork.",
+        "Transcript read errors are logged and still reschedule while the service is running.",
+        "Stopping while transcript lookup is pending prevents a fork from launching."
+      ],
+      "tests": [
+        "runtime/src/services/AgentSummary/agentSummary.test.ts",
+        "runtime/src/services/AgentSummary/transcript.test.ts",
+        "runtime/src/tasks/lifecycle.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "live-progress-wiring",
+      "sourceAnchors": [
+        "src/tasks/LocalAgentTask/LocalAgentTask.tsx#updateAgentSummary",
+        "src/tools/AgentTool/AgentTool.tsx"
+      ],
+      "targetAnchors": [
+        "runtime/src/tasks/lifecycle.ts",
+        "runtime/src/tasks/agent-thread.ts",
+        "runtime/src/agents/run-agent.ts",
+        "runtime/src/agents/thread.ts",
+        "runtime/src/agents/delegate.ts",
+        "runtime/src/services/AgentSummary/transcript.ts"
+      ],
+      "requiredBehaviors": [
+        "Store summary text on live local-agent progress state without replacing token or tool counts.",
+        "Capture cache-safe summary parameters from the real child provider request and a fork-compatible child tool-use context once messages, options, model, cwd, and abort state are available.",
+        "Start summarization for registered AgentThread tasks when captured cache-safe parameters arrive after registration.",
+        "Stop summarization when the task is stopped or the agent reaches a terminal status.",
+        "Preserve a fork-compatible readFileState cache so the default summary fork can clone child tool-use context.",
+        "Preserve assistant tool_use blocks and paired user tool_result blocks when converting native LLM transcript messages for summary context."
+      ],
+      "edgeCases": [
+        "Progress updates after a summary preserve the existing summary.",
+        "Native assistant toolCalls are converted to upstream-shaped tool_use blocks.",
+        "Native tool result messages are converted to upstream-shaped tool_result blocks with tool_use_id."
+      ],
+      "tests": [
+        "runtime/src/tasks/lifecycle.test.ts",
+        "runtime/src/agents/run-agent.test.ts",
+        "runtime/src/agents/delegate.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "transcript-filtering",
+      "sourceAnchors": [
+        "src/tools/AgentTool/runAgent.ts#filterIncompleteToolCalls"
+      ],
+      "targetAnchors": [
+        "runtime/src/services/AgentSummary/agentSummary.ts"
+      ],
+      "requiredBehaviors": [
+        "Collect completed tool_use IDs from user tool_result blocks.",
+        "Drop assistant messages containing tool_use blocks that lack matching results.",
+        "Keep completed tool-use assistant messages, non-assistant messages, assistant messages without array content, and orphaned user tool_result messages."
+      ],
+      "edgeCases": [
+        "Assistant text-only messages survive filtering.",
+        "An incomplete tool_use block drops the whole assistant message."
+      ],
+      "tests": [
+        "runtime/src/services/AgentSummary/agentSummary.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "cache-safe-summary-fork",
+      "sourceAnchors": [
+        "src/services/AgentSummary/agentSummary.ts",
+        "src/utils/forkedAgent.ts"
+      ],
+      "targetAnchors": [
+        "runtime/src/services/AgentSummary/agentSummary.ts",
+        "runtime/src/services/PromptSuggestion/runtime.ts"
+      ],
+      "requiredBehaviors": [
+        "Drop the original forkContextMessages closure and rebuild forkContextMessages from the current transcript each tick.",
+        "Preserve cache-safe parameters including the tool catalog instead of removing tools.",
+        "Deny all tool calls with canUseTool while preserving the cache key.",
+        "Use querySource and forkLabel values for the agent-summary fork and skip transcript writes."
+      ],
+      "edgeCases": [
+        "No maxOutputTokens or maxTurns override is added by the summary service.",
+        "A fresh abort controller is passed for every summary tick."
+      ],
+      "tests": [
+        "runtime/src/services/AgentSummary/agentSummary.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "summary-extraction-update",
+      "sourceAnchors": [
+        "src/services/AgentSummary/agentSummary.ts"
+      ],
+      "targetAnchors": [
+        "runtime/src/services/AgentSummary/agentSummary.ts"
+      ],
+      "requiredBehaviors": [
+        "Extract the first non-empty assistant text block from fork results.",
+        "Skip API error assistant messages.",
+        "Update previousSummary only after a successful non-empty summary.",
+        "Call the injected progress update hook with taskId and trimmed summary text."
+      ],
+      "edgeCases": [
+        "Malformed fork results produce no summary instead of throwing.",
+        "Empty and API-error results preserve the previous successful summary for later prompts."
+      ],
+      "tests": [
+        "runtime/src/services/AgentSummary/agentSummary.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "stop-abort-stale-result",
+      "sourceAnchors": [
+        "src/services/AgentSummary/agentSummary.ts"
+      ],
+      "targetAnchors": [
+        "runtime/src/services/AgentSummary/agentSummary.ts"
+      ],
+      "requiredBehaviors": [
+        "stop() is idempotent.",
+        "stop() clears pending timers and aborts in-flight summary forks.",
+        "Late fork results after stop do not update progress.",
+        "Expected aborts caused by stop are not logged as errors."
+      ],
+      "edgeCases": [
+        "Calling stop while a fork is in flight prevents the finally block from scheduling another timeout."
+      ],
+      "tests": [
+        "runtime/src/services/AgentSummary/agentSummary.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

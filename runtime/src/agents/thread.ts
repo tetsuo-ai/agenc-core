@@ -8,7 +8,7 @@
  * The class also exposes an AgenC-compatible surface (`threadName`,
  * `messages`, `memory`, `metadata`, `worktreePath`, `worktreeBranch`,
  * `fork()`, `spawn()`, `join()`)
- * so callers that expect the literal openclaude `AgentTool` shape can
+ * so callers that expect the legacy `AgentTool` shape can
  * interoperate with AgenC's subagent runtime without reaching into the
  * underlying `LiveAgent` / `delegate()` surface directly.
  *
@@ -21,13 +21,16 @@ import type { WorktreeHandle } from "./worktree.js";
 import type { ForkMode } from "./fork-context.js";
 import type { AgentStatus } from "./status.js";
 import { isFinal } from "./status.js";
+import type { CacheSafeParams } from "../services/PromptSuggestion/runtime.js";
+import type { Message } from "../types/message.js";
 import {
   delegate as defaultDelegate,
   type DelegateOpts,
   type DelegateOutcome,
 } from "./delegate.js";
-import type { RunAgentResult } from "./run-agent.js";
+import type { RunAgentProgressEvent, RunAgentResult } from "./run-agent.js";
 import type { AgentPath } from "./registry.js";
+import { runAgentProgressEventToAgentSummaryMessage } from "../services/AgentSummary/transcript.js";
 
 export type MemoryEntry = AgentMemoryEntry;
 
@@ -42,7 +45,7 @@ export interface AgentThreadOpts {
 
 /**
  * Arguments accepted by `AgentThread.fork()` / `AgentThread.spawn()`.
- * Mirrors the openclaude `AgentTool` spawn surface: a task prompt, an
+ * Mirrors the AgenC `AgentTool` spawn surface: a task prompt, an
  * optional role, and optional isolation/worktree info. The only
  * difference between `fork` and `spawn` is the default fork mode —
  * see the method docs.
@@ -96,8 +99,13 @@ export class AgentThread {
   private readonly wiring: AgentThreadWiring;
   private liveHandle: LiveAgent;
   private readonly statusListeners = new Set<(status: AgentStatus) => void>();
+  private readonly summaryCacheSafeParamListeners = new Set<
+    (params: CacheSafeParams) => void
+  >();
+  private readonly summaryTranscriptMessages: Message[] = [];
   private unsubscribeLiveStatus: (() => void) | null = null;
   private parentPathForChildren: AgentPath;
+  private summaryCacheSafeParamsValue: CacheSafeParams | null = null;
 
   constructor(opts: AgentThreadOpts, wiring: AgentThreadWiring = {}) {
     this.liveHandle = opts.live;
@@ -145,6 +153,43 @@ export class AgentThread {
     return liveMessages.length > 0
       ? liveMessages
       : this.initialMessages;
+  }
+
+  get summaryMessages(): ReadonlyArray<Message> {
+    return this.summaryTranscriptMessages;
+  }
+
+  get summaryCacheSafeParams(): CacheSafeParams | undefined {
+    return this.summaryCacheSafeParamsValue ?? undefined;
+  }
+
+  setSummaryCacheSafeParams(params: CacheSafeParams): void {
+    this.summaryCacheSafeParamsValue = params;
+    for (const listener of this.summaryCacheSafeParamListeners) {
+      listener(params);
+    }
+  }
+
+  onSummaryCacheSafeParams(
+    listener: (params: CacheSafeParams) => void,
+  ): () => void {
+    this.summaryCacheSafeParamListeners.add(listener);
+    if (this.summaryCacheSafeParamsValue !== null) {
+      listener(this.summaryCacheSafeParamsValue);
+    }
+    return () => {
+      this.summaryCacheSafeParamListeners.delete(listener);
+    };
+  }
+
+  recordSummaryProgressEvent(event: RunAgentProgressEvent): void {
+    const message = runAgentProgressEventToAgentSummaryMessage(
+      event,
+      this.summaryTranscriptMessages.length,
+    );
+    if (message !== null) {
+      this.summaryTranscriptMessages.push(message);
+    }
   }
 
   /** Resume metadata mirror from the current live handle. */
@@ -201,11 +246,11 @@ export class AgentThread {
     return this.dispatchSpawn({ ...opts, forkMode });
   }
 
-  /**
-   * Spawn a child WITHOUT inheriting parent history. Equivalent to
-   * codex `Option::None` for the spawn fork mode. Same wiring
-   * requirement as `fork()`.
-   */
+/**
+ * Spawn a child WITHOUT inheriting parent history. Equivalent to
+   * no fork context for the spawn fork mode. Same wiring
+ * requirement as `fork()`.
+ */
   async spawn(opts: AgentThreadSpawnOpts): Promise<AgentThread> {
     return this.dispatchSpawn({ ...opts, forkMode: opts.forkMode });
   }

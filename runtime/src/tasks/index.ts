@@ -10,6 +10,8 @@ export {
   type BackgroundTaskStatus,
   type BackgroundTaskType,
   type BindTaskPromiseOptions,
+  type AgentProgress,
+  type AgentToolActivity,
   type RegisterBackgroundTaskInput,
 } from "./lifecycle.js";
 

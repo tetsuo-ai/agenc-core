@@ -352,6 +352,42 @@ const ITEM_EVIDENCE = {
       "runtime/src/services/service-utilities.contract.test.ts",
     ],
   },
+  "S-12": {
+    files: [
+      "runtime/src/services/AgentSummary/agentSummary.ts",
+      "runtime/src/services/AgentSummary/transcript.ts",
+      "runtime/src/services/AgentSummary/PARITY.md",
+      "runtime/src/tasks/lifecycle.ts",
+      "runtime/src/tasks/agent-thread.ts",
+      "runtime/src/agents/run-agent.ts",
+      "runtime/src/agents/thread.ts",
+      "runtime/src/agents/delegate.ts",
+      "parity/agent-summary-service-parity.json",
+    ],
+    grepPresent: [
+      { pattern: "startAgentSummarization", scope: "runtime/src/services/AgentSummary/agentSummary.ts" },
+      { pattern: "startAgentSummarization", scope: "runtime/src/tasks/agent-thread.ts" },
+      { pattern: "buildSummaryPrompt", scope: "runtime/src/services/AgentSummary/agentSummary.ts" },
+      { pattern: "filterIncompleteToolCalls", scope: "runtime/src/services/AgentSummary/agentSummary.ts" },
+      { pattern: "extractAssistantSummaryText", scope: "runtime/src/services/AgentSummary/agentSummary.ts" },
+      { pattern: "runAgentProgressEventToAgentSummaryMessage", scope: "runtime/src/services/AgentSummary/transcript.ts" },
+      { pattern: "updateAgentSummary", scope: "runtime/src/tasks/lifecycle.ts" },
+      { pattern: "summaryCacheSafeParams", scope: "runtime/src/tasks/agent-thread.ts" },
+      { pattern: "onCacheSafeParams", scope: "runtime/src/agents/run-agent.ts" },
+      { pattern: "recordSummaryProgressEvent", scope: "runtime/src/agents/delegate.ts" },
+      { pattern: "agent-summary-service-parity", scope: "parity/agent-summary-service-parity.json" },
+    ],
+    grepNotPresent: [
+      { pattern: "@ts-nocheck", scope: "runtime/src/services/AgentSummary" },
+    ],
+    tests: [
+      "runtime/src/services/AgentSummary/agentSummary.test.ts",
+      "runtime/src/services/AgentSummary/transcript.test.ts",
+      "runtime/src/tasks/lifecycle.test.ts",
+      "runtime/src/agents/run-agent.test.ts",
+      "runtime/src/agents/delegate.test.ts",
+    ],
+  },
   "F-07": {
     files: [{ globUnder: "runtime/src/lifecycle", matching: /\.tsx?$/, minCount: 1 }],
   },
@@ -1168,6 +1204,40 @@ if (upstreamAdditions.length > 0) {
       `That tree is temporary scaffolding scheduled for deletion at Z-02. Do not add to it. ` +
       `Move the new logic to its proper AgenC-owned destination instead.\n  ` +
       upstreamAdditions.map((p) => `- ${p}`).join("\n  "),
+  );
+}
+
+const DONOR_DIR_NAMES = [
+  ["open", "cla", "ude"].join(""),
+  ["co", "dex"].join(""),
+  ["cla", "ude"].join(""),
+  ["Open", "Cla", "ude"].join(""),
+  ["Co", "dex"].join(""),
+  ["Cla", "ude"].join(""),
+  "donor",
+  "mirror",
+  "vendored",
+  "external",
+  "_donor",
+  "_mirror",
+  "_vendored",
+  "_external",
+  "_oc",
+  "_cx",
+];
+const donorNamedDirRe = new RegExp(
+  `(^|/)(${DONOR_DIR_NAMES.join("|")})(/|$)`,
+);
+const donorNamedDirAdditions = [...added].filter((p) =>
+  p.startsWith("runtime/src/") &&
+  !p.startsWith("runtime/src/agenc/upstream/") &&
+  donorNamedDirRe.test(p),
+);
+if (donorNamedDirAdditions.length > 0) {
+  failGate(
+    `forbidden: this item adds ${donorNamedDirAdditions.length} file(s) inside donor-named AgenC-owned directories. ` +
+      `Known donor-name directory segments are banned outside runtime/src/agenc/upstream/.\n  ` +
+      donorNamedDirAdditions.map((p) => `- ${p}`).join("\n  "),
   );
 }
 

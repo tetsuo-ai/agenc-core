@@ -18,14 +18,26 @@
  * @module
  */
 
+import { normalize } from "node:path";
+import { LRUCache } from "lru-cache";
 import type {
   LLMChatOptions,
   LLMContentPart,
   LLMMessage,
   LLMProvider,
+  LLMProviderStartupPrewarmHandle,
+  LLMProviderStartupPrewarmParams,
   LLMUsage,
 } from "../llm/types.js";
+import type {
+  CacheSafeParams,
+  REPLHookContext,
+} from "../services/PromptSuggestion/runtime.js";
+import { createCacheSafeParams } from "../services/PromptSuggestion/runtime.js";
+import { llmMessageToAgentSummaryMessage } from "../services/AgentSummary/transcript.js";
+import type { StartupPrewarmStore } from "../session/startup-prewarm.js";
 import { readProviderIdentity } from "../llm/provider.js";
+import { buildAgenCToolUseContext } from "../agenc/adapters/tool-use-context.js";
 import type { ToolRegistry, ToolDispatchResult } from "./_deps/tool-registry.js";
 import {
   safeStringify,
@@ -42,6 +54,7 @@ import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import {
   threadConfigSnapshot,
   type ReasoningEffort,
+  type TurnContext,
 } from "../session/turn-context.js";
 import type { LiveAgent } from "./control.js";
 import {
@@ -83,6 +96,8 @@ export interface RunAgentParams {
   readonly maxTurns?: number;
   /** Suppress parent mailbox notifications and child rollout recording. */
   readonly silent?: boolean;
+  /** Captured once the child turn has the exact cache-safe request state. */
+  readonly onCacheSafeParams?: (params: CacheSafeParams) => void;
 }
 
 export type ChildToolPolicyDecision =
@@ -146,6 +161,78 @@ export interface RunAgentResult {
 export const MCP_INIT_TIMEOUT_MS = 30_000;
 const MCP_POLL_INTERVAL_MS = 500;
 const DEFAULT_MAX_AGENT_DEPTH = 1;
+const FORK_READ_FILE_STATE_CACHE_SIZE = 100;
+const FORK_READ_FILE_STATE_MAX_SIZE_BYTES = 25 * 1024 * 1024;
+
+interface ForkFileState {
+  readonly content: string;
+  readonly timestamp: number;
+  readonly offset?: number;
+  readonly limit?: number;
+  readonly isPartialView?: boolean;
+}
+
+class ForkCompatibleFileStateCache {
+  private readonly cache = new LRUCache<string, ForkFileState>({
+    max: FORK_READ_FILE_STATE_CACHE_SIZE,
+    maxSize: FORK_READ_FILE_STATE_MAX_SIZE_BYTES,
+    sizeCalculation: (value) =>
+      Math.max(1, Buffer.byteLength(value.content, "utf8")),
+  });
+
+  get(key: string): ForkFileState | undefined {
+    return this.cache.get(normalize(key));
+  }
+
+  set(key: string, value: ForkFileState): this {
+    this.cache.set(normalize(key), value);
+    return this;
+  }
+
+  has(key: string): boolean {
+    return this.cache.has(normalize(key));
+  }
+
+  delete(key: string): boolean {
+    return this.cache.delete(normalize(key));
+  }
+
+  clear(): void {
+    this.cache.clear();
+  }
+
+  get size(): number {
+    return this.cache.size;
+  }
+
+  get max(): number {
+    return this.cache.max;
+  }
+
+  get maxSize(): number {
+    return this.cache.maxSize;
+  }
+
+  get calculatedSize(): number {
+    return this.cache.calculatedSize;
+  }
+
+  keys(): Generator<string> {
+    return this.cache.keys();
+  }
+
+  entries(): Generator<[string, ForkFileState]> {
+    return this.cache.entries();
+  }
+
+  dump(): ReturnType<LRUCache<string, ForkFileState>["dump"]> {
+    return this.cache.dump();
+  }
+
+  load(entries: ReturnType<LRUCache<string, ForkFileState>["dump"]>): void {
+    this.cache.load(entries);
+  }
+}
 
 interface RoleLikeConfig {
   readonly requiredMcpServers?: ReadonlyArray<string>;
@@ -296,6 +383,153 @@ function buildChatOptions(
     opts.timeoutMs = effectiveTimeout;
   }
   return opts as LLMChatOptions;
+}
+
+interface AgentSummaryProviderRequest {
+  readonly messages: ReadonlyArray<LLMMessage>;
+  readonly options: LLMChatOptions;
+}
+
+type AgentSummaryProviderRequestCapture = (
+  request: AgentSummaryProviderRequest,
+) => void;
+
+function captureAgentSummaryProviderRequest(
+  capture: AgentSummaryProviderRequestCapture,
+  messages: LLMMessage[],
+  options?: LLMChatOptions,
+): void {
+  capture({
+    messages: messages.map((message) => ({ ...message })),
+    options: options ?? {},
+  });
+}
+
+function wrapStartupPrewarmHandleForAgentSummary(
+  handle: LLMProviderStartupPrewarmHandle,
+  capture: AgentSummaryProviderRequestCapture,
+): LLMProviderStartupPrewarmHandle {
+  return {
+    ...handle,
+    chatStream(messages, onChunk, options) {
+      captureAgentSummaryProviderRequest(capture, messages, options);
+      return handle.chatStream(messages, onChunk, options);
+    },
+  };
+}
+
+function wrapStartupPrewarmForAgentSummary(
+  store: StartupPrewarmStore,
+  capture: AgentSummaryProviderRequestCapture,
+): StartupPrewarmStore {
+  return {
+    setProviderHandle(handle) {
+      store.setProviderHandle(
+        wrapStartupPrewarmHandleForAgentSummary(handle, capture),
+      );
+    },
+    setProviderTask(task, opts) {
+      store.setProviderTask(
+        Promise.resolve(task).then((handle) =>
+          handle
+            ? wrapStartupPrewarmHandleForAgentSummary(handle, capture)
+            : undefined,
+        ),
+        opts,
+      );
+    },
+    async consumeProviderHandle(opts) {
+      const handle = await store.consumeProviderHandle(opts);
+      return handle
+        ? wrapStartupPrewarmHandleForAgentSummary(handle, capture)
+        : undefined;
+    },
+    expireProviderHandle: () => store.expireProviderHandle(),
+    clear: () => store.clear(),
+  };
+}
+
+function wrapProviderForAgentSummary(
+  provider: LLMProvider,
+  capture: AgentSummaryProviderRequestCapture,
+): LLMProvider {
+  return {
+    ...provider,
+    chatStream(messages, onChunk, options) {
+      captureAgentSummaryProviderRequest(capture, messages, options);
+      return provider.chatStream(messages, onChunk, options);
+    },
+    ...(provider.prewarmStartup !== undefined
+      ? {
+          prewarmStartup(params: LLMProviderStartupPrewarmParams) {
+            const prewarm = provider.prewarmStartup?.(params);
+            if (
+              !prewarm ||
+              typeof (prewarm as Promise<unknown>).then !== "function"
+            ) {
+              return prewarm
+                ? wrapStartupPrewarmHandleForAgentSummary(
+                    prewarm as LLMProviderStartupPrewarmHandle,
+                    capture,
+                  )
+                : prewarm;
+            }
+            return Promise.resolve(prewarm).then((handle) =>
+              handle
+                ? wrapStartupPrewarmHandleForAgentSummary(handle, capture)
+                : handle,
+            );
+          },
+        }
+      : {}),
+  };
+}
+
+function createAgentSummaryCacheSafeParams(opts: {
+  readonly childSession: ChildSession;
+  readonly live: LiveAgent;
+  readonly turnContext: TurnContext;
+  readonly providerRequest: AgentSummaryProviderRequest;
+  readonly abortController: AbortController;
+}): CacheSafeParams {
+  const requestOptions = opts.providerRequest.options;
+  const toolUseContext = buildAgenCToolUseContext(
+    opts.childSession,
+    opts.turnContext,
+    { querySource: "agent_summary" },
+  );
+  const context: REPLHookContext = {
+    messages: opts.providerRequest.messages.map(
+      llmMessageToAgentSummaryMessage,
+    ),
+    systemPrompt: requestOptions.systemPrompt ?? "",
+    userContext: {},
+    systemContext: {
+      cwd: opts.childSession.sessionConfiguration.cwd,
+    },
+    toolUseContext: {
+      ...toolUseContext,
+      abortController: opts.abortController,
+      provider: opts.childSession.services.provider,
+      options: {
+        ...toolUseContext.options,
+        contextWindowTokens:
+          requestOptions.contextWindowTokens ??
+          toolUseContext.options.contextWindowTokens,
+        ...(requestOptions.maxOutputTokens !== undefined
+          ? { maxOutputTokens: requestOptions.maxOutputTokens }
+          : {}),
+      },
+      readFileState: new ForkCompatibleFileStateCache(),
+      cwd: opts.childSession.sessionConfiguration.cwd,
+      queryTracking: {
+        chainId: `agent-summary:${opts.live.agentId}`,
+        depth: 0,
+      },
+    } as unknown as REPLHookContext["toolUseContext"],
+    querySource: "agent_summary",
+  };
+  return createCacheSafeParams(context);
 }
 
 function relayToParentMailbox(params: {
@@ -878,6 +1112,7 @@ function splitInitialMessages(
 function buildChildSession(
   params: RunAgentParams,
   provider: LLMProvider,
+  startupPrewarm?: StartupPrewarmStore,
 ): ChildSession {
   const sessionConfiguration = cloneSessionConfiguration(
     params.parent,
@@ -918,6 +1153,7 @@ function buildChildSession(
       ...params.parent.services,
       provider,
       registry,
+      ...(startupPrewarm !== undefined ? { startupPrewarm } : {}),
       querySource: params.querySource ?? params.parent.services.querySource,
       permissionModeRegistry: new PermissionModeRegistry(
         params.parent.permissionModeRegistry.current(),
@@ -1130,7 +1366,40 @@ export async function* runAgent(
       );
     }
 
-    childSession = buildChildSession(params, provider);
+    let cacheSafeParamsCaptured = false;
+    let activeTurnContext: TurnContext | null = null;
+    const captureCacheSafeParams: AgentSummaryProviderRequestCapture = (
+      providerRequest,
+    ) => {
+      if (
+        cacheSafeParamsCaptured ||
+        childSession === null ||
+        activeTurnContext === null
+      ) {
+        return;
+      }
+      cacheSafeParamsCaptured = true;
+      params.onCacheSafeParams?.(
+        createAgentSummaryCacheSafeParams({
+          childSession,
+          live,
+          turnContext: activeTurnContext,
+          providerRequest,
+          abortController: callController,
+        }),
+      );
+    };
+    const childProvider = params.onCacheSafeParams
+      ? wrapProviderForAgentSummary(provider, captureCacheSafeParams)
+      : provider;
+    const childStartupPrewarm =
+      params.onCacheSafeParams && parent.services.startupPrewarm !== undefined
+        ? wrapStartupPrewarmForAgentSummary(
+            parent.services.startupPrewarm,
+            captureCacheSafeParams,
+          )
+        : parent.services.startupPrewarm;
+    childSession = buildChildSession(params, childProvider, childStartupPrewarm);
     const { history, userMessage } = splitInitialMessages(
       params.initialMessages,
       params.taskPrompt,
@@ -1157,11 +1426,20 @@ export async function* runAgent(
       let terminalError: unknown;
 
       const iter = childSession.runTurn(nextUserMessage, {
+        ctx: (() => {
+          activeTurnContext =
+            params.maxTurns !== undefined
+              ? childSession.newTurnWithSubId(
+                  childSession.nextInternalSubId(),
+                  { maxTurns: params.maxTurns },
+                )
+              : childSession.newDefaultTurnWithSubId(
+                  childSession.nextInternalSubId(),
+                );
+          return activeTurnContext;
+        })(),
         ...(firstTurn ? { history } : {}),
         signal: chatOptions.signal,
-        ...(params.maxTurns !== undefined
-          ? { configOverrides: { maxTurns: params.maxTurns } }
-          : {}),
       });
       // eslint-disable-next-line no-constant-condition
       while (true) {
