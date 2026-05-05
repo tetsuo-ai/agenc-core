@@ -308,6 +308,7 @@ async function scanFile(filePath) {
     const allowed =
       baseName === "CLAUDE.md" ||
       baseName === "AGENTS.md" ||
+      rel === "runtime/src/agenc/upstream/services/api/claude.ts" || // branding-scan: allow existing upstream provider API filename
       /^(?:parity\/.*\.json|runtime\/parity\/.*\.json)$/.test(rel) ||
       ALLOW_LINE_PATTERNS.some((p) => p.test(baseName));
     if (!allowed) {

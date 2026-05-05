@@ -6,7 +6,7 @@ import { getRawUtilization } from '../../agenc/upstream/services/agencAiLimitsHo
 import { getIsRemoteMode, getKairosActive, getMainThreadAgentType, getOriginalCwd, getSdkBetas, getSessionId } from '../../agenc/upstream/bootstrap/state.js';
 import { DEFAULT_OUTPUT_STYLE_NAME } from '../../agenc/upstream/constants/outputStyles.js';
 import { useNotifications } from '../../agenc/upstream/context/notifications.js';
-import { getTotalAPIDuration, getTotalCost, getTotalDuration, getTotalInputTokens, getTotalLinesAdded, getTotalLinesRemoved, getTotalOutputTokens } from '../../agenc/upstream/cost-tracker.js';
+import { getTotalAPIDuration, getTotalCost, getTotalDuration, getTotalInputTokens, getTotalLinesAdded, getTotalLinesRemoved, getTotalOutputTokens } from '../../cost/tracker.js';
 import { useMainLoopModel } from '../../agenc/upstream/hooks/useMainLoopModel.js';
 import { type ReadonlySettings, useSettings } from '../../agenc/upstream/hooks/useSettings.js';
 import type { Message } from '../../agenc/upstream/types/message.js';

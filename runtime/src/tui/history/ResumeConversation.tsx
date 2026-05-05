@@ -7,7 +7,7 @@ import { getOriginalCwd, switchSession } from '../../agenc/upstream/bootstrap/st
 import type { Command } from '../../agenc/upstream/commands.js';
 import { LogSelector } from '../../agenc/upstream/components/LogSelector.js';
 import { Spinner } from '../components/spinner/Spinner.js';
-import { restoreCostStateForSession } from '../../agenc/upstream/cost-tracker.js';
+import { restoreCostStateForSession, setActiveCostSessionId } from '../../cost/tracker.js';
 import { setClipboard } from '../ink/termio/osc.js';
 import { Box, Text } from '../ink.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
@@ -224,6 +224,7 @@ export function ResumeConversation({
         switchSession(asSessionId(result_3.sessionId), log_0.fullPath ? dirname(log_0.fullPath) : null);
         await renameRecordingForSession();
         await resetSessionFilePointer();
+        setActiveCostSessionId(result_3.sessionId);
         restoreCostStateForSession(result_3.sessionId);
       } else if (forkSession && result_3.contentReplacements?.length) {
         await recordContentReplacement(result_3.contentReplacements);

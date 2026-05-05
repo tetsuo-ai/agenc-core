@@ -352,6 +352,35 @@ const ITEM_EVIDENCE = {
       "runtime/src/services/service-utilities.contract.test.ts",
     ],
   },
+  "OC-10": {
+    files: [
+      "runtime/src/cost/tracker.ts",
+      "runtime/src/cost/hook.ts",
+      "runtime/src/cost/PARITY.md",
+      "runtime/src/session/cost.ts",
+      "runtime/src/bin/bootstrap.ts",
+      "runtime/src/tui/history/ResumeConversation.tsx",
+      "runtime/src/tui/startup/StatusLine.tsx",
+      "parity/agenc-cost-runtime-parity.json",
+    ],
+    grepPresent: [
+      { pattern: "bindActiveCostSidecar", scope: "runtime/src/cost/tracker.ts" },
+      { pattern: "restoreSessionCostsForSession", scope: "runtime/src/session/cost.ts" },
+      { pattern: "registerCostSummaryFallbackOnExit", scope: "runtime/src/cost/hook.ts" },
+      { pattern: "bindActiveCostSidecar", scope: "runtime/src/bin/bootstrap.ts" },
+      { pattern: "../../cost/tracker\\.js", scope: "runtime/src/tui/startup/StatusLine.tsx" },
+      { pattern: "../../cost/tracker\\.js", scope: "runtime/src/tui/history/ResumeConversation.tsx" },
+    ],
+    grepNotPresent: [
+      { pattern: "agenc/upstream/cost-tracker", scope: "runtime/src/tui" },
+    ],
+    tests: [
+      "runtime/src/cost/tracker.test.ts",
+      "runtime/src/session/cost.test.ts",
+      "runtime/src/session/cost-persistence.test.ts",
+      "runtime/src/commands/status.test.ts",
+    ],
+  },
   "S-12": {
     files: [
       "runtime/src/services/AgentSummary/agentSummary.ts",
@@ -2467,6 +2496,129 @@ async function donorRuntimePortGates(item) {
 }
 
 async function serviceGates(item) {
+  if (id === "OC-10") {
+    const required = [
+      "runtime/src/cost/tracker.ts",
+      "runtime/src/cost/hook.ts",
+      "runtime/src/cost/PARITY.md",
+      "runtime/src/session/cost.ts",
+      "runtime/src/bin/bootstrap.ts",
+      "runtime/src/tui/history/ResumeConversation.tsx",
+      "runtime/src/tui/startup/StatusLine.tsx",
+      "runtime/src/agenc/upstream/screens/REPL.tsx",
+      "runtime/src/agenc/upstream/utils/diff.ts",
+      "runtime/src/agenc/upstream/utils/sessionRestore.ts",
+      "runtime/src/agenc/upstream/utils/permissions/permissions.ts",
+      "runtime/src/agenc/upstream/services/tools/toolExecution.ts",
+      "runtime/src/agenc/upstream/QueryEngine.ts",
+      "runtime/src/agenc/upstream/services/api/claude.ts", // branding-scan: allow provider API filename under upstream mirror
+      "runtime/src/agenc/upstream/services/api/logging.ts",
+      "runtime/src/agenc/upstream/services/api/cacheStatsTracker.ts",
+      "runtime/src/agenc/upstream/services/vcr.ts",
+      "runtime/src/agenc/upstream/components/Settings/Usage.tsx",
+      "parity/agenc-cost-runtime-parity.json",
+    ];
+    for (const rel of required) {
+      if (!existsSync(path.join(root, rel))) failGate(`OC-10 file missing: ${rel}`);
+    }
+    for (const rel of [
+      "runtime/src/agenc/upstream/cost-tracker.ts",
+      "runtime/src/agenc/upstream/costHook.ts",
+      "runtime/src/agenc/upstream/cost-tracker.cacheIntegration.test.ts",
+    ]) {
+      if (existsSync(path.join(root, rel))) {
+        failGate(`OC-10 retired cost mirror still exists: ${rel}`);
+      }
+    }
+    const retiredImportScan = run("rg", [
+      "-n",
+      "cost-tracker\\.js|costHook\\.js",
+      "runtime/src",
+    ], { silent: true });
+    if (retiredImportScan.status === 0) {
+      failGate(`OC-10 retired live cost mirror imports remain:\n${retiredImportScan.stdout}`);
+    }
+    const permissionsSource = readFileSync(
+      path.join(root, "runtime/src/agenc/upstream/utils/permissions/permissions.ts"),
+      "utf8",
+    );
+    if (/import\s*{[\s\S]*getTotal(?:Input|Output|CacheReadInput|CacheCreationInput)Tokens[\s\S]*}\s*from\s+['"]\.\.\/\.\.\/bootstrap\/state\.js['"]/.test(permissionsSource)) {
+      failGate("OC-10 permissions analytics still imports session token totals from bootstrap state");
+    }
+    const liveCostProducers = [
+      [
+        "runtime/src/agenc/upstream/utils/diff.ts",
+        /addToTotalLinesChanged\s*}\s*from\s+['"]\.\.\/\.\.\/\.\.\/cost\/tracker\.js['"]/,
+        "file edit line deltas route through runtime/src/cost/tracker.ts",
+      ],
+      [
+        "runtime/src/agenc/upstream/services/tools/toolExecution.ts",
+        /addToToolDuration\s*}\s*from\s+['"]\.\.\/\.\.\/\.\.\/\.\.\/cost\/tracker\.js['"]/,
+        "tool durations route through runtime/src/cost/tracker.ts",
+      ],
+      [
+        "runtime/src/agenc/upstream/screens/REPL.tsx",
+        /useCostSummary\s*}\s*from\s+['"]\.\.\/\.\.\/\.\.\/cost\/hook\.js['"]/,
+        "REPL exit summary routes through runtime/src/cost/hook.ts",
+      ],
+      [
+        "runtime/src/agenc/upstream/utils/sessionRestore.ts",
+        /restoreCostStateForSession\s*}\s*from\s+['"]\.\.\/\.\.\/\.\.\/cost\/tracker\.js['"]/,
+        "session restore routes through runtime/src/cost/tracker.ts",
+      ],
+      [
+        "runtime/src/agenc/upstream/QueryEngine.ts",
+        /getModelUsage[\s\S]*from\s+['"]\.\.\/\.\.\/cost\/tracker\.js['"]/,
+        "SDK status totals route through runtime/src/cost/tracker.ts",
+      ],
+      [
+        "runtime/src/agenc/upstream/services/api/claude.ts", // branding-scan: allow provider API filename under upstream mirror
+        /addToTotalSessionCost\s*}\s*from\s+['"]src\/cost\/tracker\.js['"][\s\S]*recordUsageCacheStats\s*}\s*from\s+['"]src\/services\/api\/cacheStatsTracker\.js['"]/,
+        "API token-dollar and cache producers route through runtime cost/cache state",
+      ],
+      [
+        "runtime/src/agenc/upstream/services/vcr.ts",
+        /addToTotalSessionCost\s*}\s*from\s+['"]src\/cost\/tracker\.js['"][\s\S]*recordUsageCacheStats\s*}\s*from\s+['"]src\/services\/api\/cacheStatsTracker\.js['"]/,
+        "VCR token-dollar and cache producers route through runtime cost/cache state",
+      ],
+      [
+        "runtime/src/agenc/upstream/services/api/logging.ts",
+        /addToTotalDurationState\s*}\s*from\s+['"]src\/cost\/tracker\.js['"]/,
+        "API duration producer routes through runtime/src/cost/tracker.ts",
+      ],
+      [
+        "runtime/src/agenc/upstream/components/Settings/Usage.tsx",
+        /formatCost\s*}\s*from\s+['"]src\/cost\/tracker\.js['"]/,
+        "usage settings formatting routes through runtime/src/cost/tracker.ts",
+      ],
+      [
+        "runtime/src/agenc/upstream/screens/REPL.tsx",
+        /bindCacheStatsResetHook[\s\S]*resetSessionCacheStats/,
+        "cost reset clears cache stats for REPL cache-hit accounting",
+      ],
+    ];
+    for (const [rel, pattern, label] of liveCostProducers) {
+      const source = readFileSync(path.join(root, rel), "utf8");
+      if (!pattern.test(source)) failGate(`OC-10 missing live producer migration: ${label}`);
+      pass(`OC-10 ${label}`);
+    }
+    const testRun = run("npm", [
+      "exec",
+      "--workspace=@tetsuo-ai/runtime",
+      "vitest",
+      "run",
+      "src/cost/tracker.test.ts",
+      "src/session/cost.test.ts",
+      "src/session/cost-persistence.test.ts",
+      "src/commands/status.test.ts",
+    ]);
+    if (testRun.status !== 0) {
+      failGate("OC-10 targeted cost runtime tests failed");
+    }
+    pass("OC-10 cost runtime facade, restore, and live import migration present");
+    return;
+  }
+
   if (id === "OC-04") {
     const required = [
       "runtime/src/state/migrations/config-migrations.ts",

@@ -4,7 +4,8 @@ import { mkdir, readFile, writeFile } from 'fs/promises'
 import isPlainObject from 'lodash-es/isPlainObject.js'
 import mapValues from 'lodash-es/mapValues.js'
 import { dirname, join } from 'path'
-import { addToTotalSessionCost } from 'src/cost-tracker.js'
+import { addToTotalSessionCost } from 'src/cost/tracker.js'
+import { recordUsageCacheStats } from 'src/services/api/cacheStatsTracker.js'
 import { calculateUSDCost } from 'src/utils/modelCost.js'
 import type {
   AssistantMessage,
@@ -19,7 +20,6 @@ import { getAgenCConfigHomeDir, isEnvTruthy } from '../utils/envUtils.js'
 import { getErrnoCode } from '../utils/errors.js'
 import { normalizeMessagesForAPI } from '../utils/messages.js'
 import { jsonParse, jsonStringify } from '../utils/slowOperations.js'
-
 function shouldUseVCR(): boolean {
   if (process.env.NODE_ENV === 'test') {
     return true
@@ -132,7 +132,7 @@ export async function withVCR(
 
   if (env.isCI && !isEnvTruthy(process.env.VCR_RECORD)) {
     throw new Error(
-      `Anthropic API fixture missing: ${filename}. Re-run tests with VCR_RECORD=1, then commit the result. Input messages:\n${jsonStringify(dehydratedInput, null, 2)}`,
+      `Anthropic API fixture missing: ${filename}. Re-run tests with VCR_RECORD=1, then commit the result. Input messages:\n${jsonStringify(dehydratedInput, null, 2)}`, // branding-scan: allow provider fixture text
     )
   }
 
@@ -160,7 +160,7 @@ export async function withVCR(
   return results
 }
 
-function addCachedCostToTotalSessionCost(
+export function addCachedCostToTotalSessionCost(
   message: AssistantMessage | StreamEvent,
 ): void {
   if (message.type === 'stream_event') {
@@ -169,9 +169,9 @@ function addCachedCostToTotalSessionCost(
   const model = message.message.model
   const usage = message.message.usage
   const costUSD = calculateUSDCost(model, usage)
+  recordUsageCacheStats(usage, model)
   addToTotalSessionCost(costUSD, usage, model)
 }
-
 function mapMessages(
   messages: (UserMessage | AssistantMessage)['message']['content'][],
   f: (s: unknown) => unknown,

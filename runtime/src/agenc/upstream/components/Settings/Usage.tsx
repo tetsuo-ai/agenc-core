@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { useEffect, useState } from 'react';
 import { extraUsage as extraUsageCommand } from 'src/commands/extra-usage/index.js';
-import { formatCost } from 'src/cost-tracker.js';
+import { formatCost } from 'src/cost/tracker.js';
 import { getSubscriptionType } from 'src/utils/auth.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { Box, Text } from '../../../../tui/ink.js';
@@ -16,7 +16,7 @@ import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
 import { Byline } from '../design-system/Byline.js';
 import { ProgressBar } from '../design-system/ProgressBar.js';
 import { isEligibleForOverageCreditGrant, OverageCreditUpsell } from '../LogoV2/OverageCreditUpsell.js';
-import { CodexUsage } from './CodexUsage.js';
+import { CodexUsage } from './CodexUsage.js'; // branding-scan: allow provider-specific usage component name
 import { MiniMaxUsage } from './MiniMaxUsage.js';
 import { UnsupportedUsage } from './UnsupportedUsage.js';
 type LimitBarProps = {
@@ -269,15 +269,15 @@ function AnthropicUsage(): React.ReactNode {
 }
 export function Usage(): React.ReactNode {
   const provider = getAPIProvider();
-  if (provider === 'codex') {
-    return <CodexUsage />;
+  if (provider === 'codex') { // branding-scan: allow provider id
+    return <CodexUsage />; // branding-scan: allow provider-specific usage component name
   }
   if (provider === 'minimax') {
     return <MiniMaxUsage />;
   }
   if (provider !== 'firstParty') {
     const providerLabel = {
-      openai: 'this OpenAI-compatible provider',
+      openai: 'this OpenAI-compatible provider', // branding-scan: allow provider label
       gemini: 'Google Gemini',
       github: 'GitHub Models',
       mistral: 'Mistral',

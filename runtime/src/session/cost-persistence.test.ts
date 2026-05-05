@@ -5,7 +5,7 @@
  * write failure, and appendSessionRecord aggregation.
  */
 
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,7 @@ import {
   COST_TOTALS_FILENAME,
   COST_TOTALS_SCHEMA_VERSION,
   CostSidecar,
+  atomicWriteJson,
   type CostTotalsFile,
   type SessionCostRecord,
 } from "./cost.js";
@@ -116,6 +117,108 @@ describe("CostSidecar.loadFromDisk", () => {
     expect(diagnostics).toHaveLength(0);
     expect(sidecar.getLifetimeTotals().totalTokens).toBe(150);
     expect(sidecar.getLifetimeCostUsd()).toBeCloseTo(0.015, 6);
+  });
+
+  test("restore coerces malformed nested modelUsage rows", async () => {
+    writeFileSync(
+      join(projectDir, COST_TOTALS_FILENAME),
+      JSON.stringify({
+        version: COST_TOTALS_SCHEMA_VERSION,
+        totalUsage: {
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheReadTokens: 3,
+          cacheCreationTokens: 1,
+          reasoningOutputTokens: 0,
+          webSearchRequests: 0,
+          totalTokens: 15,
+        },
+        totalCostUsd: 0.02,
+        sessions: [
+          {
+            sessionId: "resume-me",
+            startedAtMs: 10,
+            endedAtMs: 20,
+            usage: {
+              inputTokens: 10,
+              outputTokens: 5,
+              cacheReadTokens: 3,
+              cacheCreationTokens: 1,
+              reasoningOutputTokens: 0,
+              webSearchRequests: 0,
+              totalTokens: 15,
+            },
+            costUsd: 0.02,
+            modelUsage: [
+              {
+                model: "gpt-4o",
+                provider: "openai",
+                inputTokens: "bad",
+                outputTokens: 5,
+                cacheReadTokens: Number.NaN,
+                cacheCreationTokens: 1,
+                reasoningOutputTokens: undefined,
+                webSearchRequests: 0,
+                totalTokens: 15,
+                turns: 1,
+                costUsd: 0.02,
+              },
+              { model: "", inputTokens: 999 },
+            ],
+          },
+        ],
+        updatedAtMs: 30,
+      }),
+    );
+    const sidecar = new CostSidecar({ projectDir, sessionId: "new-session" });
+    await sidecar.loadFromDisk();
+
+    expect(sidecar.restoreSessionCostsForSession("resume-me")).toBe(true);
+    expect(sidecar.getPerModelUsage()).toMatchObject([
+      {
+        provider: "openai",
+        model: "gpt-4o",
+        inputTokens: 0,
+        outputTokens: 5,
+        cachedInputTokens: 0,
+        cacheCreationInputTokens: 1,
+        totalTokens: 15,
+      },
+    ]);
+    expect(sidecar.getTotalCostUsd()).toBeCloseTo(0.02, 6);
+  });
+
+  test("load filters malformed session records before restore", async () => {
+    writeFileSync(
+      join(projectDir, COST_TOTALS_FILENAME),
+      JSON.stringify({
+        version: COST_TOTALS_SCHEMA_VERSION,
+        totalUsage: {
+          inputTokens: "bad",
+          outputTokens: 5,
+          cacheReadTokens: 0,
+          reasoningOutputTokens: 0,
+          totalTokens: 5,
+        },
+        totalCostUsd: 0,
+        sessions: [
+          {
+            sessionId: "bad-session",
+            startedAtMs: "bad",
+            endedAtMs: 20,
+            usage: undefined,
+            costUsd: "bad",
+          },
+        ],
+        updatedAtMs: 30,
+      }),
+    );
+    const sidecar = new CostSidecar({ projectDir, sessionId: "new-session" });
+    await sidecar.loadFromDisk();
+
+    expect(sidecar.restoreSessionCostsForSession("bad-session")).toBe(false);
+    expect(sidecar.getLifetimeTotals().inputTokens).toBe(0);
+    expect(sidecar.getLifetimeCostUsd()).toBe(0);
   });
 });
 
@@ -301,6 +404,16 @@ describe("CostSidecar.saveToDisk", () => {
       readdirSync(projectDir).some((f) => f.endsWith(".tmp")),
     ).toBe(false);
   });
+
+  test("real atomic write removes tmp file when rename fails", async () => {
+    const blockedPath = join(projectDir, COST_TOTALS_FILENAME);
+    mkdirSync(blockedPath);
+
+    await expect(atomicWriteJson(blockedPath, "{}")).rejects.toThrow();
+    expect(
+      readdirSync(projectDir).some((f) => f.endsWith(".tmp")),
+    ).toBe(false);
+  });
 });
 
 describe("CostSidecar.appendSessionRecord", () => {
@@ -324,6 +437,338 @@ describe("CostSidecar.appendSessionRecord", () => {
     sidecar.appendSessionRecord(record);
     expect(sidecar.getLifetimeTotals().inputTokens).toBe(500);
     expect(sidecar.getLifetimeCostUsd()).toBeCloseTo(0.02, 6);
+  });
+});
+
+describe("CostSidecar.restoreSessionCostsForSession", () => {
+  test("replaces a restored session record instead of double-counting it", async () => {
+    const projectDir = makeProjectDir();
+    const initialCost = 0.0075;
+    writeFileSync(
+      join(projectDir, COST_TOTALS_FILENAME),
+      JSON.stringify({
+        version: COST_TOTALS_SCHEMA_VERSION,
+        totalUsage: {
+          inputTokens: 1000,
+          outputTokens: 500,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          reasoningOutputTokens: 0,
+          webSearchRequests: 0,
+          totalTokens: 1500,
+        },
+        totalCostUsd: initialCost,
+        sessions: [
+          {
+            sessionId: "resume-me",
+            startedAtMs: 10,
+            endedAtMs: 20,
+            usage: {
+              inputTokens: 1000,
+              outputTokens: 500,
+              cacheReadTokens: 0,
+              cacheCreationTokens: 0,
+              reasoningOutputTokens: 0,
+              webSearchRequests: 0,
+              totalTokens: 1500,
+            },
+            costUsd: initialCost,
+            modelUsage: [
+              {
+                provider: "openai",
+                model: "gpt-4o",
+                inputTokens: 1000,
+                outputTokens: 500,
+                cacheReadTokens: 0,
+                cacheCreationTokens: 0,
+                reasoningOutputTokens: 0,
+                webSearchRequests: 0,
+                totalTokens: 1500,
+                turns: 1,
+                costUsd: initialCost,
+              },
+            ],
+            durationMs: 75,
+            apiDurationMs: 25,
+            apiDurationWithoutRetriesMs: 25,
+            toolDurationMs: 5,
+            linesAdded: 3,
+            linesRemoved: 1,
+          },
+        ],
+        updatedAtMs: 30,
+      } satisfies CostTotalsFile),
+    );
+
+    const sidecar = new CostSidecar({
+      projectDir,
+      sessionId: "fresh",
+      defaultProvider: "openai",
+      defaultModel: "gpt-4o",
+    });
+    await sidecar.loadFromDisk();
+    expect(sidecar.restoreSessionCostsForSession("resume-me")).toBe(true);
+    expect(sidecar.getLifetimeTotals().inputTokens).toBe(1000);
+    expect(sidecar.getTotalInputTokens()).toBe(1000);
+    expect(sidecar.getTotalApiDurationMs()).toBeGreaterThanOrEqual(25);
+    expect(sidecar.getTotalLinesAdded()).toBe(3);
+
+    sidecar.onEvent({
+      id: "new-usage",
+      seq: 1,
+      msg: {
+        type: "token_count",
+        payload: {
+          promptTokens: 1000,
+          completionTokens: 500,
+          totalTokens: 1500,
+        },
+      },
+    });
+    sidecar.addToTotalLinesChanged(2, 4);
+    await sidecar.stop();
+
+    const parsed = JSON.parse(
+      readFileSync(join(projectDir, COST_TOTALS_FILENAME), "utf8"),
+    ) as CostTotalsFile;
+    expect(parsed.sessions).toHaveLength(1);
+    expect(parsed.sessions[0]!.sessionId).toBe("resume-me");
+    expect(parsed.totalUsage.inputTokens).toBe(2000);
+    expect(parsed.totalUsage.outputTokens).toBe(1000);
+    expect(parsed.totalCostUsd).toBeCloseTo(initialCost * 2, 6);
+    expect(parsed.sessions[0]!.linesAdded).toBe(5);
+    expect(parsed.sessions[0]!.linesRemoved).toBe(5);
+  });
+
+  test("legacy records without modelUsage restore aggregate totals", async () => {
+    const projectDir = makeProjectDir();
+    writeFileSync(
+      join(projectDir, COST_TOTALS_FILENAME),
+      JSON.stringify({
+        version: COST_TOTALS_SCHEMA_VERSION,
+        totalUsage: {
+          inputTokens: 120,
+          outputTokens: 30,
+          cacheReadTokens: 0,
+          reasoningOutputTokens: 0,
+          totalTokens: 150,
+        },
+        totalCostUsd: 0.123,
+        sessions: [
+          {
+            sessionId: "legacy",
+            startedAtMs: 10,
+            endedAtMs: 20,
+            usage: {
+              inputTokens: 120,
+              outputTokens: 30,
+              cacheReadTokens: 0,
+              reasoningOutputTokens: 0,
+              totalTokens: 150,
+            },
+            costUsd: 0.123,
+          },
+        ],
+        updatedAtMs: 30,
+      }),
+    );
+
+    const sidecar = new CostSidecar({ projectDir, sessionId: "fresh" });
+    await sidecar.loadFromDisk();
+    expect(sidecar.restoreSessionCostsForSession("legacy")).toBe(true);
+    expect(sidecar.getTotalInputTokens()).toBe(120);
+    expect(sidecar.getTotalOutputTokens()).toBe(30);
+    expect(sidecar.getTotalCostUsd()).toBeCloseTo(0.123, 6);
+    expect(sidecar.formatTotalCost()).toContain("120 input, 30 output");
+  });
+
+  test("restored per-model bucket costs preserve persisted pricing", async () => {
+    const projectDir = makeProjectDir();
+    writeFileSync(
+      join(projectDir, COST_TOTALS_FILENAME),
+      JSON.stringify({
+        version: COST_TOTALS_SCHEMA_VERSION,
+        totalUsage: {
+          inputTokens: 1000,
+          outputTokens: 500,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          reasoningOutputTokens: 0,
+          webSearchRequests: 0,
+          totalTokens: 1500,
+        },
+        totalCostUsd: 1.23,
+        sessions: [
+          {
+            sessionId: "priced",
+            startedAtMs: 10,
+            endedAtMs: 20,
+            usage: {
+              inputTokens: 1000,
+              outputTokens: 500,
+              cacheReadTokens: 0,
+              cacheCreationTokens: 0,
+              reasoningOutputTokens: 0,
+              webSearchRequests: 0,
+              totalTokens: 1500,
+            },
+            costUsd: 1.23,
+            modelUsage: [
+              {
+                provider: "openai",
+                model: "gpt-4o",
+                inputTokens: 1000,
+                outputTokens: 500,
+                cacheReadTokens: 0,
+                cacheCreationTokens: 0,
+                reasoningOutputTokens: 0,
+                webSearchRequests: 0,
+                totalTokens: 1500,
+                turns: 1,
+                costUsd: 1.23,
+              },
+            ],
+          },
+        ],
+        updatedAtMs: 30,
+      } satisfies CostTotalsFile),
+    );
+
+    const sidecar = new CostSidecar({
+      projectDir,
+      sessionId: "fresh",
+      registry: { "openai:gpt-4o": { inputUsdPer1K: 0, outputUsdPer1K: 0 } },
+    });
+    await sidecar.loadFromDisk();
+    expect(sidecar.restoreSessionCostsForSession("priced")).toBe(true);
+
+    expect(sidecar.getTotalCostUsd()).toBeCloseTo(1.23, 6);
+    expect(sidecar.getSessionModelUsage()[0]!.costUsd).toBeCloseTo(1.23, 6);
+  });
+
+  test("repeated restore is idempotent and dirty restore is rejected", async () => {
+    const projectDir = makeProjectDir();
+    writeFileSync(
+      join(projectDir, COST_TOTALS_FILENAME),
+      JSON.stringify({
+        version: COST_TOTALS_SCHEMA_VERSION,
+        totalUsage: {
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadTokens: 0,
+          reasoningOutputTokens: 0,
+          totalTokens: 150,
+        },
+        totalCostUsd: 0.01,
+        sessions: [
+          {
+            sessionId: "one",
+            startedAtMs: 0,
+            endedAtMs: 1,
+            usage: {
+              inputTokens: 100,
+              outputTokens: 50,
+              cacheReadTokens: 0,
+              reasoningOutputTokens: 0,
+              totalTokens: 150,
+            },
+            costUsd: 0.01,
+          },
+        ],
+        updatedAtMs: 2,
+      }),
+    );
+    const sidecar = new CostSidecar({ projectDir, sessionId: "fresh" });
+    await sidecar.loadFromDisk();
+    expect(sidecar.restoreSessionCostsForSession("one")).toBe(true);
+    expect(sidecar.restoreSessionCostsForSession("one")).toBe(true);
+    expect(sidecar.getLifetimeTotals().inputTokens).toBe(100);
+
+    const dirty = new CostSidecar({
+      projectDir,
+      sessionId: "dirty",
+      defaultModel: "gpt-4o",
+    });
+    await dirty.loadFromDisk();
+    dirty.onEvent({
+      id: "dirty-usage",
+      seq: 1,
+      msg: {
+        type: "token_count",
+        payload: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      },
+    });
+    expect(dirty.restoreSessionCostsForSession("one")).toBe(false);
+  });
+
+  test("missing restored session still becomes the active save target", async () => {
+    const projectDir = makeProjectDir();
+    writeFileSync(
+      join(projectDir, COST_TOTALS_FILENAME),
+      JSON.stringify({
+        version: COST_TOTALS_SCHEMA_VERSION,
+        totalUsage: {
+          inputTokens: 20,
+          outputTokens: 10,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          reasoningOutputTokens: 0,
+          webSearchRequests: 0,
+          totalTokens: 30,
+        },
+        totalCostUsd: 0.02,
+        sessions: [
+          {
+            sessionId: "old-session",
+            startedAtMs: 0,
+            endedAtMs: 1,
+            usage: {
+              inputTokens: 20,
+              outputTokens: 10,
+              cacheReadTokens: 0,
+              cacheCreationTokens: 0,
+              reasoningOutputTokens: 0,
+              webSearchRequests: 0,
+              totalTokens: 30,
+            },
+            costUsd: 0.02,
+          },
+        ],
+        updatedAtMs: 2,
+      } satisfies CostTotalsFile),
+    );
+    const sidecar = new CostSidecar({
+      projectDir,
+      sessionId: "old-session",
+      defaultProvider: "openai",
+      defaultModel: "gpt-4o",
+    });
+    await sidecar.loadFromDisk();
+
+    sidecar.setCurrentSessionId("new-session");
+    expect(sidecar.restoreSessionCostsForSession("new-session")).toBe(false);
+    sidecar.addTokenUsage({
+      provider: "openai",
+      model: "gpt-4o",
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+      costUsd: 0.01,
+    });
+    await sidecar.saveCurrentSessionCosts();
+
+    const parsed = JSON.parse(
+      readFileSync(join(projectDir, COST_TOTALS_FILENAME), "utf8"),
+    ) as CostTotalsFile;
+    expect(parsed.sessions.map((record) => record.sessionId).sort()).toEqual([
+      "new-session",
+      "old-session",
+    ]);
+    expect(
+      parsed.sessions.find((record) => record.sessionId === "new-session")
+        ?.usage.inputTokens,
+    ).toBe(10);
+    expect(parsed.totalUsage.inputTokens).toBe(30);
   });
 });
 
@@ -369,6 +814,37 @@ describe("CostSidecar.stop (lifecycle)", () => {
     expect(parsed.sessions[0]!.usage.inputTokens).toBe(100);
     expect(parsed.sessions[0]!.usage.outputTokens).toBe(50);
     expect(parsed.totalUsage.inputTokens).toBe(100);
+  });
+
+  test("stop snapshots FPS metrics from the registered provider", async () => {
+    const projectDir = makeProjectDir();
+    const sidecar = new CostSidecar({
+      projectDir,
+      sessionId: "sess-fps",
+      defaultProvider: "openai",
+      defaultModel: "gpt-4o",
+    });
+    await sidecar.loadFromDisk();
+    sidecar.setFpsMetricsProvider(() => ({ averageFps: 60, low1PctFps: 44 }));
+    sidecar.addTokenUsage({
+      provider: "openai",
+      model: "gpt-4o",
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+      costUsd: 0.01,
+    });
+
+    await sidecar.stop();
+
+    const parsed = JSON.parse(
+      readFileSync(join(projectDir, COST_TOTALS_FILENAME), "utf8"),
+    ) as CostTotalsFile;
+    expect(parsed.sessions[0]).toMatchObject({
+      sessionId: "sess-fps",
+      fpsAverage: 60,
+      fpsLow1Pct: 44,
+    });
   });
 
   test("persists per-session provider and model buckets", async () => {
