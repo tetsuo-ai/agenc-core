@@ -1,8 +1,11 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { normalizeLspServerConfig } from "./config.js";
-import { createLSPServerInstance } from "./LSPServerInstance.js";
+import {
+  createLSPServerInstance,
+  DEFAULT_LSP_STARTUP_TIMEOUT_MS,
+} from "./LSPServerInstance.js";
 import type { LSPClient } from "./LSPClient.js";
 
 function fakeClient(overrides: Partial<LSPClient> = {}): LSPClient & {
@@ -100,6 +103,39 @@ describe("createLSPServerInstance", () => {
     expect(stopCompleted).toBe(true);
     expect(instance.state).toBe("error");
     expect(instance.lastError?.message).toContain("timed out");
+  });
+
+  test("applies the default startup timeout when config omits one", async () => {
+    vi.useFakeTimers();
+    let stopCompleted = false;
+    const client = fakeClient({
+      initialize: async () => new Promise(() => {}),
+      stop: async () => {
+        stopCompleted = true;
+        client.initialized = false;
+      },
+    });
+    const instance = createLSPServerInstance(
+      "default-timeout",
+      normalizeLspServerConfig("default-timeout", {
+        command: "slow-server",
+        extensionToLanguage: { ".ts": "typescript" },
+      }),
+      { client },
+    );
+
+    try {
+      const start = instance.start();
+      const timeoutExpectation = expect(start).rejects.toThrow(
+        `timed out after ${DEFAULT_LSP_STARTUP_TIMEOUT_MS}ms`,
+      );
+      await vi.advanceTimersByTimeAsync(DEFAULT_LSP_STARTUP_TIMEOUT_MS);
+      await timeoutExpectation;
+      expect(stopCompleted).toBe(true);
+      expect(instance.state).toBe("error");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("uses workspace fallback for process cwd and initialize root", async () => {

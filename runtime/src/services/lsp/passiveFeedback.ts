@@ -15,7 +15,7 @@ import type { DiagnosticEntry, DiagnosticFile } from "./types.js";
 
 function mapLSPSeverity(
   severity: number | undefined,
-): NonNullable<DiagnosticEntry["severity"]> {
+): DiagnosticEntry["severity"] {
   switch (severity) {
     case 1:
       return "Error";
@@ -26,7 +26,7 @@ function mapLSPSeverity(
     case 4:
       return "Hint";
     default:
-      return "Error";
+      return undefined;
   }
 }
 
@@ -77,15 +77,18 @@ export function formatDiagnosticsForAttachment(
       uri: uriToPath(params.uri),
       diagnostics: params.diagnostics
         .filter(isDiagnosticPayload)
-        .map((diagnostic) => ({
-          message: diagnostic.message,
-          severity: mapLSPSeverity(diagnostic.severity),
-          range: diagnostic.range,
-          source: diagnostic.source,
-          ...(diagnostic.code !== undefined
-            ? { code: String(diagnostic.code) }
-            : {}),
-        })),
+        .map((diagnostic) => {
+          const severity = mapLSPSeverity(diagnostic.severity);
+          return {
+            message: diagnostic.message,
+            ...(severity !== undefined ? { severity } : {}),
+            range: diagnostic.range,
+            source: diagnostic.source,
+            ...(diagnostic.code !== undefined
+              ? { code: String(diagnostic.code) }
+              : {}),
+          };
+        }),
     },
   ];
 }

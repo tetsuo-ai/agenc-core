@@ -69,6 +69,48 @@ describe("passive LSP feedback", () => {
     expect(files[0]!.diagnostics[0]!.message).toBe("bad type");
   });
 
+  test("does not upgrade omitted or unknown severity to error", () => {
+    const files = formatDiagnosticsForAttachment({
+      uri: "/tmp/example.ts",
+      diagnostics: [
+        {
+          message: "missing severity",
+          range: {
+            start: { line: 1, character: 0 },
+            end: { line: 1, character: 3 },
+          },
+        },
+        {
+          message: "unknown severity",
+          severity: 99,
+          range: {
+            start: { line: 2, character: 0 },
+            end: { line: 2, character: 3 },
+          },
+        },
+      ],
+    });
+
+    expect(files[0]!.diagnostics).toEqual([
+      {
+        message: "missing severity",
+        range: {
+          start: { line: 1, character: 0 },
+          end: { line: 1, character: 3 },
+        },
+        source: undefined,
+      },
+      {
+        message: "unknown severity",
+        range: {
+          start: { line: 2, character: 0 },
+          end: { line: 2, character: 3 },
+        },
+        source: undefined,
+      },
+    ]);
+  });
+
   test("registers notification handlers and isolates invalid payloads", () => {
     const handlers = new Map<string, (params: unknown) => void>();
     const server = {

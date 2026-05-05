@@ -17,6 +17,7 @@ import type { LspServerState, ScopedLspServerConfig } from "./types.js";
 const LSP_ERROR_CONTENT_MODIFIED = -32801;
 const MAX_RETRIES_FOR_TRANSIENT_ERRORS = 3;
 const RETRY_BASE_DELAY_MS = 500;
+export const DEFAULT_LSP_STARTUP_TIMEOUT_MS = 10_000;
 
 export interface LSPServerInstance {
   readonly name: string;
@@ -183,15 +184,13 @@ export function createLSPServerInstance(
       };
 
       initPromise = client.initialize(initParams);
-      if (config.startupTimeout !== undefined) {
-        await withTimeout(
-          initPromise,
-          config.startupTimeout,
-          `LSP server '${name}' timed out after ${config.startupTimeout}ms during initialization`,
-        );
-      } else {
-        await initPromise;
-      }
+      const startupTimeout =
+        config.startupTimeout ?? DEFAULT_LSP_STARTUP_TIMEOUT_MS;
+      await withTimeout(
+        initPromise,
+        startupTimeout,
+        `LSP server '${name}' timed out after ${startupTimeout}ms during initialization`,
+      );
 
       if (generation !== startGeneration || state !== "starting") {
         await client.stop().catch(() => {});
