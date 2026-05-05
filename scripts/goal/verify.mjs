@@ -4944,7 +4944,10 @@ async function cleanupGates(item) {
       "ZC-23": { custom: assertNoRuntimeForwarderOnlyModules },
       "ZC-24": { custom: assertZc24UnusedDependenciesRemoved },
       "ZC-26": { grepNotPresent: { pattern: "/home/claude/.agenc/remote", scope: "runtime/src" } }, // branding-scan: allow donor-leak path that ZC-26 is removing
-      "ZC-27": { grepNotPresent: { pattern: "@ts-nocheck", scope: "runtime/src/types" } },
+      "ZC-27": {
+        gone: ["runtime/src/tools/shared/gitOperationTracking.ts"],
+        grepNotPresent: { pattern: "@ts-nocheck", scope: "runtime/src" },
+      },
       "ZC-28": { gone: ["runtime/src/utils/attachments.ts", "runtime/src/utils/teamMemoryOps.ts", "runtime/src/components/FeedbackSurvey/useMemorySurvey.tsx"] },
     };
     const expectations = zcMap[id];
