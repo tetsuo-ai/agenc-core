@@ -272,6 +272,28 @@ export function worktreePath(id) {
   return path.join(worktreeBase(), id);
 }
 
+export function parseGitWorktreePorcelain(stdout) {
+  const entries = [];
+  let current = null;
+  for (const line of stdout.split(/\r?\n/)) {
+    if (line.startsWith("worktree ")) {
+      if (current) entries.push(current);
+      current = { path: line.slice("worktree ".length), branch: null };
+      continue;
+    }
+    if (!current) continue;
+    if (line.startsWith("branch ")) {
+      current.branch = line.slice("branch ".length);
+    }
+  }
+  if (current) entries.push(current);
+  return entries;
+}
+
+export function findGitWorktreeEntry(stdout, worktree) {
+  return parseGitWorktreePorcelain(stdout).find((entry) => entry.path === worktree) ?? null;
+}
+
 export function markerPath(id) {
   return path.join(markerDir(), `${id}.json`);
 }

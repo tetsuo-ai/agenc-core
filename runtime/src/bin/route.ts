@@ -162,13 +162,19 @@ export interface RouteCLIOptions {
   readonly continueTUI: (args: ContinueTUIArgs) => Promise<number>;
 }
 
-/**
- * Branch between the single-shot CLI and the full Ink TUI based on the
- * current argv + stdio state. Implementation is intentionally a pure
- * dispatcher — no I/O, no globals, no provider work — so tests can
- * assert the branch taken by watching the mocked handles.
- */
-export async function routeCLI(opts: RouteCLIOptions): Promise<number> {
+export type RouteCLIPlan =
+  | { readonly kind: "bootTUI"; readonly args: BootTUIArgs }
+  | { readonly kind: "resumeTUI"; readonly args: ResumeTUIArgs }
+  | { readonly kind: "continueTUI"; readonly args: ContinueTUIArgs }
+  | { readonly kind: "oneShotCLI"; readonly userMessage: string };
+
+export interface ClassifyCLIOptions {
+  readonly argv: readonly string[];
+  readonly isTTY: boolean;
+  readonly isStdoutTTY: boolean;
+}
+
+export function classifyCLI(opts: ClassifyCLIOptions): RouteCLIPlan {
   // argv[0] is the node binary; argv[1] is the script path. User-
   // provided args start at argv[2] and are the input the caller wants to
   // treat as the prompt (after stripping routing flags).
@@ -186,26 +192,26 @@ export async function routeCLI(opts: RouteCLIOptions): Promise<number> {
   //    surfaced via its return code; the caller owns emitting the
   //    `agenc: session not found: <id>` message.
   if (resumeId !== null && resumeId.length > 0) {
-    return opts.resumeTUI({ resumeId });
+    return { kind: "resumeTUI", args: { resumeId } };
   }
 
   // 2. `--continue` / `-c` is explicit resume of the latest project
   //    session. It is deliberately separate from plain `agenc`, which
   //    must always start a fresh conversation.
   if (hasContinueFlag) {
-    return opts.continueTUI({});
+    return { kind: "continueTUI", args: {} };
   }
 
   // 3. Piped stdin keeps the legacy one-shot path — scripts that pipe
   //    into `agenc` must continue to work unchanged.
   if (!opts.isTTY) {
-    return opts.oneShotCLI(prompt);
+    return { kind: "oneShotCLI", userMessage: prompt };
   }
 
   // 4. `--no-tui` is an explicit operator override. Even inside a TTY
   //    the caller gets the legacy single-shot path.
   if (hasNoTuiFlag) {
-    return opts.oneShotCLI(prompt);
+    return { kind: "oneShotCLI", userMessage: prompt };
   }
 
   // 5. Interactive TTY → boot the Ink TUI. Forward any argv prompt as
@@ -216,11 +222,31 @@ export async function routeCLI(opts: RouteCLIOptions): Promise<number> {
       ...(prompt.length > 0 ? { initialPrompt: prompt } : {}),
       ...(startupImages.length > 0 ? { startupImages } : {}),
     };
-    return opts.bootTUI(args);
+    return { kind: "bootTUI", args };
   }
 
   // 6. Fallback — stdout is not a TTY (captured pipe, CI runner, etc.)
   //    so the TUI would scribble escape codes into logs. Fall back to
   //    the one-shot CLI.
-  return opts.oneShotCLI(prompt);
+  return { kind: "oneShotCLI", userMessage: prompt };
+}
+
+/**
+ * Branch between the single-shot CLI and the full Ink TUI based on the
+ * current argv + stdio state. Implementation is intentionally a pure
+ * dispatcher — no I/O, no globals, no provider work — so tests can
+ * assert the branch taken by watching the mocked handles.
+ */
+export async function routeCLI(opts: RouteCLIOptions): Promise<number> {
+  const plan = classifyCLI(opts);
+  switch (plan.kind) {
+    case "bootTUI":
+      return opts.bootTUI(plan.args);
+    case "resumeTUI":
+      return opts.resumeTUI(plan.args);
+    case "continueTUI":
+      return opts.continueTUI(plan.args);
+    case "oneShotCLI":
+      return opts.oneShotCLI(plan.userMessage);
+  }
 }

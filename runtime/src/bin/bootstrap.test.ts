@@ -15,6 +15,7 @@ import {
   resolveStartupSelection,
 } from "./bootstrap.js";
 import { defaultConfig, mergeConfigs } from "../config/index.js";
+import { trustProjectSync } from "../permissions/trust/project-trust.js";
 import type { AuthBackend } from "../auth/backend.js";
 import type { Tool } from "../tools/types.js";
 import type { RolloutItem } from "../session/rollout-item.js";
@@ -44,6 +45,14 @@ function clearProcessEnv(keys: readonly string[]): () => void {
       }
     }
   };
+}
+
+function trustWorkspaceForTest(agencHome: string, workspace: string): void {
+  trustProjectSync({
+    agencHome,
+    cwd: workspace,
+    env: { HOME: agencHome },
+  });
 }
 
 describe("resolveStartupSelection", () => {
@@ -147,6 +156,7 @@ describe("resolveStartupSelection", () => {
     expect(resolved.model).toBe("agenc");
   });
 
+  // branding-scan: allow real provider identifier in test title
   it("uses compatible-provider model env ahead of generic OpenAI env", () => {
     const resolved = resolveStartupSelection({
       config: defaultConfig(),
@@ -162,6 +172,7 @@ describe("resolveStartupSelection", () => {
     expect(resolved.model).toBe("self-hosted-coder");
   });
 
+  // branding-scan: allow real provider identifier in test title
   it("uses generic OpenAI model env as compatible-provider fallback", () => {
     const resolved = resolveStartupSelection({
       config: defaultConfig(),
@@ -852,6 +863,7 @@ describe("bootstrapLocalRuntimeSession", () => {
 
     let shutdown: (() => Promise<void>) | null = null;
     try {
+      trustWorkspaceForTest(home, workspace);
       const boot = await bootstrapLocalRuntimeSession({
         apiKey: "test-key",
         conversationId: "conv-services",
@@ -1120,6 +1132,7 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
+  // branding-scan: allow real provider identifier in test title
   it("classifies no-key generic OpenAI-compatible startup as local no-auth", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
@@ -1972,6 +1985,80 @@ required = true
     }
   });
 
+  it("keeps untrusted project settings from relaxing bootstrap permissions", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    await writeFile(
+      join(home, "config.toml"),
+      'approval_policy = "never"\n',
+      "utf8",
+    );
+    await mkdir(join(workspace, ".agenc"), { recursive: true });
+    await writeFile(
+      join(workspace, ".agenc", "settings.json"),
+      JSON.stringify(
+        {
+          permissions: {
+            defaultMode: "bypassPermissions",
+            allow: ["Bash(*)"],
+            ask: ["Read"],
+            deny: ["Write"],
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      shutdown = boot.shutdown;
+      const permissions = boot.session.permissionModeRegistry.current();
+
+      expect(boot.initialState.sessionConfiguration.approvalPolicy.value).toBe(
+        "untrusted",
+      );
+      expect(permissions.mode).toBe("default");
+      expect(permissions.alwaysAllowRules.projectSettings ?? []).toEqual([]);
+      expect(permissions.alwaysAskRules.projectSettings).toEqual(["Read"]);
+      expect(permissions.alwaysDenyRules.projectSettings).toEqual(["Write"]);
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("boots in the requested mode when started with --permission-mode", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
@@ -2158,6 +2245,59 @@ required = true
       expect(sidecarIdx).toBeGreaterThan(configuredIdx);
       expect(mcpIdx).toBeGreaterThan(sidecarIdx);
       expect(prewarmIdx).toBeGreaterThan(mcpIdx);
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves explicit approval config after project trust is accepted", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    await writeFile(
+      join(home, "config.toml"),
+      'approval_policy = "never"\n',
+      "utf8",
+    );
+    trustWorkspaceForTest(home, workspace);
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      shutdown = boot.shutdown;
+
+      expect(boot.initialState.sessionConfiguration.approvalPolicy.value).toBe(
+        "never",
+      );
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */

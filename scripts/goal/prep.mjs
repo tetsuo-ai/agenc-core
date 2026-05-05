@@ -19,7 +19,7 @@ import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
-import { findItem, checkDependencies, statusName, STATUS, setItemStatus, repoRoot, mainCheckoutRoot, worktreePath, worktreeBase } from "./checklist-utils.mjs";
+import { findItem, checkDependencies, statusName, STATUS, setItemStatus, repoRoot, mainCheckoutRoot, worktreePath, worktreeBase, findGitWorktreeEntry } from "./checklist-utils.mjs";
 
 function usage() {
   process.stderr.write(
@@ -86,11 +86,6 @@ if (!existsSync(disciplinePath)) {
   process.exit(2);
 }
 
-if (!dryRun) {
-  await setItemStatus(id, STATUS.IN_PROGRESS);
-  process.stderr.write(`[prep] flipped ${id} to [~] in-progress (in main checkout: ${mainCheckoutRoot()})\n`);
-}
-
 // branding-scan: allow comment names the goal-runner CLI for context
 // Create a per-item worktree so multiple codex sessions can work in parallel
 // from the same main checkout. Each worktree gets its own working directory
@@ -100,14 +95,36 @@ if (!dryRun) {
 const wtPath = worktreePath(id);
 const branch = `port/${id}`;
 const mainRoot = mainCheckoutRoot();
+let createdWorktree = false;
+let createdBranch = false;
 
 if (!dryRun) {
   // Idempotency: if the worktree already exists for this item (resume after
   // a crash or partial prior run), reuse it. Otherwise create fresh.
   const wtList = spawnSync("git", ["-C", mainRoot, "worktree", "list", "--porcelain"], { encoding: "utf8" });
-  const wtExists = wtList.stdout.split("\n").some((l) => l === `worktree ${wtPath}`);
+  if (wtList.status !== 0) {
+    process.stderr.write(`[prep] FAILED to list git worktrees:\n${wtList.stderr || wtList.stdout}\n`);
+    process.exit(1);
+  }
+  const wtEntry = findGitWorktreeEntry(wtList.stdout, wtPath);
 
-  if (wtExists) {
+  if (wtEntry) {
+    const expectedRef = `refs/heads/${branch}`;
+    if (wtEntry.branch !== expectedRef) {
+      process.stderr.write(
+        `[prep] existing worktree ${wtPath} is on ${wtEntry.branch ?? "(detached/no branch)"}, expected ${expectedRef}.\n`,
+      );
+      process.exit(1);
+    }
+    const wtStatus = spawnSync("git", ["-C", wtPath, "status", "--short"], { encoding: "utf8" });
+    if (wtStatus.status !== 0) {
+      process.stderr.write(`[prep] FAILED to inspect existing worktree ${wtPath}:\n${wtStatus.stderr || wtStatus.stdout}\n`);
+      process.exit(1);
+    }
+    if (wtStatus.stdout.trim()) {
+      process.stderr.write(`[prep] existing worktree ${wtPath} is dirty:\n${wtStatus.stdout}\n`);
+      process.exit(1);
+    }
     process.stderr.write(`[prep] worktree already exists at ${wtPath} — reusing\n`);
   } else {
     // Check if branch already exists (e.g., from a prior aborted run)
@@ -125,7 +142,25 @@ if (!dryRun) {
       process.stderr.write(`[prep] FAILED to create worktree at ${wtPath}:\n${addRes.stderr || addRes.stdout}\n`);
       process.exit(1);
     }
+    createdWorktree = true;
+    createdBranch = !branchExists;
     process.stderr.write(`[prep] worktree created: ${wtPath} (branch ${branch})\n`);
+  }
+}
+
+if (!dryRun) {
+  try {
+    await setItemStatus(id, STATUS.IN_PROGRESS);
+    process.stderr.write(`[prep] flipped ${id} to [~] in-progress (in main checkout: ${mainRoot})\n`);
+  } catch (error) {
+    if (createdWorktree) {
+      spawnSync("git", ["-C", mainRoot, "worktree", "remove", "--force", wtPath], { encoding: "utf8" });
+    }
+    if (createdBranch) {
+      spawnSync("git", ["-C", mainRoot, "branch", "-D", branch], { encoding: "utf8" });
+    }
+    process.stderr.write(`[prep] FAILED to flip ${id} to [~] in-progress: ${error?.message || error}\n`);
+    process.exit(1);
   }
 }
 

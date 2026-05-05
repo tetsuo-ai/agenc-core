@@ -698,6 +698,74 @@ describe("initializeToolPermissionContext", () => {
     ]);
   });
 
+  test("untrusted projects ignore project/local allow rules and default modes", async () => {
+    mkdirSync(join(cwd, ".agenc"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".agenc", "settings.json"),
+      JSON.stringify({
+        permissions: {
+          defaultMode: "bypassPermissions",
+          allow: ["Bash(*)"],
+          ask: ["Edit"],
+          deny: ["Write"],
+        },
+      }),
+    );
+    writeFileSync(
+      join(cwd, ".agenc", "settings.local.json"),
+      JSON.stringify({
+        permissions: {
+          allow: ["Read"],
+          ask: ["Bash(npm publish:*)"],
+        },
+      }),
+    );
+
+    const { toolPermissionContext, warnings } =
+      await initializeToolPermissionContext({
+        env: { home, cwd, managedSettingsPath: join(home, "no-policy.json") },
+        projectTrust: "untrusted",
+      });
+
+    expect(toolPermissionContext.mode).toBe("default");
+    expect(toolPermissionContext.alwaysAllowRules.projectSettings ?? []).toEqual(
+      [],
+    );
+    expect(toolPermissionContext.alwaysAllowRules.localSettings ?? []).toEqual(
+      [],
+    );
+    expect(toolPermissionContext.alwaysAskRules.projectSettings).toEqual([
+      "Edit",
+    ]);
+    expect(toolPermissionContext.alwaysAskRules.localSettings).toEqual([
+      "Bash(npm publish:*)",
+    ]);
+    expect(toolPermissionContext.alwaysDenyRules.projectSettings).toEqual([
+      "Write",
+    ]);
+    expect(warnings).toEqual([]);
+  });
+
+  test("untrusted projects downgrade bypassPermissions unless dangerous skip is explicit", async () => {
+    const downgraded = await initializeToolPermissionContext({
+      env: { home, cwd, managedSettingsPath: join(home, "no-policy.json") },
+      projectTrust: "untrusted",
+      permissionMode: "bypassPermissions",
+    });
+    expect(downgraded.toolPermissionContext.mode).toBe("default");
+    expect(downgraded.warnings).toContain(
+      "Bypass permissions mode requires project trust; using default mode",
+    );
+
+    const explicit = await initializeToolPermissionContext({
+      env: { home, cwd, managedSettingsPath: join(home, "no-policy.json") },
+      projectTrust: "untrusted",
+      permissionMode: "bypassPermissions",
+      allowDangerouslySkipPermissions: true,
+    });
+    expect(explicit.toolPermissionContext.mode).toBe("bypassPermissions");
+  });
+
   test("applies ConfigStore permissions as session approval rules", async () => {
     const store = new ConfigStore({
       env: {},

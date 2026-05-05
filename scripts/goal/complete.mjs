@@ -49,6 +49,89 @@ const isWorktree = root !== mainRoot;
 const expectedWorktreePath = worktreePath(id);
 const { item } = await findItem(id);
 
+function collectInFlightJournals() {
+  const dir = markerDir();
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((f) => f.startsWith("IN-FLIGHT-") && f.endsWith(".json"))
+    .map((file) => {
+      const fullPath = path.join(dir, file);
+      try {
+        return { file, body: readFileSync(fullPath, "utf8") };
+      } catch {
+        return { file, body: "(could not read)" };
+      }
+    });
+}
+
+function failIfInFlightJournalsFound() {
+  const inFlight = collectInFlightJournals();
+  if (inFlight.length === 0) return;
+  const journalContents = inFlight
+    .map((entry) => `--- ${entry.file} ---\n${entry.body}`)
+    .join("\n\n");
+  fail(
+    `Refusing to start: ${inFlight.length} in-flight journal(s) from previous complete.mjs run(s):\n\n${journalContents}\n\n` +
+      `A previous complete.mjs was killed mid-flight (between merge and checklist-flip). Inspect the journal, ` +
+      `decide whether the merge happened, then either complete the work manually (flip checklist + delete journal) ` +
+      `or roll back (git reset to preMergeHead + delete journal).`,
+  );
+}
+
+let mergeLockPath = null;
+let mergeLockHeld = false;
+
+function releaseMergeLock() {
+  if (!mergeLockHeld || mergeLockPath === null) return;
+  try {
+    unlinkSync(mergeLockPath);
+  } catch {
+    // Best effort; a stale lock is intentionally fail-closed on the next run.
+  }
+  mergeLockHeld = false;
+}
+
+function acquireMergeLock() {
+  const dir = markerDir();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  mergeLockPath = path.join(dir, "COMPLETE-MERGE.lock");
+  const payload =
+    JSON.stringify(
+      {
+        itemId: id,
+        branch: `port/${id}`,
+        pid: process.pid,
+        worktree: isWorktree ? root : null,
+        mainCheckout: mainRoot,
+        acquiredAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    ) + "\n";
+  try {
+    writeFileSync(mergeLockPath, payload, {
+      flag: "wx",
+      mode: 0o600,
+    });
+    mergeLockHeld = true;
+    process.once("exit", releaseMergeLock);
+  } catch (error) {
+    if (error && error.code === "EEXIST") {
+      let lockContents = "(could not read lock)";
+      try {
+        lockContents = readFileSync(mergeLockPath, "utf8");
+      } catch {}
+      fail(
+        `Refusing to merge: completion merge lock already exists at ${mergeLockPath}.\n\n` +
+          `${lockContents}\n` +
+          `Another complete.mjs may be merging. If no such process is active, inspect any ` +
+          `IN-FLIGHT-* journals before removing the stale lock.`,
+      );
+    }
+    throw error;
+  }
+}
+
 if (item.statusToken === STATUS.DONE) {
   fail(`Item ${id} is already marked done. Refusing to re-run.`);
 }
@@ -57,24 +140,7 @@ if (item.statusToken === STATUS.DONE) {
 // a previously-killed complete.mjs run. The user must inspect the journal
 // and either complete or roll back the half-finished work before any new
 // item can be completed.
-{
-  const dir = markerDir();
-  if (existsSync(dir)) {
-    const inFlight = readdirSync(dir).filter((f) => f.startsWith("IN-FLIGHT-") && f.endsWith(".json"));
-    if (inFlight.length > 0) {
-      const journalContents = inFlight.map((f) => {
-        try { return `--- ${f} ---\n${readFileSync(path.join(dir, f), "utf8")}`; }
-        catch { return `--- ${f} (could not read) ---`; }
-      }).join("\n\n");
-      fail(
-        `Refusing to start: ${inFlight.length} in-flight journal(s) from previous complete.mjs run(s):\n\n${journalContents}\n\n` +
-        `A previous complete.mjs was killed mid-flight (between merge and checklist-flip). Inspect the journal, ` +
-        `decide whether the merge happened, then either complete the work manually (flip checklist + delete journal) ` +
-        `or roll back (git reset to preMergeHead + delete journal).`,
-      );
-    }
-  }
-}
+failIfInFlightJournalsFound();
 
 function header(name) {
   process.stdout.write(`\n${BOLD}━━ ${name}${RESET}\n`);
@@ -172,6 +238,20 @@ if (isWorktree) {
 // copy), so any future complete.mjs run from any worktree sees it.
 const dir = markerDir();
 if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+acquireMergeLock();
+failIfInFlightJournalsFound();
+const mainStatusRes = spawnSync("git", ["-C", mainRoot, "status", "--porcelain"], {
+  encoding: "utf8",
+  stdio: ["ignore", "pipe", "pipe"],
+});
+if (mainStatusRes.status !== 0) {
+  abort("git status failed in main checkout");
+}
+if (mainStatusRes.stdout.trim()) {
+  abort(
+    `main checkout is dirty:\n${mainStatusRes.stdout}\nCommit or discard main checkout changes before completing.`,
+  );
+}
 const journalPath = path.join(dir, `IN-FLIGHT-${id}.json`);
 const preMergeHead = spawnSync("git", ["-C", mainRoot, "rev-parse", "HEAD"], {
   encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
@@ -187,7 +267,7 @@ writeFileSync(journalPath, JSON.stringify({
   preMergeHead,
   expectedEndState: "checklist=[x] + branch deleted + worktree removed + marker written",
   recovery: "If this file exists at next complete.mjs invocation, the previous run was killed mid-flight. Either: (a) inspect git log to see if the merge happened; if yes, manually flip the checklist row to [x] and delete this file, or (b) git reset --hard <preMergeHead> in the main checkout, delete this file, and re-run complete.mjs.",
-}, null, 2) + "\n");
+}, null, 2) + "\n", { flag: "wx", mode: 0o600 });
 
 // Checkout main + merge — ALWAYS performed in the main checkout via `git -C`,
 // regardless of whether complete.mjs was launched from the main checkout or
@@ -222,7 +302,10 @@ if (isWorktree && existsSync(expectedWorktreePath)) {
   }
   const wtRemove = run("git", ["-C", mainRoot, "worktree", "remove", "--force", expectedWorktreePath]);
   if (wtRemove.status !== 0) {
-    process.stderr.write(`${BOLD}${RED}!${RESET} could not remove worktree ${expectedWorktreePath}; run \`git worktree remove --force ${expectedWorktreePath}\` manually.\n`);
+    abort(
+      `could not remove worktree ${expectedWorktreePath}; completion left ${journalPath} for recovery. ` +
+        `Run \`git worktree remove --force ${expectedWorktreePath}\` manually, inspect the merge, then rerun or recover from the journal.`,
+    );
   } else {
     ok(`worktree removed: ${expectedWorktreePath}`);
   }
@@ -232,7 +315,10 @@ if (isWorktree && existsSync(expectedWorktreePath)) {
 
 const deleteRes = run("git", ["-C", mainRoot, "branch", "-d", expected]);
 if (deleteRes.status !== 0) {
-  process.stderr.write(`${BOLD}${RED}!${RESET} could not delete branch ${expected}; check manually.\n`);
+  abort(
+    `could not delete branch ${expected}; completion left ${journalPath} for recovery. ` +
+      `Delete or inspect the branch manually, then rerun or recover from the journal.`,
+  );
 } else {
   ok(`feature branch ${expected} deleted`);
 }
@@ -272,6 +358,7 @@ try {
   // is done; the journal is just for recovery.
   process.stderr.write(`${YELLOW}!${RESET} could not remove in-flight journal ${journalPath}; remove manually.\n`);
 }
+releaseMergeLock();
 
 process.stdout.write(`\n${BOLD}${GREEN}✓ ${id} complete${RESET} — ${item.title}\n`);
 process.stdout.write(`${DIM}You may now call update_goal complete.${RESET}\n`);

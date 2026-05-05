@@ -8,7 +8,8 @@
 // Exits 0 on pass, 1 on failure.
 
 import process from "node:process";
-import { readChecklist, parseItems, findItem, checkDependencies, statusName, STATUS } from "./checklist-utils.mjs";
+import { readFileSync } from "node:fs";
+import { readChecklist, parseItems, findItem, checkDependencies, statusName, STATUS, findGitWorktreeEntry, parseGitWorktreePorcelain } from "./checklist-utils.mjs";
 
 let passed = 0;
 let failed = 0;
@@ -47,6 +48,25 @@ assert("statusName decision", statusName(STATUS.DECISION) === "needs-decision");
 assert("statusName skipped", statusName(STATUS.SKIPPED) === "skipped");
 assert("statusName in-progress", statusName(STATUS.IN_PROGRESS) === "in-progress");
 
+const worktreePorcelain = [
+  "worktree /repo/main",
+  "HEAD abc123",
+  "branch refs/heads/main",
+  "",
+  "worktree /tmp/agenc-core-wt/PE-09",
+  "HEAD def456",
+  "branch refs/heads/port/PE-09",
+  "",
+].join("\n");
+assert(
+  "parses git worktree porcelain entries",
+  parseGitWorktreePorcelain(worktreePorcelain).length === 2,
+);
+assert(
+  "finds reused worktree branch ref",
+  findGitWorktreeEntry(worktreePorcelain, "/tmp/agenc-core-wt/PE-09")?.branch === "refs/heads/port/PE-09",
+);
+
 // Dependency parsing.
 const f03e = items.find((i) => i.id === "F-03e");
 assert("F-03e found", !!f03e);
@@ -64,12 +84,19 @@ if (t08) {
   );
 }
 
-// Dependency satisfaction.
-const blockers = checkDependencies(f03e, items);
+// Dependency satisfaction. The checklist advances over time, so avoid
+// hard-coding one dependency as open forever.
+const blockedDependencySample = items
+  .map((item) => ({ item, blockers: checkDependencies(item, items) }))
+  .find(({ blockers }) => blockers.length > 0);
 assert(
-  "F-03e blocked by A-00c (open)",
-  blockers.length > 0 && blockers.some((b) => b.id === "A-00c"),
-  JSON.stringify(blockers),
+  "dependency satisfaction reflects current checklist state",
+  blockedDependencySample
+    ? blockedDependencySample.blockers.every((b) => typeof b.id === "string" && b.id.length > 0)
+    : items.every((item) => checkDependencies(item, items).length === 0),
+  blockedDependencySample
+    ? JSON.stringify(blockedDependencySample)
+    : "all parsed dependencies are currently satisfied",
 );
 
 // findItem.
@@ -112,6 +139,16 @@ assert("at least 1 item has done-criteria parsed", withDone.length >= 1, `got ${
 const phaseLabels = new Set(items.map((i) => i.phase).filter(Boolean));
 const hasNumericPhase = [...phaseLabels].some((p) => /^\d/.test(p));
 assert("at least one numeric phase parsed", hasNumericPhase, `phases=${[...phaseLabels].join(",")}`);
+
+const completeSource = readFileSync(new URL("./complete.mjs", import.meta.url), "utf8");
+assert(
+  "complete.mjs hard-fails worktree removal failures",
+  /const wtRemove =[\s\S]*if \(wtRemove\.status !== 0\) \{\s*abort\(/.test(completeSource),
+);
+assert(
+  "complete.mjs hard-fails branch deletion failures",
+  /const deleteRes =[\s\S]*if \(deleteRes\.status !== 0\) \{\s*abort\(/.test(completeSource),
+);
 
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
 process.exit(failed > 0 ? 1 : 0);

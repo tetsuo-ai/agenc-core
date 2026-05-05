@@ -19,6 +19,7 @@ import {
 import { MCPManager } from "../mcp-client/manager.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { isAutoModeGateEnabled } from "../permissions/classifier.js";
+import { resolveApprovalPolicy } from "../permissions/approval-policy.js";
 import { ApprovalStore as RuntimeApprovalStore } from "../permissions/approval-cache.js";
 import {
   NetworkApprovalService as RuntimeNetworkApprovalService,
@@ -94,6 +95,7 @@ import {
   readStartupCliFlags,
   resolveStartupSelection,
 } from "./startup-selection.js";
+import { resolveProjectTrustStateSync } from "../permissions/trust/project-trust.js";
 export {
   DEFAULT_MODEL,
   PROVIDER_MODEL_CATALOG,
@@ -679,8 +681,13 @@ export function sessionConfigurationFromAgenCConfig(params: {
   readonly workspaceRoot: string;
   readonly model: string;
   readonly provider?: string;
+  readonly projectTrust?: "trusted" | "untrusted";
 }): SessionConfiguration {
-  const approval = mapApprovalPolicy(params.config.approval_policy);
+  const configPolicy = mapApprovalPolicy(params.config.approval_policy);
+  const approval = resolveApprovalPolicy({
+    configPolicy,
+    projectTrust: params.projectTrust === "untrusted" ? "untrusted" : undefined,
+  });
   const sandbox = mapSandboxPolicy(params.config.sandbox_mode);
   const base: SessionConfiguration = {
     cwd: params.workspaceRoot,
@@ -796,6 +803,12 @@ export async function bootstrapLocalRuntimeSession(
 
   const workspaceRoot =
     resolveWorkspaceFromEnv(env) ?? options.cwd ?? process.cwd();
+  const projectTrust = resolveProjectTrustStateSync({
+    agencHome,
+    env,
+    cwd: workspaceRoot,
+    projectRootMarkers: startup.config.project_root_markers,
+  });
   const permissionInit = await initializeToolPermissionContext({
     env: {
       home: agencHome,
@@ -806,6 +819,7 @@ export async function bootstrapLocalRuntimeSession(
     ...(cli.allowDangerouslySkipPermissions
       ? { allowDangerouslySkipPermissions: true }
       : {}),
+    projectTrust,
   });
   const autoModeEnabled = isAutoModeGateEnabled();
   const toolPermissionContext = {
@@ -1026,6 +1040,7 @@ export async function bootstrapLocalRuntimeSession(
     workspaceRoot,
     model,
     provider: resolvedProvider,
+    projectTrust,
   });
   const sessionConfiguration = cli.allowDangerouslySkipPermissions
     ? ({

@@ -12,6 +12,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 
 import {
+  classifyCLI,
   extractFlagValue,
   routeCLI,
   stripRoutingFlags,
@@ -130,7 +131,7 @@ describe("routeCLI (T12 Wave 5-B)", () => {
         SCRIPT,
         "--image",
         "/tmp/cat.png",
-        "--image=https://example.com/dog.png",
+        "--image=http://127.0.0.1/dog.png",
         "describe",
         "them",
       ],
@@ -144,7 +145,7 @@ describe("routeCLI (T12 Wave 5-B)", () => {
     expect(exit).toBe(0);
     expect(bootTUI).toHaveBeenCalledWith({
       initialPrompt: "describe them",
-      startupImages: ["/tmp/cat.png", "https://example.com/dog.png"],
+      startupImages: ["/tmp/cat.png", "http://127.0.0.1/dog.png"],
     });
     expect(oneShotCLI).not.toHaveBeenCalled();
   });
@@ -243,6 +244,55 @@ describe("routeCLI (T12 Wave 5-B)", () => {
       continueTUI,
     });
     expect(continueTUI).toHaveBeenCalledWith({});
+  });
+});
+
+describe("classifyCLI", () => {
+  it("exposes interactive TUI plans before dispatch work starts", () => {
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "build", "a", "game"],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({
+      kind: "bootTUI",
+      args: { initialPrompt: "build a game" },
+    });
+
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "--resume", "session-1"],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({ kind: "resumeTUI", args: { resumeId: "session-1" } });
+
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "--continue"],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({ kind: "continueTUI", args: {} });
+  });
+
+  it("keeps non-interactive routes out of the TUI preflight path", () => {
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "hello"],
+        isTTY: false,
+        isStdoutTTY: false,
+      }),
+    ).toEqual({ kind: "oneShotCLI", userMessage: "hello" });
+
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "--no-tui", "hello"],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({ kind: "oneShotCLI", userMessage: "hello" });
   });
 });
 

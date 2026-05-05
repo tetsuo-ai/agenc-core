@@ -12,7 +12,7 @@ import { type ReadonlySettings, useSettings } from '../../agenc/upstream/hooks/u
 import type { Message } from '../../agenc/upstream/types/message.js';
 import type { StatusLineCommandInput } from '../../agenc/upstream/types/statusLine.js';
 import type { VimMode } from '../../agenc/upstream/types/textInputTypes.js';
-import { checkHasTrustDialogAccepted } from '../../agenc/upstream/utils/config.js';
+import { checkHasProjectTrustAcceptedSync } from '../../permissions/trust/project-trust.js';
 import { calculateContextPercentages, getContextWindowForModel } from '../../agenc/upstream/utils/context.js';
 import { getCwd } from '../../agenc/upstream/utils/cwd.js';
 import { isFullscreenEnvEnabled } from '../../agenc/upstream/utils/fullscreen.js';
@@ -274,10 +274,11 @@ function StatusLineInner({
       // executeStatusLineCommand (hooks.ts) returns undefined when trust is
       // blocked — statusLineText stays undefined forever, user sees nothing,
       // and agenc_status_line_mount above fires anyway so telemetry looks fine.
-      if (!checkHasTrustDialogAccepted()) {
+      const trustCwd = getOriginalCwd() || getCwd();
+      if (!checkHasProjectTrustAcceptedSync({ cwd: trustCwd })) {
         addNotification({
           key: 'statusline-trust-blocked',
-          text: 'statusline skipped · restart to fix',
+          text: 'statusline skipped until project trust is accepted',
           color: 'warning',
           priority: 'low'
         });
