@@ -46,7 +46,7 @@ import type { ToolPermissionContext } from '../../../agenc/upstream/Tool.js';
 import { getRunningTeammatesSorted } from '../../../agenc/upstream/tasks/InProcessTeammateTask/InProcessTeammateTask.js';
 import type { InProcessTeammateTaskState } from '../../../agenc/upstream/tasks/InProcessTeammateTask/types.js';
 import { isPanelAgentTask, type LocalAgentTaskState } from '../../../agenc/upstream/tasks/LocalAgentTask/LocalAgentTask.js';
-import { isBackgroundTask } from '../../../agenc/upstream/tasks/types.js';
+import { isBackgroundTask } from '../../../tasks/types.js';
 import { AGENT_COLOR_TO_THEME_COLOR, AGENT_COLORS, type AgentColorName } from '../../../tools/AgentTool/agentColorManager.js';
 import type { AgentDefinition } from '../../../tools/AgentTool/loadAgentsDir.js';
 import type { Message } from '../../../agenc/upstream/types/message.js';

@@ -1,0 +1,114 @@
+{
+  "contractName": "openclaude-task-registry-port",
+  "scope": "Port donor task discriminators, task registry lookup, stop validation, and compact background-task pill labels into AgenC's live task subsystem.",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/tasks.ts",
+    "src/Task.ts",
+    "src/tasks/types.ts",
+    "src/tasks/stopTask.ts",
+    "src/tasks/pillLabel.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/tasks/types.ts",
+    "runtime/src/tasks/registry.ts",
+    "runtime/src/tasks/stopTask.ts",
+    "runtime/src/tasks/pillLabel.ts",
+    "runtime/src/tasks/lifecycle.ts",
+    "runtime/src/tasks/index.ts",
+    "runtime/src/tasks/PARITY.md",
+    "runtime/src/tools/tasks/background.ts",
+    "runtime/src/tui/state/AppStateStore.ts",
+    "runtime/src/tui/components/PromptInput/PromptInput.tsx",
+    "runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx",
+    "runtime/src/tui/components/spinner/Spinner.tsx"
+  ],
+  "testFiles": [
+    "runtime/src/tasks/types.test.ts",
+    "runtime/src/tasks/registry.test.ts",
+    "runtime/src/tasks/stopTask.test.ts",
+    "runtime/src/tasks/pillLabel.test.ts",
+    "runtime/src/tasks/lifecycle.test.ts",
+    "runtime/src/tools/tasks/task-tools.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "typed-discriminator",
+      "requiredBehaviors": [
+        "Expose a typed AppState task discriminator for local shell, local agent, remote agent, and in-process teammate tasks.",
+        "Keep lifecycle-only generic and monitor task kinds available to the in-process background-task lifecycle.",
+        "Reject donor-only workflow, MCP monitor, and dream task kinds from live task lookup."
+      ],
+      "edgeCases": [
+        "terminal statuses are not background tasks",
+        "foreground tasks with isBackgrounded false are not background tasks",
+        "dropped task kind strings do not narrow to live task kinds"
+      ],
+      "tests": [
+        "runtime/src/tasks/types.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "registry-stop-dispatch",
+      "requiredBehaviors": [
+        "Return a deterministic registry list for all live task kinds.",
+        "Lookup tasks by typed discriminator.",
+        "Stop dispatch delegates to the caller-supplied lifecycle stop implementation.",
+        "Missing backing stop support fails instead of marking task state killed."
+      ],
+      "edgeCases": [
+        "unknown task kind returns undefined",
+        "dropped donor task kinds return undefined",
+        "delegate errors surface as stop failures"
+      ],
+      "tests": [
+        "runtime/src/tasks/registry.test.ts",
+        "runtime/src/tasks/stopTask.test.ts",
+        "runtime/src/tools/tasks/task-tools.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "stop-validation",
+      "requiredBehaviors": [
+        "Missing tasks fail with not_found.",
+        "Terminal tasks fail with not_running.",
+        "Lifecycle-backed stops preserve current pending-or-running stop semantics.",
+        "Local shell stops mark notifications only after a successful backing stop."
+      ],
+      "edgeCases": [
+        "pending tasks require allowPending",
+        "unsupported task kind fails before invoking the stop delegate",
+        "notification suppression does not run when backing stop fails",
+        "TaskStop shell_id aliases still resolve through the injected lifecycle"
+      ],
+      "tests": [
+        "runtime/src/tasks/stopTask.test.ts",
+        "runtime/src/tools/tasks/task-tools.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "pill-labels",
+      "requiredBehaviors": [
+        "Format shell and monitor counts from local shell task kind.",
+        "Format team counts from in-process teammate identities.",
+        "Format local agent and remote cloud-session counts.",
+        "Surface remote ultraplanning attention labels and CTA state."
+      ],
+      "edgeCases": [
+        "empty task list",
+        "mixed task types",
+        "ultraplan running without attention phase",
+        "CTA only for one remote ultraplanning task with an attention phase"
+      ],
+      "tests": [
+        "runtime/src/tasks/pillLabel.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

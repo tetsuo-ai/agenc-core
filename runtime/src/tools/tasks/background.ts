@@ -16,6 +16,7 @@
 import {
   backgroundTaskLifecycle,
   isTerminalTaskStatus,
+  stopTask,
   type BackgroundTaskLifecycle,
 } from "../../tasks/index.js";
 import type { Tool } from "../types.js";
@@ -195,14 +196,19 @@ export function createBackgroundTaskTools(
           );
         }
         try {
-          const stopped = await lifecycle.stop(taskId, "stopped by TaskStop");
+          const stopped = await stopTask(taskId, {
+            getTask: (id) => lifecycle.get(id),
+            stopTask: (id, reason) => lifecycle.stop(id, reason),
+            allowPending: true,
+            reason: "stopped by TaskStop",
+          });
           return taskTextResult(
-            `Successfully stopped task: ${stopped.id} (${stopped.description})`,
+            `Successfully stopped task: ${stopped.taskId} (${stopped.command})`,
             {
-              message: `Successfully stopped task: ${stopped.id} (${stopped.description})`,
-              task_id: stopped.id,
-              task_type: stopped.type,
-              command: stopped.description,
+              message: `Successfully stopped task: ${stopped.taskId} (${stopped.command})`,
+              task_id: stopped.taskId,
+              task_type: stopped.taskType,
+              command: stopped.command,
             },
           );
         } catch (error) {

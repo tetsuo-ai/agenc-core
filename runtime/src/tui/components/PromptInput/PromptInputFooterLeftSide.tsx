@@ -15,7 +15,7 @@ import { isVimModeEnabled } from './utils.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
 import { isDefaultMode, permissionModeSymbol, permissionModeTitle, getModeColor } from '../../../agenc/upstream/utils/permissions/PermissionMode.js';
 import { BackgroundTaskStatus } from '../../../agenc/upstream/components/tasks/BackgroundTaskStatus.js';
-import { isBackgroundTask } from '../../../agenc/upstream/tasks/types.js';
+import { isBackgroundTask } from '../../../tasks/types.js';
 import { isPanelAgentTask } from '../../../agenc/upstream/tasks/LocalAgentTask/LocalAgentTask.js';
 import { getVisibleAgentTasks } from '../../../agenc/upstream/components/CoordinatorAgentStatus.js';
 import { count } from '../../../agenc/upstream/utils/array.js';
@@ -432,6 +432,7 @@ function ModeIndicator({
   if (feature('VOICE_MODE') && voiceEnabled && voiceWarmingUp) {
     parts.push(<VoiceWarmupHint key="voice-warmup" />);
   } else if (isFullscreenEnvEnabled() && selectionHintHasContent) {
+    // branding-scan: allow Cursor is a supported editor name in this selection hint.
     // xterm.js (VS Code/Cursor/Windsurf) force-selection modifier is
     // platform-specific and gated on macOS (SelectionService.shouldForceSelection):
     //   macOS:     altKey && macOptionClickForcesSelection (VS Code default: false)
