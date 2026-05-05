@@ -884,7 +884,7 @@ function normalizeDependencies(
           });
           return null;
         }
-        return entry.replace(/@\^[^@]*$/u, "");
+        return entry;
       }
       if (isRecord(entry) && typeof entry.name === "string") {
         if (!DEPENDENCY_NAME_PATTERN.test(entry.name)) {

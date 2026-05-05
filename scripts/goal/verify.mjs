@@ -1596,8 +1596,17 @@ const FORWARD_LINE_RE =
   /^\s*(export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[^}]*\}\s*from\b|export\s*\{[^}]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
 const FORWARD_STATEMENT_RE =
   /^\s*(export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[\s\S]*\}\s*from\b|export\s*\{[\s\S]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
+const SINGLE_LINE_FORWARD_FN_RE =
+  /^\s*(?:export\s+)?(?:async\s+)?function\s+\w+\s*\([^)]*\)\s*\{\s*(?:return\s+(?:await\s+)?|await\s+)?[\w$.]+\([^{};]*\)\s*;?\s*\}\s*$/;
+const SINGLE_LINE_FORWARD_ARROW_RE =
+  /^\s*export\s+const\s+\w+\s*=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*=>\s*(?:\{\s*(?:return\s+(?:await\s+)?|await\s+)?[\w$.]+\([^{};]*\)\s*;?\s*\}|[\w$.]+\([^{};]*\)|[\w$.]+\.[\w$]+(?:\([^{};]*\))?)\s*;?\s*$/;
 function countForwardingLines(significant) {
-  return combineLogicalStatements(significant).filter((stmt) => FORWARD_LINE_RE.test(stmt) || FORWARD_STATEMENT_RE.test(stmt)).length;
+  return combineLogicalStatements(significant).filter((stmt) =>
+    FORWARD_LINE_RE.test(stmt) ||
+    FORWARD_STATEMENT_RE.test(stmt) ||
+    SINGLE_LINE_FORWARD_FN_RE.test(stmt) ||
+    SINGLE_LINE_FORWARD_ARROW_RE.test(stmt)
+  ).length;
 }
 const forwardingViolations = [];
 for (const rel of added) {

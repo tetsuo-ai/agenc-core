@@ -143,7 +143,7 @@ describe("plugin manifest schema", () => {
       );
 
       expect(manifest.dependencies).toEqual([
-        "base-plugin",
+        "base-plugin@^1.2",
         "team-plugin@team-marketplace",
         "local-plugin",
       ]);
@@ -367,8 +367,8 @@ describe("plugin manifest schema", () => {
       );
 
       expect(manifest.dependencies).toEqual([
-        "base-plugin",
-        "qualified@team",
+        "base-plugin@^1.2",
+        "qualified@team@^2",
         "object-plugin@team_marketplace",
       ]);
       expect(issues).toEqual(

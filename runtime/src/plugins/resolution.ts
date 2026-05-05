@@ -101,11 +101,13 @@ export interface ParsedPluginIdentifier {
 
 export interface PluginDependencyLookupResult {
   readonly dependencies?: readonly string[];
+  readonly version?: string;
 }
 
 export type PluginDependencyResolutionResult =
   | { readonly ok: true; readonly closure: readonly string[] }
   | { readonly ok: false; readonly reason: "cycle"; readonly chain: readonly string[] }
+  | { readonly ok: false; readonly reason: "version-mismatch"; readonly dependency: string; readonly requiredBy: string; readonly requiredVersion: string; readonly actualVersion?: string }
   | { readonly ok: false; readonly reason: "not-found"; readonly missing: string; readonly requiredBy: string }
   | {
     readonly ok: false;
@@ -118,7 +120,7 @@ export interface PluginDependencyIssue {
   readonly source: string;
   readonly plugin: string;
   readonly dependency: string;
-  readonly reason: "ambiguous" | "cross-marketplace" | "cycle" | "not-enabled" | "not-found";
+  readonly reason: "ambiguous" | "cross-marketplace" | "cycle" | "not-enabled" | "not-found" | "version-mismatch";
 }
 
 interface SignatureFile {
@@ -167,6 +169,10 @@ export async function resolvePluginSource(
 ): Promise<ResolvedPluginSource> {
   const startedAt = Date.now();
   const kind = await classifyPluginSource(source, options.workspaceRoot ?? process.cwd());
+  const signatureOptions = {
+    ...options,
+    requireSignature: options.requireSignature ?? kind !== "local",
+  };
   const telemetrySource = source;
   let tempRoot: string | undefined;
   try {
@@ -174,7 +180,7 @@ export async function resolvePluginSource(
     const materializeFresh = async (): Promise<ResolvedPluginSource> => {
       tempRoot = await mkdtemp(join(tmpdir(), "agenc-plugin-resolve-"));
       const resolvedRoot = await materializePluginSource(source, kind, tempRoot, options);
-      const signature = await verifyResolvedPluginSignature(resolvedRoot, options);
+      const signature = await verifyResolvedPluginSignature(resolvedRoot, signatureOptions);
       const pluginRoot = options.cache === false || kind === "local"
         ? resolvedRoot
         : await activatePluginCache(resolvedRoot, cacheRoot);
@@ -202,7 +208,7 @@ export async function resolvePluginSource(
     if (options.cache === false || kind === "local") return await materializeFresh();
     return await withPluginCacheLock(cacheRoot, async () => {
       if (options.refreshCache !== true && await pathIsDirectory(cacheRoot)) {
-        const signature = await verifyResolvedPluginSignature(cacheRoot, options);
+        const signature = await verifyResolvedPluginSignature(cacheRoot, signatureOptions);
         emitTelemetry(options, {
           kind,
           source: telemetrySource,
@@ -263,10 +269,12 @@ export function buildPluginIdentifier(name: string, marketplace?: string): strin
 }
 
 export function qualifyPluginDependency(dep: string, declaringPluginId: string): string {
-  if (parsePluginIdentifier(dep).marketplace) return dep;
+  const versionMarker = dep.lastIndexOf("@^");
+  const dependencyId = versionMarker === -1 ? dep : dep.slice(0, versionMarker);
+  if (parsePluginIdentifier(dependencyId).marketplace) return dependencyId;
   const marketplace = parsePluginIdentifier(declaringPluginId).marketplace;
-  if (!marketplace || marketplace === "inline") return dep;
-  return buildPluginIdentifier(dep, marketplace);
+  if (!marketplace || marketplace === "inline") return dependencyId;
+  return buildPluginIdentifier(dependencyId, marketplace);
 }
 
 export async function resolvePluginDependencyClosure(
@@ -280,7 +288,11 @@ export async function resolvePluginDependencyClosure(
   const visited = new Set<string>();
   const stack: string[] = [];
 
-  async function walk(id: string, requiredBy: string): Promise<PluginDependencyResolutionResult | null> {
+  async function walk(
+    id: string,
+    requiredBy: string,
+    requiredVersion?: string,
+  ): Promise<PluginDependencyResolutionResult | null> {
     const marketplace = parsePluginIdentifier(id).marketplace;
     if (
       marketplace !== rootMarketplace &&
@@ -293,18 +305,28 @@ export async function resolvePluginDependencyClosure(
         requiredBy,
       };
     }
-    if (id !== rootId && alreadyEnabled.has(id)) return null;
+    if (id !== rootId && alreadyEnabled.has(id) && requiredVersion === undefined) return null;
     if (stack.includes(id)) return { ok: false, reason: "cycle", chain: [...stack, id] };
-    if (visited.has(id)) return null;
-    visited.add(id);
 
     const entry = await lookup(id);
     if (!entry) return { ok: false, reason: "not-found", missing: id, requiredBy };
+    if (requiredVersion !== undefined && !pluginVersionSatisfies(entry.version, requiredVersion)) {
+      return {
+        ok: false,
+        reason: "version-mismatch",
+        dependency: id,
+        requiredBy,
+        requiredVersion,
+        ...(entry.version !== undefined ? { actualVersion: entry.version } : {}),
+      };
+    }
+    if (visited.has(id)) return null;
+    visited.add(id);
 
     stack.push(id);
     for (const rawDep of entry.dependencies ?? []) {
-      const dep = qualifyPluginDependency(rawDep, id);
-      const error = await walk(dep, id);
+      const dep = parsePluginDependencyReference(rawDep, id);
+      const error = await walk(dep.id, id, dep.versionConstraint);
       if (error) return error;
     }
     stack.pop();
@@ -324,6 +346,7 @@ export function verifyPluginDependencyState(plugins: readonly LoadedPlugin[]): {
   const idBySource = new Map(plugins.map((plugin) => [plugin.source, pluginDependencyIdentifier(plugin)] as const));
   const known = new Set(idBySource.values());
   const enabled = new Set(plugins.filter((plugin) => plugin.enabled).map((plugin) => idBySource.get(plugin.source)!));
+  const pluginByIdAll = new Map(plugins.map((plugin) => [idBySource.get(plugin.source)!, plugin] as const));
   const knownByName = pluginIdsByName(plugins, idBySource, () => true);
   const enabledByName = pluginIdsByName(plugins, idBySource, (plugin) => plugin.enabled);
 
@@ -335,7 +358,8 @@ export function verifyPluginDependencyState(plugins: readonly LoadedPlugin[]): {
       const pluginId = idBySource.get(plugin.source)!;
       if (!enabled.has(pluginId)) continue;
       for (const rawDep of plugin.manifest.dependencies ?? []) {
-        const dep = qualifyPluginDependency(rawDep, pluginId);
+        const parsedDep = parsePluginDependencyReference(rawDep, pluginId);
+        const dep = parsedDep.id;
         if (isCrossMarketplaceDependency(pluginId, dep)) {
           demotePluginForDependency({
             enabled,
@@ -349,7 +373,7 @@ export function verifyPluginDependencyState(plugins: readonly LoadedPlugin[]): {
           changed = true;
           break;
         }
-        const dependencyState = dependencySatisfactionState(dep, enabled, enabledByName, knownByName, known);
+        const dependencyState = dependencySatisfactionState(dep, parsedDep.versionConstraint, enabled, enabledByName, knownByName, known, pluginByIdAll);
         if (dependencyState.ok) continue;
 
         demotePluginForDependency({
@@ -376,7 +400,7 @@ export function verifyPluginDependencyState(plugins: readonly LoadedPlugin[]): {
   for (const [id, plugin] of pluginById) {
     const deps: string[] = [];
     for (const rawDep of plugin.manifest.dependencies ?? []) {
-      const dep = qualifyPluginDependency(rawDep, id);
+      const dep = parsePluginDependencyReference(rawDep, id).id;
       if (isCrossMarketplaceDependency(id, dep)) continue;
       const parsed = parsePluginIdentifier(dep);
       if (parsed.marketplace !== undefined) {
@@ -432,7 +456,8 @@ export function verifyPluginDependencyState(plugins: readonly LoadedPlugin[]): {
       const pluginId = idBySource.get(plugin.source)!;
       if (!enabled.has(pluginId)) continue;
       for (const rawDep of plugin.manifest.dependencies ?? []) {
-        const dep = qualifyPluginDependency(rawDep, pluginId);
+        const parsedDep = parsePluginDependencyReference(rawDep, pluginId);
+        const dep = parsedDep.id;
         if (isCrossMarketplaceDependency(pluginId, dep)) {
           demotePluginForDependency({
             enabled,
@@ -446,7 +471,7 @@ export function verifyPluginDependencyState(plugins: readonly LoadedPlugin[]): {
           changed = true;
           break;
         }
-        const dependencyState = dependencySatisfactionState(dep, enabled, enabledByName, knownByName, known);
+        const dependencyState = dependencySatisfactionState(dep, parsedDep.versionConstraint, enabled, enabledByName, knownByName, known, pluginByIdAll);
         if (dependencyState.ok) continue;
 
         demotePluginForDependency({
@@ -477,6 +502,22 @@ function isCrossMarketplaceDependency(pluginId: string, dependencyId: string): b
   const pluginMarketplace = parsePluginIdentifier(pluginId).marketplace;
   const dependencyMarketplace = parsePluginIdentifier(dependencyId).marketplace;
   return dependencyMarketplace !== undefined && dependencyMarketplace !== pluginMarketplace;
+}
+
+function parsePluginDependencyReference(
+  dependency: string,
+  declaringPluginId: string,
+): { readonly id: string; readonly versionConstraint?: string } {
+  const versionMarker = dependency.lastIndexOf("@^");
+  if (versionMarker === -1) {
+    return { id: qualifyPluginDependency(dependency, declaringPluginId) };
+  }
+  const id = dependency.slice(0, versionMarker);
+  const version = dependency.slice(versionMarker + 2).trim();
+  return {
+    id: qualifyPluginDependency(id, declaringPluginId),
+    ...(version.length > 0 ? { versionConstraint: `^${version}` } : {}),
+  };
 }
 
 function demotePluginForDependency(options: {
@@ -519,23 +560,77 @@ function pluginIdsByName(
 
 function dependencySatisfactionState(
   dependencyId: string,
+  versionConstraint: string | undefined,
   enabled: ReadonlySet<string>,
   enabledByName: ReadonlyMap<string, ReadonlySet<string>>,
   knownByName: ReadonlyMap<string, ReadonlySet<string>>,
   known: ReadonlySet<string>,
+  pluginById: ReadonlyMap<string, LoadedPlugin>,
 ): { readonly ok: true } | { readonly ok: false; readonly reason: PluginDependencyIssue["reason"] } {
   if (parsePluginIdentifier(dependencyId).marketplace !== undefined) {
-    return enabled.has(dependencyId)
+    if (!enabled.has(dependencyId)) {
+      return { ok: false, reason: known.has(dependencyId) ? "not-enabled" : "not-found" };
+    }
+    return pluginVersionSatisfies(pluginById.get(dependencyId)?.version, versionConstraint)
       ? { ok: true }
-      : { ok: false, reason: known.has(dependencyId) ? "not-enabled" : "not-found" };
+      : { ok: false, reason: "version-mismatch" };
   }
   const enabledMatches = enabledByName.get(dependencyId)?.size ?? 0;
-  if (enabledMatches === 1) return { ok: true };
+  if (enabledMatches === 1) {
+    const [id] = [...(enabledByName.get(dependencyId) ?? [])];
+    return pluginVersionSatisfies(id ? pluginById.get(id)?.version : undefined, versionConstraint)
+      ? { ok: true }
+      : { ok: false, reason: "version-mismatch" };
+  }
   if (enabledMatches > 1) return { ok: false, reason: "ambiguous" };
   return {
     ok: false,
     reason: knownByName.has(dependencyId) ? "not-enabled" : "not-found",
   };
+}
+
+function pluginVersionSatisfies(version: string | undefined, constraint: string | undefined): boolean {
+  if (constraint === undefined || constraint.trim().length === 0) return true;
+  if (version === undefined) return false;
+  const trimmed = constraint.trim();
+  const operator = /^(>=|<=|>|<|=|\^|~)/u.exec(trimmed)?.[1] ?? "=";
+  const target = parsePluginVersion(trimmed.slice(operator === "=" ? 1 : operator.length));
+  const actual = parsePluginVersion(version);
+  if (!actual || !target) return version === trimmed || version === trimmed.replace(/^=/u, "");
+  const cmp = comparePluginVersions(actual, target);
+  switch (operator) {
+    case ">=":
+      return cmp >= 0;
+    case ">":
+      return cmp > 0;
+    case "<=":
+      return cmp <= 0;
+    case "<":
+      return cmp < 0;
+    case "~":
+      return cmp >= 0 && actual.major === target.major && actual.minor === target.minor;
+    case "^":
+      return cmp >= 0 && actual.major === target.major && (target.major > 0 || actual.minor === target.minor);
+    default:
+      return cmp === 0;
+  }
+}
+
+function parsePluginVersion(version: string): { readonly major: number; readonly minor: number; readonly patch: number } | null {
+  const match = /^v?([0-9]+)(?:\.([0-9]+))?(?:\.([0-9]+))?/u.exec(version.trim());
+  if (!match) return null;
+  return {
+    major: Number.parseInt(match[1]!, 10),
+    minor: Number.parseInt(match[2] ?? "0", 10),
+    patch: Number.parseInt(match[3] ?? "0", 10),
+  };
+}
+
+function comparePluginVersions(
+  a: { readonly major: number; readonly minor: number; readonly patch: number },
+  b: { readonly major: number; readonly minor: number; readonly patch: number },
+): number {
+  return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
 }
 
 export function pluginDependencyIdentifier(plugin: LoadedPlugin): string {
@@ -553,7 +648,7 @@ export function findPluginReverseDependents(
       return plugin.enabled &&
         sourceId !== pluginId &&
         (plugin.manifest.dependencies ?? []).some((rawDep) => {
-          const qualified = qualifyPluginDependency(rawDep, sourceId);
+          const qualified = parsePluginDependencyReference(rawDep, sourceId).id;
           return parsePluginIdentifier(qualified).marketplace
             ? qualified === pluginId
             : qualified === targetName;

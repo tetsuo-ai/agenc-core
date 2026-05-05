@@ -58,6 +58,7 @@ describe("plugin source resolution", () => {
         agencHome,
         workspaceRoot: root,
         runProcess,
+        requireSignature: false,
         onTelemetry: (event) => events.push(event),
       });
 
@@ -90,6 +91,41 @@ describe("plugin source resolution", () => {
           runProcess,
         }),
       ).rejects.toThrow(/invalid git plugin source/u);
+    });
+  });
+
+  test("direct resolver requires a trusted signature for remote sources by default", async () => {
+    await withTempDir(async (root) => {
+      const runProcess: PluginProcessRunner = async (command, args) => {
+        if (command === "npm") {
+          const packDir = String(args[args.indexOf("--pack-destination") + 1]);
+          await writeFile(join(packDir, "unsigned-1.0.0.tgz"), "fixture");
+          return {
+            stdout: JSON.stringify([{ filename: "unsigned-1.0.0.tgz" }]),
+            stderr: "",
+          };
+        }
+        if (command === "tar") {
+          if (args[0] === "-tzf") {
+            return { stdout: safeTarListing("package"), stderr: "" };
+          }
+          if (args[0] === "-tvzf") {
+            return { stdout: safeTarVerboseListing("package"), stderr: "" };
+          }
+          const extractRoot = String(args[args.indexOf("-C") + 1]);
+          await writePlugin(join(extractRoot, "package"), "unsigned-demo");
+          return { stdout: "", stderr: "" };
+        }
+        throw new Error(`unexpected process: ${command}`);
+      };
+
+      await expect(
+        resolvePluginSource("@tetsuo-ai/unsigned-plugin", {
+          agencHome: join(root, "home"),
+          workspaceRoot: root,
+          runProcess,
+        }),
+      ).rejects.toThrow(/plugin signature is required/u);
     });
   });
 
@@ -209,6 +245,7 @@ describe("plugin source resolution", () => {
         agencHome,
         workspaceRoot: root,
         runProcess,
+        requireSignature: false,
       });
       await first.cleanup();
       const events: PluginFetchTelemetry[] = [];
@@ -216,6 +253,7 @@ describe("plugin source resolution", () => {
         agencHome,
         workspaceRoot: root,
         runProcess,
+        requireSignature: false,
         onTelemetry: (event) => events.push(event),
       });
 
@@ -263,12 +301,14 @@ describe("plugin source resolution", () => {
         agencHome,
         workspaceRoot: root,
         runProcess,
+        requireSignature: false,
         fetchBytes: async () => new Uint8Array([1, 2, 3]),
       });
       const bundle = await resolvePluginSource("https://agenc.tech/plugins/bundle.mcpb", {
         agencHome,
         workspaceRoot: root,
         runProcess,
+        requireSignature: false,
         fetchBytes: async () => new Uint8Array([4, 5, 6]),
       });
 
@@ -296,18 +336,21 @@ describe("plugin source resolution", () => {
       const tarball = await resolvePluginSource("https://agenc.tech/plugins/real.tgz", {
         agencHome,
         workspaceRoot: root,
+        requireSignature: false,
         fetchBytes: async () => await readFile(tarballPath),
       });
       const bundle = await resolvePluginSource("https://agenc.tech/plugins/real.mcpb", {
         agencHome,
         workspaceRoot: root,
         refreshCache: true,
+        requireSignature: false,
         fetchBytes: async () => await readFile(zipPath),
       });
       const plainTar = await resolvePluginSource("https://agenc.tech/plugins/real.tar", {
         agencHome,
         workspaceRoot: root,
         refreshCache: true,
+        requireSignature: false,
         fetchBytes: async () => await readFile(plainTarPath),
       });
 
@@ -446,11 +489,11 @@ describe("plugin source resolution", () => {
 
   test("resolves dependency closures and demotes plugins with unsatisfied dependencies", async () => {
     const lookup = async (id: string) => {
-      const dependencies: Record<string, readonly string[]> = {
-        "app@main": ["lib"],
-        "lib@main": [],
+      const entries: Record<string, { dependencies: readonly string[]; version: string }> = {
+        "app@main": { dependencies: ["lib"], version: "1.0.0" },
+        "lib@main": { dependencies: [], version: "1.5.0" },
       };
-      return id in dependencies ? { dependencies: dependencies[id] } : null;
+      return entries[id] ?? null;
     };
 
     await expect(
@@ -480,14 +523,43 @@ describe("plugin source resolution", () => {
     await expect(
       resolvePluginDependencyClosure("app@main", async (id) => ({
         dependencies: id === "app@main" ? ["lib"] : ["app"],
+        version: "1.0.0",
       })),
     ).resolves.toMatchObject({
       ok: false,
       reason: "cycle",
       chain: ["app@main", "lib@main", "app@main"],
     });
+    await expect(
+      resolvePluginDependencyClosure("app@main", async (id) => {
+        const entries: Record<string, { dependencies: readonly string[]; version: string }> = {
+          "app@main": { dependencies: ["lib@^1.0.0"], version: "1.0.0" },
+          "lib@main": { dependencies: [], version: "1.5.0" },
+        };
+        return entries[id] ?? null;
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      closure: ["lib@main", "app@main"],
+    });
+    await expect(
+      resolvePluginDependencyClosure("app@main", async (id) => {
+        const entries: Record<string, { dependencies: readonly string[]; version: string }> = {
+          "app@main": { dependencies: ["lib@^2.0.0"], version: "1.0.0" },
+          "lib@main": { dependencies: [], version: "1.5.0" },
+        };
+        return entries[id] ?? null;
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      reason: "version-mismatch",
+      dependency: "lib@main",
+      requiredVersion: "^2.0.0",
+      actualVersion: "1.5.0",
+    });
 
     expect(qualifyPluginDependency("lib", "app@main")).toBe("lib@main");
+    expect(qualifyPluginDependency("lib@^1.0.0", "app@main")).toBe("lib@main");
     const state = verifyPluginDependencyState([
       loadedPlugin("app", "app@main", true, ["lib"]),
       loadedPlugin("lib", "lib@main", false),
@@ -515,6 +587,22 @@ describe("plugin source resolution", () => {
       source: "local-app",
       dependency: "lib",
       reason: "ambiguous",
+    }));
+    const versionSatisfiedState = verifyPluginDependencyState([
+      loadedPlugin("app", "app@main", true, ["lib@^1.0.0"]),
+      loadedPlugin("lib", "lib@main", true, [], "1.5.0"),
+    ]);
+    expect([...versionSatisfiedState.demoted]).toEqual([]);
+    expect(versionSatisfiedState.errors).toEqual([]);
+    const versionMismatchState = verifyPluginDependencyState([
+      loadedPlugin("app", "app@main", true, ["lib@^2.0.0"]),
+      loadedPlugin("lib", "lib@main", true, [], "1.5.0"),
+    ]);
+    expect([...versionMismatchState.demoted]).toEqual(["app@main"]);
+    expect(versionMismatchState.errors).toContainEqual(expect.objectContaining({
+      source: "app@main",
+      dependency: "lib@main",
+      reason: "version-mismatch",
     }));
     expect(findPluginReverseDependents("app@main", [
       loadedPlugin("app", "app@main", true),
@@ -636,6 +724,7 @@ describe("plugin source resolution", () => {
         agencHome,
         workspaceRoot: root,
         runProcess,
+        requireSignature: false,
       });
 
       expect(resolved.pluginRoot).toBe(cacheRoot);
@@ -731,14 +820,17 @@ function loadedPlugin(
   source: string,
   enabled: boolean,
   dependencies: readonly string[] = [],
+  version?: string,
 ): LoadedPlugin {
   return {
     name,
+    ...(version !== undefined ? { version } : {}),
     root: "",
     source,
     enabled,
     manifest: {
       name,
+      ...(version !== undefined ? { version } : {}),
       ...(dependencies.length > 0 ? { dependencies } : {}),
     },
     commandsPaths: [],
