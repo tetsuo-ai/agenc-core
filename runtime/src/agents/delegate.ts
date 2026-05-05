@@ -24,7 +24,11 @@ import type { AgentRegistry, AgentPath } from "./registry.js";
 import type { ForkMode } from "./fork-context.js";
 import type { WorktreeHandle } from "./worktree.js";
 import type { AgentThread } from "./thread.js";
-import type { RunAgentProgressEvent, RunAgentResult } from "./run-agent.js";
+import type {
+  ChildToolPolicy,
+  RunAgentProgressEvent,
+  RunAgentResult,
+} from "./run-agent.js";
 import type { ReasoningEffort } from "../session/turn-context.js";
 import { emitWarning } from "../session/event-log.js";
 import { AgentThread as AgentThreadClass } from "./thread.js";
@@ -58,9 +62,14 @@ export interface DelegateOpts {
   readonly isolation?: IsolationMode;
   readonly worktreeSlug?: string;
   readonly forkMode?: ForkMode;
+  readonly parentMessagesOverride?: ReadonlyArray<LLMMessage>;
   readonly runInBackground?: boolean;
   readonly forceSynchronous?: boolean;
   readonly toolAllowlist?: ReadonlyArray<string>;
+  readonly childToolPolicy?: ChildToolPolicy;
+  readonly maxTurns?: number;
+  readonly externalSignal?: AbortSignal;
+  readonly silent?: boolean;
   readonly resumeManager?: ResumeManager;
   readonly onProgress?: (
     event: RunAgentProgressEvent,
@@ -148,10 +157,15 @@ export async function delegate(
   }
 
   // Build the fork context.
+  const parentMessages =
+    opts.parentMessagesOverride ?? opts.parent.snapshotHistoryMessages();
   const fork = await forkSubagent({
     parent: opts.parent,
-    parentMessages: opts.parent.snapshotHistoryMessages(),
+    parentMessages,
     ...(forkMode !== undefined ? { mode: forkMode } : {}),
+    ...(opts.parentMessagesOverride !== undefined
+      ? { useProvidedParentMessages: true }
+      : {}),
     taskPrompt: opts.taskPrompt,
     ...(worktree?.path !== undefined ? { worktreePath: worktree.path } : {}),
   });
@@ -189,6 +203,14 @@ export async function delegate(
       ...(opts.toolAllowlist !== undefined
         ? { toolAllowlist: opts.toolAllowlist }
         : {}),
+      ...(opts.childToolPolicy !== undefined
+        ? { childToolPolicy: opts.childToolPolicy }
+        : {}),
+      ...(opts.maxTurns !== undefined ? { maxTurns: opts.maxTurns } : {}),
+      ...(opts.externalSignal !== undefined
+        ? { externalSignal: opts.externalSignal }
+        : {}),
+      ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
       ...(opts.model !== undefined ? { model: opts.model } : {}),
       ...(opts.reasoningEffort !== undefined
         ? { reasoningEffort: opts.reasoningEffort }
@@ -269,6 +291,10 @@ async function runDelegateAgentLoop(opts: {
   readonly initialMessages: ReadonlyArray<LLMMessage>;
   readonly worktree?: WorktreeHandle;
   readonly toolAllowlist?: ReadonlyArray<string>;
+  readonly childToolPolicy?: ChildToolPolicy;
+  readonly maxTurns?: number;
+  readonly externalSignal?: AbortSignal;
+  readonly silent?: boolean;
   readonly model?: string;
   readonly reasoningEffort?: ReasoningEffort;
   readonly resumeManager?: ResumeManager;
@@ -289,6 +315,14 @@ async function runDelegateAgentLoop(opts: {
         ...(opts.toolAllowlist !== undefined
           ? { toolAllowlist: opts.toolAllowlist }
           : {}),
+        ...(opts.childToolPolicy !== undefined
+          ? { childToolPolicy: opts.childToolPolicy }
+          : {}),
+        ...(opts.maxTurns !== undefined ? { maxTurns: opts.maxTurns } : {}),
+        ...(opts.externalSignal !== undefined
+          ? { externalSignal: opts.externalSignal }
+          : {}),
+        ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
         ...(opts.model !== undefined ? { model: opts.model } : {}),
         ...(opts.reasoningEffort !== undefined
           ? { reasoningEffort: opts.reasoningEffort }

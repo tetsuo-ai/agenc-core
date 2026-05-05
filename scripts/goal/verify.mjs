@@ -238,6 +238,45 @@ const ITEM_EVIDENCE = {
     ],
     tests: ["scripts/check-upstream-import-growth.test.mjs"],
   },
+  "S-03": {
+    files: [
+      "runtime/src/services/extractMemories/extractMemories.ts",
+      "runtime/src/services/extractMemories/prompts.ts",
+      "runtime/src/services/extractMemories/memory-paths.ts",
+      "runtime/src/services/extractMemories/memory-scan.ts",
+      "runtime/src/services/extractMemories/PARITY.md",
+      "runtime/src/agents/delegate.ts",
+      "runtime/src/agents/fork-context.ts",
+      "runtime/src/agents/run-agent.ts",
+      "runtime/src/phases/commit.ts",
+      "runtime/src/phases/execute-tools.ts",
+      "runtime/src/session/run-turn.ts",
+      "runtime/src/session/turn-context.ts",
+      "runtime/src/session/turn-state.ts",
+      "parity/extract-memories-parity.json",
+      "scripts/check-extract-memories-parity.mjs",
+    ],
+    grepPresent: [
+      { pattern: "executeExtractMemories", scope: "runtime/src/phases/commit.ts" },
+      { pattern: "completedToolResults", scope: "runtime/src/session" },
+      { pattern: "childToolPolicy", scope: "runtime/src/agents" },
+      { pattern: "childPolicyDenied", scope: "runtime/src" },
+      { pattern: "drainPendingExtraction", scope: "runtime/src/session/run-turn.ts" },
+      { pattern: "parentMessagesOverride", scope: "runtime/src/agents/delegate.ts" },
+      { pattern: "Saved memor(y|ies):", scope: "runtime/src/phases/commit.ts" },
+      { pattern: "AGENC_COWORK_MEMORY_PATH_OVERRIDE", scope: "runtime/src/services/extractMemories/memory-paths.ts" },
+    ],
+    grepNotPresent: [
+      {
+        pattern: "\\b(system\\.bash|exec_command|Bash)\\b",
+        scope: "runtime/src/services/extractMemories/prompts.ts",
+      },
+    ],
+    tests: [
+      "runtime/src/services/extractMemories/extractMemories.test.ts",
+      "runtime/src/agents/run-agent.test.ts",
+    ],
+  },
   "F-07": {
     files: [{ globUnder: "runtime/src/lifecycle", matching: /\.tsx?$/, minCount: 1 }],
   },
@@ -2170,6 +2209,22 @@ async function serviceGates(item) {
   const tests = walkFiles(dir).filter((p) => /\.test\.(ts|tsx)$/.test(p));
   if (tests.length === 0) failGate(`no test files in runtime/src/services/${serviceMatch[1]}/`);
   pass(`${tests.length} test file(s)`);
+
+  if (id === "S-03") {
+    const parity = run("node", ["scripts/check-extract-memories-parity.mjs"]);
+    if (parity.status !== 0) failGate("S-03 extract-memories parity contract failed");
+    pass("S-03 extract-memories parity contract passed");
+
+    const vitest = run("node_modules/.bin/vitest", [
+      "run",
+      "runtime/src/services/extractMemories/extractMemories.test.ts",
+      "runtime/src/phases/commit.test.ts",
+      "runtime/src/agents/run-agent.test.ts",
+      "runtime/src/agents/delegate.test.ts",
+    ]);
+    if (vitest.status !== 0) failGate("S-03 targeted Vitest suite failed");
+    pass("S-03 targeted Vitest suite passed");
+  }
 }
 
 async function mcpServerGates(item) {

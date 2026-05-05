@@ -2,15 +2,14 @@
  * Fork-context — build a child's initial message set from the
  * parent's history.
  *
- * Two fork modes (matches codex `SpawnAgentForkMode`):
+ * Two fork modes:
  *
  *   - `full_history` — child receives the full parent history.
  *   - `last_n_turns` — child receives the last N user-turn
  *     boundaries + their assistant replies.
  *
  * When the caller passes no fork mode (`mode === undefined`) the
- * child starts fresh with just the task directive (codex
- * `Option<SpawnAgentForkMode>::None`).
+ * child starts fresh with just the task directive.
  *
  * Invariants wired:
  *   I-36 (parent rollout flush before fork) — `forkSubagent`
@@ -40,6 +39,7 @@ export interface ForkContextInput {
   readonly parent: Session;
   readonly parentMessages: ReadonlyArray<LLMMessage>;
   readonly mode?: ForkMode;
+  readonly useProvidedParentMessages?: boolean;
   readonly taskPrompt: string;
   readonly worktreePath?: string;
 }
@@ -149,6 +149,7 @@ function rolloutItemsToForkMessages(
 }
 
 function rolloutBackedParentMessages(input: ForkContextInput): LLMMessage[] {
+  if (input.useProvidedParentMessages) return [...input.parentMessages];
   const rolloutStore = input.parent.rolloutStore;
   if (!rolloutStore) return [...input.parentMessages];
   try {
@@ -231,11 +232,10 @@ export async function forkSubagent(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Port of codex `utils/forkedAgent.ts::buildCacheSafeParams`.
- * Ensures the child request shares the parent's prompt-cache prefix
- * when possible by preserving the ordered tuple (systemPrompt,
- * systemContext, toolCatalog hashes). Callers supply the parent's
- * catalog + prompt; we return a bag with the minimal delta applied.
+ * Builds child request metadata that can share the parent's prompt-cache
+ * prefix when possible by preserving the ordered tuple (systemPrompt,
+ * systemContext, toolCatalog hashes). Callers supply the parent's catalog
+ * and prompt; this returns a bag with the minimal delta applied.
  */
 export interface CacheSafeParams {
   readonly systemPrompt: string;
