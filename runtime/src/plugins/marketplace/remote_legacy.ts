@@ -9,7 +9,7 @@ import {
   readResponseTextWithLimit,
   redactUrlForError,
 } from "./fetchGuards.js";
-import type { RemoteAuth, RemotePluginServiceConfig } from "./remote.js";
+import type { RemoteAuth, RemotePluginRequestOptions, RemotePluginServiceConfig } from "./remote.js";
 
 export interface RemotePluginStatusSummary {
   readonly name: string;
@@ -29,8 +29,9 @@ export async function fetchRemotePluginStatus(
   config: RemotePluginServiceConfig,
   auth: RemoteAuth | undefined,
   fetcher: Fetcher = defaultFetch,
+  options: RemotePluginRequestOptions = {},
 ): Promise<readonly RemotePluginStatusSummary[]> {
-  const body = await remoteRequest(config, auth, "/plugins/list", "GET", fetcher);
+  const body = await remoteRequest(config, auth, "/plugins/list", "GET", fetcher, true, options);
   return validateRemotePluginStatusList(JSON.parse(body), "legacy remote plugin status response")
     .map((plugin) => ({
       name: plugin.name,
@@ -44,9 +45,10 @@ export async function fetchRemoteFeaturedPluginIds(
   auth: RemoteAuth | undefined,
   product: string | undefined,
   fetcher: Fetcher = defaultFetch,
+  options: RemotePluginRequestOptions = {},
 ): Promise<readonly string[]> {
   const query = product ? `?platform=${encodeURIComponent(product)}` : "";
-  const body = await remoteRequest(config, auth, `/plugins/featured${query}`, "GET", fetcher, false);
+  const body = await remoteRequest(config, auth, `/plugins/featured${query}`, "GET", fetcher, false, options);
   return validateRemoteFeaturedPluginIds(JSON.parse(body), "legacy remote featured plugin response");
 }
 
@@ -55,8 +57,9 @@ export async function enableRemotePlugin(
   auth: RemoteAuth | undefined,
   pluginId: string,
   fetcher: Fetcher = defaultFetch,
+  options: RemotePluginRequestOptions = {},
 ): Promise<void> {
-  const response = await postRemotePluginMutation(config, auth, pluginId, "enable", fetcher);
+  const response = await postRemotePluginMutation(config, auth, pluginId, "enable", fetcher, options);
   assertMutation(pluginId, true, response);
 }
 
@@ -65,8 +68,9 @@ export async function uninstallRemotePluginLegacy(
   auth: RemoteAuth | undefined,
   pluginId: string,
   fetcher: Fetcher = defaultFetch,
+  options: RemotePluginRequestOptions = {},
 ): Promise<void> {
-  const response = await postRemotePluginMutation(config, auth, pluginId, "uninstall", fetcher);
+  const response = await postRemotePluginMutation(config, auth, pluginId, "uninstall", fetcher, options);
   assertMutation(pluginId, false, response);
 }
 
@@ -76,6 +80,7 @@ async function postRemotePluginMutation(
   pluginId: string,
   action: "enable" | "uninstall",
   fetcher: Fetcher,
+  options: RemotePluginRequestOptions,
 ): Promise<RemotePluginMutationResponse> {
   const body = await remoteRequest(
     config,
@@ -83,6 +88,8 @@ async function postRemotePluginMutation(
     `/plugins/${encodeURIComponent(pluginId)}/${action}`,
     "POST",
     fetcher,
+    true,
+    options,
   );
   return validateRemotePluginMutationResponse(
     JSON.parse(body),
@@ -97,12 +104,15 @@ async function remoteRequest(
   method: "GET" | "POST",
   fetcher: Fetcher,
   requireAuth = true,
+  options: RemotePluginRequestOptions = {},
 ): Promise<string> {
   if (requireAuth && auth === undefined) {
     throw new Error("authentication required for remote plugin operation");
   }
   const url = `${config.baseUrl.replace(/\/+$/u, "")}${path}`;
-  assertHttpsOrLoopbackUrl(url, "legacy remote plugin API URL", { allowLoopbackHttp: true });
+  assertHttpsOrLoopbackUrl(url, "legacy remote plugin API URL", {
+    allowLoopbackHttp: options.allowLoopbackHttp === true,
+  });
   const response = await fetchWithTimeout(
     fetcher,
     url,

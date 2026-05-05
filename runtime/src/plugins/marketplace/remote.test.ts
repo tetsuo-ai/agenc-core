@@ -269,6 +269,30 @@ describe("remote plugin marketplace API", () => {
       .rejects.toThrow("repeated token");
   });
 
+  it("rejects authenticated loopback HTTP remote API calls unless explicitly allowed", async () => {
+    const loopbackConfig = { baseUrl: "http://127.0.0.1:4173" };
+    const calls: Readonly<Record<string, string>>[] = [];
+    const fetcher: Fetcher = async (_url, init) => {
+      calls.push(init?.headers ?? {});
+      return jsonResponse({ plugins: [], pagination: {} });
+    };
+
+    await expect(fetchRemoteInstalledPlugins(loopbackConfig, auth, fetcher))
+      .rejects.toThrow("remote plugin API URL must use HTTPS");
+    expect(calls).toEqual([]);
+
+    await expect(fetchRemoteInstalledPlugins(
+      loopbackConfig,
+      auth,
+      fetcher,
+      { allowLoopbackHttp: true },
+    )).resolves.toEqual([]);
+    expect(calls).toEqual([
+      { Authorization: "Bearer test" },
+      { Authorization: "Bearer test" },
+    ]);
+  });
+
   it("caps remote JSON response bodies before decoding", async () => {
     const fetcher: Fetcher = async () => ({
       ok: true,

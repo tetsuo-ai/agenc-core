@@ -27,6 +27,7 @@ import {
   performStartupChecks,
   REMOTE_PLUGIN_SERVICE_URL_ENV,
 } from "./startup_checks.js";
+import { syncRemoteInstalledPluginBundles } from "./remote.js";
 
 describe("startup marketplace sync", () => {
   it("clones the curated marketplace only when the remote HEAD changed", async () => {
@@ -357,6 +358,37 @@ describe("startup marketplace sync", () => {
     await expect(hasStartupRemotePluginSyncMarker(agencHome)).resolves.toBe(true);
   });
 
+  it("does not send startup auth headers to loopback HTTP unless explicitly allowed", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-startup-checks-loopback-auth-"));
+    let state = { plugins: { needsRefresh: false } };
+    const setAppState = (update: (prev: typeof state) => typeof state) => {
+      state = update(state);
+    };
+    const calls: string[] = [];
+    const warnings: string[] = [];
+
+    await performStartupChecks(setAppState, {
+      trustAccepted: true,
+      agencHome,
+      env: {
+        AGENC_REMOTE_AUTH_TOKEN: "remote-token",
+        [REMOTE_PLUGIN_SERVICE_URL_ENV]: "http://127.0.0.1:4173",
+      },
+      runProcess: curatedGitRunner("abc123"),
+      prerequisiteTimeoutMs: 10,
+      pollMs: 1,
+      remoteFetcher: async (url, init) => {
+        calls.push(`${url} ${init?.headers?.authorization ?? ""}`);
+        return jsonResponse({ plugins: [], pagination: {} });
+      },
+      onWarn: (message) => warnings.push(message),
+    });
+
+    expect(calls).toEqual([]);
+    expect(warnings.join("\n")).toContain("remote plugin API URL must use HTTPS");
+    expect(state.plugins.needsRefresh).toBe(true);
+  });
+
   it("keeps the live REPL startup import on the AgenC-owned marketplace path", async () => {
     const repl = await readFile(join(process.cwd(), "src/agenc/upstream/screens/REPL.tsx"), "utf8");
 
@@ -497,6 +529,49 @@ describe("startup marketplace sync", () => {
       .filter((attempt) => attempt.value !== null)).toHaveLength(1);
   });
 
+  it("does not write the startup marker when remote bundle sync is already in flight", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-startup-sync-in-flight-"));
+    await writeCuratedMarketplace(curatedPluginsRepoPath(agencHome));
+    await writeFile(curatedPluginsShaPath(agencHome), "abc123\n");
+    let releaseDirectSync = () => {};
+    const directSyncGate = new Promise<void>((resolve) => {
+      releaseDirectSync = resolve;
+    });
+    const remotePluginServiceConfig = { baseUrl: "https://agenc.tech" };
+    const remoteAuth = { headers: { Authorization: "Bearer test" } };
+    const directSync = syncRemoteInstalledPluginBundles(
+      agencHome,
+      remotePluginServiceConfig,
+      remoteAuth,
+      {
+        fetcher: async (url) => {
+          const parsed = new URL(url);
+          if (parsed.pathname === "/ps/plugins/installed") {
+            await directSyncGate;
+            return jsonResponse({ plugins: [], pagination: {} });
+          }
+          return jsonResponse({ message: "not found" }, false, 404);
+        },
+      },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await expect(startStartupRemotePluginSyncOnce({
+      agencHome,
+      prerequisiteTimeoutMs: 10,
+      pollMs: 1,
+      remotePluginServiceConfig,
+      remoteAuth,
+      fetcher: async () => {
+        throw new Error("startup should skip while direct sync is in flight");
+      },
+    })).resolves.toBeNull();
+    await expect(hasStartupRemotePluginSyncMarker(agencHome)).resolves.toBe(false);
+
+    releaseDirectSync();
+    await directSync;
+  });
+
   it("syncs curated marketplace zipballs without shelling out to unzip", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-http-startup-sync-"));
     const zipball = createZip({
@@ -538,6 +613,23 @@ describe("startup marketplace sync", () => {
       "https://agenc.tech/api/plugins/curated",
       createCuratedZipFetcher(zipball, "abc123"),
     )).rejects.toThrow("archive git identity mismatch");
+  });
+
+  it("rejects curated marketplace zipballs with same-size corrupted entry contents", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-http-startup-sync-crc-mismatch-"));
+    const zipball = corruptZipEntryPayload(createZip({
+      "repo/.agents/plugins/marketplace.json": JSON.stringify({
+        metadata: { name: "agenc-curated" },
+        plugins: [],
+      }),
+      "repo/.git/HEAD": "abc123\n",
+    }), "repo/.agents/plugins/marketplace.json");
+
+    await expect(syncCuratedPluginsRepoViaHttp(
+      agencHome,
+      "https://agenc.tech/api/plugins/curated",
+      createCuratedZipFetcher(zipball, "abc123"),
+    )).rejects.toThrow("CRC mismatch");
   });
 
   it("rejects curated marketplace zipballs that escape the extraction root", async () => {
@@ -628,10 +720,11 @@ function createZip(files: Readonly<Record<string, string>>): Buffer {
   for (const [name, content] of Object.entries(files)) {
     const nameBytes = Buffer.from(name, "utf8");
     const body = Buffer.from(content, "utf8");
+    const crc = crc32(body);
     const localHeader = Buffer.alloc(30);
     localHeader.writeUInt32LE(0x04034b50, 0);
     localHeader.writeUInt16LE(20, 4);
-    localHeader.writeUInt32LE(0, 14);
+    localHeader.writeUInt32LE(crc, 14);
     localHeader.writeUInt32LE(body.byteLength, 18);
     localHeader.writeUInt32LE(body.byteLength, 22);
     localHeader.writeUInt16LE(nameBytes.byteLength, 26);
@@ -641,7 +734,7 @@ function createZip(files: Readonly<Record<string, string>>): Buffer {
     centralHeader.writeUInt32LE(0x02014b50, 0);
     centralHeader.writeUInt16LE(20, 4);
     centralHeader.writeUInt16LE(20, 6);
-    centralHeader.writeUInt32LE(0, 16);
+    centralHeader.writeUInt32LE(crc, 16);
     centralHeader.writeUInt32LE(body.byteLength, 20);
     centralHeader.writeUInt32LE(body.byteLength, 24);
     centralHeader.writeUInt16LE(nameBytes.byteLength, 28);
@@ -658,6 +751,47 @@ function createZip(files: Readonly<Record<string, string>>): Buffer {
   eocd.writeUInt32LE(centralDirectory.byteLength, 12);
   eocd.writeUInt32LE(offset, 16);
   return Buffer.concat([...localChunks, centralDirectory, eocd]);
+}
+
+function corruptZipEntryPayload(zipball: Buffer, entryName: string): Buffer {
+  const corrupted = Buffer.from(zipball);
+  let offset = 0;
+  while (offset + 30 <= corrupted.byteLength) {
+    if (corrupted.readUInt32LE(offset) !== 0x04034b50) break;
+    const compressedSize = corrupted.readUInt32LE(offset + 18);
+    const nameLength = corrupted.readUInt16LE(offset + 26);
+    const extraLength = corrupted.readUInt16LE(offset + 28);
+    const name = corrupted.subarray(offset + 30, offset + 30 + nameLength).toString("utf8");
+    const dataStart = offset + 30 + nameLength + extraLength;
+    if (name === entryName) {
+      corrupted[dataStart] = (corrupted[dataStart] ?? 0) ^ 0x01;
+      return corrupted;
+    }
+    offset = dataStart + compressedSize;
+  }
+  throw new Error(`zip entry not found: ${entryName}`);
+}
+
+const CRC32_TABLE = makeCrc32Table();
+
+function crc32(bytes: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc = CRC32_TABLE[(crc ^ byte) & 0xff]! ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function makeCrc32Table(): Uint32Array {
+  const table = new Uint32Array(256);
+  for (let index = 0; index < table.length; index += 1) {
+    let value = index;
+    for (let bit = 0; bit < 8; bit += 1) {
+      value = (value & 1) === 1 ? (0xedb88320 ^ (value >>> 1)) : (value >>> 1);
+    }
+    table[index] = value >>> 0;
+  }
+  return table;
 }
 
 function jsonResponse(body: unknown, ok = true, status = ok ? 200 : 500): FetchResponse {

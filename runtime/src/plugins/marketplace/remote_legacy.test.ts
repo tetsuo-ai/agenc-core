@@ -29,6 +29,28 @@ describe("legacy remote plugin marketplace API", () => {
     await expect(enableRemotePlugin(config, auth, "linear", fetcher))
       .rejects.toThrow("legacy remote plugin mutation response.enabled must be a boolean");
   });
+
+  it("rejects legacy loopback HTTP with auth unless explicitly allowed", async () => {
+    const loopbackConfig = { baseUrl: "http://127.0.0.1:4173" };
+    const calls: Readonly<Record<string, string>>[] = [];
+    const fetcher: Fetcher = async (_url, init) => {
+      calls.push(init?.headers ?? {});
+      return jsonResponse({ id: "linear", enabled: true });
+    };
+
+    await expect(enableRemotePlugin(loopbackConfig, auth, "linear", fetcher))
+      .rejects.toThrow("legacy remote plugin API URL must use HTTPS");
+    expect(calls).toEqual([]);
+
+    await expect(enableRemotePlugin(
+      loopbackConfig,
+      auth,
+      "linear",
+      fetcher,
+      { allowLoopbackHttp: true },
+    )).resolves.toBeUndefined();
+    expect(calls).toEqual([{ Authorization: "Bearer test" }]);
+  });
 });
 
 function jsonResponse(body: unknown, ok = true, status = ok ? 200 : 500): FetchResponse {

@@ -333,6 +333,10 @@ async function extractZipEntries(bytes: Buffer, destination: string): Promise<vo
     if (content.byteLength !== entry.uncompressedSize) {
       throw new Error(`curated plugins archive entry '${entry.name}' size mismatch`);
     }
+    const actualCrc32 = crc32(content);
+    if (actualCrc32 !== entry.crc32) {
+      throw new Error(`curated plugins archive entry '${entry.name}' CRC mismatch`);
+    }
     await mkdir(dirname(outputPath), { recursive: true, mode: 0o700 });
     await writeFile(outputPath, content, { mode: 0o600 });
   }
@@ -358,6 +362,7 @@ function readZipCentralDirectory(bytes: Buffer): readonly ZipEntry[] {
       throw new Error("curated plugins archive central directory is malformed");
     }
     const method = bytes.readUInt16LE(offset + 10);
+    const crc32Value = bytes.readUInt32LE(offset + 16);
     const compressedSize = bytes.readUInt32LE(offset + 20);
     const uncompressedSize = bytes.readUInt32LE(offset + 24);
     const nameLength = bytes.readUInt16LE(offset + 28);
@@ -381,6 +386,7 @@ function readZipCentralDirectory(bytes: Buffer): readonly ZipEntry[] {
     entries.push({
       name,
       method,
+      crc32: crc32Value,
       compressedSize,
       uncompressedSize,
       localHeaderOffset,
@@ -405,6 +411,10 @@ function inflateZipEntry(bytes: Buffer, entry: ZipEntry): Buffer {
   }
   if (bytes.readUInt32LE(entry.localHeaderOffset) !== 0x04034b50) {
     throw new Error(`curated plugins archive local header is malformed for '${entry.name}'`);
+  }
+  const localCrc32 = bytes.readUInt32LE(entry.localHeaderOffset + 14);
+  if (localCrc32 !== entry.crc32) {
+    throw new Error(`curated plugins archive entry '${entry.name}' CRC metadata mismatch`);
   }
   const localNameLength = bytes.readUInt16LE(entry.localHeaderOffset + 26);
   const localExtraLength = bytes.readUInt16LE(entry.localHeaderOffset + 28);
@@ -437,10 +447,33 @@ function checkedArchiveOutputPath(destination: string, entryName: string): strin
 interface ZipEntry {
   readonly name: string;
   readonly method: number;
+  readonly crc32: number;
   readonly compressedSize: number;
   readonly uncompressedSize: number;
   readonly localHeaderOffset: number;
   readonly isDirectory: boolean;
+}
+
+const CRC32_TABLE = makeCrc32Table();
+
+function crc32(bytes: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc = CRC32_TABLE[(crc ^ byte) & 0xff]! ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function makeCrc32Table(): Uint32Array {
+  const table = new Uint32Array(256);
+  for (let index = 0; index < table.length; index += 1) {
+    let value = index;
+    for (let bit = 0; bit < 8; bit += 1) {
+      value = (value & 1) === 1 ? (0xedb88320 ^ (value >>> 1)) : (value >>> 1);
+    }
+    table[index] = value >>> 0;
+  }
+  return table;
 }
 
 async function stripSingleArchiveRoot(destination: string): Promise<void> {

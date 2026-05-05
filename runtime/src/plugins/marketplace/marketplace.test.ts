@@ -13,7 +13,11 @@ import {
   removeMarketplaceOp,
   type Fetcher,
 } from "./marketplace.js";
-import { isSourceAllowedByPolicy } from "./marketplaceHelpers.js";
+import {
+  createPluginId,
+  isSourceAllowedByPolicy,
+  loadMarketplacesWithGracefulDegradation,
+} from "./marketplaceHelpers.js";
 import { getMarketplace } from "./marketplaceManager.js";
 import { parseMarketplaceInput } from "./parseMarketplaceInput.js";
 
@@ -357,6 +361,23 @@ describe("plugin marketplace runtime", () => {
         }],
       },
     )).toBe(false);
+    expect(isSourceAllowedByPolicy(
+      { source: "git", url: "https://github.com/agenc-org/plugins.git" },
+      {
+        strictKnownMarketplaces: [{
+          source: "settings",
+          name: `hostPattern:${"a".repeat(257)}`,
+          plugins: [],
+        }],
+      },
+    )).toBe(false);
+  });
+
+  it("handles empty marketplace maps and unicode plugin ids at helper boundaries", async () => {
+    await expect(loadMarketplacesWithGracefulDegradation({}, async () => {
+      throw new Error("no marketplaces should load");
+    })).resolves.toEqual({ marketplaces: [], failures: [] });
+    expect(createPluginId("überblick", "team")).toBe("überblick@team");
   });
 
   it("evicts rejected marketplace cache entries before retrying", async () => {

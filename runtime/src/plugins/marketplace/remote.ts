@@ -37,6 +37,10 @@ export interface RemoteAuth {
   readonly headers: Readonly<Record<string, string>>;
 }
 
+export interface RemotePluginRequestOptions {
+  readonly allowLoopbackHttp?: boolean;
+}
+
 export interface RemoteMarketplace {
   readonly name: string;
   readonly displayName: string;
@@ -155,13 +159,14 @@ export async function fetchRemoteMarketplaces(
   config: RemotePluginServiceConfig,
   auth: RemoteAuth | undefined,
   fetcher: Fetcher = defaultFetch,
+  options: RemotePluginRequestOptions = {},
 ): Promise<readonly RemoteMarketplace[]> {
   const headers = requireRemoteAuth(auth);
   const byScope = await Promise.all(
     remoteScopes().map(async (scope) => {
       const [directory, installed] = await Promise.all([
-        fetchDirectoryPluginsForScope(config, headers, scope, fetcher),
-        fetchInstalledPluginsForScope(config, headers, scope, false, fetcher),
+        fetchDirectoryPluginsForScope(config, headers, scope, fetcher, options),
+        fetchInstalledPluginsForScope(config, headers, scope, false, fetcher, options),
       ]);
       return { scope, directory, installed };
     }),
@@ -200,12 +205,13 @@ export async function fetchRemoteInstalledPlugins(
   config: RemotePluginServiceConfig,
   auth: RemoteAuth | undefined,
   fetcher: Fetcher = defaultFetch,
+  options: RemotePluginRequestOptions = {},
 ): Promise<readonly RemoteInstalledPlugin[]> {
   const headers = requireRemoteAuth(auth);
   const results = await Promise.all(
     remoteScopes().map(async (scope) => ({
       scope,
-      installed: await fetchInstalledPluginsForScope(config, headers, scope, false, fetcher),
+      installed: await fetchInstalledPluginsForScope(config, headers, scope, false, fetcher, options),
     })),
   );
   return results
@@ -242,7 +248,7 @@ export async function syncRemoteInstalledPluginBundlesOnce(
   const scopedInstalled = await Promise.all(
     remoteScopes().map(async (scope) => ({
       scope,
-      installed: await fetchInstalledPluginsForScope(config, headers, scope, true, fetcher),
+      installed: await fetchInstalledPluginsForScope(config, headers, scope, true, fetcher, options),
     })),
   );
   const installedPluginNamesByMarketplace = new Map<string, Set<string>>(
@@ -316,8 +322,9 @@ export async function fetchRemotePluginDetail(
   marketplaceName: string,
   pluginId: string,
   fetcher: Fetcher = defaultFetch,
+  options: RemotePluginRequestOptions = {},
 ): Promise<RemotePluginDetail> {
-  return fetchRemotePluginDetailWithDownloadUrls(config, auth, marketplaceName, pluginId, false, fetcher);
+  return fetchRemotePluginDetailWithDownloadUrls(config, auth, marketplaceName, pluginId, false, fetcher, options);
 }
 
 export async function fetchRemotePluginDetailWithDownloadUrls(
@@ -327,11 +334,12 @@ export async function fetchRemotePluginDetailWithDownloadUrls(
   pluginId: string,
   includeDownloadUrls = true,
   fetcher: Fetcher = defaultFetch,
+  options: RemotePluginRequestOptions = {},
 ): Promise<RemotePluginDetail> {
   const headers = requireRemoteAuth(auth);
-  const plugin = await fetchPluginDetail(config, headers, pluginId, includeDownloadUrls, fetcher);
+  const plugin = await fetchPluginDetail(config, headers, pluginId, includeDownloadUrls, fetcher, options);
   const scope = scopeFromMarketplaceName(plugin.scope) ?? scopeFromMarketplaceName(marketplaceName) ?? remoteScopes()[0]!;
-  const installed = await fetchInstalledPluginsForScope(config, headers, scope, false, fetcher);
+  const installed = await fetchInstalledPluginsForScope(config, headers, scope, false, fetcher, options);
   const installedPlugin = installed.find((candidate) => candidate.plugin.id === pluginId);
   const disabledSkills = new Set(installedPlugin?.disabled_skill_names ?? []);
   return {
@@ -359,12 +367,13 @@ export async function fetchRemotePluginSkillDetail(
   pluginId: string,
   skillName: string,
   fetcher: Fetcher = defaultFetch,
+  options: RemotePluginRequestOptions = {},
 ): Promise<RemotePluginSkillDetail> {
   requireKnownMarketplace(marketplaceName);
   const headers = requireRemoteAuth(auth);
   const url = remotePluginSkillDetailUrl(config, pluginId, skillName);
   const response = validateRemotePluginSkillDetailResponse(
-    await sendAndDecode(url, headers, fetcher),
+    await sendAndDecode(url, headers, fetcher, "GET", options),
     "remote plugin skill response",
   );
   if (response.plugin_id !== pluginId) {
@@ -383,8 +392,9 @@ export async function installRemotePlugin(
   auth: RemoteAuth | undefined,
   pluginId: string,
   fetcher: Fetcher = defaultFetch,
+  options: RemotePluginRequestOptions = {},
 ): Promise<void> {
-  const response = await postRemotePluginMutation(config, auth, pluginId, "install", fetcher);
+  const response = await postRemotePluginMutation(config, auth, pluginId, "install", fetcher, options);
   assertMutation(pluginId, true, response);
 }
 
@@ -394,12 +404,13 @@ export async function uninstallRemotePlugin(
   agencHome: string,
   pluginId: string,
   fetcher: Fetcher = defaultFetch,
+  options: RemotePluginRequestOptions = {},
 ): Promise<void> {
-  const detail = await fetchPluginDetail(config, requireRemoteAuth(auth), pluginId, false, fetcher);
+  const detail = await fetchPluginDetail(config, requireRemoteAuth(auth), pluginId, false, fetcher, options);
   const marketplaceName = scopeFromMarketplaceName(detail.scope)?.marketplaceName ?? REMOTE_GLOBAL_MARKETPLACE_NAME;
   validateRemotePluginCacheSegment(marketplaceName, "marketplace name", pluginId);
   validateRemotePluginCacheSegment(detail.name, "plugin name", pluginId);
-  const response = await postRemotePluginMutation(config, auth, pluginId, "uninstall", fetcher);
+  const response = await postRemotePluginMutation(config, auth, pluginId, "uninstall", fetcher, options);
   assertMutation(pluginId, false, response);
   await removeRemotePluginCache(agencHome, marketplaceName, detail.name, pluginId);
 }
@@ -410,12 +421,13 @@ async function postRemotePluginMutation(
   pluginId: string,
   action: "install" | "uninstall",
   fetcher: Fetcher,
+  options: RemotePluginRequestOptions,
 ): Promise<RemotePluginMutationResponse> {
   validateRemotePluginId(pluginId);
   const headers = requireRemoteAuth(auth);
   const url = `${config.baseUrl.replace(/\/+$/u, "")}/ps/plugins/${encodeURIComponent(pluginId)}/${action}`;
   return validateRemotePluginMutationResponse(
-    await sendAndDecode(url, headers, fetcher, "POST"),
+    await sendAndDecode(url, headers, fetcher, "POST", options),
     "remote plugin mutation response",
   );
 }
@@ -539,6 +551,7 @@ async function fetchDirectoryPluginsForScope(
   headers: Readonly<Record<string, string>>,
   scope: RemoteScope,
   fetcher: Fetcher,
+  options: RemotePluginRequestOptions,
 ): Promise<RemotePluginDirectoryItem[]> {
   const plugins: RemotePluginDirectoryItem[] = [];
   let pageToken: string | undefined;
@@ -560,7 +573,7 @@ async function fetchDirectoryPluginsForScope(
     url.searchParams.set("limit", "200");
     if (pageToken !== undefined) url.searchParams.set("pageToken", pageToken);
     const response = validateRemotePluginListResponse(
-      await sendAndDecode(url.toString(), headers, fetcher),
+      await sendAndDecode(url.toString(), headers, fetcher, "GET", options),
       "remote plugin directory response",
     );
     plugins.push(...response.plugins);
@@ -578,6 +591,7 @@ async function fetchInstalledPluginsForScope(
   scope: RemoteScope,
   includeDownloadUrls: boolean,
   fetcher: Fetcher,
+  options: RemotePluginRequestOptions,
 ): Promise<RemotePluginInstalledItem[]> {
   const plugins: RemotePluginInstalledItem[] = [];
   let pageToken: string | undefined;
@@ -599,7 +613,7 @@ async function fetchInstalledPluginsForScope(
     if (includeDownloadUrls) url.searchParams.set("includeDownloadUrls", "true");
     if (pageToken !== undefined) url.searchParams.set("pageToken", pageToken);
     const response = validateRemotePluginInstalledResponse(
-      await sendAndDecode(url.toString(), headers, fetcher),
+      await sendAndDecode(url.toString(), headers, fetcher, "GET", options),
       "remote installed plugin response",
     );
     plugins.push(...response.plugins);
@@ -617,12 +631,13 @@ async function fetchPluginDetail(
   pluginId: string,
   includeDownloadUrls: boolean,
   fetcher: Fetcher,
+  options: RemotePluginRequestOptions,
 ): Promise<RemotePluginDirectoryItem> {
   validateRemotePluginId(pluginId);
   const url = new URL(`${config.baseUrl.replace(/\/+$/u, "")}/ps/plugins/${encodeURIComponent(pluginId)}`);
   if (includeDownloadUrls) url.searchParams.set("includeDownloadUrls", "true");
   return validateRemotePluginDirectoryItem(
-    await sendAndDecode(url.toString(), headers, fetcher),
+    await sendAndDecode(url.toString(), headers, fetcher, "GET", options),
     "remote plugin detail response",
   );
 }
@@ -632,8 +647,11 @@ async function sendAndDecode(
   headers: Readonly<Record<string, string>>,
   fetcher: Fetcher,
   method = "GET",
+  options: RemotePluginRequestOptions = {},
 ): Promise<unknown> {
-  assertHttpsOrLoopbackUrl(url, "remote plugin API URL", { allowLoopbackHttp: true });
+  assertHttpsOrLoopbackUrl(url, "remote plugin API URL", {
+    allowLoopbackHttp: options.allowLoopbackHttp === true,
+  });
   const response = await fetchWithTimeout(
     fetcher,
     url,

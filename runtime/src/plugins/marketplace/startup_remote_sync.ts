@@ -66,6 +66,9 @@ export async function startStartupRemotePluginSyncOnce(
       return null;
     }
     const result = await syncStartupRemotePlugins(options);
+    if (result === null) {
+      return null;
+    }
     await writeStartupRemotePluginSyncMarker(options.agencHome, options.now?.() ?? new Date());
     return result;
   } finally {
@@ -127,7 +130,7 @@ export async function writeStartupRemotePluginSyncMarker(
 
 async function syncStartupRemotePlugins(
   options: StartupRemotePluginSyncOptions,
-): Promise<StartupRemotePluginSyncResult> {
+): Promise<StartupRemotePluginSyncResult | null> {
   if (options.syncPluginsFromRemote !== undefined) {
     return options.syncPluginsFromRemote(true);
   }
@@ -143,10 +146,13 @@ async function syncStartupRemotePlugins(
       ...(options.allowLoopbackHttp !== undefined ? { allowLoopbackHttp: options.allowLoopbackHttp } : {}),
     },
   );
+  if (outcome === null) {
+    return null;
+  }
   return {
-    installedPluginIds: outcome?.installedPluginIds ?? [],
+    installedPluginIds: outcome.installedPluginIds,
     enabledPluginIds: [],
     disabledPluginIds: [],
-    uninstalledPluginIds: outcome?.removedCachePluginIds ?? [],
+    uninstalledPluginIds: outcome.removedCachePluginIds,
   };
 }
