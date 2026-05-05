@@ -15,9 +15,9 @@ import {
   addMarketplaceOp,
   readMarketplaceIndex,
   type MarketplaceOperationOptions,
-} from "./marketplace-add.js";
-import { removeMarketplaceOp } from "./marketplace-remove.js";
-import { upgradeMarketplaceOp } from "./marketplace-upgrade.js";
+  removeMarketplaceOp,
+  upgradeMarketplaceOp,
+} from "../marketplace/marketplace.js";
 
 export type AgenCPluginCliCommand =
   | { readonly kind: "list"; readonly json: boolean }
@@ -53,7 +53,8 @@ export function formatAgenCPluginCliHelpText(): string {
     "  disable <name>                                 Disable a plugin in user config",
     "  disable-all                                    Disable every currently enabled plugin",
     "  marketplace list [--json]                      List configured marketplaces",
-    "  marketplace add <path|git> [--name <name>]     Add a local or git marketplace",
+    "  marketplace add <path|git|url|github> [--name <name>]",
+    "                                                   Add local, git, URL, or GitHub marketplace",
     "  marketplace remove <name>                      Remove a marketplace",
     "  marketplace upgrade [name]                     Refresh git or local marketplaces",
     "",
@@ -236,6 +237,9 @@ export async function runAgenCPluginCli(
           ...(command.name !== undefined ? { name: command.name } : {}),
         });
         io.stdout.write(`Upgraded ${result.upgraded.length} marketplace(s)\n`);
+        for (const skipped of result.skipped) {
+          io.stdout.write(`Skipped marketplace ${skipped.marketplace.name}: ${skipped.reason}\n`);
+        }
         return 0;
       }
     }

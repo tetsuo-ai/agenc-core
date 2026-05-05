@@ -11,6 +11,7 @@ import {
   REMOTE_AUTH_TOKEN_ENV,
   REMOTE_AUTH_URL_ENV,
   RemoteAuthBackend,
+  resolveRemoteAuthHeaders,
 } from "./remote.js";
 
 describe("RemoteAuthBackend", () => {
@@ -95,6 +96,41 @@ describe("RemoteAuthBackend", () => {
           body: JSON.stringify({ sessionId: "session-1" }),
         },
       );
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves persisted remote auth headers for startup integrations", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-headers-"));
+    const backend = new RemoteAuthBackend({
+      agencHome,
+      loginFlow: () => ({ token: "persisted-token" }),
+    });
+
+    try {
+      await backend.login({ sessionId: "cli" });
+
+      await expect(resolveRemoteAuthHeaders({ agencHome })).resolves.toEqual({
+        "content-type": "application/json",
+        authorization: "Bearer persisted-token",
+      });
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves remote auth headers from the bootstrap token env when no login is persisted", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-headers-"));
+
+    try {
+      await expect(resolveRemoteAuthHeaders({
+        agencHome,
+        env: { [REMOTE_AUTH_TOKEN_ENV]: "env-token" },
+      })).resolves.toEqual({
+        "content-type": "application/json",
+        authorization: "Bearer env-token",
+      });
     } finally {
       await rm(agencHome, { recursive: true, force: true });
     }
