@@ -121,6 +121,10 @@ import {
   runAgenCProvidersCli,
 } from "./providers-cli.js";
 import {
+  parseAgenCPluginCliArgs,
+  runAgenCPluginCli,
+} from "../plugins/cli/pluginCliCommands.js";
+import {
   parseAgenCPermissionsCliArgs,
   runAgenCPermissionsCli,
 } from "../permissions/permission-cli.js";
@@ -159,6 +163,7 @@ export function formatCliHelpText(): string {
     "       agenc logout",
     "       agenc whoami",
     "       agenc providers [--json]",
+    "       agenc plugin <list|install|uninstall|enable|disable|marketplace>",
     "       agenc permissions <list|approve|revoke>",
     "       agenc state export <agent-id>",
     "       agenc state import",
@@ -2211,6 +2216,10 @@ export async function main(): Promise<number> {
   const providersCommand = parseAgenCProvidersCliArgs(argv);
   if (providersCommand !== null) {
     return runAgenCProvidersCli(providersCommand);
+  }
+  const pluginCommand = parseAgenCPluginCliArgs(argv);
+  if (pluginCommand !== null) {
+    return runAgenCPluginCli(pluginCommand);
   }
   const permissionsCommand = parseAgenCPermissionsCliArgs(argv);
   if (permissionsCommand !== null) {

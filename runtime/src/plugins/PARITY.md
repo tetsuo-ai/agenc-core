@@ -1,6 +1,6 @@
 # Plugins Parity
 
-Donor references are local-only parity metadata for PK-01 through PK-04.
+Donor references are local-only parity metadata for PK-01 through PK-04, plus PK-06.
 
 Primary source anchors:
 - `/home/tetsuo/git/codex` at `c8c30d9d75556ecbe94991af22380d2a4e9d6589` // branding-scan: allow local parity citation
@@ -26,6 +26,12 @@ Source files inspected end-to-end:
 - `src/utils/plugins/pluginBlocklist.ts`
 - `src/utils/plugins/pluginFlagging.ts`
 - `src/utils/plugins/managedPlugins.ts`
+- `src/services/plugins/pluginCliCommands.ts`
+- `src/services/plugins/pluginOperations.ts`
+- `src/services/plugins/PluginInstallationManager.ts`
+- `codex-rs/core-plugins/src/marketplace_add.rs` // branding-scan: allow local parity citation
+- `codex-rs/core-plugins/src/marketplace_remove.rs` // branding-scan: allow local parity citation
+- `codex-rs/core-plugins/src/marketplace_upgrade.rs` // branding-scan: allow local parity citation
 
 PK-01 scope carried into AgenC:
 - `manifest.ts` owns `.agenc-plugin/plugin.json` discovery, root `plugin.json` fallback, bounded JSON reads, and JSON parse errors.
@@ -57,6 +63,13 @@ PK-04 scope carried into AgenC:
 - `pluginFlagging.ts` maps to `blocklist.ts` via `FlaggedPluginStore` and pure flagged-plugin state helpers.
 - `core-plugins/src/toggles.rs` maps to `toggles.ts` via `collectPluginEnabledCandidates`. // branding-scan: allow local parity citation
 
+PK-06 scope carried into AgenC:
+- `cli/pluginCliCommands.ts` owns `agenc plugin` argument parsing, terminal output, and subcommand dispatch.
+- `cli/pluginOperations.ts` owns local plugin list/validate/install/uninstall/update/enable/disable/disable-all operations using AgenC's existing loader, manifest validator, plugin directories, and global TOML config.
+- `cli/PluginInstallationManager.ts` provides an AgenC-owned manager facade over the plugin and marketplace operations available in PK-06.
+- `cli/marketplace-add.ts`, `cli/marketplace-remove.ts`, and `cli/marketplace-upgrade.ts` own local and git marketplace staging, validation, atomic activation, private marketplace index writes, removal, and refresh.
+- `bin/agenc.ts` routes `agenc plugin ...` before prompt/TUI routing so plugin commands never get treated as user prompts.
+
 Intentional PK-01 scope reductions:
 - Marketplace fetch/install/cache refresh, signing, dependency demotion, plugin CLI, plugin sandboxing, policy/blocklist, MCP/LSP live registration, and remote sync are later PK rows.
 - Marketplace schema policy and remote registry validation remain later PK rows; PK-01 validates local plugin manifests and local Markdown component metadata.
@@ -84,3 +97,10 @@ Intentional PK-04 scope reductions:
 - Marketplace fetch/install/cache refresh and plugin CLI operations remain later PK rows. `blocklist.ts` exposes dependency-injected enforcement so those rows can wire the real installation manager without importing deleted runtime surfaces here.
 - Managed settings are modeled as explicit function inputs rather than loading a global settings singleton. AgenC config normalization for the final `plugins.{enabled,allowlist,plugins}` shape belongs to CF-10.
 - Flagged-plugin storage writes under the caller-provided plugin directory. Directory selection remains owned by `directories.ts`.
+
+Intentional PK-06 scope reductions:
+- AgenC's current runtime only loads user-level `config.toml`; `project` and `local` plugin install scopes map to workspace `.agents/plugins` discovery, while enable/disable writes remain global TOML entries until tiered config persistence lands.
+- `agenc plugin update` refreshes local installs from an explicit or recorded local source. Remote marketplace cache version selection, dependency demotion, and managed plugin update orchestration remain later plugin rows.
+- `PluginInstallationManager.ts` is scoped to CLI operation orchestration in PK-06. Background marketplace reconciliation, UI status transitions, plugin-cache clearing, and runtime refresh notifications remain with later startup/runtime plugin integration rows.
+- Remote marketplace discovery services, signed plugin verification, dependency solving, managed remote settings sync, and marketplace plugin cache/version dependency demotion remain later plugin rows.
+- Marketplace add/upgrade supports real git staging through the `git` binary and local filesystem marketplaces. It records source metadata in `$AGENC_HOME/plugins/marketplaces/marketplaces.json` rather than adding a new public config schema before CF-owned config work.
