@@ -160,7 +160,7 @@ export function isDangerousWindowsCommand(command: readonly string[]): boolean {
   const args = command.slice(1);
 
   if (POWERSHELL_EXECUTABLES.has(name)) {
-    const invocation = parsePowerShellInvocation(command);
+    const invocation = parsePowerShellInvocation(command, "dangerous");
     return invocation !== null && isDangerousPowerShellScript(invocation.script);
   }
 
@@ -198,7 +198,7 @@ export function isDangerousWindowsCommand(command: readonly string[]): boolean {
 }
 
 export function isSafeWindowsCommand(command: readonly string[]): boolean {
-  const invocation = parsePowerShellInvocation(command);
+  const invocation = parsePowerShellInvocation(command, "safe");
   if (invocation === null) return false;
   const parsed = parsePowerShellScriptWithNativeAst(
     invocation.executable,
@@ -376,18 +376,23 @@ function isUnsafeGitGlobalOption(arg: string): boolean {
   const lower = arg.toLowerCase();
   return (
     lower === "-c" ||
+    lower.startsWith("-c") ||
     lower === "--config" ||
     lower === "--config-env" ||
     lower === "--git-dir" ||
     lower === "--work-tree" ||
     lower === "--namespace" ||
     lower === "--exec-path" ||
+    lower === "--super-prefix" ||
+    lower === "--paginate" ||
+    lower === "-p" ||
     lower.startsWith("--config=") ||
     lower.startsWith("--config-env=") ||
     lower.startsWith("--git-dir=") ||
     lower.startsWith("--work-tree=") ||
     lower.startsWith("--namespace=") ||
-    lower.startsWith("--exec-path=")
+    lower.startsWith("--exec-path=") ||
+    lower.startsWith("--super-prefix=")
   );
 }
 
@@ -401,13 +406,22 @@ function gitGlobalOptionConsumesValue(arg: string): boolean {
     "--work-tree",
     "--namespace",
     "--exec-path",
+    "--super-prefix",
   ].includes(lower);
 }
 
 function hasGitOutputFlag(args: readonly string[]): boolean {
   return args.some((arg) => {
     const lower = arg.toLowerCase();
-    return lower === "--output" || lower.startsWith("--output=");
+    return (
+      lower === "--output" ||
+      lower.startsWith("--output=") ||
+      lower === "--ext-diff" ||
+      lower === "--textconv" ||
+      lower === "--exec" ||
+      lower.startsWith("--exec=") ||
+      lower === "--paginate"
+    );
   });
 }
 
@@ -469,6 +483,7 @@ function isSafeSedPrintScript(value: string): boolean {
 
 function parsePowerShellInvocation(
   command: readonly string[],
+  mode: "safe" | "dangerous",
 ): { readonly executable: string; readonly script: string } | null {
   if (command.length < 2) return null;
   const executable = command[0]!;
@@ -492,10 +507,33 @@ function parsePowerShellInvocation(
     ) {
       continue;
     }
+    if (mode === "dangerous" && lower.startsWith("-")) {
+      if (powershellFlagConsumesValue(lower)) i++;
+      continue;
+    }
+    if (mode === "dangerous") {
+      return { executable, script: command.slice(i).join(" ") };
+    }
     return null;
   }
 
   return null;
+}
+
+function powershellFlagConsumesValue(flag: string): boolean {
+  return [
+    "-executionpolicy",
+    "-ep",
+    "-inputformat",
+    "-outputformat",
+    "-windowstyle",
+    "-workingdirectory",
+    "-wd",
+    "-file",
+    "-f",
+    "-encodedcommand",
+    "-enc",
+  ].includes(flag);
 }
 
 function parseCmdScript(args: readonly string[]): string | null {

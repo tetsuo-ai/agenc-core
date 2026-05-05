@@ -5007,6 +5007,18 @@ function assertZc32ShellCommandCoverage() {
       failGate(`ZC-32: Bash permission integration is missing ${marker}.`);
     }
   }
+
+  const testRun = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/shell-command/safety.test.ts",
+    "src/permissions/bash.test.ts",
+  ]);
+  if (testRun.status !== 0) {
+    failGate("ZC-32: shell-command safety behavior test suites failed.");
+  }
 }
 
 function assertZc33SandboxCoverage() {

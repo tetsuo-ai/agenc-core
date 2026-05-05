@@ -20,8 +20,18 @@ describe("isKnownSafeCommand", () => {
 
   test("rejects read-looking commands that can write or execute helpers", () => {
     expect(isKnownSafeCommand(["git", "-C", ".", "status"])).toBe(false);
+    expect(isKnownSafeCommand(["git", "-C.", "status"])).toBe(false);
+    expect(isKnownSafeCommand(["git", "-ccore.pager=cat", "status"])).toBe(false);
     expect(isKnownSafeCommand(["git", "--git-dir=.evil-git", "diff"])).toBe(false);
+    expect(isKnownSafeCommand(["git", "--super-prefix=attacker/", "show", "HEAD"]))
+      .toBe(false);
+    expect(isKnownSafeCommand(["git", "--super-prefix", "attacker/", "show", "HEAD"]))
+      .toBe(false);
     expect(isKnownSafeCommand(["git", "log", "--output=/tmp/out"])).toBe(false);
+    expect(isKnownSafeCommand(["git", "log", "--ext-diff"])).toBe(false);
+    expect(isKnownSafeCommand(["git", "show", "--textconv", "HEAD"])).toBe(false);
+    expect(isKnownSafeCommand(["git", "log", "--exec=touch /tmp/x"])).toBe(false);
+    expect(isKnownSafeCommand(["git", "--paginate", "status"])).toBe(false);
     expect(isKnownSafeCommand(["git", "branch", "new-branch"])).toBe(false);
     expect(isKnownSafeCommand(["find", ".", "-delete"])).toBe(false);
     expect(isKnownSafeCommand(["find", ".", "-exec", "rm", "{}", ";"])).toBe(false);
@@ -33,6 +43,9 @@ describe("isKnownSafeCommand", () => {
   test("recurses through word-only Bash wrappers without approving unsafe children", () => {
     expect(isKnownSafeCommand(["bash", "-lc", "ls && pwd"])).toBe(true);
     expect(isKnownSafeCommand(["bash", "-lc", "ls && rm -rf /"])).toBe(false);
+    expect(isKnownSafeCommand(["bash", "-lc", "git -C. status"])).toBe(false);
+    expect(isKnownSafeCommand(["bash", "-lc", "git show --textconv HEAD"]))
+      .toBe(false);
     expect(shellCommandIsKnownSafe("bash -lc 'git status && rg TODO runtime'"))
       .toBe(true);
   });
@@ -55,6 +68,24 @@ describe("Windows and PowerShell safety lists", () => {
     expect(
       isDangerousWindowsCommand([
         "powershell",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "Remove-Item file.txt -Force",
+      ]),
+    ).toBe(true);
+    expect(
+      isDangerousWindowsCommand([
+        "powershell",
+        "-Mta",
+        "-Command",
+        "Remove-Item file.txt -Force",
+      ]),
+    ).toBe(true);
+    expect(
+      isDangerousWindowsCommand([
+        "powershell",
+        "-UnknownSwitch",
         "-Command",
         "Remove-Item file.txt -Force",
       ]),
