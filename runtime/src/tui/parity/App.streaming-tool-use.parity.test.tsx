@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, expect, test } from "vitest";
 
 import type { StreamingToolUse } from "../../llm/types.js";
-import { adaptTranscriptEvents, type AdaptedTranscript } from "../bridges/message-adapter.js";
+import { adaptTranscriptEvents, type AdaptedTranscript } from "../session-transcript.js";
 
 const APP_SOURCE_PATH = path.resolve(
   import.meta.dirname,
@@ -11,7 +11,7 @@ const APP_SOURCE_PATH = path.resolve(
 );
 const MESSAGE_ADAPTER_SOURCE_PATH = path.resolve(
   import.meta.dirname,
-  "../bridges/message-adapter.ts",
+  "../session-transcript.ts",
 );
 
 function readSource(p: string): string {
@@ -110,7 +110,7 @@ describe("R1 streamingToolUses prop wiring (App.tsx + transcript)", () => {
     );
   });
 
-  test("E1.6 message-adapter.ts imports StreamingToolUse from runtime/src/llm/types so the AgenC transcript field type is owned by the LLM surface", () => {
+  test("E1.6 session-transcript.ts imports StreamingToolUse from runtime/src/llm/types so the AgenC transcript field type is owned by the LLM surface", () => {
     const source = readSource(MESSAGE_ADAPTER_SOURCE_PATH);
     expect(source).toMatch(
       /import\s+type\s*\{[^}]*StreamingToolUse[^}]*\}\s+from\s+["']\.\.\/\.\.\/llm\/types\.js["']/,

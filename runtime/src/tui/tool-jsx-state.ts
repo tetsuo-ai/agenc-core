@@ -2,8 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import type React from "react";
 
 /**
- * Mirrors the upstream `toolJSX` state shape from
- * the donor REPL shell at lines 1036-1043.
+ * Mirrors the `toolJSX` state shape expected by the TUI shell.
  *
  * Tools that render their own UI surface (interactive prompts,
  * confirmation dialogs, slash-command JSX) call `setToolJSX` with a
@@ -23,7 +22,7 @@ export type ToolJSXState = {
 /**
  * Argument type for `setToolJSX`. Identical to {@link ToolJSXState} except
  * for `clearLocalJSX`, which is a one-shot directive consumed by the
- * wrapper (never written into state). Mirrors REPL.tsx:1064-1071.
+ * wrapper (never written into state).
  */
 export type ToolJSXArgs = {
   jsx: React.ReactNode | null;
@@ -39,8 +38,8 @@ export type ToolJSXUpdateResult =
   | { skip?: false; nextState: ToolJSXState | null; nextLocalRef?: ToolJSXState | null };
 
 /**
- * Pure decision function carrying the upstream wrapper logic from
- * `REPL.tsx:1064-1104`. Returns the next React state value and (when
+ * Pure decision function carrying the local-JSX preservation rules.
+ * Returns the next React state value and (when
  * relevant) the next local-JSX-command ref value. Splitting this from
  * the React `useCallback` makes the local-JSX preservation rules
  * directly unit-testable without spinning up a renderer.
@@ -74,9 +73,8 @@ export function applyToolJSXUpdate(
 }
 
 /**
- * React hook providing the upstream `toolJSX` state contract from
- * `REPL.tsx:1036-1104`. Returns `[toolJSX, setToolJSX]` where
- * `setToolJSX` is the upstream wrapper that preserves local-JSX
+ * React hook providing the TUI `toolJSX` state contract. Returns
+ * `[toolJSX, setToolJSX]` where `setToolJSX` preserves local-JSX
  * commands across normal tool updates.
  */
 export function useToolJSX(): readonly [

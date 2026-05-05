@@ -1,7 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 
-// Same AgenC ink stub as the bash and edit bridge tests — see
-// `tool-stubs-bash-bridge.test.tsx` for the rationale.
+// Same AgenC ink stub as the bash and edit renderer tests.
 vi.mock("../tui/ink.js", () => {
   function Box(_props: { readonly children?: unknown }) {
     return null;
@@ -13,13 +12,13 @@ vi.mock("../tui/ink.js", () => {
 });
 
 import {
-  createBridgeTool,
+  createTuiTool,
   FileReadView,
   FileWriteView,
   GlobPathsView,
   GrepMatchesView,
   ToolErrorView,
-} from "../tui/bridges/tool-stubs.js"; // branding-scan: allow existing compatibility-island path
+} from "../tui/tool-rendering.js";
 
 interface ChildProps {
   readonly children?: unknown;
@@ -44,25 +43,24 @@ function flatten(node: unknown): ChildElement[] {
     );
 }
 
-describe("createBridgeTools — pre-seed canonicalization", () => {
-  test("createBridgeTools([]) pre-seeds the canonical FileRead name and does NOT contain the legacy wrong 'Read' name", () => {
-    const tools = createBridgeTool("FileRead");
+describe("createTuiTools — pre-seed canonicalization", () => {
+  test("createTuiTools([]) pre-seeds the canonical FileRead name and does NOT contain the legacy wrong 'Read' name", () => {
+    const tools = createTuiTool("FileRead");
     expect(tools.name).toBe("FileRead");
   });
 
   test("the pre-seed list does not include the legacy 'Read' name (canonicalization fix)", async () => {
-    // branding-scan: allow existing compatibility-island path
-    const mod = await import("../tui/bridges/tool-stubs.js");
-    const tools = mod.createBridgeTools([]);
+    const mod = await import("../tui/tool-rendering.js");
+    const tools = mod.createTuiTools([]);
     const names = tools.map((t: { name: string }) => t.name).sort();
     expect(names).toContain("FileRead");
     expect(names).not.toContain("Read");
   });
 });
 
-describe("createBridgeTool('FileRead').renderToolResultMessage — end-to-end dispatch", () => {
+describe("createTuiTool('FileRead').renderToolResultMessage — end-to-end dispatch", () => {
   test("FileRead with <read-content> envelope dispatches to FileReadView", () => {
-    const tool = createBridgeTool("FileRead");
+    const tool = createTuiTool("FileRead");
     const node = tool.renderToolResultMessage(
       "<read-file>src/foo.ts</read-file>\n<read-content>const x = 1;</read-content>",
       [],
@@ -71,8 +69,8 @@ describe("createBridgeTool('FileRead').renderToolResultMessage — end-to-end di
     expect((node as { type: unknown }).type).toBe(FileReadView);
   });
 
-  test("'Read' (the wrong pre-seeded name) is not registered in the bridge dispatch table — even with the right envelope it falls through to generic", () => {
-    const tool = createBridgeTool("Read");
+  test("'Read' (the wrong pre-seeded name) is not registered in the TUI dispatch table — even with the right envelope it falls through to generic", () => {
+    const tool = createTuiTool("Read");
     const node = tool.renderToolResultMessage(
       "<read-content>x</read-content>",
       [],
@@ -118,7 +116,7 @@ describe("createBridgeTool('FileRead').renderToolResultMessage — end-to-end di
   });
 
   test("FileRead with the legacy single-string content shape (no envelope tags at all) falls through to the generic Text renderer instead of FileReadView", () => {
-    const tool = createBridgeTool("FileRead");
+    const tool = createTuiTool("FileRead");
     const node = tool.renderToolResultMessage(
       "raw legacy string content",
       [],
@@ -144,9 +142,9 @@ describe("createBridgeTool('FileRead').renderToolResultMessage — end-to-end di
   });
 });
 
-describe("createBridgeTool('Write').renderToolResultMessage — end-to-end dispatch", () => {
+describe("createTuiTool('Write').renderToolResultMessage — end-to-end dispatch", () => {
   test("Write with <write-summary> envelope dispatches to FileWriteView", () => {
-    const tool = createBridgeTool("Write");
+    const tool = createTuiTool("Write");
     const node = tool.renderToolResultMessage(
       "<write-file>src/out.ts</write-file>\n<write-summary>Wrote 42 bytes to src/out.ts</write-summary>",
       [],
@@ -168,7 +166,7 @@ describe("createBridgeTool('Write').renderToolResultMessage — end-to-end dispa
   });
 
   test("Write with the legacy single-string content shape (no envelope) falls through to generic Text instead of FileWriteView", () => {
-    const tool = createBridgeTool("Write");
+    const tool = createTuiTool("Write");
     const node = tool.renderToolResultMessage(
       "raw legacy string",
       [],
@@ -185,9 +183,9 @@ describe("createBridgeTool('Write').renderToolResultMessage — end-to-end dispa
   });
 });
 
-describe("createBridgeTool('Grep').renderToolResultMessage — end-to-end dispatch", () => {
+describe("createTuiTool('Grep').renderToolResultMessage — end-to-end dispatch", () => {
   test("Grep with <grep-matches> envelope dispatches to GrepMatchesView", () => {
-    const tool = createBridgeTool("Grep");
+    const tool = createTuiTool("Grep");
     const node = tool.renderToolResultMessage(
       "<grep-pattern>TODO</grep-pattern>\n<grep-matches>a.ts:1:foo</grep-matches>",
       [],
@@ -265,9 +263,9 @@ describe("createBridgeTool('Grep').renderToolResultMessage — end-to-end dispat
   });
 });
 
-describe("createBridgeTool('Glob').renderToolResultMessage — end-to-end dispatch", () => {
+describe("createTuiTool('Glob').renderToolResultMessage — end-to-end dispatch", () => {
   test("Glob with <glob-paths> envelope dispatches to GlobPathsView", () => {
-    const tool = createBridgeTool("Glob");
+    const tool = createTuiTool("Glob");
     const node = tool.renderToolResultMessage(
       "<glob-pattern>src/**/*.ts</glob-pattern>\n<glob-paths>src/a.ts\nsrc/b.ts</glob-paths>",
       [],
@@ -346,19 +344,19 @@ describe("createBridgeTool('Glob').renderToolResultMessage — end-to-end dispat
 
 describe("Tool error cross-cutting dispatch", () => {
   test("Any tool with <tool-error> envelope dispatches to ToolErrorView regardless of name", () => {
-    const bashErr = createBridgeTool("Bash").renderToolResultMessage(
+    const bashErr = createTuiTool("Bash").renderToolResultMessage(
       "<tool-error>permission denied</tool-error>",
       [],
       { verbose: false },
     );
     expect((bashErr as { type: unknown }).type).toBe(ToolErrorView);
-    const fileReadErr = createBridgeTool("FileRead").renderToolResultMessage(
+    const fileReadErr = createTuiTool("FileRead").renderToolResultMessage(
       "<tool-error-name>FileRead</tool-error-name>\n<tool-error>ENOENT</tool-error>",
       [],
       { verbose: false },
     );
     expect((fileReadErr as { type: unknown }).type).toBe(ToolErrorView);
-    const unknownErr = createBridgeTool("XYZ").renderToolResultMessage(
+    const unknownErr = createTuiTool("XYZ").renderToolResultMessage(
       "<tool-error>boom</tool-error>",
       [],
       { verbose: false },
@@ -367,7 +365,7 @@ describe("Tool error cross-cutting dispatch", () => {
   });
 
   test("Tool error envelope wins when both per-tool and error envelopes are present (defensive ordering)", () => {
-    const node = createBridgeTool("Bash").renderToolResultMessage(
+    const node = createTuiTool("Bash").renderToolResultMessage(
       "<bash-stdout>x</bash-stdout><tool-error>but failed</tool-error>",
       [],
       { verbose: false },
@@ -402,14 +400,14 @@ describe("Tool error cross-cutting dispatch", () => {
     expect(header?.props.children).toBe("Tool error");
   });
 
-  test("createBridgeTool exposes renderToolUseErrorMessage that dispatches to ToolErrorView (cross-cutting upstream renderToolUseErrorMessage path)", () => {
-    const tool = createBridgeTool("XYZ");
+  test("createTuiTool exposes renderToolUseErrorMessage that dispatches to ToolErrorView (cross-cutting upstream renderToolUseErrorMessage path)", () => {
+    const tool = createTuiTool("XYZ");
     const node = tool.renderToolUseErrorMessage("permission denied");
     expect((node as { type: unknown }).type).toBe(ToolErrorView);
   });
 
-  test("createBridgeTool().renderToolUseErrorMessage handles Error instances by extracting .message", () => {
-    const tool = createBridgeTool("FileRead");
+  test("createTuiTool().renderToolUseErrorMessage handles Error instances by extracting .message", () => {
+    const tool = createTuiTool("FileRead");
     const node = tool.renderToolUseErrorMessage(new Error("ENOENT"));
     expect((node as { type: unknown }).type).toBe(ToolErrorView);
     const props = (node as { props: { content: string } }).props;
@@ -417,8 +415,8 @@ describe("Tool error cross-cutting dispatch", () => {
     expect(props.content).toContain("<tool-error-name>FileRead</tool-error-name>");
   });
 
-  test("createBridgeTool().renderToolUseErrorMessage with an arbitrary plain object falls back to short JSON in the <tool-error> body (third branch — neither string nor Error instance)", () => {
-    const tool = createBridgeTool("Bash");
+  test("createTuiTool().renderToolUseErrorMessage with an arbitrary plain object falls back to short JSON in the <tool-error> body (third branch — neither string nor Error instance)", () => {
+    const tool = createTuiTool("Bash");
     const node = tool.renderToolUseErrorMessage({ code: 17, kind: "EEXIST" });
     expect((node as { type: unknown }).type).toBe(ToolErrorView);
     const props = (node as { props: { content: string } }).props;
@@ -427,23 +425,23 @@ describe("Tool error cross-cutting dispatch", () => {
     expect(props.content).toContain("17");
   });
 
-  test("createBridgeTool().renderToolUseErrorMessage handles null without throwing", () => {
-    const tool = createBridgeTool("Edit");
+  test("createTuiTool().renderToolUseErrorMessage handles null without throwing", () => {
+    const tool = createTuiTool("Edit");
     expect(() => tool.renderToolUseErrorMessage(null)).not.toThrow();
     const node = tool.renderToolUseErrorMessage(null);
     expect((node as { type: unknown }).type).toBe(ToolErrorView);
   });
 
-  test("createBridgeTool().renderToolUseErrorMessage handles undefined without throwing", () => {
-    const tool = createBridgeTool("Grep");
+  test("createTuiTool().renderToolUseErrorMessage handles undefined without throwing", () => {
+    const tool = createTuiTool("Grep");
     expect(() => tool.renderToolUseErrorMessage(undefined)).not.toThrow();
     const node = tool.renderToolUseErrorMessage(undefined);
     expect((node as { type: unknown }).type).toBe(ToolErrorView);
   });
 
-  test("createBridgeTool().renderToolUseErrorMessage cross-cutting: every routed tool name dispatches errors to ToolErrorView (not just FileRead)", () => {
+  test("createTuiTool().renderToolUseErrorMessage cross-cutting: every routed tool name dispatches errors to ToolErrorView (not just FileRead)", () => {
     for (const name of ["Bash", "Edit", "FileRead", "Write", "Grep", "Glob", "XYZUnknown"]) {
-      const tool = createBridgeTool(name);
+      const tool = createTuiTool(name);
       const node = tool.renderToolUseErrorMessage(new Error("boom"));
       expect((node as { type: unknown }).type).toBe(ToolErrorView);
       const props = (node as { props: { content: string } }).props;
@@ -456,8 +454,7 @@ describe("Tool error cross-cutting dispatch", () => {
 
 describe("formatStructuredToolResult ⇄ per-tool view wire-shape lock", () => {
   test("FileRead envelope produced by formatStructuredToolResult is consumed by FileReadView (no shape drift)", async () => {
-    // branding-scan: allow existing compatibility-island path
-    const adapter = await import("../tui/bridges/message-adapter.js");
+    const adapter = await import("../tui/session-transcript.js");
     const blocks = adapter.formatStructuredToolResult(
       "FileRead",
       "tool_call_completed",
@@ -480,8 +477,7 @@ describe("formatStructuredToolResult ⇄ per-tool view wire-shape lock", () => {
   });
 
   test("Write envelope produced by formatStructuredToolResult is consumed by FileWriteView", async () => {
-    // branding-scan: allow existing compatibility-island path
-    const adapter = await import("../tui/bridges/message-adapter.js");
+    const adapter = await import("../tui/session-transcript.js");
     const blocks = adapter.formatStructuredToolResult(
       "Write",
       "tool_call_completed",
@@ -495,8 +491,7 @@ describe("formatStructuredToolResult ⇄ per-tool view wire-shape lock", () => {
   });
 
   test("Grep envelope produced by formatStructuredToolResult is consumed by GrepMatchesView", async () => {
-    // branding-scan: allow existing compatibility-island path
-    const adapter = await import("../tui/bridges/message-adapter.js");
+    const adapter = await import("../tui/session-transcript.js");
     const blocks = adapter.formatStructuredToolResult(
       "Grep",
       "tool_call_completed",
@@ -515,8 +510,7 @@ describe("formatStructuredToolResult ⇄ per-tool view wire-shape lock", () => {
   });
 
   test("Glob envelope produced by formatStructuredToolResult is consumed by GlobPathsView", async () => {
-    // branding-scan: allow existing compatibility-island path
-    const adapter = await import("../tui/bridges/message-adapter.js");
+    const adapter = await import("../tui/session-transcript.js");
     const blocks = adapter.formatStructuredToolResult(
       "Glob",
       "tool_call_completed",
@@ -530,8 +524,7 @@ describe("formatStructuredToolResult ⇄ per-tool view wire-shape lock", () => {
   });
 
   test("formatStructuredToolError envelope is consumed by ToolErrorView", async () => {
-    // branding-scan: allow existing compatibility-island path
-    const adapter = await import("../tui/bridges/message-adapter.js");
+    const adapter = await import("../tui/session-transcript.js");
     const blocks = adapter.formatStructuredToolError(
       "FileRead",
       "ENOENT: no such file",
