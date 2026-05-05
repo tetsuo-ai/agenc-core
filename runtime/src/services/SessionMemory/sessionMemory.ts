@@ -1,495 +1,607 @@
 /**
- * Session Memory automatically maintains a markdown file with notes about the current conversation.
- * It runs periodically in the background using a forked subagent to extract key information
- * without interrupting the main conversation flow.
+ * Source-aligned with `src/services/SessionMemory/sessionMemory.ts` at donor
+ * commit 0ca43335375beec6e58711b797d5b0c4bb5019b8.
+ *
+ * Shape differences:
+ *   - AgenC runs the updater from the live turn loop instead of a donor hook
+ *     registry.
+ *   - Child tool access is enforced by `ChildToolPolicy`, and the notes path
+ *     is granted through AgenC's internal session allowed-roots argument.
  */
 
-import { writeFile } from 'fs/promises'
-import memoize from 'lodash-es/memoize.js'
-import { getIsRemoteMode } from '../../bootstrap/state.js'
-import { getSystemPrompt } from '../../constants/prompts.js'
-import { getSystemContext, getUserContext } from '../../context.js'
-import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
-import type { Tool, ToolUseContext } from '../../Tool.js'
-import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
 import {
-  FileReadTool,
-  type Output as FileReadToolOutput,
-} from '../../tools/FileReadTool/FileReadTool.js'
-import type { Message } from '../../types/message.js'
-import { count } from '../../utils/array.js'
+  mkdir,
+  open,
+  writeFile,
+} from "node:fs/promises";
+import { dirname, sep } from "node:path";
+
+import type { LiveAgent } from "../../agents/control.js";
+import { ROOT_AGENT_PATH } from "../../agents/registry.js";
+import type {
+  ChildToolPolicy,
+  RunAgentParams,
+} from "../../agents/run-agent.js";
+import type { LLMMessage } from "../../llm/types.js";
+import { roughTokenCountEstimationForMessages } from "../../llm/token-estimation.js";
+import type { Session } from "../../session/session.js";
 import {
-  createCacheSafeParams,
-  createSubagentContext,
-  runForkedAgent,
-} from '../../utils/forkedAgent.js'
-import { getFsImplementation } from '../../utils/fsOperations.js'
+  FILE_EDIT_TOOL_NAME,
+  createFileReadTool,
+} from "../../tools/system/index.js";
 import {
-  type REPLHookContext,
-  registerPostSamplingHook,
-} from '../../utils/hooks/postSamplingHooks.js'
+  SESSION_ALLOWED_ROOTS_ARG,
+  SESSION_ID_ARG,
+  recordSessionRead,
+  seedSessionReadState,
+  type SessionReadSeedEntry,
+} from "../../tools/system/filesystem.js";
+import type { Tool } from "../../tools/types.js";
+import { buildSessionMemoryUpdatePrompt, loadSessionMemoryTemplate } from "./prompts.js";
 import {
-  createUserMessage,
-  hasToolCallsInLastAssistantTurn,
-} from '../../utils/messages.js'
-import {
-  getSessionMemoryDir,
-  getSessionMemoryPath,
-} from '../../utils/permissions/filesystem.js'
-import { sequential } from '../../utils/sequential.js'
-import { asSystemPrompt } from '../../utils/systemPromptType.js'
-import { getTokenUsage, tokenCountWithEstimation } from '../../utils/tokens.js'
-import { logEvent } from '../analytics/index.js'
-import { isAutoCompactEnabled } from '../compact/autoCompact.js'
-import {
-  buildSessionMemoryUpdatePrompt,
-  loadSessionMemoryTemplate,
-} from './prompts.js'
-import {
-  DEFAULT_SESSION_MEMORY_CONFIG,
+  createSessionMemoryState,
+  getLastSummarizedMessageCount,
   getSessionMemoryConfig,
   getToolCallsBetweenUpdates,
   hasMetInitializationThreshold,
   hasMetUpdateThreshold,
+  isSessionMemoryEnabled,
   isSessionMemoryInitialized,
   markExtractionCompleted,
   markExtractionStarted,
   markSessionMemoryInitialized,
   recordExtractionTokenCount,
-  type SessionMemoryConfig,
+  resolveSessionMemoryDirectory,
+  resolveSessionMemoryPath,
+  resetSessionMemoryState,
+  setLastSummarizedMessageCount,
   setLastSummarizedMessageId,
   setSessionMemoryConfig,
-} from './sessionMemoryUtils.js'
+  type SessionMemoryConfig,
+  type SessionMemoryEnv,
+  type SessionMemoryPathOptions,
+  type SessionMemoryState,
+} from "./sessionMemoryUtils.js";
 
-// ============================================================================
-// Feature Gate and Config (Cached - Non-blocking)
-// ============================================================================
-// These functions return cached values from disk immediately without blocking
-// on GrowthBook initialization. Values may be stale but are updated in background.
+const SESSION_MEMORY_QUERY_SOURCE = "session_memory";
+const DEFAULT_MAX_AGENT_TURNS = 2;
+const ONE_MEBIBYTE = 1024 * 1024;
 
-import { errorMessage, getErrnoCode } from '../../utils/errors.js'
-import {
-  getDynamicConfig_CACHED_MAY_BE_STALE,
-  getFeatureValue_CACHED_MAY_BE_STALE,
-} from '../analytics/growthbook.js'
-
-/**
- * Check if session memory feature is enabled.
- * Uses cached gate value - returns immediately without blocking.
- */
-function isSessionMemoryGateEnabled(): boolean {
-  return getFeatureValue_CACHED_MAY_BE_STALE('tengu_session_memory', false)
+export interface SessionMemoryPostSamplingContext {
+  readonly messages: readonly LLMMessage[];
+  readonly baseInstructions?: string;
+  readonly querySource?: string;
+  readonly session?: Session;
+  readonly sessionId?: string;
+  readonly cwd?: string;
+  readonly env?: SessionMemoryEnv;
+  readonly signal?: AbortSignal;
 }
 
-/**
- * Get session memory config from cache.
- * Returns immediately without blocking - value may be stale.
- */
-function getSessionMemoryRemoteConfig(): Incomplete<SessionMemoryConfig> {
-  return getDynamicConfig_CACHED_MAY_BE_STALE<Incomplete<SessionMemoryConfig>>(
-    'tengu_sm_config',
-    {},
-  )
+export interface SessionMemoryAgentRequest {
+  readonly memoryPath: string;
+  readonly memoryDir: string;
+  readonly currentMemory: string;
+  readonly currentMemoryMtimeMs: number;
+  readonly prompt: string;
+  readonly messages: readonly LLMMessage[];
+  readonly baseInstructions?: string;
+  readonly session: Session;
+  readonly state: SessionMemoryState;
+  readonly signal?: AbortSignal;
 }
 
-// ============================================================================
-// Module State
-// ============================================================================
+export type SessionMemoryAgentRunner = (
+  request: SessionMemoryAgentRequest,
+) => Promise<void>;
 
-let lastMemoryMessageUuid: string | undefined
+export interface ManualExtractionResult {
+  readonly success: boolean;
+  readonly memoryPath?: string;
+  readonly error?: string;
+}
 
-/**
- * Reset the last memory message UUID (for testing)
- */
-export function resetLastMemoryMessageUuid(): void {
-  lastMemoryMessageUuid = undefined
+interface SessionMemoryLane {
+  readonly state: SessionMemoryState;
+  queue: Promise<void>;
+}
+
+let agentRunnerForTests: SessionMemoryAgentRunner | null = null;
+let defaultSessionMemoryConfig: Partial<SessionMemoryConfig> = {};
+const defaultExtractionDecisionState = createSessionMemoryState();
+const lanes = new Map<string, SessionMemoryLane>();
+
+function errnoCode(error: unknown): string | undefined {
+  return typeof error === "object" &&
+    error !== null &&
+    typeof (error as { code?: unknown }).code === "string"
+    ? (error as { code: string }).code
+    : undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function cloneMessage(message: LLMMessage): LLMMessage {
+  return {
+    ...message,
+    content: Array.isArray(message.content)
+      ? message.content.map((part) => ({ ...part }))
+      : message.content,
+    ...(message.toolCalls !== undefined
+      ? { toolCalls: message.toolCalls.map((call) => ({ ...call })) }
+      : {}),
+    ...(message.runtimeOnly !== undefined
+      ? { runtimeOnly: { ...message.runtimeOnly } }
+      : {}),
+  };
+}
+
+function hasToolCallsInLastAssistantTurn(
+  messages: readonly LLMMessage[],
+): boolean {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "assistant") continue;
+    return (message.toolCalls?.length ?? 0) > 0;
+  }
+  return false;
 }
 
 function countToolCallsSince(
-  messages: Message[],
-  sinceUuid: string | undefined,
+  messages: readonly LLMMessage[],
+  sinceMessageCount: number,
 ): number {
-  let toolCallCount = 0
-  let foundStart = sinceUuid === null || sinceUuid === undefined
-
-  for (const message of messages) {
-    if (!foundStart) {
-      if (message.uuid === sinceUuid) {
-        foundStart = true
-      }
-      continue
-    }
-
-    if (message.type === 'assistant') {
-      const content = message.message.content
-      if (Array.isArray(content)) {
-        toolCallCount += count(content, block => block.type === 'tool_use')
-      }
+  let count = 0;
+  const start = Math.max(0, Math.min(messages.length, sinceMessageCount));
+  for (const message of messages.slice(start)) {
+    if (message.role === "assistant") {
+      count += message.toolCalls?.length ?? 0;
     }
   }
-
-  return toolCallCount
+  return count;
 }
 
-export function shouldExtractMemory(messages: Message[]): boolean {
-  // Check if we've met the initialization threshold
-  // Uses total context window tokens (same as autocompact) for consistent behavior
-  const currentTokenCount = tokenCountWithEstimation(messages)
-  if (!isSessionMemoryInitialized()) {
-    if (!hasMetInitializationThreshold(currentTokenCount)) {
-      return false
+function messageCountMarker(messages: readonly LLMMessage[]): string {
+  return `count:${messages.length}`;
+}
+
+function tokenCountWithEstimation(messages: readonly LLMMessage[]): number {
+  return roughTokenCountEstimationForMessages(messages);
+}
+
+async function readSessionMemoryFileWithinLimit(
+  memoryPath: string,
+): Promise<{
+  readonly currentMemory: string;
+  readonly currentMemoryMtimeMs: number;
+}> {
+  const handle = await open(memoryPath, "r");
+  try {
+    const currentStats = await handle.stat();
+    if (currentStats.size > ONE_MEBIBYTE) {
+      throw new Error(
+        `Session memory file exceeds maximum size (${ONE_MEBIBYTE} bytes): ${memoryPath}`,
+      );
     }
-    markSessionMemoryInitialized()
+
+    const buffer = Buffer.alloc(currentStats.size);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    return {
+      currentMemory: buffer.toString("utf8", 0, bytesRead),
+      currentMemoryMtimeMs:
+        typeof currentStats.mtimeMs === "number" &&
+        Number.isFinite(currentStats.mtimeMs)
+          ? currentStats.mtimeMs
+          : Date.now(),
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
+export function shouldExtractMemory(
+  messages: readonly LLMMessage[],
+  state: SessionMemoryState = defaultExtractionDecisionState,
+): boolean {
+  const currentTokenCount = tokenCountWithEstimation(messages);
+  if (!isSessionMemoryInitialized(state)) {
+    if (!hasMetInitializationThreshold(currentTokenCount, state)) {
+      return false;
+    }
+    markSessionMemoryInitialized(state);
   }
 
-  // Check if we've met the minimum tokens between updates threshold
-  // Uses context window growth since last extraction (same metric as init threshold)
-  const hasMetTokenThreshold = hasMetUpdateThreshold(currentTokenCount)
-
-  // Check if we've met the tool calls threshold
+  const hasMetTokenThreshold = hasMetUpdateThreshold(currentTokenCount, state);
   const toolCallsSinceLastUpdate = countToolCallsSince(
     messages,
-    lastMemoryMessageUuid,
-  )
+    getLastSummarizedMessageCount(state),
+  );
   const hasMetToolCallThreshold =
-    toolCallsSinceLastUpdate >= getToolCallsBetweenUpdates()
-
-  // Check if the last assistant turn has no tool calls (safe to extract)
-  const hasToolCallsInLastTurn = hasToolCallsInLastAssistantTurn(messages)
-
-  // Trigger extraction when:
-  // 1. Both thresholds are met (tokens AND tool calls), OR
-  // 2. No tool calls in last turn AND token threshold is met
-  //    (to ensure we extract at natural conversation breaks)
-  //
-  // IMPORTANT: The token threshold (minimumTokensBetweenUpdate) is ALWAYS required.
-  // Even if the tool call threshold is met, extraction won't happen until the
-  // token threshold is also satisfied. This prevents excessive extractions.
+    toolCallsSinceLastUpdate >= getToolCallsBetweenUpdates(state);
+  const hasToolCallsInLastTurn = hasToolCallsInLastAssistantTurn(messages);
   const shouldExtract =
     (hasMetTokenThreshold && hasMetToolCallThreshold) ||
-    (hasMetTokenThreshold && !hasToolCallsInLastTurn)
+    (hasMetTokenThreshold && !hasToolCallsInLastTurn);
 
   if (shouldExtract) {
-    const lastMessage = messages[messages.length - 1]
-    if (lastMessage?.uuid) {
-      lastMemoryMessageUuid = lastMessage.uuid
-    }
-    return true
+    setLastSummarizedMessageCount(messages.length, state);
+    setLastSummarizedMessageId(messageCountMarker(messages), state);
+    return true;
   }
-
-  return false
+  return false;
 }
 
-async function setupSessionMemoryFile(
-  toolUseContext: ToolUseContext,
-): Promise<{ memoryPath: string; currentMemory: string }> {
-  const fs = getFsImplementation()
-
-  // Set up directory and file
-  const sessionMemoryDir = getSessionMemoryDir()
-  await fs.mkdir(sessionMemoryDir, { mode: 0o700 })
-
-  const memoryPath = getSessionMemoryPath()
-
-  // Create the memory file if it doesn't exist (wx = O_CREAT|O_EXCL)
-  try {
-    await writeFile(memoryPath, '', {
-      encoding: 'utf-8',
-      mode: 0o600,
-      flag: 'wx',
-    })
-    // Only load template if file was just created
-    const template = await loadSessionMemoryTemplate()
-    await writeFile(memoryPath, template, {
-      encoding: 'utf-8',
-      mode: 0o600,
-    })
-  } catch (e: any) {
-    const code = getErrnoCode(e)
-    if (code !== 'EEXIST') {
-      throw e
-    }
-  }
-
-  // Drop any cached entry so FileReadTool's dedup doesn't return a
-  // file_unchanged marker — we need the actual content. The Read repopulates it.
-  toolUseContext.readFileState.delete(memoryPath)
-  const result = await FileReadTool.call(
-    { file_path: memoryPath },
-    toolUseContext,
-  )
-  let currentMemory = ''
-
-  const output = result.data as FileReadToolOutput
-  if (output.type === 'text') {
-    currentMemory = output.file.content
-  }
-
-  logEvent('tengu_session_memory_file_read', {
-    content_length: currentMemory.length,
-  })
-
-  return { memoryPath, currentMemory }
+function laneKeyForContext(context: SessionMemoryPostSamplingContext): string {
+  const sessionId = context.session?.conversationId ?? context.sessionId ?? "default";
+  const cwd = context.cwd ?? cwdForSession(context.session);
+  return `${sessionId}\0${cwd}`;
 }
 
-/**
- * Initialize session memory config from remote config (lazy initialization).
- * Memoized - only runs once per session, subsequent calls return immediately.
- * Uses cached config values - non-blocking.
- */
-const initSessionMemoryConfigIfNeeded = memoize((): void => {
-  // Load config from cache (non-blocking, may be stale)
-  const remoteConfig = getSessionMemoryRemoteConfig()
-
-  // Only use remote values if they are explicitly set (non-zero positive numbers)
-  // This ensures sensible defaults aren't overridden by zero values
-  const config: SessionMemoryConfig = {
-    minimumMessageTokensToInit:
-      remoteConfig.minimumMessageTokensToInit &&
-      remoteConfig.minimumMessageTokensToInit > 0
-        ? remoteConfig.minimumMessageTokensToInit
-        : DEFAULT_SESSION_MEMORY_CONFIG.minimumMessageTokensToInit,
-    minimumTokensBetweenUpdate:
-      remoteConfig.minimumTokensBetweenUpdate &&
-      remoteConfig.minimumTokensBetweenUpdate > 0
-        ? remoteConfig.minimumTokensBetweenUpdate
-        : DEFAULT_SESSION_MEMORY_CONFIG.minimumTokensBetweenUpdate,
-    toolCallsBetweenUpdates:
-      remoteConfig.toolCallsBetweenUpdates &&
-      remoteConfig.toolCallsBetweenUpdates > 0
-        ? remoteConfig.toolCallsBetweenUpdates
-        : DEFAULT_SESSION_MEMORY_CONFIG.toolCallsBetweenUpdates,
-  }
-  setSessionMemoryConfig(config)
-})
-
-/**
- * Session memory post-sampling hook that extracts and updates session notes
- */
-// Track if we've logged the gate check failure this session (to avoid spam)
-let hasLoggedGateFailure = false
-
-const extractSessionMemory = sequential(async function (
-  context: REPLHookContext,
-): Promise<void> {
-  const { messages, toolUseContext, querySource } = context
-
-  // Only run session memory on main REPL thread
-  if (querySource !== 'repl_main_thread') {
-    // Don't log this - it's expected for subagents, teammates, etc.
-    return
-  }
-
-  // Check gate lazily when hook runs (cached, non-blocking)
-  if (!isSessionMemoryGateEnabled()) {
-    // Log gate failure once per session (internal-only)
-    if (process.env.USER_TYPE === 'ant' && !hasLoggedGateFailure) {
-      hasLoggedGateFailure = true
-      logEvent('tengu_session_memory_gate_disabled', {})
-    }
-    return
-  }
-
-  // Initialize config from remote (lazy, only once)
-  initSessionMemoryConfigIfNeeded()
-
-  if (!shouldExtractMemory(messages)) {
-    return
-  }
-
-  markExtractionStarted()
-
-  // Create isolated context for setup to avoid polluting parent's cache
-  const setupContext = createSubagentContext(toolUseContext)
-
-  // Set up file system and read current state with isolated context
-  const { memoryPath, currentMemory } =
-    await setupSessionMemoryFile(setupContext)
-
-  // Create extraction message
-  const userPrompt = await buildSessionMemoryUpdatePrompt(
-    currentMemory,
-    memoryPath,
-  )
-
-  // Run session memory extraction using runForkedAgent for prompt caching
-  // runForkedAgent creates an isolated context to prevent mutation of parent state
-  // Pass setupContext.readFileState so the forked agent can edit the memory file
-  await runForkedAgent({
-    promptMessages: [createUserMessage({ content: userPrompt })],
-    cacheSafeParams: createCacheSafeParams(context),
-    canUseTool: createMemoryFileCanUseTool(memoryPath),
-    querySource: 'session_memory',
-    forkLabel: 'session_memory',
-    overrides: { readFileState: setupContext.readFileState },
-  })
-
-  // Log extraction event for tracking frequency
-  // Use the token usage from the last message in the conversation
-  const lastMessage = messages[messages.length - 1]
-  const usage = lastMessage ? getTokenUsage(lastMessage) : undefined
-  const config = getSessionMemoryConfig()
-  logEvent('tengu_session_memory_extraction', {
-    input_tokens: usage?.input_tokens,
-    output_tokens: usage?.output_tokens,
-    cache_read_input_tokens: usage?.cache_read_input_tokens ?? undefined,
-    cache_creation_input_tokens:
-      usage?.cache_creation_input_tokens ?? undefined,
-    config_min_message_tokens_to_init: config.minimumMessageTokensToInit,
-    config_min_tokens_between_update: config.minimumTokensBetweenUpdate,
-    config_tool_calls_between_updates: config.toolCallsBetweenUpdates,
-  })
-
-  // Record the context size at extraction for tracking minimumTokensBetweenUpdate
-  recordExtractionTokenCount(tokenCountWithEstimation(messages))
-
-  // Update lastSummarizedMessageId after successful completion
-  updateLastSummarizedMessageIdIfSafe(messages)
-
-  markExtractionCompleted()
-})
-
-/**
- * Initialize session memory by registering the post-sampling hook.
- * This is synchronous to avoid race conditions during startup.
- * The gate check and config loading happen lazily when the hook runs.
- */
-export function initSessionMemory(): void {
-  if (getIsRemoteMode()) return
-  // Session memory is used for compaction, so respect auto-compact settings
-  const autoCompactEnabled = isAutoCompactEnabled()
-
-  // Log initialization state (internal-only to avoid noise in external logs)
-  if (process.env.USER_TYPE === 'ant') {
-    logEvent('tengu_session_memory_init', {
-      auto_compact_enabled: autoCompactEnabled,
-    })
-  }
-
-  if (!autoCompactEnabled) {
-    return
-  }
-
-  // Register hook unconditionally - gate check happens lazily when hook runs
-  registerPostSamplingHook(extractSessionMemory)
+function laneForContext(context: SessionMemoryPostSamplingContext): SessionMemoryLane {
+  const key = laneKeyForContext(context);
+  const existing = lanes.get(key);
+  if (existing) return existing;
+  const lane: SessionMemoryLane = {
+    state: createSessionMemoryState(defaultSessionMemoryConfig),
+    queue: Promise.resolve(),
+  };
+  lanes.set(key, lane);
+  return lane;
 }
 
-export type ManualExtractionResult = {
-  success: boolean
-  memoryPath?: string
-  error?: string
+function cwdForSession(session: Session | undefined): string {
+  const raw =
+    session?.sessionConfiguration?.cwd ??
+    (session as unknown as { config?: { cwd?: unknown } } | undefined)?.config
+      ?.cwd;
+  return typeof raw === "string" && raw.length > 0 ? raw : process.cwd();
 }
 
-/**
- * Manually trigger session memory extraction, bypassing threshold checks.
- * Used by the /summary command.
- */
-export async function manuallyExtractSessionMemory(
-  messages: Message[],
-  toolUseContext: ToolUseContext,
-): Promise<ManualExtractionResult> {
-  if (messages.length === 0) {
-    return { success: false, error: 'No messages to summarize' }
-  }
-  markExtractionStarted()
-
-  try {
-    // Create isolated context for setup to avoid polluting parent's cache
-    const setupContext = createSubagentContext(toolUseContext)
-
-    // Set up file system and read current state with isolated context
-    const { memoryPath, currentMemory } =
-      await setupSessionMemoryFile(setupContext)
-
-    // Create extraction message
-    const userPrompt = await buildSessionMemoryUpdatePrompt(
-      currentMemory,
-      memoryPath,
-    )
-
-    // Get system prompt for cache-safe params
-    const { tools, mainLoopModel } = toolUseContext.options
-    const [rawSystemPrompt, userContext, systemContext] = await Promise.all([
-      getSystemPrompt(tools, mainLoopModel),
-      getUserContext(),
-      getSystemContext(),
-    ])
-    const systemPrompt = asSystemPrompt(rawSystemPrompt)
-
-    // Run session memory extraction using runForkedAgent
-    await runForkedAgent({
-      promptMessages: [createUserMessage({ content: userPrompt })],
-      cacheSafeParams: {
-        systemPrompt,
-        userContext,
-        systemContext,
-        toolUseContext: setupContext,
-        forkContextMessages: messages,
-      },
-      canUseTool: createMemoryFileCanUseTool(memoryPath),
-      querySource: 'session_memory',
-      forkLabel: 'session_memory_manual',
-      overrides: { readFileState: setupContext.readFileState },
-    })
-
-    // Log manual extraction event
-    logEvent('tengu_session_memory_manual_extraction', {})
-
-    // Record the context size at extraction for tracking minimumTokensBetweenUpdate
-    recordExtractionTokenCount(tokenCountWithEstimation(messages))
-
-    // Update lastSummarizedMessageId after successful completion
-    updateLastSummarizedMessageIdIfSafe(messages)
-
-    return { success: true, memoryPath }
-  } catch (error) {
-    return {
-      success: false,
-      error: errorMessage(error),
-    }
-  } finally {
-    markExtractionCompleted()
-  }
+function pathOptionsForContext(
+  context: SessionMemoryPostSamplingContext,
+): SessionMemoryPathOptions {
+  return {
+    cwd: context.cwd ?? cwdForSession(context.session),
+    sessionId: context.session?.conversationId ?? context.sessionId ?? "default",
+    ...(context.env !== undefined ? { env: context.env } : {}),
+  };
 }
 
-// Helper functions
+function copyWithAllowedRoot(
+  input: Record<string, unknown>,
+  memoryDir: string,
+): Record<string, unknown> {
+  const existing = Array.isArray(input[SESSION_ALLOWED_ROOTS_ARG])
+    ? (input[SESSION_ALLOWED_ROOTS_ARG] as unknown[]).filter(
+        (entry): entry is string =>
+          typeof entry === "string" && entry.length > 0,
+      )
+    : [];
+  return {
+    ...input,
+    [SESSION_ALLOWED_ROOTS_ARG]: [...new Set([...existing, memoryDir])],
+  };
+}
 
-/**
- * Creates a canUseTool function that only allows Edit for the exact memory file.
- */
-export function createMemoryFileCanUseTool(memoryPath: string): CanUseToolFn {
-  return async (tool: Tool, input: any) => {
+export function createSessionMemoryEditPolicy(
+  memoryPath: string,
+  memoryDir: string = `${dirname(memoryPath)}${sep}`,
+): ChildToolPolicy {
+  return (tool: Pick<Tool, "name">, input: Record<string, unknown>) => {
     if (
       tool.name === FILE_EDIT_TOOL_NAME &&
-      typeof input === 'object' &&
-      input !== null &&
-      'file_path' in input
+      typeof input.file_path === "string" &&
+      input.file_path === memoryPath
     ) {
-      const filePath = input.file_path
-      if (typeof filePath === 'string' && filePath === memoryPath) {
-        return { behavior: 'allow' as const, updatedInput: input }
-      }
+      return {
+        behavior: "allow",
+        updatedInput: copyWithAllowedRoot(input, memoryDir),
+      };
     }
     return {
-      behavior: 'deny' as const,
-      message: `only ${FILE_EDIT_TOOL_NAME} on ${memoryPath} is allowed`,
-      decisionReason: {
-        type: 'other' as const,
-        reason: `only ${FILE_EDIT_TOOL_NAME} on ${memoryPath} is allowed`,
+      behavior: "deny",
+      message: `only ${FILE_EDIT_TOOL_NAME} is allowed for ${memoryPath}`,
+      metadata: {
+        reason: `only ${FILE_EDIT_TOOL_NAME} is allowed`,
       },
-    }
+    };
+  };
+}
+
+export async function setupSessionMemoryFile(
+  options: SessionMemoryPathOptions,
+): Promise<{
+  readonly memoryDir: string;
+  readonly memoryPath: string;
+  readonly currentMemory: string;
+  readonly currentMemoryMtimeMs: number;
+}> {
+  const memoryDir = resolveSessionMemoryDirectory(options);
+  await mkdir(memoryDir, { recursive: true, mode: 0o700 });
+  const memoryPath = resolveSessionMemoryPath(options);
+
+  try {
+    await writeFile(memoryPath, await loadSessionMemoryTemplate(), {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+  } catch (error) {
+    if (errnoCode(error) !== "EEXIST") throw error;
+  }
+
+  const { currentMemory, currentMemoryMtimeMs } =
+    await readSessionMemoryFileWithinLimit(memoryPath);
+  const readTool = createFileReadTool({
+    allowedPaths: [memoryDir],
+    maxTokens: 50_000,
+    maxTextBytes: ONE_MEBIBYTE,
+  });
+  const readResult = await readTool.execute({
+    file_path: memoryPath,
+    [SESSION_ID_ARG]: options.sessionId,
+    [SESSION_ALLOWED_ROOTS_ARG]: [memoryDir],
+  });
+  if (readResult.isError === true) {
+    throw new Error(readResult.content);
+  }
+
+  return {
+    memoryDir,
+    memoryPath,
+    currentMemory,
+    currentMemoryMtimeMs,
+  };
+}
+
+function seedEntriesForMemoryFile(
+  memoryPath: string,
+  currentMemory: string,
+  mtimeMs: number,
+): SessionReadSeedEntry[] {
+  return [
+    {
+      path: memoryPath,
+      content: currentMemory,
+      rawContent: currentMemory,
+      timestamp: mtimeMs,
+      viewKind: "full",
+    },
+  ];
+}
+
+function buildSessionMemoryInitialMessages(
+  request: SessionMemoryAgentRequest,
+): LLMMessage[] {
+  const baseInstructions = request.baseInstructions?.trim();
+  const contextMessages = request.messages.map(cloneMessage);
+  return [
+    ...(baseInstructions
+      ? [{ role: "system" as const, content: baseInstructions }]
+      : []),
+    ...contextMessages,
+    { role: "user", content: request.prompt },
+  ];
+}
+
+async function spawnSessionMemoryLiveAgent(session: Session): Promise<LiveAgent> {
+  const controlWithSpawn = session.services.agentControl as unknown as {
+    spawn?: (opts: {
+      readonly parentPath: string;
+      readonly preferredNickname?: string;
+    }) => Promise<LiveAgent>;
+  };
+  if (typeof controlWithSpawn.spawn === "function") {
+    return controlWithSpawn.spawn({
+      parentPath: ROOT_AGENT_PATH,
+      preferredNickname: "session-memory",
+    });
+  }
+
+  const { ensureAgentControl } = await import("../../bin/delegate-tool.js");
+  const { control } = ensureAgentControl(session);
+  return control.spawn({
+    parentPath: ROOT_AGENT_PATH,
+    preferredNickname: "session-memory",
+  });
+}
+
+async function runSessionMemoryAgentWithSubagent(
+  request: SessionMemoryAgentRequest,
+): Promise<void> {
+  if (request.signal?.aborted) return;
+
+  const live = await spawnSessionMemoryLiveAgent(request.session);
+  const seedEntries = seedEntriesForMemoryFile(
+    request.memoryPath,
+    request.currentMemory,
+    request.currentMemoryMtimeMs,
+  );
+  seedSessionReadState(live.agentId, seedEntries);
+  recordSessionRead(live.agentId, request.memoryPath, {
+    content: request.currentMemory,
+    rawContent: request.currentMemory,
+    timestamp: request.currentMemoryMtimeMs,
+    viewKind: "full",
+  });
+
+  const { runAgent } = await import("../../agents/run-agent.js");
+  const params: RunAgentParams = {
+    live,
+    parent: request.session,
+    initialMessages: buildSessionMemoryInitialMessages(request),
+    taskPrompt: request.prompt,
+    toolAllowlist: [FILE_EDIT_TOOL_NAME],
+    childToolPolicy: createSessionMemoryEditPolicy(
+      request.memoryPath,
+      request.memoryDir,
+    ),
+    querySource: SESSION_MEMORY_QUERY_SOURCE,
+    maxTurns: DEFAULT_MAX_AGENT_TURNS,
+    silent: true,
+    ...(request.signal !== undefined ? { externalSignal: request.signal } : {}),
+  };
+
+  for await (const _event of runAgent(params)) {
+    // Consume the background update to completion; transcript relays are disabled.
   }
 }
 
-/**
- * Updates lastSummarizedMessageId after successful extraction.
- * Only sets it if the last message doesn't have tool calls (to avoid orphaned tool_results).
- */
-function updateLastSummarizedMessageIdIfSafe(messages: Message[]): void {
-  if (!hasToolCallsInLastAssistantTurn(messages)) {
-    const lastMessage = messages[messages.length - 1]
-    if (lastMessage?.uuid) {
-      setLastSummarizedMessageId(lastMessage.uuid)
+function sessionMemoryAgentRunner(): SessionMemoryAgentRunner {
+  return agentRunnerForTests ?? runSessionMemoryAgentWithSubagent;
+}
+
+function shouldSkipContext(context: SessionMemoryPostSamplingContext): boolean {
+  if (context.signal?.aborted) return true;
+  if (!isSessionMemoryEnabled(context.env)) return true;
+  if (
+    context.querySource !== undefined &&
+    context.querySource !== "repl_main_thread"
+  ) {
+    return true;
+  }
+  return hasToolCallsInLastAssistantTurn(context.messages);
+}
+
+async function extractSessionMemory(
+  context: SessionMemoryPostSamplingContext,
+  lane: SessionMemoryLane,
+  force: boolean,
+): Promise<ManualExtractionResult | null> {
+  if (!context.session) {
+    return { success: false, error: "Session memory extraction requires a live session" };
+  }
+  if (!force && shouldSkipContext(context)) return null;
+  if (!force && !shouldExtractMemory(context.messages, lane.state)) return null;
+
+  markExtractionStarted(lane.state);
+  try {
+    const setup = await setupSessionMemoryFile(pathOptionsForContext(context));
+    const prompt = await buildSessionMemoryUpdatePrompt(
+      setup.currentMemory,
+      setup.memoryPath,
+    );
+
+    await sessionMemoryAgentRunner()({
+      memoryPath: setup.memoryPath,
+      memoryDir: setup.memoryDir,
+      currentMemory: setup.currentMemory,
+      currentMemoryMtimeMs: setup.currentMemoryMtimeMs,
+      prompt,
+      messages: context.messages.map(cloneMessage),
+      ...(context.baseInstructions !== undefined
+        ? { baseInstructions: context.baseInstructions }
+        : {}),
+      session: context.session,
+      state: lane.state,
+      ...(context.signal !== undefined ? { signal: context.signal } : {}),
+    });
+
+    recordExtractionTokenCount(tokenCountWithEstimation(context.messages), lane.state);
+    setLastSummarizedMessageCount(context.messages.length, lane.state);
+    setLastSummarizedMessageId(messageCountMarker(context.messages), lane.state);
+
+    const config = getSessionMemoryConfig(lane.state);
+    const analytics = (
+      context.session.services as {
+        readonly analyticsEventsClient?: {
+          emit(event: unknown): Promise<void>;
+        };
+      }
+    ).analyticsEventsClient;
+    if (typeof analytics?.emit === "function") {
+      await analytics
+        .emit({
+        type: "session_memory_extraction",
+        inputTokens: tokenCountWithEstimation(context.messages),
+        configMinimumMessageTokensToInit: config.minimumMessageTokensToInit,
+        configMinimumTokensBetweenUpdate: config.minimumTokensBetweenUpdate,
+        configToolCallsBetweenUpdates: config.toolCallsBetweenUpdates,
+        })
+        .catch(() => {});
     }
+
+    return { success: true, memoryPath: setup.memoryPath };
+  } catch (error) {
+    if (force) {
+      return { success: false, error: errorMessage(error) };
+    }
+    throw error;
+  } finally {
+    markExtractionCompleted(lane.state);
   }
 }
+
+export function runSessionMemoryPostSamplingHook(
+  context: SessionMemoryPostSamplingContext,
+): Promise<void> {
+  const lane = laneForContext(context);
+  lane.queue = lane.queue.then(
+    async () => {
+      await extractSessionMemory(context, lane, false);
+    },
+    async () => {
+      await extractSessionMemory(context, lane, false);
+    },
+  );
+  return lane.queue;
+}
+
+export async function manuallyExtractSessionMemory(
+  messages: readonly LLMMessage[],
+  session: Session,
+  options: {
+    readonly cwd?: string;
+    readonly env?: SessionMemoryEnv;
+    readonly signal?: AbortSignal;
+  } = {},
+): Promise<ManualExtractionResult> {
+  if (messages.length === 0) {
+    return { success: false, error: "No messages to summarize" };
+  }
+  const context: SessionMemoryPostSamplingContext = {
+    messages,
+    querySource: "repl_main_thread",
+    session,
+    ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+    ...(options.env !== undefined ? { env: options.env } : {}),
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
+  };
+  const lane = laneForContext(context);
+  return (
+    (await extractSessionMemory(context, lane, true)) ?? {
+      success: false,
+      error: "Session memory extraction skipped",
+    }
+  );
+}
+
+export function initSessionMemory(
+  config: Partial<SessionMemoryConfig> = {},
+): void {
+  defaultSessionMemoryConfig = { ...config };
+  for (const lane of lanes.values()) {
+    setSessionMemoryConfig(config, lane.state);
+  }
+}
+
+export function setSessionMemoryAgentRunnerForTests(
+  runner: SessionMemoryAgentRunner | null,
+): void {
+  agentRunnerForTests = runner;
+}
+
+export function resetSessionMemoryForTests(): void {
+  agentRunnerForTests = null;
+  defaultSessionMemoryConfig = {};
+  resetSessionMemoryState(defaultExtractionDecisionState);
+  lanes.clear();
+}
+
+export {
+  resetSessionMemoryState,
+  type SessionMemoryConfig,
+  type SessionMemoryState,
+};

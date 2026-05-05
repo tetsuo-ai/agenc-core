@@ -12,6 +12,10 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+const sessionMemoryPostSamplingMockState = vi.hoisted(() => ({
+  calls: [] as unknown[],
+  error: null as Error | null,
+}));
 vi.mock("axios", () => {
   const axiosLike = {
     create: vi.fn(() => axiosLike),
@@ -28,6 +32,14 @@ vi.mock("axios", () => {
     isAxiosError: () => false,
   };
 });
+vi.mock("../services/SessionMemory/sessionMemory.js", () => ({
+  runSessionMemoryPostSamplingHook: async (context: unknown) => {
+    sessionMemoryPostSamplingMockState.calls.push(context);
+    if (sessionMemoryPostSamplingMockState.error) {
+      throw sessionMemoryPostSamplingMockState.error;
+    }
+  },
+}));
 import { AsyncQueue } from "../utils/async-queue.js";
 import {
   insertContextMessagesAfterLeadingSystem,
@@ -79,6 +91,11 @@ import {
   runMagicDocsPostSamplingHook,
   setMagicDocsAgentRunnerForTests,
 } from "../services/MagicDocs/magicDocs.js";
+
+afterEach(() => {
+  sessionMemoryPostSamplingMockState.calls.length = 0;
+  sessionMemoryPostSamplingMockState.error = null;
+});
 
 function mkCtx(): TurnContext {
   return {
@@ -427,6 +444,49 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     expect(events.some((event) => event.msg.type === "turn_complete")).toBe(
       true,
     );
+  });
+
+  test("session memory post-sampling uses prepared context and warns on failure", async () => {
+    const ctx = mkCtx();
+    (ctx as TurnContext & { baseInstructions?: string }).baseInstructions =
+      "LIVE_SYSTEM_SENTINEL";
+    sessionMemoryPostSamplingMockState.error = new Error("memory update failed");
+    const { session, events } = mkSession({
+      provider: mkProvider({ content: "done" }),
+      registry: mkRegistry(),
+    });
+
+    await drain(session.runTurn("LIVE_USER_CONTEXT_SENTINEL", { ctx }));
+    for (
+      let index = 0;
+      index < 5 &&
+      !events.some(
+        (event) =>
+          event.msg.type === "warning" &&
+          event.msg.payload.cause === "session_memory_update_failed",
+      );
+      index += 1
+    ) {
+      await Promise.resolve();
+    }
+
+    expect(sessionMemoryPostSamplingMockState.calls).toHaveLength(1);
+    const context = sessionMemoryPostSamplingMockState.calls[0] as {
+      readonly baseInstructions?: string;
+      readonly messages: readonly LLMMessage[];
+    };
+    expect(context.baseInstructions).toBe("LIVE_SYSTEM_SENTINEL");
+    expect(
+      context.messages.some((message) =>
+        String(message.content).includes("LIVE_USER_CONTEXT_SENTINEL"),
+      ),
+    ).toBe(true);
+    const warning = events.find(
+      (event) =>
+        event.msg.type === "warning" &&
+        event.msg.payload.cause === "session_memory_update_failed",
+    );
+    expect(warning?.msg.type).toBe("warning");
   });
 
   test("blocks approval-required code-mode nested tools before raw registry dispatch", async () => {
