@@ -429,7 +429,7 @@ function isReadDenied(
   cwd: string,
 ): boolean {
   const deniedRoots = getUnreadableRootsWithCwd(policy, cwd);
-  if (deniedRoots.some((root) => pathOverlaps(root, target) || targetStartsWith(target, root))) {
+  if (deniedRoots.some((root) => targetStartsWith(target, root))) {
     return true;
   }
   return getUnreadableGlobsWithCwd(policy, cwd).some((pattern) =>
@@ -443,8 +443,12 @@ function targetStartsWith(candidate: string, root: string): boolean {
 }
 
 function globPatternMatches(pattern: string, target: string): boolean {
-  const regex = globPatternToRegex(pattern);
-  return regex.test(target);
+  try {
+    const regex = globPatternToRegex(pattern);
+    return regex.test(target);
+  } catch {
+    return true;
+  }
 }
 
 function globPatternToRegex(pattern: string): RegExp {
@@ -470,9 +474,35 @@ function globPatternToRegex(pattern: string): RegExp {
       case "?":
         regex += "[^/]";
         break;
-      case "[":
-        regex += "\\[";
+      case "[": {
+        const classChars: string[] = [];
+        let closed = false;
+        while (index < chars.length) {
+          const classCh = chars[index++] ?? "";
+          if (classCh === "]") {
+            closed = true;
+            break;
+          }
+          classChars.push(classCh);
+        }
+        if (!closed) {
+          regex += "\\[";
+          index -= classChars.length;
+          break;
+        }
+        regex += "[";
+        const [first, ...rest] = classChars;
+        if (first !== undefined) {
+          if (first === "!") regex += "^";
+          else if (first === "^") regex += "\\^";
+          else regex += first;
+        }
+        for (const classCh of rest) {
+          regex += classCh === "\\" ? "\\\\" : classCh;
+        }
+        regex += "]";
         break;
+      }
       case "]":
         regex += "\\]";
         break;

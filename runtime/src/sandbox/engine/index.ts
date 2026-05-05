@@ -38,7 +38,7 @@ export type FileSystemSpecialPath =
   | { readonly kind: "tmpdir" }
   | { readonly kind: "slash_tmp" }
   | { readonly kind: "minimal" }
-  | { readonly kind: "unknown"; readonly value: string };
+  | { readonly kind: "unknown"; readonly path: string; readonly subpath?: string };
 
 export type FileSystemPath =
   | { readonly kind: "path"; readonly path: string }

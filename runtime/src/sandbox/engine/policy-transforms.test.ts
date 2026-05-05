@@ -167,6 +167,70 @@ describe("sandbox permission profile transforms", () => {
     expect(granted).toEqual({});
   });
 
+  it("keeps broad grants while retaining nested deny carveouts", () => {
+    const granted = intersectPermissionProfiles(
+      {
+        fileSystem: {
+          entries: [
+            { path: { kind: "path", path: "/repo" }, access: "write" },
+            { path: { kind: "path", path: "/repo/secrets" }, access: "none" },
+          ],
+        },
+      },
+      {
+        fileSystem: {
+          entries: [
+            { path: { kind: "path", path: "/repo" }, access: "write" },
+          ],
+        },
+      },
+      "/repo",
+    );
+
+    expect(granted).toEqual({
+      fileSystem: {
+        entries: [
+          { path: { kind: "path", path: "/repo" }, access: "write" },
+          { path: { kind: "path", path: "/repo/secrets" }, access: "none" },
+        ],
+      },
+    });
+  });
+
+  it("rejects concrete grants covered by requested glob variants", () => {
+    const cases = [
+      ["/repo/secret/key[0-9].pem", "/repo/secret/key1.pem"],
+      ["/repo/app/file?.txt", "/repo/app/file7.txt"],
+      ["/repo/app/*.pem", "/repo/app/key.pem"],
+      ["/repo/**/*.env", "/repo/nested/.env"],
+      ["/repo/[", "/repo/["],
+    ] as const;
+
+    for (const [pattern, grantedPath] of cases) {
+      const granted = intersectPermissionProfiles(
+        {
+          fileSystem: {
+            entries: [
+              { path: { kind: "path", path: "/repo" }, access: "write" },
+              { path: { kind: "glob", pattern }, access: "none" },
+            ],
+            globScanMaxDepth: 3,
+          },
+        },
+        {
+          fileSystem: {
+            entries: [
+              { path: { kind: "path", path: grantedPath }, access: "read" },
+            ],
+          },
+        },
+        "/repo",
+      );
+
+      expect(granted, pattern).toEqual({});
+    }
+  });
+
   it("does not make cwd writable for read-only restricted policies", () => {
     const readOnly = restrictedFileSystemPolicy([
       { path: { kind: "special", value: { kind: "root" } }, access: "read" },

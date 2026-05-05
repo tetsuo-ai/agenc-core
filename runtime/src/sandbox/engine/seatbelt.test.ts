@@ -63,6 +63,28 @@ describe("macOS seatbelt policy generation", () => {
     );
   });
 
+  it("honors explicit metadata writes expressed as project-root subpaths", () => {
+    const args = createSeatbeltCommandArgs({
+      command: ["/bin/echo", "ok"],
+      fileSystemSandboxPolicy: restrictedFileSystemPolicy([
+        { path: { kind: "special", value: { kind: "project_roots" } }, access: "write" },
+        {
+          path: {
+            kind: "special",
+            value: { kind: "project_roots", subpath: ".agenc" },
+          },
+          access: "write",
+        },
+      ]),
+      networkSandboxPolicy: "disabled",
+      sandboxPolicyCwd: "/repo",
+      enforceManagedNetwork: false,
+    });
+
+    expect(args[1]).not.toContain("^/repo/\\.agenc(/.*)?$");
+    expect(args).not.toContain("-DWRITABLE_ROOT_0_EXCLUDED_1=/repo/.agenc");
+  });
+
   it("retains full-network behavior when no managed proxy is configured", () => {
     const args = createSeatbeltCommandArgs({
       command: ["true"],

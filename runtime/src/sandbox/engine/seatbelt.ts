@@ -16,6 +16,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   PROTECTED_METADATA_PATH_NAMES,
+  canWritePathWithCwd,
   getReadableRootsWithCwd,
   getUnreadableGlobsWithCwd,
   getUnreadableRootsWithCwd,
@@ -502,7 +503,7 @@ function protectedMetadataNamesForWritableRoot(
   for (const name of PROTECTED_METADATA_PATH_NAMES) {
     if (names.has(name)) continue;
     const candidate = path.join(writableRoot.root, name);
-    if (!canWritePath(policy, candidate, cwd)) names.add(name);
+    if (!canWritePathWithCwd(policy, candidate, cwd)) names.add(name);
   }
   return [...names];
 }
@@ -661,27 +662,6 @@ function pathStartsWith(candidate: string, root: string): boolean {
   if (normalizedCandidate === normalizedRoot) return true;
   const relative = path.relative(normalizedRoot, normalizedCandidate);
   return relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative);
-}
-
-function canWritePath(
-  policy: FileSystemSandboxPolicy,
-  candidate: string,
-  cwd: string,
-): boolean {
-  if (policy.kind !== "restricted") return policy.kind === "unrestricted";
-  const normalized = normalizePathForPolicy(candidate);
-  let best: "none" | "read" | "write" = "none";
-  for (const entry of policy.entries) {
-    if (entry.path.kind !== "path") continue;
-    const root = normalizePathForPolicy(entry.path.path);
-    if (!pathStartsWith(normalized, root)) continue;
-    if (entry.access === "write") return true;
-    if (entry.access === "read") best = "read";
-  }
-  if (pathStartsWith(normalized, cwd)) {
-    best = best === "none" ? "write" : best;
-  }
-  return best === "write";
 }
 
 function escapeRegex(value: string): string {
