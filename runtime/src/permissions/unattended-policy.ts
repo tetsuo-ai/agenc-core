@@ -15,13 +15,7 @@ export type UnattendedPermissionDecision =
   | { readonly behavior: "deny"; readonly toolName: string }
   | { readonly behavior: "pause"; readonly toolName: string };
 
-export const DEFAULT_UNATTENDED_ALLOWLIST = Object.freeze([
-  "FileRead",
-  "system.grep",
-  "system.glob",
-  "system.listDir",
-  "system.stat",
-] as const);
+export const DEFAULT_UNATTENDED_ALLOWLIST = Object.freeze([] as const);
 
 const TOOL_ALIASES = Object.freeze({
   read: "FileRead",

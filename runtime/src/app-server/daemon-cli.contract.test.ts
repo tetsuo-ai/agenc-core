@@ -1463,12 +1463,11 @@ describe("AgenC daemon CLI", () => {
     );
     expect(permissionModeRegistry.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        alwaysAllowRules: expect.objectContaining({
-          session: ["FileRead"],
-        }),
-        alwaysDenyRules: expect.objectContaining({
-          session: ["system.bash"],
-        }),
+        mode: "unattended",
+        unattendedPolicy: {
+          allowlist: ["FileRead"],
+          denylist: ["system.bash"],
+        },
       }),
     );
 

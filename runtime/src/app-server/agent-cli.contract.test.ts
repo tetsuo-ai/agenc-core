@@ -937,13 +937,7 @@ autostart = false
       {
         objective: "background compile",
         cwd: "/workspace",
-        unattendedAllow: [
-          "FileRead",
-          "system.grep",
-          "system.glob",
-          "system.listDir",
-          "system.stat",
-        ],
+        unattendedAllow: [],
         unattendedDeny: [],
       },
     ]);

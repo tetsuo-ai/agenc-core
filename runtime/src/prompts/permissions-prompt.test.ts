@@ -174,7 +174,7 @@ describe("getPermissionsSection", () => {
   test("unattended mode uses the default policy when context has no policy", () => {
     const out = getPermissionsSection(ctxForMode("unattended"));
     expect(out).not.toBeNull();
-    expect(out).toContain("Unattended allowlist: FileRead, system.grep");
+    expect(out).toContain("Unattended allowlist: (none)");
     expect(out).toContain("Unattended denylist: (none)");
   });
 
