@@ -142,6 +142,7 @@ assert("at least one numeric phase parsed", hasNumericPhase, `phases=${[...phase
 
 const completeSource = readFileSync(new URL("./complete.mjs", import.meta.url), "utf8");
 const verifySource = readFileSync(new URL("./verify.mjs", import.meta.url), "utf8");
+const shimBehaviorSource = readFileSync(new URL("./shim-behavior.mjs", import.meta.url), "utf8");
 assert(
   "complete.mjs hard-fails worktree removal failures",
   /const wtRemove =[\s\S]*if \(wtRemove\.status !== 0\) \{\s*abort\(/.test(completeSource),
@@ -166,8 +167,8 @@ assert(
     /failIfInFlightJournalsFound\(\);/.test(completeSource),
 );
 
-const singleLineForwardFn = extractRegexFromSource(verifySource, "SINGLE_LINE_FORWARD_FN_RE");
-const singleLineForwardArrow = extractRegexFromSource(verifySource, "SINGLE_LINE_FORWARD_ARROW_RE");
+const singleLineForwardFn = extractRegexFromSource(shimBehaviorSource, "SINGLE_LINE_FORWARD_FN_RE");
+const singleLineForwardArrow = extractRegexFromSource(shimBehaviorSource, "SINGLE_LINE_FORWARD_ARROW_RE");
 assert(
   "verify.mjs detects exported one-line forwarding functions",
   singleLineForwardFn.test("export function shim(input) { return realImpl(input); }"),

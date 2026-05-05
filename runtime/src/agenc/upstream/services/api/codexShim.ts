@@ -7,7 +7,7 @@ import type {
   ResolvedCodexCredentials,
   ResolvedProviderRequest,
 } from './providerConfig.js'
-import { sanitizeSchemaForOpenAICompat } from './openaiSchemaSanitizer.js'
+import { sanitizeSchemaForOpenAICompat } from '../../utils/schemaSanitizer.js'
 import {
   createThinkTagFilter,
   stripThinkTags,
@@ -75,13 +75,13 @@ type ResponsesTool = {
   strict?: boolean
 }
 
-type CodexSseEvent = {
+type ResponsesSseEvent = {
   event: string
   data: Record<string, any>
 }
 
 function makeUsage(usage?: Record<string, unknown>): AnthropicUsage {
-  // Single source of truth for raw → Anthropic shape. Lives in
+  // Single source of truth for the internal usage shape. Lives in
   // cacheMetrics.ts alongside the raw-shape extractor so any new
   // provider quirk requires a one-file change and the integration test
   // can call the exact same function instead of re-implementing it.
@@ -306,7 +306,7 @@ export function convertAnthropicMessagesToResponsesInput(
 }
 
 /**
- * Recursively enforces Codex strict-mode constraints on a JSON schema:
+ * Recursively enforces strict response API constraints on a JSON schema:
  * - Every `object` type gets `additionalProperties: false`
  * - All property keys are listed in `required`
  * - Nested schemas (properties, items, anyOf/oneOf/allOf) are processed too
@@ -314,14 +314,14 @@ export function convertAnthropicMessagesToResponsesInput(
 function enforceStrictSchema(schema: unknown): Record<string, unknown> {
   const record = sanitizeSchemaForOpenAICompat(schema)
 
-  // Codex Responses rejects JSON Schema's standard `uri` string format.
+  // The response endpoint rejects JSON Schema's standard `uri` string format.
   // Keep URL validation in the tool layer and send a plain string here.
   if (record.format === 'uri') {
     delete record.format
   }
 
   if (record.type === 'object') {
-    // OpenAI structured outputs completely forbid dynamic additionalProperties.
+    // Structured outputs completely forbid dynamic additionalProperties.
     // They must be set to false unconditionally.
     record.additionalProperties = false
 
@@ -336,7 +336,7 @@ function enforceStrictSchema(schema: unknown): Record<string, unknown> {
       const enforcedProps: Record<string, unknown> = {}
       for (const [key, value] of Object.entries(props)) {
         const strictValue = enforceStrictSchema(value)
-        // If the resulting schema is an empty object (no properties), OpenAI structured outputs will likely
+        // If the resulting schema is an empty object (no properties), structured outputs will likely
         // strip it silently and then complain about a 'required' mismatch if it remains in the required list.
         // E.g. z.record() objects (like AskUserQuestion.answers) lose their schema due to additionalProperties 
         // restrictions. We can safely drop these from the schema sent to the LLM.
@@ -385,7 +385,7 @@ export function convertToolsToResponsesTools(
     .filter(tool => tool.name && tool.name !== 'ToolSearchTool')
     .map(tool => {
       const rawParameters = tool.input_schema ?? { type: 'object', properties: {} }
-      // Codex requires strict schemas: all properties must be required
+      // Strict response schemas require all properties to be required.
       const parameters = enforceStrictSchema(rawParameters)
 
       return {
@@ -533,9 +533,9 @@ export async function performCodexRequest(options: {
 
   const isTargetModel =
     options.request.resolvedModel?.toLowerCase().includes('gpt') ||
-    options.request.resolvedModel?.toLowerCase().includes('codex')
+    options.request.resolvedModel?.toLowerCase().includes('codex') // branding-scan: allow real model family id
 
-  // Only pass temperature and top_p if it's not a GPT/Codex model that rejects them
+  // Only pass temperature and top_p if the target model accepts them.
   if (!isTargetModel) {
     if (options.params.temperature !== undefined) {
       body.temperature = options.params.temperature
@@ -561,7 +561,7 @@ export async function performCodexRequest(options: {
       method: 'POST',
       headers,
       // WHY: byte-identity required for implicit prefix caching on
-      // OpenAI Responses API. See src/utils/stableStringify.ts.
+      // Responses API. See src/utils/stableStringify.ts.
       body: stableStringify(body),
       signal: options.signal,
     },
@@ -573,7 +573,7 @@ export async function performCodexRequest(options: {
     try { errorResponse = JSON.parse(errorBody) } catch { /* raw text */ }
     throw APIError.generate(
       response.status, errorResponse,
-      `Codex API error ${response.status}: ${errorBody}`,
+      `Responses API error ${response.status}: ${errorBody}`,
       response.headers as unknown as Headers,
     )
   }
@@ -581,7 +581,7 @@ export async function performCodexRequest(options: {
   return response
 }
 
-async function* readSseEvents(response: Response, signal?: AbortSignal): AsyncGenerator<CodexSseEvent> {
+async function* readSseEvents(response: Response, signal?: AbortSignal): AsyncGenerator<ResponsesSseEvent> {
   const reader = response.body?.getReader()
   if (!reader) return
 
@@ -600,7 +600,7 @@ async function* readSseEvents(response: Response, signal?: AbortSignal): AsyncGe
       const timeoutId = setTimeout(() => {
         const elapsed = Math.round((Date.now() - lastDataTime) / 1000)
         reject(new Error(
-          `Codex SSE stream idle for ${elapsed}s (limit: ${STREAM_IDLE_TIMEOUT_MS / 1000}s). Connection likely dropped.`,
+          `Responses SSE stream idle for ${elapsed}s (limit: ${STREAM_IDLE_TIMEOUT_MS / 1000}s). Connection likely dropped.`,
         ))
       }, STREAM_IDLE_TIMEOUT_MS)
 
@@ -697,7 +697,7 @@ export async function collectCodexCompletedResponse(
   for await (const event of readSseEvents(response, signal)) {
     if (event.event === 'response.failed') {
       const msg = event.data?.response?.error?.message ??
-        event.data?.error?.message ?? 'Codex response failed'
+        event.data?.error?.message ?? 'Responses response failed'
       throw APIError.generate(500, undefined, msg, new Headers())
     }
 
@@ -712,7 +712,7 @@ export async function collectCodexCompletedResponse(
 
   if (!completedResponse) {
     throw APIError.generate(
-      500, undefined, 'Codex response ended without a completed payload',
+      500, undefined, 'Responses response ended without a completed payload',
       new Headers(),
     )
   }
@@ -720,7 +720,7 @@ export async function collectCodexCompletedResponse(
   return completedResponse
 }
 
-export async function* codexStreamToAnthropic(
+export async function* codexStreamToAnthropic( // branding-scan: allow existing exported conversion name
   response: Response,
   model: string,
   signal?: AbortSignal,
@@ -887,7 +887,7 @@ export async function* codexStreamToAnthropic(
 
     if (event.event === 'response.failed') {
       const msg = payload?.response?.error?.message ??
-        payload?.error?.message ?? 'Codex response failed'
+        payload?.error?.message ?? 'Responses response failed'
       throw APIError.generate(500, undefined, msg, new Headers())
     }
   }
@@ -907,7 +907,7 @@ export async function* codexStreamToAnthropic(
       stop_sequence: null,
     },
     // Delegate to the shared normalizer so the streaming message_delta
-    // path uses the same raw→Anthropic conversion as makeUsage() above
+    // path uses the same raw usage conversion as makeUsage() above
     // and the non-streaming response converter below. Previously this
     // block had its own inline subtraction that missed Kimi / DeepSeek
     // / Gemini raw shapes that the shared helper handles.
@@ -918,7 +918,7 @@ export async function* codexStreamToAnthropic(
   yield { type: 'message_stop' }
 }
 
-export function convertCodexResponseToAnthropicMessage(
+export function convertCodexResponseToAnthropicMessage( // branding-scan: allow existing exported conversion name
   data: Record<string, any>,
   model: string,
 ): Record<string, unknown> {

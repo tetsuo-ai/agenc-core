@@ -1,0 +1,355 @@
+#!/usr/bin/env node
+
+import process from "node:process";
+import {
+  SHIM_BEHAVIOR_RATIO_LIMIT,
+  formatShimBehaviorViolation,
+  measureShimBehavior,
+  measureShimBehaviorForPath,
+} from "./shim-behavior.mjs";
+
+let passed = 0;
+let failed = 0;
+
+function assert(name, condition, detail = "") {
+  if (condition) {
+    process.stdout.write(`✓ ${name}\n`);
+    passed += 1;
+  } else {
+    process.stderr.write(`✗ ${name}\n`);
+    if (detail) process.stderr.write(`    ${detail}\n`);
+    failed += 1;
+  }
+}
+
+function measure(source) {
+  return measureShimBehavior(source);
+}
+
+const hookForwarder = measure(`
+import { useContext } from 'react'
+import AppContext from '../components/AppContext.js'
+
+const useApp = () => useContext(AppContext)
+export default useApp
+`);
+assert(
+  "flags import-heavy hook forwarders",
+  hookForwarder.violates && hookForwarder.ratio > SHIM_BEHAVIOR_RATIO_LIMIT,
+  JSON.stringify(hookForwarder),
+);
+
+const singletonForwarder = measure(`
+import type Ink from './ink.js'
+
+const instances = new Map<NodeJS.WriteStream, Ink>()
+export default instances
+`);
+assert(
+  "flags import-plus-default-export singleton wrappers",
+  singletonForwarder.violates && singletonForwarder.ratio > SHIM_BEHAVIOR_RATIO_LIMIT,
+  JSON.stringify(singletonForwarder),
+);
+
+const upstreamIndexForwarder = measure(`
+export { Something } from './Something.js'
+`);
+assert(
+  "upstream forwarding fixture remains a ZC-20 failure",
+  upstreamIndexForwarder.violates,
+  JSON.stringify(upstreamIndexForwarder),
+);
+
+const multilineBarrel = measure(`
+export {
+  Alpha,
+  Beta,
+  Gamma,
+} from './impl.js'
+`);
+assert(
+  "counts multi-line forwarding statements as forwarding LOC",
+  multilineBarrel.violates &&
+    multilineBarrel.forwardLines === 5 &&
+    multilineBarrel.ratio === 1,
+  JSON.stringify(multilineBarrel),
+);
+
+const namedTypeExportFrom = measure(`
+export type { Alpha } from './types.js'
+`);
+assert(
+  "flags named type export-from barrels",
+  namedTypeExportFrom.violates && namedTypeExportFrom.forwardLines === 1,
+  JSON.stringify(namedTypeExportFrom),
+);
+
+const multilineTypeBarrel = measure(`
+export type {
+  Alpha,
+  Beta,
+  Gamma,
+} from './types.js'
+`);
+assert(
+  "counts multi-line named type re-export statements as forwarding LOC",
+  multilineTypeBarrel.violates &&
+    multilineTypeBarrel.forwardLines === 5 &&
+    multilineTypeBarrel.ratio === 1,
+  JSON.stringify(multilineTypeBarrel),
+);
+
+const importedTypeReexport = measure(`
+import type { Alpha } from './types.js'
+export type { Alpha }
+`);
+assert(
+  "flags imported type re-export barrels",
+  importedTypeReexport.violates && importedTypeReexport.forwardLines === 1,
+  JSON.stringify(importedTypeReexport),
+);
+
+const localNamedExport = measure(`
+import { a } from './a.js'
+import { b } from './b.js'
+import { c } from './c.js'
+const local = a + b + c
+export { local }
+`);
+assert(
+  "does not flag local named value exports",
+  !localNamedExport.violates && localNamedExport.forwardLines === 0,
+  JSON.stringify(localNamedExport),
+);
+
+const localNamedTypeExport = measure(`
+import type { A } from './a.js'
+import type { B } from './b.js'
+type Local = A & B
+export type { Local }
+`);
+assert(
+  "does not flag local named type exports",
+  !localNamedTypeExport.violates && localNamedTypeExport.forwardLines === 0,
+  JSON.stringify(localNamedTypeExport),
+);
+
+const packedImportExport = measure(`
+import { realImpl } from './impl.js'; export function shim(input: string): string { return realImpl(input) }
+`);
+assert(
+  "flags same-line import plus typed forwarding export",
+  packedImportExport.violates && packedImportExport.forwardLines === 1,
+  JSON.stringify(packedImportExport),
+);
+
+const typedRestWrapper = measure(`
+import { installLatest as installLatestImpl } from './installer.js'
+export function installLatest(...args: Parameters<typeof installLatestImpl>): ReturnType<typeof installLatestImpl> { return installLatestImpl(...args) }
+`);
+assert(
+  "flags typed rest-argument forwarding wrappers",
+  typedRestWrapper.violates,
+  JSON.stringify(typedRestWrapper),
+);
+
+const defaultFunctionWrapper = measure(`
+import { realImpl } from './impl.js'
+export default function shim(input: string): string { return realImpl(input) }
+`);
+assert(
+  "flags default-exported single-line forwarding functions",
+  defaultFunctionWrapper.violates && defaultFunctionWrapper.forwardLines === 1,
+  JSON.stringify(defaultFunctionWrapper),
+);
+
+const multilineFunctionWrapper = measure(`
+import { installLatest as installLatestImpl } from './impl.js'
+export function installLatest(input: string): string {
+  return installLatestImpl(input)
+}
+`);
+assert(
+  "flags multi-line forwarding functions that wrap imported implementations",
+  multilineFunctionWrapper.violates && multilineFunctionWrapper.forwardLines === 3,
+  JSON.stringify(multilineFunctionWrapper),
+);
+
+const localAliasFunctionWrapper = measure(`
+import { useKeybindings } from './keybindings.js'
+import { useExitOnCtrlCD } from './useExitOnCtrlCD.js'
+export function useExit(onExit?: () => void): ExitState {
+  const keybindings = useKeybindings
+  return useExitOnCtrlCD(keybindings, onExit)
+}
+`);
+assert(
+  "flags wrapper functions that only alias imports before forwarding",
+  localAliasFunctionWrapper.violates,
+  JSON.stringify(localAliasFunctionWrapper),
+);
+
+const unrelatedNameFunctionWrapper = measure(`
+import { run } from './impl.js'
+export function handle(input: string): string {
+  return run(input)
+}
+`);
+assert(
+  "flags multi-line forwarding functions with unrelated public names",
+  unrelatedNameFunctionWrapper.violates &&
+    unrelatedNameFunctionWrapper.forwardLines === 3,
+  JSON.stringify(unrelatedNameFunctionWrapper),
+);
+
+const importedTypeAliasForwarder = measure(`
+import type { PermissionDecision as PermissionDecisionType } from './types.js'
+export type PermissionDecision = PermissionDecisionType
+`);
+assert(
+  "flags exported aliases of imported types",
+  importedTypeAliasForwarder.violates && importedTypeAliasForwarder.forwardLines === 1,
+  JSON.stringify(importedTypeAliasForwarder),
+);
+
+const importedValueAliasForwarder = measure(`
+import { realValue } from './impl.js'
+export const value = realValue
+`);
+assert(
+  "flags exported aliases of imported values",
+  importedValueAliasForwarder.violates && importedValueAliasForwarder.forwardLines === 1,
+  JSON.stringify(importedValueAliasForwarder),
+);
+
+const commonJSDefaultForwarder = measure(`
+const impl = require('./impl.js')
+module.exports = impl
+`);
+assert(
+  "flags CommonJS module.exports forwarding",
+  commonJSDefaultForwarder.violates && commonJSDefaultForwarder.forwardLines === 1,
+  JSON.stringify(commonJSDefaultForwarder),
+);
+
+const commonJSNamedForwarder = measure(`
+const impl = require('./impl.js')
+exports.foo = impl.foo
+`);
+assert(
+  "flags CommonJS named export forwarding",
+  commonJSNamedForwarder.violates && commonJSNamedForwarder.forwardLines === 1,
+  JSON.stringify(commonJSNamedForwarder),
+);
+
+const commonJSDestructuredForwarder = measure(`
+const { foo } = require('./impl.js')
+exports.foo = foo
+`);
+assert(
+  "flags CommonJS destructured export forwarding",
+  commonJSDestructuredForwarder.violates &&
+    commonJSDestructuredForwarder.forwardLines === 1,
+  JSON.stringify(commonJSDestructuredForwarder),
+);
+
+const largeCommentSmallForwarder = measure(`
+/*
+${"large comment body\\n".repeat(1200)}
+*/
+export { Alpha } from './impl.js'
+`);
+assert(
+  "does not skip large-comment files with small forwarding bodies",
+  largeCommentSmallForwarder.violates,
+  JSON.stringify(largeCommentSmallForwarder),
+);
+
+const commentedForwardingText = measure(`
+/*
+export { Alpha } from './impl.js'
+import { Alpha } from './impl.js'
+*/
+export function owned(): string {
+  return "import/export text in comments is ignored"
+}
+`);
+assert(
+  "ignores import/export text inside block comments",
+  !commentedForwardingText.violates && commentedForwardingText.forwardLines === 0,
+  JSON.stringify(commentedForwardingText),
+);
+
+const existingRuntimeHit = measureShimBehaviorForPath(
+  "runtime/src/existing/helpers.ts",
+  `
+export {
+  Alpha,
+  Beta,
+} from './impl.js'
+`,
+);
+assert(
+  "ZC-20 runtime gate formats existing forwarding-heavy files by path",
+  existingRuntimeHit &&
+    formatShimBehaviorViolation(existingRuntimeHit).includes(
+      "runtime/src/existing/helpers.ts",
+    ),
+  JSON.stringify(existingRuntimeHit),
+);
+
+const boundary = measure(`
+import value from './value.js'
+export { value }
+const other = 1
+const another = 2
+`);
+assert(
+  "does not flag the exact 50 percent boundary",
+  !boundary.violates && boundary.ratio === SHIM_BEHAVIOR_RATIO_LIMIT,
+  JSON.stringify(boundary),
+);
+
+const importHeavyOwnedModule = measure(`
+import * as React from 'react'
+import type { LocalJSXCommandContext } from '../../../../commands.js'
+import { Settings } from '../../components/Settings/Settings.js'
+import type { LocalJSXCommandOnDone } from '../../types/command.js'
+
+export async function call(onDone: LocalJSXCommandOnDone, context: LocalJSXCommandContext): Promise<React.ReactNode> {
+  return Settings({ onClose: onDone, context, defaultTab: 'Status' })
+}
+`);
+assert(
+  "does not flag import-heavy modules without forwarding LOC",
+  !importHeavyOwnedModule.violates && importHeavyOwnedModule.forwardLines === 0,
+  JSON.stringify(importHeavyOwnedModule),
+);
+
+const realModule = measure(`
+import { createContext, useContext } from 'react'
+
+export type Props = {
+  readonly exit: (error?: Error) => void
+}
+
+const AppContext = createContext<Props>({
+  exit() {},
+})
+
+AppContext.displayName = 'InternalAppContext'
+
+export function useApp() {
+  return useContext(AppContext)
+}
+
+export default AppContext
+`);
+assert(
+  "does not flag a small module with real owned behavior",
+  !realModule.violates,
+  JSON.stringify(realModule),
+);
+
+process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
+process.exit(failed > 0 ? 1 : 0);

@@ -1,6 +1,6 @@
 import { join } from 'path';
 import React, { useCallback, useState } from 'react';
-import type { ExitState } from '../hooks/useExitOnCtrlCDWithKeybindings.js';
+import type { ExitState } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { setClipboard } from '../../../tui/ink/termio/osc.js';
 import { Box, Text } from '../../../tui/ink.js';

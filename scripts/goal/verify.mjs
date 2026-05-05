@@ -32,6 +32,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { findItem, repoRoot, fail } from "./checklist-utils.mjs";
+import {
+  SHIM_BEHAVIOR_RATIO_LIMIT,
+  formatShimBehaviorViolation,
+  measureShimBehaviorForPath,
+} from "./shim-behavior.mjs";
 
 const RESET = "\x1b[0m";
 const BOLD = "\x1b[1m";
@@ -1357,6 +1362,10 @@ const ITEM_EVIDENCE = {
     // Strict typecheck must pass with NO baseline tolerance.
     runStrict: true,
   },
+  "ZC-20": {
+    files: ["scripts/goal/shim-behavior.mjs", "parity/ZC-20-parity.json"],
+    tests: ["scripts/goal/shim-behavior.test.mjs"],
+  },
   "ZC-33": {
     files: [
       "runtime/src/permissions/sandbox.ts",
@@ -1662,60 +1671,32 @@ if (shimAdditions.length > 0) {
   );
 }
 
-// Behavior gate: catch forwarding-only modules whose filename doesn't match SHIM_RE.
-// A new module whose body is >80% imports + re-exports + single-line forwards AND
+// Behavior gate: catch forwarding-heavy modules whose filename doesn't match SHIM_RE.
+// A new module whose body is >50% imports + re-exports + single-line forwards AND
 // has fewer than 40 significant lines is functionally a shim regardless of name.
-const FORWARD_LINE_RE =
-  /^\s*(export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[^}]*\}\s*from\b|export\s*\{[^}]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
-const FORWARD_STATEMENT_RE =
-  /^\s*(export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[\s\S]*\}\s*from\b|export\s*\{[\s\S]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
-const SINGLE_LINE_FORWARD_FN_RE =
-  /^\s*(?:export\s+)?(?:async\s+)?function\s+\w+\s*\([^)]*\)\s*\{\s*(?:return\s+(?:await\s+)?|await\s+)?[\w$.]+\([^{};]*\)\s*;?\s*\}\s*$/;
-const SINGLE_LINE_FORWARD_ARROW_RE =
-  /^\s*export\s+const\s+\w+\s*=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*=>\s*(?:\{\s*(?:return\s+(?:await\s+)?|await\s+)?[\w$.]+\([^{};]*\)\s*;?\s*\}|[\w$.]+\([^{};]*\)|[\w$.]+\.[\w$]+(?:\([^{};]*\))?)\s*;?\s*$/;
-function countForwardingLines(significant) {
-  return combineLogicalStatements(significant).filter((stmt) =>
-    FORWARD_LINE_RE.test(stmt) ||
-    FORWARD_STATEMENT_RE.test(stmt) ||
-    SINGLE_LINE_FORWARD_FN_RE.test(stmt) ||
-    SINGLE_LINE_FORWARD_ARROW_RE.test(stmt)
-  ).length;
-}
 const forwardingViolations = [];
 for (const rel of added) {
   if (!/^runtime\/src\//.test(rel)) continue;
   if (!/\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(rel)) continue;
   if (/\.test\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(rel)) continue;
   if (/\.d\.ts$/.test(rel)) continue;
-  if (rel.startsWith("runtime/src/agenc/upstream/")) continue;
   let body;
   try {
     body = readFileSync(path.join(repoRoot(), rel), "utf8");
   } catch {
     continue;
   }
-  if (body.length > 16000) continue; // big files aren't shims
-  const lines = body.split("\n");
-  const significant = lines
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith("//") && !l.startsWith("*") && !l.startsWith("/*") && l !== "*/");
-  if (significant.length === 0 || significant.length >= 40) continue;
-  const implementationLines = significant.filter((line) => !/^\s*import\s/.test(line));
-  if (implementationLines.length === 0) continue;
-  const logicalStatements = combineLogicalStatements(implementationLines);
-  if (logicalStatements.length === 0 || logicalStatements.length >= 40) continue;
-  const forward = countForwardingLines(implementationLines);
-  const ratio = forward / logicalStatements.length;
-  if (forward > 0 && ratio > 0.8) {
-    forwardingViolations.push({ path: rel, ratio: ratio.toFixed(2), lines: logicalStatements.length, forward });
-  }
+  const violation = measureShimBehaviorForPath(rel, body);
+  if (violation) forwardingViolations.push(violation);
 }
 if (forwardingViolations.length > 0) {
   failGate(
     `forbidden: this item adds ${forwardingViolations.length} forwarding-only module(s) ` +
-      `(>80% imports + re-exports + single-line forwarders, <40 significant lines). ` +
+      `(>${Math.round(SHIM_BEHAVIOR_RATIO_LIMIT * 100)}% imports + forwarding LOC, <40 significant lines). ` +
       `These are shims by another name. Inline at the call site or move to canonical home.\n  ` +
-      forwardingViolations.map((v) => `- ${v.path} (${v.forward}/${v.lines} forward lines, ratio ${v.ratio})`).join("\n  "),
+      forwardingViolations
+        .map((violation) => `- ${formatShimBehaviorViolation(violation)}`)
+        .join("\n  "),
   );
 }
 pass("no new upstream/ files, no new shim-pattern additions, no forwarding-only modules");
@@ -1739,36 +1720,6 @@ if (sdkDaemonDriftRelevant) {
   pass("daemon SDK method drift check passed");
 } else {
   pass("daemon SDK method drift check not required for this diff");
-}
-
-function combineLogicalStatements(significant) {
-  const statements = [];
-  let current = "";
-  let braceDepth = 0;
-  for (const line of significant) {
-    const startsMultilineForward = current.length > 0 || /^\s*(import|export)\s*\{/u.test(line);
-    if (!startsMultilineForward) {
-      statements.push(line);
-      continue;
-    }
-    current = current.length === 0 ? line : `${current}\n${line}`;
-    braceDepth += countChar(line, "{") - countChar(line, "}");
-    if (braceDepth <= 0 && /(?:;|\bfrom\s+["'][^"']+["'];?)\s*$/u.test(line)) {
-      statements.push(current);
-      current = "";
-      braceDepth = 0;
-    }
-  }
-  if (current.length > 0) statements.push(current);
-  return statements;
-}
-
-function countChar(value, needle) {
-  let count = 0;
-  for (const char of value) {
-    if (char === needle) count += 1;
-  }
-  return count;
 }
 
 // --- Gate 2.5: per-item named evidence ----------------------------------
@@ -4511,6 +4462,35 @@ function assertZc12DonorPortArtifactsGone() {
   }
 }
 
+function assertZc20NoRuntimeShimCruft() {
+  const forwardingHits = [];
+  for (const rel of listSourceFiles(path.join(root, "runtime/src"))) {
+    if (!rel.startsWith("runtime/src/")) continue;
+    if (SHIM_ALLOW_DIRS.some((dir) => rel.startsWith(dir))) continue;
+    if (/\.test\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(rel)) continue;
+    if (/\.d\.ts$/.test(rel)) continue;
+
+    let body;
+    try {
+      body = readFileSync(path.join(root, rel), "utf8");
+    } catch {
+      continue;
+    }
+    const violation = measureShimBehaviorForPath(rel, body);
+    if (violation) forwardingHits.push(formatShimBehaviorViolation(violation));
+  }
+
+  const failures = [];
+  if (forwardingHits.length > 0) {
+    failures.push(
+      `forwarding-heavy module(s) (>${Math.round(SHIM_BEHAVIOR_RATIO_LIMIT * 100)}% imports+forwards LOC):\n${forwardingHits.join("\n")}`,
+    );
+  }
+  if (failures.length > 0) {
+    failGate(`ZC-20: runtime/src shim cruft remains:\n${failures.join("\n\n")}`);
+  }
+}
+
 function assertZc22ElicitationRendererInlined() {
   const appRel = "runtime/src/tui/components/App.tsx";
   const appPath = path.join(root, appRel);
@@ -5400,6 +5380,7 @@ async function cleanupGates(item) {
       },
       "ZC-18": { gone: ["runtime/parity/agenc-compaction-context.json"] },
       "ZC-19": { grepPresent: { pattern: "openai-compatible.*OpenAI HTTP API protocol.*not a port-era shim", scope: "runtime/src/llm/providers/openai-compatible/README.md" } }, // branding-scan: allow real OpenAI protocol name in ZC-19 evidence
+      "ZC-20": { custom: assertZc20NoRuntimeShimCruft },
       "ZC-22": {
         gone: ["runtime/src/tui/elicitation-bridge.tsx"],
         grepNotPresent: { pattern: "elicitation-bridge", scope: "runtime/src" },

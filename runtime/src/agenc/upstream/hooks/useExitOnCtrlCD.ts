@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react'
-import useApp from '../../../tui/ink/hooks/use-app.js'
+import { useApp } from '../../../tui/ink/components/AppContext.js'
 import type { KeybindingContextName } from '../../../tui/keybindings/types.js'
 import { useDoublePress } from './useDoublePress.js'
 

@@ -5,7 +5,7 @@ import {
   formatStructuredToolError,
   formatStructuredToolResult,
 } from "../session-transcript.js";
-import { pickToolResultDispatch } from "../../agenc/adapters/upstream-tool-result-dispatch.js";
+import { pickToolResultDispatch } from "../tool-result-routing.js";
 
 describe("AgenC TUI transcript bridge", () => {
   test("maps AgenC user and streaming assistant events into upstream messages", () => {

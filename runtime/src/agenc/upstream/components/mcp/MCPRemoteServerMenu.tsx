@@ -3,7 +3,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from 'src/services/analytics/index.js';
 import type { CommandResultDisplay } from '../../../../commands.js';
 import { getOauthConfig } from '../../constants/oauth.js';
-import { useExitOnCtrlCDWithKeybindings } from '../../hooks/useExitOnCtrlCDWithKeybindings.js';
+import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { setClipboard } from '../../../../tui/ink/termio/osc.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw j/k/arrow menu navigation
@@ -59,10 +59,10 @@ export function MCPRemoteServerMenu({
   const [isReconnecting, setIsReconnecting] = useState(false);
   const authAbortControllerRef = useRef<AbortController | null>(null);
   const [isAgenCAIAuthenticating, setIsAgenCAIAuthenticating] = useState(false);
-  const [claudeAIAuthUrl, setAgenCAIAuthUrl] = useState<string | null>(null);
+  const [agencAIAuthUrl, setAgenCAIAuthUrl] = useState<string | null>(null);
   const [isAgenCAIClearingAuth, setIsAgenCAIClearingAuth] = useState(false);
-  const [claudeAIClearAuthUrl, setAgenCAIClearAuthUrl] = useState<string | null>(null);
-  const [claudeAIClearAuthBrowserOpened, setAgenCAIClearAuthBrowserOpened] = useState(false);
+  const [agencAIClearAuthUrl, setAgenCAIClearAuthUrl] = useState<string | null>(null);
+  const [agencAIClearAuthBrowserOpened, setAgenCAIClearAuthBrowserOpened] = useState(false);
   const [urlCopied, setUrlCopied] = useState(false);
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const unmountedRef = useRef(false);
@@ -182,7 +182,7 @@ export function MCPRemoteServerMenu({
       void handleAgenCAIAuthComplete();
     }
     if (key.return && isAgenCAIClearingAuth) {
-      if (claudeAIClearAuthBrowserOpened) {
+      if (agencAIClearAuthBrowserOpened) {
         void handleAgenCAIClearAuthComplete();
       } else {
         // First Enter: open the browser
@@ -193,7 +193,7 @@ export function MCPRemoteServerMenu({
       }
     }
     if (input === 'c' && !urlCopied) {
-      const urlToCopy = authorizationUrl || claudeAIAuthUrl || claudeAIClearAuthUrl;
+      const urlToCopy = authorizationUrl || agencAIAuthUrl || agencAIClearAuthUrl;
       if (urlToCopy) {
         void setClipboard(urlToCopy).then(raw => {
           if (unmountedRef.current) return;
@@ -213,7 +213,7 @@ export function MCPRemoteServerMenu({
   const serverCommandsCount = filterMcpPromptsByServer(mcp.commands, server.name).length;
   const toggleMcpServer = useMcpToggleEnabled();
   const handleAgenCAIAuth = React.useCallback(async () => {
-    const claudeAiBaseUrl = getOauthConfig().AGENC_AI_ORIGIN;
+    const agencAiBaseUrl = getOauthConfig().AGENC_AI_ORIGIN;
     const accountInfo = getOauthAccountInfo();
     const orgUuid = accountInfo?.organizationUuid;
     let authUrl: string;
@@ -222,10 +222,10 @@ export function MCPRemoteServerMenu({
       // Replace 'mcprs' prefix with 'mcpsrv' if present
       const serverId = server.config.id.startsWith('mcprs') ? 'mcpsrv' + server.config.id.slice(5) : server.config.id;
       const productSurface = encodeURIComponent(process.env.AGENC_ENTRYPOINT || 'cli');
-      authUrl = `${claudeAiBaseUrl}/api/organizations/${orgUuid}/mcp/start-auth/${serverId}?product_surface=${productSurface}`;
+      authUrl = `${agencAiBaseUrl}/api/organizations/${orgUuid}/mcp/start-auth/${serverId}?product_surface=${productSurface}`;
     } else {
       // Fall back to settings/connectors if we don't have the required IDs
-      authUrl = `${claudeAiBaseUrl}/settings/connectors`;
+      authUrl = `${agencAiBaseUrl}/settings/connectors`;
     }
     setAgenCAIAuthUrl(authUrl);
     setIsAgenCAIAuthenticating(true);
@@ -389,7 +389,7 @@ export function MCPRemoteServerMenu({
           <Spinner />
           <Text> A browser window will open for authentication</Text>
         </Box>
-        {claudeAIAuthUrl && <Box flexDirection="column">
+        {agencAIAuthUrl && <Box flexDirection="column">
             <Box>
               <Text dimColor>
                 If your browser doesn&apos;t open automatically, copy this URL
@@ -399,7 +399,7 @@ export function MCPRemoteServerMenu({
                   <KeyboardShortcutHint shortcut="c" action="copy" parens />
                 </Text>}
             </Box>
-            <Link url={claudeAIAuthUrl} />
+            <Link url={agencAIAuthUrl} />
           </Box>}
         <Box marginLeft={3} flexDirection="column">
           <Text color="permission">
@@ -414,12 +414,12 @@ export function MCPRemoteServerMenu({
   if (isAgenCAIClearingAuth) {
     return <Box flexDirection="column" gap={1} padding={1}>
         <Text color="claude">Clear authentication for {server.name}</Text>
-        {claudeAIClearAuthBrowserOpened ? <>
+        {agencAIClearAuthBrowserOpened ? <>
             <Text>
               Find the MCP server in the browser and click
               &quot;Disconnect&quot;.
             </Text>
-            {claudeAIClearAuthUrl && <Box flexDirection="column">
+            {agencAIClearAuthUrl && <Box flexDirection="column">
                 <Box>
                   <Text dimColor>
                     If your browser didn&apos;t open automatically, copy this
@@ -429,7 +429,7 @@ export function MCPRemoteServerMenu({
                       <KeyboardShortcutHint shortcut="c" action="copy" parens />
                     </Text>}
                 </Box>
-                <Link url={claudeAIClearAuthUrl} />
+                <Link url={agencAIClearAuthUrl} />
               </Box>}
             <Box marginLeft={3} flexDirection="column">
               <Text color="permission">

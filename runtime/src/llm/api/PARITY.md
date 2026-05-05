@@ -15,4 +15,3 @@ This directory owns the TypeScript port of API-core primitives:
 - `retry.ts` exposes retry/backoff helpers, Retry-After handling, 529 detection, and context-overflow parsing.
 - `fallback-ladder.ts` exposes the repeated-overload fallback trigger and provider/model target normalization.
 - `http.ts` exposes the HTTP request wrapper and stale-connection fetch retry.
-- `watchdog.ts` exposes the stream-idle watchdog from the API namespace.

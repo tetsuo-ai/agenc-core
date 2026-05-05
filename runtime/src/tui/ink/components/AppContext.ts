@@ -1,4 +1,4 @@
-import { createContext } from 'react'
+import { createContext, useContext } from 'react'
 
 export type Props = {
   /**
@@ -17,5 +17,9 @@ const AppContext = createContext<Props>({
 
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
 AppContext.displayName = 'InternalAppContext'
+
+export function useApp(): Props {
+  return useContext(AppContext)
+}
 
 export default AppContext

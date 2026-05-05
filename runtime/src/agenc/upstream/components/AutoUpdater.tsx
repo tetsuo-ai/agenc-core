@@ -9,7 +9,7 @@ import { getGlobalConfig, isAutoUpdaterDisabled } from '../utils/config.js';
 import { logForDebugging } from 'src/utils/debug.js';
 import { getCurrentInstallationType } from '../utils/doctorDiagnostic.js';
 import { installOrUpdateAgenCPackage, localInstallationExists } from '../utils/localInstaller.js';
-import { removeInstalledSymlink } from '../utils/nativeInstaller/index.js';
+import { removeInstalledSymlink } from '../utils/nativeInstaller/installer.js';
 import { gt, gte } from '../utils/semver.js';
 import { getInitialSettings } from '../utils/settings/settings.js';
 type Props = {

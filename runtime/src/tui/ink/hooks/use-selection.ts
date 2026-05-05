@@ -1,6 +1,6 @@
 import { useContext, useMemo, useSyncExternalStore } from 'react'
 import StdinContext from '../components/StdinContext.js'
-import instances from '../instances.js'
+import { getInkInstance } from '../instances.js'
 import {
   type FocusMove,
   type SelectionState,
@@ -48,7 +48,7 @@ export function useSelection(): {
   // is keyed by stdout which we can get from process.stdout since there's
   // only one Ink instance per process in practice.
   useContext(StdinContext) // anchor to App subtree for hook rules
-  const ink = instances.get(process.stdout)
+  const ink = getInkInstance()
   // Memoize so callers can safely use the return value in dependency arrays.
   // ink is a singleton per stdout — stable across renders.
   return useMemo(() => {
@@ -96,7 +96,7 @@ const ALWAYS_FALSE = () => false
  */
 export function useHasSelection(): boolean {
   useContext(StdinContext)
-  const ink = instances.get(process.stdout)
+  const ink = getInkInstance()
   return useSyncExternalStore(
     ink ? ink.subscribeToSelectionChange : NO_SUBSCRIBE,
     ink ? ink.hasTextSelection : ALWAYS_FALSE,

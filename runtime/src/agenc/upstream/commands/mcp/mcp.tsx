@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { useEffect, useRef } from 'react';
-import { MCPSettings } from '../../components/mcp/index.js';
+import { MCPSettings } from '../../components/mcp/MCPSettings.js';
 import { MCPReconnect } from '../../components/mcp/MCPReconnect.js';
 import { useMcpToggleEnabled } from '../../services/mcp/MCPConnectionManager.js';
 import { useAppState } from '../../../../tui/state/AppState.js';

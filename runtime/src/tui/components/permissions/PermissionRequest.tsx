@@ -18,7 +18,7 @@ import { PowerShellTool } from '../../../agenc/upstream/tools/PowerShellTool/Pow
 import { SkillTool } from '../../../agenc/upstream/tools/SkillTool/SkillTool.js';
 import { WebFetchTool } from '../../../agenc/upstream/tools/WebFetchTool/WebFetchTool.js';
 import type { AssistantMessage } from '../../../agenc/upstream/types/message.js';
-import type { PermissionDecision } from '../../../agenc/upstream/utils/permissions/PermissionResult.js';
+import type { PermissionDecision } from '../../../agenc/upstream/types/permissions.js';
 import { AskUserQuestionPermissionRequest } from '../../../agenc/upstream/components/permissions/AskUserQuestionPermissionRequest/AskUserQuestionPermissionRequest.js';
 import { BashPermissionRequest } from '../../../agenc/upstream/components/permissions/BashPermissionRequest/BashPermissionRequest.js';
 import { EnterPlanModePermissionRequest } from '../../../agenc/upstream/components/permissions/EnterPlanModePermissionRequest/EnterPlanModePermissionRequest.js';
