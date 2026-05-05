@@ -61,6 +61,19 @@ describe("lsp config", () => {
       success: false,
       reason: expect.stringContaining("restartOnCrash is not supported"),
     });
+
+    expect(
+      parseLspServersConfig({
+        bad: {
+          command: "server",
+          workspaceFolder: " /workspace/project ",
+          extensionToLanguage: { ".ts": "typescript" },
+        },
+      }),
+    ).toMatchObject({
+      success: false,
+      reason: expect.stringContaining("workspaceFolder must not include"),
+    });
   });
 
   test("uses injectable server sources", async () => {

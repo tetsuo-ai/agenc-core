@@ -106,6 +106,15 @@ export function normalizeLspServerConfig(
   if (raw.shutdownTimeout !== undefined) {
     throw new Error(`LSP server ${name} shutdownTimeout is not supported`);
   }
+  if (
+    typeof raw.workspaceFolder === "string" &&
+    raw.workspaceFolder.trim().length > 0 &&
+    raw.workspaceFolder !== raw.workspaceFolder.trim()
+  ) {
+    throw new Error(
+      `LSP server ${name} workspaceFolder must not include surrounding whitespace`,
+    );
+  }
   const env = stringRecord(raw.env, "env");
   const config: LspServerConfig = Object.freeze({
     command: raw.command.trim(),
@@ -113,7 +122,7 @@ export function normalizeLspServerConfig(
     ...(env !== undefined ? { env } : {}),
     ...(typeof raw.workspaceFolder === "string" &&
     raw.workspaceFolder.trim().length > 0
-      ? { workspaceFolder: raw.workspaceFolder }
+      ? { workspaceFolder: raw.workspaceFolder.trim() }
       : {}),
     extensionToLanguage: normalizeExtensionMap(raw.extensionToLanguage),
     ...(raw.initializationOptions !== undefined

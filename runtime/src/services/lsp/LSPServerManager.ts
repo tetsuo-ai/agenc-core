@@ -6,7 +6,7 @@
  * notifications.
  */
 
-import { extname, resolve } from "node:path";
+import { extname, isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { getAllLspServers } from "./config.js";
@@ -47,10 +47,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function fileUri(filePath: string): string {
-  return pathToFileURL(resolve(filePath)).href;
-}
-
 export function createLSPServerManager(
   options: LSPServerManagerOptions = {},
 ): LSPServerManager {
@@ -61,6 +57,15 @@ export function createLSPServerManager(
     options.instanceFactory ??
     ((name: string, config: ScopedLspServerConfig) =>
       createLSPServerInstance(name, config, { cwd: options.workspaceRoot }));
+
+  function resolveFilePath(filePath: string): string {
+    if (isAbsolute(filePath)) return resolve(filePath);
+    return resolve(options.workspaceRoot ?? process.cwd(), filePath);
+  }
+
+  function fileUri(filePath: string): string {
+    return pathToFileURL(resolveFilePath(filePath)).href;
+  }
 
   async function initialize(): Promise<void> {
     const { servers: configs } = await getAllLspServers(options.configSource);

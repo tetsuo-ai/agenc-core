@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import {
   ConfiguredHooksRuntime,
@@ -8,8 +8,11 @@ import { defaultConfig } from "../config/schema.js";
 import type { PostToolUseHook } from "../tools/hooks.js";
 import {
   loadBootstrapHooks,
+  loadBootstrapLspServersInBackground,
   loadBootstrapLspServers,
+  shutdownBootstrapLspServers,
 } from "./bootstrap-services.js";
+import { normalizeLspServerConfig } from "../services/lsp/config.js";
 import {
   _resetLspManagerForTesting,
   getInitializationStatus,
@@ -18,6 +21,7 @@ import {
   shutdownLspServerManager,
   waitForInitialization,
 } from "../services/lsp/manager.js";
+import type { LSPServerInstance } from "../services/lsp/LSPServerInstance.js";
 
 describe("loadBootstrapHooks", () => {
   test("installs the built-in auto-fix post hook once across reloads", () => {
@@ -83,6 +87,39 @@ describe("loadBootstrapHooks", () => {
 });
 
 describe("loadBootstrapLspServers", () => {
+  function rejectingStopServer(): LSPServerInstance {
+    const config = normalizeLspServerConfig("ts", {
+      command: "typescript-language-server",
+      extensionToLanguage: { ".ts": "typescript" },
+    });
+    return {
+      name: "ts",
+      config,
+      get state() {
+        return "running";
+      },
+      get startTime() {
+        return undefined;
+      },
+      get lastError() {
+        return undefined;
+      },
+      get restartCount() {
+        return 0;
+      },
+      start: async () => {},
+      stop: async () => {
+        throw new Error("stop failed");
+      },
+      restart: async () => {},
+      isHealthy: () => true,
+      sendRequest: async () => ({}),
+      sendNotification: async () => {},
+      onNotification: () => {},
+      onRequest: () => {},
+    } as unknown as LSPServerInstance;
+  }
+
   test("starts and stops the LSP manager from typed config", async () => {
     _resetLspManagerForTesting();
     try {
@@ -204,6 +241,61 @@ describe("loadBootstrapLspServers", () => {
       );
     } finally {
       await shutdownLspServerManager();
+      _resetLspManagerForTesting();
+    }
+  });
+
+  test("background config reload logs LSP shutdown rejection", async () => {
+    _resetLspManagerForTesting();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const config = normalizeLspServerConfig("ts", {
+      command: "typescript-language-server",
+      extensionToLanguage: { ".ts": "typescript" },
+    });
+    try {
+      initializeLspServerManager({
+        configSource: () => ({ ts: config }),
+        instanceFactory: () => rejectingStopServer(),
+      });
+      await waitForInitialization();
+
+      loadBootstrapLspServersInBackground(
+        { ...defaultConfig(), lsp_servers: undefined },
+        { workspaceRoot: "/workspace/project" },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(warn).toHaveBeenCalledWith(
+        "[lsp] bootstrap config reload failed:",
+        expect.stringContaining("stop failed"),
+      );
+    } finally {
+      warn.mockRestore();
+      _resetLspManagerForTesting();
+    }
+  });
+
+  test("bootstrap LSP shutdown logs and does not throw on stop failure", async () => {
+    _resetLspManagerForTesting();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const config = normalizeLspServerConfig("ts", {
+      command: "typescript-language-server",
+      extensionToLanguage: { ".ts": "typescript" },
+    });
+    try {
+      initializeLspServerManager({
+        configSource: () => ({ ts: config }),
+        instanceFactory: () => rejectingStopServer(),
+      });
+      await waitForInitialization();
+
+      await expect(shutdownBootstrapLspServers()).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(
+        "[lsp] bootstrap shutdown failed:",
+        expect.stringContaining("stop failed"),
+      );
+    } finally {
+      warn.mockRestore();
       _resetLspManagerForTesting();
     }
   });

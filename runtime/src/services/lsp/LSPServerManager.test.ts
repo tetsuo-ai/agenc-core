@@ -156,4 +156,32 @@ describe("createLSPServerManager", () => {
 
     expect(created[0]!.stopCount).toBe(1);
   });
+
+  test("resolves relative file notifications against workspaceRoot", async () => {
+    const config = normalizeLspServerConfig("ts", {
+      command: "typescript-language-server",
+      extensionToLanguage: { ".ts": "typescript" },
+    });
+    const server = fakeServer("ts", config);
+    const manager = createLSPServerManager({
+      workspaceRoot: "/workspace/project",
+      configSource: () => ({ ts: config }),
+      instanceFactory: () => server,
+    });
+
+    await manager.initialize();
+    await manager.changeFile("src/a.ts", "let x = 1;");
+
+    expect(
+      (
+        server.notifications[0]!.params as {
+          textDocument: { uri: string };
+        }
+      ).textDocument.uri,
+    ).toBe("file:///workspace/project/src/a.ts");
+    expect(manager.isFileOpen("src/a.ts")).toBe(true);
+
+    await manager.closeFile("src/a.ts");
+    expect(manager.isFileOpen("src/a.ts")).toBe(false);
+  });
 });

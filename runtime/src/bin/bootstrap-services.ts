@@ -502,6 +502,29 @@ export async function loadBootstrapLspServers(
   reinitializeLspServerManager(managerOptions);
 }
 
+function lspErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function loadBootstrapLspServersInBackground(
+  cfg: ReturnType<ConfigStore["current"]>,
+  opts: { readonly workspaceRoot?: string } = {},
+): void {
+  void loadBootstrapLspServers(cfg, opts).catch((error) => {
+    // eslint-disable-next-line no-console
+    console.warn("[lsp] bootstrap config reload failed:", lspErrorMessage(error));
+  });
+}
+
+export async function shutdownBootstrapLspServers(): Promise<void> {
+  try {
+    await shutdownLspServerManager();
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn("[lsp] bootstrap shutdown failed:", lspErrorMessage(error));
+  }
+}
+
 function createShellSnapshotTx(
   workspaceRoot: string,
   env: NodeJS.ProcessEnv,
@@ -620,12 +643,12 @@ export function buildBootstrapSessionServices(
     });
   };
   loadHooks(opts.configStore.current());
-  void loadBootstrapLspServers(opts.configStore.current(), {
+  loadBootstrapLspServersInBackground(opts.configStore.current(), {
     workspaceRoot: opts.workspaceRoot,
   });
   const unsubscribeHooksConfig = opts.configStore.subscribe((cfg) => {
     loadHooks(cfg);
-    void loadBootstrapLspServers(cfg, { workspaceRoot: opts.workspaceRoot });
+    loadBootstrapLspServersInBackground(cfg, { workspaceRoot: opts.workspaceRoot });
   });
 
   const services: SessionServices = {
@@ -764,7 +787,7 @@ export function buildBootstrapSessionServices(
     },
     shutdown: async () => {
       unsubscribeHooksConfig();
-      await shutdownLspServerManager();
+      await shutdownBootstrapLspServers();
       hooksService.clearConfiguredLifecycleHooks();
       rolloutTrace.flush();
       rolloutTrace.close();
