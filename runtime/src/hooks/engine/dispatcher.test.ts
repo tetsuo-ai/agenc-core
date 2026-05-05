@@ -1,6 +1,10 @@
 import { describe, expect, test } from "vitest";
 
-import { HookEngine, matchesPattern } from "./dispatcher.js";
+import {
+  DEFAULT_HOOK_TIMEOUT_MS,
+  HookEngine,
+  matchesPattern,
+} from "./dispatcher.js";
 import { readHookSpecificOutput } from "./output-parser.js";
 import type { HooksMap } from "../../config/schema.js";
 
@@ -16,6 +20,10 @@ function makeEngine(config: HooksMap): HookEngine {
 }
 
 describe("HookEngine dispatcher", () => {
+  test("uses donor default command-hook timeout", () => {
+    expect(DEFAULT_HOOK_TIMEOUT_MS).toBe(600_000);
+  });
+
   test("matches exact, pipe, wildcard, and regex patterns", () => {
     expect(matchesPattern("Read", "Read")).toBe(true);
     expect(matchesPattern("Read", "Grep|Read")).toBe(true);

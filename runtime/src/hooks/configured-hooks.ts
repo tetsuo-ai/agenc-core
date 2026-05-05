@@ -218,7 +218,7 @@ export class ConfiguredHooksRuntime {
   private createPreToolUseHook(hook: IndividualHookConfig): PreToolUseHook {
     return async ({ invocation, tool, args }) => {
       const toolName = tool.name;
-      if (this.isDisabled() || !matchesPattern(toolName, hook.matcher)) {
+      if (this.isDisabled() || !matchesToolMatcher(toolName, hook.matcher)) {
         return { kind: "continue" };
       }
       const result = await this.runCommandHook(hook, {
@@ -243,34 +243,24 @@ export class ConfiguredHooksRuntime {
         return { kind: "deny", reason: legacyBlockReason };
       }
       const unsupported = unsupportedPreToolUseOutput(specific);
-      if (unsupported !== null) this.recordHookOutputIssue(result, unsupported);
-      const decision = specific?.permissionDecision;
-      const updatedInput = specific?.updatedInput;
-      return {
-        kind: "continue",
-        ...(updatedInput !== undefined ? { args: updatedInput } : {}),
-        ...(decision !== undefined
-          ? {
-              hookPermissionResult: {
-                behavior: decision,
-                ...(specific?.permissionDecisionReason !== undefined
-                  ? { message: redactSecrets(specific.permissionDecisionReason) }
-                  : {}),
-                ...(updatedInput !== undefined ? { updatedInput } : {}),
-              },
-            }
-          : {}),
-        ...(specific?.additionalContext !== undefined
-          ? { additionalContext: [redactSecrets(specific.additionalContext)] }
-          : {}),
-      };
+      if (unsupported !== null) {
+        this.recordHookOutputIssue(result, unsupported);
+        return { kind: "continue" };
+      }
+      if (specific?.permissionDecision === "deny") {
+        const reason = trimmedReason(specific.permissionDecisionReason);
+        if (reason !== undefined) {
+          return { kind: "deny", reason: redactSecrets(reason) };
+        }
+      }
+      return { kind: "continue" };
     };
   }
 
   private createPostToolUseHook(hook: IndividualHookConfig): PostToolUseHook {
     return async ({ invocation, tool, args, result }) => {
       const toolName = tool.name;
-      if (this.isDisabled() || !matchesPattern(toolName, hook.matcher)) {
+      if (this.isDisabled() || !matchesToolMatcher(toolName, hook.matcher)) {
         return { kind: "continue" };
       }
       const run = await this.runCommandHook(hook, {
@@ -326,7 +316,7 @@ export class ConfiguredHooksRuntime {
   private createFailureHook(hook: IndividualHookConfig): PostToolUseFailureHook {
     return async ({ invocation, tool, args, error, isInterrupt }) => {
       const toolName = tool.name;
-      if (this.isDisabled() || !matchesPattern(toolName, hook.matcher)) return;
+      if (this.isDisabled() || !matchesToolMatcher(toolName, hook.matcher)) return;
       await this.runCommandHook(hook, {
         ...toolInvocationHookContext(invocation, this.opts.cwd),
         hook_event_name: "PostToolUseFailure",
@@ -592,6 +582,15 @@ function hookCommandLabel(hook: IndividualHookConfig): string {
   return redactSecrets(hook.command.statusMessage ?? hook.command.command);
 }
 
+function matchesToolMatcher(toolName: string, matcher?: string): boolean {
+  return toolMatcherInputs(toolName).some((input) => matchesPattern(input, matcher));
+}
+
+function toolMatcherInputs(toolName: string): readonly string[] {
+  if (toolName === "apply_patch") return ["apply_patch", "Write", "Edit"];
+  return [toolName];
+}
+
 function permissionDecisionHookInput(
   input: PermissionDecisionHookInput,
   fallbackCwd: string,
@@ -750,6 +749,30 @@ function unsupportedPreToolUseOutput(
   }
   if (output?.suppressOutput === true) {
     return "PreToolUse hook returned unsupported suppressOutput";
+  }
+  if (output?.updatedInput !== undefined) {
+    return "PreToolUse hook returned unsupported updatedInput";
+  }
+  if (trimmedReason(output?.additionalContext) !== undefined) {
+    return "PreToolUse hook returned unsupported additionalContext";
+  }
+  if (output?.permissionDecision === "allow") {
+    return "PreToolUse hook returned unsupported permissionDecision:allow";
+  }
+  if (output?.permissionDecision === "ask") {
+    return "PreToolUse hook returned unsupported permissionDecision:ask";
+  }
+  if (
+    output?.permissionDecision === "deny" &&
+    trimmedReason(output.permissionDecisionReason) === undefined
+  ) {
+    return "PreToolUse hook returned permissionDecision:deny without a non-empty permissionDecisionReason";
+  }
+  if (
+    output?.permissionDecision === undefined &&
+    output?.permissionDecisionReason !== undefined
+  ) {
+    return "PreToolUse hook returned permissionDecisionReason without permissionDecision";
   }
   return null;
 }

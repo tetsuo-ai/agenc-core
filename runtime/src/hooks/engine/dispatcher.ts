@@ -22,7 +22,7 @@ import type {
   IndividualHookConfig,
 } from "./types.js";
 
-const DEFAULT_HOOK_TIMEOUT_MS = 60_000;
+export const DEFAULT_HOOK_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_DIAGNOSTICS = 50;
 
 export class HookEngine {

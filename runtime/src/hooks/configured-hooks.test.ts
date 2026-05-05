@@ -683,6 +683,53 @@ describe("configured hooks runtime", () => {
     );
   });
 
+  test("permission hook rejects root decisions even with nested output", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      PermissionRequest: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command: jsonStdoutCommand({
+                decision: { behavior: "deny", message: "root deny" },
+                hookSpecificOutput: {
+                  hookEventName: "PermissionRequest",
+                  decision: { behavior: "allow" },
+                },
+              }),
+            },
+          ],
+        },
+      ],
+    });
+
+    const decision = await target.permissionDecisionHooks[0]!({
+      toolName: "Write",
+      args: {},
+    });
+
+    expect(decision).toEqual({ kind: "pass" });
+    expect(runtime.latestDiagnostics()[0]?.error).toContain(
+      "PermissionRequest hook returned unsupported root decision",
+    );
+  });
+
   test("permission hook records JSON array output as invalid structured output", async () => {
     const runtime = new ConfiguredHooksRuntime({
       cwd: process.cwd(),
@@ -1086,6 +1133,201 @@ describe("configured hooks runtime", () => {
     );
   });
 
+  test("PreToolUse hookSpecific deny with reason blocks", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      PreToolUse: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command: jsonStdoutCommand({
+                hookSpecificOutput: {
+                  hookEventName: "PreToolUse",
+                  permissionDecision: "deny",
+                  permissionDecisionReason: "blocked by hook",
+                },
+              }),
+            },
+          ],
+        },
+      ],
+    });
+
+    const decision = await target.preToolUseHooks[0]!({
+      invocation: { callId: "c-pre" } as never,
+      tool: { name: "Write" } as never,
+      args: {},
+    });
+
+    expect(decision).toEqual({ kind: "deny", reason: "blocked by hook" });
+  });
+
+  test.each([
+    [
+      "permissionDecision allow",
+      { permissionDecision: "allow" },
+      "PreToolUse hook returned unsupported permissionDecision:allow",
+    ],
+    [
+      "permissionDecision ask",
+      { permissionDecision: "ask" },
+      "PreToolUse hook returned unsupported permissionDecision:ask",
+    ],
+    [
+      "updatedInput",
+      { updatedInput: { redacted: true } },
+      "PreToolUse hook returned unsupported updatedInput",
+    ],
+    [
+      "additionalContext",
+      { additionalContext: "context" },
+      "PreToolUse hook returned unsupported additionalContext",
+    ],
+  ])("records unsupported PreToolUse %s output", async (_name, output, error) => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      PreToolUse: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command: jsonStdoutCommand({
+                hookSpecificOutput: {
+                  hookEventName: "PreToolUse",
+                  ...output,
+                },
+              }),
+            },
+          ],
+        },
+      ],
+    });
+
+    const decision = await target.preToolUseHooks[0]!({
+      invocation: { callId: "c-pre" } as never,
+      tool: { name: "Write" } as never,
+      args: {},
+    });
+
+    expect(decision).toEqual({ kind: "continue" });
+    expect(runtime.latestDiagnostics()[0]?.error).toContain(error);
+  });
+
+  test("PreToolUse matcher aliases select apply_patch hooks", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      PreToolUse: [
+        {
+          matcher: "Write",
+          hooks: [{ type: "command", command: "printf alias-pre >&2; exit 2" }],
+        },
+      ],
+    });
+
+    const decision = await target.preToolUseHooks[0]!({
+      invocation: { callId: "c-pre" } as never,
+      tool: { name: "apply_patch" } as never,
+      args: {},
+    });
+
+    expect(decision).toEqual({ kind: "deny", reason: "alias-pre" });
+  });
+
+  test("PostToolUse matcher aliases select apply_patch hooks", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      PostToolUse: [
+        {
+          matcher: "Edit",
+          hooks: [
+            {
+              type: "command",
+              command: jsonStdoutCommand({
+                hookSpecificOutput: {
+                  hookEventName: "PostToolUse",
+                  additionalContext: "alias-post",
+                },
+              }),
+            },
+          ],
+        },
+      ],
+    });
+
+    const decision = await target.postToolUseHooks[0]!({
+      invocation: { callId: "c-post" } as never,
+      tool: { name: "apply_patch" } as never,
+      args: {},
+      result: "ok",
+    });
+
+    expect(decision).toEqual({
+      kind: "additionalContext",
+      content: ["alias-post"],
+    });
+  });
+
   test("PreToolUse stdin includes invocation context fields", async () => {
     const runtime = new ConfiguredHooksRuntime({
       cwd: "/tmp",
@@ -1308,3 +1550,9 @@ describe("configured hooks runtime", () => {
     expect(signal.listenerCount).toBe(0);
   });
 });
+
+function jsonStdoutCommand(value: unknown): string {
+  return `node -e 'process.stdout.write(${JSON.stringify(
+    JSON.stringify(value),
+  )})'`;
+}

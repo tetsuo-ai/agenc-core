@@ -132,7 +132,7 @@ function validateKnownOutputFields(input: OutputFieldValidationInput): void {
     input.nested ? "hookSpecificOutput" : "hook output",
   );
 
-  if (!input.nested && input.expectedEvent === "PermissionRequest") {
+  if (input.expectedEvent === "PermissionRequest") {
     if (input.root.decision !== undefined) {
       input.invalid.push(
         "PermissionRequest hook returned unsupported root decision",
