@@ -17,7 +17,18 @@
 //      Skip with --skip-validate for iteration but never skip for completion.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { findItem, repoRoot, fail } from "./checklist-utils.mjs";
@@ -1240,6 +1251,14 @@ const ITEM_EVIDENCE = {
         scope: "runtime/src",
       },
     ],
+  },
+  "PK-13": {
+    files: ["scripts/check-sibling-package-pins.mjs"],
+    grepPresent: [
+      { pattern: "@tetsuo-ai", scope: "scripts/check-sibling-package-pins.mjs" },
+      { pattern: "npm view", scope: "scripts/check-sibling-package-pins.mjs" },
+    ],
+    tests: ["scripts/check-sibling-package-pins.test.mjs"],
   },
   "MG-01": {
     files: ["runtime/src/bin/agenc.ts"],
@@ -3333,6 +3352,87 @@ async function pluginGates(item) {
       failGate("PK-12 plugin-kit ABI surface check failed");
     }
     pass("plugin-kit dead ABI surface removed from runtime and package");
+    return;
+  }
+  if (id === "PK-13") {
+    const test = run("node", ["scripts/check-sibling-package-pins.test.mjs"]);
+    if (test.status !== 0) {
+      failGate("PK-13 sibling package pin checker tests failed");
+    }
+    const check = run("node", ["scripts/check-sibling-package-pins.mjs"]);
+    if (check.status !== 0) {
+      failGate("PK-13 sibling package pin check failed");
+    }
+    const commonDir = git("rev-parse", "--git-common-dir");
+    if (commonDir.status !== 0) {
+      failGate("PK-13 could not locate main checkout for umbrella validation wiring");
+    }
+    const mainCheckout =
+      path.basename(path.resolve(root, commonDir.stdout.trim())) === ".git"
+        ? path.dirname(path.resolve(root, commonDir.stdout.trim()))
+        : root;
+    const umbrellaPkg = path.join(path.dirname(mainCheckout), "package.json");
+    const umbrella = JSON.parse(readFileSync(umbrellaPkg, "utf8"));
+    if (
+      !umbrella.scripts?.["check:sibling-package-pins"] ||
+      !umbrella.scripts?.["validate:umbrella"]?.includes(
+        "check:sibling-package-pins",
+      )
+    ) {
+      failGate("PK-13 umbrella validate script does not run check:sibling-package-pins");
+    }
+    const fixtureRoot = mkdtempSync(path.join(tmpdir(), "agenc-pk13-umbrella-"));
+    try {
+      writeFileSync(
+        path.join(fixtureRoot, "package.json"),
+        `${JSON.stringify(
+          {
+            name: "pk13-umbrella-fixture",
+            private: true,
+            scripts: {
+              "check:sibling-package-pins":
+                umbrella.scripts["check:sibling-package-pins"],
+              "validate:umbrella": "npm run check:sibling-package-pins",
+            },
+          },
+          null,
+          2,
+        )}\n`,
+      );
+      symlinkSync(root, path.join(fixtureRoot, "agenc-core"), "dir");
+      const adminToolsDir = path.join(fixtureRoot, "agenc-prover", "admin-tools");
+      mkdirSync(adminToolsDir, { recursive: true });
+      writeFileSync(
+        path.join(adminToolsDir, "package.json"),
+        `${JSON.stringify(
+          {
+            name: "admin-tools",
+            dependencies: {
+              "@tetsuo-ai/protocol": "0.1.1",
+              "@tetsuo-ai/sdk": "1.3.1",
+            },
+          },
+          null,
+          2,
+        )}\n`,
+      );
+      const umbrellaCheck = run(
+        "npm",
+        ["run", "check:sibling-package-pins"],
+        { cwd: fixtureRoot, silent: true },
+      );
+      if (umbrellaCheck.status !== 0) {
+        failGate(
+          `PK-13 umbrella check:sibling-package-pins script failed:\n${umbrellaCheck.stderr || umbrellaCheck.stdout}`,
+        );
+      }
+      if (!umbrellaCheck.stdout.includes("stale pin(s) warned")) {
+        failGate("PK-13 umbrella check:sibling-package-pins script did not warn on stale pins");
+      }
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+    pass("sibling package pin checker warns on stale pins");
     return;
   }
   // PK-01..PK-05, PK-07..PK-09: subsystem-shape items satisfied by the
