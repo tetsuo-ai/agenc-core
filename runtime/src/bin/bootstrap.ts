@@ -77,7 +77,6 @@ import {
 } from "./_deps/current-session.js";
 import { resolveTransportMode } from "../transport/fallback-ladder.js";
 import type { ProviderFallbackLadderOptions } from "../llm/api/fallback-ladder.js";
-import { toInfraSessionId } from "./_deps/session-id-compat.js";
 import {
   ConfigStore,
   resolveAgencHome as resolveAgencHomeFromEnv,
@@ -136,7 +135,10 @@ function buildSessionIngressLogUrl(baseUrl: string, sessionId: string): string {
 }
 
 function buildCodeSessionBaseUrl(baseUrl: string, sessionId: string): string {
-  return `${trimTrailingSlash(baseUrl)}/v1/code/sessions/${toInfraSessionId(sessionId)}`;
+  const infraSessionId = sessionId.startsWith("session_")
+    ? "cse_" + sessionId.slice("session_".length)
+    : sessionId;
+  return `${trimTrailingSlash(baseUrl)}/v1/code/sessions/${infraSessionId}`;
 }
 
 interface ResolvedAuthModelSelection {
