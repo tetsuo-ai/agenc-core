@@ -55,7 +55,7 @@ function isPlainInteractiveShellCommand(command: string): boolean {
 
 function runtimeSandboxForExec(
   args: Record<string, unknown>,
-  cwd: string,
+  fallbackCwd: string,
 ): UnifiedExecRuntimeSandbox | undefined {
   const context = readToolRuntimeContext(args);
   if (
@@ -75,19 +75,23 @@ function runtimeSandboxForExec(
     };
     readonly features?: unknown;
     readonly networkSandboxPolicy?: unknown;
+    readonly cwd?: unknown;
     readonly windowsSandboxLevel?: unknown;
     readonly windowsSandboxPrivateDesktop?: unknown;
   };
+  const sandboxPolicyCwd = resolve(
+    stringValue(turn.cwd) ?? fallbackCwd,
+  );
   const network = networkPolicy(turn.networkSandboxPolicy);
   const agencLinuxSandboxExe =
     stringValue(turn.agencLinuxSandboxExe) ??
     stringValue(turn.config?.agencLinuxSandboxExe);
   return {
     permissionProfile: permissionProfileForRuntimeContext(context, {
-      cwd,
+      cwd: sandboxPolicyCwd,
       ...(network !== undefined ? { network } : {}),
     }),
-    sandboxPolicyCwd: cwd,
+    sandboxPolicyCwd,
     preference: "require",
     useLegacyLandlock: useLegacyLandlock(turn.features ?? turn.config?.features),
     windowsSandboxLevel: windowsSandboxLevel(turn.windowsSandboxLevel),
@@ -284,8 +288,10 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       }
 
       try {
-        const effectiveCwd = resolve(workdir ?? config?.cwd ?? process.cwd());
-        const runtimeSandbox = runtimeSandboxForExec(args, effectiveCwd);
+        const runtimeSandbox = runtimeSandboxForExec(
+          args,
+          config?.cwd ?? process.cwd(),
+        );
         const output = await manager.execCommand({
           cmd,
           callId: asString(args.__callId),

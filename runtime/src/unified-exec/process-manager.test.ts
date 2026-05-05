@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { dirname } from "node:path";
 import { describe, expect, test } from "vitest";
 
 import {
@@ -35,8 +36,10 @@ describe("UnifiedExecProcessManager", () => {
 
   test("transforms restricted commands through the configured sandbox manager", async () => {
     const transforms: SandboxTransformRequest[] = [];
+    const commandCwd = process.cwd();
+    const sandboxPolicyCwd = dirname(commandCwd);
     const manager = new UnifiedExecProcessManager({
-      cwd: process.cwd(),
+      cwd: sandboxPolicyCwd,
       sandboxManager: {
         selectInitial: () => "linux_seccomp",
         transform: (request): SandboxExecRequest => {
@@ -68,10 +71,11 @@ describe("UnifiedExecProcessManager", () => {
 
     const result = await manager.execCommand({
       cmd: "printf host-command",
+      workdir: commandCwd,
       yield_time_ms: 250,
       runtimeSandbox: {
         permissionProfile,
-        sandboxPolicyCwd: process.cwd(),
+        sandboxPolicyCwd,
         preference: "require",
         agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
       },
@@ -83,7 +87,8 @@ describe("UnifiedExecProcessManager", () => {
     expect(transforms[0]).toMatchObject({
       permissions: permissionProfile,
       sandbox: "linux_seccomp",
-      sandboxPolicyCwd: process.cwd(),
+      sandboxPolicyCwd,
+      command: expect.objectContaining({ cwd: commandCwd }),
     });
   });
 

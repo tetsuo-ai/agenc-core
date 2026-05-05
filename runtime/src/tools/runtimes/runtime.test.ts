@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, test, vi } from "vitest";
@@ -717,6 +717,46 @@ describe("tools/runtimes", () => {
         runtimeSandbox: expect.objectContaining({
           sandboxPolicyCwd: workspaceRoot,
           preference: "require",
+          permissionProfile: expect.objectContaining({
+            fileSystem: expect.objectContaining({ kind: "restricted" }),
+          }),
+        }),
+      }),
+    );
+
+    const nestedWorkdir = join(workspaceRoot, "subdir");
+    mkdirSync(nestedWorkdir);
+    const rootScopedRead = await router.dispatchModelToolCall(
+      {
+        id: "call-exec-root-scoped-read",
+        name: "exec_command",
+        arguments: JSON.stringify({
+          cmd: "cat ../README.md",
+          workdir: nestedWorkdir,
+        }),
+      },
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: {
+          subId: "turn-exec-root-scoped-read",
+          cwd: workspaceRoot,
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "read_only" },
+        } as never,
+        tracker: tracker() as never,
+        approvalPolicy: "never",
+        sandboxMode: "read_only",
+      },
+    );
+    expect(rootScopedRead.isError).toBeFalsy();
+    expect(execCommand).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        workdir: nestedWorkdir,
+        runtimeSandbox: expect.objectContaining({
+          sandboxPolicyCwd: workspaceRoot,
           permissionProfile: expect.objectContaining({
             fileSystem: expect.objectContaining({ kind: "restricted" }),
           }),
