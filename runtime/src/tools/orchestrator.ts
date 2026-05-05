@@ -41,16 +41,10 @@
 import type { Tool } from "./types.js";
 import type { ToolInvocation, ToolPayload } from "./context.js";
 import type { PermissionDefaultMode } from "../config/schema.js";
+import type { PermissionDecisionHook } from "./hooks.js";
 import {
-  resolveHookPermissionDecision,
-  type PermissionDecisionHook,
-  type PermissionDecisionHookInput,
-} from "./hooks.js";
-import {
-  defaultExecApprovalRequirement as defaultExecApprovalRequirementFromPermissions,
   type ApprovalPolicy as PermissionsApprovalPolicy,
   type ExecApprovalRequirement as PermissionsExecApprovalRequirement,
-  type FileSystemSandboxKind as PermissionsFileSystemSandboxKind,
   type GranularApprovalConfig,
 } from "../permissions/approval-policy.js";
 
@@ -59,7 +53,6 @@ import {
   reviewDecisionIsAllow,
   type ReviewDecision as PermissionsReviewDecision,
 } from "../permissions/review-decision.js";
-import { hookDispatcherApprovalSource } from "../permissions/tool-approval.js";
 import {
   recordPermissionAuditEvent,
   type PermissionAuditDecision,
@@ -68,10 +61,31 @@ import {
 } from "../permissions/permission-audit-log.js";
 import { SandboxDeniedError } from "../permissions/sandbox.js";
 import {
-  newGuardianReviewId,
-  shouldRouteApprovalToGuardian,
+  classifyToolApproval as guardianClassifyToolApproval,
+  defaultExecApprovalRequirement as guardianDefaultExecApprovalRequirement,
+  requestApproval,
+  sandboxKindFromMode as guardianSandboxKindFromMode,
+  type ApprovalCtx,
+  type ApprovalDecision,
+  type ApprovalResolver,
+  type GuardianClassifyToolOptions,
+  type PermissionRequestHook,
+  type RequestApprovalOpts,
+  type RequestApprovalResult,
+} from "../permissions/guardian/arbiter.js";
+import {
   type GuardianApprovalReviewer,
-} from "../session/guardian-approval-review.js";
+} from "../permissions/guardian/reviewer.js";
+
+export { requestApproval };
+export type {
+  ApprovalCtx,
+  ApprovalDecision,
+  ApprovalResolver,
+  PermissionRequestHook,
+  RequestApprovalOpts,
+  RequestApprovalResult,
+};
 
 export { SandboxDeniedError };
 
@@ -115,32 +129,6 @@ export type ExecApprovalRequirement = PermissionsExecApprovalRequirement;
 export type ReviewDecision = PermissionsReviewDecision;
 
 // ─────────────────────────────────────────────────────────────────────
-// Approval decision envelope (I-21 + I-44)
-// ─────────────────────────────────────────────────────────────────────
-
-export interface ApprovalDecision {
-  readonly decision: ReviewDecision;
-  /** I-44 stamp. */
-  readonly decisionAtTurnId: string;
-  readonly reason?: string;
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// ApprovalCtx — the bundle every decision path receives
-// ─────────────────────────────────────────────────────────────────────
-
-/** Port of donor runtime `ApprovalCtx`. */
-export interface ApprovalCtx {
-  readonly invocation: ToolInvocation;
-  readonly callId: string;
-  readonly toolName: string;
-  readonly turnId: string;
-  readonly signal?: AbortSignal;
-  readonly guardianReviewId?: string;
-  readonly retryReason?: string;
-}
-
-// ─────────────────────────────────────────────────────────────────────
 // Sandbox-denied error (ports donor runtime `SandboxErr::Denied`).
 // ─────────────────────────────────────────────────────────────────────
 
@@ -158,39 +146,7 @@ export function isSandboxDeniedError(err: unknown): err is SandboxDeniedError {
 // Classifier: does this tool call need approval?
 // ─────────────────────────────────────────────────────────────────────
 
-export interface ClassifyToolOptions {
-  readonly approvalPolicy: ApprovalPolicy;
-  readonly sandboxMode: SandboxMode;
-  /** Optional per-tool override: tools can be whitelisted/blocklisted
-   *  regardless of the session-wide policy. */
-  readonly toolAllowlist?: ReadonlySet<string>;
-  readonly toolDenylist?: ReadonlySet<string>;
-  /**
-   * Full tool payload variant. Different payload kinds get different
-   * classification rules — MCP calls defer to server-side trust, shell
-   * payloads route through the fs-policy-aware default, tool_search is
-   * always read-only, and `custom`/`function` share the legacy logic.
-   * When omitted, the classifier falls back to the `function` branch
-   * so legacy call sites keep working.
-   */
-  readonly payload?: ToolPayload;
-  /**
-   * Optional MCP trust resolver. When a payload is `{kind:"mcp"}` and
-   * this returns `true`, the call is considered pre-approved at the
-   * server level and skips approval. When `undefined` or `false`, the
-   * MCP call falls through to the normal policy matrix.
-   */
-  readonly mcpServerTrusted?: (server: string) => boolean;
-  /**
-   * Optional `GranularApprovalConfig` that accompanies
-   * `approvalPolicy === "granular"`. AgenC behavior — port of
-   * `AskForApproval::Granular(GranularConfig)` inner payload
-   * (protocol.rs:859-874). When the granular config disallows sandbox
-   * approval prompts, classification of a restricted call returns
-   * `forbidden` instead of `needs_approval`.
-   */
-  readonly granular?: GranularApprovalConfig;
-}
+export type ClassifyToolOptions = GuardianClassifyToolOptions;
 
 /**
  * Decide whether a tool call needs approval. donor runtime pattern
@@ -211,103 +167,7 @@ export function classifyToolApproval(
   tool: Tool,
   opts: ClassifyToolOptions,
 ): ExecApprovalRequirement {
-  const { name } = tool;
-  if (opts.toolDenylist?.has(name)) {
-    return { kind: "forbidden", reason: "tool denylisted for this session" };
-  }
-  if (opts.toolAllowlist?.has(name)) {
-    return { kind: "skip", bypassSandbox: false };
-  }
-
-  // Payload-variant routing. Every tool invocation carries a typed
-  // `ToolPayload` describing its kind. Different kinds get different
-  // approval rules — MCP server-side trust, `tool_search` is always
-  // read-only, `local_shell` uses the fs-policy default, etc.
-  const payload = opts.payload;
-  if (payload) {
-    switch (payload.kind) {
-      case "tool_search":
-        // Tool discovery is read-only metadata — always skip approval.
-        return { kind: "skip", bypassSandbox: false };
-      case "mcp": {
-        if (opts.mcpServerTrusted?.(payload.server) === true) {
-          return { kind: "skip", bypassSandbox: false };
-        }
-        // Fall through to the function-branch logic below — the MCP
-        // server is not trusted so the normal policy matrix applies.
-        break;
-      }
-      case "local_shell": {
-        // Route shell calls through the fs-policy-aware default. Pipe
-        // through the optional `granular` config so the permissions
-        // layer can surface the `forbidden` branch when the user has
-        // disabled sandbox approval prompts.
-        const fsKind = sandboxKindFromMode(opts.sandboxMode);
-        const fallback = defaultExecApprovalRequirement(
-          opts.approvalPolicy,
-          fsKind,
-          opts.granular,
-        );
-        if (fallback.kind === "forbidden") {
-          return fallback;
-        }
-        if (fallback.kind === "needs_approval") {
-          return {
-            kind: "needs_approval",
-            reason: `local_shell under ${fsKind} sandbox requires approval`,
-          };
-        }
-        // When policy skips, honor the danger-yolo bypass exactly like
-        // the function branch below.
-        return {
-          kind: "skip",
-          bypassSandbox:
-            opts.sandboxMode === "danger_full_access" &&
-            opts.approvalPolicy === "never",
-        };
-      }
-      case "custom":
-      case "function":
-        // Falls through to the shared function-kind switch below.
-        break;
-    }
-  }
-
-  const sandboxBypass =
-    opts.sandboxMode === "danger_full_access" && opts.approvalPolicy === "never";
-
-  if (tool.requiresUserInteraction?.() === true) {
-    return { kind: "needs_approval", reason: "tool requires user interaction" };
-  }
-
-  switch (opts.approvalPolicy) {
-    case "never":
-      return { kind: "skip", bypassSandbox: sandboxBypass };
-    case "on_failure":
-      // Orchestrator treats the "retry after failure" slot as the
-      // approval trigger — first attempt skips.
-      return { kind: "skip", bypassSandbox: false };
-    case "on_request": {
-      const needs = (tool as Tool & { requiresApproval?: boolean }).requiresApproval === true;
-      return needs
-        ? { kind: "needs_approval", reason: "tool requested approval" }
-        : { kind: "skip", bypassSandbox: false };
-    }
-    case "granular": {
-      const readOnly =
-        (tool as Tool & { isReadOnly?: boolean }).isReadOnly === true;
-      return readOnly
-        ? { kind: "skip", bypassSandbox: false }
-        : { kind: "needs_approval", reason: "granular policy: mutation requires approval" };
-    }
-    case "untrusted":
-      return { kind: "needs_approval", reason: "untrusted policy: approve every call" };
-    default: {
-      const _exhaustive: never = opts.approvalPolicy;
-      void _exhaustive;
-      return { kind: "skip", bypassSandbox: false };
-    }
-  }
+  return guardianClassifyToolApproval(tool, opts);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -321,20 +181,7 @@ export function classifyToolApproval(
  * external_sandbox = `external_sandbox`).
  */
 export function sandboxKindFromMode(mode: SandboxMode): FileSystemSandboxKind {
-  switch (mode) {
-    case "danger_full_access":
-      return "unrestricted";
-    case "external_sandbox":
-      return "external_sandbox";
-    case "read_only":
-    case "workspace_write":
-      return "restricted";
-    default: {
-      const _exhaustive: never = mode;
-      void _exhaustive;
-      return "restricted";
-    }
-  }
+  return guardianSandboxKindFromMode(mode);
 }
 
 /**
@@ -361,325 +208,7 @@ export function defaultExecApprovalRequirement(
   fsKind: FileSystemSandboxKind,
   granular?: GranularApprovalConfig,
 ): ExecApprovalRequirement {
-  // Narrow the 3-variant orchestrator-side kind to the 2-variant
-  // permissions-layer kind: `external_sandbox` is treated as a
-  // non-restricted context for approval-table purposes (AgenC behavior).
-  const narrowed: PermissionsFileSystemSandboxKind =
-    fsKind === "restricted" ? "restricted" : "full_access";
-  return defaultExecApprovalRequirementFromPermissions(
-    policy,
-    narrowed,
-    granular,
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Approval resolver interface + request pipeline
-// ─────────────────────────────────────────────────────────────────────
-
-/**
- * Session-level approval UI. A concrete implementation is installed on
- * `session.services.approvalResolver`. When absent, `requestApproval`
- * defaults to `denied` with `cause: "no_approval_resolver"`.
- */
-export interface ApprovalResolver {
-  request(ctx: ApprovalCtx): Promise<ReviewDecision>;
-}
-
-/**
- * Permission-request hook. First-match wins: the first hook to return
- * a decision other than `undefined` short-circuits the resolver path.
- * Ports the precedence of `run_permission_request_hooks` in donor runtime
- * `orchestrator.rs:394-425`.
- */
-export type PermissionRequestHook = (
-  ctx: ApprovalCtx,
-) => Promise<ReviewDecision | undefined> | ReviewDecision | undefined;
-
-export interface RequestApprovalOpts {
-  readonly ctx: ApprovalCtx;
-  readonly hooks?: ReadonlyArray<PermissionRequestHook>;
-  /**
-   * Typed `PermissionDecisionHook` pipeline — walked AFTER `hooks` and
-   * BEFORE the resolver / default-deny fallback so typed per-tool
-   * policy hooks can approve or deny without synthesizing a raw
-   * `ReviewDecision`. First non-`pass` decision wins:
-   *   - `allow` → `approved`
-   *   - `deny`  → `denied`
-   *   - `ask`   → falls through to the resolver.
-   */
-  readonly permissionDecisionHooks?: ReadonlyArray<PermissionDecisionHook>;
-  /** Raw args fed to the decision hooks. Defaults to `{}` when absent. */
-  readonly args?: Record<string, unknown>;
-  readonly guardianApprovalReviewer?: GuardianApprovalReviewer;
-  readonly resolver?: ApprovalResolver;
-  readonly signal?: AbortSignal;
-  /** Logger for "no resolver" default-deny event. Optional. */
-  readonly onNoResolver?: (ctx: ApprovalCtx) => void;
-}
-
-export interface RequestApprovalResult {
-  readonly decision: ReviewDecision;
-  readonly source:
-    | "hook"
-    | "resolver"
-    | "default_deny"
-    | "permission_hook"
-    | "guardian"
-    | "aborted";
-  readonly reason?: string;
-}
-
-function alreadyAborted(signal: AbortSignal | undefined): boolean {
-  return signal?.aborted === true;
-}
-
-/**
- * AgenC behavior: detect the abort branch without relying on
- * `String(err).toLowerCase().includes("abort")` substring sniffing.
- * Mirrors the `tokio::select!` cancellation arm — we match:
- *   - `DOMException` / `AbortError` (browser/Node `AbortSignal` throws)
- *   - our in-tree `awaitWithAbort` reject (error whose message matches
- *     the signal's `reason` exactly)
- *   - direct `AbortSignal`-rooted errors (`err.name === "AbortError"`)
- * Never string-sniffs: an error message containing the word "abort"
- * from a legitimate tool failure will no longer be misclassified.
- */
-function isAbortError(err: unknown, signal?: AbortSignal): boolean {
-  if (err === null || err === undefined) return false;
-  // Signal-aborted path: synthesized rejection from awaitWithAbort
-  // carries `signal.reason` as the message; match by identity where
-  // possible, otherwise by the explicit AbortError `name` marker.
-  if (signal?.aborted === true) {
-    if (err instanceof Error) {
-      const expected = String(signal.reason ?? "aborted");
-      if (err.message === expected) return true;
-    }
-  }
-  if (typeof DOMException !== "undefined" && err instanceof DOMException) {
-    return err.name === "AbortError";
-  }
-  if (err instanceof Error && err.name === "AbortError") {
-    return true;
-  }
-  // Node's AbortController.abort(reason) propagates the reason directly
-  // as the rejection value — check its shape when it isn't an Error.
-  if (
-    typeof err === "object" &&
-    err !== null &&
-    (err as { name?: unknown }).name === "AbortError"
-  ) {
-    return true;
-  }
-  return false;
-}
-
-async function awaitWithAbort<T>(
-  promise: Promise<T>,
-  signal: AbortSignal | undefined,
-): Promise<T> {
-  if (!signal) return promise;
-  if (signal.aborted) {
-    throw new Error(String(signal.reason ?? "aborted"));
-  }
-  return await new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const onAbort = () => {
-      if (settled) return;
-      settled = true;
-      reject(new Error(String(signal.reason ?? "aborted")));
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        if (settled) return;
-        settled = true;
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (err) => {
-        if (settled) return;
-        settled = true;
-        signal.removeEventListener("abort", onAbort);
-        reject(err);
-      },
-    );
-  });
-}
-
-function permissionDecisionHookContext(
-  ctx: ApprovalCtx,
-  signal: AbortSignal | undefined,
-): Omit<PermissionDecisionHookInput, "toolName" | "args"> {
-  const invocation = ctx.invocation;
-  const session = asRecord(invocation.session);
-  const turn = asRecord(invocation.turn);
-  const cwd = stringValue(turn?.cwd);
-  const sessionId = stringValue(session?.conversationId);
-  const transcriptPath = stringValue(session?.transcriptPath);
-  const model =
-    stringValue(asRecord(turn?.modelInfo)?.slug) ??
-    stringValue(asRecord(turn?.collaborationMode)?.model) ??
-    stringValue(asRecord(turn?.config)?.model);
-  const permissionMode = stringValue(turn?.permissionMode);
-  const matcherAliases = [
-    ...toolNameMatcherAliases(ctx.toolName),
-    ...stringArrayValue(asRecord(invocation.toolName)?.matcherAliases),
-  ];
-  return {
-    invocation,
-    callId: ctx.callId,
-    turnId: ctx.turnId,
-    ...(cwd !== undefined ? { cwd } : {}),
-    ...(sessionId !== undefined ? { sessionId } : {}),
-    ...(transcriptPath !== undefined ? { transcriptPath } : {}),
-    ...(model !== undefined ? { model } : {}),
-    ...(permissionMode !== undefined ? { permissionMode } : {}),
-    ...(matcherAliases.length > 0 ? { matcherAliases } : {}),
-    ...(signal !== undefined ? { signal } : {}),
-  };
-}
-
-function toolNameMatcherAliases(toolName: string): readonly string[] {
-  if (toolName === "apply_patch") return ["Write", "Edit"];
-  return [];
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0
-    ? value
-    : undefined;
-}
-
-function stringArrayValue(value: unknown): readonly string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
-}
-
-/**
- * Run the permission-request pipeline. donor runtime order:
- *
- *   1. For each registered `permission-request` hook: await; the
- *      first `Allow | Deny` answer wins. `undefined` means "pass".
- *   2. If every hook passed, delegate to the session approval resolver
- *      (the in-band UI modal).
- *   3. If no resolver is wired, return `denied` with source
- *      `default_deny` so the caller can surface
- *      `cause: "no_approval_resolver"`.
- */
-export async function requestApproval(
-  opts: RequestApprovalOpts,
-): Promise<RequestApprovalResult> {
-  const signal = opts.signal ?? opts.ctx.signal;
-  if (alreadyAborted(signal)) {
-    return { decision: { kind: "abort" }, source: "aborted" };
-  }
-
-  for (const hook of opts.hooks ?? []) {
-    let result: ReviewDecision | undefined;
-    try {
-      result = await awaitWithAbort(Promise.resolve(hook(opts.ctx)), signal);
-    } catch (err) {
-      if (alreadyAborted(signal) || isAbortError(err, signal)) {
-        return { decision: { kind: "abort" }, source: "aborted" };
-      }
-      throw err;
-    }
-    if (result !== undefined) {
-      return { decision: result, source: "hook" };
-    }
-  }
-  // Typed permission decision hooks — walked BEFORE resolver / default_deny
-  // so hook-driven allow/deny decisions bypass the raw-resolver modal.
-  if (opts.permissionDecisionHooks && opts.permissionDecisionHooks.length > 0) {
-    let decision;
-    try {
-      decision = await awaitWithAbort(
-        resolveHookPermissionDecision(
-          opts.ctx.toolName,
-          opts.args ?? {},
-          opts.permissionDecisionHooks,
-          undefined,
-          undefined,
-          permissionDecisionHookContext(opts.ctx, signal),
-        ),
-        signal,
-      );
-    } catch (err) {
-      if (alreadyAborted(signal) || isAbortError(err, signal)) {
-        return { decision: { kind: "abort" }, source: "aborted" };
-      }
-      throw err;
-    }
-    if (decision.kind === "allow") {
-      return { decision: { kind: "approved" }, source: hookDispatcherApprovalSource };
-    }
-    if (decision.kind === "deny") {
-      return {
-        decision: { kind: "denied" },
-        source: hookDispatcherApprovalSource,
-        ...(decision.reason !== undefined ? { reason: decision.reason } : {}),
-      };
-    }
-    // `ask` / `pass` → fall through to resolver.
-  }
-  if (
-    opts.guardianApprovalReviewer !== undefined &&
-    shouldRouteApprovalToGuardian(opts.ctx)
-  ) {
-    const reviewId = opts.ctx.guardianReviewId ?? newGuardianReviewId();
-    const guardianCtx: ApprovalCtx = {
-      ...opts.ctx,
-      guardianReviewId: reviewId,
-      ...(signal !== undefined ? { signal } : {}),
-    };
-    try {
-      const result = await awaitWithAbort(
-        opts.guardianApprovalReviewer.reviewApprovalRequest({
-          ctx: guardianCtx,
-          args: opts.args ?? {},
-          ...(signal !== undefined ? { signal } : {}),
-        }),
-        signal,
-      );
-      return {
-        decision: result.decision,
-        source: "guardian",
-        ...(result.reason !== undefined ? { reason: result.reason } : {}),
-      };
-    } catch (err) {
-      if (alreadyAborted(signal) || isAbortError(err, signal)) {
-        return { decision: { kind: "abort" }, source: "aborted" };
-      }
-      throw err;
-    }
-  }
-  if (opts.resolver) {
-    try {
-      const decision = await awaitWithAbort(
-        opts.resolver.request({
-          ...opts.ctx,
-          ...(signal !== undefined ? { signal } : {}),
-        }),
-        signal,
-      );
-      return { decision, source: "resolver" };
-    } catch (err) {
-      if (alreadyAborted(signal) || isAbortError(err, signal)) {
-        return { decision: { kind: "abort" }, source: "aborted" };
-      }
-      throw err;
-    }
-  }
-  opts.onNoResolver?.(opts.ctx);
-  return { decision: { kind: "denied" }, source: "default_deny" };
+  return guardianDefaultExecApprovalRequirement(policy, fsKind, granular);
 }
 
 /**
@@ -816,6 +345,7 @@ export interface OrchestrateToolCallOpts<T> {
   readonly permissionDecisionHooks?: ReadonlyArray<PermissionDecisionHook>;
   readonly guardianApprovalReviewer?: GuardianApprovalReviewer;
   readonly approvalResolver?: ApprovalResolver;
+  readonly getActiveTurnId?: () => string | null;
   readonly permissionAuditLogger?: PermissionAuditLogger;
   readonly onPermissionAuditError?: PermissionAuditErrorHandler;
   /** Emitted when approval falls through to default-deny. */
@@ -1059,6 +589,7 @@ export async function orchestrateToolCall<T>(
         ? { guardianApprovalReviewer: opts.guardianApprovalReviewer }
         : {}),
       ...(opts.approvalResolver !== undefined ? { resolver: opts.approvalResolver } : {}),
+      ...(opts.getActiveTurnId !== undefined ? { getActiveTurnId: opts.getActiveTurnId } : {}),
       ...(opts.onNoApprovalResolver !== undefined
         ? { onNoResolver: opts.onNoApprovalResolver }
         : {}),
@@ -1133,6 +664,7 @@ export async function orchestrateToolCall<T>(
           ? { guardianApprovalReviewer: opts.guardianApprovalReviewer }
           : {}),
         ...(opts.approvalResolver !== undefined ? { resolver: opts.approvalResolver } : {}),
+        ...(opts.getActiveTurnId !== undefined ? { getActiveTurnId: opts.getActiveTurnId } : {}),
         ...(opts.onNoApprovalResolver !== undefined
           ? { onNoResolver: opts.onNoApprovalResolver }
           : {}),

@@ -36,7 +36,7 @@
     "runtime/src/agents/role.ts",
     "runtime/src/bin/model-facing-tools.ts",
     "runtime/src/config/schema.ts",
-    "runtime/src/session/guardian-approval-review.ts",
+    "runtime/src/permissions/guardian/reviewer.ts",
     "runtime/src/session/run-turn.ts",
     "runtime/src/bin/bootstrap.ts"
   ],
@@ -51,7 +51,7 @@
     "runtime/src/llm/capabilities.test.ts",
     "runtime/src/bin/model-facing-tools.test.ts",
     "runtime/src/agents/role.test.ts",
-    "runtime/src/session/guardian-approval-review.test.ts",
+    "runtime/src/permissions/guardian/reviewer.test.ts",
     "runtime/src/bin/bootstrap.test.ts"
   ],
   "rows": [
@@ -71,7 +71,7 @@
         "cap configured context windows at the registered model maximum"
       ],
       "edgeCases": [
-        "newer bundled OpenAI models not present in the previous ad-hoc table",
+        "newer bundled openai models not present in the previous ad-hoc table",
         "hidden review-only model row stays registered and selectable by guardian review",
         "gpt-5.4 defaults to xhigh rather than being silently downgraded",
         "namespaced model lookup applies prefix matching to the stripped suffix",
@@ -84,10 +84,10 @@
         "runtime/src/llm/models-manager.test.ts",
         "runtime/src/bin/model-facing-tools.test.ts",
         "runtime/src/agents/role.test.ts",
-        "runtime/src/session/guardian-approval-review.test.ts"
+        "runtime/src/permissions/guardian/reviewer.test.ts"
       ],
       "commands": [
-        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/registry/registry.test.ts src/llm/provider.test.ts src/llm/providers/grok/provider.test.ts src/llm/providers/groq/provider.test.ts src/llm/providers/openrouter/provider.test.ts src/llm/model-registry.test.ts src/llm/models-manager.test.ts src/llm/capabilities.test.ts src/bin/model-facing-tools.test.ts src/agents/role.test.ts src/session/guardian-approval-review.test.ts src/bin/bootstrap.test.ts"
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/llm/registry/registry.test.ts src/llm/provider.test.ts src/llm/providers/grok/provider.test.ts src/llm/providers/groq/provider.test.ts src/llm/providers/openrouter/provider.test.ts src/llm/model-registry.test.ts src/llm/models-manager.test.ts src/llm/capabilities.test.ts src/bin/model-facing-tools.test.ts src/agents/role.test.ts src/permissions/guardian/reviewer.test.ts src/bin/bootstrap.test.ts"
       ],
       "status": "required"
     },
@@ -109,7 +109,7 @@
         "xai alias normalizes to grok",
         "openai_compatible/custom aliases normalize to openai-compatible",
         "AgenC hosted provider is marked as managed-auth-backed",
-        "OpenAI-compatible live metadata uses registry-owned URL and auth defaults",
+        "openai-compatible live metadata uses registry-owned URL and auth defaults",
         "provider factory construction uses registry defaults when env/model overrides are absent",
         "Grok direct construction uses registry defaults",
         "Groq and OpenRouter adapters do not export duplicate model catalogs",

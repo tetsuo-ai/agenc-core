@@ -17,9 +17,9 @@
  *      `toolExecution.ts:832-894`). Hooks can rewrite args, synthesize
  *      a `hookPermissionResult`, inject `additionalContext`, deny,
  *      skip with a synthesized result, or stop the turn.
- *   4. Permission gate: `mergeHookPermissionDecision` merges the hook
- *      decision with rule-based checks. inc-4788: hook `allow` does
- *      NOT bypass rule `deny` / `ask`.
+ *   4. Permission gate: the guardian arbiter merges hook, rule, and
+ *      evaluator decisions. inc-4788: hook `allow` does NOT bypass
+ *      rule `deny` / `ask`.
  *   5. Legacy approval-modal fallback (only when the evaluator path is
  *      unavailable).
  *   6. Execute under timeout + abort race (I-9 / I-21).
@@ -78,7 +78,6 @@ import {
 } from "./context.js";
 import type { Tool } from "./types.js";
 import {
-  mergeHookPermissionDecision,
   runPostToolUseFailureHooks,
   runPostToolUseHooks,
   runPreToolUseHooks,
@@ -106,24 +105,22 @@ const INTERRUPT_MESSAGE_FOR_TOOL_USE =
   "[Request interrupted by user for tool use]";
 const CANCEL_MESSAGE =
   "The user doesn't want to take this action right now. STOP what you are doing and wait for the user to tell you how to proceed.";
-import { buildShellApprovalKey } from "../permissions/approval-cache.js";
 import type {
   CanUseToolFn,
   ToolEvaluatorContext,
 } from "../permissions/evaluator.js";
-import {
-  getAskRuleForTool,
-  getDenyRuleForTool,
-} from "../permissions/rules.js";
-import type {
-  PermissionMode,
-  ToolPermissionContext,
-} from "../permissions/types.js";
+import { reviewDecisionIsAllow } from "../permissions/review-decision.js";
+import type { PermissionMode } from "../permissions/types.js";
 import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import type { GuardianApprovalReviewer } from "../permissions/guardian/reviewer.js";
 import {
-  reviewDecisionIsAllow,
-  type ReviewDecision,
-} from "../permissions/review-decision.js";
+  arbitratePermissionMode,
+  requestApproval as requestGuardianApproval,
+  requestToolUserApproval,
+  type ApprovalRequestFn,
+  type ApprovalResolver,
+} from "../permissions/guardian/arbiter.js";
+export type { ApprovalRequestFn, ModalDecision } from "../permissions/guardian/arbiter.js";
 import {
   recordPermissionAuditEvent,
   type PermissionAuditErrorHandler,
@@ -349,177 +346,6 @@ export async function withTimeoutAndAbort<T>(
       },
     );
   });
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// I-21 + I-44: approval modal integration
-// ─────────────────────────────────────────────────────────────────────
-
-export interface ModalDecision {
-  readonly behavior: "allow" | "deny" | "abort";
-  readonly decisionAtTurnId: string;
-  readonly message?: string;
-  readonly reviewDecision?: ReviewDecision;
-}
-
-export interface ApprovalRequestFn {
-  (opts: {
-    readonly tool: Tool;
-    readonly args: Record<string, unknown>;
-    readonly currentTurnId: string;
-    readonly signal: AbortSignal;
-  }): Promise<ModalDecision>;
-}
-
-interface ApprovalCacheAdapter {
-  withCachedApproval(opts: {
-    readonly keys: readonly unknown[];
-    readonly fetchDecision: () => Promise<ReviewDecision>;
-  }): Promise<ReviewDecision>;
-}
-
-class ModalApprovalError extends Error {
-  constructor(readonly cause: string) {
-    super(cause);
-    this.name = "ModalApprovalError";
-  }
-}
-
-function activeTurnStillMatches(
-  currentTurnId: string,
-  getActiveTurnId?: (() => string | null) | undefined,
-): boolean {
-  if (typeof getActiveTurnId !== "function") return true;
-  return getActiveTurnId() === currentTurnId;
-}
-
-export async function requestApprovalWithAbortRace(
-  request: ApprovalRequestFn,
-  opts: {
-    readonly tool: Tool;
-    readonly args: Record<string, unknown>;
-    readonly currentTurnId: string;
-    readonly signal: AbortSignal;
-    readonly eventLog?: EventLog;
-    readonly subId?: string;
-    readonly callId?: string;
-    readonly approvalReason?: string;
-    readonly approvalCache?: {
-      readonly keys: readonly unknown[];
-      readonly cache: ApprovalCacheAdapter;
-    };
-    readonly getActiveTurnId?: () => string | null;
-  },
-): Promise<
-  | { readonly allow: true; readonly reviewDecision: ReviewDecision }
-  | { readonly allow: false; readonly cause: string }
-> {
-  if (opts.signal.aborted) {
-    return { allow: false, cause: "aborted_before_approval" };
-  }
-  if (!activeTurnStillMatches(opts.currentTurnId, opts.getActiveTurnId)) {
-    return { allow: false, cause: "stale_modal_decision" };
-  }
-
-  if (opts.eventLog) {
-    const subId = opts.subId ?? opts.callId ?? "approval";
-    const callId = opts.callId ?? opts.subId ?? "approval";
-    const commandPreview = extractCommandPreview(opts.tool, opts.args);
-    opts.eventLog.emit({
-      id: subId,
-      msg: {
-        type: "exec_approval_request",
-        payload: {
-          callId,
-          command: commandPreview,
-          ...(opts.approvalReason !== undefined
-            ? { reason: opts.approvalReason }
-            : {}),
-        },
-      },
-    });
-    opts.eventLog.emit({
-      id: subId,
-      msg: {
-        type: "request_permissions",
-        payload: {
-          callId,
-          toolName: opts.tool.name,
-          permissions: deriveToolPermissions(opts.tool),
-        },
-      },
-    });
-  }
-
-  const fetchModalDecision = async (): Promise<ModalDecision> =>
-    await new Promise<ModalDecision>((resolve) => {
-      let settled = false;
-      const onAbort = () => {
-        if (settled) return;
-        settled = true;
-        resolve({
-          behavior: "abort",
-          decisionAtTurnId: opts.currentTurnId,
-        });
-      };
-      opts.signal.addEventListener("abort", onAbort, { once: true });
-      request(opts).then(
-        (d) => {
-          if (settled) return;
-          settled = true;
-          opts.signal.removeEventListener("abort", onAbort);
-          resolve(d);
-        },
-        () => {
-          if (settled) return;
-          settled = true;
-          opts.signal.removeEventListener("abort", onAbort);
-          resolve({
-            behavior: "abort",
-            decisionAtTurnId: opts.currentTurnId,
-          });
-        },
-      );
-    });
-
-  const resolveModalReviewDecision = async (): Promise<ReviewDecision> => {
-    const decision = await fetchModalDecision();
-    if (!activeTurnStillMatches(opts.currentTurnId, opts.getActiveTurnId)) {
-      throw new ModalApprovalError("stale_modal_decision");
-    }
-    if (decision.decisionAtTurnId !== opts.currentTurnId) {
-      throw new ModalApprovalError("stale_modal_decision");
-    }
-    if (decision.reviewDecision) {
-      if (!reviewDecisionIsAllow(decision.reviewDecision)) {
-        throw new ModalApprovalError(
-          decision.behavior === "deny" ? "denied" : "aborted",
-        );
-      }
-      return decision.reviewDecision;
-    }
-    if (decision.behavior === "allow") return { kind: "approved" };
-    if (decision.behavior === "deny") {
-      throw new ModalApprovalError("denied");
-    }
-    throw new ModalApprovalError("aborted");
-  };
-
-  try {
-    const reviewDecision =
-      opts.approvalCache && opts.approvalCache.keys.length > 0
-        ? await opts.approvalCache.cache.withCachedApproval({
-            keys: opts.approvalCache.keys,
-            fetchDecision: resolveModalReviewDecision,
-          })
-        : await resolveModalReviewDecision();
-    return { allow: true, reviewDecision };
-  } catch (error) {
-    if (error instanceof ModalApprovalError) {
-      return { allow: false, cause: error.cause };
-    }
-    throw error;
-  }
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1060,6 +886,8 @@ export interface RunToolUseOptions {
   readonly currentTurnId: string;
   readonly getActiveTurnId?: () => string | null;
   readonly requestApproval?: ApprovalRequestFn;
+  readonly approvalResolver?: ApprovalResolver;
+  readonly guardianApprovalReviewer?: GuardianApprovalReviewer;
   readonly eventLog?: EventLog;
   readonly subId?: string;
   readonly tool: Tool & Partial<ToolExecutionOverrides>;
@@ -1135,77 +963,6 @@ export function defaultCheckModeStillAllowed(
   if (WRITE_CAPABLE_TOOL_NAMES.has(tool.name)) return false;
   if (tool.isReadOnly === true) return true;
   return true;
-}
-
-function resolveApprovalCache(
-  invocation: ToolInvocation,
-): ApprovalCacheAdapter | null {
-  const store = (
-    invocation.session.services as {
-      toolApprovals?: ApprovalCacheAdapter | null;
-    }
-  ).toolApprovals;
-  return store && typeof store.withCachedApproval === "function" ? store : null;
-}
-
-function buildApprovalCacheKeys(
-  tool: Tool,
-  invocation: ToolInvocation,
-  args: Record<string, unknown>,
-): readonly unknown[] {
-  const cwd =
-    typeof args.cwd === "string" && args.cwd.length > 0
-      ? args.cwd
-      : typeof args.workdir === "string" && args.workdir.length > 0
-        ? args.workdir
-      : invocation.turn.cwd;
-  if (
-    tool.name === "exec_command" ||
-    tool.name === "system.bash" ||
-    tool.name === "Bash" ||
-    invocation.payload.kind === "local_shell"
-  ) {
-    const command = Array.isArray(args.args)
-      ? [
-          typeof args.command === "string" ? args.command : "",
-          ...args.args.filter((part): part is string => typeof part === "string"),
-        ].filter((part) => part.length > 0)
-      : invocation.payload.kind === "local_shell"
-        ? invocation.payload.params.command
-          : typeof args.command === "string"
-            ? [args.command]
-            : typeof args.cmd === "string"
-              ? [args.cmd]
-              : [];
-    if (command.length > 0) {
-      const sandboxPermissions: string[] = [invocation.turn.sandboxPolicy.value];
-      if (args.sandbox_permissions !== undefined) {
-        sandboxPermissions.push(JSON.stringify(args.sandbox_permissions));
-      }
-      const additionalPermissions: string[] = [invocation.turn.approvalPolicy.value];
-      if (args.additional_permissions !== undefined) {
-        additionalPermissions.push(JSON.stringify(args.additional_permissions));
-      }
-      return [
-        buildShellApprovalKey({
-          command,
-          cwd,
-          ...(typeof args.tty === "boolean" ? { tty: args.tty } : {}),
-          sandbox_permissions: sandboxPermissions,
-          additional_permissions: additionalPermissions,
-        }),
-      ];
-    }
-  }
-  return [
-    {
-      toolName: tool.name,
-      cwd,
-      sandboxMode: invocation.turn.sandboxPolicy.value,
-      approvalPolicy: invocation.turn.approvalPolicy.value,
-      args,
-    },
-  ];
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1381,213 +1138,139 @@ export async function runToolUse(
   // step 4b can opt back into the legacy fallback even though the
   // evaluator path was wired.
   let evaluatorRequestedAsk = false;
+  let permissionAlreadyAllowed = false;
   const canUseTool = opts.canUseTool;
   const permissionContext = opts.permissionContext;
-  if (canUseTool && permissionContext) {
-    const merged =
-      opts.preHookPermissionDecision ??
-      (await mergeHookPermissionDecision({
-        hookPermissionResult,
+  const shouldArbitratePermission =
+    opts.preHookPermissionDecision !== undefined ||
+    hookPermissionResult !== undefined ||
+    (canUseTool !== undefined && permissionContext !== undefined);
+  if (shouldArbitratePermission) {
+    try {
+      const permissionDecision = await arbitratePermissionMode({
+        tool,
         args,
-        ruleBasedCheck: async (candidateArgs) => {
-          const permissionSnapshot =
-            readToolPermissionContext(permissionContext);
-          if (permissionSnapshot) {
-            if (getDenyRuleForTool(permissionSnapshot, tool.name, candidateArgs)) {
-              return {
-                behavior: "deny",
-                message: `permission denied by rule: ${tool.name}`,
-              };
-            }
-            if (getAskRuleForTool(permissionSnapshot, tool.name, candidateArgs)) {
-              return {
-                behavior: "ask",
-                message: `approval required by rule: ${tool.name}`,
-              };
-            }
-          }
-          return null;
-        },
-      }));
-    if (merged && merged.behavior === "deny") {
-      await recordRunToolPolicyAudit(opts, {
-        decision: "denied",
-        source: "pre-tool-use-hook",
-        reasonCode:
-          merged.decisionReason?.type === "hook_plus_rule_deny"
-            ? "rule_denied"
-            : "hook_denied",
+        ...(hookPermissionResult !== undefined ? { hookPermissionResult } : {}),
+        ...(opts.preHookPermissionDecision !== undefined
+          ? { mergedPermissionDecision: opts.preHookPermissionDecision }
+          : {}),
+        ...(canUseTool !== undefined ? { canUseTool } : {}),
+        ...(permissionContext !== undefined ? { permissionContext } : {}),
       });
-      emitHookAttachment(
-        opts.eventLog,
-        subId,
-        "hook_permission_decision",
-        `${tool.name} deny via ${merged.decisionReason?.type ?? "hook"}${merged.decisionReason?.hookName ? ` (${merged.decisionReason.hookName})` : ""}`,
-      );
-      if (opts.eventLog) {
-        emitErrorEvent(opts.eventLog, subId, {
-          cause: "permission_denied:hook",
-          message: merged.message ?? "denied by hook",
+      if (permissionDecision.kind === "deny") {
+        await recordRunToolPolicyAudit(opts, {
+          decision: "denied",
+          source: permissionDecision.source,
+          reasonCode: permissionDecision.reasonCode,
+        });
+        if (permissionDecision.source === "pre-tool-use-hook") {
+          const merged = permissionDecision.mergedDecision;
+          emitHookAttachment(
+            opts.eventLog,
+            subId,
+            "hook_permission_decision",
+            `${tool.name} deny via ${merged?.decisionReason?.type ?? "hook"}${merged?.decisionReason?.hookName ? ` (${merged.decisionReason.hookName})` : ""}`,
+          );
+        }
+        if (opts.eventLog) {
+          emitErrorEvent(opts.eventLog, subId, {
+            cause:
+              permissionDecision.source === "pre-tool-use-hook"
+                ? "permission_denied:hook"
+                : `permission_denied:${permissionDecision.decisionReason?.type ?? "unknown"}`,
+            message: permissionDecision.message ?? "denied by hook",
+          });
+        }
+        return errorOutput({
+          invocation,
+          content: permissionDecision.message ?? "Permission denied",
+          elapsedMs: performance.now() - startedAt,
         });
       }
-      return errorOutput({
-        invocation,
-        content: merged.message ?? "Permission denied",
-        elapsedMs: performance.now() - startedAt,
-      });
-    }
-    if (
-      merged &&
-      merged.behavior === "ask" &&
-      !opts.requestApproval &&
-        opts.approvalAlreadyResolved !== true
-    ) {
-      await recordRunToolPolicyAudit(opts, {
-        decision: "denied",
-        source: "permission-evaluator",
-        reasonCode: "ask_without_prompt",
-      });
-      if (opts.eventLog) {
-        emitErrorEvent(opts.eventLog, subId, {
-          cause: "permission_denied:hook_ask_without_prompt",
-          message: merged.message ?? "hook requested ask with no prompt wired",
-        });
-      }
-      return errorOutput({
-        invocation,
-        content: merged.message ?? "Permission required",
-        elapsedMs: performance.now() - startedAt,
-      });
-    }
-    if (merged && merged.behavior === "ask") {
-      emitHookAttachment(
-        opts.eventLog,
-        subId,
-        "hook_permission_decision",
-        `${tool.name} ask via ${merged.decisionReason?.type ?? "hook"}${merged.decisionReason?.hookName ? ` (${merged.decisionReason.hookName})` : ""}${merged.message ? `: ${merged.message}` : ""}`,
-      );
-      inputForTool = merged.args;
-      evaluatorRequestedAsk = opts.approvalAlreadyResolved !== true;
-    } else if (merged && merged.behavior === "allow") {
-      // Hook allow — skip the evaluator's interactive ask, but rule
-      // deny/ask merging already ran via mergeHookPermissionDecision.
-      await recordRunToolPolicyAudit(opts, {
-        decision: "approved",
-        source: "pre-tool-use-hook",
-        reasonCode: "hook_allowed",
-      });
-      emitHookAttachment(
-        opts.eventLog,
-        subId,
-        "hook_permission_decision",
-        `${tool.name} allow via ${merged.decisionReason?.type ?? "hook"}${merged.decisionReason?.hookName ? ` (${merged.decisionReason.hookName})` : ""}`,
-      );
-      inputForTool = merged.args;
-    } else {
-      // No hook decision (or hook ask with prompt available) — run the
-      // evaluator.
-      try {
-        const permResult = await opts.canUseTool(
-          tool,
-          args,
-          opts.permissionContext,
-        );
-        if (permResult.behavior === "deny") {
-          const reasonMsg = permResult.message;
-          const denialReasonType =
-            permResult.decisionReason?.type ?? "unknown";
+      if (permissionDecision.kind === "ask") {
+        const hasApprovalPath =
+          opts.requestApproval !== undefined ||
+          opts.approvalResolver !== undefined ||
+          opts.guardianApprovalReviewer !== undefined;
+        if (!hasApprovalPath && opts.approvalAlreadyResolved !== true) {
           await recordRunToolPolicyAudit(opts, {
             decision: "denied",
             source: "permission-evaluator",
-            reasonCode:
-              denialReasonType === "rule"
-                ? "rule_denied"
-                : "evaluator_denied",
+            reasonCode: "ask_without_prompt",
           });
           if (opts.eventLog) {
             emitErrorEvent(opts.eventLog, subId, {
-              cause: `permission_denied:${denialReasonType}`,
-              message: `${toolNameDisplay(invocation.toolName)} denied: ${reasonMsg}`,
+              cause:
+                permissionDecision.source === "pre-tool-use-hook"
+                  ? "permission_denied:hook_ask_without_prompt"
+                  : "permission_denied:ask_without_prompt",
+              message:
+                permissionDecision.message ??
+                "approval requested with no prompt wired",
             });
           }
           return errorOutput({
             invocation,
-            content: reasonMsg,
+            content: permissionDecision.message ?? "Permission required",
             elapsedMs: performance.now() - startedAt,
           });
         }
-        if (permResult.behavior === "ask") {
-          if (permResult.updatedInput !== undefined) {
-            inputForTool = permResult.updatedInput as Record<string, unknown>;
-          }
-          if (opts.approvalAlreadyResolved === true) {
-            evaluatorRequestedAsk = false;
-          } else if (!opts.requestApproval) {
-            const message = permResult.message;
-            await recordRunToolPolicyAudit(opts, {
-              decision: "denied",
-              source: "permission-evaluator",
-              reasonCode: "ask_without_prompt",
-            });
-            if (opts.eventLog) {
-              emitErrorEvent(opts.eventLog, subId, {
-                cause: "permission_denied:ask_without_prompt",
-                message: `${toolNameDisplay(invocation.toolName)} requires approval but no prompt is wired: ${message}`,
-              });
-            }
-            return errorOutput({
-              invocation,
-              content: message,
-              elapsedMs: performance.now() - startedAt,
-            });
-          }
-          if (opts.approvalAlreadyResolved !== true) {
-            // Evaluator returned ask with a prompt wired — fall through to
-            // the legacy approval-modal fallback so the resolver gets the
-            // call and records a decision.
-            evaluatorRequestedAsk = true;
-          }
-        } else if (permResult.behavior === "allow") {
-          await recordRunToolPolicyAudit(opts, {
-            decision: "approved",
-            source: "permission-evaluator",
-            reasonCode:
-              permResult.decisionReason?.type === "rule"
-                ? "rule_allowed"
-                : "evaluator_allowed",
-          });
-          if (permResult.updatedInput !== undefined) {
-            inputForTool = permResult.updatedInput as Record<string, unknown>;
-          }
+        if (permissionDecision.source === "pre-tool-use-hook") {
+          const merged = permissionDecision.mergedDecision;
+          emitHookAttachment(
+            opts.eventLog,
+            subId,
+            "hook_permission_decision",
+            `${tool.name} ask via ${merged?.decisionReason?.type ?? "hook"}${merged?.decisionReason?.hookName ? ` (${merged.decisionReason.hookName})` : ""}${permissionDecision.message ? `: ${permissionDecision.message}` : ""}`,
+          );
         }
-      } catch (err) {
-        if (isAbortLikeError(err)) {
-          const message = err instanceof Error ? err.message : String(err);
-          if (opts.eventLog) {
-            emitErrorEvent(opts.eventLog, subId, {
-              cause: "aborted",
-              message,
-            });
-          }
-          return errorOutput({
-            invocation,
-            content: INTERRUPT_MESSAGE_FOR_TOOL_USE,
-            elapsedMs: performance.now() - startedAt,
-          });
+        inputForTool = permissionDecision.args;
+        evaluatorRequestedAsk = opts.approvalAlreadyResolved !== true;
+      } else if (permissionDecision.kind === "allow") {
+        permissionAlreadyAllowed = true;
+        await recordRunToolPolicyAudit(opts, {
+          decision: "approved",
+          source: permissionDecision.source,
+          reasonCode: permissionDecision.reasonCode,
+        });
+        if (permissionDecision.source === "pre-tool-use-hook") {
+          const merged = permissionDecision.mergedDecision;
+          emitHookAttachment(
+            opts.eventLog,
+            subId,
+            "hook_permission_decision",
+            `${tool.name} allow via ${merged?.decisionReason?.type ?? "hook"}${merged?.decisionReason?.hookName ? ` (${merged.decisionReason.hookName})` : ""}`,
+          );
         }
+        inputForTool = permissionDecision.args;
+      }
+    } catch (err) {
+      if (isAbortLikeError(err)) {
         const message = err instanceof Error ? err.message : String(err);
         if (opts.eventLog) {
           emitErrorEvent(opts.eventLog, subId, {
-            cause: "permission_evaluator_threw",
+            cause: "aborted",
             message,
           });
         }
         return errorOutput({
           invocation,
-          content: `Permission evaluation failed for ${toolNameDisplay(invocation.toolName)}: ${message}`,
+          content: INTERRUPT_MESSAGE_FOR_TOOL_USE,
           elapsedMs: performance.now() - startedAt,
         });
       }
+      const message = err instanceof Error ? err.message : String(err);
+      if (opts.eventLog) {
+        emitErrorEvent(opts.eventLog, subId, {
+          cause: "permission_evaluator_threw",
+          message,
+        });
+      }
+      return errorOutput({
+        invocation,
+        content: `Permission evaluation failed for ${toolNameDisplay(invocation.toolName)}: ${message}`,
+        elapsedMs: performance.now() - startedAt,
+      });
     }
   }
 
@@ -1597,28 +1280,81 @@ export async function runToolUse(
   // Falling through to the legacy modal after an evaluator-side allow
   // defeats bypassPermissions / acceptEdits semantics by prompting a
   // second time on an already-approved call.
+  const shouldUseGuardianApprovalFallback =
+    (opts.approvalResolver !== undefined ||
+      opts.guardianApprovalReviewer !== undefined) &&
+    opts.approvalAlreadyResolved !== true &&
+    !permissionAlreadyAllowed &&
+    (!opts.canUseTool || !opts.permissionContext || evaluatorRequestedAsk);
+  if (shouldUseGuardianApprovalFallback) {
+    const approval = await requestGuardianApproval({
+      ctx: {
+        invocation,
+        callId: invocation.callId,
+        toolName: toolNameDisplay(invocation.toolName),
+        turnId: currentTurnId,
+        ...(effectiveSignal !== undefined ? { signal: effectiveSignal } : {}),
+      },
+      args: inputForTool,
+      ...(opts.guardianApprovalReviewer !== undefined
+        ? { guardianApprovalReviewer: opts.guardianApprovalReviewer }
+        : {}),
+      ...(opts.approvalResolver !== undefined
+        ? { resolver: opts.approvalResolver }
+        : {}),
+      ...(effectiveSignal !== undefined ? { signal: effectiveSignal } : {}),
+      ...(opts.getActiveTurnId !== undefined
+        ? { getActiveTurnId: opts.getActiveTurnId }
+        : {}),
+    });
+    const accepted = reviewDecisionIsAllow(approval.decision);
+    await recordRunToolPolicyAudit(opts, {
+      decision: accepted ? "approved" : "denied",
+      source: `approval-${approval.source}`,
+      reasonCode: accepted
+        ? `approved_${approval.source}`
+        : approval.source === "default_deny"
+          ? "default_deny"
+          : approval.source === "aborted"
+            ? "aborted"
+            : `denied_${approval.source}`,
+    });
+    if (!accepted) {
+      const message =
+        approval.reason ??
+        (approval.decision.kind === "abort"
+          ? "approval aborted"
+          : "Permission denied");
+      if (opts.eventLog) {
+        emitErrorEvent(opts.eventLog, subId, {
+          cause: `permission_denied:${approval.source}`,
+          message,
+        });
+      }
+      return errorOutput({
+        invocation,
+        content: message,
+        elapsedMs: performance.now() - startedAt,
+      });
+    }
+  }
+
   const shouldUseLegacyApprovalFallback =
     opts.requestApproval &&
+    !shouldUseGuardianApprovalFallback &&
     (!opts.canUseTool || !opts.permissionContext || evaluatorRequestedAsk);
   if (shouldUseLegacyApprovalFallback) {
-    const approvalCache = resolveApprovalCache(invocation);
-    const decision = await requestApprovalWithAbortRace(opts.requestApproval, {
+    const decision = await requestToolUserApproval({
+      request: opts.requestApproval,
       tool,
       args: inputForTool,
+      invocation,
       currentTurnId,
       getActiveTurnId: opts.getActiveTurnId,
       signal: effectiveSignal ?? new AbortController().signal,
       ...(opts.eventLog !== undefined ? { eventLog: opts.eventLog } : {}),
       subId,
       callId: invocation.callId,
-      ...(approvalCache !== null
-        ? {
-            approvalCache: {
-              cache: approvalCache,
-              keys: buildApprovalCacheKeys(tool, invocation, inputForTool),
-            },
-          }
-        : {}),
     });
     await recordRunToolPolicyAudit(opts, {
       decision: decision.allow ? "approved" : "denied",
@@ -2054,40 +1790,6 @@ function readAuditSessionId(
       | undefined
   )?.conversationId;
   return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-export function readToolPermissionContext(
-  permissionContext: ToolEvaluatorContext,
-): ToolPermissionContext | null {
-  const appState = permissionContext.getAppState();
-  const candidate =
-    typeof permissionContext.toolPermissionContext === "function"
-      ? permissionContext.toolPermissionContext(appState)
-      : appState.toolPermissionContext;
-  return typeof candidate === "object" && candidate !== null ? candidate : null;
-}
-
-function extractCommandPreview(
-  tool: Tool,
-  args: Record<string, unknown>,
-): string {
-  const candidates = ["command", "cmd", "path", "url"];
-  for (const key of candidates) {
-    const value = args[key];
-    if (typeof value === "string" && value.length > 0) {
-      return value.slice(0, 256);
-    }
-  }
-  return tool.name;
-}
-
-function deriveToolPermissions(tool: Tool): ReadonlyArray<string> {
-  const declared = (tool as unknown as { readonly permissions?: unknown })
-    .permissions;
-  if (Array.isArray(declared) && declared.every((p) => typeof p === "string")) {
-    return declared as ReadonlyArray<string>;
-  }
-  return ["execute"];
 }
 
 export { toolNameDisplay };

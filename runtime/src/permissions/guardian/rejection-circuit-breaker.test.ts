@@ -1,8 +1,7 @@
 /**
  * Tests for GuardianRejectionCircuitBreaker.
  *
- * Mirrors upstream agenc runtime tests from
- * `agenc-rs/core/src/guardian/tests.rs`:
+ * Mirrors the inspected circuit-breaker tests:
  *   - `guardian_rejection_circuit_breaker_interrupts_after_three_consecutive_denials`
  *   - `guardian_rejection_circuit_breaker_resets_consecutive_denials_on_non_denial`
  *   - `guardian_rejection_circuit_breaker_interrupts_after_ten_total_denials`
@@ -16,9 +15,9 @@ import {
   MAX_CONSECUTIVE_GUARDIAN_DENIALS_PER_TURN,
   MAX_TOTAL_GUARDIAN_DENIALS_PER_TURN,
   createGuardianRejectionCircuitBreaker,
-} from "./guardian-rejection-circuit-breaker.js";
+} from "./rejection-circuit-breaker.js";
 
-describe("GuardianRejectionCircuitBreaker (upstream agenc behavior)", () => {
+describe("GuardianRejectionCircuitBreaker", () => {
   test("stays closed below the consecutive threshold", () => {
     const breaker = new GuardianRejectionCircuitBreaker();
     expect(breaker.recordDenial("turn-1")).toEqual({ kind: "continue" });
@@ -26,7 +25,7 @@ describe("GuardianRejectionCircuitBreaker (upstream agenc behavior)", () => {
     expect(breaker.isOpen("turn-1")).toBe(false);
   });
 
-  test("interrupts after three consecutive denials (upstream parity)", () => {
+  test("interrupts after three consecutive denials", () => {
     const breaker = new GuardianRejectionCircuitBreaker();
     expect(breaker.recordDenial("turn-1")).toEqual({ kind: "continue" });
     expect(breaker.recordDenial("turn-1")).toEqual({ kind: "continue" });
@@ -40,7 +39,7 @@ describe("GuardianRejectionCircuitBreaker (upstream agenc behavior)", () => {
     expect(breaker.isOpen("turn-1")).toBe(true);
   });
 
-  test("recordNonDenial resets consecutive but not total (upstream parity)", () => {
+  test("recordNonDenial resets consecutive but not total", () => {
     const breaker = new GuardianRejectionCircuitBreaker();
     expect(breaker.recordDenial("turn-1")).toEqual({ kind: "continue" });
     breaker.recordNonDenial("turn-1");
@@ -53,7 +52,7 @@ describe("GuardianRejectionCircuitBreaker (upstream agenc behavior)", () => {
     });
   });
 
-  test("interrupts after ten total denials even with non-denials between (upstream parity)", () => {
+  test("interrupts after ten total denials even with non-denials between", () => {
     const breaker = new GuardianRejectionCircuitBreaker();
     for (let i = 0; i < 9; i++) {
       expect(breaker.recordDenial("turn-1")).toEqual({ kind: "continue" });

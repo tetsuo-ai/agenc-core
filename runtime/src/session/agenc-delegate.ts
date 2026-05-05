@@ -459,6 +459,17 @@ interface InternalDelegateThread extends AgenCDelegateThread {
 const DELEGATE_EVENT_QUEUE_DEPTH = 1_000;
 const DELEGATE_SHUTDOWN_DRAIN_MS = 500;
 
+function waitForAbort(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const onAbort = (): void => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 function asRealSession(session: AgenCDelegateSessionLike): Session | null {
   return session instanceof Session ? session : null;
 }
@@ -745,6 +756,9 @@ export function spawnAgenCDelegateThread(
     lastAssistantText: () => assistantText,
     error: () => runError,
     shutdown: async (reason?: unknown) => {
+      if (!childController.signal.aborted) {
+        childController.abort(reason ?? "shutdown");
+      }
       txSub.send({ type: "interrupt", reason });
       txSub.send({ type: "shutdown", reason });
       await Promise.race([
@@ -838,7 +852,7 @@ export async function runAgenCReviewOneShot(
         childController,
       );
       thread.txSub.send({ type: "user_input", input: req.input });
-      await thread.completion;
+      await Promise.race([thread.completion, waitForAbort(childController.signal)]);
       assistantText = thread.lastAssistantText();
       providerError = thread.error();
     }

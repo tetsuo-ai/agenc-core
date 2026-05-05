@@ -104,6 +104,24 @@ interface MkSessionOpts {
       | { readonly kind: "abort" }
     >;
   };
+  readonly guardianApprovalReviewer?: {
+    reviewApprovalRequest(ctx: {
+      readonly ctx: {
+        readonly callId: string;
+        readonly toolName: string;
+        readonly turnId: string;
+      };
+    }): Promise<{
+      readonly decision:
+        | { readonly kind: "approved" }
+        | { readonly kind: "approved_for_session" }
+        | { readonly kind: "denied" }
+        | { readonly kind: "abort" };
+      readonly reviewId: string;
+      readonly countedDenial: boolean;
+      readonly reason?: string;
+    }>;
+  };
   readonly permissionAuditLogger?: (event: unknown) => Promise<void> | void;
   readonly onPermissionAuditError?: (error: unknown, event: unknown) => void;
   readonly permissionModeRegistry?: PermissionModeRegistry;
@@ -138,6 +156,9 @@ function mkSession(opts: MkSessionOpts): Session {
   }
   if (opts.approvalResolver) {
     servicesRecord["approvalResolver"] = opts.approvalResolver;
+  }
+  if (opts.guardianApprovalReviewer) {
+    servicesRecord["guardianApprovalReviewer"] = opts.guardianApprovalReviewer;
   }
   if (opts.permissionAuditLogger) {
     servicesRecord["permissionAuditLogger"] = opts.permissionAuditLogger;
@@ -1099,6 +1120,66 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     expect(completed[0]!.result.content).toBe("fallback-allowed-write");
   });
 
+  test("fallback streaming hookPermissionResult deny works without evaluator context", async () => {
+    let executed = 0;
+    const tool: Tool = {
+      name: "Write",
+      description: "",
+      inputSchema: { type: "object" },
+      execute: async () => {
+        executed += 1;
+        return { content: "should-not-run" };
+      },
+    };
+    const registry = mkRegistry([tool]);
+    const session = mkSession({
+      log: new EventLog(),
+      registry,
+    });
+    const executor = new StreamingToolExecutor({
+      registry,
+      runtime: new ToolCallRuntime(),
+      liveToolDispatch: {
+        router: { registry },
+        options: {
+          session,
+          turn: mkCtx(),
+          preHooks: [
+            () => ({
+              kind: "continue",
+              hookPermissionResult: {
+                behavior: "deny",
+                message: "blocked without evaluator",
+                hookName: "PreToolUse:test",
+              },
+            }),
+          ],
+          approvalPolicy: "never",
+          sandboxMode: "workspace_write",
+        },
+      },
+    });
+    const call: LLMToolCall = {
+      id: "c-fallback-deny",
+      name: "Write",
+      arguments: "{}",
+    };
+
+    executor.addTool(
+      { type: "tool_use", id: call.id, name: call.name, input: {} },
+      call,
+    );
+    executor.dispatchPending();
+    for (let i = 0; i < 20 && executor.inflightCount() > 0; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    const completed = [...executor.getCompletedResults()];
+
+    expect(executed).toBe(0);
+    expect(completed[0]!.result.isError).toBe(true);
+    expect(completed[0]!.result.content).toBe("blocked without evaluator");
+  });
+
   test("streaming PreToolUse hook ask does not override a rule-based deny", async () => {
     let approvals = 0;
     let executed = 0;
@@ -1451,6 +1532,64 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     expect(executed).toBe(0);
     expect(state.messages).toHaveLength(1);
     expect(state.messages[0]!.content).toContain("rejected by user");
+  });
+
+  test("requiresApproval tools do not dispatch when guardian review denies", async () => {
+    let executed = 0;
+    const tool: Tool = {
+      name: "ExitPlanMode",
+      description: "requests plan approval",
+      inputSchema: { type: "object" },
+      requiresApproval: true,
+      execute: async () => {
+        executed += 1;
+        return { content: "should-not-run" };
+      },
+    };
+    const reviewer = {
+      reviewApprovalRequest: vi.fn(async () => ({
+        decision: { kind: "denied" as const },
+        reviewId: "guardian-review-1",
+        countedDenial: true,
+        reason: "guardian denied",
+      })),
+    };
+
+    const log = new EventLog();
+    const registry = mkRegistry([tool]);
+    const session = mkSession({
+      log,
+      registry,
+      guardianApprovalReviewer: reviewer,
+      approvalResolver: {
+        request: async () => ({ kind: "approved" }),
+      },
+    });
+    const state = mkState({
+      toolCalls: [
+        {
+          id: "plan-guardian-deny",
+          name: "ExitPlanMode",
+          arguments: "{}",
+        },
+      ],
+    });
+
+    await executeTools(
+      state,
+      {
+        ...mkCtx(),
+        approvalPolicy: { value: "on_request" },
+        sandboxPolicy: { value: "workspace_write" },
+        config: { approvalsReviewer: "auto_review" },
+      } as unknown as TurnContext,
+      session,
+    );
+
+    expect(executed).toBe(0);
+    expect(reviewer.reviewApprovalRequest).toHaveBeenCalledOnce();
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]!.content).toContain("guardian denied");
   });
 
   test("ExitPlanMode approval payload includes the current AgenC plan", async () => {

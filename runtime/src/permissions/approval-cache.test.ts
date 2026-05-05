@@ -25,6 +25,101 @@ describe("canonicalJsonKey — stable serialization", () => {
     const b = canonicalJsonKey(["-la", "ls"]);
     expect(a).not.toBe(b);
   });
+
+  test("non-json values do not collide with literal strings", () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+
+    expect(canonicalJsonKey({ x: undefined })).not.toBe(
+      canonicalJsonKey({ x: "[undefined]" }),
+    );
+    expect(canonicalJsonKey({ x: 10n })).not.toBe(
+      canonicalJsonKey({ x: "10" }),
+    );
+    expect(canonicalJsonKey({ x: () => undefined })).not.toBe(
+      canonicalJsonKey({ x: "[function]" }),
+    );
+    expect(canonicalJsonKey({ x: Symbol("approval") })).not.toBe(
+      canonicalJsonKey({ x: "Symbol(approval)" }),
+    );
+    expect(canonicalJsonKey({ x: circular })).not.toBe(
+      canonicalJsonKey({ x: "[circular]" }),
+    );
+  });
+
+  test("nested permutations stay stable without erasing positional or typed differences", () => {
+    const canonical = {
+      alpha: {
+        beta: [
+          { delta: 4, gamma: 3 },
+          ["x", "y"],
+        ],
+        epsilon: { eta: 7, zeta: 6 },
+      },
+      theta: "done",
+    };
+    const sameValuePermutations = [
+      canonical,
+      {
+        theta: "done",
+        alpha: {
+          epsilon: { zeta: 6, eta: 7 },
+          beta: [
+            { gamma: 3, delta: 4 },
+            ["x", "y"],
+          ],
+        },
+      },
+      {
+        alpha: {
+          beta: [
+            { gamma: 3, delta: 4 },
+            ["x", "y"],
+          ],
+          epsilon: { eta: 7, zeta: 6 },
+        },
+        theta: "done",
+      },
+    ];
+    const expected = canonicalJsonKey(canonical);
+    expect(sameValuePermutations.map(canonicalJsonKey)).toEqual([
+      expected,
+      expected,
+      expected,
+    ]);
+
+    const distinctValues = [
+      canonical,
+      {
+        alpha: {
+          beta: [
+            ["x", "y"],
+            { gamma: 3, delta: 4 },
+          ],
+          epsilon: { eta: 7, zeta: 6 },
+        },
+        theta: "done",
+      },
+      {
+        alpha: {
+          beta: [
+            { gamma: 3, delta: 4 },
+            ["y", "x"],
+          ],
+          epsilon: { eta: 7, zeta: 6 },
+        },
+        theta: "done",
+      },
+      { alpha: { beta: [{ gamma: 3, delta: 4 }, ["x", "y"]] }, theta: 10n },
+      {
+        alpha: { beta: [{ gamma: 3, delta: 4 }, ["x", "y"]] },
+        theta: "10",
+      },
+    ];
+    expect(new Set(distinctValues.map(canonicalJsonKey)).size).toBe(
+      distinctValues.length,
+    );
+  });
 });
 
 describe("ApprovalStore<K>", () => {

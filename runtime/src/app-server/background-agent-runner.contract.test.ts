@@ -214,7 +214,8 @@ describe("AgenC delegate background-agent runner", () => {
       sendInput,
       shutdown: vi.fn(async () => {}),
     };
-    const dispatch = vi.fn(async () => ({ content: "file text" }));
+    const dispatch = vi.fn(async () => ({ content: "should not run" }));
+    const execute = vi.fn(async () => ({ content: "file text" }));
     const replayResults: unknown[] = [];
     let runParams: Parameters<AgenCRunAgentFunction>[0] | undefined;
     const runAgentFn = (async function* (
@@ -229,7 +230,16 @@ describe("AgenC delegate background-agent runner", () => {
       bootstrap: vi.fn(async () => ({
         session,
         registry: {
-          tools: [{ name: "FileRead", recoveryCategory: "idempotent" }],
+          tools: [
+            {
+              name: "FileRead",
+              description: "Read a file.",
+              inputSchema: { type: "object" },
+              recoveryCategory: "idempotent",
+              isReadOnly: true,
+              execute,
+            },
+          ],
           toLLMTools: () => [],
           dispatch,
         },
@@ -308,17 +318,17 @@ describe("AgenC delegate background-agent runner", () => {
         },
       }),
     );
-    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(2));
-    expect(dispatch).toHaveBeenCalledWith({
-      id: "tool-replay",
-      name: "FileRead",
-      arguments: JSON.stringify({ file_path: "README.md" }),
+    await vi.waitFor(() => expect(replayResults).toHaveLength(2), {
+      timeout: 5_000,
     });
-    expect(dispatch).toHaveBeenCalledWith({
-      id: "tool-existing",
-      name: "FileRead",
-      arguments: JSON.stringify({ file_path: "already.md" }),
-    });
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({ file_path: "README.md" }),
+    );
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({ file_path: "already.md" }),
+    );
     expect(replayResults).toEqual([
       {
         sessionId: "session-restart",
@@ -432,6 +442,94 @@ describe("AgenC delegate background-agent runner", () => {
       }),
     ).resolves.toBeUndefined();
     expect(sendInput).toHaveBeenCalledWith("run-restart", "follow up");
+  });
+
+  it("does not replay idempotent recovered calls that still require approval", async () => {
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    const session = {
+      conversationId: "session-replay-approval-required",
+      permissionModeRegistry,
+      services: {},
+      eventLog: {
+        emit: vi.fn((event) => event),
+      },
+    };
+    const live = restoredLiveAgent("run-replay-approval", "/root/replay");
+    const resumeAgentFromRollout = vi.fn(async () => ({
+      resumedCount: 1,
+      rootLive: live,
+    }));
+    const execute = vi.fn(async () => ({ content: "should not execute" }));
+    const replayResults: unknown[] = [];
+    const runAgentFn = (async function* () {
+      yield { kind: "status", text: "restored" };
+      await new Promise(() => {});
+    }) as AgenCRunAgentFunction;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        registry: {
+          tools: [
+            {
+              name: "FileRead",
+              description: "Read a file.",
+              inputSchema: { type: "object" },
+              recoveryCategory: "idempotent",
+              requiresApproval: true,
+              execute,
+            },
+          ],
+          toLLMTools: () => [],
+          dispatch: vi.fn(async () => ({ content: "raw dispatch bypass" })),
+        },
+        shutdown: async () => {},
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control: {
+          resumeAgentFromRollout,
+          sendInput: async () => {},
+          shutdown: async () => {},
+        },
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      runAgentFn,
+    });
+
+    await expect(
+      runner.restoreAgent({
+        agentId: "run-replay-approval",
+        objective: "recover daemon state",
+        currentSessionId: "session-replay-approval-required",
+        initialMessages: [{ role: "user" as const, content: "continue" }],
+        replayToolCalls: [
+          {
+            callId: "tool-needs-approval",
+            toolName: "FileRead",
+            args: { file_path: "secret.txt" },
+          },
+        ],
+        onReplayToolResult: (result) => {
+          replayResults.push(result);
+        },
+        metadata: { agentPath: "/root/replay" },
+      }),
+    ).resolves.toBe(true);
+
+    await vi.waitFor(() => expect(replayResults).toHaveLength(1), {
+      timeout: 5_000,
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(replayResults[0]).toMatchObject({
+      sessionId: "session-replay-approval-required",
+      callId: "tool-needs-approval",
+      toolName: "FileRead",
+      isError: true,
+      terminalStatus: "failed",
+      recoveryCategory: "idempotent",
+    });
   });
 
   it("restores missing unattended metadata to the default unattended policy", async () => {

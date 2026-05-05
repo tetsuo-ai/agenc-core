@@ -8,7 +8,6 @@ import {
   executeToolDispatch,
   formatError,
   parseToolArgsWithBigInt,
-  requestApprovalWithAbortRace,
   resolveTimeoutMs,
   runToolUse,
   ToolTimeoutError,
@@ -23,6 +22,7 @@ import type {
   PreToolUseHook,
 } from "./hooks.js";
 import { EventLog } from "../session/event-log.js";
+import { requestToolUserApproval } from "../permissions/guardian/arbiter.js";
 import { APPROVED_FOR_SESSION } from "../permissions/review-decision.js";
 import {
   attachContextDefaults,
@@ -42,7 +42,11 @@ import {
 function makeInvocation(callId: string, toolName: string): ToolInvocation {
   return {
     session: { services: {} } as never,
-    turn: {} as never,
+    turn: {
+      cwd: "/repo",
+      sandboxPolicy: { value: "workspace_write" },
+      approvalPolicy: { value: "on_request" },
+    } as never,
     tracker: {
       appendFileDiff: () => {},
       snapshot: () => [],
@@ -178,12 +182,12 @@ describe("classifyToolError", () => {
   });
 });
 
-describe("I-21 + I-44 requestApprovalWithAbortRace", () => {
+describe("I-21 + I-44 requestToolUserApproval", () => {
   test("abort signal wins over slow modal", async () => {
     const ctl = new AbortController();
     setTimeout(() => ctl.abort(), 20);
-    const result = await requestApprovalWithAbortRace(
-      () =>
+    const result = await requestToolUserApproval({
+      request: () =>
         new Promise((r) =>
           setTimeout(
             () =>
@@ -194,30 +198,28 @@ describe("I-21 + I-44 requestApprovalWithAbortRace", () => {
             100,
           ),
         ),
-      {
-        tool: {} as Tool,
-        args: {},
-        currentTurnId: "t1",
-        signal: ctl.signal,
-      },
-    );
+      tool: { name: "test" } as Tool,
+      args: {},
+      invocation: makeInvocation("approval-1", "test"),
+      currentTurnId: "t1",
+      signal: ctl.signal,
+    });
     expect(result.allow).toBe(false);
   });
 
   test("I-44: decision for wrong turn id → stale_modal_decision", async () => {
     const ctl = new AbortController();
-    const result = await requestApprovalWithAbortRace(
-      async () => ({
+    const result = await requestToolUserApproval({
+      request: async () => ({
         behavior: "allow",
         decisionAtTurnId: "t-prev",
       }),
-      {
-        tool: {} as Tool,
-        args: {},
-        currentTurnId: "t-current",
-        signal: ctl.signal,
-      },
-    );
+      tool: { name: "test" } as Tool,
+      args: {},
+      invocation: makeInvocation("approval-2", "test"),
+      currentTurnId: "t-current",
+      signal: ctl.signal,
+    });
     expect(result.allow).toBe(false);
     if (!result.allow) {
       expect(result.cause).toBe("stale_modal_decision");
@@ -227,22 +229,21 @@ describe("I-21 + I-44 requestApprovalWithAbortRace", () => {
   test("I-44: stale active turn short-circuits before opening the modal", async () => {
     const ctl = new AbortController();
     let modalCalls = 0;
-    const result = await requestApprovalWithAbortRace(
-      async () => {
+    const result = await requestToolUserApproval({
+      request: async () => {
         modalCalls += 1;
         return {
           behavior: "allow",
           decisionAtTurnId: "t-prev",
         };
       },
-      {
-        tool: {} as Tool,
-        args: {},
-        currentTurnId: "t-prev",
-        getActiveTurnId: () => "t-current",
-        signal: ctl.signal,
-      },
-    );
+      tool: { name: "test" } as Tool,
+      args: {},
+      invocation: makeInvocation("approval-3", "test"),
+      currentTurnId: "t-prev",
+      getActiveTurnId: () => "t-current",
+      signal: ctl.signal,
+    });
     expect(result.allow).toBe(false);
     if (!result.allow) {
       expect(result.cause).toBe("stale_modal_decision");
@@ -257,19 +258,18 @@ describe("I-21 + I-44 requestApprovalWithAbortRace", () => {
       behavior: "allow" | "deny" | "abort";
       decisionAtTurnId: string;
     }) => void) | null = null;
-    const resultPromise = requestApprovalWithAbortRace(
-      async () =>
+    const resultPromise = requestToolUserApproval({
+      request: async () =>
         await new Promise((resolve) => {
           resolveDecision = resolve;
         }),
-      {
-        tool: {} as Tool,
-        args: {},
-        currentTurnId: "t1",
-        getActiveTurnId: () => activeTurnId,
-        signal: ctl.signal,
-      },
-    );
+      tool: { name: "test" } as Tool,
+      args: {},
+      invocation: makeInvocation("approval-4", "test"),
+      currentTurnId: "t1",
+      getActiveTurnId: () => activeTurnId,
+      signal: ctl.signal,
+    });
 
     activeTurnId = "t2";
     resolveDecision?.({
@@ -286,18 +286,17 @@ describe("I-21 + I-44 requestApprovalWithAbortRace", () => {
 
   test("valid allow decision passes", async () => {
     const ctl = new AbortController();
-    const result = await requestApprovalWithAbortRace(
-      async () => ({
+    const result = await requestToolUserApproval({
+      request: async () => ({
         behavior: "allow",
         decisionAtTurnId: "t1",
       }),
-      {
-        tool: {} as Tool,
-        args: {},
-        currentTurnId: "t1",
-        signal: ctl.signal,
-      },
-    );
+      tool: { name: "test" } as Tool,
+      args: {},
+      invocation: makeInvocation("approval-5", "test"),
+      currentTurnId: "t1",
+      signal: ctl.signal,
+    });
     expect(result.allow).toBe(true);
   });
 
@@ -322,8 +321,13 @@ describe("I-21 + I-44 requestApprovalWithAbortRace", () => {
       },
     };
 
-    const first = await requestApprovalWithAbortRace(
-      async () => {
+    const invocation = makeInvocation("cache-call", "system.bash");
+    (invocation.session as { services: { toolApprovals?: unknown } }).services
+      .toolApprovals = cache;
+    const tool = { name: "system.bash" } as Tool;
+
+    const first = await requestToolUserApproval({
+      request: async () => {
         modalCalls += 1;
         return {
           behavior: "allow",
@@ -331,19 +335,14 @@ describe("I-21 + I-44 requestApprovalWithAbortRace", () => {
           reviewDecision: APPROVED_FOR_SESSION,
         };
       },
-      {
-        tool: {} as Tool,
-        args: {},
-        currentTurnId: "t1",
-        signal: ctl.signal,
-        approvalCache: {
-          cache,
-          keys: [{ toolName: "system.bash", cwd: "/repo" }],
-        },
-      },
-    );
-    const second = await requestApprovalWithAbortRace(
-      async () => {
+      tool,
+      args: { command: "pwd" },
+      invocation,
+      currentTurnId: "t1",
+      signal: ctl.signal,
+    });
+    const second = await requestToolUserApproval({
+      request: async () => {
         modalCalls += 1;
         return {
           behavior: "allow",
@@ -351,17 +350,12 @@ describe("I-21 + I-44 requestApprovalWithAbortRace", () => {
           reviewDecision: APPROVED_FOR_SESSION,
         };
       },
-      {
-        tool: {} as Tool,
-        args: {},
-        currentTurnId: "t1",
-        signal: ctl.signal,
-        approvalCache: {
-          cache,
-          keys: [{ toolName: "system.bash", cwd: "/repo" }],
-        },
-      },
-    );
+      tool,
+      args: { command: "pwd" },
+      invocation,
+      currentTurnId: "t1",
+      signal: ctl.signal,
+    });
 
     expect(first.allow).toBe(true);
     expect(second.allow).toBe(true);
@@ -383,18 +377,17 @@ describe("I-21 + I-44 requestApprovalWithAbortRace", () => {
       execute: async () => ({ content: "" }),
     } as unknown as Tool;
 
-    await requestApprovalWithAbortRace(
-      async () => ({ behavior: "allow", decisionAtTurnId: "t1" }),
-      {
-        tool,
-        args: { command: "ls -la" },
-        currentTurnId: "t1",
-        signal: ctl.signal,
-        eventLog: log,
-        subId: "sub-1",
-        callId: "call-xyz",
-      },
-    );
+    await requestToolUserApproval({
+      request: async () => ({ behavior: "allow", decisionAtTurnId: "t1" }),
+      tool,
+      args: { command: "ls -la" },
+      invocation: makeInvocation("call-xyz", "system.bash"),
+      currentTurnId: "t1",
+      signal: ctl.signal,
+      eventLog: log,
+      subId: "sub-1",
+      callId: "call-xyz",
+    });
 
     const approval = recorded.find((r) => r.type === "exec_approval_request");
     expect(approval).toBeDefined();

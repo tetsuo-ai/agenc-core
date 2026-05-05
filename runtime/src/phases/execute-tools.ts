@@ -57,7 +57,7 @@ import { resolveMaxToolUseConcurrency } from "./_deps/orchestration.js";
 import type { ToolDispatchResult } from "./_deps/tool-registry.js";
 import { emitError as emitErrorEvent } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
-import type { GuardianApprovalReviewer } from "../session/guardian-approval-review.js";
+import type { GuardianApprovalReviewer } from "../permissions/guardian/reviewer.js";
 import type { PermissionAuditEventInput } from "../permissions/permission-audit-log.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { ToolUseBlock, TurnState, UserMessage } from "../session/turn-state.js";

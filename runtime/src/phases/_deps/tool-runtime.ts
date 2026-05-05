@@ -43,14 +43,13 @@ import {
   type PermissionAuditErrorHandler,
   type PermissionAuditLogger,
 } from "../../permissions/permission-audit-log.js";
+import type {
+  CanUseToolFn,
+  ToolEvaluatorContext,
+} from "../../permissions/evaluator.js";
+import { arbitratePermissionMode } from "../../permissions/guardian/arbiter.js";
+import type { GuardianApprovalReviewer } from "../../permissions/guardian/reviewer.js";
 import {
-  getAskRuleForTool,
-  getDenyRuleForTool,
-} from "../../permissions/rules.js";
-import type { ToolPermissionContext } from "../../permissions/types.js";
-import type { GuardianApprovalReviewer } from "../../session/guardian-approval-review.js";
-import {
-  mergeHookPermissionDecision,
   runPostToolUseHooks,
   runPreToolUseHooks,
   type HookPermissionResult,
@@ -737,42 +736,31 @@ export class StreamingToolExecutor {
       const permissionContext = this.liveOptions?.permissionContext;
       let forcedApprovalReason: string | undefined;
       let preHookAllowed = false;
-      if (canUseTool && permissionContext) {
-        const merged = await mergeHookPermissionDecision({
-          hookPermissionResult,
+      const shouldArbitratePermission =
+        hookPermissionResult !== undefined ||
+        (canUseTool !== undefined && permissionContext !== undefined);
+      if (shouldArbitratePermission) {
+        const permissionDecision = await arbitratePermissionMode({
+          tool: toolDef,
           args: effectiveArgs,
-          ruleBasedCheck: async (candidateArgs) => {
-            const permissionSnapshot =
-              readToolPermissionContext(permissionContext);
-            if (permissionSnapshot) {
-              if (getDenyRuleForTool(permissionSnapshot, toolDef.name, candidateArgs)) {
-                return {
-                  behavior: "deny",
-                  message: `permission denied by rule: ${toolDef.name}`,
-                };
-              }
-              if (getAskRuleForTool(permissionSnapshot, toolDef.name, candidateArgs)) {
-                return {
-                  behavior: "ask",
-                  message: `approval required by rule: ${toolDef.name}`,
-                };
-              }
-            }
-            return null;
-          },
+          ...(hookPermissionResult !== undefined ? { hookPermissionResult } : {}),
+          ...(canUseTool !== undefined
+            ? { canUseTool: canUseTool as CanUseToolFn }
+            : {}),
+          ...(permissionContext !== undefined
+            ? { permissionContext: permissionContext as ToolEvaluatorContext }
+            : {}),
         });
-        if (merged) {
-          effectiveArgs = merged.args;
-          if (merged.behavior === "deny") {
+        if (permissionDecision.kind !== "none") {
+          effectiveArgs = permissionDecision.args;
+          if (permissionDecision.kind === "deny") {
             const message =
-              merged.message ?? `permission denied: ${tool.toolCall.name}`;
+              permissionDecision.message ??
+              `permission denied: ${tool.toolCall.name}`;
             await recordToolRuntimePolicyAudit(this.liveOptions, {
               decision: "denied",
-              source: "pre-tool-use-hook",
-              reasonCode:
-                merged.decisionReason?.type === "hook_plus_rule_deny"
-                  ? "rule_denied"
-                  : "hook_denied",
+              source: permissionDecision.source,
+              reasonCode: permissionDecision.reasonCode,
               toolName: toolDef.name,
               callId: tool.toolCall.id,
             });
@@ -783,70 +771,16 @@ export class StreamingToolExecutor {
             tool.result = { content: message, isError: true };
             return tool;
           }
-          if (merged.behavior === "ask") {
+          if (permissionDecision.kind === "ask") {
             forcedApprovalReason =
-              merged.message ?? `approval required: ${tool.toolCall.name}`;
-          } else if (merged.behavior === "allow") {
+              permissionDecision.message ??
+              `approval required: ${tool.toolCall.name}`;
+          } else if (permissionDecision.kind === "allow") {
             preHookAllowed = true;
             await recordToolRuntimePolicyAudit(this.liveOptions, {
               decision: "approved",
-              source: "pre-tool-use-hook",
-              reasonCode: "hook_allowed",
-              toolName: toolDef.name,
-              callId: tool.toolCall.id,
-            });
-          }
-        } else {
-          const decision = await canUseTool(
-            toolDef,
-            effectiveArgs,
-            permissionContext,
-          );
-          if (decision.behavior === "deny") {
-            const message =
-              decision.message ?? `permission denied: ${tool.toolCall.name}`;
-            await recordToolRuntimePolicyAudit(this.liveOptions, {
-              decision: "denied",
-              source: "permission-evaluator",
-              reasonCode:
-                decision.decisionReason?.type === "rule"
-                  ? "rule_denied"
-                  : "evaluator_denied",
-              toolName: toolDef.name,
-              callId: tool.toolCall.id,
-            });
-            emitOn(session, "error", {
-              cause: `permission_denied:${tool.toolCall.name}`,
-              message,
-            });
-            tool.result = { content: message, isError: true };
-            return tool;
-          }
-          if (decision.behavior === "ask") {
-            forcedApprovalReason =
-              decision.message ?? `approval required: ${tool.toolCall.name}`;
-          } else if (decision.updatedInput !== undefined) {
-            if (decision.behavior === "allow") {
-              await recordToolRuntimePolicyAudit(this.liveOptions, {
-                decision: "approved",
-                source: "permission-evaluator",
-                reasonCode:
-                  decision.decisionReason?.type === "rule"
-                    ? "rule_allowed"
-                    : "evaluator_allowed",
-                toolName: toolDef.name,
-                callId: tool.toolCall.id,
-              });
-            }
-            effectiveArgs = decision.updatedInput as Record<string, unknown>;
-          } else if (decision.behavior === "allow") {
-            await recordToolRuntimePolicyAudit(this.liveOptions, {
-              decision: "approved",
-              source: "permission-evaluator",
-              reasonCode:
-                decision.decisionReason?.type === "rule"
-                  ? "rule_allowed"
-                  : "evaluator_allowed",
+              source: permissionDecision.source,
+              reasonCode: permissionDecision.reasonCode,
               toolName: toolDef.name,
               callId: tool.toolCall.id,
             });
@@ -1029,27 +963,6 @@ export class StreamingToolExecutor {
   }
 }
 
-function readToolPermissionContext(
-  permissionContext: unknown,
-): ToolPermissionContext | null {
-  if (
-    typeof permissionContext !== "object" ||
-    permissionContext === null ||
-    typeof (permissionContext as { getAppState?: unknown }).getAppState !==
-      "function"
-  ) {
-    return null;
-  }
-  const appState = (permissionContext as { getAppState: () => unknown })
-    .getAppState();
-  if (typeof appState !== "object" || appState === null) return null;
-  const candidate = (appState as { toolPermissionContext?: unknown })
-    .toolPermissionContext;
-  return typeof candidate === "object" && candidate !== null
-    ? (candidate as ToolPermissionContext)
-    : null;
-}
-
 async function recordToolRuntimePolicyAudit(
   options: LiveDispatchOptions | undefined,
   event: {
@@ -1102,7 +1015,12 @@ async function dispatchWithInjectedArgs(
     | { name: string; execute?: (args: Record<string, unknown>) => Promise<unknown> }
     | undefined;
   if (!tool || typeof tool.execute !== "function") {
-    return registry.dispatch(call);
+    return {
+      content: JSON.stringify({
+        error: `guarded tool dispatch is unavailable for ${call.name}`,
+      }),
+      isError: true,
+    };
   }
   const original = tool.execute.bind(tool);
   const patched = async (parsed: Record<string, unknown>): Promise<unknown> => {

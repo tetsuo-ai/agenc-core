@@ -274,12 +274,15 @@ describe("requestApproval pipeline", () => {
     turnId: "t-1",
   });
 
-  const mkGuardianCtx = (reviewer = "auto_review"): ApprovalCtx => ({
+  const mkGuardianCtx = (
+    reviewer = "auto_review",
+    approvalPolicy: "never" | "on_failure" | "on_request" | "granular" | "untrusted" = "on_request",
+  ): ApprovalCtx => ({
     invocation: {
       session: {} as ApprovalCtx["invocation"]["session"],
       turn: {
         subId: "t-1",
-        approvalPolicy: { value: "on_request" },
+        approvalPolicy: { value: approvalPolicy },
         config: { approvalsReviewer: reviewer },
       } as ApprovalCtx["invocation"]["turn"],
       tracker: {
@@ -358,6 +361,26 @@ describe("requestApproval pipeline", () => {
     expect(res.decision.kind).toBe("denied");
     expect(res.source).toBe("guardian");
     expect(res.reason).toBe("guardian denied");
+    expect(guardian.reviewApprovalRequest).toHaveBeenCalledOnce();
+    expect(resolverSpy).not.toHaveBeenCalled();
+  });
+
+  test("auto_review routes actual approval requests even when original turn policy skipped", async () => {
+    const guardian = {
+      reviewApprovalRequest: vi.fn(async () => ({
+        decision: { kind: "approved" as const },
+        reviewId: "review-effective-policy",
+        countedDenial: false,
+      })),
+    };
+    const resolverSpy = vi.fn(async () => ({ kind: "denied" as const }));
+    const res = await requestApproval({
+      ctx: mkGuardianCtx("auto_review", "never"),
+      guardianApprovalReviewer: guardian,
+      resolver: { request: resolverSpy } as ApprovalResolver,
+    });
+    expect(res.decision.kind).toBe("approved");
+    expect(res.source).toBe("guardian");
     expect(guardian.reviewApprovalRequest).toHaveBeenCalledOnce();
     expect(resolverSpy).not.toHaveBeenCalled();
   });
@@ -638,12 +661,14 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
     turnId: "t-1",
   });
 
-  const mkGuardianCtx = (): ApprovalCtx => ({
+  const mkGuardianCtx = (
+    approvalPolicy: "never" | "on_failure" | "on_request" | "granular" | "untrusted" = "on_request",
+  ): ApprovalCtx => ({
     invocation: {
       session: {} as ApprovalCtx["invocation"]["session"],
       turn: {
         subId: "t-1",
-        approvalPolicy: { value: "on_request" },
+        approvalPolicy: { value: approvalPolicy },
         config: { approvalsReviewer: "auto_review" },
       } as ApprovalCtx["invocation"]["turn"],
       tracker: {
@@ -692,6 +717,44 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
     });
     expect(result).toBe("ok");
     expect(calls).toEqual(["workspace_write", "danger_full_access"]);
+  });
+
+  test("sandbox escalation under on_failure routes auto_review through guardian", async () => {
+    const calls: string[] = [];
+    const guardian = {
+      reviewApprovalRequest: vi.fn(async () => ({
+        decision: { kind: "approved" as const },
+        reviewId: "review-sandbox-escalation",
+        countedDenial: false,
+      })),
+    };
+    const resolver: ApprovalResolver = {
+      request: vi.fn(async () => ({ kind: "denied" })),
+    };
+    const result = await orchestrateToolCall<string>({
+      tool: mkTool(),
+      approvalCtx: mkGuardianCtx("on_failure"),
+      approvalPolicy: "on_failure",
+      sandboxMode: "workspace_write",
+      dispatch: async (sandbox) => {
+        calls.push(sandbox);
+        if (calls.length === 1) {
+          throw new SandboxDeniedError("fs blocked", {
+            denial: "filesystem",
+            target: "/tmp/block",
+            policy: { kind: "workspace_write", writable_roots: [], read_only_access: { kind: "full_access" }, network_access: { mode: "disabled" }, exclude_tmpdir_env_var: false, exclude_slash_tmp: false },
+          });
+        }
+        return "ok";
+      },
+      guardianApprovalReviewer: guardian,
+      approvalResolver: resolver,
+    });
+
+    expect(result).toBe("ok");
+    expect(calls).toEqual(["workspace_write", "danger_full_access"]);
+    expect(guardian.reviewApprovalRequest).toHaveBeenCalledOnce();
+    expect(resolver.request).not.toHaveBeenCalled();
   });
 
   test("sandbox escalation: approval denied → ApprovalRejectedError (under on_failure policy)", async () => {
@@ -827,6 +890,34 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
     expect(result).toBe("ok");
     expect(dispatched).toHaveBeenCalledOnce();
     expect(resolver.request).toHaveBeenCalledOnce();
+  });
+
+  test("per-tool default_permission_mode=untrusted routes auto_review through guardian when session skips", async () => {
+    const guardian = {
+      reviewApprovalRequest: vi.fn(async () => ({
+        decision: { kind: "approved" as const },
+        reviewId: "review-default-mode",
+        countedDenial: false,
+      })),
+    };
+    const resolver: ApprovalResolver = {
+      request: vi.fn(async () => ({ kind: "denied" })),
+    };
+    const dispatched = vi.fn(async () => "ok");
+    const result = await orchestrateToolCall<string>({
+      tool: mkTool({ defaultPermissionMode: "untrusted" }),
+      approvalCtx: mkGuardianCtx("never"),
+      approvalPolicy: "never",
+      sandboxMode: "workspace_write",
+      dispatch: dispatched,
+      guardianApprovalReviewer: guardian,
+      approvalResolver: resolver,
+    });
+
+    expect(result).toBe("ok");
+    expect(dispatched).toHaveBeenCalledOnce();
+    expect(guardian.reviewApprovalRequest).toHaveBeenCalledOnce();
+    expect(resolver.request).not.toHaveBeenCalled();
   });
 
   test("needs_approval path: guardian denial blocks dispatch with guardian rationale", async () => {

@@ -1,25 +1,25 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AsyncQueue } from "../utils/async-queue.js";
-import type { LLMChatOptions, LLMMessage, LLMProvider, LLMResponse } from "../llm/types.js";
-import type { ApprovalCtx } from "../tools/orchestrator.js";
-import type { ToolInvocation } from "../tools/context.js";
+import { AsyncQueue } from "../../utils/async-queue.js";
+import type { LLMChatOptions, LLMMessage, LLMProvider, LLMResponse } from "../../llm/types.js";
+import type { ApprovalCtx } from "./arbiter.js";
+import type { ToolInvocation } from "../../tools/context.js";
 import {
   createGuardianRejectionCircuitBreaker,
   type GuardianRejectionCircuitBreaker,
-} from "./guardian-rejection-circuit-breaker.js";
+} from "./rejection-circuit-breaker.js";
 import {
   createDefaultGuardianApprovalReviewer,
   GUARDIAN_PREFERRED_MODEL,
   parseGuardianAssessment,
-} from "./guardian-approval-review.js";
-import { ReviewManager } from "./review.js";
+} from "./reviewer.js";
+import { ReviewManager } from "../../session/review.js";
 import {
   Session,
   type Event,
   type SessionOpts,
   type SessionServices,
-} from "./session.js";
+} from "../../session/session.js";
 import {
   newDefaultTurnWithSubId,
   type Config,
@@ -27,7 +27,7 @@ import {
   type ModelInfo,
   type SessionConfiguration,
   type TurnContext,
-} from "./turn-context.js";
+} from "../../session/turn-context.js";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -149,6 +149,8 @@ function mkSession(opts: {
   readonly provider: LLMProvider;
   readonly breaker?: GuardianRejectionCircuitBreaker;
   readonly models?: readonly ModelInfo[];
+  readonly modelInfoError?: Error;
+  readonly history?: readonly unknown[];
 }): { session: Session; events: Event[]; breaker: GuardianRejectionCircuitBreaker } {
   const events: Event[] = [];
   const breaker = opts.breaker ?? createGuardianRejectionCircuitBreaker();
@@ -182,15 +184,22 @@ function mkSession(opts: {
     modelsManager: {
       tryListModels: () => models,
       listModels: async () => models,
-      getModelInfo: async (slug: string) =>
-        models.find((model) => model.slug === slug) ?? mkModelInfo(slug),
+      getModelInfo: async (slug: string) => {
+        if (
+          opts.modelInfoError !== undefined &&
+          slug === GUARDIAN_PREFERRED_MODEL
+        ) {
+          throw opts.modelInfoError;
+        }
+        return models.find((model) => model.slug === slug) ?? mkModelInfo(slug);
+      },
     },
   } as unknown as SessionServices;
   const session = new Session({
     conversationId: "conv-guardian-approval-test",
     initialState: {
       sessionConfiguration: mkSessionConfiguration(),
-      history: [],
+      history: [...(opts.history ?? [])],
       totalTokenUsage: 0,
     } as unknown as SessionOpts["initialState"],
     features: mkFeatures(),
@@ -310,6 +319,67 @@ describe("guardian approval reviewer", () => {
     expect(observedModel).toBe(GUARDIAN_PREFERRED_MODEL);
   });
 
+  it("model lookup failure fails closed without counting as a breaker denial", async () => {
+    const { session, breaker } = mkSession({
+      provider: mkProvider({ content: '{"outcome":"allow"}' }),
+      modelInfoError: new Error("model lookup unavailable"),
+    });
+    const turn = newDefaultTurnWithSubId(session, "turn-model-lookup-failed");
+    const reviewer = createDefaultGuardianApprovalReviewer({ timeoutMs: 5_000 });
+
+    const result = await reviewer.reviewApprovalRequest({
+      ctx: mkApprovalCtx(session, turn),
+      args: { path: "file.txt", content: "ok" },
+    });
+
+    expect(result.decision.kind).toBe("denied");
+    expect(result.countedDenial).toBe(false);
+    expect(result.reason).toContain(
+      "Automatic approval review failed: model lookup unavailable",
+    );
+    expect(breaker.peek("turn-model-lookup-failed")).toMatchObject({
+      consecutiveDenials: 0,
+      totalDenials: 0,
+    });
+  });
+
+  it("prompt includes policy taxonomy and retained transcript context", async () => {
+    let observedPrompt = "";
+    const { session } = mkSession({
+      provider: mkProvider({
+        content: '{"outcome":"allow"}',
+        onChat: (messages) => {
+          observedPrompt = messages
+            .map((message) =>
+              typeof message.content === "string"
+                ? message.content
+                : JSON.stringify(message.content),
+            )
+            .join("\n");
+        },
+      }),
+      history: [
+        {
+          role: "user",
+          content: "Please update only the local README file.",
+        },
+      ],
+    });
+    const turn = newDefaultTurnWithSubId(session, "turn-policy-context");
+    const reviewer = createDefaultGuardianApprovalReviewer({ timeoutMs: 5_000 });
+
+    const result = await reviewer.reviewApprovalRequest({
+      ctx: mkApprovalCtx(session, turn),
+      args: { path: "README.md", content: "ok" },
+    });
+
+    expect(result.decision.kind).toBe("approved");
+    expect(observedPrompt).toContain("Data exfiltration");
+    expect(observedPrompt).toContain("Persistent security weakening");
+    expect(observedPrompt).toContain("Recent transcript/context");
+    expect(observedPrompt).toContain("Please update only the local README file.");
+  });
+
   it("guardian deny assessment records a denial and returns the rationale", async () => {
     const { session, breaker } = mkSession({
       provider: mkProvider({
@@ -390,6 +460,7 @@ describe("guardian approval reviewer", () => {
       args: { path: "file.txt", content: "ok" },
     });
     await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(600);
     const result = await promise;
     vi.useRealTimers();
 

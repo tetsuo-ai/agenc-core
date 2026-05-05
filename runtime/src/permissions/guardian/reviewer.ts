@@ -5,7 +5,7 @@
  * The run-turn kernel already clears and reads the breaker; this module
  * owns the approval-time review that records denial/non-denial outcomes.
  *
- * Semantics follow upstream agenc runtime `guardian/review.rs`:
+ * Semantics follow the inspected guardian review source:
  *   - only approval requests explicitly routed to the guardian are counted;
  *   - completed deny assessments increment the breaker;
  *   - allow/timeout/abort reset the consecutive-denial counter;
@@ -19,20 +19,49 @@
 
 import { randomUUID } from "node:crypto";
 
-import type { ReviewDecision } from "../permissions/review-decision.js";
-import type { ApprovalCtx } from "../tools/orchestrator.js";
+import type { ReviewDecision } from "../review-decision.js";
+import type { ApprovalCtx } from "./arbiter.js";
 import type {
   AgenCDelegateSessionLike,
+  AgenCReviewOneShotOutcome,
   AgenCReviewOneShotRequest,
-} from "./agenc-delegate.js";
-import { buildGuardianReviewSessionConfig } from "./agenc-delegate.js";
-import type { TurnContext } from "./turn-context.js";
+} from "../../session/agenc-delegate.js";
+import { buildGuardianReviewSessionConfig } from "../../session/agenc-delegate.js";
+import type { LLMMessage } from "../../llm/types.js";
+import type { TurnContext } from "../../session/turn-context.js";
 import {
   ReviewManager,
   type ReviewFinding,
   type ReviewOutput,
-} from "./review.js";
-import type { GuardianRejectionCircuitBreaker } from "./guardian-rejection-circuit-breaker.js";
+} from "../../session/review.js";
+import {
+  buildGuardianApprovalRequest,
+  guardianApprovalRequestActionText,
+  guardianApprovalRequestPrettyJson,
+  guardianApprovalRequestTargetItemId,
+  type GuardianApprovalRequest,
+  truncateGuardianText,
+} from "./approval-request.js";
+import {
+  buildGuardianUserPrompt,
+  guardianOutputSchema,
+  guardianPolicyPrompt,
+  parseGuardianAssessment,
+  type GuardianAssessment,
+  type GuardianAssessmentDecisionSource,
+  type GuardianRiskLevel,
+  type GuardianUserAuthorization,
+} from "./prompt.js";
+import type { GuardianRejectionCircuitBreaker } from "./rejection-circuit-breaker.js";
+
+export { guardianOutputSchema, parseGuardianAssessment } from "./prompt.js";
+export type {
+  GuardianAssessment,
+  GuardianAssessmentDecisionSource,
+  GuardianAssessmentOutcome,
+  GuardianRiskLevel,
+  GuardianUserAuthorization,
+} from "./prompt.js";
 
 export const GUARDIAN_PREFERRED_MODEL = "codex-auto-review"; // branding-scan: allow OpenAI model identifier
 export const GUARDIAN_REVIEW_TIMEOUT_MS = 90_000;
@@ -48,20 +77,6 @@ const GUARDIAN_TIMEOUT_INSTRUCTIONS =
   "The automatic permission approval review did not finish before its deadline. " +
   "Do not assume the action is unsafe based on the timeout alone. You may retry " +
   "once, or ask the user for guidance or explicit approval.";
-
-const MAX_ACTION_TEXT_CHARS = 16_000;
-
-export type GuardianRiskLevel = "low" | "medium" | "high" | "critical";
-export type GuardianUserAuthorization = "unknown" | "low" | "medium" | "high";
-export type GuardianAssessmentOutcome = "allow" | "deny";
-export type GuardianAssessmentDecisionSource = "agent";
-
-export interface GuardianAssessment {
-  readonly riskLevel: GuardianRiskLevel;
-  readonly userAuthorization: GuardianUserAuthorization;
-  readonly outcome: GuardianAssessmentOutcome;
-  readonly rationale: string;
-}
 
 export interface GuardianRejection {
   readonly rationale: string;
@@ -102,6 +117,7 @@ export interface GuardianApprovalReviewSession extends AgenCDelegateSessionLike 
     readonly guardianRejections?: Map<string, unknown>;
   };
   abortTurnIfActive?(turnId: string, reason: "interrupted"): Promise<boolean>;
+  snapshotHistoryMessages?(): LLMMessage[];
 }
 
 export interface DefaultGuardianApprovalReviewerOptions {
@@ -110,55 +126,6 @@ export interface DefaultGuardianApprovalReviewerOptions {
 
 export function newGuardianReviewId(): string {
   return randomUUID();
-}
-
-export function guardianOutputSchema(): Record<string, unknown> {
-  return {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      risk_level: {
-        type: "string",
-        enum: ["low", "medium", "high", "critical"],
-      },
-      user_authorization: {
-        type: "string",
-        enum: ["unknown", "low", "medium", "high"],
-      },
-      outcome: {
-        type: "string",
-        enum: ["allow", "deny"],
-      },
-      rationale: {
-        type: "string",
-      },
-    },
-    required: ["outcome"],
-  };
-}
-
-export function parseGuardianAssessment(
-  text: string | null | undefined,
-): GuardianAssessment {
-  if (text === null || text === undefined) {
-    throw new Error("guardian review completed without an assessment payload");
-  }
-  const payload = parseGuardianAssessmentPayload(text);
-  if (payload === null) {
-    throw new Error("guardian assessment was not valid JSON");
-  }
-  const outcome = payload.outcome;
-  const riskLevel = payload.risk_level ?? (outcome === "allow" ? "low" : "high");
-  const rationale = nonEmpty(payload.rationale) ??
-    (outcome === "allow"
-      ? "Auto-review returned a low-risk allow decision."
-      : "Auto-review returned a deny decision without a rationale.");
-  return {
-    riskLevel,
-    userAuthorization: payload.user_authorization ?? "unknown",
-    outcome,
-    rationale,
-  };
 }
 
 export function guardianRejectionMessage(
@@ -183,12 +150,8 @@ export function guardianTimeoutMessage(): string {
 }
 
 export function shouldRouteApprovalToGuardian(ctx: ApprovalCtx): boolean {
-  const approvalPolicy = ctx.invocation.turn.approvalPolicy?.value;
   const reviewer = ctx.invocation.turn.config?.approvalsReviewer;
-  return (
-    (approvalPolicy === "on_request" || approvalPolicy === "granular") &&
-    (reviewer === "auto_review" || reviewer === "guardian_subagent")
-  );
+  return reviewer === "auto_review" || reviewer === "guardian_subagent";
 }
 
 export function createDefaultGuardianApprovalReviewer(
@@ -206,9 +169,10 @@ class DefaultGuardianApprovalReviewer implements GuardianApprovalReviewer {
     const session = opts.ctx.invocation.session as GuardianApprovalReviewSession;
     const turn = opts.ctx.invocation.turn;
     const reviewId = opts.ctx.guardianReviewId ?? newGuardianReviewId();
-    const turnId = opts.ctx.turnId || turn.subId;
-    const actionSummary = summarizeGuardianAction(opts.ctx, opts.args ?? {});
-    const targetItemId = opts.ctx.callId;
+    const approvalRequest = buildGuardianApprovalRequest(opts.ctx, opts.args ?? {});
+    const turnId = approvalRequest.turnId;
+    const actionSummary = guardianApprovalRequestActionText(approvalRequest);
+    const targetItemId = guardianApprovalRequestTargetItemId(approvalRequest);
     emitGuardianAssessment(session, turnId, {
       id: reviewId,
       targetItemId,
@@ -236,35 +200,28 @@ class DefaultGuardianApprovalReviewer implements GuardianApprovalReviewer {
       };
     }
 
-    const reviewerModel = await chooseGuardianModel(session, turn);
-    const request = buildOneShotRequest({
-      reviewId,
-      targetItemId,
-      actionSummary,
-      session,
-      turn,
-      reviewerModel,
-      ctx: opts.ctx,
-      args: opts.args ?? {},
-      signal: opts.signal,
-      timeoutMs: this.timeoutMs,
-    });
-    const manager = session.services?.reviewManager ?? new ReviewManager();
-    const outcome = await manager.runReview(session, request).catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        verdict: "fail" as const,
-        output: {
-          findings: [],
-          overallCorrectness: "",
-          overallExplanation: "",
-          overallConfidenceScore: 0,
-        },
-        rawText: null,
-        modelUsed: reviewerModel,
-        error: new Error(message),
-      };
-    });
+    let reviewerModel = turn.modelInfo.slug;
+    let outcome: AgenCReviewOneShotOutcome;
+    try {
+      reviewerModel = await chooseGuardianModel(session, turn);
+      const request = buildOneShotRequest({
+        reviewId,
+        targetItemId,
+        actionSummary,
+        session,
+        turn,
+        reviewerModel,
+        ctx: opts.ctx,
+        args: opts.args ?? {},
+        approvalRequest,
+        signal: opts.signal,
+        timeoutMs: this.timeoutMs,
+      });
+      const manager = session.services?.reviewManager ?? new ReviewManager();
+      outcome = await manager.runReview(session, request);
+    } catch (err) {
+      outcome = guardianReviewFailureOutcome(reviewerModel, err);
+    }
 
     if (outcome.verdict === "timeout") {
       emitGuardianWarning(
@@ -351,74 +308,6 @@ class DefaultGuardianApprovalReviewer implements GuardianApprovalReviewer {
   }
 }
 
-interface ParsedGuardianAssessmentPayload {
-  readonly risk_level?: GuardianRiskLevel;
-  readonly user_authorization?: GuardianUserAuthorization;
-  readonly outcome: GuardianAssessmentOutcome;
-  readonly rationale?: string;
-}
-
-function parseGuardianAssessmentPayload(
-  raw: string,
-): ParsedGuardianAssessmentPayload | null {
-  const direct = tryParseGuardianAssessmentPayload(raw);
-  if (direct !== null) return direct;
-  const firstOpen = raw.indexOf("{");
-  const lastClose = raw.lastIndexOf("}");
-  if (firstOpen >= 0 && lastClose > firstOpen) {
-    return tryParseGuardianAssessmentPayload(raw.slice(firstOpen, lastClose + 1));
-  }
-  return null;
-}
-
-function tryParseGuardianAssessmentPayload(
-  raw: string,
-): ParsedGuardianAssessmentPayload | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return null;
-  }
-  const obj = parsed as Record<string, unknown>;
-  const outcome = obj.outcome;
-  if (outcome !== "allow" && outcome !== "deny") return null;
-  const risk = obj.risk_level;
-  const auth = obj.user_authorization;
-  return {
-    outcome,
-    ...(isRiskLevel(risk) ? { risk_level: risk } : {}),
-    ...(isUserAuthorization(auth) ? { user_authorization: auth } : {}),
-    ...(typeof obj.rationale === "string" ? { rationale: obj.rationale } : {}),
-  };
-}
-
-function isRiskLevel(value: unknown): value is GuardianRiskLevel {
-  return (
-    value === "low" ||
-    value === "medium" ||
-    value === "high" ||
-    value === "critical"
-  );
-}
-
-function isUserAuthorization(value: unknown): value is GuardianUserAuthorization {
-  return (
-    value === "unknown" ||
-    value === "low" ||
-    value === "medium" ||
-    value === "high"
-  );
-}
-
-function nonEmpty(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed && trimmed.length > 0 ? trimmed : undefined;
-}
-
 async function chooseGuardianModel(
   session: GuardianApprovalReviewSession,
   turn: TurnContext,
@@ -427,6 +316,25 @@ async function chooseGuardianModel(
     GUARDIAN_PREFERRED_MODEL,
   );
   return preferred?.visibility === "hide" ? preferred.slug : turn.modelInfo.slug;
+}
+
+function guardianReviewFailureOutcome(
+  reviewerModel: string,
+  err: unknown,
+): AgenCReviewOneShotOutcome {
+  const message = err instanceof Error ? err.message : String(err);
+  return {
+    verdict: "fail",
+    output: {
+      findings: [],
+      overallCorrectness: "",
+      overallExplanation: "",
+      overallConfidenceScore: 0,
+    },
+    rawText: null,
+    modelUsed: reviewerModel,
+    error: new Error(message),
+  };
 }
 
 interface BuildOneShotRequestOptions {
@@ -438,6 +346,7 @@ interface BuildOneShotRequestOptions {
   readonly reviewerModel: string;
   readonly ctx: ApprovalCtx;
   readonly args: Record<string, unknown>;
+  readonly approvalRequest: GuardianApprovalRequest;
   readonly signal?: AbortSignal;
   readonly timeoutMs: number;
 }
@@ -445,6 +354,7 @@ interface BuildOneShotRequestOptions {
 function buildOneShotRequest(
   opts: BuildOneShotRequestOptions,
 ): AgenCReviewOneShotRequest {
+  const reviewContext = buildGuardianReviewSessionContext(opts);
   const config = buildGuardianReviewSessionConfig({
     parentConfig: opts.turn.config,
     activeModel: opts.reviewerModel,
@@ -457,7 +367,15 @@ function buildOneShotRequest(
     input: [
       {
         role: "user",
-        content: buildGuardianUserPrompt(opts),
+        content: buildGuardianUserPrompt({
+          reviewId: opts.reviewId,
+          conversationId: opts.session.conversationId,
+          ctx: opts.ctx,
+          turn: opts.turn,
+          args: opts.args,
+          request: opts.approvalRequest,
+          reviewSessionContext: reviewContext.summary,
+        }),
       },
     ],
     request: {
@@ -468,76 +386,84 @@ function buildOneShotRequest(
     finalOutputJsonSchema: guardianOutputSchema(),
     systemPrompt: guardianPolicyPrompt(),
     registerTask: false,
-    reuseKey: false,
+    initialHistory: reviewContext.initialHistory,
+    reuseKey: reviewContext.reuseKey,
     ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
     timeoutMs: opts.timeoutMs,
   };
 }
 
-function guardianPolicyPrompt(): string {
-  return [
-    "You are AgenC's automatic approval reviewer.",
-    "",
-    "Decide whether the requested tool action is safe to approve under the user's instructions, the current approval policy, and the workspace context. Deny actions that are destructive, exfiltrate secrets, bypass sandboxing, perform unexplained network access, or pursue a risky workaround after a previous denial.",
-    "",
-    "You may only answer with strict JSON. For low-risk actions, use {\"outcome\":\"allow\"}. For anything else, use:",
-    "{\"risk_level\":\"low|medium|high|critical\",\"user_authorization\":\"unknown|low|medium|high\",\"outcome\":\"allow|deny\",\"rationale\":\"string\"}",
-  ].join("\n");
+interface GuardianReviewSessionContext {
+  readonly summary: string;
+  readonly initialHistory: readonly LLMMessage[];
+  readonly reuseKey: string;
 }
 
-function buildGuardianUserPrompt(opts: BuildOneShotRequestOptions): string {
-  return truncateActionText(
-    [
-      "Review this approval request and return the guardian JSON assessment.",
-      "",
-      `Review ID: ${opts.reviewId}`,
-      `Conversation ID: ${opts.session.conversationId ?? "unknown"}`,
-      `Turn ID: ${opts.ctx.turnId || opts.turn.subId}`,
-      `Target item ID: ${opts.targetItemId}`,
-      `Tool: ${opts.ctx.toolName}`,
-      `Approval policy: ${opts.turn.approvalPolicy?.value ?? "unknown"}`,
-      `Sandbox policy: ${opts.turn.sandboxPolicy?.value ?? "unknown"}`,
-      opts.ctx.retryReason ? `Retry reason: ${opts.ctx.retryReason}` : undefined,
-      "",
-      "Action summary:",
-      opts.actionSummary,
-      "",
-      "Arguments:",
-      stringifyForReview(opts.args),
-      "",
-      "Payload:",
-      stringifyForReview(opts.ctx.invocation.payload),
-    ]
-      .filter((line): line is string => line !== undefined)
-      .join("\n"),
-  );
+function buildGuardianReviewSessionContext(
+  opts: BuildOneShotRequestOptions,
+): GuardianReviewSessionContext {
+  const transcript = collectGuardianTranscriptItems(opts.session, opts.turn);
+  const summary =
+    transcript.length > 0
+      ? truncateGuardianText(
+          transcript
+            .map((item, idx) => {
+              return `#${idx + 1}\n${guardianApprovalRequestPrettyJson(item, 1_500)}`;
+            })
+            .join("\n\n"),
+          8_000,
+          "transcript",
+        )
+      : [
+          "No retained transcript snapshot was available to the approval reviewer.",
+          `Active turn: ${opts.turn.subId}`,
+          `Working directory: ${opts.turn.cwd ?? "unknown"}`,
+        ].join("\n");
+  return {
+    summary,
+    initialHistory: [
+      {
+        role: "user",
+        content: `Guardian review retained context:\n${summary}`,
+      },
+    ],
+    reuseKey: [
+      "guardian-review",
+      opts.session.conversationId ?? "unknown-conversation",
+      opts.reviewerModel,
+    ].join(":"),
+  };
 }
 
-function summarizeGuardianAction(
-  ctx: ApprovalCtx,
-  args: Record<string, unknown>,
-): string {
-  const command = commandSummary(ctx, args);
-  if (command !== undefined) return command;
-  return `${ctx.toolName} ${stringifyForReview(args)}`;
-}
-
-function commandSummary(
-  ctx: ApprovalCtx,
-  args: Record<string, unknown>,
-): string | undefined {
-  const payload = ctx.invocation.payload;
-  if (payload.kind === "local_shell") {
-    return payload.params.command.join(" ");
+function collectGuardianTranscriptItems(
+  session: GuardianApprovalReviewSession,
+  turn: TurnContext,
+): readonly unknown[] {
+  const turnRecord = turn as {
+    readonly messagesForQuery?: unknown;
+    readonly messages?: unknown;
+    readonly recentMessages?: unknown;
+  };
+  const sessionRecord = session as {
+    readonly seededTranscriptEvents?: unknown;
+    readonly transcriptEvents?: unknown;
+    readonly _emitted?: unknown;
+  };
+  const candidates = [
+    session.snapshotHistoryMessages?.(),
+    turnRecord.messagesForQuery,
+    turnRecord.messages,
+    turnRecord.recentMessages,
+    sessionRecord.seededTranscriptEvents,
+    sessionRecord.transcriptEvents,
+    sessionRecord._emitted,
+  ];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate) && candidate.length > 0) {
+      return candidate.slice(-20);
+    }
   }
-  const cmd = args.cmd ?? args.command;
-  if (typeof cmd === "string" && cmd.trim().length > 0) {
-    return cmd;
-  }
-  if (Array.isArray(cmd) && cmd.every((part) => typeof part === "string")) {
-    return cmd.join(" ");
-  }
-  return undefined;
+  return [];
 }
 
 interface DerivedAssessment {
@@ -596,7 +522,7 @@ function assessmentFromGenericFindings(
 function summarizeFinding(finding: ReviewFinding): string {
   const body = finding.body.trim();
   if (body.length === 0) return finding.title.trim();
-  return `${finding.title.trim()}: ${truncateActionText(body, 500)}`;
+  return `${finding.title.trim()}: ${truncateGuardianText(body, 500, "finding")}`;
 }
 
 function recordGuardianRejection(
@@ -697,20 +623,4 @@ function emitGuardianAssessment(
     type: "guardian_assessment",
     payload,
   });
-}
-
-function stringifyForReview(value: unknown): string {
-  try {
-    return truncateActionText(JSON.stringify(value, null, 2));
-  } catch {
-    return truncateActionText(String(value));
-  }
-}
-
-function truncateActionText(
-  text: string,
-  maxChars = MAX_ACTION_TEXT_CHARS,
-): string {
-  if (text.length <= maxChars) return text;
-  return `${text.slice(0, maxChars)}\n[... guardian approval request truncated ...]`;
 }
