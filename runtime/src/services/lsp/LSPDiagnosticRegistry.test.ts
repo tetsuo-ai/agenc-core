@@ -97,6 +97,51 @@ describe("LSPDiagnosticRegistry", () => {
     ]);
   });
 
+  test("replaces pending diagnostics for the same server and file", () => {
+    registerPendingLSPDiagnostic({
+      serverName: "ts",
+      files: [
+        {
+          uri: "/tmp/a.ts",
+          diagnostics: [{ ...baseDiagnostic, message: "old diagnostic" }],
+        },
+      ],
+    });
+    registerPendingLSPDiagnostic({
+      serverName: "ts",
+      files: [
+        {
+          uri: "/tmp/a.ts",
+          diagnostics: [{ ...baseDiagnostic, message: "new diagnostic" }],
+        },
+      ],
+    });
+
+    expect(
+      checkForLSPDiagnostics()[0]!.files[0]!.diagnostics.map(
+        (diagnostic) => diagnostic.message,
+      ),
+    ).toEqual(["new diagnostic"]);
+  });
+
+  test("clears pending diagnostics when the server publishes an empty snapshot", () => {
+    registerPendingLSPDiagnostic({
+      serverName: "ts",
+      files: [
+        {
+          uri: "/tmp/a.ts",
+          diagnostics: [{ ...baseDiagnostic, message: "stale diagnostic" }],
+        },
+      ],
+    });
+    registerPendingLSPDiagnostic({
+      serverName: "ts",
+      files: [{ uri: "/tmp/a.ts", diagnostics: [] }],
+    });
+
+    expect(checkForLSPDiagnostics()).toEqual([]);
+  });
+
   test("limits diagnostic volume by severity", () => {
     registerPendingLSPDiagnostic({
       serverName: "ts",
@@ -115,6 +160,27 @@ describe("LSPDiagnosticRegistry", () => {
     const diagnostics = checkForLSPDiagnostics()[0]!.files[0]!.diagnostics;
     expect(diagnostics).toHaveLength(10);
     expect(diagnostics[0]!.severity).toBe("Error");
+  });
+
+  test("bounds peeked diagnostics by severity without draining them", () => {
+    registerPendingLSPDiagnostic({
+      serverName: "ts",
+      files: [
+        {
+          uri: "/tmp/a.ts",
+          diagnostics: Array.from({ length: 40 }, (_, index) => ({
+            ...baseDiagnostic,
+            message: `peek diag ${index}`,
+            severity: index % 2 === 0 ? "Warning" : "Error",
+          })),
+        },
+      ],
+    });
+
+    const peeked = peekLSPDiagnosticsForFile("/tmp/a.ts");
+    expect(peeked).toHaveLength(10);
+    expect(peeked[0]!.severity).toBe("Error");
+    expect(checkForLSPDiagnostics()[0]!.files[0]!.diagnostics).toHaveLength(10);
   });
 
   test("bounds delivered diagnostic dedupe entries for one noisy file", () => {

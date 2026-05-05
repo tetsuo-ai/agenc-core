@@ -397,6 +397,42 @@ describe("model-facing tools", () => {
     }
   });
 
+  it("bounds model-facing LSP diagnostics for noisy pending files", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-lsp-tool-noisy-"));
+    try {
+      const file = join(root, "a.ts");
+      await writeFile(file, "const a = 1;\n", "utf8");
+      registerPendingLSPDiagnostic({
+        serverName: "ts",
+        files: [
+          {
+            uri: file,
+            diagnostics: Array.from({ length: 40 }, (_, index) => ({
+              message: `diag ${index}`,
+              severity: index % 2 === 0 ? "Warning" : "Error",
+            })),
+          },
+        ],
+      });
+
+      const tools = createModelFacingTools({
+        workspaceRoot: root,
+        getSession: () => null,
+      });
+      const lsp = tools.find((tool) => tool.name === "LSP")!;
+      const result = await lsp.execute({
+        operation: "diagnostics",
+        file_path: "a.ts",
+      });
+      const payload = JSON.parse(result.content);
+
+      expect(payload.diagnostics).toHaveLength(10);
+      expect(payload.diagnostics[0]!.severity).toBe("Error");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps native semantic definition, references, and symbols operations available", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-lsp-tool-code-intel-"));
     try {

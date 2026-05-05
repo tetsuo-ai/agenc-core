@@ -6,7 +6,6 @@
  * within a batch and across recent deliveries while keeping strict volume caps.
  */
 
-import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -30,6 +29,10 @@ const pendingDiagnostics = new Map<string, PendingLSPDiagnostic>();
 const deliveredDiagnostics = new LRUCache<string, Set<string>>({
   max: MAX_DELIVERED_FILES,
 });
+
+function pendingKey(serverName: string, uri: string): string {
+  return `${serverName}\u0000${uri}`;
+}
 
 function severityToNumber(severity: DiagnosticEntry["severity"]): number {
   switch (severity) {
@@ -103,6 +106,24 @@ function deduplicateDiagnosticFiles(
   return Array.from(out.values()).filter((file) => file.diagnostics.length > 0);
 }
 
+function sortAndCapDiagnosticFiles(files: DiagnosticFile[]): DiagnosticFile[] {
+  let totalDiagnostics = 0;
+  for (const file of files) {
+    file.diagnostics.sort(
+      (a, b) => severityToNumber(a.severity) - severityToNumber(b.severity),
+    );
+    if (file.diagnostics.length > MAX_DIAGNOSTICS_PER_FILE) {
+      file.diagnostics = file.diagnostics.slice(0, MAX_DIAGNOSTICS_PER_FILE);
+    }
+    const remaining = MAX_TOTAL_DIAGNOSTICS - totalDiagnostics;
+    if (file.diagnostics.length > remaining) {
+      file.diagnostics = file.diagnostics.slice(0, Math.max(0, remaining));
+    }
+    totalDiagnostics += file.diagnostics.length;
+  }
+  return files.filter((file) => file.diagnostics.length > 0);
+}
+
 function rememberDeliveredDiagnostic(fileUri: string, key: string): void {
   const delivered = deliveredDiagnostics.get(fileUri) ?? new Set<string>();
   if (delivered.has(key)) {
@@ -117,16 +138,42 @@ function rememberDeliveredDiagnostic(fileUri: string, key: string): void {
   deliveredDiagnostics.set(fileUri, delivered);
 }
 
+function reconcileDeliveredDiagnosticsForFile(file: DiagnosticFile): void {
+  if (file.diagnostics.length === 0) {
+    clearDeliveredDiagnosticsForFile(file.uri);
+    return;
+  }
+  const currentKeys = new Set(file.diagnostics.map(diagnosticKey));
+  for (const key of fileKeys(file.uri)) {
+    const delivered = deliveredDiagnostics.get(key);
+    if (!delivered) continue;
+    for (const deliveredKey of Array.from(delivered)) {
+      if (!currentKeys.has(deliveredKey)) delivered.delete(deliveredKey);
+    }
+    if (delivered.size === 0) {
+      deliveredDiagnostics.delete(key);
+    }
+  }
+}
+
 export function registerPendingLSPDiagnostic(input: {
   readonly serverName: string;
   readonly files: DiagnosticFile[];
 }): void {
-  pendingDiagnostics.set(randomUUID(), {
-    serverName: input.serverName,
-    files: input.files,
-    timestamp: Date.now(),
-    attachmentSent: false,
-  });
+  for (const file of input.files) {
+    reconcileDeliveredDiagnosticsForFile(file);
+    const key = pendingKey(input.serverName, file.uri);
+    if (file.diagnostics.length === 0) {
+      pendingDiagnostics.delete(key);
+      continue;
+    }
+    pendingDiagnostics.set(key, {
+      serverName: input.serverName,
+      files: [file],
+      timestamp: Date.now(),
+      attachmentSent: false,
+    });
+  }
 }
 
 export function checkForLSPDiagnostics(): Array<{
@@ -145,27 +192,11 @@ export function checkForLSPDiagnostics(): Array<{
   }
   if (allFiles.length === 0) return [];
 
-  let deduped = deduplicateDiagnosticFiles(allFiles);
+  let deduped = sortAndCapDiagnosticFiles(deduplicateDiagnosticFiles(allFiles));
   for (const diagnostic of diagnosticsToMark) diagnostic.attachmentSent = true;
   for (const [id, diagnostic] of pendingDiagnostics.entries()) {
     if (diagnostic.attachmentSent) pendingDiagnostics.delete(id);
   }
-
-  let totalDiagnostics = 0;
-  for (const file of deduped) {
-    file.diagnostics.sort(
-      (a, b) => severityToNumber(a.severity) - severityToNumber(b.severity),
-    );
-    if (file.diagnostics.length > MAX_DIAGNOSTICS_PER_FILE) {
-      file.diagnostics = file.diagnostics.slice(0, MAX_DIAGNOSTICS_PER_FILE);
-    }
-    const remaining = MAX_TOTAL_DIAGNOSTICS - totalDiagnostics;
-    if (file.diagnostics.length > remaining) {
-      file.diagnostics = file.diagnostics.slice(0, Math.max(0, remaining));
-    }
-    totalDiagnostics += file.diagnostics.length;
-  }
-  deduped = deduped.filter((file) => file.diagnostics.length > 0);
 
   for (const file of deduped) {
     for (const diagnostic of file.diagnostics) {
@@ -200,9 +231,7 @@ export function peekLSPDiagnosticsForFile(file: string): DiagnosticEntry[] {
     }
   }
 
-  return diagnostics.sort(
-    (a, b) => severityToNumber(a.severity) - severityToNumber(b.severity),
-  );
+  return sortAndCapDiagnosticFiles([{ uri: file, diagnostics }])[0]?.diagnostics ?? [];
 }
 
 export function clearAllLSPDiagnostics(): void {

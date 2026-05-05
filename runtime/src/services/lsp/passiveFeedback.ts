@@ -124,7 +124,7 @@ export function registerLSPNotificationHandlers(
           }
           const files = formatDiagnosticsForAttachment(params);
           const first = files[0];
-          if (!first || first.diagnostics.length === 0) return;
+          if (!first) return;
           registerPendingLSPDiagnostic({ serverName, files });
           diagnosticFailures.delete(serverName);
         } catch (error) {

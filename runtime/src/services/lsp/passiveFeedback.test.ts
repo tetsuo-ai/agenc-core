@@ -146,4 +146,36 @@ describe("passive LSP feedback", () => {
     expect(result.diagnosticFailures.has("ts")).toBe(false);
     expect(checkForLSPDiagnostics()[0]!.files[0]!.diagnostics[0]!.message).toBe("bad");
   });
+
+  test("empty publish diagnostics notifications clear stale pending entries", () => {
+    const handlers = new Map<string, (params: unknown) => void>();
+    const server = {
+      name: "ts",
+      onNotification: (method: string, handler: (params: unknown) => void) => {
+        handlers.set(method, handler);
+      },
+    } as LSPServerInstance;
+    const manager = {
+      getAllServers: () => new Map([["ts", server]]),
+    } as LSPServerManager;
+
+    registerLSPNotificationHandlers(manager);
+    const handler = handlers.get("textDocument/publishDiagnostics")!;
+    handler({
+      uri: "/tmp/a.ts",
+      diagnostics: [
+        {
+          message: "stale",
+          severity: 1,
+          range: {
+            start: { line: 0, character: 0 },
+            end: { line: 0, character: 1 },
+          },
+        },
+      ],
+    });
+    handler({ uri: "/tmp/a.ts", diagnostics: [] });
+
+    expect(checkForLSPDiagnostics()).toEqual([]);
+  });
 });
