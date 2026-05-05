@@ -9,7 +9,13 @@
     "hooks/src/engine/dispatcher.rs",
     "hooks/src/engine/command_runner.rs",
     "hooks/src/engine/output_parser.rs",
-    "hooks/src/engine/discovery.rs"
+    "hooks/src/engine/discovery.rs",
+    "hooks/src/events/permission_request.rs",
+    "hooks/src/events/session_start.rs",
+    "hooks/src/events/stop.rs",
+    "hooks/src/events/pre_tool_use.rs",
+    "hooks/src/events/post_tool_use.rs",
+    "hooks/src/events/user_prompt_submit.rs"
   ],
   "targetFiles": [
     "runtime/src/hooks/engine/discovery.ts",
@@ -18,12 +24,22 @@
     "runtime/src/hooks/engine/output-parser.ts",
     "runtime/src/hooks/engine/types.ts",
     "runtime/src/hooks/configured-hooks.ts",
+    "runtime/src/hooks/user-prompt-submit.ts",
+    "runtime/src/llm/hooks/types.ts",
+    "runtime/src/llm/hooks/dispatcher.ts",
+    "runtime/src/permissions/hook-event-schedule.ts",
+    "runtime/src/phases/stop-hooks.ts",
+    "runtime/src/bin/agenc.ts",
+    "runtime/src/tui/input/processUserInput.ts",
     "runtime/src/permissions/review-decision.ts",
     "runtime/src/tools/orchestrator.ts"
   ],
   "testFiles": [
     "runtime/src/hooks/engine/dispatcher.test.ts",
     "runtime/src/hooks/configured-hooks.test.ts",
+    "runtime/src/llm/hooks/dispatcher.test.ts",
+    "runtime/src/bin/agenc.user-prompt-submit.test.ts",
+    "runtime/src/tui/input/processUserInput.test.ts",
     "runtime/src/tools/orchestrator.test.ts"
   ],
   "rows": [
@@ -100,6 +116,49 @@
       "tests": [
         "runtime/src/hooks/configured-hooks.test.ts",
         "runtime/src/tools/orchestrator.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "full-event-surface",
+      "source": "hooks/src/events/pre_tool_use.rs; hooks/src/events/post_tool_use.rs; hooks/src/events/user_prompt_submit.rs; hooks/src/events/permission_request.rs; hooks/src/events/session_start.rs; hooks/src/events/stop.rs",
+      "target": "runtime/src/hooks/configured-hooks.ts; runtime/src/hooks/engine/output-parser.ts; runtime/src/permissions/hook-event-schedule.ts",
+      "requiredBehaviors": [
+        "PreToolUse, PostToolUse, PermissionRequest, UserPromptSubmit, SessionStart, and Stop command inputs carry donor event names and invocation context",
+        "tool events use tool matcher aliases while SessionStart matches on source and UserPromptSubmit/Stop ignore configured matchers",
+        "exit code 2 requires trimmed stderr for blocking or feedback events and stdout-only exits are diagnostics"
+      ],
+      "edgeCases": [
+        "PreToolUse stdout-only exit code 2 continues with a diagnostic",
+        "PostToolUse blank stderr exit code 2 continues with a diagnostic",
+        "Stop blank stderr exit code 2 allows stop with a diagnostic"
+      ],
+      "tests": [
+        "runtime/src/hooks/configured-hooks.test.ts",
+        "runtime/src/hooks/engine/dispatcher.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "prompt-and-session-events",
+      "source": "hooks/src/events/user_prompt_submit.rs; hooks/src/events/session_start.rs",
+      "target": "runtime/src/hooks/configured-hooks.ts; runtime/src/hooks/user-prompt-submit.ts; runtime/src/llm/hooks/dispatcher.ts; runtime/src/bin/agenc.ts; runtime/src/tui/input/processUserInput.ts",
+      "requiredBehaviors": [
+        "UserPromptSubmit preserves additional context even when a hook blocks or stops prompt processing",
+        "CLI and TUI prompt consumers surface preserved context before short-circuiting",
+        "SessionStart plain stdout and structured additionalContext become lifecycle additional-context messages",
+        "SessionStart continue:false returns an observable stopped-continuation message with preserved context"
+      ],
+      "edgeCases": [
+        "UserPromptSubmit malformed JSON-like output is diagnostic-only",
+        "SessionStart malformed JSON-like output is diagnostic-only",
+        "SessionStart source matchers select only matching handlers"
+      ],
+      "tests": [
+        "runtime/src/hooks/configured-hooks.test.ts",
+        "runtime/src/llm/hooks/dispatcher.test.ts",
+        "runtime/src/bin/agenc.user-prompt-submit.test.ts",
+        "runtime/src/tui/input/processUserInput.test.ts"
       ],
       "status": "required"
     }

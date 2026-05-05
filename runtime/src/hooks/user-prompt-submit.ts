@@ -33,6 +33,10 @@ export interface UserPromptSubmitHookInput {
   readonly prompt: string;
   readonly permissionMode?: PermissionMode | string;
   readonly cwd: string;
+  readonly sessionId?: string;
+  readonly turnId?: string;
+  readonly transcriptPath?: string;
+  readonly model?: string;
   readonly signal?: AbortSignal;
 }
 
@@ -85,6 +89,7 @@ export async function* executeUserPromptSubmitHooks(
     prompt,
     permissionMode,
     cwd: readCwd(toolUseContext),
+    ...readSessionContext(toolUseContext),
     ...readAbortSignal(toolUseContext),
   }, onError);
 }
@@ -133,6 +138,72 @@ function readCwd(toolUseContext: unknown): string {
   return process.cwd();
 }
 
+function readSessionContext(
+  toolUseContext: unknown,
+): {
+  readonly sessionId?: string;
+  readonly turnId?: string;
+  readonly transcriptPath?: string;
+  readonly model?: string;
+} {
+  if (!isRecord(toolUseContext)) return {};
+  const session = readNested(toolUseContext, ["session"]);
+  const turn = readNested(toolUseContext, ["turn"]);
+  const appState = readAppState(toolUseContext);
+
+  const sessionId =
+    stringValue(toolUseContext["sessionId"]) ??
+    stringValue(readNested(toolUseContext, ["conversationId"])) ??
+    stringValue(readNested(isRecord(session) ? session : undefined, [
+      "conversationId",
+    ]));
+  const turnId =
+    stringValue(toolUseContext["turnId"]) ??
+    stringValue(readNested(isRecord(turn) ? turn : undefined, ["subId"])) ??
+    stringValue(readNested(isRecord(appState) ? appState : undefined, [
+      "turn",
+      "subId",
+    ]));
+  const transcriptPath =
+    stringValue(toolUseContext["transcriptPath"]) ??
+    stringValue(readNested(isRecord(session) ? session : undefined, [
+      "transcriptPath",
+    ])) ??
+    stringValue(readNested(isRecord(session) ? session : undefined, [
+      "rolloutStore",
+      "rolloutPath",
+    ]));
+  const model =
+    stringValue(toolUseContext["model"]) ??
+    stringValue(readNested(isRecord(turn) ? turn : undefined, [
+      "modelInfo",
+      "slug",
+    ])) ??
+    stringValue(readNested(isRecord(session) ? session : undefined, [
+      "modelInfo",
+      "slug",
+    ])) ??
+    stringValue(readNested(isRecord(session) ? session : undefined, [
+      "sessionConfiguration",
+      "collaborationMode",
+      "model",
+    ]));
+
+  return {
+    ...(sessionId !== undefined ? { sessionId } : {}),
+    ...(turnId !== undefined ? { turnId } : {}),
+    ...(transcriptPath !== undefined ? { transcriptPath } : {}),
+    ...(model !== undefined ? { model } : {}),
+  };
+}
+
+function readAppState(toolUseContext: Record<string, unknown>): unknown {
+  const getAppState = toolUseContext["getAppState"];
+  return typeof getAppState === "function"
+    ? getAppState.call(toolUseContext)
+    : undefined;
+}
+
 function readAbortSignal(
   toolUseContext: unknown,
 ): { readonly signal?: AbortSignal } {
@@ -151,6 +222,12 @@ function readNested(
     current = current[key];
   }
   return current;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value
+    : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

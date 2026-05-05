@@ -40,8 +40,11 @@ export interface SessionStartHookInput {
   readonly hook_event_name: "SessionStart";
   readonly source: SessionStartSource;
   readonly session_id?: string;
+  readonly transcript_path?: string | null;
+  readonly cwd?: string;
   readonly agent_type?: string;
   readonly model?: string;
+  readonly permission_mode?: string;
 }
 
 export type HookInput =

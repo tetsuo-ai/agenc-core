@@ -344,6 +344,81 @@ describe("TUI session UserPromptSubmit hooks", () => {
     );
   });
 
+  it("surfaces live submit hook context when blocking before runSingleTurn", async () => {
+    const { session, events } = fakeSession("/workspace");
+    session.services.hooks.userPromptSubmitHooks.push(() => ({
+      additionalContexts: ["blocked context"],
+      blockingError: { blockingError: "policy denied" },
+    }));
+    const runSingleTurnFn = vi.fn(async function* () {
+      yield {
+        type: "turn_complete",
+        content: "ok",
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        stopReason: "completed",
+      } satisfies PhaseEvent;
+      return { reason: "completed" };
+    });
+    const uninstall = __installTuiSessionContractForTest({
+      session: session as never,
+      configStore: { current: () => defaultConfig },
+      agencHome: "/tmp/agenc",
+      resolvedProvider: "stub",
+      autonomousModeEnabled: false,
+      loadTurnInputsFn: async () => EMPTY_TURN_INPUTS,
+      runSingleTurnFn: runSingleTurnFn as never,
+    });
+
+    try {
+      await session.submit("blocked prompt");
+    } finally {
+      uninstall();
+    }
+
+    expect(runSingleTurnFn).not.toHaveBeenCalled();
+    expect(JSON.stringify(events)).toContain(
+      "<hook_additional_context>\\nblocked context\\n</hook_additional_context>",
+    );
+  });
+
+  it("surfaces live submit hook context when preventing continuation", async () => {
+    const { session, events } = fakeSession("/workspace");
+    session.services.hooks.userPromptSubmitHooks.push(() => ({
+      additionalContexts: ["stopped context"],
+      preventContinuation: true,
+      stopReason: "pause",
+    }));
+    const runSingleTurnFn = vi.fn(async function* () {
+      yield {
+        type: "turn_complete",
+        content: "ok",
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        stopReason: "completed",
+      } satisfies PhaseEvent;
+      return { reason: "completed" };
+    });
+    const uninstall = __installTuiSessionContractForTest({
+      session: session as never,
+      configStore: { current: () => defaultConfig },
+      agencHome: "/tmp/agenc",
+      resolvedProvider: "stub",
+      autonomousModeEnabled: false,
+      loadTurnInputsFn: async () => EMPTY_TURN_INPUTS,
+      runSingleTurnFn: runSingleTurnFn as never,
+    });
+
+    try {
+      await session.submit("stopped prompt");
+    } finally {
+      uninstall();
+    }
+
+    expect(runSingleTurnFn).not.toHaveBeenCalled();
+    expect(JSON.stringify(events)).toContain(
+      "<hook_additional_context>\\nstopped context\\n</hook_additional_context>",
+    );
+  });
+
   it("warns and continues when an installed live submit hook throws", async () => {
     const { session, events } = fakeSession("/workspace");
     const inputs: unknown[] = [];
@@ -416,7 +491,10 @@ process.stdin.on("end", () => {
   const prompt = String(input.prompt);
   const marker = prompt.includes("<attached_files>") ? "expanded" : prompt;
   console.log(JSON.stringify({
-    hookSpecificOutput: { additionalContext: "hook prompt=" + marker }
+    hookSpecificOutput: {
+      hookEventName: "UserPromptSubmit",
+      additionalContext: "hook prompt=" + marker
+    }
   }));
 });
 `,
