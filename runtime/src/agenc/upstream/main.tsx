@@ -188,7 +188,7 @@ import { createRemoteSessionConfig } from './remote/RemoteSessionManager.js';
 // teleportWithProgress dynamically imported at call site
 import { createDirectConnectSession, DirectConnectError } from './server/createDirectConnectSession.js';
 import { initializeLspServerManager } from './services/lsp/manager.js';
-import { shouldEnablePromptSuggestion } from './services/PromptSuggestion/promptSuggestion.js';
+import { shouldEnablePromptSuggestion } from '../../services/PromptSuggestion/promptSuggestion.js';
 import { type AppState, getDefaultAppState, IDLE_SPECULATION_STATE } from '../../tui/state/AppStateStore.js';
 import { onChangeAppState } from './state/onChangeAppState.js';
 import { createStore } from '../../tui/state/store.js';
@@ -2981,7 +2981,7 @@ async function run(): Promise<CommanderCommand> {
       },
       attribution: createEmptyAttributionState(),
       thinkingEnabled,
-      promptSuggestionEnabled: shouldEnablePromptSuggestion(),
+      promptSuggestionEnabled: shouldEnablePromptSuggestion({ ...getInitialSettings(), promptSuggestionFeatureEnabled: getFeatureValue_CACHED_MAY_BE_STALE('tengu_chomp_inflection', false), agentSwarmsEnabled: isAgentSwarmsEnabled(), isNonInteractiveSession: getIsNonInteractiveSession(), isTeammateSession: getTeammateUtils().isTeammate() }),
       sessionHooks: new Map(),
       inbox: {
         messages: []

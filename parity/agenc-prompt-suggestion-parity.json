@@ -1,0 +1,103 @@
+{
+  "contractName": "agenc-prompt-suggestion-parity",
+  "scope": "AgenC prompt-followup suggestion service and speculative prefetch behavior ported from source-reference PromptSuggestion sources.",
+  "generatedAt": "2026-05-05T02:45:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/openclaude", "sourceRootBrandingScanOverride": "branding-scan: allow upstream source path",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/services/PromptSuggestion/promptSuggestion.ts",
+    "src/services/PromptSuggestion/speculation.ts",
+    "src/hooks/usePromptSuggestion.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/services/PromptSuggestion/promptSuggestion.ts",
+    "runtime/src/services/PromptSuggestion/speculation.ts",
+    "runtime/src/services/PromptSuggestion/runtime.ts",
+    "runtime/src/services/PromptSuggestion/limits.ts",
+    "runtime/src/tui/components/PromptInput/PromptInput.tsx",
+    "runtime/src/tui/components/PromptInput/promptSuggestionControl.ts"
+  ],
+  "testFiles": [
+    "runtime/src/services/PromptSuggestion/promptSuggestion.test.ts",
+    "runtime/src/services/PromptSuggestion/runtime.test.ts",
+    "runtime/src/services/PromptSuggestion/speculation.test.ts",
+    "runtime/src/services/PromptSuggestion/prompt-suggestion.contract.test.ts",
+    "runtime/src/tui/components/PromptInput/PromptInput.promptSuggestion.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "prompt-suggestion-gates",
+      "source": "src/services/PromptSuggestion/promptSuggestion.ts",
+      "target": "runtime/src/services/PromptSuggestion/promptSuggestion.ts",
+      "sources": [
+        "src/services/PromptSuggestion/promptSuggestion.ts"
+      ],
+      "targets": [
+        "runtime/src/services/PromptSuggestion/promptSuggestion.ts",
+        "runtime/src/services/PromptSuggestion/runtime.ts",
+        "runtime/src/services/PromptSuggestion/limits.ts"
+      ],
+      "requiredBehaviors": [
+        "environment override, settings gate, non-interactive gate, teammate gate, permission/elicitation/plan-mode suppression, rate-limit suppression, cache-cold suppression, and suggestion filtering match the source behavior",
+        "prompt text, comments, env vars, and filter reason names use AgenC-owned wording where the source used product-specific wording"
+      ],
+      "edgeCases": [
+        "single-word allowed commands are not filtered",
+        "assistant-voice, meta silence, formatting, error text, and too-long suggestions are filtered"
+      ],
+      "tests": [
+        "runtime/src/services/PromptSuggestion/promptSuggestion.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "prompt-speculation-runtime",
+      "source": "src/services/PromptSuggestion/speculation.ts",
+      "target": "runtime/src/services/PromptSuggestion/speculation.ts",
+      "sources": [
+        "src/services/PromptSuggestion/speculation.ts"
+      ],
+      "targets": [
+        "runtime/src/services/PromptSuggestion/speculation.ts",
+        "runtime/src/services/PromptSuggestion/runtime.ts"
+      ],
+      "requiredBehaviors": [
+        "speculation strips pending/internal blocks before injection, isolates speculative writes in an overlay, stops at edit/bash/unknown-tool boundaries, logs accept/abort/error outcomes, and promotes pipelined suggestions after complete speculation",
+        "accepted speculation updates prompt-suggestion state and preserves the normal query fallback when speculation is incomplete or errors"
+      ],
+      "edgeCases": [
+        "pending tool uses without successful results are removed",
+        "whitespace-only messages are dropped after cleanup"
+      ],
+      "tests": [
+        "runtime/src/services/PromptSuggestion/runtime.test.ts",
+        "runtime/src/services/PromptSuggestion/speculation.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "prompt-input-hook",
+      "source": "src/hooks/usePromptSuggestion.ts",
+      "target": "runtime/src/tui/components/PromptInput/PromptInput.tsx",
+      "sources": [
+        "src/hooks/usePromptSuggestion.ts"
+      ],
+      "targets": [
+        "runtime/src/tui/components/PromptInput/PromptInput.tsx",
+        "runtime/src/tui/components/PromptInput/promptSuggestionControl.ts",
+        "runtime/src/tui/state/AppStateStore.ts"
+      ],
+      "requiredBehaviors": [
+        "PromptInput consumes the AgenC-owned suggestion service, marks suggestions shown/accepted, logs acceptance and ignored outcomes, and aborts speculation when suggestions reset",
+        "AppState initialization uses the AgenC-owned prompt-suggestion gate"
+      ],
+      "tests": [
+        "runtime/src/tui/components/App.render.test.tsx",
+        "runtime/src/tui/components/PromptInput/PromptInput.promptSuggestion.test.ts",
+        "runtime/src/tui/state/AppState.test.tsx"
+      ],
+      "status": "required"
+    }
+  ]
+}

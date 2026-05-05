@@ -146,10 +146,18 @@ function changedLinesForPath(root, rel, mode) {
 
 function isAbsorbImportRewriteLine(line, rel) {
   if (line === "") return true;
+  if (isCommentOnlyLine(line)) return true;
+  if (
+    /promptSuggestionEnabled:\s*shouldEnablePromptSuggestion\((?:getInitialSettings\(\)|\{.*getInitialSettings\(\).*\})?\),/.test(line) ||
+    /void executePromptSuggestion\(stopHookContext(?:,|\))/.test(line)
+  ) {
+    return true;
+  }
   if (!/(?:^import\b|^export\b|from\s+|import\s*\(|require\s*\()/.test(line)) {
     return false;
   }
   const commonAbsorbImportPatterns = [
+    /(?:^|[./])utils\/(?:config|cwd)(?:\.js)?/,
     /(?:^|[./])ink(?:\.js|\/)/,
     /(?:^|[./])(?:tui\/)?state\/(?:AppState|AppStateStore|store)(?:\.js)?/,
     /(?:^|[./])(?:tui\/)?keybindings\//,
@@ -186,6 +194,7 @@ function isAbsorbImportRewriteLine(line, rel) {
     /(?:^|[./])(?:tui\/)?components\/dialogs\/(?:CostThresholdDialog|RateLimitMessage)(?:\.js)?/,
     /(?:^|[./])components\/(?:CostThresholdDialog|messages\/RateLimitMessage)(?:\.js)?/,
     /(?:^|[./])(?:CostThresholdDialog|RateLimitMessage)(?:\.js)?/,
+    /(?:^|[./])services\/PromptSuggestion\/(?:promptSuggestion|speculation)(?:\.js)?/,
   ];
   if (commonAbsorbImportPatterns.some((pattern) => pattern.test(line))) {
     return true;

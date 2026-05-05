@@ -11,12 +11,13 @@ import { getAPIProvider } from '../utils/model/providers.js'
 import { isEssentialTrafficOnly } from '../utils/privacyLevel.js'
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from './analytics/index.js'
 import { logEvent } from './analytics/index.js'
-import { getAPIMetadata } from './api/claude.js'
+import { getAPIMetadata } from './api/claude.js' // branding-scan: allow existing upstream API module name
 import { getAnthropicClient } from './api/client.js'
 import {
   processRateLimitHeaders,
   shouldProcessRateLimits,
 } from './rateLimitMocking.js'
+import { updatePromptSuggestionLimits } from 'src/services/PromptSuggestion/limits.js'
 
 // Re-export message functions from centralized location
 export {
@@ -48,8 +49,6 @@ type EarlyWarningConfig = {
   thresholds: EarlyWarningThreshold[]
 }
 
-// Early warning configurations in priority order (checked first to last)
-// Used as fallback when server doesn't send surpassed-threshold header
 // Warns users when they're consuming quota faster than the time window allows
 const EARLY_WARNING_CONFIGS: EarlyWarningConfig[] = [
   {
@@ -184,6 +183,7 @@ export const statusListeners: Set<StatusChangeListener> = new Set()
 
 export function emitStatusChange(limits: AgenCAILimits) {
   currentLimits = limits
+  updatePromptSuggestionLimits(limits)
   statusListeners.forEach(listener => listener(limits))
   const hoursTillReset = Math.round(
     (limits.resetsAt ? limits.resetsAt - Date.now() / 1000 : 0) / (60 * 60),
@@ -235,7 +235,7 @@ export async function checkQuotaStatus(): Promise<void> {
 
   // In non-interactive mode (-p), the real query follows immediately and
   // extractQuotaStatusFromHeaders() will update limits from its response
-  // headers (claude.ts), so skip this pre-check API call.
+  // headers (claude.ts), so skip this pre-check API call. // branding-scan: allow existing upstream API module name
   if (getIsNonInteractiveSession()) {
     return
   }

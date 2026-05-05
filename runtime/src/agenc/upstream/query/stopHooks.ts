@@ -18,6 +18,8 @@ import type {
 } from '../types/message.js'
 import { createAttachmentMessage } from '../utils/attachments.js'
 import { logForDebugging } from 'src/utils/debug.js'
+import { getGlobalConfig } from '../utils/config.js'
+import { getCwd } from '../utils/cwd.js'
 import { errorMessage } from '../utils/errors.js'
 import type { REPLHookContext } from '../utils/hooks/postSamplingHooks.js'
 import {
@@ -50,7 +52,7 @@ const jobClassifierModule = feature('TEMPLATES')
 
 import type { QuerySource } from '../constants/querySource.js'
 import { executeAutoDream } from '../services/autoDream/autoDream.js'
-import { executePromptSuggestion } from '../services/PromptSuggestion/promptSuggestion.js'
+import { executePromptSuggestion } from '../../../services/PromptSuggestion/promptSuggestion.js'
 import { isBareMode, isEnvDefinedFalsy } from '../utils/envUtils.js'
 import {
   createCacheSafeParams,
@@ -89,8 +91,6 @@ export async function* handleStopHooks(
     toolUseContext,
     querySource,
   }
-  // Only save params for main session queries — subagents must not overwrite.
-  // Outside the prompt-suggestion gate: the REPL /btw command and the
   // side_question SDK control_request both read this snapshot, and neither
   // depends on prompt suggestions being enabled.
   if (querySource === 'repl_main_thread' || querySource === 'sdk') {
@@ -136,7 +136,7 @@ export async function* handleStopHooks(
   if (!isBareMode()) {
     // Inline env check for dead code elimination in external builds
     if (!isEnvDefinedFalsy(process.env.AGENC_ENABLE_PROMPT_SUGGESTION)) {
-      void executePromptSuggestion(stopHookContext)
+      void executePromptSuggestion(stopHookContext, { cwd: getCwd(), speculationEnabled: getGlobalConfig().speculationEnabled })
     }
     if (
       feature('EXTRACT_MEMORIES') &&

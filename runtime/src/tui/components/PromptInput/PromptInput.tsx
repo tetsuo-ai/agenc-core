@@ -26,18 +26,20 @@ import { useHistorySearch } from '../../../agenc/upstream/hooks/useHistorySearch
 import type { IDESelection } from '../../../agenc/upstream/hooks/useIdeSelection.js';
 import { useInputBuffer } from '../../../agenc/upstream/hooks/useInputBuffer.js';
 import { useMainLoopModel } from '../../../agenc/upstream/hooks/useMainLoopModel.js';
-import { usePromptSuggestion } from '../../../agenc/upstream/hooks/usePromptSuggestion.js';
 import { useTerminalSize } from '../../../agenc/upstream/hooks/useTerminalSize.js';
 import { useTypeahead } from '../../../agenc/upstream/hooks/useTypeahead.js';
 import type { BorderTextOptions } from '../../ink/render-border.js';
+import { useTerminalFocus } from '../../ink/hooks/use-terminal-focus.js';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { Box, type ClickEvent, type Key, Text, useInput } from '../../ink.js';
 import { useOptionalKeybindingContext } from '../../keybindings/KeybindingContext.js';
 import { getShortcutDisplay } from '../../keybindings/shortcutFormat.js';
 import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.js';
 import type { MCPServerConnection } from '../../../agenc/upstream/services/mcp/types.js';
-import { abortPromptSuggestion, logSuggestionSuppressed } from '../../../agenc/upstream/services/PromptSuggestion/promptSuggestion.js';
-import { type ActiveSpeculationState, abortSpeculation } from '../../../agenc/upstream/services/PromptSuggestion/speculation.js';
+import { abortPromptSuggestion, logSuggestionSuppressed } from '../../../services/PromptSuggestion/promptSuggestion.js';
+import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS as PromptSuggestionAnalyticsMetadata, logEvent as logPromptSuggestionEvent } from '../../../services/PromptSuggestion/runtime.js';
+import { type ActiveSpeculationState, abortSpeculation } from '../../../services/PromptSuggestion/speculation.js';
+import { computePromptSuggestionOutcome, getVisiblePromptSuggestion, shouldShowPromptSuggestionPlaceholder } from './promptSuggestionControl.js';
 import { getActiveAgentForInput, getViewedTeammateTask } from '../../../agenc/upstream/state/selectors.js';
 import { enterTeammateView, exitTeammateView, stopOrDismissAgent } from '../../../agenc/upstream/state/teammateViewHelpers.js';
 import type { ToolPermissionContext } from '../../../agenc/upstream/Tool.js';
@@ -53,6 +55,7 @@ import type { BaseTextInputProps, PromptInputMode, VimMode } from '../../../agen
 import { isAgentSwarmsEnabled } from '../../../agenc/upstream/utils/agentSwarmsEnabled.js';
 import { count } from '../../../agenc/upstream/utils/array.js';
 import type { AutoUpdaterResult } from '../../../agenc/upstream/utils/autoUpdater.js';
+// branding-scan: allow Cursor is the text-caret utility name.
 import { Cursor } from '../../../agenc/upstream/utils/Cursor.js';
 import { getGlobalConfig, type PastedContent, saveGlobalConfig } from '../../../agenc/upstream/utils/config.js';
 import { logForDebugging } from '../../../utils/debug.js';
@@ -123,6 +126,172 @@ import { useSwarmBanner } from './useSwarmBanner.js';
 import { getNativeCSIuTerminalDisplayName } from '../../../agenc/adapters/prompt-input-terminal-setup.js';
 import { isUltrareviewEnabled } from '../../../agenc/adapters/prompt-input-ultrareview.js';
 import { isNonSpacePrintable, isVimModeEnabled } from './utils.js';
+
+type PromptSuggestionHookProps = {
+  inputValue: string;
+  isAssistantResponding: boolean;
+};
+
+/**
+ * Ports source-reference `src/hooks/usePromptSuggestion.ts` into the absorbed
+ * PromptInput surface while delegating generation/speculation to the
+ * AgenC-owned PromptSuggestion service.
+ */
+function usePromptSuggestion({
+  inputValue,
+  isAssistantResponding,
+}: PromptSuggestionHookProps): {
+  suggestion: string | null;
+  markAccepted: () => void;
+  markShown: () => void;
+  logOutcomeAtSubmission: (
+    finalInput: string,
+    opts?: {
+      skipReset: boolean;
+    },
+  ) => void;
+} {
+  const promptSuggestion = useAppState((s: AppState) => s.promptSuggestion);
+  const setAppState = useSetAppState();
+  const isTerminalFocused = useTerminalFocus();
+  const {
+    text: suggestionText,
+    promptId,
+    shownAt,
+    acceptedAt,
+    generationRequestId,
+  } = promptSuggestion;
+
+  const suggestion = getVisiblePromptSuggestion({
+    inputValue,
+    isAssistantResponding,
+    suggestionText,
+  });
+  const isValidSuggestion = suggestionText && shownAt > 0;
+  const firstKeystrokeAt = useRef<number>(0);
+  const wasFocusedWhenShown = useRef<boolean>(true);
+  const prevShownAt = useRef<number>(0);
+
+  if (shownAt > 0 && shownAt !== prevShownAt.current) {
+    prevShownAt.current = shownAt;
+    wasFocusedWhenShown.current = isTerminalFocused;
+    firstKeystrokeAt.current = 0;
+  } else if (shownAt === 0) {
+    prevShownAt.current = 0;
+  }
+
+  if (
+    inputValue.length > 0 &&
+    firstKeystrokeAt.current === 0 &&
+    isValidSuggestion
+  ) {
+    firstKeystrokeAt.current = Date.now();
+  }
+
+  const resetSuggestion = useCallback(() => {
+    abortSpeculation(setAppState);
+
+    setAppState(prev => ({
+      ...prev,
+      promptSuggestion: {
+        text: null,
+        promptId: null,
+        shownAt: 0,
+        acceptedAt: 0,
+        generationRequestId: null,
+      },
+    }));
+  }, [setAppState]);
+
+  const markAccepted = useCallback(() => {
+    if (!isValidSuggestion) return;
+    setAppState(prev => ({
+      ...prev,
+      promptSuggestion: {
+        ...prev.promptSuggestion,
+        acceptedAt: Date.now(),
+      },
+    }));
+  }, [isValidSuggestion, setAppState]);
+
+  const markShown = useCallback(() => {
+    setAppState(prev => {
+      if (prev.promptSuggestion.shownAt !== 0 || !prev.promptSuggestion.text) {
+        return prev;
+      }
+      return {
+        ...prev,
+        promptSuggestion: {
+          ...prev.promptSuggestion,
+          shownAt: Date.now(),
+        },
+      };
+    });
+  }, [setAppState]);
+
+  const logOutcomeAtSubmission = useCallback(
+    (finalInput: string, opts?: { skipReset: boolean }) => {
+      if (!isValidSuggestion) return;
+
+      const outcome = computePromptSuggestionOutcome({
+        acceptedAt,
+        finalInput,
+        now: Date.now(),
+        shownAt,
+        suggestionText,
+      });
+      if (!outcome) return;
+
+      logPromptSuggestionEvent('tengu_prompt_suggestion', {
+        source: 'cli' as PromptSuggestionAnalyticsMetadata,
+        outcome: (outcome.wasAccepted ? 'accepted' : 'ignored') as PromptSuggestionAnalyticsMetadata,
+        prompt_id: promptId as PromptSuggestionAnalyticsMetadata,
+        ...(generationRequestId && {
+          generationRequestId:
+            generationRequestId as PromptSuggestionAnalyticsMetadata,
+        }),
+        ...(outcome.wasAccepted && {
+          acceptMethod: (outcome.tabWasPressed
+            ? 'tab'
+            : 'enter') as PromptSuggestionAnalyticsMetadata,
+        }),
+        ...(outcome.wasAccepted && {
+          timeToAcceptMs: outcome.timeMs - shownAt,
+        }),
+        ...(!outcome.wasAccepted && {
+          timeToIgnoreMs: outcome.timeMs - shownAt,
+        }),
+        ...(firstKeystrokeAt.current > 0 && {
+          timeToFirstKeystrokeMs: firstKeystrokeAt.current - shownAt,
+        }),
+        wasFocusedWhenShown: wasFocusedWhenShown.current,
+        similarity: outcome.similarity,
+        ...(process.env.USER_TYPE === 'ant' && {
+          suggestion: suggestionText as PromptSuggestionAnalyticsMetadata,
+          userInput: finalInput as PromptSuggestionAnalyticsMetadata,
+        }),
+      });
+      if (!opts?.skipReset) resetSuggestion();
+    },
+    [
+      isValidSuggestion,
+      acceptedAt,
+      shownAt,
+      suggestionText,
+      promptId,
+      generationRequestId,
+      resetSuggestion,
+    ],
+  );
+
+  return {
+    suggestion,
+    markAccepted,
+    markShown,
+    logOutcomeAtSubmission,
+  };
+}
+
 type Props = {
   debug: boolean;
   ideSelection: IDESelection | undefined;
@@ -1137,7 +1306,12 @@ function PromptInput({
 
   // Track if prompt suggestion should be shown (computed later with terminal width).
   // Hidden in teammate view — suggestion is leader-context only.
-  const showPromptSuggestion = mode === 'prompt' && suggestions.length === 0 && promptSuggestion && !viewingAgentTaskId;
+  const showPromptSuggestion = shouldShowPromptSuggestionPlaceholder({
+    mode,
+    promptSuggestion,
+    suggestionCount: suggestions.length,
+    viewingAgentTaskId,
+  });
   if (showPromptSuggestion) {
     markShown();
   }
@@ -2030,6 +2204,7 @@ function PromptInput({
   // <AlternateScreen>, so this is dormant in the normal main-screen REPL.
   // localCol/localRow are relative to the onClick Box's top-left; the Box
   // tightly wraps the text input so they map directly to (column, line)
+  // branding-scan: allow Cursor is the text-caret utility name.
   // in the Cursor wrap model. MeasuredText.getOffsetFromPosition handles
   // wide chars, wrapped lines, and clamps past-end clicks to line end.
   const maxVisibleLines = isFullscreenEnvEnabled() ? Math.max(MIN_INPUT_VIEWPORT_LINES, Math.floor(rows / 2) - PROMPT_FOOTER_LINES) : undefined;
@@ -2038,6 +2213,7 @@ function PromptInput({
     // input, and showCursor is false anyway — skip rather than
     // compute an offset against the wrong string.
     if (!input || isSearchingHistory) return;
+    // branding-scan: allow Cursor is the text-caret utility name.
     const c = Cursor.fromText(input, textInputColumns, cursorOffset);
     const viewportStart = c.getViewportStartLine(maxVisibleLines);
     const offset = c.measuredText.getOffsetFromPosition({

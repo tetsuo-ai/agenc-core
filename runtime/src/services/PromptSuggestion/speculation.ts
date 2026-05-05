@@ -1,52 +1,55 @@
+/**
+ * Ports source-reference `src/services/PromptSuggestion/speculation.ts` onto
+ * AgenC's speculative prompt-followup runtime.
+ *
+ * Shape differences:
+ *   - Uses AgenC temp-directory helpers and live TUI AppState types.
+ *   - Keeps the source overlay/copy-on-write control flow so accepting a
+ *     suggestion can inject already-completed speculative turns.
+ */
+
 import { randomUUID } from 'crypto'
 import { rm } from 'fs'
 import { appendFile, copyFile, mkdir } from 'fs/promises'
 import { dirname, isAbsolute, join, relative } from 'path'
-import { getCwdState } from '../../bootstrap/state.js'
-import type { CompletionBoundary } from '../../../../tui/state/AppStateStore.js'
-import {
-  type AppState,
-  IDLE_SPECULATION_STATE,
-  type SpeculationResult,
-  type SpeculationState,
-} from '../../../../tui/state/AppStateStore.js'
-import { commandHasAnyCd } from '../../tools/BashTool/bashPermissions.js'
-import { checkReadOnlyConstraints } from '../../tools/BashTool/readOnlyValidation.js'
-import type { SpeculationAcceptMessage } from '../../types/logs.js'
-import type { Message } from '../../types/message.js'
-import { createChildAbortController } from '../../utils/abortController.js'
-import { count } from '../../utils/array.js'
-import { getGlobalConfig } from '../../utils/config.js'
-import { logForDebugging } from 'src/utils/debug.js'
-import { errorMessage } from '../../utils/errors.js'
-import {
-  type FileStateCache,
-  mergeFileStateCaches,
-  READ_FILE_STATE_CACHE_SIZE,
-} from '../../utils/fileStateCache.js'
-import {
-  type CacheSafeParams,
-  createCacheSafeParams,
-  runForkedAgent,
-} from '../../utils/forkedAgent.js'
-import { formatDuration, formatNumber } from '../../utils/format.js'
-import type { REPLHookContext } from '../../utils/hooks/postSamplingHooks.js'
-import { logError } from '../../utils/log.js'
-import type { SetAppState } from '../../utils/messageQueueManager.js'
-import {
-  createSystemMessage,
-  createUserMessage,
-  INTERRUPT_MESSAGE,
-  INTERRUPT_MESSAGE_FOR_TOOL_USE,
-} from '../../utils/messages.js'
-import { getAgenCTempDir } from '../../utils/permissions/filesystem.js'
-import { extractReadFilesFromMessages } from '../../utils/queryHelpers.js'
-import { getTranscriptPath } from '../../utils/sessionStorage.js'
-import { jsonStringify } from '../../utils/slowOperations.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+  type AppState,
+  type CacheSafeParams,
+  type CompletionBoundary,
+  type FileStateCache,
+  IDLE_SPECULATION_STATE,
+  INTERRUPT_MESSAGE,
+  INTERRUPT_MESSAGE_FOR_TOOL_USE,
+  READ_FILE_STATE_CACHE_SIZE,
+  type PromptSuggestionRuntimeOptions,
+  type REPLHookContext,
+  type SetAppState,
+  type SpeculationResult,
+  type SpeculationState,
+  checkBashReadOnlyConstraints,
+  count,
+  createCacheSafeParams,
+  createChildAbortController,
+  createSystemMessage,
+  createUserMessage,
+  errorMessage,
+  extractReadFilesFromMessages,
+  formatDuration,
+  formatNumber,
+  getCurrentCwd,
+  getPromptSuggestionTempDir,
+  getTranscriptPath,
+  isSpeculationConfigEnabled,
+  jsonStringify,
+  logError,
   logEvent,
-} from '../analytics/index.js'
+  logForDebugging,
+  mergeFileStateCaches,
+  runForkedAgent,
+} from './runtime.js'
+import type { SpeculationAcceptMessage } from '../../types/logs.js'
+import type { Message } from '../../types/message.js'
 import {
   generateSuggestion,
   getPromptVariant,
@@ -78,7 +81,7 @@ function safeRemoveOverlay(overlayPath: string): void {
 }
 
 function getOverlayPath(id: string): string {
-  return join(getAgenCTempDir(), 'speculation', String(process.pid), id)
+  return join(getPromptSuggestionTempDir(), 'speculation', String(process.pid), id)
 }
 
 function denySpeculation(
@@ -334,10 +337,10 @@ function resetSpeculationState(setAppState: SetAppState): void {
   })
 }
 
-export function isSpeculationEnabled(): boolean {
+export function isSpeculationEnabled(speculationEnabled?: boolean): boolean {
   const enabled =
     process.env.USER_TYPE === 'ant' &&
-    (getGlobalConfig().speculationEnabled ?? true)
+    isSpeculationConfigEnabled(speculationEnabled)
   logForDebugging(`[Speculation] enabled=${enabled}`)
   return enabled
 }
@@ -349,6 +352,7 @@ async function generatePipelinedSuggestion(
   setAppState: SetAppState,
   parentAbortController: AbortController,
 ): Promise<void> {
+  let pipelineAbortController: AbortController | null = null
   try {
     const appState = context.toolUseContext.getAppState()
     const suppressReason = getSuggestionSuppressReason(appState)
@@ -366,9 +370,7 @@ async function generatePipelinedSuggestion(
       ],
     }
 
-    const pipelineAbortController = createChildAbortController(
-      parentAbortController,
-    )
+    pipelineAbortController = createChildAbortController(parentAbortController)
     if (pipelineAbortController.signal.aborted) return
 
     const promptId = getPromptVariant()
@@ -396,6 +398,8 @@ async function generatePipelinedSuggestion(
     logForDebugging(
       `[Speculation] Pipelined suggestion failed: ${errorMessage(error)}`,
     )
+  } finally {
+    pipelineAbortController?.abort()
   }
 }
 
@@ -405,8 +409,9 @@ export async function startSpeculation(
   setAppState: (f: (prev: AppState) => AppState) => void,
   isPipelined = false,
   cacheSafeParams?: CacheSafeParams,
+  runtimeOptions: PromptSuggestionRuntimeOptions = {},
 ): Promise<void> {
-  if (!isSpeculationEnabled()) return
+  if (!isSpeculationEnabled(runtimeOptions.speculationEnabled)) return
 
   // Abort any existing speculation before starting a new one
   abortSpeculation(setAppState)
@@ -423,7 +428,7 @@ export async function startSpeculation(
   const messagesRef = { current: [] as Message[] }
   const writtenPathsRef = { current: new Set<string>() }
   const overlayPath = getOverlayPath(id)
-  const cwd = getCwdState()
+  const cwd = getCurrentCwd(runtimeOptions.cwd ?? context.toolUseContext.cwd)
 
   try {
     await mkdir(overlayPath, { recursive: true })
@@ -447,6 +452,8 @@ export async function startSpeculation(
       suggestionLength: suggestionText.length,
       toolUseCount: 0,
       isPipelined,
+      speculationEnabled: runtimeOptions.speculationEnabled,
+      cwd,
       contextRef,
     },
   }))
@@ -581,8 +588,7 @@ export async function startSpeculation(
               : ''
           if (
             !command ||
-            checkReadOnlyConstraints({ command }, commandHasAnyCd(command))
-              .behavior !== 'allow'
+            (await checkBashReadOnlyConstraints(command)).behavior !== 'allow'
           ) {
             logForDebugging(
               `[Speculation] Stopping at bash: ${command.slice(0, 50) || 'missing command'}`,
@@ -729,6 +735,7 @@ export async function acceptSpeculation(
     startTime,
     suggestionLength,
     isPipelined,
+    cwd,
   } = state
   const messages = messagesRef.current
   const overlayPath = getOverlayPath(id)
@@ -737,7 +744,19 @@ export async function acceptSpeculation(
   abort()
 
   if (cleanMessageCount > 0) {
-    await copyOverlayToMain(overlayPath, writtenPathsRef.current, getCwdState())
+    const copied = await copyOverlayToMain(
+      overlayPath,
+      writtenPathsRef.current,
+      cwd,
+    )
+    if (!copied) {
+      safeRemoveOverlay(overlayPath)
+      resetSpeculationState(setAppState)
+      logForDebugging(
+        `[Speculation] Accept ${id}: overlay promotion failed, falling back to query`,
+      )
+      return null
+    }
   }
   safeRemoveOverlay(overlayPath)
 
@@ -880,8 +899,14 @@ export async function handleSpeculationAccept(
       setAppState,
       cleanMessages.length,
     )
+    if (!result) {
+      logForDebugging(
+        '[Speculation] Accept failed before injection, falling back to query',
+      )
+      return { queryRequired: true }
+    }
 
-    const isComplete = result?.boundary?.type === 'complete'
+    const isComplete = result.boundary?.type === 'complete'
 
     // When speculation didn't complete, the follow-up query needs the
     // conversation to end with a user message. Drop trailing assistant
@@ -895,11 +920,11 @@ export async function handleSpeculationAccept(
       cleanMessages = cleanMessages.slice(0, lastNonAssistant + 1)
     }
 
-    const timeSavedMs = result?.timeSavedMs ?? 0
+    const timeSavedMs = result.timeSavedMs
     const newSessionTotal = speculationSessionTimeSavedMs + timeSavedMs
     const feedbackMessage = createSpeculationFeedbackMessage(
       cleanMessages,
-      result?.boundary ?? null,
+      result.boundary,
       timeSavedMs,
       newSessionTotal,
     )
@@ -952,7 +977,10 @@ export async function handleSpeculationAccept(
           ...cleanMessages,
         ],
       }
-      void startSpeculation(text, augmentedContext, setAppState, true)
+      void startSpeculation(text, augmentedContext, setAppState, true, undefined, {
+        cwd: speculationState.cwd,
+        speculationEnabled: speculationState.speculationEnabled,
+      })
     }
 
     return { queryRequired: !isComplete }
