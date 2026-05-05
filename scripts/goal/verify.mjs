@@ -339,6 +339,19 @@ const ITEM_EVIDENCE = {
       "runtime/src/phases/execute-tools.test.ts",
     ],
   },
+  "S-14": {
+    files: [
+      "runtime/src/services/notifier.ts",
+      "runtime/src/services/preventSleep.ts",
+      "runtime/src/services/tokenEstimation.ts",
+      "runtime/src/services/PARITY.md",
+      "parity/agenc-service-utilities-parity.json",
+    ],
+    tests: [
+      "runtime/src/services/service-utilities.test.ts",
+      "runtime/src/services/service-utilities.contract.test.ts",
+    ],
+  },
   "F-07": {
     files: [{ globUnder: "runtime/src/lifecycle", matching: /\.tsx?$/, minCount: 1 }],
   },
@@ -2250,6 +2263,39 @@ async function donorRuntimePortGates(item) {
 }
 
 async function serviceGates(item) {
+  if (id === "S-14") {
+    const required = [
+      "runtime/src/services/notifier.ts",
+      "runtime/src/services/preventSleep.ts",
+      "runtime/src/services/tokenEstimation.ts",
+      "runtime/src/services/PARITY.md",
+      "parity/agenc-service-utilities-parity.json",
+    ];
+    for (const rel of required) {
+      if (!existsSync(path.join(root, rel))) failGate(`S-14 file missing: ${rel}`);
+    }
+    const tests = [
+      "runtime/src/services/service-utilities.test.ts",
+      "runtime/src/services/service-utilities.contract.test.ts",
+    ];
+    for (const rel of tests) {
+      if (!existsSync(path.join(root, rel))) failGate(`S-14 test missing: ${rel}`);
+    }
+    const testRun = run("npm", [
+      "exec",
+      "--workspace=@tetsuo-ai/runtime",
+      "vitest",
+      "run",
+      "src/services/service-utilities.test.ts",
+      "src/services/service-utilities.contract.test.ts",
+    ]);
+    if (testRun.status !== 0) {
+      failGate("S-14 targeted service utility tests failed");
+    }
+    pass("S-14 service utility files and tests present");
+    return;
+  }
+
   if (id === "S-10") {
     const dir = path.join(root, "runtime/src/tools");
     if (!existsSync(dir)) failGate("S-10: runtime/src/tools/ missing");
