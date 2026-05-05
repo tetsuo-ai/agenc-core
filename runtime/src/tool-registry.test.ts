@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -225,6 +225,49 @@ describe("tool-registry dynamic and deferred catalog", () => {
       expect(got.content).toContain("Task #1: Registry task");
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("model-facing web_fetch keeps raw URL dispatch in the registry", async () => {
+    const previousFetch = globalThis.fetch;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      url: "https://agenc.tech/page",
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === "content-type" ? "text/plain" : null,
+      },
+      text: async () => "registry fetch body",
+    });
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+    try {
+      const registry = buildToolRegistry({
+        workspaceRoot: "/tmp",
+        modelFacingTools: createModelFacingTools({
+          workspaceRoot: "/tmp",
+          getSession: () => null,
+        }),
+      });
+
+      const result = await registry.dispatch({
+        id: "web-fetch-1",
+        name: "web_fetch",
+        arguments: "http://agenc.tech/page",
+      });
+
+      expect(result.isError).toBeUndefined();
+      const parsed = JSON.parse(result.content);
+      expect(parsed).toMatchObject({
+        ok: true,
+        url: "https://agenc.tech/page",
+        final_url: "https://agenc.tech/page",
+        rendered_as: "passthrough",
+        content: "registry fetch body",
+      });
+    } finally {
+      globalThis.fetch = previousFetch;
     }
   });
 

@@ -435,7 +435,7 @@ export interface BuildToolRegistryOptions {
   readonly discoverableTools?: ToolListInput;
   /**
    * Product/model-facing tools owned by the registry surface. Bootstrap
-   * wires WebFetch, agent, task, skill, notebook, and workflow tools here
+   * wires web_fetch/WebFetch, agent, task, skill, notebook, and workflow tools here
    * so `tool-registry.ts` remains the single place that combines the
    * runtime-visible tool catalog.
    */
@@ -577,6 +577,8 @@ export function buildToolRegistry(
   });
   const registryModelFacingTools = readToolList(options.modelFacingTools);
   const modelFacingProviderNativeSurface = {
+    webFetch: "web_fetch",
+    legacyWebFetch: "WebFetch",
     webSearch: "WebSearch",
     webSearchNativeTool: "web_search",
   } as const;
@@ -593,6 +595,8 @@ export function buildToolRegistry(
   // tool; this registry entry only preserves its plain-string argument field.
   const spawnAgentToolName = "spawn_agent";
   const modelFacingStringArgumentFieldCandidates = {
+    [modelFacingProviderNativeSurface.webFetch]: "url",
+    [modelFacingProviderNativeSurface.legacyWebFetch]: "url",
     [modelFacingProviderNativeSurface.webSearch]: "query",
     [spawnAgentToolName]: "message",
     NotebookRead: "notebook_path",
@@ -731,7 +735,7 @@ export function buildToolRegistry(
   // Tools without explicit metadata get sensible defaults:
   //   - readFile/listDir/stat/glob/grep → SharedRead + isReadOnly
   //   - writeFile/editFile/delete/move    → Exclusive (never parallel)
-  //   - WebFetch/WebSearch                → SharedRead (network reads)
+  //   - web_fetch/WebFetch/WebSearch      → SharedRead (network reads)
   //   - bash                              → BackgroundTerminal (subprocess)
   function currentMcpTools(): readonly Tool[] {
     return configuredTools(
