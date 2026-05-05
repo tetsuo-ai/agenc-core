@@ -1402,6 +1402,20 @@ const itemGates = {
   D: () => failGate("D-* items are decisions, not work items. Mark them in PORT_CHECKLIST.md directly."),
 };
 
+// --- Gate 3.5: universal security-paths stub guard ----------------------
+// Runs after the prefix gate on EVERY item. Reason: a non-security item
+// (TL-*, F-*, OC-*, etc.) can still touch security-critical paths via scope
+// creep. Without a universal check, a TUI item that incidentally modifies
+// runtime/src/auth/foo.ts could ship a throwing stub there and the per-prefix
+// gate would never look. Defense-in-depth.
+
+const SECURITY_CRITICAL_PATHS = [
+  "runtime/src/sandbox",
+  "runtime/src/permissions",
+  "runtime/src/auth",
+  "runtime/src/secrets",
+];
+
 const gateFn = itemGates[prefix];
 if (!gateFn) {
   // An unknown prefix is either a typo (silent miss) or a new item family
@@ -1416,6 +1430,29 @@ if (!gateFn) {
   );
 } else {
   await gateFn(item);
+}
+
+header("universal security-paths stub guard (Gate 3.5)");
+{
+  const stubRe = /\bthrow\s+new\s+Error\s*\(\s*["'`](?:not\s+implemented|todo|stub|unimplemented|coming\s+soon|placeholder|fixme|wip)/gi;
+  for (const relDir of SECURITY_CRITICAL_PATHS) {
+    const abs = path.join(root, relDir);
+    if (!existsSync(abs)) continue;
+    const offenders = [];
+    for (const f of walkFiles(abs)) {
+      if (!/\.(ts|tsx|mts|cts)$/.test(f)) continue;
+      if (/\.test\.(ts|tsx|mts|cts)$/.test(f)) continue;
+      let src;
+      try { src = readFileSync(f, "utf8"); } catch { continue; }
+      const hits = src.match(stubRe);
+      if (hits && hits.length > 0) offenders.push(`${path.relative(root, f)} (${hits.length})`);
+    }
+    if (offenders.length > 0) {
+      failGate(`security-critical throwing stubs in ${relDir}:\n  ${offenders.join("\n  ")}\n` +
+        `Stubs in sandbox/permissions/auth/secrets are unacceptable. Implement the function or remove the export.`);
+    }
+    pass(`no throwing stubs in ${relDir}`);
+  }
 }
 
 // --- Gate 4: typecheck (baseline + delta) -------------------------------
