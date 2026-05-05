@@ -1406,6 +1406,13 @@ const ITEM_EVIDENCE = {
       "runtime/src/conversation/thread-manager.contract.test.ts",
     ],
   },
+  "ZC-37": {
+    files: [".gitignore"],
+    grepPresent: [
+      { pattern: "^undefined/$", scope: ".gitignore" },
+      { pattern: "^\\*\\*/undefined/$", scope: ".gitignore" },
+    ],
+  },
   "ZC-33": {
     files: [
       "runtime/src/permissions/sandbox.ts",
@@ -1475,6 +1482,30 @@ const ITEM_EVIDENCE = {
       { pattern: "breadth-first", scope: "runtime/src/agents/graph-store/local.test.ts" },
     ],
     tests: ["runtime/src/agents/graph-store/local.test.ts"],
+  },
+  "ZC-36": {
+    files: [
+      "runtime/src/test-parity/PARITY.md",
+      "runtime/src/test-parity/zc36-suite-coverage.test.ts",
+      "parity/ZC-36-parity.json",
+    ],
+    grepPresent: [
+      { pattern: "ZC-36 coverage lock", scope: "runtime/src/test-parity/PARITY.md" },
+      { pattern: "representative-subset", scope: "parity/ZC-36-parity.json" },
+      { pattern: "selectedCases", scope: "parity/ZC-36-parity.json" },
+    ],
+    tests: ["runtime/src/test-parity/zc36-suite-coverage.test.ts"],
+  },
+  "ZC-38": {
+    files: [".gitignore", "scripts/goal/verify.mjs"],
+    grepPresent: [
+      { pattern: "\\*\\*/dist/", scope: ".gitignore" },
+      { pattern: "runtime/dist/", scope: ".gitignore" },
+      { pattern: "web/dist/", scope: ".gitignore" },
+      { pattern: "mcp/dist/", scope: ".gitignore" },
+      { pattern: "!patches/\\*\\*/dist/", scope: ".gitignore" },
+      { pattern: "ZC-38: keep package build outputs", scope: ".gitignore" },
+    ],
   },
 };
 
@@ -5428,6 +5459,193 @@ function assertZc34AgentGraphStoreCoverage() {
   pass("ZC-34: agent graph store coverage locked");
 }
 
+function assertZc37UndefinedDirectoryGone() {
+  const rootUndefined = path.join(root, "undefined");
+  if (existsSync(rootUndefined)) {
+    failGate("ZC-37: repo-root undefined/ directory still exists; delete it.");
+  }
+
+  const tracked = run("git", ["ls-files", "undefined", ":(glob)**/undefined/**"], { silent: true });
+  if (tracked.status !== 0) {
+    failGate(`ZC-37: failed to inspect tracked undefined/ paths:\n${tracked.stderr || tracked.stdout}`);
+  }
+  if (tracked.stdout.trim()) {
+    failGate(`ZC-37: tracked undefined/ path(s) remain:\n${tracked.stdout.trim()}`);
+  }
+
+  const gitignorePath = path.join(root, ".gitignore");
+  if (!existsSync(gitignorePath)) failGate("ZC-37: .gitignore is missing.");
+  const gitignore = readFileSync(gitignorePath, "utf8");
+  for (const required of ["undefined/", "**/undefined/"]) {
+    const escaped = required.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const linePattern = new RegExp(`(^|\\n)${escaped}(\\n|$)`);
+    if (!linePattern.test(gitignore)) {
+      failGate(`ZC-37: .gitignore is missing required rule ${required}`);
+    }
+  }
+
+  pass("ZC-37: undefined/ directory absent, untracked, and ignored");
+}
+
+function assertZc36TestFixtureParityCoverage() {
+  const readRequired = (rel) => {
+    const abs = path.join(root, rel);
+    if (!existsSync(abs)) failGate(`ZC-36: missing required file ${rel}`);
+    return readFileSync(abs, "utf8");
+  };
+
+  const parity = readRequired("runtime/src/test-parity/PARITY.md");
+  const sourceRoot = `${["co", "dex-rs"].join("")}`;
+  const requiredAnchors = [
+    `${sourceRoot}/core/tests/suite/exec.rs`,
+    `${sourceRoot}/core/tests/suite/exec_policy.rs`,
+    `${sourceRoot}/core/tests/suite/fork_thread.rs`,
+    `${sourceRoot}/core/tests/suite/hierarchical_agents.rs`,
+    `${sourceRoot}/core/tests/suite/request_permissions.rs`,
+    `${sourceRoot}/core/tests/suite/request_user_input.rs`,
+    `${sourceRoot}/core/tests/suite/sqlite_state.rs`,
+    `${sourceRoot}/core/tests/suite/shell_command.rs`,
+    `${sourceRoot}/core/tests/suite/tool_parallelism.rs`,
+    `${sourceRoot}/app-server/tests/suite/v2/initialize.rs`,
+    `${sourceRoot}/app-server/tests/suite/v2/command_exec.rs`,
+    `${sourceRoot}/app-server/tests/suite/v2/request_permissions.rs`,
+    `${sourceRoot}/app-server/tests/suite/v2/request_user_input.rs`,
+    `${sourceRoot}/app-server/tests/suite/v2/thread_start.rs`,
+    `${sourceRoot}/app-server/tests/suite/v2/thread_read.rs`,
+    `${sourceRoot}/app-server/tests/suite/v2/thread_list.rs`,
+    `${sourceRoot}/app-server/tests/suite/v2/thread_fork.rs`,
+    `${sourceRoot}/app-server/tests/suite/v2/turn_interrupt.rs`,
+    `${sourceRoot}/app-server/tests/suite/v2/turn_steer.rs`,
+    `${sourceRoot}/apply-patch/tests/fixtures/scenarios/`,
+    `${sourceRoot}/apply-patch/tests/suite/scenarios.rs`,
+  ];
+  const missingAnchors = requiredAnchors.filter((anchor) => !parity.includes(anchor));
+  if (missingAnchors.length > 0) {
+    failGate(`ZC-36: test-suite parity is missing source anchor(s):\n  ${missingAnchors.join("\n  ")}`);
+  }
+
+  const matrixText = readRequired("parity/ZC-36-parity.json");
+  let matrix;
+  try {
+    matrix = JSON.parse(matrixText);
+  } catch (error) {
+    failGate(`ZC-36: parity matrix is not valid JSON: ${error?.message || error}`);
+  }
+
+  if (matrix.item !== "ZC-36" || matrix.status !== "representative-subset") {
+    failGate("ZC-36: parity matrix must record the representative-subset decision.");
+  }
+  if (!Array.isArray(matrix.selectedCases) || matrix.selectedCases.length < 20) {
+    failGate("ZC-36: parity matrix must select at least 20 source-suite behaviors.");
+  }
+  if (!Array.isArray(matrix.targetTestFiles) || matrix.targetTestFiles.length < 10) {
+    failGate("ZC-36: parity matrix must list the AgenC target test files.");
+  }
+
+  const targetTests = new Set(matrix.targetTestFiles);
+  for (const target of targetTests) {
+    if (typeof target !== "string" || !target.startsWith("runtime/src/") || !target.endsWith(".test.ts")) {
+      failGate(`ZC-36: invalid target test path ${String(target)}`);
+    }
+    if (!existsSync(path.join(root, target))) {
+      failGate(`ZC-36: mapped target test does not exist: ${target}`);
+    }
+  }
+  for (const selected of matrix.selectedCases) {
+    if (!selected || typeof selected.id !== "string" || !/^[a-z0-9-]+$/.test(selected.id)) {
+      failGate("ZC-36: each selected case needs a stable kebab-case id.");
+    }
+    if (!Array.isArray(selected.targetTests) || selected.targetTests.length === 0) {
+      failGate(`ZC-36: selected case ${selected.id} has no target tests.`);
+    }
+    for (const target of selected.targetTests) {
+      if (!targetTests.has(target)) {
+        failGate(`ZC-36: selected case ${selected.id} references unlisted target test ${target}.`);
+      }
+    }
+  }
+
+  const expectedScenarios = matrix.applyPatchFixtureCoverage?.expectedScenarioDirectories;
+  if (!Array.isArray(expectedScenarios) || expectedScenarios.length < 22) {
+    failGate("ZC-36: apply-patch fixture corpus must list every numbered scenario.");
+  }
+  const scenariosRoot = path.join(root, "runtime/src/tools/apply-patch/__fixtures__/scenarios");
+  const actualScenarios = readdirSync(scenariosRoot)
+    .filter((entry) => statSync(path.join(scenariosRoot, entry)).isDirectory())
+    .sort();
+  const expectedSorted = [...expectedScenarios].sort();
+  if (JSON.stringify(actualScenarios) !== JSON.stringify(expectedSorted)) {
+    failGate("ZC-36: apply-patch scenario fixture directories do not match the parity matrix.");
+  }
+
+  const testRun = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    ...matrix.targetTestFiles.map((target) => target.replace(/^runtime\//, "")),
+  ]);
+  if (testRun.status !== 0) {
+    failGate("ZC-36: representative suite parity tests failed.");
+  }
+
+  pass("ZC-36: representative test/fixture parity coverage locked");
+}
+
+function assertZc38DistBuildArtifactsIgnored() {
+  const gitignorePath = path.join(root, ".gitignore");
+  if (!existsSync(gitignorePath)) failGate("ZC-38: .gitignore is missing.");
+  const gitignoreLines = readFileSync(gitignorePath, "utf8").split(/\r?\n/u);
+  const requiredRules = [
+    "dist/",
+    "**/dist/",
+    "runtime/dist/",
+    "web/dist/",
+    "mcp/dist/",
+    "!patches/**/dist/",
+  ];
+  const ruleIndexes = requiredRules.map((rule) => gitignoreLines.indexOf(rule));
+  const missingRules = requiredRules.filter((_, index) => ruleIndexes[index] === -1);
+  if (missingRules.length > 0) {
+    failGate(`ZC-38: .gitignore is missing required dist rule(s):\n  ${missingRules.join("\n  ")}`);
+  }
+  for (let i = 1; i < ruleIndexes.length; i += 1) {
+    if (ruleIndexes[i] <= ruleIndexes[i - 1]) {
+      failGate("ZC-38: .gitignore dist rules must keep package-specific locks below the generic dist rules and above the patches exception.");
+    }
+  }
+
+  for (const sentinel of [
+    "runtime/dist/.zc38-sentinel",
+    "web/dist/.zc38-sentinel",
+    "mcp/dist/.zc38-sentinel",
+  ]) {
+    const ignored = git("check-ignore", sentinel);
+    if (ignored.status !== 0) {
+      failGate(`ZC-38: ${sentinel} is not ignored by git.`);
+    }
+  }
+  const patchDist = git("check-ignore", "patches/example/dist/.zc38-sentinel");
+  if (patchDist.status === 0) {
+    failGate("ZC-38: patches/**/dist/ exception no longer works.");
+  }
+
+  const files = git("ls-files");
+  if (files.status !== 0) failGate("ZC-38: git ls-files failed while checking tracked build artifacts.");
+  const trackedBuildArtifacts = files.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((rel) => (rel.startsWith("dist/") || rel.includes("/dist/")) && !rel.startsWith("patches/"));
+  if (trackedBuildArtifacts.length > 0) {
+    failGate(
+      `ZC-38: tracked non-patches dist build artifact(s) found:\n  ${trackedBuildArtifacts.join("\n  ")}`,
+    );
+  }
+
+  pass("ZC-38: dist build artifacts are ignored and absent from tracked files");
+}
+
 function listSourceFiles(dir) {
   const out = [];
   for (const entry of readdirSync(dir)) {
@@ -5825,6 +6043,9 @@ async function cleanupGates(item) {
       "ZC-33": { custom: assertZc33SandboxCoverage },
       "ZC-34": { custom: assertZc34AgentGraphStoreCoverage },
       "ZC-35": { custom: assertZc35OcCoverage },
+      "ZC-37": { custom: assertZc37UndefinedDirectoryGone },
+      "ZC-36": { custom: assertZc36TestFixtureParityCoverage },
+      "ZC-38": { custom: assertZc38DistBuildArtifactsIgnored },
     };
     const expectations = zcMap[id];
     if (!expectations) {
