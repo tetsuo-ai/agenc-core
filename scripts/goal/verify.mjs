@@ -276,7 +276,7 @@ const ITEM_EVIDENCE = {
       "runtime/src/services/compact/autoCompact.test.ts",
       "runtime/src/services/compact/microCompact.test.ts",
       "runtime/src/services/compact/compact-surfaces.test.ts",
-      "runtime/tests/compact-loader-service.contract.test.ts",
+      "runtime/tests/runtime-session.compact-contract.test.ts",
     ],
     grepNotPresent: [
       {
@@ -4330,6 +4330,7 @@ async function cleanupGates(item) {
       "ZC-11": { gone: ["runtime/src/tools/code-mode/response-adapter.ts"] },
       "ZC-13": { gone: ["runtime/src/tui/bridges"] },
       "ZC-14": { gone: ["runtime/src/llm/grok/adapter.ts", "runtime/src/llm/grok/adapter-utils.ts"] },
+      "ZC-16": { gone: ["runtime/src/agenc/adapters/dynamic-loaders.js", "runtime/src/agenc/adapters/dynamic-loaders.d.ts"] },
       "ZC-22": { gone: ["runtime/src/tui/elicitation-bridge.tsx"] },
       "ZC-26": { grepNotPresent: { pattern: "/home/claude/.agenc/remote", scope: "runtime/src" } }, // branding-scan: allow donor-leak path that ZC-26 is removing
       "ZC-27": { grepNotPresent: { pattern: "@ts-nocheck", scope: "runtime/src/types" } },

@@ -2,6 +2,8 @@ import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { ProviderHttpClient } from "../src/llm/client.js";
 import {
+  runAgenCContextCollapseOverflowRecovery,
+  runAgenCContextUsage,
   prepareAgenCTurnContext,
   runAgenCManualCompact,
 } from "../src/agenc/adapters/runtime-session.js";
@@ -105,6 +107,36 @@ describe("runtime session compact contract", () => {
       "Older tool output compressed",
     );
     expect(String(toolMessages.at(-1)?.content).length).toBeGreaterThan(6_000);
+  });
+
+  test("context usage and overflow recovery load compact runtime directly", async () => {
+    const history: LLMMessage[] = [
+      { role: "user", content: "first request" },
+      { role: "assistant", content: "first answer" },
+      { role: "user", content: "second request" },
+      { role: "assistant", content: "second answer" },
+      { role: "user", content: "third request" },
+    ];
+    const { session } = mkSession({ history });
+    const ctx = mkCtx();
+    const usage = await runAgenCContextUsage({ session, ctx });
+    expect(usage.text).toContain("/ 1,024 tokens");
+
+    const state = buildInitialTurnState(
+      ctx,
+      { role: "user", content: "continue" },
+      { priorMessages: history },
+    );
+    state.messagesForQuery = state.messages.map((message) => ({ ...message }));
+
+    const recovered = await runAgenCContextCollapseOverflowRecovery({
+      session,
+      state,
+    });
+
+    expect(recovered).toEqual({ kind: "applied", reason: "context_collapse" });
+    expect(state.messagesForQuery[0]?.content).toContain("<compact>");
+    expect(state.messagesForQuery.at(-1)?.content).toBe("continue");
   });
 
   test("compact worktree does not edit durable memory implementation files", () => {
