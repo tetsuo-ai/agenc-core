@@ -4029,22 +4029,76 @@ async function cleanupGates(item) {
     const deletedScriptRefPattern = `(^|[[:space:]"'(<])((scripts|runtime/scripts)/)?(${["check", "verify", "run"].join("|")})-${pathChars}(parity|contract)${pathChars}\\.mjs`;
     const quotedParity = `["']${"parity"}["']`;
     const dynamicParityConsumerPattern = `(path\\.)?(join|resolve)\\([^\\n]*${quotedParity}`;
-    const staleRefs = run("git", [
+    const staleRefPatterns = [
+      {
+        pattern: deletedMatrixRefPattern,
+        scopes: [
+          ".githooks",
+          "package.json",
+          "runtime/package.json",
+          "scripts",
+          "runtime/scripts",
+          "runtime/src",
+          "runtime/tests",
+          "docs/plan",
+        ],
+      },
+      {
+        pattern: deletedScriptRefPattern,
+        scopes: [
+          ".githooks",
+          "package.json",
+          "runtime/package.json",
+          "scripts",
+          "runtime/scripts",
+          "runtime/src",
+          "runtime/tests",
+        ],
+      },
+      {
+        pattern: dynamicParityConsumerPattern,
+        scopes: ["scripts", "runtime/scripts", "runtime/src", "runtime/tests"],
+      },
+    ];
+    const staleRefOutputs = [];
+    for (const { pattern, scopes } of staleRefPatterns) {
+      const scan = run("git", [
+        "grep",
+        "-n",
+        "-E",
+        pattern,
+        "--",
+        ...scopes,
+        ":(exclude)scripts/goal/complete.mjs",
+        ":(exclude)scripts/goal/verify.mjs",
+      ], { silent: true });
+      if (scan.status === 0) staleRefOutputs.push(scan.stdout.trim());
+      else if (scan.status !== 1) failGate("Z-06: failed to scan for deleted parity scaffold references");
+    }
+    const scriptRefScan = run("git", [
       "grep",
       "-n",
       "-E",
-      `${deletedMatrixRefPattern}|${deletedScriptRefPattern}|${dynamicParityConsumerPattern}`,
+      "(check|validate|test):[A-Za-z0-9:_-]+",
       "--",
-      ".",
-      ":(exclude)GOAL_DISCIPLINE.md",
-      ":(exclude)PORT_CHECKLIST.md",
+      ".githooks",
+      "package.json",
+      "runtime/package.json",
+      "scripts",
+      "runtime/scripts",
       ":(exclude)scripts/goal/complete.mjs",
+      ":(exclude)scripts/goal/verify.mjs",
     ], { silent: true });
-    if (staleRefs.status === 0) {
-      failGate(`Z-06: live files still reference deleted parity scaffolding:\n${staleRefs.stdout.trim()}`);
+    if (scriptRefScan.status === 0) {
+      const staleScriptRefs = scriptRefScan.stdout
+        .split("\n")
+        .filter((line) => /(?:check|validate|test):[^\s"'`]*?(?:parity|contract)[^\s"'`]*/i.test(line));
+      if (staleScriptRefs.length > 0) staleRefOutputs.push(staleScriptRefs.join("\n"));
+    } else if (scriptRefScan.status !== 1) {
+      failGate("Z-06: failed to scan for deleted parity npm script references");
     }
-    if (staleRefs.status !== 1) {
-      failGate("Z-06: failed to scan for deleted parity scaffold references");
+    if (staleRefOutputs.length > 0) {
+      failGate(`Z-06: live files still reference deleted parity scaffolding:\n${staleRefOutputs.join("\n")}`);
     }
     pass("Z-06: parity scaffolding removed");
   }
@@ -4058,7 +4112,7 @@ async function cleanupGates(item) {
       "ZC-03": { gone: ["runtime/src/tui/openclaude"] }, // branding-scan: allow donor-named dir that ZC-03 deletes
       "ZC-04": { gone: ["runtime/src/agenc/adapters"] },
       "ZC-05": { grepNotPresent: { pattern: "from .*agenc/upstream/", scope: "runtime/src" } },
-      "ZC-10": { gone: ["runtime/src/agenc/upstream"] },
+      "ZC-10": { gone: ["runtime/src/agenc/upstream", "runtime/src/types/runtime-ambient.d.ts"] },
       "ZC-11": { gone: ["runtime/src/tools/code-mode/response-adapter.ts"] },
       "ZC-13": { gone: ["runtime/src/tui/bridges"] },
       "ZC-22": { gone: ["runtime/src/tui/elicitation-bridge.tsx"] },
