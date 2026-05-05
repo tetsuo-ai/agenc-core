@@ -1,0 +1,115 @@
+{
+  "contractName": "file-search-git-utils-parity",
+  "scope": "C-04 file-search/git-utils: add the shared Git discovery and metadata helpers currently needed by AgenC, while preserving existing AgenC file-search, grep, and glob coverage from prior items.",
+  "generatedAt": "2026-05-05T00:00:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/codex/codex-rs",
+  "sourceRootBrandingScanOverride": "branding-scan: allow donor source path",
+  "targetRoot": "..",
+  "sourceCommit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
+  "sourceFiles": [
+    "git-utils/src/lib.rs",
+    "git-utils/src/info.rs",
+    "git-utils/src/operations.rs",
+    "file-search/src/lib.rs",
+    "file-search/src/cli.rs",
+    "file-search/src/main.rs"
+  ],
+  "consultedButNotPorted": [
+    {
+      "source": "git-utils/src/branch.rs",
+      "reason": "merge-base/upstream-ahead helpers are not required by any C-04 live AgenC caller; porting them belongs with a caller that needs branch ancestry behavior."
+    },
+    {
+      "source": "git-utils/src/platform.rs",
+      "reason": "platform symlink creation is unrelated to the current shared discovery/status helpers and has no C-04 live caller."
+    },
+    {
+      "source": "git-utils/src/errors.rs",
+      "reason": "AgenC exposes a focused GitCommandError for subprocess failures instead of the full donor error enum; other enum variants are tied to patch/baseline walkers outside C-04."
+    },
+    {
+      "source": "git-utils/src/info.rs::git_diff_to_remote + GitDiffToRemote",
+      "reason": "diff-to-remote depends on branch ancestry and untracked-file diff aggregation that no current C-04 live caller needs; it should be ported with the first caller that surfaces remote diff state."
+    },
+    {
+      "source": "git-utils/src/info.rs::get_git_remote_urls_assume_git_repo",
+      "reason": "AgenC exposes getGitRemoteUrls with the repository check included; an unchecked variant is intentionally omitted until a caller can prove it already validated the repository."
+    }
+  ],
+  "targetFiles": [
+    "runtime/src/utils/git.ts"
+  ],
+  "testFiles": [
+    "runtime/src/utils/git.test.ts",
+    "runtime/src/app-server/fuzzy-file-search.contract.test.ts",
+    "runtime/src/tools/system/grep.test.ts",
+    "runtime/src/tools/system/glob.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "repository-root-discovery",
+      "source": "git-utils/src/info.rs::get_git_repo_root + resolve_root_git_project_for_trust",
+      "target": "runtime/src/utils/git.ts::findGitRoot + findCanonicalGitRoot",
+      "requiredBehaviors": [
+        "walk ancestors from a directory or file path looking for a .git directory or .git file",
+        "return null when no repository marker is present",
+        "resolve linked worktree .git files back to the owning checkout for stable per-repository storage"
+      ],
+      "edgeCases": [
+        "nested file paths start from their parent directory",
+        "malformed worktree metadata falls back to the nearest checkout root",
+        "linked worktree metadata validates the backlink before canonicalizing",
+        "linked worktree metadata must place the worktree gitdir under the declared common directory's worktrees folder before canonicalizing"
+      ],
+      "tests": [
+        "runtime/src/utils/git.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "git-command-helpers",
+      "source": "git-utils/src/operations.rs + git-utils/src/info.rs",
+      "target": "runtime/src/utils/git.ts::runGit + collectGitInfo + branch/status helpers",
+      "requiredBehaviors": [
+        "run git through child_process with argument arrays and a bounded timeout",
+        "disable optional locks for read-only status and metadata commands",
+        "collect commit hash, current branch, repository remote, dirty state, local branches, and recent commits from real git output",
+        "return null or empty collections for non-repositories instead of throwing from status-style helpers",
+        "keep remote maps safe for special names such as __proto__ and constructor",
+        "bound subprocess runtime and captured output for exported git command helpers"
+      ],
+      "edgeCases": [
+        "empty repositories do not force a fake commit hash",
+        "detached HEAD suppresses branch names",
+        "push-only remote lines are ignored when parsing fetch remotes",
+        "origin is prioritized when ordering remotes for default branch detection",
+        "slash-containing branch names round-trip from remote HEAD refs",
+        "zero or negative recent-commit limits return an empty list instead of an unbounded log",
+        "failed git commands throw GitCommandError through runGitForStdout"
+      ],
+      "tests": [
+        "runtime/src/utils/git.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "existing-file-search-overlap",
+      "source": "file-search/src/lib.rs",
+      "target": "runtime/src/app-server/fuzzy-file-search.ts + runtime/src/tools/system/{grep,glob}.ts",
+      "requiredBehaviors": [
+        "fuzzy file search returns scored path matches and respects repository ignore rules",
+        "grep and glob tool surfaces already cover the file-listing overlap called out by C-04 through completed TL-05 and TL-06"
+      ],
+      "edgeCases": [
+        "nested ignore files and external gitdir info/exclude files are honored by the existing fuzzy search tests",
+        "C-04 does not duplicate those already-owned search helpers into a second runtime path"
+      ],
+      "tests": [
+        "runtime/src/app-server/fuzzy-file-search.contract.test.ts",
+        "runtime/src/tools/system/grep.test.ts",
+        "runtime/src/tools/system/glob.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}
