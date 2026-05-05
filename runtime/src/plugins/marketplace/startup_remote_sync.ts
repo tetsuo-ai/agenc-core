@@ -10,6 +10,7 @@ import type { Fetcher } from "./marketplace.js";
 
 export interface StartupRemotePluginSyncResult {
   readonly installedPluginIds: readonly string[];
+  readonly failedRemotePluginIds: readonly string[];
   readonly enabledPluginIds: readonly string[];
   readonly disabledPluginIds: readonly string[];
   readonly uninstalledPluginIds: readonly string[];
@@ -68,6 +69,9 @@ export async function startStartupRemotePluginSyncOnce(
     const result = await syncStartupRemotePlugins(options);
     if (result === null) {
       return null;
+    }
+    if (result.failedRemotePluginIds.length > 0) {
+      return result;
     }
     await writeStartupRemotePluginSyncMarker(options.agencHome, options.now?.() ?? new Date());
     return result;
@@ -132,7 +136,11 @@ async function syncStartupRemotePlugins(
   options: StartupRemotePluginSyncOptions,
 ): Promise<StartupRemotePluginSyncResult | null> {
   if (options.syncPluginsFromRemote !== undefined) {
-    return options.syncPluginsFromRemote(true);
+    const result = await options.syncPluginsFromRemote(true);
+    return {
+      ...result,
+      failedRemotePluginIds: result.failedRemotePluginIds ?? [],
+    };
   }
   if (options.remotePluginServiceConfig === undefined || options.remoteAuth === undefined) {
     throw new Error("startup remote plugin sync requires remote service config and auth when no sync callback is provided");
@@ -151,6 +159,7 @@ async function syncStartupRemotePlugins(
   }
   return {
     installedPluginIds: outcome.installedPluginIds,
+    failedRemotePluginIds: outcome.failedRemotePluginIds,
     enabledPluginIds: [],
     disabledPluginIds: [],
     uninstalledPluginIds: outcome.removedCachePluginIds,

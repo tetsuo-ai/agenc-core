@@ -1,4 +1,5 @@
-import { gunzipSync } from "node:zlib";
+import { promisify } from "node:util";
+import { gunzip } from "node:zlib";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import { findPluginManifestPath } from "../manifest.js";
@@ -34,6 +35,7 @@ const REMOTE_PLUGIN_BUNDLE_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
 const REMOTE_PLUGIN_BUNDLE_MAX_EXTRACTED_BYTES = 250 * 1024 * 1024;
 const REMOTE_PLUGIN_INSTALL_STAGING_DIR = "plugins/.remote-plugin-install-staging";
 const REMOTE_PLUGIN_CACHE_SEGMENT_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/u;
+const gunzipAsync = promisify(gunzip);
 
 export function validateRemotePluginBundle(
   remotePluginId: string,
@@ -139,7 +141,7 @@ export async function extractPluginBundleTarGz(
   maxTotalBytes = REMOTE_PLUGIN_BUNDLE_MAX_EXTRACTED_BYTES,
 ): Promise<void> {
   await mkdir(destination, { recursive: true, mode: 0o700 });
-  const tar = gunzipTarWithLimit(bytes, maxTotalBytes);
+  const tar = await gunzipTarWithLimit(bytes, maxTotalBytes);
   let offset = 0;
   let extractedBytes = 0;
   while (offset + 512 <= tar.length) {
@@ -323,9 +325,9 @@ function assertTarHeaderChecksum(header: Buffer): void {
   }
 }
 
-function gunzipTarWithLimit(bytes: Buffer, maxTotalBytes: number): Buffer {
+async function gunzipTarWithLimit(bytes: Buffer, maxTotalBytes: number): Promise<Buffer> {
   try {
-    const output = gunzipSync(bytes, { maxOutputLength: maxTotalBytes + 1 });
+    const output = await gunzipAsync(bytes, { maxOutputLength: maxTotalBytes + 1 });
     if (output.byteLength > maxTotalBytes) {
       throw new Error(`remote plugin bundle decompressed size exceeded maximum size of ${maxTotalBytes} bytes`);
     }

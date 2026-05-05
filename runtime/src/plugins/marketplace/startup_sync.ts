@@ -1,5 +1,6 @@
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { inflateRawSync } from "node:zlib";
+import { promisify } from "node:util";
+import { inflateRaw } from "node:zlib";
 import { dirname, join, resolve, sep } from "node:path";
 import {
   defaultFetch,
@@ -34,6 +35,7 @@ const CURATED_PLUGINS_MAX_ARCHIVE_BYTES = 50 * 1024 * 1024;
 const CURATED_PLUGINS_MAX_EXTRACTED_BYTES = 250 * 1024 * 1024;
 const CURATED_PLUGINS_MAX_ARCHIVE_ENTRIES = 20_000;
 const CURATED_PLUGINS_MAX_METADATA_BYTES = 64 * 1024;
+const inflateRawAsync = promisify(inflateRaw);
 
 export function curatedPluginsRepoPath(agencHome: string): string {
   return join(agencHome, CURATED_PLUGINS_RELATIVE_DIR);
@@ -329,7 +331,7 @@ async function extractZipEntries(bytes: Buffer, destination: string): Promise<vo
     if (totalExtracted > CURATED_PLUGINS_MAX_EXTRACTED_BYTES) {
       throw new Error(`curated plugins archive extracted size exceeded ${CURATED_PLUGINS_MAX_EXTRACTED_BYTES} bytes`);
     }
-    const content = inflateZipEntry(bytes, entry);
+    const content = await inflateZipEntry(bytes, entry);
     if (content.byteLength !== entry.uncompressedSize) {
       throw new Error(`curated plugins archive entry '${entry.name}' size mismatch`);
     }
@@ -405,7 +407,7 @@ function findEndOfCentralDirectory(bytes: Buffer): number {
   throw new Error("curated plugins archive is missing a zip central directory");
 }
 
-function inflateZipEntry(bytes: Buffer, entry: ZipEntry): Buffer {
+async function inflateZipEntry(bytes: Buffer, entry: ZipEntry): Promise<Buffer> {
   if (entry.localHeaderOffset + 30 > bytes.byteLength) {
     throw new Error(`curated plugins archive local header is truncated for '${entry.name}'`);
   }
@@ -425,7 +427,7 @@ function inflateZipEntry(bytes: Buffer, entry: ZipEntry): Buffer {
   }
   const compressed = bytes.subarray(dataStart, dataEnd);
   if (entry.method === 0) return Buffer.from(compressed);
-  return inflateRawSync(compressed, { maxOutputLength: entry.uncompressedSize + 1 });
+  return inflateRawAsync(compressed, { maxOutputLength: entry.uncompressedSize + 1 });
 }
 
 function checkedArchiveOutputPath(destination: string, entryName: string): string {

@@ -100,6 +100,7 @@ describe("startup marketplace sync", () => {
         additiveValues.push(additiveOnly);
         return {
           installedPluginIds: ["linear"],
+          failedRemotePluginIds: [],
           enabledPluginIds: ["linear"],
           disabledPluginIds: [],
           uninstalledPluginIds: [],
@@ -145,12 +146,72 @@ describe("startup marketplace sync", () => {
 
     expect(result).toEqual({
       installedPluginIds: [],
+      failedRemotePluginIds: [],
       enabledPluginIds: [],
       disabledPluginIds: [],
       uninstalledPluginIds: [],
     });
     expect(calls).toEqual(["/ps/plugins/installed", "/ps/plugins/installed"]);
     await expect(hasStartupRemotePluginSyncMarker(agencHome)).resolves.toBe(true);
+  });
+
+  it("does not write the startup marker when concrete remote bundle sync has failures", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-startup-sync-failed-bundle-"));
+    await writeCuratedMarketplace(curatedPluginsRepoPath(agencHome));
+    await writeFile(curatedPluginsShaPath(agencHome), "abc123\n");
+
+    const result = await startStartupRemotePluginSyncOnce({
+      agencHome,
+      prerequisiteTimeoutMs: 10,
+      pollMs: 1,
+      now: () => new Date("2026-05-05T00:00:00.000Z"),
+      remotePluginServiceConfig: { baseUrl: "https://agenc.tech" },
+      remoteAuth: { headers: { Authorization: "Bearer test" } },
+      fetcher: async (url) => {
+        const parsed = new URL(url);
+        if (parsed.pathname === "/ps/plugins/installed") {
+          return jsonResponse({
+            plugins: [{
+              plugin: {
+                id: "linear",
+                name: "linear",
+                scope: "GLOBAL",
+                installation_policy: "AVAILABLE",
+                authentication_policy: "ON_INSTALL",
+                status: "AVAILABLE",
+                release: {
+                  version: "1.0.0",
+                  display_name: "Linear",
+                  description: "Issue tracking",
+                  bundle_download_url: "https://agenc.tech/plugins/linear.tgz",
+                  interface: {
+                    short_description: "Issue tracking",
+                    screenshot_urls: [],
+                  },
+                  skills: [],
+                },
+              },
+              enabled: true,
+              disabled_skill_names: [],
+            }],
+            pagination: {},
+          });
+        }
+        if (url === "https://agenc.tech/plugins/linear.tgz") {
+          return jsonResponse({ message: "temporarily unavailable" }, false, 503);
+        }
+        return jsonResponse({ message: "not found" }, false, 404);
+      },
+    });
+
+    expect(result).toEqual({
+      installedPluginIds: [],
+      failedRemotePluginIds: ["linear"],
+      enabledPluginIds: [],
+      disabledPluginIds: [],
+      uninstalledPluginIds: [],
+    });
+    await expect(hasStartupRemotePluginSyncMarker(agencHome)).resolves.toBe(false);
   });
 
   it("runs the live startup checks through the AgenC-owned marketplace layer", async () => {
@@ -431,6 +492,7 @@ describe("startup marketplace sync", () => {
         await syncGate;
         return {
           installedPluginIds: ["linear"],
+          failedRemotePluginIds: [],
           enabledPluginIds: ["linear"],
           disabledPluginIds: [],
           uninstalledPluginIds: [],
@@ -445,6 +507,7 @@ describe("startup marketplace sync", () => {
         additiveValues.push(additiveOnly);
         return {
           installedPluginIds: ["second"],
+          failedRemotePluginIds: [],
           enabledPluginIds: ["second"],
           disabledPluginIds: [],
           uninstalledPluginIds: [],
@@ -477,6 +540,7 @@ describe("startup marketplace sync", () => {
       now: () => new Date("2026-05-05T00:20:00.000Z"),
       syncPluginsFromRemote: async () => ({
         installedPluginIds: ["linear"],
+        failedRemotePluginIds: [],
         enabledPluginIds: ["linear"],
         disabledPluginIds: [],
         uninstalledPluginIds: [],
@@ -503,6 +567,7 @@ describe("startup marketplace sync", () => {
         now: () => new Date("2026-05-05T00:20:00.000Z"),
         syncPluginsFromRemote: async () => ({
           installedPluginIds: ["first"],
+          failedRemotePluginIds: [],
           enabledPluginIds: ["first"],
           disabledPluginIds: [],
           uninstalledPluginIds: [],
@@ -515,6 +580,7 @@ describe("startup marketplace sync", () => {
         now: () => new Date("2026-05-05T00:20:00.000Z"),
         syncPluginsFromRemote: async () => ({
           installedPluginIds: ["second"],
+          failedRemotePluginIds: [],
           enabledPluginIds: ["second"],
           disabledPluginIds: [],
           uninstalledPluginIds: [],

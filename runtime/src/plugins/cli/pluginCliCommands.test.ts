@@ -98,6 +98,13 @@ function options(
 }
 
 describe("agenc plugin CLI", () => {
+  it("documents marketplace source forms in help text", () => {
+    const help = formatAgenCPluginCliHelpText();
+
+    expect(help).toContain("marketplace add <path|git|url|github>");
+    expect(help).toContain("Add local, git, URL, or GitHub marketplace");
+  });
+
   it("parses plugin and marketplace commands", () => {
     expect(parseAgenCPluginCliArgs(["prompt"])).toBeNull();
     expect(parseAgenCPluginCliArgs(["plugin"])).toEqual({
