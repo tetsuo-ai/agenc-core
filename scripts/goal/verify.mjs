@@ -4879,25 +4879,24 @@ function assertZc32ShellCommandCoverage() {
     failGate(`ZC-32: parity rows must be required: ${nonRequiredRows.map((row) => row?.id ?? "<missing>").join(", ")}`);
   }
 
-  const sourceRoot = `${["co", "dex-rs"].join("")}/shell-command/src`;
+  const sourceFiles = Array.isArray(ledger.sourceFiles) ? ledger.sourceFiles : [];
   const requiredSourceAnchors = [
-    `${sourceRoot}/bash.rs`,
-    `${sourceRoot}/powershell.rs`,
-    `${sourceRoot}/parse_command.rs`,
-    `${sourceRoot}/command_safety/is_dangerous_command.rs`,
-    `${sourceRoot}/command_safety/is_safe_command.rs`,
-    `${sourceRoot}/command_safety/powershell_parser.rs`,
-    `${sourceRoot}/command_safety/powershell_parser.ps1`,
-    `${sourceRoot}/command_safety/windows_dangerous_commands.rs`,
-    `${sourceRoot}/command_safety/windows_safe_commands.rs`,
+    "src/bash.rs",
+    "src/powershell.rs",
+    "src/parse_command.rs",
+    "src/command_safety/is_dangerous_command.rs",
+    "src/command_safety/is_safe_command.rs",
+    "src/command_safety/powershell_parser.rs",
+    "src/command_safety/powershell_parser.ps1",
+    "src/command_safety/windows_dangerous_commands.rs",
+    "src/command_safety/windows_safe_commands.rs",
   ];
-  const parityText = readFileSync(path.join(root, parityRel), "utf8");
-  const missingAnchors = requiredSourceAnchors.filter((anchor) => !parityText.includes(anchor));
+  const missingAnchors = requiredSourceAnchors.filter((anchor) => !sourceFiles.includes(anchor));
   if (missingAnchors.length > 0) {
-    failGate(`ZC-32: shell-command parity is missing source anchor(s):\n  ${missingAnchors.join("\n  ")}`);
+    failGate(`ZC-32: shell-command parity ledger is missing source anchor(s):\n  ${missingAnchors.join("\n  ")}`);
   }
-  if (!parityText.includes("ZC-32 coverage lock:")) {
-    failGate("ZC-32: shell-command parity is missing the ZC-32 coverage lock note.");
+  if (ledger.validation?.runtimeDocsRetiredBy !== "ZC-40") {
+    failGate("ZC-32: shell-command parity ledger must record that runtime parity docs were retired by ZC-40");
   }
 
   const parser = readFileSync(path.join(root, "runtime/src/shell-command/parser.ts"), "utf8");
