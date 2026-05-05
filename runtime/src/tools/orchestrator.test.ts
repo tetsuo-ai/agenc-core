@@ -20,6 +20,7 @@ import {
   type ReviewDecision,
 } from "./orchestrator.js";
 import type { Tool } from "./types.js";
+import { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
 
 const readTool: Tool = {
   name: "FileRead",
@@ -526,11 +527,72 @@ describe("requestApproval — permissionDecisionHooks wiring", () => {
   test("deny hook bypasses resolver", async () => {
     const res = await requestApproval({
       ctx: mkCtx(),
-      permissionDecisionHooks: [() => ({ kind: "deny" })],
+      permissionDecisionHooks: [() => ({ kind: "deny", reason: "blocked" })],
       resolver: { request: async () => ({ kind: "approved" }) },
     });
     expect(res.decision.kind).toBe("denied");
     expect(res.source).toBe("permission_hook");
+    expect(res.reason).toBe("blocked");
+  });
+
+  test("configured permission hook receives live apply_patch matcher aliases", async () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+    });
+    const target = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    runtime.attachTarget(target);
+    runtime.load({
+      PermissionRequest: [
+        {
+          matcher: "Edit",
+          hooks: [
+            {
+              type: "command",
+              command:
+                "node -e \"console.log(JSON.stringify({hookSpecificOutput:{hookEventName:'PermissionRequest',decision:{behavior:'deny',message:'alias reached'}}}))\"",
+            },
+          ],
+        },
+      ],
+    });
+
+    const res = await requestApproval({
+      ctx: {
+        invocation: {
+          session: {},
+          turn: {},
+          tracker: {
+            appendFileDiff: () => {},
+            snapshot: () => [],
+            clear: () => {},
+          },
+          callId: "c-apply",
+          toolName: { name: "apply_patch" },
+          payload: { kind: "function", arguments: "{}" },
+          source: "direct",
+        } as ApprovalCtx["invocation"],
+        callId: "c-apply",
+        toolName: "apply_patch",
+        turnId: "turn-1",
+      },
+      permissionDecisionHooks: target.permissionDecisionHooks,
+      resolver: { request: async () => ({ kind: "approved" }) },
+    });
+
+    expect(res.decision.kind).toBe("denied");
+    expect(res.source).toBe("permission_hook");
+    expect(res.reason).toBe("alias reached");
   });
 
   test("ask hook falls through to resolver", async () => {

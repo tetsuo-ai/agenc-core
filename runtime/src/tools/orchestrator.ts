@@ -44,6 +44,7 @@ import type { PermissionDefaultMode } from "../config/schema.js";
 import {
   resolveHookPermissionDecision,
   type PermissionDecisionHook,
+  type PermissionDecisionHookInput,
 } from "./hooks.js";
 import {
   defaultExecApprovalRequirement as defaultExecApprovalRequirementFromPermissions,
@@ -58,6 +59,7 @@ import {
   reviewDecisionIsAllow,
   type ReviewDecision as PermissionsReviewDecision,
 } from "../permissions/review-decision.js";
+import { hookDispatcherApprovalSource } from "../permissions/tool-approval.js";
 import {
   recordPermissionAuditEvent,
   type PermissionAuditDecision,
@@ -505,6 +507,62 @@ async function awaitWithAbort<T>(
   });
 }
 
+function permissionDecisionHookContext(
+  ctx: ApprovalCtx,
+  signal: AbortSignal | undefined,
+): Omit<PermissionDecisionHookInput, "toolName" | "args"> {
+  const invocation = ctx.invocation;
+  const session = asRecord(invocation.session);
+  const turn = asRecord(invocation.turn);
+  const cwd = stringValue(turn?.cwd);
+  const sessionId = stringValue(session?.conversationId);
+  const transcriptPath = stringValue(session?.transcriptPath);
+  const model =
+    stringValue(asRecord(turn?.modelInfo)?.slug) ??
+    stringValue(asRecord(turn?.collaborationMode)?.model) ??
+    stringValue(asRecord(turn?.config)?.model);
+  const permissionMode = stringValue(turn?.permissionMode);
+  const matcherAliases = [
+    ...toolNameMatcherAliases(ctx.toolName),
+    ...stringArrayValue(asRecord(invocation.toolName)?.matcherAliases),
+  ];
+  return {
+    invocation,
+    callId: ctx.callId,
+    turnId: ctx.turnId,
+    ...(cwd !== undefined ? { cwd } : {}),
+    ...(sessionId !== undefined ? { sessionId } : {}),
+    ...(transcriptPath !== undefined ? { transcriptPath } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(permissionMode !== undefined ? { permissionMode } : {}),
+    ...(matcherAliases.length > 0 ? { matcherAliases } : {}),
+    ...(signal !== undefined ? { signal } : {}),
+  };
+}
+
+function toolNameMatcherAliases(toolName: string): readonly string[] {
+  if (toolName === "apply_patch") return ["Write", "Edit"];
+  return [];
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value
+    : undefined;
+}
+
+function stringArrayValue(value: unknown): readonly string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
 /**
  * Run the permission-request pipeline. donor runtime order:
  *
@@ -548,6 +606,9 @@ export async function requestApproval(
           opts.ctx.toolName,
           opts.args ?? {},
           opts.permissionDecisionHooks,
+          undefined,
+          undefined,
+          permissionDecisionHookContext(opts.ctx, signal),
         ),
         signal,
       );
@@ -558,10 +619,14 @@ export async function requestApproval(
       throw err;
     }
     if (decision.kind === "allow") {
-      return { decision: { kind: "approved" }, source: "permission_hook" };
+      return { decision: { kind: "approved" }, source: hookDispatcherApprovalSource };
     }
     if (decision.kind === "deny") {
-      return { decision: { kind: "denied" }, source: "permission_hook" };
+      return {
+        decision: { kind: "denied" },
+        source: hookDispatcherApprovalSource,
+        ...(decision.reason !== undefined ? { reason: decision.reason } : {}),
+      };
     }
     // `ask` / `pass` → fall through to resolver.
   }
