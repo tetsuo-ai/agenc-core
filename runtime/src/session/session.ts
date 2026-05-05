@@ -478,6 +478,11 @@ export interface McpServerInfo {
   readonly command?: string;
 }
 
+/** agenc runtime `LspManager`. */
+export interface LspManager {
+  refreshFromConfig?(config: unknown): Promise<void>;
+}
+
 /** agenc runtime `McpConnectionManager`. */
 export interface McpConnectionManager {
   setApprovalPolicy(policy: unknown): void;
@@ -673,6 +678,7 @@ export interface SessionServices {
   readonly skillsManager: SkillsManager;
   readonly pluginsManager: PluginsManager;
   readonly mcpManager: McpManager;
+  readonly lspManager?: LspManager;
   readonly skillsWatcher: SkillsWatcher;
   /**
    * T9 live: the real `AgentControl` + `AgentRegistry` pair is bound once by

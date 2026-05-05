@@ -22,6 +22,10 @@ import {
 import { FILE_EDIT_TOOL_NAME } from '../system/file-edit.js'
 import { FILE_READ_TOOL_NAME } from '../system/file-read.js'
 import { FILE_WRITE_TOOL_NAME } from '../system/file-write.js'
+import {
+  clearPluginAgentCache,
+  loadPluginAgents,
+} from '../../plugins/registration/load-plugin-agents.js'
 import { AGENT_COLORS, setAgentColor, type AgentColorName } from './agentColorManager.js'
 import { loadAgentMemoryPrompt } from './agentMemory.js'
 
@@ -759,19 +763,13 @@ async function initializeAgentMemorySnapshots(
   }
 }
 
-async function loadPluginAgentsSafe(): Promise<PluginAgentDefinition[]> {
+async function loadPluginAgentsSafe(cwd: string): Promise<PluginAgentDefinition[]> {
   try {
     if (pluginAgentsLoaderForTesting) {
       return await pluginAgentsLoaderForTesting()
     }
-    const pluginModulePath =
-      '../../agenc/upstream/utils/plugins/loadPluginAgents.js'
-    const pluginModule = (await import(pluginModulePath)) as {
-      loadPluginAgents?: () => Promise<unknown>
-      clearPluginAgentCache?: () => void
-    }
-    pluginAgentCacheClearer = pluginModule.clearPluginAgentCache
-    const loaded = await pluginModule.loadPluginAgents?.()
+    pluginAgentCacheClearer = clearPluginAgentCache
+    const loaded = await loadPluginAgents({ cwd })
     return Array.isArray(loaded)
       ? loaded.filter((agent): agent is PluginAgentDefinition =>
           isRecord(agent) &&
@@ -819,7 +817,7 @@ async function loadAgentDefinitions(cwd: string): Promise<AgentDefinitionsResult
       .filter((agent): agent is CustomAgentDefinition => agent !== null)
 
     const [pluginAgents] = await Promise.all([
-      loadPluginAgentsSafe(),
+      loadPluginAgentsSafe(cwd),
       initializeAgentMemorySnapshots(customAgents),
     ])
 
@@ -875,11 +873,7 @@ export function clearAgentDefinitionsCache(): void {
     pluginAgentCacheClearer()
     return
   }
-  const pluginModulePath =
-    '../../agenc/upstream/utils/plugins/loadPluginAgents.js'
-  void import(pluginModulePath)
-    .then(module => module.clearPluginAgentCache?.())
-    .catch(() => {})
+  clearPluginAgentCache()
 }
 
 export function __setPluginAgentsLoaderForTesting(
