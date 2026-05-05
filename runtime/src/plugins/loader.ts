@@ -3,12 +3,14 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 import { validateHooksConfig } from "../config/schema.js";
 import type { AgenCConfig, HooksMap, LspServerConfigInput, McpServerConfig } from "../config/schema.js";
 import {
-  isRecord,
   findPluginManifestPath,
   loadPluginManifest,
-  normalizePluginManifest,
   PLUGIN_MANIFEST_RELATIVE_PATH,
   readJsonText,
+} from "./manifest.js";
+import {
+  isRecord,
+  normalizePluginManifest,
   resolveManifestRelativePath,
   type PluginCommandDeclaration,
   type PluginCommandMetadata,
@@ -16,7 +18,7 @@ import {
   type PluginManifest,
   type PluginPathDeclaration,
   type PluginServerDeclaration,
-} from "./manifest.js";
+} from "./manifest-schema.js";
 
 const DEFAULT_HOOKS_FILE = "hooks/hooks.json";
 const DEFAULT_MCP_FILE = ".mcp.json";
@@ -25,6 +27,16 @@ const DEFAULT_APP_FILE = ".app.json";
 const DEFAULT_SETTINGS_FILE = "settings.json";
 const MAX_PLUGIN_MARKDOWN_FILES = 512;
 const MAX_PLUGIN_SCAN_DEPTH = 8;
+const LSP_SERVER_KEYS = new Set([
+  "command",
+  "args",
+  "env",
+  "workspaceFolder",
+  "extensionToLanguage",
+  "initializationOptions",
+  "startupTimeout",
+  "maxRestarts",
+]);
 const PLUGIN_SETTINGS_KEYS = new Set([
   "permissions",
   "env",
@@ -1031,6 +1043,9 @@ function normalizeLspServer(
   pluginRoot: string,
 ): LspServerConfigInput | null {
   if (!isRecord(value) || typeof value.command !== "string") return null;
+  if (Object.keys(value).some((key) => !LSP_SERVER_KEYS.has(key))) return null;
+  if (value.command.trim().length === 0) return null;
+  if (value.command.includes(" ") && !value.command.startsWith("/")) return null;
   const extensionToLanguage = isRecord(value.extensionToLanguage)
     ? stringRecord(value.extensionToLanguage)
     : undefined;
