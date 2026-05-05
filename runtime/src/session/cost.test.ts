@@ -73,7 +73,7 @@ describe("cost helpers", () => {
     expect(resolution.costUsd).toBe(0);
   });
 
-  test("computeUsdCost applies OpenAI cached-input pricing", () => {
+  test("computeUsdCost applies hosted cached-input pricing", () => {
     const usage = {
       provider: "openai",
       model: "gpt-4o",
@@ -92,7 +92,7 @@ describe("cost helpers", () => {
     expect(resolution.costUsd).toBeCloseTo(0.00125, 8);
   });
 
-  test("computeUsdCost only charges OpenAI uncached input at full rate", () => {
+  test("computeUsdCost only charges uncached input at full rate", () => {
     const usage = {
       provider: "openai",
       model: "gpt-4o",
@@ -111,7 +111,7 @@ describe("cost helpers", () => {
     expect(resolution.costUsd).toBeCloseTo(0.004375, 8);
   });
 
-  test("computeUsdCost applies OpenAI mini cached-input pricing", () => {
+  test("computeUsdCost applies mini-model cached-input pricing", () => {
     const usage = {
       provider: "openai",
       model: "gpt-4o-mini",
@@ -136,7 +136,7 @@ describe("cost helpers", () => {
     ["gpt-4.1", 0.002, 0.0005],
     ["o4-mini", 0.0011, 0.000275],
   ])(
-    "computeUsdCost uses current OpenAI cached-input accounting for %s",
+    "computeUsdCost uses current cached-input accounting for %s",
     (model, inputUsdPer1K, cachedInputUsdPer1K) => {
       const fullCache = computeUsdCostWithResolution(
         {
@@ -375,6 +375,69 @@ describe("CostSidecar", () => {
     expect(sidecar.getTotalCostUsd()).toBeGreaterThan(0.02);
     expect(sidecar.formatTotalCost()).toContain("300 cache write");
     expect(sidecar.formatTotalCost()).toContain("2 web search");
+  });
+
+  test("tracks current-session API-without-retry and tool durations", async () => {
+    const sidecar = new CostSidecar();
+    sidecar.addToTotalApiDuration(23);
+    sidecar.addToTotalApiDurationWithoutRetries(17);
+    sidecar.onEvent({
+      id: "tool-start",
+      seq: 1,
+      msg: {
+        type: "tool_call_started",
+        payload: {
+          callId: "tool-1",
+          toolName: "Read",
+          args: "{}",
+        },
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    sidecar.onEvent({
+      id: "tool-end",
+      seq: 2,
+      msg: {
+        type: "tool_call_completed",
+        payload: {
+          callId: "tool-1",
+          result: "ok",
+          isError: false,
+        },
+      },
+    });
+
+    expect(sidecar.getTotalApiDurationMs()).toBe(23);
+    expect(sidecar.getTotalApiDurationWithoutRetriesMs()).toBe(17);
+    expect(sidecar.getTotalToolDurationMs()).toBeGreaterThan(0);
+  });
+
+  test("turn_complete does not duplicate API duration already recorded by API logging", () => {
+    const sidecar = new CostSidecar();
+    sidecar.onEvent({
+      id: "turn-start",
+      seq: 1,
+      msg: { type: "turn_started", payload: { turnId: "t1" } },
+    });
+    sidecar.addToTotalApiDuration(23);
+    sidecar.addToTotalApiDurationWithoutRetries(17);
+    sidecar.onEvent({
+      id: "turn-complete",
+      seq: 2,
+      msg: { type: "turn_complete", payload: { turnId: "t1", durationMs: 99 } },
+    });
+
+    expect(sidecar.getTotalApiDurationMs()).toBe(23);
+    expect(sidecar.getTotalApiDurationWithoutRetriesMs()).toBe(17);
+  });
+
+  test("formatTotalCost includes code change totals", () => {
+    const sidecar = new CostSidecar();
+    sidecar.addToTotalLinesChanged(1234, 2);
+
+    expect(sidecar.formatTotalCost()).toContain(
+      "Total code changes: 1.2K lines added, 2 lines removed",
+    );
   });
 
   test("turn_complete increments turn count for active model", () => {

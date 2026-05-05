@@ -53,6 +53,7 @@ import { SidecarManager, type Sidecar } from "../session/sidecar.js";
 import { FileHistory, FileHistorySidecar } from "../session/file-history.js";
 import { ErrorLogSidecar } from "../session/error-log.js";
 import { CostSidecar } from "../session/cost.js";
+import { bindActiveCostSidecar } from "../cost/tracker.js";
 import { shutdownSessionLifecycle } from "../session/lifecycle.js";
 import type { EventMsg } from "../session/event-log.js";
 import type { RolloutItem } from "../session/rollout-item.js";
@@ -1083,6 +1084,7 @@ export async function bootstrapLocalRuntimeSession(
   const memoryDir = join(agencHome, "memory");
   const memoryMdPath = join(memoryDir, "MEMORY.md");
   let sidecarManager: SidecarManager | null = null;
+  let clearActiveCostSidecar: (() => void) | null = null;
   let shutdownStarted = false;
   // Lifecycle slots filled by the bootstrapSession hooks. The shutdown
   // closure closes over these `let` bindings so it is safe to call at
@@ -1132,6 +1134,8 @@ export async function bootstrapLocalRuntimeSession(
         /* best effort */
       });
     }
+    clearActiveCostSidecar?.();
+    clearActiveCostSidecar = null;
     if (sessionForShutdown !== null && agentControlForShutdown !== null) {
       await shutdownSessionLifecycle({
         session: sessionForShutdown,
@@ -1393,6 +1397,8 @@ export async function bootstrapLocalRuntimeSession(
         await costSidecar.loadFromDisk();
         (s.services as { costSidecar?: CostSidecar }).costSidecar =
           costSidecar;
+        clearActiveCostSidecar?.();
+        clearActiveCostSidecar = bindActiveCostSidecar(costSidecar);
         sidecarManager.register(costSidecar);
         sidecarManager.register(createMemoryAutoSaveSidecar());
 

@@ -1,19 +1,14 @@
 /**
  * Cost sidecar — session cost tracking + formatting.
  *
- * Ports upstream `cost-tracker.ts` + `costHook.ts` session-cost behavior,
- * restructured
- * to live as a SidecarManager-compatible Sidecar rather than the
- * AgenC bootstrap-state global.
- *
  * Responsibilities:
  *   - Subscribe to `token_count` events and tally cumulative
  *     input/output/cache/reasoning tokens plus web search requests per
  *     provider + model.
  *   - Maintain a provider-aware model cost registry (USD/1K input +
  *     USD/1K output + USD/1K cache + USD/search request). Ships
- *     sensible defaults for xAI, OpenAI, Anthropic, and local
- *     providers; callers can override the registry.
+ *     sensible defaults for hosted third-party and local providers;
+ *     callers can override the registry.
  *   - Format cumulative cost for `/status` and status-line display.
  *   - Provide an exit-summary hook equivalent to upstream's React hook,
  *     but as a plain process listener so the runtime can install or skip
@@ -62,6 +57,11 @@ export interface CostSummaryExitHookOptions {
   readonly processLike?: CostSummaryProcessLike;
   readonly shouldPrint?: () => boolean;
   readonly getSummary?: () => string;
+}
+
+export interface CostFpsMetrics {
+  readonly averageFps?: number;
+  readonly low1PctFps?: number;
 }
 
 export const DEFAULT_UNKNOWN_MODEL_COST: Readonly<ModelCostEntry> =
@@ -295,6 +295,19 @@ export interface ModelUsage {
   turns: number;
 }
 
+export interface TokenUsageDelta {
+  readonly model: string;
+  readonly provider?: string;
+  readonly promptTokens?: number;
+  readonly completionTokens?: number;
+  readonly cachedInputTokens?: number;
+  readonly cacheCreationInputTokens?: number;
+  readonly reasoningOutputTokens?: number;
+  readonly webSearchRequests?: number;
+  readonly totalTokens?: number;
+  readonly costUsd?: number;
+}
+
 function emptyModelUsage(model: string, provider?: string): ModelUsage {
   return {
     model,
@@ -307,6 +320,30 @@ function emptyModelUsage(model: string, provider?: string): ModelUsage {
     webSearchRequests: 0,
     totalTokens: 0,
     turns: 0,
+  };
+}
+
+function subtractModelUsage(
+  a: ModelUsage,
+  b: ModelUsage,
+): ModelUsage {
+  return {
+    model: a.model,
+    ...(a.provider !== undefined ? { provider: a.provider } : {}),
+    inputTokens: Math.max(0, a.inputTokens - b.inputTokens),
+    outputTokens: Math.max(0, a.outputTokens - b.outputTokens),
+    cachedInputTokens: Math.max(0, a.cachedInputTokens - b.cachedInputTokens),
+    cacheCreationInputTokens: Math.max(
+      0,
+      a.cacheCreationInputTokens - b.cacheCreationInputTokens,
+    ),
+    reasoningOutputTokens: Math.max(
+      0,
+      a.reasoningOutputTokens - b.reasoningOutputTokens,
+    ),
+    webSearchRequests: Math.max(0, a.webSearchRequests - b.webSearchRequests),
+    totalTokens: Math.max(0, a.totalTokens - b.totalTokens),
+    turns: Math.max(0, a.turns - b.turns),
   };
 }
 
@@ -519,6 +556,14 @@ export interface SessionCostRecord {
   readonly usage: CostTotals;
   readonly costUsd: number;
   readonly modelUsage?: ReadonlyArray<SessionCostModelUsage>;
+  readonly durationMs?: number;
+  readonly apiDurationMs?: number;
+  readonly apiDurationWithoutRetriesMs?: number;
+  readonly toolDurationMs?: number;
+  readonly linesAdded?: number;
+  readonly linesRemoved?: number;
+  readonly fpsAverage?: number;
+  readonly fpsLow1Pct?: number;
 }
 
 export interface SessionCostModelUsage {
@@ -555,6 +600,96 @@ function emptyTotals(): CostTotals {
   };
 }
 
+function coerceTotals(raw: Partial<CostTotals> | undefined): CostTotals {
+  return {
+    inputTokens: normalizeCounter(raw?.inputTokens),
+    outputTokens: normalizeCounter(raw?.outputTokens),
+    cacheReadTokens: normalizeCounter(raw?.cacheReadTokens),
+    cacheCreationTokens: normalizeCounter(raw?.cacheCreationTokens),
+    reasoningOutputTokens: normalizeCounter(raw?.reasoningOutputTokens),
+    webSearchRequests: normalizeCounter(raw?.webSearchRequests),
+    totalTokens: normalizeCounter(raw?.totalTokens),
+  };
+}
+
+function coerceSessionModelUsage(
+  raw: unknown,
+): SessionCostModelUsage | null {
+  if (!raw || typeof raw !== "object") return null;
+  const row = raw as Record<string, unknown>;
+  if (typeof row.model !== "string" || row.model.length === 0) return null;
+  return {
+    model: row.model,
+    ...(typeof row.provider === "string" && row.provider.length > 0
+      ? { provider: row.provider }
+      : {}),
+    inputTokens: normalizeCounter(row.inputTokens as number | undefined),
+    outputTokens: normalizeCounter(row.outputTokens as number | undefined),
+    cacheReadTokens: normalizeCounter(row.cacheReadTokens as number | undefined),
+    cacheCreationTokens: normalizeCounter(
+      row.cacheCreationTokens as number | undefined,
+    ),
+    reasoningOutputTokens: normalizeCounter(
+      row.reasoningOutputTokens as number | undefined,
+    ),
+    webSearchRequests: normalizeCounter(
+      row.webSearchRequests as number | undefined,
+    ),
+    totalTokens: normalizeCounter(row.totalTokens as number | undefined),
+    turns: normalizeCounter(row.turns as number | undefined),
+    costUsd: normalizeCost(row.costUsd as number | undefined),
+  };
+}
+
+function coerceSessionRecord(raw: unknown): SessionCostRecord | null {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  if (typeof record.sessionId !== "string" || record.sessionId.length === 0) {
+    return null;
+  }
+  if (!record.usage || typeof record.usage !== "object") return null;
+  const startedAtMs = normalizeWallMs(record.startedAtMs as number | undefined);
+  const endedAtMs = normalizeWallMs(record.endedAtMs as number | undefined);
+  if (startedAtMs === null || endedAtMs === null) return null;
+  const modelUsage = Array.isArray(record.modelUsage)
+    ? record.modelUsage
+      .map((row) => coerceSessionModelUsage(row))
+      .filter((row): row is SessionCostModelUsage => row !== null)
+    : undefined;
+  const durationMs = normalizeDuration(record.durationMs as number | undefined);
+  const apiDurationMs = normalizeDuration(
+    record.apiDurationMs as number | undefined,
+  );
+  const apiDurationWithoutRetriesMs = normalizeDuration(
+    record.apiDurationWithoutRetriesMs as number | undefined,
+  );
+  const toolDurationMs = normalizeDuration(
+    record.toolDurationMs as number | undefined,
+  );
+  return {
+    sessionId: record.sessionId,
+    startedAtMs,
+    endedAtMs,
+    usage: coerceTotals(record.usage as Partial<CostTotals>),
+    costUsd: normalizeCost(record.costUsd as number | undefined),
+    ...(modelUsage !== undefined ? { modelUsage } : {}),
+    ...(durationMs !== null ? { durationMs } : {}),
+    ...(apiDurationMs !== null ? { apiDurationMs } : {}),
+    ...(apiDurationWithoutRetriesMs !== null
+      ? { apiDurationWithoutRetriesMs }
+      : {}),
+    ...(toolDurationMs !== null ? { toolDurationMs } : {}),
+    linesAdded: normalizeCounter(record.linesAdded as number | undefined),
+    linesRemoved: normalizeCounter(record.linesRemoved as number | undefined),
+    ...(typeof record.fpsAverage === "number" && Number.isFinite(record.fpsAverage)
+      ? { fpsAverage: record.fpsAverage }
+      : {}),
+    ...(typeof record.fpsLow1Pct === "number" && Number.isFinite(record.fpsLow1Pct)
+      ? { fpsLow1Pct: record.fpsLow1Pct }
+      : {}),
+  };
+}
+
 function addTotals(a: CostTotals, b: CostTotals): CostTotals {
   return {
     inputTokens: a.inputTokens + b.inputTokens,
@@ -566,6 +701,50 @@ function addTotals(a: CostTotals, b: CostTotals): CostTotals {
     webSearchRequests: (a.webSearchRequests ?? 0) + (b.webSearchRequests ?? 0),
     totalTokens: a.totalTokens + b.totalTokens,
   };
+}
+
+function subtractTotals(a: CostTotals, b: CostTotals): CostTotals {
+  return {
+    inputTokens: Math.max(0, a.inputTokens - b.inputTokens),
+    outputTokens: Math.max(0, a.outputTokens - b.outputTokens),
+    cacheReadTokens: Math.max(
+      0,
+      (a.cacheReadTokens ?? 0) - (b.cacheReadTokens ?? 0),
+    ),
+    cacheCreationTokens: Math.max(
+      0,
+      (a.cacheCreationTokens ?? 0) - (b.cacheCreationTokens ?? 0),
+    ),
+    reasoningOutputTokens: Math.max(
+      0,
+      a.reasoningOutputTokens - b.reasoningOutputTokens,
+    ),
+    webSearchRequests: Math.max(
+      0,
+      (a.webSearchRequests ?? 0) - (b.webSearchRequests ?? 0),
+    ),
+    totalTokens: Math.max(0, a.totalTokens - b.totalTokens),
+  };
+}
+
+function normalizeDuration(durationMs: number | undefined): number | null {
+  if (durationMs === undefined || !Number.isFinite(durationMs)) return null;
+  return Math.max(0, Math.trunc(durationMs));
+}
+
+function normalizeCounter(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.trunc(value));
+}
+
+function normalizeCost(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 0;
+  return Math.max(0, value);
+}
+
+function normalizeWallMs(value: number | undefined): number | null {
+  if (value === undefined || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.trunc(value));
 }
 
 function validateTotalsFile(raw: unknown): CostTotalsFile | null {
@@ -591,14 +770,28 @@ export async function atomicWriteJson(
   content: string,
 ): Promise<void> {
   const tmp = `${path}.tmp`;
-  const handle = await fsp.open(tmp, "w", 0o600);
+  let handle: Awaited<ReturnType<typeof fsp.open>> | null = await fsp.open(
+    tmp,
+    "w",
+    0o600,
+  );
   try {
     await handle.writeFile(content);
     await handle.sync();
-  } finally {
     await handle.close();
+    handle = null;
+    await fsp.rename(tmp, path);
+  } catch (err) {
+    if (handle !== null) {
+      try {
+        await handle.close();
+      } catch {
+        // best effort; preserve the original write/rename failure
+      }
+    }
+    await fsp.rm(tmp, { force: true }).catch(() => {});
+    throw err;
   }
-  await fsp.rename(tmp, path);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -650,6 +843,9 @@ export class CostSidecar implements Sidecar {
   private readonly budgetTracker: BudgetTracker | null;
   private readonly perModel = new Map<string, ModelUsage>();
   private totalApiDurationMs = 0;
+  private totalApiDurationWithoutRetriesMs = 0;
+  private totalToolDurationMs = 0;
+  private readonly toolStartedAtByCallId = new Map<string, number>();
   private readonly startedAtMs = monotonicMs();
   private lastTurnStartMs: number | null = null;
   private currentModel: string | null = null;
@@ -669,11 +865,35 @@ export class CostSidecar implements Sidecar {
     readonly message: string;
   }) => void;
   private readonly writeImpl: (path: string, content: string) => Promise<void>;
-  private readonly sessionStartedAtWallMs = Date.now();
+  private sessionStartedAtWallMs = Date.now();
   /** Lifetime snapshot from disk (does not include current session). */
   private loadedTotalUsage: CostTotals = emptyTotals();
   private loadedTotalCostUsd = 0;
   private loadedSessions: SessionCostRecord[] = [];
+  /**
+   * Aggregate restored baseline used only when an older session record has
+   * no per-model buckets. Records with modelUsage are restored into
+   * `perModel` so model/provider attribution remains inspectable.
+   */
+  private restoredAggregateBaseline: CostTotals = emptyTotals();
+  private restoredCostAdjustmentUsd = 0;
+  private restoredPerModelBaselines = new Map<string, ModelUsage>();
+  private restoredPerModelCostUsd = new Map<string, number>();
+  private explicitPerModelUsage = new Map<string, ModelUsage>();
+  private explicitPerModelCostUsd = new Map<string, number>();
+  private restoredSessionId: string | null = null;
+  private restoredWallDurationMs = 0;
+  private restoredApiDurationMs = 0;
+  private restoredApiDurationWithoutRetriesMs = 0;
+  private restoredToolDurationMs = 0;
+  private restoredLinesAdded = 0;
+  private restoredLinesRemoved = 0;
+  private currentLinesAdded = 0;
+  private currentLinesRemoved = 0;
+  private apiDurationObservedThisTurn = false;
+  private fpsAverage: number | undefined;
+  private fpsLow1Pct: number | undefined;
+  private fpsMetricsProvider: (() => CostFpsMetrics | undefined) | null = null;
   /** True once loadFromDisk has run (success or absent-file). */
   private loaded = false;
   private saveDegraded = false;
@@ -696,6 +916,7 @@ export class CostSidecar implements Sidecar {
       case "turn_started": {
         this.lastTurnStartMs = monotonicMs();
         this.lastUsageKey = null;
+        this.apiDurationObservedThisTurn = false;
         break;
       }
       case "turn_context": {
@@ -745,15 +966,31 @@ export class CostSidecar implements Sidecar {
         }
         break;
       }
+      case "tool_call_started": {
+        this.toolStartedAtByCallId.set(msg.payload.callId, monotonicMs());
+        break;
+      }
+      case "tool_call_completed": {
+        this.addCompletedToolDuration(msg.payload.callId);
+        break;
+      }
       case "turn_complete": {
         const model = this.currentModel ?? "unknown";
         const key = this.lastUsageKey ?? usageKey(model, this.currentProvider ?? undefined);
         const usage = this.perModel.get(key);
         if (usage) usage.turns += 1;
-        if (this.lastTurnStartMs !== null) {
-          this.totalApiDurationMs += monotonicMs() - this.lastTurnStartMs;
-          this.lastTurnStartMs = null;
+        if (!this.apiDurationObservedThisTurn) {
+          const duration = normalizeDuration(msg.payload.durationMs);
+          if (duration !== null) {
+            this.totalApiDurationMs += duration;
+            this.totalApiDurationWithoutRetriesMs += duration;
+          } else if (this.lastTurnStartMs !== null) {
+            const elapsed = monotonicMs() - this.lastTurnStartMs;
+            this.totalApiDurationMs += elapsed;
+            this.totalApiDurationWithoutRetriesMs += elapsed;
+          }
         }
+        this.lastTurnStartMs = null;
         break;
       }
       default:
@@ -768,9 +1005,9 @@ export class CostSidecar implements Sidecar {
   getTotalCostUsd(): number {
     let total = 0;
     for (const usage of this.perModel.values()) {
-      total += computeUsdCost(usage, this.registry);
+      total += this.getModelUsageCostUsd(usage);
     }
-    return total;
+    return total + this.restoredCostAdjustmentUsd;
   }
 
   getPerModelUsage(): ReadonlyArray<ModelUsage> {
@@ -789,8 +1026,26 @@ export class CostSidecar implements Sidecar {
       webSearchRequests: usage.webSearchRequests,
       totalTokens: usage.totalTokens,
       turns: usage.turns,
-      costUsd: computeUsdCost(usage, this.registry),
+      costUsd: this.getModelUsageCostUsd(usage),
     }));
+  }
+
+  private getModelUsageCostUsd(usage: ModelUsage): number {
+    const key = usageKey(usage.model, usage.provider);
+    const restoredBaseline = this.restoredPerModelBaselines.get(key);
+    const restoredCostUsd = this.restoredPerModelCostUsd.get(key);
+    const explicitUsage = this.explicitPerModelUsage.get(key);
+    const explicitCostUsd = this.explicitPerModelCostUsd.get(key) ?? 0;
+    let computedUsage = usage;
+    let total = explicitCostUsd;
+    if (restoredBaseline !== undefined && restoredCostUsd !== undefined) {
+      total += restoredCostUsd;
+      computedUsage = subtractModelUsage(computedUsage, restoredBaseline);
+    }
+    if (explicitUsage !== undefined) {
+      computedUsage = subtractModelUsage(computedUsage, explicitUsage);
+    }
+    return total + computeUsdCost(computedUsage, this.registry);
   }
 
   hasUnknownModelCost(): boolean {
@@ -802,39 +1057,39 @@ export class CostSidecar implements Sidecar {
   }
 
   getTotalInputTokens(): number {
-    let total = 0;
+    let total = this.restoredAggregateBaseline.inputTokens;
     for (const usage of this.perModel.values()) total += usage.inputTokens;
     return total;
   }
 
   getTotalOutputTokens(): number {
-    let total = 0;
+    let total = this.restoredAggregateBaseline.outputTokens;
     for (const usage of this.perModel.values()) total += usage.outputTokens;
     return total;
   }
 
   getTotalCachedInputTokens(): number {
-    let total = 0;
+    let total = this.restoredAggregateBaseline.cacheReadTokens;
     for (const usage of this.perModel.values()) total += usage.cachedInputTokens;
     return total;
   }
 
   getTotalCacheCreationInputTokens(): number {
-    let total = 0;
+    let total = this.restoredAggregateBaseline.cacheCreationTokens ?? 0;
     for (const usage of this.perModel.values())
       total += usage.cacheCreationInputTokens;
     return total;
   }
 
   getTotalReasoningOutputTokens(): number {
-    let total = 0;
+    let total = this.restoredAggregateBaseline.reasoningOutputTokens;
     for (const usage of this.perModel.values())
       total += usage.reasoningOutputTokens;
     return total;
   }
 
   getTotalWebSearchRequests(): number {
-    let total = 0;
+    let total = this.restoredAggregateBaseline.webSearchRequests ?? 0;
     for (const usage of this.perModel.values()) total += usage.webSearchRequests;
     return total;
   }
@@ -846,11 +1101,130 @@ export class CostSidecar implements Sidecar {
   }
 
   getTotalDurationMs(): number {
-    return monotonicMs() - this.startedAtMs;
+    return this.restoredWallDurationMs + monotonicMs() - this.startedAtMs;
   }
 
   getTotalApiDurationMs(): number {
-    return this.totalApiDurationMs;
+    return this.restoredApiDurationMs + this.totalApiDurationMs;
+  }
+
+  getTotalApiDurationWithoutRetriesMs(): number {
+    return (
+      this.restoredApiDurationWithoutRetriesMs +
+      this.totalApiDurationWithoutRetriesMs
+    );
+  }
+
+  getTotalToolDurationMs(): number {
+    return this.restoredToolDurationMs + this.totalToolDurationMs;
+  }
+
+  addToTotalApiDuration(durationMs: number): void {
+    const duration = normalizeDuration(durationMs);
+    if (duration === null) return;
+    this.totalApiDurationMs += duration;
+    this.apiDurationObservedThisTurn = true;
+  }
+
+  addToTotalApiDurationWithoutRetries(durationMs: number): void {
+    const duration = normalizeDuration(durationMs);
+    if (duration !== null) this.totalApiDurationWithoutRetriesMs += duration;
+  }
+
+  addToTotalToolDuration(durationMs: number): void {
+    const duration = normalizeDuration(durationMs);
+    if (duration !== null) this.totalToolDurationMs += duration;
+  }
+
+  private addCompletedToolDuration(callId: string): void {
+    const startedAt = this.toolStartedAtByCallId.get(callId);
+    if (startedAt === undefined) return;
+    this.toolStartedAtByCallId.delete(callId);
+    this.addToTotalToolDuration(monotonicMs() - startedAt);
+  }
+
+  addToTotalLinesChanged(added: number, removed: number): void {
+    if (Number.isFinite(added)) {
+      this.currentLinesAdded += Math.max(0, Math.trunc(added));
+    }
+    if (Number.isFinite(removed)) {
+      this.currentLinesRemoved += Math.max(0, Math.trunc(removed));
+    }
+  }
+
+  addTokenUsage(delta: TokenUsageDelta): void {
+    const provider =
+      normalizeProvider(delta.provider) ?? this.currentProvider ?? undefined;
+    const key = usageKey(delta.model, provider);
+    const usage = this.perModel.get(key) ?? emptyModelUsage(delta.model, provider);
+    const promptTokens = normalizeCounter(delta.promptTokens);
+    const completionTokens = normalizeCounter(delta.completionTokens);
+    const reasoningOutputTokens = normalizeCounter(delta.reasoningOutputTokens);
+    const totalTokens =
+      delta.totalTokens === undefined
+        ? promptTokens + completionTokens + reasoningOutputTokens
+        : normalizeCounter(delta.totalTokens);
+    usage.inputTokens += promptTokens;
+    usage.outputTokens += completionTokens;
+    usage.cachedInputTokens += normalizeCounter(delta.cachedInputTokens);
+    usage.cacheCreationInputTokens += normalizeCounter(
+      delta.cacheCreationInputTokens,
+    );
+    usage.reasoningOutputTokens += reasoningOutputTokens;
+    usage.webSearchRequests += normalizeCounter(delta.webSearchRequests);
+    usage.totalTokens += totalTokens;
+    this.perModel.set(key, usage);
+    this.currentModel = delta.model;
+    this.currentProvider = provider ?? null;
+    this.lastUsageKey = key;
+
+    const costUsd = normalizeCost(delta.costUsd);
+    if (costUsd > 0) {
+      const explicit =
+        this.explicitPerModelUsage.get(key) ?? emptyModelUsage(delta.model, provider);
+      explicit.inputTokens += promptTokens;
+      explicit.outputTokens += completionTokens;
+      explicit.cachedInputTokens += normalizeCounter(delta.cachedInputTokens);
+      explicit.cacheCreationInputTokens += normalizeCounter(
+        delta.cacheCreationInputTokens,
+      );
+      explicit.reasoningOutputTokens += reasoningOutputTokens;
+      explicit.webSearchRequests += normalizeCounter(delta.webSearchRequests);
+      explicit.totalTokens += totalTokens;
+      this.explicitPerModelUsage.set(key, explicit);
+      this.explicitPerModelCostUsd.set(
+        key,
+        (this.explicitPerModelCostUsd.get(key) ?? 0) + costUsd,
+      );
+    }
+
+    if (!computeUsdCostWithResolution(usage, this.registry).known) {
+      this.unknownCostModels.add(key);
+    }
+  }
+
+  getTotalLinesAdded(): number {
+    return this.restoredLinesAdded + this.currentLinesAdded;
+  }
+
+  getTotalLinesRemoved(): number {
+    return this.restoredLinesRemoved + this.currentLinesRemoved;
+  }
+
+  setFpsMetrics(metrics: CostFpsMetrics | undefined): void {
+    this.fpsAverage = metrics?.averageFps;
+    this.fpsLow1Pct = metrics?.low1PctFps;
+  }
+
+  setFpsMetricsProvider(
+    provider: (() => CostFpsMetrics | undefined) | null,
+  ): () => void {
+    this.fpsMetricsProvider = provider;
+    return () => {
+      if (this.fpsMetricsProvider === provider) {
+        this.fpsMetricsProvider = null;
+      }
+    };
   }
 
   /** One-line session cost summary for `/status`. */
@@ -867,7 +1241,7 @@ export class CostSidecar implements Sidecar {
   /** Multi-line summary equivalent to the upstream exit cost summary. */
   formatTotalCost(): string {
     const modelLines = this.getPerModelUsage().map((usage) => {
-      const cost = computeUsdCost(usage, this.registry);
+      const cost = this.getModelUsageCostUsd(usage);
       const label = usage.provider
         ? `${usage.provider}/${usage.model}`
         : usage.model;
@@ -897,7 +1271,10 @@ export class CostSidecar implements Sidecar {
       `Total cost: ${formatUsdCost(this.getTotalCostUsd())}${unknownSuffix}`,
       `Total duration (API): ${formatDuration(this.getTotalApiDurationMs())}`,
       `Total duration (wall): ${formatDuration(this.getTotalDurationMs())}`,
-      modelLines.length > 0 ? "Usage by model:" : "Usage: 0 input, 0 output",
+      `Total code changes: ${formatTokenCount(this.getTotalLinesAdded())} lines added, ${formatTokenCount(this.getTotalLinesRemoved())} lines removed`,
+      modelLines.length > 0
+        ? "Usage by model:"
+        : `Usage: ${formatTokenCount(this.getTotalInputTokens())} input, ${formatTokenCount(this.getTotalOutputTokens())} output`,
       ...modelLines.map((line) => `  ${line}`),
     ].join("\n");
   }
@@ -906,11 +1283,32 @@ export class CostSidecar implements Sidecar {
   reset(): void {
     this.perModel.clear();
     this.totalApiDurationMs = 0;
+    this.totalApiDurationWithoutRetriesMs = 0;
+    this.totalToolDurationMs = 0;
+    this.toolStartedAtByCallId.clear();
     this.lastTurnStartMs = null;
     this.currentModel = null;
     this.currentProvider = null;
     this.lastUsageKey = null;
     this.unknownCostModels.clear();
+    this.restoredAggregateBaseline = emptyTotals();
+    this.restoredCostAdjustmentUsd = 0;
+    this.restoredPerModelBaselines = new Map();
+    this.restoredPerModelCostUsd = new Map();
+    this.explicitPerModelUsage = new Map();
+    this.explicitPerModelCostUsd = new Map();
+    this.restoredSessionId = null;
+    this.restoredWallDurationMs = 0;
+    this.restoredApiDurationMs = 0;
+    this.restoredApiDurationWithoutRetriesMs = 0;
+    this.restoredToolDurationMs = 0;
+    this.restoredLinesAdded = 0;
+    this.restoredLinesRemoved = 0;
+    this.currentLinesAdded = 0;
+    this.currentLinesRemoved = 0;
+    this.apiDurationObservedThisTurn = false;
+    this.fpsAverage = undefined;
+    this.fpsLow1Pct = undefined;
   }
 
   isDegraded(): boolean {
@@ -932,6 +1330,11 @@ export class CostSidecar implements Sidecar {
   }): void {
     this.projectDir = opts.projectDir;
     this.sessionId = opts.sessionId;
+  }
+
+  setCurrentSessionId(sessionId: string): void {
+    this.sessionId = sessionId;
+    this.sessionStartedAtWallMs = Date.now();
   }
 
   private get totalsPath(): string | null {
@@ -984,36 +1387,64 @@ export class CostSidecar implements Sidecar {
       return;
     }
     // Coerce partial totalUsage (forward-compat: missing fields → 0).
-    this.loadedTotalUsage = {
-      inputTokens: validated.totalUsage.inputTokens ?? 0,
-      outputTokens: validated.totalUsage.outputTokens ?? 0,
-      cacheReadTokens: validated.totalUsage.cacheReadTokens ?? 0,
-      cacheCreationTokens: validated.totalUsage.cacheCreationTokens ?? 0,
-      reasoningOutputTokens: validated.totalUsage.reasoningOutputTokens ?? 0,
-      webSearchRequests: validated.totalUsage.webSearchRequests ?? 0,
-      totalTokens: validated.totalUsage.totalTokens ?? 0,
-    };
-    this.loadedTotalCostUsd = validated.totalCostUsd;
-    this.loadedSessions = [...validated.sessions];
+    this.loadedTotalUsage = coerceTotals(validated.totalUsage);
+    this.loadedTotalCostUsd = normalizeCost(validated.totalCostUsd);
+    this.loadedSessions = validated.sessions
+      .map((record) => coerceSessionRecord(record))
+      .filter((record): record is SessionCostRecord => record !== null);
   }
 
   /** Current session's in-memory totals, in `CostTotals` shape. */
   getSessionTotals(): CostTotals {
+    return addTotals(this.restoredAggregateBaseline, this.getPerModelTotals());
+  }
+
+  private getPerModelTotals(): CostTotals {
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cacheReadTokens = 0;
+    let cacheCreationTokens = 0;
+    let reasoningOutputTokens = 0;
+    let webSearchRequests = 0;
+    let totalTokens = 0;
+    for (const usage of this.perModel.values()) {
+      inputTokens += usage.inputTokens;
+      outputTokens += usage.outputTokens;
+      cacheReadTokens += usage.cachedInputTokens;
+      cacheCreationTokens += usage.cacheCreationInputTokens;
+      reasoningOutputTokens += usage.reasoningOutputTokens;
+      webSearchRequests += usage.webSearchRequests;
+      totalTokens += usage.totalTokens;
+    }
     return {
-      inputTokens: this.getTotalInputTokens(),
-      outputTokens: this.getTotalOutputTokens(),
-      cacheReadTokens: this.getTotalCachedInputTokens(),
-      cacheCreationTokens: this.getTotalCacheCreationInputTokens(),
-      reasoningOutputTokens: this.getTotalReasoningOutputTokens(),
-      webSearchRequests: this.getTotalWebSearchRequests(),
-      totalTokens: this.getSessionTotalTokensRaw(),
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheCreationTokens,
+      reasoningOutputTokens,
+      webSearchRequests,
+      totalTokens,
     };
   }
 
-  private getSessionTotalTokensRaw(): number {
-    let total = 0;
-    for (const usage of this.perModel.values()) total += usage.totalTokens;
-    return total;
+  private buildSessionRecord(): SessionCostRecord | null {
+    if (!this.projectDir || !this.sessionId) return null;
+    return {
+      sessionId: this.sessionId,
+      startedAtMs: this.sessionStartedAtWallMs,
+      endedAtMs: Date.now(),
+      usage: this.getSessionTotals(),
+      costUsd: this.getTotalCostUsd(),
+      modelUsage: this.getSessionModelUsage(),
+      durationMs: this.getTotalDurationMs(),
+      apiDurationMs: this.getTotalApiDurationMs(),
+      apiDurationWithoutRetriesMs: this.getTotalApiDurationWithoutRetriesMs(),
+      toolDurationMs: this.getTotalToolDurationMs(),
+      linesAdded: this.getTotalLinesAdded(),
+      linesRemoved: this.getTotalLinesRemoved(),
+      ...(this.fpsAverage !== undefined ? { fpsAverage: this.fpsAverage } : {}),
+      ...(this.fpsLow1Pct !== undefined ? { fpsLow1Pct: this.fpsLow1Pct } : {}),
+    };
   }
 
   /**
@@ -1036,6 +1467,135 @@ export class CostSidecar implements Sidecar {
     this.loadedSessions.push(summary);
     this.loadedTotalUsage = addTotals(this.loadedTotalUsage, summary.usage);
     this.loadedTotalCostUsd += summary.costUsd;
+  }
+
+  replaceSessionRecord(summary: SessionCostRecord): void {
+    const index = this.loadedSessions.findIndex(
+      (record) => record.sessionId === summary.sessionId,
+    );
+    if (index >= 0) {
+      const previous = this.loadedSessions[index]!;
+      this.loadedTotalUsage = subtractTotals(
+        this.loadedTotalUsage,
+        coerceTotals(previous.usage),
+      );
+      this.loadedTotalCostUsd = Math.max(
+        0,
+        this.loadedTotalCostUsd - previous.costUsd,
+      );
+      this.loadedSessions[index] = summary;
+    } else {
+      this.loadedSessions.push(summary);
+    }
+    this.loadedTotalUsage = addTotals(this.loadedTotalUsage, summary.usage);
+    this.loadedTotalCostUsd += summary.costUsd;
+  }
+
+  restoreSessionCostsForSession(sessionId: string): boolean {
+    if (this.restoredSessionId === sessionId) {
+      return true;
+    }
+    if (this.hasCurrentSessionCostState()) {
+      return false;
+    }
+    if (!this.loaded) {
+      return false;
+    }
+
+    const index = this.loadedSessions.findIndex(
+      (record) => record.sessionId === sessionId,
+    );
+    if (index < 0) {
+      return false;
+    }
+    const [record] = this.loadedSessions.splice(index, 1);
+    if (!record) {
+      return false;
+    }
+
+    const restoredUsage = coerceTotals(record.usage);
+    this.loadedTotalUsage = subtractTotals(this.loadedTotalUsage, restoredUsage);
+    this.loadedTotalCostUsd = Math.max(
+      0,
+      this.loadedTotalCostUsd - record.costUsd,
+    );
+    this.sessionId = sessionId;
+    this.sessionStartedAtWallMs = record.startedAtMs;
+    this.restoredSessionId = sessionId;
+    this.restoredWallDurationMs =
+      record.durationMs ?? Math.max(0, record.endedAtMs - record.startedAtMs);
+    this.restoredApiDurationMs = record.apiDurationMs ?? 0;
+    this.restoredApiDurationWithoutRetriesMs =
+      record.apiDurationWithoutRetriesMs ?? record.apiDurationMs ?? 0;
+    this.restoredToolDurationMs = record.toolDurationMs ?? 0;
+    this.restoredLinesAdded = record.linesAdded ?? 0;
+    this.restoredLinesRemoved = record.linesRemoved ?? 0;
+    this.fpsAverage = record.fpsAverage;
+    this.fpsLow1Pct = record.fpsLow1Pct;
+
+    const modelUsage = (record.modelUsage ?? [])
+      .map((row) => coerceSessionModelUsage(row))
+      .filter((row): row is SessionCostModelUsage => row !== null);
+    if (modelUsage.length === 0) {
+      this.restoredAggregateBaseline = restoredUsage;
+      this.restoredCostAdjustmentUsd = record.costUsd;
+      return true;
+    }
+
+    let restoredModelCostUsd = 0;
+    for (const row of modelUsage) {
+      const usage: ModelUsage = {
+        model: row.model,
+        ...(row.provider !== undefined ? { provider: row.provider } : {}),
+        inputTokens: row.inputTokens,
+        outputTokens: row.outputTokens,
+        cachedInputTokens: row.cacheReadTokens,
+        cacheCreationInputTokens: row.cacheCreationTokens,
+        reasoningOutputTokens: row.reasoningOutputTokens,
+        webSearchRequests: row.webSearchRequests,
+        totalTokens: row.totalTokens,
+        turns: row.turns,
+      };
+      const key = usageKey(usage.model, usage.provider);
+      this.perModel.set(key, usage);
+      this.restoredPerModelBaselines.set(key, { ...usage });
+      this.restoredPerModelCostUsd.set(key, row.costUsd);
+      const resolution = computeUsdCostWithResolution(usage, this.registry);
+      if (!resolution.known) {
+        this.unknownCostModels.add(key);
+      }
+      restoredModelCostUsd += row.costUsd;
+    }
+    this.restoredAggregateBaseline = emptyTotals();
+    this.restoredCostAdjustmentUsd = record.costUsd - restoredModelCostUsd;
+    return true;
+  }
+
+  getStoredSessionRecord(sessionId: string): SessionCostRecord | undefined {
+    return this.loadedSessions.find((record) => record.sessionId === sessionId);
+  }
+
+  private hasCurrentSessionCostState(): boolean {
+    return (
+      this.perModel.size > 0 ||
+      this.restoredSessionId !== null ||
+      this.currentLinesAdded > 0 ||
+      this.currentLinesRemoved > 0 ||
+      this.totalApiDurationMs > 0 ||
+      this.totalApiDurationWithoutRetriesMs > 0 ||
+      this.totalToolDurationMs > 0 ||
+      this.toolStartedAtByCallId.size > 0
+    );
+  }
+
+  async saveCurrentSessionCosts(): Promise<void> {
+    if (!this.projectDir || !this.sessionId) return;
+    this.setFpsMetrics(this.fpsMetricsProvider?.());
+    if (!this.loaded) await this.loadFromDisk();
+    const record = this.buildSessionRecord();
+    if (!record) return;
+    this.replaceSessionRecord(record);
+    await this.saveToDisk();
   }
 
   /**
@@ -1079,18 +1639,7 @@ export class CostSidecar implements Sidecar {
     this.disposeExitSummary?.();
     this.disposeExitSummary = null;
     this.writeExitSummary();
-    if (!this.projectDir || !this.sessionId) return;
-    const usage = this.getSessionTotals();
-    const record: SessionCostRecord = {
-      sessionId: this.sessionId,
-      startedAtMs: this.sessionStartedAtWallMs,
-      endedAtMs: Date.now(),
-      usage,
-      costUsd: this.getTotalCostUsd(),
-      modelUsage: this.getSessionModelUsage(),
-    };
-    this.appendSessionRecord(record);
-    await this.saveToDisk();
+    await this.saveCurrentSessionCosts();
   }
 
   start(): void {
