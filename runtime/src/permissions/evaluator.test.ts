@@ -426,6 +426,22 @@ describe("hasPermissionsToUseTool — unattended policy", () => {
     }
   });
 
+  it("pauses read-only tools when no unattended allowlist is configured", async () => {
+    const { context } = buildHarness({ mode: "unattended" });
+    const result = await hasPermissionsToUseTool(
+      makeTool({ name: "FileRead", isReadOnly: true }),
+      { path: "README.md" },
+      context,
+    );
+    expect(result.behavior).toBe("ask");
+    if (result.behavior === "ask") {
+      expect(result.decisionReason).toMatchObject({
+        type: "other",
+        reason: "unattended pause: FileRead",
+      });
+    }
+  });
+
   it("denies denylisted read-only tools before read-only fast paths", async () => {
     const { context } = buildHarness({
       mode: "unattended",

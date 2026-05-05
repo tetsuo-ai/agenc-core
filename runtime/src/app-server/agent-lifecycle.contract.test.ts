@@ -776,13 +776,7 @@ describe("AgenC background agent lifecycle", () => {
       activeSessionIds: ["session_1"],
       metadata: {
         ticket: "F-06a",
-        unattendedAllow: [
-          "FileRead",
-          "system.grep",
-          "system.glob",
-          "system.listDir",
-          "system.stat",
-        ],
+        unattendedAllow: [],
         unattendedDeny: [],
       },
       sessionId: "session_1",
@@ -793,22 +787,10 @@ describe("AgenC background agent lifecycle", () => {
         cwd: "/workspace",
         metadata: {
           ticket: "F-06a",
-          unattendedAllow: [
-            "FileRead",
-            "system.grep",
-            "system.glob",
-            "system.listDir",
-            "system.stat",
-          ],
+          unattendedAllow: [],
           unattendedDeny: [],
         },
-        unattendedAllow: [
-          "FileRead",
-          "system.grep",
-          "system.glob",
-          "system.listDir",
-          "system.stat",
-        ],
+        unattendedAllow: [],
         unattendedDeny: [],
       },
     ]);
@@ -822,13 +804,7 @@ describe("AgenC background agent lifecycle", () => {
         ticket: "F-06a",
         objective: "build the parser",
         source: "agent.start",
-        unattendedAllow: [
-          "FileRead",
-          "system.grep",
-          "system.glob",
-          "system.listDir",
-          "system.stat",
-        ],
+        unattendedAllow: [],
         unattendedDeny: [],
       },
     });
@@ -846,13 +822,7 @@ describe("AgenC background agent lifecycle", () => {
           activeSessionIds: ["session_1"],
           metadata: {
             ticket: "F-06a",
-            unattendedAllow: [
-              "FileRead",
-              "system.grep",
-              "system.glob",
-              "system.listDir",
-              "system.stat",
-            ],
+            unattendedAllow: [],
             unattendedDeny: [],
           },
         },
@@ -876,13 +846,7 @@ describe("AgenC background agent lifecycle", () => {
             ticket: "F-06a",
             objective: "build the parser",
             source: "agent.start",
-            unattendedAllow: [
-              "FileRead",
-              "system.grep",
-              "system.glob",
-              "system.listDir",
-              "system.stat",
-            ],
+            unattendedAllow: [],
             unattendedDeny: [],
           },
           activeAttachmentIds: ["attachment_1"],
@@ -1145,13 +1109,7 @@ describe("AgenC background agent lifecycle", () => {
       lastActiveAt: "2026-05-01T12:00:02.000Z",
       cwd: "/workspace",
       metadata: {
-        unattendedAllow: [
-          "FileRead",
-          "system.grep",
-          "system.glob",
-          "system.listDir",
-          "system.stat",
-        ],
+        unattendedAllow: [],
         unattendedDeny: [],
       },
     });
@@ -1369,13 +1327,7 @@ describe("AgenC background agent lifecycle", () => {
             lastActiveAt: "2026-05-01T12:00:01.000Z",
             cwd: "/workspace",
             metadata: {
-              unattendedAllow: [
-                "FileRead",
-                "system.grep",
-                "system.glob",
-                "system.listDir",
-                "system.stat",
-              ],
+              unattendedAllow: [],
               unattendedDeny: [],
             },
           },
@@ -1552,13 +1504,7 @@ describe("AgenC background agent lifecycle", () => {
           lastActiveAt: "2026-05-01T12:00:03.000Z",
           cwd: "/workspace",
           metadata: {
-            unattendedAllow: [
-              "FileRead",
-              "system.grep",
-              "system.glob",
-              "system.listDir",
-              "system.stat",
-            ],
+            unattendedAllow: [],
             unattendedDeny: [],
           },
         },
@@ -2366,13 +2312,7 @@ describe("AgenC background agent lifecycle", () => {
         lastActiveAt: "2026-05-01T12:00:00.500Z",
         cwd: "/repo",
         metadata: {
-          unattendedAllow: [
-            "FileRead",
-            "system.grep",
-            "system.glob",
-            "system.listDir",
-            "system.stat",
-          ],
+          unattendedAllow: [],
           unattendedDeny: [],
         },
       },
@@ -2399,13 +2339,7 @@ describe("AgenC background agent lifecycle", () => {
             lastActiveAt: "2026-05-01T12:00:00.500Z",
             cwd: "/repo",
             metadata: {
-              unattendedAllow: [
-                "FileRead",
-                "system.grep",
-                "system.glob",
-                "system.listDir",
-                "system.stat",
-              ],
+              unattendedAllow: [],
               unattendedDeny: [],
             },
           },

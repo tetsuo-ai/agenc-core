@@ -18,9 +18,10 @@ describe("unattended permission policy", () => {
     ]);
   });
 
-  test("uses the conservative default allowlist when no allowlist is provided", () => {
+  test("defaults to pausing every tool when no allowlist is provided", () => {
     const policy = createUnattendedPermissionPolicy();
-    expect(policy.allowlist).toEqual([...DEFAULT_UNATTENDED_ALLOWLIST]);
+    expect(DEFAULT_UNATTENDED_ALLOWLIST).toEqual([]);
+    expect(policy.allowlist).toEqual([]);
     expect(policy.denylist).toEqual([]);
   });
 
@@ -67,10 +68,12 @@ describe("unattended permission policy", () => {
     });
   });
 
-  test("missing context policy falls back to defaults", () => {
+  test("missing context policy falls back to pause-all defaults", () => {
     const context = createEmptyToolPermissionContext({ mode: "unattended" });
-    expect(unattendedPolicyForContext(context).allowlist).toEqual([
-      ...DEFAULT_UNATTENDED_ALLOWLIST,
-    ]);
+    expect(unattendedPolicyForContext(context).allowlist).toEqual([]);
+    expect(resolveUnattendedPermissionDecision(context, "FileRead")).toMatchObject({
+      behavior: "pause",
+      toolName: "FileRead",
+    });
   });
 });

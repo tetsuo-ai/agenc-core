@@ -448,13 +448,7 @@ describe("AgenC delegate background-agent runner", () => {
     expect(permissionUpdates[0]).toMatchObject({
       mode: "unattended",
       unattendedPolicy: {
-        allowlist: [
-          "FileRead",
-          "system.grep",
-          "system.glob",
-          "system.listDir",
-          "system.stat",
-        ],
+        allowlist: [],
         denylist: [],
       },
     });

@@ -41,9 +41,7 @@ function appendUnattendedPolicyGrants(
   grants: PermissionGrant[],
   context: ToolPermissionContext,
 ): void {
-  if (context.mode !== "unattended" && context.unattendedPolicy === undefined) {
-    return;
-  }
+  if (context.mode !== "unattended") return;
   const policy = unattendedPolicyForContext(context);
   for (const tool of policy.allowlist) {
     grants.push({

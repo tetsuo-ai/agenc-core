@@ -37,4 +37,25 @@ describe("permissionGrantsFromToolPermissionContext", () => {
       ]),
     );
   });
+
+  test("does not show inactive unattended grants outside unattended mode", () => {
+    const context = createEmptyToolPermissionContext({
+      mode: "default",
+      unattendedPolicy: {
+        allowlist: ["FileRead"],
+        denylist: ["Bash"],
+      },
+    });
+
+    expect(permissionGrantsFromToolPermissionContext(context)).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          permissionId: "unattended:allow:FileRead",
+        }),
+        expect.objectContaining({
+          permissionId: "unattended:deny:Bash",
+        }),
+      ]),
+    );
+  });
 });
