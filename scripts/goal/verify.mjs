@@ -463,6 +463,28 @@ const ITEM_EVIDENCE = {
   "ST-06": {
     files: [{ globUnder: "runtime/src/state/migrations", matching: /\d+_/, minCount: 1 }],
   },
+  "OC-04": {
+    files: [
+      "runtime/src/state/migrations/config-migrations.ts",
+      "runtime/src/state/migrations/PARITY.md",
+      "runtime/src/config/loader.ts",
+      "runtime/src/config/schema.ts",
+      "runtime/src/bin/bootstrap.ts",
+      "runtime/src/bin/agenc.ts",
+      "parity/openclaude-config-migrations-parity.json", // branding-scan: allow parity filename
+    ],
+    tests: [
+      "runtime/src/state/config-migrations.test.ts",
+      "runtime/src/config/config.test.ts",
+      "runtime/src/bin/project-trust-preflight.test.ts",
+    ],
+    grepPresent: [
+      { pattern: "runStartupConfigMigrations", scope: "runtime/src/bin" },
+      { pattern: "migrateRawAgenCConfig", scope: "runtime/src/config/loader.ts" },
+      { pattern: "configMigrationVersion", scope: "runtime/src/state/migrations/config-migrations.ts" },
+      { pattern: "remoteControlAtStartup", scope: "runtime/src/config/schema.ts" },
+    ],
+  },
   "ST-07": {
     grepPresent: [{ pattern: "retention|prun", scope: "runtime/src/state" }],
   },
@@ -2250,6 +2272,22 @@ async function donorRuntimePortGates(item) {
 }
 
 async function serviceGates(item) {
+  if (id === "OC-04") {
+    const required = [
+      "runtime/src/state/migrations/config-migrations.ts",
+      "runtime/src/state/migrations/PARITY.md",
+      "runtime/src/state/config-migrations.test.ts",
+      "runtime/src/config/config.test.ts",
+      "runtime/src/bin/project-trust-preflight.test.ts",
+      "parity/openclaude-config-migrations-parity.json", // branding-scan: allow parity filename
+    ];
+    for (const rel of required) {
+      if (!existsSync(path.join(root, rel))) failGate(`OC-04 file missing: ${rel}`);
+    }
+    pass("OC-04 config migration subsystem present");
+    return;
+  }
+
   if (id === "S-10") {
     const dir = path.join(root, "runtime/src/tools");
     if (!existsSync(dir)) failGate("S-10: runtime/src/tools/ missing");

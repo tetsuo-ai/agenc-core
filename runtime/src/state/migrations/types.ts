@@ -6,9 +6,9 @@
  *   - ST-06 splits the previous flat migration list into versioned files while
  *     preserving the migration contract consumed by the SQLite driver.
  *
- * Cross-cuts deliberately NOT carried:
- *   - Donor user-config/model migrations are unrelated to AgenC state DB
- *     schema migration and are not ported.
+ * Related non-SQL config/settings migrations live in
+ * `config-migrations.ts`; they are kept out of the SQLite registry so config
+ * loading does not pull in database dependencies.
  */
 
 import type { SqliteDatabase } from "../sqlite-driver.js";
