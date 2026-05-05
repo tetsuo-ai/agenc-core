@@ -834,6 +834,64 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  test("dispatchModelToolCall preserves BigInt args after pre-hook rewrites", async () => {
+    let observedArgs: Record<string, unknown> | undefined;
+    const execute = vi.fn(async (args: Record<string, unknown>) => {
+      observedArgs = args;
+      return { content: "ok" };
+    });
+    const router = new ToolRouter([
+      {
+        tool: {
+          name: "BigIntEcho",
+          description: "",
+          inputSchema: {},
+          isReadOnly: true,
+          execute,
+        },
+        supportsParallelToolCalls: true,
+      },
+    ]);
+
+    const result = await router.dispatchModelToolCall(
+      {
+        id: "call-model-bigint-rewrite",
+        name: "BigIntEcho",
+        arguments: '{"lamports":900719925474099312345,"path":"original"}',
+      },
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: {
+          subId: "turn-model-bigint-rewrite",
+          cwd: "/repo",
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "read_only" },
+        } as never,
+        tracker: {
+          appendFileDiff: () => {},
+          snapshot: () => [],
+          clear: () => {},
+        },
+        approvalPolicy: "never",
+        sandboxMode: "read_only",
+        preHooks: [
+          ({ args }) => ({
+            kind: "continue" as const,
+            args: { ...args, path: "rewritten" },
+          }),
+        ],
+      },
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(observedArgs).toMatchObject({ path: "rewritten" });
+    expect(observedArgs?.["lamports"]).toBe(900719925474099312345n);
+  });
+
   test("dispatchModelToolCall audits terminal pre-hook denials once", async () => {
     const router = new ToolRouter([
       {

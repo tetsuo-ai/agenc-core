@@ -813,7 +813,9 @@ export class ToolRouter {
       payload: executionPayload,
     };
     const executionRawArgs =
-      executionArgs === parsedArgs ? rawArgs : JSON.stringify(executionArgs);
+      executionArgs === parsedArgs
+        ? rawArgs
+        : stringifyToolArgsWithBigInt(executionArgs);
     const approvalArgs = withPlanApprovalPreview(
       toolCall.name,
       executionArgs,
