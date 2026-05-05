@@ -142,6 +142,9 @@ export function isCodeModeNestedTool(toolName: string): boolean {
 
 export function codeModeToolDefinitionsFromTools(
   tools: readonly Tool[],
+  opts: {
+    readonly stringArgumentFields?: Readonly<Record<string, string>>;
+  } = {},
 ): CodeModeToolDefinition[] {
   return tools
     .filter((tool) => isCodeModeNestedTool(tool.name))
@@ -149,7 +152,10 @@ export function codeModeToolDefinitionsFromTools(
       name: tool.name,
       globalName: normalizeCodeModeIdentifier(tool.name),
       description: tool.description,
-      kind: "function",
+      kind:
+        opts.stringArgumentFields?.[tool.name] !== undefined
+          ? "freeform"
+          : "function",
       inputSchema: tool.inputSchema,
     }));
 }
@@ -164,7 +170,11 @@ export function buildExecToolDescription(
         tool.globalName === tool.name
           ? `### \`${tool.globalName}\``
           : `### \`${tool.globalName}\` (\`${tool.name}\`)`;
-      const declaration = `declare const tools: { ${tool.globalName}(args: unknown): Promise<unknown>; };`;
+      const inputType =
+        tool.kind === "freeform"
+          ? "string | Record<string, unknown>"
+          : "Record<string, unknown>";
+      const declaration = `declare const tools: { ${tool.globalName}(args: ${inputType}): Promise<unknown>; };`;
       return `${heading}\n${tool.description}\n\nexec tool declaration:\n\`\`\`ts\n${declaration}\n\`\`\``;
     })
     .join("\n\n");

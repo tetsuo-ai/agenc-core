@@ -55,12 +55,7 @@ import type {
   LLMUsage,
 } from "../llm/types.js";
 import { safeStringify } from "../tools/types.js";
-import {
-  CODE_MODE_EXEC_TOOL_NAME,
-  CODE_MODE_WAIT_TOOL_NAME,
-  type CodeModeNestedToolCall,
-} from "../tools/code-mode/types.js";
-import { isCodeModeSafeTool } from "../tools/router.js";
+import { startCodeModeTurnWorker } from "../tools/code-mode/turn-host.js";
 import { commit } from "../phases/commit.js";
 import { continuationNudge } from "../phases/continuation-nudge.js";
 import type { PhaseEvent } from "../phases/events.js";
@@ -1706,83 +1701,7 @@ export async function* runTurnKernel(
     autoStart: false,
     startedAtMs: turnStartedAt,
   });
-  const codeModeService = (
-    session.services as {
-      readonly codeModeService?: Session["services"]["codeModeService"];
-    }
-  ).codeModeService;
-  const codeModeTurnWorker =
-    codeModeService !== undefined
-      ? codeModeService.startTurnWorker({
-          invokeTool: async (call: CodeModeNestedToolCall) => {
-            if (
-              call.toolName === CODE_MODE_EXEC_TOOL_NAME ||
-              call.toolName === CODE_MODE_WAIT_TOOL_NAME
-            ) {
-              throw new Error(`${CODE_MODE_EXEC_TOOL_NAME} cannot invoke itself`);
-            }
-            if (!isCodeModeSafeTool({ name: call.toolName })) {
-              throw new Error(
-                "direct tool calls are disabled in code_mode; use js_repl helpers instead",
-              );
-            }
-            if (
-              call.input !== undefined &&
-              (typeof call.input !== "object" ||
-                call.input === null ||
-                Array.isArray(call.input))
-            ) {
-              throw new Error(
-                `tool \`${call.toolName}\` expects a JSON object for arguments`,
-              );
-            }
-            const result = await session.services.registry.dispatch({
-              id: `exec-${call.runtimeToolCallId}`,
-              name: call.toolName,
-              arguments: safeStringify(call.input ?? {}),
-            });
-            if (result.isError === true) {
-              throw new Error(result.content);
-            }
-            if (result.codeModeResult !== undefined) {
-              return result.codeModeResult;
-            }
-            try {
-              return JSON.parse(result.content) as unknown;
-            } catch {
-              return result.content;
-            }
-          },
-          notify: ({ callId, text }) => {
-            session.emit({
-              id: session.nextInternalSubId(),
-              msg: {
-                type: "tool_progress",
-                payload: {
-                  callId,
-                  toolName: CODE_MODE_EXEC_TOOL_NAME,
-                  chunk: text,
-                  stream: "status",
-                },
-              },
-            });
-          },
-        })
-      : (() => {
-          session.emit({
-            id: session.nextInternalSubId(),
-            msg: {
-              type: "warning",
-              payload: {
-                cause: "code_mode_service_missing",
-                message:
-                  "CodeMode service is missing from SessionServices; " +
-                  "code-mode tools are disabled for this turn.",
-              },
-            },
-          });
-          return { dispose: () => undefined };
-        })();
+  const codeModeTurnWorker = startCodeModeTurnWorker(session);
 
   try {
     return yield* runTurnKernelInner(

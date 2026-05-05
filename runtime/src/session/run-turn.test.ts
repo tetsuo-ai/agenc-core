@@ -381,6 +381,7 @@ function mkCodeModeNestedProbeService(
     readonly input?: unknown;
   },
   onError: (error: unknown) => void,
+  onResult: (result: unknown) => void = () => undefined,
 ): SessionServices["codeModeService"] {
   return {
     enabled: () => true,
@@ -412,6 +413,7 @@ function mkCodeModeNestedProbeService(
           },
           controller.signal,
         )
+        .then(onResult)
         .catch(onError);
       return {
         dispose: () => {
@@ -489,15 +491,24 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     expect(warning?.msg.type).toBe("warning");
   });
 
-  test("blocks approval-required code-mode nested tools before raw registry dispatch", async () => {
+  test("fails closed for approval-required code-mode nested tools", async () => {
     const ctx = mkCtx();
-    const dispatch = vi.fn(async () => ({ content: "executed", isError: false }));
+    const dispatchCodeModeNestedTool = vi.fn(
+      async (
+        call: Parameters<
+          NonNullable<ToolRegistry["dispatchCodeModeNestedTool"]>
+        >[0],
+      ) => ({
+        content: `code-mode nested tool \`${call.name}\` requires permission-aware dispatch`,
+        isError: true,
+      }),
+    );
     let nestedError: unknown;
     const { session } = mkSession({
       provider: mkProvider({ content: "hi" }),
       registry: {
         ...mkRegistry(),
-        dispatch,
+        dispatchCodeModeNestedTool,
       } as unknown as ToolRegistry,
       codeModeService: mkCodeModeNestedProbeService(
         {
@@ -515,10 +526,17 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       await Promise.resolve();
     }
 
-    expect(dispatch).not.toHaveBeenCalled();
     expect(nestedError).toBeInstanceOf(Error);
     expect(nestedError instanceof Error ? nestedError.message : "").toContain(
-      "direct tool calls are disabled in code_mode",
+      "requires permission-aware dispatch",
+    );
+    expect(dispatchCodeModeNestedTool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "exec-nested-approval-required",
+        name: "Write",
+        input: { path: "file.txt", content: "unsafe" },
+        abortSignal: expect.any(AbortSignal),
+      }),
     );
   });
 

@@ -1,0 +1,106 @@
+{
+  "contractName": "c-05-code-mode-finish",
+  "scope": "C-05 code-mode exec/wait runtime, tool definitions, response adaptation, and turn-host nested-tool dispatch",
+  "sourceRoot": "/home/tetsuo/git/codex",
+  "sourceRootBrandingScanOverride": "branding-scan: allow donor source path",
+  "targetRoot": "..",
+  "sourceCommit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
+  "sourceFiles": [
+    "codex-rs/core/src/tools/code_mode/mod.rs",
+    "codex-rs/core/src/tools/code_mode/execute_handler.rs",
+    "codex-rs/core/src/tools/code_mode/wait_handler.rs",
+    "codex-rs/core/src/tools/code_mode/response_adapter.rs",
+    "codex-rs/core/src/tools/code_mode/execute_handler_tests.rs",
+    "codex-rs/tools/src/code_mode.rs"
+  ],
+  "targetFiles": [
+    "runtime/src/tools/code-mode/description.ts",
+    "runtime/src/tools/code-mode/response-adapter.ts",
+    "runtime/src/tools/code-mode/service.ts",
+    "runtime/src/tools/code-mode/tools.ts",
+    "runtime/src/tools/code-mode/turn-host.ts",
+    "runtime/src/tools/code-mode/types.ts",
+    "runtime/src/session/run-turn.ts",
+    "runtime/src/tools/code-mode/PARITY.md"
+  ],
+  "testFiles": [
+    "runtime/src/tools/code-mode/description.test.ts",
+    "runtime/src/tools/code-mode/service.test.ts",
+    "runtime/src/tools/code-mode/tools.test.ts",
+    "runtime/src/tools/code-mode/turn-host.test.ts",
+    "runtime/src/session/run-turn.test.ts"
+  ],
+  "foldedSourceFiles": [
+    {
+      "source": "codex-rs/core/src/tools/code_mode/mod.rs",
+      "target": "runtime/src/tools/code-mode/service.ts + runtime/src/tools/code-mode/turn-host.ts",
+      "reason": "AgenC keeps the QuickJS runtime lifecycle separate from the turn-scoped nested-tool host."
+    },
+    {
+      "source": "codex-rs/core/src/tools/code_mode/execute_handler.rs",
+      "target": "runtime/src/tools/code-mode/tools.ts",
+      "reason": "AgenC tool handlers are plain Tool objects; exec argument parsing and service invocation live in the exec Tool implementation."
+    },
+    {
+      "source": "codex-rs/core/src/tools/code_mode/wait_handler.rs",
+      "target": "runtime/src/tools/code-mode/tools.ts",
+      "reason": "AgenC wait argument parsing and service invocation live in the wait Tool implementation."
+    },
+    {
+      "source": "codex-rs/core/src/tools/code_mode/execute_handler_tests.rs",
+      "target": "runtime/src/tools/code-mode/description.test.ts + runtime/src/tools/code-mode/tools.test.ts + runtime/src/tools/code-mode/turn-host.test.ts",
+      "reason": "AgenC splits pragma parsing, adapter lifecycle, and nested dispatch coverage across focused TypeScript tests."
+    },
+    {
+      "source": "codex-rs/tools/src/code_mode.rs",
+      "target": "runtime/src/tools/code-mode/description.ts + runtime/src/tools/code-mode/tools.ts",
+      "reason": "AgenC maps freeform ToolSpec construction to its Tool interface and registry raw-string argument handling."
+    }
+  ],
+  "rows": [
+    {
+      "id": "exec-wait-lifecycle",
+      "requiredBehaviors": [
+        "exec allocates a cell, parses an optional first-line pragma, starts isolated JavaScript execution, and returns yielded or terminal output",
+        "wait resumes, collects, or terminates yielded cells and reports missing cells as model-visible errors",
+        "stored values survive across exec cells in the same service"
+      ],
+      "tests": [
+        "runtime/src/tools/code-mode/service.test.ts",
+        "runtime/src/tools/code-mode/tools.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "nested-tool-turn-host",
+      "requiredBehaviors": [
+        "reject exec/wait self-invocation from nested code-mode tools",
+        "dispatch read-only enabled non-exec nested tools through the registry code-mode path",
+        "fail closed for side-effecting or approval-required nested tools when no permission-aware nested runtime hook is available",
+        "support JSON-object inputs and string inputs for string-argument nested tools",
+        "propagate nested-tool cancellation signals into tool execution arguments",
+        "return the code-mode result projection when present",
+        "emit non-blank code-mode notify output as turn progress events"
+      ],
+      "tests": [
+        "runtime/src/tools/code-mode/turn-host.test.ts",
+        "runtime/src/session/run-turn.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "tool-definition-and-response-shape",
+      "requiredBehaviors": [
+        "derive code-mode-safe JavaScript identifiers for enabled nested tools",
+        "build exec and wait descriptions with nested-tool metadata",
+        "render runtime responses with script status, elapsed time, output items, error text, and token-bounded text output"
+      ],
+      "tests": [
+        "runtime/src/tools/code-mode/description.test.ts",
+        "runtime/src/tools/code-mode/tools.test.ts",
+        "runtime/src/tools/code-mode/service.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}
