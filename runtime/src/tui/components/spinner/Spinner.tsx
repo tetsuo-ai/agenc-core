@@ -26,7 +26,7 @@ import { getDefaultCharacters } from './utils.js';
 import { SpinnerAnimationRow } from './SpinnerAnimationRow.js';
 import { useSettings } from '../../../agenc/upstream/hooks/useSettings.js';
 import { isInProcessTeammateTask } from '../../../agenc/upstream/tasks/InProcessTeammateTask/types.js';
-import { isBackgroundTask } from '../../../agenc/upstream/tasks/types.js';
+import { isBackgroundTask } from '../../../tasks/types.js';
 import { getAllInProcessTeammateTasks } from '../../../agenc/upstream/tasks/InProcessTeammateTask/InProcessTeammateTask.js';
 import { getEffortSuffix } from '../../../agenc/upstream/utils/effort.js';
 import { getMainLoopModel } from '../../../agenc/upstream/utils/model/model.js';

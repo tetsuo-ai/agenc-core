@@ -15,6 +15,57 @@ export {
   type RegisterBackgroundTaskInput,
 } from "./lifecycle.js";
 
+export {
+  createTaskStateBase,
+  generateTaskId,
+  isAgenCBackgroundTaskType,
+  isBackgroundTask,
+  isDroppedDonorTaskType,
+  isLocalShellTask,
+  isStoppableTaskStatus,
+  isTaskType,
+  type AgenCBackgroundTaskType,
+  type AgentProgressActivity,
+  type AgentProgress as TaskStateAgentProgress,
+  type BackgroundTaskState,
+  type BashTaskKind,
+  type DroppedDonorTaskType,
+  type InProcessTeammateTaskState,
+  type LifecycleOnlyTaskType,
+  type LocalAgentTaskState,
+  type LocalShellTaskState,
+  type RemoteAgentTaskState,
+  type RemoteReviewProgress,
+  type RemoteTaskType,
+  type StoppableTaskStatus,
+  type TaskHandle,
+  type TaskState,
+  type TaskStateBase,
+  type TaskStatus,
+  type TaskType,
+  type TeammateIdentity,
+  type UltraplanPhase,
+} from "./types.js";
+
+export {
+  getAllTasks,
+  getTaskByType,
+  TaskRegistryError,
+  type RegisteredTask,
+  type TaskKillContext,
+  type TaskStopDelegate,
+} from "./registry.js";
+
+export {
+  stopTask,
+  StopTaskError,
+  type StopTaskContext,
+  type StopTaskLookupState,
+  type StopTaskResult,
+} from "./stopTask.js";
+
+export { getPillLabel, pillNeedsCta } from "./pillLabel.js";
+
 import { BackgroundTaskLifecycle } from "./lifecycle.js";
 
 export const backgroundTaskLifecycle = new BackgroundTaskLifecycle();

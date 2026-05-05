@@ -557,6 +557,40 @@ const ITEM_EVIDENCE = {
       { pattern: "remoteControlAtStartup", scope: "runtime/src/config/schema.ts" },
     ],
   },
+  "OC-08": {
+    files: [
+      "runtime/src/tasks/types.ts",
+      "runtime/src/tasks/registry.ts",
+      "runtime/src/tasks/stopTask.ts",
+      "runtime/src/tasks/pillLabel.ts",
+      "runtime/src/tasks/PARITY.md",
+      "runtime/src/tasks/lifecycle.ts",
+      "runtime/src/tasks/index.ts",
+      "runtime/src/tools/tasks/background.ts",
+      "runtime/src/tui/state/AppStateStore.ts",
+      "runtime/src/tui/components/PromptInput/PromptInput.tsx",
+      "runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx",
+      "runtime/src/tui/components/spinner/Spinner.tsx",
+      "parity/openclaude-task-registry-parity.json", // branding-scan: allow parity filename
+    ],
+    tests: [
+      "runtime/src/tasks/types.test.ts",
+      "runtime/src/tasks/registry.test.ts",
+      "runtime/src/tasks/stopTask.test.ts",
+      "runtime/src/tasks/pillLabel.test.ts",
+      "runtime/src/tasks/lifecycle.test.ts",
+      "runtime/src/tools/tasks/task-tools.test.ts",
+    ],
+    grepPresent: [
+      { pattern: "TaskType", scope: "runtime/src/tasks/types.ts" },
+      { pattern: "isBackgroundTask", scope: "runtime/src/tasks/types.ts" },
+      { pattern: "getTaskByType", scope: "runtime/src/tasks/registry.ts" },
+      { pattern: "getAllTasks", scope: "runtime/src/tasks/registry.ts" },
+      { pattern: "StopTaskError", scope: "runtime/src/tasks/stopTask.ts" },
+      { pattern: "getPillLabel", scope: "runtime/src/tasks/pillLabel.ts" },
+      { pattern: "stopTask\\(", scope: "runtime/src/tools/tasks/background.ts" },
+    ],
+  },
   "ST-07": {
     grepPresent: [{ pattern: "retention|prun", scope: "runtime/src/state" }],
   },
@@ -2428,6 +2462,42 @@ async function serviceGates(item) {
       if (!existsSync(path.join(root, rel))) failGate(`OC-04 file missing: ${rel}`);
     }
     pass("OC-04 config migration subsystem present");
+    return;
+  }
+
+  if (id === "OC-08") {
+    const required = [
+      "runtime/src/tasks/types.ts",
+      "runtime/src/tasks/registry.ts",
+      "runtime/src/tasks/stopTask.ts",
+      "runtime/src/tasks/pillLabel.ts",
+      "runtime/src/tasks/PARITY.md",
+      "runtime/src/tasks/types.test.ts",
+      "runtime/src/tasks/registry.test.ts",
+      "runtime/src/tasks/stopTask.test.ts",
+      "runtime/src/tasks/pillLabel.test.ts",
+      "runtime/src/tools/tasks/task-tools.test.ts",
+      "parity/openclaude-task-registry-parity.json", // branding-scan: allow parity filename
+    ];
+    for (const rel of required) {
+      if (!existsSync(path.join(root, rel))) failGate(`OC-08 file missing: ${rel}`);
+    }
+    const taskDir = path.join(root, "runtime/src/tasks");
+    const upstreamImports = walkFiles(taskDir).filter((file) => {
+      if (!/\.(ts|tsx)$/.test(file)) return false;
+      const source = readFileSync(file, "utf8");
+      return /agenc\/upstream/.test(source);
+    });
+    if (upstreamImports.length > 0) {
+      failGate(
+        `OC-08 task subsystem must not import the upstream mirror:\n  ${
+          upstreamImports
+            .map((file) => `- ${path.relative(root, file)}`)
+            .join("\n  ")
+        }`,
+      );
+    }
+    pass("OC-08 typed task registry subsystem present");
     return;
   }
 

@@ -10,21 +10,18 @@
  * @module
  */
 
-import { randomBytes } from "node:crypto";
+import {
+  generateTaskId,
+  isTerminalTaskStatus,
+  type AgenCBackgroundTaskType,
+  type TaskStatus,
+} from "./types.js";
 
-export type BackgroundTaskType =
-  | "local_agent"
-  | "local_bash"
-  | "monitor"
-  | "remote_agent"
-  | "generic";
+export { isTerminalTaskStatus } from "./types.js";
 
-export type BackgroundTaskStatus =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed"
-  | "killed";
+export type BackgroundTaskType = AgenCBackgroundTaskType;
+
+export type BackgroundTaskStatus = TaskStatus;
 
 export type BackgroundTaskNotificationKind =
   | "started"
@@ -149,20 +146,8 @@ export class BackgroundTaskError extends Error {
   }
 }
 
-const TASK_ID_PREFIX: Record<BackgroundTaskType, string> = {
-  local_agent: "a",
-  local_bash: "b",
-  monitor: "m",
-  remote_agent: "r",
-  generic: "t",
-};
-
-export function isTerminalTaskStatus(status: BackgroundTaskStatus): boolean {
-  return status === "completed" || status === "failed" || status === "killed";
-}
-
 export function generateBackgroundTaskId(type: BackgroundTaskType): string {
-  return `${TASK_ID_PREFIX[type]}${randomBytes(4).toString("hex")}`;
+  return generateTaskId(type);
 }
 
 function toErrorMessage(error: unknown): string {
@@ -170,7 +155,7 @@ function toErrorMessage(error: unknown): string {
 }
 
 function defaultOutputUri(taskId: string): string {
-  return `agenc://task/${encodeURIComponent(taskId)}/output`;
+  return `urn:agenc:task:${encodeURIComponent(taskId)}:output`;
 }
 
 /**
