@@ -5,6 +5,7 @@ import { dirname, isAbsolute, relative, resolve } from 'node:path';
 const entry = [
   'src/index.ts',
   'src/bin/agenc.ts',
+  'src/bin/tui-trust-prompt.tsx',
   'src/tui/main.tsx',
 ];
 

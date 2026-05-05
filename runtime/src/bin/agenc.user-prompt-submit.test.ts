@@ -10,6 +10,7 @@ import {
   type PreparedTurnRuntimeInputs,
 } from "./agenc.js";
 import { defaultConfig } from "../config/index.js";
+import { trustProjectSync } from "../permissions/trust/project-trust.js";
 import type { PhaseEvent } from "../phases/events.js";
 
 function fakeSession(cwd: string) {
@@ -73,6 +74,14 @@ function restoreEnv(prevEnv: NodeJS.ProcessEnv): void {
     if (!(key in prevEnv)) delete process.env[key];
   }
   Object.assign(process.env, prevEnv);
+}
+
+function trustWorkspaceForTest(agencHome: string, workspace: string): void {
+  trustProjectSync({
+    agencHome,
+    projectRoot: workspace,
+    env: process.env,
+  });
 }
 
 async function installOneShotHookConfig(
@@ -420,6 +429,7 @@ process.stdin.on("end", () => {
     process.env.AGENC_CLI_ENTRY_DISABLE = "1";
 
     try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
       const code = await oneShotCLI("review @secret.txt");
       expect(code).toBe(0);
       expect(spies.runTurnSpy).toHaveBeenCalledTimes(1);
@@ -461,6 +471,7 @@ process.exit(2);
     process.env.AGENC_CLI_ENTRY_DISABLE = "1";
 
     try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
       const code = await oneShotCLI("blocked prompt");
       expect(code).toBe(1);
       expect(spies.runTurnSpy).not.toHaveBeenCalled();

@@ -16,8 +16,10 @@
 // plus scripts/goal/complete.mjs).
 
 import process from "node:process";
-import { existsSync } from "node:fs";
-import { findItem, checkDependencies, statusName, STATUS, setItemStatus, repoRoot } from "./checklist-utils.mjs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync } from "node:fs";
+import path from "node:path";
+import { findItem, checkDependencies, statusName, STATUS, setItemStatus, repoRoot, mainCheckoutRoot, worktreePath, worktreeBase, findGitWorktreeEntry } from "./checklist-utils.mjs";
 
 function usage() {
   process.stderr.write(
@@ -84,9 +86,82 @@ if (!existsSync(disciplinePath)) {
   process.exit(2);
 }
 
+// branding-scan: allow comment names the goal-runner CLI for context
+// Create a per-item worktree so multiple codex sessions can work in parallel
+// from the same main checkout. Each worktree gets its own working directory
+// and its own port/<id> branch. Shared state (PORT_CHECKLIST.md, .goal-completed,
+// lock file) lives in the main checkout and is reachable from any worktree
+// via mainCheckoutRoot().
+const wtPath = worktreePath(id);
+const branch = `port/${id}`;
+const mainRoot = mainCheckoutRoot();
+let createdWorktree = false;
+let createdBranch = false;
+
 if (!dryRun) {
-  await setItemStatus(id, STATUS.IN_PROGRESS);
-  process.stderr.write(`[prep] flipped ${id} to [~] in-progress\n`);
+  // Idempotency: if the worktree already exists for this item (resume after
+  // a crash or partial prior run), reuse it. Otherwise create fresh.
+  const wtList = spawnSync("git", ["-C", mainRoot, "worktree", "list", "--porcelain"], { encoding: "utf8" });
+  if (wtList.status !== 0) {
+    process.stderr.write(`[prep] FAILED to list git worktrees:\n${wtList.stderr || wtList.stdout}\n`);
+    process.exit(1);
+  }
+  const wtEntry = findGitWorktreeEntry(wtList.stdout, wtPath);
+
+  if (wtEntry) {
+    const expectedRef = `refs/heads/${branch}`;
+    if (wtEntry.branch !== expectedRef) {
+      process.stderr.write(
+        `[prep] existing worktree ${wtPath} is on ${wtEntry.branch ?? "(detached/no branch)"}, expected ${expectedRef}.\n`,
+      );
+      process.exit(1);
+    }
+    const wtStatus = spawnSync("git", ["-C", wtPath, "status", "--short"], { encoding: "utf8" });
+    if (wtStatus.status !== 0) {
+      process.stderr.write(`[prep] FAILED to inspect existing worktree ${wtPath}:\n${wtStatus.stderr || wtStatus.stdout}\n`);
+      process.exit(1);
+    }
+    if (wtStatus.stdout.trim()) {
+      process.stderr.write(`[prep] existing worktree ${wtPath} is dirty:\n${wtStatus.stdout}\n`);
+      process.exit(1);
+    }
+    process.stderr.write(`[prep] worktree already exists at ${wtPath} — reusing\n`);
+  } else {
+    // Check if branch already exists (e.g., from a prior aborted run)
+    const branchCheck = spawnSync("git", ["-C", mainRoot, "rev-parse", "--verify", "--quiet", branch], { encoding: "utf8" });
+    const branchExists = branchCheck.status === 0;
+
+    try { mkdirSync(worktreeBase(), { recursive: true }); } catch {}
+
+    const addArgs = branchExists
+      ? ["-C", mainRoot, "worktree", "add", wtPath, branch]
+      : ["-C", mainRoot, "worktree", "add", wtPath, "-b", branch, "main"];
+
+    const addRes = spawnSync("git", addArgs, { encoding: "utf8" });
+    if (addRes.status !== 0) {
+      process.stderr.write(`[prep] FAILED to create worktree at ${wtPath}:\n${addRes.stderr || addRes.stdout}\n`);
+      process.exit(1);
+    }
+    createdWorktree = true;
+    createdBranch = !branchExists;
+    process.stderr.write(`[prep] worktree created: ${wtPath} (branch ${branch})\n`);
+  }
+}
+
+if (!dryRun) {
+  try {
+    await setItemStatus(id, STATUS.IN_PROGRESS);
+    process.stderr.write(`[prep] flipped ${id} to [~] in-progress (in main checkout: ${mainRoot})\n`);
+  } catch (error) {
+    if (createdWorktree) {
+      spawnSync("git", ["-C", mainRoot, "worktree", "remove", "--force", wtPath], { encoding: "utf8" });
+    }
+    if (createdBranch) {
+      spawnSync("git", ["-C", mainRoot, "branch", "-D", branch], { encoding: "utf8" });
+    }
+    process.stderr.write(`[prep] FAILED to flip ${id} to [~] in-progress: ${error?.message || error}\n`);
+    process.exit(1);
+  }
 }
 
 const phaseLabel = item.phase ? `Phase ${item.phase}${item.phaseTitle ? ` — ${item.phaseTitle}` : ""}` : "";
@@ -94,6 +169,21 @@ const depsLabel = item.dependsOn.length > 0 ? item.dependsOn.join(", ") : "none"
 const doneLabel = item.doneCriteria ? item.doneCriteria : "(see item body)";
 
 process.stdout.write(`AgenC port-checklist work item ${id}.
+
+═══════════════════════════════════════════════════════════════════════
+WORKTREE (mandatory — do this BEFORE any other action):
+  cd ${wtPath}
+
+Branch ${branch} is already created and checked out at that path. ALL
+work for this item happens in that directory. Do NOT edit files in
+${mainRoot} — that is the main checkout, shared across parallel sessions.
+
+When you are done, run from inside the worktree:
+  node ${wtPath}/scripts/goal/complete.mjs ${id}
+
+complete.mjs handles: gates → reviewer → merge into main (in the main
+checkout) → branch delete → worktree cleanup → checklist flip.
+═══════════════════════════════════════════════════════════════════════
 
 Title: ${item.title}
 ${phaseLabel ? `Phase: ${phaseLabel}\n` : ""}Dependencies (already done): ${depsLabel}
@@ -122,10 +212,10 @@ Mandatory workflow:
 2. Use the named skills only. For absorb work (item IDs starting with L- or T-), use the agenc-absorb-upstream skill. For net-new ports from the donor checkouts at /home/tetsuo/git/openclaude or /home/tetsuo/git/codex, use the agenc-upstream-port skill. For TUI rebuild validation, the agenc-tui-validate skill is the gate. Read the donor as REFERENCE only — implement clean AgenC code. Do not mirror the donor file structure into AgenC-owned paths. ${'' /* branding-scan: allow goal prompt names donor checkouts */}
 2a. **DONOR INSPECTION REQUIREMENT**: if this item's row body contains a "Donor:" clause naming files in the donor checkouts ${'' /* branding-scan: allow rule-explainer names donor checkouts */}(/home/tetsuo/git/openclaude or /home/tetsuo/git/codex, incl. the "OC" / "CX" / "codex" shorthand prefixes), you MUST read every cited donor file end-to-end BEFORE writing any AgenC code. Cite the specific donor files in your commit message body (one line per donor file). Items that have a Donor: clause but skip this step ship shallow re-implementations that the reviewer rejects, costing money and wall time. The donor citation in the commit message is your contract that the inspection happened.
 3. Every line of code must use AgenC branding. The branding scan rejects upstream-donor identifier roots in AgenC-owned files except real provider/model IDs and env vars (allowed via the curated allow-list). Override any unavoidable real-identifier match with a same-line "// branding-scan: allow <reason>" comment.
-4. Work on a feature branch named exactly: port/${id}
-5. When you believe the item is done, you MUST run:
-     node scripts/goal/complete.mjs ${id}
-   This runs all gates (branding scan, no-shim/no-upstream gate, typecheck, agenc-tui-validate, item-specific checks), performs the local merge into main with --no-ff, creates the .goal-completed/${id}.json marker, and flips the checklist row to [x]. If it exits non-zero, the goal is not done. Fix the gate failures and re-run; do not bypass.
+4. Work in the dedicated worktree at ${wtPath} on the pre-created branch port/${id}. Do NOT create new branches; the worktree IS the branch. Do NOT cd back to ${mainRoot} for any reason — that's reserved for the merge step which complete.mjs handles automatically.
+5. When you believe the item is done, you MUST run from inside the worktree:
+     cd ${wtPath} && node scripts/goal/complete.mjs ${id}
+   This runs all gates (branding scan, no-shim/no-upstream gate, typecheck, agenc-tui-validate, item-specific checks), performs the local merge into main (in the main checkout, not this worktree), removes the worktree, deletes the branch, creates the .goal-completed/${id}.json marker (in the main checkout), and flips the checklist row to [x]. If it exits non-zero, the goal is not done. Fix the gate failures and re-run; do not bypass.
 6. Do NOT call update_goal complete unless scripts/goal/complete.mjs exited 0.
 7. Do NOT use --no-verify on any git command. Do NOT push to any remote. Do NOT touch any "origin/*" ref. Local merges only.
 8. Do NOT edit PORT_CHECKLIST.md by hand. Only complete.mjs flips the status row.

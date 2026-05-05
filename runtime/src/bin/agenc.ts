@@ -29,6 +29,7 @@ import { mkdirSync } from "node:fs";
 import { cwd as processCwd } from "node:process";
 import { VERSION } from "../index.js";
 import {
+  classifyCLI,
   extractFlagValues,
   routeCLI,
   stripRoutingFlags,
@@ -68,6 +69,7 @@ import { runSlashCommand } from "./slash.js";
 import type { SlashCommandAppStateBridge } from "../commands/types.js";
 import {
   ConfigStore,
+  resolveAgencHome,
   resolveWorkspace as resolveWorkspaceFromEnv,
   type AgenCConfig,
 } from "../config/index.js";
@@ -102,10 +104,12 @@ import {
 } from "../app-server/daemon-cli.js";
 import {
   createConnectedAgenCJsonLineDaemonTuiClient,
+  defaultEnsureDaemonReady,
   parseAgenCAgentCliArgs,
   resolveAgenCAgentAttachCwd,
   runAgenCAgentCli,
 } from "../app-server/agent-cli.js";
+import type { AgentSummary } from "../app-server/protocol/index.js";
 import {
   ensureAgenCDaemonAutostart,
   resolveAgenCDaemonAutostartEnabled,
@@ -125,6 +129,16 @@ import {
   executeUserPromptSubmitHooks,
   getUserPromptSubmitHookBlockingMessage,
 } from "../hooks/user-prompt-submit.js";
+import { resolveStartupSelection } from "./startup-selection.js";
+import {
+  isProjectTrustedSync,
+  resolveProjectTrustRootSync,
+  trustProject,
+} from "../permissions/trust/project-trust.js";
+import {
+  formatProjectTrustSources,
+  summarizeProjectTrustSources,
+} from "../permissions/trust/trust-sources.js";
 
 export {
   bootstrapLocalRuntimeSession,
@@ -1296,6 +1310,17 @@ export async function oneShotCLI(
         : await resolveUserMessage(initAbort.signal);
     throwIfAborted("resolveUserMessage");
 
+    if (
+      !(await requireProjectTrustForTui({
+        env: process.env,
+        argv: process.argv,
+        cwd: processCwd(),
+      }))
+    ) {
+      return 1;
+    }
+    throwIfAborted("requireProjectTrustForTui");
+
     // Step 3: shared local-runtime bootstrap contract. Both the
     // one-shot CLI and TUI entry adapters construct their Session
     // through this helper so the entry surface owns less runtime
@@ -1561,6 +1586,188 @@ async function loadBootTUI(): Promise<
   return mod.bootTUI;
 }
 
+async function loadProjectTrustPrompt(): Promise<
+  (opts: {
+    readonly workspaceRoot: string;
+    readonly riskSources?: readonly string[];
+    readonly stdin?: NodeJS.ReadStream;
+    readonly stdout?: NodeJS.WriteStream;
+    readonly stderr?: NodeJS.WriteStream;
+  }) => Promise<boolean>
+> {
+  const specifier = "./tui-trust-prompt.js";
+  const mod = (await import(specifier)) as {
+    readonly renderProjectTrustPrompt: (opts: {
+      readonly workspaceRoot: string;
+      readonly riskSources?: readonly string[];
+      readonly stdin?: NodeJS.ReadStream;
+      readonly stdout?: NodeJS.WriteStream;
+      readonly stderr?: NodeJS.WriteStream;
+    }) => Promise<boolean>;
+  };
+  return mod.renderProjectTrustPrompt;
+}
+
+async function markLegacySessionTrustAccepted(): Promise<void> {
+  const specifier = ["..", "agenc", "upstream", "bootstrap", "state.js"].join(
+    "/",
+  );
+  const mod = (await import(specifier)) as {
+    readonly setSessionTrustAccepted?: unknown;
+  };
+  if (typeof mod.setSessionTrustAccepted === "function") {
+    mod.setSessionTrustAccepted(true);
+  }
+}
+
+export interface ProjectTrustPreflightOptions {
+  readonly env?: NodeJS.ProcessEnv;
+  readonly argv?: readonly string[];
+  readonly cwd?: string;
+  readonly stdin?: NodeJS.ReadStream;
+  readonly stdout?: NodeJS.WriteStream;
+  readonly stderr?: NodeJS.WriteStream;
+  readonly useEnvWorkspace?: boolean;
+  readonly allowPrompt?: boolean;
+  readonly renderPrompt?: (opts: {
+    readonly workspaceRoot: string;
+    readonly riskSources?: readonly string[];
+    readonly stdin?: NodeJS.ReadStream;
+    readonly stdout?: NodeJS.WriteStream;
+    readonly stderr?: NodeJS.WriteStream;
+  }) => Promise<boolean>;
+  readonly markSessionTrusted?: () => Promise<void>;
+}
+
+export interface ProjectTrustPreflightResult {
+  readonly accepted: boolean;
+  readonly projectRoot: string;
+  readonly prompted: boolean;
+}
+
+export async function runProjectTrustPreflightForTui(
+  options: ProjectTrustPreflightOptions = {},
+): Promise<ProjectTrustPreflightResult> {
+  const env = options.env ?? process.env;
+  const stdin = options.stdin ?? process.stdin;
+  const stdout = options.stdout ?? process.stdout;
+  const stderr = options.stderr ?? process.stderr;
+  const agencHome = resolveAgencHome(env);
+  const configStore = new ConfigStore({ home: agencHome, env });
+  await configStore.reload();
+  const startup = resolveStartupSelection({
+    config: configStore.current(),
+    env,
+    argv: options.argv ?? process.argv,
+  });
+  const rawWorkspace =
+    options.useEnvWorkspace === false
+      ? options.cwd ?? process.cwd()
+      : resolveWorkspaceFromEnv(env) ?? options.cwd ?? process.cwd();
+  const projectRoot = resolveProjectTrustRootSync({
+    cwd: rawWorkspace,
+    projectRootMarkers: startup.config.project_root_markers,
+  });
+  if (
+    isProjectTrustedSync({
+      agencHome,
+      env,
+      projectRoot,
+      projectRootMarkers: startup.config.project_root_markers,
+    })
+  ) {
+    await (options.markSessionTrusted ?? markLegacySessionTrustAccepted)();
+    return { accepted: true, projectRoot, prompted: false };
+  }
+
+  const canPrompt =
+    options.allowPrompt !== false && Boolean(stdin.isTTY) && Boolean(stdout.isTTY);
+  if (!canPrompt) {
+    stderr.write(`agenc: project is not trusted: ${projectRoot}\n`);
+    return { accepted: false, projectRoot, prompted: false };
+  }
+
+  const riskSources = formatProjectTrustSources(
+    await summarizeProjectTrustSources({
+      cwd: projectRoot,
+      home: agencHome,
+      configStore,
+    }),
+  );
+  const renderProjectTrustPrompt =
+    options.renderPrompt ?? (await loadProjectTrustPrompt());
+  const accepted = await renderProjectTrustPrompt({
+    workspaceRoot: projectRoot,
+    riskSources,
+    stdin,
+    stdout,
+    stderr,
+  });
+  if (!accepted) {
+    return { accepted: false, projectRoot, prompted: true };
+  }
+  await trustProject({
+    agencHome,
+    env,
+    projectRoot,
+  });
+  await (options.markSessionTrusted ?? markLegacySessionTrustAccepted)();
+  return { accepted: true, projectRoot, prompted: true };
+}
+
+async function requireProjectTrustForTui(
+  options: ProjectTrustPreflightOptions = {},
+): Promise<boolean> {
+  return (await runProjectTrustPreflightForTui(options)).accepted;
+}
+
+function isInteractiveTuiRoutePlan(
+  plan: ReturnType<typeof classifyCLI>,
+): boolean {
+  return (
+    plan.kind === "bootTUI" ||
+    plan.kind === "resumeTUI" ||
+    plan.kind === "continueTUI"
+  );
+}
+
+export async function resolveAttachTargetTrustRoot(
+  client: Awaited<
+    ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
+  >,
+  agentId: string,
+): Promise<string> {
+  const matches: AgentSummary[] = [];
+  let cursor: string | undefined;
+  do {
+    const result = await client.request("agent.list", {
+      limit: 100,
+      ...(cursor !== undefined ? { cursor } : {}),
+    });
+    matches.push(...result.agents.filter((agent) => agent.agentId === agentId));
+    cursor = result.nextCursor;
+  } while (cursor !== undefined);
+
+  if (matches.length !== 1) {
+    throw new Error(`daemon agent not found for attach: ${agentId}`);
+  }
+  const cwd = matches[0]?.cwd?.trim();
+  if (cwd === undefined || cwd.length === 0) {
+    throw new Error(`daemon agent has no workspace metadata: ${agentId}`);
+  }
+  return cwd;
+}
+
+export function envForAttachBootstrap(
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+): NodeJS.ProcessEnv {
+  return {
+    ...env,
+    AGENC_WORKSPACE: cwd,
+  };
+}
+
 async function loadCreateDaemonTuiSession(): Promise<
   (opts: {
     baseSession: unknown;
@@ -1608,6 +1815,15 @@ type BootTUIEntryArgs = BootTUIArgs & { readonly resumeId?: string };
 
 /** Boot the TUI, preserving argv prompts and any pre-Ink typed draft text. */
 export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
+  if (
+    !(await requireProjectTrustForTui({
+      env: process.env,
+      argv: process.argv,
+      cwd: processCwd(),
+    }))
+  ) {
+    return 1;
+  }
   const consumeEarlyInputRaw = await startTuiEarlyInputCapture();
   let earlyInputConsumed = false;
   const consumeEarlyInput = (): string => {
@@ -1738,6 +1954,20 @@ export async function attachAgentTuiEntry(
       (await createConnectedAgenCJsonLineDaemonTuiClient({
         env,
       }));
+    const targetCwd = await resolveAttachTargetTrustRoot(
+      daemonClient,
+      args.agentId,
+    );
+    if (
+      !(await requireProjectTrustForTui({
+        env,
+        argv: process.argv,
+        cwd: targetCwd,
+        useEnvWorkspace: false,
+      }))
+    ) {
+      return 1;
+    }
     const attachment = await daemonClient.request("agent.attach", {
       agentId: args.agentId,
       clientId: args.clientId,
@@ -1748,7 +1978,8 @@ export async function attachAgentTuiEntry(
     }
     const runtimeSessionId =
       attachment.runtimeSessionId ?? attachment.agentId ?? sessionId;
-    const bootstrapCwd = resolveAgenCAgentAttachCwd(attachment, processCwd());
+    const bootstrapCwd = resolveAgenCAgentAttachCwd(attachment, targetCwd);
+    const bootstrapEnv = envForAttachBootstrap(env, bootstrapCwd);
     const { sessionSlot, delegateSessionHolder, toolRegistryOptions } =
       createSharedBootstrapTooling();
     const {
@@ -1764,7 +1995,7 @@ export async function attachAgentTuiEntry(
       shutdown,
       autonomousModeEnabled,
     } = await bootstrapLocalRuntimeSession({
-      env,
+      env: bootstrapEnv,
       argv: process.argv,
       cwd: bootstrapCwd,
       conversationId: runtimeSessionId,
@@ -1903,6 +2134,31 @@ export async function main(): Promise<number> {
   }
   const agentCommand = parseAgenCAgentCliArgs(argv);
   if (agentCommand !== null) {
+    if (agentCommand.kind === "attach") {
+      return runAgenCAgentCli(agentCommand, {
+        attachTui: (context) => attachAgentTuiEntry(context),
+      });
+    }
+    if (agentCommand.kind === "start") {
+      const agentStartCwd = processCwd();
+      return runAgenCAgentCli(agentCommand, {
+        cwd: agentStartCwd,
+        ensureDaemonReady: async () => {
+          if (
+            !(await requireProjectTrustForTui({
+              env: process.env,
+              argv: process.argv,
+              cwd: agentStartCwd,
+              useEnvWorkspace: false,
+            }))
+          ) {
+            throw new Error("project trust was not accepted");
+          }
+          await defaultEnsureDaemonReady(process.env)();
+        },
+        attachTui: (context) => attachAgentTuiEntry(context),
+      });
+    }
     return runAgenCAgentCli(agentCommand, {
       attachTui: (context) => attachAgentTuiEntry(context),
     });
@@ -1936,6 +2192,23 @@ export async function main(): Promise<number> {
     }
     process.stdout.write(`${startupShortCircuit.text}\n`);
     return 0;
+  }
+  const routePlan = classifyCLI({
+    argv: process.argv,
+    isTTY: Boolean(process.stdin.isTTY),
+    isStdoutTTY: Boolean(process.stdout.isTTY),
+  });
+  const routeNeedsToolTrust =
+    routePlan.kind === "oneShotCLI" || isInteractiveTuiRoutePlan(routePlan);
+  if (
+    routeNeedsToolTrust &&
+    !(await requireProjectTrustForTui({
+      env: process.env,
+      argv: process.argv,
+      cwd: processCwd(),
+    }))
+  ) {
+    return 1;
   }
   if (await resolveAgenCDaemonAutostartEnabled(process.env)) {
     try {

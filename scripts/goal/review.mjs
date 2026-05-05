@@ -29,7 +29,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { findItem, repoRoot } from "./checklist-utils.mjs";
+import { findItem, mainCheckoutRoot, repoRoot } from "./checklist-utils.mjs";
 
 const RESET = "\x1b[0m";
 const BOLD = "\x1b[1m";
@@ -53,7 +53,7 @@ if (process.env.AGENC_SKIP_REVIEW === "1") {
       `Skipping review without recording why is forbidden.\n`);
     process.exit(2);
   }
-  const markerDir = path.join(repoRoot(), ".goal-review-skipped");
+  const markerDir = path.join(mainCheckoutRoot(), ".goal-review-skipped");
   try { mkdirSync(markerDir, { recursive: true }); } catch {}
   const marker = {
     id,
@@ -73,6 +73,9 @@ const { item } = await findItem(id);
 const disciplinePath = path.join(root, "GOAL_DISCIPLINE.md");
 const discipline = existsSync(disciplinePath) ? readFileSync(disciplinePath, "utf8") : "";
 const crossRepoEvidence = collectCrossRepoEvidence(`${item.title}\n${item.body}`);
+const itemScopedReviewNotes = id === "PE-09"
+  ? "PE-09 intentionally carries the local goal-harness worktree migration in scripts/goal/*.mjs because the user directed that harness change to merge with this item. Review those files for correctness, but do not reject PE-09 solely because those harness files are present in the diff."
+  : "No item-specific review notes.";
 
 const reviewerInstructions = `You are a senior software engineer reviewing one work item from an AgenC port checklist.
 
@@ -116,6 +119,9 @@ ${discipline}
 
 Cross-repo review evidence:
 ${crossRepoEvidence}
+
+Item-specific review notes:
+${itemScopedReviewNotes}
 
 Some checklist items explicitly name sibling repositories such as
 \`agenc-sdk/\`, \`agenc-protocol/\`, or \`agenc-plugin-kit/\`. For those

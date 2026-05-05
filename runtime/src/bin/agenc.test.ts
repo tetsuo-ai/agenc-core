@@ -75,6 +75,7 @@ import type { Session } from "../session/session.js";
 import { getCurrentRuntimeSession } from "./_deps/current-session.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import { trustProjectSync } from "../permissions/trust/project-trust.js";
 
 function stubSession() {
   return {
@@ -115,6 +116,14 @@ function createMockSignalProcess(): {
     onHandlers,
     removeListener,
   };
+}
+
+function trustWorkspaceForTest(agencHome: string, workspace: string): void {
+  trustProjectSync({
+    agencHome,
+    projectRoot: workspace,
+    env: process.env,
+  });
 }
 
 describe("buildDelegateTool — system.agent.delegate", () => {
@@ -382,6 +391,26 @@ describe("sessionConfigurationFromAgenCConfig", () => {
       model: "grok-4-fast",
     });
     expect(sc.approvalPolicy.value).toBe("on_failure");
+  });
+
+  it("untrusted project trust overrides permissive approval config", () => {
+    const sc = sessionConfigurationFromAgenCConfig({
+      config: { ...defaultConfig(), approval_policy: "never" as const },
+      workspaceRoot: "/tmp/ws",
+      model: "grok-4-fast",
+      projectTrust: "untrusted",
+    });
+    expect(sc.approvalPolicy.value).toBe("untrusted");
+  });
+
+  it("trusted project trust preserves explicit approval config", () => {
+    const sc = sessionConfigurationFromAgenCConfig({
+      config: { ...defaultConfig(), approval_policy: "never" as const },
+      workspaceRoot: "/tmp/ws",
+      model: "grok-4-fast",
+      projectTrust: "trusted",
+    });
+    expect(sc.approvalPolicy.value).toBe("never");
   });
 
   it("propagates personality, reasoning_summary, and compact_prompt", () => {
@@ -1997,6 +2026,7 @@ describe("main() full-IIFE smoke", () => {
       .mockImplementation(() => true);
 
     try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
       const code = await oneShotCLI("/help\nextra");
       expect(code).toBe(1);
       expect(createProviderSpy).toHaveBeenCalledTimes(1);
@@ -2086,6 +2116,7 @@ describe("main() full-IIFE smoke", () => {
     }));
 
     try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
       const code = await bootTUIEntry({ initialPrompt: "queue this" });
       expect(code).toBe(0);
       expect(createProviderSpy).toHaveBeenCalledTimes(1);
@@ -2170,6 +2201,7 @@ describe("main() full-IIFE smoke", () => {
     }));
 
     try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
       const code = await bootTUIEntry({
         initialPrompt: "describe this",
         startupImages: ["http://127.0.0.1/cat.png"],
@@ -2257,6 +2289,7 @@ describe("main() full-IIFE smoke", () => {
     }));
 
     try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
       const code = await resumeTUIEntry({ resumeId: "resume-123" });
       expect(code).toBe(0);
       expect(createProviderSpy).toHaveBeenCalledTimes(1);
@@ -2321,6 +2354,7 @@ describe("main() full-IIFE smoke", () => {
       } as never);
 
     try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
       const code = await oneShotCLI("/notes.txt");
       expect(code).toBe(0);
       expect(createProviderSpy).toHaveBeenCalledTimes(1);
@@ -2393,6 +2427,7 @@ describe("main() full-IIFE smoke", () => {
     }));
 
     try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
       const pending = bootTUIEntry({});
       await new Promise((r) => setTimeout(r, 20));
       expect(capturedSession).not.toBeNull();
@@ -2441,6 +2476,7 @@ describe("main() full-IIFE smoke", () => {
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
     process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
     process.env.XAI_API_KEY = "test-key";
 
     const createProviderSpy = vi
@@ -2480,6 +2516,7 @@ describe("main() full-IIFE smoke", () => {
     }));
 
     try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
       const pending = bootTUIEntry({});
       await new Promise((r) => setTimeout(r, 20));
       expect(capturedSession).not.toBeNull();
@@ -2541,6 +2578,7 @@ describe("main() full-IIFE smoke", () => {
     process.env.AGENC_WORKSPACE = tmpCwd;
     process.env.XAI_API_KEY = "stub-key-for-test";
     process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    trustWorkspaceForTest(tmpHome, tmpCwd);
 
     // Stub createProvider via module-level mock.
     const providerMod = await import("../llm/provider.js");

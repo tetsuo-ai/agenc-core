@@ -311,6 +311,18 @@ export async function loadAllPermissionRulesFromDisk(
   return rules;
 }
 
+export function filterRulesForProjectTrust(
+  rules: readonly PermissionRule[],
+  projectTrust?: "trusted" | "untrusted",
+): PermissionRule[] {
+  if (projectTrust !== "untrusted") return [...rules];
+  return rules.filter(
+    (rule) =>
+      rule.ruleBehavior !== "allow" ||
+      (rule.source !== "projectSettings" && rule.source !== "localSettings"),
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Sync (replacement-on-change)
 // ─────────────────────────────────────────────────────────────────────
@@ -668,6 +680,7 @@ function getAutoModeDisableSetting(
 
 async function loadModeSettingsInputs(
   env?: DiskEnv,
+  opts?: { readonly ignoreProjectLocalDefaults?: boolean },
 ): Promise<{
   readonly policySettings: SettingsJson | null;
   readonly defaultMode?: string;
@@ -693,7 +706,11 @@ async function loadModeSettingsInputs(
     if (source === "policySettings") {
       policySettings = json;
     }
+    const defaultModeAllowed =
+      opts?.ignoreProjectLocalDefaults !== true ||
+      (source !== "projectSettings" && source !== "localSettings");
     if (
+      defaultModeAllowed &&
       typeof json.permissions?.defaultMode === "string" &&
       json.permissions.defaultMode.length > 0
     ) {
@@ -716,6 +733,7 @@ export interface InitializeToolPermissionContextOpts {
   readonly env?: DiskEnv;
   readonly permissionMode?: PermissionMode;
   readonly allowDangerouslySkipPermissions?: boolean;
+  readonly projectTrust?: "trusted" | "untrusted";
   /** Parsed `--allow-tool` values (plain rule strings). */
   readonly cliAllows?: readonly string[];
   /** Parsed `--deny-tool` values. */
@@ -740,10 +758,13 @@ export async function initializeToolPermissionContext(
   opts: InitializeToolPermissionContextOpts = {},
 ): Promise<InitializeToolPermissionContextResult> {
   const warnings: string[] = [];
+  const untrustedProject = opts.projectTrust === "untrusted";
   const { policySettings, defaultMode, autoModeDisabled } =
-    await loadModeSettingsInputs(opts.env);
+    await loadModeSettingsInputs(opts.env, {
+      ignoreProjectLocalDefaults: untrustedProject,
+    });
 
-  const { mode, notification } = initialPermissionModeFromCLI({
+  const { mode: resolvedMode, notification } = initialPermissionModeFromCLI({
     permissionModeCli: opts.permissionMode,
     dangerouslySkipPermissions: opts.allowDangerouslySkipPermissions,
     policySettings,
@@ -755,7 +776,17 @@ export async function initializeToolPermissionContext(
     warnings.push(notification);
   }
 
-  const effectiveMode: PermissionMode = mode;
+  let effectiveMode: PermissionMode = resolvedMode;
+  if (
+    untrustedProject &&
+    effectiveMode === "bypassPermissions" &&
+    opts.allowDangerouslySkipPermissions !== true
+  ) {
+    effectiveMode = "default";
+    warnings.push(
+      "Bypass permissions mode requires project trust; using default mode",
+    );
+  }
 
   const isBypassPermissionsModeAvailable =
     (effectiveMode === "bypassPermissions" ||
@@ -791,7 +822,10 @@ export async function initializeToolPermissionContext(
   ]);
 
   // Then pull disk rules.
-  const diskRules = await loadAllPermissionRulesFromDisk(opts.env);
+  const diskRules = filterRulesForProjectTrust(
+    await loadAllPermissionRulesFromDisk(opts.env),
+    opts.projectTrust,
+  );
   ctx = applyPermissionRulesToPermissionContext(ctx, diskRules);
 
   // Apply the config snapshot's permissions overlay after disk rules. The
