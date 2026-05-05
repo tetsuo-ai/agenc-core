@@ -253,6 +253,33 @@ prefix_rule(
     ).toThrow(ExampleDidMatchError);
   });
 
+  test("loads the carried example policy corpus end-to-end", () => {
+    const fixturePath = new URL("./examples/example.agencpolicy", import.meta.url);
+    const policy = parsePolicy(
+      "examples/example.agencpolicy",
+      fs.readFileSync(fixturePath, "utf8"),
+    );
+
+    expect(policy.check(tokens(["git", "reset", "--hard"]), allowAll)).toEqual({
+      decision: "forbidden",
+      matchedRules: [
+        {
+          type: "prefix_rule_match",
+          matchedPrefix: tokens(["git", "reset", "--hard"]),
+          decision: "forbidden",
+          resolvedProgram: null,
+          justification: "destructive operation",
+        },
+      ],
+    });
+    expect(policy.check(tokens(["cp", "-r", "src", "dest"]), allowAll).decision).toBe(
+      "prompt",
+    );
+    expect(policy.check(tokens(["which", "-a", "python3"]), promptAll).decision).toBe(
+      "allow",
+    );
+  });
+
   test("heuristics fallback is returned when no policy matches", () => {
     expect(Policy.empty().check(tokens(["python"]), promptAll)).toEqual({
       decision: "prompt",

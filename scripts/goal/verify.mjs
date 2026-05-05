@@ -535,7 +535,7 @@ const ITEM_EVIDENCE = {
       "runtime/src/sandbox/execpolicy/execpolicycheck.ts",
       "runtime/src/sandbox/execpolicy/main.ts",
       "runtime/src/sandbox/execpolicy/index.ts",
-      "runtime/src/sandbox/execpolicy/lib.ts",
+      "runtime/src/sandbox/execpolicy/examples/example.agencpolicy",
       "runtime/src/sandbox/execpolicy/PARITY.md",
       "parity/execpolicy-dsl-parity.json",
     ],
@@ -1464,6 +1464,8 @@ if (shimAdditions.length > 0) {
 // has fewer than 40 significant lines is functionally a shim regardless of name.
 const FORWARD_LINE_RE =
   /^\s*(import\s|export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[^}]*\}\s*from\b|export\s*\{[^}]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
+const FORWARD_STATEMENT_RE =
+  /^\s*(import\s|export\s*\*\s*from\b|export\s*type\s*\*\s*from\b|export\s*\{[\s\S]*\}\s*from\b|export\s*\{[\s\S]*\}\s*;?\s*$|export\s+default\s+\w+\s*;?\s*$|export\s*\*\s*as\s+\w+\s*from\b)/;
 const forwardingViolations = [];
 for (const rel of added) {
   if (!/^runtime\/src\//.test(rel)) continue;
@@ -1482,11 +1484,12 @@ for (const rel of added) {
   const significant = lines
     .map((l) => l.trim())
     .filter((l) => l && !l.startsWith("//") && !l.startsWith("*") && !l.startsWith("/*") && l !== "*/");
-  if (significant.length === 0 || significant.length >= 40) continue;
-  const forward = significant.filter((l) => FORWARD_LINE_RE.test(l)).length;
-  const ratio = forward / significant.length;
+  const logicalStatements = combineLogicalStatements(significant);
+  if (logicalStatements.length === 0 || logicalStatements.length >= 40) continue;
+  const forward = logicalStatements.filter((stmt) => FORWARD_LINE_RE.test(stmt) || FORWARD_STATEMENT_RE.test(stmt)).length;
+  const ratio = forward / logicalStatements.length;
   if (ratio > 0.8) {
-    forwardingViolations.push({ path: rel, ratio: ratio.toFixed(2), lines: significant.length, forward });
+    forwardingViolations.push({ path: rel, ratio: ratio.toFixed(2), lines: logicalStatements.length, forward });
   }
 }
 if (forwardingViolations.length > 0) {
@@ -1498,6 +1501,36 @@ if (forwardingViolations.length > 0) {
   );
 }
 pass("no new upstream/ files, no new shim-pattern additions, no forwarding-only modules");
+
+function combineLogicalStatements(significant) {
+  const statements = [];
+  let current = "";
+  let braceDepth = 0;
+  for (const line of significant) {
+    const startsMultilineForward = current.length > 0 || /^\s*(import|export)\s*\{/u.test(line);
+    if (!startsMultilineForward) {
+      statements.push(line);
+      continue;
+    }
+    current = current.length === 0 ? line : `${current}\n${line}`;
+    braceDepth += countChar(line, "{") - countChar(line, "}");
+    if (braceDepth <= 0 && /(?:;|\bfrom\s+["'][^"']+["'];?)\s*$/u.test(line)) {
+      statements.push(current);
+      current = "";
+      braceDepth = 0;
+    }
+  }
+  if (current.length > 0) statements.push(current);
+  return statements;
+}
+
+function countChar(value, needle) {
+  let count = 0;
+  for (const char of value) {
+    if (char === needle) count += 1;
+  }
+  return count;
+}
 
 // --- Gate 2.5: per-item named evidence ----------------------------------
 
@@ -2578,6 +2611,7 @@ async function donorRuntimePortGates(item) {
     const amendSource = readFileSync(path.join(dir, "amend.ts"), "utf8");
     const checkerSource = readFileSync(path.join(dir, "execpolicycheck.ts"), "utf8");
     const testsSource = readFileSync(path.join(dir, "execpolicy.test.ts"), "utf8");
+    const exampleSource = readFileSync(path.join(dir, "examples/example.agencpolicy"), "utf8");
     if (!/class PolicyParser/.test(parserSource) || !/prefix_rule/.test(parserSource) || !/host_executable/.test(parserSource)) {
       failGate("C-01d: parser must implement the execpolicy builtins");
     }
@@ -2593,8 +2627,11 @@ async function donorRuntimePortGates(item) {
     if (!/formatMatchesJson/.test(checkerSource) || !/loadPolicies/.test(checkerSource)) {
       failGate("C-01d: checker must load policies and render JSON");
     }
-    if (!/host executable resolution/.test(testsSource) || !/match and not_match examples/.test(testsSource)) {
-      failGate("C-01d: tests must cover host executable resolution and example validation");
+    if (!/host executable resolution/.test(testsSource) || !/match and not_match examples/.test(testsSource) || !/carried example policy corpus/.test(testsSource)) {
+      failGate("C-01d: tests must cover host executable resolution, example validation, and example corpus loading");
+    }
+    if (!/git", "reset", "--hard/.test(exampleSource) || !/decision = "forbidden"/.test(exampleSource)) {
+      failGate("C-01d: example policy corpus fixture missing expected command rules");
     }
     if (!existsSync(path.join(root, "parity/execpolicy-dsl-parity.json"))) {
       failGate("C-01d: parity/execpolicy-dsl-parity.json missing");

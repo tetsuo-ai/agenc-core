@@ -26,8 +26,9 @@ This directory owns AgenC's TypeScript port of the execpolicy command-pattern en
 - `amend.ts` appends deduplicated prefix and network rules with file locking.
 - `execpolicycheck.ts` loads one or more policies and renders checker JSON.
 - `main.ts` parses the checker command argv shape.
-- `index.ts` and `lib.ts` expose the AgenC-owned public surface with helper constructors.
+- `index.ts` exposes the AgenC-owned public surface with helper constructors; the source library root is folded here to avoid a forwarding-only module.
 - `execpolicy.test.ts` ports the donor test corpus into focused Vitest coverage.
+- `examples/example.agencpolicy` carries the donor example corpus with the AgenC policy filename.
 
 Shape difference:
 - AgenC uses a dedicated declarative parser for the policy builtins instead of embedding a general Starlark runtime. The accepted policy surface is the executable policy DSL in the source corpus: function calls, keyword arguments, strings, lists, comments, and trailing commas.

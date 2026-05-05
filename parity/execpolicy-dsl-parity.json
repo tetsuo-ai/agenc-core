@@ -26,8 +26,8 @@
     "runtime/src/sandbox/execpolicy/error.ts",
     "runtime/src/sandbox/execpolicy/executable-name.ts",
     "runtime/src/sandbox/execpolicy/execpolicycheck.ts",
+    "runtime/src/sandbox/execpolicy/examples/example.agencpolicy",
     "runtime/src/sandbox/execpolicy/index.ts",
-    "runtime/src/sandbox/execpolicy/lib.ts",
     "runtime/src/sandbox/execpolicy/main.ts",
     "runtime/src/sandbox/execpolicy/parser.ts",
     "runtime/src/sandbox/execpolicy/policy.ts",
@@ -79,7 +79,8 @@
       ],
       "target": [
         "runtime/src/sandbox/execpolicy/parser.ts",
-        "runtime/src/sandbox/execpolicy/error.ts"
+        "runtime/src/sandbox/execpolicy/error.ts",
+        "runtime/src/sandbox/execpolicy/examples/example.agencpolicy"
       ],
       "requiredBehaviors": [
         "parse prefix_rule, network_rule, and host_executable calls",
@@ -91,7 +92,8 @@
         "empty patterns are rejected",
         "empty string examples are rejected",
         "unknown policy builtins are rejected",
-        "negative examples fail when any rule matches them"
+        "negative examples fail when any rule matches them",
+        "the carried example corpus parses and evaluates representative commands"
       ],
       "tests": [
         "runtime/src/sandbox/execpolicy/execpolicy.test.ts"
