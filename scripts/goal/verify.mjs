@@ -524,10 +524,32 @@ const ITEM_EVIDENCE = {
     tests: [{ globUnder: "runtime/src/sandbox/policy", matching: /\.test\.tsx?$/ }],
   },
   "C-01d": {
-    grepPresent: [
-      { pattern: "sandbox\\.mode", scope: "runtime/src/sandbox" },
-      { pattern: "workspace-write|read-only|sandbox.*off", scope: "runtime/src/sandbox" },
+    files: [
+      "runtime/src/sandbox/execpolicy/decision.ts",
+      "runtime/src/sandbox/execpolicy/error.ts",
+      "runtime/src/sandbox/execpolicy/executable-name.ts",
+      "runtime/src/sandbox/execpolicy/rule.ts",
+      "runtime/src/sandbox/execpolicy/policy.ts",
+      "runtime/src/sandbox/execpolicy/parser.ts",
+      "runtime/src/sandbox/execpolicy/amend.ts",
+      "runtime/src/sandbox/execpolicy/execpolicycheck.ts",
+      "runtime/src/sandbox/execpolicy/main.ts",
+      "runtime/src/sandbox/execpolicy/index.ts",
+      "runtime/src/sandbox/execpolicy/lib.ts",
+      "runtime/src/sandbox/execpolicy/PARITY.md",
+      "parity/execpolicy-dsl-parity.json",
     ],
+    grepPresent: [
+      { pattern: "class PolicyParser", scope: "runtime/src/sandbox/execpolicy/parser.ts" },
+      { pattern: "prefix_rule", scope: "runtime/src/sandbox/execpolicy/parser.ts" },
+      { pattern: "network_rule", scope: "runtime/src/sandbox/execpolicy/parser.ts" },
+      { pattern: "host_executable", scope: "runtime/src/sandbox/execpolicy/parser.ts" },
+      { pattern: "matchesForCommandWithOptions", scope: "runtime/src/sandbox/execpolicy/policy.ts" },
+      { pattern: "normalizeNetworkRuleHost", scope: "runtime/src/sandbox/execpolicy/rule.ts" },
+      { pattern: "proper-lockfile", scope: "runtime/src/sandbox/execpolicy/amend.ts" },
+      { pattern: "formatMatchesJson", scope: "runtime/src/sandbox/execpolicy/execpolicycheck.ts" },
+    ],
+    tests: ["runtime/src/sandbox/execpolicy/execpolicy.test.ts"],
   },
   "C-01e": {
     grepPresent: [{ pattern: "sandbox.*bypass|bypass.*sandbox", scope: "runtime/src/sandbox" }],
@@ -2535,6 +2557,49 @@ async function donorRuntimePortGates(item) {
       failGate("C-01b: built package bin must execute the Linux launcher entrypoint");
     }
     pass("C-01b: Linux launcher subprocess, package bin, reentry, proxy routes, bwrap, seccomp, and tests present");
+    return;
+  }
+  if (id === "C-01d") {
+    const dir = path.join(root, "runtime/src/sandbox/execpolicy");
+    if (!existsSync(dir)) failGate("C-01d: runtime/src/sandbox/execpolicy/ missing");
+    const testRun = run("npm", [
+      "exec",
+      "--workspace=@tetsuo-ai/runtime",
+      "vitest",
+      "run",
+      "src/sandbox/execpolicy/execpolicy.test.ts",
+    ]);
+    if (testRun.status !== 0) {
+      failGate("C-01d execpolicy tests failed");
+    }
+    const parserSource = readFileSync(path.join(dir, "parser.ts"), "utf8");
+    const policySource = readFileSync(path.join(dir, "policy.ts"), "utf8");
+    const ruleSource = readFileSync(path.join(dir, "rule.ts"), "utf8");
+    const amendSource = readFileSync(path.join(dir, "amend.ts"), "utf8");
+    const checkerSource = readFileSync(path.join(dir, "execpolicycheck.ts"), "utf8");
+    const testsSource = readFileSync(path.join(dir, "execpolicy.test.ts"), "utf8");
+    if (!/class PolicyParser/.test(parserSource) || !/prefix_rule/.test(parserSource) || !/host_executable/.test(parserSource)) {
+      failGate("C-01d: parser must implement the execpolicy builtins");
+    }
+    if (!/matchesForCommandWithOptions/.test(policySource) || !/compiledNetworkDomains/.test(policySource)) {
+      failGate("C-01d: policy must evaluate commands and compile network domains");
+    }
+    if (!/normalizeNetworkRuleHost/.test(ruleSource) || !/parseNetworkRuleProtocol/.test(ruleSource)) {
+      failGate("C-01d: rule layer must normalize network hosts and protocols");
+    }
+    if (!/proper-lockfile/.test(amendSource) || !/blockingAppendNetworkRule/.test(amendSource)) {
+      failGate("C-01d: amendment helpers must lock and append prefix/network rules");
+    }
+    if (!/formatMatchesJson/.test(checkerSource) || !/loadPolicies/.test(checkerSource)) {
+      failGate("C-01d: checker must load policies and render JSON");
+    }
+    if (!/host executable resolution/.test(testsSource) || !/match and not_match examples/.test(testsSource)) {
+      failGate("C-01d: tests must cover host executable resolution and example validation");
+    }
+    if (!existsSync(path.join(root, "parity/execpolicy-dsl-parity.json"))) {
+      failGate("C-01d: parity/execpolicy-dsl-parity.json missing");
+    }
+    pass("C-01d: execpolicy parser, policy engine, amendment helpers, checker, tests, and parity present");
     return;
   }
   // C-01a..C-01e: sandboxing.
