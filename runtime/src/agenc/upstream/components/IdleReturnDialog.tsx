@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { Box, Text } from '../../../tui/ink.js';
 import { formatTokens } from '../utils/format.js';
-import { Select } from './CustomSelect/index.js';
+import { Select } from './CustomSelect/select.js';
 import { Dialog } from './design-system/Dialog.js';
 type IdleReturnAction = 'continue' | 'clear' | 'dismiss' | 'never';
 type Props = {

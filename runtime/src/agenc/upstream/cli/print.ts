@@ -322,7 +322,7 @@ import {
 import { asSessionId } from 'src/types/ids.js'
 import { jsonStringify } from '../utils/slowOperations.js'
 import { skillChangeDetector } from '../utils/skills/skillChangeDetector.js'
-import { getCommands, clearCommandsCache } from '../commands.js'
+import { getCommands, clearCommandsCache } from '../../../commands.js'
 import {
   isBareMode,
   isEnvTruthy,

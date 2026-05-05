@@ -18,7 +18,7 @@
  */
 
 import { getOriginalCwd } from '../../bootstrap/state.js'
-import type { Command } from '../../commands.js'
+import type { Command } from '../../../../commands.js'
 import { reinitializeLspServerManager } from '../../services/lsp/manager.js'
 import type { AppState } from '../../../../tui/state/AppState.js'
 import { setPluginCommandsState } from '../../state/pluginCommandsStore.js'

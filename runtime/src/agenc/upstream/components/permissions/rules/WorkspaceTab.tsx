@@ -3,7 +3,7 @@ import figures from 'figures';
 import * as React from 'react';
 import { useCallback, useEffect } from 'react';
 import { getOriginalCwd } from '../../../bootstrap/state.js';
-import type { CommandResultDisplay } from '../../../commands.js';
+import type { CommandResultDisplay } from '../../../../../commands.js';
 import { Select } from '../../../components/CustomSelect/select.js';
 import { Box, Text } from '../../../../../tui/ink.js';
 import type { ToolPermissionContext } from '../../../Tool.js';

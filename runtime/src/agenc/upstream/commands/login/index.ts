@@ -1,4 +1,4 @@
-import type { Command } from '../../commands.js'
+import type { Command } from '../../../../commands.js'
 import { hasAnthropicApiKeyAuth } from '../../utils/auth.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 

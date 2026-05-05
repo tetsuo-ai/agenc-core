@@ -1,4 +1,4 @@
-import type { Command } from '../../commands.js'
+import type { Command } from '../../../../commands.js'
 
 function isSupportedPlatform(): boolean {
   if (process.platform === 'darwin') {

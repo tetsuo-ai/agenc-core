@@ -17,7 +17,7 @@ import type {
   StoredThread,
   ThreadSource,
   ThreadStore,
-} from "../thread-store/index.js";
+} from "../thread-store/store.js";
 import type {
   JsonObject,
   JsonValue,

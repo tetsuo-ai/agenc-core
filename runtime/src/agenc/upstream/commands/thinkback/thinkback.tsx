@@ -4,7 +4,7 @@ import { readFile } from 'fs/promises';
 import { join } from 'path';
 import * as React from 'react';
 import { useCallback, useEffect, useState } from 'react';
-import type { CommandResultDisplay } from '../../commands.js';
+import type { CommandResultDisplay } from '../../../../commands.js';
 import { Select } from '../../components/CustomSelect/select.js';
 import { Dialog } from '../../components/design-system/Dialog.js';
 import { Spinner } from '../../../../tui/components/spinner/Spinner.js';

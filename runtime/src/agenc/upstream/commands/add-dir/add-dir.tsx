@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import figures from 'figures';
 import React, { useEffect } from 'react';
 import { getAdditionalDirectoriesForAgenCMd, setAdditionalDirectoriesForAgenCMd } from '../../bootstrap/state.js';
-import type { LocalJSXCommandContext } from '../../commands.js';
+import type { LocalJSXCommandContext } from '../../../../commands.js';
 import { MessageResponse } from '../../components/MessageResponse.js';
 import { AddWorkspaceDirectory } from '../../components/permissions/rules/AddWorkspaceDirectory.js';
 import { Box, Text } from '../../../../tui/ink.js';

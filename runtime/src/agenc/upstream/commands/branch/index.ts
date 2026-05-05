@@ -1,5 +1,5 @@
 import { feature } from 'bun:bundle'
-import type { Command } from '../../commands.js'
+import type { Command } from '../../../../commands.js'
 
 const branch = {
   type: 'local-jsx',

@@ -9,7 +9,8 @@ import { getExternalEditor } from '../../../utils/editor.js';
 import { toIDEDisplayName } from '../../../utils/ide.js';
 import type { ImageDimensions } from '../../../utils/imageResizer.js';
 import { editPromptInEditor } from '../../../utils/promptEditor.js';
-import { type OptionWithDescription, Select, SelectMulti } from '../../CustomSelect/index.js';
+import { SelectMulti } from '../../CustomSelect/SelectMulti.js';
+import { type OptionWithDescription, Select } from '../../CustomSelect/select.js';
 import { Divider } from '../../design-system/Divider.js';
 import { FilePathLink } from '../../FilePathLink.js';
 import { PermissionRequestTitle } from '../PermissionRequestTitle.js';
@@ -112,7 +113,6 @@ export function QuestionView(t0) {
     t5 = $[4];
   }
   const handleUpFromFooter = t5;
-
   useInput(
     (input, key, event) => {
       if (!isFooterFocused) {

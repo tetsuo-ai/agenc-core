@@ -4,7 +4,7 @@ import { marked, type Tokens } from 'marked';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import React, { useRef } from 'react';
-import type { CommandResultDisplay } from '../../commands.js';
+import type { CommandResultDisplay } from '../../../../commands.js';
 import type { OptionWithDescription } from '../../components/CustomSelect/select.js';
 import { Select } from '../../components/CustomSelect/select.js';
 import { Byline } from '../../components/design-system/Byline.js';

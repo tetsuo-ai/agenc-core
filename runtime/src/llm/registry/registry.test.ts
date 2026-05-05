@@ -7,17 +7,21 @@ import { StaticModelsManager } from "../models-manager.js";
 import {
   AGENC_FEATURE_SPECS,
   AgenCFeatureSet,
-  BUILT_IN_PROVIDER_SCOPE_OMISSIONS,
   createManagedFeatures,
   experimentalFeatureSpecs,
   featureForKey,
-  listBuiltInProviderInfo,
+} from "./features.js";
+import {
   listRegisteredModelCatalogEntries,
-  resolveBuiltInProviderInfo,
   resolveModelCapabilityHints,
   resolveModelCatalogMetadata,
   resolveRegisteredModelCatalogEntry,
-} from "./index.js";
+} from "./model-catalog.js";
+import {
+  BUILT_IN_PROVIDER_SCOPE_OMISSIONS,
+  listBuiltInProviderInfo,
+  resolveBuiltInProviderInfo,
+} from "./provider-info.js";
 
 const DONOR_MODEL_IDS = Object.freeze([
   "gpt-5.5",

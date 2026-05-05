@@ -3810,9 +3810,172 @@ async function ideExtensionGates(item) {
   pass(`IDE-*: IDE protocol surface referenced (${id})`);
 }
 
-function grepRepo(pattern, scope = "runtime/src") {
-  const r = run("rg", ["--no-messages", "-l", pattern, scope], { silent: true });
+function grepRepo(pattern, scope = "runtime/src", options = {}) {
+  const args = ["--no-messages", "-l", pattern];
+  for (const glob of options.globs ?? []) args.push("-g", glob);
+  for (const glob of options.excludeGlobs ?? []) args.push("-g", `!${glob}`);
+  args.push(scope);
+  const r = run("rg", args, { silent: true });
   return r.status === 0 && r.stdout.trim().length > 0;
+}
+
+function assertChangedRelativeImportsResolve() {
+  const missing = [];
+  const specifierPattern =
+    /(?:from\s+|import\s*\(\s*|require\s*\(\s*|^\s*import\s+)["'](\.{1,2}\/[^"']+)["']/gm;
+  const diff = git("diff", "--unified=0", "main", "--", "runtime/src");
+  if (diff.status !== 0) return;
+
+  let currentRel = "";
+  for (const line of diff.stdout.split("\n")) {
+    if (line.startsWith("+++ b/")) {
+      currentRel = line.slice("+++ b/".length);
+      continue;
+    }
+    if (!line.startsWith("+") || line.startsWith("+++")) continue;
+    if (!/^runtime\/src\/.*\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(currentRel)) {
+      continue;
+    }
+    const addedLine = line.slice(1);
+    for (const match of addedLine.matchAll(specifierPattern)) {
+      const specifier = match[1];
+      if (!specifier || specifier.includes("?")) continue;
+      const baseDir = path.dirname(path.join(root, currentRel));
+      if (!relativeImportTargetExists(path.resolve(baseDir, specifier))) {
+        missing.push(`${currentRel}: unresolved relative import ${specifier}`);
+      }
+    }
+  }
+
+  if (missing.length > 0) {
+    failGate(`ZC-06: changed relative import target(s) do not resolve:\n${missing.join("\n")}`);
+  }
+}
+
+function sourceModuleExtensions() {
+  return [
+    ".d.ts",
+    ".d.mts",
+    ".d.cts",
+    ".tsx",
+    ".ts",
+    ".mts",
+    ".cts",
+    ".jsx",
+    ".js",
+    ".mjs",
+    ".cjs",
+  ];
+}
+
+function stripSourceModuleExtension(filePath) {
+  for (const ext of sourceModuleExtensions()) {
+    if (filePath.endsWith(ext)) return filePath.slice(0, -ext.length);
+  }
+  return null;
+}
+
+function zc06DeletedModuleBases() {
+  const diff = git("diff", "--name-only", "--diff-filter=D", "main...HEAD", "--", "runtime/src");
+  if (diff.status !== 0) {
+    failGate("ZC-06: could not derive deleted module list from git diff");
+  }
+  const deletedBases = new Set();
+  for (const rel of diff.stdout.split("\n").map((line) => line.trim()).filter(Boolean)) {
+    const baseRel = stripSourceModuleExtension(rel);
+    if (!baseRel) continue;
+    deletedBases.add(path.join(root, baseRel));
+  }
+  if (deletedBases.size === 0) {
+    failGate("ZC-06: no deleted runtime source modules found in diff");
+  }
+  return deletedBases;
+}
+
+function assertNoZc06DeletedModuleSurvivors(deletedBases) {
+  const survivors = [];
+  for (const base of deletedBases) {
+    for (const ext of sourceModuleExtensions()) {
+      const candidate = `${base}${ext}`;
+      if (existsSync(candidate)) survivors.push(path.relative(root, candidate).replaceAll("\\", "/"));
+    }
+  }
+  if (survivors.length > 0) {
+    failGate(`ZC-06: same-base module file(s) still exist for deleted re-export modules:\n${survivors.join("\n")}`);
+  }
+}
+
+function assertNoZc06DeletedModuleImporters(deletedBases) {
+  const specifierPattern =
+    /(?:from\s+|import\s*\(\s*|require\s*\(\s*|^\s*import\s+)["'](\.{1,2}\/[^"']+)["']/gm;
+  const offenders = [];
+
+  for (const rel of listSourceFiles(path.join(root, "runtime/src"))) {
+    const abs = path.join(root, rel);
+    const source = readFileSync(abs, "utf8");
+    const baseDir = path.dirname(abs);
+    for (const match of source.matchAll(specifierPattern)) {
+      const specifier = match[1];
+      if (!specifier || specifier.includes("?")) continue;
+      const targetBase = importTargetBase(path.resolve(baseDir, specifier));
+      if (deletedBases.has(targetBase)) {
+        offenders.push(`${rel}: imports deleted ZC-06 module ${specifier}`);
+      }
+    }
+  }
+
+  if (offenders.length > 0) {
+    failGate(`ZC-06: importer(s) still point at deleted re-export modules:\n${offenders.join("\n")}`);
+  }
+}
+
+function listSourceFiles(dir) {
+  const out = [];
+  for (const entry of readdirSync(dir)) {
+    const abs = path.join(dir, entry);
+    const rel = path.relative(root, abs).replaceAll("\\", "/");
+    const stat = statSync(abs);
+    if (stat.isDirectory()) {
+      if (entry === "node_modules" || entry === "dist") continue;
+      out.push(...listSourceFiles(abs));
+    } else if (/\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(entry)) {
+      out.push(rel);
+    }
+  }
+  return out;
+}
+
+function importTargetBase(target) {
+  return stripSourceModuleExtension(target) ?? target;
+}
+
+function relativeImportTargetExists(target) {
+  const ext = path.extname(target);
+  const candidates = [];
+  if (ext) {
+    const withoutExt = target.slice(0, -ext.length);
+    candidates.push(target);
+    if (ext === ".js" || ext === ".jsx") {
+      candidates.push(`${withoutExt}.ts`, `${withoutExt}.tsx`, `${withoutExt}.d.ts`);
+    } else if (ext === ".mjs") {
+      candidates.push(`${withoutExt}.mts`);
+    } else if (ext === ".cjs") {
+      candidates.push(`${withoutExt}.cts`);
+    }
+  } else {
+    candidates.push(
+      target,
+      `${target}.ts`,
+      `${target}.tsx`,
+      `${target}.d.ts`,
+      `${target}.js`,
+      path.join(target, "index.ts"),
+      path.join(target, "index.tsx"),
+      path.join(target, "index.d.ts"),
+      path.join(target, "index.js"),
+    );
+  }
+  return candidates.some((candidate) => existsSync(candidate));
 }
 
 // ---- per-item evidence helpers -----------------------------------------
@@ -4112,6 +4275,14 @@ async function cleanupGates(item) {
       "ZC-03": { gone: ["runtime/src/tui/openclaude"] }, // branding-scan: allow donor-named dir that ZC-03 deletes
       "ZC-04": { gone: ["runtime/src/agenc/adapters"] },
       "ZC-05": { grepNotPresent: { pattern: "from .*agenc/upstream/", scope: "runtime/src" } },
+      "ZC-06": {
+        grepNotPresent: {
+          pattern: "^export \\* from ",
+          scope: "runtime/src",
+          globs: ["*.ts", "*.tsx"],
+          excludeGlobs: ["*.test.ts", "*.test.tsx"],
+        },
+      },
       "ZC-10": { gone: ["runtime/src/agenc/upstream", "runtime/src/types/runtime-ambient.d.ts"] },
       "ZC-11": { gone: ["runtime/src/tools/code-mode/response-adapter.ts"] },
       "ZC-13": { gone: ["runtime/src/tui/bridges"] },
@@ -4134,9 +4305,18 @@ async function cleanupGates(item) {
       pass(`${id}: ${expectations.gone.length} target path(s) confirmed deleted`);
     }
     if (expectations.grepNotPresent) {
-      const { pattern, scope } = expectations.grepNotPresent;
-      if (grepRepo(pattern, scope)) failGate(`${id}: pattern "${pattern}" still found in ${scope}; should return zero hits.`);
+      const { pattern, scope, globs, excludeGlobs } = expectations.grepNotPresent;
+      if (grepRepo(pattern, scope, { globs, excludeGlobs })) failGate(`${id}: pattern "${pattern}" still found in ${scope}; should return zero hits.`);
       pass(`${id}: no hits for "${pattern}" in ${scope}`);
+    }
+    if (id === "ZC-06") {
+      const deletedBases = zc06DeletedModuleBases();
+      assertNoZc06DeletedModuleSurvivors(deletedBases);
+      pass("ZC-06: deleted re-export modules have no same-base survivors");
+      assertNoZc06DeletedModuleImporters(deletedBases);
+      pass("ZC-06: no importers point at deleted re-export modules");
+      assertChangedRelativeImportsResolve();
+      pass("ZC-06: changed relative import targets resolve");
     }
   }
 }

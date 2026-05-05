@@ -66,10 +66,8 @@ import {
   UnifiedExecProcessManager,
   type UnifiedExecProcessManagerLike,
 } from "./unified-exec/index.js";
-import {
-  createCodeModeTools,
-  type CodeModeService,
-} from "./tools/code-mode/index.js";
+import { createCodeModeTools } from "./tools/code-mode/tools.js";
+import type { CodeModeService } from "./tools/code-mode/types.js";
 import { isCodeModeNestedToolName } from "./tools/code-mode/policy.js";
 import {
   APPLY_PATCH_TOOL_NAME,

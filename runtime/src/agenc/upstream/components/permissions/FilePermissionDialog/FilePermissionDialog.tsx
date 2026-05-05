@@ -8,7 +8,7 @@ import { getCwd } from '../../../utils/cwd.js';
 import { getFsImplementation, safeResolvePath } from '../../../utils/fsOperations.js';
 import { expandPath } from '../../../utils/path.js';
 import type { CompletionType } from '../../../utils/unaryLogging.js';
-import { Select } from '../../CustomSelect/index.js';
+import { Select } from '../../CustomSelect/select.js';
 import { ShowInIDEPrompt } from '../../ShowInIDEPrompt.js';
 import { usePermissionRequestLogging } from '../hooks.js';
 import { PermissionDialog } from '../PermissionDialog.js';

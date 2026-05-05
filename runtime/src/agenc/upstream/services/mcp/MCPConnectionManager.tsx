@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { createContext, type ReactNode, useContext, useMemo } from 'react';
-import type { Command } from '../../commands.js';
+import type { Command } from '../../../../commands.js';
 import type { Tool } from '../../Tool.js';
 import type { MCPServerConnection, ScopedMcpServerConfig, ServerResource } from './types.js';
 import { useManageMCPConnections } from './useManageMCPConnections.js';
