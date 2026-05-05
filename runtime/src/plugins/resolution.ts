@@ -217,22 +217,25 @@ export async function resolvePluginSource(
     if (options.cache === false || kind === "local") return await materializeFresh();
     return await withPluginCacheLock(cacheRoot, async () => {
       if (options.refreshCache !== true && await pathIsDirectory(cacheRoot)) {
-        const signature = await verifyResolvedPluginSignature(cacheRoot, signatureOptions);
-        emitTelemetry(options, {
-          kind,
-          source: safeSource,
-          host: telemetryHost(source),
-          outcome: "cache_hit",
-          durationMs: Date.now() - startedAt,
-        });
-        return {
-          kind,
-          requestedSource: safeSource,
-          pluginRoot: cacheRoot,
-          cacheRoot,
-          signature,
-          cleanup: async () => {},
-        };
+        if (await cachedPluginRootHasManifest(cacheRoot)) {
+          const signature = await verifyResolvedPluginSignature(cacheRoot, signatureOptions);
+          emitTelemetry(options, {
+            kind,
+            source: safeSource,
+            host: telemetryHost(source),
+            outcome: "cache_hit",
+            durationMs: Date.now() - startedAt,
+          });
+          return {
+            kind,
+            requestedSource: safeSource,
+            pluginRoot: cacheRoot,
+            cacheRoot,
+            signature,
+            cleanup: async () => {},
+          };
+        }
+        await rm(cacheRoot, { recursive: true, force: true });
       }
       return await materializeFresh();
     });
@@ -694,7 +697,16 @@ function comparePrereleaseVersions(a: readonly string[], b: readonly string[]): 
 }
 
 export function pluginDependencyIdentifier(plugin: LoadedPlugin): string {
-  return plugin.source || plugin.name;
+  return isDependencyIdentitySource(plugin.source) ? plugin.source : plugin.name;
+}
+
+function isDependencyIdentitySource(source: string): boolean {
+  const trimmed = source.trim();
+  if (trimmed.length === 0) return false;
+  if (trimmed === "user" || trimmed === "project" || trimmed === "local") return false;
+  if (isAbsolute(trimmed)) return false;
+  if (trimmed.startsWith(".") || trimmed.includes("/") || trimmed.includes("\\")) return false;
+  return true;
 }
 
 export function findPluginReverseDependents(
@@ -1144,6 +1156,14 @@ async function activatePluginCache(sourceRoot: string, cacheRoot: string): Promi
     return cacheRoot;
   } finally {
     await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function cachedPluginRootHasManifest(cacheRoot: string): Promise<boolean> {
+  try {
+    return (await loadPluginManifest(cacheRoot)) !== null;
+  } catch {
+    return false;
   }
 }
 

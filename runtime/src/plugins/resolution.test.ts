@@ -387,6 +387,41 @@ describe("plugin source resolution", () => {
     });
   });
 
+  test("rematerializes corrupt cache hits when signatures are optional", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const source = "git@github.com:tetsuo-ai/corrupt-cache.git";
+      const cacheRoot = pluginSourceCacheRoot(agencHome, source);
+      await mkdir(cacheRoot, { recursive: true });
+      await writeFile(join(cacheRoot, "stale.txt"), "not a plugin");
+      let runs = 0;
+      const events: PluginFetchTelemetry[] = [];
+      const runProcess: PluginProcessRunner = async (command, args) => {
+        if (command === "git") {
+          runs += 1;
+          await writePlugin(String(args.at(-1)), "corrupt-cache");
+          return { stdout: "", stderr: "" };
+        }
+        throw new Error(`unexpected process: ${command}`);
+      };
+
+      const resolved = await resolvePluginSource(source, {
+        agencHome,
+        workspaceRoot: root,
+        runProcess,
+        requireSignature: false,
+        onTelemetry: (event) => events.push(event),
+      });
+
+      expect(resolved.pluginRoot).toBe(cacheRoot);
+      expect(runs).toBe(1);
+      expect(events.at(-1)).toMatchObject({ kind: "git", outcome: "success" });
+      await expect(access(join(cacheRoot, ".agenc-plugin", "plugin.json"))).resolves.toBeUndefined();
+      await expect(access(join(cacheRoot, "stale.txt"))).rejects.toThrow();
+      await resolved.cleanup();
+    });
+  });
+
   test("verifies signed git resolutions while ignoring repository metadata", async () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");
@@ -909,6 +944,12 @@ describe("plugin source resolution", () => {
       dependency: "lib",
       reason: "ambiguous",
     }));
+    const localPathState = verifyPluginDependencyState([
+      loadedPlugin("app", "/tmp/agenc@workspace/plugins/app", true, ["lib"]),
+      loadedPlugin("lib", "/tmp/agenc@workspace/plugins/lib", true),
+    ]);
+    expect([...localPathState.demoted]).toEqual([]);
+    expect(localPathState.errors).toEqual([]);
     const versionSatisfiedState = verifyPluginDependencyState([
       loadedPlugin("app", "app@main", true, ["lib@^1.0.0"]),
       loadedPlugin("lib", "lib@main", true, [], "1.5.0"),
@@ -959,6 +1000,25 @@ describe("plugin source resolution", () => {
         source: "app@main",
         plugin: "app",
       }));
+    });
+  });
+
+  test("loader keeps local dependencies enabled when workspace paths contain at signs", async () => {
+    await withTempDir(async (root) => {
+      const workspaceRoot = join(root, "workspace@team");
+      const appRoot = join(workspaceRoot, ".agents", "plugins", "app");
+      const libRoot = join(workspaceRoot, ".agents", "plugins", "lib");
+      await writePlugin(appRoot, "app", ["lib"]);
+      await writePlugin(libRoot, "lib");
+
+      const result = await loadPlugins({
+        agencHome: join(root, "home"),
+        workspaceRoot,
+        config: {},
+      });
+
+      expect(result.enabled.map((plugin) => plugin.name).sort()).toEqual(["app", "lib"]);
+      expect(result.errors.filter((issue) => issue.type === "dependency")).toEqual([]);
     });
   });
 
