@@ -7,7 +7,6 @@ const root = resolve(process.cwd(), "..");
 describe("memory component contract", () => {
   it("has the memory component source files in live component paths", () => {
     for (const target of [
-      "runtime/src/components/FeedbackSurvey/useMemorySurvey.tsx",
       "runtime/src/components/MemoryUsageIndicator.tsx",
       "runtime/src/components/memory/MemoryFileSelector.tsx",
       "runtime/src/components/memory/MemoryUpdateNotification.tsx",

@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-
 import { buildInheritedEnvVars } from './spawnUtils.js'
 
 const ORIGINAL_ENV = { ...process.env }
@@ -31,3 +30,4 @@ test('buildInheritedEnvVars forwards PATH for source-built teammate tool lookups
   expect(envVars).toContain('PATH=')
   expect(envVars).toContain('/custom/bin\\:/usr/bin')
 })
+test('buildInheritedEnvVars forwards remote token dir overrides', () => { process.env.AGENC_REMOTE_TOKEN_DIR = '/remote/tokens'; expect(buildInheritedEnvVars()).toContain('AGENC_REMOTE_TOKEN_DIR=/remote/tokens') })

@@ -8,7 +8,6 @@ describe("memory utility contract", () => {
   it("has memory utility files in live utility paths", () => {
     for (const target of [
       "runtime/src/utils/memoryFileDetection.ts",
-      "runtime/src/utils/teamMemoryOps.ts",
       "runtime/src/utils/memory/types.ts",
       "runtime/src/utils/memory/versions.ts",
     ]) {

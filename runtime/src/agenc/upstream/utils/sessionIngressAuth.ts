@@ -95,7 +95,7 @@ function getTokenFromFileDescriptor(): string | null {
  *  2. File descriptor (legacy path) — AGENC_WEBSOCKET_AUTH_FILE_DESCRIPTOR,
  *     read once and cached.
  *  3. Well-known file — AGENC_SESSION_INGRESS_TOKEN_FILE env var path, or
- *     /home/claude/.agenc/remote/.session_ingress_token. Covers subprocesses
+ *     $HOME/.agenc/remote/.session_ingress_token. Covers subprocesses
  *     that can't inherit the FD.
  */
 export function getSessionIngressAuthToken(): string | null {
