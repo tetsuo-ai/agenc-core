@@ -3,7 +3,7 @@ import { describe, expect, test } from "vitest";
 import {
   pickToolResultDispatch,
   resultTextForTuiTool,
-} from "../agenc/adapters/upstream-tool-result-dispatch.js";
+} from "./tool-result-routing.js";
 
 describe("pickToolResultDispatch — TUI tool routing", () => {
   test("Bash tool with <bash-stdout> envelope routes to bash-output-view", () => {

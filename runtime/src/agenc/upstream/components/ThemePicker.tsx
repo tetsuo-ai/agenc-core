@@ -1,7 +1,7 @@
 import { feature } from 'bun:bundle';
 import type { StructuredPatchHunk } from 'diff';
 import * as React from 'react';
-import { useExitOnCtrlCDWithKeybindings } from '../hooks/useExitOnCtrlCDWithKeybindings.js'
+import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js'
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { Box, Text, usePreviewTheme, useTheme, useThemeSetting } from '../../../tui/ink.js';
 import { useRegisterKeybindingContext } from '../../../tui/keybindings/KeybindingContext.js';

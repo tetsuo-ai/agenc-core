@@ -9,7 +9,7 @@ import { type FsOperations, getFsImplementation } from './fsOperations.js'
 import { cleanupOldImageCaches } from './imageStore.js'
 import * as lockfile from './lockfile.js'
 import { logError } from './log.js'
-import { cleanupOldVersions } from './nativeInstaller/index.js'
+import { cleanupOldVersions } from './nativeInstaller/installer.js'
 import { cleanupOldPastes } from './pasteStore.js'
 import { getProjectsDir } from './sessionStorage.js'
 import { getSettingsWithAllErrors } from './settings/allErrors.js'
@@ -431,9 +431,9 @@ export async function cleanupOldDebugLogs(): Promise<CleanupResult> {
 const ONE_DAY_MS = 24 * 60 * 60 * 1000
 
 /**
- * Clean up old npm cache entries for Anthropic packages.
+ * Clean up old npm cache entries for legacy first-party packages.
  * This helps reduce disk usage since we publish many dev versions per day.
- * Only runs once per day for Ant users.
+ * Only runs once per day for native-install users.
  */
 export async function cleanupNpmCacheForAnthropicPackages(): Promise<void> {
   const markerPath = join(getAgenCConfigHomeDir(), '.npm-cache-cleanup')
@@ -466,7 +466,7 @@ export async function cleanupNpmCacheForAnthropicPackages(): Promise<void> {
     const cacache = await import('cacache')
     const cutoff = startTime - ONE_DAY_MS
 
-    // Stream index entries and collect all Anthropic package entries.
+    // Stream index entries and collect all legacy package entries.
     // Previous implementation used cacache.verify() which does a full
     // integrity check + GC of the ENTIRE cache — O(all content blobs).
     // On large caches this took 60+ seconds and blocked the event loop.
@@ -476,7 +476,7 @@ export async function cleanupNpmCacheForAnthropicPackages(): Promise<void> {
       key: string
       time: number
     }>) {
-      if (entry.key.includes('@anthropic-ai/claude-')) {
+      if (entry.key.includes('@anthropic-ai/claude-')) { // branding-scan: allow legacy package cache prefix
         anthropicEntries.push({ key: entry.key, time: entry.time })
       }
     }

@@ -49,7 +49,7 @@ import {
 } from "../tools/system/filesystem.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
-import { createSessionAppStateBridge } from "../agenc/adapters/app-state-bridge.js";
+import { createSessionAppStateBridge } from "../tui/session-app-state.js";
 
 interface CacheStatsTrackerForTest {
   recordRequest(

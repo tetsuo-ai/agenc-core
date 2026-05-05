@@ -3,7 +3,7 @@ import { logForDebugging } from '../../utils/debug.js'
 import { Stream } from 'stream'
 import type { FrameEvent } from './frame.js'
 import Ink, { type Options as InkOptions } from './ink.js'
-import instances from './instances.js'
+import { deleteInkInstance, getInkInstance, setInkInstance } from './instances.js'
 
 export type RenderOptions = {
   /**
@@ -100,7 +100,7 @@ export const renderSync = (
       instance.unmount()
     },
     waitUntilExit: instance.waitUntilExit,
-    cleanup: () => instances.delete(inkOptions.stdout),
+    cleanup: () => deleteInkInstance(inkOptions.stdout),
   }
 }
 
@@ -147,7 +147,7 @@ export async function createRoot({
 
   // Register in the instances map so that code that looks up the Ink
   // instance by stdout (e.g. external editor pause/resume) can find it.
-  instances.set(stdout, instance)
+  setInkInstance(stdout, instance)
 
   return {
     render: node => instance.render(node),
@@ -173,11 +173,11 @@ const getInstance = (
   stdout: NodeJS.WriteStream,
   createInstance: () => Ink,
 ): Ink => {
-  let instance = instances.get(stdout)
+  let instance = getInkInstance(stdout)
 
   if (!instance) {
     instance = createInstance()
-    instances.set(stdout, instance)
+    setInkInstance(stdout, instance)
   }
 
   return instance

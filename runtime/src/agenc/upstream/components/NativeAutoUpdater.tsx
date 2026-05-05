@@ -9,7 +9,7 @@ import { Box, Text } from '../../../tui/ink.js';
 import type { AutoUpdaterResult } from '../utils/autoUpdater.js';
 import { getMaxVersion, getMaxVersionMessage } from '../utils/autoUpdater.js';
 import { isAutoUpdaterDisabled } from '../utils/config.js';
-import { installLatest } from '../utils/nativeInstaller/index.js';
+import { installLatest } from '../utils/nativeInstaller/installer.js';
 import { gt } from '../utils/semver.js';
 import { getInitialSettings } from '../utils/settings/settings.js';
 
@@ -186,7 +186,7 @@ export function NativeAutoUpdater({
         </Text>}
       {maxVersionIssue && "external" === 'ant' && <Text color="warning">
           ⚠ Known issue: {maxVersionIssue} &middot; Run{' '}
-          <Text bold>claude rollback --safe</Text> to downgrade
+          <Text bold>agenc rollback --safe</Text> to downgrade
         </Text>}
     </Box>;
 }

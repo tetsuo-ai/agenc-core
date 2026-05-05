@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   STREAM_IDLE_ABORT_REASON,
   STREAM_IDLE_WARNING_REASON,
-  installApiStreamWatchdog,
-} from "./watchdog.js";
+  installStreamWatchdog,
+} from "../stream-watchdog.js";
 
 describe("llm api watchdog", () => {
   let nowMs = 0;
@@ -19,12 +19,12 @@ describe("llm api watchdog", () => {
     vi.restoreAllMocks();
   });
 
-  test("exposes the shared stream watchdog from the API namespace", () => {
+  test("uses the shared stream watchdog implementation", () => {
     const abortController = new AbortController();
     const warnings: Array<{ elapsedMs: number; reason: string }> = [];
     const fired: Array<{ elapsedMs: number; reason: string }> = [];
 
-    const handle = installApiStreamWatchdog({
+    const handle = installStreamWatchdog({
       abortController,
       timeoutMs: 100,
       onWarning: (info) => warnings.push(info),

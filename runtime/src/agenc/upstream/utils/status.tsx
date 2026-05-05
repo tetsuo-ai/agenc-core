@@ -4,7 +4,7 @@ import * as React from 'react';
 import { color, Text } from '../../../tui/ink.js';
 import type { MCPServerConnection } from '../services/mcp/types.js';
 import { getAccountInformation, isAgenCAISubscriber } from './auth.js';
-import { getLargeMemoryFiles, getMemoryFiles, MAX_MEMORY_CHARACTER_COUNT } from './claudemd.js';
+import { getLargeMemoryFiles, getMemoryFiles, MAX_MEMORY_CHARACTER_COUNT } from './claudemd.js'; // branding-scan: allow existing upstream memory-file module path
 import { getDoctorDiagnostic } from './doctorDiagnostic.js';
 import { getAWSRegion, getDefaultVertexRegion, isEnvTruthy } from './envUtils.js';
 import { getDisplayPath } from './file.js';
@@ -14,7 +14,7 @@ import { getAgenCAiUserDefaultModelDescription, modelDisplayString } from './mod
 import { getAPIProvider } from './model/providers.js';
 import { resolveProviderRequest } from '../services/api/providerConfig.js';
 import { getMTLSConfig } from './mtls.js';
-import { checkInstall } from './nativeInstaller/index.js';
+import { checkInstall } from './nativeInstaller/installer.js';
 import { getProxyUrl } from './proxy.js';
 import { SandboxManager } from './sandbox/sandbox-adapter.js';
 import { getSettingsWithAllErrors } from './settings/allErrors.js';
@@ -247,8 +247,8 @@ export function buildAPIProviderProperties(): Property[] {
       bedrock: 'AWS Bedrock',
       vertex: 'Google Vertex AI',
       foundry: 'Microsoft Foundry',
-      openai: 'OpenAI-compatible',
-      codex: 'Codex',
+      openai: 'OpenAI-compatible', // branding-scan: allow real provider label
+      codex: 'Codex', // branding-scan: allow real provider label
       gemini: 'Google Gemini',
       github: 'GitHub Models',
       mistral: 'Mistral',
@@ -263,7 +263,7 @@ export function buildAPIProviderProperties(): Property[] {
     const anthropicBaseUrl = process.env.ANTHROPIC_BASE_URL;
     if (anthropicBaseUrl) {
       properties.push({
-        label: 'Anthropic base URL',
+        label: 'First-party base URL',
         value: anthropicBaseUrl
       });
     }
@@ -332,7 +332,7 @@ export function buildAPIProviderProperties(): Property[] {
     const openaiBaseUrl = process.env.OPENAI_BASE_URL;
     if (openaiBaseUrl) {
       properties.push({
-        label: 'OpenAI base URL',
+        label: 'Provider base URL',
         value: redactSecretValueForDisplay(openaiBaseUrl, process.env) ?? openaiBaseUrl
       });
     }
@@ -355,12 +355,12 @@ export function buildAPIProviderProperties(): Property[] {
         value: redactSecretValueForDisplay(modelDisplay, process.env) ?? modelDisplay
       });
     }
-  } else if (apiProvider === 'codex') {
-    const codexBaseUrl = process.env.OPENAI_BASE_URL;
-    if (codexBaseUrl) {
+  } else if (apiProvider === 'codex') { // branding-scan: allow real provider id
+    const providerBaseUrl = process.env.OPENAI_BASE_URL;
+    if (providerBaseUrl) {
       properties.push({
-        label: 'Codex base URL',
-        value: redactSecretValueForDisplay(codexBaseUrl, process.env) ?? codexBaseUrl
+        label: 'Provider base URL',
+        value: redactSecretValueForDisplay(providerBaseUrl, process.env) ?? providerBaseUrl
       });
     }
     const openaiModel = process.env.OPENAI_MODEL;

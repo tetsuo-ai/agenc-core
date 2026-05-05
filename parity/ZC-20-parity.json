@@ -1,0 +1,49 @@
+{
+  "item": "ZC-20",
+  "runtimeShimSweep": {
+    "scope": "runtime/src, including the frozen upstream mirror",
+    "threshold": ">50% imports plus forwarding statements across fewer than 40 significant source lines",
+    "resolved": [
+      "runtime/src/agenc/upstream/commands/agents-platform/index.ts",
+      "runtime/src/agenc/upstream/commands/assistant/AssistantSessionChooser.ts",
+      "runtime/src/agenc/upstream/commands/assistant/assistant.ts",
+      "runtime/src/agenc/upstream/commands/dream/index.ts",
+      "runtime/src/agenc/upstream/components/mcp/index.ts",
+      "runtime/src/agenc/upstream/components/wizard/index.ts",
+      "runtime/src/agenc/upstream/entrypoints/sdk/toolTypes.ts",
+      "runtime/src/agenc/upstream/hooks/useExitOnCtrlCDWithKeybindings.ts",
+      "runtime/src/agenc/upstream/services/api/minimaxUsage.ts",
+      "runtime/src/agenc/upstream/services/agencAiLimitsHook.ts",
+      "runtime/src/agenc/upstream/services/api/openaiSchemaSanitizer.ts",
+      "runtime/src/agenc/upstream/utils/crypto.ts",
+      "runtime/src/agenc/upstream/utils/nativeInstaller/index.ts",
+      "runtime/src/agenc/upstream/utils/permissions/PermissionResult.ts",
+      "runtime/src/llm/api/watchdog.ts",
+      "runtime/src/phases/_deps/orchestrator-types.ts",
+      "runtime/src/tools/tasks/index.ts"
+    ],
+    "detectorRules": [
+      {
+        "rule": "Multi-line re-export statements count every significant forwarding line, not one logical statement."
+      },
+      {
+        "rule": "Import-heavy modules without forwarding LOC are not shim behavior."
+      },
+      {
+        "rule": "The ZC-20 custom gate scans tracked files under runtime/src rather than only newly added files."
+      },
+      {
+        "rule": "Named type re-exports and default-exported one-line forwarding functions count as forwarding LOC."
+      },
+      {
+        "rule": "Multi-line forwarding functions, imported type aliases, and imported value aliases count as forwarding LOC."
+      },
+      {
+        "rule": "Large comments do not exempt small forwarding modules, and import/export text inside comments is ignored."
+      },
+      {
+        "rule": "Bare named export lists count as forwarding only when every exported local binding originated from an import."
+      }
+    ]
+  }
+}

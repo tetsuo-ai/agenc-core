@@ -26,7 +26,7 @@ import { TEAM_LEAD_NAME } from 'src/utils/swarm/constants.js';
 import { stopUltraplan } from '../../commands/ultraplan.js';
 import type { CommandResultDisplay } from '../../../../commands.js';
 import { useRegisterOverlay } from '../../context/overlayContext.js';
-import type { ExitState } from '../../hooks/useExitOnCtrlCDWithKeybindings.js';
+import type { ExitState } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import type { KeyboardEvent } from '../../../../tui/ink/events/keyboard-event.js';
 import { Box, Text } from '../../../../tui/ink.js';
 import { useKeybindings } from '../../../../tui/keybindings/useKeybinding.js';
