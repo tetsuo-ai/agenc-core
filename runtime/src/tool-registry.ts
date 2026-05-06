@@ -507,6 +507,11 @@ export function buildToolRegistry(
         : {}),
     }),
   ] as const;
+  const shellToolSurface = {
+    execCommand: "exec_command",
+    writeStdin: "write_stdin",
+    "bash": "system.bash",
+  } as const;
   const firstClassFileTools = [
     createFileReadTool({
       allowedPaths: [options.workspaceRoot],
@@ -617,10 +622,13 @@ export function buildToolRegistry(
     {
       id: "shell",
       tools: shellTools,
-      visibleByDefault: ["exec_command", "write_stdin"],
+      visibleByDefault: [
+        shellToolSurface.execCommand,
+        shellToolSurface.writeStdin,
+      ],
       stringArgumentFields: {
-        exec_command: "cmd",
-        "system.bash": "command",
+        [shellToolSurface.execCommand]: "cmd",
+        [shellToolSurface.bash]: "command",
       },
     },
     {
