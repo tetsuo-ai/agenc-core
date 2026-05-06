@@ -2171,6 +2171,19 @@ export function initializeCliRuntime(): void {
   enableConfigs();
 }
 
+async function loadMcpCliConfig(): Promise<AgenCConfig | undefined> {
+  try {
+    const store = new ConfigStore({
+      home: resolveAgencHome(process.env),
+      env: process.env,
+      onWarn: (message) => process.stderr.write(`${message}\n`),
+    });
+    return await store.reload();
+  } catch {
+    return undefined;
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // main — Wave 5-B routing entrypoint
 // ─────────────────────────────────────────────────────────────────────
@@ -2222,7 +2235,8 @@ export async function main(): Promise<number> {
   if (authCommand !== null) {
     return runAgenCAuthCli(authCommand);
   }
-  const mcpCommand = parseAgenCMcpCliArgs(argv);
+  const mcpConfig = argv[0] === "mcp" ? await loadMcpCliConfig() : undefined;
+  const mcpCommand = parseAgenCMcpCliArgs(argv, mcpConfig);
   if (mcpCommand !== null) {
     return runAgenCMcpCli(mcpCommand);
   }

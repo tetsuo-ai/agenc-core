@@ -14,6 +14,8 @@ import {
   formatMcpSseServeUrl,
   formatAgenCMcpCliHelpText,
   parseAgenCMcpCliArgs,
+  parseMcpServeArgs,
+  resolveMcpServeDefaults,
   runAgenCMcpCli,
   startMcpSseServe,
   type AgenCMcpCliIo,
@@ -237,6 +239,56 @@ describe("AgenC MCP CLI", () => {
     ).toEqual({
       kind: "serve",
       transport: "sse",
+      host: "127.0.0.1",
+      port: 3334,
+    });
+  });
+
+  test("uses mcp.server config defaults for mcp serve", () => {
+    const config = {
+      mcp: {
+        server: {
+          enabled: true,
+          transport: "sse" as const,
+          host: "localhost",
+          port: 4444,
+        },
+      },
+    };
+
+    expect(resolveMcpServeDefaults(config.mcp.server)).toEqual({
+      enabled: true,
+      transport: "sse",
+      host: "localhost",
+      port: 4444,
+    });
+    expect(parseAgenCMcpCliArgs(["mcp", "serve"], config)).toEqual({
+      kind: "serve",
+      transport: "sse",
+      host: "localhost",
+      port: 4444,
+    });
+    expect(
+      parseMcpServeArgs(["--transport", "stdio"], config),
+    ).toEqual({
+      kind: "serve",
+      transport: "stdio",
+      host: "localhost",
+      port: 4444,
+    });
+  });
+
+  test("falls back to safe mcp.server defaults for malformed raw config values", () => {
+    expect(
+      resolveMcpServeDefaults({
+        enabled: true,
+        transport: "http" as never,
+        host: "   ",
+        port: -1,
+      }),
+    ).toEqual({
+      enabled: true,
+      transport: "stdio",
       host: "127.0.0.1",
       port: 3334,
     });

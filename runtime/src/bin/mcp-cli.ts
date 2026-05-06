@@ -8,6 +8,7 @@
 import type { Server } from "node:http";
 import type { Readable, Writable } from "node:stream";
 import { cwd as processCwd } from "node:process";
+import type { AgenCConfig, McpServerModeConfig } from "../config/schema.js";
 import { VERSION } from "../index.js";
 import { McpHttpSseServerTransport } from "../mcp-server/http-sse.js";
 import { McpServerFramework } from "../mcp-server/framework.js";
@@ -62,6 +63,7 @@ export function formatAgenCMcpCliHelpText(): string {
 
 export function parseAgenCMcpCliArgs(
   argv: readonly string[],
+  config?: AgenCConfig,
 ): AgenCMcpCliCommand | null {
   if (argv[0] !== "mcp") return null;
   const action = argv[1];
@@ -72,10 +74,18 @@ export function parseAgenCMcpCliArgs(
     return { kind: "error", message: `unknown mcp command: ${action}` };
   }
 
-  let transport: "stdio" | "sse" = "stdio";
-  let host = "127.0.0.1";
-  let port = 3334;
-  const rest = argv.slice(2);
+  return parseMcpServeArgs(argv.slice(2), config);
+}
+
+export function parseMcpServeArgs(
+  argv: readonly string[],
+  config?: AgenCConfig,
+): AgenCMcpCliCommand {
+  const defaults = resolveMcpServeDefaults(config?.mcp?.server);
+  let transport = defaults.transport;
+  const host = defaults.host;
+  const port = defaults.port;
+  const rest = argv;
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i]!;
     if (arg === "--help" || arg === "-h") {
@@ -115,9 +125,45 @@ export function parseAgenCMcpCliArgs(
         message: "mcp serve only accepts --transport",
       };
     }
-    return { kind: "error", message: `mcp serve does not accept argument '${arg}'` };
+    return {
+      kind: "error",
+      message: `mcp serve does not accept argument '${arg}'`,
+    };
   }
   return { kind: "serve", transport, host, port };
+}
+
+export interface ResolvedMcpServeDefaults {
+  readonly enabled: boolean;
+  readonly transport: "stdio" | "sse";
+  readonly host: string;
+  readonly port: number;
+}
+
+export function resolveMcpServeDefaults(
+  config: McpServerModeConfig | undefined,
+): ResolvedMcpServeDefaults {
+  return {
+    enabled: config?.enabled === true,
+    transport: config?.transport === "sse" ? "sse" : "stdio",
+    host: readMcpServeHost(config?.host),
+    port: readMcpServePort(config?.port),
+  };
+}
+
+function readMcpServeHost(host: unknown): string {
+  return typeof host === "string" && host.trim().length > 0
+    ? host.trim()
+    : "127.0.0.1";
+}
+
+function readMcpServePort(port: unknown): number {
+  const valid =
+    typeof port === "number" &&
+    Number.isInteger(port) &&
+    port >= 0 &&
+    port <= 65_535;
+  return valid ? port : 3334;
 }
 
 export async function runAgenCMcpCli(

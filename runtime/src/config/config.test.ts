@@ -72,6 +72,10 @@ describe("schema: defaultConfig", () => {
     expect(cfg.agent_max_depth).toBe(1);
     expect(cfg.auth?.backend).toBe("local");
     expect(cfg.auth?.managedKeys?.enabled).toBe(false);
+    expect(cfg.mcp?.server).toEqual({
+      enabled: false,
+      transport: "stdio",
+    });
     expect(cfg.daemon?.transport).toBe("unix");
     expect(cfg.daemon?.autostart).toBe(true);
     expect(cfg.permissions?.default_mode).toBe("on-request");
@@ -111,6 +115,18 @@ describe("schema: mergeConfigs", () => {
     expect(out.toolBudget?.max_bytes_per_call).toBe(
       base.toolBudget?.max_bytes_per_call,
     );
+  });
+
+  test("deep merges nested mcp.server config", () => {
+    const base = defaultConfig();
+    const out = mergeConfigs(base, {
+      mcp: { server: { port: 4444 } },
+    });
+    expect(out.mcp?.server).toEqual({
+      enabled: false,
+      transport: "stdio",
+      port: 4444,
+    });
   });
 
   test("arrays are replaced not concatenated", () => {
@@ -258,6 +274,27 @@ describe("schema: normalizeRawConfig", () => {
     expect(out.sandbox).toEqual({ mode: "off" });
     expect(out._unknown).toBeUndefined();
     expect(KNOWN_CONFIG_KEYS.includes("sandbox")).toBe(true);
+  });
+
+  test("preserves mcp.server config on the typed path", () => {
+    const out = normalizeRawConfig({
+      mcp: {
+        server: {
+          enabled: true,
+          transport: "sse",
+          host: "localhost",
+          port: 4444,
+        },
+      },
+    });
+    expect(out.mcp?.server).toEqual({
+      enabled: true,
+      transport: "sse",
+      host: "localhost",
+      port: 4444,
+    });
+    expect(out._unknown?.mcp).toBeUndefined();
+    expect(KNOWN_CONFIG_KEYS.includes("mcp")).toBe(true);
   });
 
   test("preserves daemon.transport config on the typed path", () => {
@@ -1140,6 +1177,28 @@ autostart = false
     expect(out.config.daemon?.autostart).toBe(false);
     expect(out.config.daemon?.transport).toBe("unix");
     expect(out.config._unknown?.daemon).toBeUndefined();
+  });
+
+  test("mcp.server TOML overrides the disabled stdio defaults", async () => {
+    writeFileSync(
+      join(dir, "config.toml"),
+      `
+[mcp.server]
+enabled = true
+transport = "sse"
+host = "localhost"
+port = 4444
+      `,
+    );
+    const out = await loadConfig({ home: dir });
+    expect(out.exists).toBe(true);
+    expect(out.config.mcp?.server).toEqual({
+      enabled: true,
+      transport: "sse",
+      host: "localhost",
+      port: 4444,
+    });
+    expect(out.config._unknown?.mcp).toBeUndefined();
   });
 
   test("agent.budget TOML overrides the default caps", async () => {
