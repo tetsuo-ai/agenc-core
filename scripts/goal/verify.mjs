@@ -1549,7 +1549,25 @@ const ITEM_EVIDENCE = {
     grepPresent: [{ pattern: "/doctor", scope: "runtime/src/commands" }],
   },
   "OB-06": {
-    grepPresent: [{ pattern: "agenc init", scope: "runtime/src" }],
+    files: [
+      "runtime/src/bin/agenc.ts",
+      "runtime/src/bin/init-cli.ts",
+      "runtime/src/config/project-init.ts",
+      "runtime/src/bin/init-cli.test.ts",
+      "runtime/src/bin/agenc-help.test.ts",
+      "parity/OB-06-parity.json",
+    ],
+    grepPresent: [
+      { pattern: "agenc init", scope: "runtime/src/bin/agenc.ts" },
+      { pattern: "parseAgenCInitCliArgs", scope: "runtime/src/bin/init-cli.ts" },
+      { pattern: "initializeAgenCProject", scope: "runtime/src/config/project-init.ts" },
+      { pattern: "\\.agenc/config\\.json", scope: "runtime/src/bin/init-cli.test.ts" },
+      { pattern: "OB-06", scope: "parity/OB-06-parity.json" },
+    ],
+    tests: [
+      "runtime/src/bin/init-cli.test.ts",
+      "runtime/src/bin/agenc-help.test.ts",
+    ],
   },
   "OB-07": {
     grepPresent: [{ pattern: "AGENC\\.md", scope: "runtime/src/prompts" }],
@@ -4041,6 +4059,17 @@ async function onboardingGates(item) {
   if (id === "OB-06") {
     const found = grepRepo("agenc init", "runtime/src");
     if (!found) failGate("'agenc init' CLI surface not found");
+    const test = run("npm", [
+      "--workspace=@tetsuo-ai/runtime",
+      "exec",
+      "vitest",
+      "run",
+      "src/bin/init-cli.test.ts",
+      "src/bin/agenc-help.test.ts",
+    ]);
+    if (test.status !== 0) {
+      failGate("OB-06: agenc init CLI tests failed");
+    }
     pass("agenc init subcommand present");
     return;
   }

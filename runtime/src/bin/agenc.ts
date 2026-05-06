@@ -125,6 +125,11 @@ import {
   runAgenCMcpCli,
 } from "./mcp-cli.js";
 import {
+  formatAgenCInitCliHelpText,
+  parseAgenCInitCliArgs,
+  runAgenCInitCli,
+} from "./init-cli.js";
+import {
   formatAgenCProvidersCliHelpText,
   parseAgenCProvidersCliArgs,
   runAgenCProvidersCli,
@@ -175,6 +180,7 @@ export function formatCliHelpText(): string {
   return [
     "Usage: agenc [options] [PROMPT]",
     "       agenc help [command]",
+    "       agenc init [--force]",
     "       agenc login",
     "       agenc logout",
     "       agenc whoami",
@@ -193,6 +199,7 @@ export function formatCliHelpText(): string {
     "       agenc mcp serve --transport <stdio|sse>",
     "",
     "Commands:",
+    "  init                                    Create .agenc/config.json and AGENC.md",
     "  login | logout | whoami                  Manage the configured auth session",
     "  providers                               Check provider readiness",
     "  plugin                                  Manage local plugins and marketplaces",
@@ -222,6 +229,7 @@ export function formatCliHelpText(): string {
     "",
     "Examples:",
     "  agenc",
+    "  agenc init",
     "  agenc \"summarize this repository\"",
     "  agenc --no-tui \"run the tests and report failures\"",
     "  agenc --resume <session-id>",
@@ -243,6 +251,8 @@ export function formatCliHelpTopicText(topic: string): string | null {
       return formatAgenCAgentCliHelpText();
     case "help":
       return formatCliHelpText();
+    case "init":
+      return formatAgenCInitCliHelpText();
     case "auth":
     case "login":
     case "logout":
@@ -2289,6 +2299,10 @@ async function loadMcpCliConfig(): Promise<AgenCConfig | undefined> {
 export async function main(): Promise<number> {
   initializeCliRuntime();
   const argv = process.argv.slice(2);
+  const initCommand = parseAgenCInitCliArgs(argv);
+  if (initCommand !== null) {
+    return runAgenCInitCli(initCommand);
+  }
   const daemonCommand = parseAgenCDaemonCliArgs(argv);
   if (daemonCommand !== null) {
     return runAgenCDaemonCli(daemonCommand);

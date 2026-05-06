@@ -1,0 +1,51 @@
+{
+  "item": "OB-06",
+  "status": "implemented",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceRootLabel": "typescript UI reference checkout",
+  "targetRoot": "..",
+  "sourceFiles": [
+    "src/commands/init.ts",
+    "src/commands/initMode.ts",
+    "src/commands/init.test.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/bin/agenc.ts",
+    "runtime/src/bin/init-cli.ts",
+    "runtime/src/config/project-init.ts"
+  ],
+  "testFiles": [
+    "runtime/src/bin/init-cli.test.ts",
+    "runtime/src/bin/agenc-help.test.ts"
+  ],
+  "requiredBehaviors": [
+    {
+      "id": "cli-dispatch",
+      "behavior": "The top-level CLI recognizes `agenc init` as a command before prompt/TUI routing and exposes it through top-level and topic help.",
+      "tests": [
+        "runtime/src/bin/init-cli.test.ts",
+        "runtime/src/bin/agenc-help.test.ts"
+      ]
+    },
+    {
+      "id": "project-files",
+      "behavior": "`agenc init` creates `.agenc/config.json` and `AGENC.md` in the current directory with AgenC-branded project scaffolds.",
+      "tests": [
+        "runtime/src/bin/init-cli.test.ts"
+      ]
+    },
+    {
+      "id": "no-overwrite-default",
+      "behavior": "Existing project files are preserved by default and overwritten only when `--force` is explicit.",
+      "tests": [
+        "runtime/src/bin/init-cli.test.ts"
+      ]
+    }
+  ],
+  "intentionalReductions": [
+    "AgenC implements `agenc init` as a deterministic scaffold writer instead of a prompt-driven interactive setup flow.",
+    "The CLI creates the checklist-required `.agenc/config.json`; current runtime config loading remains owned by config-loader items.",
+    "Personal instruction files, skills, and hooks are not created by OB-06."
+  ],
+  "mergeResolutions": []
+}
