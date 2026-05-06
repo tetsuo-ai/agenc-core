@@ -27,7 +27,10 @@ import {
   type AgentMetadata,
   type AgentPath,
 } from "../agents/registry.js";
-import { AgentThread as AgenCAgentThread, type AgentThread } from "../agents/thread.js";
+import {
+  AgentThread as AgenCAgentThread,
+  type AgentThread,
+} from "../agents/thread.js";
 import {
   runAgent,
   type RunAgentProgressEvent,
@@ -55,7 +58,11 @@ import {
 import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { permissionGrantsFromToolPermissionContext } from "../permissions/permission-grants.js";
 import { applyUnattendedPermissionPolicyToContext } from "../permissions/unattended-policy.js";
-import { ABORT, DENIED, type ReviewDecision } from "../permissions/review-decision.js";
+import {
+  ABORT,
+  DENIED,
+  type ReviewDecision,
+} from "../permissions/review-decision.js";
 import { isFinal } from "../agents/status.js";
 import type { AgentStatus as ThreadAgentStatus } from "../agents/status.js";
 import type { Session } from "../session/session.js";
@@ -73,6 +80,13 @@ import type {
   MessageContent,
   PermissionListResult,
 } from "./protocol/index.js";
+import type { AgenCRealtimeThreadBinding } from "./realtime.js";
+import type { AgenCRealtimeCallClient } from "./realtime-transport.js";
+import type {
+  RealtimeTransportConnection,
+  RealtimeTransportRequest,
+} from "../conversation/realtime/conversation.js";
+import type { RealtimeStartupContextSessionLike } from "../conversation/realtime/context.js";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
 import { createAgenCDaemonRuntimeAuthBackend } from "./provider-key-vending.js";
 
@@ -193,14 +207,25 @@ export interface AgenCBackgroundAgentRunner {
     params: AgenCBackgroundAgentElicitationResponseParams,
   ): Promise<boolean>;
   listPermissions?(agentId: string): Promise<PermissionListResult | null>;
+  resolveRealtimeThread?(
+    threadId: string,
+  ):
+    | AgenCRealtimeThreadBinding
+    | null
+    | Promise<AgenCRealtimeThreadBinding | null>;
 }
 
-export type AgenCDelegateFunction = (opts: DelegateOpts) => Promise<DelegateOutcome>;
+export type AgenCDelegateFunction = (
+  opts: DelegateOpts,
+) => Promise<DelegateOutcome>;
 export type AgenCRunAgentFunction = typeof runAgent;
 export type AgenCBootstrapFunction = (
   options: BootstrapLocalRuntimeSessionOptions,
 ) => Promise<LocalRuntimeBootstrap>;
 export type AgenCEnsureAgentControlFunction = typeof ensureAgentControl;
+export type AgenCBackgroundRealtimeTransportConnector = (
+  request: RealtimeTransportRequest,
+) => Promise<RealtimeTransportConnection> | RealtimeTransportConnection;
 
 interface ActiveBackgroundAgent {
   readonly bootstrap: LocalRuntimeBootstrap;
@@ -270,6 +295,8 @@ export interface AgenCDelegateBackgroundAgentRunnerOptions {
   readonly argv?: readonly string[];
   readonly now?: () => string;
   readonly budgetNowMs?: () => number;
+  readonly realtimeCallClient?: AgenCRealtimeCallClient;
+  readonly realtimeConnectTransport?: AgenCBackgroundRealtimeTransportConnector;
   readonly setBudgetTimer?: (
     callback: () => void,
     delayMs: number,
@@ -277,9 +304,7 @@ export interface AgenCDelegateBackgroundAgentRunnerOptions {
   readonly clearBudgetTimer?: (timer: AgenCAgentBudgetTimer) => void;
 }
 
-export class AgenCDelegateBackgroundAgentRunner
-  implements AgenCBackgroundAgentRunner
-{
+export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentRunner {
   readonly #bootstrap: AgenCBootstrapFunction;
   readonly #delegate: AgenCDelegateFunction;
   readonly #runAgent: AgenCRunAgentFunction;
@@ -290,6 +315,8 @@ export class AgenCDelegateBackgroundAgentRunner
   readonly #argv: readonly string[] | undefined;
   readonly #now: () => string;
   readonly #budgetNowMs: () => number;
+  readonly #realtimeCallClient: AgenCRealtimeCallClient | undefined;
+  readonly #realtimeConnectTransport: AgenCBackgroundRealtimeTransportConnector;
   readonly #setBudgetTimer: (
     callback: () => void,
     delayMs: number,
@@ -308,8 +335,7 @@ export class AgenCDelegateBackgroundAgentRunner
     this.#bootstrap = options.bootstrap ?? bootstrapLocalRuntimeSession;
     this.#delegate = options.delegateFn ?? delegate;
     this.#runAgent = options.runAgentFn ?? runAgent;
-    this.#ensureAgentControl =
-      options.ensureAgentControl ?? ensureAgentControl;
+    this.#ensureAgentControl = options.ensureAgentControl ?? ensureAgentControl;
     this.#authBackend =
       options.authBackend === undefined
         ? undefined
@@ -319,6 +345,9 @@ export class AgenCDelegateBackgroundAgentRunner
     this.#argv = options.argv;
     this.#now = options.now ?? (() => new Date().toISOString());
     this.#budgetNowMs = options.budgetNowMs ?? (() => Date.now());
+    this.#realtimeCallClient = options.realtimeCallClient;
+    this.#realtimeConnectTransport =
+      options.realtimeConnectTransport ?? unavailableRealtimeTransport;
     this.#setBudgetTimer =
       options.setBudgetTimer ??
       ((callback, delayMs) => setTimeout(callback, delayMs));
@@ -338,8 +367,9 @@ export class AgenCDelegateBackgroundAgentRunner
       argv: buildBootstrapArgv(params, this.#argv),
       ...(params.cwd !== undefined ? { cwd: params.cwd } : {}),
     });
-    const uninstallApprovalBridge =
-      this.#installDaemonApprovalBridge(bootstrap.session);
+    const uninstallApprovalBridge = this.#installDaemonApprovalBridge(
+      bootstrap.session,
+    );
 
     try {
       const { control, registry } = this.#ensureAgentControl(bootstrap.session);
@@ -415,7 +445,10 @@ export class AgenCDelegateBackgroundAgentRunner
   ): Promise<AgenCBackgroundAgentSnapshot | null> {
     const active = this.#active.get(agentId);
     if (active === undefined) return null;
-    if (hasCurrentStatus(active.thread) && isFinal(active.thread.currentStatus)) {
+    if (
+      hasCurrentStatus(active.thread) &&
+      isFinal(active.thread.currentStatus)
+    ) {
       return null;
     }
     return {
@@ -437,6 +470,25 @@ export class AgenCDelegateBackgroundAgentRunner
     };
   }
 
+  async resolveRealtimeThread(
+    threadId: string,
+  ): Promise<AgenCRealtimeThreadBinding | null> {
+    const active = this.#active.get(threadId);
+    if (active === undefined || !isRunnableActiveAgent(active)) return null;
+    return {
+      threadId,
+      conversation: active.bootstrap.session.conversation,
+      session: active.bootstrap
+        .session as unknown as RealtimeStartupContextSessionLike,
+      connectTransport: this.#realtimeConnectTransport,
+      ...(this.#realtimeCallClient !== undefined
+        ? { callClient: this.#realtimeCallClient }
+        : {}),
+      routeRealtimeTextInput: (text) =>
+        active.control.sendInput(threadId, text),
+    };
+  }
+
   async restoreAgent(
     params: AgenCBackgroundAgentRestoreParams,
   ): Promise<boolean> {
@@ -452,8 +504,9 @@ export class AgenCDelegateBackgroundAgentRunner
         argv: buildBootstrapArgv(params, this.#argv),
         ...(params.cwd !== undefined ? { cwd: params.cwd } : {}),
       });
-      uninstallApprovalBridge =
-        this.#installDaemonApprovalBridge(bootstrap.session);
+      uninstallApprovalBridge = this.#installDaemonApprovalBridge(
+        bootstrap.session,
+      );
       const { control, registry } = this.#ensureAgentControl(bootstrap.session);
       await installUnattendedPermissionPolicy(
         bootstrap.session.permissionModeRegistry,
@@ -468,31 +521,30 @@ export class AgenCDelegateBackgroundAgentRunner
       });
       const live = resumed.rootLive;
       if (live === null) {
-        throw new Error(`AgenC daemon agent cannot be restored: ${params.agentId}`);
+        throw new Error(
+          `AgenC daemon agent cannot be restored: ${params.agentId}`,
+        );
       }
       let thread!: AgentThread;
       const initialMessages = params.initialMessages ?? [];
       const joinPromise = Promise.resolve().then(async () =>
-        runRestoredAgentToCompletion(
-          this.#runAgent,
-          {
-            thread,
-            parent: bootstrap!.session,
-            registry: bootstrap!.registry,
-            taskPrompt: params.objective,
-            initialMessages,
-            replayToolCalls: params.replayToolCalls ?? [],
-            ...(params.currentSessionId !== undefined
-              ? { currentSessionId: params.currentSessionId }
-              : {}),
-            ...(params.onReplayToolResult !== undefined
-              ? { onReplayToolResult: params.onReplayToolResult }
-              : {}),
-            ...(params.model !== undefined ? { model: params.model } : {}),
-            onProgress: (event, nextThread) =>
-              this.#recordProgressEvent(nextThread.threadId, event),
-          },
-        ),
+        runRestoredAgentToCompletion(this.#runAgent, {
+          thread,
+          parent: bootstrap!.session,
+          registry: bootstrap!.registry,
+          taskPrompt: params.objective,
+          initialMessages,
+          replayToolCalls: params.replayToolCalls ?? [],
+          ...(params.currentSessionId !== undefined
+            ? { currentSessionId: params.currentSessionId }
+            : {}),
+          ...(params.onReplayToolResult !== undefined
+            ? { onReplayToolResult: params.onReplayToolResult }
+            : {}),
+          ...(params.model !== undefined ? { model: params.model } : {}),
+          onProgress: (event, nextThread) =>
+            this.#recordProgressEvent(nextThread.threadId, event),
+        }),
       );
       thread = new AgenCAgentThread(
         {
@@ -547,7 +599,10 @@ export class AgenCDelegateBackgroundAgentRunner
     }
   }
 
-  async stopAgent(agentId: string, reason = "daemon_agent_stop"): Promise<void> {
+  async stopAgent(
+    agentId: string,
+    reason = "daemon_agent_stop",
+  ): Promise<void> {
     const active = this.#active.get(agentId);
     if (active === undefined) return;
     active.status = "stopping";
@@ -691,10 +746,16 @@ export class AgenCDelegateBackgroundAgentRunner
     return resolved;
   }
 
-  #installDaemonApprovalBridge(session: LocalRuntimeBootstrap["session"]): () => void {
-    const services = (session as { services?: {
-      approvalResolver?: ApprovalResolver;
-    } }).services;
+  #installDaemonApprovalBridge(
+    session: LocalRuntimeBootstrap["session"],
+  ): () => void {
+    const services = (
+      session as {
+        services?: {
+          approvalResolver?: ApprovalResolver;
+        };
+      }
+    ).services;
     if (services === undefined) return () => {};
     const previousResolver = services.approvalResolver;
     const resolver: ApprovalResolver = {
@@ -712,18 +773,24 @@ export class AgenCDelegateBackgroundAgentRunner
     };
   }
 
-  #installDaemonElicitationEventBridge(active: ActiveBackgroundAgent): () => void {
-    const eventLog = (active.bootstrap.session as {
-      eventLog?: {
-        subscribe?: (listener: (event: {
-          readonly id?: unknown;
-          readonly msg?: {
-            readonly type?: unknown;
-            readonly payload?: unknown;
-          };
-        }) => void) => () => void;
-      };
-    }).eventLog;
+  #installDaemonElicitationEventBridge(
+    active: ActiveBackgroundAgent,
+  ): () => void {
+    const eventLog = (
+      active.bootstrap.session as {
+        eventLog?: {
+          subscribe?: (
+            listener: (event: {
+              readonly id?: unknown;
+              readonly msg?: {
+                readonly type?: unknown;
+                readonly payload?: unknown;
+              };
+            }) => void,
+          ) => () => void;
+        };
+      }
+    ).eventLog;
     if (typeof eventLog?.subscribe !== "function") return () => {};
     return eventLog.subscribe((event) => {
       const daemonEvent = daemonEventFromSessionElicitationEvent(event);
@@ -885,7 +952,8 @@ export class AgenCDelegateBackgroundAgentRunner
   ): void {
     const budget = normalizeAgentBudget(this.#agentBudget);
     if (budget === undefined) return;
-    const startedAtMs = parseBudgetTimestamp(params.startedAt) ?? this.#budgetNowMs();
+    const startedAtMs =
+      parseBudgetTimestamp(params.startedAt) ?? this.#budgetNowMs();
     active.budget = {
       ...budget,
       startedAt: params.startedAt,
@@ -942,7 +1010,10 @@ export class AgenCDelegateBackgroundAgentRunner
   ): Promise<void> {
     const active = this.#active.get(agentId);
     if (active === undefined) return;
-    if (active.budgetHalt !== undefined || active.budgetHaltInProgress === true) {
+    if (
+      active.budgetHalt !== undefined ||
+      active.budgetHaltInProgress === true
+    ) {
       return;
     }
     active.budgetHalt = halt.marker;
@@ -995,10 +1066,7 @@ export class AgenCDelegateBackgroundAgentRunner
     }
   }
 
-  #trackActiveToolCall(
-    agentId: string,
-    progress: RunAgentProgressEvent,
-  ): void {
+  #trackActiveToolCall(agentId: string, progress: RunAgentProgressEvent): void {
     if (progress.kind !== "tool_call" && progress.kind !== "tool_result") {
       return;
     }
@@ -1028,7 +1096,9 @@ export class AgenCDelegateBackgroundAgentRunner
     if (progress.kind === "message" && progress.message.role === "assistant") {
       const text = messageText(progress.message.content);
       const previous = this.#assistantTextByAgent.get(agentId) ?? "";
-      const delta = text.startsWith(previous) ? text.slice(previous.length) : text;
+      const delta = text.startsWith(previous)
+        ? text.slice(previous.length)
+        : text;
       this.#assistantTextByAgent.set(agentId, text);
       if (delta.length === 0) return null;
       return {
@@ -1062,7 +1132,11 @@ export class AgenCDelegateBackgroundAgentRunner
       return;
     }
     await binding.emit(
-      notificationFromDaemonEvent(binding.sessionId, active.thread.threadId, event),
+      notificationFromDaemonEvent(
+        binding.sessionId,
+        active.thread.threadId,
+        event,
+      ),
     );
   }
 }
@@ -1104,7 +1178,9 @@ function parseBudgetTimestamp(value: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function budgetUsageFromMetadata(metadata: JsonObject | undefined): AgentBudgetUsage {
+function budgetUsageFromMetadata(
+  metadata: JsonObject | undefined,
+): AgentBudgetUsage {
   const raw = metadata?.budgetUsage;
   if (!isJsonObject(raw)) {
     return { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 };
@@ -1194,7 +1270,9 @@ function elapsedBudgetSeconds(
   return Math.max(0, (nowMs - startedAtMs) / 1000);
 }
 
-function budgetUsageForActiveAgent(active: ActiveBackgroundAgent): AgentBudgetUsage {
+function budgetUsageForActiveAgent(
+  active: ActiveBackgroundAgent,
+): AgentBudgetUsage {
   const prior = active.budget?.priorUsage ?? {
     inputTokens: 0,
     outputTokens: 0,
@@ -1338,7 +1416,10 @@ function finiteNumber(value: unknown): number {
 }
 
 function formatBudgetDollars(value: number): string {
-  return value.toFixed(value >= 1 ? 2 : 6).replace(/0+$/, "").replace(/\.$/, "");
+  return value
+    .toFixed(value >= 1 ? 2 : 6)
+    .replace(/0+$/, "")
+    .replace(/\.$/, "");
 }
 
 function formatBudgetSeconds(value: number): string {
@@ -1347,6 +1428,10 @@ function formatBudgetSeconds(value: number): string {
 
 function isRunnableActiveAgent(active: ActiveBackgroundAgent): boolean {
   return active.budgetHalt === undefined;
+}
+
+async function unavailableRealtimeTransport(): Promise<RealtimeTransportConnection> {
+  throw new Error("realtime transport connector is unavailable");
 }
 
 function notificationFromDaemonEvent(
@@ -1366,7 +1451,9 @@ function notificationFromDaemonEvent(
       method: "event.message_chunk",
       params: {
         ...base,
-        ...(event.messageId !== undefined ? { messageId: event.messageId } : {}),
+        ...(event.messageId !== undefined
+          ? { messageId: event.messageId }
+          : {}),
         ...(event.streamId !== undefined ? { streamId: event.streamId } : {}),
         delta: payload.delta,
       },
@@ -1404,11 +1491,17 @@ function notificationFromDaemonEvent(
       params: {
         ...base,
         requestId: payload.callId,
-        ...(typeof payload.toolName === "string" ? { toolName: payload.toolName } : {}),
-        ...(typeof payload.turnId === "string" ? { turnId: payload.turnId } : {}),
+        ...(typeof payload.toolName === "string"
+          ? { toolName: payload.toolName }
+          : {}),
+        ...(typeof payload.turnId === "string"
+          ? { turnId: payload.turnId }
+          : {}),
         permissions: stringArray(payload.permissions),
         ...(payload.input !== undefined ? { input: payload.input } : {}),
-        ...(typeof payload.reason === "string" ? { reason: payload.reason } : {}),
+        ...(typeof payload.reason === "string"
+          ? { reason: payload.reason }
+          : {}),
       },
     };
   }
@@ -1424,9 +1517,10 @@ function notificationFromDaemonEvent(
       method: "event.user_input_request",
       params: {
         ...base,
-        requestId: typeof payload.requestId === "string"
-          ? payload.requestId
-          : payload.callId,
+        requestId:
+          typeof payload.requestId === "string"
+            ? payload.requestId
+            : payload.callId,
         callId: payload.callId,
         turnId: payload.turnId,
         questions: jsonObjectArray(payload.questions),
@@ -1498,7 +1592,9 @@ function notificationFromDaemonEvent(
         agentId: base.agentId ?? sessionId,
         status: agentStatusFromEventType(event.type),
         runStatus: agentRunStatusFromEventType(event.type),
-        ...(typeof payload.turnId === "string" ? { turnId: payload.turnId } : {}),
+        ...(typeof payload.turnId === "string"
+          ? { turnId: payload.turnId }
+          : {}),
         ...(typeof payload.message === "string"
           ? { message: payload.message }
           : typeof payload.lastAgentMessage === "string"
@@ -1521,9 +1617,13 @@ function notificationFromDaemonEvent(
       event: {
         id: event.id,
         type: event.type,
-        ...(event.messageId !== undefined ? { messageId: event.messageId } : {}),
+        ...(event.messageId !== undefined
+          ? { messageId: event.messageId }
+          : {}),
         ...(event.streamId !== undefined ? { streamId: event.streamId } : {}),
-        ...(event.acceptedAt !== undefined ? { acceptedAt: event.acceptedAt } : {}),
+        ...(event.acceptedAt !== undefined
+          ? { acceptedAt: event.acceptedAt }
+          : {}),
         ...(payload !== undefined ? { payload } : {}),
       },
     },
@@ -1726,7 +1826,8 @@ function hasAssistantToolCall(
   return messages.some(
     (message) =>
       message.role === "assistant" &&
-      message.toolCalls?.some((toolCall) => toolCall.id === toolCallId) === true,
+      message.toolCalls?.some((toolCall) => toolCall.id === toolCallId) ===
+        true,
   );
 }
 
@@ -1796,8 +1897,11 @@ function buildReplayPermissionContext(
   permissionModeRegistry: PermissionModeRegistry,
 ): ToolEvaluatorContext {
   const denialTracking =
-    (session as { readonly denialTracking?: ReturnType<typeof freshDenialTracking> })
-      .denialTracking ?? freshDenialTracking();
+    (
+      session as {
+        readonly denialTracking?: ReturnType<typeof freshDenialTracking>;
+      }
+    ).denialTracking ?? freshDenialTracking();
   return attachContextDefaults({
     session: session as Session,
     denialTracking,
@@ -1899,7 +2003,10 @@ function metadataStringList(
   value: JsonObject | undefined,
   key: string,
 ): readonly string[] | undefined {
-  if (value === undefined || !Object.prototype.hasOwnProperty.call(value, key)) {
+  if (
+    value === undefined ||
+    !Object.prototype.hasOwnProperty.call(value, key)
+  ) {
     return undefined;
   }
   const field = value[key];
@@ -1927,7 +2034,9 @@ function agentRunStatusFromPayload(value: unknown): AgentRunStatus | undefined {
   }
 }
 
-function toolRequestInputFromPayload(payload: JsonObject): JsonValue | undefined {
+function toolRequestInputFromPayload(
+  payload: JsonObject,
+): JsonValue | undefined {
   if (payload.input !== undefined && isJsonValue(payload.input)) {
     return payload.input;
   }
@@ -1949,11 +2058,12 @@ function daemonEventFromSessionElicitationEvent(event: {
 }): BackgroundAgentDaemonEvent | null {
   const type = event.msg?.type;
   const payload = event.msg?.payload;
-  const id = typeof event.id === "string" && event.id.length > 0
-    ? event.id
-    : typeof type === "string"
-      ? type
-      : "elicitation";
+  const id =
+    typeof event.id === "string" && event.id.length > 0
+      ? event.id
+      : typeof type === "string"
+        ? type
+        : "elicitation";
   if (
     type === "request_user_input" &&
     isJsonObject(payload) &&
@@ -1966,9 +2076,10 @@ function daemonEventFromSessionElicitationEvent(event: {
       type,
       payload: {
         callId: payload.callId,
-        requestId: typeof payload.requestId === "string"
-          ? payload.requestId
-          : payload.callId,
+        requestId:
+          typeof payload.requestId === "string"
+            ? payload.requestId
+            : payload.callId,
         turnId: payload.turnId,
         questions: jsonObjectArray(payload.questions),
       },
@@ -2059,9 +2170,7 @@ function hasCurrentStatus(
   return "currentStatus" in thread;
 }
 
-function hasStatusSubscription(
-  thread: AgentThread,
-): thread is AgentThread & {
+function hasStatusSubscription(thread: AgentThread): thread is AgentThread & {
   onStatusChange(listener: (status: ThreadAgentStatus) => void): () => void;
 } {
   return typeof thread.onStatusChange === "function";
@@ -2106,7 +2215,9 @@ function eventFromThreadStatus(
           ...(status.lastMessage !== undefined
             ? { lastAgentMessage: status.lastMessage }
             : {}),
-          ...(status.endedAtMs !== undefined ? { completedAt: status.endedAtMs } : {}),
+          ...(status.endedAtMs !== undefined
+            ? { completedAt: status.endedAtMs }
+            : {}),
         },
       };
     case "errored":
@@ -2297,7 +2408,9 @@ function submitStructuredAgentInput(
     });
   } catch (error) {
     if (error instanceof MailboxClosedError) {
-      throw new Error(`AgenC daemon agent not running: ${active.thread.threadId}`);
+      throw new Error(
+        `AgenC daemon agent not running: ${active.thread.threadId}`,
+      );
     }
     throw error;
   }
@@ -2361,7 +2474,11 @@ function approvalInputFromPayload(value: unknown): JsonObject {
 function parseJsonObject(raw: string): JsonObject {
   try {
     const parsed = JSON.parse(raw) as unknown;
-    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+    if (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed)
+    ) {
       return parsed as JsonObject;
     }
   } catch {
@@ -2388,7 +2505,11 @@ function buildBootstrapArgv(
   return argv;
 }
 
-function appendFlag(argv: string[], flag: string, value: string | undefined): void {
+function appendFlag(
+  argv: string[],
+  flag: string,
+  value: string | undefined,
+): void {
   const trimmed = value?.trim();
   if (trimmed === undefined || trimmed.length === 0) return;
   argv.push(flag, trimmed);

@@ -22,6 +22,11 @@
     "session.terminate",
     "message.send",
     "message.stream",
+    "thread/realtime/start",
+    "thread/realtime/appendAudio",
+    "thread/realtime/appendText",
+    "thread/realtime/stop",
+    "thread/realtime/listVoices",
     "tool.approve",
     "tool.deny",
     "tool.cancel",
@@ -47,7 +52,15 @@
     "event.user_input_request",
     "event.mcp_elicitation_request",
     "event.agent_status",
-    "event.session_event"
+    "event.session_event",
+    "thread/realtime/started",
+    "thread/realtime/itemAdded",
+    "thread/realtime/transcript/delta",
+    "thread/realtime/transcript/done",
+    "thread/realtime/outputAudio/delta",
+    "thread/realtime/sdp",
+    "thread/realtime/error",
+    "thread/realtime/closed"
   ],
   "oneOf": [
     {
@@ -402,6 +415,350 @@
         }
       },
       "required": ["sessionId", "content"]
+    },
+    "ThreadRealtimeVersion": {
+      "type": "string",
+      "enum": ["v1", "v2"]
+    },
+    "ThreadRealtimeSessionMode": {
+      "type": "string",
+      "enum": ["conversational", "transcription"]
+    },
+    "ThreadRealtimeOutputModality": {
+      "type": "string",
+      "enum": ["audio", "text"]
+    },
+    "ThreadRealtimeVoice": {
+      "type": "string",
+      "enum": [
+        "alloy",
+        "arbor",
+        "ash",
+        "ballad",
+        "breeze",
+        "cedar",
+        "coral",
+        "cove",
+        "echo",
+        "ember",
+        "juniper",
+        "maple",
+        "marin",
+        "sage",
+        "shimmer",
+        "sol",
+        "spruce",
+        "vale",
+        "verse"
+      ]
+    },
+    "ThreadRealtimeWebsocketTransport": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "websocket"
+        }
+      },
+      "required": ["type"]
+    },
+    "ThreadRealtimeWebrtcTransport": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "webrtc"
+        },
+        "sdp": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["type", "sdp"]
+    },
+    "ThreadRealtimeStartTransport": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/ThreadRealtimeWebsocketTransport"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeWebrtcTransport"
+        }
+      ]
+    },
+    "ThreadRealtimeStartParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "transport": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadRealtimeStartTransport"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "realtimeSessionId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outputModality": {
+          "$ref": "#/definitions/ThreadRealtimeOutputModality"
+        },
+        "voice": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadRealtimeVoice"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": ["threadId", "outputModality"]
+    },
+    "ThreadRealtimeAudioChunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sampleRate": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "numChannels": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "samplesPerChannel": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "itemId": {
+          "type": ["string", "null"],
+          "minLength": 1
+        }
+      },
+      "required": ["data", "sampleRate", "numChannels"]
+    },
+    "ThreadRealtimeAppendAudioParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "audio": {
+          "$ref": "#/definitions/ThreadRealtimeAudioChunk"
+        }
+      },
+      "required": ["threadId", "audio"]
+    },
+    "ThreadRealtimeAppendTextParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["threadId", "text"]
+    },
+    "ThreadRealtimeStopParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["threadId"]
+    },
+    "ThreadRealtimeListVoicesParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "ThreadRealtimeBaseParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["threadId"]
+    },
+    "ThreadRealtimeStartedParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "realtimeSessionId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "version": {
+          "$ref": "#/definitions/ThreadRealtimeVersion"
+        }
+      },
+      "required": ["threadId", "version"]
+    },
+    "ThreadRealtimeItemAddedParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "item": true
+      },
+      "required": ["threadId", "item"]
+    },
+    "ThreadRealtimeTranscriptDeltaParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "type": "string"
+        },
+        "delta": {
+          "type": "string"
+        }
+      },
+      "required": ["threadId", "role", "delta"]
+    },
+    "ThreadRealtimeTranscriptDoneParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": ["threadId", "role", "text"]
+    },
+    "ThreadRealtimeOutputAudioDeltaParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "audio": {
+          "$ref": "#/definitions/ThreadRealtimeAudioChunk"
+        }
+      },
+      "required": ["threadId", "audio"]
+    },
+    "ThreadRealtimeSdpParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sdp": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["threadId", "sdp"]
+    },
+    "ThreadRealtimeErrorParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["threadId", "message"]
+    },
+    "ThreadRealtimeClosedParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": ["threadId"]
     },
     "ToolApproveParams": {
       "type": "object",
@@ -1165,6 +1522,21 @@
           "$ref": "#/definitions/MessageStreamRequest"
         },
         {
+          "$ref": "#/definitions/ThreadRealtimeStartRequest"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeAppendAudioRequest"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeAppendTextRequest"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeStopRequest"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeListVoicesRequest"
+        },
+        {
           "$ref": "#/definitions/ToolApproveRequest"
         },
         {
@@ -1239,6 +1611,30 @@
         },
         {
           "$ref": "#/definitions/EventSessionEventNotification"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeStartedNotification"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeItemAddedNotification"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeTranscriptDeltaNotification"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeTranscriptDoneNotification"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeOutputAudioDeltaNotification"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeSdpNotification"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeErrorNotification"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeClosedNotification"
         }
       ]
     },
@@ -1366,6 +1762,134 @@
         },
         "params": {
           "$ref": "#/definitions/EventSessionEventParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "ThreadRealtimeStartedNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "thread/realtime/started"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeStartedParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "ThreadRealtimeItemAddedNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "thread/realtime/itemAdded"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeItemAddedParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "ThreadRealtimeTranscriptDeltaNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "thread/realtime/transcript/delta"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeTranscriptDeltaParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "ThreadRealtimeTranscriptDoneNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "thread/realtime/transcript/done"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeTranscriptDoneParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "ThreadRealtimeOutputAudioDeltaNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "thread/realtime/outputAudio/delta"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeOutputAudioDeltaParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "ThreadRealtimeSdpNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "thread/realtime/sdp"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeSdpParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "ThreadRealtimeErrorNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "thread/realtime/error"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeErrorParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "ThreadRealtimeClosedNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "thread/realtime/closed"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeClosedParams"
         }
       },
       "required": ["jsonrpc", "method", "params"]
@@ -1635,6 +2159,101 @@
         }
       },
       "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "ThreadRealtimeStartRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "thread/realtime/start"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeStartParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "ThreadRealtimeAppendAudioRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "thread/realtime/appendAudio"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeAppendAudioParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "ThreadRealtimeAppendTextRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "thread/realtime/appendText"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeAppendTextParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "ThreadRealtimeStopRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "thread/realtime/stop"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeStopParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "ThreadRealtimeListVoicesRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "thread/realtime/listVoices"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeListVoicesParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method"]
     },
     "ToolApproveRequest": {
       "type": "object",

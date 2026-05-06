@@ -49,6 +49,11 @@ export const AGENC_DAEMON_METHODS = [
   "session.terminate",
   "message.send",
   "message.stream",
+  "thread/realtime/start",
+  "thread/realtime/appendAudio",
+  "thread/realtime/appendText",
+  "thread/realtime/stop",
+  "thread/realtime/listVoices",
   "tool.approve",
   "tool.deny",
   "tool.cancel",
@@ -78,6 +83,14 @@ export const AGENC_DAEMON_NOTIFICATION_METHODS = [
   "event.mcp_elicitation_request",
   "event.agent_status",
   "event.session_event",
+  "thread/realtime/started",
+  "thread/realtime/itemAdded",
+  "thread/realtime/transcript/delta",
+  "thread/realtime/transcript/done",
+  "thread/realtime/outputAudio/delta",
+  "thread/realtime/sdp",
+  "thread/realtime/error",
+  "thread/realtime/closed",
 ] as const;
 
 export type AgenCDaemonNotificationMethod =
@@ -216,6 +229,41 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     params: "required",
     result: "object",
     description: "Send a message and subscribe to streamed output.",
+  },
+  "thread/realtime/start": {
+    method: "thread/realtime/start",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Start realtime audio or text interaction for a thread.",
+  },
+  "thread/realtime/appendAudio": {
+    method: "thread/realtime/appendAudio",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Append a base64 PCM audio chunk to a realtime thread.",
+  },
+  "thread/realtime/appendText": {
+    method: "thread/realtime/appendText",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Append a text turn to a realtime thread.",
+  },
+  "thread/realtime/stop": {
+    method: "thread/realtime/stop",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Stop realtime interaction for a thread.",
+  },
+  "thread/realtime/listVoices": {
+    method: "thread/realtime/listVoices",
+    direction: "client-to-server",
+    params: "optional",
+    result: "object",
+    description: "List built-in realtime voices and defaults.",
   },
   "tool.approve": {
     method: "tool.approve",
@@ -384,6 +432,54 @@ export const AGENC_DAEMON_NOTIFICATION_SPECS = defineNotificationSpecs({
     params: "required",
     description: "Deliver a generic daemon session event to attached clients.",
   },
+  "thread/realtime/started": {
+    method: "thread/realtime/started",
+    direction: "server-to-client",
+    params: "required",
+    description: "Notify clients that realtime interaction started.",
+  },
+  "thread/realtime/itemAdded": {
+    method: "thread/realtime/itemAdded",
+    direction: "server-to-client",
+    params: "required",
+    description: "Deliver a realtime conversation item to clients.",
+  },
+  "thread/realtime/transcript/delta": {
+    method: "thread/realtime/transcript/delta",
+    direction: "server-to-client",
+    params: "required",
+    description: "Stream realtime transcript text deltas.",
+  },
+  "thread/realtime/transcript/done": {
+    method: "thread/realtime/transcript/done",
+    direction: "server-to-client",
+    params: "required",
+    description: "Deliver a completed realtime transcript segment.",
+  },
+  "thread/realtime/outputAudio/delta": {
+    method: "thread/realtime/outputAudio/delta",
+    direction: "server-to-client",
+    params: "required",
+    description: "Stream realtime output audio chunks.",
+  },
+  "thread/realtime/sdp": {
+    method: "thread/realtime/sdp",
+    direction: "server-to-client",
+    params: "required",
+    description: "Deliver provider SDP for a realtime WebRTC session.",
+  },
+  "thread/realtime/error": {
+    method: "thread/realtime/error",
+    direction: "server-to-client",
+    params: "required",
+    description: "Notify clients that realtime interaction failed.",
+  },
+  "thread/realtime/closed": {
+    method: "thread/realtime/closed",
+    direction: "server-to-client",
+    params: "required",
+    description: "Notify clients that realtime interaction closed.",
+  },
 });
 
 export function isAgenCDaemonMethod(value: string): value is AgenCDaemonMethod {
@@ -504,6 +600,95 @@ export interface MessageSendParams extends JsonObject {
 
 export interface MessageStreamParams extends MessageSendParams {
   readonly streamId?: string;
+}
+
+export type ThreadRealtimeVersion = "v1" | "v2";
+export type ThreadRealtimeSessionMode = "conversational" | "transcription";
+export type ThreadRealtimeOutputModality = "audio" | "text";
+export type ThreadRealtimeVoice =
+  | "alloy"
+  | "arbor"
+  | "ash"
+  | "ballad"
+  | "breeze"
+  | "cedar"
+  | "coral"
+  | "cove"
+  | "echo"
+  | "ember"
+  | "juniper"
+  | "maple"
+  | "marin"
+  | "sage"
+  | "shimmer"
+  | "sol"
+  | "spruce"
+  | "vale"
+  | "verse";
+
+export interface ThreadRealtimeWebsocketTransport extends JsonObject {
+  readonly type: "websocket";
+}
+
+export interface ThreadRealtimeWebrtcTransport extends JsonObject {
+  readonly type: "webrtc";
+  readonly sdp: string;
+}
+
+export type ThreadRealtimeStartTransport =
+  | ThreadRealtimeWebsocketTransport
+  | ThreadRealtimeWebrtcTransport;
+
+export interface ThreadRealtimeStartParams extends JsonObject {
+  readonly threadId: string;
+  readonly transport?: ThreadRealtimeStartTransport | null;
+  readonly realtimeSessionId?: string | null;
+  readonly prompt?: string | null;
+  readonly outputModality: ThreadRealtimeOutputModality;
+  readonly voice?: ThreadRealtimeVoice | null;
+}
+
+export interface ThreadRealtimeStartResponse extends JsonObject {}
+
+export interface ThreadRealtimeAudioChunk extends JsonObject {
+  readonly data: string;
+  readonly sampleRate: number;
+  readonly numChannels: number;
+  readonly samplesPerChannel?: number | null;
+  readonly itemId?: string | null;
+}
+
+export interface ThreadRealtimeAppendAudioParams extends JsonObject {
+  readonly threadId: string;
+  readonly audio: ThreadRealtimeAudioChunk;
+}
+
+export interface ThreadRealtimeAppendAudioResponse extends JsonObject {}
+
+export interface ThreadRealtimeAppendTextParams extends JsonObject {
+  readonly threadId: string;
+  readonly text: string;
+}
+
+export interface ThreadRealtimeAppendTextResponse extends JsonObject {}
+
+export interface ThreadRealtimeStopParams extends JsonObject {
+  readonly threadId: string;
+}
+
+export interface ThreadRealtimeStopResponse extends JsonObject {}
+
+export interface ThreadRealtimeListVoicesParams extends JsonObject {}
+
+export interface ThreadRealtimeVoicesList extends JsonObject {
+  readonly v1: readonly ThreadRealtimeVoice[];
+  readonly v2: readonly ThreadRealtimeVoice[];
+  readonly defaultV1: ThreadRealtimeVoice;
+  readonly defaultV2: ThreadRealtimeVoice;
+}
+
+export interface ThreadRealtimeListVoicesResponse extends JsonObject {
+  readonly voices: ThreadRealtimeVoicesList;
 }
 
 export interface ToolApproveParams extends JsonObject {
@@ -661,6 +846,45 @@ export interface EventSessionEventParams extends AgenCEventBaseParams {
   readonly event: JsonObject;
 }
 
+export interface ThreadRealtimeBaseParams extends JsonObject {
+  readonly threadId: string;
+}
+
+export interface ThreadRealtimeStartedParams extends ThreadRealtimeBaseParams {
+  readonly realtimeSessionId?: string | null;
+  readonly version: ThreadRealtimeVersion;
+}
+
+export interface ThreadRealtimeItemAddedParams extends ThreadRealtimeBaseParams {
+  readonly item: JsonValue;
+}
+
+export interface ThreadRealtimeTranscriptDeltaParams extends ThreadRealtimeBaseParams {
+  readonly role: string;
+  readonly delta: string;
+}
+
+export interface ThreadRealtimeTranscriptDoneParams extends ThreadRealtimeBaseParams {
+  readonly role: string;
+  readonly text: string;
+}
+
+export interface ThreadRealtimeOutputAudioDeltaParams extends ThreadRealtimeBaseParams {
+  readonly audio: ThreadRealtimeAudioChunk;
+}
+
+export interface ThreadRealtimeSdpParams extends ThreadRealtimeBaseParams {
+  readonly sdp: string;
+}
+
+export interface ThreadRealtimeErrorParams extends ThreadRealtimeBaseParams {
+  readonly message: string;
+}
+
+export interface ThreadRealtimeClosedParams extends ThreadRealtimeBaseParams {
+  readonly reason?: string | null;
+}
+
 export interface AgenCDaemonNotificationWithParams<
   Method extends AgenCDaemonNotificationMethod,
   Params extends JsonObject,
@@ -679,6 +903,14 @@ export interface AgenCDaemonNotificationParamsByMethod {
   readonly "event.mcp_elicitation_request": EventMcpElicitationRequestParams;
   readonly "event.agent_status": EventAgentStatusParams;
   readonly "event.session_event": EventSessionEventParams;
+  readonly "thread/realtime/started": ThreadRealtimeStartedParams;
+  readonly "thread/realtime/itemAdded": ThreadRealtimeItemAddedParams;
+  readonly "thread/realtime/transcript/delta": ThreadRealtimeTranscriptDeltaParams;
+  readonly "thread/realtime/transcript/done": ThreadRealtimeTranscriptDoneParams;
+  readonly "thread/realtime/outputAudio/delta": ThreadRealtimeOutputAudioDeltaParams;
+  readonly "thread/realtime/sdp": ThreadRealtimeSdpParams;
+  readonly "thread/realtime/error": ThreadRealtimeErrorParams;
+  readonly "thread/realtime/closed": ThreadRealtimeClosedParams;
 }
 
 export type AgenCDaemonNotification =
@@ -713,6 +945,38 @@ export type AgenCDaemonNotification =
   | AgenCDaemonNotificationWithParams<
       "event.session_event",
       EventSessionEventParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "thread/realtime/started",
+      ThreadRealtimeStartedParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "thread/realtime/itemAdded",
+      ThreadRealtimeItemAddedParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "thread/realtime/transcript/delta",
+      ThreadRealtimeTranscriptDeltaParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "thread/realtime/transcript/done",
+      ThreadRealtimeTranscriptDoneParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "thread/realtime/outputAudio/delta",
+      ThreadRealtimeOutputAudioDeltaParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "thread/realtime/sdp",
+      ThreadRealtimeSdpParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "thread/realtime/error",
+      ThreadRealtimeErrorParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "thread/realtime/closed",
+      ThreadRealtimeClosedParams
     >;
 
 export type AgenCDaemonSessionNotification = Exclude<
@@ -759,6 +1023,23 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"session.terminate", SessionTerminateParams>
   | AgenCDaemonRequestWithParams<"message.send", MessageSendParams>
   | AgenCDaemonRequestWithParams<"message.stream", MessageStreamParams>
+  | AgenCDaemonRequestWithParams<
+      "thread/realtime/start",
+      ThreadRealtimeStartParams
+    >
+  | AgenCDaemonRequestWithParams<
+      "thread/realtime/appendAudio",
+      ThreadRealtimeAppendAudioParams
+    >
+  | AgenCDaemonRequestWithParams<
+      "thread/realtime/appendText",
+      ThreadRealtimeAppendTextParams
+    >
+  | AgenCDaemonRequestWithParams<
+      "thread/realtime/stop",
+      ThreadRealtimeStopParams
+    >
+  | AgenCDaemonRequestWithoutParams<"thread/realtime/listVoices">
   | AgenCDaemonRequestWithParams<"tool.approve", ToolApproveParams>
   | AgenCDaemonRequestWithParams<"tool.deny", ToolDenyParams>
   | AgenCDaemonRequestWithParams<"tool.cancel", ToolCancelParams>
@@ -1050,6 +1331,11 @@ export interface AgenCDaemonResultByMethod {
   readonly "session.terminate": SessionTerminateResult;
   readonly "message.send": MessageSendResult;
   readonly "message.stream": MessageStreamResult;
+  readonly "thread/realtime/start": ThreadRealtimeStartResponse;
+  readonly "thread/realtime/appendAudio": ThreadRealtimeAppendAudioResponse;
+  readonly "thread/realtime/appendText": ThreadRealtimeAppendTextResponse;
+  readonly "thread/realtime/stop": ThreadRealtimeStopResponse;
+  readonly "thread/realtime/listVoices": ThreadRealtimeListVoicesResponse;
   readonly "tool.approve": ToolDecisionResult;
   readonly "tool.deny": ToolDecisionResult;
   readonly "tool.cancel": ToolDecisionResult;
