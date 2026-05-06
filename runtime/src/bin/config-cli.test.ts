@@ -101,6 +101,11 @@ describe("agenc config CLI", () => {
       key: "model",
       value: "grok-3",
     });
+    expect(parseAgenCConfigCliArgs(["config", "set", "model", "--help"])).toEqual({
+      kind: "set",
+      key: "model",
+      value: "--help",
+    });
     expect(parseAgenCConfigCliArgs(["config", "unset", "model"])).toEqual({
       kind: "unset",
       key: "model",
@@ -160,6 +165,55 @@ describe("agenc config CLI", () => {
     expect(failedExit).toBe(1);
     expect(calls.at(-1)).toEqual({ command: "vim", args: ["-n", configPath(home)] });
     expect(failedIo.stderrText()).toContain('editor "vim" exited with code 42');
+  });
+
+  it("migrates legacy JSON before edit and refuses unsafe JSON shadowing", async () => {
+    const home = makeHome();
+    writeFileSync(
+      join(home, "config.json"),
+      JSON.stringify({ provider: "xai", model: "legacy" }),
+      "utf8",
+    );
+    const editIo = createIo();
+    const calls: string[][] = [];
+    const exit = await runAgenCConfigCli(
+      { kind: "edit" },
+      {
+        agencHome: home,
+        env: { EDITOR: "vim" },
+        io: editIo,
+        spawner: async (_command, args) => {
+          calls.push([...args]);
+          expect(existsSync(configPath(home))).toBe(true);
+          return 0;
+        },
+      },
+    );
+    expect(exit).toBe(0);
+    expect(calls).toEqual([[configPath(home)]]);
+    expect(existsSync(join(home, "config.json.bak-cf12"))).toBe(true);
+    expect(readRawConfig(home)).toMatchObject({
+      model: "legacy",
+      model_provider: "grok",
+    });
+
+    const invalidHome = makeHome();
+    writeFileSync(join(invalidHome, "config.json"), "{not json", "utf8");
+    const refusedIo = createIo();
+    const spawner = vi.fn(async () => 0);
+    const refused = await runAgenCConfigCli(
+      { kind: "edit" },
+      {
+        agencHome: invalidHome,
+        env: { EDITOR: "vim" },
+        io: refusedIo,
+        spawner,
+      },
+    );
+    expect(refused).toBe(1);
+    expect(spawner).not.toHaveBeenCalled();
+    expect(existsSync(configPath(invalidHome))).toBe(false);
+    expect(refusedIo.stderrText()).toContain("skipped config migration");
   });
 
   it("shows, gets, and validates effective config without hiding invalid files", async () => {
@@ -225,6 +279,28 @@ describe("agenc config CLI", () => {
       inline: { enabled: true },
       label: "plain text",
     });
+  });
+
+  it("normalizes BOM-prefixed TOML before set and unset", async () => {
+    const setHome = makeHome();
+    writeFileSync(
+      configPath(setHome),
+      `\ufeffconfigVersion = ${CURRENT_CONFIG_FILE_VERSION}\nmodel = "old"\n`,
+      "utf8",
+    );
+    const set = await run(parseAgenCConfigCliArgs(["config", "set", "model", "grok-3"]), setHome);
+    expect(set.code).toBe(0);
+    expect(readRawConfig(setHome).model).toBe("grok-3");
+
+    const unsetHome = makeHome();
+    writeFileSync(
+      configPath(unsetHome),
+      `\ufeffconfigVersion = ${CURRENT_CONFIG_FILE_VERSION}\n\n[custom]\nlabel = "remove"\n`,
+      "utf8",
+    );
+    const unset = await run(parseAgenCConfigCliArgs(["config", "unset", "custom.label"]), unsetHome);
+    expect(unset.code).toBe(0);
+    expect(readRawConfig(unsetHome).custom).toBeUndefined();
   });
 
   it("migrates legacy JSON before set and refuses unsafe JSON shadowing", async () => {

@@ -3,7 +3,6 @@ import {
   lstat,
   mkdir,
   mkdtemp,
-  readFile,
   realpath,
   rename,
   rm,
@@ -22,6 +21,7 @@ import {
   getConfigFilePath,
   getConfigPath,
 } from "../commands/config.js";
+import { readTextFile } from "../config/_deps/file-read.js";
 import {
   applyEnvOverrides,
   resolveAgencHome,
@@ -385,6 +385,7 @@ async function runConfigEdit(
   spawner: ConfigEditorSpawner,
   io: AgenCConfigCliIo,
 ): Promise<number> {
+  await prepareConfigEditTarget(agencHome, io);
   const path = getConfigFilePath(agencHome);
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const editor = parseEditorCommand(editorForEnv(env));
@@ -588,7 +589,7 @@ function modeOrDefault(mode: number): number {
 }
 
 async function readConfigTomlRaw(path: string): Promise<JsonRecord> {
-  const text = await readFile(path, "utf8");
+  const text = await readTextFile(path);
   let sawDuplicateKey = false;
   let parsed: Record<string, unknown>;
   try {
