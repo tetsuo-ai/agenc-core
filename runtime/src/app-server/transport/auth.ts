@@ -1,10 +1,10 @@
 /**
- * Ports the donor app-server transport auth policy onto AgenC's daemon
+ * Ports the app-server transport auth policy onto AgenC's daemon
  * shared-cookie authentication.
  *
  * Why this lives here:
  *   - F-03p owns D-14's verified-peer surface for daemon transports. AgenC's
- *     Node runtime cannot port the donor Unix peer-credential helper through a
+ *     Node runtime cannot port the reference Unix peer-credential helper through a
  *     public `net.Socket` API, so the shared-cookie path is the portable
  *     connection authenticator.
  *
@@ -12,10 +12,7 @@
  *   - Websocket JWT bearer mode and capability-token CLI flags are remote
  *     listener policy; the local daemon socket only needs the private cookie.
  *
- * Source anchors:
- *   - /home/tetsuo/git/codex/codex-rs/app-server/tests/suite/auth.rs // branding-scan: allow donor source path
- *   - /home/tetsuo/git/codex/codex-rs/app-server-transport/src/transport/auth.rs // branding-scan: allow donor source path
- *   - /home/tetsuo/git/codex/codex-rs/app-server-transport/src/transport/unix_socket.rs // branding-scan: allow donor source path
+ * Reference anchors are tracked in parity evidence, not runtime comments.
  */
 
 import { randomBytes, timingSafeEqual } from "node:crypto";

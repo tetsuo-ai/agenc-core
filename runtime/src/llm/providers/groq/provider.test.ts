@@ -8,7 +8,7 @@ import {
 } from "../../registry/provider-info.js";
 
 describe("GroqProvider", () => {
-  test("uses the OpenAI-compatible Groq endpoint and bearer auth", async () => {
+  test("uses the Groq compatible endpoint and bearer auth", async () => {
     const model = BUILT_IN_PROVIDER_DEFAULT_MODELS.groq;
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(

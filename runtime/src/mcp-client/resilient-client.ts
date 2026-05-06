@@ -9,7 +9,7 @@
 
 import type { Tool, ToolResult } from "./_deps/tools-types.js";
 import type { MCPServerConfig, MCPToolBridge } from "./types.js";
-import type { MCPToolBridgePermissionOptions } from "./tool-bridge.js";
+import type { MCPToolBridgePermissionOptions } from "./tools.js";
 import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
 
@@ -147,7 +147,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
       try { await this.inner.dispose(); } catch { /* ignore */ }
 
       const { createMCPConnection } = await import("./connection.js");
-      const { createToolBridge } = await import("./tool-bridge.js");
+      const { createToolBridge } = await import("./tools.js");
 
       const client = await createMCPConnection(this.config, this.logger);
       const newBridge = await createToolBridge(

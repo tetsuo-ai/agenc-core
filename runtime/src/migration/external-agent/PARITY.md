@@ -1,6 +1,6 @@
 # External Agent Migration Parity
 
-Upstream reference: `/home/tetsuo/git/codex/codex-rs` at commit `c8c30d9d75556ecbe94991af22380d2a4e9d6589`.
+Reference source commit: `c8c30d9d75556ecbe94991af22380d2a4e9d6589`.
 
 Primary source anchors:
 - `external-agent-migration/src/lib.rs`

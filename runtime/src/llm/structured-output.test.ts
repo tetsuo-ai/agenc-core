@@ -32,7 +32,7 @@ describe("structured-output provider capability helpers", () => {
     expect(supportsXaiStructuredOutputsWithTools("grok-code-fast-1")).toBe(false);
   });
 
-  test("keeps OpenAI structured output support open for current models and closed for known old ones", () => {
+  test("keeps structured output support open for current models and closed for known old ones", () => {
     expect(supportsOpenAIStructuredOutputs("gpt-5")).toBe(true);
     expect(supportsOpenAIStructuredOutputs("gpt-4o-2024-08-06")).toBe(true);
     expect(supportsOpenAIStructuredOutputs("gpt-4-turbo")).toBe(false);
@@ -62,7 +62,7 @@ describe("structured-output provider capability helpers", () => {
     ).toBe("anthropic_tool_use");
   });
 
-  test("enforces OpenAI-compatible strict JSON schema constraints recursively", () => {
+  test("enforces compatible strict JSON schema constraints recursively", () => {
     expect(enforceStrictStructuredOutputSchema(SCHEMA)).toEqual({
       type: "object",
       properties: {

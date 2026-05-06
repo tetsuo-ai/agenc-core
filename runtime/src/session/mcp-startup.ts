@@ -22,7 +22,7 @@
 
 import type { MCPManager, MCPManagerStartOpts } from "../mcp-client/manager.js";
 import { MCPManager as LiveMCPManager } from "../mcp-client/manager.js";
-import type { MCPToolBridgePermissionOptions } from "../mcp-client/tool-bridge.js";
+import type { MCPToolBridgePermissionOptions } from "../mcp-client/tools.js";
 import type { MCPServerConfig } from "../mcp-client/types.js";
 import type { AgenCConfig, McpServerConfig as AgenCMcpServerConfig } from "../config/schema.js";
 import { freshDenialTracking } from "../permissions/denial-tracking.js";

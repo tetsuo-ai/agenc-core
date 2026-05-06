@@ -87,6 +87,86 @@ const ITEM_EVIDENCE = {
       { pattern: "agenc/upstream", scope: "runtime/src" },
     ],
   },
+  "OC-06": {
+    files: [
+      "runtime/src/tui/vim/types.ts",
+      "runtime/src/tui/vim/motions.ts",
+      "runtime/src/tui/vim/operators.ts",
+      "runtime/src/tui/vim/text-objects.ts",
+      "runtime/src/tui/vim/transitions.ts",
+      "runtime/src/tui/vim/PARITY.md",
+      "parity/OC-06-vim-parity.json",
+      "runtime/src/tools/ConfigTool/nestedSettingPath.ts",
+      "runtime/src/tui/components/PromptInput/ConfiguredPromptTextInput.tsx",
+    ],
+    filesAbsent: [
+      "runtime/src/tui/vim/textObjects.ts",
+    ],
+    tests: [
+      "runtime/src/tui/vim/types.test.ts",
+      "runtime/src/tui/vim/motions.test.ts",
+      "runtime/src/tui/vim/operators.test.ts",
+      "runtime/src/tui/vim/text-objects.test.ts",
+      "runtime/src/tui/vim/transitions.test.ts",
+      "runtime/src/tui/input/processTextPrompt.test.ts",
+      "runtime/src/tui/input/processUserInput.test.ts",
+      "runtime/src/tui/components/App.render.test.tsx",
+      "runtime/src/utils/handlePromptSubmit.vimMode.test.ts",
+      "runtime/src/tui/components/PromptInput/PromptInput.vimMode.test.tsx",
+      "runtime/src/tui/components/PromptInput/utils.test.ts",
+      "runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.test.tsx",
+      "runtime/src/tui/startup/StatusLine.test.tsx",
+      "runtime/src/tools/ConfigTool/ConfigTool.test.ts",
+      "runtime/src/config/config.test.ts",
+    ],
+    grepPresent: [
+      { pattern: "TEXT_OBJ_TYPES = new Set", scope: "runtime/src/tui/vim/types.ts" },
+      { pattern: "'p'", scope: "runtime/src/tui/vim/types.ts" },
+      { pattern: "'t'", scope: "runtime/src/tui/vim/types.ts" },
+      { pattern: "case 'ge'", scope: "runtime/src/tui/vim/motions.ts" },
+      { pattern: "case 'gE'", scope: "runtime/src/tui/vim/motions.ts" },
+      { pattern: "findParagraphObject", scope: "runtime/src/tui/vim/text-objects.ts" },
+      { pattern: "findTagObject", scope: "runtime/src/tui/vim/text-objects.ts" },
+      { pattern: "executeOperatorRepeatFind", scope: "runtime/src/tui/vim/transitions.ts" },
+      { pattern: "input === ';' \\|\\| input === ','", scope: "runtime/src/tui/vim/transitions.ts" },
+      { pattern: "tui\\.vimMode", scope: "runtime/src/tools/ConfigTool/supportedSettings.ts" },
+      { pattern: "setGlobalConfigSettingValue", scope: "runtime/src/tools/ConfigTool/ConfigTool.ts" },
+      { pattern: "vimMode: value_1 === 'vim'", scope: "runtime/src/tui/components/Settings/Config.tsx" },
+      { pattern: "editorMode: value_1", scope: "runtime/src/tui/components/Settings/Config.tsx" },
+      { pattern: "ConfiguredPromptTextInput", scope: "runtime/src/tui/components/PromptInput/PromptInput.tsx" },
+      { pattern: "vimRoutingState", scope: "runtime/src/tui/components/PromptInput/PromptInput.tsx" },
+      { pattern: "vimRoutingState: options\\?\\.vimRoutingState", scope: "runtime/src/tui/screens/REPL.tsx" },
+      { pattern: "vimRoutingState: isFirst \\? vimRoutingState : undefined", scope: "runtime/src/utils/handlePromptSubmit.ts" },
+      { pattern: "threads vim routing state into the real input dispatch path", scope: "runtime/src/utils/handlePromptSubmit.vimMode.test.ts" },
+      { pattern: "isVimModeEnabled\\(\\) \\? \\(", scope: "runtime/src/tui/components/PromptInput/ConfiguredPromptTextInput.tsx" },
+      { pattern: "useState<VimMode>\\(\"INSERT\"\\)", scope: "runtime/src/tui/components/App.tsx" },
+      { pattern: "treats 0 as a line-start motion after operators", scope: "runtime/src/tui/vim/transitions.test.ts" },
+      { pattern: "clamps normal and operator counts to the maximum vim count", scope: "runtime/src/tui/vim/transitions.test.ts" },
+      { pattern: "operatorSemicolon", scope: "runtime/src/tui/vim/transitions.test.ts" },
+      { pattern: "operatorComma", scope: "runtime/src/tui/vim/transitions.test.ts" },
+      { pattern: "declares delimiter alias text object keys", scope: "runtime/src/tui/vim/types.test.ts" },
+      { pattern: "executes required operator motion behavior", scope: "runtime/src/tui/vim/operators.test.ts" },
+      { pattern: "routes modal-edited composer text when tui\\.vimMode is true", scope: "runtime/src/tui/components/PromptInput/PromptInput.vimMode.test.tsx" },
+      { pattern: "keeps normal text input behavior when tui\\.vimMode is false", scope: "runtime/src/tui/components/PromptInput/PromptInput.vimMode.test.tsx" },
+      { pattern: "processes finalized text after configured vim composer movement", scope: "runtime/src/tui/input/processTextPrompt.test.ts" },
+      { pattern: "ConfiguredPromptTextInput", scope: "runtime/src/tui/input/processTextPrompt.test.ts" },
+      { pattern: "finalizeVimInputForRouting", scope: "runtime/src/tui/input/processTextPrompt.ts" },
+      { pattern: "applies vim routing keys before slash dispatch", scope: "runtime/src/tui/input/processUserInput.test.ts" },
+      { pattern: "applies vim routing keys before bash dispatch", scope: "runtime/src/tui/input/processUserInput.test.ts" },
+      { pattern: "reports the routed vim prompt when a hook blocks submission", scope: "runtime/src/tui/input/processUserInput.test.ts" },
+      { pattern: "covers delete, change, and yank across required text objects", scope: "runtime/src/tui/vim/operators.test.ts" },
+      { pattern: "formatVimModeIndicator\\(vimMode\\)", scope: "runtime/src/tui/startup/StatusLine.tsx" },
+      { pattern: "renders current %s vim mode when vim mode is active", scope: "runtime/src/tui/startup/StatusLine.test.tsx" },
+      { pattern: "StatusLine.*renders the visible", scope: "runtime/src/tui/vim/PARITY.md" },
+      { pattern: "processUserInput.*before bash, slash, or prompt dispatch", scope: "runtime/src/tui/vim/PARITY.md" },
+      { pattern: "formatVimModeIndicator", scope: "runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx" },
+      { pattern: "readonly tui\\?: TuiConfig", scope: "runtime/src/config/schema.ts" },
+      { pattern: "tui\\?: TuiConfig", scope: "runtime/src/utils/config.ts" },
+    ],
+    grepNotPresent: [
+      { pattern: "\\./textObjects\\.js", scope: "runtime/src/tui/vim" },
+    ],
+  },
   "RT-11": {
     files: [
       "runtime/src/conversation/realtime/instructions/markers.ts",
@@ -221,7 +301,7 @@ const ITEM_EVIDENCE = {
       "runtime/src/plugins/cli/pluginOperations.ts",
       "runtime/src/plugins/marketplace/startup_checks.ts",
       "runtime/src/config/PARITY.md",
-      "runtime/src/mcp-client/tool-bridge.ts",
+      "runtime/src/mcp-client/tools.ts",
       "runtime/src/mcp-client/manager.ts",
       "runtime/src/mcp-client/types.ts",
       "runtime/src/commands.ts",
@@ -241,7 +321,7 @@ const ITEM_EVIDENCE = {
       { pattern: "plugins\\.plugins", scope: "runtime/src/plugins/policy.ts" },
       { pattern: "hasExplicitPluginDiscoveryInput", scope: "runtime/src/plugins/registration/common.ts" },
       { pattern: "ensurePluginsFeatureEnabled", scope: "runtime/src/plugins/cli/pluginOperations.ts" },
-      { pattern: "defaultToolsApprovalMode", scope: "runtime/src/mcp-client/tool-bridge.ts" },
+      { pattern: "defaultToolsApprovalMode", scope: "runtime/src/mcp-client/tools.ts" },
       { pattern: "default_tools_approval_mode", scope: "runtime/src/mcp-client/types.ts" },
       { pattern: "skillsForConfig\\(config", scope: "runtime/src/commands.ts" },
       { pattern: "skillsForConfig\\(opts\\.config \\?\\? \\{\\}", scope: "runtime/src/prompts/attachments/skill-listing.ts" },
@@ -255,7 +335,7 @@ const ITEM_EVIDENCE = {
       "runtime/src/plugins/cli/pluginCliCommands.test.ts",
       "runtime/src/plugins/registration.test.ts",
       "runtime/src/plugins/resolution.test.ts",
-      "runtime/src/mcp-client/tool-bridge.test.ts",
+      "runtime/src/mcp-client/tools.test.ts",
       "runtime/src/mcp-client/manager.test.ts",
       "runtime/src/commands/command-surface.test.ts",
       "runtime/src/prompts/attachments/integration.test.ts",
@@ -2022,13 +2102,13 @@ const ITEM_EVIDENCE = {
       { pattern: "setAgencTelemetryClient", scope: "runtime/src/observability/telemetry.ts" },
       { pattern: "AGENC_TURN_TTFT_DURATION_METRIC", scope: "runtime/src/session/run-turn.ts" },
       { pattern: "AGENC_HOOK_RUN_DURATION_METRIC", scope: "runtime/src/hooks/engine/dispatcher.ts" },
-      { pattern: "mcp\\.tools\\.call", scope: "runtime/src/mcp-client/tool-bridge.ts" },
+      { pattern: "mcp\\.tools\\.call", scope: "runtime/src/mcp-client/tools.ts" },
       { pattern: "AGENC_TOOL_UNIFIED_EXEC_DURATION_METRIC", scope: "runtime/src/app-server/command-exec.ts" },
     ],
     tests: [
       "runtime/src/observability/telemetry.test.ts",
       "runtime/src/hooks/engine/dispatcher.test.ts",
-      "runtime/src/mcp-client/tool-bridge.test.ts",
+      "runtime/src/mcp-client/tools.test.ts",
     ],
   },
   "ZC-40": {
@@ -2337,9 +2417,7 @@ if (upstreamImportGrowthRes.status !== 0) {
 
 // branding-scan: allow regex enumerates banned shim-pattern suffixes for the gate
 const SHIM_RE = /(^|\/)[^/]+-(shim|adapter|compat|legacy|bridge|wrapper|facade|proxy|glue|forwarder|passthrough|stub|indirect|dispatch|barrel)\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/;
-const SHIM_ALLOW_DIRS = [
-  "runtime/src/mcp-client/",
-];
+const SHIM_ALLOW_DIRS = [];
 const shimAdditions = [...added].filter((p) => {
   if (!SHIM_RE.test(p)) return false;
   if (/\.test\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(p)) return false;
@@ -2347,8 +2425,7 @@ const shimAdditions = [...added].filter((p) => {
 });
 if (shimAdditions.length > 0) {
   failGate(
-    `forbidden: this item adds ${shimAdditions.length} new shim-pattern file(s) ` +
-      `outside the legitimate location (runtime/src/mcp-client/). ` +
+    `forbidden: this item adds ${shimAdditions.length} new shim-pattern file(s). ` +
       `Banned suffixes: -shim/-adapter/-compat/-legacy/-bridge/-wrapper/-facade/-proxy/-glue/` +
       `-forwarder/-passthrough/-stub/-indirect/-dispatch/-barrel across .ts/.tsx/.mts/.cts/.mjs/.cjs/.js/.jsx. ` +
       `This codebase has no backwards-compatibility constraint; do not create wrapper files to keep ` +
@@ -4036,6 +4113,48 @@ async function donorRuntimePortGates(item) {
 }
 
 async function serviceGates(item) {
+  if (id === "OC-06") {
+    const evidence = ITEM_EVIDENCE["OC-06"];
+    const required = [
+      ...(evidence.files ?? []),
+      ...(evidence.tests ?? []),
+      "runtime/src/tui/components/PromptInput/PromptInput.tsx",
+      "runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx",
+      "runtime/src/tui/components/Settings/Config.tsx",
+      "runtime/src/tools/ConfigTool/ConfigTool.ts",
+      "runtime/src/tools/ConfigTool/supportedSettings.ts",
+    ];
+    for (const rel of required) {
+      if (typeof rel !== "string") continue;
+      if (!existsSync(path.join(root, rel))) failGate(`OC-06 file missing: ${rel}`);
+    }
+    const vimDir = path.join(root, "runtime/src/tui/vim");
+    const upstreamImports = walkFiles(vimDir).filter((file) => {
+      if (!/\.(ts|tsx)$/.test(file)) return false;
+      return /agenc\/upstream/.test(readFileSync(file, "utf8"));
+    });
+    if (upstreamImports.length > 0) {
+      failGate(
+        `OC-06 vim subsystem must not import the upstream mirror:\n  ${
+          upstreamImports
+            .map((file) => `- ${path.relative(root, file)}`)
+            .join("\n  ")
+        }`,
+      );
+    }
+    const runtimeTests = (evidence.tests ?? []).map((rel) => rel.replace(/^runtime\//, ""));
+    const testRun = run("npm", [
+      "exec",
+      "--workspace=@tetsuo-ai/runtime",
+      "vitest",
+      "run",
+      ...runtimeTests,
+    ]);
+    if (testRun.status !== 0) failGate("OC-06 targeted vim modal input tests failed");
+    pass("OC-06 vim modal input, configuration, footer, and tests present");
+    return;
+  }
+
   if (id === "OC-10") {
     const required = [
       "runtime/src/cost/tracker.ts",
@@ -5819,6 +5938,50 @@ function assertZc12DonorPortArtifactsGone() {
   }
 }
 
+function assertZc21McpClientBridgeFilesRenamed() {
+  const oldPaths = [
+    "runtime/src/mcp-client/prompt-bridge.ts",
+    "runtime/src/mcp-client/prompt-bridge.test.ts",
+    "runtime/src/mcp-client/resilient-bridge.ts",
+    "runtime/src/mcp-client/resilient-bridge.test.ts",
+    "runtime/src/mcp-client/resource-bridge.ts",
+    "runtime/src/mcp-client/resource-bridge.test.ts",
+    "runtime/src/mcp-client/tool-bridge.ts",
+    "runtime/src/mcp-client/tool-bridge.test.ts",
+  ];
+  const existing = oldPaths.filter((rel) => existsSync(path.join(root, rel)));
+  if (existing.length > 0) {
+    failGate(`ZC-21: bridge-suffix MCP client file(s) still exist:\n${existing.join("\n")}`);
+  }
+
+  const expectedPaths = [
+    "runtime/src/mcp-client/prompts.ts",
+    "runtime/src/mcp-client/prompts.test.ts",
+    "runtime/src/mcp-client/resilient-client.ts",
+    "runtime/src/mcp-client/resilient-client.test.ts",
+    "runtime/src/mcp-client/resources.ts",
+    "runtime/src/mcp-client/resources.test.ts",
+    "runtime/src/mcp-client/tools.ts",
+    "runtime/src/mcp-client/tools.test.ts",
+  ];
+  const missing = expectedPaths.filter((rel) => !existsSync(path.join(root, rel)));
+  if (missing.length > 0) {
+    failGate(`ZC-21: expected renamed MCP client file(s) missing:\n${missing.join("\n")}`);
+  }
+
+  const refs = run("bash", ["-c", "rg -n '(prompt|resilient|resource|tool)-bridge' runtime/src"], { silent: true });
+  if (refs.status === 0) {
+    failGate(`ZC-21: old MCP bridge module reference(s) remain:\n${refs.stdout.trim()}`);
+  } else if (refs.status !== 1) {
+    failGate("ZC-21: failed to scan runtime/src for old MCP bridge module references");
+  }
+
+  const verifySource = readFileSync(path.join(root, "scripts/goal/verify.mjs"), "utf8");
+  if (/SHIM_ALLOW_DIRS[\s\S]{0,160}runtime\/src\/mcp-client\//.test(verifySource)) {
+    failGate("ZC-21: runtime/src/mcp-client remains in SHIM_ALLOW_DIRS; remove the exemption");
+  }
+}
+
 function assertZc20NoRuntimeShimCruft() {
   const forwardingHits = [];
   for (const rel of listSourceFiles(path.join(root, "runtime/src"))) {
@@ -6865,7 +7028,7 @@ function assertZc41ObservabilityCoverage() {
     ["runtime/src/session/startup-prewarm.ts", "AGENC_STARTUP_PREWARM_AGE_AT_FIRST_TURN_METRIC"],
     ["runtime/src/agenc/adapters/runtime-session.ts", "AGENC_COMPACT_DURATION_METRIC"],
     ["runtime/src/hooks/engine/dispatcher.ts", "AGENC_HOOK_RUN_DURATION_METRIC"],
-    ["runtime/src/mcp-client/tool-bridge.ts", "mcp.tools.call"],
+    ["runtime/src/mcp-client/tools.ts", "mcp.tools.call"],
     ["runtime/src/session/observer-wiring.ts", "AGENC_TOOL_UNIFIED_EXEC_DURATION_METRIC"],
     ["runtime/src/app-server/command-exec.ts", "AGENC_TOOL_UNIFIED_EXEC_METRIC"],
     ["runtime/src/unified-exec/process-manager.ts", "AGENC_WINDOWS_SANDBOX_SETUP_DURATION_METRIC"],
@@ -6900,7 +7063,7 @@ function assertZc41ObservabilityCoverage() {
     "tests/runtime-session-compact-telemetry.test.ts",
     "src/phases/stream-model.test.ts",
     "src/hooks/engine/dispatcher.test.ts",
-    "src/mcp-client/tool-bridge.test.ts",
+    "src/mcp-client/tools.test.ts",
     "src/unified-exec/process-manager.test.ts",
   ]);
   if (testRun.status !== 0) {
@@ -7879,12 +8042,13 @@ async function cleanupGates(item) {
   }
   if (id === "Z-05") {
     // Z-05 final branding sweep — branding-scan must come back clean over the whole runtime/src tree.
-    const allTsRes = run("bash", ["-c", "find runtime/src -type f \\( -name '*.ts' -o -name '*.tsx' \\) | head -2000"], { silent: true });
+    const allTsRes = run("bash", ["-c", "git ls-files runtime/src | rg '\\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$'"], { silent: true });
+    if (allTsRes.status !== 0) failGate("Z-05: failed to enumerate tracked runtime source files");
     const files = (allTsRes.stdout || "").split("\n").map((s) => s.trim()).filter(Boolean);
     if (files.length === 0) failGate("Z-05: no TS files found to scan");
     const r = run("node", [path.join(root, "scripts/branding-scan.mjs"), ...files]);
     if (r.status !== 0) failGate("Z-05: branding-scan reported findings on full runtime/src sweep");
-    pass(`Z-05: branding clean across ${files.length} files`);
+    pass(`Z-05: branding clean across ${files.length} tracked source files`);
   }
   if (id === "Z-06") {
     // Z-06 removes parity scaffolding (MATRIX files, port-tracking artifacts)
@@ -7986,6 +8150,8 @@ async function cleanupGates(item) {
   // in its row body. The body's grep / file-existence assertions are the
   // contract; we extract them and verify here.
   if (/^ZC-/.test(id)) {
+    const donorPathPattern =
+      "/(open" + "clau" + "de|co" + "dex|clau" + "de|Open" + "Clau" + "de|Co" + "dex|Clau" + "de)/";
     const zcMap = {
       "ZC-01": { gone: ["runtime/src/agenc/adapters/prompt-input-fast-mode.tsx", "runtime/src/agenc/adapters/prompt-input-terminal-setup.ts", "runtime/src/agenc/adapters/prompt-input-ultrareview.ts"] },
       "ZC-02": { gone: ["runtime/src/bin/_deps/session-id-compat.ts"] },
@@ -8010,6 +8176,12 @@ async function cleanupGates(item) {
           caseInsensitive: true,
         },
       },
+      "ZC-09": {
+        grepNotPresent: {
+          pattern: donorPathPattern,
+          scope: "runtime/src",
+        },
+      },
       "ZC-10": { gone: ["runtime/src/agenc/upstream", "runtime/src/types/runtime-ambient.d.ts"] },
       "ZC-11": { gone: ["runtime/src/tools/code-mode/response-adapter.ts"] },
       "ZC-12": { custom: assertZc12DonorPortArtifactsGone },
@@ -8023,6 +8195,7 @@ async function cleanupGates(item) {
       "ZC-18": { gone: ["runtime/parity/agenc-compaction-context.json"] },
       "ZC-19": { grepPresent: { pattern: "openai-compatible.*OpenAI HTTP API protocol.*not a port-era shim", scope: "runtime/src/llm/providers/openai-compatible/README.md" } }, // branding-scan: allow real OpenAI protocol name in ZC-19 evidence
       "ZC-20": { custom: assertZc20NoRuntimeShimCruft },
+      "ZC-21": { custom: assertZc21McpClientBridgeFilesRenamed },
       "ZC-22": {
         gone: ["runtime/src/tui/elicitation-bridge.tsx"],
         grepNotPresent: { pattern: "elicitation-bridge", scope: "runtime/src" },

@@ -1,7 +1,7 @@
 /**
- * OpenAI-compatible context/output token limits.
+ * Compatible-provider context/output token limits.
  *
- * Adapted from OpenClaude's openaiContextWindows table, with AgenC-native
+ * Adapted from a reference context-window table, with AgenC-native
  * callers and environment names. Unknown compatible models use a 128k context
  * fallback and 32k/64k output defaults so local compatible endpoints do not
  * silently fall back to tiny legacy completion budgets.

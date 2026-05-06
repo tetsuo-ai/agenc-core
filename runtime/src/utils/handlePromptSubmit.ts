@@ -28,6 +28,7 @@ import { enqueue } from './messageQueueManager.js'
 import { resolveSkillModelOverride } from './model/model.js'
 import type { ProcessUserInputContext } from '../tui/input/processUserInput.js'
 import { processUserInput } from '../tui/input/processUserInput.js'
+import type { VimRoutingState } from '../tui/input/processTextPrompt.js'
 import type { QueryGuard } from './QueryGuard.js'
 import { queryCheckpoint, startQueryProfile } from './queryProfiler.js'
 import { runWithWorkload } from './workloadContext.js'
@@ -73,6 +74,7 @@ type BaseExecutionParams = {
   setAppState: (updater: (prev: AppState) => AppState) => void
   onBeforeQuery?: (input: string, newMessages: Message[]) => Promise<boolean>
   canUseTool?: CanUseToolFn
+  vimRoutingState?: VimRoutingState
 }
 
 /**
@@ -115,6 +117,7 @@ export type HandlePromptSubmitParams = BaseExecutionParams & {
    * trigger local slash commands or skills.
    */
   skipSlashCommands?: boolean
+  vimRoutingState?: VimRoutingState
 }
 
 export async function handlePromptSubmit(
@@ -141,6 +144,7 @@ export async function handlePromptSubmit(
     queuedCommands,
     uuid,
     skipSlashCommands,
+    vimRoutingState,
   } = params
 
   const { setCursorOffset, clearBuffer, resetHistory } = helpers
@@ -167,6 +171,7 @@ export async function handlePromptSubmit(
       resetHistory,
       canUseTool,
       onInputChange,
+      vimRoutingState,
     })
     return
   }
@@ -384,6 +389,7 @@ export async function handlePromptSubmit(
     resetHistory,
     canUseTool,
     onInputChange,
+    vimRoutingState,
   })
 }
 
@@ -411,6 +417,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
     resetHistory,
     canUseTool,
     queuedCommands,
+    vimRoutingState,
   } = params
 
   // Note: paste references are already processed before calling this function
@@ -494,6 +501,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
           bridgeOrigin: cmd.bridgeOrigin,
           isMeta: cmd.isMeta,
           skipAttachments: !isFirst,
+          vimRoutingState: isFirst ? vimRoutingState : undefined,
         })
         // Stamp origin here rather than threading another arg through
         // processUserInput → processUserInputBase → processTextPrompt → createUserMessage.

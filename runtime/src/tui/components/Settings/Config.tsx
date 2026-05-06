@@ -82,6 +82,12 @@ type Setting = (SettingBase & {
   type: 'managedEnum';
 });
 type SubMenu = 'Theme' | 'Model' | 'TeammateModel' | 'ExternalIncludes' | 'OutputStyle' | 'ChannelDowngrade' | 'Language' | 'EnableAutoUpdates';
+function getEditorModeDisplay(config: GlobalConfig): 'normal' | 'vim' {
+  if (typeof config.tui?.vimMode === 'boolean') {
+    return config.tui.vimMode ? 'vim' : 'normal';
+  }
+  return config.editorMode === 'vim' ? 'vim' : 'normal';
+}
 export function Config({
   onClose,
   context,
@@ -825,17 +831,25 @@ export function Config({
   }, {
     id: 'editorMode',
     label: 'Editor mode',
-    // Convert 'emacs' to 'normal' for backward compatibility
-    value: globalConfig.editorMode === 'emacs' ? 'normal' : globalConfig.editorMode || 'normal',
+    value: getEditorModeDisplay(globalConfig),
     options: ['normal', 'vim'],
     type: 'enum',
     onChange(value_1: string) {
       saveGlobalConfig(current_13 => ({
         ...current_13,
+        tui: {
+          ...(current_13.tui ?? {}),
+          vimMode: value_1 === 'vim'
+        },
         editorMode: value_1 as GlobalConfig['editorMode']
       }));
+      const nextConfig = getGlobalConfig();
       setGlobalConfig({
-        ...getGlobalConfig(),
+        ...nextConfig,
+        tui: {
+          ...(nextConfig.tui ?? {}),
+          vimMode: value_1 === 'vim'
+        },
         editorMode: value_1 as GlobalConfig['editorMode']
       });
       logEvent('tengu_editor_mode_changed', {
@@ -1181,8 +1195,8 @@ export function Config({
     if (currentLanguage !== initialLanguage.current) {
       formattedChanges.push(`Set response language to ${chalk.bold(currentLanguage ?? 'Default (English)')}`);
     }
-    if (globalConfig.editorMode !== initialConfig.current.editorMode) {
-      formattedChanges.push(`Set editor mode to ${chalk.bold(globalConfig.editorMode || 'emacs')}`);
+    if (getEditorModeDisplay(globalConfig) !== getEditorModeDisplay(initialConfig.current)) {
+      formattedChanges.push(`Set editor mode to ${chalk.bold(getEditorModeDisplay(globalConfig))}`);
     }
     if (globalConfig.diffTool !== initialConfig.current.diffTool) {
       formattedChanges.push(`Set diff tool to ${chalk.bold(globalConfig.diffTool)}`);

@@ -45,6 +45,8 @@ export function findTextObject(
     return findWordObject(text, offset, isInner, isVimWordChar)
   if (objectType === 'W')
     return findWordObject(text, offset, isInner, ch => !isVimWhitespace(ch))
+  if (objectType === 'p') return findParagraphObject(text, offset, isInner)
+  if (objectType === 't') return findTagObject(text, offset, isInner)
 
   const pair = PAIRS[objectType]
   if (pair) {
@@ -68,6 +70,7 @@ function findWordObject(
   for (const { segment, index } of getGraphemeSegmenter().segment(text)) {
     graphemes.push({ segment, index })
   }
+  if (graphemes.length === 0) return null
 
   // Find which grapheme index the offset falls in
   let graphemeIdx = graphemes.length - 1
@@ -183,4 +186,125 @@ function findBracketObject(
   if (end === -1) return null
 
   return isInner ? { start: start + 1, end } : { start, end: end + 1 }
+}
+
+function findParagraphObject(
+  text: string,
+  offset: number,
+  isInner: boolean,
+): TextObjectRange {
+  if (text.length === 0) return null
+
+  const boundedOffset = Math.max(0, Math.min(offset, text.length - 1))
+  const before = text.slice(0, boundedOffset)
+  const after = text.slice(boundedOffset)
+  const beforeBoundary = findLastBlankLineBoundary(before)
+  const afterBoundary = after.search(/\n[ \t]*\n/)
+
+  const innerStart = beforeBoundary === null ? 0 : beforeBoundary
+  const innerEnd =
+    afterBoundary === -1 ? text.length : boundedOffset + afterBoundary
+
+  if (isInner) return { start: innerStart, end: innerEnd }
+
+  if (innerEnd < text.length) {
+    let end = innerEnd
+    while (end < text.length && (text[end] === '\n' || text[end] === ' ' || text[end] === '\t')) {
+      end++
+      if (text[end - 1] === '\n' && text[end] !== '\n' && !/[ \t]/.test(text[end] ?? '')) break
+    }
+    return { start: innerStart, end }
+  }
+
+  let start = innerStart
+  while (start > 0 && (text[start - 1] === '\n' || text[start - 1] === ' ' || text[start - 1] === '\t')) {
+    start--
+    if (start > 0 && text[start - 1] !== '\n' && text[start] === '\n') break
+  }
+  return { start, end: innerEnd }
+}
+
+function findLastBlankLineBoundary(text: string): number | null {
+  const re = /\n[ \t]*\n/g
+  let match: RegExpExecArray | null
+  let boundary: number | null = null
+  while ((match = re.exec(text)) !== null) {
+    boundary = match.index + match[0].length
+  }
+  return boundary
+}
+
+function findTagObject(
+  text: string,
+  offset: number,
+  isInner: boolean,
+): TextObjectRange {
+  type OpenTag = {
+    name: string
+    start: number
+    end: number
+  }
+  type TagPair = {
+    name: string
+    start: number
+    innerStart: number
+    innerEnd: number
+    end: number
+  }
+
+  const tagRe = /<\/?([A-Za-z][\w:-]*)(?:\s[^<>]*)?>/g
+  const stack: OpenTag[] = []
+  const pairs: TagPair[] = []
+  let match: RegExpExecArray | null
+
+  while ((match = tagRe.exec(text)) !== null) {
+    const raw = match[0]
+    const name = match[1]!
+    const start = match.index
+    const end = start + raw.length
+    const isClosing = raw.startsWith('</')
+    const isSelfClosing = /\/\s*>$/.test(raw)
+
+    if (isSelfClosing) continue
+
+    if (!isClosing) {
+      stack.push({ name, start, end })
+      continue
+    }
+
+    const openIndex = findLastMatchingOpenTag(stack, name)
+    if (openIndex === -1) continue
+
+    const [open] = stack.splice(openIndex, 1)
+    if (!open) continue
+    pairs.push({
+      name,
+      start: open.start,
+      innerStart: open.end,
+      innerEnd: start,
+      end,
+    })
+  }
+
+  const boundedOffset = Math.max(0, Math.min(offset, text.length))
+  const containing = pairs
+    .filter(pair => pair.start <= boundedOffset && boundedOffset <= pair.end)
+    .sort((a, b) => a.end - a.start - (b.end - b.start))
+
+  const pair = containing[0]
+  if (!pair) return null
+
+  return isInner
+    ? { start: pair.innerStart, end: pair.innerEnd }
+    : { start: pair.start, end: pair.end }
+}
+
+function findLastMatchingOpenTag(
+  stack: readonly { name: string }[],
+  name: string,
+): number {
+  for (let i = stack.length - 1; i >= 0; i--) {
+    if (stack[i]?.name === name) return i
+  }
+  return -1
 }

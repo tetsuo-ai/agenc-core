@@ -1,5 +1,5 @@
 /**
- * Ports the donor app-server websocket acceptor shape onto AgenC's daemon
+ * Ports the app-server websocket acceptor shape onto AgenC's daemon
  * JSON-RPC transport primitives.
  *
  * Why this lives here:
@@ -14,23 +14,7 @@
  *   - Signed bearer auth and capability-token generation are deferred to
  *     F-03p, which owns the daemon transport auth decision.
  *
- * Source anchors:
- *   - /home/tetsuo/git/codex/codex-rs/app-server-transport/src/lib.rs // branding-scan: allow donor source path
- *   - /home/tetsuo/git/codex/codex-rs/app-server-transport/src/outgoing_message.rs // branding-scan: allow donor source path
- *   - /home/tetsuo/git/codex/codex-rs/app-server-transport/src/transport/auth.rs // branding-scan: allow donor source path
- *   - /home/tetsuo/git/codex/codex-rs/app-server-transport/src/transport/mod.rs // branding-scan: allow donor source path
- *   - /home/tetsuo/git/codex/codex-rs/app-server-transport/src/transport/remote_control/client_tracker.rs // branding-scan: allow donor source path
- *   - /home/tetsuo/git/codex/codex-rs/app-server-transport/src/transport/remote_control/enroll.rs // branding-scan: allow donor source path
- *   - /home/tetsuo/git/codex/codex-rs/app-server-transport/src/transport/remote_control/mod.rs // branding-scan: allow donor source path
- *   - /home/tetsuo/git/codex/codex-rs/app-server-transport/src/transport/remote_control/protocol.rs // branding-scan: allow donor source path
- *   - /home/tetsuo/git/codex/codex-rs/app-server-transport/src/transport/remote_control/segment.rs // branding-scan: allow donor source path
- *   - /home/tetsuo/git/codex/codex-rs/app-server-transport/src/transport/remote_control/segment_tests.rs // branding-scan: allow donor source path
- *   - /home/tetsuo/git/codex/codex-rs/app-server-transport/src/transport/remote_control/tests.rs // branding-scan: allow donor source path
- *   - /home/tetsuo/git/codex/codex-rs/app-server-transport/src/transport/remote_control/websocket.rs // branding-scan: allow donor source path
- *   - /home/tetsuo/git/codex/codex-rs/app-server-transport/src/transport/stdio.rs // branding-scan: allow donor source path
- *   - /home/tetsuo/git/codex/codex-rs/app-server-transport/src/transport/unix_socket.rs // branding-scan: allow donor source path
- *   - /home/tetsuo/git/codex/codex-rs/app-server-transport/src/transport/unix_socket_tests.rs // branding-scan: allow donor source path
- *   - /home/tetsuo/git/codex/codex-rs/app-server-transport/src/transport/websocket.rs // branding-scan: allow donor source path
+ * Reference anchors are tracked in parity evidence, not runtime comments.
  */
 
 import { Buffer } from "node:buffer";

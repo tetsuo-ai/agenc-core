@@ -69,6 +69,7 @@ import { isBilledAsExtraUsage } from '../../../utils/extraUsage.js';
 import { clearFastModeCooldown, FAST_MODE_MODEL_DISPLAY, getFastModeModel, getFastModeRuntimeState, getFastModeUnavailableReason, isFastModeAvailable, isFastModeCooldown, isFastModeEnabled, isFastModeSupportedByModel } from '../../../utils/fastMode.js';
 import { isFullscreenEnvEnabled } from '../../../utils/fullscreen.js';
 import type { PromptInputHelpers } from '../../../utils/handlePromptSubmit.js';
+import type { VimRoutingState } from '../../input/processTextPrompt.js';
 import { extractDraggedFilePaths } from '../../../utils/dragDropPaths.js';
 import { getImageFromClipboard, PASTE_THRESHOLD } from '../../../utils/imagePaste.js';
 import type { ImageDimensions } from '../../../utils/imageResizer.js';
@@ -108,12 +109,11 @@ import { GlobalSearchDialog } from '../GlobalSearchDialog.js';
 import { HistorySearchDialog } from '../../history/HistorySearchDialog.js';
 import { ModelPicker } from '../ModelPicker.js';
 import { QuickOpenDialog } from '../QuickOpenDialog.js';
-import TextInput from '../TextInput.js';
 import { ThinkingToggle } from '../ThinkingToggle.js';
 import { BackgroundTasksDialog } from '../tasks/BackgroundTasksDialog.js';
 import { shouldHideTasksFooter } from '../tasks/taskStatusUtils.js';
 import { TeamsDialog } from '../teams/TeamsDialog.js';
-import VimTextInput from '../VimTextInput.js';
+import { ConfiguredPromptTextInput } from './ConfiguredPromptTextInput.js';
 import { detectModeEntry, getModeFromInput, getValueFromInput } from './inputModes.js';
 import { FOOTER_TEMPORARY_STATUS_TIMEOUT, Notifications } from './Notifications.js';
 import PromptInputFooter from './PromptInputFooter.js';
@@ -463,6 +463,7 @@ type Props = {
     setAppState: (f: (prev: AppState) => AppState) => void;
   }, options?: {
     fromKeybinding?: boolean;
+    vimRoutingState?: VimRoutingState;
   }) => Promise<void>;
   onAgentSubmit?: (input: string, task: InProcessTeammateTaskState | LocalAgentTaskState, helpers: PromptInputHelpers) => Promise<void>;
   isSearchingHistory: boolean;
@@ -1288,6 +1289,12 @@ function PromptInput({
           state: speculation,
           speculationSessionTimeSavedMs: speculationSessionTimeSavedMs,
           setAppState
+        }, {
+          vimRoutingState: {
+            enabled: isVimModeEnabled(),
+            mode: vimMode,
+            keys: []
+          }
         });
         return; // Skip normal query - speculation handled it
       }
@@ -1363,8 +1370,14 @@ function PromptInput({
       setCursorOffset,
       clearBuffer,
       resetHistory
+    }, undefined, {
+      vimRoutingState: {
+        enabled: isVimModeEnabled(),
+        mode: vimMode,
+        keys: []
+      }
     });
-  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, pastedContents, removeNotification]);
+  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, pastedContents, removeNotification, vimMode]);
   const {
     suggestions,
     selectedSuggestion,
@@ -2535,7 +2548,7 @@ function PromptInput({
         </Text>
       </Box>;
   }
-  const textInputElement = isVimModeEnabled() ? <VimTextInput {...baseProps} initialMode={vimMode} onModeChange={setVimMode} /> : <TextInput {...baseProps} />;
+  const textInputElement = <ConfiguredPromptTextInput baseProps={baseProps} vimMode={vimMode} onVimModeChange={setVimMode} />;
   return <Box flexDirection="column" marginTop={briefOwnsGap ? 0 : 1}>
       {!isFullscreenEnvEnabled() && <PromptInputQueuedCommands />}
       {hasSuppressedDialogs && <Box marginTop={1} marginLeft={2}>

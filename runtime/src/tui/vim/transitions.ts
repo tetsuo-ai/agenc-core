@@ -99,6 +99,7 @@ function handleNormalInput(
   input: string,
   count: number,
   ctx: TransitionContext,
+  countProvided = false,
 ): TransitionResult | null {
   if (isOperatorKey(input)) {
     return { next: { type: 'operator', op: OPERATORS[input], count } }
@@ -146,13 +147,10 @@ function handleNormalInput(
   if (input === 'G') {
     return {
       execute: () => {
-        // count=1 means no count given, go to last line
-        // otherwise go to line N
-        if (count === 1) {
-          ctx.setOffset(ctx.cursor.startOfLastLine().offset)
-        } else {
-          ctx.setOffset(ctx.cursor.goToLine(count).offset)
-        }
+        const target = countProvided
+          ? ctx.cursor.goToLine(count)
+          : ctx.cursor.startOfLastLine()
+        ctx.setOffset(target.offset)
       },
     }
   }
@@ -161,6 +159,9 @@ function handleNormalInput(
   }
   if (input === ';' || input === ',') {
     return { execute: () => executeRepeatFind(input === ',', count, ctx) }
+  }
+  if (input === 'n' || input === 'N') {
+    return { execute: () => executeRepeatFind(input === 'N', count, ctx) }
   }
   if (input === 'u') {
     return { execute: () => ctx.onUndo?.() }
@@ -208,6 +209,7 @@ function handleOperatorInput(
   count: number,
   input: string,
   ctx: TransitionContext,
+  countProvided = false,
 ): TransitionResult | null {
   if (isTextObjScopeKey(input)) {
     return {
@@ -231,11 +233,19 @@ function handleOperatorInput(
   }
 
   if (input === 'G') {
-    return { execute: () => executeOperatorG(op, count, ctx) }
+    return { execute: () => executeOperatorG(op, count, ctx, countProvided) }
   }
 
   if (input === 'g') {
     return { next: { type: 'operatorG', op, count } }
+  }
+
+  if (input === 'n' || input === 'N') {
+    return { execute: () => executeOperatorRepeatFind(op, input === 'N', count, ctx) }
+  }
+
+  if (input === ';' || input === ',') {
+    return { execute: () => executeOperatorRepeatFind(op, input === ',', count, ctx) }
   }
 
   return null
@@ -274,7 +284,7 @@ function fromCount(
   }
 
   const count = parseInt(state.digits, 10)
-  const result = handleNormalInput(input, count, ctx)
+  const result = handleNormalInput(input, count, ctx, true)
   if (result) return result
 
   return { next: { type: 'idle' } }
@@ -290,7 +300,7 @@ function fromOperator(
     return { execute: () => executeLineOp(state.op, state.count, ctx) }
   }
 
-  if (/[0-9]/.test(input)) {
+  if (/[1-9]/.test(input)) {
     return {
       next: {
         type: 'operatorCount',
@@ -325,7 +335,13 @@ function fromOperatorCount(
 
   const motionCount = parseInt(state.digits, 10)
   const effectiveCount = state.count * motionCount
-  const result = handleOperatorInput(state.op, effectiveCount, input, ctx)
+  const result = handleOperatorInput(
+    state.op,
+    effectiveCount,
+    input,
+    ctx,
+    true,
+  )
   if (result) return result
 
   return { next: { type: 'idle' } }
@@ -395,6 +411,14 @@ function fromG(
       },
     }
   }
+  if (input === 'e' || input === 'E') {
+    return {
+      execute: () => {
+        const target = resolveMotion(`g${input}`, ctx.cursor, state.count)
+        ctx.setOffset(target.offset)
+      },
+    }
+  }
   if (input === 'g') {
     // If count provided (e.g., 5gg), go to that line. Otherwise go to first line.
     if (state.count > 1) {
@@ -423,6 +447,12 @@ function fromOperatorG(
   ctx: TransitionContext,
 ): TransitionResult {
   if (input === 'j' || input === 'k') {
+    return {
+      execute: () =>
+        executeOperatorMotion(state.op, `g${input}`, state.count, ctx),
+    }
+  }
+  if (input === 'e' || input === 'E') {
     return {
       execute: () =>
         executeOperatorMotion(state.op, `g${input}`, state.count, ctx),
@@ -470,21 +500,38 @@ function executeRepeatFind(
   const lastFind = ctx.getLastFind()
   if (!lastFind) return
 
-  // Determine the effective find type based on reverse
-  let findType = lastFind.type
-  if (reverse) {
-    // Flip the direction
-    const flipMap: Record<FindType, FindType> = {
-      f: 'F',
-      F: 'f',
-      t: 'T',
-      T: 't',
-    }
-    findType = flipMap[findType]
-  }
-
+  const findType = resolveRepeatFindType(lastFind.type, reverse)
   const result = ctx.cursor.findCharacter(lastFind.char, findType, count)
   if (result !== null) {
     ctx.setOffset(result)
   }
+}
+
+function executeOperatorRepeatFind(
+  op: Operator,
+  reverse: boolean,
+  count: number,
+  ctx: TransitionContext,
+): void {
+  const lastFind = ctx.getLastFind()
+  if (!lastFind) return
+
+  executeOperatorFind(
+    op,
+    resolveRepeatFindType(lastFind.type, reverse),
+    lastFind.char,
+    count,
+    ctx,
+  )
+}
+
+function resolveRepeatFindType(findType: FindType, reverse: boolean): FindType {
+  if (!reverse) return findType
+  const flipMap: Record<FindType, FindType> = {
+    f: 'F',
+    F: 'f',
+    t: 'T',
+    T: 't',
+  }
+  return flipMap[findType]
 }

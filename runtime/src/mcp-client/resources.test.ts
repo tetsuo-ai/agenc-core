@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   MAX_RESOURCE_BYTES,
   createResourceBridge,
-} from "./resource-bridge.js";
+} from "./resources.js";
 
 function makeClient(overrides: {
   listResources?: ReturnType<typeof vi.fn>;

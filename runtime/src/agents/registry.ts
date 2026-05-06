@@ -1,7 +1,7 @@
 /**
  * AgentRegistry — in-memory slot + path tracking for subagents.
  *
- * Hand-port of codex runtime `core/src/agent/registry.rs` (344 LOC).
+ * Hand-port of reference runtime `core/src/agent/registry.rs` (344 LOC).
  * Owns:
  *   - Spawn-slot counter (bounded by `maxThreads`)
  *   - `agentPath` → `AgentMetadata` map (hierarchical "/root/worker/sub")
@@ -10,7 +10,7 @@
  *
  * Invariants wired:
  *   I-37 (sibling `agentPath` collision) — `reserveAgentPath` returns
- *        `AgentPathExistsError` on collision. Mirrors codex runtime.
+ *        `AgentPathExistsError` on collision. Mirrors reference runtime.
  *   I-63 (atomic slot acquisition) — slot counter increment/decrement
  *        happens under `AsyncLock<void>`. Concurrent spawns never
  *        both observe `count = N-1` and both increment to `N`.
@@ -76,7 +76,7 @@ export class InvalidAgentPathError extends Error {
 /**
  * Opaque handle the caller must hold until spawn finalizes. On drop
  * (dispose), the reservation releases the slot — so failed spawns
- * don't leak counters. Matches codex runtime's `SpawnReservation` RAII.
+ * don't leak counters. Matches reference runtime's `SpawnReservation` RAII.
  */
 export class SpawnReservation {
   private released = false;
@@ -204,7 +204,7 @@ export class AgentRegistry {
 
   /**
    * Release a completed/shutdown agent. Decrements the slot counter
-   * and removes the path entry. Codex deliberately does not release
+   * and removes the path entry. reference deliberately does not release
    * nicknames here; used nicknames remain reserved until the nickname
    * allocator exhausts its candidate pool and advances the suffix cycle.
    * This prevents sequential short-lived sibling agents from all reusing
@@ -277,7 +277,7 @@ export class AgentRegistry {
   }
 
   /**
-   * Allocate a nickname for a freshly spawning child. Matches Codex's
+   * Allocate a nickname for a freshly spawning child. Matches the reference
    * candidate-pool semantics: use the role-specific pool when present,
    * otherwise use the shared `agent_names.txt` list, choose one currently
    * unused candidate, and advance the ordinal suffix after full exhaustion.
@@ -311,7 +311,7 @@ export class AgentRegistry {
    * Release a nickname back into the pool. Idempotent. This is only
    * for failed-spawn rollback before the child becomes a live thread.
    * Normal thread shutdown intentionally keeps the nickname reserved,
-   * matching Codex registry behavior.
+   * matching reference registry behavior.
    */
   releaseNickname(nickname: string): void {
     this.usedNicknames.delete(nickname);

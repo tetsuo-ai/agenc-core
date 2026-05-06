@@ -205,7 +205,7 @@ export function getPlanFilePath(ctx: PlanFileContext = {}): string {
 /**
  * Does `absolutePath` belong to the current session's plan-file family?
  *
- * Mirrors openclaude `isSessionPlanFile`
+ * Mirrors reference `isSessionPlanFile`
  * (`/home/tetsuo/git/AgenC/src/utils/permissions/filesystem.ts:254`):
  *
  *     const expectedPrefix = join(getPlansDirectory(), getPlanSlug())

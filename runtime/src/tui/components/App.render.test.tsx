@@ -36,6 +36,7 @@ const providerProbe = {
     resetHistory(): void;
     setCursorOffset(offset: number): void;
   }) => Promise<void>>,
+  promptProps: [] as Array<Record<string, unknown>>,
   onChangeAppState: typeof vi.fn === "function" ? vi.fn() : () => {},
 };
 
@@ -276,6 +277,8 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
     default: ({
       input,
       onSubmit,
+      vimMode,
+      setVimMode,
     }: {
       input: string;
       onSubmit: (input: string, helpers: {
@@ -283,8 +286,11 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
         resetHistory(): void;
         setCursorOffset(offset: number): void;
       }) => Promise<void>;
+      vimMode?: unknown;
+      setVimMode?: unknown;
     }) => {
       providerProbe.promptSubmits.push(onSubmit);
+      providerProbe.promptProps.push({ input, vimMode, setVimMode });
       return React.createElement("ink-text", null, `prompt:${input}`);
     },
   };
@@ -461,6 +467,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
   test("renders the absorbed App shell with a stub session", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const session = createSession();
+    providerProbe.promptProps.length = 0;
 
     const output = await renderApp(
       <AgenCTuiApp
@@ -473,6 +480,13 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
     expect(output).toContain("messages:0");
     expect(output).toContain("prompt:draft");
+    expect(providerProbe.promptProps.at(-1)).toEqual(
+      expect.objectContaining({
+        input: "draft",
+        vimMode: "INSERT",
+        setVimMode: expect.any(Function),
+      }),
+    );
   });
 
   test("renders first-run onboarding before the normal transcript when enabled", async () => {

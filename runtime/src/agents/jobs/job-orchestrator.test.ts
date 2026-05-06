@@ -77,7 +77,7 @@ describe("runAgentsOnCsv", () => {
       spawn: fakeSpawnReporter(),
     });
     const written = await readFile(outPath, "utf8");
-    // Header matches codex render_job_csv: input headers + fixed suffix
+    // Header matches reference render_job_csv: input headers + fixed suffix
     expect(written).toContain(
       "id,value,job_id,item_id,row_index,source_id,status,attempt_count,last_error,result_json,reported_at,completed_at",
     );
@@ -87,7 +87,7 @@ describe("runAgentsOnCsv", () => {
     // Input columns echo the row values
     expect(data[0]).toBe("row1"); // id column value
     expect(data[1]).toBe("hi"); // value column value
-    // Codex-shape suffix begins at index 2
+    // reference-shape suffix begins at index 2
     expect(data[3]).toBe("row1"); // item_id (idColumn=id resolved to "row1")
     expect(data[4]).toBe("0"); // row_index
     expect(data[5]).toBe("row1"); // source_id (echoes idColumn value)
@@ -122,7 +122,7 @@ describe("runAgentsOnCsv", () => {
     });
     expect(result.stoppedEarly).toBe(true);
     expect(result.items[0]!.status).toBe("completed");
-    // Codex's run_agent_job_loop stops dispatching new workers when
+    // The reference run loop stops dispatching new workers when
     // cancellation is requested but does not auto-cancel pending items;
     // they remain in `pending` status. AgenC matches that behavior:
     // row2 and row3 never dispatch and stay pending.

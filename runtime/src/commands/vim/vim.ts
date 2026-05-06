@@ -7,7 +7,12 @@ import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 
 export const call: LocalCommandCall = async () => {
   const config = getGlobalConfig()
-  let currentMode = config.editorMode || 'normal'
+  let currentMode =
+    typeof config.tui?.vimMode === 'boolean'
+      ? config.tui.vimMode
+        ? 'vim'
+        : 'normal'
+      : config.editorMode || 'normal'
 
   // Handle backward compatibility - treat 'emacs' as 'normal'
   if (currentMode === 'emacs') {
@@ -18,6 +23,10 @@ export const call: LocalCommandCall = async () => {
 
   saveGlobalConfig(current => ({
     ...current,
+    tui: {
+      ...(current.tui ?? {}),
+      vimMode: newMode === 'vim',
+    },
     editorMode: newMode,
   }))
 
