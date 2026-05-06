@@ -5,12 +5,12 @@ import * as React from 'react';
 import { useEffect, useState } from 'react';
 import { Text } from '../ink.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
-import { toError } from '../../agenc/upstream/utils/errors'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../agenc/upstream/utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getSettingSourceName, type SettingSource } from '../../agenc/upstream/utils/settings/constants'; // upstream-import: keep target is owned by another Z-PURGE item
-import { updateSettingsForSource } from '../../agenc/upstream/utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getEnvironmentSelectionInfo } from '../../agenc/upstream/utils/teleport/environmentSelection'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { EnvironmentResource } from '../../agenc/upstream/utils/teleport/environments'; // upstream-import: keep target is owned by another Z-PURGE item
+import { toError } from '../../utils/errors.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSettingSourceName, type SettingSource } from '../../utils/settings/constants.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { updateSettingsForSource } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getEnvironmentSelectionInfo } from '../../utils/teleport/environmentSelection.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { EnvironmentResource } from '../../utils/teleport/environments.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint';
 import { Select } from './CustomSelect/select';
 import { Byline } from './design-system/Byline';

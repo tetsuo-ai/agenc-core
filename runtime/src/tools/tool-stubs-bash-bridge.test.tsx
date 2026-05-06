@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 
 // Stub AgenC ink before tool-rendering.tsx imports it. The real AgenC ink
-// transitively pulls `agenc/upstream/utils/config.ts` which runs a
+// transitively pulls `utils/config.ts` which runs a
 // `feature('TEAMMEM') ? require('../memdir/teamMemPaths.js') : null`
 // branch — vitest's source resolver cannot follow the .js → .ts mapping
 // inside a CommonJS require, so importing the real chain crashes the test

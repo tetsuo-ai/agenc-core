@@ -23,7 +23,7 @@ import { getSlashCommandToolSkills } from '../../commands.js'
 import {
   LOCAL_COMMAND_STDERR_TAG,
   LOCAL_COMMAND_STDOUT_TAG,
-} from './constants/xml.js'
+} from '../../constants/xml.js'
 import {
   getModelUsage,
   getTotalAPIDuration,
@@ -41,47 +41,47 @@ import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import type { Message } from './types/message.js'
 import type { OrphanedPermission } from './types/textInputTypes.js'
-import { createAbortController } from './utils/abortController.js'
-import type { AttributionState } from './utils/commitAttribution.js'
-import { getGlobalConfig } from './utils/config.js'
-import { getCwd } from './utils/cwd.js'
-import { isBareMode, isEnvTruthy } from './utils/envUtils.js'
+import { createAbortController } from '../../utils/abortController.js'
+import type { AttributionState } from '../../utils/commitAttribution.js'
+import { getGlobalConfig } from '../../utils/config.js'
+import { getCwd } from '../../utils/cwd.js'
+import { isBareMode, isEnvTruthy } from '../../utils/envUtils.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getFastModeState } from './utils/fastMode.js'
+import { getFastModeState } from '../../utils/fastMode.js'
 import {
   type FileHistoryState,
   fileHistoryEnabled,
   fileHistoryMakeSnapshot,
-} from './utils/fileHistory.js'
+} from '../../utils/fileHistory.js'
 import {
   cloneFileStateCache,
   type FileStateCache,
-} from './utils/fileStateCache.js'
-import { headlessProfilerCheckpoint } from './utils/headlessProfiler.js'
-import { registerStructuredOutputEnforcement } from './utils/hooks/hookHelpers.js'
-import { getInMemoryErrors } from './utils/log.js'
-import { countToolCalls, SYNTHETIC_MESSAGES } from './utils/messages.js'
+} from '../../utils/fileStateCache.js'
+import { headlessProfilerCheckpoint } from '../../utils/headlessProfiler.js'
+import { registerStructuredOutputEnforcement } from '../../utils/hooks/hookHelpers.js'
+import { getInMemoryErrors } from '../../utils/log.js'
+import { countToolCalls, SYNTHETIC_MESSAGES } from '../../utils/messages.js'
 import {
   getMainLoopModel,
   parseUserSpecifiedModel,
-} from './utils/model/model.js'
-import { loadAllPluginsCacheOnly } from './utils/plugins/pluginLoader.js'
+} from '../../utils/model/model.js'
+import { loadAllPluginsCacheOnly } from '../../utils/plugins/pluginLoader.js'
 import {
   type ProcessUserInputContext,
   processUserInput,
 } from '../../tui/input/processUserInput.js'
-import { fetchSystemPromptParts } from './utils/queryContext.js'
-import { setCwd } from './utils/Shell.js'
+import { fetchSystemPromptParts } from '../../utils/queryContext.js'
+import { setCwd } from '../../utils/Shell.js'
 import {
   flushSessionStorage,
   recordTranscript,
-} from './utils/sessionStorage.js'
-import { asSystemPrompt } from './utils/systemPromptType.js'
-import { resolveThemeSetting } from './utils/systemTheme.js'
+} from '../../utils/sessionStorage.js'
+import { asSystemPrompt } from '../../utils/systemPromptType.js'
+import { resolveThemeSetting } from '../../utils/systemTheme.js'
 import {
   shouldEnableThinkingByDefault,
   type ThinkingConfig,
-} from './utils/thinking.js'
+} from '../../utils/thinking.js'
 
 // Lazy: MessageSelector.tsx pulls React/ink; only needed for message filtering at query time
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -92,21 +92,21 @@ const messageSelector =
 import {
   localCommandOutputToSDKAssistantMessage,
   toSDKCompactMetadata,
-} from './utils/messages/mappers.js'
+} from '../../utils/messages/mappers.js'
 import {
   buildSystemInitMessage,
   sdkCompatToolName,
-} from './utils/messages/systemInit.js'
+} from '../../utils/messages/systemInit.js'
 import {
   getScratchpadDir,
   isScratchpadEnabled,
-} from './utils/permissions/filesystem.js'
+} from '../../utils/permissions/filesystem.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
 import {
   handleOrphanedPermission,
   isResultSuccessful,
   normalizeMessage,
-} from './utils/queryHelpers.js'
+} from '../../utils/queryHelpers.js'
 
 // Dead code elimination: conditional import for coordinator mode
 /* eslint-disable @typescript-eslint/no-require-imports */

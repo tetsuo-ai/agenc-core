@@ -9,7 +9,7 @@ import * as React from 'react';
 import { ConfigurableShortcutHint } from '../../../../tui/components/ConfigurableShortcutHint';
 import { Byline } from '../../../../tui/components/design-system/Byline';
 import { Box, Text } from '../../../../tui/ink.js';
-import type { PluginMarketplaceEntry } from '../../utils/plugins/schemas.js';
+import type { PluginMarketplaceEntry } from '../../../../utils/plugins/schemas.js';
 
 /**
  * Represents a plugin available for installation from a marketplace

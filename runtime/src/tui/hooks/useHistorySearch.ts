@@ -10,7 +10,7 @@ import { KeyboardEvent } from '../ink/events/keyboard-event.js'
 import { useInput } from '../ink.js'
 import { useKeybinding, useKeybindings } from '../keybindings/useKeybinding.js'
 import type { PromptInputMode } from '../../agenc/upstream/types/textInputTypes' // upstream-import: keep target is owned by another Z-PURGE item
-import type { HistoryEntry } from '../../agenc/upstream/utils/config' // upstream-import: keep target is owned by another Z-PURGE item
+import type { HistoryEntry } from '../../utils/config.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 export function useHistorySearch(
   onAcceptHistory: (entry: HistoryEntry) => void,

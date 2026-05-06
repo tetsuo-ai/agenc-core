@@ -6,8 +6,8 @@ import { Box } from '../../ink.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../agenc/upstream/services/analytics/growthbook'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useAppState } from '../../state/AppState.js';
 import { isEnvTruthy } from '../../../utils/envUtils';
-import { logError } from '../../../agenc/upstream/utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
-import { countCharInString } from '../../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { countCharInString } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { MessageActionsSelectedContext } from '../messageActions';
 import { HighlightedThinkingText } from './HighlightedThinkingText';
 type Props = {

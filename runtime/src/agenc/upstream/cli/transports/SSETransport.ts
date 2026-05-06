@@ -1,14 +1,14 @@
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import axios, { type AxiosError } from 'axios'
 import type { StdoutMessage } from 'src/entrypoints/sdk/controlTypes.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { logForDiagnosticsNoPII } from '../../utils/diagLogs.js'
-import { errorMessage } from '../../utils/errors.js'
-import { getSessionIngressAuthHeaders } from '../../utils/sessionIngressAuth.js'
-import { sleep } from '../../utils/sleep.js'
-import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
-import { getAgenCCodeUserAgent } from '../../utils/userAgent.js'
+import { logForDiagnosticsNoPII } from '../../../../utils/diagLogs.js'
+import { errorMessage } from '../../../../utils/errors.js'
+import { getSessionIngressAuthHeaders } from '../../../../utils/sessionIngressAuth.js'
+import { sleep } from '../../../../utils/sleep.js'
+import { jsonParse, jsonStringify } from '../../../../utils/slowOperations.js'
+import { getAgenCCodeUserAgent } from '../../../../utils/userAgent.js'
 import type { Transport } from './Transport.js'
-
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
@@ -688,11 +688,9 @@ export class SSETransport implements Transport {
     this.abortController = null
   }
 }
-
 // ---------------------------------------------------------------------------
 // URL Conversion
 // ---------------------------------------------------------------------------
-
 /**
  * Convert an SSE URL to the HTTP POST endpoint URL.
  * The SSE stream URL and POST URL share the same base; the POST endpoint

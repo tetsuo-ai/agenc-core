@@ -18,7 +18,7 @@
  *     Go regex are kept (JS $ matches end-of-string in default mode).
  */
 
-import { capitalize } from '../../utils/stringUtils.js'
+import { capitalize } from '../../../../utils/stringUtils.js'
 
 type SecretRule = {
   /** Gitleaks rule ID (kebab-case), used in labels and analytics */

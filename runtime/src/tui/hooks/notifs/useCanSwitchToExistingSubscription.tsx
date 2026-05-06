@@ -1,9 +1,9 @@
 import * as React from 'react';
 import { getOauthProfileFromApiKey } from '../../../agenc/upstream/services/oauth/getOauthProfile.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isAgenCAISubscriber } from '../../../agenc/upstream/utils/auth.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isAgenCAISubscriber } from '../../../utils/auth.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Text } from '../../ink.js';
 import { logEvent } from '../../../agenc/upstream/services/analytics/index'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getGlobalConfig, saveGlobalConfig } from '../../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useStartupNotification } from './useStartupNotification';
 const MAX_SHOW_COUNT = 3;
 

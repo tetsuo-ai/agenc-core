@@ -1,10 +1,10 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { useCallback, useEffect, useState } from 'react';
-import { getAllOutputStyles, OUTPUT_STYLE_CONFIG, type OutputStyleConfig } from '../../agenc/upstream/constants/outputStyles'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getAllOutputStyles, OUTPUT_STYLE_CONFIG, type OutputStyleConfig } from '../../constants/outputStyles.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Text } from '../ink.js';
-import type { OutputStyle } from '../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getCwd } from '../../agenc/upstream/utils/cwd'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { OutputStyle } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCwd } from '../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { OptionWithDescription } from './CustomSelect/select';
 import { Select } from './CustomSelect/select';
 import { Dialog } from './design-system/Dialog';

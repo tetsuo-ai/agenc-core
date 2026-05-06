@@ -1,20 +1,20 @@
 import { appendFile, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { getProjectRoot, getSessionId } from '../../agenc/upstream/bootstrap/state.js'
-import { registerCleanup } from '../../agenc/upstream/utils/cleanupRegistry.js'
-import type { HistoryEntry, PastedContent } from '../../agenc/upstream/utils/config.js'
+import { registerCleanup } from '../../utils/cleanupRegistry.js'
+import type { HistoryEntry, PastedContent } from '../../utils/config.js'
 import { logForDebugging } from '../../utils/debug.js'
-import { getAgenCConfigHomeDir, isEnvTruthy } from '../../agenc/upstream/utils/envUtils.js'
-import { getErrnoCode } from '../../agenc/upstream/utils/errors.js'
-import { readLinesReverse } from '../../agenc/upstream/utils/fsOperations.js'
-import { lock } from '../../agenc/upstream/utils/lockfile.js'
+import { getAgenCConfigHomeDir, isEnvTruthy } from '../../utils/envUtils.js'
+import { getErrnoCode } from '../../utils/errors.js'
+import { readLinesReverse } from '../../utils/fsOperations.js'
+import { lock } from '../../utils/lockfile.js'
 import {
   hashPastedText,
   retrievePastedText,
   storePastedText,
-} from '../../agenc/upstream/utils/pasteStore.js'
-import { sleep } from '../../agenc/upstream/utils/sleep.js'
-import { jsonParse, jsonStringify } from '../../agenc/upstream/utils/slowOperations.js'
+} from '../../utils/pasteStore.js'
+import { sleep } from '../../utils/sleep.js'
+import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
 
 const MAX_HISTORY_ITEMS = 100
 const MAX_PASTED_CONTENT_LENGTH = 1024

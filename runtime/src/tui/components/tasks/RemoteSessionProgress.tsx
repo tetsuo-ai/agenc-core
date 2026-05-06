@@ -2,11 +2,11 @@ import { c as _c } from "react-compiler-runtime";
 import React, { useRef } from 'react';
 import type { RemoteAgentTaskState } from '../../../agenc/upstream/tasks/RemoteAgentTask/RemoteAgentTask.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { DeepImmutable } from '../../../agenc/upstream/types/utils.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { DIAMOND_FILLED, DIAMOND_OPEN } from '../../../agenc/upstream/constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
+import { DIAMOND_FILLED, DIAMOND_OPEN } from '../../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useSettings } from '../../hooks/useSettings';
 import { Text, useAnimationFrame } from '../../ink.js';
-import { count } from '../../../agenc/upstream/utils/array'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getRainbowColor } from '../../../agenc/upstream/utils/thinking'; // upstream-import: keep target is owned by another Z-PURGE item
+import { count } from '../../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getRainbowColor } from '../../../utils/thinking.js'; // upstream-import: keep target is owned by another Z-PURGE item
 const TICK_MS = 80;
 type ReviewStage = NonNullable<NonNullable<RemoteAgentTaskState['reviewProgress']>['stage']>;
 

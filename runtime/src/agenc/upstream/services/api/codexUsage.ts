@@ -1,9 +1,9 @@
 import {
-  readCodexCredentialsAsync,
-  refreshCodexAccessTokenIfNeeded,
-} from '../../utils/codexCredentials.js'
+  readAgencCredentialsAsync,
+  refreshAgencAccessTokenIfNeeded,
+} from '../../../../utils/agencCredentials.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { isBareMode } from '../../utils/envUtils.js'
+import { isBareMode } from '../../../../utils/envUtils.js'
 import {
   DEFAULT_CODEX_BASE_URL,
   isCodexBaseUrl,
@@ -397,7 +397,7 @@ export function getCodexUsageUrl(baseUrl = DEFAULT_CODEX_BASE_URL): string {
 }
 
 export async function fetchCodexUsage(): Promise<CodexUsageData> {
-  const refreshResult = await refreshCodexAccessTokenIfNeeded().catch(
+  const refreshResult = await refreshAgencAccessTokenIfNeeded().catch(
     async error => {
       logForDebugging(
         `[codex] access token refresh failed before usage fetch: ${error instanceof Error ? error.message : String(error)}`,
@@ -405,7 +405,7 @@ export async function fetchCodexUsage(): Promise<CodexUsageData> {
       )
       return {
         refreshed: false,
-        credentials: await readCodexCredentialsAsync(),
+        credentials: await readAgencCredentialsAsync(),
       }
     },
   )

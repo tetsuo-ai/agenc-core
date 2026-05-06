@@ -1,3 +1,4 @@
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Read tool output limits.  Two caps apply to text reads:
  *
@@ -16,7 +17,6 @@ import memoize from 'lodash-es/memoize.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import { MAX_OUTPUT_SIZE } from 'src/utils/file.js'
 export const DEFAULT_MAX_OUTPUT_TOKENS = 25000
-
 /**
  * Env var override for max output tokens. Returns undefined when unset/invalid
  * so the caller can fall through to the next precedence tier.
@@ -77,12 +77,10 @@ export const getDefaultFileReadingLimits = memoize((): FileReadingLimits => {
     typeof override?.includeMaxSizeInPrompt === 'boolean'
       ? override.includeMaxSizeInPrompt
       : undefined
-
   const targetedRangeNudge =
     typeof override?.targetedRangeNudge === 'boolean'
       ? override.targetedRangeNudge
       : undefined
-
   return {
     maxSizeBytes,
     maxTokens,

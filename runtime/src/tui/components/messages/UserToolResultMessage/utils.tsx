@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import type { ToolUseBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import { useMemo } from 'react';
 import { findToolByName, type Tool, type Tools } from '../../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { buildMessageLookups } from '../../../../agenc/upstream/utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { buildMessageLookups } from '../../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 export function useGetToolFromMessages(toolUseID, tools, lookups) {
   const $ = _c(7);
   let t0;

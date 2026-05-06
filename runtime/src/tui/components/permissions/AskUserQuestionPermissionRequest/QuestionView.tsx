@@ -4,11 +4,11 @@ import React, { useState } from 'react';
 import { Box, Text, useInput } from '../../../ink.js';
 import { useAppState } from '../../../state/AppState.js';
 import type { AskUserQuestion as Question, AskUserQuestionOption as QuestionOption } from 'src/tools/ask-user-question/tool.js';
-import type { PastedContent } from '../../../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getExternalEditor } from '../../../../agenc/upstream/utils/editor'; // upstream-import: keep target is owned by another Z-PURGE item
-import { toIDEDisplayName } from '../../../../agenc/upstream/utils/ide'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { ImageDimensions } from '../../../../agenc/upstream/utils/imageResizer'; // upstream-import: keep target is owned by another Z-PURGE item
-import { editPromptInEditor } from '../../../../agenc/upstream/utils/promptEditor'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PastedContent } from '../../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getExternalEditor } from '../../../../utils/editor.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { toIDEDisplayName } from '../../../../utils/ide.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ImageDimensions } from '../../../../utils/imageResizer.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { editPromptInEditor } from '../../../../utils/promptEditor.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { SelectMulti } from '../../CustomSelect/SelectMulti';
 import { type OptionWithDescription, Select } from '../../CustomSelect/select';
 import { Divider } from '../../design-system/Divider';

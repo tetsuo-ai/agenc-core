@@ -1,6 +1,6 @@
 import { join } from 'path'
-import { getAgenCConfigHomeDir } from '../../utils/envUtils.js'
-import { getFsImplementation } from '../../utils/fsOperations.js'
+import { getAgenCConfigHomeDir } from '../../../../utils/envUtils.js'
+import { getFsImplementation } from '../../../../utils/fsOperations.js'
 
 /**
  * Get the Magic Docs update prompt template

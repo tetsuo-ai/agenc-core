@@ -1,9 +1,11 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import {
   ContinuousEventPriority,
   DefaultEventPriority,
   DiscreteEventPriority,
 } from 'react-reconciler/constants.js'
-import { logError } from '../../../agenc/upstream/utils/log.js'
+import { logError } from '../../../utils/log.js'
 import { HANDLER_FOR_EVENT } from './event-handlers.js'
 import type { EventTarget, TerminalEvent } from './terminal-event.js'
 

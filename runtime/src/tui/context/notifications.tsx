@@ -1,8 +1,8 @@
 import type * as React from 'react';
 import { useCallback, useEffect } from 'react';
 import { useAppStateStore, useSetAppState } from '../state/AppState.js';
-import { logError } from '../../agenc/upstream/utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { Theme } from '../../agenc/upstream/utils/theme'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { Theme } from '../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type Priority = 'low' | 'medium' | 'high' | 'immediate';
 type BaseNotification = {
   key: string;

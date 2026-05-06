@@ -9,15 +9,15 @@ import { c as _c } from "react-compiler-runtime";
 
 import figures from 'figures';
 import * as React from 'react';
-import { BLACK_CIRCLE, PAUSE_ICON, PLAY_ICON } from '../../agenc/upstream/constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
+import { BLACK_CIRCLE, PAUSE_ICON, PLAY_ICON } from '../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useTerminalSize } from '../hooks/useTerminalSize';
 import { stringWidth } from '../ink/stringWidth.js';
 import { Box, Text, wrapText } from '../ink.js';
 import { type AppState, useAppState, useSetAppState } from '../state/AppState.js';
 import { enterTeammateView, exitTeammateView } from '../../agenc/upstream/state/teammateViewHelpers'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isPanelAgentTask, type LocalAgentTaskState } from '../../agenc/upstream/tasks/LocalAgentTask/LocalAgentTask'; // upstream-import: keep target is owned by another Z-PURGE item
-import { formatDuration, formatNumber } from '../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
-import { evictTerminalTask } from '../../agenc/upstream/utils/task/framework'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatDuration, formatNumber } from '../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { evictTerminalTask } from '../../utils/task/framework.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isTerminalStatus } from './tasks/taskStatusUtils';
 
 /**

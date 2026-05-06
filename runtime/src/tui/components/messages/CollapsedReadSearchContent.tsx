@@ -7,13 +7,13 @@ import { Ansi, Box, Text, useTheme } from '../../ink.js';
 import { findToolByName, type Tools } from '../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getReplPrimitiveTools } from '../../../agenc/upstream/tools/REPLTool/primitiveTools'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { CollapsedReadSearchGroup, NormalizedAssistantMessage } from '../../../types/message';
-import { uniq } from '../../../agenc/upstream/utils/array'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getToolUseIdsFromCollapsedGroup } from '../../../agenc/upstream/utils/collapseReadSearch'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getDisplayPath } from '../../../agenc/upstream/utils/file'; // upstream-import: keep target is owned by another Z-PURGE item
-import { formatDuration, formatSecondsShort } from '../../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isFullscreenEnvEnabled } from '../../../agenc/upstream/utils/fullscreen'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { buildMessageLookups } from '../../../agenc/upstream/utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { ThemeName } from '../../../agenc/upstream/utils/theme'; // upstream-import: keep target is owned by another Z-PURGE item
+import { uniq } from '../../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getToolUseIdsFromCollapsedGroup } from '../../../utils/collapseReadSearch.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getDisplayPath } from '../../../utils/file.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatDuration, formatSecondsShort } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isFullscreenEnvEnabled } from '../../../utils/fullscreen.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { buildMessageLookups } from '../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ThemeName } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { CtrlOToExpand } from '../CtrlOToExpand';
 import { useSelectedMessageBg } from '../messageActions';
 import { PrBadge } from '../PrBadge';

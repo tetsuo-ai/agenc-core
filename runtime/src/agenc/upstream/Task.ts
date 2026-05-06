@@ -1,7 +1,7 @@
 import { randomInt } from 'crypto'
 import type { AppState } from '../../tui/state/AppState.js'
 import type { AgentId } from './types/ids.js'
-import { getTaskOutputPath } from './utils/task/diskOutput.js'
+import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
 
 export type TaskType =
   | 'local_bash'

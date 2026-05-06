@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import { Box, Text } from '../ink.js';
-import { formatNumber } from '../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { Theme } from '../../agenc/upstream/utils/theme'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatNumber } from '../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { Theme } from '../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type Props = {
   agentType: string;
   description?: string;

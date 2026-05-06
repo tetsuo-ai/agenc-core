@@ -188,7 +188,7 @@ type AnalyticsModule = {
   ) => void
 }
 
-const forkedAgentModulePath = '../../agenc/upstream/utils/forkedAgent.js'
+const forkedAgentModulePath = '../../utils/forkedAgent.js'
 const analyticsModulePath = '../../agenc/upstream/services/analytics/index.js'
 
 export type PromptSuggestionSettings = {

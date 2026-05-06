@@ -3,7 +3,7 @@ import * as React from 'react';
 import { Box, Text } from '../ink.js';
 import { useAppState } from '../state/AppState.js';
 import { getViewedTeammateTask } from '../../agenc/upstream/state/selectors'; // upstream-import: keep target is owned by another Z-PURGE item
-import { toInkColor } from '../../agenc/upstream/utils/ink'; // upstream-import: keep target is owned by another Z-PURGE item
+import { toInkColor } from '../../utils/ink.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint';
 import { OffscreenFreeze } from './OffscreenFreeze';
 

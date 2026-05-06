@@ -1,7 +1,7 @@
 import React from 'react';
 import { MessageResponse } from '../../../../tui/components/MessageResponse';
 import { Text } from '../../../../tui/ink.js';
-import { countCharInString } from '../../utils/stringUtils.js';
+import { countCharInString } from '../../../../utils/stringUtils.js';
 import type { Input, Output } from './RemoteTriggerTool.js';
 export function renderToolUseMessage(input: Partial<Input>): React.ReactNode {
   return `${input.action ?? ''}${input.trigger_id ? ` ${input.trigger_id}` : ''}`;

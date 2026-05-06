@@ -1,7 +1,7 @@
 import * as React from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import type { createSystemAPIErrorMessage } from "../../agenc/upstream/utils/messages.js";
+import type { createSystemAPIErrorMessage } from "../../utils/messages.js";
 import type { AgenCSystemAPIErrorMessage } from "../../errors/api.js";
 import { SystemAPIErrorMessage } from "./SystemAPIErrorMessage.js";
 

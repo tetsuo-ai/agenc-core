@@ -79,9 +79,9 @@ test('runtime credential resolution preserves an explicit auth.json path even wh
 test('runtime credential resolution avoids sync secure-storage reads when async credentials are provided', async () => {
   let syncReadCalled = false
 
-  mock.module('../../utils/codexCredentials.js', () => ({
-    isCodexRefreshFailureCoolingDown: () => false,
-    readCodexCredentials: () => {
+  mock.module('../../../../utils/agencCredentials.js', () => ({
+    isAgencRefreshFailureCoolingDown: () => false,
+    readAgencCredentials: () => {
       syncReadCalled = true
       throw new Error('sync secure-storage read should not run in runtime resolution')
     },

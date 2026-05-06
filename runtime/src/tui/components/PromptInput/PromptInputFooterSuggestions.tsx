@@ -3,8 +3,8 @@ import { memo, type ReactNode } from 'react'
 import { useTerminalSize } from '../../hooks/useTerminalSize'
 import { stringWidth } from '../../ink/stringWidth.js'
 import { Box, Text } from '../../ink.js'
-import { truncatePathMiddle, truncateToWidth } from '../../../agenc/upstream/utils/format.js'
-import type { Theme } from '../../../agenc/upstream/utils/theme.js'
+import { truncatePathMiddle, truncateToWidth } from '../../../utils/format.js'
+import type { Theme } from '../../../utils/theme.js'
 
 export type SuggestionItem = {
   id: string

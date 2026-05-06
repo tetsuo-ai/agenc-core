@@ -1,6 +1,6 @@
 import React from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { renderToString } from '../../../agenc/upstream/utils/staticRender.js'
+import { renderToString } from '../../../utils/staticRender.js'
 import { Text } from '../../ink.js'
 
 type QueuedCommandFixture = {
@@ -37,7 +37,7 @@ vi.mock('../Message.js', () => ({
   ),
 }))
 
-vi.mock('../../../agenc/upstream/utils/messages.js', () => ({
+vi.mock('../../../utils/messages.js', () => ({
   EMPTY_LOOKUPS: {},
   createUserMessage: ({ content }: { content: unknown }) => ({
     type: 'user',
@@ -46,7 +46,7 @@ vi.mock('../../../agenc/upstream/utils/messages.js', () => ({
   normalizeMessages: (messages: unknown[]) => messages,
 }))
 
-vi.mock('../../../agenc/upstream/utils/messageQueueManager.js', () => ({
+vi.mock('../../../utils/messageQueueManager.js', () => ({
   isQueuedCommandEditable: (cmd: { mode?: string }) => cmd.mode === 'prompt',
   isQueuedCommandVisible: (cmd: { isMeta?: boolean }) => cmd.isMeta !== true,
 }))

@@ -10,16 +10,16 @@ import type { VimMode, PromptInputMode } from '../../../agenc/upstream/types/tex
 import type { ToolPermissionContext } from '../../../agenc/upstream/Tool.js';
 import { isVimModeEnabled } from './utils.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
-import { isDefaultMode, permissionModeSymbol, permissionModeTitle, getModeColor } from '../../../agenc/upstream/utils/permissions/PermissionMode.js';
+import { isDefaultMode, permissionModeSymbol, permissionModeTitle, getModeColor } from '../../../utils/permissions/PermissionMode.js';
 import { BackgroundTaskStatus } from '../tasks/BackgroundTaskStatus';
 import { isBackgroundTask } from '../../../tasks/types.js';
 import { isPanelAgentTask } from '../../../agenc/upstream/tasks/LocalAgentTask/LocalAgentTask.js';
 import { getVisibleAgentTasks } from '../CoordinatorAgentStatus';
-import { count } from '../../../agenc/upstream/utils/array.js';
+import { count } from '../../../utils/array.js';
 import { shouldHideTasksFooter } from '../tasks/taskStatusUtils';
-import { isAgentSwarmsEnabled } from '../../../agenc/upstream/utils/agentSwarmsEnabled.js';
+import { isAgentSwarmsEnabled } from '../../../utils/agentSwarmsEnabled.js';
 import { TeamStatus } from '../teams/TeamStatus';
-import { isInProcessEnabled } from '../../../agenc/upstream/utils/swarm/backends/registry.js';
+import { isInProcessEnabled } from '../../../utils/swarm/backends/registry.js';
 import { useAppState, useAppStateStore } from '../../state/AppState.js';
 import { getIsRemoteMode } from '../../../agenc/upstream/bootstrap/state.js';
 import HistorySearchInput from './HistorySearchInput.js';
@@ -28,12 +28,12 @@ import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';
 import { Byline } from '../design-system/Byline';
 import { useTerminalSize } from '../../hooks/useTerminalSize';
 import { useTasksV2 } from '../../hooks/useTasksV2';
-import { formatDuration } from '../../../agenc/upstream/utils/format.js';
-import { isFullscreenEnvEnabled } from '../../../agenc/upstream/utils/fullscreen.js';
+import { formatDuration } from '../../../utils/format.js';
+import { isFullscreenEnvEnabled } from '../../../utils/fullscreen.js';
 import { isXtermJs } from '../../ink/terminal.js';
 import { useHasSelection, useSelection } from '../../ink/hooks/use-selection.js';
-import { getGlobalConfig } from '../../../agenc/upstream/utils/config.js';
-import { getPlatform } from '../../../agenc/upstream/utils/platform.js';
+import { getGlobalConfig } from '../../../utils/config.js';
+import { getPlatform } from '../../../utils/platform.js';
 import { PrBadge } from '../PrBadge';
 import {
   getPromptInputProactiveNextTickAt,

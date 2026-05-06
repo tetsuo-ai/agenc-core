@@ -1,9 +1,9 @@
 import {
   DANGEROUS_SHELL_SETTINGS,
   SAFE_ENV_VARS,
-} from '../../../agenc/upstream/utils/managedEnvConstants' // upstream-import: keep target is owned by another Z-PURGE item
-import type { SettingsJson } from '../../../agenc/upstream/utils/settings/types' // upstream-import: keep target is owned by another Z-PURGE item
-import { jsonStringify } from '../../../agenc/upstream/utils/slowOperations' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../utils/managedEnvConstants.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { SettingsJson } from '../../../utils/settings/types.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { jsonStringify } from '../../../utils/slowOperations.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 type DangerousShellSetting = (typeof DANGEROUS_SHELL_SETTINGS)[number]
 

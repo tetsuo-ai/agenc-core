@@ -2,8 +2,8 @@ import { c as _c } from "react-compiler-runtime";
 import { useCallback, useEffect, useState } from 'react';
 import { useNotifications } from '../../context/notifications.js';
 import { getIsRemoteMode } from '../../../agenc/upstream/bootstrap/state'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getSettingsWithAllErrors } from '../../../agenc/upstream/utils/settings/allErrors'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { ValidationError } from '../../../agenc/upstream/utils/settings/validation'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSettingsWithAllErrors } from '../../../utils/settings/allErrors.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ValidationError } from '../../../utils/settings/validation.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useSettingsChange } from '../useSettingsChange';
 const SETTINGS_ERRORS_NOTIFICATION_KEY = 'settings-errors';
 export function useSettingsErrors() {

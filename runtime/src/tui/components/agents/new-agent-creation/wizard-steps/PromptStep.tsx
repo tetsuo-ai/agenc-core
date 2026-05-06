@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import React, { type ReactNode, useCallback, useState } from 'react';
 import { Box, Text } from '../../../../ink.js';
 import { useKeybinding } from '../../../../keybindings/useKeybinding.js';
-import { editPromptInEditor } from '../../../../../agenc/upstream/utils/promptEditor'; // upstream-import: keep target is owned by another Z-PURGE item
+import { editPromptInEditor } from '../../../../../utils/promptEditor.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../../../ConfigurableShortcutHint';
 import { Byline } from '../../../design-system/Byline';
 import { KeyboardShortcutHint } from '../../../design-system/KeyboardShortcutHint';

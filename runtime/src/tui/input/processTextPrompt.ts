@@ -8,13 +8,13 @@ import type {
 } from '../../agenc/upstream/types/message.js'
 import { logEvent } from '../../agenc/upstream/services/analytics/index.js'
 import type { PermissionMode } from '../../agenc/upstream/types/permissions.js'
-import { createUserMessage } from '../../agenc/upstream/utils/messages.js'
-import { logOTelEvent, redactIfDisabled } from '../../agenc/upstream/utils/telemetry/events.js'
-import { startInteractionSpan } from '../../agenc/upstream/utils/telemetry/sessionTracing.js'
+import { createUserMessage } from '../../utils/messages.js'
+import { logOTelEvent, redactIfDisabled } from '../../utils/telemetry/events.js'
+import { startInteractionSpan } from '../../utils/telemetry/sessionTracing.js'
 import {
   matchesKeepGoingKeyword,
   matchesNegativeKeyword,
-} from '../../agenc/upstream/utils/userPromptKeywords.js'
+} from '../../utils/userPromptKeywords.js'
 
 export function processTextPrompt(
   input: string | Array<ContentBlockParam>,

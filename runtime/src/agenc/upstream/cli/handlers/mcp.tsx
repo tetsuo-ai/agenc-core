@@ -23,11 +23,11 @@ import { addMcpConfig, getAllMcpConfigs, getMcpConfigByName, getMcpConfigsByScop
 import type { ConfigScope, ScopedMcpServerConfig } from '../../services/mcp/types.js';
 import { describeMcpConfigFilePath, ensureConfigScope, getScopeLabel } from '../../services/mcp/utils.js';
 import { AppStateProvider } from '../../../../tui/state/AppState.js';
-import { getCurrentProjectConfig, getGlobalConfig, saveCurrentProjectConfig } from '../../utils/config.js';
-import { isFsInaccessible } from '../../utils/errors.js';
-import { gracefulShutdown } from '../../utils/gracefulShutdown.js';
-import { safeParseJSON } from '../../utils/json.js';
-import { getPlatform } from '../../utils/platform.js';
+import { getCurrentProjectConfig, getGlobalConfig, saveCurrentProjectConfig } from '../../../../utils/config.js';
+import { isFsInaccessible } from '../../../../utils/errors.js';
+import { gracefulShutdown } from '../../../../utils/gracefulShutdown.js';
+import { safeParseJSON } from '../../../../utils/json.js';
+import { getPlatform } from '../../../../utils/platform.js';
 import { cliError, cliOk } from '../exit.js';
 
 function formatDoctorReport(report: McpDoctorReport): string {
@@ -425,7 +425,7 @@ export async function mcpAddFromDesktopHandler(options: {
     });
     const {
       readAgenCDesktopMcpServers
-    } = await import('../../utils/claudeDesktop.js');
+    } = await import('../../../../utils/agencDesktop.js');
     const servers = await readAgenCDesktopMcpServers();
     if (Object.keys(servers).length === 0) {
       cliOk('No MCP servers found in AgenC Desktop configuration or configuration file does not exist.');

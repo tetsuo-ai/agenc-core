@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import stripAnsi from 'strip-ansi';
 import { Box, Text } from '../../ink.js';
-import { formatFileSize } from '../../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatFileSize } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { MessageResponse } from '../MessageResponse';
 import { OffscreenFreeze } from '../OffscreenFreeze';
 import { ShellTimeDisplay } from './ShellTimeDisplay';

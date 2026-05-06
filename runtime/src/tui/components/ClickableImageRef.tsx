@@ -3,8 +3,8 @@ import { pathToFileURL } from 'url';
 import Link from '../ink/components/Link.js';
 import { supportsHyperlinks } from '../ink/supports-hyperlinks.js';
 import { Text } from '../ink.js';
-import { getStoredImagePath } from '../../agenc/upstream/utils/imageStore'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { Theme } from '../../agenc/upstream/utils/theme'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getStoredImagePath } from '../../utils/imageStore.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { Theme } from '../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type Props = {
   imageId: number;
   backgroundColor?: keyof Theme;

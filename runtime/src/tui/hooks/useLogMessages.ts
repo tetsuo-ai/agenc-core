@@ -2,12 +2,12 @@ import type { UUID } from 'crypto'
 import { useEffect, useRef } from 'react'
 import { useAppState } from '../state/AppState.js'
 import type { Message } from '../../types/message'
-import { isAgentSwarmsEnabled } from '../../agenc/upstream/utils/agentSwarmsEnabled' // upstream-import: keep target is owned by another Z-PURGE item
+import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   cleanMessagesForLogging,
   isChainParticipant,
   recordTranscript,
-} from '../../agenc/upstream/utils/sessionStorage' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/sessionStorage.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 /**
  * Hook that logs messages to the transcript

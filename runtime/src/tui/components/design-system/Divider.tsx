@@ -3,7 +3,7 @@ import React from 'react';
 import { useTerminalSize } from '../../hooks/useTerminalSize';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { Ansi, Text } from '../../ink.js';
-import type { Theme } from '../../../agenc/upstream/utils/theme'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { Theme } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type DividerProps = {
   /**
    * Width of the divider in characters.

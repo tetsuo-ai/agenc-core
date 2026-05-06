@@ -2,16 +2,16 @@ import * as React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { logEvent } from '../../agenc/upstream/services/analytics/index.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js';
-import { logError } from '../../agenc/upstream/utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useInterval } from 'usehooks-ts';
 import { useUpdateNotification } from '../hooks/useUpdateNotification';
 import { Box, Text } from '../ink.js';
-import type { AutoUpdaterResult } from '../../agenc/upstream/utils/autoUpdater'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getMaxVersion, getMaxVersionMessage } from '../../agenc/upstream/utils/autoUpdater'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isAutoUpdaterDisabled } from '../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
-import { installLatest } from '../../agenc/upstream/utils/nativeInstaller/installer'; // upstream-import: keep target is owned by another Z-PURGE item
-import { gt } from '../../agenc/upstream/utils/semver'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getInitialSettings } from '../../agenc/upstream/utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { AutoUpdaterResult } from '../../utils/autoUpdater.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getMaxVersion, getMaxVersionMessage } from '../../utils/autoUpdater.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isAutoUpdaterDisabled } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { installLatest } from '../../utils/nativeInstaller/installer.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { gt } from '../../utils/semver.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getInitialSettings } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
 
 /**
  * Categorize error messages for analytics

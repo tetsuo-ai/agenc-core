@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useRef } from 'react';
 import { isBridgeEnabled } from '../../agenc/upstream/bridge/bridgeEnabled'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Text } from '../ink.js';
-import { getAgenCAIOAuthTokens } from '../../agenc/upstream/utils/auth'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getGlobalConfig, saveGlobalConfig } from '../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getAgenCAIOAuthTokens } from '../../utils/auth.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { OptionWithDescription } from './CustomSelect/select';
 import { Select } from './CustomSelect/select';
 import { PermissionDialog } from './permissions/PermissionDialog';

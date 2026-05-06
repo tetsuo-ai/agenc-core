@@ -48,6 +48,8 @@
     "src/tools/AgentTool/agentMemorySnapshot.ts",
     "src/tools/AskUserQuestionTool/AskUserQuestionTool.tsx",
     "src/tools/ask-user-question/tui-tool.tsx",
+    "src/constants/**/*",
+    "src/utils/**/*",
     "src/utils/attachments.ts",
     "src/utils/memoryFileDetection.ts",
     "src/utils/teamMemoryOps.ts",

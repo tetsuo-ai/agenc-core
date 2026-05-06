@@ -6,11 +6,11 @@ import { useTerminalSize } from '../../hooks/useTerminalSize';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { Box, Text } from '../../ink.js';
 import { useAppState } from '../../state/AppState.js';
-import { getEffortSuffix } from '../../../agenc/upstream/utils/effort'; // upstream-import: keep target is owned by another Z-PURGE item
-import { truncate } from '../../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isFullscreenEnvEnabled } from '../../../agenc/upstream/utils/fullscreen'; // upstream-import: keep target is owned by another Z-PURGE item
-import { formatModelAndBilling, getLogoDisplayData, truncatePath } from '../../../agenc/upstream/utils/logoV2Utils'; // upstream-import: keep target is owned by another Z-PURGE item
-import { renderModelSetting } from '../../../agenc/upstream/utils/model/model'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getEffortSuffix } from '../../../utils/effort.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { truncate } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isFullscreenEnvEnabled } from '../../../utils/fullscreen.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatModelAndBilling, getLogoDisplayData, truncatePath } from '../../../utils/logoV2Utils.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { renderModelSetting } from '../../../utils/model/model.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { OffscreenFreeze } from '../OffscreenFreeze';
 import { AnimatedClawd } from './AnimatedClawd';
 import { Clawd } from './Clawd';

@@ -10,13 +10,13 @@ import {
   getAgenCConfigHomeDir,
   isEnvDefinedFalsy,
   isEnvTruthy,
-} from '../utils/envUtils.js'
-import { findCanonicalGitRoot } from '../utils/git.js'
-import { sanitizePath } from '../utils/path.js'
+} from '../../../utils/envUtils.js'
+import { findCanonicalGitRoot } from '../../../utils/git.js'
+import { sanitizePath } from '../../../utils/path.js'
 import {
   getInitialSettings,
   getSettingsForSource,
-} from '../utils/settings/settings.js'
+} from '../../../utils/settings/settings.js'
 
 /**
  * Whether auto-memory features are enabled (memdir, agent memory, past session search).

@@ -7,7 +7,7 @@ import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import type { ConfigScope } from '../../../agenc/upstream/services/mcp/types'; // upstream-import: keep target is owned by another Z-PURGE item
 import { describeMcpConfigFilePath } from '../../../agenc/upstream/services/mcp/utils'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isDebugMode } from 'src/utils/debug.js';
-import { plural } from '../../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
 import { Byline } from '../design-system/Byline';
 import { Dialog } from '../design-system/Dialog';

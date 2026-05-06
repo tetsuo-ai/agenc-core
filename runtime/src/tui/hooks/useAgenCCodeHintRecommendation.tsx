@@ -14,8 +14,8 @@ import { useNotifications } from '../context/notifications';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, type AnalyticsMetadata_I_VERIFIED_THIS_IS_PII_TAGGED, logEvent } from '../../agenc/upstream/services/analytics/index'; // upstream-import: keep target is owned by another Z-PURGE item
 import { clearPendingHint, getPendingHintSnapshot, markShownThisSession, subscribeToPendingHint } from '../../errors/hints.js';
 import { logForDebugging } from 'src/utils/debug.js';
-import { disableHintRecommendations, markHintPluginShown, type PluginHintRecommendation, resolvePluginHint } from '../../agenc/upstream/utils/plugins/hintRecommendation'; // upstream-import: keep target is owned by another Z-PURGE item
-import { installPluginFromMarketplace } from '../../agenc/upstream/utils/plugins/pluginInstallationHelpers'; // upstream-import: keep target is owned by another Z-PURGE item
+import { disableHintRecommendations, markHintPluginShown, type PluginHintRecommendation, resolvePluginHint } from '../../utils/plugins/hintRecommendation.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { installPluginFromMarketplace } from '../../utils/plugins/pluginInstallationHelpers.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { installPluginAndNotify, usePluginRecommendationBase } from './usePluginRecommendationBase';
 type UseAgenCCodeHintRecommendationResult = {
   recommendation: PluginHintRecommendation | null;

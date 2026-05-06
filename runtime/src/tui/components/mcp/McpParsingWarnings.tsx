@@ -3,7 +3,7 @@ import React, { useMemo } from 'react';
 import { getMcpConfigsByScope } from '../../../agenc/upstream/services/mcp/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { ConfigScope } from '../../../agenc/upstream/services/mcp/types.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { describeMcpConfigFilePath, getScopeLabel } from '../../../agenc/upstream/services/mcp/utils.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { ValidationError } from '../../../agenc/upstream/utils/settings/validation.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ValidationError } from '../../../utils/settings/validation.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Link, Text } from '../../ink.js';
 function McpConfigErrorSection(t0) {
   const $ = _c(26);

@@ -17,9 +17,9 @@ describe('resolveCodexApiCredentials with secure storage', () => {
   })
 
   test('loads Codex credentials from AgenC secure storage', async () => {
-    mock.module('../../utils/codexCredentials.js', () => ({
-      isCodexRefreshFailureCoolingDown: () => false,
-      readCodexCredentials: () => ({
+    mock.module('../../../../utils/agencCredentials.js', () => ({
+      isAgencRefreshFailureCoolingDown: () => false,
+      readAgencCredentials: () => ({
         apiKey: 'codex-api-key-token',
         accessToken: 'header.payload.signature',
         accountId: 'acct_secure',
@@ -38,9 +38,9 @@ describe('resolveCodexApiCredentials with secure storage', () => {
   })
 
   test('prefers explicit env credentials over secure storage', async () => {
-    mock.module('../../utils/codexCredentials.js', () => ({
-      isCodexRefreshFailureCoolingDown: () => false,
-      readCodexCredentials: () => ({
+    mock.module('../../../../utils/agencCredentials.js', () => ({
+      isAgencRefreshFailureCoolingDown: () => false,
+      readAgencCredentials: () => ({
         accessToken: 'stored-token',
         accountId: 'acct_stored',
       }),
@@ -62,9 +62,9 @@ describe('resolveCodexApiCredentials with secure storage', () => {
   })
 
   test('parses nested chatgpt_account_id from a CODEX_API_KEY JWT', async () => {
-    mock.module('../../utils/codexCredentials.js', () => ({
-      isCodexRefreshFailureCoolingDown: () => false,
-      readCodexCredentials: () => undefined,
+    mock.module('../../../../utils/agencCredentials.js', () => ({
+      isAgencRefreshFailureCoolingDown: () => false,
+      readAgencCredentials: () => undefined,
     }))
 
     // @ts-expect-error cache-busting query string for Bun module mocks
@@ -85,9 +85,9 @@ describe('resolveCodexApiCredentials with secure storage', () => {
   })
 
   test('parses nested chatgpt_account_id from auth.json tokens', async () => {
-    mock.module('../../utils/codexCredentials.js', () => ({
-      isCodexRefreshFailureCoolingDown: () => false,
-      readCodexCredentials: () => undefined,
+    mock.module('../../../../utils/agencCredentials.js', () => ({
+      isAgencRefreshFailureCoolingDown: () => false,
+      readAgencCredentials: () => undefined,
     }))
 
     const tempDir = mkdtempSync(join(tmpdir(), 'agenc-codex-auth-'))
@@ -123,9 +123,9 @@ describe('resolveCodexApiCredentials with secure storage', () => {
   })
 
   test('does not read default auth.json when secure storage already has Codex credentials', async () => {
-    mock.module('../../utils/codexCredentials.js', () => ({
-      isCodexRefreshFailureCoolingDown: () => false,
-      readCodexCredentials: () => ({
+    mock.module('../../../../utils/agencCredentials.js', () => ({
+      isAgencRefreshFailureCoolingDown: () => false,
+      readAgencCredentials: () => ({
         apiKey: 'codex-api-key-token',
         accessToken: 'header.payload.signature',
         accountId: 'acct_secure',
@@ -160,9 +160,9 @@ describe('resolveCodexApiCredentials with secure storage', () => {
       homedir: () => tempHomeDir,
     }))
 
-    mock.module('../../utils/codexCredentials.js', () => ({
-      isCodexRefreshFailureCoolingDown: () => true,
-      readCodexCredentials: () => ({
+    mock.module('../../../../utils/agencCredentials.js', () => ({
+      isAgencRefreshFailureCoolingDown: () => true,
+      readAgencCredentials: () => ({
         accessToken: 'stored-token',
         refreshToken: 'refresh-stored',
         accountId: 'acct_stored',
@@ -198,9 +198,9 @@ describe('resolveCodexApiCredentials with secure storage', () => {
       homedir: () => tempHomeDir,
     }))
 
-    mock.module('../../utils/codexCredentials.js', () => ({
-      isCodexRefreshFailureCoolingDown: () => true,
-      readCodexCredentials: () => ({
+    mock.module('../../../../utils/agencCredentials.js', () => ({
+      isAgencRefreshFailureCoolingDown: () => true,
+      readAgencCredentials: () => ({
         accessToken: 'stored-token',
         refreshToken: 'refresh-stored',
         accountId: 'acct_stored',

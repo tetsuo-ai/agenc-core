@@ -5,21 +5,21 @@ import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { useState } from 'react';
 import sample from 'lodash-es/sample.js';
-import { BLACK_CIRCLE, REFERENCE_MARK, TEARDROP_ASTERISK } from '../../../agenc/upstream/constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
+import { BLACK_CIRCLE, REFERENCE_MARK, TEARDROP_ASTERISK } from '../../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import figures from 'figures';
 import { basename } from 'path';
 import { MessageResponse } from '../MessageResponse';
 import { FilePathLink } from '../FilePathLink';
-import { openPath } from '../../../agenc/upstream/utils/browser'; // upstream-import: keep target is owned by another Z-PURGE item
+import { openPath } from '../../../utils/browser.js'; // upstream-import: keep target is owned by another Z-PURGE item
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemSaved = feature('TEAMMEM') ? require('./teamMemSaved') as typeof import('./teamMemSaved') : null;
 /* eslint-enable @typescript-eslint/no-require-imports */
-import { TURN_COMPLETION_VERBS } from '../../../agenc/upstream/constants/turnCompletionVerbs'; // upstream-import: keep target is owned by another Z-PURGE item
+import { TURN_COMPLETION_VERBS } from '../../../constants/turnCompletionVerbs.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useTerminalSize } from '../../hooks/useTerminalSize';
 import type { SystemMessage, SystemStopHookSummaryMessage, SystemBridgeStatusMessage, SystemTurnDurationMessage, SystemThinkingMessage, SystemMemorySavedMessage } from '../../../types/message';
 import { SystemAPIErrorMessage } from '../SystemAPIErrorMessage.js';
-import { formatDuration, formatNumber, formatSecondsShort } from '../../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getGlobalConfig } from '../../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatDuration, formatNumber, formatSecondsShort } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import Link from '../../ink/components/Link.js';
 import ThemedText from '../design-system/ThemedText';
 import { CtrlOToExpand } from '../CtrlOToExpand';

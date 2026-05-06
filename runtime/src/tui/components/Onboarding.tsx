@@ -5,13 +5,13 @@ import { setupTerminal, shouldOfferTerminalSetup } from '../../agenc/upstream/co
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Link, Newline, Text, useTheme } from '../ink.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
-import { isAnthropicAuthEnabled } from '../../agenc/upstream/utils/auth'; // upstream-import: keep target is owned by another Z-PURGE item
-import { normalizeApiKeyForConfig } from '../../agenc/upstream/utils/authPortable'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getCustomApiKeyStatus } from '../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
-import { env } from '../../agenc/upstream/utils/env'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isAnthropicAuthEnabled } from '../../utils/auth.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { normalizeApiKeyForConfig } from '../../utils/authPortable.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCustomApiKeyStatus } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { env } from '../../utils/env.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isRunningOnHomespace } from '../../utils/envUtils';
-import { PreflightStep } from '../../agenc/upstream/utils/preflightChecks'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { ThemeSetting } from '../../agenc/upstream/utils/theme'; // upstream-import: keep target is owned by another Z-PURGE item
+import { PreflightStep } from '../../utils/preflightChecks.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ThemeSetting } from '../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ApproveApiKey } from './ApproveApiKey';
 import { ConsoleOAuthFlow } from './ConsoleOAuthFlow';
 import { Select } from './CustomSelect/select';

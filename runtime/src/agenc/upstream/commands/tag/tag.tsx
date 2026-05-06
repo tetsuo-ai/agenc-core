@@ -6,12 +6,12 @@ import { getSessionId } from '../../bootstrap/state.js';
 import type { CommandResultDisplay } from '../../../../commands.js';
 import { Select } from '../../../../tui/components/CustomSelect/select';
 import { Dialog } from '../../../../tui/components/design-system/Dialog';
-import { COMMON_HELP_ARGS, COMMON_INFO_ARGS } from '../../constants/xml.js';
+import { COMMON_HELP_ARGS, COMMON_INFO_ARGS } from '../../../../constants/xml.js';
 import { Box, Text } from '../../../../tui/ink.js';
 import { logEvent } from '../../services/analytics/index.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
-import { recursivelySanitizeUnicode } from '../../utils/sanitization.js';
-import { getCurrentSessionTag, getTranscriptPath, saveTag } from '../../utils/sessionStorage.js';
+import { recursivelySanitizeUnicode } from '../../../../utils/sanitization.js';
+import { getCurrentSessionTag, getTranscriptPath, saveTag } from '../../../../utils/sessionStorage.js';
 function ConfirmRemoveTag(t0) {
   const $ = _c(11);
   const {

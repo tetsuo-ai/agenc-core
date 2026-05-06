@@ -9,10 +9,10 @@ import { Box, Link, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import { getMcpConfigsByScope } from '../../../agenc/upstream/services/mcp/config'; // upstream-import: keep target is owned by another Z-PURGE item
 import { BASH_TOOL_NAME } from '../../../agenc/upstream/tools/BashTool/toolName'; // upstream-import: keep target is owned by another Z-PURGE item
-import { checkHasTrustDialogAccepted, saveCurrentProjectConfig } from '../../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getCwd } from '../../../agenc/upstream/utils/cwd'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getFsImplementation } from '../../../agenc/upstream/utils/fsOperations'; // upstream-import: keep target is owned by another Z-PURGE item
-import { gracefulShutdownSync } from '../../../agenc/upstream/utils/gracefulShutdown'; // upstream-import: keep target is owned by another Z-PURGE item
+import { checkHasTrustDialogAccepted, saveCurrentProjectConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCwd } from '../../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getFsImplementation } from '../../../utils/fsOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { gracefulShutdownSync } from '../../../utils/gracefulShutdown.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../CustomSelect/select';
 import { PermissionDialog } from '../permissions/PermissionDialog';
 import { getApiKeyHelperSources, getAwsCommandsSources, getBashPermissionSources, getDangerousEnvVarsSources, getGcpCommandsSources, getHooksSources, getOtelHeadersHelperSources } from './utils';

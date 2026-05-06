@@ -6,7 +6,7 @@ import {
   getApiKeyFromApiKeyHelper,
   isAnthropicAuthEnabled,
   isAgenCAISubscriber,
-} from '../../agenc/upstream/utils/auth' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/auth.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 export type VerificationStatus =
   | 'loading'

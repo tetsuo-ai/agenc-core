@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto'
 import { useCallback, useEffect, useRef } from 'react'
 import { useInterval } from 'usehooks-ts'
 import type { ToolUseConfirm } from '../components/permissions/PermissionRequest.js'
-import { TEAMMATE_MESSAGE_TAG } from '../../agenc/upstream/constants/xml' // upstream-import: keep target is owned by another Z-PURGE item
+import { TEAMMATE_MESSAGE_TAG } from '../../constants/xml.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { useTerminalNotification } from '../ink/useTerminalNotification.js'
 import { sendNotification } from '../../services/notifier'
 import {
@@ -19,35 +19,35 @@ import { logForDebugging } from 'src/utils/debug.js'
 import {
   findInProcessTeammateTaskId,
   handlePlanApprovalResponse,
-} from '../../agenc/upstream/utils/inProcessTeammateHelpers' // upstream-import: keep target is owned by another Z-PURGE item
-import { createAssistantMessage } from '../../agenc/upstream/utils/messages' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/inProcessTeammateHelpers.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { createAssistantMessage } from '../../utils/messages.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   permissionModeFromString,
   toExternalPermissionMode,
-} from '../../agenc/upstream/utils/permissions/PermissionMode' // upstream-import: keep target is owned by another Z-PURGE item
-import { applyPermissionUpdate } from '../../agenc/upstream/utils/permissions/PermissionUpdate' // upstream-import: keep target is owned by another Z-PURGE item
-import { jsonStringify } from '../../agenc/upstream/utils/slowOperations' // upstream-import: keep target is owned by another Z-PURGE item
-import { isInsideTmux } from '../../agenc/upstream/utils/swarm/backends/detection' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/permissions/PermissionMode.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { applyPermissionUpdate } from '../../utils/permissions/PermissionUpdate.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { jsonStringify } from '../../utils/slowOperations.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { isInsideTmux } from '../../utils/swarm/backends/detection.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   ensureBackendsRegistered,
   getBackendByType,
-} from '../../agenc/upstream/utils/swarm/backends/registry' // upstream-import: keep target is owned by another Z-PURGE item
-import type { PaneBackendType } from '../../agenc/upstream/utils/swarm/backends/types' // upstream-import: keep target is owned by another Z-PURGE item
-import { TEAM_LEAD_NAME } from '../../agenc/upstream/utils/swarm/constants' // upstream-import: keep target is owned by another Z-PURGE item
-import { getLeaderToolUseConfirmQueue } from '../../agenc/upstream/utils/swarm/leaderPermissionBridge' // upstream-import: keep target is owned by another Z-PURGE item
-import { sendPermissionResponseViaMailbox } from '../../agenc/upstream/utils/swarm/permissionSync' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/swarm/backends/registry.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { PaneBackendType } from '../../utils/swarm/backends/types.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { TEAM_LEAD_NAME } from '../../utils/swarm/constants.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { getLeaderToolUseConfirmQueue } from '../../utils/swarm/leaderPermissionBridge.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { sendPermissionResponseViaMailbox } from '../../utils/swarm/permissionSync.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   removeTeammateFromTeamFile,
   setMemberMode,
-} from '../../agenc/upstream/utils/swarm/teamHelpers' // upstream-import: keep target is owned by another Z-PURGE item
-import { unassignTeammateTasks } from '../../agenc/upstream/utils/tasks' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/swarm/teamHelpers.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { unassignTeammateTasks } from '../../utils/tasks.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   getAgentName,
   isPlanModeRequired,
   isTeamLead,
   isTeammate,
-} from '../../agenc/upstream/utils/teammate' // upstream-import: keep target is owned by another Z-PURGE item
-import { isInProcessTeammate } from '../../agenc/upstream/utils/teammateContext' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/teammate.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { isInProcessTeammate } from '../../utils/teammateContext.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   isModeSetRequest,
   isPermissionRequest,
@@ -63,7 +63,7 @@ import {
   readUnreadMessages,
   type TeammateMessage,
   writeToMailbox,
-} from '../../agenc/upstream/utils/teammateMailbox' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/teammateMailbox.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   hasPermissionCallback,
   hasSandboxPermissionCallback,

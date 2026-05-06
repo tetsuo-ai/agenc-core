@@ -7,19 +7,19 @@
 
 import type { AppState } from '../../../../tui/state/AppState.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { logForDiagnosticsNoPII } from '../../utils/diagLogs.js'
-import { logError } from '../../utils/log.js'
+import { logForDiagnosticsNoPII } from '../../../../utils/diagLogs.js'
+import { logError } from '../../../../utils/log.js'
 import {
   clearMarketplacesCache,
   getDeclaredMarketplaces,
   loadKnownMarketplacesConfig,
-} from '../../utils/plugins/marketplaceManager.js'
-import { clearPluginCache } from '../../utils/plugins/pluginLoader.js'
+} from '../../../../utils/plugins/marketplaceManager.js'
+import { clearPluginCache } from '../../../../utils/plugins/pluginLoader.js'
 import {
   diffMarketplaces,
   reconcileMarketplaces,
-} from '../../utils/plugins/reconciler.js'
-import { refreshActivePlugins } from '../../utils/plugins/refresh.js'
+} from '../../../../utils/plugins/reconciler.js'
+import { refreshActivePlugins } from '../../../../utils/plugins/refresh.js'
 import { logEvent } from '../analytics/index.js'
 
 type SetAppState = (f: (prevState: AppState) => AppState) => void

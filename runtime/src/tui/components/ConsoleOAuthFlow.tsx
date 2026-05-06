@@ -9,9 +9,9 @@ import { useKeybinding } from '../keybindings/useKeybinding.js';
 import { getSSLErrorHint } from '../../agenc/upstream/services/api/errorUtils'; // upstream-import: keep target is owned by another Z-PURGE item
 import { sendNotification } from '../../services/notifier';
 import { OAuthService } from '../../agenc/upstream/services/oauth/index'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getOauthAccountInfo, validateForceLoginOrg } from '../../agenc/upstream/utils/auth'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../agenc/upstream/utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getSettings_DEPRECATED } from '../../agenc/upstream/utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getOauthAccountInfo, validateForceLoginOrg } from '../../utils/auth.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSettings_DEPRECATED } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ProviderManager } from './ProviderManager';
 import { Select } from './CustomSelect/select';
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint';

@@ -8,7 +8,7 @@ import type { InProcessTeammateTaskState } from '../../../agenc/upstream/tasks/I
 import { isPanelAgentTask } from '../../../agenc/upstream/tasks/LocalAgentTask/LocalAgentTask.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isBackgroundTask, type TaskState } from 'src/tasks/types.js';
 import type { DeepImmutable } from '../../../agenc/upstream/types/utils.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { summarizeRecentActivities } from '../../../agenc/upstream/utils/collapseReadSearch.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { summarizeRecentActivities } from '../../../utils/collapseReadSearch.js'; // upstream-import: keep target is owned by another Z-PURGE item
 
 /**
  * Returns true if the given task status represents a terminal (finished) state.

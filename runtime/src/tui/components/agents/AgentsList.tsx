@@ -1,13 +1,13 @@
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import * as React from 'react';
-import type { SettingSource } from '../../../agenc/upstream/utils/settings/constants.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { SettingSource } from '../../../utils/settings/constants.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../ink.js';
 import type { ResolvedAgent } from '../../../agenc/upstream/tools/AgentTool/agentDisplay'; // upstream-import: keep target is owned by another Z-PURGE item
 import { AGENT_SOURCE_GROUPS, compareAgentsByName, getOverrideSourceLabel, resolveAgentModelDisplay } from '../../../agenc/upstream/tools/AgentTool/agentDisplay'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js';
-import { count } from '../../../agenc/upstream/utils/array'; // upstream-import: keep target is owned by another Z-PURGE item
+import { count } from '../../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Dialog } from '../design-system/Dialog';
 import { Divider } from '../design-system/Divider';
 import { getAgentSourceDisplayName } from './utils';

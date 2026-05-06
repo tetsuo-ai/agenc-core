@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { Box, color, Link, Text, useTheme } from '../../ink.js';
 import type { CommandResultDisplay } from '../../../agenc/upstream/types/command'; // upstream-import: keep target is owned by another Z-PURGE item
-import { SandboxManager } from '../../../agenc/upstream/utils/sandbox/sandbox-adapter'; // upstream-import: keep target is owned by another Z-PURGE item
+import { SandboxManager } from '../../../utils/sandbox/sandbox-runtime.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../CustomSelect/select';
 import { useTabHeaderFocus } from '../design-system/Tabs';
 type Props = {

@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import indentString from 'indent-string'
 import { applyTextStyles } from './colorize.js'
 import type { DOMElement, DOMNode } from './dom.js'

@@ -10,15 +10,15 @@ import {
   getGlobalConfig,
   getRemoteControlAtStartup,
   saveGlobalConfig,
-} from '../../utils/config.js'
-import { errorMessage } from '../../utils/errors.js'
-import { lazySchema } from '../../utils/lazySchema.js'
-import { logError } from '../../utils/log.js'
+} from '../../../../utils/config.js'
+import { errorMessage } from '../../../../utils/errors.js'
+import { lazySchema } from '../../../../utils/lazySchema.js'
+import { logError } from '../../../../utils/log.js'
 import {
   getInitialSettings,
   updateSettingsForSource,
-} from '../../utils/settings/settings.js'
-import { jsonStringify } from '../../utils/slowOperations.js'
+} from '../../../../utils/settings/settings.js'
+import { jsonStringify } from '../../../../utils/slowOperations.js'
 import { CONFIG_TOOL_NAME } from './constants.js'
 import { DESCRIPTION, generatePrompt } from './prompt.js'
 import {
@@ -238,7 +238,7 @@ export const ConfigTool = buildTool({
         '../../voice/voiceModeEnabled.js'
       )
       if (!isVoiceModeEnabled()) {
-        const { isAnthropicAuthEnabled } = await import('../../utils/auth.js')
+        const { isAnthropicAuthEnabled } = await import('../../../../utils/auth.js')
         return {
           data: {
             success: false,
@@ -347,7 +347,7 @@ export const ConfigTool = buildTool({
       // and the settings cache resets for the next /voice read.
       if (feature('VOICE_MODE') && setting === 'voiceEnabled') {
         const { settingsChangeDetector } = await import(
-          '../../utils/settings/changeDetector.js'
+          '../../../../utils/settings/changeDetector.js'
         )
         settingsChangeDetector.notifyChange('userSettings')
       }

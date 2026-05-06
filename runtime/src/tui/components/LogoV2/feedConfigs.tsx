@@ -5,8 +5,8 @@ import { Box, Text } from '../../ink.js';
 import type { Step } from '../../../agenc/upstream/projectOnboardingState'; // upstream-import: keep target is owned by another Z-PURGE item
 import { formatCreditAmount, getCachedReferrerReward } from '../../../agenc/upstream/services/api/referral'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { LogOption } from '../../../types/logs';
-import { getCwd } from '../../../agenc/upstream/utils/cwd'; // upstream-import: keep target is owned by another Z-PURGE item
-import { formatRelativeTimeAgo } from '../../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCwd } from '../../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatRelativeTimeAgo } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { FeedConfig, FeedLine } from './Feed';
 export function createRecentActivityFeed(activities: LogOption[]): FeedConfig {
   const lines: FeedLine[] = activities.map(log => {

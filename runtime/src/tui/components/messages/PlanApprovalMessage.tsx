@@ -2,8 +2,8 @@ import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { Markdown } from '../markdown/Markdown.js';
 import { Box, Text } from '../../ink.js';
-import { jsonParse } from '../../../agenc/upstream/utils/slowOperations'; // upstream-import: keep target is owned by another Z-PURGE item
-import { type IdleNotificationMessage, isIdleNotification, isPlanApprovalRequest, isPlanApprovalResponse, type PlanApprovalRequestMessage, type PlanApprovalResponseMessage } from '../../../agenc/upstream/utils/teammateMailbox'; // upstream-import: keep target is owned by another Z-PURGE item
+import { jsonParse } from '../../../utils/slowOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type IdleNotificationMessage, isIdleNotification, isPlanApprovalRequest, isPlanApprovalResponse, type PlanApprovalRequestMessage, type PlanApprovalResponseMessage } from '../../../utils/teammateMailbox.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getShutdownMessageSummary } from './ShutdownMessage';
 import { getTaskAssignmentSummary } from './TaskAssignmentMessage';
 type PlanApprovalRequestProps = {

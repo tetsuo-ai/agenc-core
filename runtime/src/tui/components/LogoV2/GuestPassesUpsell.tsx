@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { Text } from '../../ink.js';
 import { logEvent } from '../../../agenc/upstream/services/analytics/index'; // upstream-import: keep target is owned by another Z-PURGE item
 import { checkCachedPassesEligibility, formatCreditAmount, getCachedReferrerReward, getCachedRemainingPasses } from '../../../agenc/upstream/services/api/referral'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getGlobalConfig, saveGlobalConfig } from '../../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 function resetIfPassesRefreshed(): void {
   const remaining = getCachedRemainingPasses();
   if (remaining == null || remaining <= 0) return;

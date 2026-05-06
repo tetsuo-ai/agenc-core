@@ -1,12 +1,12 @@
 import { useEffect, useRef } from 'react'
-import { logError } from '../../agenc/upstream/utils/log.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../utils/log.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { z } from 'zod/v4'
 import type {
   ConnectedMCPServer,
   MCPServerConnection,
 } from '../../agenc/upstream/services/mcp/types' // upstream-import: keep target is owned by another Z-PURGE item
-import { getConnectedIdeClient } from '../../agenc/upstream/utils/ide' // upstream-import: keep target is owned by another Z-PURGE item
-import { lazySchema } from '../../agenc/upstream/utils/lazySchema' // upstream-import: keep target is owned by another Z-PURGE item
+import { getConnectedIdeClient } from '../../utils/ide.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { lazySchema } from '../../utils/lazySchema.js' // upstream-import: keep target is owned by another Z-PURGE item
 export type IDEAtMentioned = {
   filePath: string
   lineStart?: number

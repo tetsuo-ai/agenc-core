@@ -8,8 +8,8 @@ import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import type { HookEvent } from '../../../agenc/upstream/entrypoints/agentSdkTypes.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Text } from '../../ink.js';
-import { type HookSource, hookSourceInlineDisplayString, type IndividualHookConfig } from '../../../agenc/upstream/utils/hooks/hooksSettings'; // upstream-import: keep target is owned by another Z-PURGE item
-import { plural } from '../../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type HookSource, hookSourceInlineDisplayString, type IndividualHookConfig } from '../../../utils/hooks/hooksSettings.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../CustomSelect/select';
 import { Dialog } from '../design-system/Dialog';
 type MatcherWithSource = {

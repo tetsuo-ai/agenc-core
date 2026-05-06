@@ -4,7 +4,7 @@
  * Pure functions for resolving vim motions to cursor positions.
  */
 
-import type { Cursor } from '../utils/Cursor.js'
+import type { TextCursor } from '../../../utils/TextCursor.js'
 
 /**
  * Resolve a motion to a target cursor position.
@@ -12,9 +12,9 @@ import type { Cursor } from '../utils/Cursor.js'
  */
 export function resolveMotion(
   key: string,
-  cursor: Cursor,
+  cursor: TextCursor,
   count: number,
-): Cursor {
+): TextCursor {
   let result = cursor
   for (let i = 0; i < count; i++) {
     const next = applySingleMotion(key, result)
@@ -27,7 +27,7 @@ export function resolveMotion(
 /**
  * Apply a single motion step.
  */
-function applySingleMotion(key: string, cursor: Cursor): Cursor {
+function applySingleMotion(key: string, cursor: TextCursor): TextCursor {
   switch (key) {
     case 'h':
       return cursor.left()

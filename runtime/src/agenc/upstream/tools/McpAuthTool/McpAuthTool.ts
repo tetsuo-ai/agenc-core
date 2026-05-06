@@ -15,10 +15,10 @@ import type {
   ScopedMcpServerConfig,
 } from '../../services/mcp/types.js'
 import type { Tool } from '../../Tool.js'
-import { errorMessage } from '../../utils/errors.js'
-import { lazySchema } from '../../utils/lazySchema.js'
-import { logMCPDebug, logMCPError } from '../../utils/log.js'
-import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
+import { errorMessage } from '../../../../utils/errors.js'
+import { lazySchema } from '../../../../utils/lazySchema.js'
+import { logMCPDebug, logMCPError } from '../../../../utils/log.js'
+import type { PermissionDecision } from '../../../../utils/permissions/PermissionResult.js'
 
 const inputSchema = lazySchema(() => z.object({}))
 type InputSchema = ReturnType<typeof inputSchema>

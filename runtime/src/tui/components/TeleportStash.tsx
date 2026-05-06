@@ -2,8 +2,8 @@ import figures from 'figures';
 import React, { useEffect, useState } from 'react';
 import { Box, Text } from '../ink.js';
 import { logForDebugging } from 'src/utils/debug.js';
-import type { GitFileStatus } from '../../agenc/upstream/utils/git'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getFileStatus, stashToCleanState } from '../../agenc/upstream/utils/git'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { GitFileStatus } from '../../utils/git.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getFileStatus, stashToCleanState } from '../../utils/git.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from './CustomSelect/select';
 import { Dialog } from './design-system/Dialog';
 import { Spinner } from './spinner/Spinner.js';

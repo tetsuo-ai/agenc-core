@@ -15,17 +15,17 @@ import {
   type Output as FileReadToolOutput,
   registerFileReadListener,
 } from '../../tools/FileReadTool/FileReadTool.js'
-import { isFsInaccessible } from '../../utils/errors.js'
-import { cloneFileStateCache } from '../../utils/fileStateCache.js'
+import { isFsInaccessible } from '../../../../utils/errors.js'
+import { cloneFileStateCache } from '../../../../utils/fileStateCache.js'
 import {
   type REPLHookContext,
   registerPostSamplingHook,
-} from '../../utils/hooks/postSamplingHooks.js'
+} from '../../../../utils/hooks/postSamplingHooks.js'
 import {
   createUserMessage,
   hasToolCallsInLastAssistantTurn,
-} from '../../utils/messages.js'
-import { sequential } from '../../utils/sequential.js'
+} from '../../../../utils/messages.js'
+import { sequential } from '../../../../utils/sequential.js'
 import { buildMagicDocsUpdatePrompt } from './prompts.js'
 
 // Magic Doc header pattern: # MAGIC DOC: [title]

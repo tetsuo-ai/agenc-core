@@ -14,19 +14,19 @@ import { type AppState, useAppState, useSetAppState } from '../../state/AppState
 import { getEmptyToolPermissionContext } from '../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
 import { AGENT_COLOR_TO_THEME_COLOR } from 'src/tools/AgentTool/agentColorManager.js';
 import { logForDebugging } from 'src/utils/debug.js';
-import { execFileNoThrow } from '../../../agenc/upstream/utils/execFileNoThrow'; // upstream-import: keep target is owned by another Z-PURGE item
-import { truncateToWidth } from '../../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getNextPermissionMode } from '../../../agenc/upstream/utils/permissions/getNextPermissionMode'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getModeColor, type PermissionMode, permissionModeFromString, permissionModeSymbol } from '../../../agenc/upstream/utils/permissions/PermissionMode'; // upstream-import: keep target is owned by another Z-PURGE item
-import { jsonStringify } from '../../../agenc/upstream/utils/slowOperations'; // upstream-import: keep target is owned by another Z-PURGE item
-import { IT2_COMMAND, isInsideTmuxSync } from '../../../agenc/upstream/utils/swarm/backends/detection'; // upstream-import: keep target is owned by another Z-PURGE item
-import { ensureBackendsRegistered, getBackendByType, getCachedBackend } from '../../../agenc/upstream/utils/swarm/backends/registry'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { PaneBackendType } from '../../../agenc/upstream/utils/swarm/backends/types'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getSwarmSocketName, TMUX_COMMAND } from '../../../agenc/upstream/utils/swarm/constants'; // upstream-import: keep target is owned by another Z-PURGE item
-import { addHiddenPaneId, removeHiddenPaneId, removeMemberFromTeam, setMemberMode, setMultipleMemberModes } from '../../../agenc/upstream/utils/swarm/teamHelpers'; // upstream-import: keep target is owned by another Z-PURGE item
-import { listTasks, type Task, unassignTeammateTasks } from '../../../agenc/upstream/utils/tasks'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getTeammateStatuses, type TeammateStatus, type TeamSummary } from '../../../agenc/upstream/utils/teamDiscovery'; // upstream-import: keep target is owned by another Z-PURGE item
-import { createModeSetRequestMessage, sendShutdownRequestToMailbox, writeToMailbox } from '../../../agenc/upstream/utils/teammateMailbox'; // upstream-import: keep target is owned by another Z-PURGE item
+import { execFileNoThrow } from '../../../utils/execFileNoThrow.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { truncateToWidth } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getNextPermissionMode } from '../../../utils/permissions/getNextPermissionMode.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getModeColor, type PermissionMode, permissionModeFromString, permissionModeSymbol } from '../../../utils/permissions/PermissionMode.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { jsonStringify } from '../../../utils/slowOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { IT2_COMMAND, isInsideTmuxSync } from '../../../utils/swarm/backends/detection.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { ensureBackendsRegistered, getBackendByType, getCachedBackend } from '../../../utils/swarm/backends/registry.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PaneBackendType } from '../../../utils/swarm/backends/types.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSwarmSocketName, TMUX_COMMAND } from '../../../utils/swarm/constants.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { addHiddenPaneId, removeHiddenPaneId, removeMemberFromTeam, setMemberMode, setMultipleMemberModes } from '../../../utils/swarm/teamHelpers.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { listTasks, type Task, unassignTeammateTasks } from '../../../utils/tasks.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getTeammateStatuses, type TeammateStatus, type TeamSummary } from '../../../utils/teamDiscovery.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { createModeSetRequestMessage, sendShutdownRequestToMailbox, writeToMailbox } from '../../../utils/teammateMailbox.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Dialog } from '../design-system/Dialog';
 import ThemedText from '../design-system/ThemedText';
 type Props = {

@@ -1,4 +1,4 @@
-import type { Attachment } from '../../../agenc/upstream/utils/attachments.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { Attachment } from '../../../utils/attachments.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type { Message, NormalizedMessage } from '../../../types/message'
 
 /**

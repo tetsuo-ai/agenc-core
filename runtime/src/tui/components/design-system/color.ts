@@ -1,6 +1,6 @@
 import { type ColorType, colorize } from '../../ink/colorize.js'
 import type { Color } from '../../ink/styles.js'
-import { getTheme, type Theme, type ThemeName } from '../../../agenc/upstream/utils/theme' // upstream-import: keep target is owned by another Z-PURGE item
+import { getTheme, type Theme, type ThemeName } from '../../../utils/theme.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 /**
  * Curried theme-aware color function. Resolves theme keys to raw color

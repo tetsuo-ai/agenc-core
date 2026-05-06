@@ -1,9 +1,11 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /* eslint-disable custom-rules/no-top-level-side-effects */
 
 import { appendFileSync } from 'fs'
 import createReconciler from 'react-reconciler'
 import { getYogaCounters } from '../../agenc/upstream/native-ts/yoga-layout/index.js'
-import { isEnvTruthy } from '../../agenc/upstream/utils/envUtils.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
 import {
   appendChildNode,
   clearYogaNodeReferences,

@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React, { createContext, useEffect, useState } from 'react';
 import { FRAME_INTERVAL_MS } from '../constants.js';

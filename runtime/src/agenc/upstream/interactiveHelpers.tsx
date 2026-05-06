@@ -17,19 +17,19 @@ import { isQualifiedForGrove } from './services/api/grove.js';
 import { handleMcpjsonServerApprovals } from './services/mcpServerApproval.js';
 import { AppStateProvider } from '../../tui/state/AppState.js';
 import { onChangeAppState } from './state/onChangeAppState.js';
-import { normalizeApiKeyForConfig } from './utils/authPortable.js';
-import { getExternalAgenCMdIncludes, getMemoryFiles, shouldShowAgenCMdExternalIncludesWarning } from './utils/claudemd.js';
-import { checkHasTrustDialogAccepted, getCustomApiKeyStatus, getGlobalConfig, saveGlobalConfig } from './utils/config.js';
-import { updateDeepLinkTerminalPreference } from './utils/deepLink/terminalPreference.js';
-import { isEnvTruthy, isRunningOnHomespace } from './utils/envUtils.js';
-import { type FpsMetrics, FpsTracker } from './utils/fpsTracker.js';
-import { updateGithubRepoPathMapping } from './utils/githubRepoPathMapping.js';
-import { applyConfigEnvironmentVariables } from './utils/managedEnv.js';
-import { usesAnthropicAccountFlow } from './utils/model/providers.js';
-import type { PermissionMode } from './utils/permissions/PermissionMode.js';
-import { getBaseRenderOptions } from './utils/renderOptions.js';
-import { getSettingsWithAllErrors } from './utils/settings/allErrors.js';
-import { hasAutoModeOptIn, hasSkipDangerousModePermissionPrompt } from './utils/settings/settings.js';
+import { normalizeApiKeyForConfig } from '../../utils/authPortable.js';
+import { getExternalAgenCMdIncludes, getMemoryFiles, shouldShowAgenCMdExternalIncludesWarning } from '../../utils/agencmd.js';
+import { checkHasTrustDialogAccepted, getCustomApiKeyStatus, getGlobalConfig, saveGlobalConfig } from '../../utils/config.js';
+import { updateDeepLinkTerminalPreference } from '../../utils/deepLink/terminalPreference.js';
+import { isEnvTruthy, isRunningOnHomespace } from '../../utils/envUtils.js';
+import { type FpsMetrics, FpsTracker } from '../../utils/fpsTracker.js';
+import { updateGithubRepoPathMapping } from '../../utils/githubRepoPathMapping.js';
+import { applyConfigEnvironmentVariables } from '../../utils/managedEnv.js';
+import { usesAnthropicAccountFlow } from '../../utils/model/providers.js';
+import type { PermissionMode } from '../../utils/permissions/PermissionMode.js';
+import { getBaseRenderOptions } from '../../utils/renderOptions.js';
+import { getSettingsWithAllErrors } from '../../utils/settings/allErrors.js';
+import { hasAutoModeOptIn, hasSkipDangerousModePermissionPrompt } from '../../utils/settings/settings.js';
 export function completeOnboarding(): void {
   saveGlobalConfig(current => ({
     ...current,
@@ -264,7 +264,7 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
         isChannelsEnabled
       }, {
         getAgenCAIOAuthTokens
-      }] = await Promise.all([import('./services/mcp/channelAllowlist.js'), import('./utils/auth.js')]);
+      }] = await Promise.all([import('./services/mcp/channelAllowlist.js'), import('../../utils/auth.js')]);
       // Skip the dialog when channels are blocked (tengu_harbor off or no
       // OAuth) — accepting then immediately seeing "not available" in
       // ChannelsNotice is worse than no dialog. Append entries anyway so

@@ -1,7 +1,7 @@
 import React from 'react'
 import { describe, expect, test, vi, beforeEach } from 'vitest'
 
-import { renderToString } from '../../../agenc/upstream/utils/staticRender.js'
+import { renderToString } from '../../../utils/staticRender.js'
 import { CostThresholdDialog } from './CostThresholdDialog.js'
 import { getUpsellMessage, RateLimitMessage } from './RateLimitMessage.js'
 
@@ -58,7 +58,7 @@ vi.mock('../design-system/Dialog.js', async () => {
   }
 })
 
-vi.mock('../../../agenc/upstream/utils/model/providers.js', () => ({
+vi.mock('../../../utils/model/providers.js', () => ({
   getAPIProvider: () => providerMock.provider,
 }))
 
@@ -76,13 +76,13 @@ vi.mock('../../rate-limits/agenc-ai-limits.js', () => ({
   useAgenCAiLimits: () => rateLimitMock.limits,
 }))
 
-vi.mock('../../../agenc/upstream/utils/auth.js', () => ({
+vi.mock('../../../utils/auth.js', () => ({
   getSubscriptionType: () => rateLimitMock.subscriptionType,
   getRateLimitTier: () => rateLimitMock.rateLimitTier,
   isAgenCAISubscriber: () => rateLimitMock.isSubscriber,
 }))
 
-vi.mock('../../../agenc/upstream/utils/billing.js', () => ({
+vi.mock('../../../utils/billing.js', () => ({
   hasAgenCAiBillingAccess: () => rateLimitMock.hasBillingAccess,
 }))
 

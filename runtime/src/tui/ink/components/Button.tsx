@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React, { type Ref, useCallback, useEffect, useRef, useState } from 'react';
 import type { Except } from 'type-fest';

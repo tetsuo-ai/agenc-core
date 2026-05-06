@@ -6,8 +6,8 @@ import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEve
 import { shouldUseSessionMemoryCompaction } from '../../../services/compact/sessionMemoryCompact';
 import type { Message } from '../../../types/message';
 import { isEnvTruthy } from '../../../utils/envUtils';
-import { isCompactBoundaryMessage } from '../../../agenc/upstream/utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logOTelEvent } from '../../../agenc/upstream/utils/telemetry/events'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isCompactBoundaryMessage } from '../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logOTelEvent } from '../../../utils/telemetry/events.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useSurveyState } from './useSurveyState';
 import type { FeedbackSurveyResponse } from './utils';
 const HIDE_THANKS_AFTER_MS = 3000;

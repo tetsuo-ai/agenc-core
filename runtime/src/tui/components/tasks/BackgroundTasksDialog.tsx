@@ -21,8 +21,8 @@ import type { MonitorMcpTaskState } from '../../../agenc/upstream/tasks/MonitorM
 import { RemoteAgentTask, type RemoteAgentTaskState } from '../../../agenc/upstream/tasks/RemoteAgentTask/RemoteAgentTask.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { type BackgroundTaskState, isBackgroundTask, type TaskState } from 'src/tasks/types.js';
 import type { DeepImmutable } from '../../../agenc/upstream/types/utils.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { intersperse } from '../../../agenc/upstream/utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { TEAM_LEAD_NAME } from '../../../agenc/upstream/utils/swarm/constants.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { intersperse } from '../../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { TEAM_LEAD_NAME } from '../../../utils/swarm/constants.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { stopUltraplan } from '../../../agenc/upstream/commands/ultraplan'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { CommandResultDisplay } from '../../../commands.js';
 import { useRegisterOverlay } from '../../context/overlayContext';
@@ -31,7 +31,7 @@ import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
-import { count } from '../../../agenc/upstream/utils/array'; // upstream-import: keep target is owned by another Z-PURGE item
+import { count } from '../../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Byline } from '../design-system/Byline';
 import { Dialog } from '../design-system/Dialog';
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';

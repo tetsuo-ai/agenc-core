@@ -8,8 +8,8 @@ import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import { getEmptyToolPermissionContext } from '../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { LocalAgentTaskState } from '../../../agenc/upstream/tasks/LocalAgentTask/LocalAgentTask'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getTools } from '../../../agenc/upstream/tools'; // upstream-import: keep target is owned by another Z-PURGE item
-import { formatNumber } from '../../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
-import { extractTag } from '../../../agenc/upstream/utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatNumber } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { extractTag } from '../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Byline } from '../design-system/Byline';
 import { Dialog } from '../design-system/Dialog';
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';

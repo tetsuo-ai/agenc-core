@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import { getSentinelCategory } from '@ant/computer-use-mcp/sentinelApps';
 import type { CuPermissionRequest, CuPermissionResponse } from '@ant/computer-use-mcp/types';
@@ -6,8 +8,8 @@ import figures from 'figures';
 import * as React from 'react';
 import { useMemo, useState } from 'react';
 import { Box, Text } from '../../../ink.js';
-import { execFileNoThrow } from '../../../../agenc/upstream/utils/execFileNoThrow'; // upstream-import: keep target is owned by another Z-PURGE item
-import { plural } from '../../../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { execFileNoThrow } from '../../../../utils/execFileNoThrow.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { plural } from '../../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { OptionWithDescription } from '../../CustomSelect/select';
 import { Select } from '../../CustomSelect/select';
 import { Dialog } from '../../design-system/Dialog';

@@ -7,9 +7,9 @@ import {
 } from '../../agenc/upstream/services/analytics/index' // upstream-import: keep target is owned by another Z-PURGE item
 import { useAppState, useSetAppState } from '../state/AppState.js'
 import type { Message } from '../../types/message'
-import type { SkillUpdate } from '../../agenc/upstream/utils/hooks/skillImprovement' // upstream-import: keep target is owned by another Z-PURGE item
-import { applySkillImprovement } from '../../agenc/upstream/utils/hooks/skillImprovement' // upstream-import: keep target is owned by another Z-PURGE item
-import { createSystemMessage } from '../../agenc/upstream/utils/messages' // upstream-import: keep target is owned by another Z-PURGE item
+import type { SkillUpdate } from '../../utils/hooks/skillImprovement.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { applySkillImprovement } from '../../utils/hooks/skillImprovement.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { createSystemMessage } from '../../utils/messages.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 type SkillImprovementSuggestion = {
   skillName: string

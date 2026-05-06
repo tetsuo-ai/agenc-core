@@ -2,8 +2,8 @@ import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import React from 'react';
 import { Box, Text } from '../../ink.js';
-import type { PastedContent } from '../../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { ImageDimensions } from '../../../agenc/upstream/utils/imageResizer'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PastedContent } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ImageDimensions } from '../../../utils/imageResizer.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { OptionWithDescription } from './select';
 import { SelectInputOption } from './select-input-option';
 import { SelectOption } from './select-option';

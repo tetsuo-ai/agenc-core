@@ -23,15 +23,15 @@ import { findToolByName } from '../../agenc/upstream/Tool' // upstream-import: k
 import type { Message as MessageType } from '../../types/message'
 import type { PermissionAskDecision } from '../../agenc/upstream/types/permissions' // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js'
-import { truncateToWidth } from '../../agenc/upstream/utils/format' // upstream-import: keep target is owned by another Z-PURGE item
+import { truncateToWidth } from '../../utils/format.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   createSystemMessage,
   extractTextContent,
   handleMessageFromStream,
-} from '../../agenc/upstream/utils/messages' // upstream-import: keep target is owned by another Z-PURGE item
-import { generateSessionTitle } from '../../agenc/upstream/utils/sessionTitle' // upstream-import: keep target is owned by another Z-PURGE item
-import type { RemoteMessageContent } from '../../agenc/upstream/utils/teleport/api' // upstream-import: keep target is owned by another Z-PURGE item
-import { updateSessionTitle } from '../../agenc/upstream/utils/teleport/api' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/messages.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { generateSessionTitle } from '../../utils/sessionTitle.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { RemoteMessageContent } from '../../utils/teleport/api.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { updateSessionTitle } from '../../utils/teleport/api.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 // How long to wait for a response before showing a warning
 const RESPONSE_TIMEOUT_MS = 60000 // 60 seconds

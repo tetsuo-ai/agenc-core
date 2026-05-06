@@ -3,8 +3,8 @@ import * as React from 'react';
 import { useMemo } from 'react';
 import { useTerminalSize } from '../../../hooks/useTerminalSize';
 import { Box, NoSelect, Text } from '../../../ink.js';
-import { intersperse } from '../../../../agenc/upstream/utils/array'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getPatchForDisplay } from '../../../../agenc/upstream/utils/diff'; // upstream-import: keep target is owned by another Z-PURGE item
+import { intersperse } from '../../../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getPatchForDisplay } from '../../../../utils/diff.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { HighlightedCode } from '../../markdown/HighlightedCode.js';
 import { StructuredDiff } from '../../StructuredDiff';
 type Props = {

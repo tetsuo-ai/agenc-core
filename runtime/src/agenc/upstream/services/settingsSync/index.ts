@@ -19,25 +19,25 @@ import {
   AGENC_AI_INFERENCE_SCOPE,
   getOauthConfig,
   OAUTH_BETA_HEADER,
-} from '../../constants/oauth.js'
+} from '../../../../constants/oauth.js'
 import {
   checkAndRefreshOAuthTokenIfNeeded,
   getAgenCAIOAuthTokens,
-} from '../../utils/auth.js'
-import { clearMemoryFileCaches } from '../../utils/claudemd.js'
-import { getMemoryPath } from '../../utils/config.js'
-import { logForDiagnosticsNoPII } from '../../utils/diagLogs.js'
-import { classifyAxiosError } from '../../utils/errors.js'
-import { getRepoRemoteHash } from '../../utils/git.js'
+} from '../../../../utils/auth.js'
+import { clearMemoryFileCaches } from '../../../../utils/agencmd.js'
+import { getMemoryPath } from '../../../../utils/config.js'
+import { logForDiagnosticsNoPII } from '../../../../utils/diagLogs.js'
+import { classifyAxiosError } from '../../../../utils/errors.js'
+import { getRepoRemoteHash } from '../../../../utils/git.js'
 import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
-} from '../../utils/model/providers.js'
-import { markInternalWrite } from '../../utils/settings/internalWrites.js'
-import { getSettingsFilePathForSource } from '../../utils/settings/settings.js'
-import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
-import { sleep } from '../../utils/sleep.js'
-import { getAgenCCodeUserAgent } from '../../utils/userAgent.js'
+} from '../../../../utils/model/providers.js'
+import { markInternalWrite } from '../../../../utils/settings/internalWrites.js'
+import { getSettingsFilePathForSource } from '../../../../utils/settings/settings.js'
+import { resetSettingsCache } from '../../../../utils/settings/settingsCache.js'
+import { sleep } from '../../../../utils/sleep.js'
+import { getAgenCCodeUserAgent } from '../../../../utils/userAgent.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import { logEvent } from '../analytics/index.js'
 import { getRetryDelay } from '../api/withRetry.js'

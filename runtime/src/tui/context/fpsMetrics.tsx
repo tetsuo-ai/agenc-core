@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { createContext, useContext } from 'react';
-import type { FpsMetrics } from '../../agenc/upstream/utils/fpsTracker'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { FpsMetrics } from '../../utils/fpsTracker.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type FpsMetricsGetter = () => FpsMetrics | undefined;
 const FpsMetricsContext = createContext<FpsMetricsGetter | undefined>(undefined);
 type Props = {

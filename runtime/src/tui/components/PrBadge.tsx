@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { Link, Text } from '../ink.js';
-import type { PrReviewState } from '../../agenc/upstream/utils/ghPrStatus'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PrReviewState } from '../../utils/ghPrStatus.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type Props = {
   number: number;
   url: string;

@@ -1,14 +1,14 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { useCallback, useMemo } from 'react';
-import { logError } from '../../../../agenc/upstream/utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getOriginalCwd } from '../../../../agenc/upstream/bootstrap/state'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Text } from '../../../ink.js';
 import { sanitizeToolNameForAnalytics } from '../../../../agenc/upstream/services/analytics/metadata'; // upstream-import: keep target is owned by another Z-PURGE item
 import { SKILL_TOOL_NAME } from '../../../../agenc/upstream/tools/SkillTool/constants'; // upstream-import: keep target is owned by another Z-PURGE item
 import { SkillTool } from '../../../../agenc/upstream/tools/SkillTool/SkillTool'; // upstream-import: keep target is owned by another Z-PURGE item
-import { env } from '../../../../agenc/upstream/utils/env'; // upstream-import: keep target is owned by another Z-PURGE item
-import { shouldShowAlwaysAllowOptions } from '../../../../agenc/upstream/utils/permissions/permissionsLoader'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logUnaryEvent } from '../../../../agenc/upstream/utils/unaryLogging'; // upstream-import: keep target is owned by another Z-PURGE item
+import { env } from '../../../../utils/env.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { shouldShowAlwaysAllowOptions } from '../../../../utils/permissions/permissionsLoader.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logUnaryEvent } from '../../../../utils/unaryLogging.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { type UnaryEvent, usePermissionRequestLogging } from '../hooks';
 import { PermissionDialog } from '../PermissionDialog';
 import { PermissionPrompt, type PermissionPromptOption, type ToolAnalyticsContext } from '../PermissionPrompt';

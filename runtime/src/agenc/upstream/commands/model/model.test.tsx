@@ -1,7 +1,7 @@
 import { afterEach, expect, mock, test } from 'bun:test'
 
 import { getAdditionalModelOptionsCacheScope } from '../../services/api/providerConfig.js'
-import { getAPIProvider } from '../../utils/model/providers.js'
+import { getAPIProvider } from '../../../../utils/model/providers.js'
 
 const originalEnv = {
   AGENC_USE_OPENAI: process.env.AGENC_USE_OPENAI,
@@ -50,7 +50,7 @@ test('opens the model picker without awaiting local model discovery refresh', as
       }),
   )
 
-  mock.module('../../utils/model/openaiModelDiscovery.js', () => ({
+  mock.module('../../../../utils/model/openaiModelDiscovery.js', () => ({
     discoverOpenAICompatibleModelOptions,
   }))
 

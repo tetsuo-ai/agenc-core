@@ -3,13 +3,13 @@ import {
   EFFORT_LOW,
   EFFORT_MAX,
   EFFORT_MEDIUM,
-} from '../../agenc/upstream/constants/figures' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../constants/figures.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   type EffortLevel,
   type EffortValue,
   getDisplayedEffortLevel,
   modelSupportsEffort,
-} from '../../agenc/upstream/utils/effort' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/effort.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 /**
  * Build the text for the effort-changed notification, e.g. "◐ medium · /effort".

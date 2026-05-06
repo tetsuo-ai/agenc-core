@@ -1,14 +1,14 @@
 import { randomUUID } from 'crypto'
-import { isEnvTruthy } from '../../utils/envUtils.js'
+import { isEnvTruthy } from '../../../../utils/envUtils.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { createUserMessage } from '../../utils/messages.js'
-import { getSettings_DEPRECATED } from '../../utils/settings/settings.js'
-import { getContextWindowForModel } from '../../utils/context.js'
-import { tokenCountWithEstimation } from '../../utils/tokens.js'
+import { createUserMessage } from '../../../../utils/messages.js'
+import { getSettings_DEPRECATED } from '../../../../utils/settings/settings.js'
+import { getContextWindowForModel } from '../../../../utils/context.js'
+import { tokenCountWithEstimation } from '../../../../utils/tokens.js'
 import {
   recordContextCollapseCommit,
   recordContextCollapseSnapshot,
-} from '../../utils/sessionStorage.js'
+} from '../../../../utils/sessionStorage.js'
 import type {
   ContextCollapseCommitEntry,
   ContextCollapseSnapshotEntry,

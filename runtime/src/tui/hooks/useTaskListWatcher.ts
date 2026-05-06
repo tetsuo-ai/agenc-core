@@ -9,7 +9,7 @@ import {
   listTasks,
   type Task,
   updateTask,
-} from '../../agenc/upstream/utils/tasks' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/tasks.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 const DEBOUNCE_MS = 1000
 

@@ -6,13 +6,13 @@ import { useRegisterOverlay } from '../context/overlayContext';
 import { useTerminalSize } from '../hooks/useTerminalSize';
 import { Text } from '../ink.js';
 import { logEvent } from '../../agenc/upstream/services/analytics/index'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getCwd } from '../../agenc/upstream/utils/cwd'; // upstream-import: keep target is owned by another Z-PURGE item
-import { openFileInExternalEditor } from '../../agenc/upstream/utils/editor'; // upstream-import: keep target is owned by another Z-PURGE item
-import { truncatePathMiddle, truncateToWidth } from '../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
-import { highlightMatch } from '../../agenc/upstream/utils/highlightMatch'; // upstream-import: keep target is owned by another Z-PURGE item
-import { relativePath } from '../../agenc/upstream/utils/permissions/filesystem'; // upstream-import: keep target is owned by another Z-PURGE item
-import { readFileInRange } from '../../agenc/upstream/utils/readFileInRange'; // upstream-import: keep target is owned by another Z-PURGE item
-import { ripGrepStream } from '../../agenc/upstream/utils/ripgrep'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCwd } from '../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { openFileInExternalEditor } from '../../utils/editor.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { truncatePathMiddle, truncateToWidth } from '../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { highlightMatch } from '../../utils/highlightMatch.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { relativePath } from '../../utils/permissions/filesystem.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { readFileInRange } from '../../utils/readFileInRange.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { ripGrepStream } from '../../utils/ripgrep.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { FuzzyPicker } from './design-system/FuzzyPicker';
 import { LoadingState } from './design-system/LoadingState';
 type Props = {

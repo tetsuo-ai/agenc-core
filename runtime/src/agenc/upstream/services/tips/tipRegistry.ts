@@ -12,16 +12,16 @@ import { color } from '../../../../tui/components/design-system/color'
 import { shouldShowOverageCreditUpsell } from '../../../../tui/components/LogoV2/OverageCreditUpsell'
 import { getShortcutDisplay } from '../../../../tui/keybindings/shortcutFormat.js'
 import { isKairosCronEnabled } from '../../tools/ScheduleCronTool/prompt.js'
-import { is1PApiCustomer } from '../../utils/auth.js'
-import { countConcurrentSessions } from '../../utils/concurrentSessions.js'
-import { getGlobalConfig } from '../../utils/config.js'
+import { is1PApiCustomer } from '../../../../utils/auth.js'
+import { countConcurrentSessions } from '../../../../utils/concurrentSessions.js'
+import { getGlobalConfig } from '../../../../utils/config.js'
 import {
   getEffortEnvOverride,
   modelSupportsEffort,
-} from '../../utils/effort.js'
-import { env } from '../../utils/env.js'
-import { cacheKeys } from '../../utils/fileStateCache.js'
-import { getWorktreeCount } from '../../utils/git.js'
+} from '../../../../utils/effort.js'
+import { env } from '../../../../utils/env.js'
+import { cacheKeys } from '../../../../utils/fileStateCache.js'
+import { getWorktreeCount } from '../../../../utils/git.js'
 import {
   detectRunningIDEsCached,
   getSortedIdeLockfiles,
@@ -30,19 +30,19 @@ import {
   isSupportedVSCodeTerminal,
   isVSCodeInstalled,
   isWindsurfInstalled,
-} from '../../utils/ide.js'
+} from '../../../../utils/ide.js'
 import {
   getMainLoopModel,
   getUserSpecifiedModelSetting,
-} from '../../utils/model/model.js'
-import { getPlatform } from '../../utils/platform.js'
-import { isPluginInstalled } from '../../utils/plugins/installedPluginsManager.js'
-import { loadKnownMarketplacesConfigSafe } from '../../utils/plugins/marketplaceManager.js'
-import { OFFICIAL_MARKETPLACE_NAME } from '../../utils/plugins/officialMarketplace.js'
+} from '../../../../utils/model/model.js'
+import { getPlatform } from '../../../../utils/platform.js'
+import { isPluginInstalled } from '../../../../utils/plugins/installedPluginsManager.js'
+import { loadKnownMarketplacesConfigSafe } from '../../../../utils/plugins/marketplaceManager.js'
+import { OFFICIAL_MARKETPLACE_NAME } from '../../../../utils/plugins/officialMarketplace.js'
 import {
   getCurrentSessionAgentColor,
   isCustomTitleEnabled,
-} from '../../utils/sessionStorage.js'
+} from '../../../../utils/sessionStorage.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import {
   formatGrantAmount,

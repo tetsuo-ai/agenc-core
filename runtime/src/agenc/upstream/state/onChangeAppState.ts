@@ -1,25 +1,25 @@
 import { setMainLoopModelOverride } from '../bootstrap/state.js'
-import { isAntEmployee } from '../utils/buildConfig.js'
+import { isAntEmployee } from '../../../utils/buildConfig.js'
 import {
   clearApiKeyHelperCache,
   clearAwsCredentialsCache,
   clearGcpCredentialsCache,
-} from '../utils/auth.js'
-import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js'
-import { toError } from '../utils/errors.js'
-import { logError } from '../utils/log.js'
-import { applyConfigEnvironmentVariables } from '../utils/managedEnv.js'
-import { persistActiveProviderProfileModel } from '../utils/providerProfiles.js'
+} from '../../../utils/auth.js'
+import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'
+import { toError } from '../../../utils/errors.js'
+import { logError } from '../../../utils/log.js'
+import { applyConfigEnvironmentVariables } from '../../../utils/managedEnv.js'
+import { persistActiveProviderProfileModel } from '../../../utils/providerProfiles.js'
 import {
   permissionModeFromString,
   toExternalPermissionMode,
-} from '../utils/permissions/PermissionMode.js'
+} from '../../../utils/permissions/PermissionMode.js'
 import {
   notifyPermissionModeChanged,
   notifySessionMetadataChanged,
   type SessionExternalMetadata,
-} from '../utils/sessionState.js'
-import { updateSettingsForSource } from '../utils/settings/settings.js'
+} from '../../../utils/sessionState.js'
+import { updateSettingsForSource } from '../../../utils/settings/settings.js'
 import type { AppState } from '../../../tui/state/AppStateStore.js'
 
 // Inverse of the push below — restore on worker restart.

@@ -1,10 +1,10 @@
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import * as React from 'react';
-import type { AutoUpdaterResult } from '../../agenc/upstream/utils/autoUpdater'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isAutoUpdaterDisabled } from '../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { AutoUpdaterResult } from '../../utils/autoUpdater.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isAutoUpdaterDisabled } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js';
-import { getCurrentInstallationType } from '../../agenc/upstream/utils/doctorDiagnostic'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCurrentInstallationType } from '../../utils/doctorDiagnostic.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { AutoUpdater } from './AutoUpdater';
 import { NativeAutoUpdater } from './NativeAutoUpdater';
 import { PackageManagerAutoUpdater } from './PackageManagerAutoUpdater';

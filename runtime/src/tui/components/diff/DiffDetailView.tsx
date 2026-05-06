@@ -4,8 +4,8 @@ import { resolve } from 'path';
 import React, { useMemo } from 'react';
 import { useTerminalSize } from '../../hooks/useTerminalSize';
 import { Box, Text } from '../../ink.js';
-import { getCwd } from '../../../agenc/upstream/utils/cwd'; // upstream-import: keep target is owned by another Z-PURGE item
-import { readFileSafe } from '../../../agenc/upstream/utils/file'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCwd } from '../../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { readFileSafe } from '../../../utils/file.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Divider } from '../design-system/Divider';
 import { StructuredDiff } from '../StructuredDiff';
 type Props = {

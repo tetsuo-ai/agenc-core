@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { useEffect, useState } from 'react';
 import { Box, Link, Text } from '../ink.js';
-import { type AwsAuthStatus, AwsAuthStatusManager } from '../../agenc/upstream/utils/awsAuthStatusManager'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type AwsAuthStatus, AwsAuthStatusManager } from '../../utils/awsAuthStatusManager.js'; // upstream-import: keep target is owned by another Z-PURGE item
 const URL_RE = /https?:\/\/\S+/;
 export function AwsAuthStatusBox() {
   const $ = _c(11);

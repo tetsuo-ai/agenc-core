@@ -1,8 +1,8 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
-import { BLACK_CIRCLE } from '../../../agenc/upstream/constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
+import { BLACK_CIRCLE } from '../../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Text } from '../../ink.js';
-import { toInkColor } from '../../../agenc/upstream/utils/ink'; // upstream-import: keep target is owned by another Z-PURGE item
+import { toInkColor } from '../../../utils/ink.js'; // upstream-import: keep target is owned by another Z-PURGE item
 export type WorkerBadgeProps = {
   name: string;
   color: string;

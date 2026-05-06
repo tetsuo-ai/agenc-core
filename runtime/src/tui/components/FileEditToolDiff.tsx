@@ -6,10 +6,10 @@ import { useTerminalSize } from '../hooks/useTerminalSize';
 import { Box, Text } from '../ink.js';
 import type { FileEdit } from '../../agenc/upstream/tools/FileEditTool/types'; // upstream-import: keep target is owned by another Z-PURGE item
 import { findActualString, preserveQuoteStyle } from '../../agenc/upstream/tools/FileEditTool/utils'; // upstream-import: keep target is owned by another Z-PURGE item
-import { adjustHunkLineNumbers, CONTEXT_LINES, getPatchForDisplay } from '../../agenc/upstream/utils/diff'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../agenc/upstream/utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
-import { CHUNK_SIZE, openForScan, readCapped, scanForContext } from '../../agenc/upstream/utils/readEditContext'; // upstream-import: keep target is owned by another Z-PURGE item
-import { firstLineOf } from '../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { adjustHunkLineNumbers, CONTEXT_LINES, getPatchForDisplay } from '../../utils/diff.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { CHUNK_SIZE, openForScan, readCapped, scanForContext } from '../../utils/readEditContext.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { firstLineOf } from '../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { StructuredDiffList } from './StructuredDiffList';
 type Props = {
   file_path: string;

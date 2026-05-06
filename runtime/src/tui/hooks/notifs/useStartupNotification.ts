@@ -4,7 +4,7 @@ import {
   type Notification,
   useNotifications,
 } from '../../context/notifications'
-import { logError } from '../../../agenc/upstream/utils/log' // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../../utils/log.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 type Result = Notification | Notification[] | null
 

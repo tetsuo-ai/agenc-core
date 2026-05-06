@@ -1,11 +1,11 @@
 import { basename, join } from 'path'
 
-import type { MemoryFileInfo } from '../../../agenc/upstream/utils/claudemd' // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
+import type { MemoryFileInfo } from '../../../utils/agencmd.js' // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
 import {
   findProjectInstructionFilePathInAncestors,
   isProjectInstructionFileName,
   PRIMARY_PROJECT_INSTRUCTION_FILE,
-} from '../../../agenc/upstream/utils/projectInstructions' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../utils/projectInstructions.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 function isLoadedProjectInstructionFile(file: MemoryFileInfo): boolean {
   return (

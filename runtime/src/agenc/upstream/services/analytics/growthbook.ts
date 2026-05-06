@@ -7,22 +7,22 @@ import {
   getIsNonInteractiveSession,
   getSessionTrustAccepted,
 } from '../../bootstrap/state.js'
-import { getGrowthBookClientKey } from '../../constants/keys.js'
+import { getGrowthBookClientKey } from '../../../../constants/keys.js'
 import {
   checkHasTrustDialogAccepted,
   getGlobalConfig,
   saveGlobalConfig,
-} from '../../utils/config.js'
+} from '../../../../utils/config.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { toError } from '../../utils/errors.js'
-import { getAuthHeaders } from '../../utils/http.js'
-import { logError } from '../../utils/log.js'
-import { createSignal } from '../../utils/signal.js'
-import { jsonStringify } from '../../utils/slowOperations.js'
+import { toError } from '../../../../utils/errors.js'
+import { getAuthHeaders } from '../../../../utils/http.js'
+import { logError } from '../../../../utils/log.js'
+import { createSignal } from '../../../../utils/signal.js'
+import { jsonStringify } from '../../../../utils/slowOperations.js'
 import {
   type GitHubActionsMetadata,
   getUserForGrowthBook,
-} from '../../utils/user.js'
+} from '../../../../utils/user.js'
 import {
   is1PEventLoggingEnabled,
   logGrowthBookExperimentTo1P,

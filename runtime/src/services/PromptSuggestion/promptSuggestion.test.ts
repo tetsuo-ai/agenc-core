@@ -35,7 +35,7 @@ import {
   isTeammate as isLiveTeammate,
   runWithTeammateContext,
   setDynamicTeamContext,
-} from "../../agenc/upstream/utils/teammate.js";
+} from "../../utils/teammate.js";
 
 describe("PromptSuggestion service", () => {
   afterEach(() => {

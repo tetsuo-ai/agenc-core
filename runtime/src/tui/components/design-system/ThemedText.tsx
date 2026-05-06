@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import React, { useContext } from 'react';
 import Text from '../../ink/components/Text.js';
 import type { Color, Styles } from '../../ink/styles.js';
-import { getTheme, type Theme } from '../../../agenc/upstream/utils/theme'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getTheme, type Theme } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useTheme } from './ThemeProvider';
 
 /** Colors uncolored ThemedText in the subtree. Precedence: explicit `color` >

@@ -2,8 +2,8 @@ import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import { useEffect, useState } from 'react';
 import { Box, Text } from '../../ink.js';
-import { getGlobalConfig, saveGlobalConfig } from '../../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getInitialSettings } from '../../../agenc/upstream/utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getInitialSettings } from '../../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isVoiceModeEnabled } from '../../../agenc/upstream/voice/voiceModeEnabled'; // upstream-import: keep target is owned by another Z-PURGE item
 import { AnimatedAsterisk } from './AnimatedAsterisk';
 import { shouldShowOpus1mMergeNotice } from './Opus1mMergeNotice';

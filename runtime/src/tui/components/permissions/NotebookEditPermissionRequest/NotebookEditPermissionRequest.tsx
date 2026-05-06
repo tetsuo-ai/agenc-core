@@ -4,7 +4,7 @@ import React from 'react';
 import type { z } from 'zod/v4';
 import { Text } from '../../../ink.js';
 import { NotebookEditTool } from '../../../../agenc/upstream/tools/NotebookEditTool/NotebookEditTool'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../../../agenc/upstream/utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { FilePermissionDialog } from '../FilePermissionDialog/FilePermissionDialog';
 import type { PermissionRequestProps } from '../PermissionRequest.js';
 import { NotebookEditToolDiff } from './NotebookEditToolDiff';

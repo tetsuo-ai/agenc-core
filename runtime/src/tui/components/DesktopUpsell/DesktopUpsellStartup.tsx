@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { Box, Text } from '../../ink.js';
 import { getDynamicConfig_CACHED_MAY_BE_STALE } from '../../../agenc/upstream/services/analytics/growthbook'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logEvent } from '../../../agenc/upstream/services/analytics/index'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getGlobalConfig, saveGlobalConfig } from '../../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../CustomSelect/select';
 import { DesktopHandoff } from '../DesktopHandoff';
 import { PermissionDialog } from '../permissions/PermissionDialog';

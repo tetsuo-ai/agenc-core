@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import BashToolResultMessage from '../../../agenc/upstream/tools/BashTool/BashToolResultMessage'; // upstream-import: keep target is owned by another Z-PURGE item
-import { extractTag } from '../../../agenc/upstream/utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
+import { extractTag } from '../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 export function UserBashOutputMessage(t0) {
   const $ = _c(10);
   const {

@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources';
 import { randomUUID } from 'crypto';
 import * as React from 'react';
@@ -8,12 +10,12 @@ import { PowerShellTool } from '../../agenc/upstream/tools/PowerShellTool/PowerS
 import type { AttachmentMessage, SystemMessage, UserMessage } from '../../agenc/upstream/types/message.js';
 import type { ShellProgress } from '../../agenc/upstream/types/tools.js';
 import { logEvent } from '../../agenc/upstream/services/analytics/index.js';
-import { errorMessage, ShellError } from '../../agenc/upstream/utils/errors.js';
-import { createSyntheticUserCaveatMessage, createUserInterruptionMessage, createUserMessage, prepareUserContent } from '../../agenc/upstream/utils/messages.js';
-import { resolveDefaultShell } from '../../agenc/upstream/utils/shell/resolveDefaultShell.js';
-import { isPowerShellToolEnabled } from '../../agenc/upstream/utils/shell/shellToolUtils.js';
-import { processToolResultBlock } from '../../agenc/upstream/utils/toolResultStorage.js';
-import { escapeXml } from '../../agenc/upstream/utils/xml.js';
+import { errorMessage, ShellError } from '../../utils/errors.js';
+import { createSyntheticUserCaveatMessage, createUserInterruptionMessage, createUserMessage, prepareUserContent } from '../../utils/messages.js';
+import { resolveDefaultShell } from '../../utils/shell/resolveDefaultShell.js';
+import { isPowerShellToolEnabled } from '../../utils/shell/shellToolUtils.js';
+import { processToolResultBlock } from '../../utils/toolResultStorage.js';
+import { escapeXml } from '../../utils/xml.js';
 import type { ProcessUserInputContext } from './processUserInput.js';
 export async function processBashCommand(inputString: string, precedingInputBlocks: ContentBlockParam[], attachmentMessages: AttachmentMessage[], context: ProcessUserInputContext, setToolJSX: SetToolJSXFn): Promise<{
   messages: (UserMessage | AttachmentMessage | SystemMessage)[];

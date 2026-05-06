@@ -3,8 +3,8 @@ import { relative } from 'path';
 import React from 'react';
 import { Box, Text } from '../ink.js';
 import { DiagnosticTrackingService } from '../../agenc/upstream/services/diagnosticTracking'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { Attachment } from '../../agenc/upstream/utils/attachments'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getCwd } from '../../agenc/upstream/utils/cwd'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { Attachment } from '../../utils/attachments.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCwd } from '../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { CtrlOToExpand } from './CtrlOToExpand';
 import { MessageResponse } from './MessageResponse';
 type DiagnosticsAttachment = Extract<Attachment, {

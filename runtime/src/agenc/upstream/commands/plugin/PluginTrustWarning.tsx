@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import * as React from 'react';
 import { Box, Text } from '../../../../tui/ink.js';
-import { getPluginTrustMessage } from '../../utils/plugins/marketplaceHelpers.js';
+import { getPluginTrustMessage } from '../../../../utils/plugins/marketplaceHelpers.js';
 export function PluginTrustWarning() {
   const $ = _c(3);
   let t0;

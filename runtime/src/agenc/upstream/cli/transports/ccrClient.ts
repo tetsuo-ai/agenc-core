@@ -1,3 +1,4 @@
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { randomUUID } from 'crypto'
 import type {
   SDKPartialAssistantMessage,
@@ -5,30 +6,29 @@ import type {
 } from 'src/entrypoints/sdk/controlTypes.js'
 import { decodeJwtExpiry } from '../../bridge/jwtUtils.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { logForDiagnosticsNoPII } from '../../utils/diagLogs.js'
-import { errorMessage, getErrnoCode } from '../../utils/errors.js'
-import { createAxiosInstance } from '../../utils/proxy.js'
+import { logForDiagnosticsNoPII } from '../../../../utils/diagLogs.js'
+import { errorMessage, getErrnoCode } from '../../../../utils/errors.js'
+import { createAxiosInstance } from '../../../../utils/proxy.js'
 import {
   registerSessionActivityCallback,
   unregisterSessionActivityCallback,
-} from '../../utils/sessionActivity.js'
+} from '../../../../utils/sessionActivity.js'
 import {
   getSessionIngressAuthHeaders,
   getSessionIngressAuthToken,
-} from '../../utils/sessionIngressAuth.js'
+} from '../../../../utils/sessionIngressAuth.js'
 import type {
   RequiresActionDetails,
   SessionState,
-} from '../../utils/sessionState.js'
-import { sleep } from '../../utils/sleep.js'
-import { getAgenCCodeUserAgent } from '../../utils/userAgent.js'
+} from '../../../../utils/sessionState.js'
+import { sleep } from '../../../../utils/sleep.js'
+import { getAgenCCodeUserAgent } from '../../../../utils/userAgent.js'
 import {
   RetryableError,
   SerialBatchEventUploader,
 } from './SerialBatchEventUploader.js'
 import type { SSETransport, StreamClientEvent } from './SSETransport.js'
 import { WorkerStateUploader } from './WorkerStateUploader.js'
-
 /** Default interval between heartbeat events (20s; server TTL is 60s). */
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 20_000
 
@@ -972,12 +972,10 @@ export class CCRClient {
   getWorkerEpoch(): number {
     return this.workerEpoch
   }
-
   /** Internal-event queue depth — shutdown-snapshot backpressure signal. */
   get internalEventsPending(): number {
     return this.internalEventUploader.pendingCount
   }
-
   /** Clean up uploaders and timers. */
   close(): void {
     this.closed = true

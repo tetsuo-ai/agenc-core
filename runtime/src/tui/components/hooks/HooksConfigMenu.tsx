@@ -19,10 +19,10 @@ import type { CommandResultDisplay } from '../../../commands.js';
 import { useSettingsChange } from '../../hooks/useSettingsChange';
 import { Box, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import { getHookEventMetadata, getHooksForMatcher, getMatcherMetadata, getSortedMatchersForEvent, groupHooksByEventAndMatcher } from '../../../agenc/upstream/utils/hooks/hooksConfigManager'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { IndividualHookConfig } from '../../../agenc/upstream/utils/hooks/hooksSettings'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getSettings_DEPRECATED, getSettingsForSource } from '../../../agenc/upstream/utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
-import { plural } from '../../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getHookEventMetadata, getHooksForMatcher, getMatcherMetadata, getSortedMatchersForEvent, groupHooksByEventAndMatcher } from '../../../utils/hooks/hooksConfigManager.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { IndividualHookConfig } from '../../../utils/hooks/hooksSettings.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSettings_DEPRECATED, getSettingsForSource } from '../../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Dialog } from '../design-system/Dialog';
 import { SelectEventMode } from './SelectEventMode';
 import { SelectHookMode } from './SelectHookMode';

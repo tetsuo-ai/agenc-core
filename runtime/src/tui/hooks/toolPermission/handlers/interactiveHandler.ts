@@ -23,11 +23,11 @@ import {
   setClassifierApproval,
   setClassifierChecking,
   setYoloClassifierApproval,
-} from '../../../../agenc/upstream/utils/classifierApprovals' // upstream-import: keep target is owned by another Z-PURGE item
-import { errorMessage } from '../../../../agenc/upstream/utils/errors' // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionDecision } from '../../../../agenc/upstream/utils/permissions/PermissionResult' // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionUpdate } from '../../../../agenc/upstream/utils/permissions/PermissionUpdateSchema' // upstream-import: keep target is owned by another Z-PURGE item
-import { hasPermissionsToUseTool } from '../../../../agenc/upstream/utils/permissions/permissions' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../../utils/classifierApprovals.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { errorMessage } from '../../../../utils/errors.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionDecision } from '../../../../utils/permissions/PermissionResult.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { hasPermissionsToUseTool } from '../../../../utils/permissions/permissions.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type { PermissionContext } from '../PermissionContext'
 import { createResolveOnce } from '../PermissionContext'
 

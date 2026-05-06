@@ -1,6 +1,6 @@
 import { basename } from 'path'
 import React from 'react'
-import { logError } from '../../agenc/upstream/utils/log.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../utils/log.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { useDebounceCallback } from 'usehooks-ts'
 import type { InputEvent, Key } from '../ink.js'
 import {
@@ -8,9 +8,9 @@ import {
   isImageFilePath,
   PASTE_THRESHOLD,
   tryReadImageFromPath,
-} from '../../agenc/upstream/utils/imagePaste' // upstream-import: keep target is owned by another Z-PURGE item
-import type { ImageDimensions } from '../../agenc/upstream/utils/imageResizer' // upstream-import: keep target is owned by another Z-PURGE item
-import { getPlatform } from '../../agenc/upstream/utils/platform' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/imagePaste.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { ImageDimensions } from '../../utils/imageResizer.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { getPlatform } from '../../utils/platform.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 const CLIPBOARD_CHECK_DEBOUNCE_MS = 50
 const PASTE_COMPLETION_TIMEOUT_MS = 100

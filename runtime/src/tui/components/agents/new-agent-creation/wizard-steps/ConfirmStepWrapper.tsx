@@ -5,7 +5,7 @@ import { useSetAppState } from '../../../../state/AppState.js';
 import type { Tools } from '../../../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js';
 import { getActiveAgentsFromList } from 'src/tools/AgentTool/loadAgentsDir.js';
-import { editFileInEditor } from '../../../../../agenc/upstream/utils/promptEditor'; // upstream-import: keep target is owned by another Z-PURGE item
+import { editFileInEditor } from '../../../../../utils/promptEditor.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useWizard } from '../../../wizard/index';
 import { getNewAgentFilePath, saveAgentToFile } from '../../agentFileUtils';
 import type { AgentWizardData } from '../types';

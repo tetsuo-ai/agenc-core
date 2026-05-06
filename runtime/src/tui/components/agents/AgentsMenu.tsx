@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import chalk from 'chalk';
 import * as React from 'react';
 import { useCallback, useMemo, useState } from 'react';
-import type { SettingSource } from '../../../agenc/upstream/utils/settings/constants.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { SettingSource } from '../../../utils/settings/constants.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { CommandResultDisplay } from '../../../commands.js';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { useMergedTools } from '../../hooks/useMergedTools';
@@ -11,8 +11,8 @@ import { useAppState, useSetAppState } from '../../state/AppState.js';
 import type { Tools } from '../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
 import { type ResolvedAgent, resolveAgentOverrides } from '../../../agenc/upstream/tools/AgentTool/agentDisplay'; // upstream-import: keep target is owned by another Z-PURGE item
 import { type AgentDefinition, getActiveAgentsFromList } from 'src/tools/AgentTool/loadAgentsDir.js';
-import { toError } from '../../../agenc/upstream/utils/errors'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../../agenc/upstream/utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
+import { toError } from '../../../utils/errors.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../CustomSelect/select';
 import { Dialog } from '../design-system/Dialog';
 import { AgentDetail } from './AgentDetail';

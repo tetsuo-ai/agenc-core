@@ -1,11 +1,11 @@
 import {
   ConfigParseError,
   getErrnoCode,
-} from "../agenc/upstream/utils/errors.js";
-import { getGlobalAgenCFile } from "../agenc/upstream/utils/env.js";
-import { getFsImplementation } from "../agenc/upstream/utils/fsOperations.js";
-import { logForDiagnosticsNoPII } from "../agenc/upstream/utils/diagLogs.js";
-import { stripBOM } from "../agenc/upstream/utils/jsonRead.js";
+} from "../utils/errors.js";
+import { getGlobalAgenCFile } from "../utils/env.js";
+import { getFsImplementation } from "../utils/fsOperations.js";
+import { logForDiagnosticsNoPII } from "../utils/diagLogs.js";
+import { stripBOM } from "../utils/jsonRead.js";
 
 let configsEnabled = false;
 let startupComplete = false;

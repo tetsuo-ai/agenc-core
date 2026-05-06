@@ -4,7 +4,7 @@ import type { CommandResultDisplay } from '../../../commands.js';
 import { Box, color, Link, Text, useTheme } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import { AuthenticationCancelledError, performMCPOAuthFlow } from '../../../agenc/upstream/services/mcp/auth'; // upstream-import: keep target is owned by another Z-PURGE item
-import { capitalize } from '../../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { capitalize } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
 import { Select } from '../CustomSelect/select';
 import { Byline } from '../design-system/Byline';

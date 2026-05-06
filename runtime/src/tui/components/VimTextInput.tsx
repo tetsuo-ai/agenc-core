@@ -5,7 +5,7 @@ import { useClipboardImageHint } from '../hooks/useClipboardImageHint';
 import { useVimInput } from '../hooks/useVimInput';
 import { Box, color, useTerminalFocus, useTheme } from '../ink.js';
 import type { VimTextInputProps } from '../../agenc/upstream/types/textInputTypes'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { TextHighlight } from '../../agenc/upstream/utils/textHighlighting'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { TextHighlight } from '../../utils/textHighlighting.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { BaseTextInput } from './BaseTextInput';
 export type Props = VimTextInputProps & {
   highlights?: TextHighlight[];

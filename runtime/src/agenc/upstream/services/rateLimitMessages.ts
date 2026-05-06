@@ -7,9 +7,9 @@ import {
   getOauthAccountInfo,
   getSubscriptionType,
   isOverageProvisioningAllowed,
-} from '../utils/auth.js'
-import { hasAgenCAiBillingAccess } from '../utils/billing.js'
-import { formatResetTime } from '../utils/format.js'
+} from '../../../utils/auth.js'
+import { hasAgenCAiBillingAccess } from '../../../utils/billing.js'
+import { formatResetTime } from '../../../utils/format.js'
 import type { AgenCAILimits } from './claudeAiLimits.js'
 
 const FEEDBACK_CHANNEL_ANT = '#briarpatch-cc'

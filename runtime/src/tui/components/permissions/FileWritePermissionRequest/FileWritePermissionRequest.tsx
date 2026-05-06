@@ -4,9 +4,9 @@ import React, { useMemo } from 'react';
 import type { z } from 'zod/v4';
 import { Text } from '../../../ink.js';
 import { FileWriteTool } from '../../../../agenc/upstream/tools/FileWriteTool/FileWriteTool'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getCwd } from '../../../../agenc/upstream/utils/cwd'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isENOENT } from '../../../../agenc/upstream/utils/errors'; // upstream-import: keep target is owned by another Z-PURGE item
-import { readFileSync } from '../../../../agenc/upstream/utils/fileRead'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCwd } from '../../../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isENOENT } from '../../../../utils/errors.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { readFileSync } from '../../../../utils/fileRead.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { FilePermissionDialog } from '../FilePermissionDialog/FilePermissionDialog';
 import { createSingleEditDiffConfig, type FileEdit, type IDEDiffSupport } from '../FilePermissionDialog/ideDiffConfig';
 import type { PermissionRequestProps } from '../PermissionRequest.js';

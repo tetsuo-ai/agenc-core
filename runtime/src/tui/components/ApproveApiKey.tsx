@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import { Text } from '../ink.js';
-import { saveGlobalConfig } from '../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
+import { saveGlobalConfig } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from './CustomSelect/select';
 import { Dialog } from './design-system/Dialog';
 type Props = {

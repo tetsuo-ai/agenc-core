@@ -5,7 +5,7 @@ import { usePasteHandler } from '../hooks/usePasteHandler';
 import { useDeclaredCursor } from '../ink/hooks/use-declared-cursor.js';
 import { Ansi, Box, Text, useInput } from '../ink.js';
 import type { BaseInputState, BaseTextInputProps } from '../../agenc/upstream/types/textInputTypes'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { TextHighlight } from '../../agenc/upstream/utils/textHighlighting'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { TextHighlight } from '../../utils/textHighlighting.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { HighlightedInput } from './PromptInput/ShimmeredInput.js';
 type BaseTextInputComponentProps = BaseTextInputProps & {
   inputState: BaseInputState;

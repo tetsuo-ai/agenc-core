@@ -5,7 +5,7 @@ import type { Session } from "../../session/session.js";
 import type { TurnContext } from "../../session/turn-context.js";
 import { createEmptyToolPermissionContext } from "../../permissions/types.js";
 import { toAgenCModelContext } from "./model-context.js";
-import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../upstream/constants/toolLimits.js";
+import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../../constants/toolLimits.js";
 
 export interface AgenCToolUseContext {
   readonly abortController: AbortController;

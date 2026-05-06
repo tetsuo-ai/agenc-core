@@ -5,15 +5,15 @@ import figures from 'figures';
 import React, { useMemo } from 'react';
 import { Ansi, Box, color, Text, useTheme } from '../../ink.js';
 import { useAppState } from '../../state/AppState.js';
-import type { PermissionMode } from '../../../agenc/upstream/utils/permissions/PermissionMode'; // upstream-import: keep target is owned by another Z-PURGE item
-import { permissionModeTitle } from '../../../agenc/upstream/utils/permissions/PermissionMode'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionDecision, PermissionDecisionReason } from '../../../agenc/upstream/utils/permissions/PermissionResult'; // upstream-import: keep target is owned by another Z-PURGE item
-import { extractRules } from '../../../agenc/upstream/utils/permissions/PermissionUpdate'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionUpdate } from '../../../agenc/upstream/utils/permissions/PermissionUpdateSchema'; // upstream-import: keep target is owned by another Z-PURGE item
-import { permissionRuleValueToString } from '../../../agenc/upstream/utils/permissions/permissionRuleParser'; // upstream-import: keep target is owned by another Z-PURGE item
-import { detectUnreachableRules } from '../../../agenc/upstream/utils/permissions/shadowedRuleDetection'; // upstream-import: keep target is owned by another Z-PURGE item
-import { SandboxManager } from '../../../agenc/upstream/utils/sandbox/sandbox-adapter'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getSettingSourceDisplayNameLowercase } from '../../../agenc/upstream/utils/settings/constants'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionMode } from '../../../utils/permissions/PermissionMode.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { permissionModeTitle } from '../../../utils/permissions/PermissionMode.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionDecision, PermissionDecisionReason } from '../../../utils/permissions/PermissionResult.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { extractRules } from '../../../utils/permissions/PermissionUpdate.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { permissionRuleValueToString } from '../../../utils/permissions/permissionRuleParser.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { detectUnreachableRules } from '../../../utils/permissions/shadowedRuleDetection.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { SandboxManager } from '../../../utils/sandbox/sandbox-runtime.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSettingSourceDisplayNameLowercase } from '../../../utils/settings/constants.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type PermissionDecisionInfoItemProps = {
   title?: string;
   decisionReason: PermissionDecisionReason;

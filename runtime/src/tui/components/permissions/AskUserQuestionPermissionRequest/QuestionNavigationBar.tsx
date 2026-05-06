@@ -5,7 +5,7 @@ import { useTerminalSize } from '../../../hooks/useTerminalSize';
 import { stringWidth } from '../../../ink/stringWidth.js';
 import { Box, Text } from '../../../ink.js';
 import type { AskUserQuestion as Question } from 'src/tools/ask-user-question/tool.js';
-import { truncateToWidth } from '../../../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
+import { truncateToWidth } from '../../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type Props = {
   questions: Question[];
   currentQuestionIndex: number;

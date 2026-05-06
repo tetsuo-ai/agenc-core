@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import { relative } from 'path';
 import * as React from 'react';
-import { getCwd } from '../../agenc/upstream/utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCwd } from '../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Text } from '../ink.js';
 import { HighlightedCode } from './markdown/HighlightedCode.js';
 import { MessageResponse } from './MessageResponse';

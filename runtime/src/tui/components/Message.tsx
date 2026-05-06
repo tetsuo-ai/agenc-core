@@ -9,10 +9,10 @@ import { Box } from '../ink.js';
 import type { Tools } from '../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
 import { type ConnectorTextBlock, isConnectorTextBlock } from '../../agenc/upstream/types/connectorText'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { AssistantMessage, AttachmentMessage as AttachmentMessageType, CollapsedReadSearchGroup as CollapsedReadSearchGroupType, GroupedToolUseMessage as GroupedToolUseMessageType, NormalizedUserMessage, ProgressMessage, SystemMessage } from '../../types/message';
-import { type AdvisorBlock, isAdvisorBlock } from '../../agenc/upstream/utils/advisor'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isFullscreenEnvEnabled } from '../../agenc/upstream/utils/fullscreen'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../agenc/upstream/utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { buildMessageLookups } from '../../agenc/upstream/utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type AdvisorBlock, isAdvisorBlock } from '../../utils/advisor.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { buildMessageLookups } from '../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { CompactSummary } from './CompactSummary';
 import { AdvisorMessage } from './messages/AdvisorMessage';
 import { AssistantRedactedThinkingMessage } from './messages/AssistantRedactedThinkingMessage';

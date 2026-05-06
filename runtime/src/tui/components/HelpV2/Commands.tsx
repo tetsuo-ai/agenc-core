@@ -3,7 +3,7 @@ import * as React from 'react';
 import { useMemo } from 'react';
 import { type Command, formatDescriptionWithSource } from '../../../commands.js';
 import { Box, Text } from '../../ink.js';
-import { truncate } from '../../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
+import { truncate } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../CustomSelect/select';
 import { useTabHeaderFocus } from '../design-system/Tabs';
 type Props = {

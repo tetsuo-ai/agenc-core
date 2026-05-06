@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { Box, Text, useTheme } from '../../ink.js';
-import { env } from '../../../agenc/upstream/utils/env'; // upstream-import: keep target is owned by another Z-PURGE item
+import { env } from '../../../utils/env.js'; // upstream-import: keep target is owned by another Z-PURGE item
 const WELCOME_V2_WIDTH = 58;
 export function WelcomeV2() {
   const $ = _c(35);

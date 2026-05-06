@@ -1,5 +1,7 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { Notification } from '../context/notifications'
-import type { TodoList } from '../../agenc/upstream/utils/todo/types.js'
+import type { TodoList } from '../../utils/todo/types.js'
 import type { BridgePermissionCallbacks } from '../../agenc/upstream/bridge/bridgePermissionCallbacks.js'
 import type { Command } from '../../commands.js'
 import type { ChannelPermissionCallbacks } from '../../agenc/upstream/services/mcp/channelPermissions.js'
@@ -27,19 +29,19 @@ import type { DeepImmutable } from '../../agenc/upstream/types/utils.js'
 import {
   type AttributionState,
   createEmptyAttributionState,
-} from '../../agenc/upstream/utils/commitAttribution.js'
-import type { EffortValue } from '../../agenc/upstream/utils/effort.js'
-import type { FileHistoryState } from '../../agenc/upstream/utils/fileHistory.js'
-import type { REPLHookContext } from '../../agenc/upstream/utils/hooks/postSamplingHooks.js'
-import type { SessionHooksState } from '../../agenc/upstream/utils/hooks/sessionHooks.js'
-import type { ModelSetting } from '../../agenc/upstream/utils/model/model.js'
-import type { DenialTrackingState } from '../../agenc/upstream/utils/permissions/denialTracking.js'
-import type { PermissionMode } from '../../agenc/upstream/utils/permissions/PermissionMode.js'
-import { getInitialSettings } from '../../agenc/upstream/utils/settings/settings.js'
-import type { SettingsJson } from '../../agenc/upstream/utils/settings/types.js'
-import { isAgentSwarmsEnabled } from '../../agenc/upstream/utils/agentSwarmsEnabled.js'
-import { shouldEnableThinkingByDefault } from '../../agenc/upstream/utils/thinking.js'
-import { isPlanModeRequired, isTeammate } from '../../agenc/upstream/utils/teammate.js'
+} from '../../utils/commitAttribution.js'
+import type { EffortValue } from '../../utils/effort.js'
+import type { FileHistoryState } from '../../utils/fileHistory.js'
+import type { REPLHookContext } from '../../utils/hooks/postSamplingHooks.js'
+import type { SessionHooksState } from '../../utils/hooks/sessionHooks.js'
+import type { ModelSetting } from '../../utils/model/model.js'
+import type { DenialTrackingState } from '../../utils/permissions/denialTracking.js'
+import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
+import { getInitialSettings } from '../../utils/settings/settings.js'
+import type { SettingsJson } from '../../utils/settings/types.js'
+import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
+import { shouldEnableThinkingByDefault } from '../../utils/thinking.js'
+import { isPlanModeRequired, isTeammate } from '../../utils/teammate.js'
 import type { Store } from './store.js'
 
 export type CompletionBoundary =

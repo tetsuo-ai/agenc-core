@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { getLastAPIRequest } from '../../agenc/upstream/bootstrap/state.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logEventTo1P } from '../../agenc/upstream/services/analytics/firstPartyEventLogger.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../agenc/upstream/services/analytics/index.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getLastAssistantMessage, normalizeMessagesForAPI } from '../../agenc/upstream/utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getLastAssistantMessage, normalizeMessagesForAPI } from '../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { CommandResultDisplay } from '../../commands.js';
 import { useTerminalSize } from '../hooks/useTerminalSize';
 import { Box, Text, useInput } from '../ink.js';
@@ -13,18 +13,18 @@ import { useKeybinding } from '../keybindings/useKeybinding.js';
 import { queryHaiku } from '../../agenc/upstream/services/api/claude'; // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
 import { startsWithApiErrorPrefix } from '../../agenc/upstream/services/api/errors'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { Message } from '../../types/message';
-import { checkAndRefreshOAuthTokenIfNeeded } from '../../agenc/upstream/utils/auth'; // upstream-import: keep target is owned by another Z-PURGE item
-import { openBrowser } from '../../agenc/upstream/utils/browser'; // upstream-import: keep target is owned by another Z-PURGE item
+import { checkAndRefreshOAuthTokenIfNeeded } from '../../utils/auth.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { openBrowser } from '../../utils/browser.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js';
-import { env } from '../../agenc/upstream/utils/env'; // upstream-import: keep target is owned by another Z-PURGE item
+import { env } from '../../utils/env.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { type GitRepoState, getGitState, getIsGit } from '../../utils/git';
-import { getAuthHeaders, getUserAgent } from '../../agenc/upstream/utils/http'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getInMemoryErrors, logError } from '../../agenc/upstream/utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getAPIProvider } from '../../agenc/upstream/utils/model/providers'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isEssentialTrafficOnly } from '../../agenc/upstream/utils/privacyLevel'; // upstream-import: keep target is owned by another Z-PURGE item
-import { extractTeammateTranscriptsFromTasks, getTranscriptPath, loadAllSubagentTranscriptsFromDisk, MAX_TRANSCRIPT_READ_BYTES } from '../../agenc/upstream/utils/sessionStorage'; // upstream-import: keep target is owned by another Z-PURGE item
-import { jsonStringify } from '../../agenc/upstream/utils/slowOperations'; // upstream-import: keep target is owned by another Z-PURGE item
-import { asSystemPrompt } from '../../agenc/upstream/utils/systemPromptType'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getAuthHeaders, getUserAgent } from '../../utils/http.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getInMemoryErrors, logError } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getAPIProvider } from '../../utils/model/providers.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isEssentialTrafficOnly } from '../../utils/privacyLevel.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { extractTeammateTranscriptsFromTasks, getTranscriptPath, loadAllSubagentTranscriptsFromDisk, MAX_TRANSCRIPT_READ_BYTES } from '../../utils/sessionStorage.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { jsonStringify } from '../../utils/slowOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { asSystemPrompt } from '../../utils/systemPromptType.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint';
 import { Byline } from './design-system/Byline';
 import { Dialog } from './design-system/Dialog';

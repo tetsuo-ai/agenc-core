@@ -14,7 +14,7 @@ import { logForDebugging } from 'src/utils/debug.js'
 import {
   type PermissionUpdate,
   permissionUpdateSchema,
-} from '../../agenc/upstream/utils/permissions/PermissionUpdateSchema' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/permissions/PermissionUpdateSchema.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 /**
  * Validate permissionUpdates from external sources (mailbox IPC).

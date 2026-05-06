@@ -9,8 +9,8 @@ import { type IDEAtMentioned, useIdeAtMentioned } from '../../hooks/useIdeAtMent
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../agenc/upstream/services/analytics/index.js';
 import { type AppState, useAppState, useAppStateStore, useSetAppState } from '../../state/AppState.js';
 import type { FooterItem } from '../../state/AppStateStore.js';
-import { getCwd } from '../../../agenc/upstream/utils/cwd.js';
-import { isQueuedCommandEditable, popAllEditable } from '../../../agenc/upstream/utils/messageQueueManager.js';
+import { getCwd } from '../../../utils/cwd.js';
+import { isQueuedCommandEditable, popAllEditable } from '../../../utils/messageQueueManager.js';
 import stripAnsi from 'strip-ansi';
 import { companionReservedColumns } from '../../../agenc/upstream/buddy/CompanionSprite.js';
 import { isBuddyEnabled } from '../../../agenc/upstream/buddy/feature.js';
@@ -52,49 +52,49 @@ import type { AgentDefinition } from '../../../tools/AgentTool/loadAgentsDir.js'
 import type { Message } from '../../../agenc/upstream/types/message.js';
 import type { PermissionMode } from '../../../agenc/upstream/types/permissions.js';
 import type { BaseTextInputProps, PromptInputMode, VimMode } from '../../../agenc/upstream/types/textInputTypes.js';
-import { isAgentSwarmsEnabled } from '../../../agenc/upstream/utils/agentSwarmsEnabled.js';
-import { count } from '../../../agenc/upstream/utils/array.js';
-import type { AutoUpdaterResult } from '../../../agenc/upstream/utils/autoUpdater.js';
-// branding-scan: allow Cursor is the text-caret utility name.
-import { Cursor } from '../../../agenc/upstream/utils/Cursor.js'; // branding-scan: allow upstream mirror import path pending purge
-import { getGlobalConfig, type PastedContent, saveGlobalConfig } from '../../../agenc/upstream/utils/config.js';
+import { isAgentSwarmsEnabled } from '../../../utils/agentSwarmsEnabled.js';
+import { count } from '../../../utils/array.js';
+import type { AutoUpdaterResult } from '../../../utils/autoUpdater.js';
+// branding-scan: allow TextCursor is the text-caret utility name.
+import { TextCursor } from '../../../utils/TextCursor.js'; // branding-scan: allow upstream mirror import path pending purge
+import { getGlobalConfig, type PastedContent, saveGlobalConfig } from '../../../utils/config.js';
 import { logForDebugging } from '../../../utils/debug.js';
-import { parseDirectMemberMessage, sendDirectMemberMessage } from '../../../agenc/upstream/utils/directMemberMessage.js';
-import type { EffortLevel } from '../../../agenc/upstream/utils/effort.js';
-import { env } from '../../../agenc/upstream/utils/env.js';
-import { errorMessage } from '../../../agenc/upstream/utils/errors.js';
-import { isBilledAsExtraUsage } from '../../../agenc/upstream/utils/extraUsage.js';
-import { clearFastModeCooldown, FAST_MODE_MODEL_DISPLAY, getFastModeModel, getFastModeRuntimeState, getFastModeUnavailableReason, isFastModeAvailable, isFastModeCooldown, isFastModeEnabled, isFastModeSupportedByModel } from '../../../agenc/upstream/utils/fastMode.js';
-import { isFullscreenEnvEnabled } from '../../../agenc/upstream/utils/fullscreen.js';
-import type { PromptInputHelpers } from '../../../agenc/upstream/utils/handlePromptSubmit.js';
-import { extractDraggedFilePaths } from '../../../agenc/upstream/utils/dragDropPaths.js';
-import { getImageFromClipboard, PASTE_THRESHOLD } from '../../../agenc/upstream/utils/imagePaste.js';
-import type { ImageDimensions } from '../../../agenc/upstream/utils/imageResizer.js';
-import { cacheImagePath, storeImage } from '../../../agenc/upstream/utils/imageStore.js';
-import { isMacosOptionChar, MACOS_OPTION_SPECIAL_CHARS } from '../../../agenc/upstream/utils/keyboardShortcuts.js';
-import { logError } from '../../../agenc/upstream/utils/log.js';
-import { isOpus1mMergeEnabled, modelDisplayString } from '../../../agenc/upstream/utils/model/model.js';
-import { setAutoModeActive } from '../../../agenc/upstream/utils/permissions/autoModeState.js';
-import { cyclePermissionMode, getNextPermissionMode } from '../../../agenc/upstream/utils/permissions/getNextPermissionMode.js';
-import { transitionPermissionMode } from '../../../agenc/upstream/utils/permissions/permissionSetup.js';
-import { getPlatform } from '../../../agenc/upstream/utils/platform.js';
+import { parseDirectMemberMessage, sendDirectMemberMessage } from '../../../utils/directMemberMessage.js';
+import type { EffortLevel } from '../../../utils/effort.js';
+import { env } from '../../../utils/env.js';
+import { errorMessage } from '../../../utils/errors.js';
+import { isBilledAsExtraUsage } from '../../../utils/extraUsage.js';
+import { clearFastModeCooldown, FAST_MODE_MODEL_DISPLAY, getFastModeModel, getFastModeRuntimeState, getFastModeUnavailableReason, isFastModeAvailable, isFastModeCooldown, isFastModeEnabled, isFastModeSupportedByModel } from '../../../utils/fastMode.js';
+import { isFullscreenEnvEnabled } from '../../../utils/fullscreen.js';
+import type { PromptInputHelpers } from '../../../utils/handlePromptSubmit.js';
+import { extractDraggedFilePaths } from '../../../utils/dragDropPaths.js';
+import { getImageFromClipboard, PASTE_THRESHOLD } from '../../../utils/imagePaste.js';
+import type { ImageDimensions } from '../../../utils/imageResizer.js';
+import { cacheImagePath, storeImage } from '../../../utils/imageStore.js';
+import { isMacosOptionChar, MACOS_OPTION_SPECIAL_CHARS } from '../../../utils/keyboardShortcuts.js';
+import { logError } from '../../../utils/log.js';
+import { isOpus1mMergeEnabled, modelDisplayString } from '../../../utils/model/model.js';
+import { setAutoModeActive } from '../../../utils/permissions/autoModeState.js';
+import { cyclePermissionMode, getNextPermissionMode } from '../../../utils/permissions/getNextPermissionMode.js';
+import { transitionPermissionMode } from '../../../utils/permissions/permissionSetup.js';
+import { getPlatform } from '../../../utils/platform.js';
 import type { ProcessUserInputContext } from '../../input/processUserInput.js';
-import { editPromptInEditor } from '../../../agenc/upstream/utils/promptEditor.js';
-import { hasAutoModeOptIn, updateSettingsForSource } from '../../../agenc/upstream/utils/settings/settings.js';
-import { findBtwTriggerPositions } from '../../../agenc/upstream/utils/sideQuestion.js';
-import { findSlashCommandPositions } from '../../../agenc/upstream/utils/suggestions/commandSuggestions.js';
-import { findSlackChannelPositions, getKnownChannelsVersion, hasSlackMcpServer, subscribeKnownChannels } from '../../../agenc/upstream/utils/suggestions/slackChannelSuggestions.js';
-import { isInProcessEnabled } from '../../../agenc/upstream/utils/swarm/backends/registry.js';
-import { syncTeammateMode } from '../../../agenc/upstream/utils/swarm/teamHelpers.js';
-import type { TeamSummary } from '../../../agenc/upstream/utils/teamDiscovery.js';
-import { getTeammateColor } from '../../../agenc/upstream/utils/teammate.js';
-import { isInProcessTeammate } from '../../../agenc/upstream/utils/teammateContext.js';
-import { writeToMailbox } from '../../../agenc/upstream/utils/teammateMailbox.js';
-import type { TextHighlight } from '../../../agenc/upstream/utils/textHighlighting.js';
-import type { Theme } from '../../../agenc/upstream/utils/theme.js';
-import { findThinkingTriggerPositions, getRainbowColor, isUltrathinkEnabled } from '../../../agenc/upstream/utils/thinking.js';
-import { findTokenBudgetPositions } from '../../../agenc/upstream/utils/tokenBudget.js';
-import { findUltraplanTriggerPositions, findUltrareviewTriggerPositions } from '../../../agenc/upstream/utils/ultraplan/keyword.js';
+import { editPromptInEditor } from '../../../utils/promptEditor.js';
+import { hasAutoModeOptIn, updateSettingsForSource } from '../../../utils/settings/settings.js';
+import { findBtwTriggerPositions } from '../../../utils/sideQuestion.js';
+import { findSlashCommandPositions } from '../../../utils/suggestions/commandSuggestions.js';
+import { findSlackChannelPositions, getKnownChannelsVersion, hasSlackMcpServer, subscribeKnownChannels } from '../../../utils/suggestions/slackChannelSuggestions.js';
+import { isInProcessEnabled } from '../../../utils/swarm/backends/registry.js';
+import { syncTeammateMode } from '../../../utils/swarm/teamHelpers.js';
+import type { TeamSummary } from '../../../utils/teamDiscovery.js';
+import { getTeammateColor } from '../../../utils/teammate.js';
+import { isInProcessTeammate } from '../../../utils/teammateContext.js';
+import { writeToMailbox } from '../../../utils/teammateMailbox.js';
+import type { TextHighlight } from '../../../utils/textHighlighting.js';
+import type { Theme } from '../../../utils/theme.js';
+import { findThinkingTriggerPositions, getRainbowColor, isUltrathinkEnabled } from '../../../utils/thinking.js';
+import { findTokenBudgetPositions } from '../../../utils/tokenBudget.js';
+import { findUltraplanTriggerPositions, findUltrareviewTriggerPositions } from '../../../utils/ultraplan/keyword.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../agenc/upstream/services/analytics/growthbook.js';
 import { AutoModeOptInDialog } from '../AutoModeOptInDialog';
 import { BridgeDialog } from '../BridgeDialog';
@@ -2285,8 +2285,8 @@ function PromptInput({
   // <AlternateScreen>, so this is dormant in the normal main-screen REPL.
   // localCol/localRow are relative to the onClick Box's top-left; the Box
   // tightly wraps the text input so they map directly to (column, line)
-  // branding-scan: allow Cursor is the text-caret utility name.
-  // in the Cursor wrap model. MeasuredText.getOffsetFromPosition handles
+  // branding-scan: allow TextCursor is the text-caret utility name.
+  // in the TextCursor wrap model. MeasuredText.getOffsetFromPosition handles
   // wide chars, wrapped lines, and clamps past-end clicks to line end.
   const maxVisibleLines = isFullscreenEnvEnabled() ? Math.max(MIN_INPUT_VIEWPORT_LINES, Math.floor(rows / 2) - PROMPT_FOOTER_LINES) : undefined;
   const handleInputClick = useCallback((e: ClickEvent) => {
@@ -2294,8 +2294,8 @@ function PromptInput({
     // input, and showCursor is false anyway — skip rather than
     // compute an offset against the wrong string.
     if (!input || isSearchingHistory) return;
-    // branding-scan: allow Cursor is the text-caret utility name.
-    const c = Cursor.fromText(input, textInputColumns, cursorOffset);
+    // branding-scan: allow TextCursor is the text-caret utility name.
+    const c = TextCursor.fromText(input, textInputColumns, cursorOffset);
     const viewportStart = c.getViewportStartLine(maxVisibleLines);
     const offset = c.measuredText.getOffsetFromPosition({
       line: e.localRow + viewportStart,

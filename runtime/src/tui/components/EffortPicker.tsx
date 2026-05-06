@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { Box, Text } from '../ink.js'
 import { useMainLoopModel } from '../hooks/useMainLoopModel'
 import { useAppState, useSetAppState } from '../state/AppState.js'
-import type { EffortLevel } from '../../agenc/upstream/utils/effort' // upstream-import: keep target is owned by another Z-PURGE item
+import type { EffortLevel } from '../../utils/effort.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   getAvailableEffortLevels,
   getDisplayedEffortLevel,
@@ -10,8 +10,8 @@ import {
   getEffortLevelLabel,
   modelSupportsEffort,
   modelUsesOpenAIEffort,
-} from '../../agenc/upstream/utils/effort' // upstream-import: keep target is owned by another Z-PURGE item
-import { getAPIProvider } from '../../agenc/upstream/utils/model/providers' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/effort.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { getAPIProvider } from '../../utils/model/providers.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { getReasoningEffortForModel } from '../../agenc/upstream/services/api/providerConfig' // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from './CustomSelect/select'
 import { effortLevelToSymbol } from './EffortIndicator'

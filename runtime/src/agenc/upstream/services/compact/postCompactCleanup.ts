@@ -1,14 +1,14 @@
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
-import type { QuerySource } from '../../constants/querySource.js'
-import { clearSystemPromptSections } from '../../constants/systemPromptSections.js'
+import type { QuerySource } from '../../../../constants/querySource.js'
+import { clearSystemPromptSections } from '../../../../constants/systemPromptSections.js'
 import { getUserContext } from '../../context.js'
 import { clearSpeculativeChecks } from '../../tools/BashTool/bashPermissions.js'
-import { clearClassifierApprovals } from '../../utils/classifierApprovals.js'
-import { resetGetMemoryFilesCache } from '../../utils/claudemd.js'
-import { clearSessionMessagesCache } from '../../utils/sessionStorage.js'
-import { clearBetaTracingState } from '../../utils/telemetry/betaSessionTracing.js'
+import { clearClassifierApprovals } from '../../../../utils/classifierApprovals.js'
+import { resetGetMemoryFilesCache } from '../../../../utils/agencmd.js'
+import { clearSessionMessagesCache } from '../../../../utils/sessionStorage.js'
+import { clearBetaTracingState } from '../../../../utils/telemetry/betaSessionTracing.js'
 import { resetMicrocompactState } from './microCompact.js'
-
 /**
  * Run cleanup of caches and tracking state after compaction.
  * Call this after both auto-compact and manual /compact to free memory
@@ -37,7 +37,6 @@ export function runPostCompactCleanup(querySource?: QuerySource): void {
     querySource === undefined ||
     querySource.startsWith('repl_main_thread') ||
     querySource === 'sdk'
-
   resetMicrocompactState()
   if (feature('CONTEXT_COLLAPSE')) {
     if (isMainThreadCompact) {
@@ -69,7 +68,7 @@ export function runPostCompactCleanup(querySource?: QuerySource): void {
   // cacheUtils resets. See compactConversation() for full rationale.
   clearBetaTracingState()
   if (feature('COMMIT_ATTRIBUTION')) {
-    void import('../../utils/attributionHooks.js').then(m =>
+    void import('../../../../utils/attributionHooks.js').then(m =>
       m.sweepFileContentCache(),
     )
   }

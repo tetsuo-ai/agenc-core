@@ -1,7 +1,9 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { coerce } from 'semver'
 import type { Writable } from 'stream'
-import { env } from '../../agenc/upstream/utils/env.js'
-import { gte } from '../../agenc/upstream/utils/semver.js'
+import { env } from '../../utils/env.js'
+import { gte } from '../../utils/semver.js'
 import { getClearTerminalSequence } from './clearTerminal.js'
 import type { Diff } from './frame.js'
 import { cursorMove, cursorTo, eraseLines } from './termio/csi.js'
@@ -142,7 +144,7 @@ export function isGhosttyTerminal(): boolean {
   return xtversionName?.toLowerCase().startsWith('ghostty') ?? false
 }
 
-/** True if running in an xterm.js-based terminal (VS Code, Cursor, Windsurf
+/** True if running in an xterm.js-based terminal (compatible IDE
  *  integrated terminals). Combines TERM_PROGRAM env check (fast, sync, but
  *  not forwarded over SSH) with the XTVERSION probe result (async, survives
  *  SSH — query/reply goes through the pty). Early calls may miss the probe

@@ -4,9 +4,9 @@
  * Pure functions for executing vim operators (delete, change, yank, etc.)
  */
 
-import { Cursor } from '../utils/Cursor.js'
-import { firstGrapheme, lastGrapheme } from '../utils/intl.js'
-import { countCharInString } from '../utils/stringUtils.js'
+import { TextCursor } from '../../../utils/TextCursor.js'
+import { firstGrapheme, lastGrapheme } from '../../../utils/intl.js'
+import { countCharInString } from '../../../utils/stringUtils.js'
 import {
   isInclusiveMotion,
   isLinewiseMotion,
@@ -24,7 +24,7 @@ import type {
  * Context for operator execution.
  */
 export type OperatorContext = {
-  cursor: Cursor
+  cursor: TextCursor
   text: string
   setText: (text: string) => void
   setOffset: (offset: number) => void
@@ -66,7 +66,7 @@ export function executeOperatorFind(
   const targetOffset = ctx.cursor.findCharacter(char, findType, count)
   if (targetOffset === null) return
 
-  const target = new Cursor(ctx.cursor.measuredText, targetOffset)
+  const target = new TextCursor(ctx.cursor.measuredText, targetOffset)
   const range = getOperatorRangeForFind(ctx.cursor, target, findType)
 
   applyOperator(op, range.from, range.to, ctx)
@@ -246,7 +246,7 @@ export function executeToggleCase(count: number, ctx: OperatorContext): void {
   }
 
   ctx.setText(newText)
-  // Cursor moves to position after the last toggled character
+  // TextCursor moves to position after the last toggled character
   // At end of line, cursor can be at the "end" position
   ctx.setOffset(offset)
   ctx.recordChange({ type: 'toggleCase', count })
@@ -427,8 +427,8 @@ function getLineStartOffset(lines: string[], lineIndex: number): number {
 }
 
 function getOperatorRange(
-  cursor: Cursor,
-  target: Cursor,
+  cursor: TextCursor,
+  target: TextCursor,
   motion: string,
   op: Operator,
   count: number,
@@ -476,12 +476,12 @@ function getOperatorRange(
 
 /**
  * Get the range for a find-based operator.
- * Note: _findType is unused because Cursor.findCharacter already adjusts
+ * Note: _findType is unused because TextCursor.findCharacter already adjusts
  * the offset for t/T motions. All find types are treated as inclusive here.
  */
 function getOperatorRangeForFind(
-  cursor: Cursor,
-  target: Cursor,
+  cursor: TextCursor,
+  target: TextCursor,
   _findType: FindType,
 ): { from: number; to: number } {
   const from = Math.min(cursor.offset, target.offset)

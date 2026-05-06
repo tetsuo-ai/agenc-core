@@ -4,7 +4,7 @@ import { Box, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import { logEvent } from '../../../agenc/upstream/services/analytics/index'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { Message } from '../../../types/message';
-import { generatePermissionExplanation, isPermissionExplainerEnabled, type PermissionExplanation as PermissionExplanationType, type RiskLevel } from '../../../agenc/upstream/utils/permissions/permissionExplainer'; // upstream-import: keep target is owned by another Z-PURGE item
+import { generatePermissionExplanation, isPermissionExplainerEnabled, type PermissionExplanation as PermissionExplanationType, type RiskLevel } from '../../../utils/permissions/permissionExplainer.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ShimmerChar } from '../spinner/ShimmerChar.js';
 import { useShimmerAnimation } from '../spinner/useShimmerAnimation.js';
 const LOADING_MESSAGE = 'Loading explanation…';

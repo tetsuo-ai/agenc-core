@@ -38,27 +38,27 @@ import {
 vi.mock("src/utils/modelCost.js", () => ({
   calculateUSDCost: () => 0.1234,
 }));
-vi.mock("../agenc/upstream/utils/modelCost.js", () => ({
+vi.mock("../utils/modelCost.js", () => ({
   calculateUSDCost: () => 0.1234,
 }));
-vi.mock("../agenc/upstream/utils/cwd.js", () => ({
+vi.mock("../utils/cwd.js", () => ({
   getCwd: () => process.cwd(),
 }));
-vi.mock("../agenc/upstream/utils/env.js", () => ({
+vi.mock("../utils/env.js", () => ({
   env: { isCI: false },
 }));
-vi.mock("../agenc/upstream/utils/envUtils.js", () => ({
+vi.mock("../utils/envUtils.js", () => ({
   getAgenCConfigHomeDir: () => process.cwd(),
   isEnvTruthy: (value: string | boolean | undefined) =>
     value === true || value === "1" || value === "true",
 }));
-vi.mock("../agenc/upstream/utils/errors.js", () => ({
+vi.mock("../utils/errors.js", () => ({
   getErrnoCode: (error: { code?: string }) => error.code,
 }));
-vi.mock("../agenc/upstream/utils/messages.js", () => ({
+vi.mock("../utils/messages.js", () => ({
   normalizeMessagesForAPI: (messages: unknown) => messages,
 }));
-vi.mock("../agenc/upstream/utils/slowOperations.js", () => ({
+vi.mock("../utils/slowOperations.js", () => ({
   jsonParse: JSON.parse,
   jsonStringify: JSON.stringify,
 }));

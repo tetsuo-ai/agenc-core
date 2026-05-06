@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { Box, Text } from '../../ink.js';
-import { SandboxManager, shouldAllowManagedSandboxDomainsOnly } from '../../../agenc/upstream/utils/sandbox/sandbox-adapter'; // upstream-import: keep target is owned by another Z-PURGE item
+import { SandboxManager, shouldAllowManagedSandboxDomainsOnly } from '../../../utils/sandbox/sandbox-runtime.js'; // upstream-import: keep target is owned by another Z-PURGE item
 export function SandboxConfigTab() {
   const $ = _c(3);
   const isEnabled = SandboxManager.isSandboxingEnabled();

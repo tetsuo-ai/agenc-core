@@ -27,8 +27,8 @@ import { findToolByName } from '../../agenc/upstream/Tool' // upstream-import: k
 import type { Message as MessageType } from '../../types/message'
 import type { PermissionAskDecision } from '../../agenc/upstream/types/permissions' // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js'
-import { gracefulShutdown } from '../../agenc/upstream/utils/gracefulShutdown' // upstream-import: keep target is owned by another Z-PURGE item
-import type { RemoteMessageContent } from '../../agenc/upstream/utils/teleport/api' // upstream-import: keep target is owned by another Z-PURGE item
+import { gracefulShutdown } from '../../utils/gracefulShutdown.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { RemoteMessageContent } from '../../utils/teleport/api.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 type UseSSHSessionResult = {
   isRemoteMode: boolean

@@ -2,7 +2,7 @@ import figures from 'figures';
 import React, { useEffect, useRef, useState } from 'react';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../agenc/upstream/services/analytics/index.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { CommandResultDisplay } from '../../../commands.js';
-import { getOauthConfig } from '../../../agenc/upstream/constants/oauth'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getOauthConfig } from '../../../constants/oauth.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize';
 import { setClipboard } from '../../ink/termio/osc.js';
@@ -14,11 +14,11 @@ import { clearServerCache } from '../../../agenc/upstream/services/mcp/client'; 
 import { useMcpReconnect, useMcpToggleEnabled } from '../../../agenc/upstream/services/mcp/MCPConnectionManager'; // upstream-import: keep target is owned by another Z-PURGE item
 import { describeMcpConfigFilePath, excludeCommandsByServer, excludeResourcesByServer, excludeToolsByServer, filterMcpPromptsByServer } from '../../../agenc/upstream/services/mcp/utils'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useAppState, useSetAppState } from '../../state/AppState.js';
-import { getOauthAccountInfo } from '../../../agenc/upstream/utils/auth'; // upstream-import: keep target is owned by another Z-PURGE item
-import { openBrowser } from '../../../agenc/upstream/utils/browser'; // upstream-import: keep target is owned by another Z-PURGE item
-import { errorMessage } from '../../../agenc/upstream/utils/errors'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logMCPDebug } from '../../../agenc/upstream/utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
-import { capitalize } from '../../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getOauthAccountInfo } from '../../../utils/auth.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { openBrowser } from '../../../utils/browser.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { errorMessage } from '../../../utils/errors.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logMCPDebug } from '../../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { capitalize } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
 import { Select } from '../CustomSelect/select';
 import { Byline } from '../design-system/Byline';

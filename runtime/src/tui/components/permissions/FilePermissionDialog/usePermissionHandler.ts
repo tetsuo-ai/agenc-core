@@ -9,13 +9,13 @@ import {
   FILE_EDIT_TOOL_NAME,
   GLOBAL_AGENC_FOLDER_PERMISSION_PATTERN,
 } from '../../../../agenc/upstream/tools/FileEditTool/constants' // upstream-import: keep target is owned by another Z-PURGE item
-import { env } from '../../../../agenc/upstream/utils/env' // upstream-import: keep target is owned by another Z-PURGE item
-import { generateSuggestions } from '../../../../agenc/upstream/utils/permissions/filesystem' // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionUpdate } from '../../../../agenc/upstream/utils/permissions/PermissionUpdateSchema' // upstream-import: keep target is owned by another Z-PURGE item
+import { env } from '../../../../utils/env.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { generateSuggestions } from '../../../../utils/permissions/filesystem.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   type CompletionType,
   logUnaryEvent,
-} from '../../../../agenc/upstream/utils/unaryLogging' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../../utils/unaryLogging.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type { ToolUseConfirm } from '../PermissionRequest.js'
 import type {
   FileOperationType,

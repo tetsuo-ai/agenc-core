@@ -4,7 +4,7 @@
  */
 
 import { z } from 'zod/v4'
-import { lazySchema } from '../../agenc/upstream/utils/lazySchema.js'
+import { lazySchema } from '../../utils/lazySchema.js'
 import {
   KEYBINDING_ACTION_NAMES,
   KEYBINDING_CONTEXT_NAMES,

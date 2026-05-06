@@ -8,7 +8,7 @@ import type { BridgeState, ReplBridgeHandle } from '../../agenc/upstream/bridge/
 import { setReplBridgeHandle } from '../../agenc/upstream/bridge/replBridgeHandle'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { Command } from '../../commands.js';
 import { getSlashCommandToolSkills, isBridgeSafeCommand } from '../../commands.js';
-import { getRemoteSessionUrl } from '../../agenc/upstream/constants/product'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getRemoteSessionUrl } from '../../constants/product.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useNotifications } from '../context/notifications';
 import type { PermissionMode, SDKMessage } from '../../agenc/upstream/entrypoints/agentSdkTypes'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { SDKControlResponse } from '../../agenc/upstream/entrypoints/sdk/controlTypes'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -16,14 +16,14 @@ import { Text } from '../ink.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../agenc/upstream/services/analytics/growthbook'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useAppState, useAppStateStore, useSetAppState } from '../state/AppState.js';
 import type { Message } from '../../types/message';
-import { getCwd } from '../../agenc/upstream/utils/cwd'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCwd } from '../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js';
-import { errorMessage } from '../../agenc/upstream/utils/errors'; // upstream-import: keep target is owned by another Z-PURGE item
-import { enqueue } from '../../agenc/upstream/utils/messageQueueManager'; // upstream-import: keep target is owned by another Z-PURGE item
-import { buildSystemInitMessage } from '../../agenc/upstream/utils/messages/systemInit'; // upstream-import: keep target is owned by another Z-PURGE item
-import { createBridgeStatusMessage, createSystemMessage } from '../../agenc/upstream/utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getAutoModeUnavailableNotification, getAutoModeUnavailableReason, isAutoModeGateEnabled, isBypassPermissionsModeDisabled, transitionPermissionMode } from '../../agenc/upstream/utils/permissions/permissionSetup'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getLeaderToolUseConfirmQueue } from '../../agenc/upstream/utils/swarm/leaderPermissionBridge'; // upstream-import: keep target is owned by another Z-PURGE item
+import { errorMessage } from '../../utils/errors.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { enqueue } from '../../utils/messageQueueManager.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { buildSystemInitMessage } from '../../utils/messages/systemInit.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { createBridgeStatusMessage, createSystemMessage } from '../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getAutoModeUnavailableNotification, getAutoModeUnavailableReason, isAutoModeGateEnabled, isBypassPermissionsModeDisabled, transitionPermissionMode } from '../../utils/permissions/permissionSetup.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getLeaderToolUseConfirmQueue } from '../../utils/swarm/leaderPermissionBridge.js'; // upstream-import: keep target is owned by another Z-PURGE item
 
 /** How long after a failure before replBridgeEnabled is auto-cleared (stops retries). */
 export const BRIDGE_FAILURE_DISMISS_MS = 10_000;

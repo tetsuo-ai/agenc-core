@@ -7,8 +7,8 @@ import { sanitizeToolNameForAnalytics } from '../../../../agenc/upstream/service
 import { getDestructiveCommandWarning } from '../../../../agenc/upstream/tools/PowerShellTool/destructiveCommandWarning'; // upstream-import: keep target is owned by another Z-PURGE item
 import { PowerShellTool } from '../../../../agenc/upstream/tools/PowerShellTool/PowerShellTool'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isAllowlistedCommand } from '../../../../agenc/upstream/tools/PowerShellTool/readOnlyValidation'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionUpdate } from '../../../../agenc/upstream/utils/permissions/PermissionUpdateSchema'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getCompoundCommandPrefixesStatic } from '../../../../agenc/upstream/utils/powershell/staticPrefix'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCompoundCommandPrefixesStatic } from '../../../../utils/powershell/staticPrefix.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../../CustomSelect/select';
 import { type UnaryEvent, usePermissionRequestLogging } from '../hooks';
 import { PermissionDecisionDebugInfo } from '../PermissionDecisionDebugInfo';

@@ -3,9 +3,9 @@ import * as React from 'react';
 import { useMemo } from 'react';
 import { useTerminalSize } from '../../hooks/useTerminalSize';
 import { Ansi, Text } from '../../ink.js';
-import { createHyperlink } from '../../../agenc/upstream/utils/hyperlink'; // upstream-import: keep target is owned by another Z-PURGE item
-import { jsonParse, jsonStringify } from '../../../agenc/upstream/utils/slowOperations'; // upstream-import: keep target is owned by another Z-PURGE item
-import { renderTruncatedContent } from '../../../agenc/upstream/utils/terminal'; // upstream-import: keep target is owned by another Z-PURGE item
+import { createHyperlink } from '../../../utils/hyperlink.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { jsonParse, jsonStringify } from '../../../utils/slowOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { renderTruncatedContent } from '../../../utils/terminal.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { MessageResponse } from '../MessageResponse';
 import { InVirtualListContext } from '../messageActions';
 import { useExpandShellOutput } from './ExpandShellOutputContext';

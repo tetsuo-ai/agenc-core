@@ -6,14 +6,14 @@ import * as React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../agenc/upstream/services/analytics/index.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useAppState } from '../state/AppState.js';
-import { type DiffStats, fileHistoryCanRestore, fileHistoryEnabled, fileHistoryGetDiffStats } from '../../agenc/upstream/utils/fileHistory.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../agenc/upstream/utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type DiffStats, fileHistoryCanRestore, fileHistoryEnabled, fileHistoryGetDiffStats } from '../../utils/fileHistory.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Text } from '../ink.js';
 import { useKeybinding, useKeybindings } from '../keybindings/useKeybinding.js';
 import type { Message, PartialCompactDirection, UserMessage } from '../../types/message';
-import { stripDisplayTags } from '../../agenc/upstream/utils/displayTags'; // upstream-import: keep target is owned by another Z-PURGE item
-import { createUserMessage, extractTag, isEmptyMessageText, isSyntheticMessage, isToolUseResultMessage } from '../../agenc/upstream/utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
+import { stripDisplayTags } from '../../utils/displayTags.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { createUserMessage, extractTag, isEmptyMessageText, isSyntheticMessage, isToolUseResultMessage } from '../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { type OptionWithDescription, Select } from './CustomSelect/select';
 import { Spinner } from './spinner/Spinner.js';
 function isTextBlock(block: ContentBlockParam): block is TextBlockParam {
@@ -23,10 +23,10 @@ import * as path from 'path';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import type { FileEditOutput } from '../../agenc/upstream/tools/FileEditTool/types.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { Output as FileWriteToolOutput } from '../../agenc/upstream/tools/FileWriteTool/FileWriteTool.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { BASH_STDERR_TAG, BASH_STDOUT_TAG, COMMAND_MESSAGE_TAG, LOCAL_COMMAND_STDERR_TAG, LOCAL_COMMAND_STDOUT_TAG, TASK_NOTIFICATION_TAG, TEAMMATE_MESSAGE_TAG, TICK_TAG } from '../../agenc/upstream/constants/xml'; // upstream-import: keep target is owned by another Z-PURGE item
-import { count } from '../../agenc/upstream/utils/array'; // upstream-import: keep target is owned by another Z-PURGE item
-import { formatRelativeTimeAgo, truncate } from '../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { Theme } from '../../agenc/upstream/utils/theme'; // upstream-import: keep target is owned by another Z-PURGE item
+import { BASH_STDERR_TAG, BASH_STDOUT_TAG, COMMAND_MESSAGE_TAG, LOCAL_COMMAND_STDERR_TAG, LOCAL_COMMAND_STDOUT_TAG, TASK_NOTIFICATION_TAG, TEAMMATE_MESSAGE_TAG, TICK_TAG } from '../../constants/xml.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { count } from '../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatRelativeTimeAgo, truncate } from '../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { Theme } from '../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Divider } from './design-system/Divider';
 type RestoreOption = 'both' | 'conversation' | 'code' | 'summarize' | 'summarize_up_to' | 'nevermind';
 function isSummarizeOption(option: RestoreOption | null): option is 'summarize' | 'summarize_up_to' {

@@ -9,9 +9,9 @@ import {
 import { sanitizeToolNameForAnalytics } from '../../../agenc/upstream/services/analytics/metadata.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { getCodeEditToolDecisionCounter } from '../../../agenc/upstream/bootstrap/state' // upstream-import: keep target is owned by another Z-PURGE item
 import type { Tool as ToolType, ToolUseContext } from '../../../agenc/upstream/Tool' // upstream-import: keep target is owned by another Z-PURGE item
-import { getLanguageName } from '../../../agenc/upstream/utils/cliHighlight' // upstream-import: keep target is owned by another Z-PURGE item
-import { SandboxManager } from '../../../agenc/upstream/utils/sandbox/sandbox-adapter' // upstream-import: keep target is owned by another Z-PURGE item
-import { logOTelEvent } from '../../../agenc/upstream/utils/telemetry/events' // upstream-import: keep target is owned by another Z-PURGE item
+import { getLanguageName } from '../../../utils/cliHighlight.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { SandboxManager } from '../../../utils/sandbox/sandbox-runtime.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { logOTelEvent } from '../../../utils/telemetry/events.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type {
   PermissionApprovalSource,
   PermissionRejectionSource,

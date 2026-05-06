@@ -7,8 +7,8 @@ import { isAutoMemoryEnabled } from '../../../../../memdir/paths';
 import type { Tools } from '../../../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getMemoryScopeDisplay } from '../../../../../tools/AgentTool/agentMemory';
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js';
-import { truncateToWidth } from '../../../../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getAgentModelDisplay } from '../../../../../agenc/upstream/utils/model/agent'; // upstream-import: keep target is owned by another Z-PURGE item
+import { truncateToWidth } from '../../../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getAgentModelDisplay } from '../../../../../utils/model/agent.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../../../ConfigurableShortcutHint';
 import { Byline } from '../../../design-system/Byline';
 import { KeyboardShortcutHint } from '../../../design-system/KeyboardShortcutHint';

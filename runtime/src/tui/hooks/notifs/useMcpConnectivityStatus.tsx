@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
-import { logError } from '../../../agenc/upstream/utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useEffect } from 'react';
 import { useNotifications } from '../../context/notifications.js';
 import { getIsRemoteMode } from '../../../agenc/upstream/bootstrap/state'; // upstream-import: keep target is owned by another Z-PURGE item

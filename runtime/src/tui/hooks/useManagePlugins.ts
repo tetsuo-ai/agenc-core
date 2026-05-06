@@ -13,19 +13,19 @@ import {
   subscribePluginCommands,
 } from '../../agenc/upstream/state/pluginCommandsStore' // upstream-import: keep target is owned by another Z-PURGE item
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
-import { count } from '../../agenc/upstream/utils/array' // upstream-import: keep target is owned by another Z-PURGE item
+import { count } from '../../utils/array.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js'
-import { logForDiagnosticsNoPII } from '../../agenc/upstream/utils/diagLogs' // upstream-import: keep target is owned by another Z-PURGE item
-import { toError } from '../../agenc/upstream/utils/errors' // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../agenc/upstream/utils/log' // upstream-import: keep target is owned by another Z-PURGE item
-import { loadPluginAgents } from '../../agenc/upstream/utils/plugins/loadPluginAgents' // upstream-import: keep target is owned by another Z-PURGE item
-import { getPluginCommands } from '../../agenc/upstream/utils/plugins/loadPluginCommands' // upstream-import: keep target is owned by another Z-PURGE item
-import { loadPluginHooks } from '../../agenc/upstream/utils/plugins/loadPluginHooks' // upstream-import: keep target is owned by another Z-PURGE item
-import { loadPluginLspServers } from '../../agenc/upstream/utils/plugins/lspPluginIntegration' // upstream-import: keep target is owned by another Z-PURGE item
-import { loadPluginMcpServers } from '../../agenc/upstream/utils/plugins/mcpPluginIntegration' // upstream-import: keep target is owned by another Z-PURGE item
-import { detectAndUninstallDelistedPlugins } from '../../agenc/upstream/utils/plugins/pluginBlocklist' // upstream-import: keep target is owned by another Z-PURGE item
-import { getFlaggedPlugins } from '../../agenc/upstream/utils/plugins/pluginFlagging' // upstream-import: keep target is owned by another Z-PURGE item
-import { loadAllPlugins } from '../../agenc/upstream/utils/plugins/pluginLoader' // upstream-import: keep target is owned by another Z-PURGE item
+import { logForDiagnosticsNoPII } from '../../utils/diagLogs.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { toError } from '../../utils/errors.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../utils/log.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { loadPluginAgents } from '../../utils/plugins/loadPluginAgents.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { getPluginCommands } from '../../utils/plugins/loadPluginCommands.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { loadPluginHooks } from '../../utils/plugins/loadPluginHooks.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { loadPluginLspServers } from '../../utils/plugins/lspPluginIntegration.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { loadPluginMcpServers } from '../../utils/plugins/mcpPluginIntegration.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { detectAndUninstallDelistedPlugins } from '../../utils/plugins/pluginBlocklist.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { getFlaggedPlugins } from '../../utils/plugins/pluginFlagging.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { loadAllPlugins } from '../../utils/plugins/pluginLoader.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 /**
  * Hook to manage plugin state and synchronize with AppState.

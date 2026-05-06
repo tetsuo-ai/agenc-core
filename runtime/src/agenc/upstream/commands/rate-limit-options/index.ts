@@ -1,5 +1,5 @@
 import type { Command } from '../../../../commands.js'
-import { isAgenCAISubscriber } from '../../utils/auth.js'
+import { isAgenCAISubscriber } from '../../../../utils/auth.js'
 
 const rateLimitOptions = {
   type: 'local-jsx',

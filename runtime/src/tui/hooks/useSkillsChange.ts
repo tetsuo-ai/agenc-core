@@ -6,8 +6,8 @@ import {
   getCommands,
 } from '../../commands.js'
 import { onGrowthBookRefresh } from '../../agenc/upstream/services/analytics/growthbook' // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../agenc/upstream/utils/log' // upstream-import: keep target is owned by another Z-PURGE item
-import { skillChangeDetector } from '../../agenc/upstream/utils/skills/skillChangeDetector' // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../utils/log.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { skillChangeDetector } from '../../utils/skills/skillChangeDetector.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 /**
  * Keep the commands list fresh across two triggers:

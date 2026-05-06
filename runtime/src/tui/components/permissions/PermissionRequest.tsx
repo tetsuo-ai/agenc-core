@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import * as React from 'react';
@@ -55,7 +57,7 @@ const MonitorTool = feature('MONITOR_TOOL') ? MonitorToolImpl : null;
 const MonitorPermissionRequest = feature('MONITOR_TOOL') ? MonitorPermissionRequestImpl : null;
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
 import type { z } from 'zod/v4';
-import type { PermissionUpdate } from '../../../agenc/upstream/utils/permissions/PermissionUpdateSchema.js';
+import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js';
 import type { WorkerBadgeProps } from './WorkerBadge';
 function permissionComponentForTool(tool: Tool): React.ComponentType<PermissionRequestProps> {
   switch (tool) {

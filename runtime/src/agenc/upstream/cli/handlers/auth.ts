@@ -29,19 +29,19 @@ import {
   isUsing3PServices,
   saveOAuthTokensIfNeeded,
   validateForceLoginOrg,
-} from '../../utils/auth.js'
-import { saveGlobalConfig } from '../../utils/config.js'
+} from '../../../../utils/auth.js'
+import { saveGlobalConfig } from '../../../../utils/config.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { isRunningOnHomespace } from '../../utils/envUtils.js'
-import { errorMessage } from '../../utils/errors.js'
-import { logError } from '../../utils/log.js'
-import { getAPIProvider } from '../../utils/model/providers.js'
-import { getInitialSettings } from '../../utils/settings/settings.js'
-import { jsonStringify } from '../../utils/slowOperations.js'
+import { isRunningOnHomespace } from '../../../../utils/envUtils.js'
+import { errorMessage } from '../../../../utils/errors.js'
+import { logError } from '../../../../utils/log.js'
+import { getAPIProvider } from '../../../../utils/model/providers.js'
+import { getInitialSettings } from '../../../../utils/settings/settings.js'
+import { jsonStringify } from '../../../../utils/slowOperations.js'
 import {
   buildAccountProperties,
   buildAPIProviderProperties,
-} from '../../utils/status.js'
+} from '../../../../utils/status.js'
 
 /**
  * Shared post-token-acquisition logic. Saves tokens, fetches profile/roles,

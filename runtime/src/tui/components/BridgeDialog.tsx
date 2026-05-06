@@ -5,13 +5,13 @@ import * as React from 'react';
 import { useEffect, useState } from 'react';
 import { getOriginalCwd } from '../../agenc/upstream/bootstrap/state'; // upstream-import: keep target is owned by another Z-PURGE item
 import { buildActiveFooterText, buildIdleFooterText, FAILED_FOOTER_TEXT, getBridgeStatus } from '../../agenc/upstream/bridge/bridgeStatusUtil'; // upstream-import: keep target is owned by another Z-PURGE item
-import { BRIDGE_FAILED_INDICATOR, BRIDGE_READY_INDICATOR } from '../../agenc/upstream/constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
+import { BRIDGE_FAILED_INDICATOR, BRIDGE_READY_INDICATOR } from '../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useRegisterOverlay } from '../context/overlayContext';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw 'd' key for disconnect, not a configurable keybinding action
 import { Box, Text, useInput } from '../ink.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
 import { useAppState, useSetAppState } from '../state/AppState.js';
-import { saveGlobalConfig } from '../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
+import { saveGlobalConfig } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getBranch } from '../../utils/git';
 import { Dialog } from './design-system/Dialog';
 type Props = {

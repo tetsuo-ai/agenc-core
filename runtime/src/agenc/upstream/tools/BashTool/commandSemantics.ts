@@ -5,7 +5,7 @@
  * For example, grep returns 1 when no matches are found, which is not an error condition.
  */
 
-import { splitCommand_DEPRECATED } from '../../utils/bash/commands.js'
+import { splitCommand_DEPRECATED } from '../../../../utils/bash/commands.js'
 
 export type CommandSemantic = (
   exitCode: number,

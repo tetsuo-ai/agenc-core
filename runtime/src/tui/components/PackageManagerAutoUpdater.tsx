@@ -3,12 +3,12 @@ import * as React from 'react';
 import { useState } from 'react';
 import { useInterval } from 'usehooks-ts';
 import { Text } from '../ink.js';
-import { type AutoUpdaterResult, getLatestVersionFromGcs, getMaxVersion, shouldSkipVersion } from '../../agenc/upstream/utils/autoUpdater'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isAutoUpdaterDisabled } from '../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type AutoUpdaterResult, getLatestVersionFromGcs, getMaxVersion, shouldSkipVersion } from '../../utils/autoUpdater.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isAutoUpdaterDisabled } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js';
-import { getPackageManager, type PackageManager } from '../../agenc/upstream/utils/nativeInstaller/packageManagers'; // upstream-import: keep target is owned by another Z-PURGE item
-import { gt, gte } from '../../agenc/upstream/utils/semver'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getInitialSettings } from '../../agenc/upstream/utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getPackageManager, type PackageManager } from '../../utils/nativeInstaller/packageManagers.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { gt, gte } from '../../utils/semver.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getInitialSettings } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type Props = {
   isUpdating: boolean;
   onChangeIsUpdating: (isUpdating: boolean) => void;

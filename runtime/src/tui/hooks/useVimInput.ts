@@ -1,8 +1,8 @@
 import React, { useCallback, useState } from 'react'
 import type { Key } from '../ink.js'
 import type { VimInputState, VimMode } from '../../agenc/upstream/types/textInputTypes' // upstream-import: keep target is owned by another Z-PURGE item
-import { Cursor } from '../../agenc/upstream/utils/Cursor' // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
-import { lastGrapheme } from '../../agenc/upstream/utils/intl' // upstream-import: keep target is owned by another Z-PURGE item
+import { TextCursor } from '../../utils/TextCursor.js' // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
+import { lastGrapheme } from '../../utils/intl.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   executeIndent,
   executeJoin,
@@ -80,7 +80,7 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
   }, [onModeChange, textInput])
 
   function createOperatorContext(
-    cursor: Cursor,
+    cursor: TextCursor,
     isReplay: boolean = false,
   ): OperatorContext {
     return {
@@ -110,7 +110,7 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
     const change = persistentRef.current.lastChange
     if (!change) return
 
-    const cursor = Cursor.fromText(
+    const cursor = TextCursor.fromText(
       textInput.value,
       props.columns,
       textInput.offset,
@@ -182,7 +182,7 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
     // lookups expect single chars and a prepended space would break them.
     const filtered = inputFilter ? inputFilter(rawInput, key) : rawInput
     const input = state.mode === 'INSERT' ? filtered : rawInput
-    const cursor = Cursor.fromText(
+    const cursor = TextCursor.fromText(
       textInput.value,
       props.columns,
       textInput.offset,

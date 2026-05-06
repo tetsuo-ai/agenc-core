@@ -5,8 +5,8 @@ import { Box } from '../ink.js';
 import type { Screen } from '../../agenc/upstream/screens/REPL'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { Tools } from '../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { RenderableMessage } from '../../types/message';
-import { getDisplayMessageFromCollapsed, getToolSearchOrReadInfo, getToolUseIdsFromCollapsedGroup, hasAnyToolInProgress } from '../../agenc/upstream/utils/collapseReadSearch'; // upstream-import: keep target is owned by another Z-PURGE item
-import { type buildMessageLookups, EMPTY_STRING_SET, getProgressMessagesFromLookup, getSiblingToolUseIDsFromLookup, getToolUseID } from '../../agenc/upstream/utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getDisplayMessageFromCollapsed, getToolSearchOrReadInfo, getToolUseIdsFromCollapsedGroup, hasAnyToolInProgress } from '../../utils/collapseReadSearch.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type buildMessageLookups, EMPTY_STRING_SET, getProgressMessagesFromLookup, getSiblingToolUseIDsFromLookup, getToolUseID } from '../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { hasThinkingContent, Message } from './Message';
 import { MessageModel } from './MessageModel';
 import { shouldRenderStatically } from './Messages.js';

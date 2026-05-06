@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { getLastInteractionTime } from '../../agenc/upstream/bootstrap/state' // upstream-import: keep target is owned by another Z-PURGE item
-import { fetchPrStatus, type PrReviewState } from '../../agenc/upstream/utils/ghPrStatus' // upstream-import: keep target is owned by another Z-PURGE item
+import { fetchPrStatus, type PrReviewState } from '../../utils/ghPrStatus.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 const POLL_INTERVAL_MS = 60_000
 const SLOW_GH_THRESHOLD_MS = 4_000

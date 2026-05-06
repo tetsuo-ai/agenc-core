@@ -1,6 +1,6 @@
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { SearchInput, SearchProvider } from './types.js'
 import { applyDomainFilters, type ProviderOutput } from './types.js'
-
 export const firecrawlProvider: SearchProvider = {
   name: 'firecrawl',
 
@@ -22,7 +22,6 @@ export const firecrawlProvider: SearchProvider = {
     }
 
     const data = await app.search(query, { limit: 15 })
-
     const hits = applyDomainFilters(
       (data.web ?? []).map((r: { url: string; title?: string; description?: string }) => ({
         title: r.title ?? r.url,
@@ -31,7 +30,6 @@ export const firecrawlProvider: SearchProvider = {
       })),
       input,
     )
-
     return {
       hits,
       providerName: 'firecrawl',

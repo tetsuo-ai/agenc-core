@@ -1,10 +1,10 @@
 import { c as _c } from "react-compiler-runtime";
 import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import * as React from 'react';
-import { CHANNEL_ARROW } from '../../../agenc/upstream/constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
-import { CHANNEL_TAG } from '../../../agenc/upstream/constants/xml'; // upstream-import: keep target is owned by another Z-PURGE item
+import { CHANNEL_ARROW } from '../../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { CHANNEL_TAG } from '../../../constants/xml.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Text } from '../../ink.js';
-import { truncateToWidth } from '../../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
+import { truncateToWidth } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type Props = {
   addMargin: boolean;
   param: TextBlockParam;

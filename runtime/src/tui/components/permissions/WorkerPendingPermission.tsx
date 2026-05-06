@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { Box, Text } from '../../ink.js';
-import { getAgentName, getTeammateColor, getTeamName } from '../../../agenc/upstream/utils/teammate'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getAgentName, getTeammateColor, getTeamName } from '../../../utils/teammate.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Spinner } from '../spinner/Spinner.js';
 import { WorkerBadge } from './WorkerBadge';
 type Props = {

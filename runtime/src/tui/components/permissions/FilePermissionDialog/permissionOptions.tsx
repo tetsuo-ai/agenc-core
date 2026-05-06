@@ -5,8 +5,8 @@ import { getOriginalCwd } from '../../../../agenc/upstream/bootstrap/state'; // 
 import { Text } from '../../../ink.js';
 import { getShortcutDisplay } from '../../../keybindings/shortcutFormat.js';
 import type { ToolPermissionContext } from '../../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
-import { expandPath, getDirectoryForPath } from '../../../../agenc/upstream/utils/path'; // upstream-import: keep target is owned by another Z-PURGE item
-import { normalizeCaseForComparison, pathInAllowedWorkingPath } from '../../../../agenc/upstream/utils/permissions/filesystem'; // upstream-import: keep target is owned by another Z-PURGE item
+import { expandPath, getDirectoryForPath } from '../../../../utils/path.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { normalizeCaseForComparison, pathInAllowedWorkingPath } from '../../../../utils/permissions/filesystem.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { OptionWithDescription } from '../../CustomSelect/select';
 /**
  * Check if a path is within the project's .agenc/ folder.

@@ -3,15 +3,15 @@ import * as React from 'react';
 import { useEffect, useState } from 'react';
 import { extraUsage as extraUsageCommand } from '../../../agenc/upstream/commands/extra-usage/index.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { formatCost } from 'src/cost/tracker.js';
-import { getSubscriptionType } from '../../../agenc/upstream/utils/auth.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSubscriptionType } from '../../../utils/auth.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useTerminalSize } from '../../hooks/useTerminalSize';
 import { Box, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import { type ExtraUsage, fetchUtilization, type RateLimit, type Utilization } from '../../../agenc/upstream/services/api/usage'; // upstream-import: keep target is owned by another Z-PURGE item
-import { formatResetText } from '../../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../../agenc/upstream/utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getAPIProvider } from '../../../agenc/upstream/utils/model/providers'; // upstream-import: keep target is owned by another Z-PURGE item
-import { jsonStringify } from '../../../agenc/upstream/utils/slowOperations'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatResetText } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getAPIProvider } from '../../../utils/model/providers.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { jsonStringify } from '../../../utils/slowOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
 import { Byline } from '../design-system/Byline';
 import { ProgressBar } from '../design-system/ProgressBar';

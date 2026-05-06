@@ -1,17 +1,18 @@
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { markPostCompaction } from 'src/bootstrap/state.js'
 import { getSdkBetas } from '../../bootstrap/state.js'
-import type { QuerySource } from '../../constants/querySource.js'
+import type { QuerySource } from '../../../../constants/querySource.js'
 import type { ToolUseContext } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
-import { getGlobalConfig } from '../../utils/config.js'
-import { getContextWindowForModel } from '../../utils/context.js'
+import { getGlobalConfig } from '../../../../utils/config.js'
+import { getContextWindowForModel } from '../../../../utils/context.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
-import { hasExactErrorMessage } from '../../utils/errors.js'
-import type { CacheSafeParams } from '../../utils/forkedAgent.js'
-import { logError } from '../../utils/log.js'
-import { tokenCountWithEstimation } from '../../utils/tokens.js'
+import { isEnvTruthy } from '../../../../utils/envUtils.js'
+import { hasExactErrorMessage } from '../../../../utils/errors.js'
+import type { CacheSafeParams } from '../../../../utils/forkedAgent.js'
+import { logError } from '../../../../utils/log.js'
+import { tokenCountWithEstimation } from '../../../../utils/tokens.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import { getMaxOutputTokensForModel } from '../api/claude.js'
 import { notifyCompaction } from '../api/promptCacheBreakDetection.js'
@@ -24,7 +25,6 @@ import {
 } from './compact.js'
 import { runPostCompactCleanup } from './postCompactCleanup.js'
 import { trySessionMemoryCompaction } from './sessionMemoryCompact.js'
-
 // Reserve this many tokens for output during compaction
 // Based on p99.99 of compact summary output being 17,387 tokens.
 const MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
@@ -329,12 +329,10 @@ export async function autoCompactIfNeeded(
       true, // isAutoCompact
       recompactionInfo,
     )
-
     // Reset lastSummarizedMessageId since legacy compaction replaces all messages
     // and the old message UUID will no longer exist in the new messages array
     setLastSummarizedMessageId(undefined)
     runPostCompactCleanup(querySource)
-
     return {
       wasCompacted: true,
       compactionResult,

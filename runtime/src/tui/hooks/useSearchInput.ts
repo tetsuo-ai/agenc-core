@@ -3,7 +3,7 @@ import { KeyboardEvent } from '../ink/events/keyboard-event.js'
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- backward-compat bridge until consumers wire handleKeyDown to <Box onKeyDown>
 import { useInput } from '../ink.js'
 import {
-  Cursor,
+  TextCursor,
   getLastKill,
   pushToKillRing,
   recordYank,
@@ -11,7 +11,7 @@ import {
   resetYankState,
   updateYankLength,
   yankPop,
-} from '../../agenc/upstream/utils/Cursor' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/TextCursor.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { useTerminalSize } from './useTerminalSize'
 
 type UseSearchInputOptions = {
@@ -104,7 +104,7 @@ export function useSearchInput({
   const handleKeyDown = (e: KeyboardEvent): void => {
     if (!isActive) return
 
-    const cursor = Cursor.fromText(query, effectiveColumns, cursorOffset)
+    const cursor = TextCursor.fromText(query, effectiveColumns, cursorOffset)
 
     // Check passthrough ctrl keys
     if (e.ctrl && passthroughCtrlKeys.includes(e.key.toLowerCase())) {

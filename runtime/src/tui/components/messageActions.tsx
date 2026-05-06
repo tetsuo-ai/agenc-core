@@ -6,7 +6,7 @@ import { Box, Text } from '../ink.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
 import { logEvent } from '../../agenc/upstream/services/analytics/index'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { NormalizedUserMessage, RenderableMessage } from '../../types/message';
-import { isEmptyMessageText, SYNTHETIC_MESSAGES } from '../../agenc/upstream/utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isEmptyMessageText, SYNTHETIC_MESSAGES } from '../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 const NAVIGABLE_TYPES = ['user', 'assistant', 'grouped_tool_use', 'collapsed_read_search', 'system', 'attachment'] as const;
 export type NavigableType = (typeof NAVIGABLE_TYPES)[number];
 export type NavigableOf<T extends NavigableType> = Extract<RenderableMessage, {

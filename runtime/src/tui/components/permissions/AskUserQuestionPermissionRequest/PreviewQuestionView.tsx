@@ -6,9 +6,9 @@ import { Box, Text } from '../../../ink.js';
 import { useKeybinding, useKeybindings } from '../../../keybindings/useKeybinding.js';
 import { useAppState } from '../../../state/AppState.js';
 import type { AskUserQuestion as Question } from 'src/tools/ask-user-question/tool.js';
-import { getExternalEditor } from '../../../../agenc/upstream/utils/editor'; // upstream-import: keep target is owned by another Z-PURGE item
-import { toIDEDisplayName } from '../../../../agenc/upstream/utils/ide'; // upstream-import: keep target is owned by another Z-PURGE item
-import { editPromptInEditor } from '../../../../agenc/upstream/utils/promptEditor'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getExternalEditor } from '../../../../utils/editor.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { toIDEDisplayName } from '../../../../utils/ide.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { editPromptInEditor } from '../../../../utils/promptEditor.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Divider } from '../../design-system/Divider';
 import TextInput from '../../TextInput';
 import { PermissionRequestTitle } from '../PermissionRequestTitle';

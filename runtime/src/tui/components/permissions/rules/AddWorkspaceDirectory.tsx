@@ -9,7 +9,7 @@ import type { KeyboardEvent } from '../../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../../ink.js';
 import { useKeybinding } from '../../../keybindings/useKeybinding.js';
 import type { ToolPermissionContext } from '../../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getDirectoryCompletions } from '../../../../agenc/upstream/utils/suggestions/directoryCompletion'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getDirectoryCompletions } from '../../../../utils/suggestions/directoryCompletion.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../../ConfigurableShortcutHint';
 import { Select } from '../../CustomSelect/select';
 import { Byline } from '../../design-system/Byline';

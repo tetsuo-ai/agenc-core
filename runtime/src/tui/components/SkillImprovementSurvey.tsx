@@ -1,9 +1,9 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { useEffect, useRef } from 'react';
-import { BLACK_CIRCLE, BULLET_OPERATOR } from '../../agenc/upstream/constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
+import { BLACK_CIRCLE, BULLET_OPERATOR } from '../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Text } from '../ink.js';
-import type { SkillUpdate } from '../../agenc/upstream/utils/hooks/skillImprovement'; // upstream-import: keep target is owned by another Z-PURGE item
-import { normalizeFullWidthDigits } from '../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { SkillUpdate } from '../../utils/hooks/skillImprovement.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { normalizeFullWidthDigits } from '../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isValidResponseInput } from './FeedbackSurvey/FeedbackSurveyView';
 import type { FeedbackSurveyResponse } from './FeedbackSurvey/utils';
 type Props = {

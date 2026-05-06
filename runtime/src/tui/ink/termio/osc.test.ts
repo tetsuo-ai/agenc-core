@@ -12,12 +12,12 @@ const execFileNoThrowMock = vi.fn(
 )
 
 function installOscMocks(): void {
-  vi.doMock('../../../agenc/upstream/utils/execFileNoThrow.js', () => ({
+  vi.doMock('../../../utils/execFileNoThrow.js', () => ({
     execFileNoThrow: execFileNoThrowMock,
     execFileNoThrowWithCwd: execFileNoThrowMock,
   }))
 
-  vi.doMock('../../../agenc/upstream/utils/tempfile.js', () => ({
+  vi.doMock('../../../utils/tempfile.js', () => ({
     generateTempFilePath: generateTempFilePathMock,
   }))
 }

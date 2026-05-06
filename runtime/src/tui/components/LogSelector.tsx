@@ -13,12 +13,12 @@ import { Box, Text, useInput, useTerminalFocus, useTheme } from '../ink.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
 import { logEvent } from '../../agenc/upstream/services/analytics/index'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { LogOption, SerializedMessage } from '../../types/logs';
-import { formatLogMetadata, truncateToWidth } from '../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getWorktreePaths } from '../../agenc/upstream/utils/getWorktreePaths'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatLogMetadata, truncateToWidth } from '../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getWorktreePaths } from '../../utils/getWorktreePaths.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getBranch } from '../../utils/git';
-import { getLogDisplayTitle } from '../../agenc/upstream/utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getFirstMeaningfulUserMessageTextContent, getSessionIdFromLog, isCustomTitleEnabled, saveCustomTitle } from '../../agenc/upstream/utils/sessionStorage'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getTheme } from '../../agenc/upstream/utils/theme'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getLogDisplayTitle } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getFirstMeaningfulUserMessageTextContent, getSessionIdFromLog, isCustomTitleEnabled, saveCustomTitle } from '../../utils/sessionStorage.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getTheme } from '../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint';
 import { Select } from './CustomSelect/select';
 import { Byline } from './design-system/Byline';

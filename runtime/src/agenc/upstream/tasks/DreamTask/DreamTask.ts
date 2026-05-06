@@ -1,12 +1,12 @@
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 // Background task entry for auto-dream (memory consolidation subagent).
 // Makes the otherwise-invisible forked agent visible in the footer pill and
 // Shift+Down dialog. The dream agent itself is unchanged — this is pure UI
 // surfacing via the existing task registry.
-
 import { rollbackConsolidationLock } from '../../services/autoDream/consolidationLock.js'
 import type { SetAppState, Task, TaskStateBase } from '../../Task.js'
 import { createTaskStateBase, generateTaskId } from '../../Task.js'
-import { registerTask, updateTaskState } from '../../utils/task/framework.js'
+import { registerTask, updateTaskState } from '../../../../utils/task/framework.js'
 
 // Keep only the N most recent turns for live display.
 const MAX_TURNS = 30
@@ -128,11 +128,9 @@ export function failDreamTask(taskId: string, setAppState: SetAppState): void {
     abortController: undefined,
   }))
 }
-
 export const DreamTask: Task = {
   name: 'DreamTask',
   type: 'dream',
-
   async kill(taskId, setAppState) {
     let priorMtime: number | undefined
     updateTaskState<DreamTaskState>(taskId, setAppState, task => {

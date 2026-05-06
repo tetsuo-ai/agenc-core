@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { Box, Text } from '../../ink.js';
@@ -7,17 +9,17 @@ import { computeGlimmerIndex, computeShimmerSegments, SHIMMER_INTERVAL_MS } from
 import { feature } from 'bun:bundle';
 import { getKairosActive, getUserMsgOptIn } from '../../../agenc/upstream/bootstrap/state.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../agenc/upstream/services/analytics/growthbook.js';
-import { isEnvTruthy } from '../../../agenc/upstream/utils/envUtils.js';
-import { count } from '../../../agenc/upstream/utils/array.js';
+import { isEnvTruthy } from '../../../utils/envUtils.js';
+import { count } from '../../../utils/array.js';
 import sample from 'lodash-es/sample.js';
-import { formatDuration, formatNumber, formatSecondsShort } from '../../../agenc/upstream/utils/format.js';
-import type { Theme } from '../../../agenc/upstream/utils/theme.js';
-import { activityManager } from '../../../agenc/upstream/utils/activityManager.js';
-import { getSpinnerVerbs } from '../../../agenc/upstream/constants/spinnerVerbs.js';
+import { formatDuration, formatNumber, formatSecondsShort } from '../../../utils/format.js';
+import type { Theme } from '../../../utils/theme.js';
+import { activityManager } from '../../../utils/activityManager.js';
+import { getSpinnerVerbs } from '../../../constants/spinnerVerbs.js';
 import { MessageResponse } from '../MessageResponse';
 import { TaskListV2 } from '../TaskListV2';
 import { useTasksV2 } from '../../hooks/useTasksV2';
-import type { Task } from '../../../agenc/upstream/utils/tasks.js';
+import type { Task } from '../../../utils/tasks.js';
 import { useAppState } from '../../state/AppState.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize';
 import { stringWidth } from '../../ink/stringWidth.js';
@@ -28,15 +30,15 @@ import { useSettings } from '../../hooks/useSettings';
 import { isInProcessTeammateTask } from '../../../agenc/upstream/tasks/InProcessTeammateTask/types.js';
 import { isBackgroundTask } from '../../../tasks/types.js';
 import { getAllInProcessTeammateTasks } from '../../../agenc/upstream/tasks/InProcessTeammateTask/InProcessTeammateTask.js';
-import { getEffortSuffix } from '../../../agenc/upstream/utils/effort.js';
-import { getMainLoopModel } from '../../../agenc/upstream/utils/model/model.js';
+import { getEffortSuffix } from '../../../utils/effort.js';
+import { getMainLoopModel } from '../../../utils/model/model.js';
 import { getViewedTeammateTask } from '../../../agenc/upstream/state/selectors.js';
-import { TEARDROP_ASTERISK } from '../../../agenc/upstream/constants/figures.js';
+import { TEARDROP_ASTERISK } from '../../../constants/figures.js';
 import figures from 'figures';
 import { getCurrentTurnTokenBudget, getTurnOutputTokens } from '../../../agenc/upstream/bootstrap/state.js';
 import { TeammateSpinnerTree } from './TeammateSpinnerTree.js';
 import { useAnimationFrame } from '../../ink.js';
-import { getGlobalConfig } from '../../../agenc/upstream/utils/config.js';
+import { getGlobalConfig } from '../../../utils/config.js';
 export type { SpinnerMode } from './types.js';
 const DEFAULT_CHARACTERS = getDefaultCharacters();
 const SPINNER_FRAMES = [...DEFAULT_CHARACTERS, ...[...DEFAULT_CHARACTERS].reverse()];

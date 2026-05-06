@@ -1,7 +1,7 @@
 import React from 'react';
 import { MessageResponse } from '../../../../tui/components/MessageResponse';
 import { Text } from '../../../../tui/ink.js';
-import { truncate } from '../../utils/format.js';
+import { truncate } from '../../../../utils/format.js';
 import type { CreateOutput } from './CronCreateTool.js';
 import type { DeleteOutput } from './CronDeleteTool.js';
 import type { ListOutput } from './CronListTool.js';

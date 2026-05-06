@@ -7,7 +7,7 @@ const mockState = {
   effectiveWindow: 100_000,
 }
 
-mock.module('../../utils/config.js', () => ({
+mock.module('../../../../utils/config.js', () => ({
   getGlobalConfig: () => ({
     toolHistoryCompressionEnabled: mockState.enabled,
   }),

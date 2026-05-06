@@ -2,7 +2,7 @@ import type { ToolResultBlockParam, ToolUseBlockParam } from '@anthropic-ai/sdk/
 import * as React from 'react';
 import { filterToolProgressMessages, findToolByName, type Tools } from '../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { GroupedToolUseMessage } from '../../../types/message';
-import type { buildMessageLookups } from '../../../agenc/upstream/utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { buildMessageLookups } from '../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type Props = {
   message: GroupedToolUseMessage;
   tools: Tools;

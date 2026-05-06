@@ -1,8 +1,8 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { useEffect } from 'react';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../agenc/upstream/services/analytics/index.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { TeleportRemoteResponse } from '../../agenc/upstream/utils/conversationRecovery.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { CodeSession } from '../../agenc/upstream/utils/teleport/api.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { TeleportRemoteResponse } from '../../utils/conversationRecovery.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { CodeSession } from '../../utils/teleport/api.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { type TeleportSource, useTeleportResume } from '../hooks/useTeleportResume';
 import { Box, Text } from '../ink.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';

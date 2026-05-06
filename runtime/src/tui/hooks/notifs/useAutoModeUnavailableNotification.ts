@@ -3,12 +3,12 @@ import { useEffect, useRef } from 'react'
 import { useNotifications } from '../../context/notifications.js'
 import { getIsRemoteMode } from '../../../agenc/upstream/bootstrap/state' // upstream-import: keep target is owned by another Z-PURGE item
 import { useAppState } from '../../state/AppState.js'
-import type { PermissionMode } from '../../../agenc/upstream/utils/permissions/PermissionMode' // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionMode } from '../../../utils/permissions/PermissionMode.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   getAutoModeUnavailableNotification,
   getAutoModeUnavailableReason,
-} from '../../../agenc/upstream/utils/permissions/permissionSetup' // upstream-import: keep target is owned by another Z-PURGE item
-import { hasAutoModeOptIn } from '../../../agenc/upstream/utils/settings/settings' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../utils/permissions/permissionSetup.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { hasAutoModeOptIn } from '../../../utils/settings/settings.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 /**
  * Shows a one-shot notification when the shift-tab carousel wraps past where

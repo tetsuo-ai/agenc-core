@@ -2,8 +2,8 @@ import { useEffect } from 'react'
 import { logEvent } from '../../agenc/upstream/services/analytics/index.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { z } from 'zod/v4'
 import type { MCPServerConnection } from '../../agenc/upstream/services/mcp/types' // upstream-import: keep target is owned by another Z-PURGE item
-import { getConnectedIdeClient } from '../../agenc/upstream/utils/ide' // upstream-import: keep target is owned by another Z-PURGE item
-import { lazySchema } from '../../agenc/upstream/utils/lazySchema' // upstream-import: keep target is owned by another Z-PURGE item
+import { getConnectedIdeClient } from '../../utils/ide.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { lazySchema } from '../../utils/lazySchema.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 const LogEventSchema = lazySchema(() =>
   z.object({

@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { Box, Text } from '../../ink.js';
-import { type NetworkHostPattern, shouldAllowManagedSandboxDomainsOnly } from '../../../agenc/upstream/utils/sandbox/sandbox-adapter.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type NetworkHostPattern, shouldAllowManagedSandboxDomainsOnly } from '../../../utils/sandbox/sandbox-runtime.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../agenc/upstream/services/analytics/index'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../CustomSelect/select';
 import { PermissionDialog } from './PermissionDialog';

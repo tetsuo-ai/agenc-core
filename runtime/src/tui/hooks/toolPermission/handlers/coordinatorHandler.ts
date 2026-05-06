@@ -1,8 +1,8 @@
 import { feature } from 'bun:bundle'
 import type { PendingClassifierCheck } from '../../../../agenc/upstream/types/permissions' // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../../../agenc/upstream/utils/log' // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionDecision } from '../../../../agenc/upstream/utils/permissions/PermissionResult' // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionUpdate } from '../../../../agenc/upstream/utils/permissions/PermissionUpdateSchema' // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../../../utils/log.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionDecision } from '../../../../utils/permissions/PermissionResult.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type { PermissionContext } from '../PermissionContext'
 
 type CoordinatorPermissionParams = {

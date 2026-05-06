@@ -1,8 +1,8 @@
 import { describe, expect, it, beforeEach } from 'bun:test'
 import { call as knowledgeCall } from './knowledge.js'
-import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
-import { getArc, addEntity, resetArc } from '../../utils/conversationArc.js'
-import { getGlobalGraph, resetGlobalGraph } from '../../utils/knowledgeGraph.js'
+import { getGlobalConfig, saveGlobalConfig } from '../../../../utils/config.js'
+import { getArc, addEntity, resetArc } from '../../../../utils/conversationArc.js'
+import { getGlobalGraph, resetGlobalGraph } from '../../../../utils/knowledgeGraph.js'
 
 describe('knowledge command', () => {
   const mockContext = {} as any

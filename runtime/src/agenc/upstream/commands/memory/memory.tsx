@@ -6,11 +6,11 @@ import { MemoryFileSelector } from '../../../../tui/components/memory/MemoryFile
 import { getRelativeMemoryPath } from '../../../../tui/components/memory/MemoryUpdateNotification';
 import { Box, Link, Text } from '../../../../tui/ink.js';
 import type { LocalJSXCommandCall } from '../../types/command.js';
-import { clearMemoryFileCaches, getMemoryFiles } from '../../utils/claudemd.js';
-import { getAgenCConfigHomeDir } from '../../utils/envUtils.js';
-import { getErrnoCode } from '../../utils/errors.js';
-import { logError } from '../../utils/log.js';
-import { editFileInEditor } from '../../utils/promptEditor.js';
+import { clearMemoryFileCaches, getMemoryFiles } from '../../../../utils/agencmd.js';
+import { getAgenCConfigHomeDir } from '../../../../utils/envUtils.js';
+import { getErrnoCode } from '../../../../utils/errors.js';
+import { logError } from '../../../../utils/log.js';
+import { editFileInEditor } from '../../../../utils/promptEditor.js';
 function MemoryCommand({
   onDone
 }: {

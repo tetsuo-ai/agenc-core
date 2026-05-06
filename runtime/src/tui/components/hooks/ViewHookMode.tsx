@@ -7,7 +7,7 @@ import { c as _c } from "react-compiler-runtime";
  */
 import * as React from 'react';
 import { Box, Text } from '../../ink.js';
-import { hookSourceDescriptionDisplayString, type IndividualHookConfig } from '../../../agenc/upstream/utils/hooks/hooksSettings'; // upstream-import: keep target is owned by another Z-PURGE item
+import { hookSourceDescriptionDisplayString, type IndividualHookConfig } from '../../../utils/hooks/hooksSettings.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Dialog } from '../design-system/Dialog';
 type Props = {
   selectedHook: IndividualHookConfig;

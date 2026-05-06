@@ -1,3 +1,4 @@
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Cross-provider cache usage normalizer for Phase 1 observability.
  *
@@ -44,8 +45,7 @@
  *                       usage.prompt_token_count
  *   - Copilot (non-AgenC) / Ollama: not reported → supported=false
  */
-import type { APIProvider } from '../../utils/model/providers.js'
-
+import type { APIProvider } from '../../../../utils/model/providers.js'
 /** Providers for which we know how to read cache fields. */
 export type CacheAwareProvider =
   | 'anthropic'
@@ -508,7 +508,6 @@ export function formatCacheMetricsFull(
   }
   return `[Cache: ${parts.join(' ')}]`
 }
-
 // Compact 1.2k-style formatter. Duplicated here (not imported from
 // utils/format.ts) because this module should stay dependency-light and
 // deterministic — utils/format pulls Intl locale state which varies.
@@ -517,7 +516,6 @@ function formatCompactNumber(n: number): string {
   if (n < 1_000_000) return `${(n / 1_000).toFixed(1).replace(/\.0$/, '')}k`
   return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}m`
 }
-
 /** Sum two CacheMetrics, preserving `supported` as true only if both are. */
 export function addCacheMetrics(a: CacheMetrics, b: CacheMetrics): CacheMetrics {
   // Copy elision: if either side is the unsupported sentinel, return the

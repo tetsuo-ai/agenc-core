@@ -1,6 +1,6 @@
 import figures from 'figures'
 import { describe, expect, it, vi } from 'vitest'
-import { renderToString } from '../../../agenc/upstream/utils/staticRender.js'
+import { renderToString } from '../../../utils/staticRender.js'
 import {
   PromptInputFooterSuggestions,
   type SuggestionItem,

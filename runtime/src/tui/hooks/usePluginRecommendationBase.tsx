@@ -10,8 +10,8 @@ import * as React from 'react';
 import { getIsRemoteMode } from '../../agenc/upstream/bootstrap/state'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { useNotifications } from '../context/notifications';
 import { Text } from '../ink.js';
-import { logError } from '../../agenc/upstream/utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getPluginById } from '../../agenc/upstream/utils/plugins/marketplaceManager'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getPluginById } from '../../utils/plugins/marketplaceManager.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type AddNotification = ReturnType<typeof useNotifications>['addNotification'];
 type PluginData = NonNullable<Awaited<ReturnType<typeof getPluginById>>>;
 

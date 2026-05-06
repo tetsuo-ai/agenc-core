@@ -5,7 +5,7 @@ import { extractMcpToolDisplayName, getMcpDisplayName } from '../../../agenc/ups
 import { filterToolsByServer } from '../../../agenc/upstream/services/mcp/utils'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useAppState } from '../../state/AppState.js';
 import type { Tool } from '../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
-import { plural } from '../../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
 import { Select } from '../CustomSelect/select';
 import { Byline } from '../design-system/Byline';

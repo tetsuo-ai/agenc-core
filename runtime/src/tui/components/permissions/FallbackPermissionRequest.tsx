@@ -3,10 +3,10 @@ import React, { useCallback, useMemo } from 'react';
 import { getOriginalCwd } from '../../../agenc/upstream/bootstrap/state'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Text, useTheme } from '../../ink.js';
 import { sanitizeToolNameForAnalytics } from '../../../agenc/upstream/services/analytics/metadata'; // upstream-import: keep target is owned by another Z-PURGE item
-import { env } from '../../../agenc/upstream/utils/env'; // upstream-import: keep target is owned by another Z-PURGE item
-import { shouldShowAlwaysAllowOptions } from '../../../agenc/upstream/utils/permissions/permissionsLoader'; // upstream-import: keep target is owned by another Z-PURGE item
-import { truncateToLines } from '../../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logUnaryEvent } from '../../../agenc/upstream/utils/unaryLogging'; // upstream-import: keep target is owned by another Z-PURGE item
+import { env } from '../../../utils/env.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { shouldShowAlwaysAllowOptions } from '../../../utils/permissions/permissionsLoader.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { truncateToLines } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logUnaryEvent } from '../../../utils/unaryLogging.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { type UnaryEvent, usePermissionRequestLogging } from './hooks';
 import { PermissionDialog } from './PermissionDialog';
 import { PermissionPrompt, type PermissionPromptOption, type ToolAnalyticsContext } from './PermissionPrompt';

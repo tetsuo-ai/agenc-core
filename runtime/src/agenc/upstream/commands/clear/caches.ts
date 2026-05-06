@@ -8,7 +8,7 @@ import {
   setLastEmittedDate,
 } from '../../bootstrap/state.js'
 import { clearCommandsCache } from '../../../../commands.js'
-import { getSessionStartDate } from '../../constants/common.js'
+import { getSessionStartDate } from '../../../../constants/common.js'
 import {
   getGitStatus,
   getSystemContext,
@@ -24,13 +24,13 @@ import { runPostCompactCleanup } from '../../services/compact/postCompactCleanup
 import { resetAllLSPDiagnosticState } from '../../services/lsp/LSPDiagnosticRegistry.js'
 import { clearTrackedMagicDocs } from '../../services/MagicDocs/magicDocs.js'
 import { clearDynamicSkills } from '../../skills/loadSkillsDir.js'
-import { resetSentSkillNames } from '../../utils/attachments.js'
-import { clearCommandPrefixCaches } from '../../utils/bash/commands.js'
-import { resetGetMemoryFilesCache } from '../../utils/claudemd.js'
-import { clearRepositoryCaches } from '../../utils/detectRepository.js'
-import { clearResolveGitDirCache } from '../../utils/git/gitFilesystem.js'
-import { clearStoredImagePaths } from '../../utils/imageStore.js'
-import { clearSessionEnvVars } from '../../utils/sessionEnvVars.js'
+import { resetSentSkillNames } from '../../../../utils/attachments.js'
+import { clearCommandPrefixCaches } from '../../../../utils/bash/commands.js'
+import { resetGetMemoryFilesCache } from '../../../../utils/agencmd.js'
+import { clearRepositoryCaches } from '../../../../utils/detectRepository.js'
+import { clearResolveGitDirCache } from '../../../../utils/git/gitFilesystem.js'
+import { clearStoredImagePaths } from '../../../../utils/imageStore.js'
+import { clearSessionEnvVars } from '../../../../utils/sessionEnvVars.js'
 
 /**
  * Clear all session-related caches.
@@ -103,7 +103,7 @@ export function clearSessionCaches(
   // Clear attribution caches (file content cache, pending bash states)
   // Dynamic import to preserve dead code elimination for COMMIT_ATTRIBUTION feature flag
   if (feature('COMMIT_ATTRIBUTION')) {
-    void import('../../utils/attributionHooks.js').then(
+    void import('../../../../utils/attributionHooks.js').then(
       ({ clearAttributionCaches }) => clearAttributionCaches(),
     )
   }

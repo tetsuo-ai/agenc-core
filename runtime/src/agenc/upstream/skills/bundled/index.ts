@@ -1,5 +1,5 @@
 import { feature } from 'bun:bundle'
-import { shouldAutoEnableAgenCInChrome } from 'src/utils/claudeInChrome/setup.js' // branding-scan: allow upstream mirror import path
+import { shouldAutoEnableAgenCInChrome } from 'src/utils/agencInChrome/setup.js' // branding-scan: allow upstream mirror import path
 import { registerBatchSkill } from './batch.js'
 import { registerAgenCInChromeSkill } from './claudeInChrome.js' // branding-scan: allow upstream mirror import path
 import { registerDebugSkill } from './debug.js'

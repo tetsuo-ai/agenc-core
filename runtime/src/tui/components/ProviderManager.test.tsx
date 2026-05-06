@@ -193,7 +193,7 @@ function mockProviderManagerDependencies(
   options?: {
     addProviderProfile?: (...args: unknown[]) => unknown
     applySavedProfileToCurrentSession?: (...args: unknown[]) => Promise<string | null>
-    clearCodexCredentials?: () => { success: boolean; warning?: string }
+    clearAgencCredentials?: () => { success: boolean; warning?: string }
     getActiveProviderProfile?: () => unknown
     getProviderProfiles?: () => unknown[]
     probeOllamaGenerationReadiness?: () => Promise<{
@@ -258,12 +258,12 @@ function mockProviderManagerDependencies(
   }))
 
   mock.module('../utils/codexCredentials.js', () => ({ // branding-scan: allow upstream mirror mock path pending purge
-    attachCodexProfileIdToStoredCredentials: () => ({ success: true }),
-    clearCodexCredentials:
-      options?.clearCodexCredentials ?? (() => ({ success: true })),
-    readCodexCredentials:
+    attachAgencProfileIdToStoredCredentials: () => ({ success: true }),
+    clearAgencCredentials:
+      options?.clearAgencCredentials ?? (() => ({ success: true })),
+    readAgencCredentials:
       options?.codexSyncRead ?? (() => undefined),
-    readCodexCredentialsAsync:
+    readAgencCredentialsAsync:
       options?.codexAsyncRead ?? (async () => undefined),
   }))
 

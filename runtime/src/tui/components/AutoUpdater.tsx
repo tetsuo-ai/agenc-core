@@ -4,14 +4,14 @@ import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEve
 import { useInterval } from 'usehooks-ts';
 import { useUpdateNotification } from '../hooks/useUpdateNotification';
 import { Box, Text } from '../ink.js';
-import { type AutoUpdaterResult, getLatestVersion, getMaxVersion, type InstallStatus, installGlobalPackage, shouldSkipVersion } from '../../agenc/upstream/utils/autoUpdater'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getGlobalConfig, isAutoUpdaterDisabled } from '../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type AutoUpdaterResult, getLatestVersion, getMaxVersion, type InstallStatus, installGlobalPackage, shouldSkipVersion } from '../../utils/autoUpdater.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig, isAutoUpdaterDisabled } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js';
-import { getCurrentInstallationType } from '../../agenc/upstream/utils/doctorDiagnostic'; // upstream-import: keep target is owned by another Z-PURGE item
-import { installOrUpdateAgenCPackage, localInstallationExists } from '../../agenc/upstream/utils/localInstaller'; // upstream-import: keep target is owned by another Z-PURGE item
-import { removeInstalledSymlink } from '../../agenc/upstream/utils/nativeInstaller/installer'; // upstream-import: keep target is owned by another Z-PURGE item
-import { gt, gte } from '../../agenc/upstream/utils/semver'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getInitialSettings } from '../../agenc/upstream/utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCurrentInstallationType } from '../../utils/doctorDiagnostic.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { installOrUpdateAgenCPackage, localInstallationExists } from '../../utils/localInstaller.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { removeInstalledSymlink } from '../../utils/nativeInstaller/installer.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { gt, gte } from '../../utils/semver.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getInitialSettings } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type Props = {
   isUpdating: boolean;
   onChangeIsUpdating: (isUpdating: boolean) => void;

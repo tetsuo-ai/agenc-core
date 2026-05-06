@@ -1,10 +1,10 @@
 import { c as _c } from "react-compiler-runtime";
 import { useEffect } from 'react';
 import type { ScopedMcpServerConfig } from '../../agenc/upstream/services/mcp/types'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getGlobalConfig } from '../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/envUtils';
-import type { DetectedIDEInfo } from '../../agenc/upstream/utils/ide'; // upstream-import: keep target is owned by another Z-PURGE item
-import { type IDEExtensionInstallationStatus, type IdeType, initializeIdeIntegration, isSupportedTerminal } from '../../agenc/upstream/utils/ide'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { DetectedIDEInfo } from '../../utils/ide.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type IDEExtensionInstallationStatus, type IdeType, initializeIdeIntegration, isSupportedTerminal } from '../../utils/ide.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type UseIDEIntegrationProps = {
   autoConnectIdeFlag?: boolean;
   ideToInstallExtension: IdeType | null;

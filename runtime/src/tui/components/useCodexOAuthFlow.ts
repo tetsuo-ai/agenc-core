@@ -4,8 +4,8 @@ import {
   CodexOAuthService,
   type CodexOAuthTokens,
 } from '../../agenc/upstream/services/api/codexOAuth' // upstream-import: keep target is owned by another Z-PURGE item
-import { openBrowser } from '../../agenc/upstream/utils/browser' // upstream-import: keep target is owned by another Z-PURGE item
-import { saveCodexCredentials } from '../../agenc/upstream/utils/codexCredentials' // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
+import { openBrowser } from '../../utils/browser.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { saveAgencCredentials } from '../../utils/agencCredentials.js' // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
 import { isBareMode } from '../../utils/envUtils'
 
 export type CodexOAuthFlowStatus =
@@ -30,7 +30,7 @@ type CodexOAuthFlowDependencies = {
     'startOAuthFlow' | 'cleanup'
   >
   openBrowser?: typeof openBrowser
-  saveCodexCredentials?: typeof saveCodexCredentials
+  saveAgencCredentials?: typeof saveAgencCredentials
   isBareMode?: typeof isBareMode
 }
 
@@ -53,7 +53,7 @@ export function useCodexOAuthFlow(options: {
     options.deps?.createOAuthService ?? createDefaultOAuthService
   const openBrowserFn = options.deps?.openBrowser ?? openBrowser
   const saveCredentials =
-    options.deps?.saveCodexCredentials ?? saveCodexCredentials
+    options.deps?.saveAgencCredentials ?? saveAgencCredentials
   const isBareModeFn = options.deps?.isBareMode ?? isBareMode
   const [status, setStatus] = React.useState<CodexOAuthFlowStatus>({
     state: 'starting',

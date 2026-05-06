@@ -7,8 +7,8 @@ import { getMcpConfigByName } from '../../../agenc/upstream/services/mcp/config'
 import { useMcpReconnect, useMcpToggleEnabled } from '../../../agenc/upstream/services/mcp/MCPConnectionManager'; // upstream-import: keep target is owned by another Z-PURGE item
 import { describeMcpConfigFilePath, filterMcpPromptsByServer } from '../../../agenc/upstream/services/mcp/utils'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useAppState } from '../../state/AppState.js';
-import { errorMessage } from '../../../agenc/upstream/utils/errors'; // upstream-import: keep target is owned by another Z-PURGE item
-import { capitalize } from '../../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { errorMessage } from '../../../utils/errors.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { capitalize } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
 import { Select } from '../CustomSelect/select';
 import { Byline } from '../design-system/Byline';

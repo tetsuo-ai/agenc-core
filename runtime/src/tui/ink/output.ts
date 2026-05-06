@@ -5,8 +5,8 @@ import {
   tokenize,
 } from '@alcalzone/ansi-tokenize'
 import { logForDebugging } from '../../utils/debug.js'
-import { getGraphemeSegmenter } from '../../agenc/upstream/utils/intl.js'
-import sliceAnsi from '../../agenc/upstream/utils/sliceAnsi.js'
+import { getGraphemeSegmenter } from '../../utils/intl.js'
+import sliceAnsi from '../../utils/sliceAnsi.js'
 import { reorderBidi } from './bidi.js'
 import { type Rectangle, unionRect } from './layout/geometry.js'
 import {

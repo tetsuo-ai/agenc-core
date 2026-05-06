@@ -10,7 +10,7 @@ import { useInput } from '../ink.js';
 import { useOptionalKeybindingContext } from '../keybindings/KeybindingContext.js';
 import { keystrokesEqual } from '../keybindings/resolver.js';
 import type { ParsedKeystroke } from '../keybindings/types.js';
-import { normalizeFullWidthSpace } from '../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { normalizeFullWidthSpace } from '../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useVoiceEnabled } from './useVoiceEnabled';
 
 // Dead code elimination: conditional import for voice input hook.

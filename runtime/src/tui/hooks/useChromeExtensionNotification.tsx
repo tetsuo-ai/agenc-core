@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { Text } from '../ink.js';
-import { isAgenCAISubscriber } from '../../agenc/upstream/utils/auth'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isChromeExtensionInstalled, shouldEnableAgenCInChrome } from '../../agenc/upstream/utils/claudeInChrome/setup'; // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
+import { isAgenCAISubscriber } from '../../utils/auth.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isChromeExtensionInstalled, shouldEnableAgenCInChrome } from '../../utils/agencInChrome/setup.js'; // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
 import { isRunningOnHomespace } from '../../utils/envUtils';
 import { useStartupNotification } from './notifs/useStartupNotification';
 function getChromeFlag(): boolean | undefined {

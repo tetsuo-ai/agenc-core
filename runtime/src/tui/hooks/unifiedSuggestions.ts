@@ -5,9 +5,9 @@ import { generateFileSuggestions } from './fileSuggestions.js'
 import type { ServerResource } from '../../agenc/upstream/services/mcp/types.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { getAgentColor } from 'src/tools/AgentTool/agentColorManager.js'
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
-import { truncateToWidth } from '../../agenc/upstream/utils/format.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../agenc/upstream/utils/log.js' // upstream-import: keep target is owned by another Z-PURGE item
-import type { Theme } from '../../agenc/upstream/utils/theme.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { truncateToWidth } from '../../utils/format.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../utils/log.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { Theme } from '../../utils/theme.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 type FileSuggestionSource = {
   type: 'file'

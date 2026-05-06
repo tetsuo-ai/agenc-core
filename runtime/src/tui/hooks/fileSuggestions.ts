@@ -4,7 +4,7 @@ import * as path from 'path'
 import {
   AGENC_CONFIG_DIRECTORIES,
   loadMarkdownFilesForSubdir,
-} from '../../agenc/upstream/utils/markdownConfigLoader.js' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/markdownConfigLoader.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type { SuggestionItem } from '../components/PromptInput/PromptInputFooterSuggestions.js'
 import {
   CHUNK_MS,
@@ -13,21 +13,21 @@ import {
 } from '../../agenc/upstream/native-ts/file-index/index' // upstream-import: keep target is owned by another Z-PURGE item
 import { logEvent } from '../../agenc/upstream/services/analytics/index' // upstream-import: keep target is owned by another Z-PURGE item
 import type { FileSuggestionCommandInput } from '../../types/fileSuggestion'
-import { getGlobalConfig } from '../../agenc/upstream/utils/config' // upstream-import: keep target is owned by another Z-PURGE item
-import { getCwd } from '../../agenc/upstream/utils/cwd' // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig } from '../../utils/config.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { getCwd } from '../../utils/cwd.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js'
-import { errorMessage } from '../../agenc/upstream/utils/errors' // upstream-import: keep target is owned by another Z-PURGE item
-import { execFileNoThrowWithCwd } from '../../agenc/upstream/utils/execFileNoThrow' // upstream-import: keep target is owned by another Z-PURGE item
-import { getFsImplementation } from '../../agenc/upstream/utils/fsOperations' // upstream-import: keep target is owned by another Z-PURGE item
+import { errorMessage } from '../../utils/errors.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { execFileNoThrowWithCwd } from '../../utils/execFileNoThrow.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { getFsImplementation } from '../../utils/fsOperations.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { findGitRoot, gitExe } from '../../utils/git'
 import {
   createBaseHookInput,
   executeFileSuggestionCommand,
-} from '../../agenc/upstream/utils/hooks' // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../agenc/upstream/utils/log' // upstream-import: keep target is owned by another Z-PURGE item
-import { expandPath } from '../../agenc/upstream/utils/path' // upstream-import: keep target is owned by another Z-PURGE item
-import { ripGrep } from '../../agenc/upstream/utils/ripgrep' // upstream-import: keep target is owned by another Z-PURGE item
-import { getInitialSettings } from '../../agenc/upstream/utils/settings/settings' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/hooks.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../utils/log.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { expandPath } from '../../utils/path.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { ripGrep } from '../../utils/ripgrep.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { getInitialSettings } from '../../utils/settings/settings.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { createSignal } from '../../utils/signal'
 
 // Lazily constructed singleton

@@ -1,18 +1,18 @@
 import axios from 'axios'
 import { readFile, stat } from 'fs/promises'
 import type { Message } from '../../../types/message'
-import { checkAndRefreshOAuthTokenIfNeeded } from '../../../agenc/upstream/utils/auth' // upstream-import: keep target is owned by another Z-PURGE item
+import { checkAndRefreshOAuthTokenIfNeeded } from '../../../utils/auth.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js'
-import { errorMessage } from '../../../agenc/upstream/utils/errors' // upstream-import: keep target is owned by another Z-PURGE item
-import { getAuthHeaders, getUserAgent } from '../../../agenc/upstream/utils/http' // upstream-import: keep target is owned by another Z-PURGE item
-import { normalizeMessagesForAPI } from '../../../agenc/upstream/utils/messages' // upstream-import: keep target is owned by another Z-PURGE item
+import { errorMessage } from '../../../utils/errors.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { getAuthHeaders, getUserAgent } from '../../../utils/http.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { normalizeMessagesForAPI } from '../../../utils/messages.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   extractAgentIdsFromMessages,
   getTranscriptPath,
   loadSubagentTranscripts,
   MAX_TRANSCRIPT_READ_BYTES,
-} from '../../../agenc/upstream/utils/sessionStorage' // upstream-import: keep target is owned by another Z-PURGE item
-import { jsonStringify } from '../../../agenc/upstream/utils/slowOperations' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../utils/sessionStorage.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { jsonStringify } from '../../../utils/slowOperations.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { redactSensitiveInfo } from '../Feedback'
 
 type TranscriptShareResult = {

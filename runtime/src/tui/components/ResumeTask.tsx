@@ -1,13 +1,13 @@
 import React, { useCallback, useState } from 'react';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
-import { type CodeSession, fetchCodeSessionsFromSessionsAPI } from '../../agenc/upstream/utils/teleport/api.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type CodeSession, fetchCodeSessionsFromSessionsAPI } from '../../utils/teleport/api.js'; // upstream-import: keep target is owned by another Z-PURGE item
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw j/k/arrow list navigation
 import { Box, Text, useInput } from '../ink.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
 import { logForDebugging } from 'src/utils/debug.js';
-import { detectCurrentRepository } from '../../agenc/upstream/utils/detectRepository'; // upstream-import: keep target is owned by another Z-PURGE item
-import { formatRelativeTime } from '../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
+import { detectCurrentRepository } from '../../utils/detectRepository.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatRelativeTime } from '../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint';
 import { Select } from './CustomSelect/select';
 import { Byline } from './design-system/Byline';

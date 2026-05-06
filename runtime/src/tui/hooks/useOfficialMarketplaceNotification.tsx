@@ -2,7 +2,7 @@ import * as React from 'react';
 import type { Notification } from '../context/notifications';
 import { Text } from '../ink.js';
 import { logForDebugging } from 'src/utils/debug.js';
-import { checkAndInstallOfficialMarketplace } from '../../agenc/upstream/utils/plugins/officialMarketplaceStartupCheck'; // upstream-import: keep target is owned by another Z-PURGE item
+import { checkAndInstallOfficialMarketplace } from '../../utils/plugins/officialMarketplaceStartupCheck.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useStartupNotification } from './notifs/useStartupNotification';
 
 /**

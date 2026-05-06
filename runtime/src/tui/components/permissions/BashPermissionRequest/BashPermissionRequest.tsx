@@ -13,11 +13,11 @@ import { getFirstWordPrefix, getSimpleCommandPrefix } from '../../../../agenc/up
 import { getDestructiveCommandWarning } from '../../../../agenc/upstream/tools/BashTool/destructiveCommandWarning'; // upstream-import: keep target is owned by another Z-PURGE item
 import { parseSedEditCommand } from '../../../../agenc/upstream/tools/BashTool/sedEditParser'; // upstream-import: keep target is owned by another Z-PURGE item
 import { shouldUseSandbox } from '../../../../agenc/upstream/tools/BashTool/shouldUseSandbox'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getCompoundCommandPrefixesStatic } from '../../../../agenc/upstream/utils/bash/prefix'; // upstream-import: keep target is owned by another Z-PURGE item
-import { createPromptRuleContent, generateGenericDescription, getBashPromptAllowDescriptions, isClassifierPermissionsEnabled } from '../../../../agenc/upstream/utils/permissions/bashClassifier'; // upstream-import: keep target is owned by another Z-PURGE item
-import { extractRules } from '../../../../agenc/upstream/utils/permissions/PermissionUpdate'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionUpdate } from '../../../../agenc/upstream/utils/permissions/PermissionUpdateSchema'; // upstream-import: keep target is owned by another Z-PURGE item
-import { SandboxManager } from '../../../../agenc/upstream/utils/sandbox/sandbox-adapter'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCompoundCommandPrefixesStatic } from '../../../../utils/bash/prefix.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { createPromptRuleContent, generateGenericDescription, getBashPromptAllowDescriptions, isClassifierPermissionsEnabled } from '../../../../utils/permissions/bashClassifier.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { extractRules } from '../../../../utils/permissions/PermissionUpdate.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { SandboxManager } from '../../../../utils/sandbox/sandbox-runtime.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../../CustomSelect/select';
 import { ShimmerChar } from '../../spinner/ShimmerChar.js';
 import { useShimmerAnimation } from '../../spinner/useShimmerAnimation.js';
