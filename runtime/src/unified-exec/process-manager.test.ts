@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
   permissionProfileFromRuntimePermissions,
@@ -11,6 +11,15 @@ import {
 } from "../sandbox/engine/index.js";
 import { UnifiedExecError } from "./types.js";
 import { UnifiedExecProcessManager } from "./process-manager.js";
+import {
+  AGENC_WINDOWS_SANDBOX_SETUP_DURATION_METRIC,
+  AGENC_WINDOWS_SANDBOX_SETUP_SUCCESS_METRIC,
+  resetAgencTelemetryClient,
+  setAgencTelemetryClient,
+  type TelemetryClient,
+  type TelemetrySpan,
+  type TelemetryTimer,
+} from "../observability/telemetry.js";
 
 const require = createRequire(import.meta.url);
 const hasPtySupport = (() => {
@@ -21,6 +30,10 @@ const hasPtySupport = (() => {
     return false;
   }
 })();
+
+afterEach(() => {
+  resetAgencTelemetryClient();
+});
 
 function passthroughSandboxManager(): Pick<SandboxManager, "selectInitial" | "transform"> {
   return {
@@ -183,6 +196,101 @@ describe("UnifiedExecProcessManager", () => {
       sandbox: "linux_seccomp",
       sandboxPolicyCwd,
       command: expect.objectContaining({ cwd: commandCwd }),
+    });
+  });
+
+  test("records Windows sandbox setup metrics only for restricted-token backend", async () => {
+    const counters: Array<{ name: string; tags?: Record<string, string> }> = [];
+    const durations: Array<{ name: string; tags?: Record<string, string> }> = [];
+    const client: TelemetryClient = {
+      startSpan(name): TelemetrySpan {
+        return {
+          name,
+          setAttribute() {},
+          setAttributes() {},
+          addEvent() {},
+          enter(fn) {
+            return fn();
+          },
+          end() {},
+        };
+      },
+      withSpan(_name, _attributes, fn) {
+        return fn();
+      },
+      getCurrentSpan() {
+        return undefined;
+      },
+      counter(name, _increment, tags) {
+        counters.push({ name, tags });
+      },
+      histogram() {},
+      recordDuration(name, _durationMs, tags) {
+        durations.push({ name, tags });
+      },
+      timer(): TelemetryTimer {
+        return { record() {}, end() {} };
+      },
+      event() {},
+    };
+    setAgencTelemetryClient(client);
+    const commandCwd = process.cwd();
+    const sandboxPolicyCwd = dirname(commandCwd);
+    const manager = new UnifiedExecProcessManager({
+      cwd: sandboxPolicyCwd,
+      sandboxManager: {
+        selectInitial: () => "windows_restricted_token",
+        transform: (request): SandboxExecRequest => ({
+          command: [
+            process.execPath,
+            "-e",
+            "process.stdout.write('windows-sandboxed')",
+          ],
+          cwd: request.command.cwd,
+          env: request.command.env,
+          sandbox: request.sandbox,
+          windowsSandboxLevel: request.windowsSandboxLevel,
+          windowsSandboxPrivateDesktop:
+            request.windowsSandboxPrivateDesktop,
+          permissionProfile: request.permissions,
+          fileSystemSandboxPolicy: request.permissions.fileSystem,
+          networkSandboxPolicy: request.permissions.network,
+        }),
+      },
+    });
+    const permissionProfile = permissionProfileFromRuntimePermissions(
+      restrictedFileSystemPolicy(),
+      "disabled",
+    );
+
+    const result = await manager.execCommand({
+      cmd: "printf host-command",
+      workdir: commandCwd,
+      yield_time_ms: 250,
+      runtimeSandbox: {
+        permissionProfile,
+        sandboxPolicyCwd,
+        preference: "require",
+        windowsSandboxLevel: "high",
+      },
+    });
+
+    expect(result.stdout).toBe("windows-sandboxed");
+    expect(durations).toContainEqual({
+      name: AGENC_WINDOWS_SANDBOX_SETUP_DURATION_METRIC,
+      tags: {
+        level: "high",
+        mode: "windows_restricted_token",
+        result: "success",
+      },
+    });
+    expect(counters).toContainEqual({
+      name: AGENC_WINDOWS_SANDBOX_SETUP_SUCCESS_METRIC,
+      tags: {
+        level: "high",
+        mode: "windows_restricted_token",
+        result: "success",
+      },
     });
   });
 

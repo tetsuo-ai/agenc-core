@@ -60,6 +60,11 @@ import type { Session } from "../session/session.js";
 import { disposeProviderStartupPrewarmHandle } from "../session/startup-prewarm.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { AssistantMessage, ToolUseBlock, TurnState } from "../session/turn-state.js";
+import {
+  AGENC_TURN_TTFT_DURATION_METRIC,
+  agencTelemetry,
+  toMetricTags,
+} from "../observability/telemetry.js";
 
 export interface StreamModelRequestContract {
   readonly input: ReadonlyArray<LLMMessage>;
@@ -419,6 +424,7 @@ export async function streamModel(
     receivedProviderChunk = true;
     // I-11: any chunk resets the idle timer.
     watchdog.kick();
+    recordStreamingTtft(ctx, chunk);
 
     // I-22: per-chunk token accounting + sampling gate. The sampling
     // result is estimation-only; the continuation decision stays on
@@ -734,4 +740,27 @@ export async function streamModel(
     throw new StreamModelError(response.error, response);
   }
   return state;
+}
+
+function recordStreamingTtft(
+  ctx: TurnContext,
+  chunk: LLMStreamChunk,
+): void {
+  const event = streamingTtftEvent(chunk);
+  if (event === undefined) return;
+  const durationMs = ctx.turnTimingState.recordFirstToken();
+  if (durationMs === undefined) return;
+  agencTelemetry.recordDuration(
+    AGENC_TURN_TTFT_DURATION_METRIC,
+    durationMs,
+    toMetricTags({ turn_id: ctx.subId, event }),
+  );
+}
+
+function streamingTtftEvent(chunk: LLMStreamChunk): string | undefined {
+  if (chunk.content.length > 0) return "assistant_text";
+  if ((chunk.toolCalls?.length ?? 0) > 0) return "tool_call";
+  if (chunk.toolInputBlockStart !== undefined) return "tool_call";
+  if (chunk.toolInputDelta !== undefined) return "tool_call";
+  return undefined;
 }
