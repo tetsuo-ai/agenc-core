@@ -10,7 +10,7 @@ import {
   formatCodexPlanType,
   type CodexUsageData,
   type CodexUsageRow,
-} from '../../../services/api/codexUsage'
+} from '../../../services/api/openAiCodeUsage.js'
 import { formatResetText } from '../../../utils/format' // upstream-import: keep target is owned by another Z-PURGE item
 import { logError } from '../../../utils/log' // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint'

@@ -477,6 +477,7 @@ export default defineConfig({
   target: 'es2022',
   sourcemap: true,
   external,
+  noExternal: ['supports-hyperlinks'],
   esbuildPlugins: [
     agencBareSrcAlias,
     agencOptionalExternal,
