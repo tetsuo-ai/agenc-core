@@ -241,6 +241,8 @@ export function formatCliHelpTopicText(topic: string): string | null {
       return formatCliHelpText();
     case "agent":
       return formatAgenCAgentCliHelpText();
+    case "help":
+      return formatCliHelpText();
     case "auth":
     case "login":
     case "logout":
@@ -280,6 +282,9 @@ export function detectStartupShortCircuit(
       };
     }
     const topic = argv[1] ?? "";
+    if (topic === "--help" || topic === "-h") {
+      return { kind: "help", text: formatCliHelpText() };
+    }
     const text = formatCliHelpTopicText(topic);
     if (text === null) {
       return {

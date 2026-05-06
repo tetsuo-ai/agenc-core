@@ -25,6 +25,7 @@ describe("agenc CLI help", () => {
     for (const topic of [
       "agent",
       "daemon",
+      "help",
       "login",
       "mcp",
       "permissions",
@@ -52,6 +53,18 @@ describe("agenc CLI help", () => {
     expect(detectStartupShortCircuit(["help", "agent"])).toEqual({
       kind: "help",
       text: formatCliHelpTopicText("agent")!,
+    });
+    expect(detectStartupShortCircuit(["help", "--help"])).toEqual({
+      kind: "help",
+      text: formatCliHelpText(),
+    });
+    expect(detectStartupShortCircuit(["help", "-h"])).toEqual({
+      kind: "help",
+      text: formatCliHelpText(),
+    });
+    expect(detectStartupShortCircuit(["help", "help"])).toEqual({
+      kind: "help",
+      text: formatCliHelpText(),
     });
     expect(detectStartupShortCircuit(["help", "missing"])).toEqual({
       kind: "error",
