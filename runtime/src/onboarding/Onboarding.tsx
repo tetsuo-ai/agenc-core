@@ -26,6 +26,7 @@ import {
   type PastedContent,
 } from "./inputPaste.js";
 import {
+  cleanupOldPastes,
   deletePastedText,
   hashPastedText,
   storePastedText,
@@ -885,6 +886,9 @@ export function useFirstRunOnboardingController(
     }
     recordedSeen.current = true;
     incrementFirstRunOnboardingSeenCount({ agencHome: options.agencHome });
+    void cleanupOldPastes({ agencHome: options.agencHome }).catch(() => {
+      /* best effort */
+    });
   }, [active, options.agencHome]);
 
   const submit = useCallback(
@@ -1036,7 +1040,6 @@ export function Onboarding({
             maskedTail={state.pendingApiKeyApproval.maskedTail}
             status={state.pendingApiKeyApproval.verificationStatus}
             error={state.pendingApiKeyApproval.verificationError}
-            pasteHash={state.pendingApiKeyApproval.pasteHash}
             pastePreview={state.pendingApiKeyApproval.pastePreview}
           />
         ) : (

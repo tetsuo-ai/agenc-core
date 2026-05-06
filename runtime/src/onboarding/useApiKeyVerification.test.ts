@@ -73,6 +73,28 @@ describe("verifyApiKey", () => {
     );
   });
 
+  test("verifies compatible BYOK keys against the configured endpoint", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), { status: 200 }),
+    );
+
+    await expect(
+      verifyApiKey({
+        provider: "openai-compatible",
+        apiKey: "compatible-test-key",
+        config: defaultConfig(),
+        fetchImpl,
+      }),
+    ).resolves.toEqual({ status: "valid" });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/v1/models",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer compatible-test-key" },
+      }),
+    );
+  });
+
   test("distinguishes rejected keys from provider verification errors", async () => {
     await expect(
       verifyApiKey({

@@ -17,14 +17,16 @@
     "runtime/src/onboarding/pasteStore.ts",
     "runtime/src/onboarding/Onboarding.tsx",
     "runtime/src/auth/backends/local.ts",
-    "runtime/src/bin/bootstrap.ts"
+    "runtime/src/bin/bootstrap.ts",
+    "runtime/src/tui/components/App.tsx"
   ],
   "testFiles": [
     "runtime/src/onboarding/onboarding.test.tsx",
     "runtime/src/onboarding/useApiKeyVerification.test.ts",
     "runtime/src/onboarding/inputPaste.test.ts",
     "runtime/src/auth/backends/local.contract.test.ts",
-    "runtime/src/bin/bootstrap.test.ts"
+    "runtime/src/bin/bootstrap.test.ts",
+    "runtime/src/tui/components/App.render.test.tsx"
   ],
   "requiredBehaviors": [
     {
@@ -32,7 +34,8 @@
       "behavior": "The first-run API-key step accepts pasted BYOK provider keys, verifies them against the selected provider, and asks for explicit approval before persistence.",
       "tests": [
         "runtime/src/onboarding/onboarding.test.tsx",
-        "runtime/src/onboarding/useApiKeyVerification.test.ts"
+        "runtime/src/onboarding/useApiKeyVerification.test.ts",
+        "runtime/src/tui/components/App.render.test.tsx"
       ]
     },
     {

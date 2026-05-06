@@ -37,7 +37,6 @@ export interface UseApiKeyVerificationOptions extends VerifyApiKeyParams {
 const LOCAL_KEYLESS_PROVIDERS = new Set<BuiltInProviderSlug>([
   "ollama",
   "lmstudio",
-  "openai-compatible",
 ]);
 
 export async function verifyApiKey(

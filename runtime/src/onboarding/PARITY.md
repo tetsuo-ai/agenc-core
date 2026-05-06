@@ -15,6 +15,7 @@ This directory owns AgenC's first-run onboarding surface:
 - `projectOnboardingState.ts` persists first-run and project-onboarding state in the AgenC home directory.
 - `projectOnboardingSteps.ts` detects project-onboarding completion from workspace state.
 - `ApproveApiKey.tsx`, `useApiKeyVerification.ts`, `inputPaste.ts`, and `pasteStore.ts` provide the OB-09 BYOK key-entry counterparts.
+- `runtime/src/tui/components/App.tsx` owns the runtime first-run render and composer-submit integration for this controller.
 
 OC-09 project-onboarding contract:
 - `projectOnboardingState.ts` owns per-project seen counts, completion persistence, demo-mode suppression, and malformed-state recovery.

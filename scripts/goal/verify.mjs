@@ -1606,6 +1606,7 @@ const ITEM_EVIDENCE = {
       "runtime/src/onboarding/inputPaste.test.ts",
       "runtime/src/auth/backends/local.contract.test.ts",
       "runtime/src/bin/bootstrap.test.ts",
+      "runtime/src/tui/components/App.render.test.tsx",
       "parity/OB-09-parity.json",
     ],
     grepPresent: [
@@ -1624,6 +1625,7 @@ const ITEM_EVIDENCE = {
       "runtime/src/onboarding/inputPaste.test.ts",
       "runtime/src/auth/backends/local.contract.test.ts",
       "runtime/src/bin/bootstrap.test.ts",
+      "runtime/src/tui/components/App.render.test.tsx",
     ],
   },
   "UP-01": {
@@ -4162,6 +4164,7 @@ async function onboardingGates(item) {
       "src/onboarding/inputPaste.test.ts",
       "src/auth/backends/local.contract.test.ts",
       "src/bin/bootstrap.test.ts",
+      "src/tui/components/App.render.test.tsx",
     ]);
     if (test.status !== 0) {
       failGate("OB-09: BYOK onboarding tests failed");

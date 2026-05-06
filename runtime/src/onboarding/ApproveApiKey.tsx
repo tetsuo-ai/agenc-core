@@ -8,7 +8,6 @@ export interface ApproveApiKeyProps {
   readonly maskedTail: string;
   readonly status: VerificationStatus;
   readonly error?: string;
-  readonly pasteHash?: string;
   readonly pastePreview?: string;
 }
 
@@ -23,7 +22,6 @@ export function ApproveApiKey({
   maskedTail,
   status,
   error,
-  pasteHash,
   pastePreview,
 }: ApproveApiKeyProps): React.ReactElement {
   return (
@@ -34,9 +32,6 @@ export function ApproveApiKey({
       <Text dimColor>Verification: {status}</Text>
       {pastePreview !== undefined ? (
         <Text dimColor>{pastePreview}</Text>
-      ) : null}
-      {pasteHash !== undefined ? (
-        <Text dimColor>Private paste cache after approval: {pasteHash}</Text>
       ) : null}
       {error !== undefined ? <Text>{error}</Text> : null}
       <Text>Type yes to save this key, or no to continue without saving.</Text>

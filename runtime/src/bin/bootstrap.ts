@@ -941,12 +941,17 @@ export async function bootstrapLocalRuntimeSession(
     runtimeAuthBackendByokKey,
     runtimeLocalByokKey,
   );
+  const runtimeSelectedByokApiKey = selectByokPrecedenceApiKey({
+    explicitApiKey: options.apiKey,
+    byokApiKey: runtimeByokApiKey,
+    managedKeysEnabled,
+  });
   const providerSettings =
     profileProvider === resolvedProvider
       ? runtimeProviderSettings
       : resolveProviderSettings(profileProvider, startup.config, env);
   const managedKey =
-    runtimeByokApiKey === undefined &&
+    runtimeSelectedByokApiKey === undefined &&
     managedKeysEnabled &&
     !isHostedAgencProvider(resolvedProvider)
       ? await vendProviderKeyOrUndefined({
@@ -958,12 +963,14 @@ export async function bootstrapLocalRuntimeSession(
   const selectedApiKey = requireProviderApiKeyOrUndefined({
     provider: resolvedProvider,
     providerSettings: runtimeProviderSettings,
-    apiKey: selectByokPrecedenceApiKey({
-      explicitApiKey: options.apiKey,
-      byokApiKey: runtimeByokApiKey,
-      managedKeysEnabled,
-      managedApiKey: managedKey.apiKey,
-    }),
+    apiKey:
+      runtimeSelectedByokApiKey ??
+      selectByokPrecedenceApiKey({
+        explicitApiKey: undefined,
+        byokApiKey: undefined,
+        managedKeysEnabled,
+        managedApiKey: managedKey.apiKey,
+      }),
     managedKey,
   });
   const providerFallback = buildProviderFallbackLadderOptions({
