@@ -1,0 +1,143 @@
+{
+  "contractName": "rt-10-realtime-conversation",
+  "scope": "Realtime conversation phase machine, queue and fanout engine, session config, transport request shape, and startup context prelude",
+  "generatedAt": "2026-05-06T00:00:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/agenc-runtime-reference-rs",
+  "targetRoot": "..",
+  "sourceCommit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
+  "sourceFiles": [
+    "core/src/realtime_conversation.rs",
+    "core/src/realtime_context.rs"
+  ],
+  "targetFiles": [
+    "runtime/src/conversation/realtime/conversation.ts",
+    "runtime/src/conversation/realtime/context.ts"
+  ],
+  "testFiles": [
+    "runtime/src/conversation/realtime/conversation.contract.test.ts",
+    "runtime/src/conversation/realtime/context.contract.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "conversation-lifecycle-and-queues",
+      "source": "core/src/realtime_conversation.rs",
+      "target": "runtime/src/conversation/realtime/conversation.ts",
+      "requiredBehaviors": [
+        "maintains idle connecting active closing phases",
+        "replaces an active session by closing the previous connection before starting the next one",
+        "applies bounded queue policies for audio user text handoff output control fan-in and output fanout",
+        "exposes running state stale fanout registration and active finish semantics"
+      ],
+      "edgeCases": [
+        "audio input after shutdown raises the conversation inactive error",
+        "audio frames are accepted without throwing when capture outpaces the input loop",
+        "slow fanout applies output event backpressure without unbounded growth",
+        "no-fanout output event overflow closes the active session before growth exceeds the bounded queue",
+        "shutdown returns after bounded drain when a fanout consumer keeps awaiting",
+        "shutdown returns after bounded drain when transport reads remain pending after close",
+        "server-side termination emits closing before returning to idle",
+        "duplicate fanout registration for the same active session is rejected",
+        "immediate transport EOF during start does not publish a stale active session",
+        "immediate transport read errors during start do not publish a stale active session",
+        "overlapping starts serialize connection and close the replaced transport",
+        "transport close failures still finalize shutdown and server-side termination",
+        "a pending transport read resolves when shutdown closes the connection",
+        "a fanout consumer that returns while active closes the session"
+      ],
+      "tests": [
+        "runtime/src/conversation/realtime/conversation.contract.test.ts"
+      ],
+      "commands": [
+        "npm exec --workspace=@tetsuo-ai/runtime vitest run src/conversation/realtime/conversation.contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "conversation-v2-handoff-and-events",
+      "source": "core/src/realtime_conversation.rs",
+      "target": "runtime/src/conversation/realtime/conversation.ts",
+      "requiredBehaviors": [
+        "prefixes V2 user and backend text once",
+        "sends V1 handoff output through function-call output",
+        "handles V2 progress final steering and no-op acknowledgements",
+        "routes realtime handoff delegation text with XML escaping",
+        "tracks output audio duration and truncates matching items on user speech",
+        "queues one response create request while a default response is active and sends it after completion"
+      ],
+      "edgeCases": [
+        "already-prefixed V2 text is not prefixed twice",
+        "handoff output before an active handoff is a no-op",
+        "stale V2 handoff progress is ignored",
+        "input speech for a different item leaves output audio state alone",
+        "invalid audio metadata produces zero duration and no truncate payload",
+        "response-create failures emit one error event",
+        "server error events reach fanout and close the active session with error reason"
+      ],
+      "tests": [
+        "runtime/src/conversation/realtime/conversation.contract.test.ts"
+      ],
+      "commands": [
+        "npm exec --workspace=@tetsuo-ai/runtime vitest run src/conversation/realtime/conversation.contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "session-config-and-transport-selection",
+      "source": "core/src/realtime_conversation.rs",
+      "target": "runtime/src/conversation/realtime/conversation.ts",
+      "requiredBehaviors": [
+        "builds realtime session config with prompt startup context model version mode modality and voice",
+        "builds realtime session config directly from session history when no startup context override is supplied",
+        "rejects text output modality for V1 sessions",
+        "validates voice support by realtime protocol version",
+        "selects WebSocket by default and preserves caller SDP for WebRTC requests"
+      ],
+      "edgeCases": [
+        "caller prompt replaces configured backend prompt when provided",
+        "null prompt clears the backend prompt while preserving startup context",
+        "session cwd resolves from nested session configuration shapes",
+        "direct cwd and session-configuration cwd shapes build startup context",
+        "unsupported voice reports the allowed voices for the selected version",
+        "transport connection failure leaves the manager idle"
+      ],
+      "tests": [
+        "runtime/src/conversation/realtime/conversation.contract.test.ts"
+      ],
+      "commands": [
+        "npm exec --workspace=@tetsuo-ai/runtime vitest run src/conversation/realtime/conversation.contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "startup-context-builder",
+      "source": "core/src/realtime_context.rs",
+      "target": "runtime/src/conversation/realtime/context.ts",
+      "requiredBehaviors": [
+        "formats current thread user and assistant turns with contextual user fragments omitted",
+        "uses shared contextual user fragment detection for instruction hook skill shell editor and tool-result injections",
+        "groups recent work by workspace root with current workspace first and newest work next",
+        "renders a bounded workspace tree with noisy names omitted",
+        "wraps available sections in startup context tags and returns null when every section is empty"
+      ],
+      "edgeCases": [
+        "long thread text is truncated within the requested token budget",
+        "tiny final budgets preserve startup wrapper tags",
+        "aggregate section truncation preserves startup wrapper tags",
+        "newest recent work is kept before the thread cap is applied",
+        "mixed-case contextual tags are matched",
+        "multipart content with one contextual fragment is omitted from the current thread section",
+        "duplicate recent asks in the same workspace render once",
+        "unreadable directories do not stop surrounding tree rendering",
+        "symlink entries render without recursive descent",
+        "large directories render a bounded entry list plus remaining count"
+      ],
+      "tests": [
+        "runtime/src/conversation/realtime/context.contract.test.ts"
+      ],
+      "commands": [
+        "npm exec --workspace=@tetsuo-ai/runtime vitest run src/conversation/realtime/context.contract.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

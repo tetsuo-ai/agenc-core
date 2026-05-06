@@ -16,6 +16,12 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import {
+  buildRealtimeSessionConfig,
+  type RealtimeEvent,
+  type RealtimeTransportConnection,
+  type RealtimeWriter,
+} from "../conversation/realtime/conversation.js";
 import { AsyncQueue } from "../utils/async-queue.js";
 import {
   DEFAULT_LEGACY_EVENT_QUEUE_DEPTH,
@@ -1093,6 +1099,40 @@ describe("Session turn-driver hooks", () => {
 
     await session.flushEventLog();
     expect(flushDurable).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes realtime conversation transport during shutdown", async () => {
+    const session = buildSession();
+    const events = new AsyncQueue<RealtimeEvent>();
+    let closeCount = 0;
+    const writer: RealtimeWriter = {
+      sendAudioFrame: () => undefined,
+      sendConversationItemCreate: () => undefined,
+      sendConversationFunctionCallOutput: () => undefined,
+      sendResponseCreate: () => undefined,
+      sendPayload: () => undefined,
+    };
+    const connection: RealtimeTransportConnection = {
+      writer,
+      nextEvent: () => events.recv(),
+      close: () => {
+        closeCount += 1;
+        events.close();
+      },
+    };
+
+    await session.conversation.start({
+      sessionConfig: buildRealtimeSessionConfig({
+        conversationId: "conv-test",
+        outputModality: "audio",
+      }),
+      connectTransport: () => connection,
+    });
+
+    await session.shutdown();
+
+    expect(closeCount).toBe(1);
+    await expect(session.conversation.runningState()).resolves.toBeUndefined();
   });
 });
 
