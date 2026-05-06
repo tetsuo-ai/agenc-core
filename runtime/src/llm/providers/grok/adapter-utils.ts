@@ -311,7 +311,7 @@ function isReconciliationRelevantMessage(message: LLMMessage): boolean {
   // Stateful continuation should follow the stable user/assistant/tool lineage.
   // Dynamic system injections (memory, progress, runtime hints) can vary between
   // turns without invalidating the provider's previous_response_id anchor.
-  return message.role !== "system";
+  return message.role !== "system" && message.role !== "developer";
 }
 
 export function computeReconciliationChain(

@@ -6,7 +6,7 @@ import { Box, NoSelect, Text } from '../../../ink.js';
 import { intersperse } from '../../../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getPatchForDisplay } from '../../../../utils/diff.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { HighlightedCode } from '../../markdown/HighlightedCode.js';
-import { StructuredDiff } from '../../StructuredDiff';
+import { StructuredDiff } from '../../diff/StructuredDiff';
 type Props = {
   file_path: string;
   content: string;

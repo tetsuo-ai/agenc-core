@@ -2,10 +2,10 @@ import { c as _c } from "react-compiler-runtime";
 import type { StructuredPatchHunk } from 'diff';
 import * as React from 'react';
 import { memo } from 'react';
-import { useSettings } from '../hooks/useSettings';
-import { Box, NoSelect, RawAnsi, useTheme } from '../ink.js';
-import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import sliceAnsi from '../../utils/sliceAnsi.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { useSettings } from '../../hooks/useSettings';
+import { Box, NoSelect, RawAnsi, useTheme } from '../../ink.js';
+import { isFullscreenEnvEnabled } from '../../../utils/fullscreen.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import sliceAnsi from '../../../utils/sliceAnsi.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { expectColorDiff } from './StructuredDiff/colorDiff';
 import { StructuredDiffFallback } from './StructuredDiff/Fallback';
 type Props = {

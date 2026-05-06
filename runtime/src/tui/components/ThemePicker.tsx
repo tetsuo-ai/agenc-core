@@ -17,8 +17,8 @@ import type { ThemeSetting } from '../../utils/theme.js'; // upstream-import: ke
 import { Select } from './CustomSelect/select';
 import { Byline } from './design-system/Byline';
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint';
-import { getColorModuleUnavailableReason, getSyntaxTheme } from './StructuredDiff/colorDiff';
-import { StructuredDiff } from './StructuredDiff';
+import { getColorModuleUnavailableReason, getSyntaxTheme } from './diff/StructuredDiff/colorDiff';
+import { StructuredDiff } from './diff/StructuredDiff';
 
 type StructuredDiffComponent = React.ComponentType<{
   patch: StructuredPatchHunk

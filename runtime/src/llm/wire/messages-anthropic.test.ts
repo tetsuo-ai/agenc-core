@@ -24,7 +24,7 @@ function countCacheControlBlocks(value: unknown): number {
 }
 
 describe("buildAnthropicMessagesRequest", () => {
-  test("merges request instructions into the Anthropic system field", () => {
+  test("merges request instructions into the system field", () => {
     const request = buildAnthropicMessagesRequest({
       model: "claude-sonnet-4.5",
       messages: [
@@ -51,6 +51,48 @@ describe("buildAnthropicMessagesRequest", () => {
       },
     ]);
     expect(request.max_tokens).toBe(4096);
+  });
+
+  test("folds developer messages into system blocks and omits them from turns", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "claude-sonnet-4.5",
+      messages: [
+        { role: "system", content: "stable prefix" },
+        { role: "user", content: "previous ask" },
+        { role: "developer", content: [{ type: "text", text: "realtime update" }] },
+        { role: "user", content: "current ask" },
+      ],
+      tools: [],
+      options: {
+        systemPrompt: "base instructions",
+      },
+    });
+
+    expect(request.system).toEqual([
+      { type: "text", text: "base instructions" },
+      { type: "text", text: "stable prefix" },
+      {
+        type: "text",
+        text: "realtime update",
+        cache_control: { type: "ephemeral" },
+      },
+    ]);
+    expect(request.messages).toEqual([
+      {
+        role: "user",
+        content: "previous ask",
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "current ask",
+            cache_control: { type: "ephemeral" },
+          },
+        ],
+      },
+    ]);
   });
 
   test("adds a cache_control breakpoint to request instructions when they are the system prefix", () => {
@@ -181,7 +223,7 @@ describe("buildAnthropicMessagesRequest", () => {
     ]);
   });
 
-  test("serializes data-url tool result images as Anthropic base64 content", () => {
+  test("serializes data-url tool result images as base64 content", () => {
     const request = buildAnthropicMessagesRequest({
       model: "claude-sonnet-4.5",
       messages: [
@@ -236,7 +278,7 @@ describe("buildAnthropicMessagesRequest", () => {
     });
   });
 
-  test("serializes user images as Anthropic image blocks and preserves cache_control breakpoints", () => {
+  test("serializes user images as image blocks and preserves cache_control breakpoints", () => {
     const request = buildAnthropicMessagesRequest({
       model: "claude-sonnet-4.5",
       messages: [
@@ -291,7 +333,7 @@ describe("buildAnthropicMessagesRequest", () => {
     ]);
   });
 
-  test("serializes data-url user images as Anthropic base64 image blocks", () => {
+  test("serializes data-url user images as base64 image blocks", () => {
     const request = buildAnthropicMessagesRequest({
       model: "claude-sonnet-4.5",
       messages: [
@@ -331,7 +373,7 @@ describe("buildAnthropicMessagesRequest", () => {
     ]);
   });
 
-  test("serializes user PDFs as Anthropic document blocks", () => {
+  test("serializes user PDFs as document blocks", () => {
     const request = buildAnthropicMessagesRequest({
       model: "claude-sonnet-4.5",
       messages: [
@@ -373,7 +415,7 @@ describe("buildAnthropicMessagesRequest", () => {
     ]);
   });
 
-  test("does not send unsupported data-url image formats as Anthropic images", () => {
+  test("does not send unsupported data-url image formats as provider images", () => {
     const request = buildAnthropicMessagesRequest({
       model: "claude-sonnet-4.5",
       messages: [
@@ -406,7 +448,7 @@ describe("buildAnthropicMessagesRequest", () => {
     ]);
   });
 
-  test("normalizes strategic messages into at most three Anthropic cache_control breakpoints", () => {
+  test("normalizes strategic messages into at most three cache_control breakpoints", () => {
     const request = buildAnthropicMessagesRequest({
       model: "claude-sonnet-4.5",
       messages: [
@@ -466,7 +508,7 @@ describe("buildAnthropicMessagesRequest", () => {
     });
   });
 
-  test("passes Anthropic context management through the request body", () => {
+  test("passes context management through the request body", () => {
     const request = buildAnthropicMessagesRequest({
       model: "claude-sonnet-4.5",
       messages: [{ role: "user", content: "hello" }],
@@ -491,7 +533,7 @@ describe("buildAnthropicMessagesRequest", () => {
     });
   });
 
-  test("represents structured output as a forced Anthropic tool_use", () => {
+  test("represents structured output as a forced tool_use", () => {
     const request = buildAnthropicMessagesRequest({
       model: "claude-sonnet-4.5",
       messages: [{ role: "user", content: "hello" }],

@@ -628,7 +628,7 @@ export class OllamaProvider implements LLMProvider {
     if (this.config.keepAlive !== undefined)
       params.keep_alive = this.config.keepAlive;
 
-    // Tools — Ollama uses OpenAI-compatible format
+    // Tools use the provider-compatible function schema.
     const requestTools = options?.tools ? [...options.tools] : this.tools;
     if (requestTools.length > 0) {
       params.tools = (toolSelection ?? this.selectTools(
@@ -767,7 +767,10 @@ export class OllamaProvider implements LLMProvider {
         })),
       };
     }
-    return { role: msg.role, content: msg.content };
+    return {
+      role: msg.role === "developer" ? "system" : msg.role,
+      content: msg.content,
+    };
   }
 
   private parseResponse(response: any, options?: LLMChatOptions): LLMResponse {

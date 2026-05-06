@@ -169,6 +169,7 @@ function shouldPersistResponseItem(item: JsonValue | undefined): boolean {
   if (type === undefined) {
     const role = readString(object.role);
     return role === "system" ||
+      role === "developer" ||
       role === "user" ||
       role === "assistant" ||
       role === "tool";

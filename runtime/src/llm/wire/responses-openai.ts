@@ -1,5 +1,5 @@
 /**
- * OpenAI Responses API wire shim.
+ * Responses API wire shim.
  *
  * @module
  */
@@ -199,8 +199,10 @@ export function buildOpenAIResponsesRequest(
   const instructions = [
     input.options?.systemPrompt?.trim(),
     ...messages
-    .filter((message) => message.role === "system")
-    .map((message) => messageTextContent(message.content))
+      .filter((message) =>
+        message.role === "system" || message.role === "developer"
+      )
+      .map((message) => messageTextContent(message.content))
       .map((text) => text.trim()),
   ]
     .filter((text): text is string => typeof text === "string" && text.length > 0)
@@ -208,7 +210,7 @@ export function buildOpenAIResponsesRequest(
   const responseInput: Array<Record<string, unknown>> = [];
 
   for (const message of messages) {
-    if (message.role === "system") continue;
+    if (message.role === "system" || message.role === "developer") continue;
 
     if (message.role === "assistant") {
       const content = toResponsesMessageParts(message.content, "assistant");
@@ -347,6 +349,7 @@ export function parseOpenAIResponsesResponse(
           arguments: String(item.arguments ?? "{}"),
         }),
       ),
+    // branding-scan: allow real OpenAI provider identifier
     "OpenAI Responses response emitted invalid function_call",
   );
 

@@ -103,6 +103,7 @@ export interface AgenCRealtimeRpcServiceOptions {
 interface ActiveRealtimeFanout {
   readonly active: RealtimeActiveHandle;
   closeReason: "requested" | "transport_closed" | "error";
+  startedSent: boolean;
   closed: boolean;
 }
 
@@ -136,75 +137,119 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
   ): Promise<ThreadRealtimeStartResponse> {
     const binding = await this.#requireThread(params.threadId);
     const transport = normalizeRealtimeStartTransport(params.transport);
-    const config = await this.#buildSessionConfig(binding, params);
-    let providerSdp: string | undefined;
-    let connectTransport = binding.connectTransport;
-    if (transport.type === "webrtc" && binding.callClient !== undefined) {
-      const response = await binding.callClient.createWithSession(
-        transport.sdp,
-        config,
-        binding.headers,
-      );
-      providerSdp = response.sdp;
-      connectTransport = (request) =>
-        binding.connectTransport({
-          ...request,
-          providerCallId: response.callId,
-          providerSdp: response.sdp,
-        });
-    }
-
-    const started = await binding.conversation.start({
-      sessionConfig: config,
-      transport,
-      ...(binding.headers !== undefined ? { headers: binding.headers } : {}),
-      connectTransport,
-      ...(binding.routeRealtimeTextInput !== undefined
-        ? { routeRealtimeTextInput: binding.routeRealtimeTextInput }
-        : {}),
-    });
-    providerSdp = providerSdp ?? started.providerSdp;
-    const activeFanout: ActiveRealtimeFanout = {
-      active: started.active,
-      closeReason: "transport_closed",
-      closed: false,
-    };
-    this.#activeFanouts.set(params.threadId, activeFanout);
-
-    const fanoutRegistered = await binding.conversation.registerFanout(
-      started.active,
-      (events) =>
-        this.#fanoutEvents(
-          params.threadId,
-          activeFanout,
-          events,
-          context.sendNotification,
-        ),
-    );
-    if (!fanoutRegistered) {
-      activeFanout.closeReason = "error";
-      if (this.#activeFanouts.get(params.threadId) === activeFanout) {
-        this.#activeFanouts.delete(params.threadId);
-      }
-      activeFanout.closed = true;
-      await binding.conversation.finishIfActive(started.active).catch(() => {});
-      throw new AgenCDaemonAgentLifecycleError(
-        "INVALID_ARGUMENT",
-        `realtime fanout is already registered for thread: ${params.threadId}`,
-      );
-    }
-    this.#deferPostStartNotifications({
-      threadId: params.threadId,
+    this.#deferRealtimeStartup({
+      params,
       binding,
-      activeFanout,
-      active: started.active,
-      realtimeSessionId: config.sessionId,
-      version: config.version,
-      providerSdp,
+      transport,
       sendNotification: context.sendNotification,
     });
-
     return {};
+  }
+
+  #deferRealtimeStartup(options: {
+    readonly params: ThreadRealtimeStartParams;
+    readonly binding: AgenCRealtimeThreadBinding;
+    readonly transport: RealtimeTransportSelection;
+    readonly sendNotification: AgenCRealtimeNotificationSender | undefined;
+  }): void {
+    setImmediate(() => {
+      void this.#startRealtimeConversation(options);
+    });
+  }
+
+  async #startRealtimeConversation(options: {
+    readonly params: ThreadRealtimeStartParams;
+    readonly binding: AgenCRealtimeThreadBinding;
+    readonly transport: RealtimeTransportSelection;
+    readonly sendNotification: AgenCRealtimeNotificationSender | undefined;
+  }): Promise<void> {
+    const { params, binding, transport, sendNotification } = options;
+    let activeFanout: ActiveRealtimeFanout | undefined;
+    let active: RealtimeActiveHandle | undefined;
+    try {
+      const config = await this.#buildSessionConfig(binding, params);
+      let providerSdp: string | undefined;
+      let connectTransport = binding.connectTransport;
+      if (transport.type === "webrtc" && binding.callClient !== undefined) {
+        const response = await binding.callClient.createWithSession(
+          transport.sdp,
+          config,
+          binding.headers,
+        );
+        providerSdp = response.sdp;
+        connectTransport = (request) =>
+          binding.connectTransport({
+            ...request,
+            providerCallId: response.callId,
+            providerSdp: response.sdp,
+          });
+      }
+
+      const started = await binding.conversation.start({
+        sessionConfig: config,
+        transport,
+        ...(binding.headers !== undefined ? { headers: binding.headers } : {}),
+        connectTransport,
+        ...(binding.routeRealtimeTextInput !== undefined
+          ? { routeRealtimeTextInput: binding.routeRealtimeTextInput }
+          : {}),
+      });
+      providerSdp = providerSdp ?? started.providerSdp;
+      active = started.active;
+      activeFanout = {
+        active: started.active,
+        closeReason: "transport_closed",
+        startedSent: false,
+        closed: false,
+      };
+      const fanout = activeFanout;
+      this.#activeFanouts.set(params.threadId, activeFanout);
+
+      const fanoutRegistered = await binding.conversation.registerFanout(
+        started.active,
+        (events) =>
+          this.#fanoutEvents(params.threadId, fanout, events, sendNotification),
+      );
+      if (!fanoutRegistered) {
+        activeFanout.closeReason = "error";
+        if (this.#activeFanouts.get(params.threadId) === activeFanout) {
+          this.#activeFanouts.delete(params.threadId);
+        }
+        activeFanout.closed = true;
+        await binding.conversation
+          .finishIfActive(started.active)
+          .catch(() => {});
+        throw new AgenCDaemonAgentLifecycleError(
+          "INVALID_ARGUMENT",
+          `realtime fanout is already registered for thread: ${params.threadId}`,
+        );
+      }
+      if (providerSdp !== undefined) {
+        await this.#send(sendNotification, {
+          method: "thread/realtime/sdp",
+          params: {
+            threadId: params.threadId,
+            sdp: providerSdp,
+          },
+        });
+      }
+    } catch (error) {
+      if (activeFanout !== undefined && active !== undefined) {
+        activeFanout.closeReason = "error";
+        if (this.#activeFanouts.get(params.threadId) === activeFanout) {
+          this.#activeFanouts.delete(params.threadId);
+        }
+        activeFanout.closed = true;
+        await binding.conversation.finishIfActive(active).catch(() => {});
+      }
+      await this.#send(sendNotification, {
+        method: "thread/realtime/error",
+        params: {
+          threadId: params.threadId,
+          message: errorMessage(error),
+        },
+      }).catch(() => {});
+    }
   }
 
   async appendAudio(
@@ -323,43 +368,21 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
         },
       });
     } finally {
-      await this.#closeFanout(threadId, activeFanout, sendNotification);
+      await this.#closeFanout(threadId, activeFanout, sendNotification).catch(
+        () => {},
+      );
     }
   }
 
-  #deferPostStartNotifications(options: {
+  async #sendStartedNotification(options: {
     readonly threadId: string;
-    readonly binding: AgenCRealtimeThreadBinding;
     readonly activeFanout: ActiveRealtimeFanout;
-    readonly active: RealtimeActiveHandle;
     readonly realtimeSessionId: string;
     readonly version: RealtimeSessionVersion;
-    readonly providerSdp?: string;
-    readonly sendNotification: AgenCRealtimeNotificationSender | undefined;
-  }): void {
-    setImmediate(() => {
-      void this.#sendPostStartNotifications(options).catch(async () => {
-        options.activeFanout.closeReason = "error";
-        if (
-          this.#activeFanouts.get(options.threadId) === options.activeFanout
-        ) {
-          this.#activeFanouts.delete(options.threadId);
-        }
-        options.activeFanout.closed = true;
-        await options.binding.conversation
-          .finishIfActive(options.active)
-          .catch(() => {});
-      });
-    });
-  }
-
-  async #sendPostStartNotifications(options: {
-    readonly threadId: string;
-    readonly realtimeSessionId: string;
-    readonly version: RealtimeSessionVersion;
-    readonly providerSdp?: string;
     readonly sendNotification: AgenCRealtimeNotificationSender | undefined;
   }): Promise<void> {
+    if (options.activeFanout.startedSent) return;
+    options.activeFanout.startedSent = true;
     await this.#send(options.sendNotification, {
       method: "thread/realtime/started",
       params: {
@@ -368,15 +391,6 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
         version: options.version,
       },
     });
-    if (options.providerSdp !== undefined) {
-      await this.#send(options.sendNotification, {
-        method: "thread/realtime/sdp",
-        params: {
-          threadId: options.threadId,
-          sdp: options.providerSdp,
-        },
-      });
-    }
   }
 
   async #fanoutEvent(
@@ -452,6 +466,14 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
         });
         break;
       case "session_updated":
+        await this.#sendStartedNotification({
+          threadId,
+          activeFanout,
+          realtimeSessionId: event.realtimeSessionId,
+          version: activeFanout.active.version,
+          sendNotification,
+        });
+        break;
       case "input_audio_speech_started":
       case "response_created":
       case "response_cancelled":
@@ -535,4 +557,8 @@ function handoffItemPayload(handoff: {
       text: entry.text,
     })),
   };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

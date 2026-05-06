@@ -2,9 +2,9 @@ import { c as _c } from "react-compiler-runtime";
 import { diffWordsWithSpace, type StructuredPatchHunk } from 'diff';
 import * as React from 'react';
 import { useMemo } from 'react';
-import type { ThemeName } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { stringWidth } from '../../ink/stringWidth.js';
-import { Box, NoSelect, Text, useTheme, wrapText } from '../../ink.js';
+import type { ThemeName } from '../../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { stringWidth } from '../../../ink/stringWidth.js';
+import { Box, NoSelect, Text, useTheme, wrapText } from '../../../ink.js';
 
 /*
  * StructuredDiffFallback Component: Word-Level Diff Highlighting Example

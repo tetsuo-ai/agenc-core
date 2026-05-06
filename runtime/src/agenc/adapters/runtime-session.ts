@@ -6,6 +6,7 @@ import {
   toMetricTags,
 } from "../../observability/telemetry.js";
 import type { CompactionResult } from "../../services/compact/types.js";
+import type { RuntimeMessage } from "../../services/compact/types.js";
 import type { Session } from "../../session/session.js";
 import type { TurnContext } from "../../session/turn-context.js";
 import type {
@@ -69,8 +70,13 @@ export type AgenCOverflowRecoveryResult =
   | { readonly kind: "pass" }
   | { readonly kind: "surface"; readonly reason: string };
 
-type AgenCRuntimeMessage = {
-  readonly role?: AgenCMessage["role"];
+type AgenCRuntimeWireRole = NonNullable<RuntimeMessage["role"]>;
+
+type AgenCRuntimeMessage = Omit<
+  RuntimeMessage,
+  "role" | "originalRole" | "message"
+> & {
+  readonly role?: AgenCRuntimeWireRole;
   readonly originalRole?: AgenCMessage["role"];
   readonly toolCallId?: string;
   readonly toolName?: string;
@@ -81,10 +87,6 @@ type AgenCRuntimeMessage = {
     readonly role?: string;
     readonly content?: unknown;
   };
-  readonly content?: unknown;
-  readonly uuid?: string;
-  readonly timestamp?: string;
-  readonly isMeta?: boolean;
 };
 
 type AgenCCompactionResult = {
@@ -579,13 +581,14 @@ function toAgenCRuntimeMessages(
     if (message.role === "system") {
       return {
         ...converted,
+        role: "system",
         type: "system",
         content: upstreamContent,
         uuid: `agenc-system-${index}`,
         timestamp: new Date(0).toISOString(),
       };
     }
-    const role = message.role === "tool" ? "user" : message.role;
+    const role = toAgenCRuntimeWireRole(message.role);
     return {
       ...converted,
       content: upstreamContent,
@@ -609,6 +612,12 @@ function toAgenCRuntimeMessages(
       ...(message.role === "tool" ? { isMeta: true } : {}),
     };
   });
+}
+
+function toAgenCRuntimeWireRole(role: LLMMessage["role"]): AgenCRuntimeWireRole {
+  if (role === "tool") return "user";
+  if (role === "developer") return "system";
+  return role;
 }
 
 function fromAgenCRuntimeMessages(
@@ -645,6 +654,7 @@ function fromAgenCRuntimeMessage(
 function normalizeRole(value: unknown): LLMMessage["role"] | null {
   if (
     value === "system" ||
+    value === "developer" ||
     value === "user" ||
     value === "assistant" ||
     value === "tool"

@@ -24,7 +24,7 @@
  *      preceding assistant `tool_calls` entry.
  *   5. Phase J: tag strategic messages with `cacheControl: "ephemeral"`
  *      breakpoints so provider adapters that support prompt caching
- *      (Anthropic, xAI Grok 4) can pin stable prefixes. Phase J tags
+ *      can pin stable prefixes. Phase J tags
  *      the LAST system message, the LAST non-tool user message, and
  *      the LAST tool result that survived the normalization above.
  *      These are the three cut points the reference runtime uses.
@@ -145,7 +145,7 @@ export function normalizeMessagesForAPI(
 /**
  * Tag the last system message, the last non-tool user message, and
  * the last tool message with a `cacheControl: "ephemeral"` marker so
- * providers that support prompt caching (Anthropic, xAI Grok 4) can
+ * providers that support prompt caching can
  * pin stable prefixes. Mirrors the reference runtime's three-cut-point
  * strategy.
  *
@@ -193,8 +193,9 @@ function selectCacheBreakpointIndexes(
   for (let i = 0; i < messages.length; i++) {
     const message = messages[i];
     if (!message) continue;
-    if (message.role === "system") lastSystem = i;
-    else if (message.role === "user") lastUser = i;
+    if (message.role === "system" || message.role === "developer") {
+      lastSystem = i;
+    } else if (message.role === "user") lastUser = i;
     else if (message.role === "tool") lastTool = i;
   }
   const picked = new Set<number>();

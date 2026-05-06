@@ -249,6 +249,13 @@ describe("AgenC daemon protocol surface", () => {
     expect(packagedSchema["x-agenc-package"]).toEqual(
       schema["x-agenc-package"],
     );
+    expect(packagedSchema["x-agenc-methods"]).toEqual(
+      schema["x-agenc-methods"],
+    );
+    expect(packagedSchema["x-agenc-notifications"]).toEqual(
+      schema["x-agenc-notifications"],
+    );
+    expect(packagedSchema.definitions).toEqual(schema.definitions);
   });
 
   it("validates all request-bearing methods through the published schema", () => {

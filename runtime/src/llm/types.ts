@@ -12,7 +12,12 @@ import type { ProviderFallbackLadderOptions } from "./api/fallback-ladder.js";
 /**
  * Message role in a conversation
  */
-export type MessageRole = "system" | "user" | "assistant" | "tool";
+export type MessageRole =
+  | "system"
+  | "developer"
+  | "user"
+  | "assistant"
+  | "tool";
 
 /**
  * Local assistant message phase for long-running/tool-heavy flows.
@@ -23,7 +28,7 @@ export type MessageRole = "system" | "user" | "assistant" | "tool";
 type LLMAssistantPhase = "commentary" | "final_answer";
 
 /**
- * A content part for multimodal messages (OpenAI/Grok-compatible format).
+ * A content part for multimodal messages in provider-compatible format.
  */
 export type LLMContentPart =
   | { type: "text"; text: string }
@@ -88,7 +93,7 @@ export interface LLMMessage {
 }
 
 /**
- * Tool definition in OpenAI-compatible format
+ * Tool definition in provider-compatible format.
  */
 export interface LLMTool {
   type: "function";
@@ -413,7 +418,7 @@ interface LLMEncryptedReasoningDiagnostics {
 export interface LLMCollectionsSearchConfig {
   /** Enable the provider-native collections/file search tool. */
   readonly enabled?: boolean;
-  /** xAI/OpenAI-compatible collection/vector store identifiers. */
+  /** Collection/vector store identifiers for compatible providers. */
   readonly vectorStoreIds?: readonly string[];
   /** Optional server-side retrieval limit. */
   readonly maxNumResults?: number;
@@ -444,7 +449,7 @@ export interface LLMXSearchConfig {
 }
 
 export interface LLMRemoteMcpServerConfig {
-  /** xAI/OpenAI-compatible remote MCP server URL. */
+  /** Remote MCP server URL for compatible providers. */
   readonly serverUrl: string;
   /** Stable label used for tool prefixing and trace readability. */
   readonly serverLabel: string;
@@ -594,8 +599,8 @@ export interface LLMChatOptions {
    * Disable provider-side parallel tool calls for this request. Used by the
    * meta-planner and other goal-only flows that intentionally do not want the
    * model to fan out into multiple concurrent tool invocations on a single
-   * planning turn. Honored by providers that expose the OpenAI-compatible
-   * `parallel_tool_calls` request flag (Grok, OpenAI, etc.).
+   * planning turn. Honored by providers that expose the
+   * `parallel_tool_calls` request flag.
    */
   readonly parallelToolCalls?: boolean;
 }
@@ -690,7 +695,7 @@ export interface LLMStreamChunk {
   resetBuffer?: boolean;
   /**
    * Provider-emitted signal that a tool_use content block has begun
-   * streaming its arguments. Mirrors Anthropic's content_block_start
+   * streaming its arguments. Mirrors provider content_block_start
    * with content_block.type === 'tool_use'. Consumed downstream by
    * runtime/src/phases/stream-model.ts (which translates it into a
    * `tool_input_block_start` session event) so the TUI bridge can
@@ -709,7 +714,7 @@ export interface LLMStreamChunk {
   };
   /**
    * Provider-emitted signal carrying one input_json_delta payload for
-   * a streaming tool_use block. Mirrors Anthropic's
+   * a streaming tool_use block. Mirrors provider
    * content_block_delta with delta.type === 'input_json_delta'.
    * Translated downstream into a `tool_input_delta` session event;
    * the TUI bridge appends `partialJson` to the matching slot in

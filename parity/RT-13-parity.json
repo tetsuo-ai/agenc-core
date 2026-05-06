@@ -21,6 +21,8 @@
   "targetFiles": [
     "runtime/src/app-server/protocol/index.ts",
     "runtime/src/app-server/protocol/schema.json",
+    "runtime/src/app-server/background-agent-runner.ts",
+    "runtime/src/app-server/daemon-cli.ts",
     "runtime/src/app-server/daemon-dispatcher.ts",
     "runtime/src/app-server/realtime.ts",
     "runtime/src/app-server/realtime-transport.ts",
@@ -29,6 +31,8 @@
   ],
   "tests": [
     "runtime/src/app-server/realtime.contract.test.ts",
+    "runtime/src/app-server/background-agent-runner.contract.test.ts",
+    "runtime/src/app-server/daemon-cli.contract.test.ts",
     "runtime/src/app-server/protocol.contract.test.ts"
   ],
   "parityMatrix": [
@@ -59,9 +63,23 @@
         "raw SDP call creation",
         "multipart SDP plus session call creation",
         "backend JSON call creation shape",
-        "Location call id decoding"
+        "Location call id decoding",
+        "websocket URL shaping",
+        "provider websocket session.update, writer payloads, and event parsing"
       ],
       "evidence": ["runtime/src/app-server/realtime.contract.test.ts"]
+    },
+    {
+      "source": "api/src/endpoint/realtime_websocket/methods.rs",
+      "target": "runtime/src/app-server/daemon-cli.ts",
+      "coverage": [
+        "default foreground daemon constructs provider call client and websocket connector",
+        "daemon realtime transport uses configured provider base URL and bearer header resolution"
+      ],
+      "evidence": [
+        "runtime/src/app-server/daemon-cli.contract.test.ts",
+        "runtime/src/app-server/background-agent-runner.contract.test.ts"
+      ]
     },
     {
       "source": "api/src/endpoint/realtime_websocket/",
