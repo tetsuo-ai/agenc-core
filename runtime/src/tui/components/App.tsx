@@ -34,6 +34,7 @@ import type {
 } from "../../elicitation/types.js";
 import { createMcpUrlCompletionResponse } from "../../elicitation/url-completion.js";
 import type { ToolPermissionContext } from "../../permissions/types.js";
+import { defaultConfig } from "../../config/schema.js";
 import { createTuiTools } from "../tool-rendering.js";
 import { useSessionTranscript } from "../session-transcript.js";
 import { useToolJSX } from "../tool-jsx-state.js";
@@ -50,6 +51,11 @@ import { pastedContentsToLLMMessage } from "../../agenc/adapters/upstream-attach
 import type { Command } from "../../commands.js";
 import type { AgentDefinition } from "../../tools/AgentTool/loadAgentsDir.js";
 import type { AgenCTuiProps } from "../session-types.js";
+import {
+  Onboarding,
+  type FirstRunOnboardingState,
+  useFirstRunOnboardingController,
+} from "../../onboarding/Onboarding.js";
 
 export type McpFieldValue = string | number | boolean | readonly string[];
 
@@ -864,6 +870,30 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const appStateStore = useAppStateStore();
   const [toolPermissionContext, setToolPermissionContext] =
     useSyncedPermissionContext(props.session);
+  const config = useMemo(
+    () => props.configStore.current?.() ?? defaultConfig(),
+    [props.configStore],
+  );
+  const agencHome =
+    props.configStore.agencHome ?? config.agenc_home ?? props.session.home;
+  const onboardingContext = useMemo(
+    () => ({
+      agencHome,
+      config,
+      cwd: props.session.cwd ?? props.session.sessionConfiguration?.cwd,
+      env: process.env,
+      permissionMode: String(toolPermissionContext.mode),
+      sandboxMode: config.sandbox_mode ?? config.sandbox?.mode,
+      terminalName: process.env.TERM_PROGRAM ?? process.env.TERM,
+    }),
+    [
+      agencHome,
+      config,
+      props.session.cwd,
+      props.session.sessionConfiguration?.cwd,
+      toolPermissionContext.mode,
+    ],
+  );
   const transcript = useSessionTranscript(
     props.session,
     props.initialUserMessages ?? [],
@@ -883,6 +913,24 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     },
     [setAppState, props.session],
   );
+  const applyOnboardingSelection = useCallback(
+    (next: FirstRunOnboardingState) => {
+      setModel(next.selectedModel);
+      props.session.setPendingProviderSwitch?.({
+        provider: next.selectedProvider,
+        model: next.selectedModel,
+      });
+    },
+    [props.session, setModel],
+  );
+  const onboarding = useFirstRunOnboardingController({
+    ...onboardingContext,
+    hasInitialPrompt:
+      (props.initialPrompt?.length ?? 0) > 0 ||
+      (props.initialUserMessages?.length ?? 0) > 0,
+    isInteractive: props.isInteractive ?? process.stdin.isTTY === true,
+    onComplete: applyOnboardingSelection,
+  });
   const setExpandedView = useCallback(
     (next: "none" | "tasks") => {
       setAppState((prev) => ({
@@ -978,37 +1026,51 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     transcript.isStreaming &&
     permissionRequests.length === 0 &&
     elicitation.prompt === null &&
-    toolJSX === null;
+    toolJSX === null &&
+    !onboarding.active;
 
   return (
     <Box flexDirection="column" width="100%">
       <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
-      <Messages
-        messages={transcript.messages as any[]}
-        tools={tools as any}
-        commands={commands as unknown as Command[]}
-        verbose={false}
-        toolJSX={toolJSX as any}
-        toolUseConfirmQueue={toolUseConfirmQueue as never[]}
-        inProgressToolUseIDs={new Set(transcript.inProgressToolUseIDs)}
-        isMessageSelectorVisible={false}
-        conversationId={props.session.conversationId}
-        screen={"prompt" as any}
-        streamingToolUses={transcript.streamingToolUses}
-        isLoading={transcript.isStreaming}
-        streamingText={transcript.streamingText}
-        hidePastThinking={false}
-      />
-      {toolJSX !== null ? (
+      {onboarding.active ? (
+        <Onboarding
+          state={onboarding.state}
+          steps={onboarding.steps}
+          currentStep={onboarding.currentStep}
+          context={onboardingContext}
+        />
+      ) : (
+        <Messages
+          messages={transcript.messages as any[]}
+          tools={tools as any}
+          commands={commands as unknown as Command[]}
+          verbose={false}
+          toolJSX={toolJSX as any}
+          toolUseConfirmQueue={toolUseConfirmQueue as never[]}
+          inProgressToolUseIDs={new Set(transcript.inProgressToolUseIDs)}
+          isMessageSelectorVisible={false}
+          conversationId={props.session.conversationId}
+          screen={"prompt" as any}
+          streamingToolUses={transcript.streamingToolUses}
+          isLoading={transcript.isStreaming}
+          streamingText={transcript.streamingText}
+          hidePastThinking={false}
+        />
+      )}
+      {!onboarding.active && toolJSX !== null ? (
         <Box flexDirection="column" width="100%">
           {toolJSX.jsx}
         </Box>
       ) : null}
-      <PermissionOverlay
-        request={permissionRequests[0]}
-        tools={tools}
-      />
-      <ElicitationOverlay prompt={elicitation.prompt} />
+      {!onboarding.active ? (
+        <PermissionOverlay
+          request={permissionRequests[0]}
+          tools={tools}
+        />
+      ) : null}
+      {!onboarding.active ? (
+        <ElicitationOverlay prompt={elicitation.prompt} />
+      ) : null}
       <PromptInput
         debug={false}
         ideSelection={undefined}
@@ -1017,7 +1079,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
         apiKeyStatus={"valid" as any}
         commands={commands as unknown as Command[]}
         agents={agents as unknown as AgentDefinition[]}
-        isLoading={transcript.isStreaming}
+        isLoading={!onboarding.active && transcript.isStreaming}
         verbose={false}
         messages={transcript.messages as any[]}
         onAutoUpdaterResult={() => {}}
@@ -1039,9 +1101,15 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
         setShowBashesDialog={setShowBashesDialog}
         onExit={exit}
         getToolUseContext={getToolUseContext}
-        onSubmit={(value, helpers) =>
-          submitViaElicitationPrompt(elicitation, submit, value, helpers)
-        }
+        onSubmit={async (value, helpers) => {
+          if (await onboarding.submit(value)) {
+            helpers.clearBuffer();
+            helpers.resetHistory();
+            helpers.setCursorOffset(0);
+            return;
+          }
+          await submitViaElicitationPrompt(elicitation, submit, value, helpers);
+        }}
         isSearchingHistory={isSearchingHistory}
         setIsSearchingHistory={setIsSearchingHistory}
         helpOpen={helpOpen}
