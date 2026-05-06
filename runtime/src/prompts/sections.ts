@@ -1,7 +1,8 @@
 /**
  * System prompt section registry — cache-separation pattern.
  *
- * Port of openclaude `constants/systemPromptSections.ts` (69 LOC).
+ * AgenC-owned cache registry for system prompt sections. Source
+ * provenance and behavior mapping live in `parity/PR-01-parity.json`.
  *
  * Two section factories:
  *
