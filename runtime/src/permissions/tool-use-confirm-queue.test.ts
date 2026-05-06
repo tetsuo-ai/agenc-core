@@ -254,4 +254,12 @@ describe("buildToolUseConfirmQueue (TUI multi-approval queue)", () => {
     const got = buildToolUseConfirmQueue([r as never], []);
     expect(got).toEqual([]);
   });
+
+  it("falls back to the first registry tool when none match the request", () => {
+    const r = makeRequest("MissingTool", "call-1", () => {});
+    const got = buildToolUseConfirmQueue([r as never], [{ name: "Bash" }]);
+    expect(got).toHaveLength(1);
+    expect((got[0] as { tool: { name: string } }).tool.name).toBe("Bash");
+    expect((got[0] as { toolUseID: string }).toolUseID).toBe("call-1");
+  });
 });

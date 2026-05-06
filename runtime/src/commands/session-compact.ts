@@ -1003,20 +1003,19 @@ async function withCompactContextGuards<T>(
   env: CompactGuardEnv = {}
 ): Promise<T> {
   const previous = new Map<string, string | undefined>();
-  for (const key of COMPACT_CONTEXT_GUARD_ENV) {
+  for (const key of Object.keys(env) as Array<keyof CompactGuardEnv>) {
     previous.set(key, process.env[key]);
-    const next = env[key];
-    if (next === undefined) {
+    const value = env[key];
+    if (value === undefined) {
       delete process.env[key];
     } else {
-      process.env[key] = next;
+      process.env[key] = value;
     }
   }
   try {
     return await fn();
   } finally {
-    for (const key of COMPACT_CONTEXT_GUARD_ENV) {
-      const value = previous.get(key);
+    for (const [key, value] of previous) {
       if (value === undefined) {
         delete process.env[key];
       } else {
