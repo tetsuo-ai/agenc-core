@@ -43,4 +43,20 @@ describe("RealtimePanel", () => {
     expect(output).toContain("assistant: ready");
     expect(output).toContain("item: message item_1");
   });
+
+  test("renders error and closed terminal banners", async () => {
+    const failed = reduceRealtimeTuiState(initialRealtimeTuiState(), {
+      type: "error",
+      message: "microphone denied",
+    });
+    const closed = reduceRealtimeTuiState(initialRealtimeTuiState(), {
+      type: "closed",
+      reason: "requested",
+    });
+
+    await expect(renderToString(<RealtimePanel state={failed} />, 100)).resolves
+      .toContain("microphone denied");
+    await expect(renderToString(<RealtimePanel state={closed} />, 100)).resolves
+      .toContain("Realtime closed: requested");
+  });
 });

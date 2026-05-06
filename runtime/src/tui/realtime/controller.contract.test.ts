@@ -154,6 +154,127 @@ describe("AgenC realtime TUI controller", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
+  test("closes WebRTC and surfaces an error when provider SDP is rejected", async () => {
+    const client = createClient();
+    const channel = createRealtimeWebrtcEventChannel();
+    const emitted: JsonObject[] = [];
+    const close = vi.fn();
+    const started: StartedRealtimeWebrtcSession = {
+      offerSdp: "offer-sdp",
+      handle: new RealtimeWebrtcSessionHandle({
+        applyAnswerSdp: vi.fn(async () => {
+          throw new Error("bad sdp");
+        }),
+        close,
+      }),
+      events: channel.receiver,
+    };
+    const controls = createRealtimeTuiControls({
+      threadId: "agent_1",
+      client,
+      emitEvent: (event) => emitted.push(event),
+      startWebrtcSession: async () => started,
+    });
+
+    await controls.start({ transport: "webrtc" });
+    controls.handleTranscriptEvent({
+      type: "realtime_sdp",
+      payload: { sdp: "bad-answer" },
+    });
+
+    await waitFor(
+      () =>
+        close.mock.calls.length === 1 &&
+        controls.getState().errorBanner === "bad sdp",
+      "SDP rejection cleanup",
+    );
+    expect(emitted.at(-1)).toMatchObject({
+      type: "realtime_error",
+      payload: { threadId: "agent_1", message: "bad sdp" },
+    });
+  });
+
+  test("gates audio chunk appends with mute and push-to-talk state", async () => {
+    const client = createClient();
+    const controls = createRealtimeTuiControls({
+      threadId: "agent_1",
+      client,
+      emitEvent: () => {},
+    });
+    const audio = {
+      data: "AAAA",
+      sampleRate: 24000,
+      numChannels: 1,
+    };
+
+    controls.setMuted(true);
+    await controls.appendAudio(audio);
+    expect(client.requests).toHaveLength(0);
+
+    controls.setMuted(false);
+    await controls.appendAudio(audio);
+    expect(client.requests).toHaveLength(1);
+
+    controls.setPushToTalk(true);
+    await controls.appendAudio(audio);
+    expect(client.requests).toHaveLength(1);
+
+    controls.setPushToTalkHeld(true);
+    await controls.appendAudio(audio);
+    expect(client.requests).toHaveLength(2);
+    expect(client.requests.at(-1)).toEqual({
+      method: "thread/realtime/appendAudio",
+      params: { threadId: "agent_1", audio },
+    });
+  });
+
+  test("surfaces stop RPC failures after local WebRTC cleanup", async () => {
+    const requests: Array<{
+      readonly method: AgenCDaemonMethod;
+      readonly params?: JsonObject;
+    }> = [];
+    const client = {
+      requests,
+      async request<Method extends AgenCDaemonMethod>(
+        method: Method,
+        params?: JsonObject,
+      ): Promise<AgenCDaemonResultByMethod[Method]> {
+        requests.push({ method, params });
+        if (method === "thread/realtime/stop") throw new Error("stop failed");
+        return {} as AgenCDaemonResultByMethod[Method];
+      },
+    };
+    const channel = createRealtimeWebrtcEventChannel();
+    const emitted: JsonObject[] = [];
+    const close = vi.fn();
+    const controls = createRealtimeTuiControls({
+      threadId: "agent_1",
+      client,
+      emitEvent: (event) => emitted.push(event),
+      startWebrtcSession: async () => ({
+        offerSdp: "offer-sdp",
+        handle: new RealtimeWebrtcSessionHandle({
+          applyAnswerSdp: vi.fn(),
+          close,
+        }),
+        events: channel.receiver,
+      }),
+    });
+
+    await controls.start({ transport: "webrtc" });
+    await expect(controls.stop()).rejects.toThrow("stop failed");
+
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(controls.getState()).toMatchObject({
+      phase: "inactive",
+      errorBanner: "stop failed",
+    });
+    expect(emitted.at(-1)).toMatchObject({
+      type: "realtime_error",
+      payload: { threadId: "agent_1", message: "stop failed" },
+    });
+  });
+
   test.each([
     [
       "realtime_error",

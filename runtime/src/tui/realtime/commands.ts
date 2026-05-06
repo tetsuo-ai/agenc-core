@@ -50,7 +50,7 @@ export async function executeRealtimeComposerCommand(
 ): Promise<boolean> {
   const command = parseRealtimeComposerCommand(input);
   if (command === null) return false;
-  if (controls === undefined) return true;
+  if (controls === undefined) return false;
   switch (command.kind) {
     case "start":
       await controls.start({ transport: command.transport });

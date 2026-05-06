@@ -123,9 +123,16 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
     if (webRtc !== null) {
       await this.#closeWebrtc(webRtc).catch(() => {});
     }
-    await this.#client.request("thread/realtime/stop", {
-      threadId: this.#threadId,
-    } satisfies ThreadRealtimeStopParams);
+    try {
+      await this.#client.request("thread/realtime/stop", {
+        threadId: this.#threadId,
+      } satisfies ThreadRealtimeStopParams);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.#dispatch({ type: "error", message });
+      this.#emitLocal("realtime_error", { threadId: this.#threadId, message });
+      throw error;
+    }
   }
 
   async appendText(text: string): Promise<void> {
@@ -136,6 +143,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
   }
 
   async appendAudio(audio: ThreadRealtimeAudioChunk): Promise<void> {
+    if (effectiveRealtimeMicrophoneMuted(this.#state)) return;
     await this.#client.request("thread/realtime/appendAudio", {
       threadId: this.#threadId,
       audio,
@@ -184,7 +192,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
         break;
       case "realtime_sdp":
         if (typeof payload.sdp === "string") {
-          void this.#webRtc?.handle.applyAnswerSdp(payload.sdp);
+          void this.#applyProviderSdp(payload.sdp);
         }
         break;
       case "realtime_transcript_delta":
@@ -287,6 +295,20 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
   async #applyMicrophoneMuted(): Promise<void> {
     const muted = effectiveRealtimeMicrophoneMuted(this.#state);
     await this.#webRtc?.handle.setMicrophoneMuted?.(muted);
+  }
+
+  async #applyProviderSdp(sdp: string): Promise<void> {
+    const started = this.#webRtc;
+    if (started === null) return;
+    try {
+      await started.handle.applyAnswerSdp(sdp);
+    } catch (error) {
+      if (this.#webRtc === started) this.#webRtc = null;
+      await this.#closeWebrtc(started).catch(() => {});
+      const message = error instanceof Error ? error.message : String(error);
+      this.#dispatch({ type: "error", message });
+      this.#emitLocal("realtime_error", { threadId: this.#threadId, message });
+    }
   }
 
   async #closeWebrtc(started: StartedRealtimeWebrtcSession): Promise<void> {

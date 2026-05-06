@@ -76,7 +76,7 @@ describe("AgenC realtime composer commands", () => {
 
     await expect(
       executeRealtimeComposerCommand(undefined, "/realtime stop"),
-    ).resolves.toBe(true);
+    ).resolves.toBe(false);
     await expect(
       executeRealtimeComposerCommand(controls, "ordinary message"),
     ).resolves.toBe(false);
