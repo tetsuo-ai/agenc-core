@@ -69,6 +69,30 @@ describe("forkSubagent", () => {
     ]);
   });
 
+  it("preserves startup text content that differs from the task prompt", async () => {
+    const res = await forkSubagent({
+      parent: stubSession(),
+      parentMessages: history,
+      taskPrompt: "summarize",
+      taskContent: [
+        { type: "text", text: "summarize" },
+        { type: "text", text: "operator supplied details" },
+        { type: "text", text: "second text block" },
+      ],
+    });
+
+    expect(res.messages).toEqual([
+      {
+        role: "user",
+        content: expect.stringContaining("Task: summarize"),
+      },
+    ]);
+    expect(String(res.messages[0]?.content)).toContain(
+      "operator supplied details",
+    );
+    expect(String(res.messages[0]?.content)).toContain("second text block");
+  });
+
   it("mode=full_history keeps every parent message + directive", async () => {
     const res = await forkSubagent({
       parent: stubSession(),

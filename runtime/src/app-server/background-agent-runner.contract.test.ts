@@ -253,6 +253,50 @@ describe("AgenC delegate background-agent runner", () => {
     );
   });
 
+  it("passes non-duplicate startup text content into the initial delegate turn", async () => {
+    const session = {
+      conversationId: "parent-session",
+      permissionModeRegistry: {
+        current: () => createEmptyToolPermissionContext(),
+        update: vi.fn(async () => {}),
+      },
+    };
+    const delegateFn = vi.fn(async () => ({
+      kind: "async_launched",
+      thread: {
+        threadId: "agent_text",
+        agentPath: "/root/agent_text",
+        join: vi.fn(() => new Promise(() => {})),
+      } as AgentThread,
+    })) as unknown as AgenCDelegateFunction;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        shutdown: vi.fn(async () => {}),
+      })) as unknown as AgenCBootstrapFunction,
+      delegateFn,
+      ensureAgentControl: vi.fn(() => ({
+        control: { shutdown: vi.fn(async () => {}) },
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      now: () => "2026-05-01T12:00:00.500Z",
+    });
+
+    await runner.startAgent({
+      objective: "summarize",
+      initialContent: "operator supplied details",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    expect(delegateFn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskPrompt: "summarize",
+        taskContent: [{ type: "text", text: "operator supplied details" }],
+      }),
+    );
+  });
+
   it("restores a recovered live agent through the concrete runner", async () => {
     const shutdown = vi.fn(async () => {});
     const permissionModeRegistry = {

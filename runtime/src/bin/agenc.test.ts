@@ -1686,7 +1686,47 @@ describe("main() smoke", () => {
     }
   });
 
-  it("bootTUIEntry streams slash-looking TUI input through the daemon session", async () => {
+  it("bootTUIEntry opens an idle daemon-backed TUI without starting a prompt agent", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-idle-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-idle-cwd-"));
+    const prevEnv = { ...process.env };
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.XAI_API_KEY = "stub-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    const daemon = installDaemonCliDepsForTest({
+      agentId: "agent_tui_idle",
+      sessionId: "session_tui_idle",
+      cwd: tmpCwd,
+    });
+
+    const waitUntilExit = vi.fn().mockResolvedValue(undefined);
+    const unmount = vi.fn();
+    vi.doMock("../tui/main.js", () => ({
+      bootTUI: vi.fn(async () => ({ unmount, waitUntilExit })),
+    }));
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      const code = await bootTUIEntry({});
+      expect(code).toBe(0);
+      expect(daemon.startPromptAgent).not.toHaveBeenCalled();
+      expect(daemon.createConnectedTuiClient).not.toHaveBeenCalled();
+      expect(daemon.requests).toEqual([]);
+      expect(waitUntilExit).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.doUnmock("../tui/main.js");
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("bootTUIEntry starts a daemon prompt agent on first TUI input", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-slash-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-slash-cwd-"));
     const prevEnv = { ...process.env };
@@ -1731,15 +1771,16 @@ describe("main() smoke", () => {
       resolveExit?.();
       const code = await pending;
       expect(code).toBe(0);
-      expect(daemon.requests).toContainEqual(
+      expect(daemon.startPromptAgent).toHaveBeenCalledWith(
         expect.objectContaining({
-          method: "message.stream",
-          params: expect.objectContaining({
-            sessionId: "session_tui_slash",
-            content: "/help",
-          }),
+          prompt: "/help",
+          cwd: tmpCwd,
+          initialContent: "/help",
         }),
       );
+      expect(daemon.requests.map((request) => request.method)).toEqual([
+        "agent.attach",
+      ]);
     } finally {
       vi.doUnmock("../tui/main.js");
       for (const key of Object.keys(process.env)) {
@@ -1751,7 +1792,7 @@ describe("main() smoke", () => {
     }
   });
 
-  it("bootTUIEntry streams /permissions through the daemon session", async () => {
+  it("bootTUIEntry starts a daemon prompt agent for first /permissions input", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-permissions-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-permissions-cwd-"));
     const prevArgv = process.argv;
@@ -1800,15 +1841,16 @@ describe("main() smoke", () => {
       resolveExit?.();
       const code = await pending;
       expect(code).toBe(0);
-      expect(daemon.requests).toContainEqual(
+      expect(daemon.startPromptAgent).toHaveBeenCalledWith(
         expect.objectContaining({
-          method: "message.stream",
-          params: expect.objectContaining({
-            sessionId: "session_permissions",
-            content: "/permissions",
-          }),
+          prompt: "/permissions",
+          cwd: tmpCwd,
+          initialContent: "/permissions",
         }),
       );
+      expect(daemon.requests.map((request) => request.method)).toEqual([
+        "agent.attach",
+      ]);
     } finally {
       process.argv = prevArgv;
       vi.doUnmock("../tui/main.js");

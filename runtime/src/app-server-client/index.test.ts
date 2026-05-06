@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { listAgenCDaemonAgents } from "./index.js";
+import {
+  findAgenCDaemonAgentBySessionId,
+  listAgenCDaemonAgents,
+} from "./index.js";
 
 function createListClient(
   pages: Array<{
@@ -8,6 +11,7 @@ function createListClient(
       readonly agentId: string;
       readonly status: "idle" | "running" | "stopping" | "stopped" | "error";
       readonly createdAt: string;
+      readonly activeSessionIds?: readonly string[];
     }[];
     readonly nextCursor?: string;
   }>,
@@ -79,6 +83,31 @@ describe("app-server-client daemon helpers", () => {
     await expect(
       listAgenCDaemonAgents(client as never, { maxPages: 1 }),
     ).rejects.toThrow("exceeded pagination limit");
+  });
+
+  it("rejects ambiguous daemon session matches", async () => {
+    const client = createListClient([
+      {
+        agents: [
+          {
+            agentId: "agent_1",
+            status: "running",
+            createdAt: "2026-05-06T00:00:00.000Z",
+            activeSessionIds: ["session_shared"],
+          },
+          {
+            agentId: "agent_2",
+            status: "running",
+            createdAt: "2026-05-06T00:00:01.000Z",
+            activeSessionIds: ["session_shared"],
+          },
+        ],
+      },
+    ]);
+
+    await expect(
+      findAgenCDaemonAgentBySessionId(client as never, "session_shared"),
+    ).rejects.toThrow("matches multiple agents");
   });
 
   it("passes startup multimodal content through agent.create", async () => {

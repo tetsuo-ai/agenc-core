@@ -120,6 +120,17 @@ function cloneTaskAttachmentPart(part: LLMContentPart): LLMContentPart | null {
 
 function buildDirectiveMessage(input: ForkContextInput): LLMMessage {
   const directivePrompt = buildDirective(input);
+  const taskPrompt = input.taskPrompt.trim();
+  const extraTextParts =
+    input.taskContent?.flatMap((part) => {
+      if (part.type !== "text") return [];
+      const text = part.text.trim();
+      return text.length > 0 && text !== taskPrompt ? [part.text] : [];
+    }) ?? [];
+  const text =
+    extraTextParts.length === 0
+      ? directivePrompt
+      : `${directivePrompt}\n\n${extraTextParts.join("\n\n")}`;
   const attachmentParts =
     input.taskContent?.flatMap((part) => {
       const cloned = cloneTaskAttachmentPart(part);
@@ -128,12 +139,12 @@ function buildDirectiveMessage(input: ForkContextInput): LLMMessage {
   if (attachmentParts.length === 0) {
     return {
       role: "user",
-      content: directivePrompt,
+      content: text,
     };
   }
   return {
     role: "user",
-    content: [{ type: "text", text: directivePrompt }, ...attachmentParts],
+    content: [{ type: "text", text }, ...attachmentParts],
   };
 }
 

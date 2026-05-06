@@ -102,9 +102,13 @@ export async function findAgenCDaemonAgentBySessionId(
   sessionId: string,
 ): Promise<AgentSummary | null> {
   const agents = await listAgenCDaemonAgents(client);
-  return (
-    agents.find((agent) => agent.activeSessionIds?.includes(sessionId)) ?? null
+  const matches = agents.filter((agent) =>
+    agent.activeSessionIds?.includes(sessionId),
   );
+  if (matches.length > 1) {
+    throw new Error(`daemon session matches multiple agents: ${sessionId}`);
+  }
+  return matches[0] ?? null;
 }
 
 export interface AgenCDaemonOnlyTuiContextOptions {

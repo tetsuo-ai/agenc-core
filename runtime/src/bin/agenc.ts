@@ -1860,6 +1860,170 @@ async function startTuiEarlyInputCapture(): Promise<() => string> {
   }
 }
 
+function messageContentBlocksFromUnknown(input: unknown): MessageContentBlock[] {
+  if (typeof input === "string") return [{ type: "text", text: input }];
+  if (typeof input !== "object" || input === null) return [];
+  const content = (input as { readonly content?: unknown }).content;
+  if (typeof content === "string") return [{ type: "text", text: content }];
+  if (!Array.isArray(content)) return [];
+  return content.flatMap((part): MessageContentBlock[] => {
+    if (typeof part !== "object" || part === null) return [];
+    const record = part as {
+      readonly type?: unknown;
+      readonly text?: unknown;
+      readonly image_url?: unknown;
+    };
+    if (record.type === "text" && typeof record.text === "string") {
+      return [{ type: "text", text: record.text }];
+    }
+    if (record.type === "image_url") {
+      const image = record.image_url;
+      if (
+        typeof image === "object" &&
+        image !== null &&
+        typeof (image as { readonly url?: unknown }).url === "string"
+      ) {
+        return [
+          {
+            type: "image_url",
+            image_url: { url: (image as { readonly url: string }).url },
+          },
+        ];
+      }
+    }
+    return [];
+  });
+}
+
+async function createDeferredDaemonPromptTuiSession(params: {
+  readonly baseSession: unknown;
+  readonly deps: AgenCDaemonCliDeps;
+  readonly env: NodeJS.ProcessEnv;
+  readonly cwd: string;
+  readonly clientId: string;
+}): Promise<{ readonly session: unknown; readonly close: () => Promise<void> }> {
+  type TuiSessionShape = {
+    submit?: (
+      message: string,
+      opts?: { readonly displayUserMessage?: string | null },
+    ) => Promise<void>;
+    enqueueIdleInput?: (input: unknown) => number;
+    subscribeToEvents?: (cb: (event: unknown) => void) => () => void;
+    getInitialTranscriptEvents?: () => readonly unknown[];
+  };
+
+  let liveSession: TuiSessionShape | null = null;
+  let daemonClient: Awaited<
+    ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
+  > | null = null;
+  let queuedInputs: MessageContentBlock[] = [];
+  let queuedInputCount = 0;
+  const subscribers = new Set<(event: unknown) => void>();
+  const liveUnsubscribers = new Map<(event: unknown) => void, () => void>();
+
+  const ensureLiveSession = async (
+    firstMessage: string,
+  ): Promise<TuiSessionShape | null> => {
+    if (liveSession !== null) return liveSession;
+    const content: MessageContentBlock[] = [
+      ...queuedInputs,
+      ...(firstMessage.length > 0
+        ? [{ type: "text" as const, text: firstMessage }]
+        : []),
+    ];
+    if (content.length === 0) return null;
+    const prompt =
+      firstMessage.trim().length > 0
+        ? firstMessage
+        : "Multimodal AgenC startup";
+    const started = await params.deps.startPromptAgent({
+      prompt,
+      env: params.env,
+      cwd: params.cwd,
+      initialContent:
+        content.length === 1 && content[0]?.type === "text"
+          ? content[0].text
+          : content,
+      metadata: { mode: "tui" },
+    });
+    daemonClient = await params.deps.createConnectedTuiClient({
+      env: params.env,
+    });
+    const attachment = await daemonClient.request("agent.attach", {
+      agentId: started.agentId,
+      clientId: params.clientId,
+    });
+    const sessionId = attachment.sessionIds[0];
+    if (sessionId === undefined) {
+      throw new Error(`daemon agent has no attached session: ${started.agentId}`);
+    }
+    const createDaemonTuiSession = await loadCreateDaemonTuiSession();
+    liveSession = (await createDaemonTuiSession({
+      baseSession: params.baseSession,
+      client: daemonClient,
+      sessionId,
+      conversationId: attachment.runtimeSessionId ?? attachment.agentId ?? sessionId,
+      clientId: params.clientId,
+    })) as TuiSessionShape;
+    queuedInputs = [];
+    queuedInputCount = 0;
+    for (const subscriber of subscribers) {
+      const unsubscribe = liveSession.subscribeToEvents?.(subscriber);
+      if (unsubscribe !== undefined) liveUnsubscribers.set(subscriber, unsubscribe);
+    }
+    return liveSession;
+  };
+
+  const base = params.baseSession as Record<string, unknown>;
+  const session: TuiSessionShape & Record<string, unknown> = {
+    ...base,
+    submit: async (message, opts) => {
+      if (liveSession !== null) {
+        await liveSession.submit?.(message, opts);
+        return;
+      }
+      await ensureLiveSession(message);
+    },
+    enqueueIdleInput: (input) => {
+      if (liveSession !== null) {
+        return liveSession.enqueueIdleInput?.(input) ?? 0;
+      }
+      const blocks = messageContentBlocksFromUnknown(input);
+      queuedInputs.push(...blocks);
+      queuedInputCount += blocks.length;
+      return queuedInputCount;
+    },
+    subscribeToEvents: (cb) => {
+      subscribers.add(cb);
+      if (liveSession !== null) {
+        const unsubscribe = liveSession.subscribeToEvents?.(cb);
+        if (unsubscribe !== undefined) liveUnsubscribers.set(cb, unsubscribe);
+      }
+      return () => {
+        subscribers.delete(cb);
+        liveUnsubscribers.get(cb)?.();
+        liveUnsubscribers.delete(cb);
+      };
+    },
+    getInitialTranscriptEvents: () =>
+      liveSession?.getInitialTranscriptEvents?.() ??
+      (typeof base.getInitialTranscriptEvents === "function"
+        ? (base.getInitialTranscriptEvents as () => readonly unknown[])()
+        : []),
+  };
+
+  return {
+    session,
+    close: async () => {
+      for (const unsubscribe of liveUnsubscribers.values()) unsubscribe();
+      liveUnsubscribers.clear();
+      await daemonClient?.close().catch(() => {
+        /* best effort */
+      });
+    },
+  };
+}
+
 type BootTUIEntryArgs = BootTUIArgs & { readonly resumeId?: string };
 
 /** Boot the TUI, preserving argv prompts and any pre-Ink typed draft text. */
@@ -1910,16 +2074,55 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
     }
     const capturedEarlyInput = consumeEarlyInput();
     const initialPrompt = args.initialPrompt?.trim();
+    const daemonCwd = resolveWorkspaceFromEnv(process.env) ?? processCwd();
+    const startupImages = args.startupImages ?? [];
+    if (
+      (initialPrompt === undefined || initialPrompt.length === 0) &&
+      capturedEarlyInput.length === 0 &&
+      startupImages.length === 0
+    ) {
+      const deps = daemonCliDeps();
+      const {
+        configStore,
+        workspaceRoot,
+        baseSession,
+        model,
+      } = await deps.createTuiContext({
+        env: process.env,
+        cwd: daemonCwd,
+        conversationId: `agenc-tui-idle-${process.pid}`,
+      });
+      const deferred = await createDeferredDaemonPromptTuiSession({
+        baseSession,
+        deps,
+        env: process.env,
+        cwd: workspaceRoot,
+        clientId: `agenc-tui-${process.pid}`,
+      });
+      const boot = await loadBootTUI();
+      try {
+        const handle = await boot({
+          session: deferred.session,
+          configStore,
+          model,
+        });
+        activeInkUnmount = handle.unmount;
+        await handle.waitUntilExit();
+        return 0;
+      } finally {
+        activeInkUnmount = null;
+        await deferred.close();
+      }
+    }
     const objective =
       initialPrompt !== undefined && initialPrompt.length > 0
         ? initialPrompt
         : capturedEarlyInput.length > 0
           ? capturedEarlyInput
-          : "Interactive AgenC session";
-    const daemonCwd = resolveWorkspaceFromEnv(process.env) ?? processCwd();
+          : "Multimodal AgenC startup";
     const initialContent = startupContentFromInputs(
       objective,
-      args.startupImages ?? [],
+      startupImages,
       daemonCwd,
       process.env.HOME,
     );
