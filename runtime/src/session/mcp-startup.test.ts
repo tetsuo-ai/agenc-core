@@ -8,10 +8,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MCPManager } from "../mcp-client/manager.js";
 import { createMCPConnection } from "../mcp-client/connection.js";
-import { createToolBridge } from "../mcp-client/tool-bridge.js";
-import { createResourceBridge } from "../mcp-client/resource-bridge.js";
-import { createPromptBridge } from "../mcp-client/prompt-bridge.js";
-import type { MCPCallObserver } from "../mcp-client/tool-bridge.js";
+import { createToolBridge } from "../mcp-client/tools.js";
+import { createResourceBridge } from "../mcp-client/resources.js";
+import { createPromptBridge } from "../mcp-client/prompts.js";
+import type { MCPCallObserver } from "../mcp-client/tools.js";
 import {
   attachMcpManagerToSession,
   createSessionMcpManager,
@@ -30,13 +30,13 @@ import type { Session } from "./session.js";
 vi.mock("../mcp-client/connection.js", () => ({
   createMCPConnection: vi.fn(),
 }));
-vi.mock("../mcp-client/tool-bridge.js", () => ({
+vi.mock("../mcp-client/tools.js", () => ({
   createToolBridge: vi.fn(),
 }));
-vi.mock("../mcp-client/resource-bridge.js", () => ({
+vi.mock("../mcp-client/resources.js", () => ({
   createResourceBridge: vi.fn(),
 }));
-vi.mock("../mcp-client/prompt-bridge.js", () => ({
+vi.mock("../mcp-client/prompts.js", () => ({
   createPromptBridge: vi.fn(),
 }));
 

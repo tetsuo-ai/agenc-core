@@ -301,7 +301,7 @@ const ITEM_EVIDENCE = {
       "runtime/src/plugins/cli/pluginOperations.ts",
       "runtime/src/plugins/marketplace/startup_checks.ts",
       "runtime/src/config/PARITY.md",
-      "runtime/src/mcp-client/tool-bridge.ts",
+      "runtime/src/mcp-client/tools.ts",
       "runtime/src/mcp-client/manager.ts",
       "runtime/src/mcp-client/types.ts",
       "runtime/src/commands.ts",
@@ -321,7 +321,7 @@ const ITEM_EVIDENCE = {
       { pattern: "plugins\\.plugins", scope: "runtime/src/plugins/policy.ts" },
       { pattern: "hasExplicitPluginDiscoveryInput", scope: "runtime/src/plugins/registration/common.ts" },
       { pattern: "ensurePluginsFeatureEnabled", scope: "runtime/src/plugins/cli/pluginOperations.ts" },
-      { pattern: "defaultToolsApprovalMode", scope: "runtime/src/mcp-client/tool-bridge.ts" },
+      { pattern: "defaultToolsApprovalMode", scope: "runtime/src/mcp-client/tools.ts" },
       { pattern: "default_tools_approval_mode", scope: "runtime/src/mcp-client/types.ts" },
       { pattern: "skillsForConfig\\(config", scope: "runtime/src/commands.ts" },
       { pattern: "skillsForConfig\\(opts\\.config \\?\\? \\{\\}", scope: "runtime/src/prompts/attachments/skill-listing.ts" },
@@ -335,7 +335,7 @@ const ITEM_EVIDENCE = {
       "runtime/src/plugins/cli/pluginCliCommands.test.ts",
       "runtime/src/plugins/registration.test.ts",
       "runtime/src/plugins/resolution.test.ts",
-      "runtime/src/mcp-client/tool-bridge.test.ts",
+      "runtime/src/mcp-client/tools.test.ts",
       "runtime/src/mcp-client/manager.test.ts",
       "runtime/src/commands/command-surface.test.ts",
       "runtime/src/prompts/attachments/integration.test.ts",
@@ -2102,13 +2102,13 @@ const ITEM_EVIDENCE = {
       { pattern: "setAgencTelemetryClient", scope: "runtime/src/observability/telemetry.ts" },
       { pattern: "AGENC_TURN_TTFT_DURATION_METRIC", scope: "runtime/src/session/run-turn.ts" },
       { pattern: "AGENC_HOOK_RUN_DURATION_METRIC", scope: "runtime/src/hooks/engine/dispatcher.ts" },
-      { pattern: "mcp\\.tools\\.call", scope: "runtime/src/mcp-client/tool-bridge.ts" },
+      { pattern: "mcp\\.tools\\.call", scope: "runtime/src/mcp-client/tools.ts" },
       { pattern: "AGENC_TOOL_UNIFIED_EXEC_DURATION_METRIC", scope: "runtime/src/app-server/command-exec.ts" },
     ],
     tests: [
       "runtime/src/observability/telemetry.test.ts",
       "runtime/src/hooks/engine/dispatcher.test.ts",
-      "runtime/src/mcp-client/tool-bridge.test.ts",
+      "runtime/src/mcp-client/tools.test.ts",
     ],
   },
   "ZC-40": {
@@ -2417,9 +2417,7 @@ if (upstreamImportGrowthRes.status !== 0) {
 
 // branding-scan: allow regex enumerates banned shim-pattern suffixes for the gate
 const SHIM_RE = /(^|\/)[^/]+-(shim|adapter|compat|legacy|bridge|wrapper|facade|proxy|glue|forwarder|passthrough|stub|indirect|dispatch|barrel)\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/;
-const SHIM_ALLOW_DIRS = [
-  "runtime/src/mcp-client/",
-];
+const SHIM_ALLOW_DIRS = [];
 const shimAdditions = [...added].filter((p) => {
   if (!SHIM_RE.test(p)) return false;
   if (/\.test\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(p)) return false;
@@ -2427,8 +2425,7 @@ const shimAdditions = [...added].filter((p) => {
 });
 if (shimAdditions.length > 0) {
   failGate(
-    `forbidden: this item adds ${shimAdditions.length} new shim-pattern file(s) ` +
-      `outside the legitimate location (runtime/src/mcp-client/). ` +
+    `forbidden: this item adds ${shimAdditions.length} new shim-pattern file(s). ` +
       `Banned suffixes: -shim/-adapter/-compat/-legacy/-bridge/-wrapper/-facade/-proxy/-glue/` +
       `-forwarder/-passthrough/-stub/-indirect/-dispatch/-barrel across .ts/.tsx/.mts/.cts/.mjs/.cjs/.js/.jsx. ` +
       `This codebase has no backwards-compatibility constraint; do not create wrapper files to keep ` +
@@ -5941,6 +5938,50 @@ function assertZc12DonorPortArtifactsGone() {
   }
 }
 
+function assertZc21McpClientBridgeFilesRenamed() {
+  const oldPaths = [
+    "runtime/src/mcp-client/prompt-bridge.ts",
+    "runtime/src/mcp-client/prompt-bridge.test.ts",
+    "runtime/src/mcp-client/resilient-bridge.ts",
+    "runtime/src/mcp-client/resilient-bridge.test.ts",
+    "runtime/src/mcp-client/resource-bridge.ts",
+    "runtime/src/mcp-client/resource-bridge.test.ts",
+    "runtime/src/mcp-client/tool-bridge.ts",
+    "runtime/src/mcp-client/tool-bridge.test.ts",
+  ];
+  const existing = oldPaths.filter((rel) => existsSync(path.join(root, rel)));
+  if (existing.length > 0) {
+    failGate(`ZC-21: bridge-suffix MCP client file(s) still exist:\n${existing.join("\n")}`);
+  }
+
+  const expectedPaths = [
+    "runtime/src/mcp-client/prompts.ts",
+    "runtime/src/mcp-client/prompts.test.ts",
+    "runtime/src/mcp-client/resilient-client.ts",
+    "runtime/src/mcp-client/resilient-client.test.ts",
+    "runtime/src/mcp-client/resources.ts",
+    "runtime/src/mcp-client/resources.test.ts",
+    "runtime/src/mcp-client/tools.ts",
+    "runtime/src/mcp-client/tools.test.ts",
+  ];
+  const missing = expectedPaths.filter((rel) => !existsSync(path.join(root, rel)));
+  if (missing.length > 0) {
+    failGate(`ZC-21: expected renamed MCP client file(s) missing:\n${missing.join("\n")}`);
+  }
+
+  const refs = run("bash", ["-c", "rg -n '(prompt|resilient|resource|tool)-bridge' runtime/src"], { silent: true });
+  if (refs.status === 0) {
+    failGate(`ZC-21: old MCP bridge module reference(s) remain:\n${refs.stdout.trim()}`);
+  } else if (refs.status !== 1) {
+    failGate("ZC-21: failed to scan runtime/src for old MCP bridge module references");
+  }
+
+  const verifySource = readFileSync(path.join(root, "scripts/goal/verify.mjs"), "utf8");
+  if (/SHIM_ALLOW_DIRS[\s\S]{0,160}runtime\/src\/mcp-client\//.test(verifySource)) {
+    failGate("ZC-21: runtime/src/mcp-client remains in SHIM_ALLOW_DIRS; remove the exemption");
+  }
+}
+
 function assertZc20NoRuntimeShimCruft() {
   const forwardingHits = [];
   for (const rel of listSourceFiles(path.join(root, "runtime/src"))) {
@@ -6987,7 +7028,7 @@ function assertZc41ObservabilityCoverage() {
     ["runtime/src/session/startup-prewarm.ts", "AGENC_STARTUP_PREWARM_AGE_AT_FIRST_TURN_METRIC"],
     ["runtime/src/agenc/adapters/runtime-session.ts", "AGENC_COMPACT_DURATION_METRIC"],
     ["runtime/src/hooks/engine/dispatcher.ts", "AGENC_HOOK_RUN_DURATION_METRIC"],
-    ["runtime/src/mcp-client/tool-bridge.ts", "mcp.tools.call"],
+    ["runtime/src/mcp-client/tools.ts", "mcp.tools.call"],
     ["runtime/src/session/observer-wiring.ts", "AGENC_TOOL_UNIFIED_EXEC_DURATION_METRIC"],
     ["runtime/src/app-server/command-exec.ts", "AGENC_TOOL_UNIFIED_EXEC_METRIC"],
     ["runtime/src/unified-exec/process-manager.ts", "AGENC_WINDOWS_SANDBOX_SETUP_DURATION_METRIC"],
@@ -7022,7 +7063,7 @@ function assertZc41ObservabilityCoverage() {
     "tests/runtime-session-compact-telemetry.test.ts",
     "src/phases/stream-model.test.ts",
     "src/hooks/engine/dispatcher.test.ts",
-    "src/mcp-client/tool-bridge.test.ts",
+    "src/mcp-client/tools.test.ts",
     "src/unified-exec/process-manager.test.ts",
   ]);
   if (testRun.status !== 0) {
@@ -8154,6 +8195,7 @@ async function cleanupGates(item) {
       "ZC-18": { gone: ["runtime/parity/agenc-compaction-context.json"] },
       "ZC-19": { grepPresent: { pattern: "openai-compatible.*OpenAI HTTP API protocol.*not a port-era shim", scope: "runtime/src/llm/providers/openai-compatible/README.md" } }, // branding-scan: allow real OpenAI protocol name in ZC-19 evidence
       "ZC-20": { custom: assertZc20NoRuntimeShimCruft },
+      "ZC-21": { custom: assertZc21McpClientBridgeFilesRenamed },
       "ZC-22": {
         gone: ["runtime/src/tui/elicitation-bridge.tsx"],
         grepNotPresent: { pattern: "elicitation-bridge", scope: "runtime/src" },

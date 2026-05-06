@@ -1,26 +1,26 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MCPManager } from "./manager.js";
 import type { MCPServerConfig } from "./types.js";
-import type { MCPToolBridgePermissionOptions } from "./tool-bridge.js";
+import type { MCPToolBridgePermissionOptions } from "./tools.js";
 
-// Mock the connection and tool-bridge modules
+// Mock the connection and tools modules
 vi.mock("./connection.js", () => ({
   createMCPConnection: vi.fn(),
 }));
-vi.mock("./tool-bridge.js", () => ({
+vi.mock("./tools.js", () => ({
   createToolBridge: vi.fn(),
 }));
-vi.mock("./resource-bridge.js", () => ({
+vi.mock("./resources.js", () => ({
   createResourceBridge: vi.fn(),
 }));
-vi.mock("./prompt-bridge.js", () => ({
+vi.mock("./prompts.js", () => ({
   createPromptBridge: vi.fn(),
 }));
 
 import { createMCPConnection } from "./connection.js";
-import { createToolBridge } from "./tool-bridge.js";
-import { createResourceBridge } from "./resource-bridge.js";
-import { createPromptBridge } from "./prompt-bridge.js";
+import { createToolBridge } from "./tools.js";
+import { createResourceBridge } from "./resources.js";
+import { createPromptBridge } from "./prompts.js";
 
 const mockCreateMCPConnection = vi.mocked(createMCPConnection);
 const mockCreateToolBridge = vi.mocked(createToolBridge);
@@ -584,7 +584,7 @@ describe("MCPManager", () => {
     );
   });
 
-  it("connect survives a resource-bridge construction failure", async () => {
+  it("connect survives a resources construction failure", async () => {
     const bridge = makeMockBridge("srv1", ["tool"]);
     mockCreateMCPConnection.mockResolvedValueOnce("client1");
     mockCreateToolBridge.mockResolvedValueOnce(bridge);

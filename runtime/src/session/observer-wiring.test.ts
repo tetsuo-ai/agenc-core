@@ -7,7 +7,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import type { Event, EventMsg } from "./event-log.js";
-import { createToolBridge } from "../mcp-client/tool-bridge.js";
+import { createToolBridge } from "../mcp-client/tools.js";
 import { createBashTool } from "../tools/system/bash.js";
 import {
   createBashExecObserverForSession,
@@ -209,7 +209,7 @@ describe("observer-wiring — T6 gap #119 session wiring", () => {
     expect(bashEnd.payload.callId).toBe("b2");
   });
 
-  // Sanity check that the tool-bridge tests already rely on: observer
+  // Sanity check that the tools tests already rely on: observer
   // missing = no emissions. Mirrors the test-fixtures-stay-silent
   // contract documented on `MCPCallObserver`.
   it("MCP bridge without observer emits nothing", async () => {

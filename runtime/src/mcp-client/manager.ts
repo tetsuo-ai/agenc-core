@@ -18,25 +18,25 @@ import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
 import { isValidPermissionDefaultMode } from "../config/schema.js";
 import { createMCPConnection } from "./connection.js";
-import { createToolBridge } from "./tool-bridge.js";
-import { ResilientMCPBridge } from "./resilient-bridge.js";
+import { createToolBridge } from "./tools.js";
+import { ResilientMCPBridge } from "./resilient-client.js";
 import type {
   MCPCallObserver,
   MCPToolCatalogPolicyConfig,
   MCPToolBridgePermissionOptions,
-} from "./tool-bridge.js";
+} from "./tools.js";
 import {
   createResourceBridge,
   type MCPResourceBridge,
   type MCPResourceContent,
   type MCPResourceDescriptor,
-} from "./resource-bridge.js";
+} from "./resources.js";
 import {
   createPromptBridge,
   type MCPPromptBridge,
   type MCPPromptDescriptor,
   type MCPPromptRendered,
-} from "./prompt-bridge.js";
+} from "./prompts.js";
 
 /** I-50: cancellable MCP startup wait; 30s default. */
 export const MCP_STARTUP_TIMEOUT_MS = 30_000;
