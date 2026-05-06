@@ -685,8 +685,19 @@ const ITEM_EVIDENCE = {
     tests: ["runtime/src/sandbox/linux-launcher/linux-launcher.test.ts"],
   },
   "C-01c": {
-    files: [{ globUnder: "runtime/src/sandbox/policy", matching: /\.tsx?$/, minCount: 1 }],
-    tests: [{ globUnder: "runtime/src/sandbox/policy", matching: /\.test\.tsx?$/ }],
+    files: [
+      "runtime/src/sandbox/hardening/index.ts",
+    ],
+    grepPresent: [
+      { pattern: "applyPreMainProcessHardening", scope: "runtime/src/sandbox/hardening/index.ts" },
+      { pattern: "scrubDangerousEnvironment", scope: "runtime/src/sandbox/hardening/index.ts" },
+      { pattern: "compileAndLoadNativeHardeningBinding", scope: "runtime/src/sandbox/hardening/index.ts" },
+      { pattern: "prlimit", scope: "runtime/src/sandbox/hardening/index.ts" },
+      { pattern: "LD_|DYLD_|MallocStackLogging|MallocLogFile", scope: "runtime/src/sandbox/hardening/index.ts" },
+    ],
+    tests: [
+      "runtime/src/sandbox/hardening/hardening.test.ts",
+    ],
   },
   "C-01d": {
     files: [
@@ -3450,6 +3461,57 @@ async function donorRuntimePortGates(item) {
     pass("C-01b: Linux launcher subprocess, package bin, reentry, proxy routes, bwrap, seccomp, and tests present");
     return;
   }
+
+  if (id === "C-01c") {
+    const hardeningFile = "runtime/src/sandbox/hardening/index.ts";
+    const hardeningTest = "runtime/src/sandbox/hardening/hardening.test.ts";
+    if (!existsSync(path.join(root, hardeningFile))) {
+      failGate("C-01c: process hardening module missing");
+    }
+    if (!existsSync(path.join(root, hardeningTest))) {
+      failGate("C-01c: process hardening test missing");
+    }
+    if (!grepRepo("compileAndLoadNativeHardeningBinding|node_api\\.h", hardeningFile)) {
+      failGate("C-01c: hardening must include a native binding path");
+    }
+    if (!grepRepo("prlimit", hardeningFile)) {
+      failGate("C-01c: hardening must include a prlimit core-limit fallback");
+    }
+    if (!grepRepo("LD_|DYLD_|MallocStackLogging|MallocLogFile", hardeningFile)) {
+      failGate("C-01c: hardening must scrub dangerous env prefixes");
+    }
+    if (!grepRepo('nativeMode = options\\.nativeMode \\?\\? "required"', hardeningFile)) {
+      failGate("C-01c: main hardening primitive must fail closed by default");
+    }
+    if (!grepRepo("applyBestEffortPreMainProcessHardening", hardeningFile)) {
+      failGate("C-01c: best-effort hardening must be a separate API");
+    }
+    if (!grepRepo("allowRuntimeNativeBuild", hardeningFile)) {
+      failGate("C-01c: runtime native compilation must require explicit opt-in");
+    }
+    if (!grepRepo("spawnSync\\(process\\.execPath", hardeningTest)) {
+      failGate("C-01c: hardening tests must exercise a real subprocess");
+    }
+    if (!grepRepo("getCoreFileSizeLimit|getLinuxDumpable", hardeningTest)) {
+      failGate("C-01c: hardening tests must assert OS hardening state");
+    }
+    if (!grepRepo("runtime native hardening build disabled", hardeningTest)) {
+      failGate("C-01c: hardening tests must cover fail-closed default behavior");
+    }
+    if (!grepRepo("allowRuntimeNativeBuild: true", hardeningTest)) {
+      failGate("C-01c: hardening tests must cover explicit runtime-build opt-in");
+    }
+    const vitest = run("node_modules/.bin/vitest", [
+      "run",
+      hardeningTest,
+    ]);
+    if (vitest.status !== 0) {
+      failGate("C-01c process hardening tests failed");
+    }
+    pass("C-01c: process hardening native path, env scrub, prlimit fallback, and tests present");
+    return;
+  }
+
   if (id === "C-01d") {
     const dir = path.join(root, "runtime/src/sandbox/execpolicy");
     if (!existsSync(dir)) failGate("C-01d: runtime/src/sandbox/execpolicy/ missing");
