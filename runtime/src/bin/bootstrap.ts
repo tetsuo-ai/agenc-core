@@ -85,6 +85,7 @@ import type {
   AuthBackend,
   AuthSubscriptionTier,
 } from "../auth/backend.js";
+import { LocalAuthBackend } from "../auth/backends/local.js";
 import { selectByokPrecedenceApiKey } from "../auth/byok-precedence.js";
 import { resolveAuthManagedKeysEnabled } from "../auth/selection.js";
 import { bindSessionAgentControl } from "./delegate-tool.js";
@@ -877,14 +878,20 @@ export async function bootstrapLocalRuntimeSession(
     options.authBackend,
     conversationId,
   );
+  const localByokAuthBackend = new LocalAuthBackend({ agencHome, env });
   const managedKeysEnabled = resolveAuthManagedKeysEnabled(startup.config);
-  const startupAuthBackendByokKey = await readAuthBackendByokKey(
+  const startupInjectedByokKey = await readAuthBackendByokKey(
     options.authBackend,
+    startup.provider,
+  );
+  const startupLocalByokKey = await readAuthBackendByokKey(
+    localByokAuthBackend,
     startup.provider,
   );
   const startupByokApiKey = firstNonEmptyString(
     startup.apiKey,
-    startupAuthBackendByokKey,
+    startupInjectedByokKey,
+    startupLocalByokKey,
   );
   const byokApiKey = selectByokPrecedenceApiKey({
     explicitApiKey: options.apiKey,
@@ -923,11 +930,16 @@ export async function bootstrapLocalRuntimeSession(
   );
   const runtimeAuthBackendByokKey =
     resolvedProvider === startup.provider
-      ? startupAuthBackendByokKey
+      ? startupInjectedByokKey
       : await readAuthBackendByokKey(options.authBackend, resolvedProvider);
+  const runtimeLocalByokKey =
+    resolvedProvider === startup.provider
+      ? startupLocalByokKey
+      : await readAuthBackendByokKey(localByokAuthBackend, resolvedProvider);
   const runtimeByokApiKey = firstNonEmptyString(
     startup.apiKey,
     runtimeAuthBackendByokKey,
+    runtimeLocalByokKey,
   );
   const providerSettings =
     profileProvider === resolvedProvider

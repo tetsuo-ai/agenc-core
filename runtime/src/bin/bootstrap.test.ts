@@ -1418,6 +1418,67 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
+  it("uses locally saved BYOK keys without an injected auth backend", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    await new LocalAuthBackend({ agencHome: home }).saveByokKey({
+      provider: "grok",
+      apiKey: "saved-default-xai-key",
+    });
+
+    const providerMod = await import("../llm/provider.js");
+    const createProviderSpy = vi
+      .spyOn(providerMod, "createProvider")
+      .mockImplementation(
+        () =>
+          ({
+            name: "stub",
+            chat: async () => ({
+              content: "ok",
+              toolCalls: [],
+              usage: {
+                promptTokens: 1,
+                completionTokens: 1,
+                totalTokens: 2,
+              },
+            }),
+          }) as never,
+      );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        conversationId: "conv-default-local-byok",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          AGENC_XAI_API_KEY: "",
+          HOME: home,
+          GROK_API_KEY: "",
+          XAI_API_KEY: "",
+        },
+      });
+      shutdown = boot.shutdown;
+
+      expect(boot.resolvedProvider).toBe("grok");
+      expect(createProviderSpy).toHaveBeenCalledWith(
+        "grok",
+        expect.objectContaining({
+          apiKey: "saved-default-xai-key",
+          model: "grok-4-fast",
+        }),
+      );
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("asks AuthBackend to infer hosted AgenC model aliases before provider creation", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));

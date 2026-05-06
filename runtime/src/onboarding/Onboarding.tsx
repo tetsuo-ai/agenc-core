@@ -21,7 +21,10 @@ import {
 } from "../llm/registry/provider-info.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
 import { ApproveApiKey } from "./ApproveApiKey.js";
-import { MAX_ONBOARDING_INPUT_LENGTH } from "./inputPaste.js";
+import {
+  maybeTruncateInput,
+  type PastedContent,
+} from "./inputPaste.js";
 import { hashPastedText, storePastedText } from "./pasteStore.js";
 import {
   incrementFirstRunOnboardingSeenCount,
@@ -85,6 +88,7 @@ export interface FirstRunOnboardingState {
   readonly selectedProvider: BuiltInProviderSlug;
   readonly selectedModel: string;
   readonly connection: ProviderConnectionCheck | null;
+  readonly pastedContents: readonly PastedContent[];
   readonly pendingApiKeyApproval: PendingApiKeyApproval | null;
   readonly error: string | null;
   readonly isCheckingConnection: boolean;
@@ -217,6 +221,7 @@ export function createInitialFirstRunOnboardingState(
     selectedProvider: provider,
     selectedModel: model,
     connection: null,
+    pastedContents: [],
     pendingApiKeyApproval: null,
     error: null,
     isCheckingConnection: false,
@@ -331,18 +336,27 @@ function approvalAnswer(command: string): "yes" | "no" | null {
 
 async function maybeStoreApiKeyPaste(
   context: FirstRunOnboardingContext,
+  state: FirstRunOnboardingState,
   raw: string,
-): Promise<string | undefined> {
-  if (context.agencHome === undefined || raw.length <= MAX_ONBOARDING_INPUT_LENGTH) {
-    return undefined;
+): Promise<{
+  readonly pasteHash?: string;
+  readonly pastedContents: readonly PastedContent[];
+}> {
+  const pasteResult = maybeTruncateInput(raw, state.pastedContents);
+  const latest =
+    pasteResult.pastedContents.length > state.pastedContents.length
+      ? pasteResult.pastedContents[pasteResult.pastedContents.length - 1]
+      : undefined;
+  if (latest === undefined || context.agencHome === undefined) {
+    return { pastedContents: pasteResult.pastedContents };
   }
-  const hash = hashPastedText(raw);
+  const hash = hashPastedText(latest.content);
   await storePastedText({
     agencHome: context.agencHome,
     hash,
-    content: raw,
+    content: latest.content,
   });
-  return hash;
+  return { pasteHash: hash, pastedContents: pasteResult.pastedContents };
 }
 
 async function saveOnboardingByokKey(
@@ -621,6 +635,7 @@ export async function submitFirstRunOnboardingInput(
             selectedProvider: provider,
             selectedModel,
             connection: null,
+            pastedContents: [],
             pendingApiKeyApproval: null,
           },
           "provider",
@@ -719,9 +734,9 @@ export async function submitFirstRunOnboardingInput(
             completed: false,
           };
         }
-        let pasteHash: string | undefined;
+        let pasteCapture: Awaited<ReturnType<typeof maybeStoreApiKeyPaste>>;
         try {
-          pasteHash = await maybeStoreApiKeyPaste(context, raw);
+          pasteCapture = await maybeStoreApiKeyPaste(context, state, raw);
         } catch (error) {
           return {
             state: {
@@ -753,11 +768,14 @@ export async function submitFirstRunOnboardingInput(
         return {
           state: {
             ...state,
+            pastedContents: pasteCapture.pastedContents,
             pendingApiKeyApproval: {
               provider: state.selectedProvider,
               apiKey,
               maskedTail: maskApiKeyTail(apiKey),
-              ...(pasteHash !== undefined ? { pasteHash } : {}),
+              ...(pasteCapture.pasteHash !== undefined
+                ? { pasteHash: pasteCapture.pasteHash }
+                : {}),
               verificationStatus: verification.status,
               ...(verification.error !== undefined
                 ? { verificationError: verification.error }
@@ -941,6 +959,9 @@ function detailLinesForStep(
         connection.keyEnvVar === undefined
           ? "Paste an API key to verify it, or type next to continue."
           : `Paste ${connection.keyEnvVar} to verify it, or type next to add it later.`,
+        ...(state.pastedContents.length > 0
+          ? [`Captured ${state.pastedContents.length} large paste privately.`]
+          : []),
       ];
     }
     case "security":
@@ -985,6 +1006,7 @@ export function Onboarding({
             maskedTail={state.pendingApiKeyApproval.maskedTail}
             status={state.pendingApiKeyApproval.verificationStatus}
             error={state.pendingApiKeyApproval.verificationError}
+            pasteHash={state.pendingApiKeyApproval.pasteHash}
           />
         ) : (
           detailLinesForStep(state, context).map((line) => (

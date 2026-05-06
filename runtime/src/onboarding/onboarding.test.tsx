@@ -5,6 +5,8 @@ import { describe, expect, test, vi } from "vitest";
 
 import { defaultConfig } from "../config/schema.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
+import { MAX_ONBOARDING_INPUT_LENGTH } from "./inputPaste.js";
+import { retrievePastedText } from "./pasteStore.js";
 
 vi.mock("../tui/ink.js", async () => {
   const React = await import("react");
@@ -353,6 +355,81 @@ describe("first-run onboarding wizard", () => {
       await expect(
         new LocalAuthBackend({ agencHome }).readByokKey("grok"),
       ).resolves.toBeUndefined();
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  test("does not persist verified BYOK keys declined at approval", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-byok-"));
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), { status: 200 }),
+    );
+    try {
+      const config = defaultConfig();
+      const context = {
+        agencHome,
+        config,
+        env: {},
+        checkLocalProviders: false,
+        fetchImpl,
+      };
+      let state = await advanceToApiKey(context);
+
+      state = (
+        await submitFirstRunOnboardingInput(
+          state,
+          "xai-declined-key",
+          context,
+        )
+      ).state;
+      expect(state.pendingApiKeyApproval).toMatchObject({
+        provider: "grok",
+        maskedTail: "...-key",
+      });
+
+      state = (await submitFirstRunOnboardingInput(state, "no", context)).state;
+      expect(state.currentStepId).toBe("security");
+      await expect(
+        new LocalAuthBackend({ agencHome }).readByokKey("grok"),
+      ).resolves.toBeUndefined();
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  test("captures long pasted API-key input through the onboarding path", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-byok-"));
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), { status: 200 }),
+    );
+    try {
+      const config = defaultConfig();
+      const context = {
+        agencHome,
+        config,
+        env: {},
+        checkLocalProviders: false,
+        fetchImpl,
+      };
+      const longKey = "x".repeat(MAX_ONBOARDING_INPUT_LENGTH + 10);
+      const state = (
+        await submitFirstRunOnboardingInput(
+          await advanceToApiKey(context),
+          longKey,
+          context,
+        )
+      ).state;
+
+      expect(state.pendingApiKeyApproval?.pasteHash).toMatch(/^[a-f0-9]{16}$/);
+      expect(state.pastedContents).toHaveLength(1);
+      expect(state.pastedContents[0]?.content.length).toBe(longKey.length - 2_000);
+      await expect(
+        retrievePastedText({
+          agencHome,
+          hash: state.pendingApiKeyApproval?.pasteHash ?? "",
+        }),
+      ).resolves.toBe(state.pastedContents[0]?.content);
     } finally {
       rmSync(agencHome, { recursive: true, force: true });
     }

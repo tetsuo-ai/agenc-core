@@ -32,6 +32,30 @@ describe("onboarding input paste helpers", () => {
       longInput.length - 2_000,
     );
   });
+
+  test("captures only input over the maximum boundary", () => {
+    expect(
+      maybeTruncateInput("a".repeat(MAX_ONBOARDING_INPUT_LENGTH)).pastedContents,
+    ).toHaveLength(0);
+    expect(
+      maybeTruncateInput("a".repeat(MAX_ONBOARDING_INPUT_LENGTH + 1))
+        .pastedContents,
+    ).toHaveLength(1);
+  });
+
+  test("counts unicode multiline paste content", () => {
+    const longInput = [
+      "a".repeat(1_000),
+      "line one",
+      "line two",
+      "snowman",
+      "b".repeat(MAX_ONBOARDING_INPUT_LENGTH),
+    ].join("\n");
+    const result = maybeTruncateInput(longInput);
+
+    expect(result.pastedContents[0]?.lineCount).toBeGreaterThan(1);
+    expect(result.input).toContain("[Pasted content #1:");
+  });
 });
 
 describe("onboarding paste store", () => {
@@ -84,6 +108,24 @@ describe("onboarding paste store", () => {
       await expect(retrievePastedText({ agencHome, hash: recentHash })).resolves.toBe(
         "recent pasted key",
       );
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects invalid paste hashes", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-paste-store-"));
+    try {
+      await expect(
+        retrievePastedText({ agencHome, hash: "../bad-hash" }),
+      ).rejects.toThrow(/invalid onboarding paste hash/);
+      await expect(
+        storePastedText({
+          agencHome,
+          hash: "not-a-valid-hash",
+          content: "secret pasted key",
+        }),
+      ).rejects.toThrow(/invalid onboarding paste hash/);
     } finally {
       await rm(agencHome, { recursive: true, force: true });
     }

@@ -8,6 +8,7 @@ export interface ApproveApiKeyProps {
   readonly maskedTail: string;
   readonly status: VerificationStatus;
   readonly error?: string;
+  readonly pasteHash?: string;
 }
 
 export function maskedApiKeyTail(apiKey: string): string {
@@ -21,6 +22,7 @@ export function ApproveApiKey({
   maskedTail,
   status,
   error,
+  pasteHash,
 }: ApproveApiKeyProps): React.ReactElement {
   return (
     <Box flexDirection="column" marginTop={1}>
@@ -28,6 +30,9 @@ export function ApproveApiKey({
       <Text dimColor>Provider: {provider}</Text>
       <Text dimColor>Key tail: {maskedTail}</Text>
       <Text dimColor>Verification: {status}</Text>
+      {pasteHash !== undefined ? (
+        <Text dimColor>Private paste cache: {pasteHash}</Text>
+      ) : null}
       {error !== undefined ? <Text>{error}</Text> : null}
       <Text>Type yes to save this key, or no to continue without saving.</Text>
     </Box>
