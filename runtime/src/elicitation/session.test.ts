@@ -12,19 +12,19 @@ vi.mock("bun:bundle", () => ({
   feature: () => false,
 }));
 
-vi.mock("../agenc/adapters/upstream-commands.js", () => ({
-  loadUpstreamCommandList: () => [],
+vi.mock("../commands.js", () => ({
+  listTuiCommandList: () => [],
 }));
 
-vi.mock("../agenc/adapters/upstream-agent-list.js", () => ({
-  loadUpstreamAgentList: () => [],
+vi.mock("../agents/role-definitions.js", () => ({
+  listAgentRoleDefinitions: () => [],
 }));
 
-vi.mock("../agenc/adapters/upstream-model-switch.js", () => ({
+vi.mock("../tui/model-switch.js", () => ({
   buildPendingProviderSwitch: () => null,
 }));
 
-vi.mock("../agenc/adapters/upstream-attachments.js", () => ({
+vi.mock("../llm/pasted-content.js", () => ({
   pastedContentsToLLMMessage: () => null,
 }));
 

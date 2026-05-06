@@ -425,7 +425,6 @@
     "src/utils/memoryFileDetection.ts",
     "src/utils/teamMemoryOps.ts",
     "src/utils/memory/**/*",
-    "src/agenc/**/*",
     "src/tui/**/*"
   ]
 }
