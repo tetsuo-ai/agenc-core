@@ -197,7 +197,7 @@ export function shouldShowFirstRunOnboarding(
 ): boolean {
   if (options.agencHome === undefined) return false;
   if (options.hasInitialPrompt === true) return false;
-  if (options.isInteractive === false) return false;
+  if (options.isInteractive !== true) return false;
   const flag = options.env?.AGENC_ONBOARDING?.trim().toLowerCase();
   if (flag === "0" || flag === "false" || flag === "off") return false;
   const state = readOnboardingState({ agencHome: options.agencHome });
@@ -245,7 +245,8 @@ function projectKey(cwd: string | undefined): string {
 }
 
 function demoMode(env: OnboardingEnv | undefined): boolean {
-  const flag = env?.AGENC_DEMO?.trim().toLowerCase();
+  const source = env ?? process.env;
+  const flag = source.AGENC_DEMO?.trim().toLowerCase();
   return flag === "1" || flag === "true" || flag === "on";
 }
 
