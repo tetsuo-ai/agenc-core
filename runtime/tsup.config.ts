@@ -294,6 +294,9 @@ const agencOptionalExternal = {
 };
 
 const knownMissingOptionalModuleFragments = [
+  // Feature-gated modules that are intentionally absent from the current
+  // runtime tree. Unresolved relative imports must match this explicit list
+  // or the bundle fails closed.
   '../../../utils/systemThemeWatcher',
   './UserCrossSessionMessage',
   './UserForkBoilerplateMessage',
