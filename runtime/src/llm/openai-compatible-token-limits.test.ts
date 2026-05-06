@@ -7,7 +7,7 @@ import {
   OPENAI_COMPATIBLE_FALLBACK_CONTEXT_WINDOW,
 } from "./openai-compatible-token-limits.js";
 
-describe("OpenAI-compatible token tables", () => {
+describe("compatible-provider token tables", () => {
   test("resolves known exact context and output limits", () => {
     expect(getOpenAICompatibleContextWindow("gpt-4o")).toBe(128_000);
     expect(getOpenAICompatibleMaxOutputTokens("gpt-4o")).toBe(16_384);
@@ -49,7 +49,7 @@ describe("OpenAI-compatible token tables", () => {
     );
   });
 
-  test("exports OpenAI-compatible fallback defaults", () => {
+  test("exports compatible-provider fallback defaults", () => {
     expect(OPENAI_COMPATIBLE_FALLBACK_CONTEXT_WINDOW).toBe(128_000);
     expect(DEFAULT_MAX_OUTPUT_TOKENS).toBe(32_000);
     expect(DEFAULT_MAX_OUTPUT_TOKENS_UPPER_LIMIT).toBe(64_000);

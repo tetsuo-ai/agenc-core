@@ -1,14 +1,14 @@
 /**
  * AgentStatus — subagent lifecycle FSM.
  *
- * Hand-port of Codex runtime `core/src/agent/status.rs` (27 LOC). Tracks the
+ * Hand-port of reference runtime `core/src/agent/status.rs` (27 LOC). Tracks the
  * state transitions of a spawned subagent from creation through
  * terminal states.
  *
  * Final states: `completed`, `errored`, `shutdown`, `not_found`.
  * Non-final: `pending_init`, `running`, `interrupted`.
  *
- * `interrupted` is intentionally non-final (matches codex runtime
+ * `interrupted` is intentionally non-final (matches reference runtime
  * `status.rs` — `is_final` returns false for `Running | PendingInit |
  * Interrupted`). Completion watchers must loop past an interrupt
  * until a truly terminal state arrives.
@@ -68,11 +68,11 @@ export function isFinal(status: AgentStatus): boolean {
 }
 
 /**
- * Hand-port of codex `agent_status_from_event` (status.rs:6-21).
+ * Hand-port of reference `agent_status_from_event` (status.rs:6-21).
  * Maps an `EventMsg` to the AgentStatus the FSM should transition to,
  * or `undefined` if the event doesn't drive a status change.
  *
- * Codex's mapping:
+ * Reference mapping:
  *   - TurnStarted               -> Running
  *   - TurnComplete              -> Completed(last_agent_message)
  *   - TurnAborted(Interrupted   -> Interrupted
@@ -83,7 +83,7 @@ export function isFinal(status: AgentStatus): boolean {
  *   - else                      -> None
  *
  * AgenC's TurnAbortedEvent.reason is a free-text string; the mapper
- * recognizes codex's two interrupt-class reasons and treats anything
+ * recognizes the two reference interrupt-class reasons and treats anything
  * else as an errored transition.
  */
 export function agentStatusFromEvent(event: {

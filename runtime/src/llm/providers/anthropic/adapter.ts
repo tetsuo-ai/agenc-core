@@ -1,5 +1,5 @@
 /**
- * Anthropic provider adapter.
+ * Messages API provider adapter.
  *
  * @module
  */
@@ -353,7 +353,7 @@ export class AnthropicProvider implements LLMProvider {
         timeoutMs,
         signal: options?.signal,
         providerFallback: this.providerFallbackForModel(requestModel),
-        // Anthropic SSE streams are not resumable; preserve single-attempt
+        // Provider SSE streams are not resumable; preserve single-attempt
         // stream semantics while using the shared session transport contract.
         retryBudget: { maxRetries: 0 },
       });
@@ -489,7 +489,7 @@ export class AnthropicProvider implements LLMProvider {
             if (!parsedInput) {
               throw new LLMProviderError(
                 this.name,
-                `Anthropic stream emitted invalid tool_use JSON for ${completedToolCall.name || completedToolCall.id}`,
+                `Provider stream emitted invalid tool_use JSON for ${completedToolCall.name || completedToolCall.id}`,
               );
             }
             completedToolCalls.push(completedToolCall);
@@ -547,7 +547,7 @@ export class AnthropicProvider implements LLMProvider {
           const message =
             typeof errorRecord.message === "string"
               ? errorRecord.message
-              : "Anthropic stream failed";
+              : "Provider stream failed";
           if (
             content.length === 0 &&
             completedToolCalls.length === 0 &&

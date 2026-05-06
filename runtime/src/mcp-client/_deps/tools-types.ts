@@ -4,7 +4,7 @@
  * The mcp-client modules only need duck-typed `Tool`, `ToolResult`, and
  * `JSONSchema` shapes when bridging MCP server tools into the registry.
  * Carved as a local `_deps/` to cut the gut→AgenC crossing without
- * pulling in the full openclaude `tools/types.ts` PolicyEngine surface.
+ * pulling in the full reference `tools/types.ts` PolicyEngine surface.
  */
 
 export type JSONSchema = Record<string, unknown>;

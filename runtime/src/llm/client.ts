@@ -1,7 +1,7 @@
 /**
  * Session-scoped provider client factory.
  *
- * Mirrors codex runtime's provider/session split while staying source-compatible
+ * Mirrors reference runtime's provider/session split while staying source-compatible
  * with the existing runtime adapters.
  *
  * @module

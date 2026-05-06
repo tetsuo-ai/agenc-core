@@ -1,5 +1,5 @@
 /**
- * OpenAI provider configuration types.
+ * Provider configuration types.
  *
  * @module
  */

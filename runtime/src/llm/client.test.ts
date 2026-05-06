@@ -7,7 +7,7 @@ describe("ProviderHttpClient", () => {
       providerName: "openai",
       baseURL: "https://example.test/v1",
       wireApi: "responses",
-      defaultHeaders: { "OpenAI-Project": "proj-root" },
+      defaultHeaders: { "OpenAI-Project": "proj-root" }, // branding-scan: allow real provider header
       defaultQuery: { "api-version": "2025-04-01-preview" },
       authHeaders: { Authorization: "Bearer root-token" },
       requestRetry: { maxRetries: 2 },
@@ -15,7 +15,7 @@ describe("ProviderHttpClient", () => {
 
     const session = client.createTurnSession({
       defaultHeaders: { "x-turn-id": "turn-1" },
-      authHeaders: { "OpenAI-Organization": "org-1" },
+      authHeaders: { "OpenAI-Organization": "org-1" }, // branding-scan: allow real provider header
     });
 
     expect(session.providerName).toBe("openai");

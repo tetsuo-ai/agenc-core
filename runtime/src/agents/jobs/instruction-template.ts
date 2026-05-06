@@ -1,13 +1,13 @@
 /**
- * Instruction template substitution for agent-jobs (codex-v2 parity).
+ * Instruction template substitution for agent-jobs (reference parity).
  *
- * Hand-port of codex `render_instruction_template`
+ * Port of reference `render_instruction_template`
  * (`core/src/tools/handlers/agent_jobs.rs:1046`). Replaces `{column}`
  * placeholders with values from a CSV row record. `{{` and `}}` are
  * escape sequences that produce literal `{` and `}` in the output.
  *
  * Missing placeholder keys are left unreplaced verbatim, matching
- * codex's behavior.
+ * reference behavior.
  *
  * @module
  */

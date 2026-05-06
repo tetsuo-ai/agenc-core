@@ -60,7 +60,7 @@ describe("forkSubagent", () => {
     expect((res.messages[0] as LLMMessage).content).toBe("turn 2 user");
   });
 
-  it("mode=undefined yields directive-only context (codex Option::None)", async () => {
+  it("mode=undefined yields directive-only context (reference Option::None)", async () => {
     const res = await forkSubagent({
       parent: stubSession(),
       parentMessages: history,

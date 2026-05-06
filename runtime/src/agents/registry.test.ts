@@ -37,7 +37,7 @@ describe("AgentRegistry", () => {
     expect(r2).toBeDefined();
   });
 
-  it("failed spawn rollback keeps the allocated nickname reserved like Codex", async () => {
+  it("failed spawn rollback keeps the allocated nickname reserved like reference", async () => {
     const reg = new AgentRegistry({ maxThreads: 1 });
     const role = resolveAgentRole(undefined);
     const nickname = reg.allocateNickname(role);
@@ -113,7 +113,7 @@ describe("AgentRegistry", () => {
   });
 
   it(
-    "releaseSpawnedThread keeps nicknames reserved like Codex",
+    "releaseSpawnedThread keeps nicknames reserved like reference",
     async () => {
       const reg = new AgentRegistry();
       const role = resolveAgentRole(undefined);

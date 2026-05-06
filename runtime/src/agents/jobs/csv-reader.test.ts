@@ -40,7 +40,7 @@ describe("parseCsv", () => {
     expect(doc.headers).toEqual(["id", "value"]);
   });
 
-  it("skips rows where every field is empty (matches codex)", () => {
+  it("skips rows where every field is empty (matches reference)", () => {
     const doc = parseCsv("a,b\n1,2\n,\n3,4\n");
     expect(doc.rows).toEqual([
       { a: "1", b: "2" },

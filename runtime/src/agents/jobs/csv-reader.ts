@@ -1,7 +1,7 @@
 /**
- * CSV reader for agent-jobs (codex-v2 parity).
+ * CSV reader for agent-jobs (reference parity).
  *
- * Hand-written RFC-4180-style parser. The codex agent-jobs surface
+ * Hand-written RFC-4180-style parser. The reference agent-jobs surface
  * (`tools/src/agent_job_tool.rs:6-64`) accepts a CSV with a header
  * row and produces one job item per data row.
  *
@@ -44,14 +44,14 @@ export function parseCsv(text: string): CsvDocument {
   }
   const [headerRecord, ...dataRecords] = records;
   const headers: string[] = [...headerRecord!];
-  // Strip UTF-8 BOM from the first header cell (matches codex
+  // Strip UTF-8 BOM from the first header cell (matches reference
   // agent_jobs.rs:1128-1130).
   if (headers.length > 0) {
     headers[0] = headers[0]!.replace(/^﻿/, "");
   }
   const rows: CsvRow[] = [];
   for (const record of dataRecords) {
-    // Skip rows where every field is empty (matches codex
+    // Skip rows where every field is empty (matches reference
     // agent_jobs.rs:1135-1138).
     if (record.every((cell) => cell.length === 0)) continue;
     const row: { [column: string]: string } = {};

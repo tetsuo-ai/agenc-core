@@ -2,8 +2,8 @@
  * I-55 — per-provider tool-call normalizer.
  *
  * Providers emit tool_use blocks with slightly different shapes:
- *   - OpenAI / xAI (OpenAI-compatible): `{ id, type:'function', function:{ name, arguments } }`
- *   - Anthropic: `{ id, type:'tool_use', name, input }`
+ *   - Responses-compatible / xAI: `{ id, type:'function', function:{ name, arguments } }`
+ *   - Messages-compatible: `{ id, type:'tool_use', name, input }`
  *   - AgenC canonical `LLMToolCall`: `{ id, name, arguments: string }`
  *
  * The per-provider adapters already project into `LLMToolCall` before

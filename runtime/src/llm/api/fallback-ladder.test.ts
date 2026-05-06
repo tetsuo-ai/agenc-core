@@ -25,7 +25,7 @@ describe("provider fallback ladder", () => {
     expect(
       normalizeFallbackTargets(" XAI ", "grok-4-fast", [
         { provider: "grok", model: "grok-4-fast" },
-        { provider: " OpenAI ", model: "gpt-5" },
+        { provider: " OpenAI ", model: "gpt-5" }, // branding-scan: allow real provider alias input
         { provider: "openai", model: "gpt-5" },
       ]),
     ).toEqual([{ provider: "openai", model: "gpt-5" }]);
