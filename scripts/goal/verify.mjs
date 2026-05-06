@@ -7220,11 +7220,99 @@ function writeBaseline(p, count) {
 async function cleanupGates(item) {
   // Recognized cleanup IDs. Anything outside this set must fail rather than
   // silently no-op through the function with no checks fired.
-  const knownZ = new Set(["Z-01", "Z-02", "Z-03", "Z-04", "Z-05", "Z-06"]);
+  const knownZ = new Set([
+    "Z-01", "Z-02", "Z-03", "Z-04", "Z-05", "Z-06",
+    "Z-PURGEA", "Z-PURGEB", "Z-PURGEC", "Z-PURGEFINAL",
+  ]);
   if (!knownZ.has(id) && !/^ZC-/.test(id)) {
     failGate(
       `item ${id} has no specific gate branch in cleanupGates; add one or remove the item`,
     );
+  }
+
+  // Z-PURGE* items: per-cluster upstream-tree purges.
+  // Each item must verify that its assigned upstream subdirs are empty AND
+  // that no remaining imports reference those subdirs from runtime/src/.
+  function assertSubtreesPurged(subtrees, label) {
+    for (const sub of subtrees) {
+      const dir = path.join(root, "runtime/src/agenc/upstream", sub);
+      if (existsSync(dir)) {
+        const remaining = walkFiles(dir).filter((f) =>
+          /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(f),
+        );
+        if (remaining.length > 0) {
+          failGate(
+            `${id}: ${remaining.length} file(s) still in runtime/src/agenc/upstream/${sub}/:\n  ${remaining.slice(0, 10).map((f) => path.relative(root, f)).join("\n  ")}${remaining.length > 10 ? `\n  ... +${remaining.length - 10} more` : ""}`,
+          );
+        }
+      }
+      const importerScan = run("rg", [
+        "--no-messages", "-l",
+        `agenc/upstream/${sub}`,
+        "runtime/src",
+        "-g", "!runtime/src/agenc/upstream/**",
+      ], { silent: true });
+      const offenders = (importerScan.stdout || "").trim();
+      if (importerScan.status === 0 && offenders) {
+        const lines = offenders.split("\n").filter(Boolean);
+        failGate(
+          `${id}: ${lines.length} importer(s) of agenc/upstream/${sub}/ remain in runtime/src/:\n  ${lines.slice(0, 10).join("\n  ")}${lines.length > 10 ? `\n  ... +${lines.length - 10} more` : ""}`,
+        );
+      }
+    }
+    pass(`${id}: ${label} purged (zero files, zero importers)`);
+  }
+
+  if (id === "Z-PURGEA") {
+    assertSubtreesPurged(["utils", "constants"], "utils + constants");
+    return;
+  }
+  if (id === "Z-PURGEB") {
+    assertSubtreesPurged(["components", "hooks", "context"], "components + hooks + context");
+    return;
+  }
+  if (id === "Z-PURGEC") {
+    assertSubtreesPurged(
+      [
+        "tools", "services", "types", "tasks", "state",
+        "buddy", "bridge", "bootstrap", "coordinator",
+        "commands", "screens", "native-ts",
+      ],
+      "remaining upstream subtrees (tools/services/types/etc.)",
+    );
+    // Top-level files in upstream/ (e.g. Tool.js) must also be gone.
+    const upstreamRoot = path.join(root, "runtime/src/agenc/upstream");
+    if (existsSync(upstreamRoot)) {
+      const topLevelFiles = readdirSync(upstreamRoot)
+        .filter((name) => {
+          const p = path.join(upstreamRoot, name);
+          return existsSync(p) && !statSync(p).isDirectory();
+        });
+      if (topLevelFiles.length > 0) {
+        failGate(`${id}: ${topLevelFiles.length} top-level file(s) still in runtime/src/agenc/upstream/:\n  ${topLevelFiles.join("\n  ")}`);
+      }
+    }
+    pass(`${id}: no top-level upstream files remain`);
+    return;
+  }
+  if (id === "Z-PURGEFINAL") {
+    if (existsSync(path.join(root, "runtime/src/agenc/upstream"))) {
+      const remaining = walkFiles(path.join(root, "runtime/src/agenc/upstream"));
+      if (remaining.length > 0) {
+        failGate(
+          `${id}: runtime/src/agenc/upstream/ still has ${remaining.length} file(s) — run Z-PURGEA/B/C first`,
+        );
+      }
+      failGate(`${id}: runtime/src/agenc/upstream/ exists (empty); delete the directory itself`);
+    }
+    const importerScan = run("rg", [
+      "--no-messages", "-l", "agenc/upstream", "runtime/src",
+    ], { silent: true });
+    if (importerScan.status === 0 && (importerScan.stdout || "").trim()) {
+      failGate(`${id}: agenc/upstream still imported in:\n${importerScan.stdout}`);
+    }
+    pass(`${id}: upstream/ tree fully removed, zero importers`);
+    return;
   }
   if (id === "Z-01" || id === "Z-02") {
     const r = run("rg", ["--no-messages", "-l", "agenc/upstream", "runtime/src"]);
