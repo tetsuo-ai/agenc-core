@@ -515,10 +515,18 @@ describe("plugin manifest schema", () => {
             mcpServers: {
               badArgs: { command: "node", args: ["ok", 3] },
               emptyCommand: { command: "" },
-              badType: { type: "ws", endpoint: "urn:agenc:plugin:mcp" },
+              badType: { type: "pipe", endpoint: "urn:agenc:plugin:mcp" },
               badTransport: {
-                transport: "ws",
+                transport: "socket",
                 endpoint: "urn:agenc:plugin:mcp",
+              },
+              stdioEndpointOnly: {
+                transport: "stdio",
+                endpoint: "urn:agenc:plugin:mcp",
+              },
+              remoteCommandOnly: {
+                transport: "http",
+                command: "node",
               },
               missingTarget: {},
             },
@@ -556,6 +564,8 @@ describe("plugin manifest schema", () => {
           "mcpServers.emptyCommand.command",
           "mcpServers.badType.type",
           "mcpServers.badTransport.transport",
+          "mcpServers.stdioEndpointOnly.command",
+          "mcpServers.remoteCommandOnly.endpoint",
           "mcpServers.missingTarget",
           "lspServers.missingExtensionMap.extensionToLanguage",
           "lspServers.badShape.command",
@@ -868,6 +878,58 @@ describe("plugin loader", () => {
         },
       });
       expect(plugin?.mcpServers.locked?.enabled_tools).toEqual([]);
+    });
+  });
+
+  test("accepts websocket plugin MCP transports", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const workspaceRoot = join(root, "workspace");
+      const pluginRoot = join(agencHome, "plugins", "socket-tools");
+      await writePluginManifest(pluginRoot, {
+        name: "socket-tools",
+        mcpServers: {
+          websocket: {
+            transport: "websocket",
+            endpoint: "ws://127.0.0.1:4100/mcp",
+          },
+          alias: {
+            type: "ws",
+            url: "ws://127.0.0.1:4101/mcp",
+          },
+          inferredWebsocket: {
+            endpoint: "wss://127.0.0.1:4102/mcp",
+          },
+          inferredHttp: {
+            endpoint: "https://127.0.0.1:4103/mcp",
+          },
+        },
+      });
+
+      const result = await loadPlugins({
+        agencHome,
+        workspaceRoot,
+        config: { plugins: { enabled: true } },
+      });
+      const plugin = result.enabled[0];
+
+      expect(result.errors).toEqual([]);
+      expect(plugin?.mcpServers.websocket).toMatchObject({
+        transport: "websocket",
+        endpoint: "ws://127.0.0.1:4100/mcp",
+      });
+      expect(plugin?.mcpServers.alias).toMatchObject({
+        transport: "ws",
+        endpoint: "ws://127.0.0.1:4101/mcp",
+      });
+      expect(plugin?.mcpServers.inferredWebsocket).toMatchObject({
+        transport: "websocket",
+        endpoint: "wss://127.0.0.1:4102/mcp",
+      });
+      expect(plugin?.mcpServers.inferredHttp).toMatchObject({
+        transport: "http",
+        endpoint: "https://127.0.0.1:4103/mcp",
+      });
     });
   });
 

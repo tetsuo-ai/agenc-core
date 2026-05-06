@@ -1,0 +1,101 @@
+{
+  "contractName": "c-02-mcp-client-transports",
+  "itemId": "C-02",
+  "status": "implemented",
+  "sourceRoot": "local CX runtime donor checkout",
+  "sourceCommit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
+  "sourceFiles": [
+    "rmcp-client/Cargo.toml",
+    "rmcp-client/src/lib.rs",
+    "rmcp-client/src/stdio_server_launcher.rs",
+    "rmcp-client/src/program_resolver.rs",
+    "rmcp-client/src/utils.rs",
+    "rmcp-client/src/rmcp_client.rs",
+    "rmcp-client/src/executor_process_transport.rs",
+    "rmcp-client/tests/process_group_cleanup.rs",
+    "rmcp-client/tests/resources.rs",
+    "rmcp-client/tests/streamable_http_test_support.rs"
+  ],
+  "targetFiles": [
+    "runtime/src/mcp-client/transports/stdio.ts",
+    "runtime/src/mcp-client/transports/websocket.ts",
+    "runtime/src/mcp-client/transports/PARITY.md",
+    "runtime/src/mcp-client/connection.ts",
+    "runtime/src/mcp-client/types.ts",
+    "runtime/src/config/schema.ts",
+    "runtime/src/session/mcp-startup.ts"
+  ],
+  "tests": [
+    "runtime/src/mcp-client/connection.test.ts",
+    "runtime/src/mcp-client/transports/stdio.test.ts",
+    "runtime/src/mcp-client/transports/websocket.test.ts",
+    "runtime/src/mcp-client/manager.stdio-lifecycle.test.ts"
+  ],
+  "parityMatrix": [
+    {
+      "source": "rmcp-client/src/stdio_server_launcher.rs",
+      "target": "runtime/src/mcp-client/transports/stdio.ts",
+      "coverage": [
+        "local stdio process launch is isolated in the transport module",
+        "stdin/stdout are treated as newline-delimited JSON-RPC streams",
+        "stderr is diagnostic-only and never enters the protocol stream",
+        "closing the transport terminates the spawned process group"
+      ],
+      "evidence": [
+        "runtime/src/mcp-client/transports/stdio.test.ts",
+        "runtime/src/mcp-client/manager.stdio-lifecycle.test.ts"
+      ]
+    },
+    {
+      "source": "rmcp-client/src/utils.rs",
+      "target": "runtime/src/mcp-client/transports/stdio.ts",
+      "coverage": [
+        "stdio child process env starts from a default allow-list",
+        "explicit env_vars copy named parent variables",
+        "literal env overrides win over inherited values",
+        "shell-function-style values are excluded"
+      ],
+      "evidence": [
+        "runtime/src/mcp-client/transports/stdio.test.ts"
+      ]
+    },
+    {
+      "source": "rmcp-client/src/program_resolver.rs",
+      "target": "runtime/src/mcp-client/transports/stdio.ts",
+      "coverage": [
+        "Unix leaves command resolution to the OS",
+        "Windows searches PATH and PATHEXT for script launcher commands",
+        "unresolved commands fall through to the original spawn error"
+      ],
+      "evidence": [
+        "runtime/src/mcp-client/transports/stdio.test.ts"
+      ]
+    },
+    {
+      "source": "rmcp-client/src/rmcp_client.rs",
+      "target": "runtime/src/mcp-client/connection.ts",
+      "coverage": [
+        "stdio, SSE, Streamable HTTP, websocket, and ws transport recipes are selected before client connect",
+        "missing command or endpoint fails before constructing a transport",
+        "elicitation handlers are forwarded to the transport-specific connection factory"
+      ],
+      "evidence": [
+        "runtime/src/mcp-client/connection.test.ts"
+      ]
+    },
+    {
+      "source": "rmcp-client/tests/streamable_http_test_support.rs",
+      "target": "runtime/src/mcp-client/transports/websocket.ts",
+      "coverage": [
+        "WebSocket endpoints use the MCP subprotocol",
+        "configured headers are sent during the opening handshake",
+        "JSON-RPC payloads are encoded and decoded with schema validation",
+        "malformed server payloads surface through the transport error callback",
+        "close handshake timeouts forcefully terminate the WebSocket handle"
+      ],
+      "evidence": [
+        "runtime/src/mcp-client/transports/websocket.test.ts"
+      ]
+    }
+  ]
+}
