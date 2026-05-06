@@ -38,7 +38,6 @@ agent-run and snapshot cleanup. Runtime ownership is split intentionally:
   policy, and the state pruners apply retention outside the live turn loop. This
   avoids having `runAgent` open state databases or prune while an agent turn is
   still active.
-
 ## CF-11 `mcp.server`
 
 CF-11 is net-new AgenC config for serving AgenC's own MCP endpoint. Runtime
@@ -57,3 +56,33 @@ ownership is split intentionally:
   inside the foreground daemon. Enabled stdio mode is not daemon-autostarted
   because stdio requires an attached foreground process; it remains available
   through `agenc mcp serve`.
+
+## CF-13 Schema validation
+
+Upstream reference: `/home/tetsuo/git/codex` at commit <!-- branding-scan: allow local donor citation in parity artifact -->
+`c8c30d9d75556ecbe94991af22380d2a4e9d6589`.
+
+Primary source anchor:
+- `codex-rs/config/src/schema.rs` (`additional_properties = false` on closed
+  config schema blocks). <!-- branding-scan: allow local donor citation in parity artifact -->
+
+CF-13 ports the closed-subschema posture onto AgenC's live config loader while
+preserving AgenC's existing top-level forward-compat `_unknown` table:
+
+Merge note: CF-13 integrated main's CF-11 `mcp.server` parity section by
+retaining the CF-11 section above and appending this CF-13 validator section
+after it.
+
+- `runtime/src/config/schema.ts` owns the block validators and typed
+  `Invalid<Block>ConfigError.field` metadata for `auth`, `providers`, `agent`,
+  `plugins`, and `mcp.server`.
+- `runtime/src/config/loader.ts` runs `validateAgenCConfigBlocks` after
+  alias normalization, read-only migrations, and `normalizeRawConfig`, then
+  before merging onto defaults.
+- `runtime/src/config/store.ts` reads the validation diagnostics through the
+  normal `loadConfig` warning path during `ConfigStore.reload`.
+- `runtime/src/commands/config.ts` surfaces reload warnings so `/config reload`
+  reports schema validation failures instead of silently presenting a clean
+  reload message.
+- `agenc config validate` is owned by CF-14 and can reuse the exported
+  validators without re-parsing block semantics.

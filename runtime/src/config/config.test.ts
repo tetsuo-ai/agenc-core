@@ -11,13 +11,25 @@ import {
   AgenCConfig,
   resolveModelDisambiguated,
   AmbiguousModelError,
+  InvalidAgentConfigError,
+  InvalidAuthConfigError,
+  InvalidMcpConfigError,
+  InvalidMcpServerModeConfigError,
+  InvalidPluginsConfigError,
+  InvalidProviderConfigError,
   InvalidHooksConfigError,
   InvalidPermissionsConfigError,
   InvalidStatusLineConfigError,
   UnknownModelError,
   isValidPermissionDefaultMode,
   isValidPermissionMode,
+  validateAgentConfig,
+  validateAgenCConfigBlocks,
+  validateAuthConfig,
+  validateMcpServerModeConfig,
   validatePermissionsConfig,
+  validatePluginsConfig,
+  validateProviderConfig,
   validateHooksConfig,
   validateStatusLineConfig,
   validateOutputStyleConfig,
@@ -770,6 +782,249 @@ describe("schema: statusLine / outputStyle block (T12)", () => {
   });
 });
 
+describe("schema: closed config block validators (CF-13)", () => {
+  test("validateAuthConfig accepts managed local/remote auth settings", () => {
+    const out = validateAuthConfig({
+      backend: "remote",
+      managedKeys: { enabled: true },
+    });
+    expect(out).toEqual({
+      backend: "remote",
+      managedKeys: { enabled: true },
+    });
+    expect(Object.isFrozen(out)).toBe(true);
+    expect(Object.isFrozen(out?.managedKeys)).toBe(true);
+  });
+
+  test("validateAuthConfig rejects unknown auth fields with field metadata", () => {
+    let caught: unknown;
+    try {
+      validateAuthConfig({ backend: "local", typo: true });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(InvalidAuthConfigError);
+    expect((caught as InvalidAuthConfigError).field).toBe("typo");
+  });
+
+  test("validateProviderConfig accepts provider fallbacks and capabilities", () => {
+    const out = validateProviderConfig({
+      grok: {
+        api_key_env: "XAI_API_KEY",
+        default_model: "grok-4-fast",
+        context_window_tokens: 256_000,
+        max_output_tokens: 32_000,
+        capability_overrides: {
+          supportsToolUse: true,
+          acceptsReasoningEffort: true,
+        },
+        fallback_models: ["grok-3"],
+        fallback: {
+          targets: [
+            { provider: "openai", model: "gpt-5", reason: "burst" },
+          ],
+          models: ["grok-2"],
+          max_failures: 2,
+          statuses: [429, 529],
+        },
+      },
+    });
+    expect(out?.grok?.fallback?.targets?.[0]).toEqual({
+      provider: "openai",
+      model: "gpt-5",
+      reason: "burst",
+    });
+    expect(out?.grok?.capability_overrides?.supportsToolUse).toBe(true);
+    expect(Object.isFrozen(out?.grok?.fallback?.statuses)).toBe(true);
+  });
+
+  test("validateProviderConfig rejects unknown nested provider fields", () => {
+    expect(() =>
+      validateProviderConfig({
+        grok: { fallback: { targets: [{ model: "grok-3", typo: true }] } },
+      }),
+    ).toThrow(InvalidProviderConfigError);
+    try {
+      validateProviderConfig({
+        grok: { fallback: { targets: [{ model: "grok-3", typo: true }] } },
+      });
+    } catch (error) {
+      expect((error as InvalidProviderConfigError).field).toBe(
+        "grok.fallback.targets.0.typo",
+      );
+    }
+  });
+
+  test("validateAgentConfig accepts budgets and retention windows", () => {
+    const out = validateAgentConfig({
+      budget: {
+        token_cap: 10_000,
+        dollar_cap: 5.5,
+        wall_clock_seconds: 3_600,
+      },
+      retention: {
+        completed_days: 0,
+        failed_days: 90,
+        snapshot_days: 3,
+        snapshot_max_count: 1,
+        snapshot_max_bytes: 1_024,
+      },
+    });
+    expect(out?.budget?.dollar_cap).toBe(5.5);
+    expect(out?.retention?.completed_days).toBe(0);
+    expect(Object.isFrozen(out?.retention)).toBe(true);
+  });
+
+  test("validateAgentConfig rejects invalid retention max values", () => {
+    let caught: unknown;
+    try {
+      validateAgentConfig({
+        retention: { snapshot_max_count: 0 },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(InvalidAgentConfigError);
+    expect((caught as InvalidAgentConfigError).field).toBe(
+      "retention.snapshot_max_count",
+    );
+  });
+
+  test("validatePluginsConfig accepts current and staged plugin block shapes", () => {
+    const out = validatePluginsConfig({
+      dirs: ["/workspace/plugins"],
+      enabled: {
+        local: {
+          enabled: true,
+          path: "./plugins/local",
+          mcp_servers: {
+            tools: {
+              enabled: true,
+              enabled_tools: ["read"],
+              tools: {
+                read: {
+                  enabled: true,
+                  default_permission_mode: "on-request",
+                },
+              },
+            },
+          },
+        },
+      },
+      allowlist: ["local"],
+      plugins: {
+        remote: false,
+      },
+    });
+    expect(out?.dirs).toEqual(["/workspace/plugins"]);
+    expect(out?.allowlist).toEqual(["local"]);
+    expect(out?.plugins?.remote).toBe(false);
+    const local = out?.enabled?.local;
+    if (typeof local === "boolean" || local === undefined) {
+      throw new Error("expected plugin entry config");
+    }
+    expect(local.mcp_servers?.tools?.tools?.read?.enabled).toBe(true);
+  });
+
+  test("validatePluginsConfig rejects plugin entry typos", () => {
+    let caught: unknown;
+    try {
+      validatePluginsConfig({
+        enabled: { local: { enabled: true, unexpected: "nope" } },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(InvalidPluginsConfigError);
+    expect((caught as InvalidPluginsConfigError).field).toBe(
+      "enabled.local.unexpected",
+    );
+  });
+
+  test("validatePluginsConfig rejects scalar plugins.enabled", () => {
+    let caught: unknown;
+    try {
+      validatePluginsConfig({ enabled: true });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(InvalidPluginsConfigError);
+    expect((caught as InvalidPluginsConfigError).field).toBe("enabled");
+  });
+
+  test("validateMcpServerModeConfig accepts stdio and SSE server modes", () => {
+    expect(validateMcpServerModeConfig({ enabled: false, transport: "stdio" }))
+      .toEqual({ enabled: false, transport: "stdio" });
+    expect(
+      validateMcpServerModeConfig({
+        enabled: true,
+        transport: "sse",
+        host: "127.0.0.1",
+        port: 8900,
+      }),
+    ).toEqual({
+      enabled: true,
+      transport: "sse",
+      host: "127.0.0.1",
+      port: 8900,
+    });
+  });
+
+  test("validateMcpServerModeConfig rejects invalid transport and port", () => {
+    let caught: unknown;
+    try {
+      validateMcpServerModeConfig({ transport: "tcp" });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(InvalidMcpServerModeConfigError);
+    expect((caught as InvalidMcpServerModeConfigError).field).toBe(
+      "transport",
+    );
+    expect(() =>
+      validateMcpServerModeConfig({ transport: "sse", port: 70_000 }),
+    ).toThrow(InvalidMcpServerModeConfigError);
+  });
+
+  test("validateAgenCConfigBlocks checks typed blocks including mcp.server", () => {
+    const out = validateAgenCConfigBlocks(
+      normalizeRawConfig({
+        auth: { backend: "local" },
+        agent: { retention: { completed_days: 7 } },
+        providers: { grok: { default_model: "grok-4-fast" } },
+        plugins: { enabled: { local: true } },
+        mcp: { server: { enabled: true, transport: "sse", port: 4444 } },
+      }),
+    );
+    expect(out.auth?.backend).toBe("local");
+    expect(out.agent?.retention?.completed_days).toBe(7);
+    expect(out.providers?.grok?.default_model).toBe("grok-4-fast");
+    expect(out.plugins?.enabled?.local).toBe(true);
+    expect(out.mcp?.server).toEqual({
+      enabled: true,
+      transport: "sse",
+      port: 4444,
+    });
+    expect(out._unknown?.mcp).toBeUndefined();
+  });
+
+  test("validateAgenCConfigBlocks reports mcp table fields accurately", () => {
+    let caught: unknown;
+    try {
+      validateAgenCConfigBlocks(
+        normalizeRawConfig({
+          mcp: { unexpected: true },
+        }),
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(InvalidMcpConfigError);
+    expect((caught as InvalidMcpConfigError).field).toBe("unexpected");
+    expect((caught as Error).message).toContain("Invalid mcp.unexpected");
+  });
+});
+
 describe("schema: hooks block", () => {
   test("validateHooksConfig accepts command hooks and normalizes event aliases", () => {
     const out = validateHooksConfig({
@@ -1245,6 +1500,78 @@ snapshot_max_bytes = 1048576
     expect(out.config._unknown?.agent).toBeUndefined();
   });
 
+  test("invalid closed config block warns and falls back to defaults", async () => {
+    writeFileSync(
+      join(dir, "config.toml"),
+      `
+[auth]
+backend = "remote"
+extra = true
+      `,
+    );
+    const warnings: string[] = [];
+    const out = await loadConfig({
+      home: dir,
+      onWarn: (message) => warnings.push(message),
+    });
+    expect(out.exists).toBe(true);
+    expect(out.parseError).toContain("Invalid auth.extra");
+    expect(out.config.auth?.backend).toBe("local");
+    expect(
+      warnings.some((warning) => warning.includes("Invalid auth.extra")),
+    ).toBe(true);
+  });
+
+  test("loader rejects scalar plugins.enabled with field metadata", async () => {
+    writeFileSync(
+      join(dir, "config.toml"),
+      `
+[plugins]
+enabled = true
+      `,
+    );
+    const warnings: string[] = [];
+    const out = await loadConfig({
+      home: dir,
+      onWarn: (message) => warnings.push(message),
+    });
+    expect(out.parseError).toContain("Invalid plugins.enabled");
+    expect(warnings.join("\n")).toContain("Invalid plugins.enabled");
+    expect(out.config.plugins).toBeUndefined();
+  });
+
+  test("loader validates provider, plugins, agent, and mcp.server blocks", async () => {
+    writeFileSync(
+      join(dir, "config.toml"),
+      `
+[providers.grok]
+fallback = { statuses = [99] }
+
+[plugins]
+allowlist = ["local"]
+
+[plugins.enabled.local]
+enabled = true
+
+[agent.retention]
+snapshot_max_bytes = 0
+
+[mcp.server]
+transport = "tcp"
+      `,
+    );
+    const warnings: string[] = [];
+    const out = await loadConfig({
+      home: dir,
+      onWarn: (message) => warnings.push(message),
+    });
+    expect(out.parseError).toMatch(
+      /Invalid providers\.grok\.fallback\.statuses/,
+    );
+    expect(out.config).toEqual(defaultConfig());
+    expect(warnings.join("\n")).toContain("invalid config");
+  });
+
   test("permissions.default_mode TOML overrides the on-request default", async () => {
     writeFileSync(
       join(dir, "config.toml"),
@@ -1296,6 +1623,28 @@ required = false
     expect(servers?.docs?.endpoint).toBe("https://docs.example.com/mcp");
     expect(servers?.docs?.transport).toBe("http");
     expect(servers?.docs?.required).toBe(false);
+  });
+
+  test("valid mcp.server is validated on the typed path", async () => {
+    writeFileSync(
+      join(dir, "config.toml"),
+      `
+[mcp.server]
+enabled = true
+transport = "sse"
+host = "127.0.0.1"
+port = 4444
+      `,
+    );
+    const out = await loadConfig({ home: dir });
+    expect(out.parseError).toBeUndefined();
+    expect(out.config.mcp?.server).toEqual({
+      enabled: true,
+      transport: "sse",
+      host: "127.0.0.1",
+      port: 4444,
+    });
+    expect(out.config._unknown?.mcp).toBeUndefined();
   });
 
   test("AgenC key aliases: tools → tools_config via loader", async () => {
@@ -1694,6 +2043,33 @@ describe("ConfigStore", () => {
 
     unsubscribe();
     expect(store.subscriberCount()).toBe(0);
+  });
+
+  test("reload() captures schema validation warnings from loadConfig", async () => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "config.toml"),
+      `
+[agent.retention]
+snapshot_max_count = 0
+      `,
+    );
+    const warnings: string[] = [];
+    const store = new ConfigStore({
+      home: dir,
+      env: {},
+      onWarn: (message) => warnings.push(message),
+    });
+
+    const next = await store.reload();
+
+    expect(next.agent?.retention?.snapshot_max_count).toBe(10_000);
+    expect(store.warnings().join("\n")).toContain(
+      "Invalid agent.retention.snapshot_max_count",
+    );
+    expect(warnings.join("\n")).toContain(
+      "Invalid agent.retention.snapshot_max_count",
+    );
   });
 
   test("reload() observes file changes between calls", async () => {
