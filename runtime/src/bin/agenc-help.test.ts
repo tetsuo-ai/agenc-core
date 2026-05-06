@@ -18,12 +18,14 @@ describe("agenc CLI help", () => {
     expect(help).toContain("Commands:");
     expect(help).toContain("Examples:");
     expect(help).toContain("agenc agent start");
+    expect(help).toContain("agenc config validate");
     expect(help).toContain("agenc mcp serve --transport stdio");
   });
 
   it("resolves help topics for every routed CLI command", () => {
     for (const topic of [
       "agent",
+      "config",
       "daemon",
       "help",
       "login",
