@@ -723,6 +723,22 @@ async function createProviderHttpError(
   });
 }
 
+function createMalformedProviderJsonError(args: {
+  readonly providerName: string;
+  readonly response: Response;
+  readonly body: string;
+  readonly message: string;
+}): ProviderHttpError {
+  return new ProviderHttpError({
+    providerName: args.providerName,
+    status: args.response.status,
+    headers: args.response.headers,
+    url: args.response.url,
+    body: args.body,
+    message: args.message,
+  });
+}
+
 interface PreparedStreamAttempt {
   readonly attempt: number;
   readonly response: Response;
@@ -896,9 +912,34 @@ export class ProviderHttpClientSession {
       });
     }
     const text = await response.text();
-    const data = contentType.includes("application/json")
-      ? (text.length > 0 ? (JSON.parse(text) as T) : (undefined as T))
-      : (undefined as T);
+    let data: T;
+    if (contentType.includes("application/json")) {
+      if (text.length > 0) {
+        try {
+          data = JSON.parse(text) as T;
+        } catch (error) {
+          throw createMalformedProviderJsonError({
+            providerName: this.config.providerName,
+            response,
+            body: text,
+            message: `Invalid JSON response from ${this.config.providerName}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          });
+        }
+      } else {
+        data = undefined as T;
+      }
+    } else if (text.trim().length > 0) {
+      throw createMalformedProviderJsonError({
+        providerName: this.config.providerName,
+        response,
+        body: text,
+        message: `Non-JSON response from ${this.config.providerName}; content-type=${contentType || "missing"}`,
+      });
+    } else {
+      data = undefined as T;
+    }
     if (
       prepared.continuation &&
       data &&

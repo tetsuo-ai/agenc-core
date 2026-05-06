@@ -45,6 +45,44 @@ describe("AgenC code hints", () => {
     expect(extracted.stripped).toContain("prefix <agenc-code-hint");
   });
 
+  test("extracts multiple supported hints while dropping unsupported whole-line tags", () => {
+    const output = [
+      "start",
+      '<agenc-code-hint v="1" type="plugin" value="lint@official" />',
+      '<agenc-code-hint v="1" type="docs" value="ignored" />',
+      '<agenc-code-hint v="1" type="plugin" value="test@official" />',
+      "end",
+    ].join("\n");
+
+    const extracted = extractAgenCCodeHints(output, "npm test");
+
+    expect(extracted.hints).toEqual([
+      {
+        v: 1,
+        type: "plugin",
+        value: "lint@official",
+        sourceCommand: "npm",
+      },
+      {
+        v: 1,
+        type: "plugin",
+        value: "test@official",
+        sourceCommand: "npm",
+      },
+    ]);
+    expect(extracted.stripped).toBe("start\n\nend");
+  });
+
+  test("leaves partial hint tags untouched so truncation cannot invent hints", () => {
+    const partial =
+      'prefix\n<agenc-code-hint v="1" type="plugin" value="partial@official"';
+
+    const extracted = extractAgenCCodeHints(partial, "npm run build");
+
+    expect(extracted.hints).toEqual([]);
+    expect(extracted.stripped).toBe(partial);
+  });
+
   test("parses unquoted attributes and first command token", () => {
     expect(_test.parseAttrs('<agenc-code-hint v=1 type=plugin value=a@b />')).toEqual({
       v: "1",

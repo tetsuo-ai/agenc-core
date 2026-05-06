@@ -102,13 +102,14 @@ describe("SystemAPIErrorMessage", () => {
   });
 
   test("truncates long errors outside verbose mode", () => {
+    const formatted = "x".repeat(1200);
     const output = renderPlain(
       <SystemAPIErrorMessage
         verbose={false}
         message={{
           type: "system",
           subtype: "api_error",
-          error: new Error("x".repeat(1200)),
+          error: new Error(formatted),
           retryAttempt: 4,
           retryInMs: 1000,
           maxRetries: 5,
@@ -116,7 +117,8 @@ describe("SystemAPIErrorMessage", () => {
       />,
     );
 
-    expect(output.length).toBeLessThan(1150);
-    expect(output).toContain("xxx");
+    expect(output).toContain(`${"x".repeat(1000)}...`);
+    expect(output).toContain("(ctrl+o to expand)");
+    expect(output).not.toContain("x".repeat(1001));
   });
 });

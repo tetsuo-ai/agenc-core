@@ -36,6 +36,7 @@ import { isFallbackTriggeredError } from "../../../recovery/api-errors.js";
 import {
   buildOpenAICompatibilityErrorMessage,
   classifyOpenAIHttpFailure,
+  classifyOpenAINetworkFailure,
 } from "../../../errors/openai-compatible.js";
 import {
   buildChatCompletionsRequest,
@@ -121,6 +122,58 @@ function providerHttpBodyToString(body: unknown): string {
   }
 }
 
+function errorCode(error: unknown): string | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5; depth += 1) {
+    if (
+      current &&
+      typeof current === "object" &&
+      "code" in current &&
+      typeof (current as { code?: unknown }).code === "string"
+    ) {
+      return (current as { code: string }).code;
+    }
+    if (
+      current &&
+      typeof current === "object" &&
+      "cause" in current &&
+      (current as { cause?: unknown }).cause !== current
+    ) {
+      current = (current as { cause?: unknown }).cause;
+      continue;
+    }
+    break;
+  }
+  return undefined;
+}
+
+function isTransportFailure(error: unknown): boolean {
+  const code = errorCode(error);
+  if (
+    code &&
+    [
+      "ABORT_ERR",
+      "ECONNABORTED",
+      "ECONNREFUSED",
+      "ECONNRESET",
+      "EHOSTUNREACH",
+      "ENETDOWN",
+      "ENETUNREACH",
+      "ENOTFOUND",
+      "EAI_AGAIN",
+      "ETIMEDOUT",
+      "UND_ERR_CONNECT_TIMEOUT",
+    ].includes(code)
+  ) {
+    return true;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  return /(?:fetch failed|network|socket|connect econn|getaddrinfo|timed out|timeout|aborterror)/i.test(
+    message,
+  );
+}
+
 function withStreamingMetrics(response: LLMResponse): LLMResponse {
   return {
     ...response,
@@ -187,9 +240,10 @@ function mapOpenAIHttpFailureToError(args: {
   readonly body: unknown;
   readonly retryAfterMs?: number;
 }): Error {
+  const bodyText = providerHttpBodyToString(args.body);
   const failure = classifyOpenAIHttpFailure({
     status: args.status,
-    body: providerHttpBodyToString(args.body),
+    body: `${args.message}\n${bodyText}`.trim(),
   });
   const message = buildOpenAICompatibilityErrorMessage(args.message, failure);
 
@@ -212,6 +266,19 @@ function mapOpenAIHttpFailureToError(args: {
     return new LLMAuthenticationError(args.providerName, args.status);
   }
   return new LLMProviderError(args.providerName, message, args.status);
+}
+
+function mapOpenAINetworkFailureToError(args: {
+  readonly providerName: string;
+  readonly error: unknown;
+  readonly url: string;
+}): Error | null {
+  if (!isTransportFailure(args.error)) return null;
+  const failure = classifyOpenAINetworkFailure(args.error, { url: args.url });
+  return new LLMProviderError(
+    args.providerName,
+    buildOpenAICompatibilityErrorMessage(failure.message, failure),
+  );
 }
 
 function mapOpenAIStreamError(args: {
@@ -455,6 +522,14 @@ export class OpenAIProvider implements LLMProvider {
           retryAfterMs: error.retryAfterMs,
         });
       }
+      const networkError = mapOpenAINetworkFailureToError({
+        providerName: this.name,
+        error,
+        url: this.config.baseURL ?? DEFAULT_BASE_URL,
+      });
+      if (networkError) {
+        throw networkError;
+      }
       throw mapLLMError(this.name, error, timeoutMs ?? 0);
     }
   }
@@ -490,6 +565,14 @@ export class OpenAIProvider implements LLMProvider {
           body: error.body,
           retryAfterMs: error.retryAfterMs,
         });
+      }
+      const networkError = mapOpenAINetworkFailureToError({
+        providerName: this.name,
+        error,
+        url: this.config.baseURL ?? DEFAULT_BASE_URL,
+      });
+      if (networkError) {
+        throw networkError;
       }
       throw mapLLMError(this.name, error, timeoutMs ?? 0);
     }

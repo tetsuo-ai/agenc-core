@@ -1,4 +1,5 @@
 import * as React from "react";
+import { readFileSync } from "node:fs";
 import { describe, expect, test, vi } from "vitest";
 
 import {
@@ -49,6 +50,27 @@ function collectText(node: React.ReactNode): string {
 }
 
 describe("ValidationErrorsList", () => {
+  test("is wired into the live upstream settings callers", () => {
+    const doctorSource = readFileSync(
+      new URL("../../agenc/upstream/screens/Doctor.tsx", import.meta.url),
+      "utf8",
+    );
+    const invalidSettingsDialogSource = readFileSync(
+      new URL(
+        "../../agenc/upstream/components/InvalidSettingsDialog.tsx",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+
+    expect(doctorSource).toContain(
+      "../../../tui/components/ValidationErrorsList.js",
+    );
+    expect(invalidSettingsDialogSource).toContain(
+      "../../../tui/components/ValidationErrorsList.js",
+    );
+  });
+
   test("builds a readable nested tree with invalid indexed values", () => {
     expect(
       buildValidationErrorTree([

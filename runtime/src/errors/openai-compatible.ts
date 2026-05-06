@@ -127,6 +127,8 @@ function isMalformedProviderResponse(body: string): boolean {
     lower.includes("<html") ||
     lower.includes("invalid json") ||
     lower.includes("malformed") ||
+    lower.includes("non-json") ||
+    lower.includes("non json") ||
     lower.includes("unexpected token") ||
     lower.includes("cannot parse") ||
     lower.includes("not valid json")
