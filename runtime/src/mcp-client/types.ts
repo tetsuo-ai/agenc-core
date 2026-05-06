@@ -7,7 +7,11 @@
  * @module
  */
 
-import type { PermissionDefaultMode, PerToolConfig } from "../config/schema.js";
+import type {
+  PermissionDefaultMode,
+  PerToolConfig,
+  PluginMcpSandboxMetadata,
+} from "../config/schema.js";
 import type { Tool } from "./_deps/tools-types.js";
 
 /**
@@ -57,6 +61,8 @@ export interface MCPServerConfig {
   disabled_tools?: readonly string[];
   /** Per raw MCP tool approval settings. */
   tools?: Readonly<Record<string, PerToolConfig>>;
+  /** Metadata for plugin-owned stdio servers isolated as child processes. */
+  pluginSandbox?: PluginMcpSandboxMetadata;
 }
 
 /**

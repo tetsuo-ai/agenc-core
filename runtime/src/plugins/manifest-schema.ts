@@ -705,7 +705,9 @@ function validateMcpServerConfig(
     value.transport !== undefined &&
     value.transport !== "stdio" &&
     value.transport !== "sse" &&
-    value.transport !== "http"
+    value.transport !== "http" &&
+    value.transport !== "websocket" &&
+    value.transport !== "ws"
   ) {
     issues.push({ path: `${field}.transport`, message: "Invalid MCP transport" });
   }
@@ -713,7 +715,9 @@ function validateMcpServerConfig(
     value.type !== undefined &&
     value.type !== "stdio" &&
     value.type !== "sse" &&
-    value.type !== "http"
+    value.type !== "http" &&
+    value.type !== "websocket" &&
+    value.type !== "ws"
   ) {
     issues.push({ path: `${field}.type`, message: "Invalid MCP type" });
   }

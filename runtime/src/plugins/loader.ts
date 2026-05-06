@@ -1211,7 +1211,11 @@ function normalizeMcpServer(
   const env = stringRecord(value.env);
   const headers = stringRecord(value.headers);
   const server: McpServerConfig = {
-    ...(transport === "http" || transport === "sse" || transport === "stdio"
+    ...(transport === "http" ||
+      transport === "sse" ||
+      transport === "stdio" ||
+      transport === "websocket" ||
+      transport === "ws"
       ? { transport }
       : {}),
     ...(command !== undefined ? { command } : {}),
