@@ -1008,6 +1008,23 @@ function optionalPositiveInteger(
   return value;
 }
 
+function optionalNonNegativeInteger(
+  value: unknown,
+  field: string,
+  makeError: InvalidConfigFactory,
+): number | undefined {
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    !Number.isInteger(value) ||
+    value < 0
+  ) {
+    throw makeError(field, "expected non-negative integer");
+  }
+  return value;
+}
+
 function optionalNonNegativeNumber(
   value: unknown,
   field: string,
@@ -1737,7 +1754,7 @@ export function validateMcpServerModeConfig(
     }
     out.transport = record.transport;
   }
-  const port = optionalPositiveInteger(
+  const port = optionalNonNegativeInteger(
     record.port,
     "port",
     (field, detail) => new InvalidMcpServerModeConfigError(field, detail),
@@ -1746,7 +1763,7 @@ export function validateMcpServerModeConfig(
     if (port > 65_535) {
       throw new InvalidMcpServerModeConfigError(
         "port",
-        "expected TCP port between 1 and 65535",
+        "expected TCP port between 0 and 65535",
       );
     }
     out.port = port;

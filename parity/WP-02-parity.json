@@ -5,7 +5,7 @@
   "targetRoot": "..",
   "siblingEvidence": {
     "agenc-portal": {
-      "path": "sibling:agenc-portal",
+      "path": "/home/tetsuo/git/AgenC/agenc-portal",
       "commit": "35ddadd8f6209c233e821f5e8809e817f3880f06"
     }
   },
@@ -21,6 +21,10 @@
     "runtime/src/app-server-protocol/index.ts",
     "runtime/src/app-server-protocol/portal.contract.test.ts",
     "runtime/src/index.ts",
+    "runtime/src/config/schema.ts",
+    "runtime/src/config/config.test.ts",
+    "scripts/check-upstream-import-growth.mjs",
+    "scripts/check-upstream-import-growth.test.mjs",
     "agenc-portal/src/daemon-connection.js",
     "agenc-portal/src/main.js",
     "agenc-portal/src/styles.css",
@@ -31,6 +35,8 @@
   "testFiles": [
     "runtime/src/app-server/daemon-cli.contract.test.ts",
     "runtime/src/app-server-protocol/portal.contract.test.ts",
+    "runtime/src/config/config.test.ts",
+    "scripts/check-upstream-import-growth.test.mjs",
     "agenc-portal/scripts/check-scaffold.mjs"
   ],
   "requiredBehaviors": [
@@ -86,6 +92,19 @@
       "tests": [
         "agenc-portal/scripts/check-scaffold.mjs"
       ]
+    },
+    {
+      "id": "gate-3-6-import-cleanup",
+      "behavior": "After integrating main's dynamic-import guard, WP-02 carries the required cleanup that replaces production dynamic mirror imports with static references and tightens the upstream-reference growth checker so baseline comparisons include the old lazy references.",
+      "edgeCases": [
+        "production code contains no dynamic imports or requires of runtime/src/agenc/upstream",
+        "the upstream-reference checker counts static imports, dynamic imports, requires, type import paths, and the existing string-array join pattern",
+        "the candidate does not increase the production upstream-reference file count"
+      ],
+      "tests": [
+        "scripts/check-upstream-import-growth.test.mjs",
+        "node scripts/goal/verify.mjs WP-02"
+      ]
     }
   ],
   "intentionalReductions": [
@@ -93,5 +112,14 @@
     "Portal authentication actions are limited to auth.whoami for dashboard context. Authenticated mutations are owned by later WP items.",
     "The portal repo stays dependency-light and uses the browser WebSocket API directly instead of adding a client framework or transport package."
   ],
-  "mergeResolutions": []
+  "mergeResolutions": [
+    {
+      "context": "main integrated Gate 3.6 while WP-02 was in progress",
+      "resolution": "Kept main's guard and updated production code plus the upstream-reference growth checker to satisfy the new gate without increasing upstream references.",
+      "validation": [
+        "node scripts/check-upstream-import-growth.test.mjs",
+        "node scripts/goal/verify.mjs WP-02"
+      ]
+    }
+  ]
 }

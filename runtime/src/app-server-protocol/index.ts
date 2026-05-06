@@ -50,22 +50,35 @@ export const AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS = {
   "portal.agent.attach": true,
 } as const satisfies Record<AgenCPortalClientCapability, true>;
 
-export const AGENC_PORTAL_DAEMON_INITIALIZE_REQUEST = {
-  jsonrpc: JSON_RPC_VERSION,
-  id: "initialize",
-  method: "initialize",
-  params: {
-    protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
-    protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
-    clientName: "agenc-portal",
-    capabilities: AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS,
-  },
-} as const satisfies {
+export interface AgenCPortalDaemonInitializeRequest {
   readonly jsonrpc: typeof JSON_RPC_VERSION;
   readonly id: "initialize";
   readonly method: "initialize";
   readonly params: InitializeParams;
-};
+}
+
+export function createAgenCPortalDaemonInitializeRequest(
+  authCookie?: string | null,
+): AgenCPortalDaemonInitializeRequest {
+  const params: InitializeParams = {
+    protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+    protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
+    clientName: "agenc-portal",
+    capabilities: AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS,
+    ...(authCookie !== undefined && authCookie !== null
+      ? { authCookie }
+      : {}),
+  };
+  return {
+    jsonrpc: JSON_RPC_VERSION,
+    id: "initialize",
+    method: "initialize",
+    params,
+  };
+}
+
+export const AGENC_PORTAL_DAEMON_INITIALIZE_REQUEST =
+  createAgenCPortalDaemonInitializeRequest();
 
 export const AGENC_PORTAL_CONNECTION_STATUSES = [
   "disconnected",

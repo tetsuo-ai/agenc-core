@@ -15,6 +15,7 @@ import {
   AGENC_PORTAL_DEFAULT_REQUEST_TIMEOUT_MS,
   AGENC_PORTAL_METHODS,
   AGENC_PORTAL_PROTOCOL_VERSION,
+  createAgenCPortalDaemonInitializeRequest,
   isAgenCPortalMethod,
   type AgenCPortalDashboardSnapshot,
 } from "./index.js";
@@ -88,6 +89,21 @@ describe("AgenC portal protocol contract", () => {
         capabilities: AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS,
       },
     });
+    expect(createAgenCPortalDaemonInitializeRequest()).toEqual(
+      AGENC_PORTAL_DAEMON_INITIALIZE_REQUEST,
+    );
+  });
+
+  it("builds initialize requests with an optional daemon auth cookie", () => {
+    expect(
+      createAgenCPortalDaemonInitializeRequest("portal-cookie").params,
+    ).toEqual({
+      ...AGENC_PORTAL_DAEMON_INITIALIZE_REQUEST.params,
+      authCookie: "portal-cookie",
+    });
+    expect(
+      createAgenCPortalDaemonInitializeRequest(null).params,
+    ).not.toHaveProperty("authCookie");
   });
 
   it("models dashboard snapshots with websocket connection state", () => {
