@@ -4459,10 +4459,48 @@ async function promptGates(item) {
     return;
   }
   if (id === "PR-07") {
-    // Plugin instructions.
-    const found = grepRepo("pluginInstructions|plugin_instructions|availablePlugins", "runtime/src/prompts");
-    if (!found) failGate("PR-07: plugin instructions not referenced");
-    pass("PR-07: plugin instructions referenced");
+    const promptFile = "runtime/src/services/compact/prompt.ts";
+    const compactFile = "runtime/src/services/compact/compact.ts";
+    const compactTestFile = "runtime/src/services/compact/compact.test.ts";
+    const surfaceTestFile = "runtime/src/services/compact/compact-surfaces.test.ts";
+    if (!existsSync(path.join(root, promptFile))) {
+      failGate("PR-07: compact prompt file missing");
+    }
+    if (!existsSync(path.join(root, compactFile))) {
+      failGate("PR-07: compact service file missing");
+    }
+    if (!grepRepo("getCompactPrompt", promptFile)) {
+      failGate("PR-07: getCompactPrompt missing");
+    }
+    if (!grepRepo("getPartialCompactPrompt", promptFile)) {
+      failGate("PR-07: getPartialCompactPrompt missing");
+    }
+    if (!grepRepo("getCompactUserSummaryMessage", promptFile)) {
+      failGate("PR-07: compact continuation message helper missing");
+    }
+    if (!grepRepo("Summary:\\\\n", promptFile)) {
+      failGate("PR-07: formatted compact summaries must use readable Summary header");
+    }
+    if (!grepRepo("getCompactPrompt\\(customInstructions\\)", compactFile)) {
+      failGate("PR-07: live compact service must use getCompactPrompt");
+    }
+    if (!grepRepo("getCompactUserSummaryMessage\\(summary\\)", compactFile)) {
+      failGate("PR-07: live compact service must use compact continuation messages");
+    }
+    if (!grepRepo("getPartialCompactPrompt|RECENT portion|Context for Continuing Work", surfaceTestFile)) {
+      failGate("PR-07: compact prompt tests missing");
+    }
+    if (!grepRepo("CRITICAL: Respond with TEXT ONLY|This session is being continued", compactTestFile)) {
+      failGate("PR-07: compact service prompt behavior test missing");
+    }
+    const vitest = run("node_modules/.bin/vitest", [
+      "run",
+      compactTestFile,
+      surfaceTestFile,
+    ]);
+    if (vitest.status !== 0) failGate("PR-07 targeted Vitest suite failed");
+    pass("PR-07 targeted Vitest suite passed");
+    pass("PR-07: compact prompt APIs and tests present");
     return;
   }
   if (id === "PR-08") {
