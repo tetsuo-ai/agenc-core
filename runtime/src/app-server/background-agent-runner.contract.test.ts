@@ -20,15 +20,14 @@ import {
 import { ABORT, APPROVED } from "../permissions/review-decision.js";
 import type { AgentStatus } from "../agents/status.js";
 import type { ApprovalResolver } from "../tools/orchestrator.js";
-import {
-  JSON_RPC_VERSION,
-  type JsonObject,
-} from "./protocol/index.js";
+import { JSON_RPC_VERSION, type JsonObject } from "./protocol/index.js";
 import {
   createDaemonTuiSession,
   type AgenCDaemonTuiClient,
 } from "../tui/daemon-session.js";
 import { prepareMessagesForWire } from "../llm/wire/shared.js";
+import { RealtimeConversationManager } from "../conversation/realtime/conversation.js";
+import { AgenCRealtimeCallClient } from "./realtime-transport.js";
 
 function restoredLiveAgent(
   agentId: string,
@@ -82,7 +81,7 @@ function makeRestorePermissionRunner(
     sendInput: vi.fn(async () => {}),
     shutdown: vi.fn(async () => {}),
   };
-  const runAgentFn = (async function* () {}) as AgenCRunAgentFunction;
+  const runAgentFn = async function* () {} as AgenCRunAgentFunction;
 
   return new AgenCDelegateBackgroundAgentRunner({
     bootstrap: vi.fn(async () => ({
@@ -113,7 +112,10 @@ describe("AgenC delegate background-agent runner", () => {
         permissionUpdates.push(context);
       }),
     };
-    const session = { conversationId: "parent-session", permissionModeRegistry };
+    const session = {
+      conversationId: "parent-session",
+      permissionModeRegistry,
+    };
     const control = { shutdown: vi.fn(async () => {}) };
     const registry = {};
     const thread = {
@@ -218,14 +220,14 @@ describe("AgenC delegate background-agent runner", () => {
     const execute = vi.fn(async () => ({ content: "file text" }));
     const replayResults: unknown[] = [];
     let runParams: Parameters<AgenCRunAgentFunction>[0] | undefined;
-    const runAgentFn = (async function* (
+    const runAgentFn = async function* (
       params: Parameters<AgenCRunAgentFunction>[0],
     ) {
       runParams = params;
       params.live.status.markRunning("turn-restored");
       yield { kind: "status", text: "restored" };
       await new Promise(() => {});
-    }) as AgenCRunAgentFunction;
+    } as AgenCRunAgentFunction;
     const runner = new AgenCDelegateBackgroundAgentRunner({
       bootstrap: vi.fn(async () => ({
         session,
@@ -415,10 +417,14 @@ describe("AgenC delegate background-agent runner", () => {
       runParams?.initialMessages.filter(
         (message) =>
           message.role === "assistant" &&
-          message.toolCalls?.some((toolCall) => toolCall.id === "tool-existing"),
+          message.toolCalls?.some(
+            (toolCall) => toolCall.id === "tool-existing",
+          ),
       ),
     ).toHaveLength(1);
-    const wireMessages = prepareMessagesForWire(runParams?.initialMessages ?? []);
+    const wireMessages = prepareMessagesForWire(
+      runParams?.initialMessages ?? [],
+    );
     expect(wireMessages).toEqual(
       expect.arrayContaining([
         expect.objectContaining(replayAssistantMessage),
@@ -427,10 +433,12 @@ describe("AgenC delegate background-agent runner", () => {
       ]),
     );
     expect(wireMessages.at(-1)).toMatchObject(replayToolMessage);
-    await expect(runner.getAgentSnapshot("run-restart")).resolves.toMatchObject({
-      status: "running",
-      lastActiveAt: "2026-05-01T12:00:00.500Z",
-    });
+    await expect(runner.getAgentSnapshot("run-restart")).resolves.toMatchObject(
+      {
+        status: "running",
+        lastActiveAt: "2026-05-01T12:00:00.500Z",
+      },
+    );
     await expect(
       runner.submitAgentMessage("run-restart", {
         sessionId: "session-restart",
@@ -464,10 +472,10 @@ describe("AgenC delegate background-agent runner", () => {
     }));
     const execute = vi.fn(async () => ({ content: "should not execute" }));
     const replayResults: unknown[] = [];
-    const runAgentFn = (async function* () {
+    const runAgentFn = async function* () {
       yield { kind: "status", text: "restored" };
       await new Promise(() => {});
-    }) as AgenCRunAgentFunction;
+    } as AgenCRunAgentFunction;
     const runner = new AgenCDelegateBackgroundAgentRunner({
       bootstrap: vi.fn(async () => ({
         session,
@@ -594,13 +602,13 @@ describe("AgenC delegate background-agent runner", () => {
     const dispatch = vi.fn(async () => ({ content: "should not run" }));
     const replayResults: unknown[] = [];
     let runParams: Parameters<AgenCRunAgentFunction>[0] | undefined;
-    const runAgentFn = (async function* (
+    const runAgentFn = async function* (
       params: Parameters<AgenCRunAgentFunction>[0],
     ) {
       runParams = params;
       yield { kind: "status", text: "restored" };
       await new Promise(() => {});
-    }) as AgenCRunAgentFunction;
+    } as AgenCRunAgentFunction;
     const runner = new AgenCDelegateBackgroundAgentRunner({
       bootstrap: vi.fn(async () => ({
         session,
@@ -677,7 +685,7 @@ describe("AgenC delegate background-agent runner", () => {
       sendInput: vi.fn(async () => {}),
       shutdown: vi.fn(async () => {}),
     };
-    const runAgentFn = (async function* (
+    const runAgentFn = async function* (
       params: Parameters<AgenCRunAgentFunction>[0],
     ) {
       params.live.tokenUsage.inputTokens = 8;
@@ -689,7 +697,7 @@ describe("AgenC delegate background-agent runner", () => {
         toolCallCount: 0,
       };
       await new Promise(() => {});
-    }) as AgenCRunAgentFunction;
+    } as AgenCRunAgentFunction;
     const runner = new AgenCDelegateBackgroundAgentRunner({
       bootstrap: vi.fn(async () => ({
         session,
@@ -811,7 +819,7 @@ describe("AgenC delegate background-agent runner", () => {
       sendInput: vi.fn(async () => {}),
       shutdown: vi.fn(async () => {}),
     };
-    const runAgentFn = (async function* (
+    const runAgentFn = async function* (
       params: Parameters<AgenCRunAgentFunction>[0],
     ) {
       params.live.tokenUsage.inputTokens = 0;
@@ -819,7 +827,7 @@ describe("AgenC delegate background-agent runner", () => {
       params.live.tokenUsage.totalTokens = 10;
       yield { kind: "status", text: "cost updated" };
       await new Promise(() => {});
-    }) as AgenCRunAgentFunction;
+    } as AgenCRunAgentFunction;
     const runner = new AgenCDelegateBackgroundAgentRunner({
       bootstrap: vi.fn(async () => ({
         session,
@@ -904,9 +912,9 @@ describe("AgenC delegate background-agent runner", () => {
       sendInput: vi.fn(async () => {}),
       shutdown: vi.fn(async () => {}),
     };
-    const runAgentFn = (async function* () {
+    const runAgentFn = async function* () {
       await new Promise(() => {});
-    }) as AgenCRunAgentFunction;
+    } as AgenCRunAgentFunction;
     const runner = new AgenCDelegateBackgroundAgentRunner({
       bootstrap: vi.fn(async () => ({
         session,
@@ -1008,7 +1016,7 @@ describe("AgenC delegate background-agent runner", () => {
     const progressGate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const runAgentFn = (async function* (
+    const runAgentFn = async function* (
       params: Parameters<AgenCRunAgentFunction>[0],
     ) {
       await progressGate;
@@ -1021,7 +1029,7 @@ describe("AgenC delegate background-agent runner", () => {
         toolCallCount: 0,
       };
       await new Promise(() => {});
-    }) as AgenCRunAgentFunction;
+    } as AgenCRunAgentFunction;
     const runner = new AgenCDelegateBackgroundAgentRunner({
       bootstrap: vi.fn(async () => ({
         session,
@@ -1083,7 +1091,10 @@ describe("AgenC delegate background-agent runner", () => {
       },
       services: {},
     };
-    const live = restoredLiveAgent("run-budget-boundary", "/root/budget-boundary");
+    const live = restoredLiveAgent(
+      "run-budget-boundary",
+      "/root/budget-boundary",
+    );
     const control = {
       resumeAgentFromRollout: vi.fn(async () => ({
         resumedCount: 1,
@@ -1096,7 +1107,7 @@ describe("AgenC delegate background-agent runner", () => {
       }),
     };
     let secondTurnStarted = false;
-    const runAgentFn = (async function* (
+    const runAgentFn = async function* (
       params: Parameters<AgenCRunAgentFunction>[0],
     ) {
       params.live.tokenUsage.inputTokens = 8;
@@ -1119,7 +1130,7 @@ describe("AgenC delegate background-agent runner", () => {
       secondTurnStarted = true;
       yield { kind: "status", text: "second provider turn started" };
       await new Promise(() => {});
-    }) as AgenCRunAgentFunction;
+    } as AgenCRunAgentFunction;
     const runner = new AgenCDelegateBackgroundAgentRunner({
       bootstrap: vi.fn(async () => ({
         session,
@@ -1178,9 +1189,9 @@ describe("AgenC delegate background-agent runner", () => {
       sendInput: vi.fn(async () => {}),
       shutdown: vi.fn(async () => {}),
     };
-    const runAgentFn = (async function* () {
+    const runAgentFn = async function* () {
       await new Promise(() => {});
-    }) as AgenCRunAgentFunction;
+    } as AgenCRunAgentFunction;
     const runner = new AgenCDelegateBackgroundAgentRunner({
       bootstrap: vi.fn(async () => ({
         session,
@@ -1274,9 +1285,9 @@ describe("AgenC delegate background-agent runner", () => {
       sendInput: vi.fn(async () => {}),
       shutdown: vi.fn(async () => {}),
     };
-    const runAgentFn = (async function* () {
+    const runAgentFn = async function* () {
       await new Promise(() => {});
-    }) as AgenCRunAgentFunction;
+    } as AgenCRunAgentFunction;
     const runner = new AgenCDelegateBackgroundAgentRunner({
       bootstrap: vi.fn(async () => ({
         session,
@@ -1331,7 +1342,10 @@ describe("AgenC delegate background-agent runner", () => {
       current: () => createEmptyToolPermissionContext(),
       update: vi.fn(async () => {}),
     };
-    const session = { conversationId: "parent-session", permissionModeRegistry };
+    const session = {
+      conversationId: "parent-session",
+      permissionModeRegistry,
+    };
     const live = restoredLiveAgent("agent-budget-start", "/root/budget-start");
     const control = { shutdown: vi.fn(async () => {}) };
     const thread = {
@@ -1410,7 +1424,10 @@ describe("AgenC delegate background-agent runner", () => {
       current: () => createEmptyToolPermissionContext(),
       update: vi.fn(async () => {}),
     };
-    const session = { conversationId: "parent-session", permissionModeRegistry };
+    const session = {
+      conversationId: "parent-session",
+      permissionModeRegistry,
+    };
     const control = { shutdown: vi.fn(async () => {}) };
     const thread = {
       threadId: "agent_live",
@@ -1471,13 +1488,88 @@ describe("AgenC delegate background-agent runner", () => {
     expect(authBackend.vendKey).toHaveBeenCalledWith("grok", "daemon-session");
   });
 
+  it("resolves active agent realtime bindings with daemon transport clients", async () => {
+    const shutdown = vi.fn(async () => {});
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    const session = {
+      conversationId: "parent-session",
+      conversation: new RealtimeConversationManager(),
+      permissionModeRegistry,
+    };
+    const control = { sendInput: vi.fn(async () => {}) };
+    const thread = {
+      threadId: "agent_realtime",
+      agentPath: "/root/agent_realtime",
+      join: vi.fn(() => new Promise(() => {})),
+    } as AgentThread;
+    const bootstrap = vi.fn(async () => ({
+      session,
+      shutdown,
+    })) as unknown as AgenCBootstrapFunction;
+    const callClient = new AgenCRealtimeCallClient({
+      baseUrl: "https://api.openai.com/v1",
+      fetch: async () => ({
+        status: 201,
+        headers: { get: () => "/v1/realtime/calls/rtc_test" },
+        text: async () => "answer-sdp",
+      }),
+    });
+    const realtimeConnectTransport = vi.fn(async () => ({
+      writer: {
+        sendAudioFrame: vi.fn(),
+        sendConversationItemCreate: vi.fn(),
+        sendConversationFunctionCallOutput: vi.fn(),
+        sendResponseCreate: vi.fn(),
+        sendPayload: vi.fn(),
+      },
+      nextEvent: vi.fn(async () => null),
+      close: vi.fn(),
+    }));
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      delegateFn: vi.fn(async () => ({
+        kind: "async_launched",
+        thread,
+      })) as unknown as AgenCDelegateFunction,
+      realtimeCallClient: callClient,
+      realtimeConnectTransport,
+    });
+
+    await runner.startAgent({
+      objective: "open realtime",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    const binding = await runner.resolveRealtimeThread("agent_realtime");
+
+    expect(binding).toMatchObject({
+      threadId: "agent_realtime",
+      conversation: session.conversation,
+      session,
+      callClient,
+    });
+    expect(binding?.connectTransport).toBe(realtimeConnectTransport);
+    await binding?.routeRealtimeTextInput?.("hello");
+    expect(control.sendInput).toHaveBeenCalledWith("agent_realtime", "hello");
+  });
+
   it("still shuts down bootstrap resources when control shutdown fails", async () => {
     const shutdown = vi.fn(async () => {});
     const permissionModeRegistry = {
       current: () => createEmptyToolPermissionContext(),
       update: vi.fn(async () => {}),
     };
-    const session = { conversationId: "parent-session", permissionModeRegistry };
+    const session = {
+      conversationId: "parent-session",
+      permissionModeRegistry,
+    };
     const control = {
       shutdown: vi.fn(async () => {
         throw new Error("control shutdown failed");
@@ -1529,7 +1621,10 @@ describe("AgenC delegate background-agent runner", () => {
       current: () => createEmptyToolPermissionContext(),
       update: vi.fn(async () => {}),
     };
-    const session = { conversationId: "parent-session", permissionModeRegistry };
+    const session = {
+      conversationId: "parent-session",
+      permissionModeRegistry,
+    };
     const control = {
       shutdown: vi.fn(async () => {}),
       sendInput: vi.fn(async () => {}),
@@ -1545,45 +1640,47 @@ describe("AgenC delegate background-agent runner", () => {
       }),
       join: vi.fn(() => new Promise(() => {})),
     } as unknown as AgentThread;
-    const delegateFn = vi.fn(async (opts: Parameters<AgenCDelegateFunction>[0]) => {
-      await opts.onProgress?.(
-        {
-          kind: "message",
-          message: { role: "assistant", content: "he" },
-        },
-        thread,
-      );
-      await opts.onProgress?.(
-        {
-          kind: "message",
-          message: { role: "assistant", content: "hello" },
-        },
-        thread,
-      );
-      await opts.onProgress?.(
-        {
-          kind: "tool_call",
-          callId: "tool_1",
-          toolName: "FileRead",
-          arguments: JSON.stringify({ path: "src/index.ts" }),
-        },
-        thread,
-      );
-      await opts.onProgress?.(
-        {
-          kind: "tool_result",
-          callId: "tool_1",
-          toolName: "FileRead",
-          result: "file text",
-          isError: false,
-        },
-        thread,
-      );
-      return {
-        kind: "async_launched",
-        thread,
-      };
-    }) as unknown as AgenCDelegateFunction;
+    const delegateFn = vi.fn(
+      async (opts: Parameters<AgenCDelegateFunction>[0]) => {
+        await opts.onProgress?.(
+          {
+            kind: "message",
+            message: { role: "assistant", content: "he" },
+          },
+          thread,
+        );
+        await opts.onProgress?.(
+          {
+            kind: "message",
+            message: { role: "assistant", content: "hello" },
+          },
+          thread,
+        );
+        await opts.onProgress?.(
+          {
+            kind: "tool_call",
+            callId: "tool_1",
+            toolName: "FileRead",
+            arguments: JSON.stringify({ path: "src/index.ts" }),
+          },
+          thread,
+        );
+        await opts.onProgress?.(
+          {
+            kind: "tool_result",
+            callId: "tool_1",
+            toolName: "FileRead",
+            result: "file text",
+            isError: false,
+          },
+          thread,
+        );
+        return {
+          kind: "async_launched",
+          thread,
+        };
+      },
+    ) as unknown as AgenCDelegateFunction;
     const runner = new AgenCDelegateBackgroundAgentRunner({
       bootstrap: vi.fn(async () => ({
         session,
@@ -1722,26 +1819,31 @@ describe("AgenC delegate background-agent runner", () => {
       current: () => createEmptyToolPermissionContext(),
       update: vi.fn(async () => {}),
     };
-    const session = { conversationId: "parent-session", permissionModeRegistry };
+    const session = {
+      conversationId: "parent-session",
+      permissionModeRegistry,
+    };
     const control = { shutdown: vi.fn(async () => {}) };
     const thread = {
       threadId: "agent_live",
       agentPath: "/root/agent_live",
       join: vi.fn(() => new Promise(() => {})),
     } as unknown as AgentThread;
-    const delegateFn = vi.fn(async (opts: Parameters<AgenCDelegateFunction>[0]) => {
-      await opts.onProgress?.(
-        {
-          kind: "run_interrupted",
-          reason: "operator interrupted",
-        },
-        thread,
-      );
-      return {
-        kind: "async_launched",
-        thread,
-      };
-    }) as unknown as AgenCDelegateFunction;
+    const delegateFn = vi.fn(
+      async (opts: Parameters<AgenCDelegateFunction>[0]) => {
+        await opts.onProgress?.(
+          {
+            kind: "run_interrupted",
+            reason: "operator interrupted",
+          },
+          thread,
+        );
+        return {
+          kind: "async_launched",
+          thread,
+        };
+      },
+    ) as unknown as AgenCDelegateFunction;
     const runner = new AgenCDelegateBackgroundAgentRunner({
       bootstrap: vi.fn(async () => ({
         session,
@@ -1788,27 +1890,32 @@ describe("AgenC delegate background-agent runner", () => {
       current: () => createEmptyToolPermissionContext(),
       update: vi.fn(async () => {}),
     };
-    const session = { conversationId: "parent-session", permissionModeRegistry };
+    const session = {
+      conversationId: "parent-session",
+      permissionModeRegistry,
+    };
     const control = { shutdown: vi.fn(async () => {}) };
     const thread = {
       threadId: "agent_live",
       agentPath: "/root/agent_live",
       join: vi.fn(() => new Promise(() => {})),
     } as unknown as AgentThread;
-    const delegateFn = vi.fn(async (opts: Parameters<AgenCDelegateFunction>[0]) => {
-      await opts.onProgress?.(
-        {
-          kind: "run_complete",
-          finalMessage: "done",
-          toolCallCount: 0,
-        },
-        thread,
-      );
-      return {
-        kind: "async_launched",
-        thread,
-      };
-    }) as unknown as AgenCDelegateFunction;
+    const delegateFn = vi.fn(
+      async (opts: Parameters<AgenCDelegateFunction>[0]) => {
+        await opts.onProgress?.(
+          {
+            kind: "run_complete",
+            finalMessage: "done",
+            toolCallCount: 0,
+          },
+          thread,
+        );
+        return {
+          kind: "async_launched",
+          thread,
+        };
+      },
+    ) as unknown as AgenCDelegateFunction;
     const runner = new AgenCDelegateBackgroundAgentRunner({
       bootstrap: vi.fn(async () => ({
         session,
@@ -1855,7 +1962,10 @@ describe("AgenC delegate background-agent runner", () => {
       current: () => createEmptyToolPermissionContext(),
       update: vi.fn(async () => {}),
     };
-    const session = { conversationId: "parent-session", permissionModeRegistry };
+    const session = {
+      conversationId: "parent-session",
+      permissionModeRegistry,
+    };
     const control = { shutdown: vi.fn(async () => {}) };
     const thread = {
       threadId: "agent_live",
@@ -1867,20 +1977,22 @@ describe("AgenC delegate background-agent runner", () => {
         finalMessage: "done",
       })),
     } as unknown as AgentThread;
-    const delegateFn = vi.fn(async (opts: Parameters<AgenCDelegateFunction>[0]) => {
-      await opts.onProgress?.(
-        {
-          kind: "run_complete",
-          finalMessage: "done",
-          toolCallCount: 0,
-        },
-        thread,
-      );
-      return {
-        kind: "async_launched",
-        thread,
-      };
-    }) as unknown as AgenCDelegateFunction;
+    const delegateFn = vi.fn(
+      async (opts: Parameters<AgenCDelegateFunction>[0]) => {
+        await opts.onProgress?.(
+          {
+            kind: "run_complete",
+            finalMessage: "done",
+            toolCallCount: 0,
+          },
+          thread,
+        );
+        return {
+          kind: "async_launched",
+          thread,
+        };
+      },
+    ) as unknown as AgenCDelegateFunction;
     const runner = new AgenCDelegateBackgroundAgentRunner({
       bootstrap: vi.fn(async () => ({
         session,
@@ -1929,28 +2041,33 @@ describe("AgenC delegate background-agent runner", () => {
       current: () => createEmptyToolPermissionContext(),
       update: vi.fn(async () => {}),
     };
-    const session = { conversationId: "parent-session", permissionModeRegistry };
+    const session = {
+      conversationId: "parent-session",
+      permissionModeRegistry,
+    };
     const control = { shutdown: vi.fn(async () => {}) };
     const thread = {
       threadId: "agent_live",
       agentPath: "/root/agent_live",
       join: vi.fn(() => new Promise(() => {})),
     } as unknown as AgentThread;
-    const delegateFn = vi.fn(async (opts: Parameters<AgenCDelegateFunction>[0]) => {
-      await opts.onProgress?.(
-        {
-          kind: "tool_call",
-          callId: "tool_1",
-          toolName: "FileRead",
-          arguments: JSON.stringify({ path: "src/index.ts" }),
-        },
-        thread,
-      );
-      return {
-        kind: "async_launched",
-        thread,
-      };
-    }) as unknown as AgenCDelegateFunction;
+    const delegateFn = vi.fn(
+      async (opts: Parameters<AgenCDelegateFunction>[0]) => {
+        await opts.onProgress?.(
+          {
+            kind: "tool_call",
+            callId: "tool_1",
+            toolName: "FileRead",
+            arguments: JSON.stringify({ path: "src/index.ts" }),
+          },
+          thread,
+        );
+        return {
+          kind: "async_launched",
+          thread,
+        };
+      },
+    ) as unknown as AgenCDelegateFunction;
     const runner = new AgenCDelegateBackgroundAgentRunner({
       bootstrap: vi.fn(async () => ({
         session,
@@ -2486,7 +2603,10 @@ describe("AgenC delegate background-agent runner", () => {
       current: () => createEmptyToolPermissionContext(),
       update: vi.fn(async () => {}),
     };
-    const session = { conversationId: "parent-session", permissionModeRegistry };
+    const session = {
+      conversationId: "parent-session",
+      permissionModeRegistry,
+    };
     const control = { shutdown: vi.fn(async () => {}) };
     let currentStatus: AgentStatus = {
       status: "running",
@@ -2507,10 +2627,7 @@ describe("AgenC delegate background-agent runner", () => {
       }),
       join: vi.fn(() => new Promise(() => {})),
     } as unknown as AgentThread;
-    const times = [
-      "2026-05-01T12:00:00.500Z",
-      "2026-05-01T12:00:01.000Z",
-    ];
+    const times = ["2026-05-01T12:00:00.500Z", "2026-05-01T12:00:01.000Z"];
     let timeIndex = 0;
     const runner = new AgenCDelegateBackgroundAgentRunner({
       bootstrap: vi.fn(async () => ({
@@ -2563,7 +2680,10 @@ describe("AgenC delegate background-agent runner", () => {
       current: () => createEmptyToolPermissionContext(),
       update: vi.fn(async () => {}),
     };
-    const session = { conversationId: "parent-session", permissionModeRegistry };
+    const session = {
+      conversationId: "parent-session",
+      permissionModeRegistry,
+    };
     const control = { shutdown: vi.fn(async () => {}) };
     let currentStatus: AgentStatus = {
       status: "running",
@@ -2672,7 +2792,10 @@ describe("AgenC delegate background-agent runner", () => {
       current: () => createEmptyToolPermissionContext(),
       update: vi.fn(async () => {}),
     };
-    const session = { conversationId: "parent-session", permissionModeRegistry };
+    const session = {
+      conversationId: "parent-session",
+      permissionModeRegistry,
+    };
     const control = { shutdown: vi.fn(async () => {}) };
     let currentStatus: AgentStatus = {
       status: "running",

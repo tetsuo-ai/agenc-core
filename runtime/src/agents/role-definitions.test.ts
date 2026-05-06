@@ -1,18 +1,18 @@
 import { describe, it, expect } from "vitest";
 
 import { listAgentRoles } from "./role.js";
-import { loadUpstreamAgentList } from "../agenc/adapters/upstream-agent-list.js";
+import { listAgentRoleDefinitions } from "./role-definitions.js";
 
-describe("loadUpstreamAgentList (TUI agent picker wiring)", () => {
+describe("listAgentRoleDefinitions (TUI agent picker wiring)", () => {
   it("returns one entry per registered agent role", () => {
     const roleCount = listAgentRoles().length;
-    const list = loadUpstreamAgentList();
+    const list = listAgentRoleDefinitions();
     expect(list.length).toBe(roleCount);
     expect(list.length).toBeGreaterThan(0);
   });
 
   it("every entry is shaped as a BuiltInAgentDefinition", () => {
-    const list = loadUpstreamAgentList();
+    const list = listAgentRoleDefinitions();
     for (const def of list) {
       expect(typeof def.agentType).toBe("string");
       expect(def.agentType.length).toBeGreaterThan(0);
@@ -28,12 +28,12 @@ describe("loadUpstreamAgentList (TUI agent picker wiring)", () => {
 
   it("agentType matches the AgentRole.name", () => {
     const roleNames = listAgentRoles().map((r) => r.name);
-    const got = loadUpstreamAgentList().map((d) => d.agentType);
+    const got = listAgentRoleDefinitions().map((d) => d.agentType);
     expect(got).toEqual(roleNames);
   });
 
   it("whenToUse falls back to role name when description is absent", () => {
-    const list = loadUpstreamAgentList();
+    const list = listAgentRoleDefinitions();
     const roles = listAgentRoles();
     for (const role of roles) {
       const projected = list.find((d) => d.agentType === role.name);
@@ -44,7 +44,7 @@ describe("loadUpstreamAgentList (TUI agent picker wiring)", () => {
   });
 
   it("tools are populated only when the role has an allowlist", () => {
-    const list = loadUpstreamAgentList();
+    const list = listAgentRoleDefinitions();
     const roles = listAgentRoles();
     for (const role of roles) {
       const projected = list.find((d) => d.agentType === role.name);
@@ -73,7 +73,7 @@ describe("loadUpstreamAgentList (TUI agent picker wiring)", () => {
       name: "no-allowlist-role",
       config: { description: "role with no allowlist at all" },
     });
-    const list = loadUpstreamAgentList();
+    const list = listAgentRoleDefinitions();
     const empty = list.find((d) => d.agentType === "empty-allowlist-role");
     const missing = list.find((d) => d.agentType === "no-allowlist-role");
     expect(empty?.tools).toEqual([]);
@@ -82,7 +82,7 @@ describe("loadUpstreamAgentList (TUI agent picker wiring)", () => {
   });
 
   it("getSystemPrompt returns the role's systemPrompt or empty string", () => {
-    const list = loadUpstreamAgentList();
+    const list = listAgentRoleDefinitions();
     const roles = listAgentRoles();
     for (const role of roles) {
       const projected = list.find((d) => d.agentType === role.name);

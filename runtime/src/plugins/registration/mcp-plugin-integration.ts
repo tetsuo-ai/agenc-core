@@ -1,6 +1,9 @@
 import type { McpServerConfig } from "../../config/schema.js";
 import type { LoadedPlugin, PluginLoadIssue } from "../loader.js";
-import { getPluginDataDir } from "../directories.js";
+import {
+  resolvePluginMcpSandboxedServer,
+  type PluginMcpSandboxIssue,
+} from "../sandbox.js";
 import {
   loadRuntimePlugins,
   pluginSettingValue,
@@ -65,14 +68,6 @@ function substituteStringRecord(
   );
 }
 
-function pluginEnvironment(plugin: LoadedPlugin): Readonly<Record<string, string>> {
-  return {
-    AGENC_PLUGIN_ROOT: plugin.root,
-    AGENC_PLUGIN_DATA: getPluginDataDir(plugin.source),
-    AGENC_PLUGIN_NAME: plugin.name,
-  };
-}
-
 export function resolvePluginMcpEnvironment(
   plugin: LoadedPlugin,
   server: McpServerConfig,
@@ -87,10 +82,7 @@ function resolvePluginMcpEnvironmentWithIssues(
   options: PluginMcpRegistrationOptions,
 ): { readonly server: McpServerConfig; readonly issues: ServerResolutionIssues } {
   const issues = createServerResolutionIssues();
-  const env = {
-    ...pluginEnvironment(plugin),
-    ...(substituteStringRecord(plugin, server.env, options, issues) ?? {}),
-  };
+  const env = substituteStringRecord(plugin, server.env, options, issues);
   return {
     server: {
       ...server,
@@ -115,7 +107,7 @@ function resolvePluginMcpEnvironmentWithIssues(
         : server.command !== undefined
           ? { cwd: plugin.root }
           : {}),
-      env,
+      ...(env !== undefined ? { env } : {}),
     },
     issues,
   };
@@ -151,6 +143,21 @@ function reportServerIssues(
   return true;
 }
 
+function reportSandboxIssue(
+  plugin: LoadedPlugin,
+  serverName: string,
+  issue: PluginMcpSandboxIssue,
+  options: PluginMcpRegistrationOptions,
+): void {
+  options.errors?.push({
+    type: "mcp",
+    source: `plugin:${plugin.name}`,
+    plugin: plugin.name,
+    path: serverName,
+    message: issue.message,
+  });
+}
+
 export function addPluginScopeToServers(
   plugin: LoadedPlugin,
   servers: Readonly<Record<string, McpServerConfig>>,
@@ -158,9 +165,20 @@ export function addPluginScopeToServers(
 ): Readonly<Record<string, McpServerConfig>> {
   const scoped: Record<string, McpServerConfig> = {};
   for (const [name, server] of Object.entries(servers)) {
+    const scopedName = `plugin:${plugin.name}:${name}`;
     const resolved = resolvePluginMcpEnvironmentWithIssues(plugin, server, options);
     if (reportServerIssues(plugin, name, resolved.issues, options)) continue;
-    scoped[`plugin:${plugin.name}:${name}`] = resolved.server;
+    const sandboxed = resolvePluginMcpSandboxedServer(
+      plugin,
+      name,
+      resolved.server,
+      { scopedServerName: scopedName },
+    );
+    if ("issue" in sandboxed) {
+      reportSandboxIssue(plugin, name, sandboxed.issue, options);
+      continue;
+    }
+    scoped[scopedName] = sandboxed.server;
   }
   return scoped;
 }

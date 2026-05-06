@@ -407,6 +407,12 @@ export function getCommandsSync(): Command[] {
   return [...builtInCommands()];
 }
 
+export function listTuiCommandList(): readonly Command[] {
+  return getCommandsSync().filter(
+    cmd => cmd.userInvocable !== false && isCommandEnabled(cmd),
+  );
+}
+
 export async function getCommands(
   cwd: string,
   config: unknown = {},

@@ -23,6 +23,32 @@ export {
   type AgenCDaemonDispatcherOptions,
 } from "./app-server/daemon-dispatcher.js";
 export {
+  AGENC_REALTIME_CALL_MULTIPART_BOUNDARY,
+  AGENC_REALTIME_CALL_MULTIPART_CONTENT_TYPE,
+  AgenCRealtimeCallClient,
+  type AgenCRealtimeCallClientOptions,
+  type AgenCRealtimeCallResponse,
+} from "./app-server/realtime-transport.js";
+export {
+  AgenCRealtimeRpcService,
+  type AgenCRealtimeRpcHandlers,
+  type AgenCRealtimeRpcServiceOptions,
+  type AgenCRealtimeThreadBinding,
+} from "./app-server/realtime.js";
+export {
+  REALTIME_WEBRTC_UNSUPPORTED_PLATFORM_MESSAGE,
+  RealtimeWebrtcError,
+  RealtimeWebrtcEventReceiver,
+  RealtimeWebrtcLocalAudioPeak,
+  RealtimeWebrtcSession,
+  RealtimeWebrtcSessionHandle,
+  isRealtimeWebrtcUnsupportedPlatform,
+  type RealtimeWebrtcEvent,
+  type RealtimeWebrtcErrorKind,
+  type RealtimeWebrtcSessionStartOptions,
+  type StartedRealtimeWebrtcSession,
+} from "./conversation/realtime/webrtc/lib.js";
+export {
   AGENC_DAEMON_PROTOCOL_VERSION,
   JSON_RPC_VERSION,
   type AgenCDaemonRequest,

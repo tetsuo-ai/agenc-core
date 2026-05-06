@@ -68,6 +68,11 @@ const expectedMethods = [
   "session.terminate",
   "message.send",
   "message.stream",
+  "thread/realtime/start",
+  "thread/realtime/appendAudio",
+  "thread/realtime/appendText",
+  "thread/realtime/stop",
+  "thread/realtime/listVoices",
   "tool.approve",
   "tool.deny",
   "tool.cancel",
@@ -95,6 +100,14 @@ const expectedNotifications = [
   "event.mcp_elicitation_request",
   "event.agent_status",
   "event.session_event",
+  "thread/realtime/started",
+  "thread/realtime/itemAdded",
+  "thread/realtime/transcript/delta",
+  "thread/realtime/transcript/done",
+  "thread/realtime/outputAudio/delta",
+  "thread/realtime/sdp",
+  "thread/realtime/error",
+  "thread/realtime/closed",
 ] as const;
 
 function readProtocolSchema(): ProtocolSchema {
@@ -236,6 +249,13 @@ describe("AgenC daemon protocol surface", () => {
     expect(packagedSchema["x-agenc-package"]).toEqual(
       schema["x-agenc-package"],
     );
+    expect(packagedSchema["x-agenc-methods"]).toEqual(
+      schema["x-agenc-methods"],
+    );
+    expect(packagedSchema["x-agenc-notifications"]).toEqual(
+      schema["x-agenc-notifications"],
+    );
+    expect(packagedSchema.definitions).toEqual(schema.definitions);
   });
 
   it("validates all request-bearing methods through the published schema", () => {
@@ -342,6 +362,65 @@ describe("AgenC daemon protocol surface", () => {
           content: [{ type: "text", text: "Run tests" }],
           streamId: "stream_1",
         },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: "rt-start",
+        method: "thread/realtime/start",
+        params: {
+          threadId: "session_1",
+          transport: null,
+          realtimeSessionId: null,
+          outputModality: "audio",
+          voice: null,
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: "rt-audio",
+        method: "thread/realtime/appendAudio",
+        params: {
+          threadId: "session_1",
+          audio: {
+            data: "AAAA",
+            sampleRate: 24000,
+            numChannels: 1,
+            samplesPerChannel: 2,
+            itemId: null,
+          },
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: "rt-audio-null",
+        method: "thread/realtime/appendAudio",
+        params: {
+          threadId: "session_1",
+          audio: {
+            data: "BBBB",
+            sampleRate: 24000,
+            numChannels: 1,
+            samplesPerChannel: null,
+            itemId: null,
+          },
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: "rt-text",
+        method: "thread/realtime/appendText",
+        params: { threadId: "session_1", text: "continue" },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: "rt-stop",
+        method: "thread/realtime/stop",
+        params: { threadId: "session_1" },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: "rt-voices",
+        method: "thread/realtime/listVoices",
       },
       {
         jsonrpc: JSON_RPC_VERSION,
@@ -475,7 +554,10 @@ describe("AgenC daemon protocol surface", () => {
         readonly DaemonProtocolInfo: {
           readonly additionalProperties: false;
           readonly properties: {
-            readonly version: { readonly type: "string"; readonly minLength: 1 };
+            readonly version: {
+              readonly type: "string";
+              readonly minLength: 1;
+            };
           };
           readonly required: readonly string[];
         };
@@ -560,6 +642,37 @@ describe("AgenC daemon protocol surface", () => {
         id: "empty-command-program",
         method: "commandExec.start",
         params: { command: [""] },
+      }),
+    ).toBe(false);
+
+    expect(
+      validate({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "bad-realtime-transport",
+        method: "thread/realtime/start",
+        params: { threadId: "session_1", transport: { type: "webrtc" } },
+      }),
+    ).toBe(false);
+
+    expect(
+      validate({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "missing-realtime-output-modality",
+        method: "thread/realtime/start",
+        params: { threadId: "session_1" },
+      }),
+    ).toBe(false);
+
+    expect(
+      validate({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "bad-realtime-voice",
+        method: "thread/realtime/start",
+        params: {
+          threadId: "session_1",
+          outputModality: "audio",
+          voice: "bad",
+        },
       }),
     ).toBe(false);
   });
@@ -676,6 +789,77 @@ describe("AgenC daemon protocol surface", () => {
           },
         },
       },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "thread/realtime/started",
+        params: {
+          threadId: "session_1",
+          realtimeSessionId: null,
+          version: "v2",
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "thread/realtime/sdp",
+        params: {
+          threadId: "session_1",
+          sdp: "v=0\r\n",
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "thread/realtime/outputAudio/delta",
+        params: {
+          threadId: "session_1",
+          audio: {
+            data: "AAAA",
+            sampleRate: 24000,
+            numChannels: 1,
+          },
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "thread/realtime/transcript/delta",
+        params: {
+          threadId: "session_1",
+          role: "assistant",
+          delta: "hel",
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "thread/realtime/transcript/done",
+        params: {
+          threadId: "session_1",
+          role: "assistant",
+          text: "hello",
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "thread/realtime/itemAdded",
+        params: {
+          threadId: "session_1",
+          item: "assistant-message",
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "thread/realtime/error",
+        params: {
+          threadId: "session_1",
+          message: "provider failed",
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "thread/realtime/closed",
+        params: {
+          threadId: "session_1",
+          reason: null,
+        },
+      },
     ];
 
     for (const sample of samples) {
@@ -703,6 +887,17 @@ describe("AgenC daemon protocol surface", () => {
           eventId: "event_bad",
           requestId: "permission_1",
           permissions: "tool.use",
+        },
+      }),
+    ).toBe(false);
+    expect(
+      validate({
+        jsonrpc: JSON_RPC_VERSION,
+        method: "thread/realtime/transcript/delta",
+        params: {
+          threadId: "session_1",
+          role: 1,
+          delta: "bad",
         },
       }),
     ).toBe(false);

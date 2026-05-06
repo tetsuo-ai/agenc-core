@@ -24,5 +24,6 @@ This directory owns the TypeScript port of the realtime conversation spine:
 - `context.ts` owns startup context formatting for current thread history, recent work, workspace tree data, and bounded token rendering.
 - `instructions/` owns realtime turn-boundary markers, developer-role instruction rendering, and the message builders used when text turns enter or leave realtime mode.
 - `prompt.ts` and `prompts/` own backend prompt precedence, first-name placeholder substitution, and the bundled realtime prompt markdown assets.
+- `webrtc/` owns the host WebRTC offer/answer session primitive, event receiver, local audio peak holder, and unsupported-platform fallback.
 
-Concrete daemon JSON-RPC handlers and WebRTC implementation live in later RT items.
+Concrete daemon JSON-RPC handlers live in later RT items.

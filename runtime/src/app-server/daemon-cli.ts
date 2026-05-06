@@ -29,6 +29,12 @@ import {
   AgenCDaemonJsonRpcDispatcher,
   type AgenCDaemonJsonRpcConnection,
 } from "./daemon-dispatcher.js";
+import { AgenCRealtimeRpcService } from "./realtime.js";
+import {
+  AgenCRealtimeCallClient,
+  AgenCRealtimeWebSocketTransportConnector,
+  type AgenCRealtimeHeadersProvider,
+} from "./realtime-transport.js";
 import {
   JSON_RPC_VERSION,
   type AgentStatus,
@@ -55,7 +61,9 @@ import type { AuthBackend } from "../auth/backend.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
 import { createPermissionAuditFileLogger } from "../permissions/permission-audit-log.js";
 import { loadConfig } from "../config/loader.js";
+import { resolveProviderBaseURL } from "../config/env.js";
 import type { AgenCConfig, AgentRunRetentionConfig } from "../config/schema.js";
+import { BUILT_IN_PROVIDER_BASE_URLS } from "../llm/registry/provider-info.js";
 import { startMcpServerFromConfig } from "../mcp/server/start.js";
 import {
   recoverDaemonStateOnStartup,
@@ -89,12 +97,9 @@ export const AGENC_DAEMON_PID_FILENAME = "daemon.pid";
 export const AGENC_DAEMON_SOCKET_FILENAME = "daemon.sock";
 export const AGENC_DAEMON_COOKIE_FILENAME = "daemon.cookie";
 export const AGENC_DAEMON_SNAPSHOT_FILENAME = "daemon-snapshot.json";
-export const AGENC_DAEMON_WEBSOCKET_HOST_ENV =
-  "AGENC_DAEMON_WEBSOCKET_HOST";
-export const AGENC_DAEMON_WEBSOCKET_PORT_ENV =
-  "AGENC_DAEMON_WEBSOCKET_PORT";
-export const AGENC_DAEMON_WEBSOCKET_PATH_ENV =
-  "AGENC_DAEMON_WEBSOCKET_PATH";
+export const AGENC_DAEMON_WEBSOCKET_HOST_ENV = "AGENC_DAEMON_WEBSOCKET_HOST";
+export const AGENC_DAEMON_WEBSOCKET_PORT_ENV = "AGENC_DAEMON_WEBSOCKET_PORT";
+export const AGENC_DAEMON_WEBSOCKET_PATH_ENV = "AGENC_DAEMON_WEBSOCKET_PATH";
 
 const DEFAULT_DAEMON_WEBSOCKET_URL = new URL(
   AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT,
@@ -177,9 +182,7 @@ export function resolveAgenCDaemonWebSocketListenOptions(
     AGENC_DAEMON_WEBSOCKET_DEFAULT_PATH;
   return {
     host,
-    port: parseAgenCDaemonWebSocketPort(
-      env[AGENC_DAEMON_WEBSOCKET_PORT_ENV],
-    ),
+    port: parseAgenCDaemonWebSocketPort(env[AGENC_DAEMON_WEBSOCKET_PORT_ENV]),
     path,
   };
 }
@@ -468,9 +471,7 @@ async function runAgenCDaemonForeground(
   const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
   let webSocketListenOptions: AgenCDaemonWebSocketListenOptions;
   try {
-    webSocketListenOptions = resolveAgenCDaemonWebSocketListenOptions(
-      host.env,
-    );
+    webSocketListenOptions = resolveAgenCDaemonWebSocketListenOptions(host.env);
   } catch (error) {
     io.stderr.write(
       `agenc: daemon websocket configuration failed: ${formatCleanupError(error)}\n`,
@@ -507,14 +508,35 @@ async function runAgenCDaemonForeground(
   const commandExec = new AgenCCommandExecService();
   const cleanup = new AgenCCleanupRegistry();
   let shuttingDown = false;
-  const runner =
-    options.runner ??
-    new AgenCDelegateBackgroundAgentRunner({
+  let runner = options.runner;
+  if (runner === undefined) {
+    const realtimeBaseUrl = resolveAgenCDaemonRealtimeBaseUrl(
+      host.env,
+      authStartup.config,
+    );
+    const realtimeHeaders = createAgenCDaemonRealtimeHeaderResolver(
+      authStartup.authBackend,
+      host.env,
+    );
+    const realtimeCallClient = new AgenCRealtimeCallClient({
+      baseUrl: realtimeBaseUrl,
+      defaultHeaders: realtimeHeaders,
+    });
+    const realtimeWebSocketTransport =
+      new AgenCRealtimeWebSocketTransportConnector({
+        baseUrl: realtimeBaseUrl,
+        defaultHeaders: realtimeHeaders,
+      });
+    runner = new AgenCDelegateBackgroundAgentRunner({
       env: host.env,
       argv: [host.execPath, host.entrypointPath, "--autonomous"],
       authBackend: authStartup.authBackend,
       agentBudget: authStartup.config.agent?.budget,
+      realtimeCallClient,
+      realtimeConnectTransport: (request) =>
+        realtimeWebSocketTransport.connect(request),
     });
+  }
   let snapshotPolicies: AgenCDaemonSnapshotPolicyRegistry;
   try {
     snapshotPolicies = new AgenCDaemonSnapshotPolicyRegistry({
@@ -655,12 +677,17 @@ async function runAgenCDaemonForeground(
     ),
     ready: () => !shuttingDown,
   });
+  const realtime = new AgenCRealtimeRpcService({
+    resolveThread: (threadId) =>
+      runner.resolveRealtimeThread?.(threadId) ?? null,
+  });
   const dispatcher = new AgenCDaemonJsonRpcDispatcher({
     agentManager,
     clientMultiplexer,
     commandExec,
     authBackend: authStartup.authBackend,
     health,
+    realtime,
     initializeAuthenticator: (params) =>
       cookieAuthenticator.authenticateInitializeParams(params),
   });
@@ -705,9 +732,7 @@ async function runAgenCDaemonForeground(
       socketConnections.set(connectionKey, {
         send: (notification) => context.send(notification),
       });
-      const response = await connectionFor(connectionKey).dispatch(
-        message,
-      );
+      const response = await connectionFor(connectionKey).dispatch(message);
       await context.send(response);
       if (isDaemonConnectionAuthenticationFailure(response)) {
         context.close();
@@ -792,11 +817,7 @@ async function runAgenCDaemonForeground(
     | Awaited<typeof shutdownSignal.completed> = { reason: "daemon_shutdown" };
   try {
     if (
-      !(await startConfiguredDaemonMcpServer(
-        authStartup.config,
-        cleanup,
-        io,
-      ))
+      !(await startConfiguredDaemonMcpServer(authStartup.config, cleanup, io))
     ) {
       exitCode = 1;
       return exitCode;
@@ -847,7 +868,9 @@ async function startConfiguredDaemonMcpServer(
       return true;
     }
     if (result.kind === "unsupported") {
-      io.stderr.write(`agenc: ${result.reason}; skipping daemon MCP autostart\n`);
+      io.stderr.write(
+        `agenc: ${result.reason}; skipping daemon MCP autostart\n`,
+      );
       return true;
     }
 
@@ -1311,7 +1334,11 @@ async function restoreRecoveredAgentRuntime(
 
 function recoveredReplayToolCalls(
   snapshot: RecoveredSessionStateSnapshot | undefined,
-): Array<{ readonly callId: string; readonly toolName: string; readonly args: JsonValue }> {
+): Array<{
+  readonly callId: string;
+  readonly toolName: string;
+  readonly args: JsonValue;
+}> {
   if (snapshot === undefined) return [];
   return snapshot.recoveredToolCalls
     .filter((call) => call.recoveryAction === "replay")
@@ -1352,7 +1379,9 @@ function recoverySnapshotMetadata(
     conversation: snapshot.conversation as JsonValue,
     toolState: snapshot.toolState as JsonValue,
     mcpConnectionState: snapshot.mcpConnectionState as JsonValue,
-    recoveredToolCalls: snapshot.recoveredToolCalls.map(recoveryToolCallMetadata),
+    recoveredToolCalls: snapshot.recoveredToolCalls.map(
+      recoveryToolCallMetadata,
+    ),
   };
 }
 
@@ -1360,10 +1389,16 @@ function recoveredInitialMessages(
   snapshot: RecoveredSessionStateSnapshot | undefined,
 ): ReadonlyArray<LLMMessage> | undefined {
   const conversation = snapshot?.conversation;
-  if (!Array.isArray(conversation)) return undefined;
-  const messages = conversation
-    .map(recoveredMessage)
-    .filter((message): message is LLMMessage => message !== undefined);
+  const conversationMessages = Array.isArray(conversation)
+    ? conversation
+        .map(recoveredMessage)
+        .filter((message): message is LLMMessage => message !== undefined)
+        .filter(isUsefulRecoveredMessage)
+    : [];
+  const messages = appendRecoveredCompletedToolMessages(
+    conversationMessages,
+    snapshot?.toolState,
+  );
   return messages.length > 0 ? messages : undefined;
 }
 
@@ -1374,7 +1409,9 @@ function recoveredMessage(value: unknown): LLMMessage | undefined {
   const candidate = value as {
     readonly role?: unknown;
     readonly content?: unknown;
+    readonly delta?: unknown;
     readonly phase?: unknown;
+    readonly payload?: unknown;
     readonly toolCalls?: unknown;
     readonly toolCallId?: unknown;
     readonly toolName?: unknown;
@@ -1387,17 +1424,11 @@ function recoveredMessage(value: unknown): LLMMessage | undefined {
   ) {
     return undefined;
   }
-  const content =
-    typeof candidate.content === "string"
-      ? candidate.content
-      : Array.isArray(candidate.content)
-        ? recoveredContentParts(candidate.content)
-        : "";
+  const content = recoveredMessageContent(candidate);
   return {
     role: candidate.role,
-    content,
-    ...(candidate.phase === "commentary" ||
-    candidate.phase === "final_answer"
+    content: content ?? "",
+    ...(candidate.phase === "commentary" || candidate.phase === "final_answer"
       ? { phase: candidate.phase }
       : {}),
     ...(Array.isArray(candidate.toolCalls)
@@ -1410,6 +1441,23 @@ function recoveredMessage(value: unknown): LLMMessage | undefined {
       ? { toolName: candidate.toolName }
       : {}),
   };
+}
+
+function recoveredMessageContent(candidate: {
+  readonly content?: unknown;
+  readonly delta?: unknown;
+  readonly payload?: unknown;
+}): string | LLMContentPart[] | undefined {
+  if (typeof candidate.content === "string") return candidate.content;
+  if (Array.isArray(candidate.content)) {
+    return recoveredContentParts(candidate.content);
+  }
+  if (typeof candidate.delta === "string") return candidate.delta;
+  const payload = recoveredJsonObject(candidate.payload);
+  if (payload === undefined) return undefined;
+  if (typeof payload.message === "string") return payload.message;
+  if (typeof payload.displayText === "string") return payload.displayText;
+  return undefined;
 }
 
 function recoveredContentParts(value: readonly unknown[]): LLMContentPart[] {
@@ -1490,6 +1538,128 @@ function recoveredContentParts(value: readonly unknown[]): LLMContentPart[] {
   return parts;
 }
 
+function isUsefulRecoveredMessage(message: LLMMessage): boolean {
+  if (
+    message.role === "user" &&
+    typeof message.content === "string" &&
+    message.content.length === 0 &&
+    message.toolCallId === undefined &&
+    (message.toolCalls?.length ?? 0) === 0
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function appendRecoveredCompletedToolMessages(
+  messages: readonly LLMMessage[],
+  toolState: unknown,
+): LLMMessage[] {
+  const completed = recoveredCompletedToolCalls(toolState);
+  if (completed.length === 0) return [...messages];
+  const next = messages.map((message) => ({ ...message }));
+  for (const toolCall of completed) {
+    if (!hasRecoveredAssistantToolCall(next, toolCall.callId)) {
+      next.push({
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          {
+            id: toolCall.callId,
+            name: toolCall.toolName,
+            arguments: stringifyRecoveredJson(toolCall.args ?? {}),
+          },
+        ],
+      });
+    }
+    if (!hasRecoveredToolResult(next, toolCall.callId)) {
+      next.push({
+        role: "tool",
+        content: stringifyRecoveredToolResult(toolCall.result),
+        toolCallId: toolCall.callId,
+        toolName: toolCall.toolName,
+      });
+    }
+  }
+  return next;
+}
+
+function recoveredCompletedToolCalls(
+  toolState: unknown,
+): Array<{
+  readonly callId: string;
+  readonly toolName: string;
+  readonly args?: unknown;
+  readonly result?: unknown;
+}> {
+  const completed = recoveredJsonObject(toolState)?.completed;
+  const completedObject = recoveredJsonObject(completed);
+  if (completedObject === undefined) return [];
+  const calls: Array<{
+    readonly callId: string;
+    readonly toolName: string;
+    readonly args?: unknown;
+    readonly result?: unknown;
+  }> = [];
+  for (const [key, value] of Object.entries(completedObject)) {
+    const entry = recoveredJsonObject(value);
+    if (entry === undefined) continue;
+    if (entry.status !== "completed" && entry.status !== "failed") continue;
+    const toolName = typeof entry.toolName === "string" ? entry.toolName : "";
+    if (toolName.length === 0) continue;
+    const callId =
+      typeof entry.requestId === "string" && entry.requestId.length > 0
+        ? entry.requestId
+        : key;
+    calls.push({
+      callId,
+      toolName,
+      ...(entry.input !== undefined ? { args: entry.input } : {}),
+      ...(entry.result !== undefined ? { result: entry.result } : {}),
+    });
+  }
+  return calls;
+}
+
+function hasRecoveredAssistantToolCall(
+  messages: readonly LLMMessage[],
+  callId: string,
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "assistant" &&
+      message.toolCalls?.some((toolCall) => toolCall.id === callId) === true,
+  );
+}
+
+function hasRecoveredToolResult(
+  messages: readonly LLMMessage[],
+  callId: string,
+): boolean {
+  return messages.some(
+    (message) => message.role === "tool" && message.toolCallId === callId,
+  );
+}
+
+function stringifyRecoveredToolResult(value: unknown): string {
+  if (typeof value === "string") return value;
+  return stringifyRecoveredJson(value ?? null);
+}
+
+function stringifyRecoveredJson(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "null";
+  }
+}
+
+function recoveredJsonObject(value: unknown): JsonObject | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonObject)
+    : undefined;
+}
+
 function recoveryToolCallMetadata(call: RecoveredInFlightToolCall): JsonObject {
   return {
     projectDir: call.projectDir,
@@ -1552,6 +1722,36 @@ interface AgenCDaemonAuthStartup {
   readonly daemonHome: string;
   readonly config: AgenCConfig;
   readonly authBackend: AuthBackend;
+}
+
+export function resolveAgenCDaemonRealtimeBaseUrl(
+  env: NodeJS.ProcessEnv,
+  config?: AgenCConfig,
+): string {
+  return (
+    resolveProviderBaseURL("openai", env) ??
+    readNonEmptyString(config?.providers?.openai?.base_url) ??
+    BUILT_IN_PROVIDER_BASE_URLS.openai
+  );
+}
+
+export function createAgenCDaemonRealtimeHeaderResolver(
+  authBackend: AuthBackend,
+  env: NodeJS.ProcessEnv,
+): AgenCRealtimeHeadersProvider {
+  const apiKey = readNonEmptyString(env.OPENAI_API_KEY);
+  if (apiKey !== undefined) {
+    return { authorization: `Bearer ${apiKey}` };
+  }
+
+  return async (sessionConfig) => {
+    const sessionId = readNonEmptyString(sessionConfig?.sessionId);
+    if (sessionId === undefined) {
+      throw new Error("realtime provider key vending requires a session id");
+    }
+    const vended = await authBackend.vendKey("openai", sessionId);
+    return { authorization: `Bearer ${vended.apiKey}` };
+  };
 }
 
 async function tryResolveAgenCDaemonAuthStartup(
@@ -1715,4 +1915,9 @@ function isDaemonConnectionAuthenticationFailure(message: JsonObject): boolean {
 
 function formatCleanupError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function readNonEmptyString(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed !== undefined && trimmed.length > 0 ? trimmed : undefined;
 }

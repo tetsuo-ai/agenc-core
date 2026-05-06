@@ -247,12 +247,12 @@ vi.mock("../state/AppState.js", async () => {
   };
 });
 
-vi.mock("../../agenc/adapters/upstream-commands.js", () => ({
-  loadUpstreamCommandList: () => [],
+vi.mock("../../commands.js", () => ({
+  listTuiCommandList: () => [],
 }));
 
-vi.mock("../../agenc/adapters/upstream-agent-list.js", () => ({
-  loadUpstreamAgentList: () => [],
+vi.mock("../../agents/role-definitions.js", () => ({
+  listAgentRoleDefinitions: () => [],
 }));
 
 vi.mock("../keybindings/KeybindingProviderSetup.js", async () => {
