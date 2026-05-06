@@ -134,14 +134,7 @@ export function findActualString(
   fileContent: string,
   searchString: string,
 ): string | null {
-  if (fileContent.includes(searchString)) {
-    return searchString;
-  }
-  const normalizedSearch = normalizeQuotes(searchString);
-  const normalizedFile = normalizeQuotes(fileContent);
-  const idx = normalizedFile.indexOf(normalizedSearch);
-  if (idx < 0) return null;
-  return fileContent.substring(idx, idx + searchString.length);
+  return findNormalizedMatches(fileContent, searchString)[0]?.actualOldString ?? null;
 }
 
 function isOpeningQuoteContext(chars: readonly string[], index: number): boolean {
@@ -266,6 +259,8 @@ interface ResolvedMultiEditInputs {
   readonly edits: readonly ResolvedMultiEdit[];
 }
 
+type LineEndingType = "CRLF" | "LF";
+
 function validateInputs(
   args: EditArgs,
 ): ResolvedEditInputs | { error: string } {
@@ -338,6 +333,33 @@ interface FileSnapshot {
   readonly content: string;
   readonly mtimeMs: number;
   readonly size: number;
+  readonly encoding: BufferEncoding;
+  readonly lineEndings: LineEndingType;
+}
+
+function detectEncoding(buffer: Buffer): BufferEncoding {
+  return buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe
+    ? "utf16le"
+    : "utf8";
+}
+
+function detectLineEndings(content: string): LineEndingType {
+  let crlfCount = 0;
+  let lfCount = 0;
+  for (let i = 0; i < content.length; i += 1) {
+    if (content[i] !== "\n") continue;
+    if (i > 0 && content[i - 1] === "\r") crlfCount += 1;
+    else lfCount += 1;
+  }
+  return crlfCount > lfCount ? "CRLF" : "LF";
+}
+
+function encodeForOriginalFormat(
+  content: string,
+  lineEndings: LineEndingType,
+): string {
+  if (lineEndings !== "CRLF") return content;
+  return content.replaceAll("\r\n", "\n").split("\n").join("\r\n");
 }
 
 async function readFileSnapshot(absolutePath: string): Promise<FileSnapshot> {
@@ -347,9 +369,11 @@ async function readFileSnapshot(absolutePath: string): Promise<FileSnapshot> {
       throw new Error(`Path is not a regular file: ${absolutePath}`);
     }
     const buffer = await readFile(absolutePath);
-    // Normalize CRLF→LF the same way AgenC FileEditTool.ts:214 does;
-    // the model authoring `old_string` against Read output sees LF.
-    const text = buffer.toString("utf8").replaceAll("\r\n", "\n");
+    const encoding = detectEncoding(buffer);
+    const rawText = buffer.toString(encoding);
+    // Normalize CRLF→LF for matching because Read output is LF-normalized,
+    // but retain the original format for the final write.
+    const text = rawText.replaceAll("\r\n", "\n");
     return {
       exists: true,
       content: text,
@@ -358,11 +382,20 @@ async function readFileSnapshot(absolutePath: string): Promise<FileSnapshot> {
           ? fileStats.mtimeMs
           : 0,
       size: fileStats.size,
+      encoding,
+      lineEndings: detectLineEndings(rawText),
     };
   } catch (err) {
     const code = (err as NodeJS.ErrnoException)?.code;
     if (code === "ENOENT") {
-      return { exists: false, content: "", mtimeMs: 0, size: 0 };
+      return {
+        exists: false,
+        content: "",
+        mtimeMs: 0,
+        size: 0,
+        encoding: "utf8",
+        lineEndings: "LF",
+      };
     }
     throw err;
   }
@@ -386,6 +419,18 @@ async function writeFileCreatingParents(
 ): Promise<void> {
   await mkdir(dirname(absolutePath), { recursive: true });
   await writeFile(absolutePath, content, "utf8");
+}
+
+async function writeFilePreservingSnapshot(
+  absolutePath: string,
+  content: string,
+  snapshot: FileSnapshot,
+): Promise<void> {
+  await writeFile(
+    absolutePath,
+    encodeForOriginalFormat(content, snapshot.lineEndings),
+    snapshot.encoding,
+  );
 }
 
 /**
@@ -419,44 +464,33 @@ async function snapshotPostWrite(
   });
 }
 
-function applyEdit(
-  fileContent: string,
-  oldString: string,
-  newString: string,
-  replaceAll: boolean,
-): { updated: string; replacements: number } {
-  let search = oldString;
-  // Donor parity: deleting a string that appears before a newline removes
-  // that following newline too. This is deliberately substring-based, so
-  // inline `oldString + "\n"` matches join the surrounding lines.
-  const stripTrailingNewline =
-    newString === "" &&
-    !oldString.endsWith("\n") && fileContent.includes(`${oldString}\n`);
-  if (stripTrailingNewline) search = `${oldString}\n`;
-
-  const updated = replaceAll
-    ? fileContent.replaceAll(search, () => newString)
-    : fileContent.replace(search, () => newString);
-  return {
-    updated,
-    replacements: countReplacementOccurrences(fileContent, search, replaceAll),
-  };
+interface NormalizedMatch {
+  readonly start: number;
+  readonly end: number;
+  readonly actualOldString: string;
 }
 
-function countReplacementOccurrences(
+function findNormalizedMatches(
   fileContent: string,
-  search: string,
-  replaceAll: boolean,
-): number {
-  if (search === "") return 0;
-  if (!replaceAll) return fileContent.includes(search) ? 1 : 0;
-  let count = 0;
+  oldString: string,
+): NormalizedMatch[] {
+  if (oldString === "") return [];
+  const normalizedSearch = normalizeQuotes(oldString);
+  if (normalizedSearch === "") return [];
+
+  const normalizedFile = normalizeQuotes(fileContent);
+  const matches: NormalizedMatch[] = [];
   let from = 0;
   while (true) {
-    const idx = fileContent.indexOf(search, from);
-    if (idx < 0) return count;
-    count += 1;
-    from = idx + search.length;
+    const idx = normalizedFile.indexOf(normalizedSearch, from);
+    if (idx < 0) return matches;
+    const end = idx + oldString.length;
+    matches.push({
+      start: idx,
+      end,
+      actualOldString: fileContent.substring(idx, end),
+    });
+    from = idx + normalizedSearch.length;
   }
 }
 
@@ -466,40 +500,57 @@ function applyValidatedEdit(
   newString: string,
   replaceAll: boolean,
 ): { updated: string; replacements: number } | { error: string } {
-  const actualOldString = findActualString(fileContent, oldString);
-  if (actualOldString === null) {
+  const matches = findNormalizedMatches(fileContent, oldString);
+  if (matches.length === 0) {
     return {
       error: `String to replace not found in file.\nString: ${oldString}`,
     };
   }
 
-  let matches = 0;
-  let from = 0;
-  while (true) {
-    const idx = fileContent.indexOf(actualOldString, from);
-    if (idx < 0) break;
-    matches += 1;
-    from = idx + actualOldString.length;
-    if (!replaceAll && matches > 1) break;
-  }
-  if (matches === 0) {
+  if (!replaceAll && matches.length > 1) {
     return {
-      error: `String to replace not found in file.\nString: ${oldString}`,
-    };
-  }
-  if (!replaceAll && matches > 1) {
-    return {
-      error: `Found ${matches} matches of the string to replace, but replace_all is false. To replace all occurrences, set replace_all to true. To replace only one occurrence, please provide more context to uniquely identify the instance.\nString: ${oldString}`,
+      error: `Found ${matches.length} matches of the string to replace, but replace_all is false. To replace all occurrences, set replace_all to true. To replace only one occurrence, please provide more context to uniquely identify the instance.\nString: ${oldString}`,
     };
   }
 
-  const actualNewString = preserveQuoteStyle(
-    oldString,
-    actualOldString,
-    newString,
-  );
+  // Donor parity: when deleting a string and any match is followed by a
+  // newline, replacements target `old_string + "\n"` and leave inline/final
+  // occurrences untouched.
+  const stripTrailingNewline =
+    newString === "" &&
+    !oldString.endsWith("\n") &&
+    matches.some((match) => fileContent.startsWith("\n", match.end));
+  const selectedMatches = replaceAll
+    ? stripTrailingNewline
+      ? matches.filter((match) => fileContent.startsWith("\n", match.end))
+      : matches
+    : matches.slice(0, 1);
 
-  return applyEdit(fileContent, actualOldString, actualNewString, replaceAll);
+  let updated = "";
+  let cursor = 0;
+  let replacements = 0;
+  for (const match of selectedMatches) {
+    if (match.start < cursor) continue;
+    const end =
+      stripTrailingNewline && fileContent.startsWith("\n", match.end)
+        ? match.end + 1
+        : match.end;
+    const actualNewString = preserveQuoteStyle(
+      oldString,
+      match.actualOldString,
+      newString,
+    );
+    updated += fileContent.slice(cursor, match.start);
+    updated += actualNewString;
+    cursor = end;
+    replacements += 1;
+  }
+  updated += fileContent.slice(cursor);
+
+  return {
+    updated,
+    replacements,
+  };
 }
 
 /**
@@ -692,7 +743,11 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         }
         // Empty file + empty old_string → write new_string.
         try {
-          await writeFile(absoluteFilePath, new_string, "utf8");
+          await writeFilePreservingSnapshot(
+            absoluteFilePath,
+            new_string,
+            snapshot,
+          );
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           return errorResult(`Failed to write file: ${message}`);
@@ -769,7 +824,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       const { updated, replacements: matches } = applied;
 
       try {
-        await writeFile(absoluteFilePath, updated, "utf8");
+        await writeFilePreservingSnapshot(absoluteFilePath, updated, snapshot);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return errorResult(`Failed to write file: ${message}`);
@@ -971,7 +1026,11 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
           return errorResult("Cannot create new file - file already exists.");
         }
         try {
-          await writeFile(absoluteFilePath, firstEdit.new_string, "utf8");
+          await writeFilePreservingSnapshot(
+            absoluteFilePath,
+            firstEdit.new_string,
+            snapshot,
+          );
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           return errorResult(`Failed to write file: ${message}`);
@@ -1039,7 +1098,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       }
 
       try {
-        await writeFile(absoluteFilePath, updated, "utf8");
+        await writeFilePreservingSnapshot(absoluteFilePath, updated, snapshot);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return errorResult(`Failed to write file: ${message}`);

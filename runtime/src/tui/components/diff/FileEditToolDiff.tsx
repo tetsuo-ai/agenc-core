@@ -7,8 +7,8 @@ import { Suspense, use, useState } from 'react';
 import { useTerminalSize } from '../../hooks/useTerminalSize';
 import { Box, Text } from '../../ink.js';
 import type { FileEdit } from '../../../tools/FileEditTool/types';
-import { findActualString, preserveQuoteStyle } from '../../../tools/FileEditTool/utils';
-import { adjustHunkLineNumbers, CONTEXT_LINES, getPatchForDisplay } from '../../../utils/diff'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getPatchForEdits } from '../../../tools/FileEditTool/utils';
+import { adjustHunkLineNumbers, CONTEXT_LINES } from '../../../utils/diff'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logError } from '../../../utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
 import { CHUNK_SIZE, openForScan, readCapped, scanForContext } from '../../../utils/readEditContext'; // upstream-import: keep target is owned by another Z-PURGE item
 import { firstLineOf } from '../../../utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -112,43 +112,57 @@ async function loadDiffData(file_path: string, edits: FileEdit[]): Promise<DiffD
   // SedEditPermissionRequest passes the entire file as old_string. Scanning for
   // a needle ≥ CHUNK_SIZE allocates O(needle) for the overlap buffer — skip the
   // file read entirely and diff the inputs we already have.
-  if (single && single.old_string.length >= CHUNK_SIZE) {
+  if (single && single.old_string.length >= CHUNK_SIZE && !single.replace_all) {
     return diffToolInputsOnly(file_path, [single]);
   }
   try {
     const handle = await openForScan(file_path);
     if (handle === null) return diffToolInputsOnly(file_path, valid);
     try {
-      // Multi-edit and empty old_string genuinely need full-file for sequential
-      // replacements — structuredPatch needs before/after strings. replace_all
-      // routes through the chunked path below (shows first-occurrence window;
-      // matches within the slice still replace via edit.replace_all).
-      if (!single || single.old_string === '') {
+      // Multi-edit, empty old_string, and replace_all need the capped full file
+      // so the permission preview cannot hide later replacements.
+      if (!single || single.old_string === '' || single.replace_all) {
         const file = await readCapped(handle);
         if (file === null) return diffToolInputsOnly(file_path, valid);
-        const normalized = valid.map(e => normalizeEdit(file, e));
+        const { patch } = getPatchForEdits({
+          filePath: file_path,
+          fileContents: file,
+          edits: valid
+        });
         return {
-          patch: getPatchForDisplay({
-            filePath: file_path,
-            fileContents: file,
-            edits: normalized
-          }),
+          patch,
           firstLine: firstLineOf(file),
           fileContent: file
         };
       }
       const ctx = await scanForContext(handle, single.old_string, CONTEXT_LINES);
       if (ctx.truncated || ctx.content === '') {
+        const file = await readCapped(handle);
+        if (file !== null) {
+          try {
+            const { patch } = getPatchForEdits({
+              filePath: file_path,
+              fileContents: file,
+              edits: [single]
+            });
+            return {
+              patch,
+              firstLine: firstLineOf(file),
+              fileContent: file
+            };
+          } catch {
+            // Expected when neither exact nor normalized matching succeeds.
+          }
+        }
         return diffToolInputsOnly(file_path, [single]);
       }
-      const normalized = normalizeEdit(ctx.content, single);
-      const hunks = getPatchForDisplay({
+      const { patch } = getPatchForEdits({
         filePath: file_path,
         fileContents: ctx.content,
-        edits: [normalized]
+        edits: [single]
       });
       return {
-        patch: adjustHunkLineNumbers(hunks, ctx.lineOffset - 1),
+        patch: adjustHunkLineNumbers(patch, ctx.lineOffset - 1),
         firstLine: ctx.lineOffset === 1 ? firstLineOf(ctx.content) : null,
         fileContent: ctx.content
       };
@@ -162,21 +176,12 @@ async function loadDiffData(file_path: string, edits: FileEdit[]): Promise<DiffD
 }
 function diffToolInputsOnly(filePath: string, edits: FileEdit[]): DiffData {
   return {
-    patch: edits.flatMap(e => getPatchForDisplay({
+    patch: edits.flatMap(e => getPatchForEdits({
       filePath,
       fileContents: e.old_string,
       edits: [e]
-    })),
+    }).patch),
     firstLine: null,
     fileContent: undefined
-  };
-}
-function normalizeEdit(fileContent: string, edit: FileEdit): FileEdit {
-  const actualOld = findActualString(fileContent, edit.old_string) || edit.old_string;
-  const actualNew = preserveQuoteStyle(edit.old_string, actualOld, edit.new_string);
-  return {
-    ...edit,
-    old_string: actualOld,
-    new_string: actualNew
   };
 }

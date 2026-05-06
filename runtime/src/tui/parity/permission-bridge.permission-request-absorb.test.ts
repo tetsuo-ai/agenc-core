@@ -228,6 +228,11 @@ describe("PermissionRequest absorb wiring", () => {
       permissionMocks.BashPermissionRequest,
     );
     expect(__permissionRequestTest.permissionComponentForTool(
+      permissionMocks.FileEditTool as unknown as Tool,
+    )).toBe(
+      permissionMocks.FileEditPermissionRequest,
+    );
+    expect(__permissionRequestTest.permissionComponentForTool(
       permissionMocks.FileReadTool as unknown as Tool,
     )).toBe(
       permissionMocks.FilesystemPermissionRequest,

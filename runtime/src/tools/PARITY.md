@@ -20,8 +20,10 @@ Target coverage:
 - `runtime/src/tool-registry.ts` registers the visible `Edit` and `MultiEdit` tools in the first-class file surface.
 - `runtime/src/tools/system/file-edit.ts` owns the provider-facing edit execution contract: read-before-write, stale-read rejection, exact replacement, `replace_all`, empty-old-string create semantics, notebook rejection, path permission checks, mutation metadata, post-write read snapshots, and LSP change notification.
 - Empty replacements intentionally follow the donor `old_string + "\n"` deletion rule, including inline matches and `replace_all` behavior.
+- Typography-normalized matches are counted as one match set before uniqueness validation. `replace_all` replaces every normalized-equivalent dash, quote, and space variant, while non-`replace_all` rejects ambiguous mixed variants.
+- Existing file edits preserve detected UTF-8/UTF-16LE encoding and LF/CRLF line-ending style on disk while matching against LF-normalized read content.
 - `runtime/src/tools/FileEditTool/` owns the upstream-shaped TUI/tool rendering contract used by permission and transcript components.
-- `runtime/src/tui/components/diff/FileEditToolDiff.tsx` and `runtime/src/tui/components/permissions/{FileEditPermissionRequest,SedEditPermissionRequest,FilePermissionDialog}/` own diff rendering and file-edit permission flow.
+- `runtime/src/tui/components/diff/FileEditToolDiff.tsx` and `runtime/src/tui/components/permissions/{FileEditPermissionRequest,SedEditPermissionRequest,FilePermissionDialog}/` own diff rendering and file-edit permission flow, including full-file preview fallback when raw context scan misses a normalized-only match and complete capped-file previews for `replace_all`.
 
 Tests:
 - `runtime/src/tools/system/file-edit.test.ts`

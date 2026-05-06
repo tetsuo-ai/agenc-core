@@ -519,6 +519,104 @@ describe("Edit tool", () => {
     await expect(readFile(file, "utf8")).resolves.toBe("“two” and “two”\n");
   });
 
+  test("normalized-equivalent matches are ambiguous without replace_all", async () => {
+    const file = join(root, "mixed-dash-ambiguous.md");
+    const fileContent = "a-b\na—b\n";
+    await writeFile(file, fileContent, "utf8");
+    const fileStats = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: fileContent,
+      timestamp: fileStats.mtimeMs,
+      viewKind: "full",
+    });
+
+    const tool = createFileEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      old_string: "a-b",
+      new_string: "c-d",
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain(
+      "matches of the string to replace, but replace_all is false",
+    );
+    await expect(readFile(file, "utf8")).resolves.toBe(fileContent);
+  });
+
+  test("replace_all edits every normalized-equivalent dash and space variant", async () => {
+    const file = join(root, "mixed-normalized-replace-all.md");
+    const fileContent = "a—b a–b\nx y x y\n";
+    await writeFile(file, fileContent, "utf8");
+    const fileStats = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: fileContent,
+      timestamp: fileStats.mtimeMs,
+      viewKind: "full",
+    });
+
+    const tool = createFileMultiEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      edits: [
+        { old_string: "a-b", new_string: "c-d", replace_all: true },
+        { old_string: "x y", new_string: "z y", replace_all: true },
+      ],
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.metadata).toMatchObject({
+      ui: {
+        replacements: 4,
+      },
+    });
+    await expect(readFile(file, "utf8")).resolves.toBe("c-d c-d\nz y z y\n");
+  });
+
+  test("edits preserve CRLF line endings on disk", async () => {
+    const file = join(root, "crlf.txt");
+    const diskContent = "alpha\r\nbeta\r\n";
+    await writeFile(file, diskContent, "utf8");
+    const fileStats = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: "alpha\nbeta\n",
+      timestamp: fileStats.mtimeMs,
+      viewKind: "full",
+    });
+
+    const tool = createFileEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      old_string: "beta",
+      new_string: "gamma",
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBeUndefined();
+    await expect(readFile(file, "utf8")).resolves.toBe("alpha\r\ngamma\r\n");
+  });
+
+  test("edits preserve UTF-16LE encoding on disk", async () => {
+    const file = join(root, "utf16.txt");
+    const diskContent = "\ufeffalpha\nbeta\n";
+    await writeFile(file, Buffer.from(diskContent, "utf16le"));
+
+    const tool = createFileEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      old_string: "beta",
+      new_string: "gamma",
+    });
+
+    expect(result.isError).toBeUndefined();
+    const after = await readFile(file);
+    expect(after[0]).toBe(0xff);
+    expect(after[1]).toBe(0xfe);
+    expect(after.toString("utf16le")).toBe("\ufeffalpha\ngamma\n");
+  });
+
   test("findActualString returns null for unrelated text", () => {
     expect(findActualString("alpha beta", "gamma")).toBeNull();
     expect(findActualString("alpha beta", "alpha")).toBe("alpha");

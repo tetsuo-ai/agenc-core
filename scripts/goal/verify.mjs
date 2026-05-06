@@ -116,6 +116,31 @@ const ITEM_EVIDENCE = {
       "runtime/src/rollout/rollout-store.contract.test.ts",
     ],
   },
+  "RT-12": {
+    files: [
+      "runtime/src/conversation/realtime/prompt.ts",
+      "runtime/src/conversation/realtime/prompts/backend_prompt.md",
+      "runtime/src/conversation/realtime/prompts/realtime_start.md",
+      "runtime/src/conversation/realtime/prompts/realtime_end.md",
+      "runtime/src/conversation/realtime/prompt.contract.test.ts",
+      "runtime/src/types/markdown.d.ts",
+      "parity/RT-12-parity.json",
+    ],
+    grepPresent: [
+      { pattern: "prepareRealtimeBackendPrompt", scope: "runtime/src/conversation/realtime/prompt.ts" },
+      { pattern: "\\{\\{ user_first_name \\}\\}", scope: "runtime/src/conversation/realtime/prompts/backend_prompt.md" },
+      { pattern: "experimental_realtime_ws_backend_prompt", scope: "runtime/src/config/schema.ts" },
+      { pattern: "experimental_realtime_ws_backend_prompt", scope: "runtime/src/conversation/realtime/conversation.contract.test.ts" },
+      { pattern: "runtime/src/conversation/realtime/prompts/realtime_start\\.md", scope: "parity/RT-12-parity.json" },
+      { pattern: "core/src/realtime_prompt\\.rs", scope: "parity/RT-12-parity.json" },
+    ],
+    tests: [
+      "runtime/src/conversation/realtime/prompt.contract.test.ts",
+      "runtime/src/conversation/realtime/conversation.contract.test.ts",
+      "runtime/src/conversation/realtime/instructions/instructions.contract.test.ts",
+      "runtime/src/config/config.test.ts",
+    ],
+  },
   "IDE-03": {
     files: [
       "scripts/goal/verify.mjs",

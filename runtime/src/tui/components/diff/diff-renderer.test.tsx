@@ -41,6 +41,11 @@ const fileEditMockState = vi.hoisted(() => ({
       replace_all?: boolean
     }>
   }>,
+  patchFromContentsInputs: [] as Array<{
+    filePath: string
+    oldContent: string
+    newContent: string
+  }>,
   openForScanCanOpen: false,
   readCappedContent: null as string | null,
   scanContext: null as {
@@ -203,6 +208,16 @@ vi.mock('../../../utils/diff', () => ({
       makeHunk(1, [`-${edit.old_string}`, `+${edit.new_string}`]),
     ]
   },
+  getPatchFromContents: (input: {
+    filePath: string
+    oldContent: string
+    newContent: string
+  }) => {
+    fileEditMockState.patchFromContentsInputs.push(input)
+    return [
+      makeHunk(1, [`-${input.oldContent}`, `+${input.newContent}`]),
+    ]
+  },
 }))
 
 vi.mock('../../../utils/readEditContext', () => ({
@@ -313,6 +328,7 @@ describe('diff renderer components', () => {
     reactHookState.useValue = undefined
     fileEditMockState.openForScanCalls = []
     fileEditMockState.patchInputs = []
+    fileEditMockState.patchFromContentsInputs = []
     fileEditMockState.openForScanCanOpen = false
     fileEditMockState.readCappedContent = null
     fileEditMockState.scanContext = null
@@ -430,9 +446,8 @@ describe('diff renderer components', () => {
     const diffData = await body.props.promise
 
     expect(fileEditMockState.openForScanCalls).toEqual([])
-    expect(fileEditMockState.patchInputs).toHaveLength(1)
-    expect(fileEditMockState.patchInputs[0]?.edits).toEqual([
-      { old_string: 'abcd', new_string: 'wxyz' },
+    expect(fileEditMockState.patchFromContentsInputs).toMatchObject([
+      { oldContent: 'abcd', newContent: 'wxyz' },
     ])
 
     reactHookState.useValue = diffData
@@ -453,7 +468,8 @@ describe('diff renderer components', () => {
     const diffData = await body.props.promise
 
     expect(fileEditMockState.openForScanCalls).toEqual(['src/missing.ts'])
-    expect(fileEditMockState.patchInputs[0]?.fileContents).toBe('xy')
+    expect(fileEditMockState.patchFromContentsInputs[0]?.oldContent).toBe('xy')
+    expect(fileEditMockState.patchFromContentsInputs[0]?.newContent).toBe('zz')
 
     reactHookState.useValue = diffData
     const output = renderPlain(body)
@@ -473,7 +489,8 @@ describe('diff renderer components', () => {
         lineOffset: 1,
         truncated: false,
       }
-      fileEditMockState.patchInputs = []
+      fileEditMockState.readCappedContent = content
+      fileEditMockState.patchFromContentsInputs = []
       const node = FileEditToolDiff({
         file_path: 'src/preview.md',
         edits: [edit],
@@ -481,7 +498,7 @@ describe('diff renderer components', () => {
         children: React.ReactElement<{ promise: Promise<unknown> }>
       }>
       await node.props.children.props.promise
-      return fileEditMockState.patchInputs[0]
+      return fileEditMockState.patchFromContentsInputs[0]
     }
 
     await expect(
@@ -490,8 +507,8 @@ describe('diff renderer components', () => {
         'a—b\n',
       ),
     ).resolves.toMatchObject({
-      fileContents: 'a—b\n',
-      edits: [{ old_string: 'a—b', new_string: 'c-d' }],
+      oldContent: 'a—b\n',
+      newContent: 'c-d\n',
     })
 
     await expect(
@@ -500,8 +517,8 @@ describe('diff renderer components', () => {
         'x y\n',
       ),
     ).resolves.toMatchObject({
-      fileContents: 'x y\n',
-      edits: [{ old_string: 'x y', new_string: 'z y' }],
+      oldContent: 'x y\n',
+      newContent: 'z y\n',
     })
 
     await expect(
@@ -510,8 +527,8 @@ describe('diff renderer components', () => {
         '“x”\n',
       ),
     ).resolves.toMatchObject({
-      fileContents: '“x”\n',
-      edits: [{ old_string: '“x”', new_string: '“y”' }],
+      oldContent: '“x”\n',
+      newContent: '“y”\n',
     })
 
     await expect(
@@ -520,8 +537,8 @@ describe('diff renderer components', () => {
         'alpha be\ngamma\n',
       ),
     ).resolves.toMatchObject({
-      fileContents: 'alpha be\ngamma\n',
-      edits: [{ old_string: 'be', new_string: '' }],
+      oldContent: 'alpha be\ngamma\n',
+      newContent: 'alpha gamma\n',
     })
 
     await expect(
@@ -530,8 +547,55 @@ describe('diff renderer components', () => {
         'fo fo\n',
       ),
     ).resolves.toMatchObject({
-      fileContents: 'fo fo\n',
-      edits: [{ old_string: 'fo', new_string: 'ba', replace_all: true }],
+      oldContent: 'fo fo\n',
+      newContent: 'ba ba\n',
+    })
+  })
+
+  test('FileEditToolDiff falls back to full-file normalized matching when raw scan misses', async () => {
+    fileEditMockState.openForScanCanOpen = true
+    fileEditMockState.scanContext = {
+      content: '',
+      lineOffset: 1,
+      truncated: false,
+    }
+    fileEditMockState.readCappedContent = 'a—b\n'
+
+    const node = FileEditToolDiff({
+      file_path: 'src/preview.md',
+      edits: [{ old_string: 'a-b', new_string: 'c-d' }],
+    }) as React.ReactElement<{
+      children: React.ReactElement<{ promise: Promise<unknown> }>
+    }>
+    await node.props.children.props.promise
+
+    expect(fileEditMockState.patchFromContentsInputs[0]).toMatchObject({
+      oldContent: 'a—b\n',
+      newContent: 'c-d\n',
+    })
+  })
+
+  test('FileEditToolDiff previews all replace_all matches outside the scanned context window', async () => {
+    fileEditMockState.openForScanCanOpen = true
+    fileEditMockState.readCappedContent =
+      'a—b\n' + 'middle\n'.repeat(40) + 'a–b\n'
+    fileEditMockState.scanContext = {
+      content: 'a—b\nmiddle\nmiddle\n',
+      lineOffset: 1,
+      truncated: false,
+    }
+
+    const node = FileEditToolDiff({
+      file_path: 'src/preview.md',
+      edits: [{ old_string: 'a-b', new_string: 'c-d', replace_all: true }],
+    }) as React.ReactElement<{
+      children: React.ReactElement<{ promise: Promise<unknown> }>
+    }>
+    await node.props.children.props.promise
+
+    expect(fileEditMockState.patchFromContentsInputs[0]).toMatchObject({
+      oldContent: 'a—b\n' + 'middle\n'.repeat(40) + 'a–b\n',
+      newContent: 'c-d\n' + 'middle\n'.repeat(40) + 'c-d\n',
     })
   })
 })

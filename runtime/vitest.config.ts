@@ -1,5 +1,5 @@
 import { defineConfig } from 'vitest/config';
-import { existsSync, readdirSync, statSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { dirname, isAbsolute, relative, resolve } from 'path';
 
 const benchmarkLaneEnabled = process.env.AGENC_RUNTIME_BENCHMARKS === '1';
@@ -235,6 +235,15 @@ function resolveRelativeAgenCSource(importer: string, source: string): string | 
 
 export default defineConfig({
   plugins: [
+    {
+      name: 'agenc-markdown-text-loader',
+      enforce: 'pre',
+      load(id) {
+        const cleanId = id.split('?')[0] ?? id;
+        if (!cleanId.endsWith('.md')) return null;
+        return `export default ${JSON.stringify(readFileSync(cleanId, 'utf8'))};`;
+      },
+    },
     {
       name: 'agenc-bare-src-alias',
       enforce: 'pre',

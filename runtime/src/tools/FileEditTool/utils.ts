@@ -79,22 +79,7 @@ export function findActualString(
   fileContent: string,
   searchString: string,
 ): string | null {
-  // First try exact match
-  if (fileContent.includes(searchString)) {
-    return searchString
-  }
-
-  // Try with normalized quotes
-  const normalizedSearch = normalizeQuotes(searchString)
-  const normalizedFile = normalizeQuotes(fileContent)
-
-  const searchIndex = normalizedFile.indexOf(normalizedSearch)
-  if (searchIndex !== -1) {
-    // Find the actual string in the file that matches
-    return fileContent.substring(searchIndex, searchIndex + searchString.length)
-  }
-
-  return null
+  return findNormalizedMatches(fileContent, searchString)[0]?.actualOldString ?? null
 }
 
 /**
@@ -203,6 +188,36 @@ function applyCurlySingleQuotes(str: string): string {
   return result.join('')
 }
 
+type NormalizedMatch = {
+  start: number
+  end: number
+  actualOldString: string
+}
+
+function findNormalizedMatches(
+  fileContent: string,
+  oldString: string,
+): NormalizedMatch[] {
+  if (oldString === '') return []
+  const normalizedSearch = normalizeQuotes(oldString)
+  if (normalizedSearch === '') return []
+
+  const normalizedFile = normalizeQuotes(fileContent)
+  const matches: NormalizedMatch[] = []
+  let from = 0
+  while (true) {
+    const idx = normalizedFile.indexOf(normalizedSearch, from)
+    if (idx < 0) return matches
+    const end = idx + oldString.length
+    matches.push({
+      start: idx,
+      end,
+      actualOldString: fileContent.substring(idx, end),
+    })
+    from = idx + normalizedSearch.length
+  }
+}
+
 /**
  * Transform edits to ensure replace_all always has a boolean value
  * @param edits Array of edits with optional replace_all
@@ -214,22 +229,31 @@ export function applyEditToFile(
   newString: string,
   replaceAll: boolean = false,
 ): string {
-  const f = replaceAll
-    ? (content: string, search: string, replace: string) =>
-        content.replaceAll(search, () => replace)
-    : (content: string, search: string, replace: string) =>
-        content.replace(search, () => replace)
-
-  if (newString !== '') {
-    return f(originalContent, oldString, newString)
-  }
-
+  const matches = findNormalizedMatches(originalContent, oldString)
+  if (matches.length === 0) return originalContent
   const stripTrailingNewline =
-    !oldString.endsWith('\n') && originalContent.includes(oldString + '\n')
+    newString === '' &&
+    !oldString.endsWith('\n') &&
+    matches.some(match => originalContent.startsWith('\n', match.end))
+  const selectedMatches = replaceAll
+    ? stripTrailingNewline
+      ? matches.filter(match => originalContent.startsWith('\n', match.end))
+      : matches
+    : matches.slice(0, 1)
 
-  return stripTrailingNewline
-    ? f(originalContent, oldString + '\n', newString)
-    : f(originalContent, oldString, newString)
+  let updated = ''
+  let cursor = 0
+  for (const match of selectedMatches) {
+    if (match.start < cursor) continue
+    const end =
+      stripTrailingNewline && originalContent.startsWith('\n', match.end)
+        ? match.end + 1
+        : match.end
+    updated += originalContent.slice(cursor, match.start)
+    updated += preserveQuoteStyle(oldString, match.actualOldString, newString)
+    cursor = end
+  }
+  return updated + originalContent.slice(cursor)
 }
 
 /**

@@ -754,7 +754,7 @@ describe("realtime session config and helpers", () => {
     ).toThrow("text realtime output modality requires realtime v2");
   });
 
-  test("caller prompt overrides backend prompt and null prompt clears it", () => {
+  test("config backend prompt overrides caller prompt and null prompt clears without config", () => {
     const override = buildRealtimeSessionConfig({
       conversationId: "thread-1",
       outputModality: "audio",
@@ -762,17 +762,32 @@ describe("realtime session config and helpers", () => {
       backendPrompt: "backend prompt",
       startupContext: "context",
     });
-    const cleared = buildRealtimeSessionConfig({
+    const configWithNullCaller = buildRealtimeSessionConfig({
       conversationId: "thread-1",
       outputModality: "audio",
       prompt: null,
       backendPrompt: "backend prompt",
       startupContext: "context",
     });
+    const caller = buildRealtimeSessionConfig({
+      conversationId: "thread-1",
+      outputModality: "audio",
+      prompt: "caller prompt",
+      backendPrompt: "   ",
+      startupContext: "context",
+    });
+    const nullWithoutConfig = buildRealtimeSessionConfig({
+      conversationId: "thread-1",
+      outputModality: "audio",
+      prompt: null,
+      startupContext: "context",
+    });
 
-    expect(override.instructions).toBe("caller prompt\n\ncontext");
-    expect(override.instructions).not.toContain("backend prompt");
-    expect(cleared.instructions).toBe("context");
+    expect(override.instructions).toBe("backend prompt\n\ncontext");
+    expect(override.instructions).not.toContain("caller prompt");
+    expect(configWithNullCaller.instructions).toBe("backend prompt\n\ncontext");
+    expect(caller.instructions).toBe("caller prompt\n\ncontext");
+    expect(nullWithoutConfig.instructions).toBe("context");
   });
 
   test("validates voices and resolves transport selection", () => {
@@ -879,5 +894,40 @@ describe("realtime session config and helpers", () => {
     expect(config.instructions).toContain("system prompt");
     expect(config.instructions).toContain("session ask");
     expect(config.instructions).toContain("session answer");
+  });
+
+  test("loads realtime backend prompt from session config unless option is explicit", async () => {
+    const session = {
+      conversationId: "thread-from-session",
+      config: {
+        cwd: "/repo",
+        experimental_realtime_ws_backend_prompt: "session config prompt",
+      },
+      snapshotHistoryMessages: () => [],
+    };
+    const configOverride = await buildRealtimeSessionConfigFromSession({
+      session,
+      outputModality: "audio",
+      prompt: "caller prompt",
+      startupContext: "context",
+    });
+    const explicitNull = await buildRealtimeSessionConfigFromSession({
+      session,
+      outputModality: "audio",
+      prompt: "caller prompt",
+      backendPrompt: null,
+      startupContext: "context",
+    });
+    const explicitBlank = await buildRealtimeSessionConfigFromSession({
+      session,
+      outputModality: "audio",
+      prompt: "caller prompt",
+      backendPrompt: "   ",
+      startupContext: "context",
+    });
+
+    expect(configOverride.instructions).toBe("session config prompt\n\ncontext");
+    expect(explicitNull.instructions).toBe("caller prompt\n\ncontext");
+    expect(explicitBlank.instructions).toBe("caller prompt\n\ncontext");
   });
 });
