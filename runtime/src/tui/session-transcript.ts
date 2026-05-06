@@ -6,6 +6,7 @@ import { useEffect, useMemo, useReducer } from "react";
 import type { LLMMessage, StreamingToolUse } from "../llm/types.js";
 import type { Event } from "../session/event-log.js";
 import type { AgenCBridgeSession } from "./session-types.js";
+import { formatRealtimeItemSummary } from "./realtime/state.js";
 
 /**
  * Hardcoded copy of `FILE_EDIT_TOOL_NAME` from
@@ -355,6 +356,15 @@ function formatElicitationSummary(type: string, payload: Record<string, unknown>
     }
   }
   return "Elicitation requested";
+}
+
+function formatRealtimeClosed(payload: Record<string, unknown>): string {
+  const reason = typeof payload.reason === "string" ? payload.reason.trim() : "";
+  return reason.length > 0 ? `Realtime closed: ${reason}` : "Realtime closed";
+}
+
+function isUserRealtimeRole(role: unknown): boolean {
+  return typeof role === "string" && role.toLowerCase() === "user";
 }
 
 /**
@@ -727,6 +737,51 @@ export function adaptTranscriptEvents(
         if (typeof payload.delta === "string") {
           streamingText += payload.delta;
         }
+        break;
+      case "realtime_started":
+        out.push(makeSystemMessage("Realtime voice started", "info"));
+        break;
+      case "realtime_transcript_delta":
+        if (
+          !isUserRealtimeRole(payload.role) &&
+          typeof payload.delta === "string"
+        ) {
+          streamingText += payload.delta;
+        }
+        break;
+      case "realtime_transcript_done":
+        if (typeof payload.text === "string") {
+          if (isUserRealtimeRole(payload.role)) {
+            out.push(makeUserMessage(payload.text));
+          } else if (payload.text !== lastAssistantText) {
+            out.push(makeAssistantTextMessage(payload.text));
+            lastAssistantText = payload.text;
+          }
+          streamingText = "";
+        }
+        break;
+      case "realtime_item_added":
+        out.push(
+          makeSystemMessage(
+            `Realtime item: ${formatRealtimeItemSummary(payload.item as never)}`,
+            "info",
+          ),
+        );
+        break;
+      case "realtime_error":
+        out.push(
+          makeSystemMessage(
+            typeof payload.message === "string"
+              ? payload.message
+              : "Realtime error",
+            "error",
+          ),
+        );
+        streamingText = "";
+        break;
+      case "realtime_closed":
+        out.push(makeSystemMessage(formatRealtimeClosed(payload), "info"));
+        streamingText = "";
         break;
       case "agent_message":
         if (typeof payload.message === "string" && payload.message !== lastAssistantText) {

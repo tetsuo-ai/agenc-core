@@ -80,6 +80,7 @@ export interface AgenCJsonLineDaemonRequestClient {
 }
 
 export interface AgenCJsonLineDaemonTuiClient extends AgenCJsonLineDaemonRequestClient {
+  subscribeToNotifications(cb: (event: JsonObject) => void): () => void;
   subscribeToSessionEvents(
     sessionId: string,
     cb: (event: JsonObject) => void,
@@ -582,6 +583,7 @@ function connectPersistentDaemonClient(
       string,
       Set<(event: JsonObject) => void>
     >();
+    const notificationListeners = new Set<(event: JsonObject) => void>();
     const bufferedSessionEvents = new Map<string, JsonObject[]>();
     const connectionStateListeners = new Set<
       (state: {
@@ -664,6 +666,12 @@ function connectPersistentDaemonClient(
           if (listeners?.size === 0) sessionListeners.delete(sessionId);
         };
       },
+      subscribeToNotifications: (cb) => {
+        notificationListeners.add(cb);
+        return () => {
+          notificationListeners.delete(cb);
+        };
+      },
       getConnectionState: () => connectionState,
       subscribeToConnectionState: (cb) => {
         connectionStateListeners.add(cb);
@@ -692,6 +700,7 @@ function connectPersistentDaemonClient(
             pending,
             sessionListeners,
             bufferedSessionEvents,
+            notificationListeners,
           );
         }
         newlineIndex = buffer.indexOf("\n");
@@ -734,6 +743,7 @@ function handlePersistentDaemonMessage(
   >,
   sessionListeners: Map<string, Set<(event: JsonObject) => void>>,
   bufferedSessionEvents: Map<string, JsonObject[]>,
+  notificationListeners: Set<(event: JsonObject) => void>,
 ): void {
   const message = JSON.parse(line) as JsonValue;
   if (!isJsonObject(message)) return;
@@ -748,6 +758,10 @@ function handlePersistentDaemonMessage(
     }
     waiter.resolve((response as AgenCDaemonSuccessResponse).result);
     return;
+  }
+
+  for (const listener of notificationListeners) {
+    listener(message);
   }
 
   const sessionId = daemonEventSessionId(message);

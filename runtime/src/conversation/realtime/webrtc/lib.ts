@@ -117,6 +117,7 @@ export class RealtimeWebrtcLocalAudioPeak {
 
 export interface RealtimeWebrtcSessionHandleDriver {
   applyAnswerSdp(answerSdp: string): Promise<void> | void;
+  setMicrophoneMuted?(muted: boolean): Promise<void> | void;
   close(): Promise<void> | void;
 }
 
@@ -134,6 +135,10 @@ export class RealtimeWebrtcSessionHandle {
 
   applyAnswerSdp(answerSdp: string): Promise<void> | void {
     return this.#driver.applyAnswerSdp(answerSdp);
+  }
+
+  setMicrophoneMuted(muted: boolean): Promise<void> | void {
+    return this.#driver.setMicrophoneMuted?.(muted);
   }
 
   close(): Promise<void> | void {

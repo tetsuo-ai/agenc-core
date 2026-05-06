@@ -11,6 +11,7 @@ import type {
   RequestUserInputEvent,
   RequestUserInputResponse,
 } from "../elicitation/types.js";
+import type { AgenCRealtimeTuiControls } from "./realtime/controller.js";
 
 export interface PermissionModeRegistryLike {
   current(): ToolPermissionContext;
@@ -54,6 +55,7 @@ export interface AgenCBridgeSession {
   readonly initialTranscriptEvents?: readonly unknown[];
   getInitialTranscriptEvents?(): readonly unknown[];
   subscribeToEvents?(cb: (event: unknown) => void): () => void;
+  readonly realtime?: AgenCRealtimeTuiControls;
   submit?(
     message: string,
     opts?: { readonly displayUserMessage?: string | null },

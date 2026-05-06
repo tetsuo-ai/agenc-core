@@ -21,6 +21,7 @@ import {
 const DEFAULT_LOCAL_AUDIO_LEVEL_INTERVAL_MS = 200;
 
 export interface RealtimeWebrtcMediaTrack {
+  enabled?: boolean;
   stop?(): void;
 }
 
@@ -232,6 +233,12 @@ class NativeRealtimeWebrtcSessionHandle implements RealtimeWebrtcNativeSessionHa
 
   close(): void {
     this.#closeAndFinish("closed");
+  }
+
+  setMicrophoneMuted(muted: boolean): void {
+    for (const track of this.#mediaStream.getAudioTracks()) {
+      track.enabled = !muted;
+    }
   }
 
   #startLocalAudioLevelTask(): void {

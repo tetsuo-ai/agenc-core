@@ -126,6 +126,70 @@ describe("AgenC TUI transcript bridge", () => {
     ]);
   });
 
+  test("interleaves realtime transcript completions and item notifications with surrounding text transcript", () => {
+    const transcript = adaptTranscriptEvents([
+      {
+        id: "text-before",
+        msg: {
+          type: "agent_message",
+          payload: { message: "Before voice" },
+        },
+      },
+      {
+        id: "rt-user",
+        type: "realtime_transcript_done",
+        payload: {
+          role: "user",
+          text: "spoken request",
+        },
+      },
+      {
+        id: "rt-item",
+        type: "realtime_item_added",
+        payload: {
+          item: { type: "message", id: "item_1" },
+        },
+      },
+      {
+        id: "rt-assistant",
+        type: "realtime_transcript_done",
+        payload: {
+          role: "assistant",
+          text: "spoken response",
+        },
+      },
+      {
+        id: "rt-error",
+        type: "realtime_error",
+        payload: {
+          message: "voice failed",
+        },
+      },
+      {
+        id: "rt-closed",
+        type: "realtime_closed",
+        payload: {
+          reason: "requested",
+        },
+      },
+    ]);
+
+    expect(
+      transcript.messages.map((message) =>
+        message.type === "system"
+          ? message.content
+          : message.message.content,
+      ),
+    ).toEqual([
+      [{ type: "text", text: "Before voice" }],
+      "spoken request",
+      "Realtime item: message item_1",
+      [{ type: "text", text: "spoken response" }],
+      "voice failed",
+      "Realtime closed: requested",
+    ]);
+  });
+
   test("maps tool calls and AgenC agent events to upstream tool rows", () => {
     const transcript = adaptTranscriptEvents([
       {

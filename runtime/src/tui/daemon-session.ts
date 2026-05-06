@@ -26,9 +26,16 @@ import type {
   RequestUserInputResponse,
 } from "../elicitation/types.js";
 import { isMcpUrlCompletionResponse } from "../elicitation/url-completion.js";
+import {
+  createRealtimeTuiControls,
+  type AgenCRealtimeTuiControls,
+  type CreateRealtimeTuiControlsOptions,
+} from "./realtime/controller.js";
 
 export const AGENC_DAEMON_RECONNECTING_MESSAGE =
   "daemon disconnected, reconnecting";
+
+let nextRealtimeTranscriptEventSequence = 0;
 
 export type AgenCDaemonConnectionStatus =
   | "connected"
@@ -62,6 +69,7 @@ export interface AgenCTuiBridgeSession {
   readonly initialTranscriptEvents?: readonly unknown[];
   getInitialTranscriptEvents?(): readonly unknown[];
   subscribeToEvents?(cb: (event: unknown) => void): () => void;
+  readonly realtime?: AgenCRealtimeTuiControls;
   submit?(
     message: string,
     opts?: { readonly displayUserMessage?: string | null },
@@ -87,6 +95,7 @@ export type AgenCDaemonBackedTuiSession<
     opts?: { readonly displayUserMessage?: string | null },
   ): Promise<void>;
   enqueueIdleInput(input: unknown): number;
+  readonly realtime: AgenCRealtimeTuiControls;
   respondToUserInput(
     requestId: RequestId,
     response: ElicitationRespondParams["response"],
@@ -103,6 +112,9 @@ export interface AgenCDaemonTuiClient {
     method: Method,
     params?: JsonObject,
   ): Promise<AgenCDaemonResultByMethod[Method]>;
+  subscribeToNotifications?(
+    cb: (event: JsonObject) => void,
+  ): () => void;
   subscribeToSessionEvents(
     sessionId: string,
     cb: (event: JsonObject) => void,
@@ -121,6 +133,8 @@ export interface AgenCDaemonTuiSessionOptions<
   readonly sessionId: string;
   readonly clientId: string;
   readonly conversationId?: string;
+  readonly realtimeThreadId?: string;
+  readonly realtimeWebrtcSessionFactory?: CreateRealtimeTuiControlsOptions["startWebrtcSession"];
 }
 
 export interface AgenCDaemonAgentTuiSessionOptions<
@@ -146,6 +160,7 @@ export async function attachDaemonAgentTuiSession<
     ...options,
     sessionId,
     conversationId: attachment.runtimeSessionId ?? options.agentId,
+    realtimeThreadId: options.agentId,
   });
 }
 
@@ -168,6 +183,7 @@ export function createDaemonTuiSession<
 ): AgenCDaemonBackedTuiSession<Session> {
   const { baseSession, client, sessionId, clientId } = options;
   const conversationId = options.conversationId ?? sessionId;
+  const realtimeThreadId = options.realtimeThreadId ?? conversationId;
   const queuedInputs: MessageContentBlock[] = [];
   const eventSubscribers = new Set<(event: unknown) => void>();
   let queuedInputCount = 0;
@@ -177,12 +193,22 @@ export function createDaemonTuiSession<
       subscriber(event);
     }
   };
+  const realtime = createRealtimeTuiControls({
+    threadId: realtimeThreadId,
+    client,
+    emitEvent: broadcastDaemonEvent,
+    ...(options.realtimeWebrtcSessionFactory !== undefined
+      ? { startWebrtcSession: options.realtimeWebrtcSessionFactory }
+      : {}),
+  });
   const ensureDaemonEventsSubscribed = (): void => {
     if (unsubscribeDaemonEvents !== null) return;
     unsubscribeDaemonEvents = subscribeToDaemonEvents(
       client,
       sessionId,
+      realtimeThreadId,
       baseSession,
+      realtime,
       broadcastDaemonEvent,
     );
   };
@@ -194,6 +220,7 @@ export function createDaemonTuiSession<
   return {
     ...baseSession,
     conversationId,
+    realtime,
     submit: async (message, opts) => {
       const queued = queuedInputs.splice(0);
       queuedInputCount = 0;
@@ -286,7 +313,9 @@ function messageContentBlocks(
 function subscribeToDaemonEvents(
   client: AgenCDaemonTuiClient,
   sessionId: string,
+  realtimeThreadId: string,
   session: AgenCTuiBridgeSession,
+  realtime: AgenCRealtimeTuiControls,
   cb: (event: unknown) => void,
 ): () => void {
   const unsubscribeSession = client.subscribeToSessionEvents(
@@ -298,6 +327,12 @@ function subscribeToDaemonEvents(
       void maybeBridgeDaemonElicitation(client, sessionId, session, transcriptEvent);
     },
   );
+  const unsubscribeRealtime = client.subscribeToNotifications?.((event) => {
+    const transcriptEvent = toRealtimeTranscriptEvent(event, realtimeThreadId);
+    if (transcriptEvent === null) return;
+    realtime.handleTranscriptEvent(transcriptEvent);
+    cb(transcriptEvent);
+  });
   const unsubscribeConnection = client.subscribeToConnectionState?.((state) => {
     for (const event of connectionNoticeEvents(state)) {
       cb(event);
@@ -305,6 +340,7 @@ function subscribeToDaemonEvents(
   });
   return () => {
     unsubscribeSession();
+    unsubscribeRealtime?.();
     unsubscribeConnection?.();
   };
 }
@@ -542,6 +578,108 @@ function toTranscriptEvent(event: JsonObject): JsonObject {
     return params.event;
   }
   return event;
+}
+
+function toRealtimeTranscriptEvent(
+  event: JsonObject,
+  realtimeThreadId: string,
+): JsonObject | null {
+  const method = event.method;
+  const params = event.params;
+  if (typeof method !== "string" || !isJsonObject(params)) return null;
+  if (!method.startsWith("thread/realtime/")) return null;
+  if (params.threadId !== realtimeThreadId) return null;
+  const id = nextRealtimeEventId(method, params.threadId);
+  switch (method) {
+    case "thread/realtime/started":
+      return {
+        id,
+        type: "realtime_started",
+        payload: {
+          threadId: params.threadId,
+          realtimeSessionId:
+            typeof params.realtimeSessionId === "string"
+              ? params.realtimeSessionId
+              : null,
+          ...(typeof params.version === "string" ? { version: params.version } : {}),
+        },
+      };
+    case "thread/realtime/itemAdded":
+      return {
+        id,
+        type: "realtime_item_added",
+        payload: {
+          threadId: params.threadId,
+          item: params.item ?? null,
+        },
+      };
+    case "thread/realtime/transcript/delta":
+      return {
+        id,
+        type: "realtime_transcript_delta",
+        payload: {
+          threadId: params.threadId,
+          role: typeof params.role === "string" ? params.role : "assistant",
+          delta: typeof params.delta === "string" ? params.delta : "",
+        },
+      };
+    case "thread/realtime/transcript/done":
+      return {
+        id,
+        type: "realtime_transcript_done",
+        payload: {
+          threadId: params.threadId,
+          role: typeof params.role === "string" ? params.role : "assistant",
+          text: typeof params.text === "string" ? params.text : "",
+        },
+      };
+    case "thread/realtime/outputAudio/delta":
+      return {
+        id,
+        type: "realtime_output_audio_delta",
+        payload: {
+          threadId: params.threadId,
+          audio: params.audio,
+        },
+      };
+    case "thread/realtime/sdp":
+      return {
+        id,
+        type: "realtime_sdp",
+        payload: {
+          threadId: params.threadId,
+          sdp: typeof params.sdp === "string" ? params.sdp : "",
+        },
+      };
+    case "thread/realtime/error":
+      return {
+        id,
+        type: "realtime_error",
+        payload: {
+          threadId: params.threadId,
+          message:
+            typeof params.message === "string"
+              ? params.message
+              : "Realtime error",
+        },
+      };
+    case "thread/realtime/closed":
+      return {
+        id,
+        type: "realtime_closed",
+        payload: {
+          threadId: params.threadId,
+          reason: typeof params.reason === "string" ? params.reason : null,
+        },
+      };
+    default:
+      return null;
+  }
+}
+
+function nextRealtimeEventId(method: string, threadId: JsonValue | undefined): string {
+  nextRealtimeTranscriptEventSequence += 1;
+  return `realtime:${method}:${String(threadId ?? "thread")}:${nextRealtimeTranscriptEventSequence}`;
 }
 
 function transcriptEventFromAgentStatus(params: JsonObject): JsonObject {
