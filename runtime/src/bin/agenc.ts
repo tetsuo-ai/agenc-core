@@ -2314,12 +2314,14 @@ export async function main(): Promise<number> {
   if (agentCommand !== null) {
     if (agentCommand.kind === "attach") {
       return runAgenCAgentCli(agentCommand, {
+        env: process.env,
         attachTui: (context) => attachAgentTuiEntry(context),
       });
     }
     if (agentCommand.kind === "start") {
       const agentStartCwd = processCwd();
       return runAgenCAgentCli(agentCommand, {
+        env: process.env,
         cwd: agentStartCwd,
         ensureDaemonReady: async () => {
           if (
@@ -2338,6 +2340,7 @@ export async function main(): Promise<number> {
       });
     }
     return runAgenCAgentCli(agentCommand, {
+      env: process.env,
       attachTui: (context) => attachAgentTuiEntry(context),
     });
   }

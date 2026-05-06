@@ -122,6 +122,7 @@ export interface AgenCJsonLineDaemonClientOptions {
 }
 
 const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 2_000;
+const AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV = "AGENC_DAEMON_REQUEST_TIMEOUT_MS";
 
 export function formatAgenCAgentCliHelpText(): string {
   return [
@@ -287,7 +288,8 @@ export function createAgenCJsonLineDaemonRequestClient(
     options.env,
     options.userHome,
   );
-  const timeoutMs = options.timeoutMs ?? DEFAULT_DAEMON_REQUEST_TIMEOUT_MS;
+  const timeoutMs =
+    options.timeoutMs ?? resolveAgenCDaemonRequestTimeoutMs(options.env);
   return {
     request: (method, params = {}) =>
       requestDaemon(
@@ -310,7 +312,8 @@ export async function createConnectedAgenCJsonLineDaemonTuiClient(
     options.env,
     options.userHome,
   );
-  const timeoutMs = options.timeoutMs ?? DEFAULT_DAEMON_REQUEST_TIMEOUT_MS;
+  const timeoutMs =
+    options.timeoutMs ?? resolveAgenCDaemonRequestTimeoutMs(options.env);
   const authCookie = await (options.authCookie ?? readDaemonCookie(cookiePath));
   const client = await connectPersistentDaemonClient(socketPath, timeoutMs);
   await client.request("initialize", {
@@ -791,6 +794,26 @@ export function defaultEnsureDaemonReady(
   };
 }
 
+function resolveAgenCDaemonRequestTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const configured = env[AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV]?.trim();
+  if (configured === undefined || configured.length === 0) {
+    return DEFAULT_DAEMON_REQUEST_TIMEOUT_MS;
+  }
+  const timeoutMs = Number.parseInt(configured, 10);
+  if (
+    !Number.isInteger(timeoutMs) ||
+    String(timeoutMs) !== configured ||
+    timeoutMs <= 0
+  ) {
+    throw new Error(
+      `${AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV} must be a positive integer`,
+    );
+  }
+  return timeoutMs;
+}
+
 async function requestDaemon<Method extends AgenCDaemonMethod>(
   method: Method,
   params: JsonObject,
@@ -863,7 +886,7 @@ async function sendJsonLineRequestWithRetry(
     try {
       return await sendJsonLineRequest(
         socketPath,
-        Math.max(1, Math.min(250, deadline - Date.now())),
+        Math.max(1, deadline - Date.now()),
         requests,
       );
     } catch (error) {
