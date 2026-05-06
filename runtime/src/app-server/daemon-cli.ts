@@ -189,6 +189,12 @@ export function formatAgenCDaemonCliHelpText(): string {
     "  stop                  Stop the local AgenC daemon",
     "  status                Show local AgenC daemon status",
     "  restart               Stop and start the local AgenC daemon",
+    "",
+    "Examples:",
+    "  agenc daemon status",
+    "  agenc daemon start",
+    "  agenc daemon start --foreground",
+    "  agenc daemon restart",
   ].join("\n");
 }
 
@@ -200,6 +206,10 @@ export function parseAgenCDaemonCliArgs(
   if (action === undefined || action === "--help" || action === "-h") {
     return { kind: "help", text: formatAgenCDaemonCliHelpText() };
   }
+  const extra = argv.slice(2);
+  if (extra.length === 1 && (extra[0] === "--help" || extra[0] === "-h")) {
+    return { kind: "help", text: formatAgenCDaemonCliHelpText() };
+  }
   if (
     action === "start" ||
     action === "stop" ||
@@ -207,7 +217,6 @@ export function parseAgenCDaemonCliArgs(
     action === "restart" ||
     action === "run"
   ) {
-    const extra = argv.slice(2);
     if (action === "start" && extra[0] === "--foreground") {
       if (extra.length === 1) {
         return { kind: "command", action: "run" };

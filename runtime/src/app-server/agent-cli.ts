@@ -133,6 +133,13 @@ export function formatAgenCAgentCliHelpText(): string {
     "  attach <id>    Attach to a running agent",
     "  stop <id>    Stop a running agent",
     "  logs <id>    Print an agent's full local log and transcript",
+    "",
+    "Examples:",
+    "  agenc agent start \"fix the failing parser test\"",
+    "  agenc agent start --unattended-allow read,grep \"audit imports\"",
+    "  agenc agent list",
+    "  agenc agent attach agent_123",
+    "  agenc agent logs agent_123",
   ].join("\n");
 }
 
@@ -142,6 +149,10 @@ export function parseAgenCAgentCliArgs(
   if (argv[0] !== "agent") return null;
   const action = argv[1];
   if (action === undefined || action === "--help" || action === "-h") {
+    return { kind: "help", text: formatAgenCAgentCliHelpText() };
+  }
+  const rest = argv.slice(2);
+  if (rest.length === 1 && (rest[0] === "--help" || rest[0] === "-h")) {
     return { kind: "help", text: formatAgenCAgentCliHelpText() };
   }
   if (action === "list") {

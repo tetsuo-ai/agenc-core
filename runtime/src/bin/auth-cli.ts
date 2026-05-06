@@ -40,6 +40,11 @@ export function formatAgenCAuthCliHelpText(): string {
     "  login     Sign in using the configured AgenC auth backend",
     "  logout    Clear the current AgenC auth session",
     "  whoami    Show the current AgenC auth identity",
+    "",
+    "Examples:",
+    "  agenc login",
+    "  agenc whoami",
+    "  agenc logout",
   ].join("\n");
 }
 
