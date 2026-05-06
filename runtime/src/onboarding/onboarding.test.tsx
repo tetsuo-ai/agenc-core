@@ -6,7 +6,7 @@ import { describe, expect, test, vi } from "vitest";
 import { defaultConfig } from "../config/schema.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
 import { MAX_ONBOARDING_INPUT_LENGTH } from "./inputPaste.js";
-import { retrievePastedText } from "./pasteStore.js";
+import { hashPastedText, retrievePastedText } from "./pasteStore.js";
 
 vi.mock("../tui/ink.js", async () => {
   const React = await import("react");
@@ -422,6 +422,9 @@ describe("first-run onboarding wizard", () => {
       ).state;
 
       expect(state.pendingApiKeyApproval?.pasteHash).toMatch(/^[a-f0-9]{16}$/);
+      expect(state.pendingApiKeyApproval?.pastePreview).toContain(
+        "Pasted content #1",
+      );
       expect(state.pastedContents).toHaveLength(1);
       expect(state.pastedContents[0]?.content.length).toBe(longKey.length - 2_000);
       await expect(
@@ -429,7 +432,113 @@ describe("first-run onboarding wizard", () => {
           agencHome,
           hash: state.pendingApiKeyApproval?.pasteHash ?? "",
         }),
+      ).resolves.toBeNull();
+
+      const approved = await submitFirstRunOnboardingInput(state, "yes", context);
+      expect(approved.state.currentStepId).toBe("security");
+      await expect(
+        retrievePastedText({
+          agencHome,
+          hash: state.pendingApiKeyApproval?.pasteHash ?? "",
+        }),
       ).resolves.toBe(state.pastedContents[0]?.content);
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  test("does not persist declined or invalid long pasted API-key input", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-byok-"));
+    try {
+      const config = defaultConfig();
+      const longKey = "y".repeat(MAX_ONBOARDING_INPUT_LENGTH + 10);
+      const omittedHash = hashPastedText(longKey.slice(1_000, -1_000));
+      const validContext = {
+        agencHome,
+        config,
+        env: {},
+        checkLocalProviders: false,
+        fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response(JSON.stringify({ data: [] }), { status: 200 }),
+        ),
+      };
+      const pendingState = (
+        await submitFirstRunOnboardingInput(
+          await advanceToApiKey(validContext),
+          longKey,
+          validContext,
+        )
+      ).state;
+      const declined = await submitFirstRunOnboardingInput(
+        pendingState,
+        "no",
+        validContext,
+      );
+      expect(declined.state.currentStepId).toBe("security");
+      await expect(
+        retrievePastedText({ agencHome, hash: omittedHash }),
+      ).resolves.toBeNull();
+
+      const invalidContext = {
+        ...validContext,
+        fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response("unauthorized", { status: 401 }),
+        ),
+      };
+      const invalid = await submitFirstRunOnboardingInput(
+        await advanceToApiKey(invalidContext),
+        longKey,
+        invalidContext,
+      );
+      expect(invalid.state.pendingApiKeyApproval).toBeNull();
+      await expect(
+        retrievePastedText({ agencHome, hash: omittedHash }),
+      ).resolves.toBeNull();
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  test("removes approved paste cache if BYOK key persistence fails", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-byok-"));
+    try {
+      const config = defaultConfig();
+      const context = {
+        agencHome,
+        config,
+        env: {},
+        checkLocalProviders: false,
+        fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response(JSON.stringify({ data: [] }), { status: 200 }),
+        ),
+        authBackend: {
+          saveByokKey: () => {
+            throw new Error("disk unavailable");
+          },
+        },
+      };
+      const longKey = "z".repeat(MAX_ONBOARDING_INPUT_LENGTH + 10);
+      const pendingState = (
+        await submitFirstRunOnboardingInput(
+          await advanceToApiKey(context),
+          longKey,
+          context,
+        )
+      ).state;
+      const failed = await submitFirstRunOnboardingInput(
+        pendingState,
+        "yes",
+        context,
+      );
+
+      expect(failed.state.currentStepId).toBe("api-key");
+      expect(failed.state.error).toContain("disk unavailable");
+      await expect(
+        retrievePastedText({
+          agencHome,
+          hash: pendingState.pendingApiKeyApproval?.pasteHash ?? "",
+        }),
+      ).resolves.toBeNull();
     } finally {
       rmSync(agencHome, { recursive: true, force: true });
     }

@@ -54,6 +54,15 @@ export async function retrievePastedText(
   }
 }
 
+export async function deletePastedText(
+  params: RetrievePastedTextParams,
+): Promise<void> {
+  await rm(
+    join(pasteStoreDir(params.agencHome), `${sanitizePasteHash(params.hash)}.txt`),
+    { force: true },
+  );
+}
+
 export async function cleanupOldPastes(
   params: CleanupOldPastesParams,
 ): Promise<number> {

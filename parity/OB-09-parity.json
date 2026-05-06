@@ -45,7 +45,7 @@
     },
     {
       "id": "paste-capture",
-      "behavior": "Very large pasted onboarding inputs are split into visible previews plus private paste-cache entries stored with mode 0600.",
+      "behavior": "Very large pasted onboarding inputs are split into secret-safe paste metadata plus private paste-cache entries stored with mode 0600 only after explicit key approval.",
       "tests": [
         "runtime/src/onboarding/inputPaste.test.ts"
       ]
@@ -54,7 +54,7 @@
   "intentionalReductions": [
     "AgenC persists approved provider keys as provider-neutral BYOK records in LocalAuthBackend instead of keeping approved/rejected key tails in global UI config.",
     "AgenC verifies keys with provider metadata already owned by the runtime registry; it does not execute donor-specific API-key helper commands.",
-    "Paste-cache helpers avoid secret-bearing telemetry and log output."
+    "Paste-cache helpers avoid secret-bearing telemetry and log output. The API-key onboarding path does not render raw large-paste previews; it renders masked tails plus paste metadata and defers disk persistence until approval."
   ],
   "mergeResolutions": []
 }

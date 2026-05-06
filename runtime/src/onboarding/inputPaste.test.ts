@@ -9,6 +9,7 @@ import {
 } from "./inputPaste.js";
 import {
   cleanupOldPastes,
+  deletePastedText,
   hashPastedText,
   retrievePastedText,
   storePastedText,
@@ -74,6 +75,8 @@ describe("onboarding paste store", () => {
         "secret pasted key",
       );
       expect((await stat(path)).mode & 0o777).toBe(0o600);
+      await deletePastedText({ agencHome, hash });
+      expect(await retrievePastedText({ agencHome, hash })).toBeNull();
     } finally {
       await rm(agencHome, { recursive: true, force: true });
     }

@@ -28,4 +28,4 @@ Intentional reductions:
 - Project onboarding detects AGENC.md only; donor-specific instruction filenames are intentionally not accepted.
 - OB-09 stores approved provider keys as provider-neutral BYOK records rather than donor approved/rejected tail lists in UI config.
 - OB-09 uses AgenC runtime provider metadata for verification and does not execute donor-specific API-key helper commands.
-- OB-09 paste storage is silent and private; it does not emit secret-bearing telemetry or logs.
+- OB-09 paste storage is silent and private; it does not emit secret-bearing telemetry or logs, does not render raw large-paste previews for API keys, and writes paste-cache files only after explicit approval.
