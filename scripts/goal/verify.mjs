@@ -64,6 +64,23 @@ const MAX_ALLOWED_BASELINE = 22;
 //   tests: string[] | { globUnder, matching, minCount?, optional? }[]
 //   runStrict: boolean — if true, typecheck gate enforces zero errors.
 const ITEM_EVIDENCE = {
+  "IDE-01": {
+    files: [
+      "runtime/src/app-server-protocol/ide-extension.ts",
+      "runtime/src/app-server-protocol/ide-extension.contract.test.ts",
+      "runtime/src/app-server-protocol/ide-extension.repo.contract.test.ts",
+    ],
+    grepPresent: [
+      { pattern: "AGENC_IDE_EXTENSION_REPOSITORY_NAME = \"agenc-vscode\"", scope: "runtime/src/app-server-protocol/ide-extension.ts" },
+      { pattern: "AGENC_IDE_EXTENSION_PACKAGE_NAME", scope: "runtime/src/index.ts" },
+      { pattern: "createAgenCIdeInitializeParams", scope: "runtime/src/index.ts" },
+      { pattern: "AgenC VS Code sibling repo scaffold", scope: "runtime/src/app-server-protocol/ide-extension.repo.contract.test.ts" },
+    ],
+    tests: [
+      "runtime/src/app-server-protocol/ide-extension.contract.test.ts",
+      "runtime/src/app-server-protocol/ide-extension.repo.contract.test.ts",
+    ],
+  },
   "CF-02": {
     files: ["runtime/src/config/schema.ts", "runtime/src/config/config.test.ts"],
     grepPresent: [
@@ -4414,7 +4431,79 @@ async function ideExtensionGates(item) {
       `The local protocol must reference the IDE surface even when the implementation lives in a sibling repo.`,
     );
   }
+  if (id === "IDE-01") {
+    assertAgenCVscodeSiblingRepo();
+  }
   pass(`IDE-*: IDE protocol surface referenced (${id})`);
+}
+
+function assertAgenCVscodeSiblingRepo() {
+  const repo = path.resolve(mainCheckoutRoot(), "..", "agenc-vscode");
+  const requiredFiles = [
+    "package.json",
+    "README.md",
+    "src/extension.ts",
+    "test/scaffold.test.mjs",
+    "tsconfig.json",
+  ];
+  const missing = requiredFiles.filter((rel) => !existsSync(path.join(repo, rel)));
+  if (missing.length > 0) {
+    failGate(
+      `IDE-01: agenc-vscode sibling repo missing required file(s):\n  ${missing.join("\n  ")}\n` +
+        `Expected repo root: ${repo}`,
+    );
+  }
+
+  let pkg;
+  try {
+    pkg = JSON.parse(readFileSync(path.join(repo, "package.json"), "utf8"));
+  } catch (error) {
+    failGate(`IDE-01: could not parse agenc-vscode/package.json: ${error?.message || error}`);
+  }
+
+  const packageFailures = [];
+  if (pkg.name !== "agenc-vscode") packageFailures.push("name must be agenc-vscode");
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(pkg.name ?? "")) {
+    packageFailures.push("name must be a VS Code extension id segment");
+  }
+  if (pkg.displayName !== "AgenC") packageFailures.push("displayName must be AgenC");
+  if (pkg.publisher !== "tetsuo-ai") packageFailures.push("publisher must be tetsuo-ai");
+  if (pkg.engines?.vscode !== "^1.90.0") packageFailures.push("engines.vscode must be ^1.90.0");
+  if (!pkg.activationEvents?.includes?.("onCommand:agenc.connectDaemon")) {
+    packageFailures.push("activationEvents must include onCommand:agenc.connectDaemon");
+  }
+  if (pkg.contributes?.commands?.[0]?.command !== "agenc.connectDaemon") {
+    packageFailures.push("contributes.commands[0].command must be agenc.connectDaemon");
+  }
+  if (pkg.dependencies?.["@tetsuo-ai/protocol"] !== "file:../agenc-protocol/packages/protocol") {
+    packageFailures.push("@tetsuo-ai/protocol dependency must point at the sibling protocol package");
+  }
+  if (pkg.dependencies?.["@tetsuo-ai/runtime"] !== "file:../agenc-core/runtime") {
+    packageFailures.push("@tetsuo-ai/runtime dependency must point at the sibling runtime package");
+  }
+  if (pkg.scripts?.["test:scaffold"] !== "node test/scaffold.test.mjs") {
+    packageFailures.push("test:scaffold script must run the local scaffold test");
+  }
+  if (packageFailures.length > 0) {
+    failGate(`IDE-01: agenc-vscode/package.json scaffold mismatch:\n  ${packageFailures.join("\n  ")}`);
+  }
+
+  const extensionSource = readFileSync(path.join(repo, "src/extension.ts"), "utf8");
+  const sourceMarkers = [
+    "AGENC_IDE_EXTENSION_SCAFFOLD",
+    "createAgenCIdeInitializeParams",
+    "agenc.connectDaemon",
+  ];
+  const missingMarkers = sourceMarkers.filter((marker) => !extensionSource.includes(marker));
+  if (missingMarkers.length > 0) {
+    failGate(`IDE-01: src/extension.ts missing marker(s): ${missingMarkers.join(", ")}`);
+  }
+
+  const selfTest = run("node", ["test/scaffold.test.mjs"], { cwd: repo, silent: true });
+  if (selfTest.status !== 0) {
+    failGate(`IDE-01: agenc-vscode scaffold self-test failed:\n${selfTest.stderr || selfTest.stdout}`);
+  }
+  pass("IDE-01: agenc-vscode sibling repo scaffold present and self-test passes");
 }
 
 function grepRepo(pattern, scope = "runtime/src", options = {}) {
