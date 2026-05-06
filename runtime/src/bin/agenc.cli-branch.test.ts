@@ -373,6 +373,7 @@ describe("extractFlagValue + stripRoutingFlags helpers", () => {
         "fast",
         "--permission-mode",
         "bypassPermissions",
+        "--no-daemon",
         "--dangerously-bypass-approvals-and-sandbox",
         "--allow-dangerously-skip-permissions",
         "hello",
