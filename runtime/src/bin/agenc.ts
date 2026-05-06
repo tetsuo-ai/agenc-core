@@ -1,12 +1,10 @@
 #!/usr/bin/env node
 /**
- * `agenc` CLI entry point — phase-machine dispatcher.
+ * `agenc` CLI entry point - daemon-backed dispatcher.
  *
- * Reads a prompt from argv (or stdin), boots the Grok provider, builds
- * the coding-profile tool registry, constructs a Session + TurnContext,
- * drives `runTurn` through the 6-phase machine, and streams events to
- * stdout. The Ink/React cockpit lands in a later tranche; this lets us
- * verify the agent path end-to-end before adding UI.
+ * Reads startup input from argv or stdin, checks workspace trust, starts or
+ * attaches daemon-owned agents, and mounts the Ink TUI against daemon sessions.
+ * Runtime provider/session construction now lives behind the daemon.
  *
  * Usage:
  *   agenc "help me understand this repo"
@@ -17,7 +15,6 @@
  *   AGENC_MODEL        optional — model override (default: grok-4-fast)
  *   AGENC_WORKSPACE    optional — project root (default: process.cwd())
  *   AGENC_HOME         optional — state dir (default: $HOME/.agenc)
- *   AGENC_FORCE_DIRECT_RUNTIME optional — skip daemon autostart when truthy
  *
  * Invariants wired here:
  *   I-45 (SIGTERM orderly shutdown, exit 0)
@@ -41,7 +38,6 @@ import {
 import type {
   LLMContentPart,
   LLMMessage,
-  LLMToolCall,
 } from "../llm/types.js";
 import {
   normalizeUserImageInput,
@@ -62,19 +58,11 @@ import {
   SchemaMismatchError,
   SessionLockedError,
 } from "../session/session-store.js";
-import {
-  createBashExecObserverForSlot,
-  type SessionSlot,
-} from "../session/observer-wiring.js";
 import { runSlashCommand } from "./slash.js";
 import type { SlashCommandAppStateBridge } from "../commands/types.js";
 import { ConfigStore } from "../config/store.js";
 import { resolveAgencHome, resolveWorkspace as resolveWorkspaceFromEnv } from "../config/env.js";
 import type { AgenCConfig } from "../config/schema.js";
-import {
-  bootstrapLocalRuntimeSession,
-  type BootstrapLocalRuntimeSessionOptions,
-} from "./bootstrap.js";
 import {
   loadTieredInstructions,
   assembleTieredInstructions,
@@ -109,7 +97,19 @@ import {
   resolveAgenCAgentAttachCwd,
   runAgenCAgentCli,
 } from "../app-server/agent-cli.js";
-import type { AgentSummary } from "../app-server/protocol/index.js";
+import {
+  createAgenCDaemonOnlyTuiContext,
+  findAgenCDaemonAgentBySessionId,
+  listAgenCDaemonAgents,
+  startAgenCDaemonPromptAgent,
+  stopAgenCDaemonPromptAgent,
+} from "../app-server-client/index.js";
+import type {
+  AgentCreateParams,
+  AgentStopParams,
+  JsonObject,
+  MessageContentBlock,
+} from "../app-server/protocol/index.js";
 import {
   ensureAgenCDaemonAutostart,
   resolveAgenCDaemonAutostartEnabled,
@@ -158,6 +158,10 @@ import {
   executeUserPromptSubmitHooks,
   getUserPromptSubmitHookBlockingMessage,
 } from "../hooks/user-prompt-submit.js";
+import {
+  ConfiguredHooksRuntime,
+  type HookInstallTarget,
+} from "../hooks/configured-hooks.js";
 import { resolveStartupSelection } from "./startup-selection.js";
 import {
   isProjectTrustedSync,
@@ -171,8 +175,41 @@ import {
 import { runStartupConfigMigrations } from "../state/migrations/config-migrations.js";
 import { setSessionTrustAccepted } from "../bootstrap/state.js";
 
+type AgenCDaemonCliDeps = {
+  readonly startPromptAgent: typeof startAgenCDaemonPromptAgent;
+  readonly stopPromptAgent: typeof stopAgenCDaemonPromptAgent;
+  readonly createConnectedTuiClient: typeof createConnectedAgenCJsonLineDaemonTuiClient;
+  readonly findAgentBySessionId: typeof findAgenCDaemonAgentBySessionId;
+  readonly createTuiContext: typeof createAgenCDaemonOnlyTuiContext;
+  readonly ensureDaemonReady: typeof defaultEnsureDaemonReady;
+};
+
+const DEFAULT_DAEMON_CLI_DEPS: AgenCDaemonCliDeps = {
+  startPromptAgent: startAgenCDaemonPromptAgent,
+  stopPromptAgent: stopAgenCDaemonPromptAgent,
+  createConnectedTuiClient: createConnectedAgenCJsonLineDaemonTuiClient,
+  findAgentBySessionId: findAgenCDaemonAgentBySessionId,
+  createTuiContext: createAgenCDaemonOnlyTuiContext,
+  ensureDaemonReady: defaultEnsureDaemonReady,
+};
+
+let daemonCliDepsForTest: Partial<AgenCDaemonCliDeps> | null = null;
+
+function daemonCliDeps(): AgenCDaemonCliDeps {
+  return {
+    ...DEFAULT_DAEMON_CLI_DEPS,
+    ...(daemonCliDepsForTest ?? {}),
+  };
+}
+
+/** Test-only helper for daemon-backed CLI entry tests. */
+export function __setDaemonCliDepsForTest(
+  deps: Partial<AgenCDaemonCliDeps> | null,
+): void {
+  daemonCliDepsForTest = deps;
+}
+
 export {
-  bootstrapLocalRuntimeSession,
   PROVIDER_MODEL_CATALOG,
   resolveModelOrExit,
   sessionConfigurationFromAgenCConfig,
@@ -222,7 +259,6 @@ export function formatCliHelpText(): string {
     "  -h, --help                              Show this help text",
     `  --version                                Show version (${VERSION})`,
     "  --no-tui                                 Force one-shot CLI mode",
-    "  --no-daemon                              Skip daemon autostart for this invocation",
     "  -c, --continue                           Continue the latest project session",
     "  -r, --resume <session-id>                Resume a prior project session in the TUI",
     "  --provider <name>                        Override the startup model provider",
@@ -324,20 +360,6 @@ export function detectStartupShortCircuit(
   return null;
 }
 
-function envFlagEnabled(value: string | undefined): boolean {
-  const raw = value?.trim().toLowerCase();
-  if (raw === undefined || raw.length === 0) return false;
-  return raw !== "0" && raw !== "false" && raw !== "off";
-}
-
-export function shouldSkipAgenCDaemonForStartup(
-  env: NodeJS.ProcessEnv = process.env,
-  argv: readonly string[] = process.argv.slice(2),
-): boolean {
-  return envFlagEnabled(env.AGENC_FORCE_DIRECT_RUNTIME) ||
-    argv.includes("--no-daemon");
-}
-
 // ─────────────────────────────────────────────────────────────────────
 // Argv / stdin / env resolution
 // ─────────────────────────────────────────────────────────────────────
@@ -358,7 +380,7 @@ async function readStdin(signal: AbortSignal): Promise<string> {
 async function resolveUserMessage(signal: AbortSignal): Promise<string> {
   // Strip routing-level flags (--no-tui, --resume) before treating the
   // residue as the prompt; T12 routing peels these off upstream but
-  // legacy entry paths still call `resolveUserMessage` directly.
+  // Non-router entry paths still call `resolveUserMessage` directly.
   const userArgv = process.argv.slice(2);
   const argv = stripRoutingFlags(userArgv);
   if (argv.length > 0) {
@@ -393,16 +415,26 @@ function startupImageMessagesFromInputs(
   ];
 }
 
-function startupImageMessagesFromArgv(
-  argv: readonly string[],
+function startupContentFromInputs(
+  prompt: string,
+  imageInputs: readonly string[],
   cwd: string,
   home?: string,
-): LLMMessage[] {
-  return startupImageMessagesFromInputs(
-    extractFlagValues(argv, "--image"),
-    cwd,
-    home,
-  );
+): readonly MessageContentBlock[] | undefined {
+  const imageMessages = startupImageMessagesFromInputs(imageInputs, cwd, home);
+  const imageParts = imageMessages.flatMap((message) => {
+    if (!Array.isArray(message.content)) return [];
+    return message.content.flatMap((part) => {
+      if (part.type !== "image_url") return [];
+      return [{ type: "image_url" as const, image_url: part.image_url }];
+    });
+  });
+  if (imageParts.length === 0) return undefined;
+  const text = prompt.trim();
+  return [
+    ...(text.length > 0 ? [{ type: "text" as const, text }] : []),
+    ...imageParts,
+  ];
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -419,34 +451,6 @@ class InitAbortedError extends Error {
   constructor(message: string) {
     super(`init_aborted: ${message}`);
     this.name = "InitAbortedError";
-  }
-}
-
-/**
- * Reverse-cleanup stack for init. Each init step that opens a
- * resource pushes a finaliser onto this stack; on abort the stack is
- * drained in LIFO order. No-op entries are cheap; callers should
- * guard finalisers against double-close.
- */
-class InitCleanupStack {
-  private readonly finalisers: Array<{
-    name: string;
-    run: () => Promise<void> | void;
-  }> = [];
-
-  push(name: string, run: () => Promise<void> | void): void {
-    this.finalisers.push({ name, run });
-  }
-
-  async unwind(onError: (name: string, err: unknown) => void): Promise<void> {
-    while (this.finalisers.length > 0) {
-      const { name, run } = this.finalisers.pop()!;
-      try {
-        await run();
-      } catch (err) {
-        onError(name, err);
-      }
-    }
   }
 }
 
@@ -657,49 +661,6 @@ export async function maybeReloadConfigBetweenTurns(params: {
 // System prompt + rendering
 // ─────────────────────────────────────────────────────────────────────
 
-function describeToolCall(toolCall: LLMToolCall): string {
-  const tail =
-    toolCall.arguments && toolCall.arguments.length > 80
-      ? `${toolCall.arguments.slice(0, 80)}…`
-      : (toolCall.arguments ?? "");
-  return `${toolCall.name}(${tail})`;
-}
-
-function renderEvent(event: PhaseEvent): void {
-  switch (event.type) {
-    case "turn_start":
-      if (event.turnIndex > 0) {
-        process.stderr.write(`\n── turn ${event.turnIndex + 1} ──\n`);
-      }
-      return;
-    case "assistant_text":
-      process.stdout.write(event.content);
-      process.stdout.write("\n");
-      return;
-    case "tool_call":
-      process.stderr.write(`→ ${describeToolCall(event.toolCall)}\n`);
-      return;
-    case "tool_result": {
-      const tag = event.result.isError ? "✗" : "✓";
-      const preview =
-        event.result.content.length > 200
-          ? `${event.result.content.slice(0, 200)}…`
-          : event.result.content;
-      process.stderr.write(`${tag} ${preview}\n`);
-      return;
-    }
-    case "turn_complete": {
-      const { usage, stopReason, error } = event;
-      const line = `\n[${stopReason}] in:${usage.promptTokens} out:${usage.completionTokens} total:${usage.totalTokens}\n`;
-      process.stderr.write(line);
-      if (error) {
-        process.stderr.write(`error: ${error.message}\n`);
-      }
-      return;
-    }
-  }
-}
-
 // ─────────────────────────────────────────────────────────────────────
 // T10 Group I — runSingleTurn seam (R1: multi-turn future-proofing)
 // ─────────────────────────────────────────────────────────────────────
@@ -892,28 +853,6 @@ export async function prepareTurnRuntimeInputs(params: {
   };
 }
 
-function createSharedBootstrapTooling(): {
-  readonly sessionSlot: SessionSlot;
-  readonly delegateSessionHolder: { current: Session | null };
-  readonly toolRegistryOptions: NonNullable<
-    BootstrapLocalRuntimeSessionOptions["toolRegistryOptions"]
-  >;
-} {
-  const sessionSlot: SessionSlot = { current: null };
-  const delegateSessionHolder: { current: Session | null } = {
-    current: null,
-  };
-  const bashExecObserver = createBashExecObserverForSlot(sessionSlot);
-  return {
-    sessionSlot,
-    delegateSessionHolder,
-    toolRegistryOptions: {
-      bashExecObserver,
-      extraTools: [],
-    },
-  };
-}
-
 function resolveUserHome(
   env: NodeJS.ProcessEnv = process.env,
   fallback: string = processCwd(),
@@ -943,6 +882,15 @@ function emitFileMentionWarnings(
   }
 }
 
+function writeFileMentionWarnings(
+  stderr: Pick<NodeJS.WriteStream, "write">,
+  expansion: FileMentionExpansion,
+): void {
+  for (const rejection of expansion.rejected) {
+    stderr.write(`agenc: ${formatFileMentionRejection(rejection)}\n`);
+  }
+}
+
 async function expandPromptFileMentions(params: {
   readonly session: Session;
   readonly configStore: ConfigStore;
@@ -962,6 +910,21 @@ async function expandPromptFileMentions(params: {
     input: expansion.prompt,
     displayInput: params.input,
   };
+}
+
+async function expandOneShotPromptFileMentions(params: {
+  readonly configStore: Pick<ConfigStore, "current">;
+  readonly input: string;
+  readonly cwd: string;
+  readonly stderr: Pick<NodeJS.WriteStream, "write">;
+}): Promise<string> {
+  const config = params.configStore.current();
+  const expansion = await expandFileMentions(params.input, {
+    cwd: params.cwd,
+    allowedRoots: extractMentionAllowedRoots(config),
+  });
+  writeFileMentionWarnings(params.stderr, expansion);
+  return expansion.attachments.length === 0 ? params.input : expansion.prompt;
 }
 
 function userInputDisplayText(input: string | readonly LLMContentPart[]): string {
@@ -1123,6 +1086,111 @@ async function collectUserPromptSubmitHookOutcome(params: {
   return {
     blocked: false,
     additionalContexts,
+  };
+}
+
+function createOneShotHookTarget(): HookInstallTarget {
+  return {
+    preToolUseHooks: [],
+    postToolUseHooks: [],
+    failureToolUseHooks: [],
+    permissionDecisionHooks: [],
+    userPromptSubmitHooks: [],
+    stopHooks: [],
+    stopFailureHooks: [],
+    clearConfiguredLifecycleHooks: () => {},
+  };
+}
+
+async function prepareOneShotPromptForDaemon(params: {
+  readonly prompt: string;
+  readonly configStore: Pick<ConfigStore, "current">;
+  readonly agencHome: string;
+  readonly cwd: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly signal: AbortSignal;
+  readonly stderr: Pick<NodeJS.WriteStream, "write">;
+}): Promise<
+  | { readonly blocked: false; readonly prompt: string }
+  | { readonly blocked: true; readonly blockMessage: string }
+> {
+  const target = createOneShotHookTarget();
+  const hooksRuntime = new ConfiguredHooksRuntime({
+    cwd: params.cwd,
+    env: params.env,
+    agencHome: params.agencHome,
+    shellPath: params.env.SHELL ?? "/bin/sh",
+  });
+  hooksRuntime.attachTarget(target);
+  hooksRuntime.load(params.configStore.current().hooks);
+
+  const additionalContexts: string[] = [];
+  for await (const hookResult of executeUserPromptSubmitHooks(
+    params.prompt,
+    "default",
+    {
+      cwd: params.cwd,
+      services: { hooks: target },
+      abortController: { signal: params.signal },
+    },
+    undefined,
+    (err, idx) => {
+      params.stderr.write(
+        `agenc: UserPromptSubmit hook ${idx} threw: ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      );
+    },
+  )) {
+    if (hookResult.additionalContexts) {
+      additionalContexts.push(...hookResult.additionalContexts);
+    }
+    if (hookResult.blockingError) {
+      return {
+        blocked: true,
+        blockMessage: appendUserPromptSubmitContextsToMessage(
+          getUserPromptSubmitHookBlockingMessage(hookResult.blockingError),
+          additionalContexts,
+        ),
+      };
+    }
+    if (hookResult.preventContinuation) {
+      return {
+        blocked: true,
+        blockMessage: appendUserPromptSubmitContextsToMessage(
+          hookResult.stopReason
+            ? `Operation stopped by hook: ${hookResult.stopReason}`
+            : "Operation stopped by hook",
+          additionalContexts,
+        ),
+      };
+    }
+    const attachment = hookResult.message?.attachment;
+    if (
+      attachment?.type === "hook_success" &&
+      typeof attachment.content === "string" &&
+      attachment.content.length > 0
+    ) {
+      additionalContexts.push(attachment.content);
+    }
+  }
+
+  const expandedPrompt = await expandOneShotPromptFileMentions({
+    configStore: params.configStore,
+    input: params.prompt,
+    cwd: params.cwd,
+    stderr: params.stderr,
+  });
+  const promptWithContext = appendUserPromptSubmitContexts(
+    expandedPrompt,
+    additionalContexts,
+  );
+  return {
+    blocked: false,
+    prompt:
+      typeof promptWithContext === "string"
+        ? promptWithContext
+        : userInputDisplayText(promptWithContext),
   };
 }
 
@@ -1420,29 +1488,274 @@ export function __setActiveInkUnmountForTest(fn: (() => void) | null): void {
   activeInkUnmount = fn;
 }
 
+type ConnectedDaemonTuiClient = Awaited<
+  ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
+>;
+
+async function stopDaemonAgentBestEffort(params: {
+  readonly deps: AgenCDaemonCliDeps;
+  readonly daemonClient?: ConnectedDaemonTuiClient | null;
+  readonly env: NodeJS.ProcessEnv;
+  readonly agentId: string;
+  readonly reason: string;
+}): Promise<void> {
+  const stopParams: AgentStopParams = {
+    agentId: params.agentId,
+    reason: params.reason,
+  };
+  if (params.daemonClient !== undefined && params.daemonClient !== null) {
+    try {
+      await params.daemonClient.request("agent.stop", stopParams);
+      return;
+    } catch {
+      /* fall through to one-shot stop client */
+    }
+  }
+  await params.deps
+    .stopPromptAgent({
+      agentId: params.agentId,
+      reason: params.reason,
+      env: params.env,
+    })
+    .catch(() => {
+      /* best effort */
+    });
+}
+
+type DaemonOneShotFinalStatus = {
+  readonly code: number;
+  readonly message?: string;
+};
+
+function isJsonRecord(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function daemonEventParams(event: unknown): JsonObject | null {
+  if (!isJsonRecord(event)) return null;
+  return isJsonRecord(event.params) ? event.params : event;
+}
+
+function daemonNestedTranscriptEvent(event: unknown): JsonObject | null {
+  const params = daemonEventParams(event);
+  if (params === null) return null;
+  if (isJsonRecord(params.event)) return params.event;
+  if (isJsonRecord(params.msg)) return params.msg;
+  return params;
+}
+
+function daemonOneShotMessageChunk(event: unknown): string | null {
+  if (!isJsonRecord(event)) return null;
+  const params = daemonEventParams(event);
+  if (
+    event.method === "event.message_chunk" &&
+    params !== null &&
+    typeof params.delta === "string"
+  ) {
+    return params.delta;
+  }
+  const transcriptEvent = daemonNestedTranscriptEvent(event);
+  if (transcriptEvent === null) return null;
+  const payload = isJsonRecord(transcriptEvent.payload)
+    ? transcriptEvent.payload
+    : null;
+  if (
+    transcriptEvent.type === "agent_message_delta" &&
+    payload !== null &&
+    typeof payload.delta === "string"
+  ) {
+    return payload.delta;
+  }
+  if (
+    transcriptEvent.type === "agent_message" &&
+    payload !== null &&
+    typeof payload.message === "string"
+  ) {
+    return `${payload.message}\n`;
+  }
+  return null;
+}
+
+function daemonOneShotFinalStatus(
+  event: unknown,
+): DaemonOneShotFinalStatus | null {
+  if (!isJsonRecord(event)) return null;
+  const params = daemonEventParams(event);
+  if (event.method === "event.agent_status" && params !== null) {
+    const runStatus =
+      typeof params.runStatus === "string" ? params.runStatus : undefined;
+    const status = typeof params.status === "string" ? params.status : undefined;
+    const message = typeof params.message === "string" ? params.message : undefined;
+    if (runStatus === "completed" || status === "idle") {
+      return { code: 0, ...(message !== undefined ? { message } : {}) };
+    }
+    if (runStatus === "stopped" || status === "stopped") {
+      return { code: 130, ...(message !== undefined ? { message } : {}) };
+    }
+    if (runStatus === "errored" || status === "error") {
+      return { code: 1, ...(message !== undefined ? { message } : {}) };
+    }
+  }
+  const transcriptEvent = daemonNestedTranscriptEvent(event);
+  if (transcriptEvent === null) return null;
+  const payload = isJsonRecord(transcriptEvent.payload)
+    ? transcriptEvent.payload
+    : null;
+  if (transcriptEvent.type === "turn_complete") {
+    const message =
+      payload !== null && typeof payload.lastAgentMessage === "string"
+        ? payload.lastAgentMessage
+        : undefined;
+    return { code: 0, ...(message !== undefined ? { message } : {}) };
+  }
+  if (transcriptEvent.type === "error") {
+    const message =
+      payload !== null && typeof payload.message === "string"
+        ? payload.message
+        : undefined;
+    return { code: 1, ...(message !== undefined ? { message } : {}) };
+  }
+  return null;
+}
+
+async function runDaemonOneShotPrompt(params: {
+  readonly deps: AgenCDaemonCliDeps;
+  readonly prompt: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly cwd: string;
+  readonly initialContent?: string | readonly MessageContentBlock[];
+}): Promise<number> {
+  await params.deps.ensureDaemonReady(params.env)();
+  const daemonClient = await params.deps.createConnectedTuiClient({
+    env: params.env,
+  });
+  let startedAgentId: string | null = null;
+  let unsubscribeEvents: (() => void) | null = null;
+  let unsubscribeConnection: (() => void) | null = null;
+  let completed = false;
+  let printedAssistantOutput = false;
+  let lastPrintedChar = "";
+
+  try {
+    const createParams: AgentCreateParams = {
+      objective: params.prompt,
+      instructions: params.prompt,
+      cwd: params.cwd,
+      ...(params.initialContent !== undefined
+        ? { initialContent: params.initialContent }
+        : {}),
+      metadata: {
+        source: "agenc.prompt",
+        mode: "one-shot",
+      },
+    };
+    const started = await daemonClient.request("agent.create", createParams);
+    startedAgentId = started.agentId;
+    const attachment = await daemonClient.request("agent.attach", {
+      agentId: started.agentId,
+      clientId: `agenc-one-shot-${process.pid}`,
+    });
+    const sessionId =
+      attachment.sessionIds[0] ?? started.sessionId ?? started.activeSessionIds?.[0];
+    if (sessionId === undefined) {
+      throw new Error(`daemon agent has no attached session: ${started.agentId}`);
+    }
+
+    const code = await new Promise<number>((resolve, reject) => {
+      let settled = false;
+      const settle = (next: { readonly code: number } | { readonly error: Error }) => {
+        if (settled) return;
+        settled = true;
+        unsubscribeEvents?.();
+        unsubscribeConnection?.();
+        if ("error" in next) {
+          reject(next.error);
+        } else {
+          resolve(next.code);
+        }
+      };
+
+      unsubscribeConnection = daemonClient.subscribeToConnectionState((state) => {
+        if (state.status === "disconnected") {
+          settle({
+            error: new Error(state.message ?? "daemon connection closed"),
+          });
+        }
+      });
+
+      unsubscribeEvents = daemonClient.subscribeToSessionEvents(
+        sessionId,
+        (event) => {
+          const chunk = daemonOneShotMessageChunk(event);
+          if (chunk !== null && chunk.length > 0) {
+            process.stdout.write(chunk);
+            printedAssistantOutput = true;
+            lastPrintedChar = chunk.at(-1) ?? lastPrintedChar;
+          }
+
+          const finalStatus = daemonOneShotFinalStatus(event);
+          if (finalStatus === null) return;
+          if (printedAssistantOutput) {
+            if (lastPrintedChar !== "\n") process.stdout.write("\n");
+          } else if (
+            finalStatus.code === 0 &&
+            finalStatus.message !== undefined &&
+            finalStatus.message.length > 0
+          ) {
+            process.stdout.write(`${finalStatus.message}\n`);
+          }
+          if (
+            finalStatus.code !== 0 &&
+            finalStatus.message !== undefined &&
+            finalStatus.message.length > 0
+          ) {
+            process.stderr.write(`${finalStatus.message}\n`);
+          }
+          settle({ code: finalStatus.code });
+        },
+      );
+    });
+    completed = true;
+    return code;
+  } catch (error) {
+    if (startedAgentId !== null && !completed) {
+      await stopDaemonAgentBestEffort({
+        deps: params.deps,
+        daemonClient,
+        env: params.env,
+        agentId: startedAgentId,
+        reason: "one_shot_failed",
+      });
+    }
+    throw error;
+  } finally {
+    const stopEvents = unsubscribeEvents as (() => void) | null;
+    const stopConnection = unsubscribeConnection as (() => void) | null;
+    stopEvents?.();
+    stopConnection?.();
+    await daemonClient.close().catch(() => {
+      /* best effort */
+    });
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────
-// One-shot CLI — the legacy non-TUI path.
+// One-shot CLI - daemon-backed non-TUI path.
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Run a single turn through the phase machine and exit. This is the
- * original `main()` body preserved verbatim; Wave 5-B introduces
- * routing above it so piped + `--no-tui` invocations still see the same
- * pixel-identical behavior.
+ * Run a one-shot prompt through a daemon-owned agent and stream the answer.
  *
  * When `userMessage` is a non-empty string (routing path), it's used as
  * the prompt directly. Otherwise the function falls back to the
- * `resolveUserMessage` argv/stdin pipeline so legacy entry paths still
+ * `resolveUserMessage` argv/stdin pipeline so older entry adapters still
  * work without a pre-resolved prompt.
  */
 export async function oneShotCLI(
   userMessage: string | null = null,
+  startupImages: readonly string[] = [],
 ): Promise<number> {
-  // I-51: init step abort + reverse-cleanup stack. Signal handlers for
-  // Ctrl+C / SIGTERM / SIGHUP during init feed this controller; each
-  // async init step observes signal.aborted.
   const initAbort = new AbortController();
-  const cleanup = new InitCleanupStack();
   const uninstallInitSignals = installInitSignalHandlers(initAbort);
 
   const throwIfAborted = (step: string) => {
@@ -1453,19 +1766,12 @@ export async function oneShotCLI(
     }
   };
 
-  // I-47 latch — SIGUSR1 flips this; `maybeReloadConfigBetweenTurns`
-  // drains it before the next runTurn call.
-  const configReloadLatch: ConfigReloadLatch = { requested: false };
-
   try {
-    // Step 1: validate HOME (I-52).
     validateAgencHome();
     throwIfAborted("validateAgencHome");
+    const agencHome = resolveAgencHome(process.env);
 
-    // Step 2: resolve user message. The router may have pre-resolved
-    // the prompt from argv; fall through to stdin when nothing was
-    // passed (preserves the legacy piped-only path).
-    let resolvedUserMessage =
+    const resolvedUserMessage =
       userMessage !== null && userMessage.length > 0
         ? userMessage
         : await resolveUserMessage(initAbort.signal);
@@ -1482,199 +1788,54 @@ export async function oneShotCLI(
     }
     throwIfAborted("requireProjectTrustForTui");
 
-    // Step 3: shared local-runtime bootstrap contract. Both the
-    // one-shot CLI and TUI entry adapters construct their Session
-    // through this helper so the entry surface owns less runtime
-    // setup directly.
-    const { sessionSlot, delegateSessionHolder, toolRegistryOptions } =
-      createSharedBootstrapTooling();
-    // The daemon owns the live rollout lock for runtimeSessionId, so
-    // attach reuses the id without resuming that rollout locally.
-    const {
-      agencHome,
-      configStore,
-      workspaceRoot,
-      resolvedProvider,
-      registry,
-      session,
-      ctx,
-      memoryDir,
-      memoryMdPath,
-      shutdown,
-    } = await bootstrapLocalRuntimeSession({
+    const daemonCwd = resolveWorkspaceFromEnv(process.env) ?? processCwd();
+    const configStore = new ConfigStore({
+      home: agencHome,
       env: process.env,
-      argv: process.argv,
-      cwd: processCwd(),
-      toolRegistryOptions,
+      onWarn: (message) => process.stderr.write(`${message}\n`),
     });
-    throwIfAborted("bootstrapLocalRuntimeSession");
-
-    throwIfAborted("Session");
-
-    // Now that the Session exists, fill the bash observer slot so
-    // `exec_command_begin` / `exec_command_end` events land on the
-    // session event log. MCP attach/start is owned by the session
-    // boundary inside `bootstrapLocalRuntimeSession(...)`.
-    sessionSlot.current = session;
-    // T9: give the delegate tool its real Session reference.
-    delegateSessionHolder.current = session;
-
-    for (const message of startupImageMessagesFromArgv(
-      process.argv.slice(2),
-      workspaceRoot,
+    await configStore.reload();
+    const promptPreparation = await prepareOneShotPromptForDaemon({
+      prompt: resolvedUserMessage,
+      configStore,
+      agencHome,
+      cwd: daemonCwd,
+      env: process.env,
+      signal: initAbort.signal,
+      stderr: process.stderr,
+    });
+    throwIfAborted("prepareOneShotPromptForDaemon");
+    if (promptPreparation.blocked) {
+      process.stderr.write(`${promptPreparation.blockMessage}\n`);
+      return 1;
+    }
+    const preparedUserMessage = promptPreparation.prompt;
+    const resolvedStartupImages =
+      startupImages.length > 0
+        ? startupImages
+        : extractFlagValues(process.argv.slice(2), "--image");
+    const initialContent = startupContentFromInputs(
+      preparedUserMessage,
+      resolvedStartupImages,
+      daemonCwd,
       process.env.HOME,
-    )) {
-      session.enqueueIdleInput(message);
-    }
-
-    let sessionRef: Session | null = session;
-    installSignalHandlers(() => sessionRef, configReloadLatch);
-
-    // Init complete — tear down init-phase signal handlers (Session
-    // now owns its own) and drop the cleanup stack since the session
-    // finally-block below takes over.
-    uninstallInitSignals();
-    // Drain the stack without running finalisers; the finally-block
-    // below hands off to the session lifecycle helper.
-    await cleanup.unwind(() => {
-      /* swallow — we're handing off to session's own lifecycle */
+    );
+    const daemonPrompt =
+      preparedUserMessage.trim().length > 0
+        ? preparedUserMessage
+        : initialContent !== undefined
+          ? "Multimodal AgenC startup"
+          : preparedUserMessage;
+    return await runDaemonOneShotPrompt({
+      deps: daemonCliDeps(),
+      prompt: daemonPrompt,
+      env: process.env,
+      cwd: daemonCwd,
+      ...(initialContent !== undefined ? { initialContent } : {}),
     });
-
-    // Slash-command short-circuit. `runSlashCommand` is the only entry
-    // path now, including the session-backed worktree commands.
-    if (resolvedUserMessage.trimStart().startsWith("/")) {
-      let shouldShutdownAfterSlash = true;
-      try {
-        const runResult = await runSlashCommand(resolvedUserMessage, {
-          session,
-          cwd:
-            session.sessionConfiguration.cwd ?? workspaceRoot ?? processCwd(),
-          home: resolveUserHome(
-            process.env,
-            session.sessionConfiguration.cwd ?? workspaceRoot ?? processCwd(),
-          ),
-          agencHome,
-          configStore,
-        });
-        switch (runResult.kind) {
-          case "skip":
-            process.stderr.write(
-              /[\r\n]/.test(resolvedUserMessage)
-                ? "agenc: slash command rejected (multi-line input not allowed)\n"
-                : "agenc: slash command rejected (invalid syntax)\n",
-            );
-            return 1;
-          case "passthrough":
-            resolvedUserMessage = runResult.input;
-            shouldShutdownAfterSlash = false;
-            break;
-          case "unknown":
-            process.stderr.write(`agenc: ${runResult.message}\n`);
-            return 1;
-          case "blocked_by_bridge":
-            process.stderr.write(`agenc: ${runResult.message}\n`);
-            return 1;
-          case "dispatched": {
-            const r = runResult.result;
-            switch (r.kind) {
-              case "text":
-              case "compact":
-                process.stdout.write(`${r.text}\n`);
-                return 0;
-              case "prompt":
-                // Re-injected prompt would feed back into the turn
-                // loop; one-shot CLI has no loop yet, so surface the
-                // prompt to stdout + exit 0.
-                process.stdout.write(`${r.content}\n`);
-                return 0;
-              case "skip":
-                return 0;
-              case "exit":
-                return r.code;
-              case "error":
-                process.stderr.write(`agenc: ${r.message}\n`);
-                return 1;
-            }
-          }
-        }
-      } finally {
-        if (shouldShutdownAfterSlash) {
-          sessionRef = null;
-          sessionSlot.current = null;
-          delegateSessionHolder.current = null;
-          await shutdown().catch(() => {
-            /* best effort */
-          });
-        }
-      }
-    }
-
-    const loadTurnInputsFn = () =>
-      prepareTurnRuntimeInputs({
-        session,
-        configStore,
-        workspaceRoot,
-        memoryDir,
-        memoryMdPath,
-        registry,
-      });
-
-    // R1 seam: one LLM turn runs through `runSingleTurn`, which owns
-    // the between-turn reload + system-prompt assembly + runTurn loop.
-    // A future multi-turn REPL iterates this helper in a while-loop;
-    // the single-shot CLI just runs it exactly once.
-    try {
-      const preparedPrompt = await prepareSubmittedPromptForTurn({
-        session,
-        configStore,
-        input: resolvedUserMessage,
-      });
-      if (preparedPrompt.blocked) {
-        if (preparedPrompt.blockMessage) {
-          process.stderr.write(`agenc: ${preparedPrompt.blockMessage}\n`);
-        }
-        return 1;
-      }
-
-      for await (const event of runSingleTurn({
-        session,
-        ctx,
-        input: preparedPrompt.input,
-        displayInput: preparedPrompt.displayInput,
-        agencHome,
-        configStore,
-        configReloadLatch,
-        loadTurnInputsFn,
-        provider: resolvedProvider,
-      })) {
-        renderEvent(event);
-        if (event.type === "turn_complete") {
-          if (event.stopReason === "error") return 1;
-          if (event.stopReason === "cancelled") return 130;
-          return 0;
-        }
-      }
-    } finally {
-      sessionRef = null;
-      sessionSlot.current = null;
-      delegateSessionHolder.current = null;
-      await shutdown().catch(() => {
-        /* best effort */
-      });
-    }
-
-    // Generator ended without yielding turn_complete — shouldn't happen,
-    // but surface as an error rather than a silent 0 exit.
-    return 1;
   } catch (error) {
-    // I-51: on abort, run reverse cleanup + emit init_aborted.
     if (error instanceof InitAbortedError) {
       process.stderr.write(`agenc: ${error.message}\n`);
-      await cleanup.unwind((name, err) => {
-        process.stderr.write(
-          `agenc: cleanup[${name}] failed: ${err instanceof Error ? err.message : String(err)}\n`,
-        );
-      });
       return 130;
     }
     if (
@@ -1682,21 +1843,12 @@ export async function oneShotCLI(
       error instanceof SchemaMismatchError
     ) {
       process.stderr.write(`agenc: ${error.message}\n`);
-      await cleanup.unwind((name, err) => {
-        process.stderr.write(
-          `agenc: cleanup[${name}] failed: ${err instanceof Error ? err.message : String(err)}\n`,
-        );
-      });
       return 1;
     }
-    // Other init errors: still run cleanup, then re-throw so the
-    // top-level catch surfaces the message.
-    await cleanup.unwind((name, err) => {
-      process.stderr.write(
-        `agenc: cleanup[${name}] failed: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
-    });
-    throw error;
+    process.stderr.write(
+      `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    return 1;
   } finally {
     uninstallInitSignals();
   }
@@ -1898,16 +2050,9 @@ export async function resolveAttachTargetTrustRoot(
   >,
   agentId: string,
 ): Promise<string> {
-  const matches: AgentSummary[] = [];
-  let cursor: string | undefined;
-  do {
-    const result = await client.request("agent.list", {
-      limit: 100,
-      ...(cursor !== undefined ? { cursor } : {}),
-    });
-    matches.push(...result.agents.filter((agent) => agent.agentId === agentId));
-    cursor = result.nextCursor;
-  } while (cursor !== undefined);
+  const matches = (await listAgenCDaemonAgents(client)).filter(
+    (agent) => agent.agentId === agentId,
+  );
 
   if (matches.length !== 1) {
     throw new Error(`daemon agent not found for attach: ${agentId}`);
@@ -1917,16 +2062,6 @@ export async function resolveAttachTargetTrustRoot(
     throw new Error(`daemon agent has no workspace metadata: ${agentId}`);
   }
   return cwd;
-}
-
-export function envForAttachBootstrap(
-  env: NodeJS.ProcessEnv,
-  cwd: string,
-): NodeJS.ProcessEnv {
-  return {
-    ...env,
-    AGENC_WORKSPACE: cwd,
-  };
 }
 
 async function loadCreateDaemonTuiSession(): Promise<
@@ -1972,6 +2107,399 @@ async function startTuiEarlyInputCapture(): Promise<() => string> {
   }
 }
 
+function messageContentBlocksFromUnknown(input: unknown): MessageContentBlock[] {
+  if (typeof input === "string") return [{ type: "text", text: input }];
+  if (typeof input !== "object" || input === null) return [];
+  const content = (input as { readonly content?: unknown }).content;
+  if (typeof content === "string") return [{ type: "text", text: content }];
+  if (!Array.isArray(content)) return [];
+  return content.flatMap((part): MessageContentBlock[] => {
+    if (typeof part !== "object" || part === null) return [];
+    const record = part as {
+      readonly type?: unknown;
+      readonly text?: unknown;
+      readonly image_url?: unknown;
+    };
+    if (record.type === "text" && typeof record.text === "string") {
+      return [{ type: "text", text: record.text }];
+    }
+    if (record.type === "image_url") {
+      const image = record.image_url;
+      if (
+        typeof image === "object" &&
+        image !== null &&
+        typeof (image as { readonly url?: unknown }).url === "string"
+      ) {
+        return [
+          {
+            type: "image_url",
+            image_url: { url: (image as { readonly url: string }).url },
+          },
+        ];
+      }
+    }
+    return [];
+  });
+}
+
+type TuiSessionShape = {
+  submit?: (
+    message: string,
+    opts?: { readonly displayUserMessage?: string | null },
+  ) => Promise<void>;
+  enqueueIdleInput?: (input: unknown) => number;
+  subscribeToEvents?: (cb: (event: unknown) => void) => () => void;
+  getInitialTranscriptEvents?: () => readonly unknown[];
+};
+
+type LocalTuiSlashOutcome =
+  | { readonly kind: "handled" }
+  | { readonly kind: "prompt"; readonly content: string };
+
+function emitLocalTuiSlashResult(
+  subscribers: Iterable<(event: unknown) => void>,
+  input: string,
+  result:
+    | { readonly kind: "text"; readonly text: string }
+    | { readonly kind: "compact"; readonly text: string }
+    | { readonly kind: "prompt"; readonly content: string }
+    | { readonly kind: "skip" }
+    | { readonly kind: "exit"; readonly code: number }
+    | { readonly kind: "error"; readonly message: string },
+): void {
+  const event = {
+    type: "slash_result",
+    input,
+    result,
+    timestamp: Date.now(),
+  };
+  for (const subscriber of subscribers) {
+    subscriber(event);
+  }
+}
+
+async function handleLocalTuiSlashCommand(params: {
+  readonly message: string;
+  readonly session: TuiSessionShape & Record<string, unknown>;
+  readonly subscribers: Iterable<(event: unknown) => void>;
+  readonly configStore: Pick<ConfigStore, "current">;
+  readonly agencHome: string;
+  readonly cwd: string;
+  readonly env: NodeJS.ProcessEnv;
+}): Promise<LocalTuiSlashOutcome> {
+  const appStateBridge = (
+    params.session as TuiSessionShape & {
+      appStateBridge?: SlashCommandAppStateBridge;
+    }
+  ).appStateBridge;
+  const slash = await runSlashCommand(params.message, {
+    session: params.session as unknown as Session,
+    cwd: params.cwd,
+    home: resolveUserHome(params.env, params.cwd),
+    agencHome: params.agencHome,
+    configStore: params.configStore as ConfigStore,
+    ...(appStateBridge ? { appState: appStateBridge } : {}),
+  });
+  switch (slash.kind) {
+    case "skip":
+      emitLocalTuiSlashResult(params.subscribers, params.message, {
+        kind: "error",
+        message: /[\r\n]/.test(params.message)
+          ? "slash command rejected (multi-line input not allowed)"
+          : "slash command rejected (invalid syntax)",
+      });
+      return { kind: "handled" };
+    case "passthrough":
+      return { kind: "prompt", content: slash.input };
+    case "unknown":
+    case "blocked_by_bridge":
+      emitLocalTuiSlashResult(params.subscribers, params.message, {
+        kind: "error",
+        message: slash.message,
+      });
+      return { kind: "handled" };
+    case "dispatched":
+      emitLocalTuiSlashResult(params.subscribers, params.message, slash.result);
+      if (slash.result.kind === "prompt") {
+        return { kind: "prompt", content: slash.result.content };
+      }
+      if (slash.result.kind === "exit") {
+        activeInkUnmount?.();
+      }
+      return { kind: "handled" };
+  }
+}
+
+async function createDeferredDaemonPromptTuiSession(params: {
+  readonly baseSession: unknown;
+  readonly configStore: Pick<ConfigStore, "current">;
+  readonly deps: AgenCDaemonCliDeps;
+  readonly agencHome: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly cwd: string;
+  readonly clientId: string;
+}): Promise<{ readonly session: unknown; readonly close: () => Promise<void> }> {
+  let liveSession: TuiSessionShape | null = null;
+  let liveSessionPromise: Promise<TuiSessionShape | null> | null = null;
+  let daemonClient: Awaited<
+    ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
+  > | null = null;
+  let queuedInputs: MessageContentBlock[] = [];
+  let queuedInputCount = 0;
+  const subscribers = new Set<(event: unknown) => void>();
+  const liveUnsubscribers = new Map<(event: unknown) => void, () => void>();
+
+  const ensureLiveSession = async (
+    firstMessage: string,
+  ): Promise<TuiSessionShape | null> => {
+    if (liveSession !== null) return liveSession;
+    if (liveSessionPromise !== null) return liveSessionPromise;
+    liveSessionPromise = (async () => {
+      const preparedFirstMessage =
+        firstMessage.length > 0
+          ? await prepareDaemonTuiPrompt({
+              message: firstMessage,
+              configStore: params.configStore,
+              agencHome: params.agencHome,
+              cwd: params.cwd,
+              env: params.env,
+              stderr: process.stderr,
+            })
+          : firstMessage;
+      if (preparedFirstMessage === null) return null;
+      const content: MessageContentBlock[] = [
+        ...queuedInputs,
+        ...(preparedFirstMessage.length > 0
+          ? [{ type: "text" as const, text: preparedFirstMessage }]
+          : []),
+      ];
+      if (content.length === 0) return null;
+      const prompt =
+        preparedFirstMessage.trim().length > 0
+          ? preparedFirstMessage
+          : "Multimodal AgenC startup";
+      let startedAgentId: string | null = null;
+      try {
+        const started = await params.deps.startPromptAgent({
+          prompt,
+          env: params.env,
+          cwd: params.cwd,
+          initialContent:
+            content.length === 1 && content[0]?.type === "text"
+              ? content[0].text
+              : content,
+          metadata: { mode: "tui" },
+        });
+        startedAgentId = started.agentId;
+        daemonClient = await params.deps.createConnectedTuiClient({
+          env: params.env,
+        });
+        const attachment = await daemonClient.request("agent.attach", {
+          agentId: started.agentId,
+          clientId: params.clientId,
+        });
+        const sessionId = attachment.sessionIds[0];
+        if (sessionId === undefined) {
+          throw new Error(
+            `daemon agent has no attached session: ${started.agentId}`,
+          );
+        }
+        const createDaemonTuiSession = await loadCreateDaemonTuiSession();
+        liveSession = wrapDaemonTuiSessionWithPromptPreparation(
+          (await createDaemonTuiSession({
+            baseSession: params.baseSession,
+            client: daemonClient,
+            sessionId,
+            conversationId:
+              attachment.runtimeSessionId ?? attachment.agentId ?? sessionId,
+            clientId: params.clientId,
+          })) as TuiSessionShape,
+          {
+            configStore: params.configStore,
+            agencHome: params.agencHome,
+            cwd: params.cwd,
+            env: params.env,
+            stderr: process.stderr,
+          },
+        );
+        queuedInputs = [];
+        queuedInputCount = 0;
+        for (const subscriber of subscribers) {
+          const unsubscribe = liveSession.subscribeToEvents?.(subscriber);
+          if (unsubscribe !== undefined) {
+            liveUnsubscribers.set(subscriber, unsubscribe);
+          }
+        }
+        return liveSession;
+      } catch (error) {
+        if (startedAgentId !== null) {
+          await stopDaemonAgentBestEffort({
+            deps: params.deps,
+            daemonClient,
+            env: params.env,
+            agentId: startedAgentId,
+            reason: "tui_startup_failed",
+          });
+        }
+        throw error;
+      }
+    })();
+    try {
+      return await liveSessionPromise;
+    } finally {
+      if (liveSession === null) liveSessionPromise = null;
+    }
+  };
+
+  const base = params.baseSession as Record<string, unknown>;
+  const session: TuiSessionShape & Record<string, unknown> = {
+    ...base,
+    submit: async (message, opts) => {
+      if (liveSession !== null) {
+        await liveSession.submit?.(message, opts);
+        return;
+      }
+      const firstMessage = isLocalSlashCommandInput(message)
+        ? await handleLocalTuiSlashCommand({
+            message,
+            session,
+            subscribers,
+            configStore: params.configStore,
+            agencHome: params.agencHome,
+            cwd: params.cwd,
+            env: params.env,
+          })
+        : { kind: "prompt" as const, content: message };
+      if (firstMessage.kind === "handled") return;
+      await ensureLiveSession(firstMessage.content);
+    },
+    enqueueIdleInput: (input) => {
+      if (liveSession !== null) {
+        return liveSession.enqueueIdleInput?.(input) ?? 0;
+      }
+      const blocks = messageContentBlocksFromUnknown(input);
+      queuedInputs.push(...blocks);
+      queuedInputCount += blocks.length;
+      return queuedInputCount;
+    },
+    subscribeToEvents: (cb) => {
+      subscribers.add(cb);
+      if (liveSession !== null) {
+        const unsubscribe = liveSession.subscribeToEvents?.(cb);
+        if (unsubscribe !== undefined) liveUnsubscribers.set(cb, unsubscribe);
+      }
+      return () => {
+        subscribers.delete(cb);
+        liveUnsubscribers.get(cb)?.();
+        liveUnsubscribers.delete(cb);
+      };
+    },
+    getInitialTranscriptEvents: () =>
+      liveSession?.getInitialTranscriptEvents?.() ??
+      (typeof base.getInitialTranscriptEvents === "function"
+        ? (base.getInitialTranscriptEvents as () => readonly unknown[])()
+        : []),
+  };
+
+  return {
+    session,
+    close: async () => {
+      for (const unsubscribe of liveUnsubscribers.values()) unsubscribe();
+      liveUnsubscribers.clear();
+      await daemonClient?.close().catch(() => {
+        /* best effort */
+      });
+    },
+  };
+}
+
+function isLocalSlashCommandInput(message: string): boolean {
+  const trimmed = message.trimStart();
+  return trimmed.startsWith("/") && !/[\r\n]/.test(message);
+}
+
+async function prepareDaemonTuiPrompt(params: {
+  readonly message: string;
+  readonly configStore: Pick<ConfigStore, "current">;
+  readonly agencHome: string;
+  readonly cwd: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly stderr: Pick<NodeJS.WriteStream, "write">;
+}): Promise<string | null> {
+  if (isLocalSlashCommandInput(params.message)) return null;
+  const outcome = await prepareOneShotPromptForDaemon({
+    prompt: params.message,
+    configStore: params.configStore,
+    agencHome: params.agencHome,
+    cwd: params.cwd,
+    env: params.env,
+    signal: new AbortController().signal,
+    stderr: params.stderr,
+  });
+  if (outcome.blocked) {
+    params.stderr.write(`${outcome.blockMessage}\n`);
+    return null;
+  }
+  return outcome.prompt;
+}
+
+function wrapDaemonTuiSessionWithPromptPreparation<
+  Session extends {
+    submit?: (
+      message: string,
+      opts?: { readonly displayUserMessage?: string | null },
+    ) => Promise<void>;
+    subscribeToEvents?: (cb: (event: unknown) => void) => () => void;
+  },
+>(
+  session: Session,
+  params: {
+    readonly configStore: Pick<ConfigStore, "current">;
+    readonly agencHome: string;
+    readonly cwd: string;
+    readonly env: NodeJS.ProcessEnv;
+    readonly stderr: Pick<NodeJS.WriteStream, "write">;
+  },
+): Session {
+  const originalSubmit = session.submit?.bind(session);
+  if (originalSubmit === undefined) return session;
+  const originalSubscribe = session.subscribeToEvents?.bind(session);
+  const localSubscribers = new Set<(event: unknown) => void>();
+  let wrapped!: Session;
+  wrapped = {
+    ...session,
+    submit: async (message, opts) => {
+      const nextMessage = isLocalSlashCommandInput(message)
+        ? await handleLocalTuiSlashCommand({
+            message,
+            session: wrapped as TuiSessionShape & Record<string, unknown>,
+            subscribers: localSubscribers,
+            configStore: params.configStore,
+            agencHome: params.agencHome,
+            cwd: params.cwd,
+            env: params.env,
+          })
+        : { kind: "prompt" as const, content: message };
+      if (nextMessage.kind === "handled") return;
+      const prepared = await prepareDaemonTuiPrompt({
+        message: nextMessage.content,
+        ...params,
+      });
+      if (prepared === null) return;
+      await originalSubmit(prepared, opts);
+    },
+    subscribeToEvents: ((cb: (event: unknown) => void) => {
+      localSubscribers.add(cb);
+      const unsubscribeOriginal = originalSubscribe?.(cb);
+      return () => {
+        localSubscribers.delete(cb);
+        unsubscribeOriginal?.();
+      };
+    }) as Session["subscribeToEvents"],
+  };
+  return wrapped;
+}
+
 type BootTUIEntryArgs = BootTUIArgs & { readonly resumeId?: string };
 
 /** Boot the TUI, preserving argv prompts and any pre-Ink typed draft text. */
@@ -1994,89 +2522,146 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
   };
   try {
     validateAgencHome();
-    const { sessionSlot, delegateSessionHolder, toolRegistryOptions } =
-      createSharedBootstrapTooling();
-    const {
-      agencHome,
-      configStore,
-      workspaceRoot,
-      resolvedProvider,
-      registry,
-      model,
-      session,
-      memoryDir,
-      memoryMdPath,
-      shutdown,
-      autonomousModeEnabled,
-    } = await bootstrapLocalRuntimeSession({
-      env: process.env,
-      argv: process.argv,
-      cwd: processCwd(),
-      toolRegistryOptions,
-      ...(args.resumeId !== undefined ? { conversationId: args.resumeId } : {}),
-    });
-    try {
-      sessionSlot.current = session;
-      delegateSessionHolder.current = session;
-
-      const loadTurnInputsFn = () =>
-        prepareTurnRuntimeInputs({
-          session,
-          configStore,
-          workspaceRoot,
-          memoryDir,
-          memoryMdPath,
-          registry,
-        });
-      const uninstallTuiSessionContract = installTuiSessionContract({
-        session,
-        configStore,
-        agencHome,
-        resolvedProvider,
-        autonomousModeEnabled,
-        loadTurnInputsFn,
-      });
-
+    if (args.resumeId !== undefined) {
+      const deps = daemonCliDeps();
+      const daemonClient = await deps.createConnectedTuiClient();
+      let transferred = false;
       try {
-        const boot = await loadBootTUI();
-        const capturedEarlyInput = consumeEarlyInput();
-        const initialComposerText =
-          args.initialPrompt === undefined ? capturedEarlyInput : "";
-        const initialUserMessages =
-          args.startupImages !== undefined
-            ? startupImageMessagesFromInputs(
-                args.startupImages,
-                workspaceRoot,
-                process.env.HOME,
-              )
-            : startupImageMessagesFromArgv(
-                process.argv.slice(2),
-                workspaceRoot,
-                process.env.HOME,
-              );
+        const agent = await deps.findAgentBySessionId(daemonClient, args.resumeId);
+        if (agent === null) {
+          process.stderr.write(`agenc: session not found: ${args.resumeId}\n`);
+          return 1;
+        }
+        transferred = true;
+        return attachAgentTuiEntry({
+          agentId: agent.agentId,
+          clientId: `agenc-tui-${process.pid}`,
+          daemonClient,
+          initialComposerText: consumeEarlyInput(),
+          startupImages: args.startupImages,
+        });
+      } finally {
+        if (!transferred) {
+          await daemonClient.close().catch(() => {
+            /* best effort */
+          });
+        }
+      }
+    }
+    const capturedEarlyInput = consumeEarlyInput();
+    const initialPrompt = args.initialPrompt?.trim();
+    const daemonCwd = resolveWorkspaceFromEnv(process.env) ?? processCwd();
+    const startupImages = args.startupImages ?? [];
+    if (
+      (initialPrompt === undefined || initialPrompt.length === 0) &&
+      startupImages.length === 0
+    ) {
+      const deps = daemonCliDeps();
+      const {
+        configStore,
+        workspaceRoot,
+        baseSession,
+        model,
+      } = await deps.createTuiContext({
+        env: process.env,
+        cwd: daemonCwd,
+        conversationId: `agenc-tui-idle-${process.pid}`,
+      });
+      const deferred = await createDeferredDaemonPromptTuiSession({
+        baseSession,
+        configStore: configStore as unknown as Pick<ConfigStore, "current">,
+        deps,
+        agencHome:
+          (configStore as { readonly agencHome?: string }).agencHome ??
+          resolveAgencHome(process.env),
+        env: process.env,
+        cwd: workspaceRoot,
+        clientId: `agenc-tui-${process.pid}`,
+      });
+      const boot = await loadBootTUI();
+      try {
         const handle = await boot({
-          session,
+          session: deferred.session,
           configStore,
           model,
-          ...(args.initialPrompt !== undefined
-            ? { initialPrompt: args.initialPrompt }
+          ...(capturedEarlyInput.length > 0
+            ? { initialComposerText: capturedEarlyInput }
             : {}),
-          ...(initialComposerText.length > 0 ? { initialComposerText } : {}),
-          ...(initialUserMessages.length > 0 ? { initialUserMessages } : {}),
         });
         activeInkUnmount = handle.unmount;
         await handle.waitUntilExit();
         return 0;
       } finally {
         activeInkUnmount = null;
-        uninstallTuiSessionContract();
+        await deferred.close();
       }
-    } finally {
-      sessionSlot.current = null;
-      delegateSessionHolder.current = null;
-      await shutdown().catch(() => {
-        /* best effort */
+    }
+    const objective =
+      initialPrompt !== undefined && initialPrompt.length > 0
+        ? initialPrompt
+        : "Multimodal AgenC startup";
+    const agencHome = resolveAgencHome(process.env);
+    const configStore = new ConfigStore({
+      home: agencHome,
+      env: process.env,
+      onWarn: (message) => process.stderr.write(`${message}\n`),
+    });
+    await configStore.reload();
+    const promptPreparation =
+      initialPrompt !== undefined && initialPrompt.length > 0
+        ? await prepareOneShotPromptForDaemon({
+            prompt: objective,
+            configStore,
+            agencHome,
+            cwd: daemonCwd,
+            env: process.env,
+            signal: new AbortController().signal,
+            stderr: process.stderr,
+          })
+        : { blocked: false as const, prompt: objective };
+    if (promptPreparation.blocked) {
+      process.stderr.write(`${promptPreparation.blockMessage}\n`);
+      return 1;
+    }
+    const preparedObjective = promptPreparation.prompt;
+    const initialContent = startupContentFromInputs(
+      preparedObjective,
+      startupImages,
+      daemonCwd,
+      process.env.HOME,
+    );
+    const deps = daemonCliDeps();
+    const started = await deps.startPromptAgent({
+      prompt: preparedObjective,
+      env: process.env,
+      cwd: daemonCwd,
+      ...(initialContent !== undefined ? { initialContent } : {}),
+      metadata: { mode: "tui" },
+    });
+    try {
+      const exitCode = await attachAgentTuiEntry({
+        agentId: started.agentId,
+        clientId: `agenc-tui-${process.pid}`,
+        initialComposerText:
+          args.initialPrompt === undefined ? capturedEarlyInput : "",
       });
+      if (exitCode !== 0) {
+        await stopDaemonAgentBestEffort({
+          deps,
+          env: process.env,
+          agentId: started.agentId,
+          reason: "tui_startup_failed",
+        });
+      }
+      return exitCode;
+    } catch (error) {
+      await stopDaemonAgentBestEffort({
+        deps,
+        env: process.env,
+        agentId: started.agentId,
+        reason: "tui_startup_failed",
+      });
+      throw error;
     }
   } catch (error) {
     consumeEarlyInput();
@@ -2094,6 +2679,8 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
 export interface AttachAgentTuiEntryArgs {
   readonly agentId: string;
   readonly clientId: string;
+  readonly initialComposerText?: string;
+  readonly startupImages?: readonly string[];
   readonly env?: NodeJS.ProcessEnv;
   readonly daemonClient?: Awaited<
     ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
@@ -2112,7 +2699,7 @@ export async function attachAgentTuiEntry(
     validateAgencHome(env);
     daemonClient =
       args.daemonClient ??
-      (await createConnectedAgenCJsonLineDaemonTuiClient({
+      (await daemonCliDeps().createConnectedTuiClient({
         env,
       }));
     const targetCwd = await resolveAttachTargetTrustRoot(
@@ -2140,79 +2727,67 @@ export async function attachAgentTuiEntry(
     const runtimeSessionId =
       attachment.runtimeSessionId ?? attachment.agentId ?? sessionId;
     const bootstrapCwd = resolveAgenCAgentAttachCwd(attachment, targetCwd);
-    const bootstrapEnv = envForAttachBootstrap(env, bootstrapCwd);
-    const { sessionSlot, delegateSessionHolder, toolRegistryOptions } =
-      createSharedBootstrapTooling();
     const {
-      agencHome,
       configStore,
       workspaceRoot,
-      resolvedProvider,
-      registry,
+      baseSession,
       model,
-      session,
-      memoryDir,
-      memoryMdPath,
-      shutdown,
-      autonomousModeEnabled,
-    } = await bootstrapLocalRuntimeSession({
-      env: bootstrapEnv,
-      argv: process.argv,
+    } = await daemonCliDeps().createTuiContext({
+      env,
       cwd: bootstrapCwd,
       conversationId: runtimeSessionId,
-      resumeConversation: false,
-      toolRegistryOptions,
     });
+    const createDaemonTuiSession = await loadCreateDaemonTuiSession();
+    const daemonSession = await createDaemonTuiSession({
+      baseSession,
+      client: daemonClient,
+      sessionId,
+      conversationId: runtimeSessionId,
+      clientId: args.clientId,
+    });
+    const preparedDaemonSession = wrapDaemonTuiSessionWithPromptPreparation(
+      daemonSession as {
+        submit?: (
+          message: string,
+          opts?: { readonly displayUserMessage?: string | null },
+        ) => Promise<void>;
+      },
+      {
+        configStore: configStore as unknown as Pick<ConfigStore, "current">,
+        agencHome:
+          (configStore as { readonly agencHome?: string }).agencHome ??
+          resolveAgencHome(env),
+        cwd: workspaceRoot,
+        env,
+        stderr: process.stderr,
+      },
+    );
+    const boot = await loadBootTUI();
+    const startupImages = args.startupImages ?? [];
+    const initialUserMessages =
+      startupImages.length > 0
+        ? startupImageMessagesFromInputs(
+            startupImages,
+            workspaceRoot,
+            env.HOME,
+          )
+        : [];
     try {
-      sessionSlot.current = session;
-      delegateSessionHolder.current = session;
-
-      const loadTurnInputsFn = () =>
-        prepareTurnRuntimeInputs({
-          session,
-          configStore,
-          workspaceRoot,
-          memoryDir,
-          memoryMdPath,
-          registry,
-        });
-      const uninstallTuiSessionContract = installTuiSessionContract({
-        session,
+      const handle = await boot({
+        session: preparedDaemonSession,
         configStore,
-        agencHome,
-        resolvedProvider,
-        autonomousModeEnabled,
-        loadTurnInputsFn,
+        model,
+        ...(args.initialComposerText !== undefined &&
+        args.initialComposerText.length > 0
+          ? { initialComposerText: args.initialComposerText }
+          : {}),
+        ...(initialUserMessages.length > 0 ? { initialUserMessages } : {}),
       });
-
-      try {
-        const createDaemonTuiSession = await loadCreateDaemonTuiSession();
-        const daemonSession = await createDaemonTuiSession({
-          baseSession: session,
-          client: daemonClient,
-          sessionId,
-          conversationId: runtimeSessionId,
-          clientId: args.clientId,
-        });
-        const boot = await loadBootTUI();
-        const handle = await boot({
-          session: daemonSession,
-          configStore,
-          model,
-        });
-        activeInkUnmount = handle.unmount;
-        await handle.waitUntilExit();
-        return 0;
-      } finally {
-        activeInkUnmount = null;
-        uninstallTuiSessionContract();
-      }
+      activeInkUnmount = handle.unmount;
+      await handle.waitUntilExit();
+      return 0;
     } finally {
-      sessionSlot.current = null;
-      delegateSessionHolder.current = null;
-      await shutdown().catch(() => {
-        /* best effort */
-      });
+      activeInkUnmount = null;
     }
   } catch (error) {
     if (
@@ -2230,18 +2805,39 @@ export async function attachAgentTuiEntry(
   }
 }
 
-/**
- * Resume a prior session through the TUI. The entry adapter verifies the
- * requested id exists, then re-enters the shared bootstrap path with the
- * original conversation id so rollout reconstruction can hydrate the
- * session state and transcript before Ink mounts.
- */
+/** Resume a daemon-owned session through the TUI. */
 export async function resumeTUIEntry(args: ResumeTUIArgs): Promise<number> {
   const workspaceRoot = resolveWorkspaceFromEnv(process.env) ?? processCwd();
   const resolved = resolveResumeSessionId(workspaceRoot, args.resumeId);
   switch (resolved.kind) {
-    case "ok":
-      return bootTUIEntry({ resumeId: resolved.sessionId });
+    case "ok": {
+      const deps = daemonCliDeps();
+      await deps.ensureDaemonReady(process.env)();
+      const daemonClient = await deps.createConnectedTuiClient();
+      let transferred = false;
+      try {
+        const agent = await deps.findAgentBySessionId(
+          daemonClient,
+          resolved.sessionId,
+        );
+        if (agent === null) {
+          process.stderr.write(`agenc: session not found: ${args.resumeId}\n`);
+          return 1;
+        }
+        transferred = true;
+        return attachAgentTuiEntry({
+          agentId: agent.agentId,
+          clientId: `agenc-tui-${process.pid}`,
+          daemonClient,
+        });
+      } finally {
+        if (!transferred) {
+          await daemonClient.close().catch(() => {
+            /* best effort */
+          });
+        }
+      }
+    }
     case "ambiguous":
       process.stderr.write(
         `agenc: ambiguous session id '${resolved.input}' matches: ${resolved.matches.join(", ")}\n`,
@@ -2264,7 +2860,7 @@ export async function continueTUIEntry(
     process.stderr.write("agenc: no previous session found for this project\n");
     return 1;
   }
-  return bootTUIEntry({ resumeId: resolved.sessionId });
+  return resumeTUIEntry({ resumeId: resolved.sessionId });
 }
 
 /**
@@ -2296,7 +2892,7 @@ async function loadMcpCliConfig(): Promise<AgenCConfig | undefined> {
 
 /**
  * Top-level dispatcher. Branches between the full Ink TUI and the
- * legacy one-shot CLI based on argv + stdio state. See `./route.ts`
+ * daemon-backed one-shot CLI based on argv + stdio state. See `./route.ts`
  * for the routing table.
  */
 export async function main(): Promise<number> {
@@ -2400,16 +2996,14 @@ export async function main(): Promise<number> {
   ) {
     return 1;
   }
-  if (
-    !shouldSkipAgenCDaemonForStartup(process.env, argv) &&
-    (await resolveAgenCDaemonAutostartEnabled(process.env))
-  ) {
+  if (await resolveAgenCDaemonAutostartEnabled(process.env)) {
     try {
       await ensureAgenCDaemonAutostart();
     } catch (error) {
       process.stderr.write(
-        `agenc: daemon autostart failed; continuing without daemon: ${error instanceof Error ? error.message : String(error)}\n`,
+        `agenc: daemon autostart failed: ${error instanceof Error ? error.message : String(error)}\n`,
       );
+      return 1;
     }
   }
   return routeCLI({
@@ -2417,8 +3011,8 @@ export async function main(): Promise<number> {
     isTTY: Boolean(process.stdin.isTTY),
     isStdoutTTY: Boolean(process.stdout.isTTY),
     bootTUI: (args: BootTUIArgs) => bootTUIEntry(args),
-    oneShotCLI: (userMessage: string) =>
-      oneShotCLI(userMessage.length > 0 ? userMessage : null),
+    oneShotCLI: (userMessage: string, startupImages?: readonly string[]) =>
+      oneShotCLI(userMessage.length > 0 ? userMessage : null, startupImages ?? []),
     resumeTUI: (args: ResumeTUIArgs) => resumeTUIEntry(args),
     continueTUI: (args: ContinueTUIArgs) => continueTUIEntry(args),
   });

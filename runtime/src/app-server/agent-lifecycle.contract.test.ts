@@ -1564,6 +1564,68 @@ describe("AgenC background agent lifecycle", () => {
     });
   });
 
+  it("passes startup multimodal content to the background runner atomically", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_image"]),
+      createAttachmentId: sequence(["attachment_image"]),
+      now: sequence(["2026-05-01T12:00:01.000Z"]),
+    });
+    const starts: AgenCBackgroundAgentStartParams[] = [];
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async (params) => {
+        starts.push(params);
+        return {
+          agentId: "agent_image",
+          startedAt: "2026-05-01T12:00:00.500Z",
+          status: "running",
+        };
+      },
+      submitAgentMessage: async () => {
+        throw new Error("startup content must not use message.stream");
+      },
+    };
+    const agents = new AgenCDaemonAgentManager({
+      now: sequence(["2026-05-01T12:00:00.000Z"]),
+      runner,
+      sessionManager: sessions,
+    });
+
+    await expect(
+      agents.createAgent({
+        objective: "describe this",
+        initialContent: [
+          { type: "text", text: "describe this" },
+          {
+            type: "image_url",
+            image_url: { url: "file:///tmp/cat.png" },
+          },
+        ],
+      }),
+    ).resolves.toMatchObject({
+      agentId: "agent_image",
+      sessionId: "session_image",
+    });
+
+    expect(starts).toEqual([
+      expect.objectContaining({
+        objective: "describe this",
+        initialContent: [
+          { type: "text", text: "describe this" },
+          {
+            type: "image_url",
+            image_url: { url: "file:///tmp/cat.png" },
+          },
+        ],
+      }),
+    ]);
+    await expect(sessions.getSession("session_image")).resolves.toMatchObject({
+      metadata: expect.objectContaining({
+        objective: "describe this",
+        source: "agent.start",
+      }),
+    });
+  });
+
   it("preserves structured message.stream content for the background runner", async () => {
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_1"]),

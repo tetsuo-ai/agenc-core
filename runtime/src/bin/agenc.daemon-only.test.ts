@@ -46,10 +46,7 @@ function replaceIsTTY(
   };
 }
 
-async function withOneShotMain(
-  args: readonly string[],
-  envOverrides: NodeJS.ProcessEnv,
-): Promise<{
+async function withMain(args: readonly string[]): Promise<{
   readonly code: number;
   readonly stderr: string;
 }> {
@@ -75,45 +72,12 @@ async function withOneShotMain(
   process.env.AGENC_HOME = tmpHome;
   process.env.AGENC_WORKSPACE = tmpCwd;
   process.env.HOME = tmpHome;
-  process.env.XAI_API_KEY = "stub-key-for-test";
   process.env.AGENC_CLI_ENTRY_DISABLE = "1";
-  Object.assign(process.env, envOverrides);
   trustProjectSync({
     agencHome: tmpHome,
     projectRoot: tmpCwd,
     env: process.env,
   });
-
-  const providerMod = await import("../llm/provider.js");
-  const createProviderSpy = vi
-    .spyOn(providerMod, "createProvider")
-    .mockImplementation(
-      () =>
-        ({
-          name: "stub",
-          chat: async () => ({
-            content: "ok",
-            toolCalls: [],
-            usage: {
-              promptTokens: 1,
-              completionTokens: 1,
-              totalTokens: 2,
-            },
-          }),
-        }) as never,
-    );
-  const runTurnMod = await import("../session/run-turn.js");
-  const runTurnSpy = vi
-    .spyOn(runTurnMod, "runTurn")
-    .mockImplementation(async function* (): AsyncGenerator<unknown, unknown> {
-      yield {
-        type: "turn_complete",
-        content: "ok",
-        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-        stopReason: "completed",
-      };
-      return { reason: "completed" };
-    } as never);
 
   try {
     const { main } = await import("./agenc.js");
@@ -122,8 +86,6 @@ async function withOneShotMain(
       stderr: stderrChunks.join(""),
     };
   } finally {
-    createProviderSpy.mockRestore();
-    runTurnSpy.mockRestore();
     stdoutSpy.mockRestore();
     stderrSpy.mockRestore();
     for (const restore of restoreFns.reverse()) restore();
@@ -136,64 +98,23 @@ async function withOneShotMain(
   }
 }
 
-describe("agenc daemon startup fallback", () => {
+describe("agenc daemon startup requirement", () => {
   afterEach(() => {
     vi.clearAllMocks();
   });
 
-  it("detects daemon skip controls without treating false-like env values as enabled", async () => {
-    const { shouldSkipAgenCDaemonForStartup } = await import("./agenc.js");
-
-    expect(shouldSkipAgenCDaemonForStartup({}, [])).toBe(false);
-    expect(
-      shouldSkipAgenCDaemonForStartup(
-        { AGENC_FORCE_DIRECT_RUNTIME: "1" },
-        [],
-      ),
-    ).toBe(true);
-    expect(
-      shouldSkipAgenCDaemonForStartup(
-        { AGENC_FORCE_DIRECT_RUNTIME: "false" },
-        [],
-      ),
-    ).toBe(false);
-    expect(shouldSkipAgenCDaemonForStartup({}, ["--no-daemon"])).toBe(true);
-  });
-
-  it("continues through the local runtime when daemon autostart fails", async () => {
+  it("fails closed when daemon autostart fails", async () => {
     daemonMocks.resolveAgenCDaemonAutostartEnabled.mockResolvedValue(true);
     daemonMocks.ensureAgenCDaemonAutostart.mockRejectedValue(
       new Error("socket unavailable"),
     );
 
-    const result = await withOneShotMain(["hi"], {});
+    const result = await withMain(["hi"]);
 
-    expect(result.code).toBe(0);
+    expect(result.code).toBe(1);
     expect(daemonMocks.ensureAgenCDaemonAutostart).toHaveBeenCalledTimes(1);
     expect(result.stderr).toContain(
-      "agenc: daemon autostart failed; continuing without daemon: socket unavailable",
+      "agenc: daemon autostart failed: socket unavailable",
     );
-  });
-
-  it("skips daemon autostart when --no-daemon is present", async () => {
-    daemonMocks.resolveAgenCDaemonAutostartEnabled.mockResolvedValue(true);
-
-    const result = await withOneShotMain(["--no-daemon", "hi"], {});
-
-    expect(result.code).toBe(0);
-    expect(daemonMocks.resolveAgenCDaemonAutostartEnabled).not.toHaveBeenCalled();
-    expect(daemonMocks.ensureAgenCDaemonAutostart).not.toHaveBeenCalled();
-  });
-
-  it("skips daemon autostart when AGENC_FORCE_DIRECT_RUNTIME is enabled", async () => {
-    daemonMocks.resolveAgenCDaemonAutostartEnabled.mockResolvedValue(true);
-
-    const result = await withOneShotMain(["hi"], {
-      AGENC_FORCE_DIRECT_RUNTIME: "1",
-    });
-
-    expect(result.code).toBe(0);
-    expect(daemonMocks.resolveAgenCDaemonAutostartEnabled).not.toHaveBeenCalled();
-    expect(daemonMocks.ensureAgenCDaemonAutostart).not.toHaveBeenCalled();
   });
 });

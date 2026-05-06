@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  __setDaemonCliDepsForTest,
   __installTuiSessionContractForTest,
   oneShotCLI,
   type PreparedTurnRuntimeInputs,
@@ -102,59 +103,75 @@ hooks = [{ type = "command", command = ${JSON.stringify(command)} }]
   );
 }
 
-async function installOneShotRuntimeSpies() {
-  const providerMod = await import("../llm/provider.js");
-  const createProviderSpy = vi
-    .spyOn(providerMod, "createProvider")
-    .mockImplementation(
-      () =>
-        ({
-          name: "stub",
-          chat: async () => ({
-            content: "ok",
-            toolCalls: [],
-            usage: {
-              promptTokens: 1,
-              completionTokens: 1,
-              totalTokens: 2,
+function installOneShotDaemonSpies() {
+  const requests: Array<{ method: string; params: unknown }> = [];
+  const startPromptAgent = vi.fn();
+  const client = {
+    request: vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      requests.push({ method, params });
+      if (method === "agent.create") {
+        return {
+          agentId: "agent_one_shot_hooks",
+          objective:
+            typeof params?.objective === "string" ? params.objective : "",
+          status: "running" as const,
+          createdAt: "2026-05-06T00:00:00.000Z",
+          sessionId: "session_one_shot_hooks",
+          activeSessionIds: ["session_one_shot_hooks"],
+        };
+      }
+      if (method === "agent.attach") {
+        return {
+          agentId: "agent_one_shot_hooks",
+          attachmentId: "attachment_one_shot_hooks",
+          sessionIds: ["session_one_shot_hooks"],
+          runtimeSessionId: "agent_one_shot_hooks",
+        };
+      }
+      if (method === "agent.stop") {
+        return { agentId: "agent_one_shot_hooks", stopped: true };
+      }
+      throw new Error(`unexpected daemon request: ${method}`);
+    }),
+    subscribeToSessionEvents: vi.fn(
+      (_sessionId: string, cb: (event: unknown) => void) => {
+        queueMicrotask(() => {
+          cb({
+            method: "event.agent_status",
+            params: {
+              sessionId: "session_one_shot_hooks",
+              eventId: "complete_one_shot_hooks",
+              agentId: "agent_one_shot_hooks",
+              status: "idle",
+              runStatus: "completed",
+              message: "hook answer",
             },
-          }),
-        }) as never,
-    );
-  const startMcpSpy = vi
-    .spyOn(
-      (await import("../session/session.js")).Session.prototype,
-      "startMcpManager",
-    )
-    .mockResolvedValue(undefined);
-  const shutdownSpy = vi
-    .spyOn(
-      (await import("../session/session.js")).Session.prototype,
-      "shutdown",
-    )
-    .mockResolvedValue(undefined);
-  const runTurnMod = await import("../session/run-turn.js");
-  const runTurnSpy = vi
-    .spyOn(runTurnMod, "runTurn")
-    .mockImplementation(async function* (): AsyncGenerator<unknown, unknown> {
-      yield {
-        type: "turn_complete",
-        content: "ok",
-        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-        stopReason: "completed",
-      };
-      return { reason: "completed" };
-    } as never);
+          });
+        });
+        return () => undefined;
+      },
+    ),
+    getConnectionState: vi.fn(() => ({ status: "connected" })),
+    subscribeToConnectionState: vi.fn(() => () => undefined),
+    close: vi.fn().mockResolvedValue(undefined),
+  };
+  const createConnectedTuiClient = vi.fn(async () => client);
+  const ensureDaemonReady = vi.fn(() => vi.fn().mockResolvedValue(undefined));
+  const stopPromptAgent = vi.fn(async () => undefined);
+  __setDaemonCliDepsForTest({
+    startPromptAgent: startPromptAgent as never,
+    stopPromptAgent: stopPromptAgent as never,
+    createConnectedTuiClient: createConnectedTuiClient as never,
+    ensureDaemonReady: ensureDaemonReady as never,
+  });
   return {
-    createProviderSpy,
-    startMcpSpy,
-    shutdownSpy,
-    runTurnSpy,
+    requests,
+    startPromptAgent,
+    stopPromptAgent,
+    createConnectedTuiClient,
+    ensureDaemonReady,
     restore: () => {
-      createProviderSpy.mockRestore();
-      startMcpSpy.mockRestore();
-      shutdownSpy.mockRestore();
-      runTurnSpy.mockRestore();
+      __setDaemonCliDepsForTest(null);
     },
   };
 }
@@ -478,7 +495,10 @@ describe("TUI session UserPromptSubmit hooks", () => {
     const stderrSpy = vi
       .spyOn(process.stderr, "write")
       .mockImplementation(() => true);
-    const spies = await installOneShotRuntimeSpies();
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+    const spies = installOneShotDaemonSpies();
     await writeFile(join(tmpCwd, "secret.txt"), "one-shot file body\n", "utf8");
     await installOneShotHookConfig(
       tmpHome,
@@ -510,14 +530,21 @@ process.stdin.on("end", () => {
       trustWorkspaceForTest(tmpHome, tmpCwd);
       const code = await oneShotCLI("review @secret.txt");
       expect(code).toBe(0);
-      expect(spies.runTurnSpy).toHaveBeenCalledTimes(1);
-      const modelInput = String(spies.runTurnSpy.mock.calls[0]?.[2]);
-      expect(modelInput).toContain("<attached_files>");
-      expect(modelInput).toContain("one-shot file body");
-      expect(modelInput).toContain("hook prompt=review @secret.txt");
-      expect(modelInput).not.toContain("hook prompt=expanded");
+      expect(spies.startPromptAgent).not.toHaveBeenCalled();
+      expect(spies.requests[0]).toEqual(
+        expect.objectContaining({ method: "agent.create" }),
+      );
+      const daemonPrompt = String(
+        (spies.requests[0]?.params as { readonly objective?: unknown })
+          ?.objective,
+      );
+      expect(daemonPrompt).toContain("<attached_files>");
+      expect(daemonPrompt).toContain("one-shot file body");
+      expect(daemonPrompt).toContain("hook prompt=review @secret.txt");
+      expect(daemonPrompt).not.toContain("hook prompt=expanded");
     } finally {
       spies.restore();
+      stdoutSpy.mockRestore();
       stderrSpy.mockRestore();
       restoreEnv(prevEnv);
       await rm(tmpHome, { recursive: true, force: true });
@@ -532,7 +559,7 @@ process.stdin.on("end", () => {
     const stderrSpy = vi
       .spyOn(process.stderr, "write")
       .mockImplementation(() => true);
-    const spies = await installOneShotRuntimeSpies();
+    const spies = installOneShotDaemonSpies();
     await installOneShotHookConfig(
       tmpHome,
       "blocking-prompt-hook.cjs",
@@ -552,8 +579,8 @@ process.exit(2);
       trustWorkspaceForTest(tmpHome, tmpCwd);
       const code = await oneShotCLI("blocked prompt");
       expect(code).toBe(1);
-      expect(spies.runTurnSpy).not.toHaveBeenCalled();
-      expect(spies.shutdownSpy).toHaveBeenCalledTimes(1);
+      expect(spies.startPromptAgent).not.toHaveBeenCalled();
+      expect(spies.requests).toEqual([]);
       expect(
         stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
       ).toContain("blocked one-shot prompt");

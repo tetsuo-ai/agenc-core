@@ -19,7 +19,7 @@
  * @module
  */
 
-import type { LLMMessage } from "../llm/types.js";
+import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import type { ResponseItem, RolloutItem } from "../session/rollout-item.js";
 import type { Session } from "../session/session.js";
 import {
@@ -41,6 +41,7 @@ export interface ForkContextInput {
   readonly mode?: ForkMode;
   readonly useProvidedParentMessages?: boolean;
   readonly taskPrompt: string;
+  readonly taskContent?: readonly LLMContentPart[];
   readonly worktreePath?: string;
 }
 
@@ -104,6 +105,47 @@ function buildDirective(input: ForkContextInput): string {
     "Do not spawn further subagents unless explicitly instructed.",
   );
   return lines.join("\n");
+}
+
+function cloneTaskAttachmentPart(part: LLMContentPart): LLMContentPart | null {
+  if (part.type === "text") return null;
+  if (part.type === "image_url") {
+    return {
+      type: "image_url",
+      image_url: { url: part.image_url.url },
+    };
+  }
+  return { ...part };
+}
+
+function buildDirectiveMessage(input: ForkContextInput): LLMMessage {
+  const directivePrompt = buildDirective(input);
+  const taskPrompt = input.taskPrompt.trim();
+  const extraTextParts =
+    input.taskContent?.flatMap((part) => {
+      if (part.type !== "text") return [];
+      const text = part.text.trim();
+      return text.length > 0 && text !== taskPrompt ? [part.text] : [];
+    }) ?? [];
+  const text =
+    extraTextParts.length === 0
+      ? directivePrompt
+      : `${directivePrompt}\n\n${extraTextParts.join("\n\n")}`;
+  const attachmentParts =
+    input.taskContent?.flatMap((part) => {
+      const cloned = cloneTaskAttachmentPart(part);
+      return cloned === null ? [] : [cloned];
+    }) ?? [];
+  if (attachmentParts.length === 0) {
+    return {
+      role: "user",
+      content: text,
+    };
+  }
+  return {
+    role: "user",
+    content: [{ type: "text", text }, ...attachmentParts],
+  };
 }
 
 function responseItemToForkMessage(item: ResponseItem): LLMMessage | null {
@@ -193,10 +235,7 @@ export async function forkSubagent(
   }
 
   const directivePrompt = buildDirective(input);
-  const directiveMessage: LLMMessage = {
-    role: "user",
-    content: directivePrompt,
-  };
+  const directiveMessage = buildDirectiveMessage(input);
 
   if (input.mode === undefined) {
     return {

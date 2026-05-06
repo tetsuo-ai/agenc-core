@@ -310,6 +310,9 @@ export class AgenCDaemonAgentManager {
         ...(params.model !== undefined ? { model: params.model } : {}),
         ...(params.provider !== undefined ? { provider: params.provider } : {}),
         ...(params.profile !== undefined ? { profile: params.profile } : {}),
+        ...(params.initialContent !== undefined
+          ? { initialContent: params.initialContent }
+          : {}),
         metadata,
         unattendedAllow,
         unattendedDeny,

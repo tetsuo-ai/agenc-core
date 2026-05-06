@@ -5,14 +5,14 @@
  * full Ink TUI alongside it. This module owns the routing decision so
  * both paths stay independently testable:
  *
- *   1. **Piped stdin + argv**               → legacy one-shot path.
+ *   1. **Piped stdin + argv**               -> daemon-backed one-shot path.
  *   2. **`--no-tui` flag**                  → force one-shot even in TTY.
  *   3. **`--resume <id>` / `-r <id>` flag** → resume TUI with prior session.
  *   4. **`--continue` / `-c` flag**         → resume latest project session.
  *   5. **TTY + no argv**                    → boot full Ink TUI.
- *   6. **TTY + argv + TTY stdout**          → boot TUI with pre-populated
- *                                             prompt in the composer.
- *   7. **Fallback**                         → one-shot.
+ *   6. **TTY + argv + TTY stdout**          -> boot TUI against a daemon
+ *                                             prompt agent.
+ *   7. **Fallback**                         -> one-shot.
  *
  * Keeping this module provider-free (it only takes function handles for
  * the real implementations) means the test suite can drive every branch
@@ -74,7 +74,6 @@ export const ROUTING_BOOLEAN_FLAGS = Object.freeze(["--no-tui"] as const);
 export const STARTUP_BOOLEAN_FLAGS = Object.freeze([
   "--help",
   "--version",
-  "--no-daemon",
   "--yolo",
   "--continue",
   "-c",
@@ -155,8 +154,11 @@ export interface RouteCLIOptions {
   readonly isStdoutTTY: boolean;
   /** Mount the full Ink TUI. Returns the process exit code. */
   readonly bootTUI: (args: BootTUIArgs) => Promise<number>;
-  /** Run the legacy single-shot CLI. Returns the process exit code. */
-  readonly oneShotCLI: (userMessage: string) => Promise<number>;
+  /** Start the daemon-backed single-shot CLI. Returns the process exit code. */
+  readonly oneShotCLI: (
+    userMessage: string,
+    startupImages?: readonly string[],
+  ) => Promise<number>;
   /** Resume a prior session through the TUI. Returns the exit code. */
   readonly resumeTUI: (args: ResumeTUIArgs) => Promise<number>;
   /** Continue the newest prior session for this project. Returns the exit code. */
@@ -167,7 +169,11 @@ export type RouteCLIPlan =
   | { readonly kind: "bootTUI"; readonly args: BootTUIArgs }
   | { readonly kind: "resumeTUI"; readonly args: ResumeTUIArgs }
   | { readonly kind: "continueTUI"; readonly args: ContinueTUIArgs }
-  | { readonly kind: "oneShotCLI"; readonly userMessage: string };
+  | {
+      readonly kind: "oneShotCLI";
+      readonly userMessage: string;
+      readonly startupImages?: readonly string[];
+    };
 
 export interface ClassifyCLIOptions {
   readonly argv: readonly string[];
@@ -203,21 +209,27 @@ export function classifyCLI(opts: ClassifyCLIOptions): RouteCLIPlan {
     return { kind: "continueTUI", args: {} };
   }
 
-  // 3. Piped stdin keeps the legacy one-shot path — scripts that pipe
-  //    into `agenc` must continue to work unchanged.
+  // 3. Piped stdin starts a daemon-backed one-shot agent and writes its ID.
   if (!opts.isTTY) {
-    return { kind: "oneShotCLI", userMessage: prompt };
+    return {
+      kind: "oneShotCLI",
+      userMessage: prompt,
+      ...(startupImages.length > 0 ? { startupImages } : {}),
+    };
   }
 
   // 4. `--no-tui` is an explicit operator override. Even inside a TTY
-  //    the caller gets the legacy single-shot path.
+  //    the caller gets the daemon-backed single-shot path.
   if (hasNoTuiFlag) {
-    return { kind: "oneShotCLI", userMessage: prompt };
+    return {
+      kind: "oneShotCLI",
+      userMessage: prompt,
+      ...(startupImages.length > 0 ? { startupImages } : {}),
+    };
   }
 
-  // 5. Interactive TTY → boot the Ink TUI. Forward any argv prompt as
-  //    `initialPrompt` so the composer can pre-populate it (actual
-  //    wiring through the composer reducer is a follow-up).
+  // 5. Interactive TTY -> boot the Ink TUI. Forward any argv prompt as
+  //    daemon-backed startup input for the TUI attachment path.
   if (opts.isStdoutTTY) {
     const args: BootTUIArgs = {
       ...(prompt.length > 0 ? { initialPrompt: prompt } : {}),
@@ -226,10 +238,13 @@ export function classifyCLI(opts: ClassifyCLIOptions): RouteCLIPlan {
     return { kind: "bootTUI", args };
   }
 
-  // 6. Fallback — stdout is not a TTY (captured pipe, CI runner, etc.)
-  //    so the TUI would scribble escape codes into logs. Fall back to
-  //    the one-shot CLI.
-  return { kind: "oneShotCLI", userMessage: prompt };
+  // 6. Fallback - stdout is not a TTY (captured pipe, CI runner, etc.)
+  //    so the TUI would scribble escape codes into logs. Use the one-shot CLI.
+  return {
+    kind: "oneShotCLI",
+    userMessage: prompt,
+    ...(startupImages.length > 0 ? { startupImages } : {}),
+  };
 }
 
 /**
@@ -248,6 +263,8 @@ export async function routeCLI(opts: RouteCLIOptions): Promise<number> {
     case "continueTUI":
       return opts.continueTUI(plan.args);
     case "oneShotCLI":
-      return opts.oneShotCLI(plan.userMessage);
+      return plan.startupImages === undefined
+        ? opts.oneShotCLI(plan.userMessage)
+        : opts.oneShotCLI(plan.userMessage, plan.startupImages);
   }
 }
