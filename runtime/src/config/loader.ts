@@ -53,6 +53,7 @@ import {
 import { resolveAgencHome } from "./env.js";
 import { readTextFile } from "./_deps/file-read.js";
 import { migrateRawAgenCConfig } from "../state/migrations/config-migrations.js";
+import { runConfigFileMigrations } from "./migrate.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Parser
@@ -650,6 +651,13 @@ export async function loadConfig(
   const path = pathResolve(home, "config.toml");
   const base = opts.base ?? defaultConfig();
   const onWarn = opts.onWarn ?? ((m: string) => console.warn(m));
+
+  await runConfigFileMigrations({
+    home,
+    configTomlPath: path,
+    onWarn,
+    parseToml,
+  });
 
   let raw: string;
   try {
