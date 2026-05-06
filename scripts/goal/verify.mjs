@@ -64,6 +64,21 @@ const MAX_ALLOWED_BASELINE = 22;
 //   tests: string[] | { globUnder, matching, minCount?, optional? }[]
 //   runStrict: boolean — if true, typecheck gate enforces zero errors.
 const ITEM_EVIDENCE = {
+  "IDE-02": {
+    files: [
+      "runtime/src/app-server-protocol/ide-extension.ts",
+      "runtime/src/app-server-protocol/ide-extension.repo.contract.test.ts",
+      "scripts/goal/verify.mjs",
+    ],
+    grepPresent: [
+      { pattern: "assertAgenCVscodeExtensionBoilerplate", scope: "scripts/goal/verify.mjs" },
+      { pattern: "npm run build", scope: "scripts/goal/verify.mjs" },
+      { pattern: "agenc-vscode", scope: "runtime/src/app-server-protocol/ide-extension.repo.contract.test.ts" },
+    ],
+    tests: [
+      "runtime/src/app-server-protocol/ide-extension.repo.contract.test.ts",
+    ],
+  },
   "IDE-01": {
     files: [
       "runtime/src/app-server-protocol/ide-extension.ts",
@@ -4434,6 +4449,9 @@ async function ideExtensionGates(item) {
   if (id === "IDE-01") {
     assertAgenCVscodeSiblingRepo();
   }
+  if (id === "IDE-02") {
+    assertAgenCVscodeExtensionBoilerplate();
+  }
   pass(`IDE-*: IDE protocol surface referenced (${id})`);
 }
 
@@ -4504,6 +4522,65 @@ function assertAgenCVscodeSiblingRepo() {
     failGate(`IDE-01: agenc-vscode scaffold self-test failed:\n${selfTest.stderr || selfTest.stdout}`);
   }
   pass("IDE-01: agenc-vscode sibling repo scaffold present and self-test passes");
+}
+
+function assertAgenCVscodeExtensionBoilerplate() {
+  const repo = path.resolve(mainCheckoutRoot(), "..", "agenc-vscode");
+  const requiredFiles = [
+    ".vscode/extensions.json",
+    ".vscode/launch.json",
+    ".vscode/tasks.json",
+    ".vscodeignore",
+    "package-lock.json",
+    "scripts/clean.mjs",
+    "src/agenc-runtime.d.ts",
+    "src/extension.ts",
+    "test/scaffold.test.mjs",
+    "tsconfig.json",
+  ];
+  const missing = requiredFiles.filter((rel) => !existsSync(path.join(repo, rel)));
+  if (missing.length > 0) {
+    failGate(
+      `IDE-02: agenc-vscode extension boilerplate missing required file(s):\n  ${missing.join("\n  ")}\n` +
+        `Expected repo root: ${repo}`,
+    );
+  }
+
+  const pkg = JSON.parse(readFileSync(path.join(repo, "package.json"), "utf8"));
+  const expectedScripts = {
+    clean: "node scripts/clean.mjs",
+    compile: "tsc -p tsconfig.json",
+    build: "npm run clean && npm run compile",
+    typecheck: "tsc --noEmit",
+    "test:scaffold": "node test/scaffold.test.mjs",
+    check: "npm run test:scaffold && npm run typecheck",
+  };
+  const scriptFailures = Object.entries(expectedScripts)
+    .filter(([name, script]) => pkg.scripts?.[name] !== script)
+    .map(([name, script]) => `${name} must be ${script}`);
+  if (scriptFailures.length > 0) {
+    failGate(`IDE-02: agenc-vscode/package.json script mismatch:\n  ${scriptFailures.join("\n  ")}`);
+  }
+
+  const vscodeIgnore = readFileSync(path.join(repo, ".vscodeignore"), "utf8");
+  for (const required of ["node_modules/", "src/", "test/", "scripts/"]) {
+    if (!vscodeIgnore.split(/\r?\n/).includes(required)) {
+      failGate(`IDE-02: .vscodeignore must include ${required}`);
+    }
+  }
+
+  const check = run("npm", ["run", "check"], { cwd: repo, silent: true });
+  if (check.status !== 0) {
+    failGate(`IDE-02: agenc-vscode check failed:\n${check.stderr || check.stdout}`);
+  }
+  const build = run("npm", ["run", "build"], { cwd: repo, silent: true });
+  if (build.status !== 0) {
+    failGate(`IDE-02: agenc-vscode build failed:\n${build.stderr || build.stdout}`);
+  }
+  if (!existsSync(path.join(repo, "dist/extension.js"))) {
+    failGate("IDE-02: agenc-vscode build did not emit dist/extension.js");
+  }
+  pass("IDE-02: agenc-vscode extension boilerplate checks and builds");
 }
 
 function grepRepo(pattern, scope = "runtime/src", options = {}) {
