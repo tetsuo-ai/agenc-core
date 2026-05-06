@@ -30,6 +30,7 @@ import {
   type Config,
   type ManagedFeatures,
   type ModelInfo,
+  type NetworkProxy,
   type SessionConfiguration,
   type SessionForTurn,
 } from "./turn-context.js";
@@ -118,6 +119,18 @@ function mkProvider(): LLMProvider {
       finishReason: "stop",
     }),
   } as unknown as LLMProvider;
+}
+
+function mkNetworkProxy(): NetworkProxy {
+  return {
+    httpsProxy: "http://127.0.0.1:9050",
+    policyDecider: {
+      decide: () => ({ decision: "allow" }),
+    },
+    blockedRequestObserver: {
+      onBlockedRequest: () => undefined,
+    },
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -600,6 +613,45 @@ describe("AgenC turn-builder helpers", () => {
     expect(ctx.subId).toBe("sub-x");
     expect(ctx.config.model).toBe("overridden");
     expect(Object.isFrozen(ctx.config)).toBe(true);
+  });
+
+  test("buildTurnContext preserves network policy decider and observer", () => {
+    const network = mkNetworkProxy();
+    const ctx = buildTurnContext({
+      conversationId: "conv-network",
+      subId: "sub-network",
+      config: mkConfig(),
+      modelInfo: mkModelInfo(),
+      provider: mkProvider(),
+      sessionConfiguration: mkSessionConfiguration(),
+      network,
+      clock: { currentDate: "2026-04-20", timezone: "Etc/UTC" },
+    });
+
+    expect(ctx.network).toBe(network);
+    expect(ctx.network?.policyDecider).toBe(network.policyDecider);
+    expect(ctx.network?.blockedRequestObserver).toBe(
+      network.blockedRequestObserver,
+    );
+  });
+
+  test("turn-builder helpers preserve network policy decider and observer", () => {
+    const network = mkNetworkProxy();
+    const session = mkSessionForTurn({ network });
+
+    const defaultTurn = newDefaultTurnWithSubId(session, "sub-network-default");
+    expect(defaultTurn.network?.policyDecider).toBe(network.policyDecider);
+    expect(defaultTurn.network?.blockedRequestObserver).toBe(
+      network.blockedRequestObserver,
+    );
+
+    const overrideTurn = newTurnWithSubId(session, "sub-network-override", {
+      model: "network-model",
+    });
+    expect(overrideTurn.network?.policyDecider).toBe(network.policyDecider);
+    expect(overrideTurn.network?.blockedRequestObserver).toBe(
+      network.blockedRequestObserver,
+    );
   });
 });
 

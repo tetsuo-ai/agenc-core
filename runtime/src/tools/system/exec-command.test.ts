@@ -5,10 +5,14 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-import { createExecCommandTool } from "./exec-command.js";
+import {
+  createExecCommandTool,
+  runtimeSandboxForExec,
+} from "./exec-command.js";
 import { createWriteStdinTool } from "./write-stdin.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
 import type { ExecCommandToolOutput, UnifiedExecProcessManagerLike } from "../../unified-exec/types.js";
+import { attachToolRuntimeContext } from "../runtimes/context.js";
 
 function completedExecOutput(stdout: string): ExecCommandToolOutput {
   return {
@@ -60,6 +64,50 @@ describe("exec_command tool", () => {
   afterEach(async () => {
     if (root) await rm(root, { recursive: true, force: true });
     root = "";
+  });
+
+  test("threads network policy interfaces into runtime sandbox requests", () => {
+    const policyDecider = { decide: () => ({ decision: "allow" as const }) };
+    const blockedRequestObserver = { onBlockedRequest: () => undefined };
+    const args: Record<string, unknown> = {};
+
+    attachToolRuntimeContext(args, {
+      callId: "call-network-proxy",
+      toolName: "exec_command",
+      runtimeKind: "function",
+      classification: "exclusive",
+      supportsParallelToolCalls: false,
+      source: { type: "model" },
+      submittedAtMs: 0,
+      approvalPolicy: "never",
+      requestedSandboxMode: "read_only",
+      sandboxMode: "read_only",
+      approvalResolved: true,
+      rawArgs: "{}",
+      invocation: {
+        payload: { kind: "function", arguments: "{}" },
+        turn: {
+          subId: "turn-network-proxy",
+          cwd: root,
+          agencLinuxSandboxExe: "/bin/true",
+          networkSandboxPolicy: {
+            allowlist: [],
+            denylist: [],
+            allowManagedDomainsOnly: false,
+            enabled: true,
+          },
+          network: {
+            policyDecider,
+            blockedRequestObserver,
+          },
+        },
+      },
+    } as never);
+
+    const runtimeSandbox = runtimeSandboxForExec(args, root);
+
+    expect(runtimeSandbox?.networkPolicyDecider).toBe(policyDecider);
+    expect(runtimeSandbox?.blockedRequestObserver).toBe(blockedRequestObserver);
   });
 
   test("blocks shell redirection writes into workspace files", async () => {

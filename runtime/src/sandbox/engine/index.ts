@@ -40,6 +40,11 @@ export type FileSystemSpecialPath =
   | { readonly kind: "minimal" }
   | { readonly kind: "unknown"; readonly path: string; readonly subpath?: string };
 
+import type {
+  BlockedRequestObserver,
+  NetworkPolicyDecider,
+} from "../network-policy.js";
+
 export type FileSystemPath =
   | { readonly kind: "path"; readonly path: string }
   | { readonly kind: "glob"; readonly pattern: string }
@@ -113,6 +118,8 @@ export interface SandboxTransformRequest {
   readonly sandbox: SandboxType;
   readonly enforceManagedNetwork: boolean;
   readonly network?: NetworkProxyConfig;
+  readonly networkPolicyDecider?: NetworkPolicyDecider;
+  readonly blockedRequestObserver?: BlockedRequestObserver;
   readonly sandboxPolicyCwd: string;
   readonly agencLinuxSandboxExe?: string;
   readonly useLegacyLandlock: boolean;

@@ -7,6 +7,10 @@ import type {
   SandboxablePreference,
   WindowsSandboxLevel,
 } from "../sandbox/engine/index.js";
+import type {
+  BlockedRequestObserver,
+  NetworkPolicyDecider,
+} from "../sandbox/network-policy.js";
 
 export type UnifiedExecStream = "stdout" | "stderr";
 
@@ -48,6 +52,8 @@ export interface UnifiedExecRuntimeSandbox {
   readonly preference?: SandboxablePreference;
   readonly enforceManagedNetwork?: boolean;
   readonly network?: NetworkProxyConfig;
+  readonly networkPolicyDecider?: NetworkPolicyDecider;
+  readonly blockedRequestObserver?: BlockedRequestObserver;
   readonly agencLinuxSandboxExe?: string;
   readonly useLegacyLandlock?: boolean;
   readonly windowsSandboxLevel?: WindowsSandboxLevel;

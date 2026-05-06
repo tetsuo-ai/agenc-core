@@ -11,6 +11,10 @@ import type {
   NetworkSandboxPolicy,
   WindowsSandboxLevel,
 } from "../../sandbox/engine/index.js";
+import type {
+  BlockedRequestObserver,
+  NetworkPolicyDecider,
+} from "../../sandbox/network-policy.js";
 import {
   formatUnifiedExecToolContent,
   unifiedExecCodeModeResult,
@@ -74,6 +78,7 @@ export function runtimeSandboxForExec(
       };
     };
     readonly features?: unknown;
+    readonly network?: unknown;
     readonly networkSandboxPolicy?: unknown;
     readonly cwd?: unknown;
     readonly windowsSandboxLevel?: unknown;
@@ -83,6 +88,7 @@ export function runtimeSandboxForExec(
     stringValue(turn.cwd) ?? fallbackCwd,
   );
   const network = networkPolicy(turn.networkSandboxPolicy);
+  const networkInterfaces = networkPolicyInterfaces(turn.network);
   return {
     permissionProfile: permissionProfileForRuntimeContext(context, {
       cwd: sandboxPolicyCwd,
@@ -101,6 +107,12 @@ export function runtimeSandboxForExec(
     ...(platformSandbox.agencLinuxSandboxExe !== undefined
       ? { agencLinuxSandboxExe: platformSandbox.agencLinuxSandboxExe }
       : {}),
+    ...(networkInterfaces.policyDecider !== undefined
+      ? { networkPolicyDecider: networkInterfaces.policyDecider }
+      : {}),
+    ...(networkInterfaces.blockedRequestObserver !== undefined
+      ? { blockedRequestObserver: networkInterfaces.blockedRequestObserver }
+      : {}),
   };
 }
 
@@ -116,6 +128,44 @@ function networkPolicy(value: unknown): NetworkSandboxPolicy | undefined {
   return value === "enabled" || value === "disabled" || value === "restricted"
     ? value
     : undefined;
+}
+
+function networkPolicyInterfaces(value: unknown): {
+  readonly policyDecider?: NetworkPolicyDecider;
+  readonly blockedRequestObserver?: BlockedRequestObserver;
+} {
+  if (typeof value !== "object" || value === null) return {};
+  const candidate = value as {
+    readonly policyDecider?: unknown;
+    readonly blockedRequestObserver?: unknown;
+  };
+  return {
+    ...(isNetworkPolicyDecider(candidate.policyDecider)
+      ? { policyDecider: candidate.policyDecider }
+      : {}),
+    ...(isBlockedRequestObserver(candidate.blockedRequestObserver)
+      ? { blockedRequestObserver: candidate.blockedRequestObserver }
+      : {}),
+  };
+}
+
+function isNetworkPolicyDecider(value: unknown): value is NetworkPolicyDecider {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { readonly decide?: unknown }).decide === "function"
+  );
+}
+
+function isBlockedRequestObserver(
+  value: unknown,
+): value is BlockedRequestObserver {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { readonly onBlockedRequest?: unknown }).onBlockedRequest ===
+      "function"
+  );
 }
 
 function windowsSandboxLevel(value: unknown): WindowsSandboxLevel {
