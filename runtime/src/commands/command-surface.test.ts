@@ -30,7 +30,7 @@ import { collectContextFiles } from "./files.js";
 import { loadReleaseNotes } from "./release-notes.js";
 import { formatRuntimeStats } from "./stats.js";
 import { formatUsage } from "./usage.js";
-import { collectDoctorChecks, formatDoctorReport } from "./doctor.js";
+import { collectDoctorReport, formatDoctorReport } from "../diagnostics/doctor.js";
 import {
   reloadPluginSurfaces,
   setActivePluginRefresherForTesting,
@@ -548,7 +548,25 @@ describe("absorbed T-10 command behavior", () => {
     expect(formatRuntimeStats(session, dir)).toContain("transcript items: 2");
     expect(formatRuntimeStats(session, dir)).toContain("registered tools: 2");
     const doctorReport = formatDoctorReport(
-      collectDoctorChecks(fakeContext(dir, session)),
+      await collectDoctorReport(fakeContext(dir, session), {
+        processVersion: "v25.4.0",
+        platform: "linux",
+        agencLinuxSandboxExe: "/bin/true",
+        systemBwrapWarning: null,
+        providerAvailabilityReport: {
+          entries: [{
+            provider: "grok",
+            model: "grok-4",
+            status: "usable",
+            usable: true,
+            keyStatus: "present",
+            keyEnvVar: "XAI_API_KEY",
+            localStatus: "n/a",
+            detail: "BYOK credential found via XAI_API_KEY",
+          }],
+        },
+        daemonPid: null,
+      }),
     );
     expect(doctorReport).toContain("AgenC doctor");
     expect(doctorReport).toContain("provider: xai / grok-4");

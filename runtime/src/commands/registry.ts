@@ -47,7 +47,7 @@ import skillsCommand from "./skills.js";
 import memoryCommand from "./memory/index.js";
 import cacheStatsCommand from "./cache-stats.js";
 import costCommand from "./cost.js";
-import doctorCommand from "./doctor.js";
+import doctorCommand from "./doctor/doctor.js";
 import effortCommand from "./effort.js";
 import filesCommand from "./files.js";
 import releaseNotesCommand from "./release-notes.js";
