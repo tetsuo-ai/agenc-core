@@ -1,23 +1,15 @@
 /**
  * AgenC-original concurrency contract for tool execution.
  *
- * Provenance note: `ConcurrencyClass` is AgenC-original — codex runtime has
- * no equivalent enum. Earlier docs (feature-matrix.md:73,
- * architecture.md:228 + architecture.md:387-390) mistakenly framed
- * this as a "port of codex runtime `parallel.rs:28-140`"; in fact codex runtime only
- * exposes the boolean `supports_parallel_tool_calls` flag referenced
- * below, and AgenC extends it here. W4 is correcting the docs.
- *
- * codex runtime `core/src/tools/parallel.rs` inspired the boolean
- * `supports_parallel_tool_calls` flag, but AgenC expands that single
- * boolean into a 4-class `ConcurrencyClass` enum + a per-serverId
- * `Semaphore` map for MCP tools + an AgenC-style
+ * `ConcurrencyClass` is AgenC-original. It expands a single
+ * `supports_parallel_tool_calls` capability flag into a 4-class
+ * `ConcurrencyClass` enum + a per-serverId `Semaphore` map for MCP
+ * tools + an AgenC-style
  * `isConcurrencySafe(args)` runtime predicate that can downgrade an
  * otherwise-parallel call to `exclusive` on untrusted input.
  *
- * The codex runtime primitive — `ToolCallRuntime::handle_tool_call` as
- * spawn + cancellation token + router dispatch — is NOT ported here.
- * That lives in `phases/execute-tools.ts` and
+ * The runtime primitive for spawn + cancellation token + router
+ * dispatch lives in `phases/execute-tools.ts` and
  * `tools/streaming-executor.ts`. This module only owns the
  * classification + guard-acquisition surface.
  *
@@ -131,9 +123,9 @@ export interface ToolCallRuntimeOpts {
  * `Semaphore` map. Every tool dispatch funnels through `run()` which
  * acquires the right guard for the supplied ConcurrencyClass.
  *
- * codex runtime `parallel.rs` uses `tokio::sync::RwLock`; AgenC uses
- * `AsyncRwLock` (T5). The guard-acquisition policy here is AgenC's
- * own; codex runtime has no per-id semaphore or per-call downgrade path.
+ * AgenC uses `AsyncRwLock` (T5). The guard-acquisition policy here is
+ * AgenC-owned and includes per-id semaphores plus per-call downgrade
+ * support.
  */
 export class ToolCallRuntime {
   private readonly lock = new AsyncRwLock<void>(undefined);

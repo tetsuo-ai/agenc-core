@@ -123,8 +123,8 @@ const SKILL_TOOL_NAMES: ReadonlySet<string> = new Set([
  * Per-tool override for a schema-validation error message. Returns
  * `null` when the default `formatSchemaValidationError` prose is fine.
  *
- * Mirrors openclaude `getSchemaValidationErrorOverride` scope (today,
- * only SkillTool's missing-`skill` case). Additional overrides can be
+ * Matches AgenC's schema-validation override scope (today, only
+ * SkillTool's missing-`skill` case). Additional overrides can be
  * added here as new tools gain specific bad-input guidance.
  */
 export function getSchemaValidationErrorOverride(
