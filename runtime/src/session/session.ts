@@ -886,7 +886,6 @@ async function providerFactoryOptionsFromSettings(params: {
   const byokApiKey = params.settings?.apiKey ?? params.reusableApiKey;
   if (
     isRemoteAuthBackend(params.authBackend) &&
-    params.managedKeysEnabled &&
     !isSubscriptionEntitled(params.authSubscriptionTier)
   ) {
     if (requiresHostedModelRouting(params.provider, params.model)) {
@@ -895,6 +894,7 @@ async function providerFactoryOptionsFromSettings(params: {
       );
     }
     if (
+      params.managedKeysEnabled &&
       byokApiKey === undefined &&
       normalizedProvider !== null &&
       MANAGED_KEY_PROVIDERS.has(normalizedProvider)

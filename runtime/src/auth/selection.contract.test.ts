@@ -92,6 +92,55 @@ describe("auth backend selection", () => {
     expect(keyVendor).not.toHaveBeenCalled();
   });
 
+  it("applies env managed-key overrides before remote backend construction", async () => {
+    const agencHome = await makeTempHome();
+    homes.push(agencHome);
+    const config = mergeConfigs(defaultConfig(), {
+      auth: { backend: "remote" },
+    });
+    const keyVendor = vi.fn(({ provider, sessionId }) => ({
+      provider,
+      sessionId,
+      apiKey: "managed-key",
+    }));
+
+    const backend = createAuthBackend(config, {
+      agencHome,
+      env: {
+        AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
+        AGENC_HOME: agencHome,
+      },
+      remote: { keyVendor },
+    });
+
+    await expect(backend.vendKey("grok", "session-1")).resolves.toEqual({
+      provider: "grok",
+      sessionId: "session-1",
+      apiKey: "managed-key",
+    });
+    expect(keyVendor).toHaveBeenCalledOnce();
+  });
+
+  it("does not let remote options override config-disabled managed keys", async () => {
+    const config = mergeConfigs(defaultConfig(), {
+      auth: { backend: "remote", managedKeys: { enabled: false } },
+    });
+    const keyVendor = vi.fn(({ provider, sessionId }) => ({
+      provider,
+      sessionId,
+      apiKey: "managed-key",
+    }));
+
+    const backend = createAuthBackend(config, {
+      remote: { keyVendor, managedKeysEnabled: true },
+    });
+
+    await expect(backend.vendKey("grok", "session-1")).rejects.toThrow(
+      /auth\.managedKeys\.enabled/,
+    );
+    expect(keyVendor).not.toHaveBeenCalled();
+  });
+
   it("passes remote login prompt options through non-CLI backend selection", async () => {
     const agencHome = await makeTempHome();
     homes.push(agencHome);

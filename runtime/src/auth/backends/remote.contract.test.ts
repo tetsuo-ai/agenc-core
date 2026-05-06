@@ -297,6 +297,7 @@ describe("RemoteAuthBackend", () => {
     let vendCount = 0;
     const backend = new RemoteAuthBackend({
       agencHome,
+      managedKeysEnabled: true,
       keyVendor: ({ provider, sessionId }) => ({
         provider,
         sessionId,
@@ -366,7 +367,10 @@ describe("RemoteAuthBackend", () => {
       sessionId,
       apiKey: ` managed-${++vendCount} `,
     }));
-    const backend = new RemoteAuthBackend({ keyVendor });
+    const backend = new RemoteAuthBackend({
+      keyVendor,
+      managedKeysEnabled: true,
+    });
 
     const [first, duplicate] = await Promise.all([
       backend.vendKey("grok", "session-1"),
@@ -391,7 +395,7 @@ describe("RemoteAuthBackend", () => {
     ]);
   });
 
-  it("does not request managed keys when config selection disables them", async () => {
+  it("does not request managed keys unless config selection enables them", async () => {
     const keyVendor = vi.fn(({ provider, sessionId }) => ({
       provider,
       sessionId,
@@ -399,7 +403,6 @@ describe("RemoteAuthBackend", () => {
     }));
     const backend = new RemoteAuthBackend({
       keyVendor,
-      managedKeysEnabled: false,
     });
 
     await expect(backend.vendKey("grok", "session-1")).rejects.toThrow(
@@ -418,6 +421,7 @@ describe("RemoteAuthBackend", () => {
     }));
     const backend = new RemoteAuthBackend({
       keyVendor,
+      managedKeysEnabled: true,
       keyCacheTtlMs: 100,
       nowMs: () => nowMs,
     });
@@ -445,6 +449,7 @@ describe("RemoteAuthBackend", () => {
     }));
     const backend = new RemoteAuthBackend({
       keyVendor,
+      managedKeysEnabled: true,
       keyCacheTtlMs: 100,
       nowMs: () => nowMs,
     });
@@ -463,6 +468,7 @@ describe("RemoteAuthBackend", () => {
   it("retries key vending after a failed remote request", async () => {
     let attempts = 0;
     const backend = new RemoteAuthBackend({
+      managedKeysEnabled: true,
       keyVendor: ({ provider, sessionId }) => {
         attempts += 1;
         if (attempts === 1) {
@@ -483,6 +489,7 @@ describe("RemoteAuthBackend", () => {
 
   it("rejects injected key vendors that return a different identity", async () => {
     const backend = new RemoteAuthBackend({
+      managedKeysEnabled: true,
       keyVendor: () => ({
         provider: "openai",
         sessionId: "session-2",
@@ -509,6 +516,7 @@ describe("RemoteAuthBackend", () => {
     );
     const backend = new RemoteAuthBackend({
       agencHome: "/tmp/agenc-remote-auth-test",
+      managedKeysEnabled: true,
       env: {
         [REMOTE_AUTH_URL_ENV]: "https://api.agenc.tech/test/vend-key",
         [REMOTE_AUTH_TOKEN_ENV]: "remote-token",
@@ -540,6 +548,7 @@ describe("RemoteAuthBackend", () => {
 
   it("rejects remote key responses for a different session or provider", async () => {
     const providerMismatch = new RemoteAuthBackend({
+      managedKeysEnabled: true,
       fetchImpl: vi.fn(async () =>
         new Response(
           JSON.stringify({
@@ -556,6 +565,7 @@ describe("RemoteAuthBackend", () => {
     );
 
     const sessionMismatch = new RemoteAuthBackend({
+      managedKeysEnabled: true,
       fetchImpl: vi.fn(async () =>
         new Response(
           JSON.stringify({

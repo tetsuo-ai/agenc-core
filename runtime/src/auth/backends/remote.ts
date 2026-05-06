@@ -147,7 +147,7 @@ export class RemoteAuthBackend implements AuthBackend {
     this.#subscriptionTierResolver =
       options.subscriptionTierResolver ??
       createHttpRemoteAuthSubscriptionTierResolver(options);
-    this.#managedKeysEnabled = options.managedKeysEnabled ?? true;
+    this.#managedKeysEnabled = options.managedKeysEnabled === true;
     this.#keyCacheTtlMs = positiveTtlMs(options.keyCacheTtlMs);
     this.#now = options.now ?? (() => new Date());
     this.#nowMs = options.nowMs ?? (() => Date.now());

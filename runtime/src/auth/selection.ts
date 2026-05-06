@@ -1,5 +1,5 @@
 import type { AgenCConfig, AuthBackendConfigKind } from "../config/schema.js";
-import type { EnvSnapshot } from "../config/env.js";
+import { applyEnvOverrides, type EnvSnapshot } from "../config/env.js";
 import type { AuthBackend } from "./backend.js";
 import {
   LocalAuthBackend,
@@ -80,12 +80,16 @@ export function createAuthBackend(
   config: Pick<AgenCConfig, "auth">,
   options: AuthBackendSelectionOptions = {},
 ): AuthBackend {
-  const backend = resolveAuthBackendKind(config);
+  const effectiveConfig =
+    options.env !== undefined ? applyEnvOverrides(config, options.env) : config;
+  const backend = resolveAuthBackendKind(effectiveConfig);
   switch (backend) {
     case "local":
       return new LocalAuthBackend(localBackendOptions(options));
     case "remote":
-      return new RemoteAuthBackend(remoteBackendOptions(config, options));
+      return new RemoteAuthBackend(
+        remoteBackendOptions(effectiveConfig, options),
+      );
   }
 }
 
