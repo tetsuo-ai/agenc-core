@@ -1,5 +1,7 @@
 import type { JsonValue } from "../../app-server/protocol/index.js";
 
+// RT-15 parity: tui/src/chatwidget/realtime.rs voice session state.
+
 export type RealtimeTuiPhase = "inactive" | "starting" | "active" | "stopping";
 export type RealtimeTuiTransport = "websocket" | "webrtc";
 export type RealtimeTuiTranscriptRole = "assistant" | "user" | string;
@@ -38,6 +40,7 @@ export type RealtimeTuiEvent =
       readonly realtimeSessionId?: string | null;
       readonly transport?: RealtimeTuiTransport | null;
     }
+  | { readonly type: "connected" }
   | { readonly type: "stop_requested" }
   | {
       readonly type: "closed";
@@ -123,10 +126,17 @@ export function reduceRealtimeTuiState(
     case "started":
       return {
         ...state,
-        phase: "active",
+        phase: state.transport === "webrtc" ? "starting" : "active",
         requestedClose: false,
         realtimeSessionId: event.realtimeSessionId ?? null,
         transport: event.transport ?? state.transport,
+        errorBanner: null,
+        closedBanner: null,
+      };
+    case "connected":
+      return {
+        ...state,
+        phase: "active",
         errorBanner: null,
         closedBanner: null,
       };

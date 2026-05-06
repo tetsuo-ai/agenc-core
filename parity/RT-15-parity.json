@@ -7,6 +7,7 @@
   "sourceFiles": ["tui/src/chatwidget/realtime.rs"],
   "targetFiles": [
     "runtime/src/tui/realtime/state.ts",
+    "runtime/src/tui/realtime/audio.ts",
     "runtime/src/tui/realtime/controller.ts",
     "runtime/src/tui/realtime/commands.ts",
     "runtime/src/tui/realtime/useRealtimeState.ts",
@@ -48,8 +49,19 @@
       "coverage": [
         "start, stop, appendText, appendAudio, mute, and push-to-talk controls update TUI state",
         "websocket starts route to thread/realtime/start and websocket append/stop calls route through the daemon client",
+        "websocket audio capture frames route to thread/realtime/appendAudio with mute and push-to-talk gating",
         "webrtc starts create a local offer, apply provider SDP, forward local events, and keep microphone mute state in sync",
         "provider realtime notifications update item previews, transcript previews, audio output, error banners, and close banners"
+      ],
+      "evidence": ["runtime/src/tui/realtime/controller.contract.test.ts"]
+    },
+    {
+      "source": "tui/src/chatwidget/realtime.rs",
+      "target": "runtime/src/tui/realtime/audio.ts",
+      "coverage": [
+        "default microphone capture uses the existing local voice recording backend and converts PCM frames to realtime audio chunks",
+        "local input levels are converted to the TUI meter scale",
+        "output audio chunks enqueue into a process-backed raw PCM player when the platform has a playback command"
       ],
       "evidence": ["runtime/src/tui/realtime/controller.contract.test.ts"]
     },

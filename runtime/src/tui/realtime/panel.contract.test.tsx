@@ -18,6 +18,7 @@ describe("RealtimePanel", () => {
       type: "started",
       realtimeSessionId: "rt_1",
     });
+    state = reduceRealtimeTuiState(state, { type: "connected" });
     state = reduceRealtimeTuiState(state, {
       type: "local_audio_level",
       peak: 65535,

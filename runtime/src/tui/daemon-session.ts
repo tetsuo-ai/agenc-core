@@ -31,6 +31,10 @@ import {
   type AgenCRealtimeTuiControls,
   type CreateRealtimeTuiControlsOptions,
 } from "./realtime/controller.js";
+import type {
+  RealtimeAudioPlayer,
+  StartRealtimeAudioCapture,
+} from "./realtime/audio.js";
 
 export const AGENC_DAEMON_RECONNECTING_MESSAGE =
   "daemon disconnected, reconnecting";
@@ -135,6 +139,8 @@ export interface AgenCDaemonTuiSessionOptions<
   readonly conversationId?: string;
   readonly realtimeThreadId?: string;
   readonly realtimeWebrtcSessionFactory?: CreateRealtimeTuiControlsOptions["startWebrtcSession"];
+  readonly realtimeAudioCaptureFactory?: StartRealtimeAudioCapture;
+  readonly realtimeAudioPlayer?: RealtimeAudioPlayer;
 }
 
 export interface AgenCDaemonAgentTuiSessionOptions<
@@ -199,6 +205,12 @@ export function createDaemonTuiSession<
     emitEvent: broadcastDaemonEvent,
     ...(options.realtimeWebrtcSessionFactory !== undefined
       ? { startWebrtcSession: options.realtimeWebrtcSessionFactory }
+      : {}),
+    ...(options.realtimeAudioCaptureFactory !== undefined
+      ? { startAudioCapture: options.realtimeAudioCaptureFactory }
+      : {}),
+    ...(options.realtimeAudioPlayer !== undefined
+      ? { audioPlayer: options.realtimeAudioPlayer }
       : {}),
   });
   const ensureDaemonEventsSubscribed = (): void => {

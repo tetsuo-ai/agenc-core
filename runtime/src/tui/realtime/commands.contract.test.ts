@@ -15,7 +15,9 @@ function createControls(): AgenCRealtimeTuiControls {
     setMuted: vi.fn(),
     setPushToTalk: vi.fn(),
     setPushToTalkHeld: vi.fn(),
-    getState: vi.fn(),
+    getState: vi.fn(() => ({
+      phase: "inactive",
+    })),
     subscribe: vi.fn(),
     handleTranscriptEvent: vi.fn(),
   } as unknown as AgenCRealtimeTuiControls;
@@ -24,8 +26,7 @@ function createControls(): AgenCRealtimeTuiControls {
 describe("AgenC realtime composer commands", () => {
   test("parses realtime command aliases without matching longer slash commands", () => {
     expect(parseRealtimeComposerCommand("/realtime")).toEqual({
-      kind: "start",
-      transport: "websocket",
+      kind: "toggle",
     });
     expect(parseRealtimeComposerCommand("/realtime start")).toEqual({
       kind: "start",
@@ -80,5 +81,18 @@ describe("AgenC realtime composer commands", () => {
     await expect(
       executeRealtimeComposerCommand(controls, "ordinary message"),
     ).resolves.toBe(false);
+  });
+
+  test("toggles realtime start and stop from the bare command", async () => {
+    const controls = createControls();
+
+    await executeRealtimeComposerCommand(controls, "/realtime");
+    expect(controls.start).toHaveBeenCalledWith({ transport: "websocket" });
+
+    vi.mocked(controls.getState).mockReturnValue({
+      phase: "active",
+    } as never);
+    await executeRealtimeComposerCommand(controls, "/realtime");
+    expect(controls.stop).toHaveBeenCalled();
   });
 });

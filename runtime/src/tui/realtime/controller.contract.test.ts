@@ -9,7 +9,13 @@ import type {
   AgenCDaemonMethod,
   AgenCDaemonResultByMethod,
   JsonObject,
+  ThreadRealtimeAudioChunk,
 } from "../../app-server/protocol/index.js";
+import type {
+  RealtimeAudioCaptureCallbacks,
+  RealtimeAudioPlayer,
+  StartRealtimeAudioCapture,
+} from "./audio.js";
 import { createRealtimeTuiControls } from "./controller.js";
 
 function createClient(): {
@@ -35,6 +41,25 @@ function createClient(): {
   };
 }
 
+function createNoopAudioCapture(): StartRealtimeAudioCapture {
+  return async () => ({
+    stop: vi.fn(),
+  });
+}
+
+function createAudioPlayer(): RealtimeAudioPlayer & {
+  readonly enqueued: ThreadRealtimeAudioChunk[];
+} {
+  const enqueued: ThreadRealtimeAudioChunk[] = [];
+  return {
+    enqueued,
+    enqueue: vi.fn((audio) => {
+      enqueued.push(audio);
+    }),
+    close: vi.fn(),
+  };
+}
+
 async function waitFor(
   predicate: () => boolean,
   message: string,
@@ -54,6 +79,7 @@ describe("AgenC realtime TUI controller", () => {
       threadId: "agent_1",
       client,
       emitEvent: () => {},
+      startAudioCapture: createNoopAudioCapture(),
     });
 
     await controls.start({ transport: "websocket", outputModality: "text" });
@@ -138,6 +164,21 @@ describe("AgenC realtime TUI controller", () => {
       payload: { sdp: "answer-sdp" },
     });
     expect(applyAnswerSdp).toHaveBeenCalledWith("answer-sdp");
+
+    controls.handleTranscriptEvent({
+      type: "realtime_started",
+      payload: { realtimeSessionId: "rt_1" },
+    });
+    expect(controls.getState()).toMatchObject({
+      phase: "starting",
+      realtimeSessionId: "rt_1",
+    });
+
+    channel.sender.send({ type: "connected" });
+    await waitFor(
+      () => controls.getState().phase === "active",
+      "WebRTC connected state",
+    );
 
     channel.sender.send({ type: "local_audio_level", peak: 12000 });
     await waitFor(
@@ -226,6 +267,85 @@ describe("AgenC realtime TUI controller", () => {
       method: "thread/realtime/appendAudio",
       params: { threadId: "agent_1", audio },
     });
+  });
+
+  test("starts websocket audio capture and routes captured frames to appendAudio", async () => {
+    const client = createClient();
+    let callbacks: RealtimeAudioCaptureCallbacks | null = null;
+    const stop = vi.fn();
+    const controls = createRealtimeTuiControls({
+      threadId: "agent_1",
+      client,
+      emitEvent: () => {},
+      startAudioCapture: async (nextCallbacks) => {
+        callbacks = nextCallbacks;
+        return { stop };
+      },
+    });
+    const audio = {
+      data: "BBBB",
+      sampleRate: 16000,
+      numChannels: 1,
+      samplesPerChannel: 2,
+    };
+
+    await controls.start({ transport: "websocket" });
+    callbacks?.onLevel(32000);
+    callbacks?.onAudio(audio);
+    await waitFor(
+      () =>
+        client.requests.some(
+          (request) => request.method === "thread/realtime/appendAudio",
+        ),
+      "captured audio append",
+    );
+
+    expect(controls.getState().localAudioLevel).toBe(32000);
+    expect(client.requests.at(-1)).toEqual({
+      method: "thread/realtime/appendAudio",
+      params: { threadId: "agent_1", audio },
+    });
+
+    controls.setMuted(true);
+    callbacks?.onAudio({ ...audio, data: "CCCC" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(client.requests.at(-1)).toEqual({
+      method: "thread/realtime/appendAudio",
+      params: { threadId: "agent_1", audio },
+    });
+
+    await controls.stop();
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  test("enqueues realtime output audio deltas into the audio player", () => {
+    const client = createClient();
+    const audioPlayer = createAudioPlayer();
+    const controls = createRealtimeTuiControls({
+      threadId: "agent_1",
+      client,
+      emitEvent: () => {},
+      audioPlayer,
+    });
+    const audio = {
+      data: "AAAA",
+      sampleRate: 24000,
+      numChannels: 1,
+    };
+
+    controls.handleTranscriptEvent({
+      type: "realtime_output_audio_delta",
+      payload: { audio },
+    });
+
+    expect(audioPlayer.enqueue).toHaveBeenCalledWith({
+      ...audio,
+      samplesPerChannel: null,
+      itemId: null,
+    });
+    expect(audioPlayer.enqueued).toEqual([
+      { ...audio, samplesPerChannel: null, itemId: null },
+    ]);
   });
 
   test("surfaces stop RPC failures after local WebRTC cleanup", async () => {

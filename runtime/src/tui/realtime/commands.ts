@@ -1,6 +1,9 @@
 import type { AgenCRealtimeTuiControls } from "./controller.js";
 
+// RT-15 parity: tui/src/chatwidget/realtime.rs lifecycle command controls.
+
 export type RealtimeComposerCommand =
+  | { readonly kind: "toggle" }
   | { readonly kind: "start"; readonly transport: "websocket" | "webrtc" }
   | { readonly kind: "stop" }
   | { readonly kind: "mute"; readonly muted: boolean }
@@ -16,7 +19,8 @@ export function parseRealtimeComposerCommand(
     return null;
   }
   const rest = trimmed.slice("/realtime".length).trim();
-  if (rest.length === 0 || rest === "start") {
+  if (rest.length === 0) return { kind: "toggle" };
+  if (rest === "start") {
     return { kind: "start", transport: "websocket" };
   }
   if (rest === "webrtc" || rest === "start webrtc") {
@@ -52,6 +56,13 @@ export async function executeRealtimeComposerCommand(
   if (command === null) return false;
   if (controls === undefined) return false;
   switch (command.kind) {
+    case "toggle":
+      if (controls.getState().phase === "inactive") {
+        await controls.start({ transport: "websocket" });
+      } else {
+        await controls.stop();
+      }
+      return true;
     case "start":
       await controls.start({ transport: command.transport });
       return true;

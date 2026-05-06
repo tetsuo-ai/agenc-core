@@ -15,6 +15,13 @@ import {
   type StartedRealtimeWebrtcSession,
 } from "../../conversation/realtime/webrtc/lib.js";
 import {
+  createProcessRealtimeAudioPlayer,
+  startDefaultRealtimeAudioCapture,
+  type RealtimeAudioCaptureSession,
+  type RealtimeAudioPlayer,
+  type StartRealtimeAudioCapture,
+} from "./audio.js";
+import {
   effectiveRealtimeMicrophoneMuted,
   initialRealtimeTuiState,
   reduceRealtimeTuiState,
@@ -22,6 +29,8 @@ import {
   type RealtimeTuiState,
   type RealtimeTuiTransport,
 } from "./state.js";
+
+// RT-15 parity: tui/src/chatwidget/realtime.rs realtime TUI controller.
 
 export interface RealtimeDaemonRequestClient {
   request<Method extends AgenCDaemonMethod>(
@@ -56,6 +65,8 @@ export interface CreateRealtimeTuiControlsOptions {
   readonly client: RealtimeDaemonRequestClient;
   readonly emitEvent: (event: JsonObject) => void;
   readonly startWebrtcSession?: () => Promise<StartedRealtimeWebrtcSession>;
+  readonly startAudioCapture?: StartRealtimeAudioCapture;
+  readonly audioPlayer?: RealtimeAudioPlayer;
 }
 
 export function createRealtimeTuiControls(
@@ -69,9 +80,12 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
   readonly #client: RealtimeDaemonRequestClient;
   readonly #emitEvent: (event: JsonObject) => void;
   readonly #startWebrtcSession: () => Promise<StartedRealtimeWebrtcSession>;
+  readonly #startAudioCapture: StartRealtimeAudioCapture;
+  readonly #audioPlayer: RealtimeAudioPlayer;
   readonly #subscribers = new Set<(state: RealtimeTuiState) => void>();
   #state = initialRealtimeTuiState();
   #webRtc: StartedRealtimeWebrtcSession | null = null;
+  #audioCapture: RealtimeAudioCaptureSession | null = null;
   #eventSequence = 0;
 
   constructor(options: CreateRealtimeTuiControlsOptions) {
@@ -80,6 +94,9 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
     this.#emitEvent = options.emitEvent;
     this.#startWebrtcSession =
       options.startWebrtcSession ?? (() => RealtimeWebrtcSession.start());
+    this.#startAudioCapture =
+      options.startAudioCapture ?? startDefaultRealtimeAudioCapture;
+    this.#audioPlayer = options.audioPlayer ?? createProcessRealtimeAudioPlayer();
   }
 
   async start(options: RealtimeStartOptions = {}): Promise<void> {
@@ -103,7 +120,11 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
         outputModality: options.outputModality ?? "audio",
         voice: options.voice ?? null,
       } satisfies ThreadRealtimeStartParams);
+      if (transport === "websocket") {
+        await this.#startWebsocketAudioCapture();
+      }
     } catch (error) {
+      await this.#stopAudioCapture().catch(() => {});
       if (startedWebRtc !== null) {
         await this.#closeWebrtc(startedWebRtc).catch(() => {});
       }
@@ -118,6 +139,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
   async stop(): Promise<void> {
     if (this.#state.phase === "inactive") return;
     this.#dispatch({ type: "stop_requested" });
+    await this.#stopAudioCapture();
     const webRtc = this.#webRtc;
     this.#webRtc = null;
     if (webRtc !== null) {
@@ -195,6 +217,12 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
           void this.#applyProviderSdp(payload.sdp);
         }
         break;
+      case "realtime_output_audio_delta":
+        if (isJsonObject(payload.audio)) {
+          const audio = toRealtimeAudioChunk(payload.audio);
+          if (audio !== null) this.#audioPlayer.enqueue(audio);
+        }
+        break;
       case "realtime_transcript_delta":
         if (
           typeof payload.role === "string" &&
@@ -223,7 +251,9 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
         this.#dispatch({ type: "item_added", item: payload.item ?? null });
         break;
       case "realtime_error":
+        void this.#stopAudioCapture().catch(() => {});
         this.#closeActiveWebrtc();
+        this.#audioPlayer.close();
         this.#dispatch({
           type: "error",
           message:
@@ -233,7 +263,9 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
         });
         break;
       case "realtime_closed":
+        void this.#stopAudioCapture().catch(() => {});
         this.#closeActiveWebrtc();
+        this.#audioPlayer.close();
         this.#dispatch({
           type: "closed",
           reason: typeof payload.reason === "string" ? payload.reason : null,
@@ -265,6 +297,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
   #handleWebrtcEvent(event: RealtimeWebrtcEvent): void {
     switch (event.type) {
       case "connected":
+        this.#dispatch({ type: "connected" });
         break;
       case "local_audio_level":
         this.#dispatch({ type: "local_audio_level", peak: event.peak });
@@ -297,6 +330,43 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
     await this.#webRtc?.handle.setMicrophoneMuted?.(muted);
   }
 
+  async #startWebsocketAudioCapture(): Promise<void> {
+    await this.#stopAudioCapture();
+    this.#audioCapture = await this.#startAudioCapture({
+      onAudio: (audio) => {
+        void this.appendAudio(audio).catch((error) => {
+          this.#surfaceRealtimeError(error, "Realtime audio append failed");
+        });
+      },
+      onLevel: (peak) => {
+        this.#dispatch({ type: "local_audio_level", peak });
+        this.#emitLocal("realtime_local_audio_level", {
+          threadId: this.#threadId,
+          peak,
+        });
+      },
+      onError: (message) => {
+        this.#surfaceRealtimeError(message, "Realtime audio capture failed");
+      },
+      onClosed: () => {
+        if (this.#state.phase !== "inactive") {
+          this.#dispatch({ type: "closed", reason: "audio_capture_closed" });
+          this.#emitLocal("realtime_closed", {
+            threadId: this.#threadId,
+            reason: "audio_capture_closed",
+          });
+        }
+      },
+    });
+  }
+
+  async #stopAudioCapture(): Promise<void> {
+    const capture = this.#audioCapture;
+    if (capture === null) return;
+    this.#audioCapture = null;
+    await capture.stop();
+  }
+
   async #applyProviderSdp(sdp: string): Promise<void> {
     const started = this.#webRtc;
     if (started === null) return;
@@ -305,9 +375,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
     } catch (error) {
       if (this.#webRtc === started) this.#webRtc = null;
       await this.#closeWebrtc(started).catch(() => {});
-      const message = error instanceof Error ? error.message : String(error);
-      this.#dispatch({ type: "error", message });
-      this.#emitLocal("realtime_error", { threadId: this.#threadId, message });
+      this.#surfaceRealtimeError(error, "Realtime SDP failed");
     }
   }
 
@@ -321,6 +389,18 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
     if (started === null) return;
     this.#webRtc = null;
     void this.#closeWebrtc(started).catch(() => {});
+  }
+
+  #surfaceRealtimeError(error: unknown, fallback: string): string {
+    const message =
+      error instanceof Error
+        ? error.message
+        : typeof error === "string" && error.trim().length > 0
+          ? error
+          : fallback;
+    this.#dispatch({ type: "error", message });
+    this.#emitLocal("realtime_error", { threadId: this.#threadId, message });
+    return message;
   }
 
   #dispatch(event: RealtimeTuiEvent): void {
@@ -342,4 +422,24 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
 
 function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function toRealtimeAudioChunk(value: JsonObject): ThreadRealtimeAudioChunk | null {
+  if (
+    typeof value.data !== "string" ||
+    typeof value.sampleRate !== "number" ||
+    typeof value.numChannels !== "number"
+  ) {
+    return null;
+  }
+  return {
+    data: value.data,
+    sampleRate: value.sampleRate,
+    numChannels: value.numChannels,
+    samplesPerChannel:
+      typeof value.samplesPerChannel === "number"
+        ? value.samplesPerChannel
+        : null,
+    itemId: typeof value.itemId === "string" ? value.itemId : null,
+  };
 }

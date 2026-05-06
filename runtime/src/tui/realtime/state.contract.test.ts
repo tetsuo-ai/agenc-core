@@ -27,11 +27,17 @@ describe("AgenC TUI realtime state", () => {
       realtimeSessionId: "rt_1",
     });
     expect(active).toMatchObject({
+      phase: "starting",
+      realtimeSessionId: "rt_1",
+    });
+
+    const connected = reduceRealtimeTuiState(active, { type: "connected" });
+    expect(connected).toMatchObject({
       phase: "active",
       realtimeSessionId: "rt_1",
     });
 
-    const stopping = reduceRealtimeTuiState(active, {
+    const stopping = reduceRealtimeTuiState(connected, {
       type: "stop_requested",
     });
     expect(stopping).toMatchObject({

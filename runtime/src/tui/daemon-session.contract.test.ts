@@ -304,6 +304,7 @@ describe("AgenC TUI daemon session adapter", () => {
       sessionId: "session_1",
       clientId: "tui_1",
       realtimeThreadId: "agent_1",
+      realtimeAudioCaptureFactory: async () => ({ stop: vi.fn() }),
     });
 
     await session.realtime.start({ transport: "websocket", outputModality: "text" });

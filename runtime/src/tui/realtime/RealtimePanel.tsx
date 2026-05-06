@@ -7,6 +7,8 @@ import {
   type RealtimeTuiState,
 } from "./state.js";
 
+// RT-15 parity: tui/src/chatwidget/realtime.rs realtime panel rendering.
+
 export interface RealtimePanelProps {
   readonly state: RealtimeTuiState;
 }
