@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import * as rateLimitService from '../../agenc/upstream/services/claudeAiLimits.js' // branding-scan: allow existing upstream rate-limit service path
+import * as rateLimitService from '../../services/agencAiLimits.js' // branding-scan: allow existing upstream rate-limit service path
 
 type RawUtilization = ReturnType<typeof rateLimitService.getRawUtilization>
 type RateLimitSnapshot = typeof rateLimitService.currentLimits

@@ -4,10 +4,10 @@ import * as React from 'react';
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import type { Tools } from '../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { Tools } from '../../../tools/Tool';
 import { getAgentColor } from 'src/tools/AgentTool/agentColorManager.js';
 import { getMemoryScopeDisplay } from '../../../tools/AgentTool/agentMemory';
-import { resolveAgentTools } from '../../../agenc/upstream/tools/AgentTool/agentToolUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { resolveAgentTools } from '../../../tools/AgentTool/agentToolUtils';
 import { type AgentDefinition, isBuiltInAgent } from 'src/tools/AgentTool/loadAgentsDir.js';
 import { getAgentModelDisplay } from '../../../utils/model/agent.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Markdown } from '../markdown/Markdown.js';

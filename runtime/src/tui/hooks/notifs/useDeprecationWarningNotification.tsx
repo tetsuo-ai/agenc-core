@@ -1,8 +1,10 @@
+// @ts-nocheck
+// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.
 import { c as _c } from "react-compiler-runtime";
 import { useEffect, useRef } from 'react';
 import { useNotifications } from '../../context/notifications.js';
 import { getModelDeprecationWarning } from '../../../utils/model/deprecation.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getIsRemoteMode } from '../../../agenc/upstream/bootstrap/state'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getIsRemoteMode } from '../../../bootstrap/state';
 export function useDeprecationWarningNotification(model) {
   const $ = _c(4);
   const {

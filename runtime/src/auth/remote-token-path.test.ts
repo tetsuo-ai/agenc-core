@@ -82,7 +82,7 @@ async function loadAuthFileDescriptor(): Promise<typeof import("../utils/authFil
 
 async function loadSpawnUtils(): Promise<typeof import("../utils/swarm/spawnUtils.js")> {
   vi.resetModules();
-  vi.doMock("../agenc/upstream/bootstrap/state.js", () => ({
+  vi.doMock("../bootstrap/state.js", () => ({
     getChromeFlagOverride: () => undefined,
     getFlagSettingsPath: () => undefined,
     getInlinePlugins: () => [],

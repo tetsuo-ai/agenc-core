@@ -5,14 +5,15 @@ import { mkdir } from 'fs/promises';
 import { basename, join } from 'path';
 import * as React from 'react';
 import { use, useEffect, useState } from 'react';
-import { getOriginalCwd } from '../../../agenc/upstream/bootstrap/state'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getOriginalCwd } from '../../../bootstrap/state';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import { getAutoMemPath, isAutoMemoryEnabled } from '../../../memdir/paths';
-import { logEvent } from '../../../agenc/upstream/services/analytics/index'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isAutoDreamEnabled } from '../../../agenc/upstream/services/autoDream/config'; // upstream-import: keep target is owned by another Z-PURGE item
-import { readLastConsolidatedAt } from '../../../agenc/upstream/services/autoDream/consolidationLock'; // upstream-import: keep target is owned by another Z-PURGE item
+import * as teamMemPathsModule from '../../../memdir/teamMemPaths';
+import { logEvent } from '../../../services/analytics/index';
+import { isAutoDreamEnabled } from '../../../services/autoDream/config';
+import { readLastConsolidatedAt } from '../../../services/autoDream/consolidationLock';
 import { useAppState } from '../../state/AppState.js';
 import { getAgentMemoryDir } from '../../../tools/AgentTool/agentMemory';
 import { openPath } from '../../../utils/browser.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -27,7 +28,7 @@ import { ListItem } from '../design-system/ListItem';
 import { getProjectMemoryPathForSelector } from './memoryFileSelectorPaths';
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-const teamMemPaths = feature('TEAMMEM') ? require('../../../memdir/teamMemPaths') as typeof import('../../../memdir/teamMemPaths') : null;
+const teamMemPaths = feature('TEAMMEM') ? teamMemPathsModule : null;
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 interface ExtendedMemoryFileInfo extends MemoryFileInfo {

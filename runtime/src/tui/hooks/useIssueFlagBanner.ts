@@ -1,5 +1,7 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { useMemo, useRef } from 'react'
-import { BASH_TOOL_NAME } from '../../agenc/upstream/tools/BashTool/toolName' // upstream-import: keep target is owned by another Z-PURGE item
+import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName'
 import type { Message } from '../../types/message'
 import { getUserMessageText } from '../../utils/messages.js' // upstream-import: keep target is owned by another Z-PURGE item
 

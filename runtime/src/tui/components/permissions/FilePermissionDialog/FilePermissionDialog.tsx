@@ -2,12 +2,12 @@ import { relative } from 'path';
 import React, { useMemo } from 'react';
 import { useDiffInIDE } from '../../../hooks/useDiffInIDE';
 import { Box, Text } from '../../../ink.js';
-import type { ToolUseContext } from '../../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getLanguageName } from '../../../../utils/cliHighlight.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getCwd } from '../../../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getFsImplementation, safeResolvePath } from '../../../../utils/fsOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { expandPath } from '../../../../utils/path.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { CompletionType } from '../../../../utils/unaryLogging.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ToolUseContext } from '../../../../tools/Tool';
+import { getLanguageName } from '../../../../utils/cliHighlight'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCwd } from '../../../../utils/cwd'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getFsImplementation, safeResolvePath } from '../../../../utils/fsOperations'; // upstream-import: keep target is owned by another Z-PURGE item
+import { expandPath } from '../../../../utils/path'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { CompletionType } from '../../../../utils/unaryLogging'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../../CustomSelect/select';
 import { ShowInIDEPrompt } from '../../ShowInIDEPrompt';
 import { usePermissionRequestLogging } from '../hooks';

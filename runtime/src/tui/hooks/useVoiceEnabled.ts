@@ -3,7 +3,7 @@ import { useAppState } from '../state/AppState.js'
 import {
   hasVoiceAuth,
   isVoiceGrowthBookEnabled,
-} from '../../agenc/upstream/voice/voiceModeEnabled' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../voice/voiceModeEnabled'
 
 /**
  * Combines user intent (settings.voiceEnabled) with auth + GB kill-switch.

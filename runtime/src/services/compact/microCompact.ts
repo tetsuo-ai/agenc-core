@@ -215,3 +215,15 @@ function isWithinTimeWindow(
   const timestamp = Date.parse(message.timestamp);
   return Number.isFinite(timestamp) && now - timestamp < clearAfterMs;
 }
+
+export function consumePendingCacheEdits(): readonly never[] {
+  return [];
+}
+
+export function getPinnedCacheEdits(): readonly never[] {
+  return [];
+}
+
+export function markToolsSentToAPIState(): void {}
+
+export function pinCacheEdits(): void {}

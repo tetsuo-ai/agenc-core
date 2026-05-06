@@ -3,7 +3,7 @@
 import { c as _c } from "react-compiler-runtime";
 import { marked, type Token, type Tokens } from 'marked';
 import React, { Suspense, use, useMemo, useRef } from 'react';
-import { useSettings } from '../../hooks/useSettings';
+import { useSettings } from '../../hooks/useSettings.js';
 import { Ansi, Box, useTheme } from '../../ink.js';
 import { type CliHighlight, getCliHighlightPromise } from '../../../utils/cliHighlight.js';
 import { hashContent } from '../../../utils/hash.js';

@@ -1,9 +1,9 @@
 import type { PermissionRule } from '../../../utils/permissions/PermissionRule.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { getSettingsForSource } from '../../../utils/settings/settings.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type { SettingsJson } from '../../../utils/settings/types.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { BASH_TOOL_NAME } from '../../../agenc/upstream/tools/BashTool/toolName' // upstream-import: keep target is owned by another Z-PURGE item
-import { SAFE_ENV_VARS } from '../../../utils/managedEnvConstants.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { getPermissionRulesForSource } from '../../../utils/permissions/permissionsLoader.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { BASH_TOOL_NAME } from '../../../tools/BashTool/toolName'
+import { SAFE_ENV_VARS } from '../../../utils/managedEnvConstants' // upstream-import: keep target is owned by another Z-PURGE item
+import { getPermissionRulesForSource } from '../../../utils/permissions/permissionsLoader' // upstream-import: keep target is owned by another Z-PURGE item
 
 function hasHooks(settings: SettingsJson | null): boolean {
   if (settings === null || settings.disableAllHooks) {

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   _resetForTesting as resetAnalyticsForTesting,
   attachAnalyticsSink,
-} from "../../agenc/upstream/services/analytics/index.js";
+} from "../analytics/index.js";
 
 const runAgenCForkedAgent = vi.hoisted(() => vi.fn());
 

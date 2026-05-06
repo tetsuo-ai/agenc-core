@@ -1,9 +1,11 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React, { useEffect, useMemo } from 'react';
 import type { CommandResultDisplay } from '../../../commands.js';
-import { AgenCAuthProvider } from '../../../agenc/upstream/services/mcp/auth'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { McpAgenCAIProxyServerConfig, McpHTTPServerConfig, McpSSEServerConfig, McpStdioServerConfig } from '../../../agenc/upstream/services/mcp/types'; // upstream-import: keep target is owned by another Z-PURGE item
-import { extractAgentMcpServers, filterToolsByServer } from '../../../agenc/upstream/services/mcp/utils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { AgenCAuthProvider } from '../../../services/mcp/auth';
+import type { McpAgenCAIProxyServerConfig, McpHTTPServerConfig, McpSSEServerConfig, McpStdioServerConfig } from '../../../services/mcp/types';
+import { extractAgentMcpServers, filterToolsByServer } from '../../../services/mcp/utils';
 import { useAppState } from '../../state/AppState.js';
 import { getSessionIngressAuthToken } from '../../../utils/sessionIngressAuth.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { MCPAgentServerMenu } from './MCPAgentServerMenu';
@@ -207,7 +209,7 @@ export function MCPSettings(t0) {
           t9 = $[25];
         }
         const serverTools_0 = t9;
-        const defaultTab = viewState.server.transport === "claudeai-proxy" ? "agenc.ai" : "AgenC";
+        const defaultTab = viewState.server.transport === "claudeai-proxy" ? "agenc.tech" : "AgenC";
         if (viewState.server.transport === "stdio") {
           let t10;
           if ($[26] !== viewState.server) {

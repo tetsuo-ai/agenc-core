@@ -2,13 +2,13 @@ import { useLayoutEffect, useRef, useState } from 'react'
 import { isInputModeCharacter } from '../components/PromptInput/inputModes.js'
 import { useNotifications } from '../context/notifications.js'
 import stripAnsi from 'strip-ansi'
-import { markBackslashReturnUsed } from '../../agenc/upstream/commands/terminalSetup/terminalSetup' // upstream-import: keep target is owned by another Z-PURGE item
+import { markBackslashReturnUsed } from '../../commands/terminalSetup/terminalSetup'
 import { addToHistory } from '../history/history.js'
 import type { Key } from '../ink.js'
 import type {
   InlineGhostText,
   TextInputState,
-} from '../../agenc/upstream/types/textInputTypes' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../types/textInputTypes'
 import {
   TextCursor,
   getLastKill,

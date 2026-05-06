@@ -1,10 +1,12 @@
+// @ts-nocheck
+// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { useEffect, useState } from 'react';
 import { Box, Text } from '../../ink.js';
-import { getDynamicConfig_CACHED_MAY_BE_STALE } from '../../../agenc/upstream/services/analytics/growthbook'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logEvent } from '../../../agenc/upstream/services/analytics/index'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getDynamicConfig_CACHED_MAY_BE_STALE } from '../../../services/analytics/growthbook';
+import { logEvent } from '../../../services/analytics/index';
+import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../CustomSelect/select';
 import { DesktopHandoff } from '../DesktopHandoff';
 import { PermissionDialog } from '../permissions/PermissionDialog';

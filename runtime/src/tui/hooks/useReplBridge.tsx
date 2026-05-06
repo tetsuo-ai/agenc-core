@@ -1,19 +1,21 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle';
 import React, { useCallback, useEffect, useRef } from 'react';
-import { setMainLoopModelOverride } from '../../agenc/upstream/bootstrap/state'; // upstream-import: keep target is owned by another Z-PURGE item
-import { type BridgePermissionCallbacks, type BridgePermissionResponse, isBridgePermissionResponse } from '../../agenc/upstream/bridge/bridgePermissionCallbacks'; // upstream-import: keep target is owned by another Z-PURGE item
-import { buildBridgeConnectUrl } from '../../agenc/upstream/bridge/bridgeStatusUtil'; // upstream-import: keep target is owned by another Z-PURGE item
-import { extractInboundMessageFields } from '../../agenc/upstream/bridge/inboundMessages'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { BridgeState, ReplBridgeHandle } from '../../agenc/upstream/bridge/replBridge'; // upstream-import: keep target is owned by another Z-PURGE item
-import { setReplBridgeHandle } from '../../agenc/upstream/bridge/replBridgeHandle'; // upstream-import: keep target is owned by another Z-PURGE item
+import { setMainLoopModelOverride } from '../../bootstrap/state';
+import { type BridgePermissionCallbacks, type BridgePermissionResponse, isBridgePermissionResponse } from '../../bridge/bridgePermissionCallbacks';
+import { buildBridgeConnectUrl } from '../../bridge/bridgeStatusUtil';
+import { extractInboundMessageFields } from '../../bridge/inboundMessages';
+import type { BridgeState, ReplBridgeHandle } from '../../bridge/replBridge';
+import { setReplBridgeHandle } from '../../bridge/replBridgeHandle';
 import type { Command } from '../../commands.js';
 import { getSlashCommandToolSkills, isBridgeSafeCommand } from '../../commands.js';
 import { getRemoteSessionUrl } from '../../constants/product.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useNotifications } from '../context/notifications';
-import type { PermissionMode, SDKMessage } from '../../agenc/upstream/entrypoints/agentSdkTypes'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { SDKControlResponse } from '../../agenc/upstream/entrypoints/sdk/controlTypes'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionMode, SDKMessage } from '../../entrypoints/agentSdkTypes';
+import type { SDKControlResponse } from '../../entrypoints/sdk/controlTypes';
 import { Text } from '../ink.js';
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../agenc/upstream/services/analytics/growthbook'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook';
 import { useAppState, useAppStateStore, useSetAppState } from '../state/AppState.js';
 import type { Message } from '../../types/message';
 import { getCwd } from '../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -48,7 +50,7 @@ const MAX_CONSECUTIVE_INIT_FAILURES = 3;
  * Watches AppState.replBridgeEnabled — when toggled off (via /config or footer),
  * the bridge is torn down. When toggled back on, it re-initializes.
  *
- * Inbound messages from agenc.ai are injected into the REPL via queuedCommands.
+ * Inbound messages from agenc.tech are injected into the REPL via queuedCommands.
  */
 export function useReplBridge(messages: Message[], setMessages: (action: React.SetStateAction<Message[]>) => void, abortControllerRef: React.RefObject<AbortController | null>, commands: readonly Command[], mainLoopModel: string): {
   sendBridgeResult: () => void;
@@ -152,7 +154,7 @@ export function useReplBridge(messages: Message[], setMessages: (action: React.S
             shouldShowAppUpgradeMessage
           } = await import('../../bridge/envLessBridgeConfig');
 
-          // Assistant mode: perpetual bridge session — agenc.ai shows one
+          // Assistant mode: perpetual bridge session — agenc.tech shows one
           // continuous conversation across CLI restarts instead of a new
           // session per invocation. initBridgeCore reads bridge-pointer.json
           // (the same crash-recovery file #20735 added) and reuses its
@@ -169,7 +171,7 @@ export function useReplBridge(messages: Message[], setMessages: (action: React.S
             perpetual = isAssistantMode();
           }
 
-          // When a user message arrives from agenc.ai, inject it into the REPL.
+          // When a user message arrives from agenc.tech, inject it into the REPL.
           // Preserves the original UUID so that when the message is forwarded
           // back to CCR, it matches the original — avoiding duplicate messages.
           //

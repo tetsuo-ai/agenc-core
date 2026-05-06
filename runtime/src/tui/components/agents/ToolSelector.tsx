@@ -1,27 +1,27 @@
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import React, { useCallback, useMemo, useState } from 'react';
-import { mcpInfoFromString } from '../../../agenc/upstream/services/mcp/mcpStringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isMcpTool } from '../../../agenc/upstream/services/mcp/utils.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { Tool, Tools } from '../../../agenc/upstream/Tool.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { filterToolsForAgent } from '../../../agenc/upstream/tools/AgentTool/agentToolUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { mcpInfoFromString } from '../../../services/mcp/mcpStringUtils.js';
+import { isMcpTool } from '../../../services/mcp/utils.js';
+import type { Tool, Tools } from '../../../tools/Tool.js';
+import { filterToolsForAgent } from '../../../tools/AgentTool/agentToolUtils.js';
 import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js';
-import { BashTool } from '../../../agenc/upstream/tools/BashTool/BashTool.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { ExitPlanModeV2Tool } from '../../../agenc/upstream/tools/ExitPlanModeTool/ExitPlanModeV2Tool.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { FileEditTool } from '../../../agenc/upstream/tools/FileEditTool/FileEditTool.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { FileReadTool } from '../../../agenc/upstream/tools/FileReadTool/FileReadTool.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { FileWriteTool } from '../../../agenc/upstream/tools/FileWriteTool/FileWriteTool.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { GlobTool } from '../../../agenc/upstream/tools/GlobTool/GlobTool.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { GrepTool } from '../../../agenc/upstream/tools/GrepTool/GrepTool.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { ListMcpResourcesTool } from '../../../agenc/upstream/tools/ListMcpResourcesTool/ListMcpResourcesTool.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { NotebookEditTool } from '../../../agenc/upstream/tools/NotebookEditTool/NotebookEditTool.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { ReadMcpResourceTool } from '../../../agenc/upstream/tools/ReadMcpResourceTool/ReadMcpResourceTool.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { TaskOutputTool } from '../../../agenc/upstream/tools/TaskOutputTool/TaskOutputTool.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { TaskStopTool } from '../../../agenc/upstream/tools/TaskStopTool/TaskStopTool.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { TodoWriteTool } from '../../../agenc/upstream/tools/TodoWriteTool/TodoWriteTool.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { TungstenTool } from '../../../agenc/upstream/tools/TungstenTool/TungstenTool.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { WebFetchTool } from '../../../agenc/upstream/tools/WebFetchTool/WebFetchTool.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { WebSearchTool } from '../../../agenc/upstream/tools/WebSearchTool/WebSearchTool.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { BashTool } from '../../../tools/BashTool/BashTool.js';
+import { ExitPlanModeV2Tool } from '../../../tools/ExitPlanModeTool/ExitPlanModeV2Tool.js';
+import { FileEditTool } from '../../../tools/FileEditTool/FileEditTool.js';
+import { FileReadTool } from '../../../tools/FileReadTool/FileReadTool.js';
+import { FileWriteTool } from '../../../tools/FileWriteTool/FileWriteTool.js';
+import { GlobTool } from '../../../tools/GlobTool/GlobTool.js';
+import { GrepTool } from '../../../tools/GrepTool/GrepTool.js';
+import { ListMcpResourcesTool } from '../../../tools/ListMcpResourcesTool/ListMcpResourcesTool.js';
+import { NotebookEditTool } from '../../../tools/NotebookEditTool/NotebookEditTool.js';
+import { ReadMcpResourceTool } from '../../../tools/ReadMcpResourceTool/ReadMcpResourceTool.js';
+import { TaskOutputTool } from '../../../tools/TaskOutputTool/TaskOutputTool.js';
+import { TaskStopTool } from '../../../tools/TaskStopTool/TaskStopTool.js';
+import { TodoWriteTool } from '../../../tools/TodoWriteTool/TodoWriteTool.js';
+import { TungstenTool } from '../../../tools/TungstenTool/TungstenTool.js';
+import { WebFetchTool } from '../../../tools/WebFetchTool/WebFetchTool.js';
+import { WebSearchTool } from '../../../tools/WebSearchTool/WebSearchTool.js';
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';

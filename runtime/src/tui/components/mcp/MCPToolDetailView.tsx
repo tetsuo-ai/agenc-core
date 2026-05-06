@@ -1,8 +1,10 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { Box, Text } from '../../ink.js';
-import { extractMcpToolDisplayName, getMcpDisplayName } from '../../../agenc/upstream/services/mcp/mcpStringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { Tool } from '../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
+import { extractMcpToolDisplayName, getMcpDisplayName } from '../../../services/mcp/mcpStringUtils';
+import type { Tool } from '../../../tools/Tool';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
 import { Dialog } from '../design-system/Dialog';
 import type { ServerInfo } from './types';

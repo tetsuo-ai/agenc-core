@@ -1,9 +1,9 @@
 /**
  * Pure dispatch logic for the AgenC TUI tool renderer's
  * `renderToolResultMessage`. Lives in a JSX-free `.ts` file (no React,
- * no upstream/ink imports) so unit tests can exercise the dispatch
- * decision without dragging the upstream component chain into vitest
- * (the upstream chain reaches `config.ts` which `require()`s
+ * no renderer imports) so unit tests can exercise the dispatch
+ * decision without dragging the moved component chain into vitest
+ * (that chain reaches `config.ts` which `require()`s
  * feature-gated paths the source resolver cannot follow).
  *
  * @module
@@ -51,9 +51,9 @@ export type ToolResultDispatchTarget =
  * (legacy or error-path) always fall through to the generic renderer.
  *
  * The `<tool-error>` envelope is the cross-cutting error path —
- * dispatched regardless of tool name when the upstream renderer
+ * dispatched regardless of tool name when the migrated renderer
  * paths a tool result through the error message channel. This is the
- * structured replacement for the upstream `FallbackToolUseErrorMessage`
+ * structured replacement for `FallbackToolUseErrorMessage`
  * fallback.
  */
 export function pickToolResultDispatch(
@@ -142,7 +142,7 @@ export function resultTextForTuiTool(value: unknown): string {
     // Structured-content-block array shape (the shape that
     // `session-transcript.formatStructuredToolResult` produces). Flatten
     // by joining the `.text` fields with newlines so tag-extraction
-    // helpers see one continuous string with the upstream envelope.
+    // helpers see one continuous string with the tool envelope.
     if (value.length > 0 && value.every(isStructuredTextBlock)) {
       return value
         .map((item) => (item as { readonly text: string }).text)

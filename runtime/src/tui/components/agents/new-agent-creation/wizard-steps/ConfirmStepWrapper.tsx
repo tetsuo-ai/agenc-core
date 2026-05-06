@@ -1,8 +1,8 @@
 import chalk from 'chalk';
 import React, { type ReactNode, useCallback, useState } from 'react';
-import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../../../agenc/upstream/services/analytics/index.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../../../services/analytics/index.js';
 import { useSetAppState } from '../../../../state/AppState.js';
-import type { Tools } from '../../../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { Tools } from '../../../../../tools/Tool';
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js';
 import { getActiveAgentsFromList } from 'src/tools/AgentTool/loadAgentsDir.js';
 import { editFileInEditor } from '../../../../../utils/promptEditor.js'; // upstream-import: keep target is owned by another Z-PURGE item

@@ -3,38 +3,38 @@
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import * as React from 'react';
-import { EnterPlanModeTool } from '../../../agenc/upstream/tools/EnterPlanModeTool/EnterPlanModeTool.js';
-import { ExitPlanModeV2Tool } from '../../../agenc/upstream/tools/ExitPlanModeTool/ExitPlanModeV2Tool.js';
-import { useNotifyAfterTimeout } from '../../hooks/useNotifyAfterTimeout';
+import { EnterPlanModeTool } from '../../../tools/EnterPlanModeTool/EnterPlanModeTool.js';
+import { ExitPlanModeV2Tool } from '../../../tools/ExitPlanModeTool/ExitPlanModeV2Tool.js';
+import { useNotifyAfterTimeout } from '../../hooks/useNotifyAfterTimeout.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import type { AnyObject, Tool, ToolUseContext } from '../../../agenc/upstream/Tool.js';
+import type { AnyObject, Tool, ToolUseContext } from '../../../tools/Tool.js';
 import { AskUserQuestionTool } from '../../../tools/ask-user-question/tui-tool.js';
-import { BashTool } from '../../../agenc/upstream/tools/BashTool/BashTool.js';
-import { FileEditTool } from '../../../agenc/upstream/tools/FileEditTool/FileEditTool.js';
-import { FileReadTool } from '../../../agenc/upstream/tools/FileReadTool/FileReadTool.js';
-import { FileWriteTool } from '../../../agenc/upstream/tools/FileWriteTool/FileWriteTool.js';
-import { GlobTool } from '../../../agenc/upstream/tools/GlobTool/GlobTool.js';
-import { GrepTool } from '../../../agenc/upstream/tools/GrepTool/GrepTool.js';
-import { NotebookEditTool } from '../../../agenc/upstream/tools/NotebookEditTool/NotebookEditTool.js';
-import { PowerShellTool } from '../../../agenc/upstream/tools/PowerShellTool/PowerShellTool.js';
-import { SkillTool } from '../../../agenc/upstream/tools/SkillTool/SkillTool.js';
-import { WebFetchTool } from '../../../agenc/upstream/tools/WebFetchTool/WebFetchTool.js';
-import { MonitorTool as MonitorToolImpl } from '../../../agenc/upstream/tools/MonitorTool/MonitorTool.js';
-import type { AssistantMessage } from '../../../agenc/upstream/types/message.js';
-import type { PermissionDecision } from '../../../agenc/upstream/types/permissions.js';
-import { AskUserQuestionPermissionRequest } from './AskUserQuestionPermissionRequest/AskUserQuestionPermissionRequest';
-import { BashPermissionRequest } from './BashPermissionRequest/BashPermissionRequest';
-import { EnterPlanModePermissionRequest } from './EnterPlanModePermissionRequest/EnterPlanModePermissionRequest';
-import { ExitPlanModePermissionRequest } from './ExitPlanModePermissionRequest/ExitPlanModePermissionRequest';
-import { FallbackPermissionRequest } from './FallbackPermissionRequest';
-import { FileEditPermissionRequest } from './FileEditPermissionRequest/FileEditPermissionRequest';
-import { FilesystemPermissionRequest } from './FilesystemPermissionRequest/FilesystemPermissionRequest';
-import { FileWritePermissionRequest } from './FileWritePermissionRequest/FileWritePermissionRequest';
-import { NotebookEditPermissionRequest } from './NotebookEditPermissionRequest/NotebookEditPermissionRequest';
-import { PowerShellPermissionRequest } from './PowerShellPermissionRequest/PowerShellPermissionRequest';
-import { SkillPermissionRequest } from './SkillPermissionRequest/SkillPermissionRequest';
-import { WebFetchPermissionRequest } from './WebFetchPermissionRequest/WebFetchPermissionRequest';
-import { MonitorPermissionRequest as MonitorPermissionRequestImpl } from './MonitorPermissionRequest/MonitorPermissionRequest';
+import { BashTool } from '../../../tools/BashTool/BashTool.js';
+import { FileEditTool } from '../../../tools/FileEditTool/FileEditTool.js';
+import { FileReadTool } from '../../../tools/FileReadTool/FileReadTool.js';
+import { FileWriteTool } from '../../../tools/FileWriteTool/FileWriteTool.js';
+import { GlobTool } from '../../../tools/GlobTool/GlobTool.js';
+import { GrepTool } from '../../../tools/GrepTool/GrepTool.js';
+import { NotebookEditTool } from '../../../tools/NotebookEditTool/NotebookEditTool.js';
+import { PowerShellTool } from '../../../tools/PowerShellTool/PowerShellTool.js';
+import { SkillTool } from '../../../tools/SkillTool/SkillTool.js';
+import { WebFetchTool } from '../../../tools/WebFetchTool/WebFetchTool.js';
+import { MonitorTool as MonitorToolImpl } from '../../../tools/MonitorTool/MonitorTool.js';
+import type { AssistantMessage } from '../../../types/message.js';
+import type { PermissionDecision } from '../../../types/permissions.js';
+import { AskUserQuestionPermissionRequest } from './AskUserQuestionPermissionRequest/AskUserQuestionPermissionRequest.js';
+import { BashPermissionRequest } from './BashPermissionRequest/BashPermissionRequest.js';
+import { EnterPlanModePermissionRequest } from './EnterPlanModePermissionRequest/EnterPlanModePermissionRequest.js';
+import { ExitPlanModePermissionRequest } from './ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.js';
+import { FallbackPermissionRequest } from './FallbackPermissionRequest.js';
+import { FileEditPermissionRequest } from './FileEditPermissionRequest/FileEditPermissionRequest.js';
+import { FilesystemPermissionRequest } from './FilesystemPermissionRequest/FilesystemPermissionRequest.js';
+import { FileWritePermissionRequest } from './FileWritePermissionRequest/FileWritePermissionRequest.js';
+import { NotebookEditPermissionRequest } from './NotebookEditPermissionRequest/NotebookEditPermissionRequest.js';
+import { PowerShellPermissionRequest } from './PowerShellPermissionRequest/PowerShellPermissionRequest.js';
+import { SkillPermissionRequest } from './SkillPermissionRequest/SkillPermissionRequest.js';
+import { WebFetchPermissionRequest } from './WebFetchPermissionRequest/WebFetchPermissionRequest.js';
+import { MonitorPermissionRequest as MonitorPermissionRequestImpl } from './MonitorPermissionRequest/MonitorPermissionRequest.js';
 
 function unsupportedPermissionFeature<T>(featureName: string): T {
   throw new Error(
@@ -58,7 +58,7 @@ const MonitorPermissionRequest = feature('MONITOR_TOOL') ? MonitorPermissionRequ
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
 import type { z } from 'zod/v4';
 import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js';
-import type { WorkerBadgeProps } from './WorkerBadge';
+import type { WorkerBadgeProps } from './WorkerBadge.js';
 function permissionComponentForTool(tool: Tool): React.ComponentType<PermissionRequestProps> {
   switch (tool) {
     case FileEditTool:

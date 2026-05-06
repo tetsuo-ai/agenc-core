@@ -256,3 +256,5 @@ export function sanitizeSchemaForOpenAICompat(
 
   return record
 }
+
+export const sanitizeSchemaForOpenAiCompat = sanitizeSchemaForOpenAICompat

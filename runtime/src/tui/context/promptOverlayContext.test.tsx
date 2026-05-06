@@ -16,7 +16,7 @@ import {
 vi.mock("../../utils/debug.js", () => ({
   logForDebugging: () => {},
 }));
-vi.mock("../../agenc/upstream/bootstrap/state.js", () => ({
+vi.mock("../../bootstrap/state.js", () => ({
   flushInteractionTime: () => {},
   markScrollActivity: () => {},
   updateLastInteractionTime: () => {},

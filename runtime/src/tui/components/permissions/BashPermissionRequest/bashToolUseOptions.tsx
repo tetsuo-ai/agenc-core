@@ -1,9 +1,9 @@
-import { BASH_TOOL_NAME } from '../../../../agenc/upstream/tools/BashTool/toolName'; // upstream-import: keep target is owned by another Z-PURGE item
-import { extractOutputRedirections } from '../../../../utils/bash/commands.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isClassifierPermissionsEnabled } from '../../../../utils/permissions/bashClassifier.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionDecisionReason } from '../../../../utils/permissions/PermissionResult.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { shouldShowAlwaysAllowOptions } from '../../../../utils/permissions/permissionsLoader.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { BASH_TOOL_NAME } from '../../../../tools/BashTool/toolName';
+import { extractOutputRedirections } from '../../../../utils/bash/commands'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isClassifierPermissionsEnabled } from '../../../../utils/permissions/bashClassifier'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionDecisionReason } from '../../../../utils/permissions/PermissionResult'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema'; // upstream-import: keep target is owned by another Z-PURGE item
+import { shouldShowAlwaysAllowOptions } from '../../../../utils/permissions/permissionsLoader'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { OptionWithDescription } from '../../CustomSelect/select';
 import { generateShellSuggestionsLabel } from '../shellPermissionHelpers';
 export type BashToolUseOption = 'yes' | 'yes-apply-suggestions' | 'yes-prefix-edited' | 'yes-classifier-reviewed' | 'no';

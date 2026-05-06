@@ -4,8 +4,8 @@ import { basename } from 'path';
 import React, { useRef } from 'react';
 import { useMinDisplayTime } from '../../hooks/useMinDisplayTime';
 import { Ansi, Box, Text, useTheme } from '../../ink.js';
-import { findToolByName, type Tools } from '../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getReplPrimitiveTools } from '../../../agenc/upstream/tools/REPLTool/primitiveTools'; // upstream-import: keep target is owned by another Z-PURGE item
+import { findToolByName, type Tools } from '../../../tools/Tool';
+import { getReplPrimitiveTools } from '../../../tools/REPLTool/primitiveTools';
 import type { CollapsedReadSearchGroup, NormalizedAssistantMessage } from '../../../types/message';
 import { uniq } from '../../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getToolUseIdsFromCollapsedGroup } from '../../../utils/collapseReadSearch.js'; // upstream-import: keep target is owned by another Z-PURGE item

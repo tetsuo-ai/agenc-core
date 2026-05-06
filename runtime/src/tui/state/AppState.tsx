@@ -2,9 +2,9 @@
 // Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React, { useContext, useEffect, useState, useSyncExternalStore } from 'react';
-import { MailboxProvider } from '../context/mailbox';
-import { useEffectEventCompat } from '../hooks/useEffectEventCompat';
-import { useSettingsChange } from '../hooks/useSettingsChange';
+import { MailboxProvider } from '../context/mailbox.js';
+import { useEffectEventCompat } from '../hooks/useEffectEventCompat.js';
+import { useSettingsChange } from '../hooks/useSettingsChange.js';
 import { logForDebugging } from '../../utils/debug.js';
 import { createDisabledBypassPermissionsContext, isBypassPermissionsModeDisabled } from '../../utils/permissions/permissionSetup.js';
 import { applySettingsChange } from '../../utils/settings/applySettingsChange.js';

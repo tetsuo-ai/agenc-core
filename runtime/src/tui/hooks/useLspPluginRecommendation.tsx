@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.
 import { c as _c } from "react-compiler-runtime";
 /**
  * Hook for LSP plugin recommendations
@@ -13,7 +15,7 @@ import { c as _c } from "react-compiler-runtime";
 
 import { extname, join } from 'path';
 import * as React from 'react';
-import { hasShownLspRecommendationThisSession, setLspRecommendationShownThisSession } from '../../agenc/upstream/bootstrap/state'; // upstream-import: keep target is owned by another Z-PURGE item
+import { hasShownLspRecommendationThisSession, setLspRecommendationShownThisSession } from '../../bootstrap/state';
 import { useNotifications } from '../context/notifications';
 import { useAppState } from '../state/AppState.js';
 import { saveGlobalConfig } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item

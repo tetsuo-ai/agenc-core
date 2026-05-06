@@ -7,10 +7,10 @@ import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWit
 import { useTerminalSize } from '../../../hooks/useTerminalSize';
 import { Box, Newline, Text } from '../../../ink.js';
 import { useKeybinding } from '../../../keybindings/useKeybinding.js';
-import { BashTool } from '../../../../agenc/upstream/tools/BashTool/BashTool'; // upstream-import: keep target is owned by another Z-PURGE item
-import { WebFetchTool } from '../../../../agenc/upstream/tools/WebFetchTool/WebFetchTool'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionBehavior, PermissionRuleValue } from '../../../../utils/permissions/PermissionRule.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { permissionRuleValueFromString, permissionRuleValueToString } from '../../../../utils/permissions/permissionRuleParser.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { BashTool } from '../../../../tools/BashTool/BashTool';
+import { WebFetchTool } from '../../../../tools/WebFetchTool/WebFetchTool';
+import type { PermissionBehavior, PermissionRuleValue } from '../../../../utils/permissions/PermissionRule'; // upstream-import: keep target is owned by another Z-PURGE item
+import { permissionRuleValueFromString, permissionRuleValueToString } from '../../../../utils/permissions/permissionRuleParser'; // upstream-import: keep target is owned by another Z-PURGE item
 export type PermissionRuleInputProps = {
   onCancel: () => void;
   onSubmit: (ruleValue: PermissionRuleValue, ruleBehavior: PermissionBehavior) => void;

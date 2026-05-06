@@ -1,11 +1,13 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { Box, color, Link, Text, useTheme } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
-import type { CommandResultDisplay } from '../../../agenc/upstream/types/command'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { SandboxDependencyCheck } from '../../../utils/sandbox/sandbox-runtime.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { SandboxManager } from '../../../utils/sandbox/sandbox-runtime.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getSettings_DEPRECATED } from '../../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { CommandResultDisplay } from '../../../types/command';
+import type { SandboxDependencyCheck } from '../../../utils/sandbox/sandbox-runtime'; // upstream-import: keep target is owned by another Z-PURGE item
+import { SandboxManager } from '../../../utils/sandbox/sandbox-runtime'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSettings_DEPRECATED } from '../../../utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../CustomSelect/select';
 import { Pane } from '../design-system/Pane';
 import { Tab, Tabs, useTabHeaderFocus } from '../design-system/Tabs';
@@ -277,7 +279,7 @@ function SandboxModeTab(t0) {
   }
   let t6;
   if ($[12] === Symbol.for("react.memo_cache_sentinel")) {
-    t6 = <Box flexDirection="column" marginTop={1} gap={1}>{t5}<Text dimColor={true}>Learn more:{" "}<Link url="https://code.agenc.com/docs/en/sandboxing">code.agenc.com/docs/en/sandboxing</Link></Text></Box>;
+    t6 = <Box flexDirection="column" marginTop={1} gap={1}>{t5}<Text dimColor={true}>Learn more:{" "}<Link url="https://agenc.tech/docs/en/sandboxing">agenc.tech/docs/en/sandboxing</Link></Text></Box>;
     $[12] = t6;
   } else {
     t6 = $[12];

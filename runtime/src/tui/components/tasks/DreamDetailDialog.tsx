@@ -1,12 +1,12 @@
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
-import type { DeepImmutable } from '../../../agenc/upstream/types/utils.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { DeepImmutable } from '../../../types/utils.js';
 import { useElapsedTime } from '../../hooks/useElapsedTime';
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
-import type { DreamTaskState } from '../../../agenc/upstream/tasks/DreamTask/DreamTask'; // upstream-import: keep target is owned by another Z-PURGE item
-import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { DreamTaskState } from '../../../tasks/DreamTask/DreamTask';
+import { plural } from '../../../utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Byline } from '../design-system/Byline';
 import { Dialog } from '../design-system/Dialog';
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';

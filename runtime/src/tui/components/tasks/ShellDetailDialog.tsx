@@ -1,15 +1,15 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { Suspense, use, useDeferredValue, useEffect, useState } from 'react';
-import type { DeepImmutable } from '../../../agenc/upstream/types/utils.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { DeepImmutable } from '../../../types/utils.js';
 import type { CommandResultDisplay } from '../../../commands.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize';
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
-import type { LocalShellTaskState } from '../../../agenc/upstream/tasks/LocalShellTask/guards'; // upstream-import: keep target is owned by another Z-PURGE item
-import { formatDuration, formatFileSize, truncateToWidth } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { tailFile } from '../../../utils/fsOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getTaskOutputPath } from '../../../utils/task/diskOutput.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { LocalShellTaskState } from '../../../tasks/LocalShellTask/guards';
+import { formatDuration, formatFileSize, truncateToWidth } from '../../../utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
+import { tailFile } from '../../../utils/fsOperations'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getTaskOutputPath } from '../../../utils/task/diskOutput'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Byline } from '../design-system/Byline';
 import { Dialog } from '../design-system/Dialog';
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';

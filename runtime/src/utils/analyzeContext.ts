@@ -9,7 +9,7 @@ import {
 import { microcompactMessages } from 'src/services/compact/microCompact.js'
 import { getSdkBetas } from '../bootstrap/state.js'
 import { getCommandName } from '../commands.js'
-import { getSystemContext } from '../agenc/upstream/context.js' // upstream-import: keep root context target is owned by another Z-PURGE item
+import { getSystemContext } from '../context.js' // upstream-import: keep root context target is owned by another Z-PURGE item
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
   AUTOCOMPACT_BUFFER_TOKENS,

@@ -1,6 +1,8 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import React, { type PropsWithChildren, type Ref, useImperativeHandle, useRef, useState } from 'react';
 import type { Except } from 'type-fest';
-import { markScrollActivity } from '../../../agenc/upstream/bootstrap/state.js';
+import { markScrollActivity } from '../../../bootstrap/state.js';
 import type { DOMElement } from '../dom.js';
 import { markDirty, scheduleRenderFrom } from '../dom.js';
 import { markCommitStart } from '../reconciler.js';

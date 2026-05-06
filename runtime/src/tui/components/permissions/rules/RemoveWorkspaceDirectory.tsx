@@ -3,8 +3,8 @@ import * as React from 'react';
 import { useCallback } from 'react';
 import { Select } from '../../CustomSelect/select';
 import { Box, Text } from '../../../ink.js';
-import type { ToolPermissionContext } from '../../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
-import { applyPermissionUpdate } from '../../../../utils/permissions/PermissionUpdate.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ToolPermissionContext } from '../../../../tools/Tool';
+import { applyPermissionUpdate } from '../../../../utils/permissions/PermissionUpdate'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Dialog } from '../../design-system/Dialog';
 type Props = {
   directoryPath: string;

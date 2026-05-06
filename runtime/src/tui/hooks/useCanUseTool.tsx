@@ -5,13 +5,13 @@ import { feature } from 'bun:bundle';
 import { APIUserAbortError } from '@anthropic-ai/sdk';
 import * as React from 'react';
 import { useCallback } from 'react';
-import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../agenc/upstream/services/analytics/index.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { sanitizeToolNameForAnalytics } from '../../agenc/upstream/services/analytics/metadata.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
+import { sanitizeToolNameForAnalytics } from '../../services/analytics/metadata.js';
 import type { ToolUseConfirm } from '../components/permissions/PermissionRequest.js';
 import { Text } from '../ink.js';
-import type { ToolPermissionContext, Tool as ToolType, ToolUseContext } from '../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
-import { consumeSpeculativeClassifierCheck, peekSpeculativeClassifierCheck } from '../../agenc/upstream/tools/BashTool/bashPermissions'; // upstream-import: keep target is owned by another Z-PURGE item
-import { BASH_TOOL_NAME } from '../../agenc/upstream/tools/BashTool/toolName'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ToolPermissionContext, Tool as ToolType, ToolUseContext } from '../../tools/Tool';
+import { consumeSpeculativeClassifierCheck, peekSpeculativeClassifierCheck } from '../../tools/BashTool/bashPermissions';
+import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName';
 import type { AssistantMessage } from '../../types/message';
 import { recordAutoModeDenial } from '../../utils/autoModeDenials.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { clearClassifierChecking, setClassifierApproval, setYoloClassifierApproval } from '../../utils/classifierApprovals.js'; // upstream-import: keep target is owned by another Z-PURGE item

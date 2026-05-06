@@ -2,7 +2,7 @@ import Fuse from 'fuse.js'
 import { basename } from 'path'
 import type { SuggestionItem } from '../components/PromptInput/PromptInputFooterSuggestions.js'
 import { generateFileSuggestions } from './fileSuggestions.js'
-import type { ServerResource } from '../../agenc/upstream/services/mcp/types.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { ServerResource } from '../../services/mcp/types.js'
 import { getAgentColor } from 'src/tools/AgentTool/agentColorManager.js'
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
 import { truncateToWidth } from '../../utils/format.js' // upstream-import: keep target is owned by another Z-PURGE item

@@ -331,6 +331,8 @@ export function createAutoMemoryToolPolicy(memoryDir: string): ChildToolPolicy {
   };
 }
 
+export const createAutoMemCanUseTool = createAutoMemoryToolPolicy
+
 function successfulDirectMemoryWrite(
   messages: readonly LLMMessage[],
   completedToolResults: readonly CompletedToolResultRecord[],

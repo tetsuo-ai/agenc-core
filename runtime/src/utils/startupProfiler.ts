@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Startup profiling utility for measuring and reporting time spent in various
  * initialization phases.

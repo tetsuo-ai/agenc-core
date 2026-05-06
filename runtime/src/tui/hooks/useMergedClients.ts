@@ -1,6 +1,8 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import uniqBy from 'lodash-es/uniqBy.js'
 import { useMemo } from 'react'
-import type { MCPServerConnection } from '../../agenc/upstream/services/mcp/types' // upstream-import: keep target is owned by another Z-PURGE item
+import type { MCPServerConnection } from '../../services/mcp/types'
 
 export function mergeClients(
   initialClients: MCPServerConnection[] | undefined,

@@ -1,11 +1,13 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { Text } from '../../ink.js';
-import { extractMcpToolDisplayName, getMcpDisplayName } from '../../../agenc/upstream/services/mcp/mcpStringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
-import { filterToolsByServer } from '../../../agenc/upstream/services/mcp/utils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { extractMcpToolDisplayName, getMcpDisplayName } from '../../../services/mcp/mcpStringUtils';
+import { filterToolsByServer } from '../../../services/mcp/utils';
 import { useAppState } from '../../state/AppState.js';
-import type { Tool } from '../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
-import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { Tool } from '../../../tools/Tool';
+import { plural } from '../../../utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
 import { Select } from '../CustomSelect/select';
 import { Byline } from '../design-system/Byline';

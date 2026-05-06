@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { useEffect, useRef, useState } from 'react';
-import { logEvent } from '../../agenc/upstream/services/analytics/index.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logEvent } from '../../services/analytics/index.js';
 import { logForDebugging } from 'src/utils/debug.js';
 import { logError } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useInterval } from 'usehooks-ts';

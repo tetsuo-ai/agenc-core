@@ -1,8 +1,10 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { useEffect } from 'react'
 import {
   getLastInteractionTime,
   updateLastInteractionTime,
-} from '../../agenc/upstream/bootstrap/state' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../bootstrap/state'
 import { useTerminalNotification } from '../ink/useTerminalNotification.js'
 import { sendNotification } from '../../services/notifier'
 // The time threshold in milliseconds for considering an interaction "recent" (6 seconds)

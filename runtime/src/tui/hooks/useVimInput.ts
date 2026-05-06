@@ -1,8 +1,8 @@
 import React, { useCallback, useState } from 'react'
 import type { Key } from '../ink.js'
-import type { VimInputState, VimMode } from '../../agenc/upstream/types/textInputTypes' // upstream-import: keep target is owned by another Z-PURGE item
-import { TextCursor } from '../../utils/TextCursor.js' // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
-import { lastGrapheme } from '../../utils/intl.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { VimInputState, VimMode } from '../../types/textInputTypes'
+import { TextCursor as Cursor } from '../../utils/TextCursor' // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
+import { lastGrapheme } from '../../utils/intl' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   executeIndent,
   executeJoin,
@@ -14,15 +14,15 @@ import {
   executeToggleCase,
   executeX,
   type OperatorContext,
-} from '../../agenc/upstream/vim/operators' // upstream-import: keep target is owned by another Z-PURGE item
-import { type TransitionContext, transition } from '../../agenc/upstream/vim/transitions' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../vim/operators'
+import { type TransitionContext, transition } from '../vim/transitions'
 import {
   createInitialPersistentState,
   createInitialVimState,
   type PersistentState,
   type RecordedChange,
   type VimState,
-} from '../../agenc/upstream/vim/types' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../vim/types'
 import { type UseTextInputProps, useTextInput } from './useTextInput'
 
 type UseVimInputProps = Omit<UseTextInputProps, 'inputFilter'> & {

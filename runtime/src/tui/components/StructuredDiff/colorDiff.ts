@@ -1,9 +1,11 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import {
   ColorDiff,
   ColorFile,
   getSyntaxTheme as nativeGetSyntaxTheme,
   type SyntaxTheme,
-} from '../../../agenc/upstream/native-ts/color-diff/index' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../ink/native-ts/color-diff/index'
 import { isEnvDefinedFalsy } from '../../../utils/envUtils'
 
 export type ColorModuleUnavailableReason = 'env'

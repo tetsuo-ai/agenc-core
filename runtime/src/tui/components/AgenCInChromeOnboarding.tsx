@@ -1,13 +1,13 @@
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
-import { logEvent } from '../../agenc/upstream/services/analytics/index.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logEvent } from '../../services/analytics/index.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- enter to continue
 import { Box, Link, Newline, Text, useInput } from '../ink.js';
 import { isChromeExtensionInstalled } from '../../utils/agencInChrome/setup.js'; // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
 import { saveGlobalConfig } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Dialog } from './design-system/Dialog';
-const CHROME_EXTENSION_URL = 'https://agenc.ai/chrome';
-const CHROME_PERMISSIONS_URL = 'https://clau.de/chrome/permissions';
+const CHROME_EXTENSION_URL = 'https://agenc.tech/chrome';
+const CHROME_PERMISSIONS_URL = 'https://agenc.tech/chrome/permissions';
 type Props = {
   onDone(): void;
 };
@@ -87,7 +87,7 @@ export function AgenCInChromeOnboarding(t0) {
   }
   let t9;
   if ($[13] === Symbol.for("react.memo_cache_sentinel")) {
-    t9 = <Text dimColor={true}>For more info, use{" "}{t8}{" "}or visit <Link url="https://code.agenc.com/docs/en/chrome" /></Text>;
+    t9 = <Text dimColor={true}>For more info, use{" "}{t8}{" "}or visit <Link url="https://agenc.tech/docs/en/chrome" /></Text>;
     $[13] = t9;
   } else {
     t9 = $[13];

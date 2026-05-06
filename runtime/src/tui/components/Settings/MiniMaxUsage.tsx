@@ -4,10 +4,10 @@ import { useEffect, useState } from 'react'
 import { useTerminalSize } from '../../hooks/useTerminalSize'
 import { Box, Text } from '../../ink.js'
 import { useKeybinding } from '../../keybindings/useKeybinding.js'
-import { buildMiniMaxUsageRows, type MiniMaxUsageRow } from '../../../agenc/upstream/services/api/minimaxUsage/parse' // upstream-import: keep target is owned by another Z-PURGE item
-import type { MiniMaxUsageData } from '../../../agenc/upstream/services/api/minimaxUsage/types' // upstream-import: keep target is owned by another Z-PURGE item
-import { fetchMiniMaxUsage } from '../../../agenc/upstream/services/api/minimaxUsage/fetch' // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../../utils/log.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { buildMiniMaxUsageRows, type MiniMaxUsageRow } from '../../../services/api/minimaxUsage/parse'
+import type { MiniMaxUsageData } from '../../../services/api/minimaxUsage/types'
+import { fetchMiniMaxUsage } from '../../../services/api/minimaxUsage/fetch'
+import { logError } from '../../../utils/log' // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint'
 import { Byline } from '../design-system/Byline'
 import { ProgressBar } from '../design-system/ProgressBar'

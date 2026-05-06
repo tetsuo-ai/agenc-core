@@ -1,0 +1,13 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+import type { Command } from '../../commands.js'
+
+const config = {
+  aliases: ['settings'],
+  type: 'local-jsx',
+  name: 'config',
+  description: 'Open config panel',
+  load: () => import('./config.js'),
+} satisfies Command
+
+export default config

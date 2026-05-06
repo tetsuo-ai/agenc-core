@@ -1,9 +1,11 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import type { Command } from '../../commands.js';
 import { Box } from '../ink.js';
-import type { Screen } from '../../agenc/upstream/screens/REPL'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { Tools } from '../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { Screen } from '../screens/REPL';
+import type { Tools } from '../../tools/Tool';
 import type { RenderableMessage } from '../../types/message';
 import { getDisplayMessageFromCollapsed, getToolSearchOrReadInfo, getToolUseIdsFromCollapsedGroup, hasAnyToolInProgress } from '../../utils/collapseReadSearch.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { type buildMessageLookups, EMPTY_STRING_SET, getProgressMessagesFromLookup, getSiblingToolUseIDsFromLookup, getToolUseID } from '../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item

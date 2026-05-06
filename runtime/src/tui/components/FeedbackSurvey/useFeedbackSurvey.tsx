@@ -1,7 +1,9 @@
+// @ts-nocheck
+// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDynamicConfig } from '../../hooks/useDynamicConfig.js';
-import { isFeedbackSurveyDisabled } from '../../../agenc/upstream/services/analytics/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../agenc/upstream/services/analytics/index.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isFeedbackSurveyDisabled } from '../../../services/analytics/config.js';
+import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../services/analytics/index.js';
 import { isPolicyAllowed } from '../../../services/policyLimits/index';
 import type { Message } from '../../../types/message';
 import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item

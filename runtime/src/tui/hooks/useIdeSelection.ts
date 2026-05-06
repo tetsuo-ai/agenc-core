@@ -6,9 +6,9 @@ import { z } from 'zod/v4'
 import type {
   ConnectedMCPServer,
   MCPServerConnection,
-} from '../../agenc/upstream/services/mcp/types' // upstream-import: keep target is owned by another Z-PURGE item
-import { getConnectedIdeClient } from '../../utils/ide.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { lazySchema } from '../../utils/lazySchema.js' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../services/mcp/types'
+import { getConnectedIdeClient } from '../../utils/ide' // upstream-import: keep target is owned by another Z-PURGE item
+import { lazySchema } from '../../utils/lazySchema' // upstream-import: keep target is owned by another Z-PURGE item
 export type SelectionPoint = {
   line: number
   character: number

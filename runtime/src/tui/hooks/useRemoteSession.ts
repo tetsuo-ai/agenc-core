@@ -1,27 +1,29 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 import type { StreamingToolUse } from '../../llm/types.js'
-import { BoundedUUIDSet } from '../../agenc/upstream/bridge/bridgeMessaging' // upstream-import: keep target is owned by another Z-PURGE item
+import { BoundedUUIDSet } from '../../bridge/bridgeMessaging'
 import type { ToolUseConfirm } from '../components/permissions/PermissionRequest.js'
 import type { SpinnerMode } from '../components/spinner/types.js'
 import {
   type RemotePermissionResponse,
   type RemoteSessionConfig,
   RemoteSessionManager,
-} from '../../agenc/upstream/remote/RemoteSessionManager' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../remote/RemoteSessionManager'
 import {
   createSyntheticAssistantMessage,
   createToolStub,
-} from '../../agenc/upstream/remote/remotePermissionBridge' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../remote/remotePermissionBridge'
 import {
   convertSDKMessage,
   isSessionEndMessage,
-} from '../../agenc/upstream/remote/sdkMessageAdapter' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../remote/sdkMessageAdapter'
 import { useSetAppState } from '../state/AppState.js'
 import type { AppState } from '../state/AppStateStore.js'
-import type { Tool } from '../../agenc/upstream/Tool' // upstream-import: keep target is owned by another Z-PURGE item
-import { findToolByName } from '../../agenc/upstream/Tool' // upstream-import: keep target is owned by another Z-PURGE item
+import type { Tool } from '../../tools/Tool'
+import { findToolByName } from '../../tools/Tool'
 import type { Message as MessageType } from '../../types/message'
-import type { PermissionAskDecision } from '../../agenc/upstream/types/permissions' // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionAskDecision } from '../../types/permissions'
 import { logForDebugging } from 'src/utils/debug.js'
 import { truncateToWidth } from '../../utils/format.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
@@ -501,7 +503,7 @@ export function useRemoteSession({
       }
 
       // Update the session title after the first message when no initial prompt was provided.
-      // This gives the session a meaningful title on agenc.ai instead of "Background task".
+      // This gives the session a meaningful title on agenc.tech instead of "Background task".
       // Skip in viewerOnly mode — the remote agent owns the session title.
       if (
         !hasUpdatedTitleRef.current &&

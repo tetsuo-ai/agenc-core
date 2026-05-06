@@ -62,6 +62,7 @@ import type {
   SessionConfiguration,
   TurnContext,
 } from "./turn-context.js";
+import { TurnTimingState } from "./turn-context.js";
 import {
   LLMAuthenticationError,
   LLMCaptivePortalError,
@@ -137,6 +138,7 @@ function mkCtx(): TurnContext {
       signal: () => {},
       wait: async () => {},
     },
+    turnTimingState: new TurnTimingState(),
   } as unknown as TurnContext;
 }
 

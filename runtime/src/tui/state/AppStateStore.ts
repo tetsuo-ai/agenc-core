@@ -1,31 +1,29 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
-import type { Notification } from '../context/notifications'
+import type { Notification } from '../context/notifications.js'
 import type { TodoList } from '../../utils/todo/types.js'
-import type { BridgePermissionCallbacks } from '../../agenc/upstream/bridge/bridgePermissionCallbacks.js'
+import type { BridgePermissionCallbacks } from '../../bridge/bridgePermissionCallbacks.js'
 import type { Command } from '../../commands.js'
-import type { ChannelPermissionCallbacks } from '../../agenc/upstream/services/mcp/channelPermissions.js'
-import type { ElicitationRequestEvent } from '../../agenc/upstream/services/mcp/elicitationHandler.js'
+import type { ChannelPermissionCallbacks } from '../../services/mcp/channelPermissions.js'
+import type { ElicitationRequestEvent } from '../../services/mcp/elicitationHandler.js'
 import type {
   MCPServerConnection,
   ServerResource,
-} from '../../agenc/upstream/services/mcp/types.js'
+} from '../../services/mcp/types.js'
 import { shouldEnablePromptSuggestion } from '../../services/PromptSuggestion/promptSuggestion.js'
 import {
   getEmptyToolPermissionContext,
   type Tool,
   type ToolPermissionContext,
-} from '../../agenc/upstream/Tool.js'
-import { getIsNonInteractiveSession } from '../../agenc/upstream/bootstrap/state.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../agenc/upstream/services/analytics/growthbook.js'
+} from '../../tools/Tool.js'
+import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
+import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import type { TaskState } from '../../tasks/types.js'
 import type { AgentColorName } from '../../tools/AgentTool/agentColorManager.js'
 import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir.js'
-import type { AllowedPrompt } from '../../agenc/upstream/tools/ExitPlanModeTool/ExitPlanModeV2Tool.js'
-import type { AgentId } from '../../agenc/upstream/types/ids.js'
-import type { Message, UserMessage } from '../../agenc/upstream/types/message.js'
-import type { LoadedPlugin, PluginError } from '../../agenc/upstream/types/plugin.js'
-import type { DeepImmutable } from '../../agenc/upstream/types/utils.js'
+import type { AllowedPrompt } from '../../tools/ExitPlanModeTool/ExitPlanModeV2Tool.js'
+import type { AgentId } from '../../types/ids.js'
+import type { Message, UserMessage } from '../../types/message.js'
+import type { LoadedPlugin, PluginError } from '../../types/plugin.js'
+import type { DeepImmutable } from '../../types/utils.js'
 import {
   type AttributionState,
   createEmptyAttributionState,

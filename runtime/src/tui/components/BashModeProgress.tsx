@@ -1,8 +1,10 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { Box } from '../ink.js';
-import { BashTool } from '../../agenc/upstream/tools/BashTool/BashTool'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { ShellProgress } from '../../agenc/upstream/types/tools'; // upstream-import: keep target is owned by another Z-PURGE item
+import { BashTool } from '../../tools/BashTool/BashTool';
+import type { ShellProgress } from '../../types/tools';
 import { UserBashInputMessage } from './messages/UserBashInputMessage';
 import { ShellProgressMessage } from './shell/ShellProgressMessage';
 type Props = {

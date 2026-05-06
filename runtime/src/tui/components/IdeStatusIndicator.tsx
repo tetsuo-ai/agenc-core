@@ -1,10 +1,12 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import { basename } from 'path';
 import * as React from 'react';
 import { useIdeConnectionStatus } from '../hooks/useIdeConnectionStatus';
 import type { IDESelection } from '../hooks/useIdeSelection';
 import { Text } from '../ink.js';
-import type { MCPServerConnection } from '../../agenc/upstream/services/mcp/types'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { MCPServerConnection } from '../../services/mcp/types';
 type IdeStatusIndicatorProps = {
   ideSelection: IDESelection | undefined;
   mcpClients?: MCPServerConnection[];

@@ -1,7 +1,7 @@
 // @ts-nocheck
 // Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { createElement, type ReactNode } from 'react'
-import { ThemeProvider } from './components/design-system/ThemeProvider'
+import { ThemeProvider } from './components/design-system/ThemeProvider.js'
 import inkRender, {
   type Instance,
   createRoot as inkCreateRoot,
@@ -32,17 +32,17 @@ export async function createRoot(options?: RenderOptions): Promise<Root> {
   }
 }
 
-export { color } from './components/design-system/color'
-export type { Props as BoxProps } from './components/design-system/ThemedBox'
-export { default as Box } from './components/design-system/ThemedBox'
-export type { Props as TextProps } from './components/design-system/ThemedText'
-export { default as Text } from './components/design-system/ThemedText'
+export { color } from './components/design-system/color.js'
+export type { Props as BoxProps } from './components/design-system/ThemedBox.js'
+export { default as Box } from './components/design-system/ThemedBox.js'
+export type { Props as TextProps } from './components/design-system/ThemedText.js'
+export { default as Text } from './components/design-system/ThemedText.js'
 export {
   ThemeProvider,
   usePreviewTheme,
   useTheme,
   useThemeSetting,
-} from './components/design-system/ThemeProvider'
+} from './components/design-system/ThemeProvider.js'
 export { Ansi } from './ink/Ansi.js'
 export type { Props as AppProps } from './ink/components/AppContext.js'
 export type { Props as BaseBoxProps } from './ink/components/Box.js'

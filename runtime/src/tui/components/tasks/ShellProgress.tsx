@@ -2,9 +2,9 @@ import { c as _c } from "react-compiler-runtime";
 import type { ReactNode } from 'react';
 import React from 'react';
 import { Text } from '../../ink.js';
-import type { TaskStatus } from '../../../agenc/upstream/Task.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { LocalShellTaskState } from '../../../agenc/upstream/tasks/LocalShellTask/guards.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { DeepImmutable } from '../../../agenc/upstream/types/utils.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { TaskStatus } from '../../../tasks/Task.js';
+import type { LocalShellTaskState } from '../../../tasks/LocalShellTask/guards.js';
+import type { DeepImmutable } from '../../../types/utils.js';
 type TaskStatusTextProps = {
   status: TaskStatus;
   label?: string;

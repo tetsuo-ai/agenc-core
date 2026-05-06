@@ -17,6 +17,17 @@ export function isCachedMicrocompactEnabled(): false {
   return false;
 }
 
+export function isModelSupportedForCacheEditing(_model: string): false {
+  return false;
+}
+
+export function getCachedMCConfig(): {
+  readonly enabled: false;
+  readonly supportedModels: readonly [];
+} {
+  return { enabled: false, supportedModels: [] };
+}
+
 export function createCachedMicrocompactState(): CachedMicrocompactState {
   return { enabled: false, pinnedEdits: [] };
 }

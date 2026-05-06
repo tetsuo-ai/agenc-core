@@ -8,7 +8,7 @@ import { BLACK_CIRCLE } from '../../../constants/figures.js'; // upstream-import
 import { stringWidth } from '../../ink/stringWidth.js';
 import { Box, Text, useTheme } from '../../ink.js';
 import { useAppStateMaybeOutsideOfProvider } from '../../state/AppState.js';
-import { findToolByName, type Tool, type ToolProgressData, type Tools } from '../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
+import { findToolByName, type Tool, type ToolProgressData, type Tools } from '../../../tools/Tool';
 import type { ProgressMessage } from '../../../types/message';
 import { useIsClassifierChecking } from '../../../utils/classifierApprovalsHook.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logError } from '../../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item

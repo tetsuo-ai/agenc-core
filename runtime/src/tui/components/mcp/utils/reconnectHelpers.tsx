@@ -1,6 +1,6 @@
 import type { Command } from '../../../../commands.js';
-import type { MCPServerConnection, ServerResource } from '../../../../agenc/upstream/services/mcp/types'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { Tool } from '../../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { MCPServerConnection, ServerResource } from '../../../../services/mcp/types';
+import type { Tool } from '../../../../tools/Tool';
 export interface ReconnectResult {
   message: string;
   success: boolean;

@@ -7,14 +7,14 @@ import { c as _c } from "react-compiler-runtime";
 
 import * as React from 'react';
 import { useState } from 'react';
-import { type ChannelEntry, getAllowedChannels, getHasDevChannels } from '../../../agenc/upstream/bootstrap/state'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type ChannelEntry, getAllowedChannels, getHasDevChannels } from '../../../bootstrap/state';
 import { Box, Text } from '../../ink.js';
-import { isChannelsEnabled } from '../../../agenc/upstream/services/mcp/channelAllowlist'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getEffectiveChannelAllowlist } from '../../../agenc/upstream/services/mcp/channelNotification'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getMcpConfigsByScope } from '../../../agenc/upstream/services/mcp/config'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getAgenCAIOAuthTokens, getSubscriptionType } from '../../../utils/auth.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { loadInstalledPluginsV2 } from '../../../utils/plugins/installedPluginsManager.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getSettingsForSource } from '../../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isChannelsEnabled } from '../../../services/mcp/channelAllowlist';
+import { getEffectiveChannelAllowlist } from '../../../services/mcp/channelNotification';
+import { getMcpConfigsByScope } from '../../../services/mcp/config';
+import { getAgenCAIOAuthTokens, getSubscriptionType } from '../../../utils/auth'; // upstream-import: keep target is owned by another Z-PURGE item
+import { loadInstalledPluginsV2 } from '../../../utils/plugins/installedPluginsManager'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSettingsForSource } from '../../../utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
 export function ChannelsNotice() {
   const $ = _c(32);
   const [t0] = useState(_temp);
@@ -70,7 +70,7 @@ export function ChannelsNotice() {
     }
     let t2;
     if ($[9] === Symbol.for("react.memo_cache_sentinel")) {
-      t2 = <Text dimColor={true}>Channels require agenc.ai authentication · run /login, then restart</Text>;
+      t2 = <Text dimColor={true}>Channels require agenc.tech authentication · run /login, then restart</Text>;
       $[9] = t2;
     } else {
       t2 = $[9];

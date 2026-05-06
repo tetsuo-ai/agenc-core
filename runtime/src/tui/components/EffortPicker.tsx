@@ -10,9 +10,9 @@ import {
   getEffortLevelLabel,
   modelSupportsEffort,
   modelUsesOpenAIEffort,
-} from '../../utils/effort.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { getAPIProvider } from '../../utils/model/providers.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { getReasoningEffortForModel } from '../../agenc/upstream/services/api/providerConfig' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/effort' // upstream-import: keep target is owned by another Z-PURGE item
+import { getAPIProvider } from '../../utils/model/providers' // upstream-import: keep target is owned by another Z-PURGE item
+import { getReasoningEffortForModel } from '../../services/api/providerConfig'
 import { Select } from './CustomSelect/select'
 import { effortLevelToSymbol } from './EffortIndicator'
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint'

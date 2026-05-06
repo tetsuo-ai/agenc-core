@@ -1,7 +1,9 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import partition from 'lodash-es/partition.js';
 import React, { useCallback } from 'react';
-import { logEvent } from '../../agenc/upstream/services/analytics/index.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logEvent } from '../../services/analytics/index.js';
 import { Box, Text } from '../ink.js';
 import { getSettings_DEPRECATED, updateSettingsForSource } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint';

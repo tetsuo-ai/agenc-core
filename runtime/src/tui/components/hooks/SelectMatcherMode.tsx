@@ -6,7 +6,7 @@ import { c as _c } from "react-compiler-runtime";
  * and simply lets the user drill into each matcher to see its hooks.
  */
 import * as React from 'react';
-import type { HookEvent } from '../../../agenc/upstream/entrypoints/agentSdkTypes.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { HookEvent } from '../../../entrypoints/agentSdkTypes.js';
 import { Box, Text } from '../../ink.js';
 import { type HookSource, hookSourceInlineDisplayString, type IndividualHookConfig } from '../../../utils/hooks/hooksSettings.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item

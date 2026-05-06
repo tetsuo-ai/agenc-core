@@ -62,13 +62,13 @@ vi.mock('../../../utils/model/providers.js', () => ({
   getAPIProvider: () => providerMock.provider,
 }))
 
-vi.mock('../../../agenc/upstream/commands/extra-usage/index.js', () => ({
+vi.mock('../../../commands/extra-usage/index.js', () => ({
   extraUsage: {
     isEnabled: () => rateLimitMock.extraUsageEnabled,
   },
 }))
 
-vi.mock('../../../agenc/upstream/services/rateLimitMocking.js', () => ({
+vi.mock('../../../services/rateLimitMocking.js', () => ({
   shouldProcessMockLimits: () => rateLimitMock.shouldProcessMockLimits,
 }))
 

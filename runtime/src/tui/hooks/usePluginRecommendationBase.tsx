@@ -7,7 +7,7 @@ import { c as _c } from "react-compiler-runtime";
 
 import figures from 'figures';
 import * as React from 'react';
-import { getIsRemoteMode } from '../../agenc/upstream/bootstrap/state'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getIsRemoteMode } from '../../bootstrap/state';
 import type { useNotifications } from '../context/notifications';
 import { Text } from '../ink.js';
 import { logError } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item

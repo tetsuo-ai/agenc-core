@@ -1,18 +1,18 @@
 import { c as _c } from "react-compiler-runtime";
 import { homedir } from 'os';
 import React from 'react';
-import { logEvent } from '../../../agenc/upstream/services/analytics/index.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { setSessionTrustAccepted } from '../../../agenc/upstream/bootstrap/state'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logEvent } from '../../../services/analytics/index.js';
+import { setSessionTrustAccepted } from '../../../bootstrap/state';
 import type { Command } from '../../../commands.js';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Link, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import { getMcpConfigsByScope } from '../../../agenc/upstream/services/mcp/config'; // upstream-import: keep target is owned by another Z-PURGE item
-import { BASH_TOOL_NAME } from '../../../agenc/upstream/tools/BashTool/toolName'; // upstream-import: keep target is owned by another Z-PURGE item
-import { checkHasTrustDialogAccepted, saveCurrentProjectConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getCwd } from '../../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getFsImplementation } from '../../../utils/fsOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { gracefulShutdownSync } from '../../../utils/gracefulShutdown.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getMcpConfigsByScope } from '../../../services/mcp/config';
+import { BASH_TOOL_NAME } from '../../../tools/BashTool/toolName';
+import { checkHasTrustDialogAccepted, saveCurrentProjectConfig } from '../../../utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCwd } from '../../../utils/cwd'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getFsImplementation } from '../../../utils/fsOperations'; // upstream-import: keep target is owned by another Z-PURGE item
+import { gracefulShutdownSync } from '../../../utils/gracefulShutdown'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../CustomSelect/select';
 import { PermissionDialog } from '../permissions/PermissionDialog';
 import { getApiKeyHelperSources, getAwsCommandsSources, getBashPermissionSources, getDangerousEnvVarsSources, getGcpCommandsSources, getHooksSources, getOtelHeadersHelperSources } from './utils';
@@ -217,7 +217,7 @@ export function TrustDialog(t0) {
   }
   let t19;
   if ($[23] === Symbol.for("react.memo_cache_sentinel")) {
-    t19 = <Text dimColor={true}><Link url="https://code.agenc.com/docs/en/security">Security guide</Link></Text>;
+    t19 = <Text dimColor={true}><Link url="https://agenc.tech/docs/en/security">Security guide</Link></Text>;
     $[23] = t19;
   } else {
     t19 = $[23];

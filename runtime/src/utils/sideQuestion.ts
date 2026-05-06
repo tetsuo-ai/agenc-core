@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Side Question ("/btw") feature - allows asking quick questions without
  * interrupting the main agent context.

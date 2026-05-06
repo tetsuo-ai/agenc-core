@@ -19,11 +19,11 @@ vi.mock("../components/BashModeProgress.js", () => ({
   BashModeProgress: vi.fn(() => null),
 }));
 
-vi.mock("../../agenc/upstream/services/analytics/index.js", () => ({
+vi.mock("../../services/analytics/index.js", () => ({
   logEvent: mocks.logEvent,
 }));
 
-vi.mock("../../agenc/upstream/tools/BashTool/BashTool.js", () => ({
+vi.mock("../../tools/BashTool/BashTool.js", () => ({
   BashTool: {
     call: mocks.bashCall,
   },

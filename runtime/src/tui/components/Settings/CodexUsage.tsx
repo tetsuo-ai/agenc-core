@@ -10,9 +10,9 @@ import {
   formatCodexPlanType,
   type CodexUsageData,
   type CodexUsageRow,
-} from '../../../agenc/upstream/services/api/codexUsage' // upstream-import: keep target is owned by another Z-PURGE item
-import { formatResetText } from '../../../utils/format.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../../utils/log.js' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../services/api/openAiCodeUsage.js'
+import { formatResetText } from '../../../utils/format' // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../../utils/log' // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint'
 import { Byline } from '../design-system/Byline'
 import { ProgressBar } from '../design-system/ProgressBar'

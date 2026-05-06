@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { type ReactNode } from 'react';
 import { isAutoMemoryEnabled } from '../../../../memdir/paths';
-import type { Tools } from '../../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { Tools } from '../../../../tools/Tool';
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js';
 import { WizardProvider } from '../../wizard/index';
 import type { WizardStepComponent } from '../../wizard/types';

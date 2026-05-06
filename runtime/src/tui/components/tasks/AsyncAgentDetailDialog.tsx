@@ -1,15 +1,15 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { useMemo } from 'react';
-import type { DeepImmutable } from '../../../agenc/upstream/types/utils.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { DeepImmutable } from '../../../types/utils.js';
 import { useElapsedTime } from '../../hooks/useElapsedTime';
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { Box, Text, useTheme } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
-import { getEmptyToolPermissionContext } from '../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { LocalAgentTaskState } from '../../../agenc/upstream/tasks/LocalAgentTask/LocalAgentTask'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getTools } from '../../../agenc/upstream/tools'; // upstream-import: keep target is owned by another Z-PURGE item
-import { formatNumber } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { extractTag } from '../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getEmptyToolPermissionContext } from '../../../tools/Tool';
+import type { LocalAgentTaskState } from '../../../tasks/LocalAgentTask/LocalAgentTask';
+import { getTools } from '../../../tools';
+import { formatNumber } from '../../../utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
+import { extractTag } from '../../../utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Byline } from '../design-system/Byline';
 import { Dialog } from '../design-system/Dialog';
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';

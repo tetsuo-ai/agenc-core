@@ -31,7 +31,7 @@ import {
   compactConversation,
   ERROR_MESSAGE_USER_ABORT,
   // upstream-import: keep compact runtime target is owned by a later purge item
-} from '../../agenc/upstream/services/compact/compact.js'
+} from '../../services/compact/compact.js'
 import { resetMicrocompactState } from '../../services/compact/microCompact.js'
 import type { AppState } from '../../tui/state/AppState.js'
 import type { Tool, ToolUseContext } from '../../tools/Tool.js'

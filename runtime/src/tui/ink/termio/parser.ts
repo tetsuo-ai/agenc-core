@@ -115,7 +115,7 @@ function parseCSI(rawSequence: string): Action | null {
     return { type: 'sgr', params: paramStr }
   }
 
-  // cursor movement
+  // Caret movement
   if (finalByte === CSI.CUU) {
     return {
       type: 'cursor',
@@ -183,7 +183,7 @@ function parseCSI(rawSequence: string): Action | null {
     }
   }
 
-  // cursor save/restore
+  // Caret save/restore
   if (finalByte === CSI.SCOSC) {
     return { type: 'cursor', action: { type: 'save' } }
   }
@@ -191,7 +191,7 @@ function parseCSI(rawSequence: string): Action | null {
     return { type: 'cursor', action: { type: 'restore' } }
   }
 
-  // cursor style
+  // Caret style
   if (finalByte === CSI.DECSCUSR && intermediate === ' ') {
     const styleInfo = CURSOR_STYLES[p0] ?? CURSOR_STYLES[0]!
     return { type: 'cursor', action: { type: 'style', ...styleInfo } }

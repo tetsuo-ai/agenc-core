@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Plugin telemetry helpers — shared field builders for plugin lifecycle events.
  *

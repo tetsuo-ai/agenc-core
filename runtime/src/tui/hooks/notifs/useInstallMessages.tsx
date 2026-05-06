@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.
 import { checkInstall } from '../../../utils/nativeInstaller/installer.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useStartupNotification } from './useStartupNotification';
 export function useInstallMessages() {

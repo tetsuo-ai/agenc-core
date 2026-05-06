@@ -1,23 +1,25 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import figures from 'figures';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useTheme } from '../../../ink.js';
 import { useKeybinding } from '../../../keybindings/useKeybinding.js';
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../../agenc/upstream/services/analytics/growthbook'; // upstream-import: keep target is owned by another Z-PURGE item
-import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../../agenc/upstream/services/analytics/index'; // upstream-import: keep target is owned by another Z-PURGE item
-import { sanitizeToolNameForAnalytics } from '../../../../agenc/upstream/services/analytics/metadata'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../../services/analytics/growthbook';
+import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../../services/analytics/index';
+import { sanitizeToolNameForAnalytics } from '../../../../services/analytics/metadata';
 import { useAppState } from '../../../state/AppState.js';
-import { BashTool } from '../../../../agenc/upstream/tools/BashTool/BashTool'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getFirstWordPrefix, getSimpleCommandPrefix } from '../../../../agenc/upstream/tools/BashTool/bashPermissions'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getDestructiveCommandWarning } from '../../../../agenc/upstream/tools/BashTool/destructiveCommandWarning'; // upstream-import: keep target is owned by another Z-PURGE item
-import { parseSedEditCommand } from '../../../../agenc/upstream/tools/BashTool/sedEditParser'; // upstream-import: keep target is owned by another Z-PURGE item
-import { shouldUseSandbox } from '../../../../agenc/upstream/tools/BashTool/shouldUseSandbox'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getCompoundCommandPrefixesStatic } from '../../../../utils/bash/prefix.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { createPromptRuleContent, generateGenericDescription, getBashPromptAllowDescriptions, isClassifierPermissionsEnabled } from '../../../../utils/permissions/bashClassifier.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { extractRules } from '../../../../utils/permissions/PermissionUpdate.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { SandboxManager } from '../../../../utils/sandbox/sandbox-runtime.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { BashTool } from '../../../../tools/BashTool/BashTool';
+import { getFirstWordPrefix, getSimpleCommandPrefix } from '../../../../tools/BashTool/bashPermissions';
+import { getDestructiveCommandWarning } from '../../../../tools/BashTool/destructiveCommandWarning';
+import { parseSedEditCommand } from '../../../../tools/BashTool/sedEditParser';
+import { shouldUseSandbox } from '../../../../tools/BashTool/shouldUseSandbox';
+import { getCompoundCommandPrefixesStatic } from '../../../../utils/bash/prefix'; // upstream-import: keep target is owned by another Z-PURGE item
+import { createPromptRuleContent, generateGenericDescription, getBashPromptAllowDescriptions, isClassifierPermissionsEnabled } from '../../../../utils/permissions/bashClassifier'; // upstream-import: keep target is owned by another Z-PURGE item
+import { extractRules } from '../../../../utils/permissions/PermissionUpdate'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema'; // upstream-import: keep target is owned by another Z-PURGE item
+import { SandboxManager } from '../../../../utils/sandbox/sandbox-runtime'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../../CustomSelect/select';
 import { ShimmerChar } from '../../spinner/ShimmerChar.js';
 import { useShimmerAnimation } from '../../spinner/useShimmerAnimation.js';

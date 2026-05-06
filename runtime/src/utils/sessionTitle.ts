@@ -15,7 +15,7 @@
 import { z } from 'zod/v4'
 import { getIsNonInteractiveSession } from '../bootstrap/state.js'
 import { logEvent } from '../services/analytics/index.js'
-import { queryHaiku } from '../agenc/upstream/services/api/claude.js' // branding-scan: allow upstream provider module path pending purge // upstream-import: keep API service target is owned by a later purge item
+import { queryHaiku } from '../services/api/anthropic.js'
 import type { Message } from '../types/message.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { safeParseJSON } from './json.js'
@@ -130,4 +130,3 @@ export async function generateSessionTitle(
     return 'AgenC'
   }
 }
-

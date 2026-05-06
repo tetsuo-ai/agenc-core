@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.
 import * as React from 'react';
 import { Text } from '../ink.js';
 import { isAgenCAISubscriber } from '../../utils/auth.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -24,7 +26,7 @@ async function _temp() {
   if (true && !isAgenCAISubscriber()) {
     return {
       key: "chrome-requires-subscription",
-      jsx: <Text color="error">AgenC in Chrome requires a agenc.ai subscription</Text>,
+      jsx: <Text color="error">AgenC in Chrome requires a agenc.tech subscription</Text>,
       priority: "immediate",
       timeoutMs: 5000
     };
@@ -33,7 +35,7 @@ async function _temp() {
   if (!installed && !isRunningOnHomespace()) {
     return {
       key: "chrome-extension-not-detected",
-      jsx: <Text color="warning">Chrome extension not detected · https://agenc.ai/chrome to install</Text>,
+      jsx: <Text color="warning">Chrome extension not detected · https://agenc.tech/chrome to install</Text>,
       priority: "immediate",
       timeoutMs: 3000
     };

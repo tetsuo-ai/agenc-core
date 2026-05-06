@@ -3,7 +3,7 @@ import type { UUID } from 'crypto';
 import React, { useCallback } from 'react';
 import { Box, Text } from '../ink.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
-import { getAllBaseTools } from '../../agenc/upstream/tools'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getAllBaseTools } from '../../tools';
 import type { LogOption } from '../../types/logs';
 import { formatRelativeTimeAgo } from '../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getSessionIdFromLog, isLiteLog, loadFullLog } from '../../utils/sessionStorage.js'; // upstream-import: keep target is owned by another Z-PURGE item

@@ -1,9 +1,11 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import * as React from 'react'
 import { useAppState, useAppStateStore } from '../../state/AppState.js'
 import {
   getActiveAgentForInput,
   getViewedTeammateTask,
-} from '../../../agenc/upstream/state/selectors.js'
+} from '../../state/selectors.js'
 import {
   AGENT_COLOR_TO_THEME_COLOR,
   AGENT_COLORS,

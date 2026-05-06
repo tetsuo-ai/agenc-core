@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
-import { logEvent } from '../../agenc/upstream/services/analytics/index.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logEvent } from '../../services/analytics/index.js';
 import { Box, Link, Text } from '../ink.js';
 import type { ExternalAgenCMdInclude } from '../../utils/agencmd.js'; // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
 import { saveCurrentProjectConfig } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -74,7 +74,7 @@ export function AgenCMdExternalIncludesDialog(t0: Props) {
   }
   let t8;
   if ($[8] === Symbol.for("react.memo_cache_sentinel")) {
-    t8 = <Text dimColor={true}>Important: Only use AgenC with files you trust. Accessing untrusted files may pose security risks{" "}<Link url="https://code.agenc.com/docs/en/security" />{" "}</Text>;
+    t8 = <Text dimColor={true}>Important: Only use AgenC with files you trust. Accessing untrusted files may pose security risks{" "}<Link url="https://agenc.tech/docs/en/security" />{" "}</Text>;
     $[8] = t8;
   } else {
     t8 = $[8];

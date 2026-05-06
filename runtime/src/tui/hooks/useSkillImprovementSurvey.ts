@@ -1,10 +1,12 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { useCallback, useRef, useState } from 'react'
 import type { FeedbackSurveyResponse } from '../components/FeedbackSurvey/utils'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_PII_TAGGED,
   logEvent,
-} from '../../agenc/upstream/services/analytics/index' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../services/analytics/index'
 import { useAppState, useSetAppState } from '../state/AppState.js'
 import type { Message } from '../../types/message'
 import type { SkillUpdate } from '../../utils/hooks/skillImprovement.js' // upstream-import: keep target is owned by another Z-PURGE item

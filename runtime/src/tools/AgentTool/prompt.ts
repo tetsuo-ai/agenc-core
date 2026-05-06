@@ -6,7 +6,7 @@ import type { AgentDefinition } from './loadAgentsDir.js'
 const SEND_MESSAGE_TOOL_NAME = 'SendMessage'
 const authModulePath = '../../utils/auth.js'
 const forkSubagentModulePath =
-  '../../agenc/upstream/tools/AgentTool/forkSubagent.js'
+  './forkSubagent.js'
 const teammateModulePath = '../../utils/teammate.js'
 const teammateContextModulePath =
   '../../utils/teammateContext.js'

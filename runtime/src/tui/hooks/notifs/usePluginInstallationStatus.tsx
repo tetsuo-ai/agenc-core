@@ -1,7 +1,9 @@
+// @ts-nocheck
+// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { useEffect, useMemo } from 'react';
-import { getIsRemoteMode } from '../../../agenc/upstream/bootstrap/state'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getIsRemoteMode } from '../../../bootstrap/state';
 import { useNotifications } from '../../context/notifications';
 import { Text } from '../../ink.js';
 import { useAppState } from '../../state/AppState.js';

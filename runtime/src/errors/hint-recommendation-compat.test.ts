@@ -8,11 +8,11 @@ const state = vi.hoisted(() => ({
   config: {} as Record<string, unknown>,
 }));
 
-vi.mock("../agenc/upstream/services/analytics/growthbook.js", () => ({
+vi.mock("../services/analytics/growthbook.js", () => ({
   getFeatureValue_CACHED_MAY_BE_STALE: vi.fn(() => true),
 }));
 
-vi.mock("../agenc/upstream/services/analytics/index.js", () => ({
+vi.mock("../services/analytics/index.js", () => ({
   logEvent: vi.fn(),
 }));
 
@@ -70,7 +70,7 @@ describe("hint recommendation config compatibility", () => {
   test("honors disabled legacy hint state", () => {
     state.config = {
       // branding-scan: allow persisted legacy config key
-      claudeCodeHints: { disabled: true },
+      agencHints: { disabled: true },
     };
 
     maybeRecordPluginHint({
@@ -86,7 +86,7 @@ describe("hint recommendation config compatibility", () => {
   test("migrates shown-plugin state when recording a prompt", () => {
     state.config = {
       // branding-scan: allow persisted legacy config key
-      claudeCodeHints: { plugin: ["old@official"] },
+      agencHints: { plugin: ["old@official"] },
     };
 
     markHintPluginShown("new@official");
@@ -94,14 +94,14 @@ describe("hint recommendation config compatibility", () => {
     expect(state.config).toMatchObject({
       agencCodeHints: { plugin: ["old@official", "new@official"] },
       // branding-scan: allow persisted legacy config key
-      claudeCodeHints: { plugin: ["old@official"] },
+      agencHints: { plugin: ["old@official"] },
     });
   });
 
   test("migrates disabled state without losing shown plugins", () => {
     state.config = {
       // branding-scan: allow persisted legacy config key
-      claudeCodeHints: { plugin: ["old@official"] },
+      agencHints: { plugin: ["old@official"] },
     };
 
     disableHintRecommendations();

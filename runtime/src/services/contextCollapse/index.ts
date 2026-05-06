@@ -14,3 +14,19 @@ export function isContextCollapseEnabled(): boolean {
 export function getContextCollapseState(): AgenCContextCollapseState {
   return null;
 }
+
+export function getContextCollapseCommits(): readonly unknown[] {
+  return [];
+}
+
+export function getContextCollapseSnapshot(): null {
+  return null;
+}
+
+export function getContextVisualizationData(): null {
+  return null;
+}
+
+export function getStats(): Record<string, never> {
+  return {};
+}

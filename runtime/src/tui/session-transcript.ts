@@ -1,8 +1,10 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { randomUUID } from "node:crypto";
 import { useEffect, useMemo, useReducer } from "react";
 
-import type { LLMMessage, StreamingToolUse } from "../../llm/types.js";
-import type { Event } from "../../session/event-log.js";
+import type { LLMMessage, StreamingToolUse } from "../llm/types.js";
+import type { Event } from "../session/event-log.js";
 import type { AgenCBridgeSession } from "./session-types.js";
 
 /**

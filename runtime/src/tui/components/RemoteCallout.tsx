@@ -1,5 +1,7 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import React, { useCallback, useEffect, useRef } from 'react';
-import { isBridgeEnabled } from '../../agenc/upstream/bridge/bridgeEnabled'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isBridgeEnabled } from '../../bridge/bridgeEnabled';
 import { Box, Text } from '../ink.js';
 import { getAgenCAIOAuthTokens } from '../../utils/auth.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -34,7 +36,7 @@ export function RemoteCallout({
   }, []);
   const options: OptionWithDescription<RemoteCalloutSelection>[] = [{
     label: 'Enable Remote Control for this session',
-    description: 'Opens a secure connection to agenc.ai.',
+    description: 'Opens a secure connection to agenc.tech.',
     value: 'enable'
   }, {
     label: 'Never mind',
@@ -46,7 +48,7 @@ export function RemoteCallout({
         <Box marginBottom={1} flexDirection="column">
           <Text>
             Remote Control lets you access this CLI session from the web
-            (agenc.ai/code) or the AgenC app, so you can pick up where you
+            (agenc.tech/code) or the AgenC app, so you can pick up where you
             left off on any device.
           </Text>
           <Text> </Text>

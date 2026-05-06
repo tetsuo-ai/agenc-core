@@ -1,7 +1,7 @@
 import type { StructuredPatchHunk } from 'diff'
 import { useMemo, useRef } from 'react'
-import type { FileEditOutput } from '../../agenc/upstream/tools/FileEditTool/types' // upstream-import: keep target is owned by another Z-PURGE item
-import type { Output as FileWriteOutput } from '../../agenc/upstream/tools/FileWriteTool/FileWriteTool' // upstream-import: keep target is owned by another Z-PURGE item
+import type { FileEditOutput } from '../../tools/FileEditTool/types'
+import type { Output as FileWriteOutput } from '../../tools/FileWriteTool/FileWriteTool'
 import type { Message } from '../../types/message'
 
 export type TurnFileDiff = {

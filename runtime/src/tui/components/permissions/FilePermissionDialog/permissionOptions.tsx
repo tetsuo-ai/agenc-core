@@ -1,12 +1,12 @@
 import { homedir } from 'os';
 import { basename, join, sep } from 'path';
 import React, { type ReactNode } from 'react';
-import { getOriginalCwd } from '../../../../agenc/upstream/bootstrap/state'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getOriginalCwd } from '../../../../bootstrap/state';
 import { Text } from '../../../ink.js';
 import { getShortcutDisplay } from '../../../keybindings/shortcutFormat.js';
-import type { ToolPermissionContext } from '../../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
-import { expandPath, getDirectoryForPath } from '../../../../utils/path.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { normalizeCaseForComparison, pathInAllowedWorkingPath } from '../../../../utils/permissions/filesystem.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ToolPermissionContext } from '../../../../tools/Tool';
+import { expandPath, getDirectoryForPath } from '../../../../utils/path'; // upstream-import: keep target is owned by another Z-PURGE item
+import { normalizeCaseForComparison, pathInAllowedWorkingPath } from '../../../../utils/permissions/filesystem'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { OptionWithDescription } from '../../CustomSelect/select';
 /**
  * Check if a path is within the project's .agenc/ folder.

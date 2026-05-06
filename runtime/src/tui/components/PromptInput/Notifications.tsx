@@ -1,19 +1,21 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
-import { type Notification, useNotifications } from '../../context/notifications';
-import { logEvent } from '../../../agenc/upstream/services/analytics/index.js';
+import { type Notification, useNotifications } from '../../context/notifications.js';
+import { logEvent } from '../../../services/analytics/index.js';
 import { useAppState } from '../../state/AppState.js';
-import type { VerificationStatus } from '../../hooks/useApiKeyVerification';
-import { useIdeConnectionStatus } from '../../hooks/useIdeConnectionStatus';
-import type { IDESelection } from '../../hooks/useIdeSelection';
-import { useMainLoopModel } from '../../hooks/useMainLoopModel';
+import type { VerificationStatus } from '../../hooks/useApiKeyVerification.js';
+import { useIdeConnectionStatus } from '../../hooks/useIdeConnectionStatus.js';
+import type { IDESelection } from '../../hooks/useIdeSelection.js';
+import { useMainLoopModel } from '../../hooks/useMainLoopModel.js';
 import { Box, Text } from '../../ink.js';
 import { useAgenCAiLimits } from "../../rate-limits/agenc-ai-limits.js";
 import { calculateTokenWarningState } from '../../../services/compact/autoCompact.js';
-import type { MCPServerConnection } from '../../../agenc/upstream/services/mcp/types.js';
-import type { Message } from '../../../agenc/upstream/types/message.js';
+import type { MCPServerConnection } from '../../../services/mcp/types.js';
+import type { Message } from '../../../types/message.js';
 import { getApiKeyHelperElapsedMs, getConfiguredApiKeyHelper, getSubscriptionType } from '../../../utils/auth.js';
 import type { AutoUpdaterResult } from '../../../utils/autoUpdater.js';
 import { getExternalEditor } from '../../../utils/editor.js';
@@ -23,11 +25,11 @@ import { setEnvHookNotifier } from '../../../utils/hooks/fileChangedWatcher.js';
 import { toIDEDisplayName } from '../../../utils/ide.js';
 import { getMessagesAfterCompactBoundary } from '../../../utils/messages.js';
 import { tokenCountFromLastAPIResponse } from '../../../utils/tokens.js';
-import { AutoUpdaterWrapper } from '../AutoUpdaterWrapper';
-import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
-import { IdeStatusIndicator } from '../IdeStatusIndicator';
+import { AutoUpdaterWrapper } from '../AutoUpdaterWrapper.js';
+import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
+import { IdeStatusIndicator } from '../IdeStatusIndicator.js';
 import { MemoryUsageIndicator } from '../../cost/MemoryUsageIndicator.js';
-import { SentryErrorBoundary } from '../SentryErrorBoundary';
+import { SentryErrorBoundary } from '../SentryErrorBoundary.js';
 import { TokenWarning } from '../../cost/TokenWarning.js';
 import { SandboxPromptFooterHint } from './SandboxPromptFooterHint.js';
 

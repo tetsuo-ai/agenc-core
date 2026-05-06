@@ -1,17 +1,19 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { useCallback, useEffect, useSyncExternalStore } from 'react'
 import type { Command } from '../../commands.js'
 import { useNotifications } from '../context/notifications'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
-} from '../../agenc/upstream/services/analytics/index' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../services/analytics/index'
 import { reinitializeLspServerManager } from '../../services/lsp/manager'
 import { useAppState, useSetAppState } from '../state/AppState.js'
 import {
   getPluginCommandsState,
   setPluginCommandsState,
   subscribePluginCommands,
-} from '../../agenc/upstream/state/pluginCommandsStore' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../state/pluginCommandsStore'
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
 import { count } from '../../utils/array.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js'

@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../agenc/upstream/services/analytics/index.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { setupTerminal, shouldOfferTerminalSetup } from '../../agenc/upstream/commands/terminalSetup/terminalSetup'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
+import { setupTerminal, shouldOfferTerminalSetup } from '../../commands/terminalSetup/terminalSetup';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Link, Newline, Text, useTheme } from '../ink.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
@@ -86,7 +86,7 @@ export function Onboarding({
             <Text dimColor wrap="wrap">
               For more details see:
               <Newline />
-              <Link url="https://code.agenc.com/docs/en/security" />
+              <Link url="https://agenc.tech/docs/en/security" />
             </Text>
           </OrderedList.Item>
         </OrderedList>

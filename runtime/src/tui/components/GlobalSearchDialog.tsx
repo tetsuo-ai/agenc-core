@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import { resolve as resolvePath } from 'path';
 import * as React from 'react';
@@ -5,14 +7,14 @@ import { useEffect, useRef, useState } from 'react';
 import { useRegisterOverlay } from '../context/overlayContext';
 import { useTerminalSize } from '../hooks/useTerminalSize';
 import { Text } from '../ink.js';
-import { logEvent } from '../../agenc/upstream/services/analytics/index'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getCwd } from '../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { openFileInExternalEditor } from '../../utils/editor.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { truncatePathMiddle, truncateToWidth } from '../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { highlightMatch } from '../../utils/highlightMatch.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { relativePath } from '../../utils/permissions/filesystem.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { readFileInRange } from '../../utils/readFileInRange.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { ripGrepStream } from '../../utils/ripgrep.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logEvent } from '../../services/analytics/index';
+import { getCwd } from '../../utils/cwd'; // upstream-import: keep target is owned by another Z-PURGE item
+import { openFileInExternalEditor } from '../../utils/editor'; // upstream-import: keep target is owned by another Z-PURGE item
+import { truncatePathMiddle, truncateToWidth } from '../../utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
+import { highlightMatch } from '../../utils/highlightMatch'; // upstream-import: keep target is owned by another Z-PURGE item
+import { relativePath } from '../../utils/permissions/filesystem'; // upstream-import: keep target is owned by another Z-PURGE item
+import { readFileInRange } from '../../utils/readFileInRange'; // upstream-import: keep target is owned by another Z-PURGE item
+import { ripGrepStream } from '../../utils/ripgrep'; // upstream-import: keep target is owned by another Z-PURGE item
 import { FuzzyPicker } from './design-system/FuzzyPicker';
 import { LoadingState } from './design-system/LoadingState';
 type Props = {

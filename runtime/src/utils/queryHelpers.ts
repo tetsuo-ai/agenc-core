@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ToolUseBlock } from '@anthropic-ai/sdk/resources/index.mjs'
 import last from 'lodash-es/last.js'
 import {

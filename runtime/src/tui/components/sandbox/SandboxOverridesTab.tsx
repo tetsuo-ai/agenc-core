@@ -1,8 +1,8 @@
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { Box, color, Link, Text, useTheme } from '../../ink.js';
-import type { CommandResultDisplay } from '../../../agenc/upstream/types/command'; // upstream-import: keep target is owned by another Z-PURGE item
-import { SandboxManager } from '../../../utils/sandbox/sandbox-runtime.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { CommandResultDisplay } from '../../../types/command';
+import { SandboxManager } from '../../../utils/sandbox/sandbox-runtime'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../CustomSelect/select';
 import { useTabHeaderFocus } from '../design-system/Tabs';
 type Props = {
@@ -175,7 +175,7 @@ function OverridesSelect(t0) {
   }
   let t13;
   if ($[22] === Symbol.for("react.memo_cache_sentinel")) {
-    t13 = <Box flexDirection="column" marginTop={1} gap={1}>{t11}{t12}<Text dimColor={true}>Learn more:{" "}<Link url="https://code.agenc.com/docs/en/sandboxing#configure-sandboxing">code.agenc.com/docs/en/sandboxing#configure-sandboxing</Link></Text></Box>;
+    t13 = <Box flexDirection="column" marginTop={1} gap={1}>{t11}{t12}<Text dimColor={true}>Learn more:{" "}<Link url="https://agenc.tech/docs/en/sandboxing#configure-sandboxing">agenc.tech/docs/en/sandboxing#configure-sandboxing</Link></Text></Box>;
     $[22] = t13;
   } else {
     t13 = $[22];

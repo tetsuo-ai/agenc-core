@@ -3,24 +3,24 @@ import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
-} from '../../../agenc/upstream/services/analytics/index.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { sanitizeToolNameForAnalytics } from '../../../agenc/upstream/services/analytics/metadata.js' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../services/analytics/index.js'
+import { sanitizeToolNameForAnalytics } from '../../../services/analytics/metadata.js'
 import type { ToolUseConfirm } from '../../components/permissions/PermissionRequest.js'
 import type {
   ToolPermissionContext,
   Tool as ToolType,
   ToolUseContext,
-} from '../../../agenc/upstream/Tool' // upstream-import: keep target is owned by another Z-PURGE item
-import { awaitClassifierAutoApproval } from '../../../agenc/upstream/tools/BashTool/bashPermissions' // upstream-import: keep target is owned by another Z-PURGE item
-import { BASH_TOOL_NAME } from '../../../agenc/upstream/tools/BashTool/toolName' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../tools/Tool'
+import { awaitClassifierAutoApproval } from '../../../tools/BashTool/bashPermissions'
+import { BASH_TOOL_NAME } from '../../../tools/BashTool/toolName'
 import type { AssistantMessage } from '../../../types/message'
 import type {
   PendingClassifierCheck,
   PermissionAllowDecision,
   PermissionDecisionReason,
   PermissionDenyDecision,
-} from '../../../agenc/upstream/types/permissions' // upstream-import: keep target is owned by another Z-PURGE item
-import { setClassifierApproval } from '../../../utils/classifierApprovals.js' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../types/permissions'
+import { setClassifierApproval } from '../../../utils/classifierApprovals' // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js'
 import { executePermissionRequestHooks } from '../../../utils/hooks.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {

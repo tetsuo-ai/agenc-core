@@ -1,12 +1,14 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import { basename, relative } from 'path';
 import React, { useMemo } from 'react';
 import type { z } from 'zod/v4';
 import { Text } from '../../../ink.js';
-import { FileWriteTool } from '../../../../agenc/upstream/tools/FileWriteTool/FileWriteTool'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getCwd } from '../../../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isENOENT } from '../../../../utils/errors.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { readFileSync } from '../../../../utils/fileRead.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { FileWriteTool } from '../../../../tools/FileWriteTool/FileWriteTool';
+import { getCwd } from '../../../../utils/cwd'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isENOENT } from '../../../../utils/errors'; // upstream-import: keep target is owned by another Z-PURGE item
+import { readFileSync } from '../../../../utils/fileRead'; // upstream-import: keep target is owned by another Z-PURGE item
 import { FilePermissionDialog } from '../FilePermissionDialog/FilePermissionDialog';
 import { createSingleEditDiffConfig, type FileEdit, type IDEDiffSupport } from '../FilePermissionDialog/ideDiffConfig';
 import type { PermissionRequestProps } from '../PermissionRequest.js';

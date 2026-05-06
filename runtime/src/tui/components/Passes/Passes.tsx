@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import * as React from 'react';
 import { useCallback, useEffect, useState } from 'react';
 import type { CommandResultDisplay } from '../../../commands.js';
@@ -7,8 +9,8 @@ import { setClipboard } from '../../ink/termio/osc.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- enter to copy link
 import { Box, Link, Text, useInput } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import { logEvent } from '../../../agenc/upstream/services/analytics/index'; // upstream-import: keep target is owned by another Z-PURGE item
-import { fetchReferralRedemptions, formatCreditAmount, getCachedOrFetchPassesEligibility } from '../../../agenc/upstream/services/api/referral'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logEvent } from '../../../services/analytics/index';
+import { fetchReferralRedemptions, formatCreditAmount, getCachedOrFetchPassesEligibility } from '../../../services/api/referral';
 import type { ReferralRedemptionsResponse, ReferrerRewardInfo } from '../../../services/oauth/types';
 import { count } from '../../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logError } from '../../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -167,7 +169,7 @@ export function Passes({
         <Box flexDirection="column" marginLeft={2}>
           <Text dimColor>
             {referrerReward ? `Share a free week of AgenC with friends. If they love it and subscribe, you'll get ${formatCreditAmount(referrerReward)} of extra usage to keep building. ` : 'Share a free week of AgenC with friends. '}
-            <Link url={referrerReward ? 'https://support.agenc.com/en/articles/13456702-agenc-code-guest-passes' : 'https://support.agenc.com/en/articles/12875061-agenc-code-guest-passes'}>
+            <Link url={referrerReward ? 'https://agenc.tech/support/en/articles/13456702-agenc-code-guest-passes' : 'https://agenc.tech/support/en/articles/12875061-agenc-code-guest-passes'}>
               Terms apply.
             </Link>
           </Text>

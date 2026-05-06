@@ -64,9 +64,8 @@ describe("R4 runningToolProgress / RunningToolProgress removal from session-tran
   test("E4.2 no other file under runtime/src references runningToolProgress (consumers were limited to App.tsx + session-transcript; both now clean)", () => {
     const offenders: string[] = [];
     for (const file of listTsFilesRecursive(RUNTIME_SRC_DIR)) {
-      // Ignore anything inside the upstream mirror at runtime/src/agenc/upstream
-      // (that is donor code; it does not reference our local
-      // AgenC field name and is out of this row's scope by definition).
+      // Ignore any still-quarantined donor boundary file; that code does not
+      // reference our local AgenC field name and is out of this row's scope.
       if (file.includes(`${path.sep}agenc${path.sep}upstream${path.sep}`)) {
         continue;
       }

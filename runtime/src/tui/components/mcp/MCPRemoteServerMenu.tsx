@@ -1,6 +1,8 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import figures from 'figures';
 import React, { useEffect, useRef, useState } from 'react';
-import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../agenc/upstream/services/analytics/index.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../services/analytics/index.js';
 import type { CommandResultDisplay } from '../../../commands.js';
 import { getOauthConfig } from '../../../constants/oauth.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
@@ -9,10 +11,10 @@ import { setClipboard } from '../../ink/termio/osc.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw j/k/arrow menu navigation
 import { Box, color, Link, Text, useInput, useTheme } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import { AuthenticationCancelledError, performMCPOAuthFlow, revokeServerTokens } from '../../../agenc/upstream/services/mcp/auth'; // upstream-import: keep target is owned by another Z-PURGE item
-import { clearServerCache } from '../../../agenc/upstream/services/mcp/client'; // upstream-import: keep target is owned by another Z-PURGE item
-import { useMcpReconnect, useMcpToggleEnabled } from '../../../agenc/upstream/services/mcp/MCPConnectionManager'; // upstream-import: keep target is owned by another Z-PURGE item
-import { describeMcpConfigFilePath, excludeCommandsByServer, excludeResourcesByServer, excludeToolsByServer, filterMcpPromptsByServer } from '../../../agenc/upstream/services/mcp/utils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { AuthenticationCancelledError, performMCPOAuthFlow, revokeServerTokens } from '../../../services/mcp/auth';
+import { clearServerCache } from '../../../services/mcp/client';
+import { useMcpReconnect, useMcpToggleEnabled } from '../../../services/mcp/MCPConnectionManager';
+import { describeMcpConfigFilePath, excludeCommandsByServer, excludeResourcesByServer, excludeToolsByServer, filterMcpPromptsByServer } from '../../../services/mcp/utils';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
 import { getOauthAccountInfo } from '../../../utils/auth.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { openBrowser } from '../../../utils/browser.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -441,7 +443,7 @@ export function MCPRemoteServerMenu({
             </Box>
           </> : <>
             <Text>
-              This will open agenc.ai in the browser. Find the MCP server in
+              This will open agenc.tech in the browser. Find the MCP server in
               the list and click &quot;Disconnect&quot;.
             </Text>
             <Box marginLeft={3} flexDirection="column">

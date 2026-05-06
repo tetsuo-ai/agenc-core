@@ -7,8 +7,8 @@ import { isENOENT } from '../../../../utils/errors.js'; // upstream-import: keep
 import { detectEncodingForResolvedPath } from '../../../../utils/fileRead.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getFsImplementation } from '../../../../utils/fsOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Text } from '../../../ink.js';
-import { BashTool } from '../../../../agenc/upstream/tools/BashTool/BashTool'; // upstream-import: keep target is owned by another Z-PURGE item
-import { applySedSubstitution, type SedEditInfo } from '../../../../agenc/upstream/tools/BashTool/sedEditParser'; // upstream-import: keep target is owned by another Z-PURGE item
+import { BashTool } from '../../../../tools/BashTool/BashTool';
+import { applySedSubstitution, type SedEditInfo } from '../../../../tools/BashTool/sedEditParser';
 import { FilePermissionDialog } from '../FilePermissionDialog/FilePermissionDialog';
 import type { PermissionRequestProps } from '../PermissionRequest.js';
 type SedEditPermissionRequestProps = PermissionRequestProps & {

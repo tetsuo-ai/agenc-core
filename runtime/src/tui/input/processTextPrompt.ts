@@ -1,13 +1,13 @@
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources'
 import { randomUUID } from 'crypto'
-import { setPromptId } from '../../agenc/upstream/bootstrap/state.js'
+import { setPromptId } from '../../bootstrap/state.js'
 import type {
   AttachmentMessage,
   SystemMessage,
   UserMessage,
-} from '../../agenc/upstream/types/message.js'
-import { logEvent } from '../../agenc/upstream/services/analytics/index.js'
-import type { PermissionMode } from '../../agenc/upstream/types/permissions.js'
+} from '../../types/message.js'
+import { logEvent } from '../../services/analytics/index.js'
+import type { PermissionMode } from '../../types/permissions.js'
 import { createUserMessage } from '../../utils/messages.js'
 import { logOTelEvent, redactIfDisabled } from '../../utils/telemetry/events.js'
 import { startInteractionSpan } from '../../utils/telemetry/sessionTracing.js'

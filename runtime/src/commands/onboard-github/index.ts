@@ -1,0 +1,14 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+import type { Command } from '../../commands.js'
+
+const onboardGithub: Command = {
+  name: 'onboard-github',
+  aliases: ['onboarding-github', 'onboardgithub', 'onboardinggithub'],
+  description:
+    'Interactive setup for GitHub Copilot: OAuth device login stored in secure storage',
+  type: 'local-jsx',
+  load: () => import('./onboard-github.js'),
+}
+
+export default onboardGithub

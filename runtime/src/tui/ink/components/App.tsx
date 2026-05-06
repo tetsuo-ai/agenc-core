@@ -1,7 +1,7 @@
 // @ts-nocheck
 // Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import React, { PureComponent, type ReactNode } from 'react';
-import { updateLastInteractionTime } from '../../../agenc/upstream/bootstrap/state.js';
+import { updateLastInteractionTime } from '../../../bootstrap/state.js';
 import { stopCapturingEarlyInput } from '../../../utils/earlyInput.js';
 import { isEnvTruthy } from '../../../utils/envUtils.js';
 import { isMouseClicksDisabled } from '../../../utils/fullscreen.js';
@@ -664,7 +664,7 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
       // still reflects what the user clicked — deferring only the
       // browser-open so double-click can cancel it.
       const url = app.props.getHyperlinkAt(col, row);
-      // xterm.js-based hosts have their own OSC 8 link
+      // xterm.js-based editors have their own OSC 8 link
       // handler that fires on Cmd+click *without consuming the mouse event*
       // (Linkifier._handleMouseUp calls link.activate() but never
       // preventDefault/stopPropagation). The click is also forwarded to the

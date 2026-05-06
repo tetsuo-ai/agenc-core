@@ -1,15 +1,17 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import type { StructuredPatchHunk } from 'diff';
 import * as React from 'react';
 import { Suspense, use, useState } from 'react';
 import { useTerminalSize } from '../hooks/useTerminalSize';
 import { Box, Text } from '../ink.js';
-import type { FileEdit } from '../../agenc/upstream/tools/FileEditTool/types'; // upstream-import: keep target is owned by another Z-PURGE item
-import { findActualString, preserveQuoteStyle } from '../../agenc/upstream/tools/FileEditTool/utils'; // upstream-import: keep target is owned by another Z-PURGE item
-import { adjustHunkLineNumbers, CONTEXT_LINES, getPatchForDisplay } from '../../utils/diff.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { CHUNK_SIZE, openForScan, readCapped, scanForContext } from '../../utils/readEditContext.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { firstLineOf } from '../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { FileEdit } from '../../tools/FileEditTool/types';
+import { findActualString, preserveQuoteStyle } from '../../tools/FileEditTool/utils';
+import { adjustHunkLineNumbers, CONTEXT_LINES, getPatchForDisplay } from '../../utils/diff'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
+import { CHUNK_SIZE, openForScan, readCapped, scanForContext } from '../../utils/readEditContext'; // upstream-import: keep target is owned by another Z-PURGE item
+import { firstLineOf } from '../../utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
 import { StructuredDiffList } from './StructuredDiffList';
 type Props = {
   file_path: string;

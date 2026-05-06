@@ -28,7 +28,7 @@ import {
   getIsNonInteractiveSession as getBootstrapIsNonInteractiveSession,
   resetStateForTests,
   setIsInteractive,
-} from "../../agenc/upstream/bootstrap/state.js";
+} from "../../bootstrap/state.js";
 import {
   clearDynamicTeamContext,
   createTeammateContext,

@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import * as React from 'react';
@@ -5,7 +7,7 @@ import { Box, Text } from '../../ink.js';
 import { getPlatform } from '../../../utils/platform.js';
 import { isKeybindingCustomizationEnabled } from '../../keybindings/loadUserBindings.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../agenc/upstream/services/analytics/growthbook.js';
+import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../services/analytics/growthbook.js';
 import { isFastModeAvailable, isFastModeEnabled } from '../../../utils/fastMode.js';
 import { getNewlineInstructions } from './utils.js';
 

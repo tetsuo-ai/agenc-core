@@ -1,11 +1,11 @@
 import * as React from 'react'
 
 import {
-  CodexOAuthService,
-  type CodexOAuthTokens,
-} from '../../agenc/upstream/services/api/codexOAuth' // upstream-import: keep target is owned by another Z-PURGE item
-import { openBrowser } from '../../utils/browser.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { saveAgencCredentials } from '../../utils/agencCredentials.js' // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
+  OpenAiCodeOAuthService,
+  type OpenAiCodeOAuthTokens,
+} from '../../services/api/openAiCodeOAuth.js'
+import { openBrowser } from '../../utils/browser' // upstream-import: keep target is owned by another Z-PURGE item
+import { saveAgencCredentials } from '../../utils/agencCredentials' // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
 import { isBareMode } from '../../utils/envUtils'
 
 export type CodexOAuthFlowStatus =
@@ -23,6 +23,8 @@ export type CodexOAuthFlowStatus =
 type PersistCodexOAuthCredentials = (options?: {
   profileId?: string
 }) => void
+type CodexOAuthService = OpenAiCodeOAuthService
+type CodexOAuthTokens = OpenAiCodeOAuthTokens
 
 type CodexOAuthFlowDependencies = {
   createOAuthService?: () => Pick<
@@ -38,7 +40,7 @@ function createDefaultOAuthService(): Pick<
   CodexOAuthService,
   'startOAuthFlow' | 'cleanup'
 > {
-  return new CodexOAuthService()
+  return new OpenAiCodeOAuthService()
 }
 
 export function useCodexOAuthFlow(options: {

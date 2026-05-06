@@ -12,6 +12,8 @@
  *     hand-validated in `runtime/src/config/schema.ts`.
  */
 
+import { z } from "zod/v4";
+
 export const AUTO_FIX_DEFAULT_MAX_RETRIES = 3;
 export const AUTO_FIX_DEFAULT_TIMEOUT_MS = 30_000;
 export const AUTO_FIX_MAX_RETRIES_LIMIT = 10;
@@ -25,6 +27,14 @@ export interface AutoFixConfig {
   readonly maxRetries: number;
   readonly timeout: number;
 }
+
+export const AutoFixConfigSchema = z.object({
+  enabled: z.boolean(),
+  lint: z.string().optional(),
+  test: z.string().optional(),
+  maxRetries: z.number().int().optional(),
+  timeout: z.number().int().optional(),
+});
 
 export interface AutoFixParseFailure {
   readonly success: false;

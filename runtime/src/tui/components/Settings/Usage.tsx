@@ -1,17 +1,17 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { useEffect, useState } from 'react';
-import { extraUsage as extraUsageCommand } from '../../../agenc/upstream/commands/extra-usage/index.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { extraUsage as extraUsageCommand } from '../../../commands/extra-usage/index.js';
 import { formatCost } from 'src/cost/tracker.js';
 import { getSubscriptionType } from '../../../utils/auth.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useTerminalSize } from '../../hooks/useTerminalSize';
 import { Box, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import { type ExtraUsage, fetchUtilization, type RateLimit, type Utilization } from '../../../agenc/upstream/services/api/usage'; // upstream-import: keep target is owned by another Z-PURGE item
-import { formatResetText } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getAPIProvider } from '../../../utils/model/providers.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { jsonStringify } from '../../../utils/slowOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type ExtraUsage, fetchUtilization, type RateLimit, type Utilization } from '../../../services/api/usage';
+import { formatResetText } from '../../../utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../../utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getAPIProvider } from '../../../utils/model/providers'; // upstream-import: keep target is owned by another Z-PURGE item
+import { jsonStringify } from '../../../utils/slowOperations'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
 import { Byline } from '../design-system/Byline';
 import { ProgressBar } from '../design-system/ProgressBar';

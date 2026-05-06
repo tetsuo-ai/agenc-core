@@ -88,6 +88,7 @@ import type { ResponseItem } from "./rollout-item.js";
 import type { Session } from "./session.js";
 import {
   modelContextWindow,
+  TurnTimingState,
   toTurnContextItem,
   type TurnContext,
   type TurnContextItem,
@@ -158,6 +159,7 @@ function recordTurnTimingForPhaseEvent(
   ctx: TurnContext,
   event: PhaseEvent,
 ): void {
+  ensureTurnTimingState(ctx);
   const tags = toMetricTags({ turn_id: ctx.subId, event: event.type });
   const ttftMs = ctx.turnTimingState.recordTtftForPhaseEvent(event);
   if (ttftMs !== undefined) {
@@ -179,6 +181,13 @@ function recordTurnTimingForPhaseEvent(
       );
     }
   }
+}
+
+function ensureTurnTimingState(ctx: TurnContext): TurnTimingState {
+  if (ctx.turnTimingState !== undefined) return ctx.turnTimingState;
+  const timingState = new TurnTimingState();
+  (ctx as { turnTimingState: TurnTimingState }).turnTimingState = timingState;
+  return timingState;
 }
 
 const MAX_PLAN_TOOL_REQUIRED_RETRIES = 2;
@@ -1645,7 +1654,7 @@ export async function* runTurnKernel(
   // recovery in rollout-reconstruction would treat every clean turn
   // as a `process_killed` abort.
   const turnStartedAt = Date.now();
-  ctx.turnTimingState.markTurnStarted(turnStartedAt);
+  ensureTurnTimingState(ctx).markTurnStarted(turnStartedAt);
   const emitTurnStarted = (): void => {
     session.emit({
       id: session.nextInternalSubId(),

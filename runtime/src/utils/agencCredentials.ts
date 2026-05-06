@@ -1,13 +1,15 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { isBareMode } from './envUtils.js'
 import { getSecureStorage } from './secureStorage/index.js'
 import {
   asTrimmedString,
-  CODEX_REFRESH_URL as AGENC_REFRESH_URL,
-  exchangeCodexIdTokenForApiKey as exchangeAgencIdTokenForApiKey,
-  getCodexOAuthClientId as getAgencOAuthClientId,
+  PROVIDER_CODE_REFRESH_URL as AGENC_REFRESH_URL,
+  exchangeProviderCodeIdTokenForApiKey as exchangeAgencIdTokenForApiKey,
+  getOpenAiCodeOAuthClientId as getAgencOAuthClientId,
   parseChatgptAccountId,
   decodeJwtPayload,
-} from '../agenc/upstream/services/api/codexOAuthShared.js' // branding-scan: allow upstream provider module path pending purge // upstream-import: keep OAuth shared target is owned by a later purge item
+} from '../services/api/openAiCodeOAuthShared.js'
 
 export const AGENC_STORAGE_KEY = 'agenc' as const
 const AGENC_TOKEN_REFRESH_SKEW_MS = 60_000

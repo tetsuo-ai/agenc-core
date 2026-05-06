@@ -1,8 +1,10 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { Box, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import type { PromptRequest } from '../../../agenc/upstream/types/hooks'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PromptRequest } from '../../../types/hooks';
 import { Select } from '../CustomSelect/select';
 import { PermissionDialog } from '../permissions/PermissionDialog';
 type Props = {

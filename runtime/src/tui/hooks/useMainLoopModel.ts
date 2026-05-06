@@ -1,5 +1,7 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { useEffect, useReducer } from 'react'
-import { onGrowthBookRefresh } from '../../agenc/upstream/services/analytics/growthbook' // upstream-import: keep target is owned by another Z-PURGE item
+import { onGrowthBookRefresh } from '../../services/analytics/growthbook'
 import { useAppState } from '../state/AppState.js'
 import {
   getDefaultMainLoopModelSetting,

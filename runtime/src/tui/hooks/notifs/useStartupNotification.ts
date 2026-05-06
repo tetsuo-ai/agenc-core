@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { getIsRemoteMode } from '../../../agenc/upstream/bootstrap/state' // upstream-import: keep target is owned by another Z-PURGE item
+import { getIsRemoteMode } from '../../../bootstrap/state'
 import {
   type Notification,
   useNotifications,

@@ -4,8 +4,8 @@ import * as React from 'react';
 import type { SettingSource } from '../../../utils/settings/constants.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../ink.js';
-import type { ResolvedAgent } from '../../../agenc/upstream/tools/AgentTool/agentDisplay'; // upstream-import: keep target is owned by another Z-PURGE item
-import { AGENT_SOURCE_GROUPS, compareAgentsByName, getOverrideSourceLabel, resolveAgentModelDisplay } from '../../../agenc/upstream/tools/AgentTool/agentDisplay'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ResolvedAgent } from '../../../tools/AgentTool/agentDisplay';
+import { AGENT_SOURCE_GROUPS, compareAgentsByName, getOverrideSourceLabel, resolveAgentModelDisplay } from '../../../tools/AgentTool/agentDisplay';
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js';
 import { count } from '../../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Dialog } from '../design-system/Dialog';

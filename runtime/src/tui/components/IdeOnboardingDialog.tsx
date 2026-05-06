@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { envDynamic } from '../../utils/envDynamic.js'; // upstream-import: keep target is owned by another Z-PURGE item

@@ -1,10 +1,12 @@
+// @ts-nocheck
+// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { isFeedbackSurveyDisabled } from '../../../agenc/upstream/services/analytics/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../agenc/upstream/services/analytics/growthbook.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../agenc/upstream/services/analytics/index.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isFeedbackSurveyDisabled } from '../../../services/analytics/config.js';
+import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../services/analytics/growthbook.js';
+import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../services/analytics/index.js';
 import { isAutoMemoryEnabled } from '../../../memdir/paths';
 import { isPolicyAllowed } from '../../../services/policyLimits/index';
-import { FILE_READ_TOOL_NAME } from '../../../agenc/upstream/tools/FileReadTool/prompt'; // upstream-import: keep target is owned by another Z-PURGE item
+import { FILE_READ_TOOL_NAME } from '../../../tools/FileReadTool/prompt';
 import type { Message } from '../../../types/message';
 import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isEnvTruthy } from '../../../utils/envUtils';

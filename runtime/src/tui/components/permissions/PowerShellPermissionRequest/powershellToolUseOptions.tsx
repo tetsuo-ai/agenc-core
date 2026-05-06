@@ -1,6 +1,6 @@
-import { POWERSHELL_TOOL_NAME } from '../../../../agenc/upstream/tools/PowerShellTool/toolName'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { shouldShowAlwaysAllowOptions } from '../../../../utils/permissions/permissionsLoader.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { POWERSHELL_TOOL_NAME } from '../../../../tools/PowerShellTool/toolName';
+import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema'; // upstream-import: keep target is owned by another Z-PURGE item
+import { shouldShowAlwaysAllowOptions } from '../../../../utils/permissions/permissionsLoader'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { OptionWithDescription } from '../../CustomSelect/select';
 import { generateShellSuggestionsLabel } from '../shellPermissionHelpers';
 export type PowerShellToolUseOption = 'yes' | 'yes-apply-suggestions' | 'yes-prefix-edited' | 'no';

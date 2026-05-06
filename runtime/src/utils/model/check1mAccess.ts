@@ -1,4 +1,4 @@
-import type { OverageDisabledReason } from 'src/agenc/upstream/services/claudeAiLimits.js' // branding-scan: allow upstream provider module path pending purge // upstream-import: keep limits target is owned by a later purge item
+import type { OverageDisabledReason } from 'src/services/agencAiLimits.js'
 import { isAgenCAISubscriber } from '../auth.js'
 import { getGlobalConfig } from '../config.js'
 import { is1mContextDisabled } from '../context.js'

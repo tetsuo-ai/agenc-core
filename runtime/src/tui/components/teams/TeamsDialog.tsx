@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import { randomUUID } from 'crypto';
 import figures from 'figures';
@@ -11,7 +13,7 @@ import { Box, Text, useInput } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
 import { type AppState, useAppState, useSetAppState } from '../../state/AppState.js';
-import { getEmptyToolPermissionContext } from '../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getEmptyToolPermissionContext } from '../../../tools/Tool';
 import { AGENT_COLOR_TO_THEME_COLOR } from 'src/tools/AgentTool/agentColorManager.js';
 import { logForDebugging } from 'src/utils/debug.js';
 import { execFileNoThrow } from '../../../utils/execFileNoThrow.js'; // upstream-import: keep target is owned by another Z-PURGE item

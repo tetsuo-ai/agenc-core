@@ -33,7 +33,7 @@ import {
   getSessionCacheMetrics,
   recordUsageCacheStats,
   resetSessionCacheStats,
-} from "../agenc/upstream/services/api/cacheStatsTracker.js";
+} from "../services/api/cacheStatsTracker.js";
 
 vi.mock("src/utils/modelCost.js", () => ({
   calculateUSDCost: () => 0.1234,
@@ -168,7 +168,7 @@ describe("cost tracker facade", () => {
     resetStateForTests();
     resetSessionCacheStats();
     const { addCachedCostToTotalSessionCost } = await import(
-      "../agenc/upstream/services/vcr.js"
+      "../services/vcr.js"
     );
     const sidecar = new CostSidecar({
       defaultProvider: "openai",

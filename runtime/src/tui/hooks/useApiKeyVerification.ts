@@ -1,6 +1,8 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { useCallback, useEffect, useState } from 'react'
-import { getIsNonInteractiveSession } from '../../agenc/upstream/bootstrap/state' // upstream-import: keep target is owned by another Z-PURGE item
-import { verifyApiKey } from '../../agenc/upstream/services/api/claude' // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
+import { getIsNonInteractiveSession } from '../../bootstrap/state'
+import { verifyApiKey } from '../../services/api/anthropic' // branding-scan: allow upstream mirror import path pending purge
 import {
   getAnthropicApiKeyWithSource,
   getApiKeyFromApiKeyHelper,

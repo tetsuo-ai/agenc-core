@@ -1,5 +1,5 @@
 import { c as _c } from "react-compiler-runtime";
-import type { ChannelEntry } from '../../agenc/upstream/bootstrap/state'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ChannelEntry } from '../../bootstrap/state';
 import { Box, Text } from '../ink.js';
 import { gracefulShutdownSync } from '../../utils/gracefulShutdown.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from './CustomSelect/select';

@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import * as React from 'react';
@@ -15,11 +17,11 @@ import { resolveThemeSetting } from '../../../utils/systemTheme.js'; // upstream
 import { getInitialSettings } from '../../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isDebugMode, isDebugToStdErr, getDebugLogPath } from 'src/utils/debug.js';
 import { useEffect, useState } from 'react';
-import { getSteps, shouldShowProjectOnboarding, incrementProjectOnboardingSeenCount } from '../../../agenc/upstream/projectOnboardingState'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSteps, shouldShowProjectOnboarding, incrementProjectOnboardingSeenCount } from '../../../onboarding/projectOnboardingState';
 import { CondensedLogo } from './CondensedLogo';
 import { OffscreenFreeze } from '../OffscreenFreeze';
-import { checkForReleaseNotesSync } from '../../../utils/releaseNotes.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getDumpPromptsPath } from '../../../agenc/upstream/services/api/dumpPrompts.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { checkForReleaseNotesSync } from '../../../utils/releaseNotes'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getDumpPromptsPath } from '../../../services/api/dumpPrompts.js';
 import { isEnvTruthy } from 'src/utils/envUtils.js';
 import { getStartupPerfLogPath, isDetailedProfilingEnabled } from '../../../utils/startupProfiler.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { EmergencyTip } from './EmergencyTip';

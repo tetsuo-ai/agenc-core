@@ -10,7 +10,7 @@ import { c as _c } from "react-compiler-runtime";
 
 import figures from 'figures';
 import * as React from 'react';
-import type { HookEvent } from '../../../agenc/upstream/entrypoints/agentSdkTypes.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { HookEvent } from '../../../entrypoints/agentSdkTypes.js';
 import type { HookEventMetadata } from '../../../utils/hooks/hooksConfigManager.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Link, Text } from '../../ink.js';
 import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -53,7 +53,7 @@ export function SelectEventMode(t0) {
   }
   let t3;
   if ($[4] === Symbol.for("react.memo_cache_sentinel")) {
-    t3 = <Box flexDirection="column"><Text dimColor={true}>{figures.info} This menu is read-only. To add or modify hooks, edit settings.json directly or ask AgenC.{" "}<Link url="https://code.agenc.com/docs/en/hooks">Learn more</Link></Text></Box>;
+    t3 = <Box flexDirection="column"><Text dimColor={true}>{figures.info} This menu is read-only. To add or modify hooks, edit settings.json directly or ask AgenC.{" "}<Link url="https://agenc.tech/docs/en/hooks">Learn more</Link></Text></Box>;
     $[4] = t3;
   } else {
     t3 = $[4];

@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto'
 import { basename } from 'path'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { logEvent } from '../../agenc/upstream/services/analytics/index.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { logEvent } from '../../services/analytics/index.js'
 import { readFileSync } from '../../utils/fileRead.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { expandPath } from '../../utils/path.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type { PermissionOption } from '../components/permissions/FilePermissionDialog/permissionOptions'
@@ -9,16 +9,16 @@ import type {
   MCPServerConnection,
   McpSSEIDEServerConfig,
   McpWebSocketIDEServerConfig,
-} from '../../agenc/upstream/services/mcp/types' // upstream-import: keep target is owned by another Z-PURGE item
-import type { ToolUseContext } from '../../agenc/upstream/Tool' // upstream-import: keep target is owned by another Z-PURGE item
-import type { FileEdit } from '../../agenc/upstream/tools/FileEditTool/types' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../services/mcp/types'
+import type { ToolUseContext } from '../../tools/Tool'
+import type { FileEdit } from '../../tools/FileEditTool/types'
 import {
   getEditsForPatch,
   getPatchForEdits,
-} from '../../agenc/upstream/tools/FileEditTool/utils' // upstream-import: keep target is owned by another Z-PURGE item
-import { getGlobalConfig } from '../../utils/config.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { getPatchFromContents } from '../../utils/diff.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { isENOENT } from '../../utils/errors.js' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../tools/FileEditTool/utils'
+import { getGlobalConfig } from '../../utils/config' // upstream-import: keep target is owned by another Z-PURGE item
+import { getPatchFromContents } from '../../utils/diff' // upstream-import: keep target is owned by another Z-PURGE item
+import { isENOENT } from '../../utils/errors' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   callIdeRpc,
   getConnectedIdeClient,

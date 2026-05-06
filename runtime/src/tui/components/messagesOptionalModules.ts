@@ -9,7 +9,7 @@ type SendUserFilePromptModule = {
 }
 
 const requireFromHere = createRequire(import.meta.url)
-const upstreamRoot = '../../agenc/upstream/'
+const optionalModuleRoot = '../../'
 let proactiveModule: ProactiveModule | null | undefined
 let sendUserFilePromptModule: SendUserFilePromptModule | null | undefined
 
@@ -21,13 +21,13 @@ function isMissingOptionalModule(error: unknown, path: string): boolean {
   }
   return (
     error.message.includes(path) ||
-    error.message.includes(`${upstreamRoot}${path}`)
+    error.message.includes(`${optionalModuleRoot}${path}`)
   )
 }
 
 function loadOptionalModule<T>(path: string): T | null {
   try {
-    return requireFromHere(upstreamRoot + path) as T
+    return requireFromHere(optionalModuleRoot + path) as T
   } catch (error) {
     if (isMissingOptionalModule(error, path)) return null
     throw error

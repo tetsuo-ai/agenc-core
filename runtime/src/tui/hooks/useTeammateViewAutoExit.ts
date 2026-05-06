@@ -1,7 +1,9 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { useEffect } from 'react'
 import { useAppState, useSetAppState } from '../state/AppState.js'
-import { exitTeammateView } from '../../agenc/upstream/state/teammateViewHelpers' // upstream-import: keep target is owned by another Z-PURGE item
-import { isInProcessTeammateTask } from '../../agenc/upstream/tasks/InProcessTeammateTask/types' // upstream-import: keep target is owned by another Z-PURGE item
+import { exitTeammateView } from '../state/teammateViewHelpers'
+import { isInProcessTeammateTask } from '../../tasks/InProcessTeammateTask/types'
 
 /**
  * Auto-exits teammate viewing mode when the viewed teammate

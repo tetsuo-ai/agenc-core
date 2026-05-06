@@ -62,7 +62,7 @@ import { logForDebugging } from 'src/utils/debug.js'
 import { loadMemoryPrompt } from '../memdir/memdir.js'
 import { isUndercover } from '../utils/undercover.js'
 import { isMcpInstructionsDeltaEnabled } from '../utils/mcpInstructionsDelta.js'
-import { getCachedMCConfig as getCachedMCConfigForFRCSource } from '../services/compact/cachedMCConfig.js'
+import { getCachedMCConfig as getCachedMCConfigForFRCSource } from '../services/compact/cachedMicrocompact.js'
 import { getAntModelOverrideConfig } from '../utils/model/antModels.js'
 
 // Dead code elimination: conditional imports for feature-gated modules

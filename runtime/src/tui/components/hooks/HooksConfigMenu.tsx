@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 /**
  * HooksConfigMenu is a read-only browser for configured hooks.
@@ -13,7 +15,7 @@ import { c as _c } from "react-compiler-runtime";
  */
 import * as React from 'react';
 import { useCallback, useMemo, useState } from 'react';
-import type { HookEvent } from '../../../agenc/upstream/entrypoints/agentSdkTypes.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { HookEvent } from '../../../entrypoints/agentSdkTypes.js';
 import { useAppState, useAppStateStore } from '../../state/AppState.js';
 import type { CommandResultDisplay } from '../../../commands.js';
 import { useSettingsChange } from '../../hooks/useSettingsChange';

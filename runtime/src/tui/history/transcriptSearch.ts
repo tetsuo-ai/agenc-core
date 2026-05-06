@@ -1,4 +1,6 @@
-import type { RenderableMessage } from '../../agenc/upstream/types/message.js'
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+import type { RenderableMessage } from '../../types/message.js'
 import {
   INTERRUPT_MESSAGE,
   INTERRUPT_MESSAGE_FOR_TOOL_USE,

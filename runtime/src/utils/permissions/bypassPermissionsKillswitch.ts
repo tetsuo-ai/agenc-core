@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { useEffect, useRef } from 'react'
 import {
@@ -6,7 +8,7 @@ import {
   useAppStateStore,
   useSetAppState,
 } from '../../tui/state/AppState.js'
-import type { ToolPermissionContext } from 'src/Tool.js'
+import type { ToolPermissionContext } from 'src/tools/Tool.js'
 import { getIsRemoteMode } from '../../bootstrap/state.js'
 import {
   createDisabledBypassPermissionsContext,

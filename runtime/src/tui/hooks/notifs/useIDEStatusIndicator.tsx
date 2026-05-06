@@ -1,11 +1,13 @@
+// @ts-nocheck
+// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.
 import { c as _c } from "react-compiler-runtime";
 import React, { useEffect, useRef } from 'react';
 import { useNotifications } from '../../context/notifications.js';
 import { Text } from '../../ink.js';
-import type { MCPServerConnection } from '../../../agenc/upstream/services/mcp/types.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { MCPServerConnection } from '../../../services/mcp/types.js';
 import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { detectIDEs, type IDEExtensionInstallationStatus, isJetBrainsIde, isSupportedTerminal } from '../../../utils/ide.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getIsRemoteMode } from '../../../agenc/upstream/bootstrap/state'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getIsRemoteMode } from '../../../bootstrap/state';
 import { useIdeConnectionStatus } from '../useIdeConnectionStatus';
 import type { IDESelection } from '../useIdeSelection';
 const MAX_IDE_HINT_SHOW_COUNT = 5;

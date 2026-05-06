@@ -1,6 +1,5 @@
 // @ts-nocheck
 // Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
-import { feature } from 'bun:bundle'
 import { stat } from 'fs/promises'
 import { getClientType } from '../bootstrap/state.js'
 import {
@@ -79,13 +78,8 @@ export function getAttributionTexts(): AttributionTexts {
     isInternalModelRepoCached() || isKnownPublicModel
       ? getPublicModelName(model)
       : 'AgenC Opus 4.6'
-  const defaultAttribution = `🤖 Generated with [AgenC](${PRODUCT_URL})`
-  const coAuthorDomain = 'agenc.tech'
-  const defaultCommit = isEnvTruthy(
-    process.env.AGENC_DISABLE_CO_AUTHORED_BY,
-  )
-    ? ''
-    : `Co-Authored-By: ${modelName} <noreply@${coAuthorDomain}>`
+  const defaultAttribution = ''
+  const defaultCommit = ''
 
   const settings = getInitialSettings()
 
@@ -290,15 +284,11 @@ async function getTranscriptStats(): Promise<{
 }
 
 /**
- * Get enhanced PR attribution text with AgenC contribution stats.
- *
- * Format: "🤖 Generated with AgenC (93% 3-shotted by claude-opus-4-5)"
+ * Get configured PR attribution text.
  *
  * Rules:
- * - Shows AgenC contribution percentage from commit attribution
- * - Shows N-shotted where N is the prompt count (1-shotted, 2-shotted, etc.)
- * - Shows short model name (e.g., claude-opus-4-5)
- * - Returns default attribution if stats can't be computed
+ * - Returns explicit user-configured PR attribution when present
+ * - Returns empty text by default
  *
  * @param getAppState Function to get the current AppState (from command context)
  */
@@ -333,7 +323,7 @@ export async function getEnhancedPRAttribution(
     return ''
   }
 
-  const defaultAttribution = `🤖 Generated with [AgenC](${PRODUCT_URL})`
+  const defaultAttribution = ''
 
   // Get AppState first
   const appState = getAppState()
@@ -374,27 +364,16 @@ export async function getEnhancedPRAttribution(
     return defaultAttribution
   }
 
-  // Build the enhanced attribution: "🤖 Generated with AgenC (93% 3-shotted by claude-opus-4-5, 2 memories recalled)"
+  if (defaultAttribution === '') {
+    logForDebugging('PR Attribution: returning empty default')
+    return ''
+  }
+
   const memSuffix =
     memoryAccessCount > 0
       ? `, ${memoryAccessCount} ${memoryAccessCount === 1 ? 'memory' : 'memories'} recalled`
       : ''
-  const summary = `🤖 Generated with [AgenC](${PRODUCT_URL}) (${agencPercent}% ${promptCount}-shotted by ${shortModelName}${memSuffix})`
-
-  // Append trailer lines for squash-merge survival. Only for allowlisted repos
-  // (INTERNAL_MODEL_REPOS) and only in builds with COMMIT_ATTRIBUTION enabled —
-  // attributionTrailer.ts contains excluded strings, so reach it via dynamic
-  // import behind feature(). When the repo is configured with
-  // squash_merge_commit_message=PR_BODY (cli, apps), the PR body becomes the
-  // squash commit body verbatim — trailer lines at the end become proper git
-  // trailers on the squash commit.
-  if (feature('COMMIT_ATTRIBUTION') && isInternal && attributionData) {
-    const { buildPRTrailers } = await import('./attributionTrailer.js')
-    const trailers = buildPRTrailers(attributionData, appState.attribution)
-    const result = `${summary}\n\n${trailers.join('\n')}`
-    logForDebugging(`PR Attribution: returning with trailers: ${result}`)
-    return result
-  }
+  const summary = `${defaultAttribution} (${agencPercent}% ${promptCount}-shotted by ${shortModelName}${memSuffix})`
 
   logForDebugging(`PR Attribution: returning summary: ${summary}`)
   return summary

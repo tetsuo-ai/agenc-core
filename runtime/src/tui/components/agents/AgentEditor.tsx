@@ -6,7 +6,7 @@ import { useSetAppState } from '../../state/AppState.js';
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import type { Tools } from '../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { Tools } from '../../../tools/Tool';
 import { type AgentColorName, setAgentColor } from 'src/tools/AgentTool/agentColorManager.js';
 import { type AgentDefinition, getActiveAgentsFromList, isCustomAgent, isPluginAgent } from 'src/tools/AgentTool/loadAgentsDir.js';
 import { editFileInEditor } from '../../../utils/promptEditor.js'; // upstream-import: keep target is owned by another Z-PURGE item

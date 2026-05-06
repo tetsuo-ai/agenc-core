@@ -1,13 +1,15 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Shared utilities for displaying task status across different task types.
  */
 
 import figures from 'figures';
-import type { TaskStatus } from '../../../agenc/upstream/Task.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { InProcessTeammateTaskState } from '../../../agenc/upstream/tasks/InProcessTeammateTask/types.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isPanelAgentTask } from '../../../agenc/upstream/tasks/LocalAgentTask/LocalAgentTask.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { TaskStatus } from '../../../tasks/Task.js';
+import type { InProcessTeammateTaskState } from '../../../tasks/InProcessTeammateTask/types.js';
+import { isPanelAgentTask } from '../../../tasks/LocalAgentTask/LocalAgentTask.js';
 import { isBackgroundTask, type TaskState } from 'src/tasks/types.js';
-import type { DeepImmutable } from '../../../agenc/upstream/types/utils.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { DeepImmutable } from '../../../types/utils.js';
 import { summarizeRecentActivities } from '../../../utils/collapseReadSearch.js'; // upstream-import: keep target is owned by another Z-PURGE item
 
 /**

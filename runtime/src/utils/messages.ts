@@ -25,7 +25,7 @@ import {
 } from 'src/services/analytics/index.js'
 import { sanitizeToolNameForAnalytics } from 'src/services/analytics/metadata.js'
 import type { AgentId } from 'src/types/ids.js'
-import { companionIntroText } from '../agenc/upstream/buddy/prompt.js' // upstream-import: keep buddy target is owned by another Z-PURGE item
+import { companionIntroText } from '../tui/buddy/prompt.js'
 import { NO_CONTENT_MESSAGE } from '../constants/messages.js'
 import { OUTPUT_STYLE_CONFIG } from '../constants/outputStyles.js'
 import { isAutoMemoryEnabled } from '../memdir/paths.js'

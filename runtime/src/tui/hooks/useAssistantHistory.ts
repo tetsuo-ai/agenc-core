@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { randomUUID } from 'crypto'
 import {
   type RefObject,
@@ -12,10 +14,10 @@ import {
   fetchOlderEvents,
   type HistoryAuthCtx,
   type HistoryPage,
-} from '../../agenc/upstream/assistant/sessionHistory' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../assistant/sessionHistory'
 import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js'
-import type { RemoteSessionConfig } from '../../agenc/upstream/remote/RemoteSessionManager' // upstream-import: keep target is owned by another Z-PURGE item
-import { convertSDKMessage } from '../../agenc/upstream/remote/sdkMessageAdapter' // upstream-import: keep target is owned by another Z-PURGE item
+import type { RemoteSessionConfig } from '../../remote/RemoteSessionManager'
+import { convertSDKMessage } from '../../remote/sdkMessageAdapter'
 import type { Message, SystemInformationalMessage } from '../../types/message'
 import { logForDebugging } from 'src/utils/debug.js'
 

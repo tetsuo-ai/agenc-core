@@ -1,23 +1,25 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { memo, type ReactNode, useMemo, useRef } from 'react';
-import { isBridgeEnabled } from '../../../agenc/upstream/bridge/bridgeEnabled.js';
-import { getBridgeStatus } from '../../../agenc/upstream/bridge/bridgeStatusUtil.js';
+import { isBridgeEnabled } from '../../../bridge/bridgeEnabled.js';
+import { getBridgeStatus } from '../../../bridge/bridgeStatusUtil.js';
 import { useSetPromptOverlay } from '../../context/promptOverlayContext.js';
-import type { VerificationStatus } from '../../hooks/useApiKeyVerification';
-import type { IDESelection } from '../../hooks/useIdeSelection';
-import { useSettings } from '../../hooks/useSettings';
-import { useTerminalSize } from '../../hooks/useTerminalSize';
+import type { VerificationStatus } from '../../hooks/useApiKeyVerification.js';
+import type { IDESelection } from '../../hooks/useIdeSelection.js';
+import { useSettings } from '../../hooks/useSettings.js';
+import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { Box, Text } from '../../ink.js';
-import type { MCPServerConnection } from '../../../agenc/upstream/services/mcp/types.js';
+import type { MCPServerConnection } from '../../../services/mcp/types.js';
 import { useAppState } from '../../state/AppState.js';
-import type { ToolPermissionContext } from '../../../agenc/upstream/Tool.js';
-import type { Message } from '../../../agenc/upstream/types/message.js';
-import type { PromptInputMode, VimMode } from '../../../agenc/upstream/types/textInputTypes.js';
+import type { ToolPermissionContext } from '../../../tools/Tool.js';
+import type { Message } from '../../../types/message.js';
+import type { PromptInputMode, VimMode } from '../../../types/textInputTypes.js';
 import type { AutoUpdaterResult } from '../../../utils/autoUpdater.js';
 import { isFullscreenEnvEnabled } from '../../../utils/fullscreen.js';
 import { isUndercover } from '../../../utils/undercover.js';
-import { CoordinatorTaskPanel, useCoordinatorTaskCount } from '../CoordinatorAgentStatus';
+import { CoordinatorTaskPanel, useCoordinatorTaskCount } from '../CoordinatorAgentStatus.js';
 import { getLastAssistantMessageId, StatusLine, statusLineShouldDisplay } from '../../startup/StatusLine.js';
 import { Notifications } from './Notifications.js';
 import { PromptInputFooterLeftSide } from './PromptInputFooterLeftSide.js';

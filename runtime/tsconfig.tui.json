@@ -13,7 +13,7 @@
     "types": [],
     "paths": {
       "bun:bundle": ["./src/build/feature.ts"],
-      "src/*": ["./src/agenc/upstream/*", "./src/*"]
+      "src/*": ["./src/*"]
     }
   },
   "include": ["src/tui/**/*"],

@@ -3,9 +3,9 @@ import { useEffect, useRef } from 'react'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
-} from '../../../agenc/upstream/services/analytics/index.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { sanitizeToolNameForAnalytics } from '../../../agenc/upstream/services/analytics/metadata.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { BashTool } from '../../../agenc/upstream/tools/BashTool/BashTool.js' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../services/analytics/index.js'
+import { sanitizeToolNameForAnalytics } from '../../../services/analytics/metadata.js'
+import { BashTool } from '../../../tools/BashTool/BashTool.js'
 import { splitCommand_DEPRECATED } from '../../../utils/bash/commands.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type {
   PermissionDecisionReason,

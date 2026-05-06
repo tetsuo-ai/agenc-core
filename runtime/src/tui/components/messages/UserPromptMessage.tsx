@@ -1,9 +1,9 @@
 import { feature } from 'bun:bundle';
 import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import React, { useContext, useMemo } from 'react';
-import { getKairosActive, getUserMsgOptIn } from '../../../agenc/upstream/bootstrap/state'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getKairosActive, getUserMsgOptIn } from '../../../bootstrap/state';
 import { Box } from '../../ink.js';
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../agenc/upstream/services/analytics/growthbook'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../services/analytics/growthbook';
 import { useAppState } from '../../state/AppState.js';
 import { isEnvTruthy } from '../../../utils/envUtils';
 import { logError } from '../../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item

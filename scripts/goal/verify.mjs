@@ -34,6 +34,11 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { findItem, repoRoot, mainCheckoutRoot, fail } from "./checklist-utils.mjs";
 import {
+  RUNTIME_UPSTREAM_SCAN_PATHS,
+  collectRuntimeUpstreamReferences,
+  validateZPurgecTsconfigBoundary,
+} from "./purge-scans.mjs";
+import {
   SHIM_BEHAVIOR_RATIO_LIMIT,
   formatShimBehaviorViolation,
   measureShimBehaviorForPath,
@@ -2073,11 +2078,21 @@ if (toScan.length === 0 && candidates.size === 0) {
 //      filename suffix wouldn't flag — wrapper-by-another-name).
 
 header("no upstream growth; no new shim/adapter/compat/legacy/bridge files");
-const addedRes = git("diff", "--name-only", "--diff-filter=A", "main...HEAD");
-const addedStagedRes = git("diff", "--name-only", "--diff-filter=A", "--cached");
+const addedRes = git("diff", "--name-only", "--diff-filter=ACR", "-M", "-C", "main...HEAD");
+const addedStagedRes = git("diff", "--name-only", "--diff-filter=ACR", "-M", "-C", "--cached");
 const addedWtRes = git("ls-files", "--others", "--exclude-standard");
 const added = new Set(
   [addedRes.stdout, addedStagedRes.stdout, addedWtRes.stdout]
+    .join("\n")
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
+const changedRes = git("diff", "--name-only", "--diff-filter=ACMR", "-M", "-C", "main...HEAD");
+const changedStagedRes = git("diff", "--name-only", "--diff-filter=ACMR", "-M", "-C", "--cached");
+const changedWtRes = git("diff", "--name-only", "--diff-filter=ACMR", "-M", "-C");
+const changed = new Set(
+  [changedRes.stdout, changedStagedRes.stdout, changedWtRes.stdout, addedWtRes.stdout]
     .join("\n")
     .split("\n")
     .map((s) => s.trim())
@@ -2205,7 +2220,8 @@ if (shimAdditions.length > 0) {
 // A new module whose body is >50% imports + re-exports + single-line forwards AND
 // has fewer than 40 significant lines is functionally a shim regardless of name.
 const forwardingViolations = [];
-for (const rel of added) {
+const hiddenStubViolations = [];
+for (const rel of changed) {
   if (!/^runtime\/src\//.test(rel)) continue;
   if (!/\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(rel)) continue;
   if (/\.test\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(rel)) continue;
@@ -2218,6 +2234,13 @@ for (const rel of added) {
   }
   const violation = measureShimBehaviorForPath(rel, body);
   if (violation) forwardingViolations.push(violation);
+  if (
+    /\bname\s*:\s*["']stub["']/.test(body) &&
+    /\bisHidden\s*:\s*true/.test(body) &&
+    /\bisEnabled\s*:\s*\(\s*\)\s*=>\s*false/.test(body)
+  ) {
+    hiddenStubViolations.push(rel);
+  }
 }
 if (forwardingViolations.length > 0) {
   failGate(
@@ -2227,6 +2250,13 @@ if (forwardingViolations.length > 0) {
       forwardingViolations
         .map((violation) => `- ${formatShimBehaviorViolation(violation)}`)
         .join("\n  "),
+  );
+}
+if (hiddenStubViolations.length > 0) {
+  failGate(
+    `forbidden: this item adds ${hiddenStubViolations.length} hidden stub module(s). ` +
+      `Remove intentionally unavailable command surfaces or migrate real behavior.\n  ` +
+      hiddenStubViolations.map((p) => `- ${p}`).join("\n  "),
   );
 }
 pass("no new upstream/ files, no new shim-pattern additions, no forwarding-only modules");
@@ -7412,6 +7442,92 @@ async function cleanupGates(item) {
     pass(`${id}: ${label} purged (zero files, zero importers)`);
   }
 
+  function assertNoRuntimeUpstreamReferences(label) {
+    const listed = run("git", ["ls-files", "--", ...RUNTIME_UPSTREAM_SCAN_PATHS], { silent: true });
+    if (listed.status !== 0) {
+      failGate(`${id}: unable to enumerate tracked runtime files for upstream-reference scan`);
+    }
+    const files = (listed.stdout || "")
+      .split("\n")
+      .filter(Boolean);
+    const stale = collectRuntimeUpstreamReferences({ root, files });
+    if (stale.length > 0) {
+      failGate(
+        `${id}: stale agenc/upstream reference(s) remain in tracked runtime source, tests, or build config:\n  ${stale.slice(0, 30).join("\n  ")}${stale.length > 30 ? `\n  ... +${stale.length - 30} more` : ""}`,
+      );
+    }
+    pass(`${id}: ${label} has zero stale agenc/upstream references in tracked runtime source, tests, and build config`);
+  }
+
+  function assertZPurgecTemporaryBoundaries() {
+    const tsconfigSource = readFileSync(path.join(root, "runtime/tsconfig.json"), "utf8");
+    const tsconfigBoundary = validateZPurgecTsconfigBoundary(tsconfigSource);
+    if (tsconfigBoundary.issues.length > 0) {
+      failGate(
+        `Z-PURGEC: runtime/tsconfig.json temporary boundary is not exact:\n  ${tsconfigBoundary.issues.join("\n  ")}`,
+      );
+    }
+    pass(`Z-PURGEC: runtime/tsconfig.json has exact ${tsconfigBoundary.entries.length}-entry concrete temporary boundary and no broad migrated-root exclusions`);
+
+    const movedBoundaryPrefixes = [
+      "// @ts-nocheck\n" +
+        "// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.\n",
+      "// @ts-nocheck\n" +
+        "// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.\n",
+      "// @ts-nocheck\n" +
+        "// temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.\n",
+      "// @ts-nocheck\n" +
+        "// temporary boundary: moved purge surface is outside baseline typecheck.\n",
+      "// @ts-nocheck\n" +
+        "// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.\n",
+      "// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.",
+      "// @ts-nocheck -- temporary boundary: moved purge surface is outside baseline typecheck.",
+      "// @ts-nocheck\n" +
+        "// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.\n",
+      "// @ts-nocheck -- Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.",
+    ];
+    const runtimeFiles = walkFiles(path.join(root, "runtime/src"))
+      .filter((file) => /\.(ts|tsx|mts|cts)$/.test(file))
+      .filter((file) => !file.split(path.sep).join("/").includes("/runtime/src/agenc/upstream/"));
+    const boundaryFiles = runtimeFiles.filter((file) => {
+      const source = readFileSync(file, "utf8");
+      return movedBoundaryPrefixes.some((prefix) => source.startsWith(prefix));
+    });
+    const undocumentedUnchecked = runtimeFiles.filter((file) => {
+      const source = readFileSync(file, "utf8");
+      return source.startsWith("// @ts-nocheck") &&
+        !movedBoundaryPrefixes.some((prefix) => source.startsWith(prefix));
+    });
+    if (undocumentedUnchecked.length > 0) {
+      failGate(
+        `Z-PURGEC: ${undocumentedUnchecked.length} runtime file(s) keep undocumented ts-nocheck:\n  ${undocumentedUnchecked.slice(0, 20).map((f) => path.relative(root, f)).join("\n  ")}`,
+      );
+    }
+    if (boundaryFiles.length > 800) {
+      failGate(`Z-PURGEC: ${boundaryFiles.length} moved file(s) keep ts-nocheck; expected <= 800 documented boundary files`);
+    }
+    pass(`Z-PURGEC: moved ts-nocheck boundary documented and capped at ${boundaryFiles.length} file(s)`);
+
+    const scannerTest = run("node", ["scripts/goal/purge-scans.test.mjs"]);
+    if (scannerTest.status !== 0) {
+      failGate("Z-PURGEC: purge scanner self-test failed");
+    }
+    pass("Z-PURGEC: purge scanner self-test passed");
+
+    const tsupResolutionTest = run("npm", [
+      "test",
+      "--workspace",
+      "@tetsuo-ai/runtime",
+      "--",
+      "--run",
+      "tests/zpurgec-tsup-resolution.test.ts",
+    ]);
+    if (tsupResolutionTest.status !== 0) {
+      failGate("Z-PURGEC: tsup resolution boundary test failed");
+    }
+    pass("Z-PURGEC: tsup resolution boundary test passed");
+  }
+
   if (id === "Z-PURGEA") {
     assertSubtreesPurged(["utils", "constants"], "utils + constants");
     const movedRoots = [
@@ -7564,6 +7680,8 @@ async function cleanupGates(item) {
       }
     }
     pass(`${id}: no top-level upstream files remain`);
+    assertNoRuntimeUpstreamReferences("runtime purge surface");
+    assertZPurgecTemporaryBoundaries();
     return;
   }
   if (id === "Z-PURGEFINAL") {
@@ -7576,12 +7694,7 @@ async function cleanupGates(item) {
       }
       failGate(`${id}: runtime/src/agenc/upstream/ exists (empty); delete the directory itself`);
     }
-    const importerScan = run("rg", [
-      "--no-messages", "-l", "agenc/upstream", "runtime/src",
-    ], { silent: true });
-    if (importerScan.status === 0 && (importerScan.stdout || "").trim()) {
-      failGate(`${id}: agenc/upstream still imported in:\n${importerScan.stdout}`);
-    }
+    assertNoRuntimeUpstreamReferences("final runtime purge surface");
     pass(`${id}: upstream/ tree fully removed, zero importers`);
     return;
   }

@@ -1,7 +1,7 @@
 import type { ContentBlock } from '@anthropic-ai/sdk/resources/index.mjs'
 import { getUserContext } from '../../../context.js'
-import { queryModelWithoutStreaming } from '../../../agenc/upstream/services/api/claude.js' // branding-scan: allow existing provider API module path pending service purge // upstream-import: keep target is owned by another Z-PURGE item
-import { getEmptyToolPermissionContext } from '../../../agenc/upstream/Tool.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { queryModelWithoutStreaming } from '../../../services/api/anthropic.js' // branding-scan: allow existing provider API module path pending service purge
+import { getEmptyToolPermissionContext } from '../../../tools/Tool.js'
 import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 import { prependUserContext } from '../../../utils/api.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
@@ -13,9 +13,9 @@ import { isAutoMemoryEnabled } from '../../../memdir/paths'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
-} from '../../../agenc/upstream/services/analytics/index' // upstream-import: keep target is owned by another Z-PURGE item
-import { jsonParse } from '../../../utils/slowOperations.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { asSystemPrompt } from '../../../utils/systemPromptType.js' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../services/analytics/index'
+import { jsonParse } from '../../../utils/slowOperations' // upstream-import: keep target is owned by another Z-PURGE item
+import { asSystemPrompt } from '../../../utils/systemPromptType' // upstream-import: keep target is owned by another Z-PURGE item
 
 type GeneratedAgent = {
   identifier: string

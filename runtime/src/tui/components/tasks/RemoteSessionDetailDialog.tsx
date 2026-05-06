@@ -1,26 +1,26 @@
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import React, { useMemo, useState } from 'react';
-import type { SDKMessage } from '../../../agenc/upstream/entrypoints/agentSdkTypes.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { ToolUseContext } from '../../../agenc/upstream/Tool.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { DeepImmutable } from '../../../agenc/upstream/types/utils.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { SDKMessage } from '../../../entrypoints/agentSdkTypes.js';
+import type { ToolUseContext } from '../../../tools/Tool.js';
+import type { DeepImmutable } from '../../../types/utils.js';
 import type { CommandResultDisplay } from '../../../commands.js';
 import { DIAMOND_FILLED, DIAMOND_OPEN } from '../../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useElapsedTime } from '../../hooks/useElapsedTime';
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { Box, Link, Text } from '../../ink.js';
-import type { RemoteAgentTaskState } from '../../../agenc/upstream/tasks/RemoteAgentTask/RemoteAgentTask'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getRemoteTaskSessionUrl } from '../../../agenc/upstream/tasks/RemoteAgentTask/RemoteAgentTask'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { RemoteAgentTaskState } from '../../../tasks/RemoteAgentTask/RemoteAgentTask';
+import { getRemoteTaskSessionUrl } from '../../../tasks/RemoteAgentTask/RemoteAgentTask';
 import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js';
 import { ASK_USER_QUESTION_TOOL_NAME } from 'src/tools/AskUserQuestionTool/prompt.js';
-import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../../../agenc/upstream/tools/ExitPlanModeTool/constants'; // upstream-import: keep target is owned by another Z-PURGE item
-import { openBrowser } from '../../../utils/browser.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { errorMessage } from '../../../utils/errors.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { formatDuration, truncateToWidth } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { toInternalMessages } from '../../../utils/messages/mappers.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { EMPTY_LOOKUPS, normalizeMessages } from '../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { teleportResumeCodeSession } from '../../../utils/teleport.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../../../tools/ExitPlanModeTool/constants';
+import { openBrowser } from '../../../utils/browser'; // upstream-import: keep target is owned by another Z-PURGE item
+import { errorMessage } from '../../../utils/errors'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatDuration, truncateToWidth } from '../../../utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
+import { toInternalMessages } from '../../../utils/messages/mappers'; // upstream-import: keep target is owned by another Z-PURGE item
+import { EMPTY_LOOKUPS, normalizeMessages } from '../../../utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
+import { plural } from '../../../utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { teleportResumeCodeSession } from '../../../utils/teleport'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../CustomSelect/select';
 import { Byline } from '../design-system/Byline';
 import { Dialog } from '../design-system/Dialog';

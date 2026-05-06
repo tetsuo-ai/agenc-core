@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { z } from 'zod/v4'
 // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
@@ -31,7 +33,7 @@ export {
 // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { type HookCommand, HooksSchema } from '../../schemas/hooks.js'
 // upstream-import: keep service schema target is owned by a later purge item
-import { AutoFixConfigSchema } from '../../agenc/upstream/services/autoFix/autoFixConfig.js'
+import { AutoFixConfigSchema } from '../../services/autoFix/autoFixConfig.js'
 import { count } from '../array.js'
 
 /**

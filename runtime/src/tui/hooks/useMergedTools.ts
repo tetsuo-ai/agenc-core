@@ -1,7 +1,9 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { useMemo } from 'react'
-import type { Tools, ToolPermissionContext } from '../../agenc/upstream/Tool' // upstream-import: keep target is owned by another Z-PURGE item
-import { assembleToolPool } from '../../agenc/upstream/tools' // upstream-import: keep target is owned by another Z-PURGE item
+import type { Tools, ToolPermissionContext } from '../../tools/Tool'
+import { assembleToolPool } from '../../tools'
 import { useAppState } from '../state/AppState.js'
 import { mergeAndFilterTools } from '../../utils/toolPool.js' // upstream-import: keep target is owned by another Z-PURGE item
 

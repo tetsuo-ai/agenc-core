@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { useTerminalSize } from '../../../hooks/useTerminalSize';
 import { useTheme } from '../../../ink.js';
-import { filterToolProgressMessages, type Tool, type Tools } from '../../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
+import { filterToolProgressMessages, type Tool, type Tools } from '../../../../tools/Tool';
 import type { ProgressMessage } from '../../../../types/message';
 import type { buildMessageLookups } from '../../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { FallbackToolUseRejectedMessage } from '../../FallbackToolUseRejectedMessage';

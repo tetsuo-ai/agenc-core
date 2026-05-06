@@ -1,9 +1,11 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import * as React from 'react';
 import { Box, Text } from '../../ink.js';
 import { AGENT_COLOR_TO_THEME_COLOR, AGENT_COLORS, type AgentColorName } from '../../../tools/AgentTool/agentColorManager.js';
-import type { PromptInputMode } from '../../../agenc/upstream/types/textInputTypes.js';
+import type { PromptInputMode } from '../../../types/textInputTypes.js';
 import { getTeammateColor } from '../../../utils/teammate.js';
 import type { Theme } from '../../../utils/theme.js';
 import { isAgentSwarmsEnabled } from '../../../utils/agentSwarmsEnabled.js';

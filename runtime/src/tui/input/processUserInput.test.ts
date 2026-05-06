@@ -21,13 +21,13 @@ const mocks = vi.hoisted(() => ({
   storeImages: vi.fn(async () => new Map<number, string>()),
 }));
 
-vi.mock("../../agenc/upstream/bootstrap/state.js", () => ({
+vi.mock("../../bootstrap/state.js", () => ({
   addInvokedSkill: vi.fn(),
   getSessionId: vi.fn(() => "session-test"),
   setPromptId: mocks.setPromptId,
 }));
 
-vi.mock("../../agenc/upstream/services/analytics/index.js", () => ({
+vi.mock("../../services/analytics/index.js", () => ({
   logEvent: mocks.logEvent,
 }));
 

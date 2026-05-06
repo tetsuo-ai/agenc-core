@@ -2,8 +2,8 @@ import figures from 'figures';
 import { homedir } from 'os';
 import * as React from 'react';
 import { Box, Text } from '../../ink.js';
-import type { Step } from '../../../agenc/upstream/projectOnboardingState'; // upstream-import: keep target is owned by another Z-PURGE item
-import { formatCreditAmount, getCachedReferrerReward } from '../../../agenc/upstream/services/api/referral'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { Step } from '../../../onboarding/projectOnboardingState';
+import { formatCreditAmount, getCachedReferrerReward } from '../../../services/api/referral';
 import type { LogOption } from '../../../types/logs';
 import { getCwd } from '../../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { formatRelativeTimeAgo } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item

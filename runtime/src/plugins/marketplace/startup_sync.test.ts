@@ -594,7 +594,7 @@ describe("startup marketplace sync", () => {
   });
 
   it("keeps the live REPL startup import on the AgenC-owned marketplace path", async () => {
-    const repl = await readFile(join(process.cwd(), "src/agenc/upstream/screens/REPL.tsx"), "utf8");
+    const repl = await readFile(join(process.cwd(), "src/tui/screens/REPL.tsx"), "utf8");
 
     expect(repl).toContain("src/plugins/marketplace/startup_checks.js");
     expect(repl).not.toContain("src/utils/plugins/performStartupChecks.js");

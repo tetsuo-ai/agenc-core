@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto'
 import type { QuerySource } from '../../constants/querySource.js'
-import { queryModelWithoutStreaming } from '../../agenc/upstream/services/api/claude.js' // branding-scan: allow upstream provider module path pending purge // upstream-import: keep API service target is owned by a later purge item
+import { queryModelWithoutStreaming } from '../../services/api/anthropic.js'
 import type { Message } from '../../types/message.js'
 import { createAbortController } from '../abortController.js'
 import { logError } from '../log.js'

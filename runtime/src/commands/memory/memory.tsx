@@ -74,7 +74,7 @@ function MemoryCommand({
 
         <Box marginTop={1}>
           <Text dimColor>
-            Learn more: <Link url="https://code.agenc.com/docs/en/memory" />
+            Learn more: <Link url="https://agenc.tech/docs/en/memory" />
           </Text>
         </Box>
       </Box>

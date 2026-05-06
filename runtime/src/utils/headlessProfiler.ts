@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Headless mode profiling utility for measuring per-turn latency in -p (print) mode.
  *

@@ -1,5 +1,5 @@
-import type { Tools } from '../../../agenc/upstream/Tool' // upstream-import: keep target is owned by another Z-PURGE item
-import { resolveAgentTools } from '../../../agenc/upstream/tools/AgentTool/agentToolUtils' // upstream-import: keep target is owned by another Z-PURGE item
+import type { Tools } from '../../../tools/Tool'
+import { resolveAgentTools } from '../../../tools/AgentTool/agentToolUtils'
 import type {
   AgentDefinition,
   CustomAgentDefinition,

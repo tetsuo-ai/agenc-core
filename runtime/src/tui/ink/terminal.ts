@@ -144,7 +144,7 @@ export function isGhosttyTerminal(): boolean {
   return xtversionName?.toLowerCase().startsWith('ghostty') ?? false
 }
 
-/** True if running in an xterm.js-based terminal (compatible IDE
+/** True if running in an xterm.js-based terminal (VS Code-compatible, Windsurf
  *  integrated terminals). Combines TERM_PROGRAM env check (fast, sync, but
  *  not forwarded over SSH) with the XTVERSION probe result (async, survives
  *  SSH — query/reply goes through the pty). Early calls may miss the probe

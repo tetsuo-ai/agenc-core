@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import type { CommandResultDisplay } from 'src/commands.js';
-import { logEvent } from '../../agenc/upstream/services/analytics/index.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logEvent } from '../../services/analytics/index.js';
 import { logForDebugging } from 'src/utils/debug.js';
 import { Box, Text } from '../ink.js';
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js'; // upstream-import: keep target is owned by another Z-PURGE item

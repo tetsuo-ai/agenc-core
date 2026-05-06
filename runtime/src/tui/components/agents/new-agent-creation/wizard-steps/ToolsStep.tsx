@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { type ReactNode } from 'react';
-import type { Tools } from '../../../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { Tools } from '../../../../../tools/Tool';
 import { ConfigurableShortcutHint } from '../../../ConfigurableShortcutHint';
 import { Byline } from '../../../design-system/Byline';
 import { KeyboardShortcutHint } from '../../../design-system/KeyboardShortcutHint';

@@ -21,6 +21,7 @@ import {
 const SUMMARY_MAX_OUTPUT_TOKENS = 4_000;
 const MAX_SUMMARY_INPUT_CHARS = 48_000;
 const NO_CONTENT_MESSAGE = "(no content)";
+export const ERROR_MESSAGE_USER_ABORT = "User aborted";
 const COMMAND_NAME_TAG = "command-name";
 const COMMAND_MESSAGE_TAG = "command-message";
 const COMMAND_ARGS_TAG = "command-args";

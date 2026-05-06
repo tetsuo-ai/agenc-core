@@ -31,17 +31,17 @@ vi.mock("../../commands.js", () => ({
   ),
 }));
 
-vi.mock("../../agenc/upstream/bootstrap/state.js", () => ({
+vi.mock("../../bootstrap/state.js", () => ({
   addInvokedSkill: vi.fn(),
   getSessionId: vi.fn(() => "session-test"),
   setPromptId: vi.fn(),
 }));
 
-vi.mock("../../agenc/upstream/services/analytics/index.js", () => ({
+vi.mock("../../services/analytics/index.js", () => ({
   logEvent: mocks.logEvent,
 }));
 
-vi.mock("../../agenc/upstream/services/api/dumpPrompts.js", () => ({
+vi.mock("../../services/api/dumpPrompts.js", () => ({
   getDumpPromptsPath: vi.fn(() => "/tmp/prompts"),
 }));
 
@@ -53,11 +53,11 @@ vi.mock("../../services/compact/microCompact.js", () => ({
   resetMicrocompactState: vi.fn(),
 }));
 
-vi.mock("../../agenc/upstream/tools/AgentTool/runAgent.js", () => ({
+vi.mock("../../tools/AgentTool/runAgent.js", () => ({
   runAgent: vi.fn(async function* () {}),
 }));
 
-vi.mock("../../agenc/upstream/tools/AgentTool/UI.js", () => ({
+vi.mock("../../tools/AgentTool/UI.js", () => ({
   renderToolUseProgressMessage: vi.fn(() => null),
 }));
 

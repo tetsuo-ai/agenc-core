@@ -1,7 +1,7 @@
 import * as React from "react";
 import { describe, expect, test, vi } from "vitest";
 
-import { InvalidSettingsDialog } from "./InvalidSettingsDialog";
+import { InvalidSettingsDialog } from "./InvalidSettingsDialog.js";
 import {
   buildValidationErrorTree,
   ValidationErrorsList,

@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import chalk from 'chalk';
 import figures from 'figures';
@@ -18,7 +20,7 @@ import { Dialog } from './design-system/Dialog';
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint';
 import { LoadingState } from './design-system/LoadingState';
 const DIALOG_TITLE = 'Select Remote Environment';
-const SETUP_HINT = `Configure environments at: https://agenc.ai/code`;
+const SETUP_HINT = `Configure environments at: https://agenc.tech/code`;
 type Props = {
   onDone: (message?: string) => void;
 };

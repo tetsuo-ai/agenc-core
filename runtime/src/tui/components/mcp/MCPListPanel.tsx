@@ -4,8 +4,8 @@ import React, { useCallback, useState } from 'react';
 import type { CommandResultDisplay } from '../../../commands.js';
 import { Box, color, Link, Text, useTheme } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
-import type { ConfigScope } from '../../../agenc/upstream/services/mcp/types'; // upstream-import: keep target is owned by another Z-PURGE item
-import { describeMcpConfigFilePath } from '../../../agenc/upstream/services/mcp/utils'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ConfigScope } from '../../../services/mcp/types';
+import { describeMcpConfigFilePath } from '../../../services/mcp/utils';
 import { isDebugMode } from 'src/utils/debug.js';
 import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
@@ -396,7 +396,7 @@ export function MCPListPanel(t0) {
   }
   let t23;
   if ($[51] !== agencAiServers || $[52] !== renderServerItem) {
-    t23 = agencAiServers.length > 0 && <Box flexDirection="column" marginBottom={1}><Box paddingLeft={2}><Text bold={true}>agenc.ai</Text></Box>{agencAiServers.map(server_5 => renderServerItem(server_5))}</Box>;
+    t23 = agencAiServers.length > 0 && <Box flexDirection="column" marginBottom={1}><Box paddingLeft={2}><Text bold={true}>agenc.tech</Text></Box>{agencAiServers.map(server_5 => renderServerItem(server_5))}</Box>;
     $[51] = agencAiServers;
     $[52] = renderServerItem;
     $[53] = t23;
@@ -431,7 +431,7 @@ export function MCPListPanel(t0) {
   }
   let t27;
   if ($[62] === Symbol.for("react.memo_cache_sentinel")) {
-    t27 = <Text dimColor={true}><Link url="https://code.agenc.com/docs/en/mcp">https://code.agenc.com/docs/en/mcp</Link>{" "}for help</Text>;
+    t27 = <Text dimColor={true}><Link url="https://agenc.tech/docs/en/mcp">https://agenc.tech/docs/en/mcp</Link>{" "}for help</Text>;
     $[62] = t27;
   } else {
     t27 = $[62];

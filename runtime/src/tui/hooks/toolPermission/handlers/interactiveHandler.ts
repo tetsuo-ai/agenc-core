@@ -2,22 +2,22 @@ import { feature } from 'bun:bundle'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import { randomUUID } from 'crypto'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getAllowedChannels } from '../../../../agenc/upstream/bootstrap/state' // upstream-import: keep target is owned by another Z-PURGE item
-import type { BridgePermissionCallbacks } from '../../../../agenc/upstream/bridge/bridgePermissionCallbacks' // upstream-import: keep target is owned by another Z-PURGE item
+import { getAllowedChannels } from '../../../../bootstrap/state'
+import type { BridgePermissionCallbacks } from '../../../../bridge/bridgePermissionCallbacks'
 import { getTerminalFocused } from '../../../ink/terminal-focus-state.js'
 import {
   CHANNEL_PERMISSION_REQUEST_METHOD,
   type ChannelPermissionRequestParams,
   findChannelEntry,
-} from '../../../../agenc/upstream/services/mcp/channelNotification' // upstream-import: keep target is owned by another Z-PURGE item
-import type { ChannelPermissionCallbacks } from '../../../../agenc/upstream/services/mcp/channelPermissions' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../../services/mcp/channelNotification'
+import type { ChannelPermissionCallbacks } from '../../../../services/mcp/channelPermissions'
 import {
   filterPermissionRelayClients,
   shortRequestId,
   truncateForPreview,
-} from '../../../../agenc/upstream/services/mcp/channelPermissions' // upstream-import: keep target is owned by another Z-PURGE item
-import { executeAsyncClassifierCheck } from '../../../../agenc/upstream/tools/BashTool/bashPermissions' // upstream-import: keep target is owned by another Z-PURGE item
-import { BASH_TOOL_NAME } from '../../../../agenc/upstream/tools/BashTool/toolName' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../../services/mcp/channelPermissions'
+import { executeAsyncClassifierCheck } from '../../../../tools/BashTool/bashPermissions'
+import { BASH_TOOL_NAME } from '../../../../tools/BashTool/toolName'
 import {
   clearClassifierChecking,
   setClassifierApproval,
@@ -231,7 +231,7 @@ function handleInteractivePermission(
     },
   })
 
-  // Race 4: Bridge permission response from CCR (agenc.ai)
+  // Race 4: Bridge permission response from CCR (agenc.tech)
   // When the bridge is connected, send the permission request to CCR and
   // subscribe for a response. Whichever side (CLI or CCR) responds first
   // wins via claim().

@@ -1,11 +1,11 @@
 import { useEffect, useRef } from 'react'
 import { useAppStateStore, useSetAppState } from '../state/AppState.js'
-import { isTerminalTaskStatus } from '../../agenc/upstream/Task' // upstream-import: keep target is owned by another Z-PURGE item
+import { isTerminalTaskStatus } from '../../tasks/Task'
 import {
   findTeammateTaskByAgentId,
   injectUserMessageToTeammate,
-} from '../../agenc/upstream/tasks/InProcessTeammateTask/InProcessTeammateTask' // upstream-import: keep target is owned by another Z-PURGE item
-import { isKairosCronEnabled } from '../../agenc/upstream/tools/ScheduleCronTool/prompt' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../tasks/InProcessTeammateTask/InProcessTeammateTask'
+import { isKairosCronEnabled } from '../../tools/ScheduleCronTool/prompt'
 import type { Message } from '../../types/message'
 import { getCronJitterConfig } from '../../utils/cronJitterConfig.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { createCronScheduler } from '../../utils/cronScheduler.js' // upstream-import: keep target is owned by another Z-PURGE item

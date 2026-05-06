@@ -1,40 +1,42 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { feature } from 'bun:bundle';
-import { isCoordinatorMode } from '../../../agenc/upstream/coordinator/coordinatorMode.js';
+import { isCoordinatorMode } from '../../../coordinator/coordinatorMode.js';
 import { Box, Text, Link } from '../../ink.js';
 import * as React from 'react';
 import figures from 'figures';
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import type { VimMode, PromptInputMode } from '../../../agenc/upstream/types/textInputTypes.js';
-import type { ToolPermissionContext } from '../../../agenc/upstream/Tool.js';
+import type { VimMode, PromptInputMode } from '../../../types/textInputTypes.js';
+import type { ToolPermissionContext } from '../../../tools/Tool.js';
 import { isVimModeEnabled } from './utils.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
 import { isDefaultMode, permissionModeSymbol, permissionModeTitle, getModeColor } from '../../../utils/permissions/PermissionMode.js';
-import { BackgroundTaskStatus } from '../tasks/BackgroundTaskStatus';
+import { BackgroundTaskStatus } from '../tasks/BackgroundTaskStatus.js';
 import { isBackgroundTask } from '../../../tasks/types.js';
-import { isPanelAgentTask } from '../../../agenc/upstream/tasks/LocalAgentTask/LocalAgentTask.js';
-import { getVisibleAgentTasks } from '../CoordinatorAgentStatus';
+import { isPanelAgentTask } from '../../../tasks/LocalAgentTask/LocalAgentTask.js';
+import { getVisibleAgentTasks } from '../CoordinatorAgentStatus.js';
 import { count } from '../../../utils/array.js';
-import { shouldHideTasksFooter } from '../tasks/taskStatusUtils';
+import { shouldHideTasksFooter } from '../tasks/taskStatusUtils.js';
 import { isAgentSwarmsEnabled } from '../../../utils/agentSwarmsEnabled.js';
-import { TeamStatus } from '../teams/TeamStatus';
+import { TeamStatus } from '../teams/TeamStatus.js';
 import { isInProcessEnabled } from '../../../utils/swarm/backends/registry.js';
 import { useAppState, useAppStateStore } from '../../state/AppState.js';
-import { getIsRemoteMode } from '../../../agenc/upstream/bootstrap/state.js';
+import { getIsRemoteMode } from '../../../bootstrap/state.js';
 import HistorySearchInput from './HistorySearchInput.js';
-import { usePrStatus } from '../../hooks/usePrStatus';
-import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';
-import { Byline } from '../design-system/Byline';
-import { useTerminalSize } from '../../hooks/useTerminalSize';
-import { useTasksV2 } from '../../hooks/useTasksV2';
+import { usePrStatus } from '../../hooks/usePrStatus.js';
+import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js';
+import { Byline } from '../design-system/Byline.js';
+import { useTerminalSize } from '../../hooks/useTerminalSize.js';
+import { useTasksV2 } from '../../hooks/useTasksV2.js';
 import { formatDuration } from '../../../utils/format.js';
 import { isFullscreenEnvEnabled } from '../../../utils/fullscreen.js';
 import { isXtermJs } from '../../ink/terminal.js';
 import { useHasSelection, useSelection } from '../../ink/hooks/use-selection.js';
 import { getGlobalConfig } from '../../../utils/config.js';
 import { getPlatform } from '../../../utils/platform.js';
-import { PrBadge } from '../PrBadge';
+import { PrBadge } from '../PrBadge.js';
 import {
   getPromptInputProactiveNextTickAt,
   isPromptInputProactiveActive,

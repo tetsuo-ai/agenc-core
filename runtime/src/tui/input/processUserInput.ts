@@ -8,7 +8,7 @@ import type {
 } from '@anthropic-ai/sdk/resources/messages.mjs'
 import { randomUUID } from 'crypto'
 import type { QuerySource } from '../../constants/querySource.js'
-import { logEvent } from '../../agenc/upstream/services/analytics/index.js'
+import { logEvent } from '../../services/analytics/index.js'
 import { getContentText } from '../../utils/messages.js'
 import {
   findCommand,
@@ -16,9 +16,9 @@ import {
   isBridgeSafeCommand,
   type LocalJSXCommandContext,
 } from '../../commands.js'
-import type { CanUseToolFn } from '../hooks/useCanUseTool'
-import type { IDESelection } from '../hooks/useIdeSelection'
-import type { SetToolJSXFn, ToolUseContext } from '../../agenc/upstream/Tool.js'
+import type { CanUseToolFn } from '../hooks/useCanUseTool.js'
+import type { IDESelection } from '../hooks/useIdeSelection.js'
+import type { SetToolJSXFn, ToolUseContext } from '../../tools/Tool.js'
 import type {
   AssistantMessage,
   AttachmentMessage,
@@ -26,12 +26,12 @@ import type {
   ProgressMessage,
   SystemMessage,
   UserMessage,
-} from '../../agenc/upstream/types/message.js'
-import type { PermissionMode } from '../../agenc/upstream/types/permissions.js'
+} from '../../types/message.js'
+import type { PermissionMode } from '../../types/permissions.js'
 import {
   isValidImagePaste,
   type PromptInputMode,
-} from '../../agenc/upstream/types/textInputTypes.js'
+} from '../../types/textInputTypes.js'
 import {
   type AgentMentionAttachment,
   createAttachmentMessage,

@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
-import type { HookEvent } from '../../../agenc/upstream/entrypoints/agentSdkTypes.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { HookEvent } from '../../../entrypoints/agentSdkTypes.js';
 import type { buildMessageLookups } from '../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Text } from '../../ink.js';
 import { MessageResponse } from '../MessageResponse';

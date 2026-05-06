@@ -6,7 +6,7 @@ import memoize from 'lodash-es/memoize.js'
 import {
   getSessionId,
   setSessionTrustAccepted,
-} from '../agenc/upstream/bootstrap/state.js'
+} from '../bootstrap/state.js'
 import { registerCleanup } from './cleanupRegistry.js'
 import { getAgenCConfigHomeDir, isEnvTruthy } from './envUtils.js'
 import { writeToStderr } from './process.js'

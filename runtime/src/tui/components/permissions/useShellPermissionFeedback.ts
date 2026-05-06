@@ -2,8 +2,8 @@ import { useState } from 'react'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
-} from '../../../agenc/upstream/services/analytics/index' // upstream-import: keep target is owned by another Z-PURGE item
-import { sanitizeToolNameForAnalytics } from '../../../agenc/upstream/services/analytics/metadata' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../services/analytics/index'
+import { sanitizeToolNameForAnalytics } from '../../../services/analytics/metadata'
 import { useSetAppState } from '../../state/AppState.js'
 import type { ToolUseConfirm } from './PermissionRequest.js'
 import { logUnaryPermissionEvent } from './utils'

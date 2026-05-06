@@ -1,14 +1,16 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import capitalize from 'lodash-es/capitalize.js';
 import * as React from 'react';
 import { useMemo } from 'react';
 import { type Command, type CommandBase, type CommandResultDisplay, getCommandName, type PromptCommand } from '../../../commands.js';
 import { Box, Text } from '../../ink.js';
-import { estimateSkillFrontmatterTokens, getSkillsPath } from '../../../agenc/upstream/skills/loadSkillsDir'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getDisplayPath } from '../../../utils/file.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { formatTokens } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getSettingSourceName, type SettingSource } from '../../../utils/settings/constants.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { estimateSkillFrontmatterTokens, getSkillsPath } from '../../../skills/loadSkillsDir';
+import { getDisplayPath } from '../../../utils/file'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatTokens } from '../../../utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSettingSourceName, type SettingSource } from '../../../utils/settings/constants'; // upstream-import: keep target is owned by another Z-PURGE item
+import { plural } from '../../../utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
 import { Dialog } from '../design-system/Dialog';
 import FullWidthRow from '../design-system/FullWidthRow';

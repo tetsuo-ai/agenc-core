@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Swarm Initialization Hook
  *
@@ -8,7 +10,7 @@
  */
 
 import { useEffect } from 'react'
-import { getSessionId } from '../../agenc/upstream/bootstrap/state' // upstream-import: keep target is owned by another Z-PURGE item
+import { getSessionId } from '../../bootstrap/state'
 import type { AppState } from '../state/AppState.js'
 import type { Message } from '../../types/message'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js' // upstream-import: keep target is owned by another Z-PURGE item

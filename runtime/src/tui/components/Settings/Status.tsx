@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import * as React from 'react';
 import { Suspense, use } from 'react';
-import { getSessionId } from '../../../agenc/upstream/bootstrap/state'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSessionId } from '../../../bootstrap/state';
 import type { LocalJSXCommandContext } from '../../../commands.js';
 import { useIsInsideModal } from '../../context/modalContext';
 import { Box, Text, useTheme } from '../../ink.js';

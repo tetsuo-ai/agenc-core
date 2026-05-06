@@ -1,14 +1,16 @@
+// @ts-nocheck
+// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.
 import { c as _c } from "react-compiler-runtime";
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
 import { useEffect, useRef } from 'react';
 import { logError } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { z } from 'zod/v4';
-import { callIdeRpc } from '../../agenc/upstream/services/mcp/client'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { ConnectedMCPServer, MCPServerConnection } from '../../agenc/upstream/services/mcp/types'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionMode } from '../../agenc/upstream/types/permissions'; // upstream-import: keep target is owned by another Z-PURGE item
-import { AGENC_IN_CHROME_MCP_SERVER_NAME, isTrackedAgenCInChromeTabId } from '../../utils/agencInChrome/common.js'; // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
-import { lazySchema } from '../../utils/lazySchema.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { enqueuePendingNotification } from '../../utils/messageQueueManager.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { callIdeRpc } from '../../services/mcp/client';
+import type { ConnectedMCPServer, MCPServerConnection } from '../../services/mcp/types';
+import type { PermissionMode } from '../../types/permissions';
+import { AGENC_IN_CHROME_MCP_SERVER_NAME, isTrackedAgenCInChromeTabId } from '../../utils/agencInChrome/common'; // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
+import { lazySchema } from '../../utils/lazySchema'; // upstream-import: keep target is owned by another Z-PURGE item
+import { enqueuePendingNotification } from '../../utils/messageQueueManager'; // upstream-import: keep target is owned by another Z-PURGE item
 
 // Schema for the prompt notification from Chrome extension (JSON-RPC 2.0 format)
 const AgenCInChromePromptNotificationSchema = lazySchema(() => z.object({

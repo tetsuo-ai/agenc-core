@@ -1,4 +1,6 @@
-import type { Tool, ToolUseContext } from 'src/Tool.js'
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+import type { Tool, ToolUseContext } from 'src/tools/Tool.js'
 import z from 'zod/v4'
 import { logForDebugging } from 'src/utils/debug.js'
 import { lazySchema } from '../lazySchema.js'

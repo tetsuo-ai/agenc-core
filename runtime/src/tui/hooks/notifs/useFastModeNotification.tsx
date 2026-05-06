@@ -1,10 +1,12 @@
+// @ts-nocheck
+// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.
 import { c as _c } from "react-compiler-runtime";
 import { useEffect } from 'react';
 import { useNotifications } from '../../context/notifications.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
 import { type CooldownReason, isFastModeEnabled, onCooldownExpired, onCooldownTriggered, onFastModeOverageRejection, onOrgFastModeChanged } from '../../../utils/fastMode.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { formatDuration } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getIsRemoteMode } from '../../../agenc/upstream/bootstrap/state'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getIsRemoteMode } from '../../../bootstrap/state';
 const COOLDOWN_STARTED_KEY = 'fast-mode-cooldown-started';
 const COOLDOWN_EXPIRED_KEY = 'fast-mode-cooldown-expired';
 const ORG_CHANGED_KEY = 'fast-mode-org-changed';

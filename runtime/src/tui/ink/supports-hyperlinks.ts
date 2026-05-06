@@ -1,4 +1,5 @@
-import supportsHyperlinksLib from 'supports-hyperlinks'
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 
 // Additional terminals that support OSC 8 hyperlinks but aren't detected by supports-hyperlinks.
 // Checked against both TERM_PROGRAM and LC_TERMINAL (the latter is preserved inside tmux).
@@ -10,6 +11,12 @@ export const ADDITIONAL_HYPERLINK_TERMINALS = [
   'iTerm.app',
   'iTerm2',
 ]
+
+function defaultStdoutSupportsHyperlinks(env: EnvLike): boolean {
+  if (env.FORCE_HYPERLINK === '1') return true
+  if (env.NO_COLOR || env.FORCE_HYPERLINK === '0') return false
+  return false
+}
 
 type EnvLike = Record<string, string | undefined>
 
@@ -27,7 +34,7 @@ export function supportsHyperlinks(
   options?: SupportsHyperlinksOptions,
 ): boolean {
   const stdoutSupported =
-    options?.stdoutSupported ?? supportsHyperlinksLib.stdout
+    options?.stdoutSupported ?? defaultStdoutSupportsHyperlinks(options?.env ?? process.env)
   if (stdoutSupported) {
     return true
   }

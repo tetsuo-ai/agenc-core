@@ -83,7 +83,7 @@ vi.mock("../context/stats.js", async () => {
   };
 });
 
-vi.mock("../../agenc/upstream/state/onChangeAppState.js", () => ({
+vi.mock("../state/onChangeAppState.js", () => ({
   onChangeAppState: providerProbe.onChangeAppState,
 }));
 
@@ -120,7 +120,7 @@ vi.mock("../../services/PromptSuggestion/promptSuggestion.js", () => ({
   shouldEnablePromptSuggestion: () => false,
 }));
 
-vi.mock("../../agenc/upstream/Tool.js", () => ({
+vi.mock("../../tools/Tool.js", () => ({
   buildTool: (tool: unknown) => tool,
   getEmptyToolPermissionContext: () => ({
     mode: "default",

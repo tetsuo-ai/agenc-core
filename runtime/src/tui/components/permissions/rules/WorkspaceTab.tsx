@@ -2,11 +2,11 @@ import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import * as React from 'react';
 import { useCallback, useEffect } from 'react';
-import { getOriginalCwd } from '../../../../agenc/upstream/bootstrap/state'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getOriginalCwd } from '../../../../bootstrap/state';
 import type { CommandResultDisplay } from '../../../../commands.js';
 import { Select } from '../../CustomSelect/select';
 import { Box, Text } from '../../../ink.js';
-import type { ToolPermissionContext } from '../../../../agenc/upstream/Tool'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ToolPermissionContext } from '../../../../tools/Tool';
 import { useTabHeaderFocus } from '../../design-system/Tabs';
 type Props = {
   onExit: (result?: string, options?: {

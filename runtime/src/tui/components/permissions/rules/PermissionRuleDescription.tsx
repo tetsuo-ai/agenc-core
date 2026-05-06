@@ -1,8 +1,8 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { Text } from '../../../ink.js';
-import { BashTool } from '../../../../agenc/upstream/tools/BashTool/BashTool'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionRuleValue } from '../../../../utils/permissions/PermissionRule.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { BashTool } from '../../../../tools/BashTool/BashTool';
+import type { PermissionRuleValue } from '../../../../utils/permissions/PermissionRule'; // upstream-import: keep target is owned by another Z-PURGE item
 type RuleSubtitleProps = {
   ruleValue: PermissionRuleValue;
 };

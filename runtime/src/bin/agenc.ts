@@ -169,7 +169,7 @@ import {
   summarizeProjectTrustSources,
 } from "../permissions/trust/trust-sources.js";
 import { runStartupConfigMigrations } from "../state/migrations/config-migrations.js";
-import { setSessionTrustAccepted } from "../agenc/upstream/bootstrap/state.js";
+import { setSessionTrustAccepted } from "../bootstrap/state.js";
 
 export {
   bootstrapLocalRuntimeSession,

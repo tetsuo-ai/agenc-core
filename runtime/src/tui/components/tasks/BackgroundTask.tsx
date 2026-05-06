@@ -2,11 +2,11 @@ import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { Text } from '../../ink.js';
 import type { BackgroundTaskState } from 'src/tasks/types.js';
-import type { DeepImmutable } from '../../../agenc/upstream/types/utils.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { DeepImmutable } from '../../../types/utils.js';
 import { truncate } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { toInkColor } from '../../../utils/ink.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { DIAMOND_FILLED, DIAMOND_OPEN } from '../../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { DIAMOND_FILLED, DIAMOND_OPEN } from '../../../constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
 import { RemoteSessionProgress } from './RemoteSessionProgress';
 import { ShellProgress, TaskStatusText } from './ShellProgress';
 import { describeTeammateActivity } from './taskStatusUtils';
