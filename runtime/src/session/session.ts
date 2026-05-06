@@ -43,7 +43,7 @@ import type { MCPManager, MCPManagerStartOpts } from "../mcp-client/manager.js";
 import {
   projectMcpManagerToConnections,
   type McpManagerLike,
-} from "../agenc/adapters/upstream-mcp-clients.js";
+} from "../mcp-client/tui-connections.js";
 import type { MCPServerConnection } from "../services/mcp/types.js";
 import { ProviderHttpClient } from "../llm/client.js";
 import { setContextWindowUpgradeContext } from "../llm/context-window-upgrade.js";
@@ -1395,7 +1395,7 @@ export class Session {
    * SDK Client into the bridge contract. All entries are emitted as
    * `type: 'pending'` today; upgrading to `'connected'` requires a
    * runtime `MCPManager.getClient(name)` accessor (see
-   * `agenc/adapters/upstream-mcp-clients.ts` for rationale). Returns
+   * `mcp-client/tui-connections.ts` for rationale). Returns
    * an empty array if the manager is not a class shape that exposes
    * `getConfiguredServers` / `isConnected` (e.g. a compatibility shim
    * is installed).

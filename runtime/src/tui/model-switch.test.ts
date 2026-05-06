@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { buildPendingProviderSwitch } from "../agenc/adapters/upstream-model-switch.js";
+import { buildPendingProviderSwitch } from "./model-switch.js";
 
 describe("buildPendingProviderSwitch (TUI model picker → runtime switch)", () => {
   it("returns the spec when the session has a configured provider", () => {

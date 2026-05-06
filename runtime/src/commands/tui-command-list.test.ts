@@ -6,10 +6,10 @@ import {
   clearCommandMemoizationCaches,
   filterCommandsForRemoteMode,
   getCommandsSync,
+  listTuiCommandList,
 } from "../commands.js";
-import { loadUpstreamCommandList } from "../agenc/adapters/upstream-commands.js";
 
-describe("loadUpstreamCommandList (TUI slash-command wiring)", () => {
+describe("listTuiCommandList (TUI slash-command wiring)", () => {
   it("returns exactly the user-invocable subset of the registry", () => {
     const previousUserType = process.env.USER_TYPE;
     delete process.env.USER_TYPE;
@@ -17,7 +17,7 @@ describe("loadUpstreamCommandList (TUI slash-command wiring)", () => {
       .list()
       .filter((cmd) => cmd.userInvocable !== false && (cmd.isEnabled?.() ?? true)).length;
     try {
-      const list = loadUpstreamCommandList();
+      const list = listTuiCommandList();
       expect(list.length).toBe(expected);
       expect(list.length).toBeGreaterThanOrEqual(18);
     } finally {
@@ -29,8 +29,8 @@ describe("loadUpstreamCommandList (TUI slash-command wiring)", () => {
     }
   });
 
-  it("every entry carries name, description, and the upstream local-type discriminator", () => {
-    const list = loadUpstreamCommandList();
+  it("every entry carries name, description, and the local command discriminator", () => {
+    const list = listTuiCommandList();
     for (const cmd of list) {
       expect(typeof cmd.name).toBe("string");
       expect(cmd.name.length).toBeGreaterThan(0);
@@ -47,14 +47,14 @@ describe("loadUpstreamCommandList (TUI slash-command wiring)", () => {
       .filter((cmd) => cmd.userInvocable !== false && (cmd.isEnabled?.() ?? true))
       .map((cmd) => cmd.name)
       .sort();
-    const got = loadUpstreamCommandList()
+    const got = listTuiCommandList()
       .map((cmd) => cmd.name)
       .sort();
     expect(got).toEqual(expected);
   });
 
   it("preserves aliases when present on the AgenC command", () => {
-    const list = loadUpstreamCommandList();
+    const list = listTuiCommandList();
     const registry = buildDefaultRegistry();
     for (const cmd of registry.list()) {
       if (cmd.userInvocable === false) continue;
@@ -69,8 +69,8 @@ describe("loadUpstreamCommandList (TUI slash-command wiring)", () => {
     }
   });
 
-  it("upstream load() exposes a non-throwing legacy adapter", async () => {
-    const list = loadUpstreamCommandList();
+  it("load() exposes a non-throwing local command fallback", async () => {
+    const list = listTuiCommandList();
     const sample = list[0];
     expect(sample).toBeDefined();
     expect((sample as { type: string }).type).toBe("local");
@@ -87,7 +87,7 @@ describe("loadUpstreamCommandList (TUI slash-command wiring)", () => {
       .list()
       .filter((cmd) => cmd.userInvocable !== false && (cmd.isEnabled?.() ?? true))
       .map((cmd) => cmd.name);
-    const projectedNames = loadUpstreamCommandList().map((cmd) => cmd.name);
+    const projectedNames = listTuiCommandList().map((cmd) => cmd.name);
     expect(projectedNames).toEqual(registryNames);
   });
 
@@ -95,9 +95,9 @@ describe("loadUpstreamCommandList (TUI slash-command wiring)", () => {
     const previousUserType = process.env.USER_TYPE;
     try {
       delete process.env.USER_TYPE;
-      expect(loadUpstreamCommandList().map((cmd) => cmd.name)).not.toContain("files");
+      expect(listTuiCommandList().map((cmd) => cmd.name)).not.toContain("files");
       process.env.USER_TYPE = "ant";
-      expect(loadUpstreamCommandList().map((cmd) => cmd.name)).toContain("files");
+      expect(listTuiCommandList().map((cmd) => cmd.name)).toContain("files");
     } finally {
       if (previousUserType === undefined) {
         delete process.env.USER_TYPE;

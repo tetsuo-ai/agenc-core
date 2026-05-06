@@ -3,7 +3,7 @@ import { describe, it, expect } from "vitest";
 import {
   type McpManagerLike,
   projectMcpManagerToConnections,
-} from "../agenc/adapters/upstream-mcp-clients.js";
+} from "./tui-connections.js";
 
 function fakeManager(
   servers: ReadonlyArray<{ name: string; connected: boolean }>,
@@ -38,7 +38,7 @@ describe("projectMcpManagerToConnections (TUI MCP picker wiring)", () => {
     expect(got.map((c) => c.name)).toEqual(["files", "octosearch"]);
   });
 
-  it("does not emit type='connected' even when the manager reports a server connected — the upstream Client SDK is not wired", () => {
+  it("does not emit type='connected' when the manager reports a server connected", () => {
     const got = projectMcpManagerToConnections(
       fakeManager([
         { name: "ide", connected: true },
