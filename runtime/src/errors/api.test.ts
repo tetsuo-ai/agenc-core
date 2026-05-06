@@ -56,6 +56,14 @@ describe("API error UX helpers", () => {
         error: { error: { message: "nested detail" } },
       }),
     ).toBe("nested detail");
+    expect(
+      formatAPIError(
+        new AgenCApiError("HTTP 400", {
+          status: 400,
+          body: { error: { message: "actual provider detail" } },
+        }),
+      ),
+    ).toBe("actual provider detail");
   });
 
   test("redacts high-risk secrets from display text", () => {

@@ -21,20 +21,20 @@ type Props = {
 };
 
 function formatInvalidValue(value: unknown): string {
-  if (typeof value === "string") return `"${value}"`;
+  if (typeof value === "string") return JSON.stringify(value) ?? '""';
   if (value === null) return "null";
   if (value === undefined) return "undefined";
   return String(value);
 }
 
-function readableErrorPath(error: ValidationError): string {
-  if (!error.path) return "";
+function readableErrorPathSegments(error: ValidationError): string[] {
+  if (!error.path) return [""];
   if (error.invalidValue === null || error.invalidValue === undefined) {
-    return error.path;
+    return error.path.split(".").filter(Boolean);
   }
 
   const pathParts = error.path.split(".");
-  if (pathParts.length === 0) return error.path;
+  if (pathParts.length === 0) return [error.path];
 
   const nextParts: string[] = [];
   for (let index = 0; index < pathParts.length; index += 1) {
@@ -47,7 +47,7 @@ function readableErrorPath(error: ValidationError): string {
         : part,
     );
   }
-  return nextParts.join(".");
+  return nextParts;
 }
 
 export function buildValidationErrorTree(
@@ -55,7 +55,7 @@ export function buildValidationErrorTree(
 ): TreeNode {
   const tree: TreeNode = {};
   for (const error of errors) {
-    setWith(tree, readableErrorPath(error), error.message, Object);
+    setWith(tree, readableErrorPathSegments(error), error.message, Object);
   }
   return tree;
 }

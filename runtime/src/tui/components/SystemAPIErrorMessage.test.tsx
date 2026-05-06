@@ -146,6 +146,27 @@ describe("SystemAPIErrorMessage", () => {
     expect(output).not.toContain("x".repeat(1001));
   });
 
+  test("preserves long errors in verbose mode", () => {
+    const formatted = "x".repeat(4500);
+    const output = renderPlain(
+      <SystemAPIErrorMessage
+        verbose={true}
+        message={{
+          type: "system",
+          subtype: "api_error",
+          level: "error",
+          error: new Error(formatted),
+          retryAttempt: 4,
+          retryInMs: 1000,
+          maxRetries: 5,
+        }}
+      />,
+    );
+
+    expect(output).toContain("x".repeat(4500));
+    expect(output).not.toContain("(ctrl+o to expand)");
+  });
+
   test("does not render raw title-less HTML provider bodies", () => {
     const output = renderPlain(
       <SystemAPIErrorMessage

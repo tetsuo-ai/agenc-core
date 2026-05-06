@@ -24,7 +24,6 @@ export const TOKEN_REVOKED_ERROR_MESSAGE =
 export const REPEATED_529_ERROR_MESSAGE = "Repeated 529 Overloaded errors";
 export const API_TIMEOUT_ERROR_MESSAGE = "Request timed out";
 
-const MAX_FORMATTED_API_ERROR_CHARS = 4000;
 const HTML_API_ERROR_MESSAGE =
   "Received an HTML response from the API instead of JSON. Check provider endpoint, proxy, or login status.";
 
@@ -170,15 +169,20 @@ export function redactSensitiveAPIText(message: string): string {
     .replace(/\bsk-[A-Za-z0-9][A-Za-z0-9_-]{8,}\b/g, "sk-[REDACTED]");
 }
 
-function capAPIText(message: string): string {
-  if (message.length <= MAX_FORMATTED_API_ERROR_CHARS) return message;
-  return `${message.slice(0, MAX_FORMATTED_API_ERROR_CHARS)}...`;
+function sanitizeAPIMessage(message: string): string {
+  return redactSensitiveAPIText(sanitizeMessageHTML(message));
 }
 
 export function sanitizeAPIError(error: unknown): string {
   const message = readMessage(error);
   if (!message) return "";
-  return capAPIText(redactSensitiveAPIText(sanitizeMessageHTML(message)));
+  return sanitizeAPIMessage(message);
+}
+
+function sanitizeNonEmptyMessage(message: unknown): string | null {
+  if (typeof message !== "string" || message.length === 0) return null;
+  const sanitized = sanitizeAPIMessage(message);
+  return sanitized.length > 0 ? sanitized : null;
 }
 
 type NestedAPIError = {
@@ -202,15 +206,37 @@ function extractNestedErrorMessage(error: unknown): string | null {
   if (!hasNestedError(error)) return null;
 
   const deepMsg = error.error?.error?.message;
-  if (typeof deepMsg === "string" && deepMsg.length > 0) {
-    const sanitized = sanitizeAPIError({ message: deepMsg });
-    return sanitized.length > 0 ? sanitized : null;
-  }
+  const deepSanitized = sanitizeNonEmptyMessage(deepMsg);
+  if (deepSanitized) return deepSanitized;
 
   const msg = error.error?.message;
-  if (typeof msg === "string" && msg.length > 0) {
-    const sanitized = sanitizeAPIError({ message: msg });
-    return sanitized.length > 0 ? sanitized : null;
+  const sanitized = sanitizeNonEmptyMessage(msg);
+  if (sanitized) return sanitized;
+
+  return null;
+}
+
+function extractBodyErrorMessage(error: unknown): string | null {
+  if (typeof error !== "object" || error === null) return null;
+
+  const record = error as {
+    readonly body?: unknown;
+    readonly data?: unknown;
+    readonly response?: { readonly data?: unknown; readonly body?: unknown };
+  };
+  const candidates = [
+    record.body,
+    record.data,
+    record.response?.data,
+    record.response?.body,
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate === undefined || candidate === null) continue;
+    const direct = sanitizeNonEmptyMessage(candidate);
+    if (direct) return direct;
+    const nested = extractNestedErrorMessage(candidate);
+    if (nested) return nested;
   }
 
   return null;
@@ -256,6 +282,9 @@ export function formatAPIError(error: unknown): string {
     }
     return "Unable to connect to API. Check your internet connection";
   }
+
+  const bodyMessage = extractBodyErrorMessage(error);
+  if (bodyMessage) return bodyMessage;
 
   if (!rawMessage) {
     return (

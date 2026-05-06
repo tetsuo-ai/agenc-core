@@ -126,6 +126,23 @@ describe("ValidationErrorsList", () => {
         },
       },
     });
+
+    expect(
+      buildValidationErrorTree([
+        {
+          file: "config.toml",
+          path: "permissions.allow.0",
+          message: "Ambiguous tool",
+          invalidValue: 'bad.tool["x"]\nnext',
+        },
+      ]),
+    ).toEqual({
+      permissions: {
+        allow: {
+          '"bad.tool[\\"x\\"]\\nnext"': "Ambiguous tool",
+        },
+      },
+    });
   });
 
   test("renders grouped files, tree output, and unique suggestions", () => {
