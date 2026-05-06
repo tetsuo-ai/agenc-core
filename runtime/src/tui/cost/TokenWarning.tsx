@@ -7,6 +7,7 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../agenc/upstream/servic
 import { calculateTokenWarningState, getEffectiveContextWindowSize, isAutoCompactEnabled } from '../../services/compact/autoCompact.js';
 import { useCompactWarningSuppression } from '../../services/compact/compactWarningHook.js';
 import { getUpgradeMessage } from '../../agenc/upstream/utils/model/contextWindowUpgradeCheck.js';
+import { getStats, isContextCollapseEnabled, subscribe } from '../../agenc/upstream/services/contextCollapse/index.js';
 type Props = {
   tokenUsage: number;
   model: string;
@@ -23,17 +24,6 @@ function CollapseLabel(t0) {
   const {
     upgradeMessage
   } = t0;
-  let t1;
-  if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
-    t1 = require("../../agenc/upstream/services/contextCollapse/index.js");
-    $[0] = t1;
-  } else {
-    t1 = $[0];
-  }
-  const {
-    getStats,
-    subscribe
-  } = t1 as typeof import('../../agenc/upstream/services/contextCollapse/index.js');
   let t2;
   if ($[1] === Symbol.for("react.memo_cache_sentinel")) {
     t2 = () => {
@@ -133,9 +123,6 @@ export function TokenWarning(t0) {
     }
   }
   if (feature("CONTEXT_COLLAPSE")) {
-    const {
-      isContextCollapseEnabled
-    } = require("../../agenc/upstream/services/contextCollapse/index.js") as typeof import('../../agenc/upstream/services/contextCollapse/index.js');
     if (isContextCollapseEnabled()) {
       collapseMode = true;
     }

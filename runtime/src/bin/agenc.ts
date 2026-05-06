@@ -169,6 +169,7 @@ import {
   summarizeProjectTrustSources,
 } from "../permissions/trust/trust-sources.js";
 import { runStartupConfigMigrations } from "../state/migrations/config-migrations.js";
+import { setSessionTrustAccepted } from "../agenc/upstream/bootstrap/state.js";
 
 export {
   bootstrapLocalRuntimeSession,
@@ -1769,15 +1770,7 @@ async function loadProjectTrustPrompt(): Promise<
 }
 
 async function markLegacySessionTrustAccepted(): Promise<void> {
-  const specifier = ["..", "agenc", "upstream", "bootstrap", "state.js"].join(
-    "/",
-  );
-  const mod = (await import(specifier)) as {
-    readonly setSessionTrustAccepted?: unknown;
-  };
-  if (typeof mod.setSessionTrustAccepted === "function") {
-    mod.setSessionTrustAccepted(true);
-  }
+  setSessionTrustAccepted(true);
 }
 
 export interface ProjectTrustPreflightOptions {

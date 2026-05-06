@@ -1039,6 +1039,17 @@ describe("schema: closed config block validators (CF-13)", () => {
       host: "127.0.0.1",
       port: 8900,
     });
+    expect(
+      validateMcpServerModeConfig({
+        enabled: true,
+        transport: "sse",
+        port: 0,
+      }),
+    ).toEqual({
+      enabled: true,
+      transport: "sse",
+      port: 0,
+    });
   });
 
   test("validateMcpServerModeConfig rejects invalid transport and port", () => {
