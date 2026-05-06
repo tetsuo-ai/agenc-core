@@ -158,6 +158,28 @@ describe("MultiTurnContextManager", () => {
     expect(manager.getRecentTurns(1)).toHaveLength(1);
   });
 
+  test("returns deep-cloned message and attachment snapshots", async () => {
+    const cwd = tempRoot();
+    writeFileSync(join(cwd, "note.txt"), "original attachment");
+    const manager = createMultiTurnContextManager();
+    manager.addMessageToTurn(message("original message"));
+    await manager.attachFileMentions("read @note.txt", { cwd });
+
+    const snapshot = manager.getTurnHistory()[0]!;
+    (snapshot.messages[0] as { message: { content: string } }).message.content =
+      "mutated message";
+    (snapshot.attachments[0] as { expandedPrompt: string }).expandedPrompt =
+      "mutated attachment";
+
+    const fresh = manager.getTurnHistory()[0]!;
+    expect(
+      (fresh.messages[0] as { message: { content: string } }).message.content,
+    ).toBe("original message");
+    expect(
+      (fresh.attachments[0] as { expandedPrompt: string }).expandedPrompt,
+    ).toContain("original attachment");
+  });
+
   test("reports compaction status from message tokens and thresholds", () => {
     const manager = createMultiTurnContextManager({
       contextWindowTokens: 20,
@@ -170,6 +192,66 @@ describe("MultiTurnContextManager", () => {
     expect(status.autoCompactThresholdTokens).toBe(16);
     expect(status.exceedsAutoCompactThreshold).toBe(true);
     expect(status.shouldCompact).toBe(true);
+  });
+
+  test("uses aggregate recent-turn tokens for default compaction triggers", () => {
+    const manager = createMultiTurnContextManager({
+      contextWindowTokens: 20,
+      maxTokensPerTurn: 1_000,
+    });
+
+    for (let i = 0; i < 4; i += 1) {
+      manager.startNewTurn();
+      manager.addMessageToTurn(message("x".repeat(20)));
+      expect(manager.getCurrentTurnCompactionStatus().shouldCompact).toBe(false);
+    }
+
+    const aggregateStatus = manager.getCompactionStatus();
+    const trigger = manager.getCompactionTrigger();
+    expect(aggregateStatus.currentTokens).toBe(20);
+    expect(aggregateStatus.shouldCompact).toBe(true);
+    expect(trigger.shouldCompact).toBe(true);
+    expect(trigger.reason).toBe("auto_compact_threshold");
+    expect(trigger.context.turnIds).toHaveLength(4);
+    expect(trigger.context.compactableMessages).toHaveLength(4);
+  });
+
+  test("handles just-below and equal compaction thresholds", () => {
+    const below = createMultiTurnContextManager({
+      autoCompactThresholdTokens: 5,
+      maxTokensPerTurn: 1_000,
+    });
+    below.addMessageToTurn(message("x".repeat(16)));
+    expect(below.getCompactionStatus()).toMatchObject({
+      currentTokens: 4,
+      shouldCompact: false,
+      remainingTokensUntilCompact: 1,
+    });
+
+    const equal = createMultiTurnContextManager({
+      autoCompactThresholdTokens: 5,
+      maxTokensPerTurn: 1_000,
+    });
+    equal.addMessageToTurn(message("x".repeat(20)));
+    expect(equal.getCompactionStatus()).toMatchObject({
+      currentTokens: 5,
+      shouldCompact: true,
+      remainingTokensUntilCompact: 0,
+    });
+  });
+
+  test("ignores invalid token estimator values", () => {
+    const manager = createMultiTurnContextManager(
+      {},
+      {
+        estimateMessageTokens: () => Number.NaN,
+        estimateContentTokens: () => Number.NaN,
+      },
+    );
+
+    manager.addMessageToTurn(message("message"));
+    expect(manager.getCurrentTurn()?.tokens).toBe(0);
+    expect(manager.getCompactionStatus().currentTokens).toBe(0);
   });
 
   test("records file mention rejections through the wrapper", async () => {
@@ -186,6 +268,21 @@ describe("MultiTurnContextManager", () => {
     expect(attachment.attachments).toEqual([]);
     expect(attachment.rejected[0]?.reason).toBe("outside_workspace");
     expect(manager.getCurrentTurn()?.attachments).toHaveLength(1);
+  });
+
+  test("allows file mentions inside explicit allowed roots", async () => {
+    const cwd = tempRoot();
+    const shared = tempRoot();
+    writeFileSync(join(shared, "shared.txt"), "shared context");
+    const manager = createMultiTurnContextManager();
+
+    const attachment = await manager.attachFileMentions(
+      `read @${join(shared, "shared.txt")}`,
+      { cwd, allowedRoots: [shared] },
+    );
+
+    expect(attachment.rejected).toEqual([]);
+    expect(attachment.attachments[0]?.content).toBe("shared context");
   });
 
   posixTest("rejects file mention symlink escapes through the wrapper", async () => {
@@ -230,6 +327,7 @@ describe("MultiTurnContextManager", () => {
     mkdirSync(repo, { recursive: true });
     writeFileSync(join(repo, "package.json"), "{}");
     writeFileSync(join(repo, "AGENC.md"), "Project instruction sentinel.");
+    writeFileSync(join(repo, "note.txt"), "Mentioned file sentinel.");
     const memoryPath = resolveSessionMemoryPath({
       cwd: repo,
       sessionId: "session-1",
@@ -239,6 +337,9 @@ describe("MultiTurnContextManager", () => {
     writeFileSync(memoryPath, "Remember this session decision.", "utf8");
     const manager = createMultiTurnContextManager();
 
+    const mention = await manager.attachFileMentions("read @note.txt", {
+      cwd: repo,
+    });
     const instructions = await manager.attachAgenCInstructions({
       cwd: repo,
       homeDir: home,
@@ -249,17 +350,33 @@ describe("MultiTurnContextManager", () => {
       sessionId: "session-1",
       configHomeDir: configHome,
     });
+    const payload = manager.getActiveContextPayload();
 
+    expect(mention.expandedPrompt).toContain("Mentioned file sentinel.");
     expect(instructions?.content).toContain("Project instruction sentinel.");
     expect(instructions?.tokens).toBeGreaterThan(0);
     expect(memory?.content).toContain("Remember this session decision.");
     expect(memory?.tokens).toBeGreaterThan(0);
     expect(manager.getCurrentTurn()?.attachments.map((entry) => entry.type)).toEqual([
+      "file_mentions",
       "agenc_instructions",
       "session_memory",
     ]);
+    expect(payload.attachmentBlocks.map((entry) => entry.type)).toEqual([
+      "file_mentions",
+      "agenc_instructions",
+      "session_memory",
+    ]);
+    expect(payload.compactableMessages.filter((entry) => entry.kind === "attachment"))
+      .toHaveLength(3);
+    expect(payload.attachmentBlocks.map((entry) => entry.content).join("\n"))
+      .toContain("Mentioned file sentinel.");
+    expect(payload.attachmentBlocks.map((entry) => entry.content).join("\n"))
+      .toContain("Project instruction sentinel.");
+    expect(payload.attachmentBlocks.map((entry) => entry.content).join("\n"))
+      .toContain("Remember this session decision.");
     expect(manager.getCompactionStatus().attachmentTokens).toBe(
-      (instructions?.tokens ?? 0) + (memory?.tokens ?? 0),
+      mention.tokens + (instructions?.tokens ?? 0) + (memory?.tokens ?? 0),
     );
   });
 

@@ -31,7 +31,14 @@
     },
     {
       "id": "compaction-status",
-      "behavior": "Per-turn token accounting combines message and attachment tokens, compares them to max-turn and automatic compaction thresholds, and exposes a stable should-compact status.",
+      "behavior": "Multi-turn token accounting combines message and attachment tokens across the active bounded context, compares them to max-turn and automatic compaction thresholds, and exposes a stable should-compact trigger for downstream compaction.",
+      "tests": [
+        "runtime/src/conversation/multi-turn-context.contract.test.ts"
+      ]
+    },
+    {
+      "id": "compactable-context",
+      "behavior": "The manager exposes the complete active context payload, including compactable messages and attachment blocks, so S-01 can consume the context without re-deriving attachment ordering or token totals.",
       "tests": [
         "runtime/src/conversation/multi-turn-context.contract.test.ts"
       ]
