@@ -42,6 +42,10 @@ export interface GuardianApprovalRequestBase {
   readonly retryReason?: string;
   readonly availableDecisions?: ApprovalCtx["availableDecisions"];
   readonly networkApprovalContext?: ApprovalCtx["networkApprovalContext"];
+  readonly networkPolicyInterfaces?: {
+    readonly policyDecider: boolean;
+    readonly blockedRequestObserver: boolean;
+  };
   readonly additionalPermissions?: ApprovalCtx["additionalPermissions"];
   readonly proposedExecPolicyAmendment?: ApprovalCtx["proposedExecPolicyAmendment"];
   readonly proposedNetworkPolicyAmendments?: ApprovalCtx[
@@ -239,6 +243,7 @@ function guardianApprovalRequestBase(ctx: ApprovalCtx): GuardianApprovalRequestB
     ...(ctx.networkApprovalContext !== undefined
       ? { networkApprovalContext: ctx.networkApprovalContext }
       : {}),
+    ...guardianNetworkPolicyInterfaces(ctx),
     ...(ctx.additionalPermissions !== undefined
       ? { additionalPermissions: ctx.additionalPermissions }
       : {}),
@@ -255,6 +260,23 @@ function guardianApprovalRequestBase(ctx: ApprovalCtx): GuardianApprovalRequestB
     ...(turn.sandboxPolicy?.value !== undefined
       ? { sandboxPolicy: turn.sandboxPolicy.value }
       : {}),
+  };
+}
+
+function guardianNetworkPolicyInterfaces(
+  ctx: ApprovalCtx,
+): Pick<GuardianApprovalRequestBase, "networkPolicyInterfaces"> {
+  if (
+    ctx.networkPolicyDecider === undefined &&
+    ctx.blockedRequestObserver === undefined
+  ) {
+    return {};
+  }
+  return {
+    networkPolicyInterfaces: {
+      policyDecider: ctx.networkPolicyDecider !== undefined,
+      blockedRequestObserver: ctx.blockedRequestObserver !== undefined,
+    },
   };
 }
 

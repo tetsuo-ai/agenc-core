@@ -32,6 +32,7 @@ import {
   type Config,
   type ManagedFeatures,
   type ModelInfo,
+  type NetworkProxy,
   type SessionConfiguration,
   type SessionForTurn,
 } from "./turn-context.js";
@@ -144,6 +145,18 @@ function mkProvider(): LLMProvider {
       finishReason: "stop",
     }),
   } as unknown as LLMProvider;
+}
+
+function mkNetworkProxy(): NetworkProxy {
+  return {
+    httpsProxy: "http://127.0.0.1:9050",
+    policyDecider: {
+      decide: () => ({ decision: "allow" }),
+    },
+    blockedRequestObserver: {
+      onBlockedRequest: () => undefined,
+    },
+  };
 }
 
 function mkProviderWithClient(client: ProviderHttpClient): LLMProvider {
@@ -1134,6 +1147,21 @@ describe("TurnContext.permissionMode (I-30 snapshot)", () => {
     expect(ctx.subId).toBe("sub-owned");
     expect(ctx.permissionMode).toBe("acceptEdits");
     expect(ctx.config.model).toBe("test-model");
+  });
+
+  it("Session.newDefaultTurnWithSubId threads network policy interfaces", () => {
+    const networkProxy = mkNetworkProxy();
+    const session = buildSession({
+      services: { networkProxy },
+    });
+
+    const ctx = session.newDefaultTurnWithSubId("sub-network-owned");
+
+    expect(session.network).toBe(networkProxy);
+    expect(ctx.network?.policyDecider).toBe(networkProxy.policyDecider);
+    expect(ctx.network?.blockedRequestObserver).toBe(
+      networkProxy.blockedRequestObserver,
+    );
   });
 
   it("I-30: mutating the registry after buildTurnContext does not mutate the snapshot", async () => {

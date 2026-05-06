@@ -130,12 +130,20 @@ describe("UnifiedExecProcessManager", () => {
 
   test("transforms restricted commands through the configured sandbox manager", async () => {
     const transforms: SandboxTransformRequest[] = [];
+    const selections: Array<{
+      readonly hasManagedNetworkRequirements: boolean;
+    }> = [];
     const commandCwd = process.cwd();
     const sandboxPolicyCwd = dirname(commandCwd);
+    const networkPolicyDecider = { decide: () => ({ decision: "allow" as const }) };
+    const blockedRequestObserver = { onBlockedRequest: () => undefined };
     const manager = new UnifiedExecProcessManager({
       cwd: sandboxPolicyCwd,
       sandboxManager: {
-        selectInitial: () => "linux_seccomp",
+        selectInitial: (request) => {
+          selections.push(request);
+          return "linux_seccomp";
+        },
         transform: (request): SandboxExecRequest => {
           transforms.push(request);
           return {
@@ -172,6 +180,8 @@ describe("UnifiedExecProcessManager", () => {
         sandboxPolicyCwd,
         preference: "require",
         agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
+        networkPolicyDecider,
+        blockedRequestObserver,
       },
     });
 
@@ -184,6 +194,11 @@ describe("UnifiedExecProcessManager", () => {
       sandboxPolicyCwd,
       command: expect.objectContaining({ cwd: commandCwd }),
     });
+    expect(selections).toEqual([
+      expect.objectContaining({ hasManagedNetworkRequirements: true }),
+    ]);
+    expect(transforms[0]?.networkPolicyDecider).toBe(networkPolicyDecider);
+    expect(transforms[0]?.blockedRequestObserver).toBe(blockedRequestObserver);
   });
 
   test("keeps non-PTY long-running commands pollable but stdin-closed", async () => {

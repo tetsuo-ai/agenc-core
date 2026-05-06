@@ -145,6 +145,8 @@ function runtimeSandboxesCompatible(
       (requested.enforceManagedNetwork ?? false) &&
     stableStringify(active.network ?? null) ===
       stableStringify(requested.network ?? null) &&
+    active.networkPolicyDecider === requested.networkPolicyDecider &&
+    active.blockedRequestObserver === requested.blockedRequestObserver &&
     (active.useLegacyLandlock ?? false) ===
       (requested.useLegacyLandlock ?? false) &&
     (active.windowsSandboxLevel ?? "disabled") ===
@@ -673,7 +675,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         windowsSandboxLevel,
         hasManagedNetworkRequirements:
           params.runtimeSandbox.enforceManagedNetwork === true ||
-          params.runtimeSandbox.network !== undefined,
+          params.runtimeSandbox.network !== undefined ||
+          params.runtimeSandbox.networkPolicyDecider !== undefined ||
+          params.runtimeSandbox.blockedRequestObserver !== undefined,
       });
       if (
         sandbox === "none" &&
@@ -703,6 +707,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
           params.runtimeSandbox.enforceManagedNetwork ?? false,
         ...(params.runtimeSandbox.network !== undefined
           ? { network: params.runtimeSandbox.network }
+          : {}),
+        ...(params.runtimeSandbox.networkPolicyDecider !== undefined
+          ? { networkPolicyDecider: params.runtimeSandbox.networkPolicyDecider }
+          : {}),
+        ...(params.runtimeSandbox.blockedRequestObserver !== undefined
+          ? {
+              blockedRequestObserver:
+                params.runtimeSandbox.blockedRequestObserver,
+            }
           : {}),
         sandboxPolicyCwd: params.runtimeSandbox.sandboxPolicyCwd,
         ...(params.runtimeSandbox.agencLinuxSandboxExe !== undefined

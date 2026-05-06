@@ -19,6 +19,10 @@ import type {
   AdditionalSandboxPermissions,
 } from "../../sandbox/escalation/sandboxing.js";
 import type {
+  BlockedRequestObserver,
+  NetworkPolicyDecider,
+} from "../../sandbox/network-policy.js";
+import type {
   AvailableApprovalDecision,
   NetworkApprovalContext,
   ParsedApprovalCommand,
@@ -227,6 +231,8 @@ export interface ApprovalCtx {
   readonly command?: readonly string[];
   readonly parsedCommand?: ParsedApprovalCommand;
   readonly networkApprovalContext?: NetworkApprovalContext;
+  readonly networkPolicyDecider?: NetworkPolicyDecider;
+  readonly blockedRequestObserver?: BlockedRequestObserver;
   readonly additionalPermissions?: AdditionalSandboxPermissions;
   readonly proposedExecPolicyAmendment?: ExecPolicyAmendment;
   readonly proposedNetworkPolicyAmendments?: readonly NetworkPolicyAmendment[];

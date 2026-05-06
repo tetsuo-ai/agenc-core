@@ -1500,8 +1500,18 @@ const ITEM_EVIDENCE = {
     files: [
       "runtime/src/sandbox/network-policy.ts",
       "runtime/src/sandbox/network-policy.test.ts",
+      "runtime/src/sandbox/engine/index.ts",
       "runtime/src/session/turn-context.ts",
       "runtime/src/session/turn-context.test.ts",
+      "runtime/src/session/session.test.ts",
+      "runtime/src/tools/system/exec-command.ts",
+      "runtime/src/tools/system/exec-command.test.ts",
+      "runtime/src/unified-exec/types.ts",
+      "runtime/src/unified-exec/process-manager.ts",
+      "runtime/src/unified-exec/process-manager.test.ts",
+      "runtime/src/permissions/guardian/arbiter.ts",
+      "runtime/src/permissions/guardian/approval-request.ts",
+      "runtime/src/permissions/guardian/approval-request.test.ts",
       "parity/ZC-43-parity.json",
       "scripts/goal/verify.mjs",
     ],
@@ -1513,11 +1523,19 @@ const ITEM_EVIDENCE = {
       { pattern: "policyDecider", scope: "runtime/src/session/turn-context.ts" },
       { pattern: "blockedRequestObserver", scope: "runtime/src/session/turn-context.ts" },
       { pattern: "turn-builder helpers preserve network policy decider", scope: "runtime/src/session/turn-context.test.ts" },
+      { pattern: "networkPolicyInterfaces", scope: "runtime/src/permissions/guardian/approval-request.ts" },
+      { pattern: "networkPolicyInterfaces", scope: "runtime/src/permissions/guardian/approval-request.test.ts" },
+      { pattern: "networkPolicyInterfaces", scope: "runtime/src/tools/system/exec-command.ts" },
+      { pattern: "networkPolicyDecider", scope: "runtime/src/unified-exec/process-manager.ts" },
       { pattern: "no-op-interface-port", scope: "parity/ZC-43-parity.json" },
     ],
     tests: [
       "runtime/src/sandbox/network-policy.test.ts",
       "runtime/src/session/turn-context.test.ts",
+      "runtime/src/session/session.test.ts",
+      "runtime/src/tools/system/exec-command.test.ts",
+      "runtime/src/unified-exec/process-manager.test.ts",
+      "runtime/src/permissions/guardian/approval-request.test.ts",
     ],
   },
 };
@@ -5586,12 +5604,16 @@ function assertZc43NetworkPolicyInterfaces() {
   }
   for (const required of [
     "runtime/src/sandbox/network-policy.ts",
+    "runtime/src/sandbox/engine/index.ts",
     "runtime/src/session/turn-context.ts",
     "runtime/src/session/session.ts",
     "runtime/src/tools/system/exec-command.ts",
-    "runtime/src/tools/runtimes/sandboxing.ts",
+    "runtime/src/tools/system/exec-command.test.ts",
+    "runtime/src/unified-exec/types.ts",
     "runtime/src/unified-exec/process-manager.ts",
+    "runtime/src/unified-exec/process-manager.test.ts",
     "runtime/src/permissions/guardian/approval-request.ts",
+    "runtime/src/permissions/guardian/approval-request.test.ts",
     "runtime/src/permissions/guardian/arbiter.ts",
   ]) {
     if (!ledger.targetFiles?.includes(required)) {
@@ -5618,9 +5640,9 @@ function assertZc43NetworkPolicyInterfaces() {
     }
     if (
       typeof row.resolution !== "string" ||
-      !/\b(thread|threaded|threading|removal|removed)\b/i.test(row.resolution)
+      !/\b(thread|threaded|threading)\b/i.test(row.resolution)
     ) {
-      failGate(`ZC-43: checklist port site ${required} must document threading or parameter removal.`);
+      failGate(`ZC-43: checklist port site ${required} must document interface threading.`);
     }
   }
 
@@ -5645,6 +5667,38 @@ function assertZc43NetworkPolicyInterfaces() {
       failGate(`ZC-43: turn-context tests are missing ${marker}.`);
     }
   }
+  const sessionTestSource = readRequired("runtime/src/session/session.test.ts");
+  if (!sessionTestSource.includes("threads network policy interfaces")) {
+    failGate("ZC-43: Session live builder path must test network policy interface threading.");
+  }
+  const execSource = readRequired("runtime/src/tools/system/exec-command.ts");
+  for (const marker of [
+    "networkPolicyInterfaces",
+    "networkPolicyDecider",
+    "blockedRequestObserver",
+  ]) {
+    if (!execSource.includes(marker)) {
+      failGate(`ZC-43: exec-command runtime sandbox threading is missing ${marker}.`);
+    }
+  }
+  const execTestSource = readRequired("runtime/src/tools/system/exec-command.test.ts");
+  if (!execTestSource.includes("threads network policy interfaces into runtime sandbox requests")) {
+    failGate("ZC-43: exec-command tests must lock network policy interface threading.");
+  }
+  const processManagerSource = readRequired("runtime/src/unified-exec/process-manager.ts");
+  for (const marker of [
+    "networkPolicyDecider",
+    "blockedRequestObserver",
+    "hasManagedNetworkRequirements",
+  ]) {
+    if (!processManagerSource.includes(marker)) {
+      failGate(`ZC-43: unified-exec spawn threading is missing ${marker}.`);
+    }
+  }
+  const guardianSource = readRequired("runtime/src/permissions/guardian/approval-request.ts");
+  if (!guardianSource.includes("networkPolicyInterfaces")) {
+    failGate("ZC-43: guardian approval request must carry network policy interface metadata.");
+  }
 
   const testRun = run("npm", [
     "exec",
@@ -5653,6 +5707,10 @@ function assertZc43NetworkPolicyInterfaces() {
     "run",
     "src/sandbox/network-policy.test.ts",
     "src/session/turn-context.test.ts",
+    "src/session/session.test.ts",
+    "src/tools/system/exec-command.test.ts",
+    "src/unified-exec/process-manager.test.ts",
+    "src/permissions/guardian/approval-request.test.ts",
   ]);
   if (testRun.status !== 0) {
     failGate("ZC-43: network policy interface threading tests failed.");

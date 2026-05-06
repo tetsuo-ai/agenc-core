@@ -16,17 +16,25 @@
   ],
   "targetFiles": [
     "runtime/src/sandbox/network-policy.ts",
+    "runtime/src/sandbox/engine/index.ts",
     "runtime/src/session/turn-context.ts",
     "runtime/src/session/session.ts",
     "runtime/src/tools/system/exec-command.ts",
-    "runtime/src/tools/runtimes/sandboxing.ts",
+    "runtime/src/tools/system/exec-command.test.ts",
+    "runtime/src/unified-exec/types.ts",
     "runtime/src/unified-exec/process-manager.ts",
+    "runtime/src/unified-exec/process-manager.test.ts",
     "runtime/src/permissions/guardian/approval-request.ts",
+    "runtime/src/permissions/guardian/approval-request.test.ts",
     "runtime/src/permissions/guardian/arbiter.ts"
   ],
   "testFiles": [
     "runtime/src/sandbox/network-policy.test.ts",
-    "runtime/src/session/turn-context.test.ts"
+    "runtime/src/session/turn-context.test.ts",
+    "runtime/src/session/session.test.ts",
+    "runtime/src/tools/system/exec-command.test.ts",
+    "runtime/src/unified-exec/process-manager.test.ts",
+    "runtime/src/permissions/guardian/approval-request.test.ts"
   ],
   "checklistPortSites": [
     {
@@ -43,18 +51,21 @@
       "sourceFile": "core/src/exec.rs",
       "targetFiles": [
         "runtime/src/tools/system/exec-command.ts",
-        "runtime/src/tools/runtimes/sandboxing.ts"
+        "runtime/src/tools/system/exec-command.test.ts",
+        "runtime/src/unified-exec/types.ts"
       ],
-      "resolution": "Managed proxy process parameters are removed in the current AgenC exec path; exec tools use the per-turn networkSandboxPolicy while the optional NetworkProxy carrier preserves the decider/observer interface shape for later transport work."
+      "resolution": "Threaded through runtimeSandboxForExec: the per-turn NetworkProxy policyDecider and blockedRequestObserver are copied onto UnifiedExecRuntimeSandbox beside the existing networkSandboxPolicy."
     },
     {
       "checklistFile": "core/src/spawn.rs",
       "sourceFile": "core/src/spawn.rs",
       "targetFiles": [
+        "runtime/src/sandbox/engine/index.ts",
+        "runtime/src/unified-exec/types.ts",
         "runtime/src/unified-exec/process-manager.ts",
-        "runtime/src/tools/system/exec-command.ts"
+        "runtime/src/unified-exec/process-manager.test.ts"
       ],
-      "resolution": "Managed proxy environment application is removed from AgenC's process-spawn path until a transport implementation lands; child process execution is driven by the runtime sandbox policy and the NetworkProxy interface remains available on the turn carrier."
+      "resolution": "Threaded through UnifiedExecRuntimeSandbox and SandboxTransformRequest. The process manager treats either interface as a managed-network requirement and carries both into the sandbox transform request."
     },
     {
       "checklistFile": "core/src/network_policy_decision.rs",
@@ -69,9 +80,10 @@
       "sourceFile": "core/src/guardian/review.rs",
       "targetFiles": [
         "runtime/src/permissions/guardian/approval-request.ts",
+        "runtime/src/permissions/guardian/approval-request.test.ts",
         "runtime/src/permissions/guardian/arbiter.ts"
       ],
-      "resolution": "Managed proxy config input is removed from AgenC guardian review until the transport exists; guardian review receives network approval amendment context through the permissions approval request surface."
+      "resolution": "Threaded through ApprovalCtx policyDecider and blockedRequestObserver fields, then represented on GuardianApprovalRequest as networkPolicyInterfaces metadata so review prompt construction sees the interface presence without serializing functions."
     }
   ],
   "requiredBehaviors": [
@@ -126,7 +138,29 @@
       ],
       "behavior": "The session turn context can thread the interface shapes through the optional network proxy carrier without requiring a transport implementation.",
       "tests": [
-        "runtime/src/sandbox/network-policy.test.ts"
+        "runtime/src/session/turn-context.test.ts",
+        "runtime/src/session/session.test.ts"
+      ]
+    },
+    {
+      "id": "exec-spawn-guardian-threading",
+      "sourceSymbols": [
+        "core exec network proxy parameter",
+        "core spawn network proxy parameter",
+        "guardian managed network config"
+      ],
+      "targetSymbols": [
+        "UnifiedExecRuntimeSandbox.networkPolicyDecider",
+        "UnifiedExecRuntimeSandbox.blockedRequestObserver",
+        "SandboxTransformRequest.networkPolicyDecider",
+        "ApprovalCtx.networkPolicyDecider",
+        "GuardianApprovalRequestBase.networkPolicyInterfaces"
+      ],
+      "behavior": "Exec, spawn, and guardian target surfaces carry the optional interface presence without starting a managed proxy transport.",
+      "tests": [
+        "runtime/src/tools/system/exec-command.test.ts",
+        "runtime/src/unified-exec/process-manager.test.ts",
+        "runtime/src/permissions/guardian/approval-request.test.ts"
       ]
     }
   ],
