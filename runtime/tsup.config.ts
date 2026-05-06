@@ -71,11 +71,6 @@ const relocatedTuiSourceRoots = [
   resolve(runtimeSourceRoot, 'tui/context'),
   resolve(runtimeSourceRoot, 'tui/hooks'),
 ];
-const movedBoundaryPrefix =
-  '// @ts-nocheck\n' +
-  '// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.\n';
-const movedBoundaryInlinePrefix =
-  '// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.';
 const runtimePackage = JSON.parse(
   readFileSync(resolve(runtimeRoot, 'package.json'), 'utf8'),
 ) as { version?: string };
@@ -153,23 +148,11 @@ function relocatedUpstreamImporter(importer: string): string | null {
   return null;
 }
 
-function isMovedBoundaryImporter(importer: string): boolean {
-  const absoluteImporter = isAbsolute(importer) ? importer : resolve(runtimeRoot, importer);
-  if (!isWithin(runtimeSourceRoot, absoluteImporter)) return false;
-  if (!existsSync(absoluteImporter)) return false;
-  const source = readFileSync(absoluteImporter, 'utf8');
-  return (
-    source.startsWith(movedBoundaryPrefix) ||
-    source.startsWith(movedBoundaryInlinePrefix)
-  );
-}
-
 function shouldUseAgenCResolution(importer: string): boolean {
   return (
     importer.includes('/src/agenc/') ||
     sourceRootForImporter(importer) !== null ||
-    relocatedUpstreamImporter(importer) !== null ||
-    isMovedBoundaryImporter(importer)
+    relocatedUpstreamImporter(importer) !== null
   );
 }
 
@@ -244,56 +227,6 @@ function resolveRelocatedTuiSource(importer: string, source: string): string | n
   return null;
 }
 
-const runtimeTopLevelSourceSegments = new Set([
-  'agents',
-  'auth',
-  'bootstrap',
-  'bridge',
-  'cli',
-  'commands',
-  'components',
-  'constants',
-  'context',
-  'coordinator',
-  'cost',
-  'entrypoints',
-  'grpc',
-  'hooks',
-  'jobs',
-  'outputStyles',
-  'permissions',
-  'plugins',
-  'proactive',
-  'query',
-  'remote',
-  'schemas',
-  'server',
-  'services',
-  'skills',
-  'state',
-  'tasks',
-  'tools',
-  'tui',
-  'types',
-  'utils',
-]);
-
-function resolveCollapsedRuntimeSource(source: string): string | null {
-  const parts = normalizeRuntimePath(source).split('/').filter(Boolean);
-  const start = parts.findIndex((part) =>
-    part !== '.' && part !== '..' && runtimeTopLevelSourceSegments.has(topKey(part)),
-  );
-  if (start === -1) return null;
-  const logical = parts.slice(start).join('/');
-  const direct = existingSourceFile(resolve(runtimeSourceRoot, logical));
-  if (direct) return direct;
-  const first = topKey(logical);
-  if (first === 'components' || first === 'context' || first === 'hooks') {
-    return existingSourceFile(resolve(runtimeSourceRoot, 'tui', logical));
-  }
-  return null;
-}
-
 const agencBareSrcAlias = {
   name: 'agenc-bare-src-alias',
   setup(build: {
@@ -305,9 +238,7 @@ const agencBareSrcAlias = {
     build.onResolve({ filter: /^src\// }, (args) => {
       const resolved = resolveAgenCBareSrc(args.path);
       if (resolved !== null) return { path: resolved };
-      return shouldUseAgenCResolution(args.importer)
-        ? { path: args.path, external: true }
-        : null;
+      return null;
     });
   },
 };
@@ -316,8 +247,6 @@ function resolveRelativeAgenCSource(importer: string, source: string): string | 
   const absoluteImporter = isAbsolute(importer) ? importer : resolve(runtimeRoot, importer);
   const direct = existingSourceFile(resolve(dirname(absoluteImporter), source));
   if (direct) return direct;
-  const collapsed = resolveCollapsedRuntimeSource(source);
-  if (collapsed) return collapsed;
 
   const relocatedImporter = relocatedUpstreamImporter(absoluteImporter);
   if (relocatedImporter !== null) {
@@ -343,7 +272,6 @@ const agencOptionalExternal = {
     ) => void;
   }) {
     build.onResolve({ filter: /^(?:[^./]|\.{1,2}\/)/ }, (args) => {
-      const upstreamRoot = sourceRootForImporter(args.importer);
       if (!shouldUseAgenCResolution(args.importer)) {
         return null;
       }
@@ -352,7 +280,10 @@ const agencOptionalExternal = {
       }
       if (args.path.startsWith('./') || args.path.startsWith('../')) {
         const resolved = resolveRelativeAgenCSource(args.importer, args.path);
-        return resolved === null ? { path: args.path, external: true } : { path: resolved };
+        if (resolved !== null) return { path: resolved };
+        return isKnownMissingOptionalModule(args.path)
+          ? { path: args.path, external: true }
+          : null;
       }
       if (args.path.startsWith('src/')) {
         return null;
@@ -363,14 +294,39 @@ const agencOptionalExternal = {
 };
 
 const knownMissingOptionalModuleFragments = [
+  '../../../utils/systemThemeWatcher',
+  './UserCrossSessionMessage',
+  './UserForkBoilerplateMessage',
+  './UserGitHubWebhookMessage',
+  './WorkflowDetailDialog',
+  './messages/SnipBoundaryMessage',
+  '/memdir/memoryShapeTelemetry',
+  '/services/compact/snipProjection',
+  '/services/sessionTranscript/sessionTranscript',
+  '/tasks/LocalWorkflowTask/LocalWorkflowTask',
+  '/tools/DiscoverSkillsTool/prompt',
+  '/utils/attributionTrailer',
   '/jobs/classifier.js',
   '/proactive/index.js',
   '/services/compact/reactiveCompact.js',
+  '/services/compact/snipProjection',
   '/services/skillSearch/',
+  '/services/sessionTranscript/sessionTranscript.js',
   '/skills/mcpSkills.js',
+  '/tasks/LocalWorkflowTask/LocalWorkflowTask.js',
+  '/tools/DiscoverSkillsTool/prompt.js',
   '/utils/taskSummary.js',
   '/utils/udsClient.js',
+  '/utils/systemThemeWatcher',
   '/bridge/peerSessions.js',
+  '/memdir/memoryShapeTelemetry.js',
+  '/messages/SnipBoundaryMessage',
+  '/UserCrossSessionMessage',
+  '/UserForkBoilerplateMessage',
+  '/UserGitHubWebhookMessage',
+  '/WorkflowDetailDialog',
+  '/attributionTrailer.js',
+  '/memoryShapeTelemetry.js',
   '/tools/ListPeersTool/',
   '/tools/OverflowTestTool/',
   '/tools/PushNotificationTool/',
@@ -409,10 +365,12 @@ const agencKnownMissingOptionalExternal = {
 };
 
 export const __agencTsupAliasTest = {
+  isKnownMissingOptionalModule,
   relocatedTuiSourceRoots,
   relocatedUpstreamRoots,
   resolveAgenCBareSrc,
   resolveRelativeAgenCSource,
+  shouldUseAgenCResolution,
   sourceFileBaseAliases,
   sourceRootForImporter,
 } as const;

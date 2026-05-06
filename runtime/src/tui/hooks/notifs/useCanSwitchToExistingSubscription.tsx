@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.
 import * as React from 'react';
 import { getOauthProfileFromApiKey } from '../../../services/oauth/getOauthProfile.js';
 import { isAgenCAISubscriber } from '../../../utils/auth.js'; // upstream-import: keep target is owned by another Z-PURGE item

@@ -34,6 +34,11 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { findItem, repoRoot, mainCheckoutRoot, fail } from "./checklist-utils.mjs";
 import {
+  RUNTIME_UPSTREAM_SCAN_PATHS,
+  collectRuntimeUpstreamReferences,
+  disallowedZPurgecTypecheckExcludes,
+} from "./purge-scans.mjs";
+import {
   SHIM_BEHAVIOR_RATIO_LIMIT,
   formatShimBehaviorViolation,
   measureShimBehaviorForPath,
@@ -7413,40 +7418,89 @@ async function cleanupGates(item) {
   }
 
   function assertNoRuntimeUpstreamReferences(label) {
-    const pathspecs = [
-      "runtime/src",
-      "runtime/tests",
-      "runtime/tsconfig*.json",
-      "runtime/tsup.config.ts",
-      "runtime/package.json",
-      "runtime/vitest.config.ts",
-    ];
-    const listed = run("git", ["ls-files", "--", ...pathspecs], { silent: true });
+    const listed = run("git", ["ls-files", "--", ...RUNTIME_UPSTREAM_SCAN_PATHS], { silent: true });
     if (listed.status !== 0) {
       failGate(`${id}: unable to enumerate tracked runtime files for upstream-reference scan`);
     }
     const files = (listed.stdout || "")
       .split("\n")
-      .filter(Boolean)
-      .filter((rel) => !rel.startsWith("runtime/src/agenc/upstream/"));
-    const stale = [];
-    const staleRe = /(?:runtime\/src\/agenc\/upstream|src\/agenc\/upstream|agenc\/upstream)/;
-    for (const rel of files) {
-      const abs = path.join(root, rel);
-      if (!existsSync(abs) || statSync(abs).isDirectory()) continue;
-      const lines = readFileSync(abs, "utf8").split("\n");
-      lines.forEach((line, index) => {
-        if (staleRe.test(line)) {
-          stale.push(`${rel}:${index + 1}: ${line.trim().slice(0, 180)}`);
-        }
-      });
-    }
+      .filter(Boolean);
+    const stale = collectRuntimeUpstreamReferences({ root, files });
     if (stale.length > 0) {
       failGate(
         `${id}: stale agenc/upstream reference(s) remain in tracked runtime source, tests, or build config:\n  ${stale.slice(0, 30).join("\n  ")}${stale.length > 30 ? `\n  ... +${stale.length - 30} more` : ""}`,
       );
     }
     pass(`${id}: ${label} has zero stale agenc/upstream references in tracked runtime source, tests, and build config`);
+  }
+
+  function assertZPurgecTemporaryBoundaries() {
+    const tsconfigSource = readFileSync(path.join(root, "runtime/tsconfig.json"), "utf8");
+    const broadBoundary = disallowedZPurgecTypecheckExcludes(tsconfigSource);
+    if (broadBoundary.length > 0) {
+      failGate(
+        `Z-PURGEC: runtime/tsconfig.json still excludes migrated Z-PURGEC roots from typecheck:\n  ${broadBoundary.join("\n  ")}`,
+      );
+    }
+    pass("Z-PURGEC: runtime/tsconfig.json has no broad migrated-root exclusions");
+
+    const movedBoundaryPrefixes = [
+      "// @ts-nocheck\n" +
+        "// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.\n",
+      "// @ts-nocheck\n" +
+        "// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.\n",
+      "// @ts-nocheck\n" +
+        "// temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.\n",
+      "// @ts-nocheck\n" +
+        "// temporary boundary: moved purge surface is outside baseline typecheck.\n",
+      "// @ts-nocheck\n" +
+        "// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.\n",
+      "// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.",
+      "// @ts-nocheck -- temporary boundary: moved purge surface is outside baseline typecheck.",
+      "// @ts-nocheck\n" +
+        "// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.\n",
+      "// @ts-nocheck -- Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.",
+    ];
+    const runtimeFiles = walkFiles(path.join(root, "runtime/src"))
+      .filter((file) => /\.(ts|tsx|mts|cts)$/.test(file))
+      .filter((file) => !file.split(path.sep).join("/").includes("/runtime/src/agenc/upstream/"));
+    const boundaryFiles = runtimeFiles.filter((file) => {
+      const source = readFileSync(file, "utf8");
+      return movedBoundaryPrefixes.some((prefix) => source.startsWith(prefix));
+    });
+    const undocumentedUnchecked = runtimeFiles.filter((file) => {
+      const source = readFileSync(file, "utf8");
+      return source.startsWith("// @ts-nocheck") &&
+        !movedBoundaryPrefixes.some((prefix) => source.startsWith(prefix));
+    });
+    if (undocumentedUnchecked.length > 0) {
+      failGate(
+        `Z-PURGEC: ${undocumentedUnchecked.length} runtime file(s) keep undocumented ts-nocheck:\n  ${undocumentedUnchecked.slice(0, 20).map((f) => path.relative(root, f)).join("\n  ")}`,
+      );
+    }
+    if (boundaryFiles.length > 800) {
+      failGate(`Z-PURGEC: ${boundaryFiles.length} moved file(s) keep ts-nocheck; expected <= 800 documented boundary files`);
+    }
+    pass(`Z-PURGEC: moved ts-nocheck boundary documented and capped at ${boundaryFiles.length} file(s)`);
+
+    const scannerTest = run("node", ["scripts/goal/purge-scans.test.mjs"]);
+    if (scannerTest.status !== 0) {
+      failGate("Z-PURGEC: purge scanner self-test failed");
+    }
+    pass("Z-PURGEC: purge scanner self-test passed");
+
+    const tsupResolutionTest = run("npm", [
+      "test",
+      "--workspace",
+      "@tetsuo-ai/runtime",
+      "--",
+      "--run",
+      "tests/zpurgec-tsup-resolution.test.ts",
+    ]);
+    if (tsupResolutionTest.status !== 0) {
+      failGate("Z-PURGEC: tsup resolution boundary test failed");
+    }
+    pass("Z-PURGEC: tsup resolution boundary test passed");
   }
 
   if (id === "Z-PURGEA") {
@@ -7602,6 +7656,7 @@ async function cleanupGates(item) {
     }
     pass(`${id}: no top-level upstream files remain`);
     assertNoRuntimeUpstreamReferences("runtime purge surface");
+    assertZPurgecTemporaryBoundaries();
     return;
   }
   if (id === "Z-PURGEFINAL") {

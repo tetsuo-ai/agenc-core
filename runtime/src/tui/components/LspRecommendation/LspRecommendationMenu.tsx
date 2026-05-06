@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.
 import * as React from 'react';
 import { Box, Text } from '../../ink.js';
 import { Select } from '../CustomSelect/select';

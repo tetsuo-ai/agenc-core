@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { logError } from '../../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item

@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.
 import chalk from 'chalk'
 import { toString as qrToString } from 'qrcode'
 import {

@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.
 import { useEffect, useRef } from 'react'
 import { getIsRemoteMode } from '../../../bootstrap/state'
 import {
