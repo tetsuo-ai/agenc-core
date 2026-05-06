@@ -35,8 +35,24 @@ const fileEditMockState = vi.hoisted(() => ({
   patchInputs: [] as Array<{
     filePath: string
     fileContents: string
-    edits: Array<{ old_string: string; new_string: string }>
+    edits: Array<{
+      old_string: string
+      new_string: string
+      replace_all?: boolean
+    }>
   }>,
+  patchFromContentsInputs: [] as Array<{
+    filePath: string
+    oldContent: string
+    newContent: string
+  }>,
+  openForScanCanOpen: false,
+  readCappedContent: null as string | null,
+  scanContext: null as {
+    content: string
+    lineOffset: number
+    truncated: boolean
+  } | null,
 }))
 
 vi.mock('react', async () => {
@@ -159,6 +175,9 @@ vi.mock('../../../utils/cwd.js', () => ({
 }))
 
 vi.mock('../../../utils/file.js', () => ({
+  addLineNumbers: ({ content }: { content: string }) => content,
+  convertLeadingTabsToSpaces: (input: string) => input,
+  readFileSyncCached: () => '',
   readFileSafe: () => undefined,
 }))
 
@@ -177,12 +196,26 @@ vi.mock('../../../utils/diff', () => ({
   getPatchForDisplay: (input: {
     filePath: string
     fileContents: string
-    edits: Array<{ old_string: string; new_string: string }>
+    edits: Array<{
+      old_string: string
+      new_string: string
+      replace_all?: boolean
+    }>
   }) => {
     fileEditMockState.patchInputs.push(input)
     const edit = input.edits[0] ?? { old_string: '', new_string: '' }
     return [
       makeHunk(1, [`-${edit.old_string}`, `+${edit.new_string}`]),
+    ]
+  },
+  getPatchFromContents: (input: {
+    filePath: string
+    oldContent: string
+    newContent: string
+  }) => {
+    fileEditMockState.patchFromContentsInputs.push(input)
+    return [
+      makeHunk(1, [`-${input.oldContent}`, `+${input.newContent}`]),
     ]
   },
 }))
@@ -191,27 +224,21 @@ vi.mock('../../../utils/readEditContext', () => ({
   CHUNK_SIZE: 4,
   openForScan: async (filePath: string) => {
     fileEditMockState.openForScanCalls.push(filePath)
-    return null
+    return fileEditMockState.openForScanCanOpen
+      ? { close: vi.fn() }
+      : null
   },
-  readCapped: async () => null,
-  scanForContext: async () => ({
-    content: '',
-    lineOffset: 1,
-    truncated: true,
-  }),
+  readCapped: async () => fileEditMockState.readCappedContent,
+  scanForContext: async () =>
+    fileEditMockState.scanContext ?? {
+      content: '',
+      lineOffset: 1,
+      truncated: true,
+    },
 }))
 
 vi.mock('../../../utils/log', () => ({
   logError: vi.fn(),
-}))
-
-vi.mock('../../../tools/FileEditTool/utils', () => ({
-  findActualString: (_fileContent: string, oldString: string) => oldString,
-  preserveQuoteStyle: (
-    _oldString: string,
-    _actualOldString: string,
-    newString: string,
-  ) => newString,
 }))
 
 vi.mock('../design-system/Dialog', async () => {
@@ -301,6 +328,10 @@ describe('diff renderer components', () => {
     reactHookState.useValue = undefined
     fileEditMockState.openForScanCalls = []
     fileEditMockState.patchInputs = []
+    fileEditMockState.patchFromContentsInputs = []
+    fileEditMockState.openForScanCanOpen = false
+    fileEditMockState.readCappedContent = null
+    fileEditMockState.scanContext = null
   })
 
   test('renders actual structured hunks with ellipsis separators', () => {
@@ -415,9 +446,8 @@ describe('diff renderer components', () => {
     const diffData = await body.props.promise
 
     expect(fileEditMockState.openForScanCalls).toEqual([])
-    expect(fileEditMockState.patchInputs).toHaveLength(1)
-    expect(fileEditMockState.patchInputs[0]?.edits).toEqual([
-      { old_string: 'abcd', new_string: 'wxyz' },
+    expect(fileEditMockState.patchFromContentsInputs).toMatchObject([
+      { oldContent: 'abcd', newContent: 'wxyz' },
     ])
 
     reactHookState.useValue = diffData
@@ -438,12 +468,168 @@ describe('diff renderer components', () => {
     const diffData = await body.props.promise
 
     expect(fileEditMockState.openForScanCalls).toEqual(['src/missing.ts'])
-    expect(fileEditMockState.patchInputs[0]?.fileContents).toBe('xy')
+    expect(fileEditMockState.patchFromContentsInputs[0]?.oldContent).toBe('xy')
+    expect(fileEditMockState.patchFromContentsInputs[0]?.newContent).toBe('zz')
 
     reactHookState.useValue = diffData
     const output = renderPlain(body)
 
     expect(output).toContain('xy')
     expect(output).toContain('zz')
+  })
+
+  test('FileEditToolDiff input-only fallback resolves no-op edits without throwing', async () => {
+    const node = FileEditToolDiff({
+      file_path: 'src/noop.ts',
+      edits: [{ old_string: 'same', new_string: 'same' }],
+    }) as React.ReactElement<{
+      children: React.ReactElement<{ promise: Promise<unknown> }>
+    }>
+
+    await expect(node.props.children.props.promise).resolves.toMatchObject({
+      patch: [],
+      firstLine: null,
+      fileContent: undefined,
+    })
+  })
+
+  test('FileEditToolDiff normalizes permission preview edits before display patching', async () => {
+    async function loadPatchInput(
+      edit: { old_string: string; new_string: string; replace_all?: boolean },
+      content: string,
+    ) {
+      fileEditMockState.openForScanCanOpen = true
+      fileEditMockState.scanContext = {
+        content,
+        lineOffset: 1,
+        truncated: false,
+      }
+      fileEditMockState.readCappedContent = content
+      fileEditMockState.patchFromContentsInputs = []
+      const node = FileEditToolDiff({
+        file_path: 'src/preview.md',
+        edits: [edit],
+      }) as React.ReactElement<{
+        children: React.ReactElement<{ promise: Promise<unknown> }>
+      }>
+      await node.props.children.props.promise
+      return fileEditMockState.patchFromContentsInputs[0]
+    }
+
+    await expect(
+      loadPatchInput(
+        { old_string: 'a-b', new_string: 'c-d' },
+        'a-b\n',
+      ),
+    ).resolves.toMatchObject({
+      oldContent: 'a-b\n',
+      newContent: 'c-d\n',
+    })
+
+    await expect(
+      loadPatchInput(
+        { old_string: 'x y', new_string: 'z y' },
+        'x y\n',
+      ),
+    ).resolves.toMatchObject({
+      oldContent: 'x y\n',
+      newContent: 'z y\n',
+    })
+
+    await expect(
+      loadPatchInput(
+        { old_string: '"x"', new_string: '"y"' },
+        '“x”\n',
+      ),
+    ).resolves.toMatchObject({
+      oldContent: '“x”\n',
+      newContent: '“y”\n',
+    })
+
+    await expect(
+      loadPatchInput(
+        { old_string: 'be', new_string: '' },
+        'alpha be\ngamma\n',
+      ),
+    ).resolves.toMatchObject({
+      oldContent: 'alpha be\ngamma\n',
+      newContent: 'alpha gamma\n',
+    })
+
+    await expect(
+      loadPatchInput(
+        { old_string: 'fo', new_string: 'ba', replace_all: true },
+        'fo fo\n',
+      ),
+    ).resolves.toMatchObject({
+      oldContent: 'fo fo\n',
+      newContent: 'ba ba\n',
+    })
+  })
+
+  test('FileEditToolDiff falls back to full-file quote matching when raw scan misses', async () => {
+    fileEditMockState.openForScanCanOpen = true
+    fileEditMockState.scanContext = {
+      content: '',
+      lineOffset: 1,
+      truncated: false,
+    }
+    fileEditMockState.readCappedContent = '“x”\n'
+
+    const node = FileEditToolDiff({
+      file_path: 'src/preview.md',
+      edits: [{ old_string: '"x"', new_string: '"y"' }],
+    }) as React.ReactElement<{
+      children: React.ReactElement<{ promise: Promise<unknown> }>
+    }>
+    await node.props.children.props.promise
+
+    expect(fileEditMockState.patchFromContentsInputs[0]).toMatchObject({
+      oldContent: '“x”\n',
+      newContent: '“y”\n',
+    })
+  })
+
+  test('FileEditToolDiff previews all replace_all matches outside the scanned context window', async () => {
+    fileEditMockState.openForScanCanOpen = true
+    fileEditMockState.readCappedContent =
+      'a-b\n' + 'middle\n'.repeat(40) + 'a—b\n'
+    fileEditMockState.scanContext = {
+      content: 'a-b\nmiddle\nmiddle\n',
+      lineOffset: 1,
+      truncated: false,
+    }
+
+    const node = FileEditToolDiff({
+      file_path: 'src/preview.md',
+      edits: [{ old_string: 'a-b', new_string: 'c-d', replace_all: true }],
+    }) as React.ReactElement<{
+      children: React.ReactElement<{ promise: Promise<unknown> }>
+    }>
+    await node.props.children.props.promise
+
+    expect(fileEditMockState.patchFromContentsInputs[0]).toMatchObject({
+      oldContent: 'a-b\n' + 'middle\n'.repeat(40) + 'a—b\n',
+      newContent: 'c-d\n' + 'middle\n'.repeat(40) + 'a—b\n',
+    })
+  })
+
+  test('FileEditToolDiff keeps non-ASCII spaces literal in replace_all previews', async () => {
+    fileEditMockState.openForScanCanOpen = true
+    fileEditMockState.readCappedContent =
+      'x y\n' + 'middle\n'.repeat(40) + 'x y\n'
+
+    const node = FileEditToolDiff({
+      file_path: 'src/preview.md',
+      edits: [{ old_string: 'x y', new_string: 'z y', replace_all: true }],
+    }) as React.ReactElement<{
+      children: React.ReactElement<{ promise: Promise<unknown> }>
+    }>
+    await node.props.children.props.promise
+
+    expect(fileEditMockState.patchFromContentsInputs[0]).toMatchObject({
+      oldContent: 'x y\n' + 'middle\n'.repeat(40) + 'x y\n',
+      newContent: 'z y\n' + 'middle\n'.repeat(40) + 'x y\n',
+    })
   })
 })

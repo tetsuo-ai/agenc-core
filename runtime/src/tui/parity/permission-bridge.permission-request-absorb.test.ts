@@ -5,6 +5,11 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test, vi } from "vitest";
 
 import type { Tool } from "../../tools/Tool.js";
+import { buildToolUseConfirm } from "../../agenc/adapters/permission-bridge-projection.js";
+import {
+  createFileEditTool,
+  createFileMultiEditTool,
+} from "../../tools/system/file-edit.js";
 import {
   __permissionRequestTest,
   type ToolUseConfirm,
@@ -25,6 +30,7 @@ const permissionMocks = vi.hoisted(() => {
     FileWriteTool: tool("Write"),
     GlobTool: tool("Glob"),
     GrepTool: tool("Grep"),
+    MonitorTool: tool("Monitor"),
     NotebookEditTool: tool("NotebookEdit"),
     PowerShellTool: tool("PowerShell"),
     SkillTool: tool("Skill"),
@@ -37,6 +43,7 @@ const permissionMocks = vi.hoisted(() => {
     FileEditPermissionRequest: component(),
     FilesystemPermissionRequest: component(),
     FileWritePermissionRequest: component(),
+    MonitorPermissionRequest: component(),
     NotebookEditPermissionRequest: component(),
     PowerShellPermissionRequest: component(),
     SkillPermissionRequest: component(),
@@ -68,6 +75,9 @@ vi.mock("../../tools/ExitPlanModeTool/ExitPlanModeV2Tool.js", () => ({
 vi.mock("../../tools/FileEditTool/FileEditTool.js", () => ({
   FileEditTool: permissionMocks.FileEditTool,
 }));
+vi.mock("../../tools/FileEditTool/FileEditTool", () => ({
+  FileEditTool: permissionMocks.FileEditTool,
+}));
 vi.mock("../../tools/FileReadTool/FileReadTool.js", () => ({
   FileReadTool: permissionMocks.FileReadTool,
 }));
@@ -79,6 +89,9 @@ vi.mock("../../tools/GlobTool/GlobTool.js", () => ({
 }));
 vi.mock("../../tools/GrepTool/GrepTool.js", () => ({
   GrepTool: permissionMocks.GrepTool,
+}));
+vi.mock("../../tools/MonitorTool/MonitorTool.js", () => ({
+  MonitorTool: permissionMocks.MonitorTool,
 }));
 vi.mock("../../tools/NotebookEditTool/NotebookEditTool.js", () => ({
   NotebookEditTool: permissionMocks.NotebookEditTool,
@@ -126,6 +139,32 @@ vi.mock(
     FileEditPermissionRequest: permissionMocks.FileEditPermissionRequest,
   }),
 );
+vi.mock("../components/diff/FileEditToolDiff.js", () => ({
+  FileEditToolDiff: function MockFileEditToolDiff() {
+    return null;
+  },
+}));
+vi.mock("../components/diff/FileEditToolDiff", () => ({
+  FileEditToolDiff: function MockFileEditToolDiff() {
+    return null;
+  },
+}));
+vi.mock(
+  "../components/permissions/FilePermissionDialog/FilePermissionDialog.js",
+  () => ({
+    FilePermissionDialog: function MockFilePermissionDialog() {
+      return null;
+    },
+  }),
+);
+vi.mock(
+  "../components/permissions/FilePermissionDialog/FilePermissionDialog",
+  () => ({
+    FilePermissionDialog: function MockFilePermissionDialog() {
+      return null;
+    },
+  }),
+);
 vi.mock(
   "../components/permissions/FilesystemPermissionRequest/FilesystemPermissionRequest.js",
   () => ({
@@ -136,6 +175,12 @@ vi.mock(
   "../components/permissions/FileWritePermissionRequest/FileWritePermissionRequest.js",
   () => ({
     FileWritePermissionRequest: permissionMocks.FileWritePermissionRequest,
+  }),
+);
+vi.mock(
+  "../components/permissions/MonitorPermissionRequest/MonitorPermissionRequest.js",
+  () => ({
+    MonitorPermissionRequest: permissionMocks.MonitorPermissionRequest,
   }),
 );
 vi.mock(
@@ -178,6 +223,19 @@ function toolUseConfirmFor(tool: Tool, input: Record<string, unknown> = {}): Too
   } as unknown as ToolUseConfirm;
 }
 
+function pendingRequestFor(toolName: string, input: Record<string, unknown>) {
+  return {
+    id: `pending-${toolName}`,
+    ctx: {
+      callId: `call-${toolName}`,
+      toolName,
+    },
+    input,
+    description: `Approve ${toolName}`,
+    resolve: vi.fn(),
+  };
+}
+
 describe("PermissionRequest absorb wiring", () => {
   test("routes the live overlay through the absorbed TUI component", () => {
     const permissionRequests = readRuntime(
@@ -198,7 +256,7 @@ describe("PermissionRequest absorb wiring", () => {
       existsSync(
         resolve(
           runtimeRoot,
-          "src/tui/components/permissions",
+          "src/agenc/upstream/components/permissions",
           "PermissionRequest.tsx",
         ),
       ),
@@ -217,6 +275,11 @@ describe("PermissionRequest absorb wiring", () => {
       permissionMocks.BashPermissionRequest,
     );
     expect(__permissionRequestTest.permissionComponentForTool(
+      permissionMocks.FileEditTool as unknown as Tool,
+    )).toBe(
+      permissionMocks.FileEditPermissionRequest,
+    );
+    expect(__permissionRequestTest.permissionComponentForTool(
       permissionMocks.FileReadTool as unknown as Tool,
     )).toBe(
       permissionMocks.FilesystemPermissionRequest,
@@ -226,6 +289,51 @@ describe("PermissionRequest absorb wiring", () => {
         userFacingName: () => "CustomTool",
       } as unknown as Tool),
     ).toBe(permissionMocks.FallbackPermissionRequest);
+  });
+
+  test("routes live registered Edit and MultiEdit approvals to the edit permission UI", () => {
+    const editTool = createFileEditTool({ allowedPaths: ["/tmp"] });
+    const multiEditTool = createFileMultiEditTool({ allowedPaths: ["/tmp"] });
+    const editConfirm = buildToolUseConfirm(
+      pendingRequestFor("Edit", {
+        file_path: "/tmp/example.txt",
+        old_string: "before",
+        new_string: "after",
+      }) as never,
+      [editTool],
+    ) as ToolUseConfirm;
+    const multiEditConfirm = buildToolUseConfirm(
+      pendingRequestFor("MultiEdit", {
+        file_path: "/tmp/example.txt",
+        edits: [{ old_string: "before", new_string: "after" }],
+      }) as never,
+      [multiEditTool],
+    ) as ToolUseConfirm;
+
+    expect(__permissionRequestTest.permissionComponentForTool(editConfirm.tool)).toBe(
+      permissionMocks.FileEditPermissionRequest,
+    );
+    expect(
+      __permissionRequestTest.permissionComponentForTool(multiEditConfirm.tool),
+    ).toBe(permissionMocks.FileEditPermissionRequest);
+  });
+
+  test("FileEditPermissionRequest has a live MultiEdit parse/render path", () => {
+    const source = readRuntime(
+      [
+        "src",
+        "tui",
+        "components",
+        "permissions",
+        "FileEditPermissionRequest",
+        "FileEditPermissionRequest.tsx",
+      ].join("/"),
+    );
+
+    expect(source).toContain("Array.isArray(input.edits)");
+    expect(source).toContain("const edits = editsForInput(parsed)");
+    expect(source).toContain("<FileEditToolDiff file_path={file_path} edits={edits} />");
+    expect(source).toContain('completionType={edits.length > 1 ? "str_replace_multi" : "str_replace_single"}');
   });
 
   test("keeps notification copy behavior after the move", () => {
