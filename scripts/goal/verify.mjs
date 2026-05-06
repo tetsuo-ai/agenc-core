@@ -5807,6 +5807,33 @@ function assertZc43NetworkPolicyInterfaces() {
       failGate(`ZC-43: unified-exec spawn threading is missing ${marker}.`);
     }
   }
+  const managedNetworkStart = processManagerSource.indexOf(
+    "hasManagedNetworkRequirements:",
+  );
+  if (managedNetworkStart === -1) {
+    failGate("ZC-43: unified-exec must set hasManagedNetworkRequirements explicitly.");
+  }
+  const managedNetworkWindow = processManagerSource.slice(
+    managedNetworkStart,
+    managedNetworkStart + 260,
+  );
+  if (/networkPolicyDecider|blockedRequestObserver/.test(managedNetworkWindow)) {
+    failGate(
+      "ZC-43: network policy interfaces alone must not count as managed-network sandbox requirements.",
+    );
+  }
+  const processManagerTestSource = readRequired(
+    "runtime/src/unified-exec/process-manager.test.ts",
+  );
+  if (
+    !processManagerTestSource.includes(
+      "network policy interfaces alone do not force managed network sandboxing",
+    )
+  ) {
+    failGate(
+      "ZC-43: unified-exec tests must prove interface presence alone is no-op for managed-network sandbox selection.",
+    );
+  }
   const guardianSource = readRequired("runtime/src/permissions/guardian/approval-request.ts");
   if (!guardianSource.includes("networkPolicyInterfaces")) {
     failGate("ZC-43: guardian approval request must carry network policy interface metadata.");

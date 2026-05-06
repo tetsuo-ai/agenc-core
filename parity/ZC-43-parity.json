@@ -162,7 +162,7 @@
         "ToolRouter.networkPolicyInterfacesFromTurn",
         "GuardianApprovalRequestBase.networkPolicyInterfaces"
       ],
-      "behavior": "Exec, spawn, and guardian target surfaces carry the optional interface presence without starting a managed proxy transport.",
+      "behavior": "Exec, spawn, and guardian target surfaces carry the optional interface presence without starting a managed proxy transport. Interface presence alone remains no-op for managed-network sandbox selection; only real proxy config or enforceManagedNetwork marks managed-network requirements.",
       "tests": [
         "runtime/src/tools/system/exec-command.test.ts",
         "runtime/src/unified-exec/process-manager.test.ts",

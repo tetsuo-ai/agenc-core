@@ -675,9 +675,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         windowsSandboxLevel,
         hasManagedNetworkRequirements:
           params.runtimeSandbox.enforceManagedNetwork === true ||
-          params.runtimeSandbox.network !== undefined ||
-          params.runtimeSandbox.networkPolicyDecider !== undefined ||
-          params.runtimeSandbox.blockedRequestObserver !== undefined,
+          params.runtimeSandbox.network !== undefined,
       });
       if (
         sandbox === "none" &&
