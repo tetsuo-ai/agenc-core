@@ -474,6 +474,32 @@ describe("Edit tool", () => {
     expect(after).toBe("He whispered “goodbye” to her\n");
   });
 
+  test("semantic no-op after quote preservation is rejected", async () => {
+    const file = join(root, "smart-noop.md");
+    const fileContent = "“x”\n";
+    await writeFile(file, fileContent, "utf8");
+    const fileStats = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: fileContent,
+      timestamp: fileStats.mtimeMs,
+      viewKind: "full",
+    });
+
+    const tool = createFileEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      old_string: '"x"',
+      new_string: "“x”",
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toBe(
+      "No changes to make: old_string and new_string are exactly the same.",
+    );
+    await expect(readFile(file, "utf8")).resolves.toBe(fileContent);
+  });
+
   test("deleting line contents removes the trailing newline", async () => {
     const file = join(root, "delete-line.txt");
     const fileContent = "alpha\nbeta\ngamma\n";

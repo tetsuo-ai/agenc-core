@@ -546,7 +546,13 @@ function applyValidatedEdit(
     newString,
   );
 
-  return applyEdit(fileContent, actualOldString, actualNewString, replaceAll);
+  const applied = applyEdit(fileContent, actualOldString, actualNewString, replaceAll);
+  if (applied.updated === fileContent) {
+    return {
+      error: "No changes to make: old_string and new_string are exactly the same.",
+    };
+  }
+  return applied;
 }
 
 /**

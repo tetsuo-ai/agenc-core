@@ -25,6 +25,7 @@ Target coverage:
 - Existing file edits preserve detected UTF-8/UTF-16LE encoding and LF/CRLF line-ending style on disk while matching against LF-normalized read content.
 - `runtime/src/tools/FileEditTool/` owns the upstream-shaped TUI/tool rendering contract used by permission and transcript components.
 - `runtime/src/tui/components/diff/FileEditToolDiff.tsx` and `runtime/src/tui/components/permissions/{FileEditPermissionRequest,SedEditPermissionRequest,FilePermissionDialog}/` own diff rendering and file-edit permission flow, including full-file preview fallback when raw context scan misses a quote-normalized match and complete capped-file previews for `replace_all`.
+- `runtime/src/tui/components/permissions/PermissionRequest.tsx` maps both upstream-shaped file-edit tools and live registered `Edit`/`MultiEdit` runtime tools to `FileEditPermissionRequest`.
 
 Tests:
 - `runtime/src/tools/system/file-edit.test.ts`
