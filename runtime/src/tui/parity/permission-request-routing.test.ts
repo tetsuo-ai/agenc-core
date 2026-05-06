@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test, vi } from "vitest";
 
 import type { Tool } from "../../tools/Tool.js";
-import { buildToolUseConfirm } from "../permission-confirm-queue.js";
+import { buildToolUseConfirm } from "../permission-requests.js";
 import {
   createFileEditTool,
   createFileMultiEditTool,

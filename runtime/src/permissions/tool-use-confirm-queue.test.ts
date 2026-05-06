@@ -1,4 +1,4 @@
-import { afterEach, describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 
 import type { ApprovalCtx } from "../tools/orchestrator.js";
 import type { ReviewDecision } from "./review-decision.js";
@@ -8,7 +8,10 @@ import {
   APPROVED_FOR_SESSION,
   DENIED,
 } from "./review-decision.js";
-import { buildToolUseConfirmQueue } from "../tui/permission-confirm-queue.js";
+vi.mock("../tui/components/permissions/PermissionRequest.js", () => ({
+  PermissionRequest: () => null,
+}));
+import { buildToolUseConfirmQueue } from "../tui/permission-requests.js";
 import { clearAskUserQuestionResponsesForTest, createAskUserQuestionTool } from "../tools/ask-user-question/tool.js";
 import type { AskUserQuestionInput } from "../tools/ask-user-question/tool.js";
 

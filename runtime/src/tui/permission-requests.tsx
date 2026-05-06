@@ -3,17 +3,32 @@ import { useEffect, useMemo, useState } from "react";
 import { PermissionRequest } from "./components/permissions/PermissionRequest.js";
 import type { ApprovalCtx } from "../tools/orchestrator.js";
 import type { ReviewDecision } from "../permissions/review-decision.js";
-import { ABORT } from "../permissions/review-decision.js";
 import {
-  buildToolUseConfirm,
-  buildToolUseConfirmQueue,
-  type PendingRequest,
-} from "./permission-confirm-queue.js";
+  ABORT,
+  APPROVED,
+  APPROVED_FOR_SESSION,
+  DENIED,
+} from "../permissions/review-decision.js";
+import {
+  ASK_USER_QUESTION_TOOL_NAME,
+  recordAskUserQuestionPlanInterviewAction,
+  recordAskUserQuestionUpdatedInput,
+  type AskUserQuestionPlanInterviewAction,
+} from "../tools/ask-user-question/tool.js";
+import { makeToolUseMessage } from "./session-transcript.js";
 import type { AgenCBridgeSession } from "./session-types.js";
 import { createSessionAppStateBridge } from "./session-app-state.js";
 import type { AppState } from "./state/AppState.js";
 
-export { buildToolUseConfirmQueue, createSessionAppStateBridge, type PendingRequest };
+export { createSessionAppStateBridge };
+
+export interface PendingRequest {
+  readonly id: string;
+  readonly ctx: ApprovalCtx;
+  readonly input: Record<string, unknown>;
+  readonly description: string;
+  resolve(decision: ReviewDecision): void;
+}
 
 function parseJsonObject(raw: string | undefined): Record<string, unknown> {
   if (raw === undefined || raw.trim().length === 0) return {};
@@ -59,6 +74,92 @@ function deriveInput(ctx: ApprovalCtx): Record<string, unknown> {
     default:
       return {};
   }
+}
+
+function planInterviewActionFromFeedback(
+  feedback: unknown,
+): AskUserQuestionPlanInterviewAction | null {
+  if (typeof feedback !== "string") return null;
+  const normalized = feedback.toLowerCase();
+  if (normalized.includes("wants to clarify these questions")) {
+    return "chat_about_this";
+  }
+  if (normalized.includes("provided enough answers for the plan interview")) {
+    return "skip_plan_interview";
+  }
+  return null;
+}
+
+export function buildToolUseConfirm(
+  request: PendingRequest,
+  tools: readonly { readonly name: string }[],
+): unknown | null {
+  const tool =
+    tools.find((candidate) => candidate.name === request.ctx.toolName) ?? tools[0];
+  if (!tool) return null;
+  const assistantMessage = makeToolUseMessage(
+    request.ctx.callId,
+    request.ctx.toolName,
+    request.input,
+  );
+  return {
+    assistantMessage,
+    tool,
+    description: request.description,
+    input: request.input,
+    toolUseContext: {},
+    toolUseID: request.ctx.callId,
+    permissionResult: {
+      behavior: "ask",
+      message: request.description,
+    },
+    permissionPromptStartTimeMs: Date.now(),
+    onUserInteraction() {},
+    onAbort() {
+      request.resolve(ABORT);
+    },
+    onAllow(
+      updatedInput: unknown,
+      permissionUpdates: readonly unknown[] = [],
+    ) {
+      if (request.ctx.toolName === ASK_USER_QUESTION_TOOL_NAME) {
+        recordAskUserQuestionUpdatedInput(request.ctx.callId, updatedInput);
+      }
+      request.resolve(
+        permissionUpdates.length > 0 ? APPROVED_FOR_SESSION : APPROVED,
+      );
+    },
+    onReject(feedback?: string) {
+      if (request.ctx.toolName === ASK_USER_QUESTION_TOOL_NAME) {
+        const action = planInterviewActionFromFeedback(feedback);
+        if (
+          action !== null &&
+          recordAskUserQuestionPlanInterviewAction(
+            request.ctx.callId,
+            request.input,
+            action,
+          )
+        ) {
+          request.resolve(APPROVED);
+          return;
+        }
+      }
+      request.resolve(DENIED);
+    },
+    async recheckPermission() {},
+  };
+}
+
+export function buildToolUseConfirmQueue(
+  requests: readonly PendingRequest[],
+  tools: readonly { readonly name: string }[],
+): readonly unknown[] {
+  const queue: unknown[] = [];
+  for (const request of requests) {
+    const projected = buildToolUseConfirm(request, tools);
+    if (projected !== null) queue.push(projected);
+  }
+  return queue;
 }
 
 export function usePermissionRequests(

@@ -23,6 +23,15 @@
  */
 
 import { emitError, emitWarning } from "../session/event-log.js";
+import type { LLMContentPart, LLMMessage } from "../llm/types.js";
+import { compactConversation } from "../services/compact/compact.js";
+import type { RuntimeMessage } from "../services/compact/types.js";
+import {
+  AGENC_COMPACT_CALL_METRIC,
+  AGENC_COMPACT_DURATION_METRIC,
+  agencTelemetry,
+  toMetricTags,
+} from "../observability/telemetry.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { TurnState } from "../session/turn-state.js";
@@ -41,12 +50,359 @@ import {
   markContextCollapseAttempted,
   resetContextCollapseAttempted,
 } from "../recovery/withhold-cascading.js";
-import {
-  runAgenCContextCollapseOverflowRecovery,
-} from "../session/compaction.js";
 import type { StreamingToolExecutor } from "./_deps/tool-runtime.js";
 import { tombstoneOrphans } from "../recovery/tombstone.js";
 import { executeStopFailureHooks } from "./stop-hooks.js";
+
+type ContextCollapseOverflowRecoveryResult =
+  | { readonly kind: "applied"; readonly reason: string }
+  | { readonly kind: "pass" }
+  | { readonly kind: "surface"; readonly reason: string };
+
+type RuntimeWireRole = NonNullable<RuntimeMessage["role"]>;
+
+type CollapseRuntimeMessage = Omit<
+  RuntimeMessage,
+  "role" | "originalRole" | "message"
+> & {
+  readonly role?: RuntimeWireRole;
+  readonly originalRole?: LLMMessage["role"];
+  readonly toolCallId?: string;
+  readonly toolName?: string;
+  readonly toolCalls?: readonly { readonly id: string; readonly name: string }[];
+  readonly phase?: string;
+  readonly type?: string;
+  readonly message?: {
+    readonly role?: string;
+    readonly content?: unknown;
+  };
+};
+
+export async function runContextCollapseOverflowRecovery(params: {
+  readonly state: TurnState;
+}): Promise<ContextCollapseOverflowRecoveryResult> {
+  const finishTelemetry = startCompactTelemetry("overflow_recovery");
+  try {
+    const recovered = await recoverFromOverflow(
+      toCollapseRuntimeMessages(params.state.messagesForQuery),
+    );
+    if (recovered.committed <= 0) {
+      const result = { kind: "pass" } as const;
+      finishTelemetry(result.kind);
+      return result;
+    }
+    params.state.messagesForQuery = fromCollapseRuntimeMessages(
+      recovered.messages as CollapseRuntimeMessage[],
+    );
+    params.state.messages = [...params.state.messagesForQuery];
+    const result = {
+      kind: "applied",
+      reason: "context_collapse",
+    } as const;
+    finishTelemetry(result.kind, { reason: result.reason });
+    return result;
+  } catch (error) {
+    finishTelemetry("error");
+    throw error;
+  }
+}
+
+async function recoverFromOverflow(
+  messages: RuntimeMessage[],
+): Promise<{ readonly messages: RuntimeMessage[]; readonly committed: number }> {
+  if (messages.length < 4) return { messages, committed: 0 };
+  const keepCount = Math.min(3, messages.length);
+  const compacted = await compactConversation(
+    messages,
+    {},
+    "Recover from a prompt-too-long provider response.",
+  );
+  return {
+    messages: [
+      compacted.boundaryMarker,
+      ...compacted.summaryMessages,
+      ...messages.slice(-keepCount),
+    ],
+    committed: 1,
+  };
+}
+
+function toCollapseRuntimeMessages(
+  messages: readonly LLMMessage[],
+): CollapseRuntimeMessage[] {
+  return messages.map((message, index) => {
+    const runtimeContent = toRuntimeMessageContent(message.content);
+    if (message.role === "system") {
+      return {
+        role: "system",
+        type: "system",
+        content: runtimeContent,
+        uuid: `agenc-system-${index}`,
+        timestamp: new Date(0).toISOString(),
+      };
+    }
+    const role = toRuntimeWireRole(message.role);
+    return {
+      role,
+      content: runtimeContent,
+      ...(message.role !== role ? { originalRole: message.role } : {}),
+      ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
+      ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
+      ...(message.phase !== undefined ? { phase: message.phase } : {}),
+      type: role,
+      message: {
+        role,
+        content: runtimeContent,
+      },
+      uuid: `agenc-${role}-${index}`,
+      timestamp: new Date(0).toISOString(),
+      ...(message.toolCalls !== undefined
+        ? {
+            toolCalls: message.toolCalls.map((call) => ({
+              id: call.id,
+              name: call.name,
+            })),
+          }
+        : {}),
+      ...(message.role === "tool" ? { isMeta: true } : {}),
+    };
+  });
+}
+
+function toRuntimeWireRole(role: LLMMessage["role"]): RuntimeWireRole {
+  if (role === "tool") return "user";
+  if (role === "developer") return "system";
+  return role;
+}
+
+function fromCollapseRuntimeMessages(
+  messages: readonly CollapseRuntimeMessage[],
+): LLMMessage[] {
+  return messages
+    .map(fromCollapseRuntimeMessage)
+    .filter((message): message is LLMMessage => message !== null);
+}
+
+function fromCollapseRuntimeMessage(
+  message: CollapseRuntimeMessage,
+): LLMMessage | null {
+  if (message.role && message.content !== undefined) {
+    const role = message.originalRole ?? message.role;
+    return {
+      role,
+      content: fromRuntimeMessageContent(message.content),
+      ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
+      ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
+      ...(message.phase === "commentary" || message.phase === "final_answer"
+        ? { phase: message.phase }
+        : {}),
+    };
+  }
+  const role = normalizeRole(message.message?.role ?? message.type);
+  if (!role) return null;
+  return {
+    role,
+    content: fromRuntimeMessageContent(readContent(message)),
+  };
+}
+
+function normalizeRole(value: unknown): LLMMessage["role"] | null {
+  if (
+    value === "system" ||
+    value === "developer" ||
+    value === "user" ||
+    value === "assistant" ||
+    value === "tool"
+  ) {
+    return value;
+  }
+  return null;
+}
+
+function readContent(
+  message: CollapseRuntimeMessage,
+): LLMMessage["content"] {
+  const content = message.message?.content ?? message.content ?? "";
+  return cloneContent(content);
+}
+
+function cloneDocumentContentPart(item: object): LLMContentPart | null {
+  const record = item as Record<string, unknown>;
+  if (record.type !== "document") return null;
+  const source =
+    record.source && typeof record.source === "object"
+      ? (record.source as Record<string, unknown>)
+      : null;
+  if (
+    source?.type !== "base64" ||
+    source.media_type !== "application/pdf" ||
+    typeof source.data !== "string" ||
+    source.data.length === 0
+  ) {
+    return null;
+  }
+  return {
+    type: "document",
+    source: {
+      type: "base64",
+      media_type: "application/pdf",
+      data: source.data,
+    },
+    ...(typeof record.title === "string" && record.title.length > 0
+      ? { title: record.title }
+      : {}),
+    ...(typeof record.filename === "string" && record.filename.length > 0
+      ? { filename: record.filename }
+      : {}),
+    ...(typeof record.fallbackText === "string"
+      ? { fallbackText: record.fallbackText }
+      : {}),
+    ...(typeof record.fallbackTextTruncated === "boolean"
+      ? { fallbackTextTruncated: record.fallbackTextTruncated }
+      : {}),
+    ...(typeof record.fallbackTextError === "string" &&
+    record.fallbackTextError.length > 0
+      ? { fallbackTextError: record.fallbackTextError }
+      : {}),
+  };
+}
+
+function cloneContent(content: unknown): LLMMessage["content"] {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    const parts: LLMContentPart[] = [];
+    for (const item of content) {
+      if (!item || typeof item !== "object") continue;
+      const document = cloneDocumentContentPart(item);
+      if (document !== null) {
+        parts.push(document);
+        continue;
+      }
+      if (
+        "type" in item &&
+        item.type === "image_url" &&
+        "image_url" in item &&
+        item.image_url &&
+        typeof item.image_url === "object" &&
+        "url" in item.image_url &&
+        typeof item.image_url.url === "string"
+      ) {
+        parts.push({
+          type: "image_url",
+          image_url: { url: item.image_url.url },
+        });
+        continue;
+      }
+      if ("text" in item && typeof item.text === "string") {
+        parts.push({ type: "text", text: item.text });
+      }
+    }
+    return parts;
+  }
+  return "";
+}
+
+function toRuntimeMessageContent(content: unknown): unknown {
+  if (typeof content === "string") return [{ type: "text", text: content }];
+  if (!Array.isArray(content)) return [];
+  return content.map((item) => {
+    if (!item || typeof item !== "object") return { type: "text", text: "" };
+    const document = cloneDocumentContentPart(item);
+    if (document !== null) return document;
+    if (
+      "type" in item &&
+      item.type === "image_url" &&
+      "image_url" in item &&
+      item.image_url &&
+      typeof item.image_url === "object" &&
+      "url" in item.image_url &&
+      typeof item.image_url.url === "string"
+    ) {
+      return {
+        type: "image",
+        source: { type: "url", url: item.image_url.url },
+      };
+    }
+    if ("text" in item && typeof item.text === "string") {
+      return { type: "text", text: item.text };
+    }
+    return { ...item };
+  });
+}
+
+function fromRuntimeMessageContent(content: unknown): LLMMessage["content"] {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const parts: LLMContentPart[] = [];
+  let textOnly = true;
+  for (const item of content) {
+    if (!item || typeof item !== "object") continue;
+    const document = cloneDocumentContentPart(item);
+    if (document !== null) {
+      textOnly = false;
+      parts.push(document);
+      continue;
+    }
+    if (
+      "type" in item &&
+      item.type === "image" &&
+      "source" in item &&
+      item.source &&
+      typeof item.source === "object" &&
+      "url" in item.source &&
+      typeof item.source.url === "string"
+    ) {
+      textOnly = false;
+      parts.push({
+        type: "image_url",
+        image_url: { url: item.source.url },
+      });
+      continue;
+    }
+    if (
+      "type" in item &&
+      item.type === "image_url" &&
+      "image_url" in item &&
+      item.image_url &&
+      typeof item.image_url === "object" &&
+      "url" in item.image_url &&
+      typeof item.image_url.url === "string"
+    ) {
+      textOnly = false;
+      parts.push({
+        type: "image_url",
+        image_url: { url: item.image_url.url },
+      });
+      continue;
+    }
+    if ("text" in item && typeof item.text === "string") {
+      parts.push({ type: "text", text: item.text });
+    }
+  }
+  if (textOnly) {
+    return parts.map((part) => part.type === "text" ? part.text : "").join("\n");
+  }
+  return parts;
+}
+
+function startCompactTelemetry(
+  mode: string,
+  attributes: Readonly<Record<string, unknown>> = {},
+): (status: string, additionalAttributes?: Readonly<Record<string, unknown>>) => void {
+  const baseTags = toMetricTags({ mode, ...attributes });
+  const timer = agencTelemetry.timer(AGENC_COMPACT_DURATION_METRIC, baseTags);
+  let finished = false;
+  return (
+    status: string,
+    additionalAttributes: Readonly<Record<string, unknown>> = {},
+  ) => {
+    if (finished) return;
+    finished = true;
+    const tags = toMetricTags({ mode, ...attributes, status, ...additionalAttributes });
+    agencTelemetry.counter(AGENC_COMPACT_CALL_METRIC, 1, tags);
+    timer.end(tags);
+  };
+}
 
 /**
  * Phase-3 entry point. Called by run-turn after the stream-model
@@ -121,10 +477,8 @@ export async function postSampleRecovery(
         const gate = evaluateWithholdCascade(c.state, c.lastMessage);
         if (gate.kind === "route_to_collapse_drain") {
           markContextCollapseAttempted(c.state);
-          const drain = await runAgenCContextCollapseOverflowRecovery({
-            session: c.session,
+          const drain = await runContextCollapseOverflowRecovery({
             state: c.state,
-            ...(c.lastMessage !== undefined ? { lastMessage: c.lastMessage } : {}),
           });
           if (drain.kind === "applied") {
             c.state.transition = { reason: "collapse_drain_retry" };

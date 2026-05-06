@@ -1,14 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { ProviderHttpClient } from "../src/llm/client.js";
-import {
-  runAgenCContextCollapseOverflowRecovery,
-  runAgenCContextUsage,
-  prepareAgenCTurnContext,
-  runAgenCManualCompact,
-} from "../src/session/compaction.js";
+import { compactCommand, contextCommand } from "../src/commands/session-compact.js";
+import { runContextCollapseOverflowRecovery } from "../src/phases/post-sample-recovery.js";
+import { runTurn } from "../src/session/run-turn.js";
 import { buildInitialTurnState } from "../src/session/turn-state.js";
 import {
+  drain,
   mkCtx,
   mkProvider,
   mkSession,
@@ -43,6 +41,16 @@ function longToolExchange(id: number): LLMMessage[] {
   ];
 }
 
+function commandContext(session: unknown, argsRaw = "") {
+  return {
+    session,
+    argsRaw,
+    cwd: "/tmp/project",
+    home: "/tmp",
+    agencHome: "/tmp/.agenc",
+  } as never;
+}
+
 describe("runtime session compact contract", () => {
   test("manual compact writes replacement history and clears provider continuation", async () => {
     const client = new ProviderHttpClient({
@@ -65,13 +73,11 @@ describe("runtime session compact contract", () => {
       ],
     });
 
-    const result = await runAgenCManualCompact({
-      session,
-      ctx: mkCtx(),
-      customInstructions: "Preserve test decisions",
-    });
+    const result = await compactCommand.execute(
+      commandContext(session, "Preserve test decisions"),
+    );
 
-    expect(result.displayText).toBe("Conversation compacted");
+    expect(result).toMatchObject({ kind: "compact", text: "Conversation compacted" });
     expect(clearSpy).toHaveBeenCalledTimes(1);
     expect(state.history.map((message) => message.content).join("\n")).toContain(
       "summary from compact provider",
@@ -89,17 +95,16 @@ describe("runtime session compact contract", () => {
     process.env.AGENC_DISABLE_AUTO_COMPACT = "1";
     const history = Array.from({ length: 7 }, (_, index) => longToolExchange(index))
       .flat();
-    const { session } = mkSession({ history });
-    const ctx = mkCtx();
-    const state = buildInitialTurnState(
-      ctx,
-      { role: "user", content: "continue" },
-      { priorMessages: history },
+    const seen: LLMMessage[][] = [];
+    const provider = mkProvider(
+      { content: "ok" },
+      { onChatStream: (messages) => seen.push(messages) },
     );
+    const { session } = mkSession({ provider, history });
 
-    await prepareAgenCTurnContext(state, ctx, session);
+    await drain(runTurn(session, mkCtx(), "continue"));
 
-    const toolMessages = state.messagesForQuery.filter(
+    const toolMessages = (seen[0] ?? []).filter(
       (message) => message.role === "tool",
     );
     expect(toolMessages).toHaveLength(7);
@@ -119,8 +124,11 @@ describe("runtime session compact contract", () => {
     ];
     const { session } = mkSession({ history });
     const ctx = mkCtx();
-    const usage = await runAgenCContextUsage({ session, ctx });
-    expect(usage.text).toContain("/ 1,024 tokens");
+    const usage = await contextCommand.execute(commandContext(session));
+    expect(usage).toMatchObject({ kind: "text" });
+    if (usage.kind === "text") {
+      expect(usage.text).toContain("/ 1,024 tokens");
+    }
 
     const state = buildInitialTurnState(
       ctx,
@@ -129,8 +137,7 @@ describe("runtime session compact contract", () => {
     );
     state.messagesForQuery = state.messages.map((message) => ({ ...message }));
 
-    const recovered = await runAgenCContextCollapseOverflowRecovery({
-      session,
+    const recovered = await runContextCollapseOverflowRecovery({
       state,
     });
 
