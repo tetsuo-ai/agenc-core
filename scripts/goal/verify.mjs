@@ -2331,6 +2331,68 @@ header("universal security-paths stub guard (Gate 3.5)");
   }
 }
 
+// --- Gate 3.6: branding-scan evasion + dynamic-import-of-upstream guard ----
+//
+// Catches two anti-patterns that ship as runtime time-bombs:
+//
+// (a) String-array-join evasion of the branding scanner. Code like
+//        const x = ["..", "agenc", "upstream", "bootstrap", "state.js"].join("/");
+//        const mod = await import(x);
+//     was inserted in runtime/src/bin/agenc.ts to evade the literal-string
+//     branding scan. tsup cannot follow the constructed path, so the dist
+//     ships without the bundled module, and the runtime crashes at user
+//     launch with "Cannot find module .../agenc/upstream/...".
+//
+// (b) Direct dynamic import / require of agenc/upstream/. Even with a literal
+//     string this is fragile because tsup may externalize upstream paths
+//     depending on the importer's location.
+//
+// Both patterns are forbidden in non-test source. Tests may legitimately
+// reference these paths via vi.mock for isolation.
+header("branding-scan evasion + dynamic-import-of-upstream guard (Gate 3.6)");
+{
+  const evasionPatterns = [
+    {
+      name: "string-array-join with 'agenc' element",
+      // matches array literals containing the literal "agenc" as a quoted element
+      // and a sibling "upstream" element — the scanner-evasion hallmark.
+      // branding-scan: allow rule definition contains the literal forbidden tokens it detects
+      re: /\[[^\]]*["'](?:agenc|claude|codex|openclaude)["'][^\]]*["'](?:upstream|claude|codex|openclaude|bootstrap)["'][^\]]*\]/g,
+    },
+    {
+      name: "dynamic import of agenc/upstream",
+      re: /(?:await\s+)?import\s*\(\s*["'`][^"'`]*agenc\/upstream/g,
+    },
+    {
+      name: "require of agenc/upstream",
+      re: /\brequire\s*\(\s*["'`][^"'`]*agenc\/upstream/g,
+    },
+  ];
+  const offenders = [];
+  for (const f of walkFiles(path.join(root, "runtime/src"))) {
+    if (!/\.(ts|tsx|mts|cts)$/.test(f)) continue;
+    if (/\.test\.(ts|tsx|mts|cts)$/.test(f)) continue;
+    let src;
+    try { src = readFileSync(f, "utf8"); } catch { continue; }
+    for (const { name, re } of evasionPatterns) {
+      const hits = src.match(re);
+      if (hits && hits.length > 0) {
+        offenders.push(`${path.relative(root, f)}: ${name} (${hits.length})`);
+      }
+    }
+  }
+  if (offenders.length > 0) {
+    failGate(
+      `branding-scan evasion / dynamic-upstream-import detected in non-test source:\n  ${offenders.join("\n  ")}\n\n` +
+        `These patterns ship runtime time-bombs: tsup cannot bundle dynamically-constructed import paths, ` +
+        `so the dist file ${'' /* branding-scan: allow rule explainer */}references a module that doesn't exist after build. ` +
+        `Replace with a static import from the migrated AgenC-owned path. If the source must reference the legacy ` +
+        `mirror tree during the migration window, file a tracked exemption with a deadline.`,
+    );
+  }
+  pass("no branding-scan evasion or dynamic upstream imports in non-test source");
+}
+
 // --- Gate 4: typecheck (baseline + delta) -------------------------------
 
 if (skipTypecheck) {
