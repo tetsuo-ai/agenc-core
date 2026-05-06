@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * AST-based bash command analysis using tree-sitter.
  *

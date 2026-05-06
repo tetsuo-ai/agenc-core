@@ -1,7 +1,7 @@
-// @ts-nocheck
 import {
   getModelStrings as getModelStringsState,
   setModelStrings as setModelStringsState,
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 } from 'src/bootstrap/state.js'
 import { logError } from '../log.js'
 import { sequential } from '../sequential.js'
@@ -29,6 +29,7 @@ function getBuiltinModelStrings(provider: APIProvider): ModelStrings {
   const providerKey = provider === 'agenc' || provider === 'github' ? 'openai' : provider
   const out = {} as ModelStrings
   for (const key of MODEL_KEYS) {
+    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
     out[key] = ALL_MODEL_CONFIGS[key][providerKey]
   }
   return out

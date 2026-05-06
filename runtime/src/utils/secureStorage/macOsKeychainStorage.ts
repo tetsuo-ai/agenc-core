@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { execaSync } from 'execa'
 import { logForDebugging } from 'src/utils/debug.js'
 import { execFileNoThrow } from '../execFileNoThrow.js'

@@ -1,5 +1,5 @@
-// @ts-nocheck
 import { randomBytes } from 'crypto'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import type { ControlOperator, ParseEntry } from 'shell-quote'
 import {
   type CommandPrefixResult,

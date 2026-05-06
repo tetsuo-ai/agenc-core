@@ -1,8 +1,8 @@
-// @ts-nocheck
 import { randomBytes } from 'crypto'
 import {
   isCodexBaseUrl,
   parseOpenAICompatibleApiFormat,
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 } from '../services/api/providerConfig.js'
 import {
   getGlobalConfig,
@@ -1058,6 +1058,7 @@ export function setActiveProviderProfile(
 
   // Keep startup persisted provider profile in sync so initial startup
   // uses the selected provider/model.
+  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
   const persistedProfile = (() => {
     if (activeProfile.provider === 'anthropic') return 'openai' as const
     return activeProfile.provider

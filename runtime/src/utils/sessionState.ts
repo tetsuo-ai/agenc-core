@@ -1,4 +1,3 @@
-// @ts-nocheck
 export type SessionState = 'idle' | 'running' | 'requires_action'
 
 /**

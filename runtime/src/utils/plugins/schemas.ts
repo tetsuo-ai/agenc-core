@@ -1,13 +1,14 @@
-// @ts-nocheck
 import { z } from 'zod/v4'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { HooksSchema } from '../../schemas/hooks.js'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { McpServerConfigSchema } from '../../services/mcp/types.js'
 import { lazySchema } from '../lazySchema.js'
 
 /**
  * First-layer defense against official marketplace impersonation.
  *
- * This validation blocks direct impersonation attempts like "anthropic-official",
+ * This validation blocks direct impersonation attempts like "agenc-official",
  * "agenc-marketplace", etc. Indirect variations (e.g., "my-agenc-marketplace")
  * are not blocked intentionally to avoid false positives on legitimate names.
  * Source org verification provides additional protection at registration/install time.
@@ -21,8 +22,6 @@ export const ALLOWED_OFFICIAL_MARKETPLACE_NAMES = new Set([
   'agenc-code-marketplace',
   'agenc-code-plugins',
   'agenc-plugins-official',
-  'anthropic-marketplace',
-  'anthropic-plugins',
   'agent-skills',
   'life-sciences',
   'knowledge-work-plugins',
@@ -62,15 +61,15 @@ export function isMarketplaceAutoUpdate(
  * Pattern to detect names that impersonate official provider/AgenC marketplaces.
  *
  * Matches names containing variations like:
- * - "official" combined with "anthropic" or "agenc" (e.g., "official-agenc-plugins")
- * - "anthropic" or "agenc" combined with "official" (e.g., "agenc-official")
- * - Names starting with "anthropic" or "agenc" followed by official-sounding terms
- *   like "marketplace", "plugins" (e.g., "anthropic-marketplace-new", "agenc-plugins-v2")
+ * - "official" combined with "agenc" (e.g., "official-agenc-plugins")
+ * - "agenc" combined with "official" (e.g., "agenc-official")
+ * - Names starting with "agenc" followed by official-sounding terms
+ *   like "marketplace", "plugins" (e.g., "agenc-plugins-v2")
  *
  * The pattern is case-insensitive.
  */
 export const BLOCKED_OFFICIAL_NAME_PATTERN =
-  /(?:official[^a-z0-9]*(anthropic|agenc)|(?:anthropic|agenc)[^a-z0-9]*official|^(?:anthropic|agenc)[^a-z0-9]*(marketplace|plugins|official))/i
+  /(?:official[^a-z0-9]*agenc|agenc[^a-z0-9]*official|^agenc[^a-z0-9]*(marketplace|plugins|official))/i
 
 /**
  * Pattern to detect non-ASCII characters that could be used for homograph attacks.
@@ -92,7 +91,7 @@ export function isBlockedOfficialName(name: string): boolean {
   }
 
   // Block names with non-ASCII characters to prevent homograph attacks
-  // (e.g., using Cyrillic 'а' to impersonate 'anthropic')
+  // (e.g., using Cyrillic 'а' to impersonate 'agenc')
   if (NON_ASCII_PATTERN.test(name)) {
     return true
   }
@@ -105,7 +104,7 @@ export function isBlockedOfficialName(name: string): boolean {
  * The official GitHub organization for provider marketplaces.
  * Reserved names must come from this org.
  */
-export const OFFICIAL_GITHUB_ORG = 'anthropics'
+export const OFFICIAL_GITHUB_ORG = 'tetsuo-ai'
 
 /**
  * Validate that a marketplace with a reserved name comes from the official source.
@@ -141,12 +140,12 @@ export function validateOfficialNameSource(
   // Check for git URL source type
   if (source.source === 'git' && source.url) {
     const url = source.url.toLowerCase()
-    // Check for HTTPS URL format: https://github.com/anthropics/...
-    // or SSH format: git@github.com:anthropics/...
-    const isHttpsAnthropics = url.includes('github.com/anthropics/')
-    const isSshAnthropics = url.includes('git@github.com:anthropics/')
+    // Check for HTTPS URL format: https://github.com/tetsuo-ai/...
+    // or SSH format: git@github.com:tetsuo-ai/...
+    const isHttpsOfficial = url.includes(`github.com/${OFFICIAL_GITHUB_ORG}/`)
+    const isSshOfficial = url.includes(`git@github.com:${OFFICIAL_GITHUB_ORG}/`)
 
-    if (isHttpsAnthropics || isSshAnthropics) {
+    if (isHttpsOfficial || isSshOfficial) {
       return null // Valid: reserved name from official git URL
     }
 
@@ -1019,7 +1018,7 @@ export const MarketplaceSourceSchema = lazySchema(() =>
             {
               message:
                 'Reserved official marketplace names cannot be used with settings sources. ' +
-                'validateOfficialNameSource only accepts github/git sources from anthropics/* ' +
+                'validateOfficialNameSource only accepts github/git sources from tetsuo-ai/* ' +
                 'for these names; a settings source would be rejected after ' +
                 'loadAndCacheMarketplace has already written to disk with cleanupNeeded=false.',
             },

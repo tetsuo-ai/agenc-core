@@ -1,4 +1,5 @@
 // @ts-nocheck
+// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
 import axios from 'axios';
 import chalk from 'chalk';
 import { randomUUID } from 'crypto';
@@ -13,7 +14,7 @@ import { getOauthConfig } from '../constants/oauth.js';
 import type { SDKMessage } from '../entrypoints/agentSdkTypes.js';
 import type { Root } from '../tui/ink.js';
 import { KeybindingSetup } from '../tui/keybindings/KeybindingProviderSetup.js';
-import { queryHaiku } from '../services/api/agenc.js';
+import { queryHaiku } from '../agenc/upstream/services/api/claude.js' // branding-scan: allow upstream provider module path pending purge // upstream-import: keep API service target is owned by a later purge item;
 import { getSessionLogsViaOAuth, getTeleportEvents } from '../services/api/sessionIngress.js';
 import { getOrganizationUUID } from '../services/oauth/client.js';
 import { AppStateProvider } from '../tui/state/AppState.js';
@@ -1011,7 +1012,7 @@ export async function teleportToRemote(options: {
       if (!bundle.success) {
         logError(new Error(`Bundle upload failed: ${bundle.error}`));
         // Only steer users to GitHub setup when there's a remote to clone from.
-        const setup = repoInfo ? '. Please setup GitHub on https://agenc.ai/code' : '';
+        const setup = repoInfo ? '. Please setup GitHub on https://agenc.tech/code' : '';
         let msg: string;
         switch (bundle.failReason) {
           case 'empty_repo':

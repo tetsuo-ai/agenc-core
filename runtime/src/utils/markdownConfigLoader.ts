@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { feature } from 'bun:bundle'
 import { statSync } from 'fs'
 import { lstat, readdir, readFile, realpath, stat } from 'fs/promises'
@@ -8,7 +7,9 @@ import { dirname, join, resolve, sep } from 'path'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 } from 'src/services/analytics/index.js'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getProjectRoot } from '../bootstrap/state.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { getAgenCConfigHomeDir, isEnvTruthy } from './envUtils.js'
@@ -152,7 +153,7 @@ export function parseSlashCommandToolsFromFrontmatter(
  * Uses bigint: true to handle filesystems with large inodes (e.g., ExFAT)
  * that exceed JavaScript's Number precision (53 bits). Without bigint, different
  * large inodes can round to the same Number, causing false duplicate detection.
- * See: https://github.com/anthropics/agenc-code/issues/13893
+ * See: https://github.com/tetsuo-ai/agenc-core/issues/13893
  *
  * @param filePath - Path to the file
  * @returns A string identifier "device:inode" or null if file can't be identified
@@ -314,7 +315,7 @@ export const loadMarkdownFilesForSubdir = memoize(
     // is absent. A standard `git worktree add` checks out the full tree, so the
     // worktree already has identical .agenc/<subdir> content — loading the main
     // repo's copy too would duplicate every command/agent/skill
-    // (anthropics/agenc-code#29599, #28182, #26992).
+    // (tetsuo-ai/agenc-core#29599, #28182, #26992).
     //
     // projectDirs already reflects existence (getProjectDirsUpToHome checked
     // each dir), so we compare against that instead of stat'ing again.
@@ -464,7 +465,7 @@ async function findMarkdownFilesNative(
     // Cycle detection: track visited directories by device+inode
     // Uses bigint: true to handle filesystems with large inodes (e.g., ExFAT)
     // that exceed JavaScript's Number precision (53 bits).
-    // See: https://github.com/anthropics/agenc-code/issues/13893
+    // See: https://github.com/tetsuo-ai/agenc-core/issues/13893
     try {
       const stats = await stat(currentDir, { bigint: true })
       if (stats.isDirectory()) {

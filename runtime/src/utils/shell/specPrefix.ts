@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Fig-spec-driven command prefix extraction.
  *

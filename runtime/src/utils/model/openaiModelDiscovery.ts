@@ -1,4 +1,3 @@
-// @ts-nocheck
 import axios from 'axios'
 import { logForDebugging } from 'src/utils/debug.js'
 import type { ModelOption } from './modelOptions.js'

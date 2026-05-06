@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { execa } from 'execa'
 import { readFile, realpath } from 'fs/promises'
 import { homedir } from 'os'
@@ -46,7 +45,7 @@ import { jsonParse } from './slowOperations.js'
 import { which } from './which.js'
 
 function getCliBinaryName(): string {
-  return MACRO.PACKAGE_URL === '@anthropic-ai/agenc-code'
+  return MACRO.PACKAGE_URL === '@tetsuo-ai/runtime'
     ? 'agenc'
     : 'agenc'
 }
@@ -233,8 +232,8 @@ async function detectMultipleInstallations(): Promise<
   }
 
   // Check for global npm installation
-  const packagesToCheck = ['@anthropic-ai/agenc-code']
-  if (MACRO.PACKAGE_URL && MACRO.PACKAGE_URL !== '@anthropic-ai/agenc-code') {
+  const packagesToCheck = ['@tetsuo-ai/runtime']
+  if (MACRO.PACKAGE_URL && MACRO.PACKAGE_URL !== '@tetsuo-ai/runtime') {
     packagesToCheck.push(MACRO.PACKAGE_URL)
   }
   const npmResult = await execFileNoThrow('npm', [
@@ -559,10 +558,10 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
 
     for (const install of npmInstalls) {
       if (install.type === 'npm-global') {
-        let uninstallCmd = 'npm -g uninstall @anthropic-ai/agenc-code'
+        let uninstallCmd = 'npm -g uninstall @tetsuo-ai/runtime'
         if (
           MACRO.PACKAGE_URL &&
-          MACRO.PACKAGE_URL !== '@anthropic-ai/agenc-code'
+          MACRO.PACKAGE_URL !== '@tetsuo-ai/runtime'
         ) {
           uninstallCmd += ` && npm -g uninstall ${MACRO.PACKAGE_URL}`
         }

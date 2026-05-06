@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Session activity tracking with refcount-based heartbeat timer.
  *

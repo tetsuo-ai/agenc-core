@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { dirname, join } from 'path'
 
 export const PRIMARY_PROJECT_INSTRUCTION_FILE = 'AGENTS.md'

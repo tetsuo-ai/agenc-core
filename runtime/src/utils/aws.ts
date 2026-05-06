@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { logForDebugging } from 'src/utils/debug.js'
 
 /** AWS short-term credentials format. */
@@ -50,6 +49,7 @@ export function isValidAwsStsOutput(obj: unknown): obj is AwsStsOutput {
 /** Throws if STS caller identity cannot be retrieved. */
 export async function checkStsCallerIdentity(): Promise<void> {
   const { STSClient, GetCallerIdentityCommand } = await import(
+    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
     '@aws-sdk/client-sts'
   )
   await new STSClient().send(new GetCallerIdentityCommand({}))
@@ -62,6 +62,7 @@ export async function checkStsCallerIdentity(): Promise<void> {
 export async function clearAwsIniCache(): Promise<void> {
   try {
     logForDebugging('Clearing AWS credential provider cache')
+    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
     const { fromIni } = await import('@aws-sdk/credential-providers')
     const iniProvider = fromIni({ ignoreCache: true })
     await iniProvider() // This updates the global file cache

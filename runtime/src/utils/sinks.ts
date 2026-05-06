@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { initializeAnalyticsSink } from '../services/analytics/sink.js'
 import { initializeErrorLogSink } from './errorLogSink.js'
 

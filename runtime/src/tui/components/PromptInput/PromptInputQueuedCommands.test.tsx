@@ -17,7 +17,7 @@ vi.mock('bun:bundle', () => ({
   feature: () => false,
 }))
 
-vi.mock('../../../agenc/upstream/hooks/useCommandQueue.js', () => ({
+vi.mock('../../hooks/useCommandQueue.js', () => ({
   useCommandQueue: () => queueFixture.commands,
 }))
 
@@ -27,7 +27,7 @@ vi.mock('../../state/AppState.js', () => ({
   ) => selector({ viewingAgentTaskId: undefined, isBriefOnly: false }),
 }))
 
-vi.mock('../../../agenc/upstream/components/Message.js', () => ({
+vi.mock('../Message.js', () => ({
   Message: ({ message }: { message: { message?: { content?: unknown } } }) => (
     <Text>
       {typeof message.message?.content === 'string'

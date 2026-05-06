@@ -1,6 +1,6 @@
 import figures from 'figures'
 import { memo, type ReactNode } from 'react'
-import { useTerminalSize } from '../../../agenc/upstream/hooks/useTerminalSize.js'
+import { useTerminalSize } from '../../hooks/useTerminalSize'
 import { stringWidth } from '../../ink/stringWidth.js'
 import { Box, Text } from '../../ink.js'
 import { truncatePathMiddle, truncateToWidth } from '../../../utils/format.js'

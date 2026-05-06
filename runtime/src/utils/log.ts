@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { feature } from 'bun:bundle'
 import type { BetaMessageStreamParams } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { readdir, readFile, stat } from 'fs/promises'
@@ -8,6 +7,7 @@ import type { QuerySource } from 'src/constants/querySource.js'
 import {
   setLastAPIRequest,
   setLastAPIRequestMessages,
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 } from '../bootstrap/state.js'
 import { TICK_TAG } from '../constants/xml.js'
 import {
@@ -232,6 +232,7 @@ export async function getErrorLogByIndex(
 async function loadLogList(path: string): Promise<LogOption[]> {
   let files: Awaited<ReturnType<typeof readdir>>
   try {
+    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
     files = await readdir(path, { withFileTypes: true })
   } catch {
     logError(new Error(`No logs found at ${path}`))
@@ -239,6 +240,7 @@ async function loadLogList(path: string): Promise<LogOption[]> {
   }
   const logData = await Promise.all(
     files.map(async (file, i) => {
+      // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
       const fullPath = join(path, file.name)
       const content = await readFile(fullPath, { encoding: 'utf8' })
       const messages = jsonParse(content) as SerializedMessage[]

@@ -1,7 +1,7 @@
 import { execa } from 'execa';
 import React, { useCallback, useState } from 'react';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from 'src/services/analytics/index.js';
-import { WorkflowMultiselectDialog } from '../../components/WorkflowMultiselectDialog.js';
+import { WorkflowMultiselectDialog } from '../../../../tui/components/WorkflowMultiselectDialog';
 import { GITHUB_ACTION_SETUP_DOCS_URL } from '../../../../constants/github-app.js';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import type { KeyboardEvent } from '../../../../tui/ink/events/keyboard-event.js';

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Synchronous state machine for the query lifecycle, compatible with
  * React's `useSyncExternalStore`.

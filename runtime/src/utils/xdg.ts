@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * XDG Base Directory utilities for AgenC CLI Native Installer
  *

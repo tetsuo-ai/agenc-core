@@ -1,4 +1,3 @@
-// @ts-nocheck
 const SENSITIVE_URL_QUERY_PARAM_TOKENS = [
   'api_key',
   'apikey',

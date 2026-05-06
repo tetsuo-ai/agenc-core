@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { getCwd } from './cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { getRemoteUrl } from './git.js'

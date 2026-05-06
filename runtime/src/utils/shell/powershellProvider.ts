@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { join as posixJoin } from 'path/posix'

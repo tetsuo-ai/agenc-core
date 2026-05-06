@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { AppState } from '../../tui/state/AppState.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { updateHooksConfigSnapshot } from '../hooks/hooksConfigSnapshot.js'

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { afterEach, expect, test } from 'bun:test'
 
 // MACRO is replaced at build time by Bun.define but not in test mode.
@@ -7,7 +6,7 @@ import { afterEach, expect, test } from 'bun:test'
   VERSION: '99.0.0',
   DISPLAY_VERSION: '0.0.0-test',
   BUILD_TIME: new Date().toISOString(),
-  ISSUES_EXPLAINER: 'report the issue at https://github.com/anthropics/agenc-code/issues',
+  ISSUES_EXPLAINER: 'report the issue at https://github.com/tetsuo-ai/agenc-core/issues',
   PACKAGE_URL: '@gitlawb/agenc',
   NATIVE_PACKAGE_URL: undefined,
 }

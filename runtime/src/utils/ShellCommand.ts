@@ -1,8 +1,8 @@
-// @ts-nocheck
 import type { ChildProcess } from 'child_process'
 import { stat } from 'fs/promises'
 import type { Readable } from 'stream'
 import treeKill from 'tree-kill'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { generateTaskId } from '../tasks/Task.js'
 import { formatDuration } from './format.js'
 import {

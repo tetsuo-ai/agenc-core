@@ -1,7 +1,7 @@
-// @ts-nocheck
 import chokidar, { type FSWatcher } from 'chokidar'
 import { stat } from 'fs/promises'
 import * as platformPath from 'path'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getIsRemoteMode } from '../../bootstrap/state.js'
 import { registerCleanup } from '../cleanupRegistry.js'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -191,7 +191,7 @@ async function getWatchTargets(): Promise<{
     // Skip flagSettings - they're provided via CLI and won't change during the session.
     // Additionally, they may be temp files in $TMPDIR which can contain special files
     // (FIFOs, sockets) that cause the file watcher to hang or error.
-    // See: https://github.com/anthropics/agenc-code/issues/16469
+    // See: https://github.com/tetsuo-ai/agenc-core/issues/16469
     if (source === 'flagSettings') {
       continue
     }

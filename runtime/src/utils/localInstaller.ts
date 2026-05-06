@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Utilities for handling local installation
  */

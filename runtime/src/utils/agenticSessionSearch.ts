@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { LogOption, SerializedMessage } from '../types/logs.js'
 import { count } from './array.js'
 import { logForDebugging } from 'src/utils/debug.js'

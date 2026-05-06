@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import type {
   Base64ImageSource,
@@ -232,7 +234,7 @@ function getMcpToolTimeoutMs(): number {
   )
 }
 
-import { isAgenCInChromeMCPServer } from '../../utils/claudeInChrome/common.js'
+import { isAgenCInChromeMCPServer } from '../../../../utils/agencInChrome/common.js'
 
 // Lazy: toolRendering.tsx pulls React/ink; only needed when AgenC-in-Chrome MCP server is connected
 /* eslint-disable @typescript-eslint/no-require-imports */

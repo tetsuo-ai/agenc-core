@@ -1,4 +1,3 @@
-// @ts-nocheck
 // @aws-sdk/credential-provider-node and @smithy/node-http-handler are imported
 // dynamically in getAWSClientProxyConfig() to defer ~929KB of AWS SDK.
 // undici is lazy-required inside getProxyAgent/configureGlobalAgents to defer
@@ -402,7 +401,9 @@ export async function getAWSClientProxyConfig(): Promise<object> {
   }
 
   const [{ NodeHttpHandler }, { defaultProvider }] = await Promise.all([
+    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
     import('@smithy/node-http-handler'),
+    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
     import('@aws-sdk/credential-provider-node'),
   ])
 

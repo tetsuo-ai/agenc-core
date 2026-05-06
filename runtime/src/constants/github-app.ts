@@ -1,8 +1,7 @@
-// @ts-nocheck
 export const PR_TITLE = 'Add AgenC GitHub Workflow'
 
 export const GITHUB_ACTION_SETUP_DOCS_URL =
-  'https://github.com/anthropics/agenc-code-action/blob/main/docs/setup.md'
+  'https://github.com/tetsuo-ai/agenc-code-action/blob/main/docs/setup.md'
 
 export const WORKFLOW_CONTENT = `name: AgenC
 
@@ -19,10 +18,10 @@ on:
 jobs:
   agenc:
     if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
-      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@agenc')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@agenc')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@agenc')) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@agenc') || contains(github.event.issue.title, '@agenc')))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -38,9 +37,9 @@ jobs:
 
       - name: Run AgenC
         id: agenc
-        uses: anthropics/agenc-code-action@v1
+        uses: tetsuo-ai/agenc-code-action@v1
         with:
-          anthropic_api_key: \${{ secrets.ANTHROPIC_API_KEY }}
+          agenc_api_key: \${{ secrets.AGENC_API_KEY }}
 
           # This is an optional setting that allows AgenC to read CI results on PRs
           additional_permissions: |
@@ -50,8 +49,8 @@ jobs:
           # prompt: 'Update the pull request description to include a summary of changes.'
 
           # Optional: Add agenc_args to customize behavior and configuration
-          # See https://github.com/anthropics/agenc-code-action/blob/main/docs/usage.md
-          # or https://code.agenc.com/docs/en/cli-reference for available options
+          # See https://github.com/tetsuo-ai/agenc-code-action/blob/main/docs/usage.md
+          # or https://agenc.tech/docs/en/cli-reference for available options
           # agenc_args: '--allowed-tools Bash(gh pr:*)'
 
 `
@@ -94,7 +93,7 @@ Once the workflow is triggered, AgenC will analyze the comment and surrounding c
 allowed_tools: Bash(npm install),Bash(npm run build),Bash(npm run lint),Bash(npm run test)
 \`\`\`
 
-There's more information in the [AgenC action repo](https://github.com/anthropics/agenc-code-action).
+There's more information in the [AgenC action repo](https://github.com/tetsuo-ai/agenc-code-action).
 
 After merging this PR, let's try mentioning @agenc in a comment on any PR to get started!`
 
@@ -133,13 +132,13 @@ jobs:
 
       - name: Run AgenC Review
         id: agenc-review
-        uses: anthropics/agenc-code-action@v1
+        uses: tetsuo-ai/agenc-code-action@v1
         with:
-          anthropic_api_key: \${{ secrets.ANTHROPIC_API_KEY }}
-          plugin_marketplaces: 'https://github.com/anthropics/agenc-code.git'
+          agenc_api_key: \${{ secrets.AGENC_API_KEY }}
+          plugin_marketplaces: 'https://github.com/tetsuo-ai/agenc-code.git'
           plugins: 'code-review@agenc-code-plugins'
           prompt: '/code-review:code-review \${{ github.repository }}/pull/\${{ github.event.pull_request.number }}'
-          # See https://github.com/anthropics/agenc-code-action/blob/main/docs/usage.md
-          # or https://code.agenc.com/docs/en/cli-reference for available options
+          # See https://github.com/tetsuo-ai/agenc-code-action/blob/main/docs/usage.md
+          # or https://agenc.tech/docs/en/cli-reference for available options
 
 `

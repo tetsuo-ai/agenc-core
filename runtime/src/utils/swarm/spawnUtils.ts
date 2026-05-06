@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Shared utilities for spawning teammates across different backends.
  */
@@ -9,6 +8,7 @@ import {
   getInlinePlugins,
   getMainLoopModelOverride,
   getSessionBypassPermissionsMode,
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 } from '../../bootstrap/state.js'
 import { quote } from '../bash/shellQuote.js'
 import { isInBundledMode } from '../bundledMode.js'

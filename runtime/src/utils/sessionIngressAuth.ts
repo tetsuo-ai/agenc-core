@@ -1,7 +1,7 @@
-// @ts-nocheck
 import {
   getSessionIngressToken,
   setSessionIngressToken,
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 } from '../bootstrap/state.js'
 import {
   CCR_SESSION_INGRESS_TOKEN_PATH,

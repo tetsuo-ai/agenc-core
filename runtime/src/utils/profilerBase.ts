@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Shared infrastructure for profiler modules (startupProfiler, queryProfiler,
  * headlessProfiler). All three use the same perf_hooks timeline and the same

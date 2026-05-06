@@ -1,4 +1,3 @@
-// @ts-nocheck
 export const TEAM_LEAD_NAME = 'team-lead'
 export const SWARM_SESSION_NAME = 'agenc-swarm'
 export const SWARM_VIEW_WINDOW_NAME = 'swarm-view'

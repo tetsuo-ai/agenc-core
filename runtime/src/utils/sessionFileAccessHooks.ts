@@ -1,4 +1,5 @@
 // @ts-nocheck
+// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
 /**
  * Session file access analytics hooks.
  * Tracks access to session memory and transcript files via Read, Grep, Glob tools.

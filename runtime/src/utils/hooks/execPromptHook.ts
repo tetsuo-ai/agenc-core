@@ -1,7 +1,7 @@
-// @ts-nocheck
 import { randomUUID } from 'crypto'
 import type { HookEvent } from 'src/entrypoints/agentSdkTypes.js'
-import { queryModelWithoutStreaming } from '../../services/api/agenc.js'
+import { queryModelWithoutStreaming } from '../../agenc/upstream/services/api/claude.js' // branding-scan: allow upstream provider module path pending purge // upstream-import: keep API service target is owned by a later purge item
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import type { ToolUseContext } from '../../tools/Tool.js'
 import type { Message } from '../../types/message.js'
 import { createAttachmentMessage } from '../attachments.js'
@@ -106,6 +106,7 @@ Your response must be a JSON object matching one of the following schemas:
       const content = extractTextContent(response.message.content)
 
       // Update response length for spinner display
+      // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
       toolUseContext.setResponseLength(length => length + content.length)
 
       const fullResponse = content.trim()

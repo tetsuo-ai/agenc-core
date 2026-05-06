@@ -1,7 +1,6 @@
-// @ts-nocheck
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 
-import { getMaxOutputTokensForModel } from '../services/api/agenc.ts'
+import { getMaxOutputTokensForModel } from '../agenc/upstream/services/api/claude.ts' // branding-scan: allow upstream provider module path pending purge // upstream-import: keep API service target is owned by a later purge item
 import {
   getContextWindowForModel,
   getModelMaxOutputTokens,

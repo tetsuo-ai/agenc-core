@@ -1,4 +1,3 @@
-// @ts-nocheck
 // biome-ignore-all lint/suspicious/noConsole: file uses console intentionally
 /**
  * Chrome Native Host - Pure TypeScript Implementation

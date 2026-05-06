@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { env } from '../../env.js'
 import { execFileNoThrow } from '../../execFileNoThrow.js'
 import { TMUX_COMMAND } from '../constants.js'

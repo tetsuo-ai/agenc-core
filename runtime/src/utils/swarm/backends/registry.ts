@@ -1,4 +1,4 @@
-// @ts-nocheck
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getIsNonInteractiveSession } from '../../../bootstrap/state.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { getPlatform } from '../../platform.js'

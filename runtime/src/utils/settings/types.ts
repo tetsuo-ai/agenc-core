@@ -1,6 +1,6 @@
-// @ts-nocheck
 import { feature } from 'bun:bundle'
 import { z } from 'zod/v4'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { SandboxSettingsSchema } from '../../entrypoints/sandboxTypes.js'
 import { isEnvTruthy } from '../envUtils.js'
 import { lazySchema } from '../lazySchema.js'
@@ -24,10 +24,13 @@ export {
   type HooksSettings,
   type HttpHook,
   type PromptHook,
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 } from '../../schemas/hooks.js'
 
 // Also import for use within this file
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { type HookCommand, HooksSchema } from '../../schemas/hooks.js'
+// upstream-import: keep service schema target is owned by a later purge item
 import { AutoFixConfigSchema } from '../../agenc/upstream/services/autoFix/autoFixConfig.js'
 import { count } from '../array.js'
 
@@ -912,7 +915,7 @@ export const SettingsSchema = lazySchema(() =>
               .string()
               .optional()
               .describe(
-                'Display name for the assistant, shown in the agenc.ai session list',
+                'Display name for the assistant, shown in the AgenC session list',
               ),
           }
         : {}),

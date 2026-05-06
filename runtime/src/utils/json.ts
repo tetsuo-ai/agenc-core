@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { open, readFile, stat } from 'fs/promises'
 import {
   applyEdits,

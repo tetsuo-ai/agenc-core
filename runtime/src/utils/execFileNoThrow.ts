@@ -1,4 +1,5 @@
 // @ts-nocheck
+// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
 // This file represents useful wrappers over node:child_process
 // These wrappers ease error handling and cross-platform compatibility.
 // By using cross-spawn, Windows gets .cmd/.bat compatibility without falling

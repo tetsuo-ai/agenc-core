@@ -1,6 +1,6 @@
-// @ts-nocheck
 import { isBareMode, isEnvTruthy } from './envUtils.js'
 import { getSecureStorage } from './secureStorage/index.js'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { exchangeForCopilotToken } from '../services/github/deviceFlow.js'
 
 /** JSON key in the shared AgenC secure storage blob. */

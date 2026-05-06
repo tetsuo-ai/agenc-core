@@ -1,4 +1,3 @@
-// @ts-nocheck
 import chalk from 'chalk'
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import { homedir } from 'os'

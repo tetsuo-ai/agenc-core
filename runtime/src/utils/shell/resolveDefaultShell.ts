@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { getInitialSettings } from '../settings/settings.js'
 
 /**

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Startup profiling utility for measuring and reporting time spent in various
  * initialization phases.
@@ -11,10 +10,12 @@
  */
 
 import { dirname, join } from 'path'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getSessionId } from 'src/bootstrap/state.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 } from '../services/analytics/index.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { getAgenCConfigHomeDir, isEnvTruthy } from './envUtils.js'

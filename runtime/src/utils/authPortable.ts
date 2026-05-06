@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { execa } from 'execa'
 import { getMacOsKeychainStorageServiceName } from 'src/utils/secureStorage/macOsKeychainHelpers.js'
 

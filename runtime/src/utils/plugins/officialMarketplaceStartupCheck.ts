@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Auto-install logic for the official provider marketplace.
  *

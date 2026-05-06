@@ -1,4 +1,3 @@
-// @ts-nocheck
 import {
   OUTPUT_FILE_TAG,
   STATUS_TAG,
@@ -13,6 +12,7 @@ import {
   isTerminalTaskStatus,
   type TaskStatus,
   type TaskType,
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 } from '../../tasks/Task.js'
 import type { TaskState } from '../../tasks/types.js'
 import { enqueuePendingNotification } from '../messageQueueManager.js'
@@ -293,6 +293,7 @@ function enqueueTaskNotification(attachment: TaskAttachment): void {
 /**
  * Get human-readable status text.
  */
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 function getStatusText(status: TaskStatus): string {
   switch (status) {
     case 'completed':

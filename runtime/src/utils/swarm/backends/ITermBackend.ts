@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { AgentColorName } from 'src/tools/AgentTool/agentColorManager.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { execFileNoThrow } from '../../execFileNoThrow.js'

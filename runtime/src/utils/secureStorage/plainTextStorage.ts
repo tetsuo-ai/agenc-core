@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { chmodSync } from 'fs'
 import { join } from 'path'
 import { getAgenCConfigHomeDir } from '../envUtils.js'

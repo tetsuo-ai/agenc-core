@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Hardcoded Copilot model registry from models.dev/api.json
  * These are the 19 models available through GitHub Copilot.

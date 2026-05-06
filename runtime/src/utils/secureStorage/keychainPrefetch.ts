@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Minimal module for firing macOS keychain reads in parallel with main.tsx
  * module evaluation, same pattern as startMdmRawRead() in settings/mdm/rawRead.ts.

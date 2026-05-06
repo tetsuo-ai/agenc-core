@@ -1,4 +1,5 @@
 // @ts-nocheck
+// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { createHash, randomUUID, type UUID } from 'crypto'
 import { stat } from 'fs/promises'
 import { isAbsolute, join, relative, sep } from 'path'
@@ -20,60 +21,10 @@ import { sequential } from './sequential.js'
 
 /**
  * List of repos where internal model names are allowed in trailers.
- * Includes both SSH and HTTPS URL formats.
- *
- * NOTE: This is intentionally a repo allowlist, not an org-wide check.
- * The anthropics and anthropic-experimental orgs contain PUBLIC repos
- * (e.g. anthropics/agenc-code, anthropic-experimental/sandbox-runtime).
- * Undercover mode must stay ON in those to prevent codename leaks.
- * Only add repos here that are confirmed PRIVATE.
+ * Includes both SSH and HTTPS URL formats. Keep this as a repo allowlist,
+ * not an org-wide check, so public repos do not leak model codenames.
  */
-const INTERNAL_MODEL_REPOS = [
-  'github.com:anthropics/agenc-cli-internal',
-  'github.com/anthropics/agenc-cli-internal',
-  'github.com:anthropics/anthropic',
-  'github.com/anthropics/anthropic',
-  'github.com:anthropics/apps',
-  'github.com/anthropics/apps',
-  'github.com:anthropics/casino',
-  'github.com/anthropics/casino',
-  'github.com:anthropics/dbt',
-  'github.com/anthropics/dbt',
-  'github.com:anthropics/dotfiles',
-  'github.com/anthropics/dotfiles',
-  'github.com:anthropics/terraform-config',
-  'github.com/anthropics/terraform-config',
-  'github.com:anthropics/hex-export',
-  'github.com/anthropics/hex-export',
-  'github.com:anthropics/feedback-v2',
-  'github.com/anthropics/feedback-v2',
-  'github.com:anthropics/labs',
-  'github.com/anthropics/labs',
-  'github.com:anthropics/argo-rollouts',
-  'github.com/anthropics/argo-rollouts',
-  'github.com:anthropics/starling-configs',
-  'github.com/anthropics/starling-configs',
-  'github.com:anthropics/ts-tools',
-  'github.com/anthropics/ts-tools',
-  'github.com:anthropics/ts-capsules',
-  'github.com/anthropics/ts-capsules',
-  'github.com:anthropics/feldspar-testing',
-  'github.com/anthropics/feldspar-testing',
-  'github.com:anthropics/trellis',
-  'github.com/anthropics/trellis',
-  'github.com:anthropics/agenc-for-hiring',
-  'github.com/anthropics/agenc-for-hiring',
-  'github.com:anthropics/forge-web',
-  'github.com/anthropics/forge-web',
-  'github.com:anthropics/infra-manifests',
-  'github.com/anthropics/infra-manifests',
-  'github.com:anthropics/mycro_manifests',
-  'github.com/anthropics/mycro_manifests',
-  'github.com:anthropics/mycro_configs',
-  'github.com/anthropics/mycro_configs',
-  'github.com:anthropics/mobile-apps',
-  'github.com/anthropics/mobile-apps',
-]
+const INTERNAL_MODEL_REPOS: string[] = []
 
 /**
  * Get the repo root for attribution operations.

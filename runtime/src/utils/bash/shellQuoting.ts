@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { quote } from './shellQuote.js'
 
 /**
@@ -113,7 +112,7 @@ export function shouldAddStdinRedirect(command: string): boolean {
  * even though our bash shell is always POSIX (Git Bash / WSL on Windows).
  * When Git Bash sees `2>nul`, it creates a literal file named `nul` — a
  * Windows reserved device name that is extremely hard to delete and breaks
- * `git add .` and `git clone`. See anthropics/agenc-code#4928.
+ * `git add .` and `git clone`. See tetsuo-ai/agenc-core#4928.
  *
  * Matches: `>nul`, `> NUL`, `2>nul`, `&>nul`, `>>nul` (case-insensitive)
  * Does NOT match: `>null`, `>nullable`, `>nul.txt`, `cat nul.txt`

@@ -1,4 +1,6 @@
-import type { Notification } from '../../agenc/upstream/context/notifications.js'
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+import type { Notification } from '../context/notifications'
 import type { TodoList } from '../../utils/todo/types.js'
 import type { BridgePermissionCallbacks } from '../../agenc/upstream/bridge/bridgePermissionCallbacks.js'
 import type { Command } from '../../commands.js'

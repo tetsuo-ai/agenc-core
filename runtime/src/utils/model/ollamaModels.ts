@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Ollama model discovery for the /model picker.
  * Fetches available models from the Ollama API and caches them

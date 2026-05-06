@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Marketplace manager for AgenC plugins
  *
@@ -24,6 +23,7 @@ import { writeFile } from 'fs/promises'
 import isEqual from 'lodash-es/isEqual.js'
 import memoize from 'lodash-es/memoize.js'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'path'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvTruthy } from '../envUtils.js'
@@ -2010,6 +2010,7 @@ export async function removeMarketplaceSource(name: string): Promise<void> {
 
       for (const pluginId in updatedPlugins) {
         if (pluginId.endsWith(marketplaceSuffix)) {
+          // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
           updatedPlugins[pluginId] = undefined
           removedPlugins = true
         }

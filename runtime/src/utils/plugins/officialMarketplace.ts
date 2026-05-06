@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Constants for the official provider plugins marketplace.
  *

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import chalk from 'chalk'
 import { supportsHyperlinks } from '../tui/ink/supports-hyperlinks.js'
 

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { SuggestionItem } from '../../tui/components/PromptInput/PromptInputFooterSuggestions.js'
 import {
   type ParseEntry,

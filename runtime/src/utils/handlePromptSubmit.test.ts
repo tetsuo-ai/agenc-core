@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
 import { getCommandQueue, resetCommandQueue } from './messageQueueManager.js'
 

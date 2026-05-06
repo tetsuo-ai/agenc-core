@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { basename, extname, posix, sep } from 'path'
 
 /**

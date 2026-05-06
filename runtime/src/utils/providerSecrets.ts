@@ -1,4 +1,3 @@
-// @ts-nocheck
 const SECRET_ENV_KEYS = [
   'OPENAI_API_KEY',
   'OPENAI_AUTH_HEADER_VALUE',

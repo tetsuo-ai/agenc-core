@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import { toString as qrToString } from 'qrcode';
 import * as React from 'react';
 import { useCallback, useEffect, useState } from 'react';
-import { Pane } from '../../components/design-system/Pane.js';
+import { Pane } from '../../../../tui/components/design-system/Pane';
 import type { KeyboardEvent } from '../../../../tui/ink/events/keyboard-event.js';
 import { Box, Text } from '../../../../tui/ink.js';
 import { useKeybinding } from '../../../../tui/keybindings/useKeybinding.js';

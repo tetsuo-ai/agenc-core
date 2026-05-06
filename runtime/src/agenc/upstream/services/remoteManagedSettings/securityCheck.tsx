@@ -1,7 +1,7 @@
 import React from 'react';
 import { getIsInteractive } from '../../bootstrap/state.js';
-import { ManagedSettingsSecurityDialog } from '../../components/ManagedSettingsSecurityDialog/ManagedSettingsSecurityDialog.js';
-import { extractDangerousSettings, hasDangerousSettings, hasDangerousSettingsChanged } from '../../components/ManagedSettingsSecurityDialog/utils.js';
+import { ManagedSettingsSecurityDialog } from '../../../../tui/components/ManagedSettingsSecurityDialog/ManagedSettingsSecurityDialog';
+import { extractDangerousSettings, hasDangerousSettings, hasDangerousSettingsChanged } from '../../../../tui/components/ManagedSettingsSecurityDialog/utils';
 import { render } from '../../../../tui/ink.js';
 import { KeybindingSetup } from '../../../../tui/keybindings/KeybindingProviderSetup.js';
 import { AppStateProvider } from '../../../../tui/state/AppState.js';

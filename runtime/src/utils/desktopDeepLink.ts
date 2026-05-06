@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readdir } from 'fs/promises'
 import { join } from 'path'
 import { coerce as semverCoerce } from 'semver'
@@ -217,7 +216,7 @@ export async function openCurrentSessionInDesktop(): Promise<{
     return {
       success: false,
       error:
-        'AgenC Desktop is not installed. Install it from https://agenc.ai/download',
+        'AgenC Desktop is not installed. Install it from https://agenc.tech/download',
     }
   }
 

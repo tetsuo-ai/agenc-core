@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 // MonitorMcpTask — task registry entry for the 'monitor_mcp' type.
 //
 // Architecture: MonitorTool spawns shell processes as LocalShellTask

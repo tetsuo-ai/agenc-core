@@ -1,10 +1,10 @@
-// @ts-nocheck
 import type { ChildProcess, ExecFileException } from 'child_process'
 import { execFile, spawn } from 'child_process'
 import { existsSync } from 'fs'
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
 import * as path from 'path'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { logEvent } from 'src/services/analytics/index.js'
 import { fileURLToPath } from 'url'
 import { isInBundledMode } from './bundledMode.js'
@@ -572,6 +572,7 @@ export const countFilesRoundedRg = memoize(
     dirPath: string,
     abortSignal: AbortSignal,
     ignorePatterns: string[] = [],
+  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
   ): Promise<number | undefined> => {
     // Skip file counting if we're in the home directory to avoid triggering
     // macOS TCC permission dialogs for Desktop, Downloads, Documents, etc.
@@ -657,6 +658,7 @@ const testRipgrepOnFirstUse = memoize(async (): Promise<void> => {
     if (config.argv0) {
       // Only Bun embeds ripgrep.
       // eslint-disable-next-line custom-rules/require-bun-typeof-guard
+      // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
       const proc = Bun.spawn([config.command, '--version'], {
         argv0: config.argv0,
         stderr: 'ignore',

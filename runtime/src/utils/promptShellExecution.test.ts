@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { afterEach, expect, test } from 'bun:test'
 import { getEmptyToolPermissionContext } from '../tools/Tool.js'
 import { BashTool } from '../tools/BashTool/BashTool.js'

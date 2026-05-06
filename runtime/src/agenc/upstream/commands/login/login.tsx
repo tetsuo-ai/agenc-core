@@ -7,13 +7,13 @@ import {
   enrollTrustedDevice,
 } from '../../bridge/trustedDevice.js'
 import type { LocalJSXCommandContext } from '../../../../commands.js'
-import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutHint.js'
+import { ConfigurableShortcutHint } from '../../../../tui/components/ConfigurableShortcutHint'
 import {
   ConsoleOAuthFlow,
   type ConsoleOAuthFlowResult,
-} from '../../components/ConsoleOAuthFlow.js'
-import { Dialog } from '../../components/design-system/Dialog.js'
-import { useMainLoopModel } from '../../hooks/useMainLoopModel.js'
+} from '../../../../tui/components/ConsoleOAuthFlow'
+import { Dialog } from '../../../../tui/components/design-system/Dialog'
+import { useMainLoopModel } from '../../../../tui/hooks/useMainLoopModel'
 import { Text } from '../../../../tui/ink.js'
 import { refreshGrowthBookAfterAuthChange } from '../../services/analytics/growthbook.js'
 import { refreshPolicyLimits } from '../../services/policyLimits/index.js'

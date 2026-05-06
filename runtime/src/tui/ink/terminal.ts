@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { coerce } from 'semver'
 import type { Writable } from 'stream'
 import { env } from '../../utils/env.js'

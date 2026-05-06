@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Combines settings validation errors with MCP configuration errors.
  *

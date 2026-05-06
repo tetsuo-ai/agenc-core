@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { feature } from 'bun:bundle'
 import { chmod, mkdir, readdir, readFile, unlink, writeFile } from 'fs/promises'
 import { join } from 'path'
@@ -6,6 +5,7 @@ import {
   getOriginalCwd,
   getSessionId,
   onSessionSwitch,
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 } from '../bootstrap/state.js'
 import { registerCleanup } from './cleanupRegistry.js'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -99,6 +99,7 @@ export async function registerSession(): Promise<boolean> {
     // --resume / /resume mutates getSessionId() via switchSession. Without
     // this, the PID file's sessionId goes stale and `agenc ps` sparkline
     // reads the wrong transcript.
+    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
     onSessionSwitch(id => {
       void updatePidFile({ sessionId: id })
     })
@@ -183,7 +184,7 @@ export async function countConcurrentSessions(): Promise<number> {
     // Strict filename guard: only `<pid>.json` is a candidate. parseInt's
     // lenient prefix-parsing means `2026-03-14_notes.md` would otherwise
     // parse as PID 2026 and get swept as stale — silent user data loss.
-    // See anthropics/agenc-code#34210.
+    // See tetsuo-ai/agenc-core#34210.
     if (!/^\d+\.json$/.test(file)) continue
     const pid = parseInt(file.slice(0, -5), 10)
     if (pid === process.pid) {

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { registerCleanup } from './cleanupRegistry.js'
 import { logForDebugging } from 'src/utils/debug.js'
 

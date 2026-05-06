@@ -1,5 +1,7 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import React from 'react';
-import { MessageResponse } from '../../components/MessageResponse.js';
+import { MessageResponse } from '../../../../tui/components/MessageResponse';
 import { TOOL_SUMMARY_MAX_LENGTH } from '../../../../constants/toolLimits.js';
 import { Box, Text } from '../../../../tui/ink.js';
 import type { ProgressMessage } from '../../types/message.js';

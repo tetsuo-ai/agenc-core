@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Synchronized Permission Prompts for Agent Swarms
  *

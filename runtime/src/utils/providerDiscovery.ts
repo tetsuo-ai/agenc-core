@@ -1,5 +1,5 @@
-// @ts-nocheck
 import type { OllamaModelDescriptor } from './providerRecommendation.ts'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { DEFAULT_OPENAI_BASE_URL } from '../services/api/providerConfig.js'
 import { isZaiBaseUrl } from './zaiProvider.js'
 

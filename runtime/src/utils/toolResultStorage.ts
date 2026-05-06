@@ -1,4 +1,5 @@
 // @ts-nocheck
+// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
 /**
  * Utility for persisting large tool results to disk instead of truncating them.
  */

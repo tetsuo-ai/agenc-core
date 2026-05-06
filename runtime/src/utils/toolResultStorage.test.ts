@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { expect, test } from 'bun:test'
 
 import { createUserMessage } from './messages.ts'

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import {
   type AnsiCode,
   ansiCodesToString,
@@ -44,6 +43,7 @@ export default function sliceAnsi(
     // pass start/end in display cells (via stringWidth), so position must
     // track the same units.
     const width =
+      // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
       token.type === 'ansi' ? 0 : token.fullWidth ? 2 : stringWidth(token.value)
 
     // Break AFTER trailing zero-width marks — a combining mark attaches to
@@ -78,6 +78,7 @@ export default function sliceAnsi(
       }
 
       if (include) {
+        // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
         result += token.value
       }
 

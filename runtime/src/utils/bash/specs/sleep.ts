@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { CommandSpec } from '../registry.js'
 
 const sleep: CommandSpec = {

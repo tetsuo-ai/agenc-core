@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * NVIDIA NIM model list for the /model picker.
  * Filtered to chat/instruct models only - embedding, reward, safety, vision, etc. excluded.

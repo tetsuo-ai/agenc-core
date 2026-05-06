@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Reads plugin-related settings (enabledPlugins, extraKnownMarketplaces)
  * from --add-dir directories.
@@ -9,6 +8,7 @@
 
 import { join } from 'path'
 import type { z } from 'zod/v4'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getAdditionalDirectoriesForAgenCMd } from '../../bootstrap/state.js'
 import { parseSettingsFile } from '../settings/settings.js'
 import type {

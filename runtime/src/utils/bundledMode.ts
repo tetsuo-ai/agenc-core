@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Detects if the current runtime is Bun.
  * Returns true when:

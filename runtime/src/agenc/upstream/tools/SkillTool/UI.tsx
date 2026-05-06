@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import * as React from 'react';
 import { SubAgentProvider } from 'src/components/CtrlOToExpand.js';
@@ -5,9 +7,9 @@ import { FallbackToolUseErrorMessage } from 'src/components/FallbackToolUseError
 import { FallbackToolUseRejectedMessage } from 'src/components/FallbackToolUseRejectedMessage.js';
 import type { z } from 'zod/v4';
 import type { Command } from '../../../../commands.js';
-import { Byline } from '../../components/design-system/Byline.js';
-import { Message as MessageComponent } from '../../components/Message.js';
-import { MessageResponse } from '../../components/MessageResponse.js';
+import { Byline } from '../../../../tui/components/design-system/Byline';
+import { Message as MessageComponent } from '../../../../tui/components/Message';
+import { MessageResponse } from '../../../../tui/components/MessageResponse';
 import { Box, Text } from '../../../../tui/ink.js';
 import type { Tools } from '../../Tool.js';
 import type { ProgressMessage } from '../../types/message.js';

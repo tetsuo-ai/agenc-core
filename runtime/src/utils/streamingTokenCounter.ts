@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Streaming Token Counter - Accurate token counting during generation
  * 

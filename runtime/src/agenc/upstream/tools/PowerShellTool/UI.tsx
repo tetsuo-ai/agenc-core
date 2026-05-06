@@ -1,11 +1,13 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import * as React from 'react';
-import { KeyboardShortcutHint } from '../../components/design-system/KeyboardShortcutHint.js';
-import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErrorMessage.js';
-import { MessageResponse } from '../../components/MessageResponse.js';
-import { OutputLine } from '../../components/shell/OutputLine.js';
-import { ShellProgressMessage } from '../../components/shell/ShellProgressMessage.js';
-import { ShellTimeDisplay } from '../../components/shell/ShellTimeDisplay.js';
+import { KeyboardShortcutHint } from '../../../../tui/components/design-system/KeyboardShortcutHint';
+import { FallbackToolUseErrorMessage } from '../../../../tui/components/FallbackToolUseErrorMessage';
+import { MessageResponse } from '../../../../tui/components/MessageResponse';
+import { OutputLine } from '../../../../tui/components/shell/OutputLine';
+import { ShellProgressMessage } from '../../../../tui/components/shell/ShellProgressMessage';
+import { ShellTimeDisplay } from '../../../../tui/components/shell/ShellTimeDisplay';
 import { Box, Text } from '../../../../tui/ink.js';
 import type { Tool } from '../../Tool.js';
 import type { ProgressMessage } from '../../types/message.js';

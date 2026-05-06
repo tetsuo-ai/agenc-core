@@ -2,11 +2,11 @@ import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import * as React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutHint.js';
-import { Byline } from '../../components/design-system/Byline.js';
-import { SearchBox } from '../../components/SearchBox.js';
-import { useSearchInput } from '../../hooks/useSearchInput.js';
-import { useTerminalSize } from '../../hooks/useTerminalSize.js';
+import { ConfigurableShortcutHint } from '../../../../tui/components/ConfigurableShortcutHint';
+import { Byline } from '../../../../tui/components/design-system/Byline';
+import { SearchBox } from '../../../../tui/components/SearchBox';
+import { useSearchInput } from '../../../../tui/hooks/useSearchInput';
+import { useTerminalSize } from '../../../../tui/hooks/useTerminalSize';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- useInput needed for raw search mode text input
 import { Box, Text, useInput, useTerminalFocus } from '../../../../tui/ink.js';
 import { useKeybinding, useKeybindings } from '../../../../tui/keybindings/useKeybinding.js';

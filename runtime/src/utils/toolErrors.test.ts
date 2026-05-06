@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { describe, expect, test } from 'bun:test'
 import { ShellError, AbortError } from './errors.js'
 import { formatError, getErrorParts } from './toolErrors.js'

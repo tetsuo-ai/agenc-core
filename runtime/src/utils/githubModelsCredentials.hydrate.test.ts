@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Hydrate tests live in a separate file with no static import of
  * githubModelsCredentials so Bun's mock.module can replace secureStorage

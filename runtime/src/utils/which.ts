@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { execa } from 'execa'
 import { execSync_DEPRECATED } from './execSyncWrapper.js'
 

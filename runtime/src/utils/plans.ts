@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { randomUUID } from 'crypto'
 import { copyFile, writeFile } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
@@ -8,10 +7,13 @@ import type { LogOption } from 'src/types/logs.js'
 import type {
   AssistantMessage,
   AttachmentMessage,
+  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
   SystemFileSnapshotMessage,
   UserMessage,
 } from 'src/types/message.js'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getPlanSlugCache, getSessionId } from '../bootstrap/state.js'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../tools/ExitPlanModeTool/constants.js'
 import { getCwd } from './cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'

@@ -1,5 +1,6 @@
-// @ts-nocheck
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getSessionId } from '../../../bootstrap/state.js'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import type { ToolUseContext } from '../../../tools/Tool.js'
 import { formatAgentId, parseAgentId } from '../../agentId.js'
 import { quote } from '../../bash/shellQuote.js'

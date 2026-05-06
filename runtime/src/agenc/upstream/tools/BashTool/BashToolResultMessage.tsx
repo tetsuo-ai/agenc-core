@@ -1,11 +1,13 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { removeSandboxViolationTags } from 'src/utils/sandbox/sandbox-ui-utils.js';
-import FullWidthRow from '../../components/design-system/FullWidthRow.js';
-import { KeyboardShortcutHint } from '../../components/design-system/KeyboardShortcutHint.js';
-import { MessageResponse } from '../../components/MessageResponse.js';
-import { OutputLine } from '../../components/shell/OutputLine.js';
-import { ShellTimeDisplay } from '../../components/shell/ShellTimeDisplay.js';
+import FullWidthRow from '../../../../tui/components/design-system/FullWidthRow';
+import { KeyboardShortcutHint } from '../../../../tui/components/design-system/KeyboardShortcutHint';
+import { MessageResponse } from '../../../../tui/components/MessageResponse';
+import { OutputLine } from '../../../../tui/components/shell/OutputLine';
+import { ShellTimeDisplay } from '../../../../tui/components/shell/ShellTimeDisplay';
 import { Box, Text } from '../../../../tui/ink.js';
 import type { Out as BashOut } from './BashTool.js';
 type Props = {

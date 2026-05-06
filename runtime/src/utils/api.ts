@@ -1,4 +1,5 @@
 // @ts-nocheck
+// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
 import type provider from '@anthropic-ai/sdk'
 import type {
   BetaTool,
@@ -289,7 +290,7 @@ export async function toolToAPISchema(
   // standard prompt caching (Bedrock/Vertex supported); the beta sub-fields
   // (scope, ttl) are already gated upstream by shouldIncludeFirstPartyOnlyBetas
   // which independently respects this kill switch.
-  // github.com/anthropics/agenc-code/issues/20031
+  // github.com/tetsuo-ai/agenc-core/issues/20031
   if (isEnvTruthy(process.env.AGENC_DISABLE_EXPERIMENTAL_BETAS)) {
     const allowed = new Set([
       'name',

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { createHash } from 'crypto'
 import type { AssistantMessage, UserMessage } from '../types/message.js'
 
@@ -79,5 +78,6 @@ export function computeFingerprintFromMessages(
   messages: (UserMessage | AssistantMessage)[],
 ): string {
   const firstMessageText = extractFirstMessageText(messages)
+  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
   return computeFingerprint(firstMessageText, MACRO.VERSION)
 }

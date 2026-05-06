@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Centralized plugin directory configuration.
  *
@@ -13,6 +12,7 @@
 import { mkdirSync } from 'fs'
 import { readdir, rm, stat } from 'fs/promises'
 import { delimiter, join } from 'path'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getUseCoworkPlugins } from '../../bootstrap/state.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { getAgenCConfigHomeDir, isEnvTruthy } from '../envUtils.js'

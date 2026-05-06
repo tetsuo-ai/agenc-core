@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Minimal cron expression parsing and next-run calculation.
 //
 // Supports the standard 5-field cron subset:

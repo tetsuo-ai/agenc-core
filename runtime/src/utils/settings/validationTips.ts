@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { ZodIssueCode } from 'zod/v4'
 
 // v4 ZodIssueCode is a value, not a type - use typeof to get the type

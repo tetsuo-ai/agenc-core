@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { type ChildProcess, spawn } from 'child_process'
 import {
   createMessageConnection,

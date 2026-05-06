@@ -1,4 +1,3 @@
-// @ts-nocheck
 export type FpsMetrics = {
   averageFps: number
   low1PctFps: number

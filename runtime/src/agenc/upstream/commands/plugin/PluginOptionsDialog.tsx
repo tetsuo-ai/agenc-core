@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import React, { useCallback, useState } from 'react';
-import { Dialog } from '../../components/design-system/Dialog.js';
+import { Dialog } from '../../../../tui/components/design-system/Dialog';
 import { stringWidth } from '../../../../tui/ink/stringWidth.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw text input for config dialog
 import { Box, Text, useInput } from '../../../../tui/ink.js';

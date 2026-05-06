@@ -1,5 +1,5 @@
-// @ts-nocheck
 import type { BetaUsage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { shouldIncludeFirstPartyOnlyBetas } from './betas.js'
 import { isEnvTruthy } from './envUtils.js'

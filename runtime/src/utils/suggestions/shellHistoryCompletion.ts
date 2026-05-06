@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { getHistory } from '../../tui/history/history.js'
 import { logForDebugging } from 'src/utils/debug.js'
 

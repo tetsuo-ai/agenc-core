@@ -4,7 +4,7 @@ vi.mock("../ink.js", () => ({
   useInput: () => {},
 }));
 
-vi.mock("../../agenc/upstream/context/notifications.js", () => ({
+vi.mock("../context/notifications.js", () => ({
   useNotifications: () => ({
     addNotification: () => {},
     removeNotification: () => {},

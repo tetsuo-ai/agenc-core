@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { type FileHandle, open } from 'fs/promises'
 import { isENOENT } from './errors.js'
 

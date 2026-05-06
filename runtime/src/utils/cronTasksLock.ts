@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Scheduler lease lock for .agenc/scheduled_tasks.json.
 //
 // When multiple AgenC sessions run in the same project directory, only one

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Zip Cache Adapters
  *

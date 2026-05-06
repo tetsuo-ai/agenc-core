@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Portable session storage utilities.
  *
@@ -315,6 +314,7 @@ export function sanitizePath(name: string): string {
     return sanitized
   }
   const hash =
+    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
     typeof Bun !== 'undefined' ? Bun.hash(name).toString(36) : simpleHash(name)
   return `${sanitized.slice(0, MAX_SANITIZED_LENGTH)}-${hash}`
 }

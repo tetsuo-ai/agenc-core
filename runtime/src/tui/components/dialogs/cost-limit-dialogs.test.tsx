@@ -27,7 +27,7 @@ vi.mock('bun:bundle', () => ({
   feature: () => false,
 }))
 
-vi.mock('../../../agenc/upstream/components/CustomSelect/select.js', async () => {
+vi.mock('../CustomSelect/select.js', async () => {
   const { Box, Text } = await import('../../ink.js')
   return {
     Select: ({ options }: { options: Array<{ label: string }> }) => (
@@ -40,7 +40,7 @@ vi.mock('../../../agenc/upstream/components/CustomSelect/select.js', async () =>
   }
 })
 
-vi.mock('../../../agenc/upstream/components/design-system/Dialog.js', async () => {
+vi.mock('../design-system/Dialog.js', async () => {
   const { Box, Text } = await import('../../ink.js')
   return {
     Dialog: ({
@@ -86,7 +86,7 @@ vi.mock('../../../utils/billing.js', () => ({
   hasAgenCAiBillingAccess: () => rateLimitMock.hasBillingAccess,
 }))
 
-vi.mock('../../../agenc/upstream/components/MessageResponse.js', () => ({
+vi.mock('../MessageResponse.js', () => ({
   MessageResponse: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 

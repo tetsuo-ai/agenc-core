@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { expect, test, describe } from 'bun:test'
 import { z } from 'zod'
 import {

@@ -1,7 +1,9 @@
-// @ts-nocheck
 import type { BetaUsage as Usage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from 'src/services/analytics/index.js'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { logEvent } from 'src/services/analytics/index.js'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { setHasUnknownModelCost } from '../bootstrap/state.js'
 import { isFastModeEnabled } from './fastMode.js'
 import {
@@ -22,7 +24,7 @@ import {
   type ModelShortName,
 } from './model/model.js'
 
-// @see https://platform.agenc.com/docs/en/about-agenc/pricing
+// @see https://agenc.tech/docs/en/about-agenc/pricing
 export type ModelCosts = {
   inputTokens: number
   outputTokens: number
@@ -122,7 +124,7 @@ export function getOpus46CostTier(fastMode: boolean): ModelCosts {
 }
 
 // @[MODEL LAUNCH]: Add a pricing entry for the new model below.
-// Costs from https://platform.agenc.com/docs/en/about-agenc/pricing
+// Costs from https://agenc.tech/docs/en/about-agenc/pricing
 // Web search cost: $10 per 1000 requests = $0.01 per request
 export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
   [firstPartyNameToCanonicalForCost(AGENC_3_5_HAIKU_CONFIG.firstParty)]:

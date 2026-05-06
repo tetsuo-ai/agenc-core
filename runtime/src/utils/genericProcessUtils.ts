@@ -1,4 +1,3 @@
-// @ts-nocheck
 import {
   execFileNoThrowWithCwd,
   execSyncWithDefaults_DEPRECATED,

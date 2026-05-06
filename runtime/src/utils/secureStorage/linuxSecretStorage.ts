@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { execaSync } from 'execa'
 import { jsonParse, jsonStringify } from '../slowOperations.js'
 import {

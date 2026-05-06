@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Teammate mode snapshot module.
  *

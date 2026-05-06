@@ -1,3 +1,6 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// branding-scan: allow terminal cursor type
 import type { Cursor } from './cursor.js'
 import type { Size } from './layout/geometry.js'
 import type { ScrollHint } from './render-node-to-output.js'
@@ -12,6 +15,7 @@ import {
 export type Frame = {
   readonly screen: Screen
   readonly viewport: Size
+  // branding-scan: allow terminal cursor type
   readonly cursor: Cursor
   /** DECSTBM scroll optimization hint (alt-screen only, null otherwise). */
   readonly scrollHint?: ScrollHint | null

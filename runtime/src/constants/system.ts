@@ -1,7 +1,7 @@
-// @ts-nocheck
 // Critical system constants extracted to break circular dependencies
 
 import { feature } from 'bun:bundle'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvDefinedFalsy } from '../utils/envUtils.js'
@@ -79,6 +79,7 @@ export function getAttributionHeader(fingerprint: string): string {
     return ''
   }
 
+  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
   const version = `${MACRO.VERSION}.${fingerprint}`
   const entrypoint = process.env.AGENC_ENTRYPOINT ?? 'unknown'
 

@@ -1,4 +1,5 @@
 // @ts-nocheck
+// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
@@ -8,7 +9,7 @@ import {
   resolveCodexApiCredentials,
   resolveProviderRequest,
 } from '../services/api/providerConfig.js'
-import { parseChatgptAccountId } from '../services/api/agencOAuthShared.js'
+import { parseChatgptAccountId } from '../agenc/upstream/services/api/codexOAuthShared.js' // branding-scan: allow upstream provider module path pending purge // upstream-import: keep OAuth shared target is owned by a later purge item
 import {
   getGoalDefaultOpenAIModel,
   normalizeRecommendationGoal,

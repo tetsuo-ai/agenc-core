@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { getDirectConnectServerUrl, getSessionId } from '../bootstrap/state.js'
 import { stringWidth } from '../tui/ink/stringWidth.js'
 import type { LogOption } from '../types/logs.js'

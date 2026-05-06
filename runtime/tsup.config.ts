@@ -1,5 +1,5 @@
 import { defineConfig } from 'tsup';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 
 const entry = [
@@ -13,6 +13,9 @@ const entry = [
 const agencRoot = resolve(__dirname, 'src/agenc');
 const agencUpstreamRoot = resolve(agencRoot, 'upstream');
 const runtimeSourceRoot = resolve(__dirname, 'src');
+// Moved utils/constants still contain upstream-relative imports to sibling
+// subsystems that later purge items own. These aliases let the production
+// bundle resolve those imports without leaving dead external paths in dist.
 const relocatedUpstreamRoots = [
   {
     runtimeRoot: resolve(runtimeSourceRoot, 'utils'),
@@ -27,13 +30,38 @@ const relocatedUpstreamRoots = [
     upstreamRoot: resolve(agencUpstreamRoot, 'memdir'),
   },
 ];
-const upstreamProduct = String.fromCharCode(99, 108, 97, 117, 100, 101);
-const upstreamEngineName = String.fromCharCode(99, 111, 100, 101, 120);
-const sourceStemAliases = new Map<string, string>([
-  ['agenc', upstreamProduct],
-  ['agencAiLimits', `${upstreamProduct}AiLimits`],
-  ['agencOAuthShared', `${upstreamEngineName}OAuthShared`],
-]);
+const relocatedSourcePathAliases = [
+  {
+    runtimeRoot: resolve(agencUpstreamRoot, 'tui/components'),
+    upstreamRoot: resolve(agencUpstreamRoot, 'components'),
+  },
+  {
+    runtimeRoot: resolve(agencUpstreamRoot, 'tui/buddy'),
+    upstreamRoot: resolve(agencUpstreamRoot, 'buddy'),
+  },
+];
+// File-level aliases for upstream modules whose historical import paths do
+// not match their current mirror location. Keep this narrow and delete entries
+// as the owning purge items absorb those subsystems.
+const sourceFileBaseAliases = [
+  {
+    runtimeBase: resolve(runtimeSourceRoot, 'tools/Tool'),
+    upstreamBase: resolve(agencUpstreamRoot, 'Tool'),
+  },
+  {
+    runtimeBase: resolve(agencUpstreamRoot, 'tools/Tool'),
+    upstreamBase: resolve(agencUpstreamRoot, 'Tool'),
+  },
+  {
+    runtimeBase: resolve(agencUpstreamRoot, 'tasks/Task'),
+    upstreamBase: resolve(agencUpstreamRoot, 'Task'),
+  },
+];
+const relocatedTuiSourceRoots = [
+  resolve(runtimeSourceRoot, 'tui/components'),
+  resolve(runtimeSourceRoot, 'tui/context'),
+  resolve(runtimeSourceRoot, 'tui/hooks'),
+];
 const runtimePackage = JSON.parse(
   readFileSync(resolve(__dirname, 'package.json'), 'utf8'),
 ) as { version?: string };
@@ -41,33 +69,63 @@ const displayVersion = runtimePackage.version ?? '0.0.0';
 
 function aliasedSourceBases(base: string): string[] {
   const slash = base.lastIndexOf('/');
-  const dir = slash === -1 ? '' : base.slice(0, slash + 1);
   const file = slash === -1 ? base : base.slice(slash + 1);
   const extMatch = /^(.*?)(\.(?:js|jsx|ts|tsx))?$/.exec(file);
-  const stem = extMatch?.[1] ?? file;
   const ext = extMatch?.[2] ?? '';
-  const aliasedStem = sourceStemAliases.get(stem);
-  return aliasedStem === undefined ? [base] : [base, `${dir}${aliasedStem}${ext}`];
+  const extensionlessBase = ext === '' ? base : base.slice(0, -ext.length);
+  const fileBaseAliases = sourceFileBaseAliases
+    .filter(({ runtimeBase }) => runtimeBase === extensionlessBase)
+    .map(({ upstreamBase }) => `${upstreamBase}${ext}`);
+  return [base, ...fileBaseAliases];
 }
 
 function existingSourceFile(base: string): string | null {
+  const hasExtension = /\.[^/\\]+$/.test(base);
   const candidates = [
     ...new Set(
-      aliasedSourceBases(base).flatMap((sourceBase) => [
-        sourceBase,
-        sourceBase.replace(/\.js$/, '.ts'),
-        sourceBase.replace(/\.js$/, '.tsx'),
-        sourceBase.replace(/\.jsx$/, '.tsx'),
-      ]),
+      aliasedSourceBases(base).flatMap((sourceBase) =>
+        hasExtension
+          ? [
+              sourceBase,
+              sourceBase.replace(/\.js$/, '.ts'),
+              sourceBase.replace(/\.js$/, '.tsx'),
+              sourceBase.replace(/\.jsx$/, '.tsx'),
+            ]
+          : [
+              sourceBase,
+              `${sourceBase}.ts`,
+              `${sourceBase}.tsx`,
+              `${sourceBase}.mts`,
+              `${sourceBase}.cts`,
+              resolve(sourceBase, 'index.ts'),
+              resolve(sourceBase, 'index.tsx'),
+              resolve(sourceBase, 'index.js'),
+            ],
+      ),
     ),
   ];
-  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+  return candidates.find((candidate) => {
+    if (!existsSync(candidate)) return false;
+    try {
+      return statSync(candidate).isFile();
+    } catch {
+      return false;
+    }
+  }) ?? null;
+}
+
+function isWithin(root: string, file: string): boolean {
+  const rel = relative(root, file);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }
 
 function sourceRootForImporter(importer: string): string | null {
   const absoluteImporter = isAbsolute(importer) ? importer : resolve(__dirname, importer);
-  const rel = relative(agencUpstreamRoot, absoluteImporter);
-  return rel !== '' && !rel.startsWith('..') ? agencUpstreamRoot : null;
+  if (isWithin(agencUpstreamRoot, absoluteImporter)) return agencUpstreamRoot;
+  const relocatedRoot = relocatedTuiSourceRoots.find((root) =>
+    isWithin(root, absoluteImporter),
+  );
+  return relocatedRoot ?? null;
 }
 
 function relocatedUpstreamImporter(importer: string): string | null {
@@ -81,11 +139,84 @@ function relocatedUpstreamImporter(importer: string): string | null {
   return null;
 }
 
+function resolveRelocatedPathAlias(target: string): string | null {
+  for (const { runtimeRoot, upstreamRoot } of relocatedSourcePathAliases) {
+    const rel = relative(runtimeRoot, target);
+    if (rel !== '' && !rel.startsWith('..')) {
+      const found = existingSourceFile(resolve(upstreamRoot, rel));
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
 function resolveAgenCBareSrc(source: string): string | null {
   const sourceRelative = source.slice('src/'.length);
+  const relocatedTuiRelative = /^(components|context|hooks)\//.exec(sourceRelative);
+  if (relocatedTuiRelative) {
+    const found = existingSourceFile(resolve(runtimeSourceRoot, 'tui', sourceRelative));
+    if (found) return found;
+  }
   for (const root of [agencUpstreamRoot, runtimeSourceRoot]) {
     const found = existingSourceFile(resolve(root, sourceRelative));
     if (found) return found;
+  }
+  return null;
+}
+
+function normalizeRuntimePath(file: string): string {
+  return file.split(/[/\\]+/).join('/');
+}
+
+function topKey(logical: string): string {
+  return logical.split('/')[0]?.replace(/\.(?:jsx?|tsx?)$/, '') ?? '';
+}
+
+function relocatedLogicalCandidates(importer: string, source: string): string[] {
+  const candidates: string[] = [];
+  let logical: string | null = null;
+  if (source.startsWith('src/')) {
+    logical = source.slice('src/'.length);
+  } else if (source.startsWith('./') || source.startsWith('../')) {
+    const absolute = resolve(dirname(importer), source);
+    const relSource = normalizeRuntimePath(relative(runtimeSourceRoot, absolute));
+    if (relSource !== '' && !relSource.startsWith('..')) {
+      logical = relSource;
+    } else {
+      const relRuntime = normalizeRuntimePath(relative(resolve(__dirname), absolute));
+      if (relRuntime !== '' && !relRuntime.startsWith('..')) logical = relRuntime;
+    }
+  }
+  if (!logical) return candidates;
+  candidates.push(logical);
+  if (logical.startsWith('tui/tui/')) candidates.push(logical.slice('tui/'.length));
+  if (logical.startsWith('tui/')) candidates.push(logical.slice('tui/'.length));
+  const first = topKey(logical);
+  if (first === 'components' || first === 'context' || first === 'hooks') {
+    candidates.push(`tui/${logical}`);
+  }
+  return [...new Set(candidates)];
+}
+
+function resolveRelocatedTuiSource(importer: string, source: string): string | null {
+  for (const logical of relocatedLogicalCandidates(importer, source)) {
+    const direct = existingSourceFile(resolve(runtimeSourceRoot, logical));
+    if (direct) return direct;
+
+    const first = topKey(logical);
+    if (first === 'components' || first === 'context' || first === 'hooks') {
+      const moved = existingSourceFile(resolve(runtimeSourceRoot, 'tui', logical));
+      if (moved) return moved;
+    }
+
+    const upstream = existingSourceFile(resolve(agencUpstreamRoot, logical));
+    if (upstream) return upstream;
+
+    if (logical.startsWith('tui/')) {
+      const stripped = logical.slice('tui/'.length);
+      const strippedUpstream = existingSourceFile(resolve(agencUpstreamRoot, stripped));
+      if (strippedUpstream) return strippedUpstream;
+    }
   }
   return null;
 }
@@ -119,12 +250,18 @@ function resolveRelativeAgenCSource(importer: string, source: string): string | 
 
   const relocatedImporter = relocatedUpstreamImporter(absoluteImporter);
   if (relocatedImporter !== null) {
-    const relocated = existingSourceFile(resolve(dirname(relocatedImporter), source));
+    const relocatedTarget = resolve(dirname(relocatedImporter), source);
+    const relocated = existingSourceFile(relocatedTarget);
     if (relocated) return relocated;
+    const aliasedRelocated = resolveRelocatedPathAlias(relocatedTarget);
+    if (aliasedRelocated) return aliasedRelocated;
   }
 
   const sourceRoot = sourceRootForImporter(absoluteImporter);
   if (sourceRoot === null) return null;
+  if (relocatedTuiSourceRoots.includes(sourceRoot)) {
+    return resolveRelocatedTuiSource(absoluteImporter, source);
+  }
   return null;
 }
 
@@ -169,7 +306,7 @@ const external = [
   '@ant/computer-use-mcp/sentinelApps',
   '@ant/computer-use-mcp/types',
   '@ant/computer-use-swift',
-  `@ant/${upstreamProduct}-for-chrome-mcp`,
+  '@ant/claude-for-chrome-mcp', // branding-scan: allow real external package name
   '@opentelemetry/exporter-logs-otlp-grpc',
   '@opentelemetry/exporter-logs-otlp-proto',
   '@opentelemetry/exporter-metrics-otlp-grpc',

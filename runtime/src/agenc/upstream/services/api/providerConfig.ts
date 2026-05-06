@@ -4,9 +4,9 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import {
-  isCodexRefreshFailureCoolingDown,
-  readCodexCredentials,
-  type CodexCredentialBlob,
+  isAgencRefreshFailureCoolingDown,
+  readAgencCredentials,
+  type AgencCredentialBlob,
 } from '../../../../utils/agencCredentials.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvTruthy } from '../../../../utils/envUtils.js'
@@ -758,7 +758,7 @@ function resolveCodexAuthJsonCredentials(options: {
 
 export function resolveStoredCodexCredentials(options: {
   storedCredentials: Pick<
-    CodexCredentialBlob,
+    AgencCredentialBlob,
     'apiKey' | 'accessToken' | 'idToken' | 'accountId'
   >
   envAccountId?: string
@@ -819,7 +819,7 @@ function resolveEnvOrAuthJsonCodexCredentials(
 export function resolveRuntimeCodexCredentials(options?: {
   env?: NodeJS.ProcessEnv
   storedCredentials?: Pick<
-    CodexCredentialBlob,
+    AgencCredentialBlob,
     'apiKey' | 'accessToken' | 'idToken' | 'accountId'
   >
 }): ResolvedCodexCredentials {
@@ -880,7 +880,7 @@ export function resolveCodexApiCredentials(
     return envOrExplicitAuthJsonCredentials
   }
 
-  const storedCredentials = readCodexCredentials()
+  const storedCredentials = readAgencCredentials()
   if (storedCredentials?.accessToken) {
     const resolvedStoredCredentials = resolveStoredCodexCredentials({
       storedCredentials,
@@ -889,7 +889,7 @@ export function resolveCodexApiCredentials(
 
     const shouldCheckDefaultAuthJson =
       !resolvedStoredCredentials.accountId ||
-      isCodexRefreshFailureCoolingDown(storedCredentials)
+      isAgencRefreshFailureCoolingDown(storedCredentials)
 
     if (!shouldCheckDefaultAuthJson) {
       return resolvedStoredCredentials

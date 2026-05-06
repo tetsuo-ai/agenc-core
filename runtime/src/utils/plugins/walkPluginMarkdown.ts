@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { join } from 'path'
 import { logForDebugging } from 'src/utils/debug.js'
 import { getFsImplementation } from '../fsOperations.js'

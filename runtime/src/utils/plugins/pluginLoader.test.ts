@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { describe, expect, test } from 'bun:test'
 
 import type { LoadedPlugin } from '../../types/plugin.js'

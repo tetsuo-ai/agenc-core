@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * TeammateContext - Runtime context for in-process teammates
  *

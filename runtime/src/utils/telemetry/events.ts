@@ -1,5 +1,5 @@
-// @ts-nocheck
 import type { Attributes } from '@opentelemetry/api'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getEventLogger, getPromptId } from 'src/bootstrap/state.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvTruthy } from '../envUtils.js'

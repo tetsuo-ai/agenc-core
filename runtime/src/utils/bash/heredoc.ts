@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Heredoc extraction and restoration utilities.
  *

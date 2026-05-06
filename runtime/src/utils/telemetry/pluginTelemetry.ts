@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Plugin telemetry helpers — shared field builders for plugin lifecycle events.
  *
@@ -18,11 +17,13 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_PII_TAGGED,
   logEvent,
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 } from '../../services/analytics/index.js'
 import type {
   LoadedPlugin,
   PluginError,
   PluginManifest,
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 } from '../../types/plugin.js'
 import {
   isOfficialMarketplaceName,

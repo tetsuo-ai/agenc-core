@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Shared permission rule matching utilities for shell tools.
  *

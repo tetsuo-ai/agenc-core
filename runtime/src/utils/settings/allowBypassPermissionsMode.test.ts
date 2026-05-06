@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { describe, test, expect } from 'bun:test'
 
 describe('SettingsSchema allowBypassPermissionsMode', () => {

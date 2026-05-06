@@ -1,10 +1,11 @@
-// @ts-nocheck
 import { writeFile } from 'fs/promises'
 import { join } from 'path'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 } from '../services/analytics/index.js'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import type { MCPResultType } from '../services/mcp/client.js'
 import { toError } from './errors.js'
 import { formatFileSize } from './format.js'
@@ -17,6 +18,7 @@ import { ensureToolResultsDir, getToolResultsDir } from './toolResultStorage.js'
 export function getFormatDescription(
   type: MCPResultType,
   schema?: unknown,
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 ): string {
   switch (type) {
     case 'toolResult':

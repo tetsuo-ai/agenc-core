@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Tool validation configuration
  *

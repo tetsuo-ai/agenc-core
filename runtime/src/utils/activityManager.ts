@@ -1,4 +1,4 @@
-// @ts-nocheck
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getActiveTimeCounter as getActiveTimeCounterImpl } from '../bootstrap/state.js'
 
 type ActivityManagerOptions = {

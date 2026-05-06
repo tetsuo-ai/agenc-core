@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Width-aware truncation/wrapping — needs ink/stringWidth (not leaf-safe).
 
 import { stringWidth } from '../tui/ink/stringWidth.js'

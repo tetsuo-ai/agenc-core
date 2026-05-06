@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { posix, win32 } from 'path'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,

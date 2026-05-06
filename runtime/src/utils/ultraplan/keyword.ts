@@ -1,4 +1,3 @@
-// @ts-nocheck
 type TriggerPosition = { word: string; start: number; end: number }
 
 const OPEN_TO_CLOSE: Record<string, string> = {

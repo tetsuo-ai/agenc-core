@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Non-React scheduler core for .agenc/scheduled_tasks.json.
 // Shared by REPL (via useScheduledTasks) and SDK/-p mode (print.ts).
 //

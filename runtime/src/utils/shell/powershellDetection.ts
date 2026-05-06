@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { realpath, stat } from 'fs/promises'
 import { getPlatform } from '../platform.js'
 import { which } from '../which.js'

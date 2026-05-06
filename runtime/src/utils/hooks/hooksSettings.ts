@@ -1,6 +1,6 @@
-// @ts-nocheck
 import { resolve } from 'path'
 import type { HookEvent } from 'src/entrypoints/agentSdkTypes.js'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getSessionId } from '../../bootstrap/state.js'
 import type { AppState } from '../../tui/state/AppState.js'
 import type { EditableSettingSource } from '../settings/constants.js'
@@ -34,6 +34,7 @@ export interface IndividualHookConfig {
 export function isHookEqual(
   a: HookCommand | { type: 'function'; timeout?: number },
   b: HookCommand | { type: 'function'; timeout?: number },
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 ): boolean {
   if (a.type !== b.type) return false
 
@@ -68,6 +69,7 @@ export function isHookEqual(
 /** Get the display text for a hook */
 export function getHookDisplayText(
   hook: HookCommand | { type: 'callback' | 'function'; statusMessage?: string },
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 ): string {
   // Return custom status message if provided
   if ('statusMessage' in hook && hook.statusMessage) {

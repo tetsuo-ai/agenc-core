@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * User-Agent string helpers.
  *
@@ -7,5 +6,6 @@
  */
 
 export function getAgenCCodeUserAgent(): string {
+  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
   return `agenc-code/${MACRO.VERSION}`
 }

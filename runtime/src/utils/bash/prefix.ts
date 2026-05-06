@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { buildPrefix } from '../shell/specPrefix.js'
 import { splitCommand_DEPRECATED } from './commands.js'
 import { extractCommandArguments, parseCommand } from './parser.js'

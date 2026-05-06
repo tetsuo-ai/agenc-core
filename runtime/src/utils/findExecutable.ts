@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { whichSync } from './which.js'
 
 /**

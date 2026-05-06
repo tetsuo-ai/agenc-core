@@ -1,6 +1,6 @@
-// @ts-nocheck
 import { execa } from 'execa'
 import memoize from 'lodash-es/memoize.js'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getSessionId } from '../bootstrap/state.js'
 import {
   getOauthAccountInfo,
@@ -106,6 +106,7 @@ export const getCoreUserData = memoize(
       deviceId,
       sessionId: getSessionId(),
       email: getEmail(),
+      // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
       appVersion: MACRO.VERSION,
       platform: getHostPlatformForAnalytics(),
       organizationUuid,

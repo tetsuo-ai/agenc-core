@@ -1,6 +1,6 @@
 import { join } from 'path';
 import React from 'react';
-import { ExportDialog } from '../../components/ExportDialog.js';
+import { ExportDialog } from '../../../../tui/components/ExportDialog';
 import type { ToolUseContext } from '../../Tool.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
 import type { Message } from '../../types/message.js';

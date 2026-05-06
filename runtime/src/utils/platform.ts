@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readdir, readFile } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
 import { release as osRelease } from 'os'

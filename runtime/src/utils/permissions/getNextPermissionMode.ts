@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { feature } from 'bun:bundle'
 import type { ToolPermissionContext } from '../../tools/Tool.js'
 import { logForDebugging } from 'src/utils/debug.js'

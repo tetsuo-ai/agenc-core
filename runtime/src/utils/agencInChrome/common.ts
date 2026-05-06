@@ -1,8 +1,8 @@
-// @ts-nocheck
 import { readdirSync } from 'fs'
 import { stat } from 'fs/promises'
 import { homedir, platform, tmpdir, userInfo } from 'os'
 import { join } from 'path'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { normalizeNameForMCP } from '../../services/mcp/normalization.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isFsInaccessible } from '../errors.js'

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Frontmatter parser for markdown files
  * Extracts and parses YAML frontmatter between --- delimiters

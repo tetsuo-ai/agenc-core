@@ -1,4 +1,3 @@
-// @ts-nocheck
 export class Stream<T> implements AsyncIterator<T> {
   private readonly queue: T[] = []
   private readResolve?: (value: IteratorResult<T>) => void

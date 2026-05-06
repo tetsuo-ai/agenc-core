@@ -1,4 +1,3 @@
-// @ts-nocheck
 // External build: terminal recording is not available.
 // Keep this module as a stable no-op surface so runtime imports stay valid.
 

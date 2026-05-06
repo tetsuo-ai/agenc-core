@@ -1,4 +1,3 @@
-// @ts-nocheck
 export type RecommendationGoal = 'latency' | 'balanced' | 'coding'
 
 export type OllamaModelDescriptor = {

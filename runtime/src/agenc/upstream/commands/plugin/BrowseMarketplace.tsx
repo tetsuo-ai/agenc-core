@@ -1,8 +1,8 @@
 import figures from 'figures';
 import * as React from 'react';
 import { useEffect, useState } from 'react';
-import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutHint.js';
-import { Byline } from '../../components/design-system/Byline.js';
+import { ConfigurableShortcutHint } from '../../../../tui/components/ConfigurableShortcutHint';
+import { Byline } from '../../../../tui/components/design-system/Byline';
 import { Box, Text } from '../../../../tui/ink.js';
 import { useKeybinding, useKeybindings } from '../../../../tui/keybindings/useKeybinding.js';
 import type { LoadedPlugin } from '../../types/plugin.js';

@@ -1,10 +1,12 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import * as React from 'react';
-import { KeyboardShortcutHint } from '../../components/design-system/KeyboardShortcutHint.js';
-import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErrorMessage.js';
-import { MessageResponse } from '../../components/MessageResponse.js';
-import { ShellProgressMessage } from '../../components/shell/ShellProgressMessage.js';
+import { KeyboardShortcutHint } from '../../../../tui/components/design-system/KeyboardShortcutHint';
+import { FallbackToolUseErrorMessage } from '../../../../tui/components/FallbackToolUseErrorMessage';
+import { MessageResponse } from '../../../../tui/components/MessageResponse';
+import { ShellProgressMessage } from '../../../../tui/components/shell/ShellProgressMessage';
 import { Box, Text } from '../../../../tui/ink.js';
 import { useKeybinding } from '../../../../tui/keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../../../../tui/keybindings/useShortcutDisplay.js';

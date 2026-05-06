@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Error IDs for tracking error sources in production.
  * These IDs are obfuscated identifiers that help us trace

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { type Options as ExecaOptions, execaSync } from 'execa'
 import { getCwd } from './cwd.js'
 import { slowLogging } from './slowOperations.js'

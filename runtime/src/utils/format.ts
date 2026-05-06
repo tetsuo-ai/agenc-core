@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Pure display formatters — leaf-safe (no Ink). Width-aware truncation lives in ./truncate.ts.
 
 import { getRelativeTimeFormat, getTimeZone } from './intl.js'

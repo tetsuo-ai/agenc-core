@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * AgenC build-time constants.
  *

@@ -47,7 +47,7 @@ const permissionMocks = vi.hoisted(() => {
 vi.mock("bun:bundle", () => ({
   feature: () => false,
 }));
-vi.mock("../../agenc/upstream/hooks/useNotifyAfterTimeout.js", () => ({
+vi.mock("../hooks/useNotifyAfterTimeout.js", () => ({
   useNotifyAfterTimeout: () => {},
 }));
 vi.mock("../keybindings/useKeybinding.js", () => ({
@@ -93,71 +93,71 @@ vi.mock("../../agenc/upstream/tools/WebFetchTool/WebFetchTool.js", () => ({
   WebFetchTool: permissionMocks.WebFetchTool,
 }));
 vi.mock(
-  "../../agenc/upstream/components/permissions/AskUserQuestionPermissionRequest/AskUserQuestionPermissionRequest.js",
+  "../components/permissions/AskUserQuestionPermissionRequest/AskUserQuestionPermissionRequest.js",
   () => ({
     AskUserQuestionPermissionRequest:
       permissionMocks.AskUserQuestionPermissionRequest,
   }),
 );
 vi.mock(
-  "../../agenc/upstream/components/permissions/BashPermissionRequest/BashPermissionRequest.js",
+  "../components/permissions/BashPermissionRequest/BashPermissionRequest.js",
   () => ({
     BashPermissionRequest: permissionMocks.BashPermissionRequest,
   }),
 );
 vi.mock(
-  "../../agenc/upstream/components/permissions/EnterPlanModePermissionRequest/EnterPlanModePermissionRequest.js",
+  "../components/permissions/EnterPlanModePermissionRequest/EnterPlanModePermissionRequest.js",
   () => ({
     EnterPlanModePermissionRequest: permissionMocks.EnterPlanModePermissionRequest,
   }),
 );
 vi.mock(
-  "../../agenc/upstream/components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.js",
+  "../components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.js",
   () => ({
     ExitPlanModePermissionRequest: permissionMocks.ExitPlanModePermissionRequest,
   }),
 );
-vi.mock("../../agenc/upstream/components/permissions/FallbackPermissionRequest.js", () => ({
+vi.mock("../components/permissions/FallbackPermissionRequest.js", () => ({
   FallbackPermissionRequest: permissionMocks.FallbackPermissionRequest,
 }));
 vi.mock(
-  "../../agenc/upstream/components/permissions/FileEditPermissionRequest/FileEditPermissionRequest.js",
+  "../components/permissions/FileEditPermissionRequest/FileEditPermissionRequest.js",
   () => ({
     FileEditPermissionRequest: permissionMocks.FileEditPermissionRequest,
   }),
 );
 vi.mock(
-  "../../agenc/upstream/components/permissions/FilesystemPermissionRequest/FilesystemPermissionRequest.js",
+  "../components/permissions/FilesystemPermissionRequest/FilesystemPermissionRequest.js",
   () => ({
     FilesystemPermissionRequest: permissionMocks.FilesystemPermissionRequest,
   }),
 );
 vi.mock(
-  "../../agenc/upstream/components/permissions/FileWritePermissionRequest/FileWritePermissionRequest.js",
+  "../components/permissions/FileWritePermissionRequest/FileWritePermissionRequest.js",
   () => ({
     FileWritePermissionRequest: permissionMocks.FileWritePermissionRequest,
   }),
 );
 vi.mock(
-  "../../agenc/upstream/components/permissions/NotebookEditPermissionRequest/NotebookEditPermissionRequest.js",
+  "../components/permissions/NotebookEditPermissionRequest/NotebookEditPermissionRequest.js",
   () => ({
     NotebookEditPermissionRequest: permissionMocks.NotebookEditPermissionRequest,
   }),
 );
 vi.mock(
-  "../../agenc/upstream/components/permissions/PowerShellPermissionRequest/PowerShellPermissionRequest.js",
+  "../components/permissions/PowerShellPermissionRequest/PowerShellPermissionRequest.js",
   () => ({
     PowerShellPermissionRequest: permissionMocks.PowerShellPermissionRequest,
   }),
 );
 vi.mock(
-  "../../agenc/upstream/components/permissions/SkillPermissionRequest/SkillPermissionRequest.js",
+  "../components/permissions/SkillPermissionRequest/SkillPermissionRequest.js",
   () => ({
     SkillPermissionRequest: permissionMocks.SkillPermissionRequest,
   }),
 );
 vi.mock(
-  "../../agenc/upstream/components/permissions/WebFetchPermissionRequest/WebFetchPermissionRequest.js",
+  "../components/permissions/WebFetchPermissionRequest/WebFetchPermissionRequest.js",
   () => ({
     WebFetchPermissionRequest: permissionMocks.WebFetchPermissionRequest,
   }),
@@ -188,7 +188,7 @@ describe("PermissionRequest absorb wiring", () => {
       './components/permissions/PermissionRequest.js',
     );
     expect(permissionRequests).not.toContain(
-      "../../agenc/upstream/components/permissions/" +
+      "../components/permissions" +
         "PermissionRequest.js",
     );
   });
@@ -198,7 +198,7 @@ describe("PermissionRequest absorb wiring", () => {
       existsSync(
         resolve(
           runtimeRoot,
-          "src/agenc/upstream/components/permissions",
+          "src/tui/components/permissions",
           "PermissionRequest.tsx",
         ),
       ),

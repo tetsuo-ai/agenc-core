@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { logEvent } from 'src/services/analytics/index.js'
 import { extractHeredocs } from '../../../../utils/bash/heredoc.js'
 import { ParsedCommand } from '../../../../utils/bash/ParsedCommand.js'

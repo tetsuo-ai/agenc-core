@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { describe, expect, it, beforeEach } from 'bun:test'
 import {
   createStreamState,

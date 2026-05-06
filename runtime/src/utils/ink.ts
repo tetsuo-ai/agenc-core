@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { TextProps } from '../tui/ink.js'
 import {
   AGENT_COLOR_TO_THEME_COLOR,

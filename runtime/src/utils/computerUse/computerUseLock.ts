@@ -1,6 +1,6 @@
-// @ts-nocheck
 import { mkdir, readFile, unlink, writeFile } from 'fs/promises'
 import { join } from 'path'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getSessionId } from '../../bootstrap/state.js'
 import { registerCleanup } from '../cleanupRegistry.js'
 import { logForDebugging } from 'src/utils/debug.js'

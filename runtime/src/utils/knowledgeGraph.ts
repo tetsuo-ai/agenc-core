@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import { getProjectsDir } from './sessionStorage.js'

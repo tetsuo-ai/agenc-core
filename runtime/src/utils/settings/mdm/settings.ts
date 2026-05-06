@@ -1,9 +1,8 @@
-// @ts-nocheck
 /**
  * MDM (Mobile Device Management) profile enforcement for AgenC managed settings.
  *
  * Reads enterprise settings from OS-level MDM configuration:
- * - macOS: `com.anthropic.agenccode` preference domain
+ * - macOS: `tech.agenc.agenccode` preference domain
  *   (MDM profiles at /Library/Managed Preferences/ only — not user-writable ~/Library/Preferences/)
  * - Windows: `HKLM\SOFTWARE\Policies\AgenCCode` (admin-only)
  *   and `HKCU\SOFTWARE\Policies\AgenCCode` (user-writable, lowest priority)

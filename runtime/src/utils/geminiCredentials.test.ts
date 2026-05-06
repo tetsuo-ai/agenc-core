@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { afterEach, beforeEach, expect, mock, test } from 'bun:test'
 
 type MockStorageData = Record<string, unknown>

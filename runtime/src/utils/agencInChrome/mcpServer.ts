@@ -1,4 +1,5 @@
 // @ts-nocheck
+// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
 import {
   type AgenCForChromeContext,
   createAgenCForChromeMcpServer,
@@ -22,9 +23,9 @@ import { isEnvTruthy } from '../envUtils.js'
 import { sideQuery } from '../sideQuery.js'
 import { getAllSocketPaths, getSecureSocketPath } from './common.js'
 
-const EXTENSION_DOWNLOAD_URL = 'https://agenc.ai/chrome'
+const EXTENSION_DOWNLOAD_URL = 'https://agenc.tech/chrome'
 const BUG_REPORT_URL =
-  'https://github.com/anthropics/agenc-code/issues/new?labels=bug,agenc-in-chrome'
+  'https://github.com/tetsuo-ai/agenc-core/issues/new?labels=bug,agenc-in-chrome'
 
 // String metadata keys safe to forward to analytics. Keys like error_message
 // are excluded because they could contain page content or user data.
@@ -110,11 +111,11 @@ export function createChromeContext(
     clientTypeId: 'agenc-code',
     onAuthenticationError: () => {
       logger.warn(
-        'Authentication error occurred. Please ensure you are logged into the AgenC browser extension with the same agenc.ai account as AgenC.',
+        'Authentication error occurred. Please ensure you are logged into the AgenC browser extension with the same AgenC account as AgenC.',
       )
     },
     onToolCallDisconnected: () => {
-      return `Browser extension is not connected. Please ensure the AgenC browser extension is installed and running (${EXTENSION_DOWNLOAD_URL}), and that you are logged into agenc.ai with the same account as AgenC. If this is your first time connecting to Chrome, you may need to restart Chrome for the installation to take effect. If you continue to experience issues, please report a bug: ${BUG_REPORT_URL}`
+      return `Browser extension is not connected. Please ensure the AgenC browser extension is installed and running (${EXTENSION_DOWNLOAD_URL}), and that you are logged into AgenC with the same account as AgenC. If this is your first time connecting to Chrome, you may need to restart Chrome for the installation to take effect. If you continue to experience issues, please report a bug: ${BUG_REPORT_URL}`
     },
     onExtensionPaired: (deviceId: string, name: string) => {
       saveGlobalConfig(config => {

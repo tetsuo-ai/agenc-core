@@ -1,4 +1,3 @@
-// @ts-nocheck
 export type {
   PermissionAllowDecision,
   PermissionAskDecision,
@@ -7,8 +6,10 @@ export type {
   PermissionDenyDecision,
   PermissionMetadata,
   PermissionResult,
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 } from '../../types/permissions.js'
 
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import type { PermissionResult } from '../../types/permissions.js'
 
 // Helper function to get the appropriate prose description for rule behavior

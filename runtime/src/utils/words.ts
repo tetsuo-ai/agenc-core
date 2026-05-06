@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Random word slug generator for plan IDs
  * Inspired by https://github.com/nas5w/random-word-slugs

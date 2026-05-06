@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { randomUUID, type UUID } from 'crypto'
 import { validateUuid } from './uuid.js'
 

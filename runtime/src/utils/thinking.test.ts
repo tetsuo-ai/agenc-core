@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { resetSettingsCache } from './settings/settingsCache.js'
 

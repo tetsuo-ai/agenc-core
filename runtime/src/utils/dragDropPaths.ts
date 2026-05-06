@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { existsSync } from 'fs'
 import { isAbsolute } from 'path'
 

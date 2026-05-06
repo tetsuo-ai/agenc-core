@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { randomBytes } from 'crypto'
 
 export function randomUUID(): `${string}-${string}-${string}-${string}-${string}` {

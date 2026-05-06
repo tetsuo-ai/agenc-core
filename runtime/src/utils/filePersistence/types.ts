@@ -1,4 +1,3 @@
-// @ts-nocheck
 export const OUTPUTS_SUBDIR = 'outputs'
 
 export type PersistedFile = {

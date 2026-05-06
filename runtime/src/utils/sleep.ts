@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Abort-responsive sleep. Resolves after `ms` milliseconds, or immediately
  * when `signal` aborts (so backoff loops don't block shutdown).

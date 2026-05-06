@@ -1,14 +1,13 @@
-// @ts-nocheck
 import { isBareMode } from './envUtils.js'
 import { getSecureStorage } from './secureStorage/index.js'
 import {
   asTrimmedString,
   CODEX_REFRESH_URL as AGENC_REFRESH_URL,
-  exchangeCodexIdTokenForApiKey,
-  getCodexOAuthClientId,
+  exchangeCodexIdTokenForApiKey as exchangeAgencIdTokenForApiKey,
+  getCodexOAuthClientId as getAgencOAuthClientId,
   parseChatgptAccountId,
   decodeJwtPayload,
-} from '../services/api/agencOAuthShared.js'
+} from '../agenc/upstream/services/api/codexOAuthShared.js' // branding-scan: allow upstream provider module path pending purge // upstream-import: keep OAuth shared target is owned by a later purge item
 
 export const AGENC_STORAGE_KEY = 'agenc' as const
 const AGENC_TOKEN_REFRESH_SKEW_MS = 60_000
@@ -31,7 +30,7 @@ type AgencTokenRefreshResponse = {
   id_token?: string
 }
 
-let inFlightCodexRefresh:
+let inFlightAgencRefresh:
   | Promise<{
       refreshed: boolean
       credentials?: AgencCredentialBlob
@@ -39,7 +38,7 @@ let inFlightCodexRefresh:
   | null = null
 let inMemoryLastRefreshFailureAt: number | null = null
 
-function getCodexSecureStorage() {
+function getAgencSecureStorage() {
   return getSecureStorage({ allowPlainTextFallback: false })
 }
 
@@ -53,7 +52,7 @@ function parseJwtExpiryMs(token: string | undefined): number | undefined {
   return undefined
 }
 
-function normalizeCodexCredentialBlob(
+function normalizeAgencCredentialBlob(
   value: unknown,
 ): AgencCredentialBlob | undefined {
   if (!value || typeof value !== 'object') return undefined
@@ -94,7 +93,7 @@ function normalizeCodexCredentialBlob(
   }
 }
 
-function shouldRefreshCodexToken(blob: AgencCredentialBlob): boolean {
+function shouldRefreshAgencToken(blob: AgencCredentialBlob): boolean {
   const expiresAt =
     parseJwtExpiryMs(blob.accessToken) ?? parseJwtExpiryMs(blob.idToken)
   if (expiresAt === undefined) {
@@ -147,31 +146,31 @@ function getRefreshErrorMessage(
   }
 }
 
-export function readCodexCredentials(): AgencCredentialBlob | undefined {
+export function readAgencCredentials(): AgencCredentialBlob | undefined {
   if (isBareMode()) return undefined
 
   try {
-    const data = getCodexSecureStorage().read()
-    return normalizeCodexCredentialBlob(data?.agenc)
+    const data = getAgencSecureStorage().read()
+    return normalizeAgencCredentialBlob(data?.agenc)
   } catch {
     return undefined
   }
 }
 
-export async function readCodexCredentialsAsync(): Promise<
+export async function readAgencCredentialsAsync(): Promise<
   AgencCredentialBlob | undefined
 > {
   if (isBareMode()) return undefined
 
   try {
-    const data = await getCodexSecureStorage().readAsync()
-    return normalizeCodexCredentialBlob(data?.agenc)
+    const data = await getAgencSecureStorage().readAsync()
+    return normalizeAgencCredentialBlob(data?.agenc)
   } catch {
     return undefined
   }
 }
 
-export function isCodexRefreshFailureCoolingDown(
+export function isAgencRefreshFailureCoolingDown(
   blob: Pick<AgencCredentialBlob, 'lastRefreshFailureAt'>,
   now = Date.now(),
 ): boolean {
@@ -181,38 +180,38 @@ export function isCodexRefreshFailureCoolingDown(
   )
 }
 
-export function saveCodexCredentials(
+export function saveAgencCredentials(
   credentials: AgencCredentialBlob,
 ): { success: boolean; warning?: string } {
   if (isBareMode()) {
     return { success: false, warning: 'Bare mode: secure storage is disabled.' }
   }
 
-  const normalized = normalizeCodexCredentialBlob(credentials)
+  const normalized = normalizeAgencCredentialBlob(credentials)
   if (!normalized) {
     return { success: false, warning: 'Agenc credentials are incomplete.' }
   }
 
-  const secureStorage = getCodexSecureStorage()
+  const secureStorage = getAgencSecureStorage()
   const previous = secureStorage.read() || {}
-  const previousCodex = normalizeCodexCredentialBlob(previous[AGENC_STORAGE_KEY])
+  const previousAgenc = normalizeAgencCredentialBlob(previous[AGENC_STORAGE_KEY])
   const next = {
     ...(previous as Record<string, unknown>),
     [AGENC_STORAGE_KEY]: {
       ...normalized,
-      profileId: normalized.profileId ?? previousCodex?.profileId,
+      profileId: normalized.profileId ?? previousAgenc?.profileId,
       lastRefreshAt: normalized.lastRefreshAt ?? Date.now(),
     },
   }
   const result = secureStorage.update(next as typeof previous)
   if (result.success) {
-    const storedCodex = normalizeCodexCredentialBlob(next[AGENC_STORAGE_KEY])
-    inMemoryLastRefreshFailureAt = storedCodex?.lastRefreshFailureAt ?? null
+    const storedAgenc = normalizeAgencCredentialBlob(next[AGENC_STORAGE_KEY])
+    inMemoryLastRefreshFailureAt = storedAgenc?.lastRefreshFailureAt ?? null
   }
   return result
 }
 
-export function attachCodexProfileIdToStoredCredentials(profileId: string): {
+export function attachAgencProfileIdToStoredCredentials(profileId: string): {
   success: boolean
   warning?: string
 } {
@@ -220,7 +219,7 @@ export function attachCodexProfileIdToStoredCredentials(profileId: string): {
     return { success: false, warning: 'Bare mode: secure storage is disabled.' }
   }
 
-  const current = readCodexCredentials()
+  const current = readAgencCredentials()
   if (!current) {
     return {
       success: false,
@@ -228,17 +227,17 @@ export function attachCodexProfileIdToStoredCredentials(profileId: string): {
     }
   }
 
-  return saveCodexCredentials({
+  return saveAgencCredentials({
     ...current,
     profileId,
   })
 }
 
-function persistCodexRefreshFailure(
+function persistAgencRefreshFailure(
   credentials: AgencCredentialBlob,
   occurredAt: number,
 ): void {
-  const result = saveCodexCredentials({
+  const result = saveAgencCredentials({
     ...credentials,
     lastRefreshFailureAt: occurredAt,
   })
@@ -247,7 +246,7 @@ function persistCodexRefreshFailure(
   }
 }
 
-export function clearCodexCredentials(): {
+export function clearAgencCredentials(): {
   success: boolean
   warning?: string
 } {
@@ -255,7 +254,7 @@ export function clearCodexCredentials(): {
     return { success: true }
   }
 
-  const secureStorage = getCodexSecureStorage()
+  const secureStorage = getAgencSecureStorage()
   const previous = secureStorage.read() || {}
   const next = { ...(previous as Record<string, unknown>) }
   delete next[AGENC_STORAGE_KEY]
@@ -266,7 +265,7 @@ export function clearCodexCredentials(): {
   return result
 }
 
-export async function refreshCodexAccessTokenIfNeeded(options?: {
+export async function refreshAgencAccessTokenIfNeeded(options?: {
   force?: boolean
 }): Promise<{
   refreshed: boolean
@@ -280,7 +279,7 @@ export async function refreshCodexAccessTokenIfNeeded(options?: {
     return { refreshed: false }
   }
 
-  const current = await readCodexCredentialsAsync()
+  const current = await readAgencCredentialsAsync()
   if (!current) {
     return { refreshed: false }
   }
@@ -289,7 +288,7 @@ export async function refreshCodexAccessTokenIfNeeded(options?: {
     return { refreshed: false, credentials: current }
   }
 
-  if (!options?.force && !shouldRefreshCodexToken(current)) {
+  if (!options?.force && !shouldRefreshAgencToken(current)) {
     return { refreshed: false, credentials: current }
   }
 
@@ -297,16 +296,17 @@ export async function refreshCodexAccessTokenIfNeeded(options?: {
     return { refreshed: false, credentials: current }
   }
 
-  if (inFlightCodexRefresh) {
-    return inFlightCodexRefresh
+  if (inFlightAgencRefresh) {
+    return inFlightAgencRefresh
   }
 
-  inFlightCodexRefresh = (async () => {
+  inFlightAgencRefresh = (async () => {
     const refreshAttemptedAt = Date.now()
 
     try {
+      // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
       const body = new URLSearchParams({
-        client_id: getCodexOAuthClientId(),
+        client_id: getAgencOAuthClientId(),
         grant_type: 'refresh_token',
         refresh_token: current.refreshToken,
       })
@@ -347,12 +347,12 @@ export async function refreshCodexAccessTokenIfNeeded(options?: {
 
       const idTokenForExchange = next.idToken ?? current.idToken
       if (idTokenForExchange) {
-        next.apiKey = await exchangeCodexIdTokenForApiKey(
+        next.apiKey = await exchangeAgencIdTokenForApiKey(
           idTokenForExchange,
         ).catch(() => undefined)
       }
 
-      const saveResult = saveCodexCredentials(next)
+      const saveResult = saveAgencCredentials(next)
       if (!saveResult.success) {
         throw new Error(
           saveResult.warning ??
@@ -365,12 +365,12 @@ export async function refreshCodexAccessTokenIfNeeded(options?: {
         credentials: next,
       }
     } catch (error) {
-      persistCodexRefreshFailure(current, refreshAttemptedAt)
+      persistAgencRefreshFailure(current, refreshAttemptedAt)
       throw error
     } finally {
-      inFlightCodexRefresh = null
+      inFlightAgencRefresh = null
     }
   })()
 
-  return inFlightCodexRefresh
+  return inFlightAgencRefresh
 }

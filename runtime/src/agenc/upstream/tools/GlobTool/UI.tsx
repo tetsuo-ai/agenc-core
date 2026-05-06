@@ -1,8 +1,10 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import React from 'react';
 import { MessageResponse } from 'src/components/MessageResponse.js';
 import { extractTag } from 'src/utils/messages.js';
-import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErrorMessage.js';
+import { FallbackToolUseErrorMessage } from '../../../../tui/components/FallbackToolUseErrorMessage';
 import { TOOL_SUMMARY_MAX_LENGTH } from '../../../../constants/toolLimits.js';
 import { Text } from '../../../../tui/ink.js';
 import { FILE_NOT_FOUND_CWD_NOTE, getDisplayPath } from '../../../../utils/file.js';

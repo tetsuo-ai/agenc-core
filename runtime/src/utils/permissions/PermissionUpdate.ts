@@ -1,4 +1,5 @@
 // @ts-nocheck
+// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { posix } from 'path'
 import type { ToolPermissionContext } from '../../tools/Tool.js'
 // Types extracted to src/types/permissions.ts to break import cycles

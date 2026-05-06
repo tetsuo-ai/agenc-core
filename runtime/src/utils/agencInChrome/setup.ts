@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { BROWSER_TOOLS } from '@ant/agenc-for-chrome-mcp'
 import { chmod, mkdir, readFile, writeFile } from 'fs/promises'
 import { homedir } from 'os'
@@ -32,9 +31,9 @@ import {
 import { getChromeSystemPrompt } from './prompt.js'
 import { isChromeExtensionInstalledPortable } from './setupPortable.js'
 
-const CHROME_EXTENSION_RECONNECT_URL = 'https://clau.de/chrome/reconnect'
+const CHROME_EXTENSION_RECONNECT_URL = 'https://agenc.tech/chrome/reconnect'
 
-const NATIVE_HOST_IDENTIFIER = 'com.anthropic.agenc_code_browser_extension'
+const NATIVE_HOST_IDENTIFIER = 'tech.agenc.agenc_code_browser_extension'
 const NATIVE_HOST_MANIFEST_NAME = `${NATIVE_HOST_IDENTIFIER}.json`
 
 export function shouldEnableAgenCInChrome(chromeFlag?: boolean): boolean {
@@ -96,7 +95,7 @@ export function setupAgenCInChrome(): {
 } {
   const isNativeBuild = isInBundledMode()
   const allowedTools = BROWSER_TOOLS.map(
-    tool => `mcp__claude-in-chrome__${tool.name}`,
+    tool => `mcp__agenc-in-chrome__${tool.name}`,
   )
 
   const env: Record<string, string> = {}

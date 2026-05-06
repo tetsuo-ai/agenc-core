@@ -1,10 +1,9 @@
-// @ts-nocheck
 import { readdir } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
 import { isFsInaccessible } from '../errors.js'
 
-export const CHROME_EXTENSION_URL = 'https://agenc.ai/chrome'
+export const CHROME_EXTENSION_URL = 'https://agenc.tech/chrome'
 
 // Production extension ID
 const PROD_EXTENSION_ID = 'fcoeoabgfenejglbffodgkkbkcdhcgfn'

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { createSignal } from './signal.js'
 
 export type MessageSource = 'user' | 'teammate' | 'system' | 'tick' | 'task'

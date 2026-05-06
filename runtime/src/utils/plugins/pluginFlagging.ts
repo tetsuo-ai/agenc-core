@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Flagged plugin tracking utilities
  *

@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Scheduled prompts, stored in <project>/.agenc/scheduled_tasks.json.
 //
 // Tasks come in two flavors:

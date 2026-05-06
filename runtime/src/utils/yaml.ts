@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * YAML parsing wrapper.
  *
@@ -9,8 +8,10 @@
 
 export function parseYaml(input: string): unknown {
   if (typeof Bun !== 'undefined') {
+    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
     return Bun.YAML.parse(input)
   }
   // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
   return (require('yaml') as typeof import('yaml')).parse(input)
 }

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Matches any XML-like `<tag>…</tag>` block (lowercase tag names, optional
  * attributes, multi-line content). Used to strip system-injected wrapper tags

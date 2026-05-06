@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { AddressFamily, LookupAddress as AxiosLookupAddress } from 'axios'
 import { lookup as dnsLookup } from 'dns'
 import { isIP } from 'net'

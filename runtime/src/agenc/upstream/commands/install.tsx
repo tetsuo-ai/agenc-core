@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import React, { useEffect, useState } from 'react';
 import type { CommandResultDisplay } from 'src/commands.js';
 import { logEvent } from 'src/services/analytics/index.js';
-import { StatusIcon } from '../components/design-system/StatusIcon.js';
+import { StatusIcon } from '../../../tui/components/design-system/StatusIcon';
 import { Box, render, Text } from '../../../tui/ink.js';
 import { logForDebugging } from 'src/utils/debug.js';
 import { env } from '../../../utils/env.js';

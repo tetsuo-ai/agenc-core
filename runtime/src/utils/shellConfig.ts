@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Utilities for managing shell configuration files (like .bashrc, .zshrc)
  * Used for managing agenc aliases and PATH entries

@@ -15,8 +15,8 @@ import {
   getUserContext,
   setSystemPromptInjection,
 } from '../../context.js'
-import { clearFileSuggestionCaches } from '../../hooks/fileSuggestions.js'
-import { clearAllPendingCallbacks } from '../../hooks/useSwarmPermissionPoller.js'
+import { clearFileSuggestionCaches } from '../../../../tui/hooks/fileSuggestions'
+import { clearAllPendingCallbacks } from '../../../../tui/hooks/useSwarmPermissionPoller'
 import { clearAllDumpState } from '../../services/api/dumpPrompts.js'
 import { resetPromptCacheBreakDetection } from '../../services/api/promptCacheBreakDetection.js'
 import { clearAllSessions } from '../../services/api/sessionIngress.js'

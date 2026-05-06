@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * PID-Based Version Locking
  *

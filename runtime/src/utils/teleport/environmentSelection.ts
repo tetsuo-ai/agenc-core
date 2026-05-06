@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { SETTING_SOURCES, type SettingSource } from '../settings/constants.js'
 import {
   getSettings_DEPRECATED,

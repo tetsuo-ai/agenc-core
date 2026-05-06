@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * https://tc39.es/ecma262/multipage/fundamental-objects.html#sec-object.groupby
  */

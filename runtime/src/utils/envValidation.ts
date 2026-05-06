@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { logForDebugging } from 'src/utils/debug.js'
 
 export type EnvVarValidationResult = {

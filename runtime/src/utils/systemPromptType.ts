@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Branded type for system prompt arrays.
  *

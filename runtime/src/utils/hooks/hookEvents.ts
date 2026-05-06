@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Hook event system for broadcasting hook execution events.
  *
@@ -7,6 +6,7 @@
  * what to do with them (e.g., convert to SDK messages, log, etc.).
  */
 
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { HOOK_EVENTS } from 'src/entrypoints/sdk/coreTypes.js'
 
 import { logForDebugging } from 'src/utils/debug.js'

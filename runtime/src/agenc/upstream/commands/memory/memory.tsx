@@ -1,9 +1,9 @@
 import { mkdir, writeFile } from 'fs/promises';
 import * as React from 'react';
 import type { CommandResultDisplay } from '../../../../commands.js';
-import { Dialog } from '../../components/design-system/Dialog.js';
-import { MemoryFileSelector } from '../../components/memory/MemoryFileSelector.js';
-import { getRelativeMemoryPath } from '../../components/memory/MemoryUpdateNotification.js';
+import { Dialog } from '../../../../tui/components/design-system/Dialog';
+import { MemoryFileSelector } from '../../../../tui/components/memory/MemoryFileSelector';
+import { getRelativeMemoryPath } from '../../../../tui/components/memory/MemoryUpdateNotification';
 import { Box, Link, Text } from '../../../../tui/ink.js';
 import type { LocalJSXCommandCall } from '../../types/command.js';
 import { clearMemoryFileCaches, getMemoryFiles } from '../../../../utils/agencmd.js';

@@ -1,4 +1,3 @@
-// @ts-nocheck
 type WriteFn = (content: string) => void
 
 export type BufferedWriter = {

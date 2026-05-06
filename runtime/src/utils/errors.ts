@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { APIUserAbortError } from '@anthropic-ai/sdk'
 
 export class AgenCError extends Error {

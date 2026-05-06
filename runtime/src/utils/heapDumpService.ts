@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Service for heap dump capture.
  * Used by the /heapdump command.

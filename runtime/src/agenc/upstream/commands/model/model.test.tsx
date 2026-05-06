@@ -50,7 +50,7 @@ test('opens the model picker without awaiting local model discovery refresh', as
       }),
   )
 
-  mock.module('../../utils/model/openaiModelDiscovery.js', () => ({
+  mock.module('../../../../utils/model/openaiModelDiscovery.js', () => ({
     discoverOpenAICompatibleModelOptions,
   }))
 

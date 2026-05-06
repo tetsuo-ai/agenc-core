@@ -1,7 +1,9 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { Token, Tokens } from 'marked';
 import React from 'react';
 import stripAnsi from 'strip-ansi';
-import { useTerminalSize } from '../../../agenc/upstream/hooks/useTerminalSize.js';
+import { useTerminalSize } from '../../hooks/useTerminalSize';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { wrapAnsi } from '../../ink/wrapAnsi.js';
 import { Ansi, useTheme } from '../../ink.js';

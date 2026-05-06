@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Manages plugin installation metadata stored in installed_plugins.json
  *
@@ -41,6 +40,7 @@ type InstalledPluginsMapV2 = Record<string, PluginInstallationEntry[]>
 // Type for persistable scopes (excludes 'flag' which is session-only)
 export type PersistableScope = Exclude<PluginScope, never> // All scopes are persistable in the schema
 
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getOriginalCwd } from '../../bootstrap/state.js'
 import { getCwd } from '../cwd.js'
 import { getHeadForDir } from '../git/gitFilesystem.js'
@@ -388,6 +388,7 @@ function saveInstalledPluginsV2(data: InstalledPluginsFileV2): void {
       `Saved ${Object.keys(data.plugins).length} installed plugins to ${filePath}`,
     )
   } catch (error) {
+    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
     const _errorMsg = errorMessage(error)
     logError(toError(error))
     throw error

@@ -1,10 +1,10 @@
-// @ts-nocheck
 import { resolve } from 'node:path'
 import {
   getGithubEndpointType,
   isLocalProviderUrl,
   resolveCodexApiCredentials,
   resolveProviderRequest,
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 } from '../services/api/providerConfig.js'
 import { getGlobalAgenCFile } from './env.js'
 import { isBareMode } from './envUtils.js'

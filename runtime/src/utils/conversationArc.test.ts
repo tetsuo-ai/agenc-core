@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { describe, expect, it, beforeEach, afterEach } from 'bun:test'
 import {
   initializeArc,

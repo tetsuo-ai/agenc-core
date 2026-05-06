@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { saveGlobalConfig } from './config.js'
 import { updateSettingsForSource } from './settings/settings.js'
 

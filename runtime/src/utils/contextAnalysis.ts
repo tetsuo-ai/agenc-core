@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { BetaContentBlock } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type {
   ContentBlock,
@@ -68,6 +67,7 @@ export function analyzeContext(messages: Message[]): TokenStats {
           tokens
       }
     } else {
+      // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
       content.forEach(block =>
         processBlock(
           block,

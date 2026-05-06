@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * CYBER_RISK_INSTRUCTION
  *

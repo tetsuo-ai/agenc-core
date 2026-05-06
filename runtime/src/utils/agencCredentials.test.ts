@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * These tests avoid static imports so Bun can mock secureStorage before
  * agencCredentials is first loaded.
@@ -38,11 +37,11 @@ describe('agencCredentials', () => {
     process.env.AGENC_SIMPLE = '1'
 
     // @ts-expect-error cache-busting query string for Bun module mocks
-    const { saveCodexCredentials } = await import(
+    const { saveAgencCredentials } = await import(
       './agencCredentials.js?save-bare-mode'
     )
 
-    const result = saveCodexCredentials({
+    const result = saveAgencCredentials({
       accessToken: 'token',
       accountId: 'acct_123',
     })
@@ -51,7 +50,7 @@ describe('agencCredentials', () => {
     expect(result.warning).toContain('Bare mode')
   })
 
-  test('saveCodexCredentials refuses plaintext fallback when native secure storage is unavailable', async () => {
+  test('saveAgencCredentials refuses plaintext fallback when native secure storage is unavailable', async () => {
     delete process.env.AGENC_SIMPLE
 
     mock.module('./secureStorage/index.js', () => ({
@@ -71,11 +70,11 @@ describe('agencCredentials', () => {
     }))
 
     // @ts-expect-error cache-busting query string for Bun module mocks
-    const { saveCodexCredentials } = await import(
+    const { saveAgencCredentials } = await import(
       './agencCredentials.js?save-no-plaintext-fallback'
     )
 
-    const result = saveCodexCredentials({
+    const result = saveAgencCredentials({
       accessToken: 'token',
       accountId: 'acct_123',
     })
@@ -84,7 +83,7 @@ describe('agencCredentials', () => {
     expect(result.warning).toContain('without plaintext fallback')
   })
 
-  test('refreshCodexAccessTokenIfNeeded refreshes expired stored credentials', async () => {
+  test('refreshAgencAccessTokenIfNeeded refreshes expired stored credentials', async () => {
     delete process.env.AGENC_SIMPLE
     delete process.env.AGENC_API_KEY
 
@@ -165,20 +164,20 @@ describe('agencCredentials', () => {
     ) as unknown as typeof fetch
 
     // @ts-expect-error cache-busting query string for Bun module mocks
-    const { refreshCodexAccessTokenIfNeeded, readCodexCredentials } =
+    const { refreshAgencAccessTokenIfNeeded, readAgencCredentials } =
       await import('./agencCredentials.js?refresh-success')
 
-    const result = await refreshCodexAccessTokenIfNeeded()
+    const result = await refreshAgencAccessTokenIfNeeded()
     expect(result.refreshed).toBe(true)
 
-    const stored = readCodexCredentials()
+    const stored = readAgencCredentials()
     expect(stored?.accessToken).toBe(freshAccessToken)
     expect(stored?.apiKey).toBe('agenc-api-key-token')
     expect(stored?.refreshToken).toBe('refresh-new')
     expect(stored?.accountId).toBe('acct_new')
   })
 
-  test('refreshCodexAccessTokenIfNeeded backs off after a failed refresh attempt', async () => {
+  test('refreshAgencAccessTokenIfNeeded backs off after a failed refresh attempt', async () => {
     delete process.env.AGENC_SIMPLE
     delete process.env.AGENC_API_KEY
 
@@ -226,23 +225,23 @@ describe('agencCredentials', () => {
     }) as unknown as typeof fetch
 
     // @ts-expect-error cache-busting query string for Bun module mocks
-    const { refreshCodexAccessTokenIfNeeded, readCodexCredentials } =
+    const { refreshAgencAccessTokenIfNeeded, readAgencCredentials } =
       await import('./agencCredentials.js?refresh-cooldown')
 
-    await expect(refreshCodexAccessTokenIfNeeded()).rejects.toThrow(
+    await expect(refreshAgencAccessTokenIfNeeded()).rejects.toThrow(
       'Agenc token refresh failed (invalid_grant): refresh token expired',
     )
 
-    const afterFailure = readCodexCredentials()
+    const afterFailure = readAgencCredentials()
     expect(typeof afterFailure?.lastRefreshFailureAt).toBe('number')
 
-    const secondAttempt = await refreshCodexAccessTokenIfNeeded()
+    const secondAttempt = await refreshAgencAccessTokenIfNeeded()
     expect(secondAttempt.refreshed).toBe(false)
     expect(secondAttempt.credentials?.accessToken).toBe(expiredToken)
     expect(refreshAttempts).toBe(1)
   })
 
-  test('refreshCodexAccessTokenIfNeeded drops a stale api key when id-token exchange fails', async () => {
+  test('refreshAgencAccessTokenIfNeeded drops a stale api key when id-token exchange fails', async () => {
     delete process.env.AGENC_SIMPLE
     delete process.env.AGENC_API_KEY
 
@@ -313,20 +312,20 @@ describe('agencCredentials', () => {
     ) as unknown as typeof fetch
 
     // @ts-expect-error cache-busting query string for Bun module mocks
-    const { refreshCodexAccessTokenIfNeeded, readCodexCredentials } =
+    const { refreshAgencAccessTokenIfNeeded, readAgencCredentials } =
       await import('./agencCredentials.js?refresh-drop-stale-api-key')
 
-    const result = await refreshCodexAccessTokenIfNeeded()
+    const result = await refreshAgencAccessTokenIfNeeded()
     expect(result.refreshed).toBe(true)
 
-    const stored = readCodexCredentials()
+    const stored = readAgencCredentials()
     expect(stored?.accessToken).toBe(freshAccessToken)
     expect(stored?.apiKey).toBeUndefined()
     expect(stored?.refreshToken).toBe('refresh-new')
     expect(stored?.accountId).toBe('acct_new')
   })
 
-  test('refreshCodexAccessTokenIfNeeded deduplicates concurrent refresh attempts', async () => {
+  test('refreshAgencAccessTokenIfNeeded deduplicates concurrent refresh attempts', async () => {
     delete process.env.AGENC_SIMPLE
     delete process.env.AGENC_API_KEY
 
@@ -410,12 +409,12 @@ describe('agencCredentials', () => {
     }) as unknown as typeof fetch
 
     // @ts-expect-error cache-busting query string for Bun module mocks
-    const { refreshCodexAccessTokenIfNeeded } = await import(
+    const { refreshAgencAccessTokenIfNeeded } = await import(
       './agencCredentials.js?refresh-dedupe'
     )
 
-    const firstRefresh = refreshCodexAccessTokenIfNeeded()
-    const secondRefresh = refreshCodexAccessTokenIfNeeded()
+    const firstRefresh = refreshAgencAccessTokenIfNeeded()
+    const secondRefresh = refreshAgencAccessTokenIfNeeded()
     releaseRefresh?.()
 
     const [firstResult, secondResult] = await Promise.all([
@@ -429,7 +428,7 @@ describe('agencCredentials', () => {
     expect(firstResult.credentials?.accessToken).toBe(freshAccessToken)
   })
 
-  test('saveCodexCredentials preserves an existing linked profile id', async () => {
+  test('saveAgencCredentials preserves an existing linked profile id', async () => {
     delete process.env.AGENC_SIMPLE
 
     let storageState: Record<string, unknown> = {
@@ -437,7 +436,7 @@ describe('agencCredentials', () => {
         accessToken: 'access-old',
         refreshToken: 'refresh-old',
         accountId: 'acct_old',
-        profileId: 'profile_codex_oauth',
+        profileId: 'profile_agenc_oauth',
       },
     }
 
@@ -453,21 +452,21 @@ describe('agencCredentials', () => {
     }))
 
     // @ts-expect-error cache-busting query string for Bun module mocks
-    const { readCodexCredentials, saveCodexCredentials } = await import(
+    const { readAgencCredentials, saveAgencCredentials } = await import(
       './agencCredentials.js?preserve-profile-id'
     )
 
-    const saved = saveCodexCredentials({
+    const saved = saveAgencCredentials({
       accessToken: 'access-new',
       refreshToken: 'refresh-new',
       accountId: 'acct_new',
     })
 
     expect(saved.success).toBe(true)
-    expect(readCodexCredentials()?.profileId).toBe('profile_codex_oauth')
+    expect(readAgencCredentials()?.profileId).toBe('profile_agenc_oauth')
   })
 
-  test('attachCodexProfileIdToStoredCredentials links the saved profile id', async () => {
+  test('attachAgencProfileIdToStoredCredentials links the saved profile id', async () => {
     delete process.env.AGENC_SIMPLE
 
     let storageState: Record<string, unknown> = {
@@ -491,18 +490,18 @@ describe('agencCredentials', () => {
 
     // @ts-expect-error cache-busting query string for Bun module mocks
     const {
-      attachCodexProfileIdToStoredCredentials,
-      readCodexCredentials,
+      attachAgencProfileIdToStoredCredentials,
+      readAgencCredentials,
     } = await import('./agencCredentials.js?attach-profile-id')
 
     const result =
-      attachCodexProfileIdToStoredCredentials('profile_codex_oauth')
+      attachAgencProfileIdToStoredCredentials('profile_agenc_oauth')
 
     expect(result.success).toBe(true)
-    expect(readCodexCredentials()?.profileId).toBe('profile_codex_oauth')
+    expect(readAgencCredentials()?.profileId).toBe('profile_agenc_oauth')
   })
 
-  test('refreshCodexAccessTokenIfNeeded uses async secure-storage reads in its request path', async () => {
+  test('refreshAgencAccessTokenIfNeeded uses async secure-storage reads in its request path', async () => {
     delete process.env.AGENC_SIMPLE
     delete process.env.AGENC_API_KEY
 
@@ -535,16 +534,16 @@ describe('agencCredentials', () => {
     }))
 
     // @ts-expect-error cache-busting query string for Bun module mocks
-    const { refreshCodexAccessTokenIfNeeded } = await import(
+    const { refreshAgencAccessTokenIfNeeded } = await import(
       './agencCredentials.js?refresh-async-read'
     )
 
-    const result = await refreshCodexAccessTokenIfNeeded()
+    const result = await refreshAgencAccessTokenIfNeeded()
     expect(result.refreshed).toBe(false)
     expect(result.credentials?.accessToken).toBe(freshToken)
   })
 
-  test('refreshCodexAccessTokenIfNeeded keeps a cooldown in memory when secure storage cannot persist it', async () => {
+  test('refreshAgencAccessTokenIfNeeded keeps a cooldown in memory when secure storage cannot persist it', async () => {
     delete process.env.AGENC_SIMPLE
     delete process.env.AGENC_API_KEY
 
@@ -592,15 +591,15 @@ describe('agencCredentials', () => {
     }) as unknown as typeof fetch
 
     // @ts-expect-error cache-busting query string for Bun module mocks
-    const { refreshCodexAccessTokenIfNeeded } = await import(
+    const { refreshAgencAccessTokenIfNeeded } = await import(
       './agencCredentials.js?refresh-memory-cooldown'
     )
 
-    await expect(refreshCodexAccessTokenIfNeeded()).rejects.toThrow(
+    await expect(refreshAgencAccessTokenIfNeeded()).rejects.toThrow(
       'Agenc token refresh failed (invalid_grant): refresh token expired',
     )
 
-    const secondAttempt = await refreshCodexAccessTokenIfNeeded()
+    const secondAttempt = await refreshAgencAccessTokenIfNeeded()
     expect(secondAttempt.refreshed).toBe(false)
     expect(secondAttempt.credentials?.accessToken).toBe(expiredToken)
     expect(refreshAttempts).toBe(1)

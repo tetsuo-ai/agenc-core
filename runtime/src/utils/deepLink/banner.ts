@@ -1,11 +1,10 @@
-// @ts-nocheck
 /**
  * Deep Link Origin Banner
  *
  * Builds the warning text shown when a session was opened by an external
  * agenc-cli:// deep link. Linux xdg-open and browsers with "always allow"
  * set dispatch the link with no OS-level confirmation, so the application
- * provides its own provenance signal — mirroring agenc.ai's security
+ * provides its own provenance signal — mirroring AgenC cloud security
  * interstitial for external-source prefills.
  *
  * The user must press Enter to submit; this banner primes them to read the

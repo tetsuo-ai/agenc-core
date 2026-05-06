@@ -1,5 +1,5 @@
-// @ts-nocheck
 import { AsyncLocalStorage } from 'async_hooks'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getCwdState, getOriginalCwd } from '../bootstrap/state.js'
 
 const cwdOverrideStorage = new AsyncLocalStorage<string>()

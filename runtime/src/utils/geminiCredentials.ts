@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { isBareMode, isEnvTruthy } from './envUtils.js'
 import { getGeminiAuthMode } from './geminiAuth.js'
 import { getSecureStorage } from './secureStorage/index.js'

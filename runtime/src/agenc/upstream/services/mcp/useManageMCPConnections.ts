@@ -53,7 +53,7 @@ import type { AppState } from '../../../../tui/state/AppState.js'
 import type { PluginError } from 'src/types/plugin.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { getAllowedChannels } from '../../bootstrap/state.js'
-import { useNotifications } from '../../context/notifications.js'
+import { useNotifications } from '../../../../tui/context/notifications'
 import {
   useAppState,
   useAppStateStore,

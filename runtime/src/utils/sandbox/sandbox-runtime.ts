@@ -1,4 +1,5 @@
 // @ts-nocheck
+// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
 /**
  * Adapter layer that wraps @anthropic-ai/sandbox-runtime with AgenC CLI-specific integrations.
  * This file provides the bridge between the external sandbox-runtime package and AgenC CLI's
@@ -394,13 +395,13 @@ let settingsSubscriptionCleanup: (() => void) | undefined
 let worktreeMainRepoPath: string | null | undefined
 
 // Bare-repo files at cwd that didn't exist at config time and should be
-// scrubbed if they appear after a sandboxed command. See anthropics/agenc-code#29316.
+// scrubbed if they appear after a sandboxed command. See tetsuo-ai/agenc-core#29316.
 const bareGitRepoScrubPaths: string[] = []
 
 /**
  * Delete bare-repo files planted at cwd during a sandboxed command, before
  * AgenC's unsandboxed git calls can see them. See the SECURITY block above
- * bareGitRepoFiles. anthropics/agenc-code#29316.
+ * bareGitRepoFiles. tetsuo-ai/agenc-core#29316.
  */
 function scrubBareGitRepoFiles(): void {
   for (const p of bareGitRepoScrubPaths) {

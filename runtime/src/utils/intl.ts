@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Shared Intl object instances with lazy initialization.
  *

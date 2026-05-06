@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { feature } from 'bun:bundle'
 
 export const AGENC_20250219_BETA_HEADER = 'agenc-code-20250219'

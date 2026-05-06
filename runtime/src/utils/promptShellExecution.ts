@@ -1,6 +1,7 @@
-// @ts-nocheck
 import { randomUUID } from 'crypto'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import type { Tool, ToolUseContext } from '../tools/Tool.js'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { BashTool } from '../tools/BashTool/BashTool.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage, MalformedCommandError, ShellError } from './errors.js'
@@ -42,6 +43,7 @@ const getPowerShellTool = (() => {
   return (): PromptShellTool => {
     if (!cached) {
       cached = (
+        // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
         require('../tools/PowerShellTool/PowerShellTool.js') as typeof import('../tools/PowerShellTool/PowerShellTool.js')
       ).PowerShellTool
     }

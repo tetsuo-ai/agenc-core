@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { getSettingsForSource } from '../settings/settings.js'
 
 /**

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { AgentColorName } from 'src/tools/AgentTool/agentColorManager.js'
 import { AGENT_COLORS } from 'src/tools/AgentTool/agentColorManager.js'
 import { detectAndGetBackend } from './backends/registry.js'

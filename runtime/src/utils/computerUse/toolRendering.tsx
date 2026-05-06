@@ -1,4 +1,3 @@
-// @ts-nocheck
 import * as React from 'react';
 import { MessageResponse } from '../../tui/components/MessageResponse.js';
 import { Text } from '../../tui/ink.js';

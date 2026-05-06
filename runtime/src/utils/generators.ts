@@ -1,4 +1,3 @@
-// @ts-nocheck
 const NO_VALUE = Symbol('NO_VALUE')
 
 export async function lastX<A>(as: AsyncGenerator<A>): Promise<A> {

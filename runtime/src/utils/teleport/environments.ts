@@ -1,6 +1,6 @@
-// @ts-nocheck
 import axios from 'axios'
 import { getOauthConfig } from 'src/constants/oauth.js'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getOrganizationUUID } from 'src/services/oauth/client.js'
 import { getAgenCAIOAuthTokens } from '../auth.js'
 import { toError } from '../errors.js'

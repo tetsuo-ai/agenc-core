@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { isAgenCAISubscriber } from './auth.js'
 import { has1mContext } from './context.js'
 

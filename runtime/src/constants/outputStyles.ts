@@ -1,6 +1,6 @@
-// @ts-nocheck
 import figures from 'figures'
 import memoize from 'lodash-es/memoize.js'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getOutputStyleDirStyles } from '../outputStyles/loadOutputStylesDir.js'
 import type { OutputStyle } from '../utils/config.js'
 import { getCwd } from '../utils/cwd.js'
@@ -147,12 +147,15 @@ export const getAllOutputStyles = memoize(async function getAllOutputStyles(
   }
 
   const managedStyles = customStyles.filter(
+    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
     style => style.source === 'policySettings',
   )
   const userStyles = customStyles.filter(
+    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
     style => style.source === 'userSettings',
   )
   const projectStyles = customStyles.filter(
+    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
     style => style.source === 'projectSettings',
   )
 

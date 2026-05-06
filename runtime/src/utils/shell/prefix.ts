@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Shared command prefix extraction using Haiku LLM
  *
@@ -10,12 +9,15 @@
 
 import chalk from 'chalk'
 import type { QuerySource } from '../../constants/querySource.js'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 } from '../../services/analytics/index.js'
-import { queryHaiku } from '../../services/api/agenc.js'
+import { queryHaiku } from '../../agenc/upstream/services/api/claude.js' // branding-scan: allow upstream provider module path pending purge // upstream-import: keep API service target is owned by a later purge item
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { startsWithApiErrorPrefix } from '../../services/api/errors.js'
 import { memoizeWithLRU } from '../memoize.js'
 import { jsonStringify } from '../slowOperations.js'
@@ -250,6 +252,7 @@ async function getCommandPrefixImpl(
       typeof response.message.content === 'string'
         ? response.message.content
         : Array.isArray(response.message.content)
+          // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
           ? (response.message.content.find(_ => _.type === 'text')?.text ??
             'none')
           : 'none'

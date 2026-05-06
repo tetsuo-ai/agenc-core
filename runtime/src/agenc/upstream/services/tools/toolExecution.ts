@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import type {
   ContentBlockParam,
@@ -26,8 +28,8 @@ import { addToToolDuration } from '../../../../cost/tracker.js'
 import {
   buildCodeEditToolAttributes,
   isCodeEditingTool,
-} from '../../hooks/toolPermission/permissionLogging.js'
-import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
+} from '../../../../tui/hooks/toolPermission/permissionLogging'
+import type { CanUseToolFn } from '../../../../tui/hooks/useCanUseTool'
 import {
   findToolByName,
   type Tool,

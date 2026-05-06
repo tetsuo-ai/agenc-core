@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Tagged ID encoding compatible with the API's tagged_id.py format.
  *

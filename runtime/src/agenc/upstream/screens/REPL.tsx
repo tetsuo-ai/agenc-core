@@ -10,20 +10,20 @@ import { tmpdir } from 'os';
 import figures from 'figures';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- / n N Esc [ v are bare letters in transcript modal context, same class as g/G/j/k in ScrollKeybindingHandler
 import { useInput } from '../../../tui/ink.js';
-import { useSearchInput } from '../hooks/useSearchInput.js';
-import { useTerminalSize } from '../hooks/useTerminalSize.js';
+import { useSearchInput } from '../../../tui/hooks/useSearchInput';
+import { useTerminalSize } from '../../../tui/hooks/useTerminalSize';
 import { useSearchHighlight } from '../../../tui/ink/hooks/use-search-highlight.js';
-import type { JumpHandle } from '../components/VirtualMessageList.js';
+import type { JumpHandle } from '../../../tui/components/VirtualMessageList';
 import { renderMessagesToPlainText } from '../../../utils/exportRenderer.js';
 import { openFileInExternalEditor } from '../../../utils/editor.js';
 import { writeFile } from 'fs/promises';
 import { Box, Text, useStdin, useTheme, useTerminalFocus, useTerminalTitle, useTabStatus } from '../../../tui/ink.js';
 import type { TabStatusKind } from '../../../tui/ink/hooks/use-tab-status.js';
 import { CostThresholdDialog } from '../../../tui/components/dialogs/CostThresholdDialog.js';
-import { IdleReturnDialog } from '../components/IdleReturnDialog.js';
+import { IdleReturnDialog } from '../../../tui/components/IdleReturnDialog';
 import * as React from 'react';
 import { useEffect, useMemo, useRef, useState, useCallback, useDeferredValue, useLayoutEffect, type RefObject } from 'react';
-import { useNotifications } from '../context/notifications.js';
+import { useNotifications } from '../../../tui/context/notifications';
 import { sendNotification } from '../services/notifier.js';
 import { startPreventSleep, stopPreventSleep } from '../services/preventSleep.js';
 import { useTerminalNotification } from '../../../tui/ink/useTerminalNotification.js';
@@ -38,33 +38,33 @@ import { formatTokens, truncateToWidth } from '../../../utils/format.js';
 import { consumeEarlyInput } from '../../../utils/earlyInput.js';
 import { setMemberActive } from '../../../utils/swarm/teamHelpers.js';
 import { isSwarmWorker, generateSandboxRequestId, sendSandboxPermissionRequestViaMailbox, sendSandboxPermissionResponseViaMailbox } from '../../../utils/swarm/permissionSync.js';
-import { registerSandboxPermissionCallback } from '../hooks/useSwarmPermissionPoller.js';
+import { registerSandboxPermissionCallback } from '../../../tui/hooks/useSwarmPermissionPoller';
 import { getTeamName, getAgentName } from '../../../utils/teammate.js';
-import { WorkerPendingPermission } from '../components/permissions/WorkerPendingPermission.js';
+import { WorkerPendingPermission } from '../../../tui/components/permissions/WorkerPendingPermission';
 import { injectUserMessageToTeammate, getAllInProcessTeammateTasks } from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js';
 import { isLocalAgentTask, queuePendingMessage, appendMessageToLocalAgent, type LocalAgentTaskState } from '../tasks/LocalAgentTask/LocalAgentTask.js';
 import { registerLeaderToolUseConfirmQueue, unregisterLeaderToolUseConfirmQueue, registerLeaderSetToolPermissionContext, unregisterLeaderSetToolPermissionContext } from '../../../utils/swarm/leaderPermissionBridge.js';
 import { endInteractionSpan } from '../../../utils/telemetry/sessionTracing.js';
-import { useLogMessages } from '../hooks/useLogMessages.js';
-import { useReplBridge } from '../hooks/useReplBridge.js';
+import { useLogMessages } from '../../../tui/hooks/useLogMessages';
+import { useReplBridge } from '../../../tui/hooks/useReplBridge';
 import { type Command, type CommandResultDisplay, type ResumeEntrypoint, getCommandName, isCommandEnabled } from '../../../commands.js';
 import type { PromptInputMode, QueuedCommand, VimMode } from '../types/textInputTypes.js';
-import { MessageSelector, selectableUserMessagesFilter, messagesAfterAreOnlySynthetic } from '../components/MessageSelector.js';
-import { useIdeLogging } from '../hooks/useIdeLogging.js';
+import { MessageSelector, selectableUserMessagesFilter, messagesAfterAreOnlySynthetic } from '../../../tui/components/MessageSelector';
+import { useIdeLogging } from '../../../tui/hooks/useIdeLogging';
 import { PermissionRequest, type ToolUseConfirm } from '../../../tui/components/permissions/PermissionRequest.js';
-import { ElicitationDialog } from '../components/mcp/ElicitationDialog.js';
-import { PromptDialog } from '../components/hooks/PromptDialog.js';
+import { ElicitationDialog } from '../../../tui/components/mcp/ElicitationDialog';
+import { PromptDialog } from '../../../tui/components/hooks/PromptDialog';
 import type { PromptRequest, PromptResponse } from '../types/hooks.js';
 import PromptInput from '../../../tui/components/PromptInput/PromptInput.js';
 import { PromptInputQueuedCommands } from '../../../tui/components/PromptInput/PromptInputQueuedCommands.js';
-import { useRemoteSession } from '../hooks/useRemoteSession.js';
-import { useDirectConnect } from '../hooks/useDirectConnect.js';
+import { useRemoteSession } from '../../../tui/hooks/useRemoteSession';
+import { useDirectConnect } from '../../../tui/hooks/useDirectConnect';
 import type { DirectConnectConfig } from '../server/directConnectManager.js';
-import { useSSHSession } from '../hooks/useSSHSession.js';
-import { useAssistantHistory } from '../hooks/useAssistantHistory.js';
+import { useSSHSession } from '../../../tui/hooks/useSSHSession';
+import { useAssistantHistory } from '../../../tui/hooks/useAssistantHistory';
 import type { SSHSession } from '../ssh/createSSHSession.js';
-import { SkillImprovementSurvey } from '../components/SkillImprovementSurvey.js';
-import { useSkillImprovementSurvey } from '../hooks/useSkillImprovementSurvey.js';
+import { SkillImprovementSurvey } from '../../../tui/components/SkillImprovementSurvey';
+import { useSkillImprovementSurvey } from '../../../tui/hooks/useSkillImprovementSurvey';
 import { useMoreRight } from '../moreright/useMoreRight.js';
 import { SpinnerWithVerb, BriefIdleStatus, type SpinnerMode } from '../../../tui/components/spinner/Spinner.js';
 import { getSystemPrompt } from '../../../constants/prompts.js';
@@ -74,22 +74,22 @@ import { getMemoryFiles } from '../../../utils/agencmd.js'; // branding-scan: al
 import { startBackgroundHousekeeping } from '../../../utils/backgroundHousekeeping.js';
 import { getTotalCost, saveCurrentSessionCosts, resetCostState, restoreCostStateForSession, bindCacheStatsResetHook, setActiveCostSessionId } from '../../../cost/tracker.js';
 import { useCostSummary } from '../../../cost/hook.js';
-import { useFpsMetrics } from '../context/fpsMetrics.js';
-import { useAfterFirstRender } from '../hooks/useAfterFirstRender.js';
-import { useDeferredHookMessages } from '../hooks/useDeferredHookMessages.js';
+import { useFpsMetrics } from '../../../tui/context/fpsMetrics';
+import { useAfterFirstRender } from '../../../tui/hooks/useAfterFirstRender';
+import { useDeferredHookMessages } from '../../../tui/hooks/useDeferredHookMessages';
 import { addToHistory, removeLastFromHistory, expandPastedTextRefs, parseReferences } from '../../../tui/history/history.js';
 import { prependModeCharacterToInput } from '../../../tui/components/PromptInput/inputModes.js';
 import { prependToShellHistoryCache } from '../../../utils/suggestions/shellHistoryCompletion.js';
-import { useApiKeyVerification } from '../hooks/useApiKeyVerification.js';
-import { GlobalKeybindingHandlers } from '../hooks/useGlobalKeybindings.js';
-import { CommandKeybindingHandlers } from '../hooks/useCommandKeybindings.js';
+import { useApiKeyVerification } from '../../../tui/hooks/useApiKeyVerification';
+import { GlobalKeybindingHandlers } from '../../../tui/hooks/useGlobalKeybindings';
+import { CommandKeybindingHandlers } from '../../../tui/hooks/useCommandKeybindings';
 import { KeybindingSetup } from '../../../tui/keybindings/KeybindingProviderSetup.js';
 import { useShortcutDisplay } from '../../../tui/keybindings/useShortcutDisplay.js';
 import { getShortcutDisplay } from '../../../tui/keybindings/shortcutFormat.js';
-import { CancelRequestHandler } from '../hooks/useCancelRequest.js';
-import { useBackgroundTaskNavigation } from '../hooks/useBackgroundTaskNavigation.js';
-import { useSwarmInitialization } from '../hooks/useSwarmInitialization.js';
-import { useTeammateViewAutoExit } from '../hooks/useTeammateViewAutoExit.js';
+import { CancelRequestHandler } from '../../../tui/hooks/useCancelRequest';
+import { useBackgroundTaskNavigation } from '../../../tui/hooks/useBackgroundTaskNavigation';
+import { useSwarmInitialization } from '../../../tui/hooks/useSwarmInitialization';
+import { useTeammateViewAutoExit } from '../../../tui/hooks/useTeammateViewAutoExit';
 import { errorMessage } from '../../../utils/errors.js';
 import { isHumanTurn } from '../../../utils/messagePredicates.js';
 import { logError } from '../../../utils/log.js';
@@ -98,13 +98,13 @@ import { logError } from '../../../utils/log.js';
 // Frustration detection is internal-only (dogfooding). Conditional require so external
 // builds eliminate the module entirely (including its two O(n) useMemos that run
 // on every messages change, plus the GrowthBook fetch).
-const useFrustrationDetection: typeof import('../components/FeedbackSurvey/useFrustrationDetection.js').useFrustrationDetection = "external" === 'ant' ? require('../components/FeedbackSurvey/useFrustrationDetection.js').useFrustrationDetection : () => ({
+const useFrustrationDetection: typeof import('../../../tui/components/FeedbackSurvey/useFrustrationDetection').useFrustrationDetection = "external" === 'ant' ? require('../../../tui/components/FeedbackSurvey/useFrustrationDetection').useFrustrationDetection : () => ({
   state: 'closed',
   handleTranscriptSelect: () => { }
 });
 // Ant-only org warning. Conditional require so the org UUID list is
 // eliminated from external builds (one UUID is on excluded-strings).
-const useAntOrgWarningNotification: typeof import('../hooks/notifs/useAntOrgWarningNotification.js').useAntOrgWarningNotification = "external" === 'ant' ? require('../hooks/notifs/useAntOrgWarningNotification.js').useAntOrgWarningNotification : () => { };
+const useAntOrgWarningNotification: typeof import('../../../tui/hooks/notifs/useAntOrgWarningNotification').useAntOrgWarningNotification = "external" === 'ant' ? require('../../../tui/hooks/notifs/useAntOrgWarningNotification').useAntOrgWarningNotification : () => { };
 // Dead code elimination: conditional import for coordinator mode
 const getCoordinatorUserContext: (mcpClients: ReadonlyArray<{
   name: string;
@@ -112,10 +112,10 @@ const getCoordinatorUserContext: (mcpClients: ReadonlyArray<{
   [k: string]: string;
 } = feature('COORDINATOR_MODE') ? require('../coordinator/coordinatorMode.js').getCoordinatorUserContext : () => ({});
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
-import useCanUseTool from '../hooks/useCanUseTool.js';
+import useCanUseTool from '../../../tui/hooks/useCanUseTool';
 import type { ToolPermissionContext, Tool } from '../Tool.js';
 import { applyPermissionUpdate, applyPermissionUpdates, persistPermissionUpdate } from '../../../utils/permissions/PermissionUpdate.js';
-import { buildPermissionUpdates } from '../components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.js';
+import { buildPermissionUpdates } from '../../../tui/components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest';
 import { stripDangerousPermissionsForAutoMode } from '../../../utils/permissions/permissionSetup.js';
 import { getScratchpadDir, isScratchpadEnabled } from '../../../utils/permissions/filesystem.js';
 import { WEB_FETCH_TOOL_NAME } from '../tools/WebFetchTool/prompt.js';
@@ -136,34 +136,34 @@ import { escapeXml } from '../../../utils/xml.js';
 import type { ThinkingConfig } from '../../../utils/thinking.js';
 import { gracefulShutdownSync, isShuttingDown } from '../../../utils/gracefulShutdown.js';
 import { handlePromptSubmit, type PromptInputHelpers } from '../../../utils/handlePromptSubmit.js';
-import { useQueueProcessor } from '../hooks/useQueueProcessor.js';
-import { useMailboxBridge } from '../hooks/useMailboxBridge.js';
+import { useQueueProcessor } from '../../../tui/hooks/useQueueProcessor';
+import { useMailboxBridge } from '../../../tui/hooks/useMailboxBridge';
 import { queryCheckpoint, logQueryProfileReport } from '../../../utils/queryProfiler.js';
 import type { Message as MessageType, UserMessage, ProgressMessage, HookResultMessage, PartialCompactDirection } from '../types/message.js';
 import { query } from '../query.js';
-import { mergeClients, useMergedClients } from '../hooks/useMergedClients.js';
+import { mergeClients, useMergedClients } from '../../../tui/hooks/useMergedClients';
 import { getQuerySourceForREPL } from '../../../utils/promptCategory.js';
-import { useMergedTools } from '../hooks/useMergedTools.js';
+import { useMergedTools } from '../../../tui/hooks/useMergedTools';
 import { mergeAndFilterTools } from '../../../utils/toolPool.js';
-import { useMergedCommands } from '../hooks/useMergedCommands.js';
-import { useSkillsChange } from '../hooks/useSkillsChange.js';
-import { useManagePlugins } from '../hooks/useManagePlugins.js';
+import { useMergedCommands } from '../../../tui/hooks/useMergedCommands';
+import { useSkillsChange } from '../../../tui/hooks/useSkillsChange';
+import { useManagePlugins } from '../../../tui/hooks/useManagePlugins';
 import { Messages } from '../../../tui/components/Messages.js';
-import { TaskListV2 } from '../components/TaskListV2.js';
-import { TeammateViewHeader } from '../components/TeammateViewHeader.js';
-import { useTasksV2WithCollapseEffect } from '../hooks/useTasksV2.js';
+import { TaskListV2 } from '../../../tui/components/TaskListV2';
+import { TeammateViewHeader } from '../../../tui/components/TeammateViewHeader';
+import { useTasksV2WithCollapseEffect } from '../../../tui/hooks/useTasksV2';
 import { maybeMarkProjectOnboardingComplete } from '../projectOnboardingState.js';
 import type { MCPServerConnection } from '../services/mcp/types.js';
 import type { ScopedMcpServerConfig } from '../services/mcp/types.js';
 import { randomUUID, type UUID } from 'crypto';
 import { processSessionStartHooks } from '../../../utils/sessionStart.js';
 import { executeSessionEndHooks, getSessionEndHookTimeoutMs } from '../../../utils/hooks.js';
-import { type IDESelection, useIdeSelection } from '../hooks/useIdeSelection.js';
+import { type IDESelection, useIdeSelection } from '../../../tui/hooks/useIdeSelection';
 import { getTools, assembleToolPool } from '../tools.js';
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js';
 import { resolveAgentTools } from '../tools/AgentTool/agentToolUtils.js';
 import { resumeAgentBackground } from '../tools/AgentTool/resumeAgent.js';
-import { useMainLoopModel } from '../hooks/useMainLoopModel.js';
+import { useMainLoopModel } from '../../../tui/hooks/useMainLoopModel';
 import { useAppState, useSetAppState, useAppStateStore } from '../../../tui/state/AppState.js';
 import type { ContentBlockParam, ImageBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
 import type { ProcessUserInputContext } from '../../../tui/input/processUserInput.js';
@@ -185,7 +185,7 @@ import { computeStandaloneAgentContext, restoreAgentFromSession, restoreSessionS
 import { isBgSession, updateSessionName, updateSessionActivity } from '../../../utils/concurrentSessions.js';
 import { isInProcessTeammateTask, type InProcessTeammateTaskState } from '../tasks/InProcessTeammateTask/types.js';
 import { restoreRemoteAgentTasks } from '../tasks/RemoteAgentTask/RemoteAgentTask.js';
-import { useInboxPoller } from '../hooks/useInboxPoller.js';
+import { useInboxPoller } from '../../../tui/hooks/useInboxPoller';
 bindCacheStatsResetHook(resetSessionCacheStats);
 /* eslint-disable @typescript-eslint/no-require-imports */
 const proactiveModule = feature('PROACTIVE') || feature('KAIROS') ? require('../proactive/index.js') : null;
@@ -193,32 +193,32 @@ const PROACTIVE_NO_OP_SUBSCRIBE = (_cb: () => void) => () => { };
 const PROACTIVE_FALSE = () => false;
 const SUGGEST_BG_PR_NOOP = (_p: string, _n: string): boolean => false;
 const useProactive = feature('PROACTIVE') || feature('KAIROS') ? require('../proactive/useProactive.js').useProactive : null;
-const useScheduledTasks = require('../hooks/useScheduledTasks.js').useScheduledTasks;
+const useScheduledTasks = require('../../../tui/hooks/useScheduledTasks').useScheduledTasks;
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { isAgentSwarmsEnabled } from '../../../utils/agentSwarmsEnabled.js';
-import { useTaskListWatcher } from '../hooks/useTaskListWatcher.js';
+import { useTaskListWatcher } from '../../../tui/hooks/useTaskListWatcher';
 import type { SandboxAskCallback, NetworkHostPattern } from '../../../utils/sandbox/sandbox-runtime.js';
 import { type IDEExtensionInstallationStatus, closeOpenDiffs, getConnectedIdeClient, type IdeType } from '../../../utils/ide.js';
-import { useIDEIntegration } from '../hooks/useIDEIntegration.js';
+import { useIDEIntegration } from '../../../tui/hooks/useIDEIntegration';
 import exit from '../commands/exit/index.js';
-import { ExitFlow } from '../components/ExitFlow.js';
+import { ExitFlow } from '../../../tui/components/ExitFlow';
 import { getCurrentWorktreeSession } from '../../../utils/worktree.js';
 import { popAllEditable, enqueue, type SetAppState, getCommandQueue, getCommandQueueLength, removeByFilter } from '../../../utils/messageQueueManager.js';
-import { useCommandQueue } from '../hooks/useCommandQueue.js';
-import { SessionBackgroundHint } from '../components/SessionBackgroundHint.js';
+import { useCommandQueue } from '../../../tui/hooks/useCommandQueue';
+import { SessionBackgroundHint } from '../../../tui/components/SessionBackgroundHint';
 import { startBackgroundSession } from '../tasks/LocalMainSessionTask.js';
-import { useSessionBackgrounding } from '../hooks/useSessionBackgrounding.js';
+import { useSessionBackgrounding } from '../../../tui/hooks/useSessionBackgrounding';
 import { diagnosticTracker } from '../services/diagnosticTracking.js';
 import { handleSpeculationAccept, type ActiveSpeculationState } from '../../../services/PromptSuggestion/speculation.js';
-import { IdeOnboardingDialog } from '../components/IdeOnboardingDialog.js';
-import { EffortCallout, shouldShowEffortCallout } from '../components/EffortCallout.js';
+import { IdeOnboardingDialog } from '../../../tui/components/IdeOnboardingDialog';
+import { EffortCallout, shouldShowEffortCallout } from '../../../tui/components/EffortCallout';
 import type { EffortValue } from '../../../utils/effort.js';
-import { RemoteCallout } from '../components/RemoteCallout.js';
+import { RemoteCallout } from '../../../tui/components/RemoteCallout';
 import { getAPIProvider } from '../../../utils/model/providers.js';
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
-const AntModelSwitchCallout = "external" === 'ant' ? require('../components/AntModelSwitchCallout.js').AntModelSwitchCallout : null;
-const shouldShowAntModelSwitch = "external" === 'ant' ? require('../components/AntModelSwitchCallout.js').shouldShowModelSwitchCallout : (): boolean => false;
-const UndercoverAutoCallout = "external" === 'ant' ? require('../components/UndercoverAutoCallout.js').UndercoverAutoCallout : null;
+const AntModelSwitchCallout = "external" === 'ant' ? require('../../../tui/components/AntModelSwitchCallout').AntModelSwitchCallout : null;
+const shouldShowAntModelSwitch = "external" === 'ant' ? require('../../../tui/components/AntModelSwitchCallout').shouldShowModelSwitchCallout : (): boolean => false;
+const UndercoverAutoCallout = "external" === 'ant' ? require('../../../tui/components/UndercoverAutoCallout').UndercoverAutoCallout : null;
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 import { activityManager } from '../../../utils/activityManager.js';
 import { createAbortController } from '../../../utils/abortController.js';
@@ -237,7 +237,7 @@ import type { Theme } from 'src/utils/theme.js';
 import { isPromptTypingSuppressionActive } from './replInputSuppression.js';
 import { shouldRunStartupChecks } from './replStartupGates.js';
 import { checkAndDisableBypassPermissionsIfNeeded, checkAndDisableAutoModeIfNeeded, useKickOffCheckAndDisableBypassPermissionsIfNeeded, useKickOffCheckAndDisableAutoModeIfNeeded } from 'src/utils/permissions/bypassPermissionsKillswitch.js';
-import { SandboxManager } from 'src/utils/sandbox/sandbox-runtime.js';
+import { SandboxManager } from 'src/utils/sandbox/sandbox-adapter.js';
 import { SANDBOX_NETWORK_ACCESS_TOOL_NAME } from 'src/cli/structuredIO.js';
 import { useFileHistorySnapshotInit } from 'src/hooks/useFileHistorySnapshotInit.js';
 import { SandboxPermissionRequest } from 'src/components/permissions/SandboxPermissionRequest.js';
@@ -256,7 +256,7 @@ import { usePluginInstallationStatus } from 'src/hooks/notifs/usePluginInstallat
 import { usePluginAutoupdateNotification } from 'src/hooks/notifs/usePluginAutoupdateNotification.js';
 import { performStartupChecks } from 'src/plugins/marketplace/startup_checks.js';
 import { UserTextMessage } from 'src/components/messages/UserTextMessage.js';
-import { AwsAuthStatusBox } from '../components/AwsAuthStatusBox.js';
+import { AwsAuthStatusBox } from '../../../tui/components/AwsAuthStatusBox';
 import { useRateLimitWarningNotification } from 'src/hooks/notifs/useRateLimitWarningNotification.js';
 import { useDeprecationWarningNotification } from 'src/hooks/notifs/useDeprecationWarningNotification.js';
 import { useNpmDeprecationNotification } from 'src/hooks/notifs/useNpmDeprecationNotification.js';
@@ -272,20 +272,20 @@ import { TungstenLiveMonitor } from '../tools/TungstenTool/TungstenLiveMonitor.j
 const WebBrowserPanelModule = feature('WEB_BROWSER_TOOL') ? require('../tools/WebBrowserTool/WebBrowserPanel.js') as typeof import('../tools/WebBrowserTool/WebBrowserPanel.js') : null;
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { IssueFlagBanner } from '../../../tui/components/PromptInput/IssueFlagBanner.js';
-import { useIssueFlagBanner } from '../hooks/useIssueFlagBanner.js';
+import { useIssueFlagBanner } from '../../../tui/hooks/useIssueFlagBanner';
 import { CompanionSprite, CompanionFloatingBubble, MIN_COLS_FOR_FULL_SPRITE } from '../buddy/CompanionSprite.js';
 import { isBuddyEnabled } from '../buddy/feature.js';
 import { fireCompanionObserver } from '../buddy/observer.js';
-import { DevBar } from '../components/DevBar.js';
+import { DevBar } from '../../../tui/components/DevBar';
 // Session manager removed - using AppState now
 import type { RemoteSessionConfig } from '../remote/RemoteSessionManager.js';
 import { REMOTE_SAFE_COMMANDS } from '../../../commands.js';
 import type { RemoteMessageContent } from '../../../utils/teleport/api.js';
-import { FullscreenLayout, useUnseenDivider, computeUnseenDivider } from '../components/FullscreenLayout.js';
+import { FullscreenLayout, useUnseenDivider, computeUnseenDivider } from '../../../tui/components/FullscreenLayout';
 import { isFullscreenEnvEnabled, maybeGetTmuxMouseHint, isMouseTrackingEnabled } from '../../../utils/fullscreen.js';
 import { AlternateScreen } from '../../../tui/ink/components/AlternateScreen.js';
-import { ScrollKeybindingHandler } from '../components/ScrollKeybindingHandler.js';
-import { useMessageActions, MessageActionsKeybindings, MessageActionsBar, type MessageActionsState, type MessageActionsNav, type MessageActionCaps } from '../components/messageActions.js';
+import { ScrollKeybindingHandler } from '../../../tui/components/ScrollKeybindingHandler';
+import { useMessageActions, MessageActionsKeybindings, MessageActionsBar, type MessageActionsState, type MessageActionsNav, type MessageActionCaps } from '../../../tui/components/messageActions';
 import { setClipboard } from '../../../tui/ink/termio/osc.js';
 import type { ScrollBoxHandle } from '../../../tui/ink/components/ScrollBox.js';
 import { createAttachmentMessage, getQueuedCommandAttachments } from '../../../utils/attachments.js';
@@ -2515,8 +2515,8 @@ export function REPL({
       onCompactProgress: event => {
         switch (event.type) {
           case 'hooks_start':
-            setSpinnerColor('agencBlue_FOR_SYSTEM_SPINNER');
-            setSpinnerShimmerColor('agencBlueShimmer_FOR_SYSTEM_SPINNER');
+            setSpinnerColor('claudeBlue_FOR_SYSTEM_SPINNER');
+            setSpinnerShimmerColor('claudeBlueShimmer_FOR_SYSTEM_SPINNER');
             setSpinnerMessage(event.hookType === 'pre_compact' ? 'Running PreCompact hooks\u2026' : event.hookType === 'post_compact' ? 'Running PostCompact hooks\u2026' : 'Running SessionStart hooks\u2026');
             break;
           case 'compact_start':

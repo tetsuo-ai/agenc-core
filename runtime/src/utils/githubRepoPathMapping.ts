@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { realpath } from 'fs/promises'
 import { getOriginalCwd } from '../bootstrap/state.js'
 import { getGlobalConfig, saveGlobalConfig } from './config.js'

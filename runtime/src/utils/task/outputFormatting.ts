@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { validateBoundedIntEnvVar } from '../envValidation.js'
 import { getTaskOutputPath } from './diskOutput.js'
 

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Git bundle creation + upload for CCR seed-bundle seeding.
  *
@@ -14,8 +13,11 @@ import { stat, unlink } from 'fs/promises'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 } from 'src/services/analytics/index.js'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { type FilesApiConfig, uploadFile } from '../../services/api/filesApi.js'
 import { getCwd } from '../cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -141,7 +143,7 @@ async function _bundleWithFallback(
   return {
     ok: false,
     error:
-      'Repo is too large to bundle. Please setup GitHub on https://agenc.ai/code',
+      'Repo is too large to bundle. Please setup GitHub on https://agenc.tech/code',
     failReason: 'too_large',
   }
 }

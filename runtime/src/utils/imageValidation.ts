@@ -1,5 +1,5 @@
-// @ts-nocheck
 import { API_IMAGE_MAX_BASE64_SIZE } from '../constants/apiLimits.js'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { logEvent } from '../services/analytics/index.js'
 import { formatFileSize } from './format.js'
 

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import envPaths from 'env-paths'
 import { join } from 'path'
 import { getFsImplementation } from './fsOperations.js'

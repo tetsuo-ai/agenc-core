@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { describe, expect, it, beforeEach, afterEach, vi } from 'bun:test'
 import { isModelCacheValid, getCachedModelsFromDisk, saveModelsToCache } from './modelCache.js'
 

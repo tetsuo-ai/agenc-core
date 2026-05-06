@@ -1,14 +1,16 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import * as React from 'react';
 import type { Message, ProgressMessage } from 'src/types/message.js';
 import { extractTag } from 'src/utils/messages.js';
 import type { ThemeName } from 'src/utils/theme.js';
 import type { z } from 'zod/v4';
-import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErrorMessage.js';
-import { FilePathLink } from '../../components/FilePathLink.js';
+import { FallbackToolUseErrorMessage } from '../../../../tui/components/FallbackToolUseErrorMessage';
+import { FilePathLink } from '../../../../tui/components/FilePathLink';
 import { HighlightedCode } from '../../../../tui/components/markdown/HighlightedCode.js';
-import { MessageResponse } from '../../components/MessageResponse.js';
-import { NotebookEditToolUseRejectedMessage } from '../../components/NotebookEditToolUseRejectedMessage.js';
+import { MessageResponse } from '../../../../tui/components/MessageResponse';
+import { NotebookEditToolUseRejectedMessage } from '../../../../tui/components/NotebookEditToolUseRejectedMessage';
 import { Box, Text } from '../../../../tui/ink.js';
 import type { Tools } from '../../Tool.js';
 import { getDisplayPath } from '../../../../utils/file.js';

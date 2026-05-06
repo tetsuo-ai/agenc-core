@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { isEnvTruthy } from 'src/utils/envUtils.js'
 
 // Default to prod config, override with test/staging if enabled
@@ -42,7 +41,7 @@ export const CONSOLE_OAUTH_SCOPES = [
   AGENC_AI_PROFILE_SCOPE,
 ] as const
 
-// AgenC.ai OAuth scopes - for AgenC.ai subscribers (Pro/Max/Team/Enterprise)
+// AgenC cloud OAuth scopes - for AgenC subscribers (Pro/Max/Team/Enterprise)
 export const AGENC_AI_OAUTH_SCOPES = [
   AGENC_AI_PROFILE_SCOPE,
   AGENC_AI_INFERENCE_SCOPE,
@@ -51,8 +50,9 @@ export const AGENC_AI_OAUTH_SCOPES = [
   'user:file_upload',
 ] as const
 
-// All OAuth scopes - union of all scopes used in AgenC CLI
-// When logging in, request all scopes in order to handle both Console -> AgenC.ai redirect
+// All OAuth scopes - union of all scopes used in AgenC CLI.
+// When logging in, request all scopes in order to handle both Console and
+// AgenC cloud redirects.
 // Ensure that `OAuthConsentPage` in apps repo is kept in sync with this list.
 export const ALL_OAUTH_SCOPES = Array.from(
   new Set([...CONSOLE_OAUTH_SCOPES, ...AGENC_AI_OAUTH_SCOPES]),
@@ -63,10 +63,9 @@ type OauthConfig = {
   CONSOLE_AUTHORIZE_URL: string
   AGENC_AI_AUTHORIZE_URL: string
   /**
-   * The agenc.ai web origin. Separate from AGENC_AI_AUTHORIZE_URL because
-   * that now routes through agenc.com/cai/* for attribution — deriving
-   * .origin from it would give agenc.com, breaking links to /code,
-   * /settings/connectors, and other agenc.ai web pages.
+   * The AgenC cloud web origin. Separate from AGENC_AI_AUTHORIZE_URL so
+   * attribution redirects do not break links to /code, /settings/connectors,
+   * and other web pages.
    */
   AGENC_AI_ORIGIN: string
   TOKEN_URL: string
@@ -84,19 +83,18 @@ type OauthConfig = {
 // Production OAuth configuration - Used in normal operation
 const PROD_OAUTH_CONFIG = {
   BASE_API_URL: 'https://api.anthropic.com',
-  CONSOLE_AUTHORIZE_URL: 'https://platform.agenc.com/oauth/authorize',
-  // Bounces through agenc.com/cai/* so CLI sign-ins connect to agenc.com
-  // visits for attribution. 307s to agenc.ai/oauth/authorize in two hops.
+  CONSOLE_AUTHORIZE_URL: 'https://agenc.tech/oauth/authorize',
+  // Bounces through the AgenC-owned attribution route before OAuth authorize.
   AGENC_AI_AUTHORIZE_URL: 'https://agenc.tech/cai/oauth/authorize',
-  AGENC_AI_ORIGIN: 'https://agenc.ai',
-  TOKEN_URL: 'https://platform.agenc.com/v1/oauth/token',
+  AGENC_AI_ORIGIN: 'https://agenc.tech',
+  TOKEN_URL: 'https://agenc.tech/v1/oauth/token',
   API_KEY_URL: 'https://api.anthropic.com/api/oauth/agenc_cli/create_api_key',
   ROLES_URL: 'https://api.anthropic.com/api/oauth/agenc_cli/roles',
   CONSOLE_SUCCESS_URL:
-    'https://platform.agenc.com/buy_credits?returnUrl=/oauth/code/success%3Fapp%3Dagenc-code',
+    'https://agenc.tech/buy_credits?returnUrl=/oauth/code/success%3Fapp%3Dagenc-code',
   AGENCAI_SUCCESS_URL:
-    'https://platform.agenc.com/oauth/code/success?app=agenc-code',
-  MANUAL_REDIRECT_URL: 'https://platform.agenc.com/oauth/code/callback',
+    'https://agenc.tech/oauth/code/success?app=agenc-code',
+  MANUAL_REDIRECT_URL: 'https://agenc.tech/oauth/code/callback',
   CLIENT_ID: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
   // No suffix for production config
   OAUTH_FILE_SUFFIX: '',
@@ -112,33 +110,33 @@ const PROD_OAUTH_CONFIG = {
  * See: https://datatracker.ietf.org/doc/html/draft-ietf-oauth-client-id-metadata-document-00
  */
 export const MCP_CLIENT_METADATA_URL =
-  'https://agenc.ai/oauth/agenc-code-client-metadata'
+  'https://agenc.tech/oauth/agenc-code-client-metadata'
 
-// Staging OAuth configuration - only included in ant builds with staging flag
+// Staging OAuth configuration - only included in internal builds with staging flag
 // Uses literal check for dead code elimination
 const STAGING_OAUTH_CONFIG =
   process.env.USER_TYPE === 'ant'
     ? ({
-        BASE_API_URL: 'https://api-staging.anthropic.com',
+        BASE_API_URL: 'https://agenc.tech',
         CONSOLE_AUTHORIZE_URL:
-          'https://platform.staging.ant.dev/oauth/authorize',
+          'https://agenc.tech/oauth/authorize',
         AGENC_AI_AUTHORIZE_URL:
           'https://agenc.tech/oauth/authorize',
         AGENC_AI_ORIGIN: 'https://agenc.tech',
-        TOKEN_URL: 'https://platform.staging.ant.dev/v1/oauth/token',
+        TOKEN_URL: 'https://agenc.tech/v1/oauth/token',
         API_KEY_URL:
-          'https://api-staging.anthropic.com/api/oauth/agenc_cli/create_api_key',
+          'https://agenc.tech/api/oauth/agenc_cli/create_api_key',
         ROLES_URL:
-          'https://api-staging.anthropic.com/api/oauth/agenc_cli/roles',
+          'https://agenc.tech/api/oauth/agenc_cli/roles',
         CONSOLE_SUCCESS_URL:
-          'https://platform.staging.ant.dev/buy_credits?returnUrl=/oauth/code/success%3Fapp%3Dagenc-code',
+          'https://agenc.tech/buy_credits?returnUrl=/oauth/code/success%3Fapp%3Dagenc-code',
         AGENCAI_SUCCESS_URL:
-          'https://platform.staging.ant.dev/oauth/code/success?app=agenc-code',
+          'https://agenc.tech/oauth/code/success?app=agenc-code',
         MANUAL_REDIRECT_URL:
-          'https://platform.staging.ant.dev/oauth/code/callback',
+          'https://agenc.tech/oauth/code/callback',
         CLIENT_ID: '22422756-60c9-4084-8eb7-27705fd5cf9a',
         OAUTH_FILE_SUFFIX: '-staging-oauth',
-        MCP_PROXY_URL: 'https://mcp-proxy-staging.anthropic.com',
+        MCP_PROXY_URL: 'https://agenc.tech',
         MCP_PROXY_PATH: '/v1/mcp/{server_id}',
       } as const)
     : undefined
@@ -178,8 +176,6 @@ function getLocalOauthConfig(): OauthConfig {
 // Only FedStart/PubSec deployments are permitted to prevent OAuth tokens
 // from being sent to arbitrary endpoints.
 const ALLOWED_OAUTH_BASE_URLS = [
-  'https://beacon.agenc-ai.staging.ant.dev',
-  'https://agenc.tech',
   'https://agenc.tech',
 ]
 

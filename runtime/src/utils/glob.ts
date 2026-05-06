@@ -1,5 +1,5 @@
-// @ts-nocheck
 import { basename, dirname, isAbsolute, join, sep } from 'path'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import type { ToolPermissionContext } from '../tools/Tool.js'
 import { isEnvTruthy } from './envUtils.js'
 import {

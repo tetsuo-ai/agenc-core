@@ -1,4 +1,3 @@
-// @ts-nocheck
 const ZAI_API_HOSTS = new Set([
   'api.z.ai',
 ])

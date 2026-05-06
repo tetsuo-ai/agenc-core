@@ -1,6 +1,6 @@
-// @ts-nocheck
 import { mkdir, readdir, readFile, writeFile } from 'fs/promises'
 import { join } from 'path'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getSessionId } from '../bootstrap/state.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { getAgenCConfigHomeDir } from './envUtils.js'

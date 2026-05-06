@@ -1,4 +1,3 @@
-// @ts-nocheck
 import axios from 'axios'
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import { dirname, join } from 'path'
@@ -27,9 +26,9 @@ const MAX_RELEASE_NOTES_SHOWN = 5
  * 3. Next time the user starts AgenC, the cached changelog is available immediately
  */
 export const CHANGELOG_URL =
-  'https://github.com/anthropics/agenc-code/blob/main/CHANGELOG.md'
+  'https://github.com/tetsuo-ai/agenc-core/blob/main/CHANGELOG.md'
 const RAW_CHANGELOG_URL =
-  'https://raw.githubusercontent.com/anthropics/agenc-code/refs/heads/main/CHANGELOG.md'
+  'https://raw.githubusercontent.com/tetsuo-ai/agenc-core/refs/heads/main/CHANGELOG.md'
 
 /**
  * Get the path for the cached changelog file.

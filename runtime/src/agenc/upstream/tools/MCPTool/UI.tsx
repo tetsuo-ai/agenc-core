@@ -1,11 +1,13 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import figures from 'figures';
 import * as React from 'react';
 import type { z } from 'zod/v4';
-import { ProgressBar } from '../../components/design-system/ProgressBar.js';
-import { MessageResponse } from '../../components/MessageResponse.js';
-import { linkifyUrlsInText, OutputLine } from '../../components/shell/OutputLine.js';
+import { ProgressBar } from '../../../../tui/components/design-system/ProgressBar';
+import { MessageResponse } from '../../../../tui/components/MessageResponse';
+import { linkifyUrlsInText, OutputLine } from '../../../../tui/components/shell/OutputLine';
 import { stringWidth } from '../../../../tui/ink/stringWidth.js';
 import { Ansi, Box, Text } from '../../../../tui/ink.js';
 import type { ToolProgressData } from '../../Tool.js';

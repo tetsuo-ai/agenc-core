@@ -1,9 +1,10 @@
-// @ts-nocheck
 import { z } from 'zod/v4'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import type { Tool } from '../../tools/Tool.js'
 import {
   SYNTHETIC_OUTPUT_TOOL_NAME,
   SyntheticOutputTool,
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 } from '../../tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import { substituteArguments } from '../../tui/slash/argument-substitution.js'
 import { lazySchema } from '../lazySchema.js'

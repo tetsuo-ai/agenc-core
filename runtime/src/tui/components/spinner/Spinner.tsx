@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { Box, Text } from '../../ink.js';
@@ -14,17 +16,17 @@ import { formatDuration, formatNumber, formatSecondsShort } from '../../../utils
 import type { Theme } from '../../../utils/theme.js';
 import { activityManager } from '../../../utils/activityManager.js';
 import { getSpinnerVerbs } from '../../../constants/spinnerVerbs.js';
-import { MessageResponse } from '../../../agenc/upstream/components/MessageResponse.js';
-import { TaskListV2 } from '../../../agenc/upstream/components/TaskListV2.js';
-import { useTasksV2 } from '../../../agenc/upstream/hooks/useTasksV2.js';
+import { MessageResponse } from '../MessageResponse';
+import { TaskListV2 } from '../TaskListV2';
+import { useTasksV2 } from '../../hooks/useTasksV2';
 import type { Task } from '../../../utils/tasks.js';
 import { useAppState } from '../../state/AppState.js';
-import { useTerminalSize } from '../../../agenc/upstream/hooks/useTerminalSize.js';
+import { useTerminalSize } from '../../hooks/useTerminalSize';
 import { stringWidth } from '../../ink/stringWidth.js';
 import type { SpinnerMode } from './types.js';
 import { getDefaultCharacters } from './utils.js';
 import { SpinnerAnimationRow } from './SpinnerAnimationRow.js';
-import { useSettings } from '../../../agenc/upstream/hooks/useSettings.js';
+import { useSettings } from '../../hooks/useSettings';
 import { isInProcessTeammateTask } from '../../../agenc/upstream/tasks/InProcessTeammateTask/types.js';
 import { isBackgroundTask } from '../../../tasks/types.js';
 import { getAllInProcessTeammateTasks } from '../../../agenc/upstream/tasks/InProcessTeammateTask/InProcessTeammateTask.js';

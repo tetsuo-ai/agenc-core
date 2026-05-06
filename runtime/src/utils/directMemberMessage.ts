@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { AppState } from '../tui/state/AppState.js'
 
 /**

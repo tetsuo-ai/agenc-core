@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { capitalize } from '../stringUtils.js'
 import { MODEL_ALIASES, type ModelAlias } from './aliases.js'
@@ -123,7 +122,7 @@ export function getAgentModel(
  * Prevents surprising downgrades: a Vertex user on Opus 4.6 (via /model) who
  * spawns a subagent with `model: opus` should get Opus 4.6, not whatever
  * getDefaultOpusModel() returns for 3P.
- * See https://github.com/anthropics/agenc-code/issues/30815.
+ * See https://github.com/tetsuo-ai/agenc-core/issues/30815.
  *
  * Only bare family aliases match. `opus[1m]`, `best`, `opusplan` fall through
  * since they carry semantics beyond "same tier as parent".

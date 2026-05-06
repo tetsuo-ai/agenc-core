@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * openaiContextWindows.ts
  * Context window sizes for openai-compatible models used via the shim.

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Leader Permission Bridge
  *
@@ -12,6 +11,7 @@
  */
 
 import type { ToolUseConfirm } from '../../tui/components/permissions/PermissionRequest.js'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import type { ToolPermissionContext } from '../../tools/Tool.js'
 
 export type SetToolUseConfirmQueueFn = (

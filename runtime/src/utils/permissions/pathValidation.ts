@@ -1,7 +1,7 @@
-// @ts-nocheck
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
 import { dirname, isAbsolute, resolve } from 'path'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import type { ToolPermissionContext } from '../../tools/Tool.js'
 import { getPlatform } from '../platform.js'
 import {

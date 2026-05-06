@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Passes } from '../../components/Passes/Passes.js';
+import { Passes } from '../../../../tui/components/Passes/Passes';
 import { logEvent } from '../../services/analytics/index.js';
 import { getCachedRemainingPasses } from '../../services/api/referral.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';

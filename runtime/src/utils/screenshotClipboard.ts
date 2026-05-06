@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { mkdir, unlink, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'

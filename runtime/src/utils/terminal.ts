@@ -1,4 +1,3 @@
-// @ts-nocheck
 import chalk from 'chalk'
 import { ctrlOToExpand } from '../tui/components/CtrlOToExpand.js'
 import { stringWidth } from '../tui/ink/stringWidth.js'

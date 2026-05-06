@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Checks if input matches negative keyword patterns
  */

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import axios from 'axios'
 import type { HookEvent } from 'src/entrypoints/agentSdkTypes.js'
 import { createCombinedAbortSignal } from '../combinedAbortSignal.js'
@@ -164,10 +163,12 @@ export async function execHttpHook(
       const hookVars = hook.allowedEnvVars ?? []
       const effectiveVars =
         policy.allowedEnvVars !== undefined
+          // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
           ? hookVars.filter(v => policy.allowedEnvVars!.includes(v))
           : hookVars
       const allowedEnvVars = new Set(effectiveVars)
       for (const [name, value] of Object.entries(hook.headers)) {
+        // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
         headers[name] = interpolateEnvVars(value, allowedEnvVars)
       }
     }

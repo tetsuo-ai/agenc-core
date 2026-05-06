@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * HTTP utility constants and helpers
  */
@@ -33,6 +32,7 @@ export function getUserAgent(): string {
   // so the read picks up the same setWorkload() value as getAttributionHeader.
   const workload = getWorkload()
   const workloadSuffix = workload ? `, workload/${workload}` : ''
+  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
   return `agenc-cli/${MACRO.VERSION} (${process.env.USER_TYPE}, ${process.env.AGENC_ENTRYPOINT ?? 'cli'}${agentSdkVersion}${clientApp}${workloadSuffix})`
 }
 
@@ -48,13 +48,14 @@ export function getMCPUserAgent(): string {
     parts.push(`client-app/${process.env.AGENC_AGENT_SDK_CLIENT_APP}`)
   }
   const suffix = parts.length > 0 ? ` (${parts.join(', ')})` : ''
+  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
   return `agenc-code/${MACRO.VERSION}${suffix}`
 }
 
 // User-Agent for WebFetch requests to arbitrary sites. `AgenC-User` is
 // The first-party provider's publicly documented agent for user-initiated fetches (what site
 // operators match in robots.txt); the agenc-code suffix lets them distinguish
-// local CLI traffic from agenc.ai server-side fetches.
+// local CLI traffic from AgenC cloud server-side fetches.
 export function getWebFetchUserAgent(): string {
   const supportUrl =
     getAPIProvider() === 'firstParty'

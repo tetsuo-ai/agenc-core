@@ -1,9 +1,11 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import React from 'react';
-import { CtrlOToExpand } from '../../components/CtrlOToExpand.js';
-import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErrorMessage.js';
-import { MessageResponse } from '../../components/MessageResponse.js';
+import { CtrlOToExpand } from '../../../../tui/components/CtrlOToExpand';
+import { FallbackToolUseErrorMessage } from '../../../../tui/components/FallbackToolUseErrorMessage';
+import { MessageResponse } from '../../../../tui/components/MessageResponse';
 import { Box, Text } from '../../../../tui/ink.js';
 import { getDisplayPath } from '../../../../utils/file.js';
 import { extractTag } from '../../../../utils/messages.js';

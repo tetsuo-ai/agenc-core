@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Protocol Handler Registration
  *
@@ -31,7 +30,7 @@ import { which } from '../which.js'
 import { getUserBinDir, getXDGDataHome } from '../xdg.js'
 import { DEEP_LINK_PROTOCOL } from './parseDeepLink.js'
 
-export const MACOS_BUNDLE_ID = 'com.anthropic.agenc-code-url-handler'
+export const MACOS_BUNDLE_ID = 'tech.agenc.agenc-code-url-handler'
 const APP_NAME = 'AgenC URL Handler'
 const DESKTOP_FILE_NAME = 'agenc-code-url-handler.desktop'
 const MACOS_APP_NAME = 'AgenC URL Handler.app'

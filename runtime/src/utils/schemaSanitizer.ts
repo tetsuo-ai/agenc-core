@@ -1,4 +1,3 @@
-// @ts-nocheck
 const OPENAI_INCOMPATIBLE_SCHEMA_KEYWORDS = new Set([
   '$comment',
   '$schema',

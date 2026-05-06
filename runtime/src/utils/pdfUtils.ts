@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { getMainLoopModel } from './model/model.js'
 
 // Document extensions that are handled specially

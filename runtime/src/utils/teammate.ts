@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Teammate utilities for agent swarm coordination
  *

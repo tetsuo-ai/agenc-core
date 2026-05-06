@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Config/settings-backed NODE_EXTRA_CA_CERTS population for `caCerts.ts`.
  *

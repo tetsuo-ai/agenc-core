@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { unlink } from 'fs/promises'
 import { CircularBuffer } from '../CircularBuffer.js'
 import { logForDebugging } from 'src/utils/debug.js'

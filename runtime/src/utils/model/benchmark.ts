@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Model Benchmarking for AgenC
  * 

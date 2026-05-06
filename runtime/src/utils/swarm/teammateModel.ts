@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { AGENC_OPUS_4_6_CONFIG } from '../model/configs.js'
 import { getAPIProvider } from '../model/providers.js'
 
@@ -7,5 +6,6 @@ import { getAPIProvider } from '../model/providers.js'
 // use Opus 4.6. Must be provider-aware so Bedrock/Vertex/Foundry customers get
 // the correct model ID.
 export function getHardcodedTeammateModelFallback(): string {
+  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
   return AGENC_OPUS_4_6_CONFIG[getAPIProvider()]
 }

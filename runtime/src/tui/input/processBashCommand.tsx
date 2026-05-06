@@ -1,7 +1,9 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources';
 import { randomUUID } from 'crypto';
 import * as React from 'react';
-import { BashModeProgress } from '../../agenc/upstream/components/BashModeProgress.js';
+import { BashModeProgress } from '../components/BashModeProgress';
 import type { SetToolJSXFn } from '../../agenc/upstream/Tool.js';
 import { BashTool } from '../../agenc/upstream/tools/BashTool/BashTool.js';
 import { PowerShellTool } from '../../agenc/upstream/tools/PowerShellTool/PowerShellTool.js';

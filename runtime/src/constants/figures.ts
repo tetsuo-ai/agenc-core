@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { env } from '../utils/env.js'
 
 // The former is better vertically aligned, but isn't usually supported on Windows/Linux

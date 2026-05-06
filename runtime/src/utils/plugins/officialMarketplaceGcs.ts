@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * inc-5046: fetch the official marketplace from a GCS mirror instead of
  * git-cloning GitHub on every startup.
@@ -12,8 +11,11 @@
 import axios from 'axios'
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'fs/promises'
 import { dirname, join, resolve, sep } from 'path'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { waitForScrollIdle } from '../../bootstrap/state.js'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../../services/analytics/index.js'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { logEvent } from '../../services/analytics/index.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { parseZipModes, unzipFile } from '../dxt/zip.js'
@@ -27,7 +29,7 @@ type SafeString = AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
 // `latest` has Cache-Control: max-age=300 so CDN staleness is bounded.
 // Backend (anthropic#317037) populates this prefix.
 const GCS_BASE =
-  'https://downloads.agenc.ai/agenc-code-releases/plugins/agenc-plugins-official'
+  'https://agenc.tech/agenc-code-releases/plugins/agenc-plugins-official'
 
 // Zip arc paths are seed-dir-relative (marketplaces/agenc-plugins-official/…)
 // so the titanium seed machinery can use the same zip. Strip this prefix when
@@ -159,7 +161,7 @@ export async function fetchOfficialMarketplaceFromGcs(
     // values below are static enums or a git SHA — not code/filepaths/PII.
     logEvent('tengu_plugin_remote_fetch', {
       source: 'marketplace_gcs' as SafeString,
-      host: 'downloads.agenc.ai' as SafeString,
+      host: 'agenc.tech' as SafeString,
       is_official: true,
       outcome: outcome as SafeString,
       duration_ms: Math.round(performance.now() - start),

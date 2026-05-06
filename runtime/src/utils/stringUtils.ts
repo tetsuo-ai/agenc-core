@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * General string utility functions and classes for safe string accumulation
  */

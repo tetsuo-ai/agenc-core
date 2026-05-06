@@ -1,5 +1,5 @@
-// @ts-nocheck
 import { feature } from 'bun:bundle'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { logEvent } from '../../services/analytics/index.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import {

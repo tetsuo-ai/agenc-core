@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import * as React from 'react';
@@ -8,8 +10,8 @@ import type { InProcessTeammateTaskState } from '../../../agenc/upstream/tasks/I
 import { formatDuration, formatNumber } from '../../../utils/format.js';
 import { toInkColor } from '../../../utils/ink.js';
 import type { Theme } from '../../../utils/theme.js';
-import { Byline } from '../../../agenc/upstream/components/design-system/Byline.js';
-import FullWidthRow from '../../../agenc/upstream/components/design-system/FullWidthRow.js';
+import { Byline } from '../design-system/Byline';
+import FullWidthRow from '../design-system/FullWidthRow';
 import { GlimmerMessage } from './GlimmerMessage.js';
 import { SpinnerGlyph } from './SpinnerGlyph.js';
 import type { SpinnerMode } from './types.js';

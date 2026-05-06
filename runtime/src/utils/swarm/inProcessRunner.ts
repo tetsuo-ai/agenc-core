@@ -1,4 +1,5 @@
 // @ts-nocheck
+// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
 /**
  * In-process teammate runner
  *
@@ -29,6 +30,7 @@ import {
   buildPostCompactMessages,
   compactConversation,
   ERROR_MESSAGE_USER_ABORT,
+  // upstream-import: keep compact runtime target is owned by a later purge item
 } from '../../agenc/upstream/services/compact/compact.js'
 import { resetMicrocompactState } from '../../services/compact/microCompact.js'
 import type { AppState } from '../../tui/state/AppState.js'

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Terminal preference capture for deep link handling.
  *

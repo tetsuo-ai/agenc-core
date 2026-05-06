@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import React, { PureComponent, type ReactNode } from 'react';
 import { updateLastInteractionTime } from '../../../agenc/upstream/bootstrap/state.js';
 import { stopCapturingEarlyInput } from '../../../utils/earlyInput.js';

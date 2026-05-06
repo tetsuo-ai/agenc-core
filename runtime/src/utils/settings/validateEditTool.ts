@@ -1,4 +1,4 @@
-// @ts-nocheck
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import type { ValidationResult } from 'src/Tool.js'
 import { isAgenCSettingsPath } from '../permissions/filesystem.js'
 import { validateSettingsFileContent } from './validation.js'

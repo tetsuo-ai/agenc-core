@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Preconnect to the provider API to overlap TCP+TLS handshake with startup.
  *

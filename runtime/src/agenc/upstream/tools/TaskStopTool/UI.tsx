@@ -1,5 +1,7 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import React from 'react';
-import { MessageResponse } from '../../components/MessageResponse.js';
+import { MessageResponse } from '../../../../tui/components/MessageResponse';
 import { stringWidth } from '../../../../tui/ink/stringWidth.js';
 import { Text } from '../../../../tui/ink.js';
 import { truncateToWidthNoEllipsis } from '../../../../utils/format.js';

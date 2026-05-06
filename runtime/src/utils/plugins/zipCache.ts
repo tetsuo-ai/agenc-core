@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Plugin Zip Cache Module
  *
@@ -221,6 +220,7 @@ export async function createZipFromDirectory(
   const visited = new Set<string>()
   await collectFilesForZip(sourceDir, '', files, visited)
 
+  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
   const { zipSync } = await import('fflate')
   const zipData = zipSync(files, { level: 6 })
   logForDebugging(
@@ -255,7 +255,7 @@ async function collectFilesForZip(
   // same JS number, causing subdirs to be silently skipped as "cycles". This
   // broke the round-trip test on Windows CI when sharding shuffled which tests
   // ran first and pushed MFT sequence numbers over the precision cliff.
-  // See also: markdownConfigLoader.ts getFileIdentity, anthropics/agenc-code#13893
+  // See also: markdownConfigLoader.ts getFileIdentity, tetsuo-ai/agenc-core#13893
   try {
     const dirStat = await stat(currentDir, { bigint: true })
     // ReFS (Dev Drive), NFS, some FUSE mounts report dev=0 and ino=0 for

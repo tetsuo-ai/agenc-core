@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Tracks which tool uses were auto-approved by classifiers.
  * Populated from useCanUseTool.ts and permissions.ts, read from UserToolSuccessMessage.tsx.

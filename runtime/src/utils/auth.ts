@@ -1,4 +1,5 @@
 // @ts-nocheck
+// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
 import chalk from 'chalk'
 import { exec } from 'child_process'
 import { execa } from 'execa'
@@ -212,7 +213,7 @@ export function getAuthTokenSource() {
 
   const oauthTokens = getAgenCAIOAuthTokens()
   if (shouldUseAgenCAIAuth(oauthTokens?.scopes) && oauthTokens?.accessToken) {
-    return { source: 'agenc.ai' as const, hasToken: true }
+    return { source: 'agenc-cloud' as const, hasToken: true }
   }
 
   return { source: 'none' as const, hasToken: false }
@@ -1357,7 +1358,7 @@ async function invalidateOAuthCacheIfDiskChanged(): Promise<void> {
   }
 }
 
-// In-flight dedup: when N agenc.ai proxy connectors hit 401 with the same
+// In-flight dedup: when N AgenC cloud proxy connectors hit 401 with the same
 // token simultaneously (common at startup — #20930), only one should clear
 // caches and re-read the keychain. Without this, each call's clearOAuthTokenCache()
 // nukes readInFlight in macOsKeychainStorage and triggers a fresh spawn —
@@ -1911,7 +1912,7 @@ export function getAccountInformation() {
 
   // We don't know the organization if we're relying on an external API key or auth token
   if (
-    authTokenSource === 'agenc.ai' ||
+    authTokenSource === 'agenc-cloud' ||
     apiKeySource === '/login managed key'
   ) {
     // Get organization name from OAuth account info
@@ -1922,7 +1923,7 @@ export function getAccountInformation() {
   }
   const email = getOauthAccountInfo()?.emailAddress
   if (
-    (authTokenSource === 'agenc.ai' ||
+    (authTokenSource === 'agenc-cloud' ||
       apiKeySource === '/login managed key') &&
     email
   ) {

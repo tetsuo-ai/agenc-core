@@ -1,4 +1,3 @@
-// @ts-nocheck
 import chalk, { Chalk } from 'chalk'
 import { env } from './env.js'
 

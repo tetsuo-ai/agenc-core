@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { homedir } from 'os'
 import { join } from 'path'
 import { logForDebugging } from 'src/utils/debug.js'

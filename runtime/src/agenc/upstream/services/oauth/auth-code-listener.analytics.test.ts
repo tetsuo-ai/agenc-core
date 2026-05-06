@@ -71,7 +71,7 @@ test('custom handlers that do not end the response are closed automatically and 
     },
   }))
 
-  mock.module('../../utils/log.js', () => ({
+  mock.module('../../../../utils/log.js', () => ({
     logError: () => {},
   }))
 
@@ -129,7 +129,7 @@ test('custom handlers that throw are logged, converted to a fallback response, a
     },
   }))
 
-  mock.module('../../utils/log.js', () => ({
+  mock.module('../../../../utils/log.js', () => ({
     logError: (error: unknown) => {
       loggedErrors.push(error)
     },

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import isEqual from 'lodash-es/isEqual.js'
 import { toError } from '../errors.js'
 import { logError } from '../log.js'

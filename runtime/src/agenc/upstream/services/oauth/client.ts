@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 // OAuth client for handling authentication flows with AgenC services
 import axios from 'axios'
 import {

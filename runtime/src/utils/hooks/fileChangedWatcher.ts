@@ -1,4 +1,3 @@
-// @ts-nocheck
 import chokidar, { type FSWatcher } from 'chokidar'
 import { isAbsolute, join } from 'path'
 import { registerCleanup } from '../cleanupRegistry.js'
@@ -55,6 +54,7 @@ function resolveWatchPaths(
   const staticPaths: string[] = []
   for (const m of matchers) {
     if (!m.matcher) continue
+    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
     for (const name of m.matcher.split('|').map(s => s.trim())) {
       if (!name) continue
       staticPaths.push(isAbsolute(name) ? name : join(currentCwd, name))

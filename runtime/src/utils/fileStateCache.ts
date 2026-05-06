@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { LRUCache } from 'lru-cache'
 import { normalize } from 'path'
 

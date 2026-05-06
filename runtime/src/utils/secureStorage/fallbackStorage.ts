@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { SecureStorage, SecureStorageData } from './index.js'
 
 /**
@@ -34,7 +33,7 @@ export function createFallbackStorage(
       if (result.success) {
         // Delete secondary when migrating to primary for the first time
         // This preserves credentials when sharing .agenc between host and containers
-        // See: https://github.com/anthropics/agenc-code/issues/1414
+        // See: https://github.com/tetsuo-ai/agenc-core/issues/1414
         if (primaryDataBefore === null) {
           secondary.delete()
         }

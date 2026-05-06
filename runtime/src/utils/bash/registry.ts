@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { memoizeWithLRU } from '../memoize.js'
 import specs from './specs/index.js'
 

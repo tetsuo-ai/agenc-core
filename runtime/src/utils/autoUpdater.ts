@@ -1,4 +1,3 @@
-// @ts-nocheck
 import axios from 'axios'
 import { constants as fsConstants } from 'fs'
 import { access, writeFile } from 'fs/promises'

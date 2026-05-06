@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Session-scoped environment variables set via /env.
  * Applied only to spawned child processes (via bash provider env overrides),

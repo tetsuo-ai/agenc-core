@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * LSP Plugin Recommendation Utility
  *

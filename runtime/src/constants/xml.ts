@@ -1,4 +1,3 @@
-// @ts-nocheck
 // XML tag names used to mark skill/command metadata in messages
 export const COMMAND_NAME_TAG = 'command-name'
 export const COMMAND_MESSAGE_TAG = 'command-message'

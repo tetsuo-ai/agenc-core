@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Session Tracing for AgenC using OpenTelemetry (BETA)
  *
@@ -14,6 +13,7 @@
 import { feature } from 'bun:bundle'
 import { context as otelContext, type Span, trace } from '@opentelemetry/api'
 import { AsyncLocalStorage } from 'async_hooks'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import type { AssistantMessage, UserMessage } from '../../types/message.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from '../envUtils.js'
@@ -151,7 +151,7 @@ function isAnyTracingEnabled(): boolean {
 }
 
 function getTracer() {
-  return trace.getTracer('com.anthropic.agenc_code.tracing', '1.0.0')
+  return trace.getTracer('tech.agenc.agenc_code.tracing', '1.0.0')
 }
 
 function createSpanAttributes(

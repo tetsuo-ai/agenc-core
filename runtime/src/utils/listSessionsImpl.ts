@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Standalone implementation of listSessions for the Agent SDK.
  *

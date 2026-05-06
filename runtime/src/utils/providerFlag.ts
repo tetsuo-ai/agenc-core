@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * --provider CLI flag support.
  *

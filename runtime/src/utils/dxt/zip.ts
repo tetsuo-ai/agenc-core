@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { isAbsolute, normalize } from 'path'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isENOENT } from '../errors.js'
@@ -114,6 +113,7 @@ export function validateZipFile(
 export async function unzipFile(
   zipData: Buffer,
 ): Promise<Record<string, Uint8Array>> {
+  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
   const { unzipSync } = await import('fflate')
   const compressedSize = zipData.length
 
@@ -125,6 +125,7 @@ export async function unzipFile(
   }
 
   const result = unzipSync(new Uint8Array(zipData), {
+    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
     filter: file => {
       const validationResult = validateZipFile(file, state)
       if (!validationResult.isValid) {

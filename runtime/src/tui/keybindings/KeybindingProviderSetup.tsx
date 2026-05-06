@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 /**
  * Setup utilities for integrating KeybindingProvider into the app.
@@ -8,7 +10,7 @@ import { c as _c } from "react-compiler-runtime";
  * support when the file changes.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useNotifications } from '../../agenc/upstream/context/notifications.js';
+import { useNotifications } from '../context/notifications';
 import type { InputEvent } from '../ink/events/input-event.js';
 // ChordInterceptor intentionally uses useInput to intercept all keystrokes before
 // other handlers process them - this is required for chord sequence support

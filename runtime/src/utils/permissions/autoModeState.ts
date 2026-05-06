@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Auto mode state functions — lives in its own module so callers can
 // conditionally require() it on feature('TRANSCRIPT_CLASSIFIER').
 

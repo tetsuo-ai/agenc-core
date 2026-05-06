@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Safe wrappers for shell-quote library functions that handle errors gracefully
  * These are drop-in replacements for the original functions
@@ -8,10 +7,12 @@ import {
   type ParseEntry,
   parse as shellQuoteParse,
   quote as shellQuoteQuote,
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 } from 'shell-quote'
 import { logError } from '../log.js'
 import { jsonStringify } from '../slowOperations.js'
 
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 export type { ParseEntry } from 'shell-quote'
 
 export type ShellParseResult =

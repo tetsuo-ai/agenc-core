@@ -1,4 +1,3 @@
-// @ts-nocheck
 import chokidar, { type FSWatcher } from 'chokidar'
 import * as platformPath from 'path'
 import { getAdditionalDirectoriesForAgenCMd } from '../../bootstrap/state.js'

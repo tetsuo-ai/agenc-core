@@ -1,4 +1,3 @@
-// @ts-nocheck
 // External build: internal model-capabilities fetch/cache path is disabled.
 // Preserve a stable public surface so callers can continue to import it.
 

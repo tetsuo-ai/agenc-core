@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { BetaTool } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 
 // Session-scoped cache of rendered tool schemas. Tool schemas render at server

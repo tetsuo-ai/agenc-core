@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { execa } from 'execa'
 import { which } from '../which.js'
 

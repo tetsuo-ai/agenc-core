@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Utility for checking git availability.
  *

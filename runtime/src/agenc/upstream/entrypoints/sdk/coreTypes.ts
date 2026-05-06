@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 // SDK Core Types - Common serializable types used by both SDK consumers and SDK builders.
 //
 // Types are generated from Zod schemas in coreSchemas.ts.

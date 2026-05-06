@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { buildComputerUseTools } from '@ant/computer-use-mcp'
 import { join } from 'path'
 import { fileURLToPath } from 'url'

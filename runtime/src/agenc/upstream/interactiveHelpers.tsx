@@ -5,7 +5,7 @@ import { logEvent } from 'src/services/analytics/index.js';
 import { gracefulShutdown, gracefulShutdownSync } from 'src/utils/gracefulShutdown.js';
 import { type ChannelEntry, getAllowedChannels, setAllowedChannels, setHasDevChannels, setSessionTrustAccepted, setStatsStore } from './bootstrap/state.js';
 import type { Command } from '../../commands.js';
-import { createStatsStore, type StatsStore } from './context/stats.js';
+import { createStatsStore, type StatsStore } from '../../tui/context/stats';
 import { getSystemContext } from './context.js';
 import { initializeTelemetryAfterTrust } from './entrypoints/init.js';
 import { isSynchronizedOutputSupported } from '../../tui/ink/terminal.js';
@@ -118,7 +118,7 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
     onboardingShown = true;
     const {
       Onboarding
-    } = await import('./components/Onboarding.js');
+    } = await import('../../tui/components/Onboarding');
     await showSetupDialog(root, done => <Onboarding onDone={() => {
       completeOnboarding();
       void done();
@@ -139,7 +139,7 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
     if (usesAnthropicSetup && !checkHasTrustDialogAccepted()) {
       const {
         TrustDialog
-      } = await import('./components/TrustDialog/TrustDialog.js');
+      } = await import('../../tui/components/TrustDialog/TrustDialog');
       await showSetupDialog(root, done => <TrustDialog commands={commands} onDone={done} />);
     }
 
@@ -173,7 +173,7 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
         const externalIncludes = getExternalAgenCMdIncludes(await getMemoryFiles(true));
         const {
           AgenCMdExternalIncludesDialog
-        } = await import('./components/AgenCMdExternalIncludesDialog.js');
+        } = await import('../../tui/components/AgenCMdExternalIncludesDialog');
         await showSetupDialog(root, done => <AgenCMdExternalIncludesDialog onDone={done} isStandaloneDialog externalIncludes={externalIncludes} />);
       }
     }
@@ -218,7 +218,7 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
     if (keyStatus === 'new') {
       const {
         ApproveApiKey
-      } = await import('./components/ApproveApiKey.js');
+      } = await import('../../tui/components/ApproveApiKey');
       await showSetupDialog<boolean>(root, done => <ApproveApiKey customApiKeyTruncated={customApiKeyTruncated} onDone={done} />, {
         onChangeAppState
       });
@@ -227,7 +227,7 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
   if ((permissionMode === 'bypassPermissions' || allowDangerouslySkipPermissions) && !hasSkipDangerousModePermissionPrompt()) {
     const {
       BypassPermissionsModeDialog
-    } = await import('./components/BypassPermissionsModeDialog.js');
+    } = await import('../../tui/components/BypassPermissionsModeDialog');
     await showSetupDialog(root, done => <BypassPermissionsModeDialog onAccept={done} />);
   }
   if (feature('TRANSCRIPT_CLASSIFIER')) {
@@ -238,7 +238,7 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
     if (permissionMode === 'auto' && !hasAutoModeOptIn()) {
       const {
         AutoModeOptInDialog
-      } = await import('./components/AutoModeOptInDialog.js');
+      } = await import('../../tui/components/AutoModeOptInDialog');
       await showSetupDialog(root, done => <AutoModeOptInDialog onAccept={done} onDecline={() => gracefulShutdownSync(1)} declineExits />);
     }
   }
@@ -281,7 +281,7 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
       } else {
         const {
           DevChannelsDialog
-        } = await import('./components/DevChannelsDialog.js');
+        } = await import('../../tui/components/DevChannelsDialog');
         await showSetupDialog(root, done => <DevChannelsDialog channels={devChannels} onAccept={() => {
           // Mark dev entries per-entry so the allowlist bypass doesn't leak
           // to --channels entries when both flags are passed.
@@ -300,7 +300,7 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
   if (claudeInChrome && !getGlobalConfig().hasCompletedAgenCInChromeOnboarding) {
     const {
       AgenCInChromeOnboarding
-    } = await import('./components/AgenCInChromeOnboarding.js');
+    } = await import('../../tui/components/AgenCInChromeOnboarding');
     await showSetupDialog(root, done => <AgenCInChromeOnboarding onDone={done} />);
   }
   return onboardingShown;

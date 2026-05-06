@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Native Installer Implementation
  *
@@ -1663,9 +1662,9 @@ export async function cleanupNpmInstallations(): Promise<{
   const warnings: string[] = []
   let removed = 0
 
-  // Always attempt to remove @anthropic-ai/agenc-code
+  // Always attempt to remove @tetsuo-ai/runtime
   const codePackageResult = await attemptNpmUninstall(
-    '@anthropic-ai/agenc-code',
+    '@tetsuo-ai/runtime',
   )
   if (codePackageResult.success) {
     removed++
@@ -1677,7 +1676,7 @@ export async function cleanupNpmInstallations(): Promise<{
   }
 
   // Also attempt to remove MACRO.PACKAGE_URL if it's defined and different
-  if (MACRO.PACKAGE_URL && MACRO.PACKAGE_URL !== '@anthropic-ai/agenc-code') {
+  if (MACRO.PACKAGE_URL && MACRO.PACKAGE_URL !== '@tetsuo-ai/runtime') {
     const macroPackageResult = await attemptNpmUninstall(MACRO.PACKAGE_URL)
     if (macroPackageResult.success) {
       removed++

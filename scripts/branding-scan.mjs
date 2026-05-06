@@ -102,6 +102,30 @@ const ALLOW_FILE_LINE_PATTERNS = [
     file: /(^|\/)\.gitignore$/,
     line: /\b(?:OpenClaude\w*|openclaude|Claude\w*|claude|Codex\w*|codex|Cursor)\b|\.openclaude\//, // branding-scan: allow gitignore exception pattern
   },
+  {
+    // Provider-management UI needs to render real provider names and
+    // ChatGPT credential labels. Keep this scoped to the provider
+    // setup surfaces instead of allowing these identifiers globally.
+    file: /(^|\/)runtime\/src\/tui\/components\/(?:ProviderManager(?:\.test)?|ConsoleOAuthFlow(?:\.test)?|useCodexOAuthFlow(?:\.test)?)\.(?:ts|tsx)$/,
+    line: /\b(?:Anthropic|OpenAI|Codex\w*|codex\w*)\b|chatgpt\.com\/(?:backend-api\/)?codex|CODEX_/, // branding-scan: allow scanner allow-list regex
+  },
+  {
+    // Usage and effort UI may refer to the real provider family.
+    file: /(^|\/)runtime\/src\/tui\/components\/(?:EffortPicker|Settings\/CodexUsage)\.(?:ts|tsx)$/, // branding-scan: allow scanner allow-list regex
+    line: /\b(?:OpenAI|Codex\w*|codex\w*)\b/, // branding-scan: allow scanner allow-list regex
+  },
+  {
+    // OpenAI/Codex provider transport internals necessarily refer to // branding-scan: allow scanner allow-list comment
+    // provider-defined names, env vars, auth files, and wire transports.
+    file: /(^|\/)runtime\/src\/agenc\/upstream\/services\/api\/(?:codexUsage|openaiShim|providerConfig(?:\.[^.]+)*?)\.ts$/, // branding-scan: allow scanner allow-list regex
+    line: /\b(?:Anthropic|OpenAI|Codex\w*|codex\w*|claude\w*)\b|CODEX_|CHATGPT_|\.codex|chatgpt\.com\/backend-api\/codex|codex_responses/, // branding-scan: allow scanner allow-list regex
+  },
+  {
+    // Text input internals use a caret utility type, not as an
+    // editor/product reference.
+    file: /(^|\/)runtime\/src\/tui\/(?:hooks\/(?:useTextInput|useSearchInput|useVimInput)|components\/TextInput(?:\.test)?)\.(?:ts|tsx)$/,
+    line: /\bCursor\b/, // branding-scan: allow text-caret utility identifier
+  },
 ];
 
 const OVERRIDE_RE = /branding-scan:\s*allow\b/i;
@@ -154,11 +178,21 @@ function isAbsorbImportRewriteLine(line, rel) {
   ) {
     return true;
   }
-  if (/(?:^|['"`(])(?:[./]+|src\/)(?:utils|constants)\/[\w@./?&=-]+(?:\.js)?/.test(line)) {
+  if (
+    UPSTREAM_MIRROR_RE.test(rel) &&
+    // branding-scan: allow scanner regex enumerates credential symbol rewrite names
+    /(?:\b(?:read|refresh|is)(?:Codex|Agenc)(?:Credentials(?:Async)?|AccessTokenIfNeeded|RefreshFailureCoolingDown)\b|\b(?:Codex|Agenc)CredentialBlob\b)/.test(line)
+  ) {
     return true;
   }
   if (!/(?:^import\b|^export\b|from\s+|import\s*\(|require\s*\()/.test(line)) {
     return false;
+  }
+  if (
+    UPSTREAM_MIRROR_RE.test(rel) &&
+    /(?:^|['"`(])(?:[./]+|src\/)(?:utils|constants)\/[\w@./?&=-]+(?:\.js)?/.test(line)
+  ) {
+    return true;
   }
   const commonAbsorbImportPatterns = [
     /(?:^|[./])utils\/(?:config|cwd)(?:\.js)?/,
@@ -196,6 +230,9 @@ function isAbsorbImportRewriteLine(line, rel) {
     /(?:^|[./])components\/(?:Markdown|MarkdownTable|HighlightedCode)(?:\.js|\/Fallback(?:\.js)?)?/,
     /(?:^|[./])(?:Markdown|MarkdownTable|HighlightedCode)(?:\.js|\/Fallback(?:\.js)?)?/,
     /(?:^|[./])(?:tui\/)?components\/dialogs\/(?:CostThresholdDialog|RateLimitMessage)(?:\.js)?/,
+    /(?:^|[./])(?:tui\/)?components\//,
+    /(?:^|[./])(?:tui\/)?hooks\//,
+    /(?:^|[./])(?:tui\/)?context\//,
     /(?:^|[./])components\/(?:CostThresholdDialog|messages\/RateLimitMessage)(?:\.js)?/,
     /(?:^|[./])(?:CostThresholdDialog|RateLimitMessage)(?:\.js)?/,
     /(?:^|[./])services\/PromptSuggestion\/(?:promptSuggestion|speculation)(?:\.js)?/,

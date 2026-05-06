@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * djb2 string hash — fast non-cryptographic hash returning a signed 32-bit int.
  * Deterministic across runtimes (unlike Bun.hash which uses wyhash). Use as a
@@ -19,6 +18,7 @@ export function djb2Hash(str: string): number {
  */
 export function hashContent(content: string): string {
   if (typeof Bun !== 'undefined') {
+    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
     return Bun.hash(content).toString()
   }
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -34,6 +34,7 @@ export function hashContent(content: string): string {
  */
 export function hashPair(a: string, b: string): string {
   if (typeof Bun !== 'undefined') {
+    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
     return Bun.hash(b, Bun.hash(a)).toString()
   }
   // eslint-disable-next-line @typescript-eslint/no-require-imports

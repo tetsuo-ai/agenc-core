@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Plugin option storage and substitution.
  *
@@ -14,6 +13,7 @@
  */
 
 import memoize from 'lodash-es/memoize.js'
+// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import type { LoadedPlugin } from '../../types/plugin.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from '../log.js'

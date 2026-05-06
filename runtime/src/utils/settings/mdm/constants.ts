@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Shared constants and path builders for MDM settings modules.
  *
@@ -10,7 +9,7 @@ import { homedir, userInfo } from 'os'
 import { join } from 'path'
 
 /** macOS preference domain for AgenC MDM profiles. */
-export const MACOS_PREFERENCE_DOMAIN = 'com.anthropic.agenccode'
+export const MACOS_PREFERENCE_DOMAIN = 'tech.agenc.agenccode'
 
 /**
  * Windows registry key paths for AgenC MDM policies.

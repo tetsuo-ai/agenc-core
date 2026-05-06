@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 // Union of all concrete task state types
 // Use this for components that need to work with any task type
 

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import memoize from 'lodash-es/memoize.js'
 
 // This ensures you get the LOCAL date in ISO format

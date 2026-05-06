@@ -1,4 +1,3 @@
-// @ts-nocheck
 type QueueItem<T extends unknown[], R> = {
   args: T
   resolve: (value: R) => void
