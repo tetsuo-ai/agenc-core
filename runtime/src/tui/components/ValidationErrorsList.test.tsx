@@ -2,6 +2,7 @@ import * as React from "react";
 import { readFileSync } from "node:fs";
 import { describe, expect, test, vi } from "vitest";
 
+import { InvalidSettingsDialog } from "../../agenc/upstream/components/InvalidSettingsDialog.js";
 import {
   buildValidationErrorTree,
   ValidationErrorsList,
@@ -107,10 +108,7 @@ describe("ValidationErrorsList", () => {
     );
   });
 
-  test("renders validation output through the live settings dialog route", async () => {
-    const { InvalidSettingsDialog } = await import(
-      "../../agenc/upstream/components/InvalidSettingsDialog.js"
-    );
+  test("renders validation output through the live settings dialog route", () => {
     const output = renderPlain(
       <InvalidSettingsDialog
         settingsErrors={[
