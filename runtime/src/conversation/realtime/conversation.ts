@@ -16,6 +16,7 @@ import {
   type RealtimeStartupContextOptions,
   type RealtimeStartupContextSessionLike,
 } from "./context.js";
+import { prepareRealtimeBackendPrompt } from "./prompt.js";
 
 const AUDIO_IN_QUEUE_CAPACITY = 256;
 const USER_TEXT_IN_QUEUE_CAPACITY = 64;
@@ -923,9 +924,12 @@ export function buildRealtimeSessionConfig(
   options: BuildRealtimeSessionConfigOptions,
 ): RealtimeSessionConfig {
   const version = options.version ?? "v2";
-  const prompt = prepareRealtimeInstructions(
+  const backendPrompt = prepareRealtimeBackendPrompt(
     options.prompt,
-    options.backendPrompt ?? "",
+    options.backendPrompt ?? null,
+  );
+  const prompt = prepareRealtimeInstructions(
+    backendPrompt,
     options.startupContext ?? "",
   );
   if (version === "v1" && options.outputModality === "text") {
@@ -971,23 +975,34 @@ export async function buildRealtimeSessionConfigFromSession(
           session,
           startupContextOptions ?? {},
         );
+  const configPrompt = realtimeBackendConfigPrompt(configOptions, session);
   return buildRealtimeSessionConfig({
     ...configOptions,
     conversationId,
     startupContext: resolvedStartupContext,
+    backendPrompt: configPrompt ?? null,
   });
 }
 
 export function prepareRealtimeInstructions(
-  prompt: string | null | undefined,
-  backendPrompt: string | null,
+  prompt: string | null,
   startupContext: string | null,
 ): string {
-  const preparedPrompt = prompt === undefined ? backendPrompt ?? "" : prompt ?? "";
+  const preparedPrompt = prompt ?? "";
   const preparedContext = startupContext ?? "";
   if (preparedPrompt.length === 0) return preparedContext;
   if (preparedContext.length === 0) return preparedPrompt;
   return `${preparedPrompt}\n\n${preparedContext}`;
+}
+
+function realtimeBackendConfigPrompt(
+  options: Pick<BuildRealtimeSessionConfigOptions, "backendPrompt">,
+  session: RealtimeStartupContextSessionLike,
+): string | null | undefined {
+  if (Object.prototype.hasOwnProperty.call(options, "backendPrompt")) {
+    return options.backendPrompt;
+  }
+  return session.config?.experimental_realtime_ws_backend_prompt;
 }
 
 export function resolveRealtimeTransportSelection(

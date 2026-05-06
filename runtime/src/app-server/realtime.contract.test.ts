@@ -22,6 +22,7 @@ import {
   AgenCRealtimeWebSocketTransportConnector,
   type AgenCRealtimeWebSocketLike,
   decodeRealtimeCallIdFromLocation,
+  realtimeCallSessionConfigToProviderJson,
   realtimeCallMultipartContentType,
   realtimeCallMultipartBody,
   realtimeSessionConfigToProviderJson,
@@ -496,6 +497,7 @@ describe("AgenC daemon realtime JSON-RPC surface", () => {
     expect(providerCalls[0]!.init.body).toContain(`--${providerBoundary}`);
     expect(providerCalls[0]!.init.body).toContain('name="sdp"');
     expect(providerCalls[0]!.init.body).toContain('name="session"');
+    expect(providerCalls[0]!.init.body).toContain('"model":"gpt-realtime-1.5"');
     expect(providerCalls[0]!.init.body).not.toContain("rt_hidden");
 
     const backendCalls: FetchCall[] = [];
@@ -529,10 +531,30 @@ describe("AgenC daemon realtime JSON-RPC surface", () => {
       sdp: "offer-sdp",
       session: {
         type: "realtime",
+        model: "gpt-realtime-1.5",
         audio: { output: { voice: "marin" } },
       },
     });
     expect(backendBody.session as JsonObject).not.toHaveProperty("id");
+    expect(
+      realtimeCallSessionConfigToProviderJson(
+        buildRealtimeSessionConfig({
+          conversationId: "thread_1",
+          outputModality: "audio",
+          version: "v1",
+          voice: "cove",
+        }),
+      ),
+    ).toMatchObject({ type: "quicksilver", model: "gpt-realtime-1.5" });
+    expect(
+      realtimeCallSessionConfigToProviderJson(
+        buildRealtimeSessionConfig({
+          conversationId: "thread_1",
+          outputModality: "text",
+          sessionMode: "transcription",
+        }),
+      ),
+    ).toMatchObject({ type: "transcription", model: "gpt-realtime-1.5" });
 
     const failingClient = new AgenCRealtimeCallClient({
       baseUrl: "https://api.openai.com/v1",
@@ -775,13 +797,45 @@ describe("AgenC daemon realtime JSON-RPC surface", () => {
       },
     });
     socket!.message({
+      type: "conversation.item.input_audio_transcription.delta",
+      delta: "please ",
+    });
+    await expect(connection.nextEvent()).resolves.toEqual({
+      type: "input_transcript_delta",
+      delta: "please ",
+    });
+    socket!.message({
+      type: "conversation.item.input_audio_transcription.completed",
+      transcript: "please compile",
+    });
+    await expect(connection.nextEvent()).resolves.toEqual({
+      type: "input_transcript_done",
+      text: "please compile",
+    });
+    socket!.message({
+      type: "response.created",
+      response: { id: "response_1" },
+    });
+    await expect(connection.nextEvent()).resolves.toEqual({
+      type: "response_created",
+      responseId: "response_1",
+    });
+    socket!.message({
+      type: "response.output_text.delta",
+      delta: "On it.",
+    });
+    await expect(connection.nextEvent()).resolves.toEqual({
+      type: "output_transcript_delta",
+      delta: "On it.",
+    });
+    socket!.message({
       type: "conversation.item.done",
       item: {
         id: "item_call",
         type: "function_call",
         name: "background_agent",
         call_id: "call_1",
-        arguments: JSON.stringify({ prompt: "compile" }),
+        arguments: "",
       },
     });
     await expect(connection.nextEvent()).resolves.toEqual({
@@ -789,13 +843,28 @@ describe("AgenC daemon realtime JSON-RPC surface", () => {
       handoff: {
         handoffId: "call_1",
         itemId: "item_call",
-        inputTranscript: "compile",
-        activeTranscript: [],
+        inputTranscript: "",
+        activeTranscript: [
+          { role: "user", text: "please compile" },
+          { role: "assistant", text: "On it." },
+        ],
       },
     });
 
     await connection.close();
     await expect(connection.nextEvent()).resolves.toBeNull();
+
+    const pendingClosedConnection = connector.connect({
+      transport: { type: "websocket" },
+      sessionConfig: v2Session,
+      requestedSessionId: "thread_ws_v2_closed",
+    });
+    await waitFor(
+      () => socket !== undefined && socket.readyState === 0,
+      "pre-open websocket factory",
+    );
+    socket!.close();
+    await expect(pendingClosedConnection).rejects.toThrow("closed before open");
   });
 });
 

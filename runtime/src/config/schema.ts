@@ -453,6 +453,7 @@ export interface AgenCConfig {
   readonly tools_config?: ToolsConfig;
   readonly compact_prompt?: string;
   readonly experimental_realtime_start_instructions?: string;
+  readonly experimental_realtime_ws_backend_prompt?: string;
   readonly hooks?: HooksMap;
   readonly mcp?: McpConfig;
   readonly mcp_servers?: Readonly<Record<string, McpServerConfig>>;
@@ -600,6 +601,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "tools_config",
   "compact_prompt",
   "experimental_realtime_start_instructions",
+  "experimental_realtime_ws_backend_prompt",
   "hooks",
   "mcp",
   "mcp_servers",

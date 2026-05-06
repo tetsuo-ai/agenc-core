@@ -1,0 +1,100 @@
+{
+  "contractName": "rt-12-realtime-backend-prompt",
+  "scope": "Realtime backend prompt precedence, first-name placeholder substitution, and bundled realtime prompt markdown assets",
+  "generatedAt": "2026-05-06T00:00:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/agenc-runtime-reference-rs",
+  "targetRoot": "..",
+  "sourceCommit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
+  "sourceFiles": [
+    "core/src/realtime_prompt.rs",
+    "core/templates/realtime/backend_prompt.md",
+    "core/src/context/prompts/realtime/realtime_start.md",
+    "core/src/context/prompts/realtime/realtime_end.md"
+  ],
+  "targetFiles": [
+    "runtime/src/conversation/realtime/prompt.ts",
+    "runtime/src/conversation/realtime/prompts/backend_prompt.md",
+    "runtime/src/conversation/realtime/prompts/realtime_start.md",
+    "runtime/src/conversation/realtime/prompts/realtime_end.md",
+    "runtime/src/conversation/realtime/conversation.ts",
+    "runtime/src/conversation/realtime/context.ts",
+    "runtime/src/conversation/realtime/instructions/messages.ts",
+    "runtime/src/config/schema.ts",
+    "runtime/src/session/turn-context.ts",
+    "runtime/vitest.config.ts"
+  ],
+  "testFiles": [
+    "runtime/src/conversation/realtime/prompt.contract.test.ts",
+    "runtime/src/conversation/realtime/conversation.contract.test.ts",
+    "runtime/src/conversation/realtime/instructions/instructions.contract.test.ts",
+    "runtime/src/config/config.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "backend-prompt-precedence",
+      "source": "core/src/realtime_prompt.rs",
+      "target": [
+        "runtime/src/conversation/realtime/prompt.ts",
+        "runtime/src/conversation/realtime/conversation.ts",
+        "runtime/src/config/schema.ts",
+        "runtime/src/session/turn-context.ts"
+      ],
+      "requiredBehaviors": [
+        "nonblank config backend prompt wins over caller prompt and is returned without trimming",
+        "blank config backend prompt is ignored",
+        "caller prompt wins when config backend prompt is absent or blank",
+        "null caller prompt clears the backend prompt when config backend prompt is absent",
+        "buildRealtimeSessionConfigFromSession uses the loaded session config key unless backendPrompt is explicitly provided"
+      ],
+      "tests": [
+        "runtime/src/conversation/realtime/prompt.contract.test.ts",
+        "runtime/src/conversation/realtime/conversation.contract.test.ts",
+        "runtime/src/config/config.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "backend-prompt-default-placeholder",
+      "source": [
+        "core/src/realtime_prompt.rs",
+        "core/templates/realtime/backend_prompt.md"
+      ],
+      "target": [
+        "runtime/src/conversation/realtime/prompt.ts",
+        "runtime/src/conversation/realtime/prompts/backend_prompt.md"
+      ],
+      "requiredBehaviors": [
+        "bundled default backend prompt is trimmed on the right before use",
+        "all {{ user_first_name }} placeholders are replaced",
+        "first name is taken from the first nonblank user-name candidate",
+        "missing or blank user-name candidates fall back to there"
+      ],
+      "tests": [
+        "runtime/src/conversation/realtime/prompt.contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "turn-boundary-prompt-assets",
+      "source": [
+        "core/src/context/prompts/realtime/realtime_start.md",
+        "core/src/context/prompts/realtime/realtime_end.md"
+      ],
+      "target": [
+        "runtime/src/conversation/realtime/prompts/realtime_start.md",
+        "runtime/src/conversation/realtime/prompts/realtime_end.md",
+        "runtime/src/conversation/realtime/instructions/messages.ts"
+      ],
+      "requiredBehaviors": [
+        "default realtime start instructions are read from the bundled markdown asset",
+        "default realtime end instructions are read from the bundled markdown asset",
+        "instruction message rendering keeps the realtime marker wrappers and close reason behavior"
+      ],
+      "tests": [
+        "runtime/src/conversation/realtime/prompt.contract.test.ts",
+        "runtime/src/conversation/realtime/instructions/instructions.contract.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

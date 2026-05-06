@@ -64,8 +64,10 @@
         "multipart SDP plus session call creation",
         "backend JSON call creation shape",
         "Location call id decoding",
+        "call-create session body removes id while preserving configured model",
         "websocket URL shaping",
-        "provider websocket session.update, writer payloads, and event parsing"
+        "provider websocket session.update, writer payloads, and event parsing",
+        "AgenC-owned randomized multipart boundary divergence for caller SDP injection resistance"
       ],
       "evidence": ["runtime/src/app-server/realtime.contract.test.ts"]
     },
@@ -87,6 +89,7 @@
       "coverage": [
         "daemon method dispatch to existing realtime conversation spine",
         "server-push notification fanout for realtime audio, transcript, item, error, and close events",
+        "transcript accumulation into handoff activeTranscript",
         "voice list defaults for v1 and v2"
       ],
       "evidence": ["runtime/src/app-server/realtime.contract.test.ts"]

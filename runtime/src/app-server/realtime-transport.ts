@@ -27,6 +27,8 @@ export const AGENC_REALTIME_CALL_MULTIPART_BOUNDARY =
   "agenc-realtime-call-boundary" as const;
 export const AGENC_REALTIME_CALL_MULTIPART_CONTENT_TYPE =
   `multipart/form-data; boundary=${AGENC_REALTIME_CALL_MULTIPART_BOUNDARY}` as const;
+// Donor uses a fixed multipart boundary. AgenC generates a per-request boundary
+// for call creation so caller SDP cannot inject a multipart part boundary.
 const DEFAULT_AUDIO_SAMPLE_RATE = 24_000;
 const DEFAULT_AUDIO_CHANNELS = 1;
 const BACKGROUND_AGENT_TOOL_NAME = "background_agent";
@@ -39,6 +41,11 @@ const TOOL_ARGUMENT_KEYS = [
   "prompt",
   "query",
 ] as const;
+
+interface MutableRealtimeTranscriptEntry {
+  role: string;
+  text: string;
+}
 
 export interface AgenCRealtimeCallResponse {
   readonly sdp: string;
@@ -109,7 +116,7 @@ export class AgenCRealtimeCallClient {
     sessionConfig: RealtimeSessionConfig,
     extraHeaders: Readonly<Record<string, string>> = {},
   ): Promise<AgenCRealtimeCallResponse> {
-    const session = realtimeSessionConfigToProviderJson(sessionConfig);
+    const session = realtimeCallSessionConfigToProviderJson(sessionConfig);
     const defaultHeaders = await resolveRealtimeHeaders(
       this.#defaultHeaders,
       sessionConfig,
@@ -154,6 +161,10 @@ export interface AgenCRealtimeWebSocketLike {
   ): this;
   on(event: "close", listener: (code?: number, reason?: unknown) => void): this;
   on(event: "error", listener: (error: unknown) => void): this;
+  off?(
+    event: "open" | "message" | "close" | "error",
+    listener: (...args: any[]) => void,
+  ): this;
   send(payload: string, callback?: (error?: Error) => void): void;
   close(code?: number, reason?: string): void;
 }
@@ -200,8 +211,9 @@ export class AgenCRealtimeWebSocketTransportConnector {
       ),
       { headers },
     );
-    const events = new AsyncQueue<RealtimeEvent>({ maxDepth: 512 });
+    const events = new AsyncQueue<RealtimeEvent>();
     const version = request.sessionConfig.version;
+    const transcriptAccumulator = new AgenCRealtimeTranscriptAccumulator();
     socket.on("message", (data, isBinary) => {
       const payload = realtimeWebSocketDataToString(data, isBinary);
       if (payload === null) {
@@ -212,7 +224,7 @@ export class AgenCRealtimeWebSocketTransportConnector {
         return;
       }
       const event = parseRealtimeWebSocketEvent(payload, version);
-      if (event !== null) events.send(event);
+      if (event !== null) events.send(transcriptAccumulator.apply(event));
     });
     socket.on("error", (error) => {
       events.send({
@@ -333,6 +345,14 @@ export function realtimeSessionConfigToProviderJson(
     tools: [backgroundAgentTool(), silenceTool()],
     tool_choice: "auto",
   };
+}
+
+export function realtimeCallSessionConfigToProviderJson(
+  config: RealtimeSessionConfig,
+): JsonObject {
+  // Donor call-create uses session_update_session_json(...), then removes only
+  // the provider-generated id; the configured model remains in this body.
+  return realtimeSessionConfigToProviderJson(config);
 }
 
 export function realtimeSessionUpdateToProviderJson(
@@ -612,6 +632,78 @@ class AgenCRealtimeWebSocketWriter implements RealtimeWriter {
   }
 }
 
+class AgenCRealtimeTranscriptAccumulator {
+  readonly #entries: MutableRealtimeTranscriptEntry[] = [];
+  #lastHandoffEntryCount = 0;
+  #newInputEntry = false;
+  #newOutputEntry = false;
+
+  apply(event: RealtimeEvent): RealtimeEvent {
+    switch (event.type) {
+      case "input_audio_speech_started":
+        this.#newInputEntry = true;
+        return event;
+      case "input_transcript_delta":
+        appendTranscriptDelta(
+          this.#entries,
+          "user",
+          event.delta,
+          this.#newInputEntry,
+        );
+        this.#newInputEntry = false;
+        return event;
+      case "output_transcript_delta":
+        appendTranscriptDelta(
+          this.#entries,
+          "assistant",
+          event.delta,
+          this.#newOutputEntry,
+        );
+        this.#newOutputEntry = false;
+        return event;
+      case "input_transcript_done":
+        applyTranscriptDone(
+          this.#entries,
+          "user",
+          event.text,
+          this.#newInputEntry,
+        );
+        this.#newInputEntry = false;
+        return event;
+      case "output_transcript_done":
+        applyTranscriptDone(
+          this.#entries,
+          "assistant",
+          event.text,
+          this.#newOutputEntry,
+        );
+        this.#newOutputEntry = false;
+        return event;
+      case "handoff_requested": {
+        appendHandoffInput(this.#entries, event.handoff.inputTranscript);
+        const activeTranscript = this.#entries.slice(
+          this.#lastHandoffEntryCount,
+        );
+        this.#lastHandoffEntryCount = this.#entries.length;
+        this.#newInputEntry = true;
+        this.#newOutputEntry = true;
+        return {
+          type: "handoff_requested",
+          handoff: {
+            ...event.handoff,
+            activeTranscript,
+          },
+        };
+      }
+      case "response_created":
+        this.#newOutputEntry = true;
+        return event;
+      default:
+        return event;
+    }
+  }
+}
+
 function defaultRealtimeWebSocketFactory(): AgenCRealtimeWebSocketFactory {
   return (url, options) => new WebSocket(url, { headers: options.headers });
 }
@@ -674,20 +766,42 @@ function waitForRealtimeWebSocketOpen(
   if (socket.readyState === 1) return Promise.resolve();
   return new Promise<void>((resolve, reject) => {
     let settled = false;
-    socket.on("open", () => {
+    const cleanup = (): void => {
+      socket.off?.("open", onOpen);
+      socket.off?.("error", onError);
+      socket.off?.("close", onClose);
+    };
+    const settle = (error?: Error): void => {
       if (settled) return;
       settled = true;
+      cleanup();
+      if (error !== undefined) {
+        reject(error);
+        return;
+      }
       resolve();
-    });
-    socket.on("error", (error) => {
-      if (settled) return;
-      settled = true;
-      reject(
+    };
+    const onOpen = (): void => settle();
+    const onError = (error: unknown): void =>
+      settle(
         new Error(
           `failed to connect realtime websocket: ${errorMessage(error)}`,
         ),
       );
-    });
+    const onClose = (code?: number, reason?: unknown): void => {
+      const suffix =
+        code === undefined
+          ? ""
+          : `: code=${code}${formatRealtimeCloseReason(reason)}`;
+      settle(
+        new Error(
+          `failed to connect realtime websocket: closed before open${suffix}`,
+        ),
+      );
+    };
+    socket.on("open", onOpen);
+    socket.on("error", onError);
+    socket.on("close", onClose);
   });
 }
 
@@ -1022,6 +1136,60 @@ function extractInputTranscript(argumentsText: string): string {
   return argumentsText;
 }
 
+function appendTranscriptDelta(
+  entries: MutableRealtimeTranscriptEntry[],
+  role: string,
+  delta: string,
+  forceNew: boolean,
+): void {
+  if (delta.length === 0) return;
+  const last = entries.at(-1);
+  if (!forceNew && last !== undefined && last.role === role) {
+    last.text += delta;
+    return;
+  }
+  entries.push({ role, text: delta });
+}
+
+function applyTranscriptDone(
+  entries: MutableRealtimeTranscriptEntry[],
+  role: string,
+  text: string,
+  forceNew: boolean,
+): void {
+  if (text.length === 0) return;
+  const last = entries.at(-1);
+  if (!forceNew && last !== undefined && last.role === role) {
+    last.text = text;
+    return;
+  }
+  entries.push({ role, text });
+}
+
+function appendHandoffInput(
+  entries: MutableRealtimeTranscriptEntry[],
+  input: string,
+): void {
+  const trimmed = input.trim();
+  if (
+    trimmed.length === 0 ||
+    containsTranscriptEntry(entries, "user", trimmed)
+  ) {
+    return;
+  }
+  entries.push({ role: "user", text: trimmed });
+}
+
+function containsTranscriptEntry(
+  entries: readonly MutableRealtimeTranscriptEntry[],
+  role: string,
+  text: string,
+): boolean {
+  return entries.some(
+    (entry) => entry.role === role && entry.text.trim() === text.trim(),
+  );
+}
+
 function isJsonObject(value: JsonValue | undefined): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -1039,6 +1207,15 @@ function positiveInteger(value: JsonValue | undefined): number | null {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function formatRealtimeCloseReason(reason: unknown): string {
+  const text = Buffer.isBuffer(reason)
+    ? reason.toString("utf8")
+    : reason === undefined
+      ? ""
+      : String(reason);
+  return text.length === 0 ? "" : ` reason=${text}`;
 }
 
 export function realtimeVoiceToJsonValue(voice: RealtimeVoice): JsonValue {
