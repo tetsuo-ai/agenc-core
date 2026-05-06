@@ -32,6 +32,18 @@ export {
   type RequestId,
 } from "./app-server/protocol/index.js";
 export {
+  AGENC_PORTAL_CLIENT_CAPABILITIES,
+  AGENC_PORTAL_METHODS,
+  AGENC_PORTAL_PROTOCOL_VERSION,
+  isAgenCPortalMethod,
+  type AgenCPortalAgentSummary,
+  type AgenCPortalClientCapability,
+  type AgenCPortalConnectionTarget,
+  type AgenCPortalDashboardSnapshot,
+  type AgenCPortalMethod,
+  type AgenCPortalSessionSummary,
+} from "./app-server-protocol/index.js";
+export {
   AGENC_IDE_EXTENSION_CAPABILITY_NAMESPACE,
   AGENC_IDE_EXTENSION_LSP_CAPABILITY,
   AGENC_IDE_EXTENSION_PACKAGE_NAME,

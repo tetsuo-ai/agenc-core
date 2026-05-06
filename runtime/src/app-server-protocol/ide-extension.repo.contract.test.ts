@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -26,11 +27,12 @@ interface ExtensionPackageJson {
 }
 
 function findAgenCVscodeRepo(): string {
+  const mainCheckoutCandidate = mainCheckoutSiblingCandidate();
   const candidates = [
     process.env.AGENC_VSCODE_REPO,
+    mainCheckoutCandidate,
     resolve(process.cwd(), "..", "..", AGENC_IDE_EXTENSION_REPOSITORY_NAME),
     resolve(process.cwd(), "..", "..", "..", AGENC_IDE_EXTENSION_REPOSITORY_NAME),
-    "/home/tetsuo/git/AgenC/agenc-vscode",
   ].filter((candidate): candidate is string => typeof candidate === "string");
 
   const packagePath = candidates
@@ -40,6 +42,17 @@ function findAgenCVscodeRepo(): string {
     throw new Error("Missing agenc-vscode sibling repo package.json");
   }
   return dirname(packagePath);
+}
+
+function mainCheckoutSiblingCandidate(): string | undefined {
+  const commonDir = spawnSync(
+    "git",
+    ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+  if (commonDir.status !== 0) return undefined;
+  const mainCheckout = dirname(commonDir.stdout.trim());
+  return resolve(mainCheckout, "..", AGENC_IDE_EXTENSION_REPOSITORY_NAME);
 }
 
 describe("AgenC VS Code sibling repo scaffold", () => {
