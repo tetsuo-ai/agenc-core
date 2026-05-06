@@ -1,6 +1,6 @@
 import React from 'react';
-import { MCPServerApprovalDialog } from '../components/MCPServerApprovalDialog.js';
-import { MCPServerMultiselectDialog } from '../components/MCPServerMultiselectDialog.js';
+import { MCPServerApprovalDialog } from '../../../tui/components/MCPServerApprovalDialog';
+import { MCPServerMultiselectDialog } from '../../../tui/components/MCPServerMultiselectDialog';
 import type { Root } from '../../../tui/ink.js';
 import { KeybindingSetup } from '../../../tui/keybindings/KeybindingProviderSetup.js';
 import { AppStateProvider } from '../../../tui/state/AppState.js';

@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { logEvent } from 'src/services/analytics/index.js';
 import { Spinner } from '../../../tui/components/spinner/Spinner.js';
 import { getOauthConfig } from '../constants/oauth.js';
-import { useTimeout } from '../hooks/useTimeout.js';
+import { useTimeout } from '../../../tui/hooks/useTimeout';
 import { Box, Text } from '../../../tui/ink.js';
 import { getSSLErrorHint } from '../services/api/errorUtils.js';
 import { getUserAgent } from './http.js';

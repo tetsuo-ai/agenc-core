@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { HooksConfigMenu } from '../../components/hooks/HooksConfigMenu.js';
+import { HooksConfigMenu } from '../../../../tui/components/hooks/HooksConfigMenu';
 import { logEvent } from '../../services/analytics/index.js';
 import { getTools } from '../../tools.js';
 import type { LocalJSXCommandCall } from '../../types/command.js';

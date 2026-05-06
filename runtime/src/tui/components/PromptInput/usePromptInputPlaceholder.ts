@@ -1,6 +1,6 @@
 import { feature } from 'bun:bundle'
 import { useMemo } from 'react'
-import { useCommandQueue } from '../../../agenc/upstream/hooks/useCommandQueue.js'
+import { useCommandQueue } from '../../hooks/useCommandQueue'
 import { useAppState } from '../../state/AppState.js'
 import { getGlobalConfig } from '../../../agenc/upstream/utils/config.js'
 import { getExampleCommandFromCache } from '../../../agenc/upstream/utils/exampleCommands.js'

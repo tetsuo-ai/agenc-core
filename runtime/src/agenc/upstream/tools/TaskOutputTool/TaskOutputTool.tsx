@@ -1,9 +1,9 @@
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { z } from 'zod/v4';
-import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErrorMessage.js';
-import { FallbackToolUseRejectedMessage } from '../../components/FallbackToolUseRejectedMessage.js';
-import { MessageResponse } from '../../components/MessageResponse.js';
+import { FallbackToolUseErrorMessage } from '../../../../tui/components/FallbackToolUseErrorMessage';
+import { FallbackToolUseRejectedMessage } from '../../../../tui/components/FallbackToolUseRejectedMessage';
+import { MessageResponse } from '../../../../tui/components/MessageResponse';
 import { Box, Text } from '../../../../tui/ink.js';
 import { useShortcutDisplay } from '../../../../tui/keybindings/useShortcutDisplay.js';
 import type { TaskType } from '../../Task.js';

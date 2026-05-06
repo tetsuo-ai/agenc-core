@@ -12,7 +12,7 @@ import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
 import type { PromptCommand } from '../../../commands.js'
 import type { QuerySource } from '../constants/querySource.js'
-import type { CanUseToolFn } from '../hooks/useCanUseTool.js'
+import type { CanUseToolFn } from '../../../tui/hooks/useCanUseTool'
 import { query } from '../query.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,

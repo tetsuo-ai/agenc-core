@@ -51,7 +51,7 @@ vi.mock("src/utils/envUtils.js", () => ({
   isEnvTruthy: () => false,
 }));
 
-vi.mock("../../agenc/upstream/context/fpsMetrics.js", async () => {
+vi.mock("../context/fpsMetrics.js", async () => {
   const React = await import("react");
   return {
     FpsMetricsProvider: ({
@@ -67,7 +67,7 @@ vi.mock("../../agenc/upstream/context/fpsMetrics.js", async () => {
   };
 });
 
-vi.mock("../../agenc/upstream/context/stats.js", async () => {
+vi.mock("../context/stats.js", async () => {
   const React = await import("react");
   return {
     StatsProvider: ({
@@ -100,7 +100,7 @@ vi.mock("../ink.js", async () => {
   };
 });
 
-vi.mock("../../agenc/upstream/context/mailbox.js", async () => {
+vi.mock("../context/mailbox.js", async () => {
   const React = await import("react");
   return {
     MailboxProvider: ({ children }: { children: React.ReactNode }) =>
@@ -108,11 +108,11 @@ vi.mock("../../agenc/upstream/context/mailbox.js", async () => {
   };
 });
 
-vi.mock("../../agenc/upstream/hooks/useEffectEventCompat.js", () => ({
+vi.mock("../hooks/useEffectEventCompat.js", () => ({
   useEffectEventCompat: (callback: unknown) => callback,
 }));
 
-vi.mock("../../agenc/upstream/hooks/useSettingsChange.js", () => ({
+vi.mock("../hooks/useSettingsChange.js", () => ({
   useSettingsChange: () => {},
 }));
 

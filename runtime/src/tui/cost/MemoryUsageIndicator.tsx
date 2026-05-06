@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useMemoryUsage } from '../../agenc/upstream/hooks/useMemoryUsage.js';
+import { useMemoryUsage } from '../hooks/useMemoryUsage';
 import { Box, Text } from '../ink.js';
 import { formatFileSize } from '../../agenc/upstream/utils/format.js';
 export function MemoryUsageIndicator(): React.ReactNode {

@@ -7,8 +7,8 @@ import { c as _c } from "react-compiler-runtime";
 
 import { cwd } from 'process';
 import React from 'react';
-import { WelcomeV2 } from '../../components/LogoV2/WelcomeV2.js';
-import { useManagePlugins } from '../../hooks/useManagePlugins.js';
+import { WelcomeV2 } from '../../../../tui/components/LogoV2/WelcomeV2';
+import { useManagePlugins } from '../../../../tui/hooks/useManagePlugins';
 import type { Root } from '../../../../tui/ink.js';
 import { Box, Text } from '../../../../tui/ink.js';
 import { KeybindingSetup } from '../../../../tui/keybindings/KeybindingProviderSetup.js';
@@ -22,7 +22,7 @@ export async function setupTokenHandler(root: Root): Promise<void> {
   const showAuthWarning = !isAnthropicAuthEnabled();
   const {
     ConsoleOAuthFlow
-  } = await import('../../components/ConsoleOAuthFlow.js');
+  } = await import('../../../../tui/components/ConsoleOAuthFlow');
   await new Promise<void>(resolve => {
     root.render(<AppStateProvider onChangeAppState={onChangeAppState}>
         <KeybindingSetup>

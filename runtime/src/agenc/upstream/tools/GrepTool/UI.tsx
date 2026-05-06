@@ -1,9 +1,9 @@
 import { c as _c } from "react-compiler-runtime";
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import React from 'react';
-import { CtrlOToExpand } from '../../components/CtrlOToExpand.js';
-import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErrorMessage.js';
-import { MessageResponse } from '../../components/MessageResponse.js';
+import { CtrlOToExpand } from '../../../../tui/components/CtrlOToExpand';
+import { FallbackToolUseErrorMessage } from '../../../../tui/components/FallbackToolUseErrorMessage';
+import { MessageResponse } from '../../../../tui/components/MessageResponse';
 import { TOOL_SUMMARY_MAX_LENGTH } from '../../constants/toolLimits.js';
 import { Box, Text } from '../../../../tui/ink.js';
 import type { ToolProgressData } from '../../Tool.js';

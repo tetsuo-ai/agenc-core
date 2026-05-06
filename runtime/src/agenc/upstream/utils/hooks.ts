@@ -147,7 +147,7 @@ import {
 import { createAttachmentMessage } from './attachments.js'
 import { all } from './generators.js'
 import { findToolByName, type Tools, type ToolUseContext } from '../Tool.js'
-import type { CanUseToolFn } from '../hooks/useCanUseTool.js'
+import type { CanUseToolFn } from '../../../tui/hooks/useCanUseTool'
 import { execPromptHook } from './hooks/execPromptHook.js'
 import type { Message, AssistantMessage } from '../types/message.js'
 import { execAgentHook } from './hooks/execAgentHook.js'

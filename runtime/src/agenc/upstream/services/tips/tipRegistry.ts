@@ -7,9 +7,9 @@ import {
   getSettingsForSource,
 } from 'src/utils/settings/settings.js'
 import { shouldOfferTerminalSetup } from '../../commands/terminalSetup/terminalSetup.js'
-import { getDesktopUpsellConfig } from '../../components/DesktopUpsell/DesktopUpsellStartup.js'
-import { color } from '../../components/design-system/color.js'
-import { shouldShowOverageCreditUpsell } from '../../components/LogoV2/OverageCreditUpsell.js'
+import { getDesktopUpsellConfig } from '../../../../tui/components/DesktopUpsell/DesktopUpsellStartup'
+import { color } from '../../../../tui/components/design-system/color'
+import { shouldShowOverageCreditUpsell } from '../../../../tui/components/LogoV2/OverageCreditUpsell'
 import { getShortcutDisplay } from '../../../../tui/keybindings/shortcutFormat.js'
 import { isKairosCronEnabled } from '../../tools/ScheduleCronTool/prompt.js'
 import { is1PApiCustomer } from '../../utils/auth.js'

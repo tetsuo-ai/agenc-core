@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useCallback, useState } from 'react'
-import { Select } from '../../components/CustomSelect/select.js'
+import { Select } from '../../../../tui/components/CustomSelect/select'
 import { Spinner } from '../../../../tui/components/spinner/Spinner.js'
 import { Box, Text } from '../../../../tui/ink.js'
 import {

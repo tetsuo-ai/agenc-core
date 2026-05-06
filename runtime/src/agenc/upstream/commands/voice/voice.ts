@@ -1,4 +1,4 @@
-import { normalizeLanguageForSTT } from '../../hooks/useVoice.js'
+import { normalizeLanguageForSTT } from '../../../../tui/hooks/useVoice'
 import { getShortcutDisplay } from '../../../../tui/keybindings/shortcutFormat.js'
 import { logEvent } from '../../services/analytics/index.js'
 import type { LocalCommandCall } from '../../types/command.js'

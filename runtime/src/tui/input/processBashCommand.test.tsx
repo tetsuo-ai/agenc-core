@@ -15,7 +15,7 @@ const mocks = vi.hoisted(() => ({
   })),
 }));
 
-vi.mock("../../agenc/upstream/components/BashModeProgress.js", () => ({
+vi.mock("../components/BashModeProgress.js", () => ({
   BashModeProgress: vi.fn(() => null),
 }));
 

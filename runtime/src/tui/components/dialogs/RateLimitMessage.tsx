@@ -6,7 +6,7 @@ import { useAgenCAiLimits } from '../../rate-limits/agenc-ai-limits.js';
 import { getRateLimitTier, getSubscriptionType, isAgenCAISubscriber } from '../../../agenc/upstream/utils/auth.js';
 import { hasAgenCAiBillingAccess } from '../../../agenc/upstream/utils/billing.js';
 import { Box, Text } from '../../ink.js';
-import { MessageResponse } from '../../../agenc/upstream/components/MessageResponse.js';
+import { MessageResponse } from '../MessageResponse';
 type UpsellParams = {
   shouldShowUpsell: boolean;
   isMax20x: boolean;

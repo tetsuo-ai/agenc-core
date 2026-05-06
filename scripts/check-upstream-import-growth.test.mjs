@@ -9,6 +9,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import {
   compareImporterSets,
+  hasUnexemptedUpstreamImport,
   importerFilesFromGitGrepOutput,
   importerFilesFromRipgrepOutput,
   isProductionTypeScriptPath,
@@ -104,6 +105,21 @@ try {
       "runtime/src/b.ts",
     ]).delta === 1,
   );
+  assert(
+    "keep comment exempts upstream import lines",
+    !hasUnexemptedUpstreamImport(
+      [
+        "// upstream-import: keep target is owned by another Z-PURGE item",
+        'import { kept } from "./agenc/upstream/kept.js";',
+      ].join("\n"),
+    ),
+  );
+  assert(
+    "uncommented upstream import lines are counted",
+    hasUnexemptedUpstreamImport(
+      'import { counted } from "./agenc/upstream/counted.js";',
+    ),
+  );
 
   const root = createRepo();
   try {
@@ -123,6 +139,21 @@ try {
       "test-only importer is ignored",
       testOnly.status === 0,
       `${testOnly.stderr}${testOnly.stdout}`,
+    );
+
+    writeFileSync(
+      path.join(root, "runtime/src/kept.ts"),
+      [
+        "// upstream-import: keep target is owned by another Z-PURGE item",
+        'import { kept } from "./agenc/upstream/kept.js";',
+        "export { kept };",
+      ].join("\n"),
+    );
+    const kept = runChecker(root);
+    assert(
+      "kept importer is ignored",
+      kept.status === 0,
+      `${kept.stderr}${kept.stdout}`,
     );
 
     writeFileSync(

@@ -29,7 +29,7 @@ import {
   getTotalAPIDuration,
   getTotalCost,
 } from '../../cost/tracker.js'
-import type { CanUseToolFn } from './hooks/useCanUseTool.js'
+import type { CanUseToolFn } from '../../tui/hooks/useCanUseTool'
 import { loadMemoryPrompt } from './memdir/memdir.js'
 import { hasAutoMemPathOverride } from './memdir/paths.js'
 import { query } from './query.js'

@@ -10,7 +10,7 @@ import { every } from '../../agenc/upstream/utils/set.js';
 import { getIsRemoteMode } from '../../agenc/upstream/bootstrap/state.js';
 import type { Command } from '../../commands.js';
 import { BLACK_CIRCLE } from '../../agenc/upstream/constants/figures.js';
-import { useTerminalSize } from '../../agenc/upstream/hooks/useTerminalSize.js';
+import { useTerminalSize } from '../hooks/useTerminalSize';
 import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js';
 import { useTerminalNotification } from '../ink/useTerminalNotification.js';
 import { Box, Text } from '../ink.js';
@@ -32,18 +32,18 @@ import { applyGrouping } from '../../agenc/upstream/utils/groupToolUses.js';
 import { buildMessageLookups, createAssistantMessage, deriveUUID, getMessagesAfterCompactBoundary, getToolUseID, getToolUseIDs, hasUnresolvedHooksFromLookup, isNotEmptyMessage, normalizeMessages, reorderMessagesInUI, type StreamingThinking, shouldShowUserMessage } from '../../agenc/upstream/utils/messages.js';
 import { plural } from '../../agenc/upstream/utils/stringUtils.js';
 import { renderableSearchText } from '../history/transcriptSearch.js';
-import { Divider } from '../../agenc/upstream/components/design-system/Divider.js';
-import type { UnseenDivider } from '../../agenc/upstream/components/FullscreenLayout.js';
-import { LogoV2 } from '../../agenc/upstream/components/LogoV2/LogoV2.js';
+import { Divider } from './design-system/Divider';
+import type { UnseenDivider } from './FullscreenLayout';
+import { LogoV2 } from './LogoV2/LogoV2';
 import { StreamingMarkdown } from './markdown/Markdown.js';
-import { hasContentAfterIndex, MessageRow } from '../../agenc/upstream/components/MessageRow.js';
-import { InVirtualListContext, type MessageActionsNav, MessageActionsSelectedContext, type MessageActionsState } from '../../agenc/upstream/components/messageActions.js';
-import { AssistantThinkingMessage } from '../../agenc/upstream/components/messages/AssistantThinkingMessage.js';
-import { isNullRenderingAttachment } from '../../agenc/upstream/components/messages/nullRenderingAttachments.js';
-import { OffscreenFreeze } from '../../agenc/upstream/components/OffscreenFreeze.js';
+import { hasContentAfterIndex, MessageRow } from './MessageRow';
+import { InVirtualListContext, type MessageActionsNav, MessageActionsSelectedContext, type MessageActionsState } from './messageActions';
+import { AssistantThinkingMessage } from './messages/AssistantThinkingMessage';
+import { isNullRenderingAttachment } from './messages/nullRenderingAttachments';
+import { OffscreenFreeze } from './OffscreenFreeze';
 import type { ToolUseConfirm } from './permissions/PermissionRequest.js';
 import { StatusNotices } from '../startup/StatusNotices.js';
-import type { JumpHandle } from '../../agenc/upstream/components/VirtualMessageList.js';
+import type { JumpHandle } from './VirtualMessageList';
 import {
   getMessagesSendUserFileToolName,
   isMessagesProactiveActive,
@@ -90,7 +90,7 @@ const BRIEF_TOOL_NAME: string | null = feature('KAIROS') || feature('KAIROS_BRIE
 /* eslint-enable @typescript-eslint/no-require-imports */
 const SEND_USER_FILE_TOOL_NAME: string | null = feature('KAIROS') ? getMessagesSendUserFileToolName() : null;
 
-import { VirtualMessageList } from '../../agenc/upstream/components/VirtualMessageList.js';
+import { VirtualMessageList } from './VirtualMessageList';
 export { dropTextInBriefTurns, filterForBriefTool } from './messagesBriefFiltering.js';
 type Props = {
   messages: MessageType[];

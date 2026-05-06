@@ -34,7 +34,7 @@ vi.mock('bun:bundle', () => ({
   feature: () => false,
 }))
 
-vi.mock('../../../agenc/upstream/hooks/useSettings.js', () => ({
+vi.mock('../../hooks/useSettings.js', () => ({
   useSettings: () => ({
     syntaxHighlightingDisabled: settingsMock.syntaxHighlightingDisabled,
   }),
@@ -45,7 +45,7 @@ vi.mock('../../../agenc/upstream/utils/messages.js', () => ({
     input.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, ''),
 }))
 
-vi.mock('../../../agenc/upstream/components/StructuredDiff/colorDiff.js', () => ({
+vi.mock('../StructuredDiff/colorDiff.js', () => ({
   expectColorFile: () => colorFileMock.ColorFile,
 }))
 

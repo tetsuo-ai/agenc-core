@@ -1,5 +1,5 @@
 import React from 'react';
-import { MessageResponse } from '../../components/MessageResponse.js';
+import { MessageResponse } from '../../../../tui/components/MessageResponse';
 import { Text } from '../../../../tui/ink.js';
 import { jsonParse } from '../../utils/slowOperations.js';
 import type { Input, SendMessageToolOutput } from './SendMessageTool.js';

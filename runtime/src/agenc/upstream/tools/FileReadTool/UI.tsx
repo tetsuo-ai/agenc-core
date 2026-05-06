@@ -1,9 +1,9 @@
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import * as React from 'react';
 import { extractTag } from 'src/utils/messages.js';
-import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErrorMessage.js';
-import { FilePathLink } from '../../components/FilePathLink.js';
-import { MessageResponse } from '../../components/MessageResponse.js';
+import { FallbackToolUseErrorMessage } from '../../../../tui/components/FallbackToolUseErrorMessage';
+import { FilePathLink } from '../../../../tui/components/FilePathLink';
+import { MessageResponse } from '../../../../tui/components/MessageResponse';
 import { Text } from '../../../../tui/ink.js';
 import { FILE_NOT_FOUND_CWD_NOTE, getDisplayPath } from '../../utils/file.js';
 import { formatFileSize } from '../../utils/format.js';

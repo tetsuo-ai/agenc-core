@@ -3,7 +3,7 @@ import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { EnterPlanModeTool } from '../../../agenc/upstream/tools/EnterPlanModeTool/EnterPlanModeTool.js';
 import { ExitPlanModeV2Tool } from '../../../agenc/upstream/tools/ExitPlanModeTool/ExitPlanModeV2Tool.js';
-import { useNotifyAfterTimeout } from '../../../agenc/upstream/hooks/useNotifyAfterTimeout.js';
+import { useNotifyAfterTimeout } from '../../hooks/useNotifyAfterTimeout';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import type { AnyObject, Tool, ToolUseContext } from '../../../agenc/upstream/Tool.js';
 import { AskUserQuestionTool } from '../../../tools/ask-user-question/tui-tool.js';
@@ -20,19 +20,19 @@ import { WebFetchTool } from '../../../agenc/upstream/tools/WebFetchTool/WebFetc
 import { MonitorTool as MonitorToolImpl } from '../../../agenc/upstream/tools/MonitorTool/MonitorTool.js';
 import type { AssistantMessage } from '../../../agenc/upstream/types/message.js';
 import type { PermissionDecision } from '../../../agenc/upstream/types/permissions.js';
-import { AskUserQuestionPermissionRequest } from '../../../agenc/upstream/components/permissions/AskUserQuestionPermissionRequest/AskUserQuestionPermissionRequest.js';
-import { BashPermissionRequest } from '../../../agenc/upstream/components/permissions/BashPermissionRequest/BashPermissionRequest.js';
-import { EnterPlanModePermissionRequest } from '../../../agenc/upstream/components/permissions/EnterPlanModePermissionRequest/EnterPlanModePermissionRequest.js';
-import { ExitPlanModePermissionRequest } from '../../../agenc/upstream/components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.js';
-import { FallbackPermissionRequest } from '../../../agenc/upstream/components/permissions/FallbackPermissionRequest.js';
-import { FileEditPermissionRequest } from '../../../agenc/upstream/components/permissions/FileEditPermissionRequest/FileEditPermissionRequest.js';
-import { FilesystemPermissionRequest } from '../../../agenc/upstream/components/permissions/FilesystemPermissionRequest/FilesystemPermissionRequest.js';
-import { FileWritePermissionRequest } from '../../../agenc/upstream/components/permissions/FileWritePermissionRequest/FileWritePermissionRequest.js';
-import { NotebookEditPermissionRequest } from '../../../agenc/upstream/components/permissions/NotebookEditPermissionRequest/NotebookEditPermissionRequest.js';
-import { PowerShellPermissionRequest } from '../../../agenc/upstream/components/permissions/PowerShellPermissionRequest/PowerShellPermissionRequest.js';
-import { SkillPermissionRequest } from '../../../agenc/upstream/components/permissions/SkillPermissionRequest/SkillPermissionRequest.js';
-import { WebFetchPermissionRequest } from '../../../agenc/upstream/components/permissions/WebFetchPermissionRequest/WebFetchPermissionRequest.js';
-import { MonitorPermissionRequest as MonitorPermissionRequestImpl } from '../../../agenc/upstream/components/permissions/MonitorPermissionRequest/MonitorPermissionRequest.js';
+import { AskUserQuestionPermissionRequest } from './AskUserQuestionPermissionRequest/AskUserQuestionPermissionRequest';
+import { BashPermissionRequest } from './BashPermissionRequest/BashPermissionRequest';
+import { EnterPlanModePermissionRequest } from './EnterPlanModePermissionRequest/EnterPlanModePermissionRequest';
+import { ExitPlanModePermissionRequest } from './ExitPlanModePermissionRequest/ExitPlanModePermissionRequest';
+import { FallbackPermissionRequest } from './FallbackPermissionRequest';
+import { FileEditPermissionRequest } from './FileEditPermissionRequest/FileEditPermissionRequest';
+import { FilesystemPermissionRequest } from './FilesystemPermissionRequest/FilesystemPermissionRequest';
+import { FileWritePermissionRequest } from './FileWritePermissionRequest/FileWritePermissionRequest';
+import { NotebookEditPermissionRequest } from './NotebookEditPermissionRequest/NotebookEditPermissionRequest';
+import { PowerShellPermissionRequest } from './PowerShellPermissionRequest/PowerShellPermissionRequest';
+import { SkillPermissionRequest } from './SkillPermissionRequest/SkillPermissionRequest';
+import { WebFetchPermissionRequest } from './WebFetchPermissionRequest/WebFetchPermissionRequest';
+import { MonitorPermissionRequest as MonitorPermissionRequestImpl } from './MonitorPermissionRequest/MonitorPermissionRequest';
 
 function unsupportedPermissionFeature<T>(featureName: string): T {
   throw new Error(
@@ -56,7 +56,7 @@ const MonitorPermissionRequest = feature('MONITOR_TOOL') ? MonitorPermissionRequ
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
 import type { z } from 'zod/v4';
 import type { PermissionUpdate } from '../../../agenc/upstream/utils/permissions/PermissionUpdateSchema.js';
-import type { WorkerBadgeProps } from '../../../agenc/upstream/components/permissions/WorkerBadge.js';
+import type { WorkerBadgeProps } from './WorkerBadge';
 function permissionComponentForTool(tool: Tool): React.ComponentType<PermissionRequestProps> {
   switch (tool) {
     case FileEditTool:

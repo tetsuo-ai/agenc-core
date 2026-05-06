@@ -13,12 +13,12 @@ import { feature } from 'bun:bundle'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import { getSystemPrompt } from '../../constants/prompts.js'
 import { TEAMMATE_MESSAGE_TAG } from '../../constants/xml.js'
-import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
+import type { CanUseToolFn } from '../../../../tui/hooks/useCanUseTool'
 import {
   processMailboxPermissionResponse,
   registerPermissionCallback,
   unregisterPermissionCallback,
-} from '../../hooks/useSwarmPermissionPoller.js'
+} from '../../../../tui/hooks/useSwarmPermissionPoller'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,

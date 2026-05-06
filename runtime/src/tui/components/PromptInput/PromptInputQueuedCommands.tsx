@@ -5,13 +5,13 @@ import { Box, Text } from '../../ink.js';
 import { useAppState } from '../../state/AppState.js';
 import type { AppState } from '../../state/AppState.js';
 import { STATUS_TAG, SUMMARY_TAG, TASK_NOTIFICATION_TAG } from '../../../agenc/upstream/constants/xml.js';
-import { QueuedMessageProvider } from '../../../agenc/upstream/context/QueuedMessageContext.js';
-import { useCommandQueue } from '../../../agenc/upstream/hooks/useCommandQueue.js';
+import { QueuedMessageProvider } from '../../context/QueuedMessageContext';
+import { useCommandQueue } from '../../hooks/useCommandQueue';
 import type { QueuedCommand } from '../../../agenc/upstream/types/textInputTypes.js';
 import { isQueuedCommandEditable, isQueuedCommandVisible } from '../../../agenc/upstream/utils/messageQueueManager.js';
 import { createUserMessage, EMPTY_LOOKUPS, normalizeMessages } from '../../../agenc/upstream/utils/messages.js';
 import { jsonParse } from '../../../agenc/upstream/utils/slowOperations.js';
-import { Message } from '../../../agenc/upstream/components/Message.js';
+import { Message } from '../Message';
 const EMPTY_SET = new Set<string>();
 
 /**

@@ -8,7 +8,7 @@
  */
 import React from 'react';
 import type { AssistantSession } from './assistant/sessionDiscovery.js';
-import type { StatsStore } from './context/stats.js';
+import type { StatsStore } from '../../tui/context/stats';
 import type { Root } from '../../tui/ink.js';
 import { renderAndRun, showSetupDialog } from './interactiveHelpers.js';
 import { KeybindingSetup } from '../../tui/keybindings/KeybindingProviderSetup.js';
@@ -33,7 +33,7 @@ export async function launchSnapshotUpdateDialog(root: Root, props: {
 }): Promise<'merge' | 'keep' | 'replace'> {
   const {
     SnapshotUpdateDialog
-  } = await import('./components/agents/SnapshotUpdateDialog.js');
+  } = await import('../../tui/components/agents/SnapshotUpdateDialog');
   return showSetupDialog<'merge' | 'keep' | 'replace'>(root, done => <SnapshotUpdateDialog agentType={props.agentType} scope={props.scope} snapshotTimestamp={props.snapshotTimestamp} onComplete={done} onCancel={() => done('keep')} />);
 }
 
@@ -47,7 +47,7 @@ export async function launchInvalidSettingsDialog(root: Root, props: {
 }): Promise<void> {
   const {
     InvalidSettingsDialog
-  } = await import('./components/InvalidSettingsDialog.js');
+  } = await import('../../tui/components/InvalidSettingsDialog');
   return showSetupDialog(root, done => <InvalidSettingsDialog settingsErrors={props.settingsErrors} onContinue={done} onExit={props.onExit} />);
 }
 
@@ -81,7 +81,7 @@ export async function launchAssistantInstallWizard(root: Root): Promise<string |
 export async function launchTeleportResumeWrapper(root: Root): Promise<TeleportRemoteResponse | null> {
   const {
     TeleportResumeWrapper
-  } = await import('./components/TeleportResumeWrapper.js');
+  } = await import('../../tui/components/TeleportResumeWrapper');
   return showSetupDialog<TeleportRemoteResponse | null>(root, done => <TeleportResumeWrapper onComplete={done} onCancel={() => done(null)} source="cliArg" />);
 }
 
@@ -95,7 +95,7 @@ export async function launchTeleportRepoMismatchDialog(root: Root, props: {
 }): Promise<string | null> {
   const {
     TeleportRepoMismatchDialog
-  } = await import('./components/TeleportRepoMismatchDialog.js');
+  } = await import('../../tui/components/TeleportRepoMismatchDialog');
   return showSetupDialog<string | null>(root, done => <TeleportRepoMismatchDialog targetRepo={props.targetRepo} initialPaths={props.initialPaths} onSelectPath={done} onCancel={() => done(null)} />);
 }
 
