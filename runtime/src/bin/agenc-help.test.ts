@@ -17,6 +17,7 @@ describe("agenc CLI help", () => {
     expect(help).toContain("agenc help [command]");
     expect(help).toContain("Commands:");
     expect(help).toContain("Examples:");
+    expect(help).toContain("agenc init");
     expect(help).toContain("agenc agent start");
     expect(help).toContain("agenc mcp serve --transport stdio");
   });
@@ -26,6 +27,7 @@ describe("agenc CLI help", () => {
       "agent",
       "daemon",
       "help",
+      "init",
       "login",
       "mcp",
       "permissions",
