@@ -1,5 +1,5 @@
 /**
- * Anthropic Messages API wire shim.
+ * Messages API wire shim.
  *
  * @module
  */
@@ -110,7 +110,9 @@ export function buildAnthropicMessagesRequest(
   input: AnthropicMessagesRequestOptions,
 ): Record<string, unknown> {
   const messages = prepareMessagesForWire(input.messages);
-  const systemMessages = messages.filter((message) => message.role === "system");
+  const systemMessages = messages.filter((message) =>
+    message.role === "system" || message.role === "developer"
+  );
   const optionSystemPrompt = input.options?.systemPrompt?.trim();
   const systemMessageHasCacheControl = systemMessages.some((message) =>
     hasEphemeralCacheControl(message)
@@ -151,7 +153,9 @@ export function buildAnthropicMessagesRequest(
   const body: Record<string, unknown> = {
     model: input.model,
     messages: messages
-      .filter((message) => message.role !== "system")
+      .filter((message) =>
+        message.role !== "system" && message.role !== "developer"
+      )
       .map((message) => {
         if (message.role === "assistant" && message.toolCalls?.length) {
           const anthropicContent = normalizeAnthropicMessageContent(message);

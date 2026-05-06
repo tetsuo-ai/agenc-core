@@ -12,7 +12,7 @@ import type { LLMProvider } from "../../llm/types.js";
 
 export type RuntimeMessage = {
   readonly role?: "system" | "user" | "assistant" | "tool";
-  readonly originalRole?: "system" | "user" | "assistant" | "tool";
+  readonly originalRole?: "system" | "developer" | "user" | "assistant" | "tool";
   readonly type?: string;
   readonly content?: unknown;
   readonly toolCallId?: string;

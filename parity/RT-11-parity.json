@@ -1,0 +1,179 @@
+{
+  "contractName": "rt-11-realtime-instructions",
+  "scope": "Realtime developer-role instruction fragments, text-turn injection, rollback trimming, and provider serialization",
+  "generatedAt": "2026-05-06T00:00:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/agenc-runtime-reference-rs",
+  "targetRoot": "..",
+  "sourceCommit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
+  "sourceFiles": [
+    "core/src/context/realtime_start_instructions.rs",
+    "core/src/context/realtime_end_instructions.rs",
+    "core/src/context/realtime_start_with_instructions.rs",
+    "core/src/context/fragment.rs",
+    "core/src/context_manager/updates.rs",
+    "core/src/event_mapping.rs",
+    "core/src/context_manager/history.rs",
+    "protocol/src/protocol.rs"
+  ],
+  "deferredSourceFiles": [
+    {
+      "path": "core/src/context/prompts/realtime/realtime_start.md",
+      "owner": "RT-12"
+    },
+    {
+      "path": "core/src/context/prompts/realtime/realtime_end.md",
+      "owner": "RT-12"
+    }
+  ],
+  "targetFiles": [
+    "runtime/src/conversation/realtime/instructions/markers.ts",
+    "runtime/src/conversation/realtime/instructions/messages.ts",
+    "runtime/src/session/run-turn.ts",
+    "runtime/src/session/rollout-reconstruction.ts",
+    "runtime/src/session/event-log-reducer.ts",
+    "runtime/src/config/schema.ts",
+    "runtime/src/llm/types.ts",
+    "runtime/src/session/rollout-item.ts",
+    "runtime/src/rollout/policy.ts",
+    "runtime/src/llm/wire/responses-openai.ts",
+    "runtime/src/llm/wire/chat-completions.ts",
+    "runtime/src/llm/wire/messages-anthropic.ts",
+    "runtime/src/llm/wire/responses-xai.ts",
+    "runtime/src/llm/providers/ollama/adapter.ts",
+    "runtime/src/llm/providers/grok/adapter-utils.ts"
+  ],
+  "testFiles": [
+    "runtime/src/conversation/realtime/instructions/instructions.contract.test.ts",
+    "runtime/src/session/run-turn.test.ts",
+    "runtime/src/session/rollout-reconstruction.test.ts",
+    "runtime/src/conversation/realtime/context.contract.test.ts",
+    "runtime/src/llm/wire/responses-openai.test.ts",
+    "runtime/src/llm/wire/chat-completions.test.ts",
+    "runtime/src/llm/wire/messages-anthropic.test.ts",
+    "runtime/src/llm/wire/responses-xai.test.ts",
+    "runtime/src/config/config.test.ts",
+    "runtime/src/rollout/rollout-store.contract.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "developer-fragment-rendering",
+      "source": [
+        "core/src/context/realtime_start_instructions.rs",
+        "core/src/context/realtime_end_instructions.rs",
+        "core/src/context/realtime_start_with_instructions.rs",
+        "core/src/context/fragment.rs",
+        "protocol/src/protocol.rs"
+      ],
+      "target": [
+        "runtime/src/conversation/realtime/instructions/markers.ts",
+        "runtime/src/conversation/realtime/instructions/messages.ts"
+      ],
+      "requiredBehaviors": [
+        "renders realtime open and close markers around newline-wrapped instruction bodies",
+        "emits developer-role messages for start end and custom-start instructions",
+        "preserves empty and trailing-newline custom instruction bodies"
+      ],
+      "tests": [
+        "runtime/src/conversation/realtime/instructions/instructions.contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "text-turn-realtime-transition-injection",
+      "source": "core/src/context_manager/updates.rs",
+      "target": "runtime/src/session/run-turn.ts",
+      "requiredBehaviors": [
+        "injects realtime start instructions when current turn enters realtime",
+        "injects realtime end instructions when current turn exits realtime",
+        "falls back to previousTurnSettings when no reference turn context survived resume",
+        "does not duplicate realtime start instructions when resume fallback is already active",
+        "persists injected developer messages exactly once before the current user message"
+      ],
+      "tests": [
+        "runtime/src/session/run-turn.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "developer-role-preservation-and-provider-wire",
+      "source": [
+        "core/src/context_manager/updates.rs",
+        "core/src/event_mapping.rs"
+      ],
+      "target": [
+        "runtime/src/llm/types.ts",
+        "runtime/src/session/rollout-item.ts",
+        "runtime/src/rollout/policy.ts",
+        "runtime/src/llm/wire/responses-openai.ts",
+        "runtime/src/llm/wire/chat-completions.ts",
+        "runtime/src/llm/wire/messages-anthropic.ts",
+        "runtime/src/llm/wire/responses-xai.ts",
+        "runtime/src/llm/providers/ollama/adapter.ts"
+      ],
+      "requiredBehaviors": [
+        "retains developer-role messages in local session and rollout history",
+        "routes developer instructions through provider instruction or system lanes instead of user turns",
+        "keeps provider continuation hashing from treating realtime developer updates as user lineage"
+      ],
+      "tests": [
+        "runtime/src/llm/wire/responses-openai.test.ts",
+        "runtime/src/llm/wire/chat-completions.test.ts",
+        "runtime/src/llm/wire/messages-anthropic.test.ts",
+        "runtime/src/llm/wire/responses-xai.test.ts",
+        "runtime/src/rollout/rollout-store.contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "custom-start-config-override",
+      "source": "core/src/context_manager/updates.rs",
+      "target": [
+        "runtime/src/config/schema.ts",
+        "runtime/src/session/turn-context.ts",
+        "runtime/src/session/run-turn.ts"
+      ],
+      "requiredBehaviors": [
+        "loads the experimental realtime start instructions override from TOML config",
+        "passes custom realtime start instructions through turn context injection"
+      ],
+      "tests": [
+        "runtime/src/config/config.test.ts",
+        "runtime/src/session/run-turn.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "rollback-contextual-developer-trimming",
+      "source": [
+        "core/src/event_mapping.rs",
+        "core/src/context_manager/history.rs"
+      ],
+      "target": [
+        "runtime/src/session/rollout-reconstruction.ts",
+        "runtime/src/session/event-log-reducer.ts"
+      ],
+      "requiredBehaviors": [
+        "matches realtime developer context by prefix over text fragments",
+        "does not count realtime developer context as a user turn boundary",
+        "trims realtime developer pre-turn context on thread rollback",
+        "clears the turn-context baseline when trimming mixed developer bundles"
+      ],
+      "tests": [
+        "runtime/src/session/rollout-reconstruction.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "startup-context-omission",
+      "source": "core/src/realtime_context.rs",
+      "target": "runtime/src/conversation/realtime/context.ts",
+      "requiredBehaviors": [
+        "excludes realtime developer instruction fragments from realtime startup current-thread summaries"
+      ],
+      "tests": [
+        "runtime/src/conversation/realtime/context.contract.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

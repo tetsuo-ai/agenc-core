@@ -1,5 +1,5 @@
 /**
- * OpenAI Chat Completions wire shim.
+ * Chat Completions wire shim.
  *
  * @module
  */
@@ -71,7 +71,7 @@ function systemPromptParts(
   const optionPrompt = options?.systemPrompt?.trim();
   if (optionPrompt) parts.push(optionPrompt);
   for (const message of messages) {
-    if (message.role !== "system") continue;
+    if (message.role !== "system" && message.role !== "developer") continue;
     const text = messageTextContent(message.content).trim();
     if (text.length > 0) parts.push(text);
   }
@@ -89,7 +89,7 @@ function toChatCompletionsMessages(
     wireMessages.push({ role: "system", content: systemPrompt });
   }
   for (const message of prepared) {
-    if (message.role === "system") continue;
+    if (message.role === "system" || message.role === "developer") continue;
     if (message.role === "tool") {
       wireMessages.push({
         role: "tool",
@@ -229,6 +229,7 @@ export function parseChatCompletionsResponse(
           ),
         }),
       ),
+      // branding-scan: allow real OpenAI provider identifier
       "OpenAI chat-completions response emitted invalid tool_call",
     )
     : [];

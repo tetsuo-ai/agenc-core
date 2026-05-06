@@ -92,6 +92,9 @@ import {
   runMagicDocsPostSamplingHook,
   setMagicDocsAgentRunnerForTests,
 } from "../services/MagicDocs/magicDocs.js";
+import {
+  REALTIME_CONVERSATION_OPEN_TAG,
+} from "../conversation/realtime/instructions/markers.js";
 
 afterEach(() => {
   sessionMemoryPostSamplingMockState.calls.length = 0;
@@ -259,6 +262,13 @@ function mkProvider(response: Partial<LLMResponse>): LLMProvider {
     }),
     healthCheck: async () => true,
   };
+}
+
+function testMessageText(message: LLMMessage): string {
+  if (typeof message.content === "string") return message.content;
+  return message.content
+    .map((part) => (part.type === "text" ? part.text : ""))
+    .join("");
 }
 
 function mkRegistry(): ToolRegistry {
@@ -1038,6 +1048,133 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       { role: "assistant", content: "first answer" },
       { role: "user", content: "second question" },
     ]);
+  });
+
+  test("injects realtime start developer instructions before the current user turn", async () => {
+    const seenMessages: LLMMessage[][] = [];
+    const provider = mkProvider({ content: "answer" });
+    provider.chatStream = async (messages) => {
+      seenMessages.push(messages.map((message) => ({ ...message })));
+      return {
+        content: "answer",
+        toolCalls: [],
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    };
+    const { session, getState } = mkSession({
+      provider,
+      registry: mkRegistry(),
+    });
+    const state = getState();
+    state.history = [
+      { role: "user", content: "before" },
+      { role: "assistant", content: "before answer" },
+    ];
+    state.referenceContextItem = {
+      model: "test-model",
+      realtimeActive: false,
+    };
+    const ctx = {
+      ...mkCtx(),
+      realtimeActive: true,
+      config: {
+        ...mkConfig(),
+        experimental_realtime_start_instructions: "custom realtime handoff",
+      },
+    } as TurnContext;
+
+    await drain(session.runTurn("voice transcript", { ctx }));
+
+    const firstRequest = seenMessages[0] ?? [];
+    const developerIndex = firstRequest.findIndex((message) =>
+      message.role === "developer"
+    );
+    const userIndex = firstRequest.findIndex((message) =>
+      message.role === "user" && message.content === "voice transcript"
+    );
+    expect(developerIndex).toBeGreaterThan(1);
+    expect(developerIndex).toBeLessThan(userIndex);
+    expect(testMessageText(firstRequest[developerIndex]!)).toContain(
+      "custom realtime handoff",
+    );
+
+    const persisted = getState().history as LLMMessage[];
+    const developerMessages = persisted.filter((message) =>
+      message.role === "developer"
+    );
+    expect(developerMessages).toHaveLength(1);
+    expect(testMessageText(developerMessages[0]!)).toContain(
+      REALTIME_CONVERSATION_OPEN_TAG,
+    );
+    const persistedDeveloperIndex = persisted.findIndex((message) =>
+      message.role === "developer"
+    );
+    expect(persisted[persistedDeveloperIndex + 1]).toMatchObject({
+      role: "user",
+      content: "voice transcript",
+    });
+  });
+
+  test("injects realtime end instructions from resume previousTurnSettings fallback", async () => {
+    const { session, getState } = mkSession({
+      provider: mkProvider({ content: "answer" }),
+      registry: mkRegistry(),
+    });
+    const state = getState();
+    state.previousTurnSettings = {
+      model: "test-model",
+      realtimeActive: true,
+    };
+    const ctx = { ...mkCtx(), realtimeActive: false } as TurnContext;
+
+    await drain(session.runTurn("typed again", { ctx }));
+
+    const persisted = getState().history as LLMMessage[];
+    expect(persisted[0]?.role).toBe("developer");
+    expect(testMessageText(persisted[0]!)).toContain("Reason: inactive");
+    expect(persisted[1]).toMatchObject({
+      role: "user",
+      content: "typed again",
+    });
+  });
+
+  test("does not duplicate realtime start instructions from active resume fallback", async () => {
+    const seenMessages: LLMMessage[][] = [];
+    const provider = mkProvider({ content: "answer" });
+    provider.chatStream = async (messages) => {
+      seenMessages.push(messages.map((message) => ({ ...message })));
+      return {
+        content: "answer",
+        toolCalls: [],
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    };
+    const { session, getState } = mkSession({
+      provider,
+      registry: mkRegistry(),
+    });
+    const state = getState();
+    state.previousTurnSettings = {
+      model: "test-model",
+      realtimeActive: true,
+    };
+    const ctx = { ...mkCtx(), realtimeActive: true } as TurnContext;
+
+    await drain(session.runTurn("continued voice", { ctx }));
+
+    expect(
+      (seenMessages[0] ?? []).some((message) => message.role === "developer"),
+    ).toBe(false);
+    const persisted = getState().history as LLMMessage[];
+    expect(persisted.some((message) => message.role === "developer")).toBe(false);
+    expect(persisted[0]).toMatchObject({
+      role: "user",
+      content: "continued voice",
+    });
   });
 
   test("emits token_count after streamModel completes", async () => {
@@ -2463,7 +2600,7 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
 
     expect(session.pendingProviderSwitch).not.toBeNull();
 
-    await drain(session.runTurn("hello", { ctx }));
+    await drain(session.runTurn("", { ctx }));
 
     expect(session.pendingProviderSwitch).toBeNull();
   });
@@ -2498,9 +2635,8 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
       });
 
       // Turn N+1: fresh runTurn call. The consumer at the top reads the
-      // marker, applies it, and clears it. The new turn proceeds with
-      // the updated model.
-      await drain(session.runTurn("second message", { ctx }));
+      // marker, applies it, and clears it before sampling is needed.
+      await drain(session.runTurn("", { ctx }));
 
       expect(session.pendingProviderSwitch).toBeNull();
       expect(getState().sessionConfiguration.collaborationMode?.model).toBe(

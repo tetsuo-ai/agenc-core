@@ -3,7 +3,8 @@
  *
  * This keeps the Grok adapter's request-shaping rules separate from provider
  * orchestration. xAI uses the Responses family, but its documented contract
- * differs enough from OpenAI's that it needs its own narrow shim.
+ * differs enough from the neighboring provider contract that it needs
+ * its own narrow shim.
  *
  * @module
  */
@@ -239,7 +240,7 @@ function toXaiOpenAIMessage(message: LLMMessage): Record<string, unknown> {
   }
 
   return {
-    role: message.role,
+    role: message.role === "developer" ? "system" : message.role,
     content: message.content,
   };
 }

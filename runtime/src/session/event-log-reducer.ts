@@ -31,6 +31,8 @@ import type {
 import { isKnownRolloutType } from "./rollout-item.js";
 import {
   isUserTurnBoundary,
+  hasNonContextualDeveloperMessageContent,
+  isContextualDeveloperMessageContent,
   isContextualUserMessageContent,
 } from "./rollout-reconstruction.js";
 
@@ -225,7 +227,14 @@ export function reduce(
           const payload = (inner as unknown as { payload: { numTurns: number } }).payload;
           nextState.rolledBackTurns += payload?.numTurns ?? 0;
           // Drop the last N user-turn boundaries from history.
-          nextState.history = dropLastNUserTurns(nextState.history, payload?.numTurns ?? 0);
+          const trimmed = dropLastNUserTurns(
+            nextState.history,
+            payload?.numTurns ?? 0,
+          );
+          nextState.history = trimmed.history;
+          if (trimmed.clearedTurnContext) {
+            delete nextState.lastTurnContext;
+          }
           break;
         }
         default:
@@ -257,19 +266,18 @@ export function reduce(
  *     shared helper in `rollout-reconstruction.ts` so forward replay
  *     and compaction rebuild agree on what counts as a boundary.
  *   - after choosing the cut index, walk backward from the cut while
- *     the preceding item is a contextual pre-turn update (a
- *     user-role Message whose content is purely contextual fragments).
- *     These items sit above the rolled-back turn as prompt scaffolding
- *     that belongs with the discarded turn, so agenc runtime trims them too.
- *     We conservatively skip agenc runtime's "developer-role contextual
- *     message" branch because AgenC does not yet emit developer-role
- *     message items in rollout history (see feature matrix I-33 / I-82).
+ *     the preceding item is a contextual pre-turn update. User-role
+ *     contextual fragments and developer-role realtime fragments sit
+ *     above the rolled-back turn as prompt scaffolding that belongs
+ *     with the discarded turn, so the replay path trims them too.
+ *     Mixed developer bundles clear the stored turn-context baseline
+ *     so the next surviving turn fully rebuilds context.
  */
 function dropLastNUserTurns(
   history: ReadonlyArray<ResponseItem>,
   n: number,
-): ResponseItem[] {
-  if (n <= 0) return [...history];
+): { readonly history: ResponseItem[]; readonly clearedTurnContext: boolean } {
+  if (n <= 0) return { history: [...history], clearedTurnContext: false };
 
   // Collect user-turn boundary indices (agenc runtime `user_message_positions`).
   const userPositions: number[] = [];
@@ -277,7 +285,9 @@ function dropLastNUserTurns(
     const item = history[i];
     if (item && isUserTurnBoundary(item)) userPositions.push(i);
   }
-  if (userPositions.length === 0) return [...history];
+  if (userPositions.length === 0) {
+    return { history: [...history], clearedTurnContext: false };
+  }
 
   const firstInstructionTurnIdx = userPositions[0]!;
   let cutIndex: number;
@@ -291,15 +301,24 @@ function dropLastNUserTurns(
   // cut, stripping contiguous contextual user-message injections
   // above the boundary. We stop at the first non-contextual item and
   // never cross `firstInstructionTurnIdx`.
+  let clearedTurnContext = false;
   while (cutIndex > firstInstructionTurnIdx) {
     const prev = history[cutIndex - 1];
     if (!prev) break;
+    if (prev.role === "developer") {
+      if (!isContextualDeveloperMessageContent(prev.content)) break;
+      if (hasNonContextualDeveloperMessageContent(prev.content)) {
+        clearedTurnContext = true;
+      }
+      cutIndex -= 1;
+      continue;
+    }
     if (prev.role !== "user") break;
     if (!isContextualUserMessageContent(prev.content)) break;
     cutIndex -= 1;
   }
 
-  return history.slice(0, cutIndex);
+  return { history: history.slice(0, cutIndex), clearedTurnContext };
 }
 
 // ─────────────────────────────────────────────────────────────────────

@@ -68,6 +68,11 @@ import { getAttachments } from "../prompts/attachments/orchestrator.js";
 import { attachmentsToMessages } from "../prompts/attachments/messages.js";
 import { extractMentionAllowedRoots } from "../prompts/file-mentions.js";
 import {
+  realtimeEndInstructionMessage,
+  realtimeStartInstructionMessage,
+  realtimeStartWithInstructionsMessage,
+} from "../conversation/realtime/instructions/messages.js";
+import {
   buildAgenCCompactedRolloutItem,
   buildAgenCPostCompactMessages,
   getAgenCPreparedTerminal,
@@ -339,6 +344,59 @@ function buildSeedMessages(
   const prior: LLMMessage[] = [...(opts.history ?? [])];
   const user: LLMMessage = { role: "user", content: userContent };
   return { system, prior, user };
+}
+
+interface RealtimeUpdatePreviousTurnSettings {
+  readonly realtimeActive?: boolean;
+}
+
+function readRealtimeUpdateBaseline(session: Session): {
+  readonly previousContextItem?: TurnContextItem;
+  readonly previousTurnSettings?: RealtimeUpdatePreviousTurnSettings;
+} {
+  const peek = (session.state as unknown as {
+    unsafePeek?: () => {
+      readonly referenceContextItem?: TurnContextItem;
+      readonly previousTurnSettings?: RealtimeUpdatePreviousTurnSettings;
+    };
+  }).unsafePeek?.();
+  return {
+    ...(peek?.referenceContextItem !== undefined
+      ? { previousContextItem: peek.referenceContextItem }
+      : {}),
+    ...(peek?.previousTurnSettings !== undefined
+      ? { previousTurnSettings: peek.previousTurnSettings }
+      : {}),
+  };
+}
+
+function buildRealtimeInstructionUpdateMessage(
+  previousContextItem: TurnContextItem | undefined,
+  previousTurnSettings: RealtimeUpdatePreviousTurnSettings | undefined,
+  ctx: TurnContext,
+): LLMMessage | undefined {
+  const previousRealtimeActive =
+    previousContextItem?.realtimeActive ?? previousTurnSettings?.realtimeActive;
+  if (previousRealtimeActive === true && ctx.realtimeActive === false) {
+    return realtimeEndInstructionMessage("inactive");
+  }
+  if (
+    (previousRealtimeActive === false || previousRealtimeActive === undefined) &&
+    ctx.realtimeActive === true
+  ) {
+    const instructions = realtimeStartInstructionsOverride(ctx);
+    return instructions !== undefined
+      ? realtimeStartWithInstructionsMessage(instructions)
+      : realtimeStartInstructionMessage();
+  }
+  return undefined;
+}
+
+function realtimeStartInstructionsOverride(ctx: TurnContext): string | undefined {
+  const value = (ctx.config as {
+    readonly experimental_realtime_start_instructions?: unknown;
+  }).experimental_realtime_start_instructions;
+  return typeof value === "string" ? value : undefined;
 }
 
 function messageText(message: LLMMessage): string {
@@ -1824,13 +1882,22 @@ async function* runTurnKernelInner(
       : { ...opts, systemPrompt: ctxBaseInstructions },
     userContent,
   );
-  const priorFull = system ? [system, ...prior] : prior;
+  const priorExisting = system ? [system, ...prior] : prior;
+  const realtimeBaseline = readRealtimeUpdateBaseline(session);
+  const realtimeInstructionUpdate = buildRealtimeInstructionUpdateMessage(
+    realtimeBaseline.previousContextItem,
+    realtimeBaseline.previousTurnSettings,
+    ctx,
+  );
+  const priorFull = realtimeInstructionUpdate
+    ? [...priorExisting, realtimeInstructionUpdate]
+    : priorExisting;
   const durableHistoryStartIndex = system ? 1 : 0;
 
   let state: TurnState = buildInitialTurnState(ctx, user, {
     priorMessages: priorFull,
   });
-  let persistedMessageCount = priorFull.length;
+  let persistedMessageCount = priorExisting.length;
   const rolloutPersistenceSuspended = (): boolean =>
     session.isRolloutPersistenceSuspended?.() === true;
   const persistTurnRolloutBaseline = (): void => {
