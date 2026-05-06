@@ -39,6 +39,11 @@ describe("API error UX helpers", () => {
       }),
     ).toBe("Gateway");
     expect(
+      sanitizeAPIError({
+        message: '<!doctype HTML><HTML><TITLE class="x">Proxy</TITLE></HTML>',
+      }),
+    ).toBe("Proxy");
+    expect(
       formatAPIError({
         status: 400,
         error: { error: { message: "nested detail" } },

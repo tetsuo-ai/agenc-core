@@ -1,7 +1,23 @@
 import * as React from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
+import type { AgenCSystemAPIErrorMessage } from "../../errors/api.js";
 import { SystemAPIErrorMessage } from "./SystemAPIErrorMessage.js";
+
+type LiveCreateSystemAPIErrorMessage =
+  typeof import("../../agenc/upstream/utils/messages.js").createSystemAPIErrorMessage;
+type LiveCreatedSystemAPIErrorMessage =
+  ReturnType<LiveCreateSystemAPIErrorMessage>;
+type IsAny<T> = 0 extends 1 & T ? true : false;
+type Assert<T extends true> = T;
+type _LiveCreatedMessageIsTyped = Assert<
+  IsAny<LiveCreatedSystemAPIErrorMessage> extends false ? true : false
+>;
+type _LiveCreatedMessageIsCanonical = Assert<
+  LiveCreatedSystemAPIErrorMessage extends AgenCSystemAPIErrorMessage
+    ? true
+    : false
+>;
 
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
@@ -28,6 +44,10 @@ vi.mock("../ink.js", async () => {
 function renderPlain(node: React.ReactNode): string {
   return collectText(node);
 }
+
+function assertSystemAPIErrorMessage(
+  _message: AgenCSystemAPIErrorMessage,
+): void {}
 
 function collectText(node: React.ReactNode): string {
   if (node === null || node === undefined || typeof node === "boolean") {
@@ -66,6 +86,7 @@ describe("SystemAPIErrorMessage", () => {
         message={{
           type: "system",
           subtype: "api_error",
+          level: "error",
           error: new Error("temporary"),
           retryAttempt: 2,
           retryInMs: 3000,
@@ -86,6 +107,7 @@ describe("SystemAPIErrorMessage", () => {
         message={{
           type: "system",
           subtype: "api_error",
+          level: "error",
           error: Object.assign(new Error("Connection error."), {
             cause: Object.assign(new Error("timeout"), { code: "ETIMEDOUT" }),
           }),
@@ -109,6 +131,7 @@ describe("SystemAPIErrorMessage", () => {
         message={{
           type: "system",
           subtype: "api_error",
+          level: "error",
           error: new Error(formatted),
           retryAttempt: 4,
           retryInMs: 1000,
@@ -120,5 +143,34 @@ describe("SystemAPIErrorMessage", () => {
     expect(output).toContain(`${"x".repeat(1000)}...`);
     expect(output).toContain("(ctrl+o to expand)");
     expect(output).not.toContain("x".repeat(1001));
+  });
+
+  test("renders the live-created API retry message shape through the typed boundary", () => {
+    const cause = Object.assign(new Error("connect refused"), {
+      code: "ECONNREFUSED",
+    });
+    const error = Object.assign(new Error("Connection error."), { cause });
+    const message: LiveCreatedSystemAPIErrorMessage = {
+      type: "system",
+      subtype: "api_error",
+      level: "error",
+      cause,
+      error,
+      retryInMs: 1000,
+      retryAttempt: 4,
+      maxRetries: 5,
+      timestamp: new Date().toISOString(),
+      uuid: "api-error-test",
+    };
+    assertSystemAPIErrorMessage(message);
+
+    const output = renderPlain(
+      <SystemAPIErrorMessage verbose={false} message={message} />,
+    );
+
+    expect(message.level).toBe("error");
+    expect(message.cause).toBe(cause);
+    expect(output).toContain("Unable to connect to API (ECONNREFUSED)");
+    expect(output).toContain("Retrying in 1 second");
   });
 });

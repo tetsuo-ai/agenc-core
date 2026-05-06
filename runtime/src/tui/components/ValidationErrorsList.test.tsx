@@ -7,6 +7,13 @@ import {
   ValidationErrorsList,
 } from "./ValidationErrorsList.js";
 
+vi.mock("react-compiler-runtime", () => ({
+  c: (size: number) =>
+    Array.from({ length: size }, () =>
+      Symbol.for("react.memo_cache_sentinel"),
+    ),
+}));
+
 vi.mock("../ink.js", async () => {
   const React = await import("react");
   const Passthrough = ({
@@ -17,6 +24,35 @@ vi.mock("../ink.js", async () => {
   return {
     Box: Passthrough,
     Text: Passthrough,
+  };
+});
+
+vi.mock("../../agenc/upstream/components/design-system/Dialog.js", async () => {
+  const React = await import("react");
+  return {
+    Dialog: ({
+      title,
+      children,
+    }: {
+      readonly title: React.ReactNode;
+      readonly children?: React.ReactNode;
+    }) => React.createElement(React.Fragment, null, title, children),
+  };
+});
+
+vi.mock("../../agenc/upstream/components/CustomSelect/select.js", async () => {
+  const React = await import("react");
+  return {
+    Select: ({
+      options,
+    }: {
+      readonly options: readonly { readonly label: React.ReactNode }[];
+    }) =>
+      React.createElement(
+        React.Fragment,
+        null,
+        options.map((option) => option.label),
+      ),
   };
 });
 
@@ -69,6 +105,32 @@ describe("ValidationErrorsList", () => {
     expect(invalidSettingsDialogSource).toContain(
       "../../../tui/components/ValidationErrorsList.js",
     );
+  });
+
+  test("renders validation output through the live settings dialog route", async () => {
+    const { InvalidSettingsDialog } = await import(
+      "../../agenc/upstream/components/InvalidSettingsDialog.js"
+    );
+    const output = renderPlain(
+      <InvalidSettingsDialog
+        settingsErrors={[
+          {
+            file: "config.toml",
+            path: "permissions.allow.0",
+            message: "Unknown tool",
+            invalidValue: "bad-tool",
+          },
+        ]}
+        onContinue={() => {}}
+        onExit={() => {}}
+      />,
+    );
+
+    expect(output).toContain("Settings Error");
+    expect(output).toContain("config.toml");
+    expect(output).toContain('"bad-tool"');
+    expect(output).toContain("Unknown tool");
+    expect(output).toContain("Exit and fix manually");
   });
 
   test("builds a readable nested tree with invalid indexed values", () => {

@@ -3,8 +3,10 @@ import type { SDKAssistantMessageError } from "./runtime.js";
 export type AgenCSystemAPIErrorMessage = {
   readonly type: "system";
   readonly subtype: "api_error";
+  readonly level: "error";
   readonly uuid?: string;
   readonly timestamp?: string;
+  readonly cause?: Error;
   readonly error: unknown;
   readonly retryInMs: number;
   readonly retryAttempt: number;
@@ -151,8 +153,8 @@ export function getSSLErrorHint(error: unknown): string | null {
 }
 
 function sanitizeMessageHTML(message: string): string {
-  if (message.includes("<!DOCTYPE html") || message.includes("<html")) {
-    const titleMatch = message.match(/<title>([^<]+)<\/title>/);
+  if (/<!doctype\s+html|<html\b/i.test(message)) {
+    const titleMatch = message.match(/<title[^>]*>([^<]+)<\/title>/i);
     return titleMatch?.[1]?.trim() ?? "";
   }
   return message;

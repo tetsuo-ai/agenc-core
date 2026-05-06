@@ -26,6 +26,7 @@
     "runtime/src/agenc/upstream/components/messages/SystemTextMessage.tsx",
     "runtime/src/agenc/upstream/components/InvalidSettingsDialog.tsx",
     "runtime/src/agenc/upstream/screens/Doctor.tsx",
+    "runtime/src/agenc/upstream/types/message.ts",
     "runtime/src/llm/api/errors.ts",
     "runtime/src/llm/client-session.ts",
     "runtime/src/llm/providers/openai/adapter.ts",
@@ -120,12 +121,14 @@
         "runtime/src/tui/components/SystemAPIErrorMessage.tsx",
         "runtime/src/tui/components/ValidationErrorsList.tsx",
         "runtime/src/types/message.ts",
+        "runtime/src/agenc/upstream/types/message.ts",
         "runtime/src/agenc/upstream/components/messages/SystemTextMessage.tsx",
         "runtime/src/agenc/upstream/components/InvalidSettingsDialog.tsx",
         "runtime/src/agenc/upstream/screens/Doctor.tsx"
       ],
       "requiredBehaviors": [
         "Type system API retry messages instead of leaving them as any.",
+        "Keep the live upstream-created API retry message alias assignable to the canonical AgenC type.",
         "Render late retry attempts with formatted API error text, retry countdown, and timeout hint text.",
         "Render validation errors grouped by file with nested path trees and de-duplicated suggestions.",
         "Route live settings and doctor validation surfaces to the AgenC-owned validation list component."
@@ -170,7 +173,7 @@
   "carriedBehavior": [
     "Runtime error primitives now live under runtime/src/errors and include abort, errno, SDK assistant-message, axios-shaped, API-formatting, SSL/TLS, prompt-too-long, media-size, and retryable-error helpers.",
     "The \u004fpenAI-compatible provider imports the canonical runtime classifier and keeps stable category markers for actionable self-hosted provider failures, including live transport and malformed-success response paths.",
-    "The system API retry message is typed through runtime/src/types/message.ts and rendered by the AgenC-owned TUI component from the live system-message path.",
+    "The system API retry message is typed through runtime/src/types/message.ts and the live upstream message alias, then rendered by the AgenC-owned TUI component from the live system-message path.",
     "Validation error rendering builds nested trees from dot paths, replaces invalid indexed leaves with readable invalid values, sorts files, de-duplicates suggestions, and is wired into the live settings/doctor callers.",
     "AgenC code hints use the AgenC tag name and debug prefix, strip from bash output before truncation, and are surfaced as structured metadata while preserving the single-slot pending store."
   ],
