@@ -1467,7 +1467,24 @@ const ITEM_EVIDENCE = {
     grepPresent: [{ pattern: "agent\\.budget", scope: "runtime/src/config" }],
   },
   "CF-12": {
-    grepPresent: [{ pattern: "configMigration|migrateConfig|configVersion", scope: "runtime/src/config" }],
+    files: [
+      "runtime/src/config/migrate.ts",
+      "runtime/src/config/migrate.test.ts",
+      "runtime/src/config/loader.ts",
+      "runtime/src/config/schema.ts",
+      "runtime/src/config/config.test.ts",
+    ],
+    grepPresent: [
+      { pattern: "runConfigFileMigrations", scope: "runtime/src/config/migrate.ts" },
+      { pattern: "runConfigFileMigrations", scope: "runtime/src/config/loader.ts" },
+      { pattern: "configVersion", scope: "runtime/src/config/schema.ts" },
+      { pattern: "config\\.json", scope: "runtime/src/config/migrate.ts" },
+      { pattern: "config\\.json", scope: "runtime/src/config/migrate.test.ts" },
+    ],
+    tests: [
+      "runtime/src/config/migrate.test.ts",
+      "runtime/src/config/config.test.ts",
+    ],
   },
   "CF-13": {
     files: [
