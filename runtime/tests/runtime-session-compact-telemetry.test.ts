@@ -11,7 +11,7 @@ import {
   type TelemetryTags,
   type TelemetryTimer,
 } from "../src/observability/telemetry.js";
-import { runAgenCContextCollapseOverflowRecovery } from "../src/agenc/adapters/runtime-session.js";
+import { runAgenCContextCollapseOverflowRecovery } from "../src/session/compaction.js";
 
 class RecordingSpan implements TelemetrySpan {
   readonly attributes: Record<string, unknown> = {};

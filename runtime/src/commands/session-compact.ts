@@ -3,11 +3,11 @@ import {
   type SlashCommand,
   type SlashCommandContext,
   type SlashCommandResult,
-} from "../../commands/types.js";
+} from "./types.js";
 import {
   runAgenCContextUsage,
   runAgenCManualCompact,
-} from "./runtime-session.js";
+} from "../session/compaction.js";
 
 export const compactCommand: SlashCommand = {
   name: "compact",

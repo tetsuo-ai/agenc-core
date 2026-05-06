@@ -1,5 +1,5 @@
-import type { TurnContext } from "../../session/turn-context.js";
-import { modelContextWindow } from "../../session/turn-context.js";
+import type { TurnContext } from "./turn-context.js";
+import { modelContextWindow } from "./turn-context.js";
 
 export interface AgenCModelContext {
   readonly model: string;

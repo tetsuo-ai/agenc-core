@@ -37,7 +37,7 @@ import { createCacheSafeParams } from "../services/PromptSuggestion/runtime.js";
 import { llmMessageToAgentSummaryMessage } from "../services/AgentSummary/transcript.js";
 import type { StartupPrewarmStore } from "../session/startup-prewarm.js";
 import { readProviderIdentity } from "../llm/provider.js";
-import { buildAgenCToolUseContext } from "../agenc/adapters/tool-use-context.js";
+import { buildAgenCToolUseContext } from "../session/tool-use-context.js";
 import type { ToolRegistry, ToolDispatchResult } from "./_deps/tool-registry.js";
 import {
   safeStringify,

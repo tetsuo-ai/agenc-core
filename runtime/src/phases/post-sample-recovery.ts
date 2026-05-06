@@ -43,7 +43,7 @@ import {
 } from "../recovery/withhold-cascading.js";
 import {
   runAgenCContextCollapseOverflowRecovery,
-} from "../agenc/adapters/runtime-session.js";
+} from "../session/compaction.js";
 import type { StreamingToolExecutor } from "./_deps/tool-runtime.js";
 import { tombstoneOrphans } from "../recovery/tombstone.js";
 import { executeStopFailureHooks } from "./stop-hooks.js";

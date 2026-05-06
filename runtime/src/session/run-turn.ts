@@ -79,7 +79,7 @@ import {
   prepareAgenCTurnContext,
   runAgenCAutoCompact,
   type AgenCAutoCompactResult,
-} from "../agenc/adapters/runtime-session.js";
+} from "./compaction.js";
 import {
   streamModel,
   StreamModelError,

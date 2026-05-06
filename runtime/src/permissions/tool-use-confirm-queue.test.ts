@@ -8,7 +8,7 @@ import {
   APPROVED_FOR_SESSION,
   DENIED,
 } from "./review-decision.js";
-import { buildToolUseConfirmQueue } from "../agenc/adapters/permission-bridge-projection.js";
+import { buildToolUseConfirmQueue } from "../tui/permission-confirm-queue.js";
 import { clearAskUserQuestionResponsesForTest, createAskUserQuestionTool } from "../tools/ask-user-question/tool.js";
 import type { AskUserQuestionInput } from "../tools/ask-user-question/tool.js";
 
@@ -50,7 +50,7 @@ const ASK_USER_QUESTION_INPUT: AskUserQuestionInput = {
       options: [
         {
           label: "Use AgenC picker (Recommended)",
-          description: "Use the interactive question bridge.",
+          description: "Use the interactive question flow.",
           preview: "Wire onAllow(updatedInput) to the model result.",
         },
         {
@@ -62,7 +62,7 @@ const ASK_USER_QUESTION_INPUT: AskUserQuestionInput = {
   ],
 };
 
-describe("buildToolUseConfirmQueue (TUI multi-approval queue projection)", () => {
+describe("buildToolUseConfirmQueue (TUI multi-approval queue)", () => {
   afterEach(() => {
     clearAskUserQuestionResponsesForTest();
   });

@@ -1,24 +1,24 @@
 /**
- * Pure projection helpers for the AgenC TUI permission bridge.
+ * Pure helpers for the AgenC TUI permission confirmation queue.
  *
  * Lives in a `.ts` file (no JSX, no React imports) so unit tests can
  * import it without dragging the full `react/jsx-dev-runtime` runtime
- * into vitest. The React-bearing TUI permission overlay consumes these
- * helpers.
+ * into vitest. The React-bearing TUI permission overlay consumes the
+ * resulting queue entries.
  *
  * @module
  */
-import type { ApprovalCtx } from "../../tools/orchestrator.js";
-import type { ReviewDecision } from "../../permissions/review-decision.js";
+import type { ApprovalCtx } from "../tools/orchestrator.js";
+import type { ReviewDecision } from "../permissions/review-decision.js";
 import {
   ABORT,
   APPROVED,
   APPROVED_FOR_SESSION,
   DENIED,
-} from "../../permissions/review-decision.js";
-import { ASK_USER_QUESTION_TOOL_NAME, recordAskUserQuestionPlanInterviewAction, recordAskUserQuestionUpdatedInput } from "../../tools/ask-user-question/tool.js";
-import type { AskUserQuestionPlanInterviewAction } from "../../tools/ask-user-question/tool.js";
-import { makeToolUseMessage } from "../../tui/session-transcript.js";
+} from "../permissions/review-decision.js";
+import { ASK_USER_QUESTION_TOOL_NAME, recordAskUserQuestionPlanInterviewAction, recordAskUserQuestionUpdatedInput } from "../tools/ask-user-question/tool.js";
+import type { AskUserQuestionPlanInterviewAction } from "../tools/ask-user-question/tool.js";
+import { makeToolUseMessage } from "./session-transcript.js";
 
 export interface PendingRequest {
   readonly id: string;
@@ -43,10 +43,10 @@ function planInterviewActionFromFeedback(
 }
 
 /**
- * Build the `ToolUseConfirm` projection a single `PendingRequest`
- * produces for the upstream permission UI. Returns `null` when no
- * matching tool is registered (defensive — the bridge always has at
- * least the live tool registry, but this lets tests exercise the
+ * Build the `ToolUseConfirm` entry a single `PendingRequest` produces
+ * for the permission UI. Returns `null` when no matching tool is
+ * registered (defensive: the runtime normally has at least the live
+ * tool registry, but this lets tests exercise the
  * empty-registry case without crashing).
  */
 export function buildToolUseConfirm(
@@ -110,7 +110,7 @@ export function buildToolUseConfirm(
 }
 
 /**
- * Build the queue projection for the `<Messages toolUseConfirmQueue>` prop.
+ * Build the queue for the `<Messages toolUseConfirmQueue>` prop.
  * One entry per pending request, in arrival order. Entries with no
  * matching tool are dropped silently; the TUI overlay has the same
  * fallback behavior for the head of the queue.

@@ -60,7 +60,7 @@ import { exitWorktree } from "./exit-worktree.js";
 import {
   compactCommand,
   contextCommand,
-} from "../agenc/adapters/slash-commands.js";
+} from "./session-compact.js";
 
 /**
  * Concrete in-memory implementation of `CommandRegistry`. The registry

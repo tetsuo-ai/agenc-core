@@ -8,7 +8,7 @@ import {
   buildToolUseConfirm,
   buildToolUseConfirmQueue,
   type PendingRequest,
-} from "../agenc/adapters/permission-bridge-projection.js";
+} from "./permission-confirm-queue.js";
 import type { AgenCBridgeSession } from "./session-types.js";
 import { createSessionAppStateBridge } from "./session-app-state.js";
 import type { AppState } from "./state/AppState.js";

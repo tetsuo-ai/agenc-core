@@ -6,7 +6,7 @@ import {
   runAgenCContextUsage,
   prepareAgenCTurnContext,
   runAgenCManualCompact,
-} from "../src/agenc/adapters/runtime-session.js";
+} from "../src/session/compaction.js";
 import { buildInitialTurnState } from "../src/session/turn-state.js";
 import {
   mkCtx,

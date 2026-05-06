@@ -1,11 +1,11 @@
-import type { LLMTool } from "../../llm/types.js";
-import type { LLMProvider } from "../../llm/types.js";
-import { readProviderFactoryOptions } from "../../llm/provider.js";
-import type { Session } from "../../session/session.js";
-import type { TurnContext } from "../../session/turn-context.js";
-import { createEmptyToolPermissionContext } from "../../permissions/types.js";
+import type { LLMTool } from "../llm/types.js";
+import type { LLMProvider } from "../llm/types.js";
+import { readProviderFactoryOptions } from "../llm/provider.js";
+import type { Session } from "./session.js";
+import type { TurnContext } from "./turn-context.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { toAgenCModelContext } from "./model-context.js";
-import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../../constants/toolLimits.js";
+import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
 
 export interface AgenCToolUseContext {
   readonly abortController: AbortController;
@@ -13,7 +13,7 @@ export interface AgenCToolUseContext {
   readonly sessionId: string;
   readonly options: {
     readonly mainLoopModel: string;
-    readonly tools: readonly AgenCUpstreamTool[];
+    readonly tools: readonly AgenCRuntimeTool[];
     readonly mcpClients: readonly unknown[];
     readonly contextWindowTokens: number;
     readonly maxOutputTokens?: number;
@@ -52,7 +52,7 @@ export interface AgenCToolUseContext {
   readonly cwd?: string;
 }
 
-export type AgenCUpstreamTool = LLMTool & {
+export type AgenCRuntimeTool = LLMTool & {
   readonly name: string;
   readonly description: string;
   readonly inputJSONSchema: Record<string, unknown>;
@@ -79,7 +79,7 @@ export function buildAgenCToolUseContext(
     sessionId: session.conversationId,
     options: {
       mainLoopModel: model.model,
-      tools: toAgenCUpstreamTools(session.services.registry.toLLMTools()),
+      tools: toAgenCRuntimeTools(session.services.registry.toLLMTools()),
       mcpClients: Array.isArray(surface.mcpClients) ? surface.mcpClients : [],
       contextWindowTokens: model.contextWindowTokens,
       ...(model.maxOutputTokens !== undefined
@@ -132,7 +132,7 @@ export function buildAgenCToolUseContext(
   };
 }
 
-function toAgenCUpstreamTools(tools: readonly LLMTool[]): AgenCUpstreamTool[] {
+function toAgenCRuntimeTools(tools: readonly LLMTool[]): AgenCRuntimeTool[] {
   return tools.map((tool) => {
     const name = tool.function.name;
     return {

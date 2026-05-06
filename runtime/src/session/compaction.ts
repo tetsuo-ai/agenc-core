@@ -1,34 +1,30 @@
-import type { LLMContentPart, LLMMessage } from "../../llm/types.js";
+import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import {
   AGENC_COMPACT_CALL_METRIC,
   AGENC_COMPACT_DURATION_METRIC,
   agencTelemetry,
   toMetricTags,
-} from "../../observability/telemetry.js";
-import type { CompactionResult } from "../../services/compact/types.js";
-import type { RuntimeMessage } from "../../services/compact/types.js";
-import type { Session } from "../../session/session.js";
-import type { TurnContext } from "../../session/turn-context.js";
+} from "../observability/telemetry.js";
+import type { CompactionResult } from "../services/compact/types.js";
+import type { RuntimeMessage } from "../services/compact/types.js";
+import type { CompactedItem, ResponseItem } from "./rollout-item.js";
+import type { Session } from "./session.js";
+import type { TurnContext } from "./turn-context.js";
 import type {
   AssistantMessage,
   Terminal,
   TurnState,
-} from "../../session/turn-state.js";
+} from "./turn-state.js";
 import {
   buildAgenCToolUseContext,
   type AgenCToolUseContext,
 } from "./tool-use-context.js";
 import { toAgenCModelContext } from "./model-context.js";
-import {
-  buildCompactedRolloutPayload,
-  toAgenCMessage,
-  type AgenCMessage,
-} from "./message-rollout.js";
 
 const AGENC_COMPACT_BOUNDARY = "<compact>";
 const PREPARED_TERMINAL = Symbol("agenc_prepared_terminal");
 const RECOVERY_PASS: AgenCOverflowRecoveryResult = { kind: "pass" };
-const UPSTREAM_CONTEXT_GUARD_ENV = [
+const COMPACT_CONTEXT_GUARD_ENV = [
   "AGENC_USE_OPENAI",
   "OPENAI_MODEL",
   "OPENAI_BASE_URL",
@@ -70,6 +66,21 @@ export type AgenCOverflowRecoveryResult =
   | { readonly kind: "pass" }
   | { readonly kind: "surface"; readonly reason: string };
 
+export type AgenCMessageRole =
+  | "system"
+  | "developer"
+  | "user"
+  | "assistant"
+  | "tool";
+
+export interface AgenCMessage {
+  readonly role: AgenCMessageRole;
+  readonly content: string | readonly LLMContentPart[];
+  readonly toolCallId?: string;
+  readonly toolName?: string;
+  readonly phase?: string;
+}
+
 type AgenCRuntimeWireRole = NonNullable<RuntimeMessage["role"]>;
 
 type AgenCRuntimeMessage = Omit<
@@ -101,7 +112,7 @@ type AgenCCompactionResult = {
   readonly truePostCompactTokenCount?: number;
 };
 
-type UpstreamGuardEnv = Partial<Record<(typeof UPSTREAM_CONTEXT_GUARD_ENV)[number], string>>;
+type CompactGuardEnv = Partial<Record<(typeof COMPACT_CONTEXT_GUARD_ENV)[number], string>>;
 
 export async function prepareAgenCTurnContext(
   state: TurnState,
@@ -177,9 +188,9 @@ export async function runAgenCAutoCompact(params: {
       toolUseContext,
       forkContextMessages: messages,
     };
-    const result = await withUpstreamContextGuards(async () => {
+    const result = await withCompactContextGuards(async () => {
       const { autoCompactIfNeeded } =
-        await import("../../services/compact/autoCompact.js");
+        await import("../services/compact/autoCompact.js");
       return autoCompactIfNeeded(
         messages,
         toolUseContext,
@@ -252,9 +263,9 @@ export async function runAgenCManualCompact(params: {
         theme: "dark",
       },
     };
-    const result = await withUpstreamContextGuards(async () => {
+    const result = await withCompactContextGuards(async () => {
       const { manualCompactCall } =
-        await import("../../services/compact/compact.js");
+        await import("../services/compact/compact.js");
       const call = manualCompactCall;
       return call(params.customInstructions ?? "", commandContext as never);
     }, envForToolUseContext(toolUseContext));
@@ -320,10 +331,8 @@ export async function runAgenCContextUsage(params: {
         appendSystemPrompt: undefined,
       },
     };
-    const result = await withUpstreamContextGuards(async () => {
-      const { contextUsageCall } = await import("./compact-runtime.js");
-      const call = contextUsageCall;
-      return call(params.args ?? "", commandContext as never);
+    const result = await withCompactContextGuards(async () => {
+      return contextUsageCall(params.args ?? "", commandContext as never);
     }, envForToolUseContext(toolUseContext));
     finishTelemetry("reported");
     return { text: result.value };
@@ -340,8 +349,7 @@ export async function runAgenCContextCollapseOverflowRecovery(params: {
 }): Promise<AgenCOverflowRecoveryResult> {
   const finishTelemetry = startCompactTelemetry("overflow_recovery");
   try {
-    const recovered = await withUpstreamContextGuards(async () => {
-      const { recoverFromOverflow } = await import("./compact-runtime.js");
+    const recovered = await withCompactContextGuards(async () => {
       return recoverFromOverflow(
         toAgenCRuntimeMessages(params.state.messagesForQuery),
       );
@@ -384,6 +392,46 @@ export function buildAgenCPostCompactMessages(
   return result.replacementHistory.map((message) => ({ ...message }));
 }
 
+function toAgenCMessage(message: LLMMessage): AgenCMessage {
+  return {
+    role: message.role,
+    content: cloneContent(message.content),
+    ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
+    ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
+    ...(message.phase !== undefined ? { phase: message.phase } : {}),
+  };
+}
+
+function toResponseItem(message: LLMMessage): ResponseItem {
+  return {
+    role: message.role,
+    content: cloneContent(message.content),
+    ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
+    ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
+    ...(message.phase !== undefined ? { phase: message.phase } : {}),
+  };
+}
+
+function buildCompactedRolloutPayload(params: {
+  readonly message: string;
+  readonly replacementHistory?: readonly LLMMessage[];
+  readonly preCompactTokens?: number;
+  readonly postCompactTokens?: number;
+}): CompactedItem {
+  return {
+    message: params.message,
+    ...(params.replacementHistory !== undefined
+      ? { replacementHistory: params.replacementHistory.map(toResponseItem) }
+      : {}),
+    ...(params.preCompactTokens !== undefined
+      ? { preCompactTokens: params.preCompactTokens }
+      : {}),
+    ...(params.postCompactTokens !== undefined
+      ? { postCompactTokens: params.postCompactTokens }
+      : {}),
+  };
+}
+
 function messagesAfterAgenCBoundary(
   messages: readonly LLMMessage[],
 ): LLMMessage[] {
@@ -415,15 +463,14 @@ async function prepareAgenCQueryMessages(params: {
     context_collapse: params.applyContextCollapse,
   });
   try {
-    const result = await withUpstreamContextGuards(async () => {
+    const result = await withCompactContextGuards(async () => {
       let messages = toAgenCRuntimeMessages(params.messages);
-      const { applyToolResultBudget } = await import("./compact-runtime.js");
       const budgeted = await applyToolResultBudget(
         messages,
       );
       messages = budgeted.messages as AgenCRuntimeMessage[];
       const { microcompactMessages } =
-        await import("../../services/compact/microCompact.js");
+        await import("../services/compact/microCompact.js");
       const microcompactResult = await microcompactMessages(
         messages,
         params.toolUseContext,
@@ -432,7 +479,6 @@ async function prepareAgenCQueryMessages(params: {
       messages = microcompactResult.messages as AgenCRuntimeMessage[];
       let committed = false;
       if (params.applyContextCollapse) {
-        const { applyCollapsesIfNeeded } = await import("./compact-runtime.js");
         const projected = await applyCollapsesIfNeeded(
           messages,
         );
@@ -455,6 +501,79 @@ async function prepareAgenCQueryMessages(params: {
     finishTelemetry("error");
     throw error;
   }
+}
+
+async function contextUsageCall(
+  _args: string,
+  context: {
+    readonly messages?: RuntimeMessage[];
+    readonly options?: {
+      readonly contextWindowTokens?: number;
+    };
+  },
+): Promise<{ readonly value: string }> {
+  const messages = context.messages ?? [];
+  const used = roughRuntimeTokenCount(messages);
+  const window = context.options?.contextWindowTokens ?? 0;
+  const percent = window > 0
+    ? Math.min(100, Math.round((used / window) * 100))
+    : 0;
+  return {
+    value: window > 0
+      ? `Context: ${used.toLocaleString()} / ${window.toLocaleString()} tokens (${percent}%)`
+      : `Context: ${used.toLocaleString()} estimated tokens`,
+  };
+}
+
+async function applyToolResultBudget(
+  messages: RuntimeMessage[],
+): Promise<{
+  readonly messages: RuntimeMessage[];
+  readonly newlyReplaced: readonly unknown[];
+}> {
+  return { messages, newlyReplaced: [] };
+}
+
+async function applyCollapsesIfNeeded(
+  messages: RuntimeMessage[],
+): Promise<{ readonly messages: RuntimeMessage[]; readonly committed: number }> {
+  return { messages, committed: 0 };
+}
+
+async function recoverFromOverflow(
+  messages: RuntimeMessage[],
+): Promise<{ readonly messages: RuntimeMessage[]; readonly committed: number }> {
+  if (messages.length < 4) return { messages, committed: 0 };
+  const keepCount = Math.min(3, messages.length);
+  const { compactConversation } = await import("../services/compact/compact.js");
+  const compacted = await compactConversation(
+    messages,
+    {},
+    "Recover from a prompt-too-long provider response.",
+  );
+  return {
+    messages: [
+      compacted.boundaryMarker,
+      ...compacted.summaryMessages,
+      ...messages.slice(-keepCount),
+    ],
+    committed: 1,
+  };
+}
+
+function roughRuntimeTokenCount(messages: readonly RuntimeMessage[]): number {
+  return Math.ceil(
+    messages.reduce(
+      (total, message) => total + runtimeMessageText(message).length,
+      0,
+    ) / 4,
+  );
+}
+
+function runtimeMessageText(message: RuntimeMessage): string {
+  const content = message.message?.content ?? message.content ?? "";
+  if (typeof content === "string") return content;
+  return JSON.stringify(content ?? "");
 }
 
 function startCompactTelemetry(
@@ -480,9 +599,9 @@ async function toAgenCCompactionResult(
   result: AgenCCompactionResult,
   toolUseContext?: AgenCToolUseContext,
 ): Promise<NonNullable<AgenCAutoCompactResult["compactionResult"]>> {
-  const replacementHistory = await withUpstreamContextGuards(async () => {
+  const replacementHistory = await withCompactContextGuards(async () => {
     const { buildPostCompactMessages } =
-      await import("../../services/compact/compact.js");
+      await import("../services/compact/compact.js");
     return fromAgenCRuntimeMessages(
       buildPostCompactMessages(toCompactServiceResult(result)) as AgenCRuntimeMessage[],
     );
@@ -538,7 +657,7 @@ async function addManualCompactSlashMessages(
     createSyntheticUserCaveatMessage,
     createUserMessage,
     formatCommandInputTags,
-  } = await import("../../services/compact/compact.js");
+  } = await import("../services/compact/compact.js");
   const slashMessages: AgenCRuntimeMessage[] = [
     createSyntheticUserCaveatMessage(),
     createUserMessage({
@@ -565,9 +684,9 @@ async function addManualCompactSlashMessages(
 async function resetAgenCMicrocompactState(
   toolUseContext: AgenCToolUseContext,
 ): Promise<void> {
-  await withUpstreamContextGuards(async () => {
+  await withCompactContextGuards(async () => {
     const { resetMicrocompactState } =
-      await import("../../services/compact/microCompact.js");
+      await import("../services/compact/microCompact.js");
     resetMicrocompactState();
   }, envForToolUseContext(toolUseContext));
 }
@@ -577,13 +696,13 @@ function toAgenCRuntimeMessages(
 ): AgenCRuntimeMessage[] {
   return messages.map((message, index) => {
     const converted = toAgenCMessage(message);
-    const upstreamContent = toUpstreamMessageContent(message.content);
+    const runtimeContent = toRuntimeMessageContent(message.content);
     if (message.role === "system") {
       return {
         ...converted,
         role: "system",
         type: "system",
-        content: upstreamContent,
+        content: runtimeContent,
         uuid: `agenc-system-${index}`,
         timestamp: new Date(0).toISOString(),
       };
@@ -591,13 +710,13 @@ function toAgenCRuntimeMessages(
     const role = toAgenCRuntimeWireRole(message.role);
     return {
       ...converted,
-      content: upstreamContent,
+      content: runtimeContent,
       role,
       ...(message.role !== role ? { originalRole: message.role } : {}),
       type: role,
       message: {
         role,
-        content: upstreamContent,
+        content: runtimeContent,
       },
       uuid: `agenc-${role}-${index}`,
       timestamp: new Date(0).toISOString(),
@@ -635,7 +754,7 @@ function fromAgenCRuntimeMessage(
     const role = message.originalRole ?? message.role;
     return {
       role,
-      content: fromUpstreamMessageContent(message.content),
+      content: fromRuntimeMessageContent(message.content),
       ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
       ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
       ...(message.phase === "commentary" || message.phase === "final_answer"
@@ -647,7 +766,7 @@ function fromAgenCRuntimeMessage(
   if (!role) return null;
   return {
     role,
-    content: fromUpstreamMessageContent(readContent(message)),
+    content: fromRuntimeMessageContent(readContent(message)),
   };
 }
 
@@ -761,7 +880,7 @@ function cloneContent(content: unknown): LLMMessage["content"] {
   return "";
 }
 
-function toUpstreamMessageContent(content: unknown): unknown {
+function toRuntimeMessageContent(content: unknown): unknown {
   if (typeof content === "string") return [{ type: "text", text: content }];
   if (!Array.isArray(content)) return [];
   return content.map((item) => {
@@ -789,7 +908,7 @@ function toUpstreamMessageContent(content: unknown): unknown {
   });
 }
 
-function fromUpstreamMessageContent(content: unknown): LLMMessage["content"] {
+function fromRuntimeMessageContent(content: unknown): LLMMessage["content"] {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   const parts: LLMContentPart[] = [];
@@ -864,12 +983,12 @@ function passRecovery(): AgenCOverflowRecoveryResult {
   return { ...RECOVERY_PASS };
 }
 
-async function withUpstreamContextGuards<T>(
+async function withCompactContextGuards<T>(
   fn: () => Promise<T>,
-  env: UpstreamGuardEnv = {},
+  env: CompactGuardEnv = {},
 ): Promise<T> {
   const previous = new Map<string, string | undefined>();
-  for (const key of Object.keys(env) as Array<keyof UpstreamGuardEnv>) {
+  for (const key of Object.keys(env) as Array<keyof CompactGuardEnv>) {
     previous.set(key, process.env[key]);
     const value = env[key];
     if (value === undefined) {
@@ -893,7 +1012,7 @@ async function withUpstreamContextGuards<T>(
 
 function envForToolUseContext(
   toolUseContext: AgenCToolUseContext,
-): UpstreamGuardEnv {
+): CompactGuardEnv {
   const providerOverride = toolUseContext.options.providerOverride;
   if (!providerOverride) return {};
   return {
