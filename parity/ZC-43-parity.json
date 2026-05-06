@@ -68,7 +68,7 @@
         "runtime/src/unified-exec/process-manager.ts",
         "runtime/src/unified-exec/process-manager.test.ts"
       ],
-      "resolution": "Threaded through UnifiedExecRuntimeSandbox and SandboxTransformRequest. The process manager treats either interface as a managed-network requirement and carries both into the sandbox transform request."
+      "resolution": "Threaded through UnifiedExecRuntimeSandbox and SandboxTransformRequest. The process manager carries both interfaces into the sandbox transform request, but interface presence alone remains no-op for managed-network sandbox selection; only real proxy config or enforceManagedNetwork marks managed-network requirements."
     },
     {
       "checklistFile": "core/src/network_policy_decision.rs",

@@ -5880,6 +5880,23 @@ function assertZc43NetworkPolicyInterfaces() {
       failGate(`ZC-43: checklist port site ${required} must document interface threading.`);
     }
   }
+  const ledgerText = JSON.stringify(ledger);
+  if (/treats either interface as a managed-network requirement/i.test(ledgerText)) {
+    failGate(
+      "ZC-43: parity ledger must not claim no-op interfaces are managed-network requirements.",
+    );
+  }
+  const spawnSite = siteRows.find((candidate) =>
+    candidate?.checklistFile === "core/src/spawn.rs"
+  );
+  if (
+    typeof spawnSite?.resolution !== "string" ||
+    !/interface presence alone remains no-op/i.test(spawnSite.resolution)
+  ) {
+    failGate(
+      "ZC-43: spawn parity row must document that interface presence alone is no-op for sandbox selection.",
+    );
+  }
 
   const testSource = readRequired("runtime/src/sandbox/network-policy.test.ts");
   for (const marker of [
