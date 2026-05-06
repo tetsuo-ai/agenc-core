@@ -22,6 +22,10 @@ import {
 
 describe("AgenC IDE extension scaffold protocol", () => {
   it("pins the first extension repo to the VS Code target", () => {
+    expect(AGENC_IDE_EXTENSION_REPOSITORY_NAME).toBe("agenc-vscode");
+    expect(AGENC_IDE_EXTENSION_PACKAGE_NAME).toBe("@tetsuo-ai/agenc-vscode");
+    expect(AGENC_IDE_EXTENSION_TARGET).toBe("vscode");
+
     expect(AGENC_IDE_EXTENSION_SCAFFOLD).toEqual({
       repositoryName: AGENC_IDE_EXTENSION_REPOSITORY_NAME,
       packageName: AGENC_IDE_EXTENSION_PACKAGE_NAME,
