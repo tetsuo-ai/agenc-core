@@ -1272,6 +1272,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         env: {
           ...process.env,
           AGENC_HOME: home,
+          AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
           AGENC_WORKSPACE: workspace,
           AGENC_XAI_API_KEY: "",
           HOME: home,
@@ -1297,6 +1298,54 @@ describe("bootstrapLocalRuntimeSession", () => {
       await shutdown?.().catch(() => {
         /* best effort */
       });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("does not vend managed keys during provider startup unless enabled", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const calls: string[] = [];
+    const authBackend: AuthBackend = {
+      login: () => ({ authenticated: true, provider: "local" }),
+      logout: () => ({ authenticated: false }),
+      whoami: () => ({ authenticated: true, provider: "local" }),
+      vendKey: (provider, sessionId) => {
+        calls.push(`vendKey:${provider}:${sessionId}`);
+        return { provider, sessionId, apiKey: "managed-key" };
+      },
+      inferAgencModel: () => {
+        calls.push("inferAgencModel");
+        throw new Error("not expected");
+      },
+      getSubscriptionTier: ({ sessionId } = {}) => {
+        calls.push(`getSubscriptionTier:${sessionId ?? ""}`);
+        return "pro";
+      },
+    };
+
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    try {
+      await expect(
+        bootstrapLocalRuntimeSession({
+          authBackend,
+          conversationId: "conv-auth-disabled",
+          env: {
+            ...process.env,
+            AGENC_HOME: home,
+            AGENC_WORKSPACE: workspace,
+            AGENC_XAI_API_KEY: "",
+            HOME: home,
+            GROK_API_KEY: "",
+            XAI_API_KEY: "",
+          },
+        }),
+      ).rejects.toThrow(/auth\.managedKeys\.enabled/);
+
+      expect(calls).toEqual(["getSubscriptionTier:conv-auth-disabled"]);
+    } finally {
       await rm(home, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
     }
@@ -1359,6 +1408,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         env: {
           ...process.env,
           AGENC_HOME: home,
+          AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
           AGENC_WORKSPACE: workspace,
           AGENC_XAI_API_KEY: "",
           HOME: home,
