@@ -4,6 +4,7 @@ import {
   LLMContextWindowExceededError,
   LLMRateLimitError,
   LLMServerError,
+  LLMTimeoutError,
 } from "../../errors.js";
 import { GeminiProvider } from "../gemini/index.js";
 import { LMStudioProvider } from "../lmstudio/index.js";
@@ -818,6 +819,76 @@ describe("OpenAIProvider", () => {
         expect((error as Error).message).toContain(
           "openai_category=auth_invalid",
         );
+      },
+    );
+  });
+
+  test("maps forbidden auth failures to typed authentication errors", async () => {
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "gpt-5",
+      fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify({ error: { message: "forbidden" } }), {
+          status: 403,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    });
+
+    await provider.chat([{ role: "user", content: "hello" }]).then(
+      () => {
+        throw new Error("expected authentication failure");
+      },
+      (error: unknown) => {
+        expect(error).toBeInstanceOf(LLMAuthenticationError);
+        expect(error).toMatchObject({ statusCode: 403 });
+        expect((error as Error).message).toContain(
+          "openai_category=auth_invalid",
+        );
+      },
+    );
+  });
+
+  test("keeps chat aborts on the typed timeout path", async () => {
+    const abortError = Object.assign(new Error("request aborted"), {
+      name: "AbortError",
+      code: "ABORT_ERR",
+    });
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "gpt-5",
+      fetchImpl: vi.fn<typeof fetch>().mockRejectedValue(abortError),
+    });
+
+    await provider.chat([{ role: "user", content: "hello" }]).then(
+      () => {
+        throw new Error("expected abort");
+      },
+      (error: unknown) => {
+        expect(error).toBeInstanceOf(LLMTimeoutError);
+        expect((error as Error).message).not.toContain("openai_category=");
+      },
+    );
+  });
+
+  test("keeps stream aborts on the typed timeout path", async () => {
+    const abortError = Object.assign(new Error("stream aborted"), {
+      name: "AbortError",
+      code: "ABORT_ERR",
+    });
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "gpt-5",
+      fetchImpl: vi.fn<typeof fetch>().mockRejectedValue(abortError),
+    });
+
+    await provider.chatStream([{ role: "user", content: "hello" }], () => {}).then(
+      () => {
+        throw new Error("expected abort");
+      },
+      (error: unknown) => {
+        expect(error).toBeInstanceOf(LLMTimeoutError);
+        expect((error as Error).message).not.toContain("openai_category=");
       },
     );
   });

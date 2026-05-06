@@ -147,12 +147,42 @@ function errorCode(error: unknown): string | undefined {
   return undefined;
 }
 
+function errorName(error: unknown): string | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5; depth += 1) {
+    if (
+      current &&
+      typeof current === "object" &&
+      "name" in current &&
+      typeof (current as { name?: unknown }).name === "string"
+    ) {
+      return (current as { name: string }).name;
+    }
+    if (
+      current &&
+      typeof current === "object" &&
+      "cause" in current &&
+      (current as { cause?: unknown }).cause !== current
+    ) {
+      current = (current as { cause?: unknown }).cause;
+      continue;
+    }
+    break;
+  }
+  return undefined;
+}
+
+function isAbortLikeError(error: unknown): boolean {
+  return errorCode(error) === "ABORT_ERR" || errorName(error) === "AbortError";
+}
+
 function isTransportFailure(error: unknown): boolean {
+  if (isAbortLikeError(error)) return false;
+
   const code = errorCode(error);
   if (
     code &&
     [
-      "ABORT_ERR",
       "ECONNABORTED",
       "ECONNREFUSED",
       "ECONNRESET",
@@ -169,7 +199,7 @@ function isTransportFailure(error: unknown): boolean {
   }
 
   const message = error instanceof Error ? error.message : String(error);
-  return /(?:fetch failed|network|socket|connect econn|getaddrinfo|timed out|timeout|aborterror)/i.test(
+  return /(?:fetch failed|network|socket|connect econn|getaddrinfo|timed out|timeout)/i.test(
     message,
   );
 }
@@ -263,7 +293,10 @@ function mapOpenAIHttpFailureToError(args: {
   if (failure.category === "malformed_provider_response") {
     return new LLMInvalidResponseError(args.providerName, message);
   }
-  if (failure.category === "auth_invalid" && args.status === 401) {
+  if (
+    failure.category === "auth_invalid" &&
+    (args.status === 401 || args.status === 403)
+  ) {
     return new LLMAuthenticationError(args.providerName, args.status, message);
   }
   return new LLMProviderError(args.providerName, message, args.status);
