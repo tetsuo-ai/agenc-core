@@ -394,7 +394,15 @@ describe("AgenC command surface compatibility", () => {
     );
 
     clearCommandMemoizationCaches();
-    const commands = await getCommands(dir);
+    const disabledCommands = await getCommands(dir, {
+      plugins: { enabled: false },
+    });
+    expect(disabledCommands.find(command => command.name === "plugin-demo"))
+      .toBeUndefined();
+
+    const commands = await getCommands(dir, {
+      plugins: { enabled: true },
+    });
     expect(commands.find(command => command.name === "debug")?.loadedFrom)
       .toBe("bundled");
     expect(commands.find(command => command.name === "plugin-demo")).toMatchObject({
@@ -402,6 +410,12 @@ describe("AgenC command surface compatibility", () => {
       loadedFrom: "plugin",
       description: "Demo plugin skill",
     });
+
+    const disabledAfterEnabled = await getCommands(dir, {
+      plugins: { enabled: false },
+    });
+    expect(disabledAfterEnabled.find(command => command.name === "plugin-demo"))
+      .toBeUndefined();
   });
 
   it("filters MCP skill commands to model-invocable MCP prompts", () => {

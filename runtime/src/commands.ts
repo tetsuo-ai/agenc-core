@@ -18,11 +18,14 @@ import {
   loadPluginSkills,
 } from "./plugins/registration/load-plugin-commands.js";
 import { clearPluginRegistrationCaches } from "./plugins/registration/manager.js";
+import type { AgenCConfig } from "./config/schema.js";
 
 export type LocalCommandResult =
   | { type: "text"; value: string }
   | { type: "compact"; compactionResult?: unknown; displayText?: string }
   | { type: "skip" };
+
+type PluginConfigSurface = Pick<AgenCConfig, "plugins" | "enabledPlugins">;
 
 export type CommandResultDisplay = "skip" | "system" | "user";
 
@@ -327,10 +330,13 @@ function projectLocalSkill(
   };
 }
 
-async function loadLocalSkillCommands(cwd: string): Promise<readonly Command[]> {
+async function loadLocalSkillCommands(
+  cwd: string,
+  config: unknown = {},
+): Promise<readonly Command[]> {
   try {
     const services = localSkillServices(cwd);
-    const outcome = await services.skillsManager.skillsForConfig({}, null);
+    const outcome = await services.skillsManager.skillsForConfig(config, null);
     return (outcome.availableSkills ?? []).map(skill =>
       projectLocalSkill(skill as LocalSkillMetadata, services),
     );
@@ -358,7 +364,10 @@ async function callCommandSource(
   }
 }
 
-async function loadProductionCommandSources(cwd: string): Promise<readonly Command[]> {
+async function loadProductionCommandSources(
+  cwd: string,
+  config?: PluginConfigSurface,
+): Promise<readonly Command[]> {
   const skillsModulePath = "./agenc/upstream/skills/loadSkillsDir.js";
   const bundledSkillsModulePath = "./agenc/upstream/skills/bundledSkills.js";
   const builtinPluginsModulePath = "./agenc/upstream/plugins/builtinPlugins.js";
@@ -378,8 +387,8 @@ async function loadProductionCommandSources(cwd: string): Promise<readonly Comma
     callCommandSource(skillsModulePath, "getDynamicSkills"),
     callCommandSource(bundledSkillsModulePath, "getBundledSkills"),
     callCommandSource(builtinPluginsModulePath, "getBuiltinPluginSkillCommands"),
-    loadPluginCommands({ cwd }),
-    loadPluginSkills({ cwd }),
+    loadPluginCommands({ cwd, config }),
+    loadPluginSkills({ cwd, config }),
     callCommandSource(workflowCommandsModulePath, "getWorkflowCommands", cwd),
   ]);
 
@@ -398,11 +407,15 @@ export function getCommandsSync(): Command[] {
   return [...builtInCommands()];
 }
 
-export async function getCommands(cwd: string): Promise<Command[]> {
+export async function getCommands(
+  cwd: string,
+  config: unknown = {},
+): Promise<Command[]> {
+  const pluginConfig = pluginConfigSurface(config);
   const dynamicCommands = await Promise.all(
     [
-      loadLocalSkillCommands(cwd),
-      loadProductionCommandSources(cwd),
+      loadLocalSkillCommands(cwd, config),
+      loadProductionCommandSources(cwd, pluginConfig),
       ...[...commandProviders].map(async provider => [...(await provider(cwd))]),
     ],
   );
@@ -415,6 +428,12 @@ export async function getCommands(cwd: string): Promise<Command[]> {
     seen.add(key);
     return true;
   });
+}
+
+function pluginConfigSurface(config: unknown): PluginConfigSurface | undefined {
+  return typeof config === "object" && config !== null && !Array.isArray(config)
+    ? config as PluginConfigSurface
+    : undefined;
 }
 
 export function findCommand(
@@ -532,8 +551,11 @@ export function isBridgeSafeCommand(cmd: Command): boolean {
   return commandMatchesNameSet(cmd, BRIDGE_SAFE_COMMAND_NAMES);
 }
 
-export async function getSkillToolCommands(cwd: string): Promise<Command[]> {
-  const allCommands = await getCommands(cwd);
+export async function getSkillToolCommands(
+  cwd: string,
+  config: unknown = {},
+): Promise<Command[]> {
+  const allCommands = await getCommands(cwd, config);
   return allCommands.filter(
     command =>
       command.type === "prompt" &&
@@ -551,9 +573,12 @@ getSkillToolCommands.cache = {
   clear() {},
 };
 
-export async function getSlashCommandToolSkills(cwd: string): Promise<Command[]> {
+export async function getSlashCommandToolSkills(
+  cwd: string,
+  config: unknown = {},
+): Promise<Command[]> {
   try {
-    const allCommands = await getCommands(cwd);
+    const allCommands = await getCommands(cwd, config);
     return allCommands.filter(
       command =>
         command.type === "prompt" &&
