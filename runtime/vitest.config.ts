@@ -275,6 +275,7 @@ export default defineConfig({
   resolve: {
     alias: [
       { find: 'bun:bundle', replacement: resolve(__dirname, 'src/build/feature.ts') },
+      { find: /^src\/(.*)$/, replacement: resolve(__dirname, 'src/$1') },
     ],
   },
   test: {

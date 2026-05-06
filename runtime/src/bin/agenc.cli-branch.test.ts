@@ -166,6 +166,29 @@ describe("routeCLI (T12 Wave 5-B)", () => {
     expect(bootTUI).not.toHaveBeenCalled();
   });
 
+  it("--no-tui forwards startup image flags to oneShotCLI", async () => {
+    const { bootTUI, oneShotCLI, resumeTUI, continueTUI } = makeHandles();
+    const exit = await routeCLI({
+      argv: [
+        NODE,
+        SCRIPT,
+        "--no-tui",
+        "--image",
+        "/tmp/cat.png",
+        "describe",
+      ],
+      isTTY: true,
+      isStdoutTTY: true,
+      bootTUI,
+      oneShotCLI,
+      resumeTUI,
+      continueTUI,
+    });
+    expect(exit).toBe(0);
+    expect(oneShotCLI).toHaveBeenCalledWith("describe", ["/tmp/cat.png"]);
+    expect(bootTUI).not.toHaveBeenCalled();
+  });
+
   it("--resume <id> dispatches through resumeTUI", async () => {
     const { bootTUI, oneShotCLI, resumeTUI, continueTUI } = makeHandles();
     const exit = await routeCLI({
@@ -288,11 +311,15 @@ describe("classifyCLI", () => {
 
     expect(
       classifyCLI({
-        argv: [NODE, SCRIPT, "--no-tui", "hello"],
+        argv: [NODE, SCRIPT, "--no-tui", "--image", "/tmp/cat.png", "hello"],
         isTTY: true,
         isStdoutTTY: true,
       }),
-    ).toEqual({ kind: "oneShotCLI", userMessage: "hello" });
+    ).toEqual({
+      kind: "oneShotCLI",
+      userMessage: "hello",
+      startupImages: ["/tmp/cat.png"],
+    });
   });
 });
 
@@ -373,7 +400,6 @@ describe("extractFlagValue + stripRoutingFlags helpers", () => {
         "fast",
         "--permission-mode",
         "bypassPermissions",
-        "--no-daemon",
         "--dangerously-bypass-approvals-and-sandbox",
         "--allow-dangerously-skip-permissions",
         "hello",

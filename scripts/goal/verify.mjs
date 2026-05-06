@@ -1732,7 +1732,11 @@ const ITEM_EVIDENCE = {
     tests: ["scripts/check-bin-classification.test.mjs"],
   },
   "MG-04": {
-    grepNotPresent: [{ pattern: "directRuntime|direct.*runtime|legacy.*direct", scope: "runtime/src/bin" }],
+    files: ["runtime/src/app-server-client/index.ts"],
+    grepNotPresent: [
+      { pattern: "directRuntime|direct.*runtime|legacy.*direct", scope: "runtime/src/bin" },
+      { pattern: "AGENC_FORCE_DIRECT_RUNTIME|--no-daemon|shouldSkipAgenCDaemonForStartup", scope: "runtime/src/bin" },
+    ],
   },
   "MG-06": {
     grepPresent: [{ pattern: "autostart|spawnDaemon", scope: "packages/agenc" }],
@@ -4663,10 +4667,37 @@ async function migrationGates(item) {
     return;
   }
   if (id === "MG-04") {
-    // Direct-CLI removal. The runtime should now be daemon-driven only.
-    const f = path.join(root, "runtime/src/app-server-client/index.ts");
-    if (!existsSync(f)) failGate("runtime/src/app-server-client/index.ts missing — daemon-only CLI requires it");
-    pass("daemon-only CLI client present");
+    const client = path.join(root, "runtime/src/app-server-client/index.ts");
+    if (!existsSync(client)) {
+      failGate("runtime/src/app-server-client/index.ts missing — daemon-only CLI requires it");
+    }
+    const cli = await readFileSafe(path.join(root, "runtime/src/bin/agenc.ts"));
+    if (cli.includes("bootstrapLocalRuntimeSession")) {
+      failGate("MG-04: runtime/src/bin/agenc.ts still references local runtime bootstrap");
+    }
+    if (
+      cli.includes("AGENC_FORCE_DIRECT_RUNTIME") ||
+      cli.includes("--no-daemon") ||
+      cli.includes("shouldSkipAgenCDaemonForStartup")
+    ) {
+      failGate("MG-04: MG-01 daemon bypass flag remains in runtime/src/bin/agenc.ts");
+    }
+    const vitest = run("npm", [
+      "exec",
+      "--workspace=@tetsuo-ai/runtime",
+      "vitest",
+      "run",
+      "src/bin/agenc.daemon-fallback.test.ts",
+      "src/bin/agenc.cli-branch.test.ts",
+      "src/bin/agenc.test.ts",
+      "src/app-server-client/index.test.ts",
+      "src/tui/daemon-session.contract.test.ts",
+      "src/app-server/agent-cli.contract.test.ts",
+    ]);
+    if (vitest.status !== 0) {
+      failGate("MG-04: daemon-only CLI targeted Vitest suite failed");
+    }
+    pass("MG-04: daemon-only CLI client present and bin/agenc.ts has no local bootstrap references");
     return;
   }
   if (id === "MG-05") {

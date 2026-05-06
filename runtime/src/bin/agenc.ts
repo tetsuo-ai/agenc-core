@@ -1,12 +1,10 @@
 #!/usr/bin/env node
 /**
- * `agenc` CLI entry point — phase-machine dispatcher.
+ * `agenc` CLI entry point - daemon-backed dispatcher.
  *
- * Reads a prompt from argv (or stdin), boots the Grok provider, builds
- * the coding-profile tool registry, constructs a Session + TurnContext,
- * drives `runTurn` through the 6-phase machine, and streams events to
- * stdout. The Ink/React cockpit lands in a later tranche; this lets us
- * verify the agent path end-to-end before adding UI.
+ * Reads startup input from argv or stdin, checks workspace trust, starts or
+ * attaches daemon-owned agents, and mounts the Ink TUI against daemon sessions.
+ * Runtime provider/session construction now lives behind the daemon.
  *
  * Usage:
  *   agenc "help me understand this repo"
@@ -17,7 +15,6 @@
  *   AGENC_MODEL        optional — model override (default: grok-4-fast)
  *   AGENC_WORKSPACE    optional — project root (default: process.cwd())
  *   AGENC_HOME         optional — state dir (default: $HOME/.agenc)
- *   AGENC_FORCE_DIRECT_RUNTIME optional — skip daemon autostart when truthy
  *
  * Invariants wired here:
  *   I-45 (SIGTERM orderly shutdown, exit 0)
@@ -41,7 +38,6 @@ import {
 import type {
   LLMContentPart,
   LLMMessage,
-  LLMToolCall,
 } from "../llm/types.js";
 import {
   normalizeUserImageInput,
@@ -62,19 +58,11 @@ import {
   SchemaMismatchError,
   SessionLockedError,
 } from "../session/session-store.js";
-import {
-  createBashExecObserverForSlot,
-  type SessionSlot,
-} from "../session/observer-wiring.js";
 import { runSlashCommand } from "./slash.js";
 import type { SlashCommandAppStateBridge } from "../commands/types.js";
 import { ConfigStore } from "../config/store.js";
 import { resolveAgencHome, resolveWorkspace as resolveWorkspaceFromEnv } from "../config/env.js";
 import type { AgenCConfig } from "../config/schema.js";
-import {
-  bootstrapLocalRuntimeSession,
-  type BootstrapLocalRuntimeSessionOptions,
-} from "./bootstrap.js";
 import {
   loadTieredInstructions,
   assembleTieredInstructions,
@@ -109,7 +97,13 @@ import {
   resolveAgenCAgentAttachCwd,
   runAgenCAgentCli,
 } from "../app-server/agent-cli.js";
-import type { AgentSummary } from "../app-server/protocol/index.js";
+import {
+  createAgenCDaemonOnlyTuiContext,
+  findAgenCDaemonAgentBySessionId,
+  listAgenCDaemonAgents,
+  startAgenCDaemonPromptAgent,
+} from "../app-server-client/index.js";
+import type { MessageContentBlock } from "../app-server/protocol/index.js";
 import {
   ensureAgenCDaemonAutostart,
   resolveAgenCDaemonAutostartEnabled,
@@ -171,8 +165,39 @@ import {
 import { runStartupConfigMigrations } from "../state/migrations/config-migrations.js";
 import { setSessionTrustAccepted } from "../bootstrap/state.js";
 
+type AgenCDaemonCliDeps = {
+  readonly startPromptAgent: typeof startAgenCDaemonPromptAgent;
+  readonly createConnectedTuiClient: typeof createConnectedAgenCJsonLineDaemonTuiClient;
+  readonly findAgentBySessionId: typeof findAgenCDaemonAgentBySessionId;
+  readonly createTuiContext: typeof createAgenCDaemonOnlyTuiContext;
+  readonly ensureDaemonReady: typeof defaultEnsureDaemonReady;
+};
+
+const DEFAULT_DAEMON_CLI_DEPS: AgenCDaemonCliDeps = {
+  startPromptAgent: startAgenCDaemonPromptAgent,
+  createConnectedTuiClient: createConnectedAgenCJsonLineDaemonTuiClient,
+  findAgentBySessionId: findAgenCDaemonAgentBySessionId,
+  createTuiContext: createAgenCDaemonOnlyTuiContext,
+  ensureDaemonReady: defaultEnsureDaemonReady,
+};
+
+let daemonCliDepsForTest: Partial<AgenCDaemonCliDeps> | null = null;
+
+function daemonCliDeps(): AgenCDaemonCliDeps {
+  return {
+    ...DEFAULT_DAEMON_CLI_DEPS,
+    ...(daemonCliDepsForTest ?? {}),
+  };
+}
+
+/** Test-only helper for daemon-backed CLI entry tests. */
+export function __setDaemonCliDepsForTest(
+  deps: Partial<AgenCDaemonCliDeps> | null,
+): void {
+  daemonCliDepsForTest = deps;
+}
+
 export {
-  bootstrapLocalRuntimeSession,
   PROVIDER_MODEL_CATALOG,
   resolveModelOrExit,
   sessionConfigurationFromAgenCConfig,
@@ -222,7 +247,6 @@ export function formatCliHelpText(): string {
     "  -h, --help                              Show this help text",
     `  --version                                Show version (${VERSION})`,
     "  --no-tui                                 Force one-shot CLI mode",
-    "  --no-daemon                              Skip daemon autostart for this invocation",
     "  -c, --continue                           Continue the latest project session",
     "  -r, --resume <session-id>                Resume a prior project session in the TUI",
     "  --provider <name>                        Override the startup model provider",
@@ -324,20 +348,6 @@ export function detectStartupShortCircuit(
   return null;
 }
 
-function envFlagEnabled(value: string | undefined): boolean {
-  const raw = value?.trim().toLowerCase();
-  if (raw === undefined || raw.length === 0) return false;
-  return raw !== "0" && raw !== "false" && raw !== "off";
-}
-
-export function shouldSkipAgenCDaemonForStartup(
-  env: NodeJS.ProcessEnv = process.env,
-  argv: readonly string[] = process.argv.slice(2),
-): boolean {
-  return envFlagEnabled(env.AGENC_FORCE_DIRECT_RUNTIME) ||
-    argv.includes("--no-daemon");
-}
-
 // ─────────────────────────────────────────────────────────────────────
 // Argv / stdin / env resolution
 // ─────────────────────────────────────────────────────────────────────
@@ -358,7 +368,7 @@ async function readStdin(signal: AbortSignal): Promise<string> {
 async function resolveUserMessage(signal: AbortSignal): Promise<string> {
   // Strip routing-level flags (--no-tui, --resume) before treating the
   // residue as the prompt; T12 routing peels these off upstream but
-  // legacy entry paths still call `resolveUserMessage` directly.
+  // Non-router entry paths still call `resolveUserMessage` directly.
   const userArgv = process.argv.slice(2);
   const argv = stripRoutingFlags(userArgv);
   if (argv.length > 0) {
@@ -393,16 +403,26 @@ function startupImageMessagesFromInputs(
   ];
 }
 
-function startupImageMessagesFromArgv(
-  argv: readonly string[],
+function startupContentFromInputs(
+  prompt: string,
+  imageInputs: readonly string[],
   cwd: string,
   home?: string,
-): LLMMessage[] {
-  return startupImageMessagesFromInputs(
-    extractFlagValues(argv, "--image"),
-    cwd,
-    home,
-  );
+): readonly MessageContentBlock[] | undefined {
+  const imageMessages = startupImageMessagesFromInputs(imageInputs, cwd, home);
+  const imageParts = imageMessages.flatMap((message) => {
+    if (!Array.isArray(message.content)) return [];
+    return message.content.flatMap((part) => {
+      if (part.type !== "image_url") return [];
+      return [{ type: "image_url" as const, image_url: part.image_url }];
+    });
+  });
+  if (imageParts.length === 0) return undefined;
+  const text = prompt.trim();
+  return [
+    ...(text.length > 0 ? [{ type: "text" as const, text }] : []),
+    ...imageParts,
+  ];
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -419,34 +439,6 @@ class InitAbortedError extends Error {
   constructor(message: string) {
     super(`init_aborted: ${message}`);
     this.name = "InitAbortedError";
-  }
-}
-
-/**
- * Reverse-cleanup stack for init. Each init step that opens a
- * resource pushes a finaliser onto this stack; on abort the stack is
- * drained in LIFO order. No-op entries are cheap; callers should
- * guard finalisers against double-close.
- */
-class InitCleanupStack {
-  private readonly finalisers: Array<{
-    name: string;
-    run: () => Promise<void> | void;
-  }> = [];
-
-  push(name: string, run: () => Promise<void> | void): void {
-    this.finalisers.push({ name, run });
-  }
-
-  async unwind(onError: (name: string, err: unknown) => void): Promise<void> {
-    while (this.finalisers.length > 0) {
-      const { name, run } = this.finalisers.pop()!;
-      try {
-        await run();
-      } catch (err) {
-        onError(name, err);
-      }
-    }
   }
 }
 
@@ -657,49 +649,6 @@ export async function maybeReloadConfigBetweenTurns(params: {
 // System prompt + rendering
 // ─────────────────────────────────────────────────────────────────────
 
-function describeToolCall(toolCall: LLMToolCall): string {
-  const tail =
-    toolCall.arguments && toolCall.arguments.length > 80
-      ? `${toolCall.arguments.slice(0, 80)}…`
-      : (toolCall.arguments ?? "");
-  return `${toolCall.name}(${tail})`;
-}
-
-function renderEvent(event: PhaseEvent): void {
-  switch (event.type) {
-    case "turn_start":
-      if (event.turnIndex > 0) {
-        process.stderr.write(`\n── turn ${event.turnIndex + 1} ──\n`);
-      }
-      return;
-    case "assistant_text":
-      process.stdout.write(event.content);
-      process.stdout.write("\n");
-      return;
-    case "tool_call":
-      process.stderr.write(`→ ${describeToolCall(event.toolCall)}\n`);
-      return;
-    case "tool_result": {
-      const tag = event.result.isError ? "✗" : "✓";
-      const preview =
-        event.result.content.length > 200
-          ? `${event.result.content.slice(0, 200)}…`
-          : event.result.content;
-      process.stderr.write(`${tag} ${preview}\n`);
-      return;
-    }
-    case "turn_complete": {
-      const { usage, stopReason, error } = event;
-      const line = `\n[${stopReason}] in:${usage.promptTokens} out:${usage.completionTokens} total:${usage.totalTokens}\n`;
-      process.stderr.write(line);
-      if (error) {
-        process.stderr.write(`error: ${error.message}\n`);
-      }
-      return;
-    }
-  }
-}
-
 // ─────────────────────────────────────────────────────────────────────
 // T10 Group I — runSingleTurn seam (R1: multi-turn future-proofing)
 // ─────────────────────────────────────────────────────────────────────
@@ -889,28 +838,6 @@ export async function prepareTurnRuntimeInputs(params: {
       params.session,
       currentConfig,
     ),
-  };
-}
-
-function createSharedBootstrapTooling(): {
-  readonly sessionSlot: SessionSlot;
-  readonly delegateSessionHolder: { current: Session | null };
-  readonly toolRegistryOptions: NonNullable<
-    BootstrapLocalRuntimeSessionOptions["toolRegistryOptions"]
-  >;
-} {
-  const sessionSlot: SessionSlot = { current: null };
-  const delegateSessionHolder: { current: Session | null } = {
-    current: null,
-  };
-  const bashExecObserver = createBashExecObserverForSlot(sessionSlot);
-  return {
-    sessionSlot,
-    delegateSessionHolder,
-    toolRegistryOptions: {
-      bashExecObserver,
-      extraTools: [],
-    },
   };
 }
 
@@ -1421,28 +1348,22 @@ export function __setActiveInkUnmountForTest(fn: (() => void) | null): void {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// One-shot CLI — the legacy non-TUI path.
+// One-shot CLI - daemon-backed non-TUI path.
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Run a single turn through the phase machine and exit. This is the
- * original `main()` body preserved verbatim; Wave 5-B introduces
- * routing above it so piped + `--no-tui` invocations still see the same
- * pixel-identical behavior.
+ * Start a daemon-owned prompt agent and exit after printing its agent ID.
  *
  * When `userMessage` is a non-empty string (routing path), it's used as
  * the prompt directly. Otherwise the function falls back to the
- * `resolveUserMessage` argv/stdin pipeline so legacy entry paths still
+ * `resolveUserMessage` argv/stdin pipeline so older entry adapters still
  * work without a pre-resolved prompt.
  */
 export async function oneShotCLI(
   userMessage: string | null = null,
+  startupImages: readonly string[] = [],
 ): Promise<number> {
-  // I-51: init step abort + reverse-cleanup stack. Signal handlers for
-  // Ctrl+C / SIGTERM / SIGHUP during init feed this controller; each
-  // async init step observes signal.aborted.
   const initAbort = new AbortController();
-  const cleanup = new InitCleanupStack();
   const uninstallInitSignals = installInitSignalHandlers(initAbort);
 
   const throwIfAborted = (step: string) => {
@@ -1453,19 +1374,11 @@ export async function oneShotCLI(
     }
   };
 
-  // I-47 latch — SIGUSR1 flips this; `maybeReloadConfigBetweenTurns`
-  // drains it before the next runTurn call.
-  const configReloadLatch: ConfigReloadLatch = { requested: false };
-
   try {
-    // Step 1: validate HOME (I-52).
     validateAgencHome();
     throwIfAborted("validateAgencHome");
 
-    // Step 2: resolve user message. The router may have pre-resolved
-    // the prompt from argv; fall through to stdin when nothing was
-    // passed (preserves the legacy piped-only path).
-    let resolvedUserMessage =
+    const resolvedUserMessage =
       userMessage !== null && userMessage.length > 0
         ? userMessage
         : await resolveUserMessage(initAbort.signal);
@@ -1482,199 +1395,35 @@ export async function oneShotCLI(
     }
     throwIfAborted("requireProjectTrustForTui");
 
-    // Step 3: shared local-runtime bootstrap contract. Both the
-    // one-shot CLI and TUI entry adapters construct their Session
-    // through this helper so the entry surface owns less runtime
-    // setup directly.
-    const { sessionSlot, delegateSessionHolder, toolRegistryOptions } =
-      createSharedBootstrapTooling();
-    // The daemon owns the live rollout lock for runtimeSessionId, so
-    // attach reuses the id without resuming that rollout locally.
-    const {
-      agencHome,
-      configStore,
-      workspaceRoot,
-      resolvedProvider,
-      registry,
-      session,
-      ctx,
-      memoryDir,
-      memoryMdPath,
-      shutdown,
-    } = await bootstrapLocalRuntimeSession({
-      env: process.env,
-      argv: process.argv,
-      cwd: processCwd(),
-      toolRegistryOptions,
-    });
-    throwIfAborted("bootstrapLocalRuntimeSession");
-
-    throwIfAborted("Session");
-
-    // Now that the Session exists, fill the bash observer slot so
-    // `exec_command_begin` / `exec_command_end` events land on the
-    // session event log. MCP attach/start is owned by the session
-    // boundary inside `bootstrapLocalRuntimeSession(...)`.
-    sessionSlot.current = session;
-    // T9: give the delegate tool its real Session reference.
-    delegateSessionHolder.current = session;
-
-    for (const message of startupImageMessagesFromArgv(
-      process.argv.slice(2),
-      workspaceRoot,
+    const daemonCwd = resolveWorkspaceFromEnv(process.env) ?? processCwd();
+    const resolvedStartupImages =
+      startupImages.length > 0
+        ? startupImages
+        : extractFlagValues(process.argv.slice(2), "--image");
+    const initialContent = startupContentFromInputs(
+      resolvedUserMessage,
+      resolvedStartupImages,
+      daemonCwd,
       process.env.HOME,
-    )) {
-      session.enqueueIdleInput(message);
-    }
-
-    let sessionRef: Session | null = session;
-    installSignalHandlers(() => sessionRef, configReloadLatch);
-
-    // Init complete — tear down init-phase signal handlers (Session
-    // now owns its own) and drop the cleanup stack since the session
-    // finally-block below takes over.
-    uninstallInitSignals();
-    // Drain the stack without running finalisers; the finally-block
-    // below hands off to the session lifecycle helper.
-    await cleanup.unwind(() => {
-      /* swallow — we're handing off to session's own lifecycle */
+    );
+    const daemonPrompt =
+      resolvedUserMessage.trim().length > 0
+        ? resolvedUserMessage
+        : initialContent !== undefined
+          ? "Multimodal AgenC startup"
+          : resolvedUserMessage;
+    const started = await daemonCliDeps().startPromptAgent({
+      prompt: daemonPrompt,
+      env: process.env,
+      cwd: daemonCwd,
+      ...(initialContent !== undefined ? { initialContent } : {}),
+      metadata: { mode: "one-shot" },
     });
-
-    // Slash-command short-circuit. `runSlashCommand` is the only entry
-    // path now, including the session-backed worktree commands.
-    if (resolvedUserMessage.trimStart().startsWith("/")) {
-      let shouldShutdownAfterSlash = true;
-      try {
-        const runResult = await runSlashCommand(resolvedUserMessage, {
-          session,
-          cwd:
-            session.sessionConfiguration.cwd ?? workspaceRoot ?? processCwd(),
-          home: resolveUserHome(
-            process.env,
-            session.sessionConfiguration.cwd ?? workspaceRoot ?? processCwd(),
-          ),
-          agencHome,
-          configStore,
-        });
-        switch (runResult.kind) {
-          case "skip":
-            process.stderr.write(
-              /[\r\n]/.test(resolvedUserMessage)
-                ? "agenc: slash command rejected (multi-line input not allowed)\n"
-                : "agenc: slash command rejected (invalid syntax)\n",
-            );
-            return 1;
-          case "passthrough":
-            resolvedUserMessage = runResult.input;
-            shouldShutdownAfterSlash = false;
-            break;
-          case "unknown":
-            process.stderr.write(`agenc: ${runResult.message}\n`);
-            return 1;
-          case "blocked_by_bridge":
-            process.stderr.write(`agenc: ${runResult.message}\n`);
-            return 1;
-          case "dispatched": {
-            const r = runResult.result;
-            switch (r.kind) {
-              case "text":
-              case "compact":
-                process.stdout.write(`${r.text}\n`);
-                return 0;
-              case "prompt":
-                // Re-injected prompt would feed back into the turn
-                // loop; one-shot CLI has no loop yet, so surface the
-                // prompt to stdout + exit 0.
-                process.stdout.write(`${r.content}\n`);
-                return 0;
-              case "skip":
-                return 0;
-              case "exit":
-                return r.code;
-              case "error":
-                process.stderr.write(`agenc: ${r.message}\n`);
-                return 1;
-            }
-          }
-        }
-      } finally {
-        if (shouldShutdownAfterSlash) {
-          sessionRef = null;
-          sessionSlot.current = null;
-          delegateSessionHolder.current = null;
-          await shutdown().catch(() => {
-            /* best effort */
-          });
-        }
-      }
-    }
-
-    const loadTurnInputsFn = () =>
-      prepareTurnRuntimeInputs({
-        session,
-        configStore,
-        workspaceRoot,
-        memoryDir,
-        memoryMdPath,
-        registry,
-      });
-
-    // R1 seam: one LLM turn runs through `runSingleTurn`, which owns
-    // the between-turn reload + system-prompt assembly + runTurn loop.
-    // A future multi-turn REPL iterates this helper in a while-loop;
-    // the single-shot CLI just runs it exactly once.
-    try {
-      const preparedPrompt = await prepareSubmittedPromptForTurn({
-        session,
-        configStore,
-        input: resolvedUserMessage,
-      });
-      if (preparedPrompt.blocked) {
-        if (preparedPrompt.blockMessage) {
-          process.stderr.write(`agenc: ${preparedPrompt.blockMessage}\n`);
-        }
-        return 1;
-      }
-
-      for await (const event of runSingleTurn({
-        session,
-        ctx,
-        input: preparedPrompt.input,
-        displayInput: preparedPrompt.displayInput,
-        agencHome,
-        configStore,
-        configReloadLatch,
-        loadTurnInputsFn,
-        provider: resolvedProvider,
-      })) {
-        renderEvent(event);
-        if (event.type === "turn_complete") {
-          if (event.stopReason === "error") return 1;
-          if (event.stopReason === "cancelled") return 130;
-          return 0;
-        }
-      }
-    } finally {
-      sessionRef = null;
-      sessionSlot.current = null;
-      delegateSessionHolder.current = null;
-      await shutdown().catch(() => {
-        /* best effort */
-      });
-    }
-
-    // Generator ended without yielding turn_complete — shouldn't happen,
-    // but surface as an error rather than a silent 0 exit.
-    return 1;
+    process.stdout.write(`${started.agentId}\n`);
+    return 0;
   } catch (error) {
-    // I-51: on abort, run reverse cleanup + emit init_aborted.
     if (error instanceof InitAbortedError) {
       process.stderr.write(`agenc: ${error.message}\n`);
-      await cleanup.unwind((name, err) => {
-        process.stderr.write(
-          `agenc: cleanup[${name}] failed: ${err instanceof Error ? err.message : String(err)}\n`,
-        );
-      });
       return 130;
     }
     if (
@@ -1682,21 +1431,12 @@ export async function oneShotCLI(
       error instanceof SchemaMismatchError
     ) {
       process.stderr.write(`agenc: ${error.message}\n`);
-      await cleanup.unwind((name, err) => {
-        process.stderr.write(
-          `agenc: cleanup[${name}] failed: ${err instanceof Error ? err.message : String(err)}\n`,
-        );
-      });
       return 1;
     }
-    // Other init errors: still run cleanup, then re-throw so the
-    // top-level catch surfaces the message.
-    await cleanup.unwind((name, err) => {
-      process.stderr.write(
-        `agenc: cleanup[${name}] failed: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
-    });
-    throw error;
+    process.stderr.write(
+      `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    return 1;
   } finally {
     uninstallInitSignals();
   }
@@ -1898,16 +1638,9 @@ export async function resolveAttachTargetTrustRoot(
   >,
   agentId: string,
 ): Promise<string> {
-  const matches: AgentSummary[] = [];
-  let cursor: string | undefined;
-  do {
-    const result = await client.request("agent.list", {
-      limit: 100,
-      ...(cursor !== undefined ? { cursor } : {}),
-    });
-    matches.push(...result.agents.filter((agent) => agent.agentId === agentId));
-    cursor = result.nextCursor;
-  } while (cursor !== undefined);
+  const matches = (await listAgenCDaemonAgents(client)).filter(
+    (agent) => agent.agentId === agentId,
+  );
 
   if (matches.length !== 1) {
     throw new Error(`daemon agent not found for attach: ${agentId}`);
@@ -1994,90 +1727,60 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
   };
   try {
     validateAgencHome();
-    const { sessionSlot, delegateSessionHolder, toolRegistryOptions } =
-      createSharedBootstrapTooling();
-    const {
-      agencHome,
-      configStore,
-      workspaceRoot,
-      resolvedProvider,
-      registry,
-      model,
-      session,
-      memoryDir,
-      memoryMdPath,
-      shutdown,
-      autonomousModeEnabled,
-    } = await bootstrapLocalRuntimeSession({
-      env: process.env,
-      argv: process.argv,
-      cwd: processCwd(),
-      toolRegistryOptions,
-      ...(args.resumeId !== undefined ? { conversationId: args.resumeId } : {}),
-    });
-    try {
-      sessionSlot.current = session;
-      delegateSessionHolder.current = session;
-
-      const loadTurnInputsFn = () =>
-        prepareTurnRuntimeInputs({
-          session,
-          configStore,
-          workspaceRoot,
-          memoryDir,
-          memoryMdPath,
-          registry,
-        });
-      const uninstallTuiSessionContract = installTuiSessionContract({
-        session,
-        configStore,
-        agencHome,
-        resolvedProvider,
-        autonomousModeEnabled,
-        loadTurnInputsFn,
-      });
-
+    if (args.resumeId !== undefined) {
+      const deps = daemonCliDeps();
+      const daemonClient = await deps.createConnectedTuiClient();
+      let transferred = false;
       try {
-        const boot = await loadBootTUI();
-        const capturedEarlyInput = consumeEarlyInput();
-        const initialComposerText =
-          args.initialPrompt === undefined ? capturedEarlyInput : "";
-        const initialUserMessages =
-          args.startupImages !== undefined
-            ? startupImageMessagesFromInputs(
-                args.startupImages,
-                workspaceRoot,
-                process.env.HOME,
-              )
-            : startupImageMessagesFromArgv(
-                process.argv.slice(2),
-                workspaceRoot,
-                process.env.HOME,
-              );
-        const handle = await boot({
-          session,
-          configStore,
-          model,
-          ...(args.initialPrompt !== undefined
-            ? { initialPrompt: args.initialPrompt }
-            : {}),
-          ...(initialComposerText.length > 0 ? { initialComposerText } : {}),
-          ...(initialUserMessages.length > 0 ? { initialUserMessages } : {}),
+        const agent = await deps.findAgentBySessionId(daemonClient, args.resumeId);
+        if (agent === null) {
+          process.stderr.write(`agenc: session not found: ${args.resumeId}\n`);
+          return 1;
+        }
+        transferred = true;
+        return attachAgentTuiEntry({
+          agentId: agent.agentId,
+          clientId: `agenc-tui-${process.pid}`,
+          daemonClient,
+          initialComposerText: consumeEarlyInput(),
+          startupImages: args.startupImages,
         });
-        activeInkUnmount = handle.unmount;
-        await handle.waitUntilExit();
-        return 0;
       } finally {
-        activeInkUnmount = null;
-        uninstallTuiSessionContract();
+        if (!transferred) {
+          await daemonClient.close().catch(() => {
+            /* best effort */
+          });
+        }
       }
-    } finally {
-      sessionSlot.current = null;
-      delegateSessionHolder.current = null;
-      await shutdown().catch(() => {
-        /* best effort */
-      });
     }
+    const capturedEarlyInput = consumeEarlyInput();
+    const initialPrompt = args.initialPrompt?.trim();
+    const objective =
+      initialPrompt !== undefined && initialPrompt.length > 0
+        ? initialPrompt
+        : capturedEarlyInput.length > 0
+          ? capturedEarlyInput
+          : "Interactive AgenC session";
+    const daemonCwd = resolveWorkspaceFromEnv(process.env) ?? processCwd();
+    const initialContent = startupContentFromInputs(
+      objective,
+      args.startupImages ?? [],
+      daemonCwd,
+      process.env.HOME,
+    );
+    const started = await daemonCliDeps().startPromptAgent({
+      prompt: objective,
+      env: process.env,
+      cwd: daemonCwd,
+      ...(initialContent !== undefined ? { initialContent } : {}),
+      metadata: { mode: "tui" },
+    });
+    return attachAgentTuiEntry({
+      agentId: started.agentId,
+      clientId: `agenc-tui-${process.pid}`,
+      initialComposerText:
+        args.initialPrompt === undefined ? capturedEarlyInput : "",
+    });
   } catch (error) {
     consumeEarlyInput();
     if (
@@ -2094,6 +1797,8 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
 export interface AttachAgentTuiEntryArgs {
   readonly agentId: string;
   readonly clientId: string;
+  readonly initialComposerText?: string;
+  readonly startupImages?: readonly string[];
   readonly env?: NodeJS.ProcessEnv;
   readonly daemonClient?: Awaited<
     ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
@@ -2112,7 +1817,7 @@ export async function attachAgentTuiEntry(
     validateAgencHome(env);
     daemonClient =
       args.daemonClient ??
-      (await createConnectedAgenCJsonLineDaemonTuiClient({
+      (await daemonCliDeps().createConnectedTuiClient({
         env,
       }));
     const targetCwd = await resolveAttachTargetTrustRoot(
@@ -2140,79 +1845,50 @@ export async function attachAgentTuiEntry(
     const runtimeSessionId =
       attachment.runtimeSessionId ?? attachment.agentId ?? sessionId;
     const bootstrapCwd = resolveAgenCAgentAttachCwd(attachment, targetCwd);
-    const bootstrapEnv = envForAttachBootstrap(env, bootstrapCwd);
-    const { sessionSlot, delegateSessionHolder, toolRegistryOptions } =
-      createSharedBootstrapTooling();
     const {
-      agencHome,
       configStore,
       workspaceRoot,
-      resolvedProvider,
-      registry,
+      baseSession,
       model,
-      session,
-      memoryDir,
-      memoryMdPath,
-      shutdown,
-      autonomousModeEnabled,
-    } = await bootstrapLocalRuntimeSession({
-      env: bootstrapEnv,
-      argv: process.argv,
+    } = await daemonCliDeps().createTuiContext({
+      env,
       cwd: bootstrapCwd,
       conversationId: runtimeSessionId,
-      resumeConversation: false,
-      toolRegistryOptions,
     });
+    const createDaemonTuiSession = await loadCreateDaemonTuiSession();
+    const daemonSession = await createDaemonTuiSession({
+      baseSession,
+      client: daemonClient,
+      sessionId,
+      conversationId: runtimeSessionId,
+      clientId: args.clientId,
+    });
+    const boot = await loadBootTUI();
+    const startupImages = args.startupImages ?? [];
+    const initialUserMessages =
+      startupImages.length > 0
+        ? startupImageMessagesFromInputs(
+            startupImages,
+            workspaceRoot,
+            env.HOME,
+          )
+        : [];
     try {
-      sessionSlot.current = session;
-      delegateSessionHolder.current = session;
-
-      const loadTurnInputsFn = () =>
-        prepareTurnRuntimeInputs({
-          session,
-          configStore,
-          workspaceRoot,
-          memoryDir,
-          memoryMdPath,
-          registry,
-        });
-      const uninstallTuiSessionContract = installTuiSessionContract({
-        session,
+      const handle = await boot({
+        session: daemonSession,
         configStore,
-        agencHome,
-        resolvedProvider,
-        autonomousModeEnabled,
-        loadTurnInputsFn,
+        model,
+        ...(args.initialComposerText !== undefined &&
+        args.initialComposerText.length > 0
+          ? { initialComposerText: args.initialComposerText }
+          : {}),
+        ...(initialUserMessages.length > 0 ? { initialUserMessages } : {}),
       });
-
-      try {
-        const createDaemonTuiSession = await loadCreateDaemonTuiSession();
-        const daemonSession = await createDaemonTuiSession({
-          baseSession: session,
-          client: daemonClient,
-          sessionId,
-          conversationId: runtimeSessionId,
-          clientId: args.clientId,
-        });
-        const boot = await loadBootTUI();
-        const handle = await boot({
-          session: daemonSession,
-          configStore,
-          model,
-        });
-        activeInkUnmount = handle.unmount;
-        await handle.waitUntilExit();
-        return 0;
-      } finally {
-        activeInkUnmount = null;
-        uninstallTuiSessionContract();
-      }
+      activeInkUnmount = handle.unmount;
+      await handle.waitUntilExit();
+      return 0;
     } finally {
-      sessionSlot.current = null;
-      delegateSessionHolder.current = null;
-      await shutdown().catch(() => {
-        /* best effort */
-      });
+      activeInkUnmount = null;
     }
   } catch (error) {
     if (
@@ -2230,18 +1906,39 @@ export async function attachAgentTuiEntry(
   }
 }
 
-/**
- * Resume a prior session through the TUI. The entry adapter verifies the
- * requested id exists, then re-enters the shared bootstrap path with the
- * original conversation id so rollout reconstruction can hydrate the
- * session state and transcript before Ink mounts.
- */
+/** Resume a daemon-owned session through the TUI. */
 export async function resumeTUIEntry(args: ResumeTUIArgs): Promise<number> {
   const workspaceRoot = resolveWorkspaceFromEnv(process.env) ?? processCwd();
   const resolved = resolveResumeSessionId(workspaceRoot, args.resumeId);
   switch (resolved.kind) {
-    case "ok":
-      return bootTUIEntry({ resumeId: resolved.sessionId });
+    case "ok": {
+      const deps = daemonCliDeps();
+      await deps.ensureDaemonReady(process.env)();
+      const daemonClient = await deps.createConnectedTuiClient();
+      let transferred = false;
+      try {
+        const agent = await deps.findAgentBySessionId(
+          daemonClient,
+          resolved.sessionId,
+        );
+        if (agent === null) {
+          process.stderr.write(`agenc: session not found: ${args.resumeId}\n`);
+          return 1;
+        }
+        transferred = true;
+        return attachAgentTuiEntry({
+          agentId: agent.agentId,
+          clientId: `agenc-tui-${process.pid}`,
+          daemonClient,
+        });
+      } finally {
+        if (!transferred) {
+          await daemonClient.close().catch(() => {
+            /* best effort */
+          });
+        }
+      }
+    }
     case "ambiguous":
       process.stderr.write(
         `agenc: ambiguous session id '${resolved.input}' matches: ${resolved.matches.join(", ")}\n`,
@@ -2264,7 +1961,7 @@ export async function continueTUIEntry(
     process.stderr.write("agenc: no previous session found for this project\n");
     return 1;
   }
-  return bootTUIEntry({ resumeId: resolved.sessionId });
+  return resumeTUIEntry({ resumeId: resolved.sessionId });
 }
 
 /**
@@ -2296,7 +1993,7 @@ async function loadMcpCliConfig(): Promise<AgenCConfig | undefined> {
 
 /**
  * Top-level dispatcher. Branches between the full Ink TUI and the
- * legacy one-shot CLI based on argv + stdio state. See `./route.ts`
+ * daemon-backed one-shot CLI based on argv + stdio state. See `./route.ts`
  * for the routing table.
  */
 export async function main(): Promise<number> {
@@ -2400,16 +2097,14 @@ export async function main(): Promise<number> {
   ) {
     return 1;
   }
-  if (
-    !shouldSkipAgenCDaemonForStartup(process.env, argv) &&
-    (await resolveAgenCDaemonAutostartEnabled(process.env))
-  ) {
+  if (await resolveAgenCDaemonAutostartEnabled(process.env)) {
     try {
       await ensureAgenCDaemonAutostart();
     } catch (error) {
       process.stderr.write(
-        `agenc: daemon autostart failed; continuing without daemon: ${error instanceof Error ? error.message : String(error)}\n`,
+        `agenc: daemon autostart failed: ${error instanceof Error ? error.message : String(error)}\n`,
       );
+      return 1;
     }
   }
   return routeCLI({
@@ -2417,8 +2112,8 @@ export async function main(): Promise<number> {
     isTTY: Boolean(process.stdin.isTTY),
     isStdoutTTY: Boolean(process.stdout.isTTY),
     bootTUI: (args: BootTUIArgs) => bootTUIEntry(args),
-    oneShotCLI: (userMessage: string) =>
-      oneShotCLI(userMessage.length > 0 ? userMessage : null),
+    oneShotCLI: (userMessage: string, startupImages?: readonly string[]) =>
+      oneShotCLI(userMessage.length > 0 ? userMessage : null, startupImages ?? []),
     resumeTUI: (args: ResumeTUIArgs) => resumeTUIEntry(args),
     continueTUI: (args: ContinueTUIArgs) => continueTUIEntry(args),
   });
