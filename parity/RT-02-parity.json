@@ -1,0 +1,59 @@
+{
+  "item": "RT-02",
+  "status": "implemented",
+  "sourceRoot": "/home/tetsuo/git/\u006fpenclaude",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "targetRoot": "..",
+  "sourceFiles": [
+    "src/utils/multiTurnContext.ts",
+    "src/utils/multiTurnContext.test.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/conversation/multi-turn-context.ts"
+  ],
+  "testFiles": [
+    "runtime/src/conversation/multi-turn-context.contract.test.ts"
+  ],
+  "requiredBehaviors": [
+    {
+      "id": "turn-ring",
+      "behavior": "AgenC tracks a current turn with bounded recent-turn history, monotonic turn ids, message records, tool calls, per-turn state, and donor-compatible stats.",
+      "tests": [
+        "runtime/src/conversation/multi-turn-context.contract.test.ts"
+      ]
+    },
+    {
+      "id": "session-isolation",
+      "behavior": "Live callers use isolated MultiTurnContextManager instances so histories, state maps, options, and compaction thresholds cannot leak across daemon sessions.",
+      "tests": [
+        "runtime/src/conversation/multi-turn-context.contract.test.ts"
+      ]
+    },
+    {
+      "id": "compaction-status",
+      "behavior": "Per-turn token accounting combines message and attachment tokens, compares them to max-turn and automatic compaction thresholds, and exposes a stable should-compact status.",
+      "tests": [
+        "runtime/src/conversation/multi-turn-context.contract.test.ts"
+      ]
+    },
+    {
+      "id": "turn-attachments",
+      "behavior": "The manager records explicit AGENC.md, session-memory, and file-mention attachments by wrapping already-landed AgenC helpers, preserving rejection/warning metadata and counting attachment tokens once.",
+      "tests": [
+        "runtime/src/conversation/multi-turn-context.contract.test.ts"
+      ]
+    },
+    {
+      "id": "attachment-boundaries",
+      "behavior": "File mentions require an explicit cwd, honor allowed roots, reject outside-root and symlink escapes through the wrapper, and propagate unexpected helper failures without dropping previously recorded attachments.",
+      "tests": [
+        "runtime/src/conversation/multi-turn-context.contract.test.ts"
+      ]
+    }
+  ],
+  "intentionalReductions": [
+    "RT-02 does not wire the live turn loop; downstream RT and PR items consume the per-session manager factory.",
+    "The module-level donor API is retained as a source-parity compatibility surface only. Production callers should use createMultiTurnContextManager.",
+    "The manager wraps existing AGENC.md, session-memory, file-mention, token-estimation, and compaction helpers instead of re-porting those subsystems."
+  ]
+}
