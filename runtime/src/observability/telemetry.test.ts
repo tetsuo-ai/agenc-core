@@ -154,6 +154,39 @@ describe("observability telemetry", () => {
     expect(noop.getCurrentSpan()).toBeUndefined();
   });
 
+  test("default no-op client isolates concurrent async spans", async () => {
+    const noop = createNoopTelemetryClient();
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const seen: string[] = [];
+
+    const first = noop.withSpan("first.async", undefined, async () => {
+      seen.push(`first:${noop.getCurrentSpan()?.name}`);
+      await firstGate;
+      seen.push(`first-after:${noop.getCurrentSpan()?.name}`);
+    });
+    const second = noop.withSpan("second.async", undefined, async () => {
+      seen.push(`second:${noop.getCurrentSpan()?.name}`);
+      await Promise.resolve();
+      seen.push(`second-after:${noop.getCurrentSpan()?.name}`);
+    });
+
+    await second;
+    expect(noop.getCurrentSpan()).toBeUndefined();
+    releaseFirst();
+    await first;
+
+    expect(seen).toEqual([
+      "first:first.async",
+      "second:second.async",
+      "second-after:second.async",
+      "first-after:first.async",
+    ]);
+    expect(noop.getCurrentSpan()).toBeUndefined();
+  });
+
   test("global client can be swapped without changing call sites", () => {
     const recording = new RecordingTelemetryClient();
     const restore = setAgencTelemetryClient(recording);

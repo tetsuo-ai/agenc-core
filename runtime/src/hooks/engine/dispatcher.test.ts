@@ -186,8 +186,8 @@ describe("HookEngine dispatcher", () => {
   });
 
   test("records hook metrics through the observability surface", async () => {
-    const counters: string[] = [];
-    const durations: string[] = [];
+    const counters: Array<{ name: string; tags?: Record<string, string> }> = [];
+    const durations: Array<{ name: string; tags?: Record<string, string> }> = [];
     const client: TelemetryClient = {
       startSpan(name): TelemetrySpan {
         return {
@@ -207,12 +207,12 @@ describe("HookEngine dispatcher", () => {
       getCurrentSpan() {
         return undefined;
       },
-      counter(name) {
-        counters.push(name);
+      counter(name, _increment, tags) {
+        counters.push({ name, tags });
       },
       histogram() {},
-      recordDuration(name) {
-        durations.push(name);
+      recordDuration(name, _durationMs, tags) {
+        durations.push({ name, tags });
       },
       timer(): TelemetryTimer {
         return { record() {}, end() {} };
@@ -227,8 +227,22 @@ describe("HookEngine dispatcher", () => {
     const result = await engine.runCommandHook(engine.listHooks()[0]!, {});
 
     expect(result.status).toBe("success");
-    expect(counters).toContain("agenc.hooks.run");
-    expect(durations).toContain("agenc.hooks.run.duration_ms");
+    expect(counters).toContainEqual({
+      name: "agenc.hooks.run",
+      tags: {
+        hook_name: "Stop",
+        source: "config",
+        status: "completed",
+      },
+    });
+    expect(durations).toContainEqual({
+      name: "agenc.hooks.run.duration_ms",
+      tags: {
+        hook_name: "Stop",
+        source: "config",
+        status: "completed",
+      },
+    });
   });
 
   test("does not spawn hooks when the signal is already aborted", async () => {

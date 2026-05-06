@@ -178,8 +178,8 @@ export class HookEngine {
     );
     const tags = toMetricTags({
       hook_name: hook.event,
-      status: sanitizedResult.status,
-      source: hook.matcher === undefined ? "unmatched" : "matched",
+      status: hookMetricStatus(sanitizedResult.status),
+      source: hookMetricSource(hook),
     });
     agencTelemetry.counter(AGENC_HOOK_RUN_METRIC, 1, tags);
     agencTelemetry.recordDuration(
@@ -199,6 +199,38 @@ export class HookEngine {
       ...(result.error !== undefined ? { rawError: result.error } : {}),
     };
   }
+}
+
+function hookMetricStatus(status: CommandRunResult["status"]): string {
+  switch (status) {
+    case "success":
+      return "completed";
+    case "blocking":
+      return "blocked";
+    case "timeout":
+    case "skipped":
+      return "stopped";
+    case "non_blocking_error":
+      return "failed";
+  }
+}
+
+function hookMetricSource(hook: IndividualHookConfig): string {
+  const record = hook as unknown as {
+    readonly metricSource?: unknown;
+    readonly configSource?: unknown;
+  };
+  return (
+    nonEmptyString(record.metricSource) ??
+    nonEmptyString(record.configSource) ??
+    hook.source
+  );
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : undefined;
 }
 
 function inputCwd(input: Record<string, unknown>): string | undefined {

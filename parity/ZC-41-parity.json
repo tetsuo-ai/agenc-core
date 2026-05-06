@@ -98,7 +98,13 @@
       "required": true,
       "source": "core/src/hook_runtime.rs",
       "target": "runtime/src/hooks/engine/dispatcher.ts",
-      "carried": ["hook run count", "hook duration", "completion event"]
+      "carried": [
+        "hook run count",
+        "hook duration",
+        "hook source tag",
+        "normalized completion status",
+        "completion event"
+      ]
     },
     {
       "id": "mcp-tool-call",
@@ -110,6 +116,8 @@
         "rpc attributes",
         "server.address",
         "server.port",
+        "connector id/name tags",
+        "ok/error status",
         "result span telemetry"
       ]
     },

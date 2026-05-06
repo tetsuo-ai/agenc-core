@@ -49,8 +49,8 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
       attributes: Record<string, unknown>;
       ended: boolean;
     }> = [];
-    const counters: string[] = [];
-    const durations: string[] = [];
+    const counters: Array<{ name: string; tags?: Record<string, string> }> = [];
+    const durations: Array<{ name: string; tags?: Record<string, string> }> = [];
     const client: TelemetryClient = {
       startSpan(name, attributes) {
         const stored = {
@@ -82,12 +82,12 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
       getCurrentSpan() {
         return undefined;
       },
-      counter(name) {
-        counters.push(name);
+      counter(name, _increment, tags) {
+        counters.push({ name, tags });
       },
       histogram() {},
-      recordDuration(name) {
-        durations.push(name);
+      recordDuration(name, _durationMs, tags) {
+        durations.push({ name, tags });
       },
       timer(): TelemetryTimer {
         return { record() {}, end() {} };
@@ -127,8 +127,26 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
     expect(spans[0]?.attributes["agenc.mcp.target.id"]).toBe("target-123");
     expect(spans[0]?.attributes["agenc.mcp.server_user_flow.triggered"]).toBe(true);
     expect(spans[0]?.ended).toBe(true);
-    expect(counters).toContain("agenc.mcp.call");
-    expect(durations).toContain("agenc.mcp.call.duration_ms");
+    expect(counters).toContainEqual({
+      name: "agenc.mcp.call",
+      tags: {
+        connector_id: "local",
+        connector_name: "Local",
+        server: "srv",
+        status: "ok",
+        tool: "echo",
+      },
+    });
+    expect(durations).toContainEqual({
+      name: "agenc.mcp.call.duration_ms",
+      tags: {
+        connector_id: "local",
+        connector_name: "Local",
+        server: "srv",
+        status: "ok",
+        tool: "echo",
+      },
+    });
   });
 
   test("observer.onBegin + onEnd fire around a successful call", async () => {
@@ -180,11 +198,42 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
 
   test("observer.onEnd still fires with isError when client throws", async () => {
     const ends: Array<{ isError: boolean }> = [];
+    const counters: Array<{ name: string; tags?: Record<string, string> }> = [];
+    const client: TelemetryClient = {
+      startSpan(name) {
+        return {
+          name,
+          setAttribute() {},
+          setAttributes() {},
+          addEvent() {},
+          enter(fn) {
+            return fn();
+          },
+          end() {},
+        };
+      },
+      withSpan(_name, _attributes, fn) {
+        return fn();
+      },
+      getCurrentSpan() {
+        return undefined;
+      },
+      counter(name, _increment, tags) {
+        counters.push({ name, tags });
+      },
+      histogram() {},
+      recordDuration() {},
+      timer(): TelemetryTimer {
+        return { record() {}, end() {} };
+      },
+      event() {},
+    };
     const observer: MCPCallObserver = {
       onEnd: (e) => {
         ends.push({ isError: e.isError });
       },
     };
+    setAgencTelemetryClient(client);
 
     const fakeClient = {
       listTools: async () => ({
@@ -209,6 +258,16 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
     expect(result.isError).toBe(true);
     expect(ends).toHaveLength(1);
     expect(ends[0]!.isError).toBe(true);
+    expect(counters).toContainEqual({
+      name: "agenc.mcp.call",
+      tags: {
+        connector_id: "srv",
+        connector_name: "srv",
+        server: "srv",
+        status: "error",
+        tool: "boom",
+      },
+    });
   });
 
   test("permission deny blocks MCP client dispatch", async () => {

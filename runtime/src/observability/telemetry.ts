@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 export type TelemetryAttributeValue =
   | string
   | number
@@ -110,7 +112,7 @@ class NoopTelemetryTimer implements TelemetryTimer {
 }
 
 class NoopTelemetryClient implements TelemetryClient {
-  private currentSpan: TelemetrySpan | undefined;
+  private readonly spanStorage = new AsyncLocalStorage<TelemetrySpan>();
 
   startSpan(name: string, _attributes?: TelemetryAttributes): TelemetrySpan {
     return new NoopTelemetrySpan(name);
@@ -121,35 +123,26 @@ class NoopTelemetryClient implements TelemetryClient {
     attributes: TelemetryAttributes | undefined,
     fn: () => T,
   ): T {
-    const previous = this.currentSpan;
     const span = this.startSpan(name, attributes);
-    this.currentSpan = span;
-    try {
-      const result = span.enter(fn);
-      if (isPromiseLike(result)) {
-        return (result as Promise<unknown>).finally(() => {
-          span.end();
-          if (this.currentSpan === span) {
-            this.currentSpan = previous;
-          }
-        }) as T;
+    return this.spanStorage.run(span, () => {
+      try {
+        const result = span.enter(fn);
+        if (isPromiseLike(result)) {
+          return (result as Promise<unknown>).finally(() => {
+            span.end();
+          }) as T;
+        }
+        span.end();
+        return result;
+      } catch (error) {
+        span.end();
+        throw error;
       }
-      span.end();
-      if (this.currentSpan === span) {
-        this.currentSpan = previous;
-      }
-      return result;
-    } catch (error) {
-      span.end();
-      if (this.currentSpan === span) {
-        this.currentSpan = previous;
-      }
-      throw error;
-    }
+    });
   }
 
   getCurrentSpan(): TelemetrySpan | undefined {
-    return this.currentSpan;
+    return this.spanStorage.getStore();
   }
 
   counter(_name: string, _increment = 1, _tags?: TelemetryTags): void {}

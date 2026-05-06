@@ -769,6 +769,10 @@ export async function createToolBridge(
         }
         const callArgs = safeStringifyArgs(executionArgs);
         const observer = options.callObserver;
+        const connectorId =
+          stringValue(asRecord(mcpTool)?.connectorId) ?? serverName;
+        const connectorName =
+          stringValue(asRecord(mcpTool)?.connectorName) ?? serverName;
         const span = agencTelemetry.startSpan("mcp.tools.call", {
           "otel.kind": "client",
           "rpc.system": "jsonrpc",
@@ -779,10 +783,8 @@ export async function createToolBridge(
             options.transport,
             options.serverOrigin,
           ),
-          "mcp.connector.id":
-            stringValue(asRecord(mcpTool)?.connectorId) ?? serverName,
-          "mcp.connector.name":
-            stringValue(asRecord(mcpTool)?.connectorName) ?? serverName,
+          "mcp.connector.id": connectorId,
+          "mcp.connector.name": connectorName,
           "tool.name": mcpTool.name,
           "tool.call_id": callId,
           "agenc.mcp.target.id": "",
@@ -844,6 +846,8 @@ export async function createToolBridge(
             span,
             serverName,
             mcpTool.name,
+            connectorId,
+            connectorName,
             isError ? "error" : "ok",
             durationMs,
           );
@@ -866,7 +870,9 @@ export async function createToolBridge(
             span,
             serverName,
             mcpTool.name,
-            "exception",
+            connectorId,
+            connectorName,
+            "error",
             durationMs,
           );
           return {
@@ -901,12 +907,16 @@ function recordMcpCallTelemetry(
   span: TelemetrySpan,
   serverName: string,
   toolName: string,
+  connectorId: string,
+  connectorName: string,
   status: string,
   durationMs: number,
 ): void {
   const tags = toMetricTags({
     server: serverName,
     tool: toolName,
+    connector_id: connectorId,
+    connector_name: connectorName,
     status,
   });
   agencTelemetry.counter(AGENC_MCP_CALL_METRIC, 1, tags);
