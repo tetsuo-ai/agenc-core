@@ -1,5 +1,11 @@
 import type { LLMProviderStartupPrewarmHandle } from "../llm/types.js";
 import type { Session } from "./session.js";
+import {
+  AGENC_STARTUP_PREWARM_AGE_AT_FIRST_TURN_METRIC,
+  AGENC_STARTUP_PREWARM_DURATION_METRIC,
+  agencTelemetry,
+  toMetricTags,
+} from "../observability/telemetry.js";
 
 export const DEFAULT_PROVIDER_STARTUP_PREWARM_BOUND_MS = 250;
 
@@ -18,13 +24,24 @@ export interface StartupPrewarmStore {
 }
 
 interface PendingProviderStartupPrewarm {
-  readonly promise: Promise<LLMProviderStartupPrewarmHandle | undefined>;
+  readonly promise: Promise<ProviderStartupPrewarmResolution>;
   readonly startedAtMs: number;
   readonly boundMs: number;
 }
 
+type ProviderStartupPrewarmResolution =
+  | {
+      readonly status: "ready" | "consumed";
+      readonly handle: LLMProviderStartupPrewarmHandle;
+    }
+  | {
+      readonly status: "failed" | "unavailable" | "timed_out" | "cancelled";
+      readonly handle?: undefined;
+    };
+
 export class SessionStartupPrewarmStore implements StartupPrewarmStore {
   private providerHandle: LLMProviderStartupPrewarmHandle | undefined;
+  private providerHandleStartedAtMs: number | undefined;
   private providerPending: PendingProviderStartupPrewarm | undefined;
   private closed = false;
   private expired = false;
@@ -39,6 +56,7 @@ export class SessionStartupPrewarmStore implements StartupPrewarmStore {
     const previous = this.providerHandle;
     const previousPending = this.providerPending;
     this.providerHandle = handle;
+    this.providerHandleStartedAtMs = Date.now();
     this.providerPending = undefined;
     if (previous !== undefined) {
       void disposeProviderStartupPrewarmHandle(previous).catch(() => {
@@ -54,12 +72,23 @@ export class SessionStartupPrewarmStore implements StartupPrewarmStore {
     task: Promise<LLMProviderStartupPrewarmHandle | void>,
     opts: { readonly boundMs?: number } = {},
   ): void {
+    const startedAtMs = Date.now();
     const pending: PendingProviderStartupPrewarm = {
       promise: task.then(
-        (handle) => handle ?? undefined,
-        () => undefined,
+        (handle) => {
+          if (handle === undefined) {
+            recordStartupPrewarmDuration(startedAtMs, "unavailable");
+            return { status: "unavailable" };
+          }
+          recordStartupPrewarmDuration(startedAtMs, "ready");
+          return { status: "ready", handle };
+        },
+        () => {
+          recordStartupPrewarmDuration(startedAtMs, "failed");
+          return { status: "failed" };
+        },
       ),
-      startedAtMs: Date.now(),
+      startedAtMs,
       boundMs: opts.boundMs ?? DEFAULT_PROVIDER_STARTUP_PREWARM_BOUND_MS,
     };
     if (this.closed || this.expired) {
@@ -69,6 +98,7 @@ export class SessionStartupPrewarmStore implements StartupPrewarmStore {
     const previous = this.providerHandle;
     const previousPending = this.providerPending;
     this.providerHandle = undefined;
+    this.providerHandleStartedAtMs = undefined;
     this.providerPending = pending;
     if (previous !== undefined) {
       void disposeProviderStartupPrewarmHandle(previous).catch(() => {
@@ -86,11 +116,19 @@ export class SessionStartupPrewarmStore implements StartupPrewarmStore {
   } = {}): Promise<LLMProviderStartupPrewarmHandle | undefined> {
     this.expired = true;
     const handle = this.providerHandle;
+    const handleStartedAtMs = this.providerHandleStartedAtMs;
     const pending = this.providerPending;
     this.providerHandle = undefined;
+    this.providerHandleStartedAtMs = undefined;
     this.providerPending = undefined;
-    if (handle !== undefined) return handle;
-    if (pending === undefined) return undefined;
+    if (handle !== undefined) {
+      recordStartupPrewarmAge(handleStartedAtMs ?? Date.now(), "consumed");
+      return handle;
+    }
+    if (pending === undefined) {
+      recordStartupPrewarmAge(Date.now(), "unavailable");
+      return undefined;
+    }
     const boundMs = opts.boundMs ?? pending.boundMs;
     const remainingMs = Math.max(
       0,
@@ -101,10 +139,14 @@ export class SessionStartupPrewarmStore implements StartupPrewarmStore {
       remainingMs,
       opts.signal,
     );
-    if (resolved === undefined) {
+    recordStartupPrewarmAge(
+      pending.startedAtMs,
+      resolved.handle === undefined ? resolved.status : "consumed",
+    );
+    if (resolved.handle === undefined) {
       disposePendingProviderStartupPrewarm(pending);
     }
-    return resolved;
+    return resolved.handle;
   }
 
   async expireProviderHandle(): Promise<void> {
@@ -112,6 +154,7 @@ export class SessionStartupPrewarmStore implements StartupPrewarmStore {
     const handle = this.providerHandle;
     const pending = this.providerPending;
     this.providerHandle = undefined;
+    this.providerHandleStartedAtMs = undefined;
     this.providerPending = undefined;
     if (handle !== undefined) {
       await disposeProviderStartupPrewarmHandle(handle);
@@ -136,9 +179,9 @@ export async function disposeProviderStartupPrewarmHandle(
 function disposePendingProviderStartupPrewarm(
   pending: PendingProviderStartupPrewarm,
 ): void {
-  void pending.promise.then((handle) =>
-    handle !== undefined
-      ? disposeProviderStartupPrewarmHandle(handle).catch(() => {
+  void pending.promise.then((resolution) =>
+    resolution.handle !== undefined
+      ? disposeProviderStartupPrewarmHandle(resolution.handle).catch(() => {
           /* best-effort disposal after timeout/shutdown */
         })
       : undefined,
@@ -149,19 +192,19 @@ async function resolvePendingProviderStartupPrewarm(
   pending: PendingProviderStartupPrewarm,
   remainingMs: number,
   signal?: AbortSignal,
-): Promise<LLMProviderStartupPrewarmHandle | undefined> {
-  if (signal?.aborted) return undefined;
+): Promise<ProviderStartupPrewarmResolution> {
+  if (signal?.aborted) return { status: "cancelled" };
   let timeout: number | NodeJS.Timeout | undefined;
   let onAbort: (() => void) | undefined;
-  const timeoutPromise = new Promise<undefined>((resolve) => {
-    timeout = setTimeout(() => resolve(undefined), remainingMs);
+  const timeoutPromise = new Promise<ProviderStartupPrewarmResolution>((resolve) => {
+    timeout = setTimeout(() => resolve({ status: "timed_out" }), remainingMs);
     (timeout as { unref?: () => void }).unref?.();
   });
   const abortPromise =
     signal === undefined
       ? undefined
-      : new Promise<undefined>((resolve) => {
-          onAbort = () => resolve(undefined);
+      : new Promise<ProviderStartupPrewarmResolution>((resolve) => {
+          onAbort = () => resolve({ status: "cancelled" });
           signal.addEventListener("abort", onAbort, { once: true });
         });
   try {
@@ -176,6 +219,25 @@ async function resolvePendingProviderStartupPrewarm(
       signal.removeEventListener("abort", onAbort);
     }
   }
+}
+
+function recordStartupPrewarmDuration(
+  startedAtMs: number,
+  status: string,
+): void {
+  agencTelemetry.recordDuration(
+    AGENC_STARTUP_PREWARM_DURATION_METRIC,
+    Math.max(0, Date.now() - startedAtMs),
+    toMetricTags({ status }),
+  );
+}
+
+function recordStartupPrewarmAge(startedAtMs: number, status: string): void {
+  agencTelemetry.recordDuration(
+    AGENC_STARTUP_PREWARM_AGE_AT_FIRST_TURN_METRIC,
+    Math.max(0, Date.now() - startedAtMs),
+    toMetricTags({ status }),
+  );
 }
 
 export function ensureStartupPrewarmStore(

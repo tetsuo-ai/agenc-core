@@ -44,6 +44,13 @@ import {
   catalogDigestMatches,
   type MCPToolDescriptorLike,
 } from "./supply-chain.js";
+import {
+  AGENC_MCP_CALL_DURATION_METRIC,
+  AGENC_MCP_CALL_METRIC,
+  agencTelemetry,
+  toMetricTags,
+  type TelemetrySpan,
+} from "../observability/telemetry.js";
 
 /**
  * Policy knobs forwarded from server config to the bridge. `allowedTools`
@@ -79,6 +86,15 @@ function filterMCPToolCatalog<T extends { name: string }>(
 const DEFAULT_MCP_LIST_TOOLS_TIMEOUT_MS = 30_000;
 const DEFAULT_MCP_CALL_TIMEOUT_MS = 45_000;
 const MCP_REQUEST_PERMISSIONS_TOOL_NAME = "request_permissions";
+const MCP_RESULT_TELEMETRY_META_KEY = "agenc/telemetry";
+const MCP_RESULT_TELEMETRY_SPAN_KEY = "span";
+const MCP_RESULT_TELEMETRY_TARGET_ID_KEY = "target_id";
+const MCP_RESULT_TELEMETRY_DID_TRIGGER_SERVER_USER_FLOW_KEY =
+  "did_trigger_server_user_flow";
+const MCP_RESULT_TELEMETRY_TARGET_ID_SPAN_ATTR = "agenc.mcp.target.id";
+const MCP_RESULT_TELEMETRY_SERVER_USER_FLOW_SPAN_ATTR =
+  "agenc.mcp.server_user_flow.triggered";
+const MCP_RESULT_TELEMETRY_TARGET_ID_MAX_CHARS = 256;
 
 /** I-76: upper bound on a single MCP tool-call result, 5MB. */
 export const MAX_MCP_CALL_RESULT_BYTES = 5 * 1024 * 1024;
@@ -130,6 +146,8 @@ interface ToolBridgeOptions {
   serverConfig?: MCPToolCatalogPolicyConfig;
   callObserver?: MCPCallObserver;
   permissions?: MCPToolBridgePermissionOptions;
+  serverOrigin?: string;
+  transport?: "stdio" | "sse" | "http" | "streamable_http";
 }
 
 interface MCPToolDescriptor {
@@ -145,6 +163,7 @@ interface MCPListToolsResponse {
 interface MCPCallToolResponse {
   content?: unknown;
   isError?: boolean;
+  _meta?: unknown;
 }
 
 type PermissionResolution =
@@ -199,6 +218,82 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0
     ? value
     : undefined;
+}
+
+function booleanValue(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function mcpTransportForSpan(
+  transport: ToolBridgeOptions["transport"],
+  origin: string | undefined,
+): string {
+  if (transport === "stdio") return "stdio";
+  if (transport === "sse" || transport === "http") return "streamable_http";
+  if (transport === "streamable_http") return "streamable_http";
+  if (origin === undefined || origin.length === 0) return "";
+  return origin === "stdio" ? "stdio" : "streamable_http";
+}
+
+function recordMcpServerFields(
+  span: TelemetrySpan,
+  origin: string | undefined,
+): void {
+  if (origin === undefined) return;
+  try {
+    const parsed = new URL(origin);
+    span.setAttribute("server.address", parsed.hostname);
+    const port = parsed.port.length > 0
+      ? Number.parseInt(parsed.port, 10)
+      : defaultPortForProtocol(parsed.protocol);
+    if (port !== undefined) {
+      span.setAttribute("server.port", port);
+    }
+  } catch {
+    return;
+  }
+}
+
+function defaultPortForProtocol(protocol: string): number | undefined {
+  switch (protocol) {
+    case "http:":
+      return 80;
+    case "https:":
+      return 443;
+    default:
+      return undefined;
+  }
+}
+
+function recordMcpResultSpanTelemetry(
+  span: TelemetrySpan,
+  result: MCPCallToolResponse,
+): void {
+  const telemetry = asRecord(asRecord(result._meta)?.[MCP_RESULT_TELEMETRY_META_KEY]);
+  const spanTelemetry = asRecord(telemetry?.[MCP_RESULT_TELEMETRY_SPAN_KEY]);
+  if (spanTelemetry === null) return;
+  const targetId = stringValue(
+    spanTelemetry[MCP_RESULT_TELEMETRY_TARGET_ID_KEY],
+  );
+  if (targetId !== undefined) {
+    span.setAttribute(
+      MCP_RESULT_TELEMETRY_TARGET_ID_SPAN_ATTR,
+      truncateForSpanAttribute(
+        targetId,
+        MCP_RESULT_TELEMETRY_TARGET_ID_MAX_CHARS,
+      ),
+    );
+  }
+  const userFlow = booleanValue(
+    spanTelemetry[MCP_RESULT_TELEMETRY_DID_TRIGGER_SERVER_USER_FLOW_KEY],
+  );
+  if (userFlow !== undefined) {
+    span.setAttribute(MCP_RESULT_TELEMETRY_SERVER_USER_FLOW_SPAN_ATTR, userFlow);
+  }
+}
+
+function truncateForSpanAttribute(value: string, maxChars: number): string {
+  return Array.from(value).slice(0, maxChars).join("");
 }
 
 function errorResult(content: string): ToolResult {
@@ -655,7 +750,42 @@ export async function createToolBridge(
         ) {
           return callRequestPermissionsTool(args, callId, options.permissions);
         }
-        let executionArgs: Record<string, unknown>;
+        const connectorId =
+          stringValue(asRecord(mcpTool)?.connectorId) ?? serverName;
+        const connectorName =
+          stringValue(asRecord(mcpTool)?.connectorName) ?? serverName;
+        const span = agencTelemetry.startSpan("mcp.tools.call", {
+          "otel.kind": "client",
+          "rpc.system": "jsonrpc",
+          "rpc.method": "tools/call",
+          "mcp.server.name": serverName,
+          "mcp.server.origin": options.serverOrigin ?? "",
+          "mcp.transport": mcpTransportForSpan(
+            options.transport,
+            options.serverOrigin,
+          ),
+          "mcp.connector.id": connectorId,
+          "mcp.connector.name": connectorName,
+          "tool.name": mcpTool.name,
+          "tool.call_id": callId,
+        });
+        recordMcpServerFields(span, options.serverOrigin);
+        const startedAtMs = Date.now();
+        let telemetryRecorded = false;
+        const finishTelemetry = (status: string, durationMs: number) => {
+          if (telemetryRecorded) return;
+          telemetryRecorded = true;
+          recordMcpCallTelemetry(
+            span,
+            serverName,
+            mcpTool.name,
+            connectorId,
+            connectorName,
+            status,
+            durationMs,
+          );
+        };
+
         try {
           const authorization = await authorizeMcpClientToolCall(
             bridgeTool,
@@ -665,24 +795,19 @@ export async function createToolBridge(
             args,
             options.permissions,
           );
-          if (!authorization.ok) return authorization.result;
-          executionArgs = authorization.args;
-        } catch (error) {
-          return errorResult(
-            error instanceof Error ? error.message : String(error),
-          );
-        }
-        const callArgs = safeStringifyArgs(executionArgs);
-        const observer = options.callObserver;
-        observer?.onBegin?.({
-          callId,
-          server: serverName,
-          toolName: mcpTool.name,
-          args: callArgs,
-        });
-        const startedAtMs = Date.now();
-
-        try {
+          if (!authorization.ok) {
+            finishTelemetry("error", 0);
+            return authorization.result;
+          }
+          const executionArgs = authorization.args;
+          const callArgs = safeStringifyArgs(executionArgs);
+          const observer = options.callObserver;
+          observer?.onBegin?.({
+            callId,
+            server: serverName,
+            toolName: mcpTool.name,
+            args: callArgs,
+          });
           const result = await withRPCDeadline<MCPCallToolResponse>(
             `MCP tool "${mcpTool.name}" callTool`,
             callToolTimeoutMs,
@@ -692,6 +817,7 @@ export async function createToolBridge(
                 arguments: executionArgs,
               }),
           );
+          recordMcpResultSpanTelemetry(span, result);
 
           // MCP tool results contain a content array
           const rawContent = Array.isArray(result.content)
@@ -715,28 +841,35 @@ export async function createToolBridge(
           }
 
           const isError = result.isError === true;
+          const durationMs = Date.now() - startedAtMs;
           observer?.onEnd?.({
             callId,
             server: serverName,
             toolName: mcpTool.name,
             result: content,
             isError,
-            durationMs: Date.now() - startedAtMs,
+            durationMs,
           });
+          finishTelemetry(isError ? "error" : "ok", durationMs);
           return {
             content,
             isError,
           };
         } catch (error) {
           const errMessage = `MCP tool "${mcpTool.name}" failed: ${(error as Error).message}`;
-          observer?.onEnd?.({
-            callId,
-            server: serverName,
-            toolName: mcpTool.name,
-            result: errMessage,
-            isError: true,
-            durationMs: Date.now() - startedAtMs,
-          });
+          const durationMs = Date.now() - startedAtMs;
+          try {
+            options.callObserver?.onEnd?.({
+              callId,
+              server: serverName,
+              toolName: mcpTool.name,
+              result: errMessage,
+              isError: true,
+              durationMs,
+            });
+          } finally {
+            finishTelemetry("error", durationMs);
+          }
           return {
             content: errMessage,
             isError: true,
@@ -763,4 +896,30 @@ export async function createToolBridge(
       }
     },
   };
+}
+
+function recordMcpCallTelemetry(
+  span: TelemetrySpan,
+  serverName: string,
+  toolName: string,
+  connectorId: string,
+  connectorName: string,
+  status: string,
+  durationMs: number,
+): void {
+  const tags = toMetricTags({
+    server: serverName,
+    tool: toolName,
+    connector_id: connectorId,
+    connector_name: connectorName,
+    status,
+  });
+  agencTelemetry.counter(AGENC_MCP_CALL_METRIC, 1, tags);
+  agencTelemetry.recordDuration(
+    AGENC_MCP_CALL_DURATION_METRIC,
+    durationMs,
+    tags,
+  );
+  span.setAttribute("mcp.status", status);
+  span.end();
 }

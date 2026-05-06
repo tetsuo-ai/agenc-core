@@ -101,6 +101,12 @@ export function compareBinClassification({ sourceFiles, entries }) {
   };
 }
 
+export function findDaemonOnlyEntries(entries) {
+  return entries
+    .filter((entry) => entry.classification === "daemon-only")
+    .sort((a, b) => a.relPath.localeCompare(b.relPath));
+}
+
 function binImportTarget(importerRelPath, specifier) {
   if (!specifier.startsWith(".")) return null;
   const importerDir = path.posix.dirname(importerRelPath);
@@ -163,23 +169,31 @@ export function buildBinClassificationReport(options = {}) {
   const sideDependencyContradictions = comparison.ok
     ? findSideDependencyContradictions(root, entries)
     : [];
+  const daemonOnlyEntries = findDaemonOnlyEntries(entries);
+  const daemonOnlyAllowed = options.forbidDaemonOnly !== true;
   return {
     root,
     migrationPath: MIGRATION_REL_PATH,
     sourceFiles,
     entries,
     ...comparison,
-    ok: comparison.ok && sideDependencyContradictions.length === 0,
+    ok:
+      comparison.ok &&
+      sideDependencyContradictions.length === 0 &&
+      (daemonOnlyAllowed || daemonOnlyEntries.length === 0),
     sideDependencyContradictions,
+    forbidDaemonOnly: options.forbidDaemonOnly === true,
+    daemonOnlyEntries,
   };
 }
 
 function usage() {
   process.stderr.write(
     [
-      "Usage: node scripts/check-bin-classification.mjs [--root <dir>] [--json]",
+      "Usage: node scripts/check-bin-classification.mjs [--root <dir>] [--json] [--forbid-daemon-only]",
       "",
       "Fails when runtime/src/bin/MIGRATION.md does not classify every non-test .ts file under runtime/src/bin/ as client-only, daemon-only, or shared.",
+      "With --forbid-daemon-only, also fails when any runtime/src/bin file remains daemon-only.",
     ].join("\n") + "\n",
   );
 }
@@ -188,6 +202,7 @@ function parseArgs(argv) {
   const parsed = {
     root: process.cwd(),
     json: false,
+    forbidDaemonOnly: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -198,6 +213,8 @@ function parseArgs(argv) {
       i += 1;
     } else if (arg === "--json") {
       parsed.json = true;
+    } else if (arg === "--forbid-daemon-only") {
+      parsed.forbidDaemonOnly = true;
     } else if (arg === "--help" || arg === "-h") {
       usage();
       process.exit(0);
@@ -210,8 +227,9 @@ function parseArgs(argv) {
 
 function printReport(report) {
   if (report.ok) {
+    const suffix = report.forbidDaemonOnly ? "; no daemon-only bin files" : "";
     process.stdout.write(
-      `bin classification complete (${report.classifiedCount}/${report.sourceCount} source files)\n`,
+      `bin classification complete (${report.classifiedCount}/${report.sourceCount} source files${suffix})\n`,
     );
     return;
   }
@@ -242,6 +260,12 @@ function printReport(report) {
       process.stderr.write(
         `- ${edge.from} (${edge.fromClassification}) imports ${edge.to} (${edge.toClassification})\n`,
       );
+    }
+  }
+  if (report.forbidDaemonOnly && report.daemonOnlyEntries.length > 0) {
+    process.stderr.write("Daemon-only bin file row(s) are forbidden:\n");
+    for (const entry of report.daemonOnlyEntries) {
+      process.stderr.write(`- ${entry.relPath}\n`);
     }
   }
 }

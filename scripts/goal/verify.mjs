@@ -1293,6 +1293,18 @@ const ITEM_EVIDENCE = {
     ],
     tests: ["scripts/check-bin-classification.test.mjs"],
   },
+  "MG-03": {
+    files: [
+      "runtime/src/bin/MIGRATION.md",
+      "scripts/check-bin-classification.mjs",
+    ],
+    grepPresent: [
+      { pattern: "MG-03 Relocation Result", scope: "runtime/src/bin/MIGRATION.md" },
+      { pattern: "runtime/src/app-server/handlers", scope: "runtime/src/bin/MIGRATION.md" },
+      { pattern: "forbidDaemonOnly", scope: "scripts/check-bin-classification.mjs" },
+    ],
+    tests: ["scripts/check-bin-classification.test.mjs"],
+  },
   "MG-04": {
     grepNotPresent: [{ pattern: "directRuntime|direct.*runtime|legacy.*direct", scope: "runtime/src/bin" }],
   },
@@ -1514,6 +1526,29 @@ const ITEM_EVIDENCE = {
       { pattern: "mcp/dist/", scope: ".gitignore" },
       { pattern: "!patches/\\*\\*/dist/", scope: ".gitignore" },
       { pattern: "ZC-38: keep package build outputs", scope: ".gitignore" },
+    ],
+  },
+  "ZC-41": {
+    files: [
+      "runtime/src/observability/telemetry.ts",
+      "runtime/src/observability/telemetry.test.ts",
+      "parity/ZC-41-parity.json",
+    ],
+    grepPresent: [
+      { pattern: "ZC-41 coverage lock", scope: "parity/ZC-41-parity.json" },
+      { pattern: "TelemetryClient", scope: "runtime/src/observability/telemetry.ts" },
+      { pattern: "startSpan", scope: "runtime/src/observability/telemetry.ts" },
+      { pattern: "recordDuration", scope: "runtime/src/observability/telemetry.ts" },
+      { pattern: "setAgencTelemetryClient", scope: "runtime/src/observability/telemetry.ts" },
+      { pattern: "AGENC_TURN_TTFT_DURATION_METRIC", scope: "runtime/src/session/run-turn.ts" },
+      { pattern: "AGENC_HOOK_RUN_DURATION_METRIC", scope: "runtime/src/hooks/engine/dispatcher.ts" },
+      { pattern: "mcp\\.tools\\.call", scope: "runtime/src/mcp-client/tool-bridge.ts" },
+      { pattern: "AGENC_TOOL_UNIFIED_EXEC_DURATION_METRIC", scope: "runtime/src/app-server/command-exec.ts" },
+    ],
+    tests: [
+      "runtime/src/observability/telemetry.test.ts",
+      "runtime/src/hooks/engine/dispatcher.test.ts",
+      "runtime/src/mcp-client/tool-bridge.test.ts",
     ],
   },
   "ZC-40": {
@@ -3636,10 +3671,18 @@ async function migrationGates(item) {
     return;
   }
   if (id === "MG-03") {
-    // Migration warning for direct-CLI fallback path users.
-    const found = grepRepo("daemon mode unavailable|daemon-mode unavailable|direct-runtime fallback", "runtime/src");
-    if (!found) failGate("MG-03: direct-runtime-fallback warning not found in runtime/src/");
-    pass("MG-03: fallback warning present");
+    const test = run("node", ["scripts/check-bin-classification.test.mjs"]);
+    if (test.status !== 0) {
+      failGate("MG-03: bin classification checker tests failed");
+    }
+    const check = run("node", [
+      "scripts/check-bin-classification.mjs",
+      "--forbid-daemon-only",
+    ]);
+    if (check.status !== 0) {
+      failGate("MG-03: daemon-only bin files remain after relocation");
+    }
+    pass("MG-03: runtime/src/bin has no daemon-only production files");
     return;
   }
   if (id === "MG-04") {
@@ -5628,6 +5671,86 @@ function assertZc38DistBuildArtifactsIgnored() {
   pass("ZC-38: dist build artifacts are ignored and absent from tracked files");
 }
 
+function assertZc41ObservabilityCoverage() {
+  const requiredFiles = [
+    "runtime/src/observability/telemetry.ts",
+    "runtime/src/observability/telemetry.test.ts",
+    "parity/ZC-41-parity.json",
+  ];
+  for (const rel of requiredFiles) {
+    if (!existsSync(path.join(root, rel))) {
+      failGate(`ZC-41: missing required observability artifact ${rel}`);
+    }
+  }
+
+  const telemetry = readFileSync(path.join(root, "runtime/src/observability/telemetry.ts"), "utf8");
+  const requiredSurface = [
+    "interface TelemetrySpan",
+    "interface TelemetryTimer",
+    "interface TelemetryClient",
+    "startSpan(",
+    "withSpan",
+    "recordDuration(",
+    "timer(",
+    "sanitizeMetricTagValue",
+    "setAgencTelemetryClient",
+  ];
+  const missingSurface = requiredSurface.filter((marker) => !telemetry.includes(marker));
+  if (missingSurface.length > 0) {
+    failGate(`ZC-41: observability surface missing marker(s): ${missingSurface.join(", ")}`);
+  }
+
+  const wiredMarkers = [
+    ["runtime/src/session/session.ts", "AGENC_TURN_E2E_DURATION_METRIC"],
+    ["runtime/src/session/run-turn.ts", "AGENC_TURN_TTFT_DURATION_METRIC"],
+    ["runtime/src/session/startup-prewarm.ts", "AGENC_STARTUP_PREWARM_AGE_AT_FIRST_TURN_METRIC"],
+    ["runtime/src/agenc/adapters/runtime-session.ts", "AGENC_COMPACT_DURATION_METRIC"],
+    ["runtime/src/hooks/engine/dispatcher.ts", "AGENC_HOOK_RUN_DURATION_METRIC"],
+    ["runtime/src/mcp-client/tool-bridge.ts", "mcp.tools.call"],
+    ["runtime/src/session/observer-wiring.ts", "AGENC_TOOL_UNIFIED_EXEC_DURATION_METRIC"],
+    ["runtime/src/app-server/command-exec.ts", "AGENC_TOOL_UNIFIED_EXEC_METRIC"],
+    ["runtime/src/unified-exec/process-manager.ts", "AGENC_WINDOWS_SANDBOX_SETUP_DURATION_METRIC"],
+  ];
+  const missingWiring = [];
+  for (const [rel, marker] of wiredMarkers) {
+    const source = readFileSync(path.join(root, rel), "utf8");
+    if (!source.includes(marker)) missingWiring.push(`${rel}: ${marker}`);
+  }
+  if (missingWiring.length > 0) {
+    failGate(`ZC-41: telemetry wiring marker(s) missing:\n  ${missingWiring.join("\n  ")}`);
+  }
+
+  const ledger = JSON.parse(readFileSync(path.join(root, "parity/ZC-41-parity.json"), "utf8"));
+  if (ledger.item !== "ZC-41" || ledger.status !== "implemented") {
+    failGate("ZC-41: parity ledger must identify item ZC-41 with implemented status");
+  }
+  if (!Array.isArray(ledger.coverageRows) || ledger.coverageRows.length < 9) {
+    failGate("ZC-41: parity ledger must cover client, timer, turn timing, task lifecycle, startup prewarm, compact, hooks, MCP, exec, and Windows sandbox seams");
+  }
+  const nonRequiredRows = ledger.coverageRows.filter((row) => row?.required !== true);
+  if (nonRequiredRows.length > 0) {
+    failGate(`ZC-41: parity rows must be required: ${nonRequiredRows.map((row) => row?.id ?? "<missing>").join(", ")}`);
+  }
+
+  const testRun = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/observability/telemetry.test.ts",
+    "tests/runtime-session-compact-telemetry.test.ts",
+    "src/phases/stream-model.test.ts",
+    "src/hooks/engine/dispatcher.test.ts",
+    "src/mcp-client/tool-bridge.test.ts",
+    "src/unified-exec/process-manager.test.ts",
+  ]);
+  if (testRun.status !== 0) {
+    failGate("ZC-41: observability seam tests failed.");
+  }
+
+  pass("ZC-41: observability no-op surface and call-site seams locked");
+}
+
 function assertZc40RuntimeParityDocsGone() {
   const runtimeSrc = path.join(root, "runtime/src");
   const filesystemDocs = walkFiles(runtimeSrc)
@@ -6279,6 +6402,7 @@ async function cleanupGates(item) {
       "ZC-42": { custom: assertZc42ExternalAgentMigrationPort },
       "ZC-36": { custom: assertZc36TestFixtureParityCoverage },
       "ZC-38": { custom: assertZc38DistBuildArtifactsIgnored },
+      "ZC-41": { custom: assertZc41ObservabilityCoverage },
       "ZC-40": { custom: assertZc40RuntimeParityDocsGone },
       "ZC-43": { custom: assertZc43NetworkPolicyInterfaces },
     };

@@ -259,8 +259,72 @@ export class TurnSkillsContext {
 
 /** agenc runtime `TurnTimingState`. T6 wires. */
 export class TurnTimingState {
-  readonly startedAtMs: number = performance.now();
+  startedAtMs: number = Date.now();
+  startedAtUnixSecs: number | undefined;
+  firstTokenAtMs: number | undefined;
+  firstMessageAtMs: number | undefined;
   readonly samples: Array<{ phase: string; durationMs: number }> = [];
+
+  markTurnStarted(startedAtMs: number = Date.now()): number {
+    this.startedAtMs = startedAtMs;
+    this.startedAtUnixSecs = Math.trunc(startedAtMs / 1000);
+    this.firstTokenAtMs = undefined;
+    this.firstMessageAtMs = undefined;
+    return startedAtMs;
+  }
+
+  completedAtAndDurationMs(nowMs: number = Date.now()): {
+    readonly completedAtUnixSecs: number;
+    readonly durationMs: number;
+  } {
+    return {
+      completedAtUnixSecs: Math.trunc(nowMs / 1000),
+      durationMs: Math.max(0, Math.trunc(nowMs - this.startedAtMs)),
+    };
+  }
+
+  timeToFirstTokenMs(): number | undefined {
+    if (this.firstTokenAtMs === undefined) return undefined;
+    return Math.max(0, Math.trunc(this.firstTokenAtMs - this.startedAtMs));
+  }
+
+  recordFirstToken(nowMs: number = Date.now()): number | undefined {
+    if (this.firstTokenAtMs !== undefined) return undefined;
+    this.firstTokenAtMs = nowMs;
+    return this.timeToFirstTokenMs();
+  }
+
+  recordTtftForPhaseEvent(
+    event: { readonly type: string; readonly content?: string },
+    nowMs: number = Date.now(),
+  ): number | undefined {
+    if (!phaseEventRecordsTurnTtft(event)) return undefined;
+    return this.recordFirstToken(nowMs);
+  }
+
+  recordTtfmForAssistantText(
+    content: string,
+    nowMs: number = Date.now(),
+  ): number | undefined {
+    if (content.length === 0) return undefined;
+    if (this.firstMessageAtMs !== undefined) return undefined;
+    this.firstMessageAtMs = nowMs;
+    return Math.max(0, Math.trunc(nowMs - this.startedAtMs));
+  }
+}
+
+function phaseEventRecordsTurnTtft(event: {
+  readonly type: string;
+  readonly content?: string;
+}): boolean {
+  switch (event.type) {
+    case "assistant_text":
+      return typeof event.content === "string" && event.content.length > 0;
+    case "tool_call":
+      return true;
+    default:
+      return false;
+  }
 }
 
 /** agenc runtime `SessionConfiguration` (the big config blob). T10 lands real shape. */
