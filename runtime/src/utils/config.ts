@@ -8,6 +8,7 @@ import pickBy from 'lodash-es/pickBy.js'
 import { basename, dirname, join, resolve } from 'path'
 import { getOriginalCwd, getSessionTrustAccepted } from '../bootstrap/state.js'
 import { getAutoMemEntrypoint } from '../memdir/paths.js'
+import * as teamMemPathsModule from '../memdir/teamMemPaths.js'
 import { logEvent } from '../services/analytics/index.js'
 import {
   assertConfigReadsEnabled,
@@ -39,9 +40,7 @@ import type { ThemeSetting } from './theme.js'
 import { PRIMARY_PROJECT_INSTRUCTION_FILE } from './projectInstructions.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-const teamMemPaths = feature('TEAMMEM')
-  ? (require('../memdir/teamMemPaths.js') as typeof import('../memdir/teamMemPaths.js'))
-  : null
+const teamMemPaths = feature('TEAMMEM') ? teamMemPathsModule : null
 const ccrAutoConnect = feature('CCR_AUTO_CONNECT')
   ? (require('../bridge/bridgeEnabled.js') as typeof import('../bridge/bridgeEnabled.js'))
   : null

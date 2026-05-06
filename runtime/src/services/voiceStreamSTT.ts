@@ -125,11 +125,11 @@ export async function connectVoiceStream(
 
   // voice_stream is a private_api route, but /api/ws/ is also exposed on
   // the api.anthropic.com listener (service_definitions.yaml private-api:
-  // visibility.external: true). We target that host instead of agenc.ai
-  // because the agenc.ai CF zone uses TLS fingerprinting and challenges
+  // visibility.external: true). We target that host instead of agenc.tech
+  // because the agenc.tech CF zone uses TLS fingerprinting and challenges
   // non-browser clients (anthropics/agenc-code#34094). Same private-api
   // pod, same OAuth Bearer auth — just a CF zone that doesn't block us.
-  // Desktop dictation still uses agenc.ai (Swift URLSession has a
+  // Desktop dictation still uses agenc.tech (Swift URLSession has a
   // browser-class JA3 fingerprint, so CF lets it through).
   const wsBaseUrl =
     process.env.VOICE_STREAM_BASE_URL ||

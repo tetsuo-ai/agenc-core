@@ -162,7 +162,7 @@ function getServerUrl(config: McpServerConfig): string | null {
 }
 
 /**
- * CCR proxy URL path markers. In remote sessions, agenc.ai connectors arrive
+ * CCR proxy URL path markers. In remote sessions, agenc.tech connectors arrive
  * via --mcp-config with URLs rewritten to route through the CCR/session-ingress
  * SHTTP proxy. The original vendor URL is preserved in the mcp_url query param
  * so the proxy knows where to forward. See api-go/ccr/internal/ccrshared/
@@ -266,11 +266,11 @@ export function dedupPluginMcpServers(
 }
 
 /**
- * Filter agenc.ai connectors, dropping any whose signature matches an enabled
+ * Filter agenc.tech connectors, dropping any whose signature matches an enabled
  * manually-configured server. Manual wins: a user who wrote .mcp.json or ran
  * `agenc mcp add` expressed higher intent than a connector toggled in the web UI.
  *
- * Connector keys are `agenc.ai <DisplayName>` so they never key-collide with
+ * Connector keys are `agenc.tech <DisplayName>` so they never key-collide with
  * manual servers in the merge — this content-based check catches the case where
  * both point at the same underlying URL (e.g. `mcp__slack__*` and
  * `mcp__agenc_ai_Slack__*` both hitting mcp.slack.com, ~600 chars/turn wasted).
@@ -299,7 +299,7 @@ export function dedupAgenCAiMcpServers(
     const manualDup = sig !== null ? manualSigs.get(sig) : undefined
     if (manualDup !== undefined) {
       logForDebugging(
-        `Suppressing agenc.ai connector "${name}": duplicates manually-configured "${manualDup}"`,
+        `Suppressing agenc.tech connector "${name}": duplicates manually-configured "${manualDup}"`,
       )
       suppressed.push({ name, duplicateOf: manualDup })
       continue
@@ -1060,11 +1060,11 @@ export function getMcpConfigByName(name: string): ScopedMcpServerConfig | null {
 }
 
 /**
- * Get AgenC MCP configurations (excludes agenc.ai servers from the
+ * Get AgenC MCP configurations (excludes agenc.tech servers from the
  * returned set — they're fetched separately and merged by callers).
  * This is fast: only local file reads; no awaited network calls on the
  * critical path. The optional extraDedupTargets promise (e.g. the in-flight
- * agenc.ai connector fetch) is awaited only after loadAllPluginsCacheOnly() completes,
+ * agenc.tech connector fetch) is awaited only after loadAllPluginsCacheOnly() completes,
  * so the two overlap rather than serialize.
  * @returns AgenC server configurations with appropriate scopes
  */
@@ -1251,7 +1251,7 @@ export async function getAgenCCodeMcpConfigs(
 }
 
 /**
- * Get all MCP configurations across all scopes, including agenc.ai servers.
+ * Get all MCP configurations across all scopes, including agenc.tech servers.
  * This may be slow due to network calls - use getAgenCCodeMcpConfigs() for fast startup.
  * @returns All server configurations with appropriate scopes
  */
@@ -1259,12 +1259,12 @@ export async function getAllMcpConfigs(): Promise<{
   servers: Record<string, ScopedMcpServerConfig>
   errors: PluginError[]
 }> {
-  // In enterprise mode, don't load agenc.ai servers (enterprise has exclusive control)
+  // In enterprise mode, don't load agenc.tech servers (enterprise has exclusive control)
   if (doesEnterpriseMcpConfigExist()) {
     return getAgenCCodeMcpConfigs()
   }
 
-  // Kick off the agenc.ai fetch before getAgenCCodeMcpConfigs so it overlaps
+  // Kick off the agenc.tech fetch before getAgenCCodeMcpConfigs so it overlaps
   // with loadAllPluginsCacheOnly() inside. Memoized — the awaited call below is a cache hit.
   const agencaiPromise = fetchAgenCAIMcpConfigsIfEligible()
   const { servers: agencServers, errors } = await getAgenCCodeMcpConfigs(
@@ -1275,15 +1275,15 @@ export async function getAllMcpConfigs(): Promise<{
     await agencaiPromise,
   )
 
-  // Suppress agenc.ai connectors that duplicate an enabled manual server.
-  // Keys never collide (`slack` vs `agenc.ai Slack`) so the merge below
+  // Suppress agenc.tech connectors that duplicate an enabled manual server.
+  // Keys never collide (`slack` vs `agenc.tech Slack`) so the merge below
   // won't catch this — need content-based dedup by URL signature.
   const { servers: dedupedAgenCAi } = dedupAgenCAiMcpServers(
     agencaiMcpServers,
     agencServers,
   )
 
-  // Merge with agenc.ai having lowest precedence
+  // Merge with agenc.tech having lowest precedence
   const servers = Object.assign({}, dedupedAgenCAi, agencServers)
 
   return { servers, errors }
@@ -1359,7 +1359,7 @@ export function parseMcpConfig(params: {
         ...(filePath && { file: filePath }),
         path: `mcpServers.${name}`,
         message: `Windows requires 'cmd /c' wrapper to execute npx`,
-        suggestion: `Change command to "cmd" with args ["/c", "npx", ...]. See: https://code.agenc.com/docs/en/mcp#configure-mcp-servers`,
+        suggestion: `Change command to "cmd" with args ["/c", "npx", ...]. See: https://agenc.tech/docs/en/mcp#configure-mcp-servers`,
         mcpErrorMetadata: {
           scope,
           serverName: name,

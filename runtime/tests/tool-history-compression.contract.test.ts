@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   compressToolHistory,
   getTiers,
-} from "../src/agenc/upstream/services/api/compressToolHistory.js";
+} from "../src/services/api/compressToolHistory.js";
 
 type Block = Record<string, unknown>;
 type Msg = { role: string; content: Block[] | string };
@@ -99,7 +99,7 @@ function resultText(message: Msg): string {
 }
 
 describe("tool history compression contract", () => {
-  test("uses OpenClaude tier sizes across effective context windows", () => {
+  test("uses provider tier sizes across effective context windows", () => {
     expect(getTiers(8_000)).toEqual({ recent: 2, mid: 3 });
     expect(getTiers(100_000)).toEqual({ recent: 5, mid: 10 });
     expect(getTiers(1_000_000)).toEqual({ recent: 25, mid: 50 });
@@ -152,19 +152,19 @@ describe("tool history compression contract", () => {
     expect(compressToolHistory(messages, "gpt-4o")).toBe(messages);
   });
 
-  test("OpenAI and Codex provider shims pass messages through compression before serialization", () => {
+  test("provider serializers pass messages through compression before serialization", () => {
     const openai = readFileSync(
-      resolve("src/agenc/upstream/services/api/openaiShim.ts"),
+      resolve("src/services/api/openaiShim.ts"),
       "utf8",
     );
-    const codex = readFileSync(
-      resolve("src/agenc/upstream/services/api/codexShim.ts"),
+    const responses = readFileSync(
+      resolve("src/services/api/openAiCodeTransform.ts"),
       "utf8",
     );
 
     expect(openai).toContain("const compressedMessages = compressToolHistory(");
     expect(openai).toContain("convertMessages(compressedMessages");
-    expect(codex).toContain("const compressedMessages = compressToolHistory(");
-    expect(codex).toContain("convertAnthropicMessagesToResponsesInput(compressedMessages)");
+    expect(responses).toContain("const compressedMessages = compressToolHistory(");
+    expect(responses).toContain("convertproviderMessagesToResponsesInput(compressedMessages)");
   });
 });

@@ -118,9 +118,7 @@ async function loadLegacySessionTrustForTest(): Promise<{
   readonly getSessionTrustAccepted: () => boolean;
   readonly setSessionTrustAccepted: (value: boolean) => void;
 }> {
-  const statePath = ["..", "agenc", "upstream", "bootstrap", "state.js"].join(
-    "/",
-  );
+  const statePath = ["..", "bootstrap", "state.js"].join("/");
   const state = await import(statePath);
   return {
     getSessionTrustAccepted: state.getSessionTrustAccepted as () => boolean,

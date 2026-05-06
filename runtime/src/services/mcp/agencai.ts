@@ -72,7 +72,7 @@ export const fetchAgenCAIMcpConfigsIfEligible = memoize(
       // In non-interactive mode, isAgenCAISubscriber() returns false when ANTHROPIC_API_KEY
       // is set (even with valid OAuth tokens) because preferThirdPartyAuthentication() causes
       // isproviderAuthEnabled() to return false. Checking the scope directly allows users
-      // with both API keys and OAuth tokens to access agenc.ai MCPs in print mode.
+      // with both API keys and OAuth tokens to access agenc.tech MCPs in print mode.
       if (!tokens.scopes?.includes('user:mcp_servers')) {
         logForDebugging(
           `[agencai-mcp] Missing user:mcp_servers scope (scopes=${tokens.scopes?.join(',') || 'none'})`,
@@ -107,7 +107,7 @@ export const fetchAgenCAIMcpConfigsIfEligible = memoize(
       const usedNormalizedNames = new Set<string>()
 
       for (const server of response.data.data) {
-        const baseName = `agenc.ai ${server.display_name}`
+        const baseName = `agenc.tech ${server.display_name}`
 
         // Try without suffix first, then increment until we find an unused normalized name
         let finalName = baseName
@@ -153,7 +153,7 @@ export function clearAgenCAIMcpConfigsCache(): void {
   clearMcpAuthCache()
 }
 /**
- * Record that a agenc.ai connector successfully connected. Idempotent.
+ * Record that a agenc.tech connector successfully connected. Idempotent.
  *
  * Gates the "N connectors unavailable/need auth" startup notifications: a
  * connector that was working yesterday and is now failed is a state change

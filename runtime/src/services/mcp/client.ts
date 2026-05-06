@@ -354,7 +354,7 @@ function handleRemoteAuthFailure(
   const label: Record<typeof transportType, string> = {
     sse: 'SSE',
     http: 'HTTP',
-    'agencai-proxy': 'agenc.ai proxy',
+    'agencai-proxy': 'agenc.tech proxy',
   }
   logMCPDebug(
     name,
@@ -365,12 +365,12 @@ function handleRemoteAuthFailure(
 }
 
 /**
- * Fetch wrapper for agenc.ai proxy connections. Attaches the OAuth bearer
+ * Fetch wrapper for agenc.tech proxy connections. Attaches the OAuth bearer
  * token and retries once on 401 via handleOAuth401Error (force-refresh).
  *
  * The provider API path has this retry (withRetry.ts, grove.ts) to handle
  * memoize-cache staleness and clock drift. Without the same here, a single
- * stale token mass-401s every agenc.ai connector and sticks them all in the
+ * stale token mass-401s every agenc.tech connector and sticks them all in the
  * 15-min needs-auth cache.
  */
 export function createAgenCAiProxyFetch(innerFetch: FetchLike): FetchLike {
@@ -379,7 +379,7 @@ export function createAgenCAiProxyFetch(innerFetch: FetchLike): FetchLike {
       await checkAndRefreshOAuthTokenIfNeeded()
       const currentTokens = getAgenCAIOAuthTokens()
       if (!currentTokens) {
-        throw new Error('No agenc.ai OAuth token available')
+        throw new Error('No agenc.tech OAuth token available')
       }
       // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
       const headers = new Headers(init?.headers)
@@ -886,18 +886,18 @@ export const connectToServer = memoize(
       } else if (serverRef.type === 'agencai-proxy') {
         logMCPDebug(
           name,
-          `Initializing agenc.ai proxy transport for server ${serverRef.id}`,
+          `Initializing agenc.tech proxy transport for server ${serverRef.id}`,
         )
 
         const tokens = getAgenCAIOAuthTokens()
         if (!tokens) {
-          throw new Error('No agenc.ai OAuth token found')
+          throw new Error('No agenc.tech OAuth token found')
         }
 
         const oauthConfig = getOauthConfig()
         const proxyUrl = `${oauthConfig.MCP_PROXY_URL}${oauthConfig.MCP_PROXY_PATH.replace('{server_id}', serverRef.id)}`
 
-        logMCPDebug(name, `Using agenc.ai proxy at ${proxyUrl}`)
+        logMCPDebug(name, `Using agenc.tech proxy at ${proxyUrl}`)
 
         // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
         const fetchWithAuth = createAgenCAiProxyFetch(globalThis.fetch)
@@ -919,7 +919,7 @@ export const connectToServer = memoize(
           new URL(proxyUrl),
           transportOptions,
         )
-        logMCPDebug(name, `agenc.ai proxy transport created successfully`)
+        logMCPDebug(name, `agenc.tech proxy transport created successfully`)
       } else if (
         (serverRef.type === 'stdio' || !serverRef.type) &&
         isAgenCInChromeMCPServer(name)
@@ -1147,7 +1147,7 @@ export const connectToServer = memoize(
         ) {
           logMCPDebug(
             name,
-            `agenc.ai proxy connection failed after ${elapsed}ms: ${error.message}`,
+            `agenc.tech proxy connection failed after ${elapsed}ms: ${error.message}`,
           )
           logMCPError(name, error)
 

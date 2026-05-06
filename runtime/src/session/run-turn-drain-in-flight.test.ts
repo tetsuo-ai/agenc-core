@@ -140,13 +140,15 @@ describe("drainInFlight — AgenC behavior (T6)", () => {
 
   test("drains in-flight exclusive tool, pairs tool_use with real result", async () => {
     let resolveExec!: () => void;
+    const registry = mockRegistry(async (call) => {
+      await new Promise<void>((r) => {
+        resolveExec = r;
+      });
+      return { content: `real-${call.id}` };
+    });
     const exec = new StreamingToolExecutor({
-      registry: mockRegistry(async (call) => {
-        await new Promise<void>((r) => {
-          resolveExec = r;
-        });
-        return { content: `real-${call.id}` };
-      }),
+      registry,
+      runToolUseFn: (call) => registry.dispatch(call),
     });
     exec.setConcurrencyClassFor("Write", EXCLUSIVE);
     exec.addTool(

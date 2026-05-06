@@ -302,7 +302,7 @@ function buildObservedDefinition(
       getSourceType(activeConfig) === 'plugin'
         ? `plugin:${activeConfig.pluginSource ?? 'unknown'}`
         : getSourceType(activeConfig) === 'agencai'
-          ? 'agenc.ai'
+          ? 'agenc.tech'
           : activeConfig.scope,
     transport: getTransport(activeConfig),
     runtimeVisible: options?.runtimeVisible ?? true,
@@ -321,7 +321,7 @@ function hasDefinitionForRuntimeSource(
     runtimeSourceType === 'plugin'
       ? `plugin:${runtimeConfig.pluginSource ?? 'unknown'}`
       : runtimeSourceType === 'agencai'
-        ? 'agenc.ai'
+        ? 'agenc.tech'
         : deps.describeMcpConfigFilePath(runtimeConfig.scope)
 
   return definitions.some(

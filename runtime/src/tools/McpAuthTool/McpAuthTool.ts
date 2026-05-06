@@ -83,14 +83,14 @@ export function createMcpAuthTool(
       return { behavior: 'allow', updatedInput: input }
     },
     async call(_input, context) {
-      // agenc.ai connectors use a separate auth flow (handleAgenCAIAuth in
+      // agenc.tech connectors use a separate auth flow (handleAgenCAIAuth in
       // MCPRemoteServerMenu) that we don't invoke programmatically here —
       // just point the user at /mcp.
       if (config.type === 'agencai-proxy') {
         return {
           data: {
             status: 'unsupported' as const,
-            message: `This is a agenc.ai MCP connector. Ask the user to run /mcp and select "${serverName}" to authenticate.`,
+            message: `This is a agenc.tech MCP connector. Ask the user to run /mcp and select "${serverName}" to authenticate.`,
           },
         }
       }

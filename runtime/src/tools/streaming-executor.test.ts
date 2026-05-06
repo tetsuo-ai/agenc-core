@@ -337,6 +337,7 @@ describe("StreamingToolExecutor AgenC behavior (T6)", () => {
       makeBlock("r1", "FileRead"),
       makeCall("r1", "FileRead"),
     );
+    exec.dispatchPending();
     exec.close();
 
     // While x1 is still executing, only x1 is in queue. r1 is queued

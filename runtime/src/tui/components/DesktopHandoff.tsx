@@ -11,13 +11,13 @@ import { errorMessage } from '../../utils/errors.js'; // upstream-import: keep t
 import { gracefulShutdown } from '../../utils/gracefulShutdown.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { flushSessionStorage } from '../../utils/sessionStorage.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { LoadingState } from './design-system/LoadingState';
-const DESKTOP_DOCS_URL = 'https://clau.de/desktop';
+const DESKTOP_DOCS_URL = 'https://agenc.tech/desktop';
 export function getDownloadUrl(): string {
   switch (process.platform) {
     case 'win32':
-      return 'https://agenc.ai/api/desktop/win32/x64/exe/latest/redirect';
+      return 'https://agenc.tech/api/desktop/win32/x64/exe/latest/redirect';
     default:
-      return 'https://agenc.ai/api/desktop/darwin/universal/dmg/latest/redirect';
+      return 'https://agenc.tech/api/desktop/darwin/universal/dmg/latest/redirect';
   }
 }
 type DesktopHandoffState = 'checking' | 'prompt-download' | 'flushing' | 'opening' | 'success' | 'error';

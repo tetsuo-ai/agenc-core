@@ -6,6 +6,7 @@ import {
   isAutoMemoryEnabled,
   isAutoMemPath,
 } from '../memdir/paths.js'
+import * as teamMemPathsModule from '../memdir/teamMemPaths.js'
 import { isAgentMemoryPath } from '../tools/AgentTool/agentMemory.js'
 import { getAgenCConfigHomeDir } from './envUtils.js'
 import {
@@ -14,9 +15,7 @@ import {
 } from './windowsPaths.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-const teamMemPaths = feature('TEAMMEM')
-  ? (require('../memdir/teamMemPaths.js') as typeof import('../memdir/teamMemPaths.js'))
-  : null
+const teamMemPaths = feature('TEAMMEM') ? teamMemPathsModule : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 const IS_WINDOWS = process.platform === 'win32'

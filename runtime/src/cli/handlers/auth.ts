@@ -131,7 +131,7 @@ export async function authLogin({
 
   const settings = getInitialSettings()
   // forceLoginMethod is a hard constraint (enterprise setting) — matches ConsoleOAuthFlow behavior.
-  // Without it, --console selects Console; --agencai (or no flag) selects agenc.ai.
+  // Without it, --console selects Console; --agencai (or no flag) selects agenc.tech.
   const loginWithAgenCAi = settings.forceLoginMethod
     ? settings.forceLoginMethod === 'agencai'
     : !useConsole
@@ -249,8 +249,8 @@ export async function authStatus(opts: {
   let authMethod: string = 'none'
   if (using3P) {
     authMethod = 'third_party'
-  } else if (authTokenSource === 'agenc.ai') {
-    authMethod = 'agenc.ai'
+  } else if (authTokenSource === 'agenc.tech') {
+    authMethod = 'agenc.tech'
   } else if (authTokenSource === 'apiKeyHelper') {
     authMethod = 'api_key_helper'
   } else if (authTokenSource !== 'none') {
@@ -258,7 +258,7 @@ export async function authStatus(opts: {
   } else if (apiKeySource === 'ANTHROPIC_API_KEY' || hasApiKeyEnvVar) {
     authMethod = 'api_key'
   } else if (apiKeySource === '/login managed key') {
-    authMethod = 'agenc.ai'
+    authMethod = 'agenc.tech'
   }
 
   if (opts.text) {
@@ -308,7 +308,7 @@ export async function authStatus(opts: {
     if (resolvedApiKeySource) {
       output.apiKeySource = resolvedApiKeySource
     }
-    if (authMethod === 'agenc.ai') {
+    if (authMethod === 'agenc.tech') {
       output.email = oauthAccount?.emailAddress ?? null
       output.orgId = oauthAccount?.organizationUuid ?? null
       output.orgName = oauthAccount?.organizationName ?? null

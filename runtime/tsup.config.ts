@@ -509,7 +509,6 @@ export default defineConfig({
     options.alias = {
       ...(options.alias ?? {}),
       'bun:bundle': './src/build/feature.ts',
-      'src/services/claudeAiLimits.js': './src/agenc/upstream/services/claudeAiLimits.ts', // branding-scan: allow existing upstream provider-limit module path
     };
     options.loader = {
       ...(options.loader ?? {}),

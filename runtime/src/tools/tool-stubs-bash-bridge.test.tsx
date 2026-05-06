@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 
 // Stub AgenC ink before tool-rendering.tsx imports it. The real AgenC ink
 // transitively pulls `utils/config.ts` which runs a
-// `feature('TEAMMEM') ? require('../memdir/teamMemPaths.js') : null`
+// `feature('TEAMMEM') ? require('../memdir/teamMemPaths') : null`
 // branch — vitest's source resolver cannot follow the .js → .ts mapping
 // inside a CommonJS require, so importing the real chain crashes the test
 // host. The stubs here keep the dispatch logic exercisable end-to-end

@@ -102,8 +102,8 @@ export async function runExtraUsage(): Promise<ExtraUsageResult> {
   }
 
   const url = isTeamOrEnterprise
-    ? 'https://agenc.ai/admin-settings/usage'
-    : 'https://agenc.ai/settings/usage'
+    ? 'https://agenc.tech/admin-settings/usage'
+    : 'https://agenc.tech/settings/usage'
 
   try {
     const opened = await openBrowser(url)

@@ -13,8 +13,8 @@
 
 export const PREAPPROVED_HOSTS = new Set([
   // provider
-  'platform.agenc.com',
-  'code.agenc.com',
+  'agenc.tech',
+  'agenc.tech',
   'modelcontextprotocol.io',
   'github.com/anthropics',
   'agentskills.io',

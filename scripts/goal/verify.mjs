@@ -7412,6 +7412,43 @@ async function cleanupGates(item) {
     pass(`${id}: ${label} purged (zero files, zero importers)`);
   }
 
+  function assertNoRuntimeUpstreamReferences(label) {
+    const pathspecs = [
+      "runtime/src",
+      "runtime/tests",
+      "runtime/tsconfig*.json",
+      "runtime/tsup.config.ts",
+      "runtime/package.json",
+      "runtime/vitest.config.ts",
+    ];
+    const listed = run("git", ["ls-files", "--", ...pathspecs], { silent: true });
+    if (listed.status !== 0) {
+      failGate(`${id}: unable to enumerate tracked runtime files for upstream-reference scan`);
+    }
+    const files = (listed.stdout || "")
+      .split("\n")
+      .filter(Boolean)
+      .filter((rel) => !rel.startsWith("runtime/src/agenc/upstream/"));
+    const stale = [];
+    const staleRe = /(?:runtime\/src\/agenc\/upstream|src\/agenc\/upstream|agenc\/upstream)/;
+    for (const rel of files) {
+      const abs = path.join(root, rel);
+      if (!existsSync(abs) || statSync(abs).isDirectory()) continue;
+      const lines = readFileSync(abs, "utf8").split("\n");
+      lines.forEach((line, index) => {
+        if (staleRe.test(line)) {
+          stale.push(`${rel}:${index + 1}: ${line.trim().slice(0, 180)}`);
+        }
+      });
+    }
+    if (stale.length > 0) {
+      failGate(
+        `${id}: stale agenc/upstream reference(s) remain in tracked runtime source, tests, or build config:\n  ${stale.slice(0, 30).join("\n  ")}${stale.length > 30 ? `\n  ... +${stale.length - 30} more` : ""}`,
+      );
+    }
+    pass(`${id}: ${label} has zero stale agenc/upstream references in tracked runtime source, tests, and build config`);
+  }
+
   if (id === "Z-PURGEA") {
     assertSubtreesPurged(["utils", "constants"], "utils + constants");
     const movedRoots = [
@@ -7564,6 +7601,7 @@ async function cleanupGates(item) {
       }
     }
     pass(`${id}: no top-level upstream files remain`);
+    assertNoRuntimeUpstreamReferences("runtime purge surface");
     return;
   }
   if (id === "Z-PURGEFINAL") {
@@ -7576,12 +7614,7 @@ async function cleanupGates(item) {
       }
       failGate(`${id}: runtime/src/agenc/upstream/ exists (empty); delete the directory itself`);
     }
-    const importerScan = run("rg", [
-      "--no-messages", "-l", "agenc/upstream", "runtime/src",
-    ], { silent: true });
-    if (importerScan.status === 0 && (importerScan.stdout || "").trim()) {
-      failGate(`${id}: agenc/upstream still imported in:\n${importerScan.stdout}`);
-    }
+    assertNoRuntimeUpstreamReferences("final runtime purge surface");
     pass(`${id}: upstream/ tree fully removed, zero importers`);
     return;
   }

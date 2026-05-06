@@ -158,12 +158,12 @@ export function createBridgeApiClient(deps: BridgeApiDeps): BridgeApiClient {
               directory: config.dir,
               branch: config.branch,
               git_repo_url: config.gitRepoUrl,
-              // Advertise session capacity so agenc.ai/code can show
+              // Advertise session capacity so agenc.tech/code can show
               // "2/4 sessions" badges and only block the picker when
               // actually at capacity. Backends that don't yet accept
               // this field will silently ignore it.
               max_sessions: config.maxSessions,
-              // worker_type lets agenc.ai filter environments by origin
+              // worker_type lets agenc.tech filter environments by origin
               // (e.g. assistant picker only shows assistant-mode workers).
               // Desktop cowork app sends "cowork"; we send a distinct value.
               metadata: { worker_type: config.workerType },

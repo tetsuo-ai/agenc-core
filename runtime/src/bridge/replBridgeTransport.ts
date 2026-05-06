@@ -49,7 +49,7 @@ export type ReplBridgeTransport = {
   readonly droppedBatchCount: number
   /**
    * PUT /worker state (v2 only; v1 is a no-op). `requires_action` tells
-   * the backend a permission prompt is pending — agenc.ai shows the
+   * the backend a permission prompt is pending — agenc.tech shows the
    * "waiting for input" indicator. REPL/daemon callers don't need this
    * (user watches the REPL locally); multi-session worker callers do.
    */

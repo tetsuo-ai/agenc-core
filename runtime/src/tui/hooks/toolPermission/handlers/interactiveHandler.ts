@@ -231,7 +231,7 @@ function handleInteractivePermission(
     },
   })
 
-  // Race 4: Bridge permission response from CCR (agenc.ai)
+  // Race 4: Bridge permission response from CCR (agenc.tech)
   // When the bridge is connected, send the permission request to CCR and
   // subscribe for a response. Whichever side (CLI or CCR) responds first
   // wins via claim().

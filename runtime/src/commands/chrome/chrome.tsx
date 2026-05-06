@@ -13,9 +13,9 @@ import { isChromeExtensionInstalled } from '../../utils/agencInChrome/setup.js';
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js';
 import { env } from '../../utils/env.js';
 import { isRunningOnHomespace } from '../../utils/envUtils.js';
-const CHROME_EXTENSION_URL = 'https://agenc.ai/chrome';
-const CHROME_PERMISSIONS_URL = 'https://clau.de/chrome/permissions';
-const CHROME_RECONNECT_URL = 'https://clau.de/chrome/reconnect';
+const CHROME_EXTENSION_URL = 'https://agenc.tech/chrome';
+const CHROME_PERMISSIONS_URL = 'https://agenc.tech/chrome/permissions';
+const CHROME_RECONNECT_URL = 'https://agenc.tech/chrome/reconnect';
 type MenuAction = 'install-extension' | 'reconnect' | 'manage-permissions' | 'toggle-default';
 type Props = {
   onDone: (result?: string) => void;
@@ -214,7 +214,7 @@ function AgenCInChromeMenu(t0) {
   }
   let t8;
   if ($[23] !== isAgenCAISubscriber) {
-    t8 = true && !isAgenCAISubscriber && <Text color="error">AgenC in Chrome requires a agenc.ai subscription.</Text>;
+    t8 = true && !isAgenCAISubscriber && <Text color="error">AgenC in Chrome requires a agenc.tech subscription.</Text>;
     $[23] = isAgenCAISubscriber;
     $[24] = t8;
   } else {
@@ -236,7 +236,7 @@ function AgenCInChromeMenu(t0) {
   }
   let t10;
   if ($[33] === Symbol.for("react.memo_cache_sentinel")) {
-    t10 = <Text dimColor={true}>Learn more: https://code.agenc.com/docs/en/chrome</Text>;
+    t10 = <Text dimColor={true}>Learn more: https://agenc.tech/docs/en/chrome</Text>;
     $[33] = t10;
   } else {
     t10 = $[33];

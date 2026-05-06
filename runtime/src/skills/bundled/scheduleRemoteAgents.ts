@@ -96,7 +96,7 @@ function sanitizeConnectorName(name: string): string {
 
 function formatConnectorsInfo(connectors: ConnectorInfo[]): string {
   if (connectors.length === 0) {
-    return 'No connected MCP connectors found. The user may need to connect servers at https://agenc.ai/settings/connectors'
+    return 'No connected MCP connectors found. The user may need to connect servers at https://agenc.tech/settings/connectors'
   }
   const lines = ['Connected connectors (available for triggers):']
   for (const c of connectors) {
@@ -190,7 +190,7 @@ Use the \`${REMOTE_TRIGGER_TOOL_NAME}\` tool (load it first with \`ToolSearch se
 - \`{action: "update", trigger_id: "...", body: {...}}\` — partial update
 - \`{action: "run", trigger_id: "..."}\` — run a trigger now
 
-You CANNOT delete triggers. If the user asks to delete, direct them to: https://agenc.ai/code/scheduled
+You CANNOT delete triggers. If the user asks to delete, direct them to: https://agenc.tech/code/scheduled
 
 ## Create body shape
 
@@ -227,13 +227,13 @@ Generate a fresh lowercase UUID for \`events[].data.uuid\` yourself.
 
 ## Available MCP Connectors
 
-These are the user's currently connected agenc.ai MCP connectors:
+These are the user's currently connected agenc.tech MCP connectors:
 
 ${connectorsInfo}
 
 When attaching connectors to a trigger, use the \`connector_uuid\` and \`name\` shown above (the name is already sanitized to only contain letters, numbers, hyphens, and underscores), and the connector's URL. The \`name\` field in \`mcp_connections\` must only contain \`[a-zA-Z0-9_-]\` — dots and spaces are NOT allowed.
 
-**Important:** Infer what services the agent needs from the user's description. For example, if they say "check Datadog and Slack me errors," the agent needs both Datadog and Slack connectors. Cross-reference against the list above and warn if any required service isn't connected. If a needed connector is missing, direct the user to https://agenc.ai/settings/connectors to connect it first.
+**Important:** Infer what services the agent needs from the user's description. For example, if they say "check Datadog and Slack me errors," the agent needs both Datadog and Slack connectors. Cross-reference against the list above and warn if any required service isn't connected. If a needed connector is missing, direct the user to https://agenc.tech/settings/connectors to connect it first.
 
 ## Environments
 
@@ -287,9 +287,9 @@ Minimum interval is 1 hour. \`*/30 * * * *\` will be rejected.
    - Explicit about what actions to take (open PRs, commit, just analyze, etc.)
 3. **Set the schedule** — Ask when and how often. The user's timezone is ${userTimezone}. When they say a time (e.g., "every morning at 9am"), assume they mean their local time and convert to UTC for the cron expression. Always confirm the conversion: "9am ${userTimezone} = Xam UTC."
 4. **Choose the model** — Default to \`claude-sonnet-4-6\`. Tell the user which model you're defaulting to and ask if they want a different one.
-5. **Validate connections** — Infer what services the agent will need from the user's description. For example, if they say "check Datadog and Slack me errors," the agent needs both Datadog and Slack MCP connectors. Cross-reference with the connectors list above. If any are missing, warn the user and link them to https://agenc.ai/settings/connectors to connect first.${gitRepoUrl ? ` The default git repo is already set to \`${gitRepoUrl}\`. Ask the user if this is the right repo or if they need a different one.` : ' Ask which git repos the remote agent needs cloned into its environment.'}
+5. **Validate connections** — Infer what services the agent will need from the user's description. For example, if they say "check Datadog and Slack me errors," the agent needs both Datadog and Slack MCP connectors. Cross-reference with the connectors list above. If any are missing, warn the user and link them to https://agenc.tech/settings/connectors to connect first.${gitRepoUrl ? ` The default git repo is already set to \`${gitRepoUrl}\`. Ask the user if this is the right repo or if they need a different one.` : ' Ask which git repos the remote agent needs cloned into its environment.'}
 6. **Review and confirm** — Show the full configuration before creating. Let them adjust.
-7. **Create it** \u2014 Call \`${REMOTE_TRIGGER_TOOL_NAME}\` with \`action: "create"\` and show the result. The response includes the trigger ID. Always output a link at the end: \`https://agenc.ai/code/scheduled/{TRIGGER_ID}\`
+7. **Create it** \u2014 Call \`${REMOTE_TRIGGER_TOOL_NAME}\` with \`action: "create"\` and show the result. The response includes the trigger ID. Always output a link at the end: \`https://agenc.tech/code/scheduled/{TRIGGER_ID}\`
 
 ### UPDATE a trigger:
 
@@ -316,7 +316,7 @@ Minimum interval is 1 hour. \`*/30 * * * *\` will be rejected.
 - Default to \`enabled: true\` unless user says otherwise
 - Accept GitHub URLs in any format (https://github.com/org/repo, org/repo, etc.) and normalize to the full HTTPS URL (without .git suffix)
 - The prompt is the most important part — spend time getting it right. The remote agent starts with zero context, so the prompt must be self-contained.
-- To delete a trigger, direct users to https://agenc.ai/code/scheduled
+- To delete a trigger, direct users to https://agenc.tech/code/scheduled
 ${needsGitHubAccessReminder ? `- If the user's request seems to require GitHub repo access (e.g. cloning a repo, opening PRs, reading code), remind them that ${getFeatureValue_CACHED_MAY_BE_STALE('tengu_cobalt_lantern', false) ? "they should run /web-setup to connect their GitHub account (or install the AgenC GitHub App on the repo as an alternative) — otherwise the remote agent won't be able to access it" : "they need the AgenC GitHub App installed on the repo — otherwise the remote agent won't be able to access it"}.` : ''}
 ${userArgs ? `\n## User Request\n\nThe user said: "${userArgs}"\n\nStart by understanding their intent and working through the appropriate workflow above.` : ''}`
 }
@@ -338,7 +338,7 @@ export function registerScheduleRemoteAgentsSkill(): void {
         return [
           {
             type: 'text',
-            text: 'You need to authenticate with a agenc.ai account first. API accounts are not supported. Run /login, then try /schedule again.',
+            text: 'You need to authenticate with a agenc.tech account first. API accounts are not supported. Run /login, then try /schedule again.',
           },
         ]
       }
@@ -353,7 +353,7 @@ export function registerScheduleRemoteAgentsSkill(): void {
         return [
           {
             type: 'text',
-            text: "We're having trouble connecting with your remote agenc.ai account to set up a scheduled task. Please try /schedule again in a few minutes.",
+            text: "We're having trouble connecting with your remote agenc.tech account to set up a scheduled task. Please try /schedule again in a few minutes.",
           },
         ]
       }
@@ -372,7 +372,7 @@ export function registerScheduleRemoteAgentsSkill(): void {
           return [
             {
               type: 'text',
-              text: 'No remote environments found, and we could not create one automatically. Visit https://agenc.ai/code to set one up, then run /schedule again.',
+              text: 'No remote environments found, and we could not create one automatically. Visit https://agenc.tech/code to set one up, then run /schedule again.',
             },
           ]
         }
@@ -402,8 +402,8 @@ export function registerScheduleRemoteAgentsSkill(): void {
             false,
           )
           const msg = webSetupEnabled
-            ? `GitHub not connected for ${repo.owner}/${repo.name} \u2014 run /web-setup to sync your GitHub credentials, or install the AgenC GitHub App at https://agenc.ai/code/onboarding?magic=github-app-setup.`
-            : `AgenC GitHub App not installed on ${repo.owner}/${repo.name} \u2014 install at https://agenc.ai/code/onboarding?magic=github-app-setup if your trigger needs this repo.`
+            ? `GitHub not connected for ${repo.owner}/${repo.name} \u2014 run /web-setup to sync your GitHub credentials, or install the AgenC GitHub App at https://agenc.tech/code/onboarding?magic=github-app-setup.`
+            : `AgenC GitHub App not installed on ${repo.owner}/${repo.name} \u2014 install at https://agenc.tech/code/onboarding?magic=github-app-setup if your trigger needs this repo.`
           setupNotes.push(msg)
         }
       }
@@ -417,7 +417,7 @@ export function registerScheduleRemoteAgentsSkill(): void {
       )
       if (connectors.length === 0) {
         setupNotes.push(
-          `No MCP connectors — connect at https://agenc.ai/settings/connectors if needed.`,
+          `No MCP connectors — connect at https://agenc.tech/settings/connectors if needed.`,
         )
       }
 

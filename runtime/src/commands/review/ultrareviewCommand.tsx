@@ -30,13 +30,13 @@ async function launchAndDone(args: string, context: Parameters<LocalJSXCommandCa
 export const call: LocalJSXCommandCall = async (onDone, context, args) => {
   const gate = await checkOverageGate();
   if (gate.kind === 'not-enabled') {
-    onDone('Free ultrareviews used. Enable Extra Usage at https://agenc.ai/settings/billing to continue.', {
+    onDone('Free ultrareviews used. Enable Extra Usage at https://agenc.tech/settings/billing to continue.', {
       display: 'system'
     });
     return null;
   }
   if (gate.kind === 'low-balance') {
-    onDone(`Balance too low to launch ultrareview ($${gate.available.toFixed(2)} available, $10 minimum). Top up at https://agenc.ai/settings/billing`, {
+    onDone(`Balance too low to launch ultrareview ($${gate.available.toFixed(2)} available, $10 minimum). Top up at https://agenc.tech/settings/billing`, {
       display: 'system'
     });
     return null;

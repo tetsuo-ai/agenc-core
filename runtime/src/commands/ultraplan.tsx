@@ -24,7 +24,7 @@ import { pollForApprovedExitPlanMode, UltraplanPollError } from '../utils/ultrap
 
 // Multi-agent exploration is slow; 30min timeout.
 const ULTRAPLAN_TIMEOUT_MS = 30 * 60 * 1000;
-export const CCR_TERMS_URL = 'https://code.agenc.com/docs/en/agenc-code-on-the-web';
+export const CCR_TERMS_URL = 'https://agenc.tech/docs/en/agenc-code-on-the-web';
 
 // CCR runs against the first-party API — use the canonical ID, not the
 // provider-specific string getModelStrings() would return (which may be a

@@ -113,7 +113,7 @@ describe("R1 streamingToolUses prop wiring (App.tsx + transcript)", () => {
   test("E1.6 session-transcript.ts imports StreamingToolUse from runtime/src/llm/types so the AgenC transcript field type is owned by the LLM surface", () => {
     const source = readSource(MESSAGE_ADAPTER_SOURCE_PATH);
     expect(source).toMatch(
-      /import\s+type\s*\{[^}]*StreamingToolUse[^}]*\}\s+from\s+["']\.\.\/\.\.\/llm\/types\.js["']/,
+      /import\s+type\s*\{[^}]*StreamingToolUse[^}]*\}\s+from\s+["']\.\.\/llm\/types\.js["']/,
     );
   });
 });

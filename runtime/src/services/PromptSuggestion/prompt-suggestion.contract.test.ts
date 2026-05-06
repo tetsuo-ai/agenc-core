@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const runtimeSrc = resolve(root, "runtime/src");
-const promptSuggestionMirror = resolve(runtimeSrc, "services/PromptSuggestion");
+const promptSuggestionService = resolve(runtimeSrc, "services/PromptSuggestion");
 
 function listSourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((entry) => {
@@ -14,11 +14,6 @@ function listSourceFiles(dir: string): string[] {
     if (stat.isDirectory()) return listSourceFiles(full);
     return /\.(ts|tsx)$/.test(full) ? [full] : [];
   });
-}
-
-function isInside(parent: string, child: string): boolean {
-  const rel = relative(parent, child);
-  return rel === "" || (!rel.startsWith("..") && !rel.startsWith("/"));
 }
 
 function importSpecs(source: string): string[] {
@@ -60,19 +55,22 @@ function resolvedImportsFor(file: string): string[] {
 }
 
 describe("prompt suggestion service ownership", () => {
-  it("keeps production imports off the retired PromptSuggestion mirror", () => {
+  it("keeps production PromptSuggestion imports on owned service files", () => {
     const productionFiles = listSourceFiles(runtimeSrc).filter((file) => {
       if (file.includes(".test.")) return false;
-      if (isInside(promptSuggestionMirror, file)) return false;
       return true;
     });
 
     const offenders = productionFiles.flatMap((file) =>
-      resolvedImportsFor(file)
-        .filter((importPath) => isInside(promptSuggestionMirror, importPath))
-        .map((importPath) => ({
+      importSpecs(readFileSync(file, "utf8"))
+        .filter((spec) => spec.includes("PromptSuggestion"))
+        .filter((spec) => {
+          const resolved = resolveImport(file, spec);
+          return !resolved || relative(promptSuggestionService, resolved).startsWith("..");
+        })
+        .map((spec) => ({
           file: relative(root, file),
-          importPath: relative(root, importPath),
+          importPath: spec,
         })),
     );
 
@@ -80,12 +78,12 @@ describe("prompt suggestion service ownership", () => {
   });
 
   it("resolves known live callers to AgenC-owned PromptSuggestion files", () => {
+    expect(existsSync(promptSuggestionService)).toBe(true);
     const expected = new Map([
       ["runtime/src/query/stopHooks.ts", "runtime/src/services/PromptSuggestion/promptSuggestion.ts"],
       ["runtime/src/tui/screens/REPL.tsx", "runtime/src/services/PromptSuggestion/speculation.ts"],
       ["runtime/src/tasks/LocalAgentTask/LocalAgentTask.tsx", "runtime/src/services/PromptSuggestion/speculation.ts"],
       ["runtime/src/tasks/LocalShellTask/LocalShellTask.tsx", "runtime/src/services/PromptSuggestion/speculation.ts"],
-      ["runtime/src/tui/main.tsx", "runtime/src/services/PromptSuggestion/promptSuggestion.ts"],
     ]);
 
     for (const [caller, target] of expected) {

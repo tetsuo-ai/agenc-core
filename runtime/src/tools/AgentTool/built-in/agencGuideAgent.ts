@@ -17,8 +17,8 @@ import type {
 } from 'src/tools/AgentTool/loadAgentsDir.js'
 
 const AGENC_DOCS_MAP_URL =
-  'https://code.agenc.com/docs/en/agenc_docs_map.md'
-const CDP_DOCS_MAP_URL = 'https://platform.agenc.com/llms.txt'
+  'https://agenc.tech/docs/en/agenc_docs_map.md'
+const CDP_DOCS_MAP_URL = 'https://agenc.tech/llms.txt'
 
 export const AGENC_GUIDE_AGENT_TYPE = 'agenc-code-guide'
 

@@ -96,7 +96,7 @@ test('findingsFromValidationErrors maps Windows npx warnings into doctor finding
       path: 'mcpServers.node-tools',
       message: "Windows requires 'cmd /c' wrapper to execute npx",
       suggestion:
-        'Change command to "cmd" with args ["/c", "npx", ...]. See: https://code.agenc.com/docs/en/mcp#configure-mcp-servers',
+        'Change command to "cmd" with args ["/c", "npx", ...]. See: https://agenc.tech/docs/en/mcp#configure-mcp-servers',
       mcpErrorMetadata: {
         scope: 'project',
         serverName: 'node-tools',

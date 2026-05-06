@@ -25,7 +25,7 @@ export async function call(onDone: LocalJSXCommandOnDone, context: LocalJSXComma
         return null;
       }
     }
-    const url = 'https://agenc.ai/upgrade/max';
+    const url = 'https://agenc.tech/upgrade/max';
     await openBrowser(url);
     return <Login startingMessage={'Starting new login following /upgrade. Exit with Ctrl-C to use existing account.'} onDone={success => {
       context.onChangeAPIKey();
@@ -33,7 +33,7 @@ export async function call(onDone: LocalJSXCommandOnDone, context: LocalJSXComma
     }} />;
   } catch (error) {
     logError(error as Error);
-    setTimeout(onDone, 0, 'Failed to open browser. Please visit https://agenc.ai/upgrade/max to upgrade.');
+    setTimeout(onDone, 0, 'Failed to open browser. Please visit https://agenc.tech/upgrade/max to upgrade.');
   }
   return null;
 }

@@ -273,7 +273,7 @@ export function describeMcpConfigFilePath(scope: ConfigScope): string {
     case 'enterprise':
       return getEnterpriseMcpFilePath()
     case 'agencai':
-      return 'agenc.ai'
+      return 'agenc.tech'
     default:
       return scope
   }
@@ -292,7 +292,7 @@ export function getScopeLabel(scope: ConfigScope): string {
     case 'enterprise':
       return 'Enterprise config (managed by your organization)'
     case 'agencai':
-      return 'agenc.ai config'
+      return 'agenc.tech config'
     default:
       return scope
   }
@@ -426,7 +426,7 @@ export function getMcpServerScopeFromToolName(
   // Look up server config
   const serverConfig = getMcpConfigByName(mcpInfo.serverName)
 
-  // Fallback: agenc.ai servers have normalized names starting with "agenc_ai_"
+  // Fallback: agenc.tech servers have normalized names starting with "agenc_ai_"
   // but aren't in getMcpConfigByName (they're fetched async separately)
   if (!serverConfig && mcpInfo.serverName.startsWith('agenc_ai_')) {
     return 'agencai'

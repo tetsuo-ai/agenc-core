@@ -163,13 +163,13 @@ type LocalJSXCommand = {
  * of the listed auth types. See meetsAvailabilityRequirement() in commands.ts.
  *
  * Example: `availability: ['agenc-ai', 'console']` shows the command to
- * agenc.ai subscribers and direct Console API key users (api.anthropic.com),
+ * agenc.tech subscribers and direct Console API key users (api.anthropic.com),
  * but hides it from Bedrock/Vertex/Foundry users and custom base URL users.
  */
 export type CommandAvailability =
-  // agenc.ai OAuth subscriber (Pro/Max/Team/Enterprise via agenc.ai)
+  // agenc.tech OAuth subscriber (Pro/Max/Team/Enterprise via agenc.tech)
   | 'agenc-ai'
-  // Console API key user (direct api.anthropic.com, not via agenc.ai OAuth)
+  // Console API key user (direct api.anthropic.com, not via agenc.tech OAuth)
   | 'console'
 
 export type CommandBase = {

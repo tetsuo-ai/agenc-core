@@ -55,7 +55,7 @@ function GracePeriodContentBody() {
   }
   let t4;
   if ($[4] === Symbol.for("react.memo_cache_sentinel")) {
-    t4 = <Box paddingLeft={1}><Text>{t2}{t3}<Text>— Allow the use of your chats and coding sessions to train and improve AgenC service models. Change anytime in your Privacy Settings (<Link url="https://agenc.ai/settings/data-privacy-controls" />).</Text></Text></Box>;
+    t4 = <Box paddingLeft={1}><Text>{t2}{t3}<Text>— Allow the use of your chats and coding sessions to train and improve AgenC service models. Change anytime in your Privacy Settings (<Link url="https://agenc.tech/settings/data-privacy-controls" />).</Text></Text></Box>;
     $[4] = t4;
   } else {
     t4 = $[4];
@@ -108,7 +108,7 @@ function PostGracePeriodContentBody() {
   }
   let t2;
   if ($[2] === Symbol.for("react.memo_cache_sentinel")) {
-    t2 = <Box flexDirection="column"><Text bold={true}>Help improve AgenC</Text><Text>Allow the use of your chats and coding sessions to train and improve AgenC service models. You can change this anytime in Privacy Settings</Text><Link url="https://agenc.ai/settings/data-privacy-controls" /></Box>;
+    t2 = <Box flexDirection="column"><Text bold={true}>Help improve AgenC</Text><Text>Allow the use of your chats and coding sessions to train and improve AgenC service models. You can change this anytime in Privacy Settings</Text><Link url="https://agenc.tech/settings/data-privacy-controls" /></Box>;
     $[2] = t2;
   } else {
     t2 = $[2];
@@ -427,7 +427,7 @@ export function PrivacySettingsDialog(t0) {
   }
   let t5;
   if ($[9] === Symbol.for("react.memo_cache_sentinel")) {
-    t5 = <Text>Review and manage your privacy settings at{" "}<Link url="https://agenc.ai/settings/data-privacy-controls" /></Text>;
+    t5 = <Text>Review and manage your privacy settings at{" "}<Link url="https://agenc.tech/settings/data-privacy-controls" /></Text>;
     $[9] = t5;
   } else {
     t5 = $[9];

@@ -599,7 +599,7 @@ export function useManageMCPConnections(
                     gate.kind === 'disabled'
                       ? 'Channels are not currently available'
                       : gate.kind === 'auth'
-                        ? 'Channels require agenc.ai authentication · run /login'
+                        ? 'Channels require agenc.tech authentication · run /login'
                         : gate.kind === 'policy'
                           ? 'Channels are not enabled for your org · have an administrator set channelsEnabled: true in managed settings'
                           : gate.reason
@@ -768,7 +768,7 @@ export function useManageMCPConnections(
   // Re-runs on session change (/clear) and on /reload-plugins (pluginReconnectKey).
   // On plugin reload, also disconnects stale plugin MCP servers (scope 'dynamic')
   // that no longer appear in configs — prevents ghost tools from disabled plugins.
-  // Skip agenc.ai dedup here to avoid blocking on the network fetch; the connect
+  // Skip agenc.tech dedup here to avoid blocking on the network fetch; the connect
   // useEffect below runs immediately after and dedups before connecting.
   const sessionId = getSessionId()
   useEffect(() => {
@@ -856,12 +856,12 @@ export function useManageMCPConnections(
   ])
 
   // Load MCP configs and connect to servers
-  // Two-phase loading: AgenC configs first (fast), then agenc.ai configs (may be slow)
+  // Two-phase loading: AgenC configs first (fast), then agenc.tech configs (may be slow)
   useEffect(() => {
     let cancelled = false
 
     async function loadAndConnectMcpConfigs() {
-      // Clear agenc.ai MCP cache so we fetch fresh configs with current auth
+      // Clear agenc.tech MCP cache so we fetch fresh configs with current auth
       // state. This is important when authVersion changes (e.g., after login/
       // logout). Kick off the fetch now so it overlaps with loadAllPlugins()
       // inside getAgenCCodeMcpConfigs; it's awaited only at the dedup step.
@@ -875,7 +875,7 @@ export function useManageMCPConnections(
       }
 
       // Phase 1: Load AgenC configs. Plugin MCP servers that duplicate a
-      // --mcp-config entry or a agenc.ai connector are suppressed here so they
+      // --mcp-config entry or a agenc.tech connector are suppressed here so they
       // don't connect alongside the connector in Phase 2.
       const { servers: agencConfigs, errors: mcpErrors } =
         isStrictMcpConfig
@@ -903,7 +903,7 @@ export function useManageMCPConnections(
         )
       })
 
-      // Phase 2: Await agenc.ai configs (started above; memoized — no second fetch)
+      // Phase 2: Await agenc.tech configs (started above; memoized — no second fetch)
       let agencaiConfigs: Record<string, ScopedMcpServerConfig> = {}
       if (!isStrictMcpConfig) {
         agencaiConfigs = filterMcpServersByPolicy(
@@ -911,8 +911,8 @@ export function useManageMCPConnections(
         ).allowed
         if (cancelled) return
 
-        // Suppress agenc.ai connectors that duplicate an enabled manual server.
-        // Keys never collide (`slack` vs `agenc.ai Slack`) so the merge below
+        // Suppress agenc.tech connectors that duplicate an enabled manual server.
+        // Keys never collide (`slack` vs `agenc.tech Slack`) so the merge below
         // won't catch this — need content-based dedup by URL signature.
         if (Object.keys(agencaiConfigs).length > 0) {
           const { servers: dedupedAgenCAi } = dedupAgenCAiMcpServers(
@@ -923,7 +923,7 @@ export function useManageMCPConnections(
         }
 
         if (Object.keys(agencaiConfigs).length > 0) {
-          // Add agenc.ai servers as pending immediately so they show up in UI
+          // Add agenc.tech servers as pending immediately so they show up in UI
           setAppState(prevState => {
             const existingServerNames = new Set(
               prevState.mcp.clients.map(c => c.name),
@@ -959,7 +959,7 @@ export function useManageMCPConnections(
           ).catch(error => {
             logMCPError(
               'useManageMcpConnections',
-              `Failed to get agenc.ai MCP resources: ${errorMessage(error)}`,
+              `Failed to get agenc.tech MCP resources: ${errorMessage(error)}`,
             )
           })
         }

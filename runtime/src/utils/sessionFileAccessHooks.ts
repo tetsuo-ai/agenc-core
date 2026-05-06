@@ -7,6 +7,7 @@
  */
 import { feature } from 'bun:bundle'
 import { registerHookCallbacks } from '../bootstrap/state.js'
+import * as teamMemPathsModule from '../memdir/teamMemPaths.js'
 import type { HookInput, HookJSONOutput } from '../entrypoints/agentSdkTypes.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -31,9 +32,7 @@ import {
 } from './memoryFileDetection.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-const teamMemPaths = feature('TEAMMEM')
-  ? (require('../memdir/teamMemPaths.js') as typeof import('../memdir/teamMemPaths.js'))
-  : null
+const teamMemPaths = feature('TEAMMEM') ? teamMemPathsModule : null
 const teamMemWatcher = feature('TEAMMEM')
   ? (require('../services/teamMemorySync/watcher.js') as typeof import('../services/teamMemorySync/watcher.js'))
   : null

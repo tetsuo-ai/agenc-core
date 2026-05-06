@@ -33,7 +33,7 @@ export function isVoiceGrowthBookEnabled(): boolean {
  */
 export function hasVoiceAuth(): boolean {
   // Voice mode requires provider OAuth — it uses the voice_stream
-  // endpoint on agenc.ai which is not available with API keys,
+  // endpoint on agenc.tech which is not available with API keys,
   // Bedrock, Vertex, or Foundry.
   if (!isproviderAuthEnabled()) {
     return false

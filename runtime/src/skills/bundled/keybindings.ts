@@ -113,7 +113,7 @@ function generateReservedShortcuts(): string {
 
 const FILE_FORMAT_EXAMPLE: KeybindingsSchemaType = {
   $schema: 'https://www.schemastore.org/agenc-code-keybindings.json',
-  $docs: 'https://code.agenc.com/docs/en/keybindings',
+  $docs: 'https://agenc.tech/docs/en/keybindings',
   bindings: [
     {
       context: 'Chat',

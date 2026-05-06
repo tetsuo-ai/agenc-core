@@ -18,8 +18,8 @@ import { lt } from '../utils/semver.js'
 /**
  * Runtime check for bridge mode entitlement.
  *
- * Remote Control requires a agenc.ai subscription (the bridge auths to CCR
- * with the agenc.ai OAuth token). isAgenCAISubscriber() excludes
+ * Remote Control requires a agenc.tech subscription (the bridge auths to CCR
+ * with the agenc.tech OAuth token). isAgenCAISubscriber() excludes
  * Bedrock/Vertex/Foundry, apiKeyHelper/gateway deployments, env-var API keys,
  * and Console API logins — none of which have the OAuth token CCR needs.
  * See github.com/deshaw/anthropic-issues/issues/24.
@@ -72,7 +72,7 @@ export async function isBridgeEnabledBlocking(): Promise<boolean> {
 export async function getBridgeDisabledReason(): Promise<string | null> {
   if (feature('BRIDGE_MODE')) {
     if (!isAgenCAISubscriber()) {
-      return 'Remote Control requires a agenc.ai subscription. Run `agenc auth login` to sign in with your agenc.ai account.'
+      return 'Remote Control requires a agenc.tech subscription. Run `agenc auth login` to sign in with your agenc.tech account.'
     }
     if (!hasProfileScope()) {
       return 'Remote Control requires a full-scope login token. Long-lived tokens (from `agenc setup-token` or AGENC_OAUTH_TOKEN) are limited to inference-only for security reasons. Run `agenc auth login` to use Remote Control.'
@@ -135,7 +135,7 @@ export function isEnvLessBridgeEnabled(): boolean {
  * Kill-switch for the `cse_*` → `session_*` client-side retag shim.
  *
  * The shim exists because compat/convert.go:27 validates TagSession and the
- * agenc.ai frontend routes on `session_*`, while v2 worker endpoints hand out
+ * agenc.tech frontend routes on `session_*`, while v2 worker endpoints hand out
  * `cse_*`. Once the server tags by environment_kind and the frontend accepts
  * `cse_*` directly, flip this to false to make toCompatSessionId a no-op.
  * Defaults to true — the shim stays active until explicitly disabled.

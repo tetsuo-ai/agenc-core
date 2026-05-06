@@ -80,7 +80,7 @@ export const RemoteTriggerTool = buildTool({
     const accessToken = getAgenCAIOAuthTokens()?.accessToken
     if (!accessToken) {
       throw new Error(
-        'Not authenticated with a agenc.ai account. Run /login and try again.',
+        'Not authenticated with a agenc.tech account. Run /login and try again.',
       )
     }
     const orgUUID = await getOrganizationUUID()

@@ -53,6 +53,7 @@ import {
 } from '../bootstrap/state.js'
 import { truncateEntrypointContent } from '../memdir/memdir.js'
 import { getAutoMemEntrypoint, isAutoMemoryEnabled } from '../memdir/paths.js'
+import * as teamMemPathsModule from '../memdir/teamMemPaths.js'
 // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
@@ -90,9 +91,7 @@ import { isSettingSourceEnabled } from './settings/constants.js'
 import { getInitialSettings } from './settings/settings.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-const teamMemPaths = feature('TEAMMEM')
-  ? (require('../memdir/teamMemPaths.js') as typeof import('../memdir/teamMemPaths.js'))
-  : null
+const teamMemPaths = feature('TEAMMEM') ? teamMemPathsModule : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 let hasLoggedInitialLoad = false

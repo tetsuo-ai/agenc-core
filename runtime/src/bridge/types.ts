@@ -3,7 +3,7 @@ export const DEFAULT_SESSION_TIMEOUT_MS = 24 * 60 * 60 * 1000
 
 /** Reusable login guidance appended to bridge auth errors. */
 export const BRIDGE_LOGIN_INSTRUCTION =
-  'Remote Control is only available with agenc.ai subscriptions. Please use `/login` to sign in with your agenc.ai account.'
+  'Remote Control is only available with agenc.tech subscriptions. Please use `/login` to sign in with your agenc.tech account.'
 
 /** Full error printed when `agenc remote-control` is run without auth. */
 export const BRIDGE_LOGIN_ERROR =
@@ -70,7 +70,7 @@ export type SpawnMode = 'single-session' | 'worktree' | 'same-dir'
 
 /**
  * Well-known worker_type values THIS codebase produces. Sent as
- * `metadata.worker_type` at environment registration so agenc.ai can filter
+ * `metadata.worker_type` at environment registration so agenc.tech can filter
  * the session picker by origin (e.g. assistant tab only shows assistant
  * workers). The backend treats this as an opaque string — desktop cowork
  * sends `"cowork"`, which isn't in this union. REPL code uses this narrow

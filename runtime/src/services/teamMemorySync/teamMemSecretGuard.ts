@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle'
+import { isTeamMemPath } from '../../memdir/teamMemPaths.js'
 
 /**
  * Check if a file write/edit to a team memory path contains secrets.
@@ -18,8 +19,6 @@ export function checkTeamMemSecrets(
 ): string | null {
   if (feature('TEAMMEM')) {
     /* eslint-disable @typescript-eslint/no-require-imports */
-    const { isTeamMemPath } =
-      require('../../memdir/teamMemPaths.js') as typeof import('../../memdir/teamMemPaths.js')
     const { scanForSecrets } =
       require('./secretScanner.js') as typeof import('./secretScanner.js')
     /* eslint-enable @typescript-eslint/no-require-imports */

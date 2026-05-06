@@ -93,7 +93,7 @@ export function isToolDetailsLoggingEnabled(): boolean {
  *
  * Per go/taxonomy, MCP names are medium PII. We log them for:
  * - Cowork (entrypoint=local-agent) — no ZDR concept, log all MCPs
- * - agenc.ai-proxied connectors — always official (from agenc.ai's list)
+ * - agenc.tech-proxied connectors — always official (from agenc.tech's list)
  * - Servers whose URL matches the official MCP registry — directory
  *   connectors added via `agenc mcp add`, not customer-specific config
  *

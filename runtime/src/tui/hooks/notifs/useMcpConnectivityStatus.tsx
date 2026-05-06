@@ -45,7 +45,7 @@ export function useMcpConnectivityStatus(t0) {
         if (failedAgenCAiClients.length > 0) {
           addNotification({
             key: "mcp-claudeai-failed",
-            jsx: <><Text color="error">{failedAgenCAiClients.length} agenc.ai{" "}{failedAgenCAiClients.length === 1 ? "connector" : "connectors"}{" "}unavailable</Text><Text dimColor={true}> · /mcp</Text></>,
+            jsx: <><Text color="error">{failedAgenCAiClients.length} agenc.tech{" "}{failedAgenCAiClients.length === 1 ? "connector" : "connectors"}{" "}unavailable</Text><Text dimColor={true}> · /mcp</Text></>,
             priority: "medium"
           });
         }
@@ -59,7 +59,7 @@ export function useMcpConnectivityStatus(t0) {
         if (needsAuthAgenCAiServers.length > 0) {
           addNotification({
             key: "mcp-claudeai-needs-auth",
-            jsx: <><Text color="warning">{needsAuthAgenCAiServers.length} agenc.ai{" "}{needsAuthAgenCAiServers.length === 1 ? "connector needs" : "connectors need"}{" "}auth</Text><Text dimColor={true}> · /mcp</Text></>,
+            jsx: <><Text color="warning">{needsAuthAgenCAiServers.length} agenc.tech{" "}{needsAuthAgenCAiServers.length === 1 ? "connector needs" : "connectors need"}{" "}auth</Text><Text dimColor={true}> · /mcp</Text></>,
             priority: "medium"
           });
         }

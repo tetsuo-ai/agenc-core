@@ -3,7 +3,7 @@ import { type GroveDecision, GroveDialog, PrivacySettingsDialog } from '../../tu
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { getGroveNoticeConfig, getGroveSettings, isQualifiedForGrove } from '../../services/api/grove.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
-const FALLBACK_MESSAGE = 'Review and manage your privacy settings at https://agenc.ai/settings/data-privacy-controls';
+const FALLBACK_MESSAGE = 'Review and manage your privacy settings at https://agenc.tech/settings/data-privacy-controls';
 export async function call(onDone: LocalJSXCommandOnDone): Promise<React.ReactNode | null> {
   const qualified = await isQualifiedForGrove();
   if (!qualified) {

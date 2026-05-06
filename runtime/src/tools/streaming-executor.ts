@@ -359,7 +359,6 @@ export class StreamingToolExecutor {
       pendingProgress: [],
     };
     this.tools.push(tracked);
-    void this.processQueue();
   }
 
   /**
@@ -571,8 +570,8 @@ export class StreamingToolExecutor {
     }));
   }
 
-  dispatchPending(): void {
-    void this.processQueue();
+  dispatchPending(opts: { readonly safeOnly?: boolean } = {}): void {
+    void this.processQueue(opts);
   }
 
   inflightCount(): number {
@@ -716,11 +715,17 @@ export class StreamingToolExecutor {
    * `void` makes the non-blocking dispatch intent clear and preserves
    * AgenC's whole-queue parallel-dispatch model.
    */
-  private async processQueue(): Promise<void> {
+  private async processQueue(opts: { readonly safeOnly?: boolean } = {}): Promise<void> {
     if (this.discarded) return;
     for (let i = 0; i < this.tools.length; i += 1) {
       const tool = this.tools[i]!;
       if (tool.status !== "queued") continue;
+      if (opts.safeOnly === true && !tool.isConcurrencySafe) {
+        // During provider streaming, only concurrency-safe tools may
+        // pre-dispatch. Mutating/default tools wait for the normal
+        // close/drain path so a dropped stream can cancel them first.
+        break;
+      }
       if (this.canExecuteTool(tool)) {
         // Fire but don't await — multiple safe tools can start.
         tool.status = "executing";

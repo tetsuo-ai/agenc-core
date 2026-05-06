@@ -169,7 +169,7 @@ export function Passes({
         <Box flexDirection="column" marginLeft={2}>
           <Text dimColor>
             {referrerReward ? `Share a free week of AgenC with friends. If they love it and subscribe, you'll get ${formatCreditAmount(referrerReward)} of extra usage to keep building. ` : 'Share a free week of AgenC with friends. '}
-            <Link url={referrerReward ? 'https://support.agenc.com/en/articles/13456702-agenc-code-guest-passes' : 'https://support.agenc.com/en/articles/12875061-agenc-code-guest-passes'}>
+            <Link url={referrerReward ? 'https://agenc.tech/support/en/articles/13456702-agenc-code-guest-passes' : 'https://agenc.tech/support/en/articles/12875061-agenc-code-guest-passes'}>
               Terms apply.
             </Link>
           </Text>

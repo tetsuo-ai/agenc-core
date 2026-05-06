@@ -32,7 +32,7 @@ type Props = {
  * useReplBridge in REPL.tsx to initialize the bridge connection.
  * The bridge registers an environment, creates a session with the current
  * conversation, polls for work, and connects an ingress WebSocket for
- * bidirectional messaging between the CLI and agenc.ai.
+ * bidirectional messaging between the CLI and agenc.tech.
  *
  * Running /remote-control when already connected shows a dialog with the session
  * URL and options to disconnect or continue.

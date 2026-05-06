@@ -1585,7 +1585,7 @@ export type SDKUserMessageReplay = {
   isReplay: true
 }
 
-/** Rate limit information for agenc.ai subscription users. */
+/** Rate limit information for agenc.tech subscription users. */
 export type SDKRateLimitInfo = {
   status: "allowed" | "allowed_warning" | "rejected"
   resetsAt?: number

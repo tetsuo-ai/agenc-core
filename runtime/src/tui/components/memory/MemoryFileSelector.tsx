@@ -10,6 +10,7 @@ import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWit
 import { Box, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import { getAutoMemPath, isAutoMemoryEnabled } from '../../../memdir/paths';
+import * as teamMemPathsModule from '../../../memdir/teamMemPaths';
 import { logEvent } from '../../../services/analytics/index';
 import { isAutoDreamEnabled } from '../../../services/autoDream/config';
 import { readLastConsolidatedAt } from '../../../services/autoDream/consolidationLock';
@@ -27,7 +28,7 @@ import { ListItem } from '../design-system/ListItem';
 import { getProjectMemoryPathForSelector } from './memoryFileSelectorPaths';
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-const teamMemPaths = feature('TEAMMEM') ? require('../../../memdir/teamMemPaths') as typeof import('../../../memdir/teamMemPaths') : null;
+const teamMemPaths = feature('TEAMMEM') ? teamMemPathsModule : null;
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 interface ExtendedMemoryFileInfo extends MemoryFileInfo {

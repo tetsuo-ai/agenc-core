@@ -34,7 +34,7 @@ function extractToolTag(content: string, tagName: string): string | null {
  * `UserBashOutputMessage` (extracts `<bash-stdout>` and `<bash-stderr>`
  * tags and renders them in distinct colors), but does not import
  * upstream component because the upstream chain drags `bun:bundle`
- * resolution through a feature-gated `require('../memdir/teamMemPaths.js')`
+ * resolution through a feature-gated `require('../memdir/teamMemPaths')`
  * inside `utils/config.ts` that vitest cannot follow
  * from raw source (only the compiled dist resolves it). Production
  * runtime CAN later be flipped to dispatch to the real upstream

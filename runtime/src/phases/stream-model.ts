@@ -484,7 +484,10 @@ export async function streamModel(
         if (!block) continue;
         streamedToolCalls.set(call.id, call);
         streamedToolBlocks.set(block.id, block);
-        queueStreamingToolCall(executor, block, call, session);
+        if (queueStreamingToolCall(executor, block, call, session)) {
+          (executor as { dispatchPending?: (opts?: { readonly safeOnly?: boolean }) => void })
+            .dispatchPending?.({ safeOnly: true });
+        }
       }
       state.toolUseBlocks = [...streamedToolBlocks.values()];
       state.needsFollowUp = state.toolUseBlocks.length > 0;

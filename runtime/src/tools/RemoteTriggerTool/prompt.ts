@@ -1,9 +1,9 @@
 export const REMOTE_TRIGGER_TOOL_NAME = 'RemoteTrigger'
 
 export const DESCRIPTION =
-  'Manage scheduled remote AgenC agents (triggers) via the agenc.ai CCR API. Auth is handled in-process — the token never reaches the shell.'
+  'Manage scheduled remote AgenC agents (triggers) via the agenc.tech CCR API. Auth is handled in-process — the token never reaches the shell.'
 
-export const PROMPT = `Call the agenc.ai remote-trigger API. Use this instead of curl — the OAuth token is added automatically in-process and never exposed.
+export const PROMPT = `Call the agenc.tech remote-trigger API. Use this instead of curl — the OAuth token is added automatically in-process and never exposed.
 
 Actions:
 - list: GET /v1/code/triggers
