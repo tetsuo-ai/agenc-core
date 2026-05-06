@@ -85,9 +85,9 @@ describe("AgenC VS Code sibling repo scaffold", () => {
     const hasInitialProtocolStub =
       source.includes("AGENC_IDE_EXTENSION_SCAFFOLD") &&
       source.includes("createAgenCIdeInitializeParams");
-    const hasDaemonProtocolConnection =
-      source.includes("AgenCDaemonProcess") &&
-      source.includes("createAgenCDaemonInitializeRequest");
+  const hasDaemonProtocolConnection =
+    source.includes("AgenCDaemonProcess") &&
+    source.includes("daemon.connect()");
 
     expect(hasInitialProtocolStub || hasDaemonProtocolConnection).toBe(true);
     expect(source).toContain("agenc.connectDaemon");

@@ -4632,7 +4632,7 @@ function assertAgenCVscodeSiblingRepo() {
     extensionSource.includes("createAgenCIdeInitializeParams");
   const hasDaemonProtocolConnection =
     extensionSource.includes("AgenCDaemonProcess") &&
-    extensionSource.includes("createAgenCDaemonInitializeRequest");
+    extensionSource.includes("daemon.connect()");
   if (!extensionSource.includes("agenc.connectDaemon")) {
     failGate("IDE-01: src/extension.ts missing agenc.connectDaemon command registration");
   }
@@ -4740,7 +4740,9 @@ function assertAgenCVscodeDaemonConnection() {
     "\"--foreground\"",
     "createAgenCDaemonLaunchPlan",
     "createAgenCDaemonInitializeRequest",
-    "spawn(plan.command, plan.args, plan.options)",
+    "connectAgenCDaemonSocket",
+    "sendAgenCDaemonInitializeRequest",
+    "socket.write(`${JSON.stringify(request)}\\n`)",
   ];
   const missingDaemonMarkers = daemonMarkers.filter((marker) => !daemonSource.includes(marker));
   if (missingDaemonMarkers.length > 0) {
@@ -4750,13 +4752,25 @@ function assertAgenCVscodeDaemonConnection() {
   const extensionSource = readFileSync(path.join(repo, "src/extension.ts"), "utf8");
   const extensionMarkers = [
     "new AgenCDaemonProcess()",
-    "daemon.start()",
+    "daemon.connect()",
     "daemon.stop()",
-    "createAgenCDaemonInitializeRequest",
+    "showErrorMessage",
+  ];
+  const testSource = readFileSync(path.join(repo, "test/daemon.test.mjs"), "utf8");
+  const testMarkers = [
+    "createServer",
+    "AgenCDaemonProcess",
+    "sendAgenCDaemonInitializeRequest",
+    "AgenC daemon initialize failed",
+    "exited before initialize response",
   ];
   const missingExtensionMarkers = extensionMarkers.filter((marker) => !extensionSource.includes(marker));
   if (missingExtensionMarkers.length > 0) {
     failGate(`IDE-03: src/extension.ts missing marker(s): ${missingExtensionMarkers.join(", ")}`);
+  }
+  const missingTestMarkers = testMarkers.filter((marker) => !testSource.includes(marker));
+  if (missingTestMarkers.length > 0) {
+    failGate(`IDE-03: test/daemon.test.mjs missing behavior marker(s): ${missingTestMarkers.join(", ")}`);
   }
 
   const pkg = JSON.parse(readFileSync(path.join(repo, "package.json"), "utf8"));
