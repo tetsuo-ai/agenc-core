@@ -96,7 +96,7 @@ describe("AgenC VS Code sibling repo scaffold", () => {
   it("requires the daemon-backed activation path once the daemon module exists", () => {
     const repoRoot = findAgenCVscodeRepo();
     const daemonModulePath = resolve(repoRoot, "src/daemon.ts");
-    if (!existsSync(daemonModulePath)) return;
+    expect(existsSync(daemonModulePath)).toBe(true);
 
     const extensionSource = readFileSync(
       resolve(repoRoot, "src/extension.ts"),
