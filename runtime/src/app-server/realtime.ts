@@ -102,6 +102,7 @@ export interface AgenCRealtimeRpcServiceOptions {
 
 interface ActiveRealtimeFanout {
   readonly active: RealtimeActiveHandle;
+  providerSdp?: string;
   closeReason: "requested" | "transport_closed" | "error";
   startedSent: boolean;
   closed: boolean;
@@ -198,6 +199,7 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
       active = started.active;
       activeFanout = {
         active: started.active,
+        ...(providerSdp !== undefined ? { providerSdp } : {}),
         closeReason: "transport_closed",
         startedSent: false,
         closed: false,
@@ -223,15 +225,6 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
           "INVALID_ARGUMENT",
           `realtime fanout is already registered for thread: ${params.threadId}`,
         );
-      }
-      if (providerSdp !== undefined) {
-        await this.#send(sendNotification, {
-          method: "thread/realtime/sdp",
-          params: {
-            threadId: params.threadId,
-            sdp: providerSdp,
-          },
-        });
       }
     } catch (error) {
       if (activeFanout !== undefined && active !== undefined) {
@@ -260,10 +253,11 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
       data: params.audio.data,
       sampleRate: params.audio.sampleRate,
       numChannels: params.audio.numChannels,
-      ...(params.audio.samplesPerChannel !== undefined
+      ...(params.audio.samplesPerChannel !== undefined &&
+      params.audio.samplesPerChannel !== null
         ? { samplesPerChannel: params.audio.samplesPerChannel }
         : {}),
-      ...(params.audio.itemId !== undefined
+      ...(params.audio.itemId !== undefined && params.audio.itemId !== null
         ? { itemId: params.audio.itemId }
         : {}),
     });
@@ -391,6 +385,17 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
         version: options.version,
       },
     });
+    if (options.activeFanout.providerSdp !== undefined) {
+      const sdp = options.activeFanout.providerSdp;
+      options.activeFanout.providerSdp = undefined;
+      await this.#send(options.sendNotification, {
+        method: "thread/realtime/sdp",
+        params: {
+          threadId: options.threadId,
+          sdp,
+        },
+      });
+    }
   }
 
   async #fanoutEvent(

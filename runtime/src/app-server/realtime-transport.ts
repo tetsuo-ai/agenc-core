@@ -239,12 +239,18 @@ export class AgenCRealtimeWebSocketTransportConnector {
 
     await waitForRealtimeWebSocketOpen(socket);
     const writer = new AgenCRealtimeWebSocketWriter(socket, version);
-    await writer.sendPayload(
-      JSON.stringify({
-        type: "session.update",
-        session: realtimeSessionUpdateToProviderJson(request.sessionConfig),
-      }),
-    );
+    try {
+      await writer.sendPayload(
+        JSON.stringify({
+          type: "session.update",
+          session: realtimeSessionUpdateToProviderJson(request.sessionConfig),
+        }),
+      );
+    } catch (error) {
+      events.close();
+      await writer.close().catch(() => {});
+      throw error;
+    }
 
     return {
       writer,

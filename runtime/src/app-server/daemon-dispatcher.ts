@@ -1050,11 +1050,16 @@ function validateThreadRealtimeAppendAudioParams(
   }
   const audio = validateObjectShape(validated.audio as JsonObject, {
     methodName: "thread/realtime/appendAudio.audio",
-    stringFields: ["data", "itemId"],
-    numberFields: ["sampleRate", "numChannels", "samplesPerChannel"],
+    stringFields: ["data"],
+    numberFields: ["sampleRate", "numChannels"],
+    valueFields: ["itemId", "samplesPerChannel"],
   });
   validateRequiredString(audio, "thread/realtime/appendAudio.audio", "data");
-  validateOptionalString(audio, "thread/realtime/appendAudio.audio", "itemId");
+  validateOptionalStringOrNull(
+    audio,
+    "thread/realtime/appendAudio.audio",
+    "itemId",
+  );
   validatePositiveInteger(
     audio,
     "thread/realtime/appendAudio.audio",
@@ -1067,7 +1072,7 @@ function validateThreadRealtimeAppendAudioParams(
     "numChannels",
     true,
   );
-  validatePositiveInteger(
+  validatePositiveIntegerOrNull(
     audio,
     "thread/realtime/appendAudio.audio",
     "samplesPerChannel",
@@ -1347,20 +1352,6 @@ function validateRequiredString(
   }
 }
 
-function validateOptionalString(
-  params: JsonObject,
-  methodName: string,
-  field: string,
-): void {
-  const value = params[field];
-  if (value === undefined) return;
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw invalidParams(
-      `${methodName} param '${field}' must be a non-empty string`,
-    );
-  }
-}
-
 function validateOptionalStringOrNull(
   params: JsonObject,
   methodName: string,
@@ -1434,6 +1425,17 @@ function validatePositiveInteger(
       `${methodName} param '${field}' must be a positive integer`,
     );
   }
+}
+
+function validatePositiveIntegerOrNull(
+  params: JsonObject,
+  methodName: string,
+  field: string,
+  required: boolean,
+): void {
+  const value = params[field];
+  if (value === null) return;
+  validatePositiveInteger(params, methodName, field, required);
 }
 
 function validateObjectShape(

@@ -654,8 +654,8 @@ export interface ThreadRealtimeAudioChunk extends JsonObject {
   readonly data: string;
   readonly sampleRate: number;
   readonly numChannels: number;
-  readonly samplesPerChannel?: number;
-  readonly itemId?: string;
+  readonly samplesPerChannel?: number | null;
+  readonly itemId?: string | null;
 }
 
 export interface ThreadRealtimeAppendAudioParams extends JsonObject {

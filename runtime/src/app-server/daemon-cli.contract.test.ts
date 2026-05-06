@@ -390,9 +390,9 @@ describe("AgenC daemon CLI", () => {
     expect(
       resolveAgenCDaemonRealtimeBaseUrl(
         {},
-        { providers: { openai: { base_url: "https://openai.example/v1" } } },
+        { providers: { openai: { base_url: "http://127.0.0.1:9001/v1" } } },
       ),
-    ).toBe("https://openai.example/v1");
+    ).toBe("http://127.0.0.1:9001/v1");
     expect(resolveAgenCDaemonRealtimeBaseUrl({})).toBe(
       "https://api.openai.com/v1",
     );

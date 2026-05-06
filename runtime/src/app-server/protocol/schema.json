@@ -558,11 +558,11 @@
           "minimum": 1
         },
         "samplesPerChannel": {
-          "type": "integer",
+          "type": ["integer", "null"],
           "minimum": 1
         },
         "itemId": {
-          "type": "string",
+          "type": ["string", "null"],
           "minLength": 1
         }
       },

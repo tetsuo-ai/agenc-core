@@ -132,6 +132,9 @@ describe("AgenC daemon realtime JSON-RPC surface", () => {
     expect(ordering.indexOf("response:start")).toBeLessThan(
       ordering.indexOf("notification:thread/realtime/sdp"),
     );
+    expect(
+      ordering.indexOf("notification:thread/realtime/started"),
+    ).toBeLessThan(ordering.indexOf("notification:thread/realtime/sdp"));
     expect(notifications).toEqual(
       expect.arrayContaining([
         {
@@ -166,6 +169,21 @@ describe("AgenC daemon realtime JSON-RPC surface", () => {
         },
       },
     });
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "audio-null-metadata",
+      method: "thread/realtime/appendAudio",
+      params: {
+        threadId: "thread_1",
+        audio: {
+          data: "BBBB",
+          sampleRate: 24000,
+          numChannels: 1,
+          samplesPerChannel: null,
+          itemId: null,
+        },
+      },
+    });
 
     const missingAudio = await connection.dispatch({
       jsonrpc: JSON_RPC_VERSION,
@@ -187,7 +205,7 @@ describe("AgenC daemon realtime JSON-RPC surface", () => {
       params: { threadId: "thread_1", text: "continue" },
     });
 
-    await waitFor(() => binding.writer.audioFrames.length === 1, "audio sent");
+    await waitFor(() => binding.writer.audioFrames.length === 2, "audio sent");
     await waitFor(() => binding.writer.textItems.length === 1, "text sent");
     expect(binding.writer.audioFrames[0]).toMatchObject({
       data: "AAAA",
@@ -195,6 +213,11 @@ describe("AgenC daemon realtime JSON-RPC surface", () => {
       numChannels: 1,
       samplesPerChannel: 2,
       itemId: "audio_item_1",
+    });
+    expect(binding.writer.audioFrames[1]).toEqual({
+      data: "BBBB",
+      sampleRate: 24000,
+      numChannels: 1,
     });
     expect(binding.writer.textItems).toEqual(["[USER] continue"]);
 
@@ -672,13 +695,13 @@ describe("AgenC daemon realtime JSON-RPC surface", () => {
     );
     expect(
       realtimeWebSocketUrl(
-        "https://example.com/v1/realtime?foo=bar",
+        "https://127.0.0.1:9443/v1/realtime?foo=bar",
         v2Session,
       ),
-    ).toBe("wss://example.com/v1/realtime?foo=bar&model=gpt-realtime-1.5");
+    ).toBe("wss://127.0.0.1:9443/v1/realtime?foo=bar&model=gpt-realtime-1.5");
     expect(
-      realtimeWebSocketUrl("https://example.com", transcriptionSession),
-    ).toBe("wss://example.com/v1/realtime");
+      realtimeWebSocketUrl("https://127.0.0.1:9443", transcriptionSession),
+    ).toBe("wss://127.0.0.1:9443/v1/realtime");
     expect(
       realtimeWebSocketUrl("https://api.openai.com/v1", v2Session, "rtc_test"),
     ).toBe("wss://api.openai.com/v1/realtime?call_id=rtc_test");
@@ -865,6 +888,20 @@ describe("AgenC daemon realtime JSON-RPC surface", () => {
     );
     socket!.close();
     await expect(pendingClosedConnection).rejects.toThrow("closed before open");
+
+    const pendingSendFailure = connector.connect({
+      transport: { type: "websocket" },
+      sessionConfig: v2Session,
+      requestedSessionId: "thread_ws_v2_send_failure",
+    });
+    await waitFor(
+      () => socket !== undefined && socket.readyState === 0,
+      "send-failure websocket factory",
+    );
+    socket!.failNextSend = new Error("socket write failed");
+    socket!.open();
+    await expect(pendingSendFailure).rejects.toThrow("socket write failed");
+    expect(socket!.readyState).toBe(3);
   });
 });
 
@@ -882,6 +919,7 @@ class FakeRealtimeWebSocket
   implements AgenCRealtimeWebSocketLike
 {
   readyState = 0;
+  failNextSend: Error | null = null;
   readonly sent: string[] = [];
 
   open(): void {
@@ -895,6 +933,12 @@ class FakeRealtimeWebSocket
 
   send(payload: string, callback?: (error?: Error) => void): void {
     this.sent.push(payload);
+    if (this.failNextSend !== null) {
+      const error = this.failNextSend;
+      this.failNextSend = null;
+      callback?.(error);
+      return;
+    }
     callback?.();
   }
 

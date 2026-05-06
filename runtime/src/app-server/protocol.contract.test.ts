@@ -386,6 +386,22 @@ describe("AgenC daemon protocol surface", () => {
             sampleRate: 24000,
             numChannels: 1,
             samplesPerChannel: 2,
+            itemId: null,
+          },
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: "rt-audio-null",
+        method: "thread/realtime/appendAudio",
+        params: {
+          threadId: "session_1",
+          audio: {
+            data: "BBBB",
+            sampleRate: 24000,
+            numChannels: 1,
+            samplesPerChannel: null,
+            itemId: null,
           },
         },
       },
