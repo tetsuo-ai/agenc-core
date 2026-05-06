@@ -5,22 +5,29 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
+import WebSocket from "ws";
 import type { AgenCShutdownSignal } from "../lifecycle/signal-handlers.js";
 import { openStateDatabases } from "../state/sqlite-driver.js";
 import {
   createAgenCJsonLineDaemonRequestClient,
 } from "./agent-cli.js";
 import {
+  AGENC_DAEMON_WEBSOCKET_DEFAULT_HOST,
+  AGENC_DAEMON_WEBSOCKET_DEFAULT_PATH,
+  AGENC_DAEMON_WEBSOCKET_DEFAULT_PORT,
+  AGENC_DAEMON_WEBSOCKET_PORT_ENV,
   defaultAgenCDaemonPidPath,
   ensureAgenCDaemonCookie,
   formatAgenCDaemonCliHelpText,
   parseAgenCDaemonCliArgs,
   readAgenCDaemonPid,
+  resolveAgenCDaemonWebSocketListenOptions,
   resolveAgenCDaemonCookiePath,
   resolveAgenCDaemonPidPath,
   resolveAgenCDaemonSnapshotPath,
   resolveAgenCDaemonSocketPath,
   runAgenCDaemonCli,
+  validateAgenCDaemonWebSocketOrigin,
   writeAgenCDaemonPid,
   type AgenCDaemonCliHost,
   type AgenCDaemonCliIo,
@@ -106,7 +113,10 @@ function createHost(agencHome: string): AgenCDaemonCliHost & {
   const runningPids = new Set<number>();
   const terminatedPids: number[] = [];
   return {
-    env: { AGENC_HOME: agencHome },
+    env: {
+      AGENC_HOME: agencHome,
+      [AGENC_DAEMON_WEBSOCKET_PORT_ENV]: "0",
+    },
     userHome: "/home/test",
     entrypointPath: "/opt/agenc/bin/agenc.js",
     execPath: "/usr/bin/node",
@@ -235,6 +245,53 @@ async function waitForSocketClose(socket: Socket): Promise<"closed" | "open"> {
   ]);
 }
 
+function readWebSocketMessage(socket: WebSocket): Promise<Record<string, unknown>> {
+  return new Promise((resolve) => {
+    socket.once("message", (data) => {
+      resolve(JSON.parse(data.toString()) as Record<string, unknown>);
+    });
+  });
+}
+
+function waitForWebSocketClose(socket: WebSocket): Promise<void> {
+  if (socket.readyState === WebSocket.CLOSED) return Promise.resolve();
+  return new Promise((resolve) => {
+    socket.once("close", () => resolve());
+  });
+}
+
+async function waitForDaemonWebSocketUrl(
+  io: ReturnType<typeof createIo>,
+): Promise<string> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 2_000) {
+    const match = /AgenC daemon websocket listening on (ws:\/\/\S+)/.exec(
+      io.stderrText(),
+    );
+    if (match?.[1] !== undefined) return match[1];
+    await delay(10);
+  }
+  throw new Error("timed out waiting for daemon websocket URL");
+}
+
+async function rejectedWebSocketUpgradeStatus(
+  url: string,
+  origin: string,
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(url, { headers: { Origin: origin } });
+    socket.once("unexpected-response", (_request, response) => {
+      resolve(response.statusCode ?? 0);
+      socket.terminate();
+    });
+    socket.once("open", () => {
+      socket.close();
+      reject(new Error("websocket upgrade unexpectedly succeeded"));
+    });
+    socket.once("error", reject);
+  });
+}
+
 describe("AgenC daemon CLI", () => {
   it("resolves the required pid file path", () => {
     expect(defaultAgenCDaemonPidPath("/home/test")).toBe(
@@ -264,6 +321,30 @@ describe("AgenC daemon CLI", () => {
     expect(resolveAgenCDaemonSnapshotPath({ AGENC_HOME: "/tmp/agenc-home" })).toBe(
       "/tmp/agenc-home/daemon-snapshot.json",
     );
+  });
+
+  it("pins daemon websocket defaults and trusted browser origins", () => {
+    expect(resolveAgenCDaemonWebSocketListenOptions({})).toEqual({
+      host: AGENC_DAEMON_WEBSOCKET_DEFAULT_HOST,
+      port: AGENC_DAEMON_WEBSOCKET_DEFAULT_PORT,
+      path: AGENC_DAEMON_WEBSOCKET_DEFAULT_PATH,
+    });
+    expect(
+      resolveAgenCDaemonWebSocketListenOptions({
+        [AGENC_DAEMON_WEBSOCKET_PORT_ENV]: "0",
+      }).port,
+    ).toBe(0);
+    expect(validateAgenCDaemonWebSocketOrigin(undefined)).toBe(true);
+    expect(
+      validateAgenCDaemonWebSocketOrigin("http://127.0.0.1:4173"),
+    ).toBe(true);
+    expect(
+      validateAgenCDaemonWebSocketOrigin("http://localhost:4173"),
+    ).toBe(true);
+    expect(validateAgenCDaemonWebSocketOrigin("https://agenc.tech")).toBe(
+      true,
+    );
+    expect(validateAgenCDaemonWebSocketOrigin("http://192.0.2.1")).toBe(false);
   });
 
   it("creates a private daemon cookie and reuses it", async () => {
@@ -566,6 +647,100 @@ describe("AgenC daemon CLI", () => {
       },
     });
 
+    signalProcess.emit("SIGTERM");
+    await expect(running).resolves.toBe(0);
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("foreground daemon exposes cookie-authenticated websocket JSON-RPC for the portal", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    host.env[AGENC_DAEMON_WEBSOCKET_PORT_ENV] = "0";
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+    const webSocketUrl = await waitForDaemonWebSocketUrl(io);
+    const authCookie = (await readFile(cookiePath, "utf8")).trim();
+
+    await expect(
+      rejectedWebSocketUpgradeStatus(webSocketUrl, "http://192.0.2.1"),
+    ).resolves.toBe(403);
+
+    const missingCookieSocket = new WebSocket(webSocketUrl, {
+      headers: { Origin: "http://127.0.0.1:4173" },
+    });
+    await once(missingCookieSocket, "open");
+    missingCookieSocket.send(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: "missing-cookie-init",
+        method: "initialize",
+        params: {
+          protocolVersion: "1.0.0",
+          protocol: { version: "1.0.0" },
+          clientName: "agenc-portal",
+          capabilities: { "portal.dashboard.read": true },
+        },
+      }),
+    );
+    const missingCookieResponse = await readWebSocketMessage(
+      missingCookieSocket,
+    );
+    expect(
+      ((missingCookieResponse.error as { data?: { code?: string } } | undefined)
+        ?.data?.code),
+    ).toBe("CONNECTION_AUTHENTICATION_FAILED");
+    await waitForWebSocketClose(missingCookieSocket);
+
+    const socket = new WebSocket(webSocketUrl, {
+      headers: { Origin: "http://127.0.0.1:4173" },
+    });
+    await once(socket, "open");
+    socket.send(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: "initialize",
+        method: "initialize",
+        params: {
+          protocolVersion: "1.0.0",
+          protocol: { version: "1.0.0" },
+          clientName: "agenc-portal",
+          authCookie,
+          capabilities: { "portal.dashboard.read": true },
+        },
+      }),
+    );
+    await expect(readWebSocketMessage(socket)).resolves.toMatchObject({
+      id: "initialize",
+      result: {
+        type: "initialized",
+        protocolVersion: "1.0.0",
+        protocol: { version: "1.0.0" },
+      },
+    });
+
+    socket.send(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: "ready",
+        method: "health.ready",
+      }),
+    );
+    await expect(readWebSocketMessage(socket)).resolves.toMatchObject({
+      id: "ready",
+      result: { ready: true },
+    });
+
+    socket.close();
+    await waitForWebSocketClose(socket);
     signalProcess.emit("SIGTERM");
     await expect(running).resolves.toBe(0);
 

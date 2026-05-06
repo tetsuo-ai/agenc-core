@@ -22,16 +22,12 @@ import { isPluginBlockedByPolicy } from './pluginPolicy.js'
 type HintRecommendationState = { plugin?: string[]; disabled?: boolean }
 type HintConfigShape = {
   agencCodeHints?: HintRecommendationState
-  // branding-scan: allow persisted legacy config key
-  claudeCodeHints?: HintRecommendationState
+  claudeCodeHints?: HintRecommendationState // branding-scan: allow persisted legacy config key
 }
-function readHintState(config: HintConfigShape): HintRecommendationState | undefined {
-  return (
-    config.agencCodeHints ??
-    // branding-scan: allow persisted legacy config key
-    config.claudeCodeHints
-  )
-}
+const readHintState = (
+  config: HintConfigShape,
+): HintRecommendationState | undefined =>
+  config.agencCodeHints ?? config.claudeCodeHints // branding-scan: allow persisted legacy config key
 
 /**
  * Hard cap on `agencCodeHints.plugin[]` — bounds config growth. Each shown

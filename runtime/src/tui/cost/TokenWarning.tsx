@@ -12,6 +12,7 @@ import {
 import { calculateTokenWarningState, getEffectiveContextWindowSize, isAutoCompactEnabled } from '../../services/compact/autoCompact.js';
 import { useCompactWarningSuppression } from '../../services/compact/compactWarningHook.js';
 import { getUpgradeMessage } from '../../agenc/upstream/utils/model/contextWindowUpgradeCheck.js';
+import { getStats, isContextCollapseEnabled, subscribe } from '../../agenc/upstream/services/contextCollapse/index.js';
 type Props = {
   tokenUsage: number;
   model: string;

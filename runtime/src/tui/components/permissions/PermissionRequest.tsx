@@ -13,11 +13,11 @@ import { FileReadTool } from '../../../agenc/upstream/tools/FileReadTool/FileRea
 import { FileWriteTool } from '../../../agenc/upstream/tools/FileWriteTool/FileWriteTool.js';
 import { GlobTool } from '../../../agenc/upstream/tools/GlobTool/GlobTool.js';
 import { GrepTool } from '../../../agenc/upstream/tools/GrepTool/GrepTool.js';
-import { MonitorTool as UpstreamMonitorTool } from '../../../agenc/upstream/tools/MonitorTool/MonitorTool.js';
 import { NotebookEditTool } from '../../../agenc/upstream/tools/NotebookEditTool/NotebookEditTool.js';
 import { PowerShellTool } from '../../../agenc/upstream/tools/PowerShellTool/PowerShellTool.js';
 import { SkillTool } from '../../../agenc/upstream/tools/SkillTool/SkillTool.js';
 import { WebFetchTool } from '../../../agenc/upstream/tools/WebFetchTool/WebFetchTool.js';
+import { MonitorTool as MonitorToolImpl } from '../../../agenc/upstream/tools/MonitorTool/MonitorTool.js';
 import type { AssistantMessage } from '../../../agenc/upstream/types/message.js';
 import type { PermissionDecision } from '../../../agenc/upstream/types/permissions.js';
 import { AskUserQuestionPermissionRequest } from '../../../agenc/upstream/components/permissions/AskUserQuestionPermissionRequest/AskUserQuestionPermissionRequest.js';
@@ -28,13 +28,12 @@ import { FallbackPermissionRequest } from '../../../agenc/upstream/components/pe
 import { FileEditPermissionRequest } from '../../../agenc/upstream/components/permissions/FileEditPermissionRequest/FileEditPermissionRequest.js';
 import { FilesystemPermissionRequest } from '../../../agenc/upstream/components/permissions/FilesystemPermissionRequest/FilesystemPermissionRequest.js';
 import { FileWritePermissionRequest } from '../../../agenc/upstream/components/permissions/FileWritePermissionRequest/FileWritePermissionRequest.js';
-import { MonitorPermissionRequest as UpstreamMonitorPermissionRequest } from '../../../agenc/upstream/components/permissions/MonitorPermissionRequest/MonitorPermissionRequest.js';
 import { NotebookEditPermissionRequest } from '../../../agenc/upstream/components/permissions/NotebookEditPermissionRequest/NotebookEditPermissionRequest.js';
 import { PowerShellPermissionRequest } from '../../../agenc/upstream/components/permissions/PowerShellPermissionRequest/PowerShellPermissionRequest.js';
 import { SkillPermissionRequest } from '../../../agenc/upstream/components/permissions/SkillPermissionRequest/SkillPermissionRequest.js';
 import { WebFetchPermissionRequest } from '../../../agenc/upstream/components/permissions/WebFetchPermissionRequest/WebFetchPermissionRequest.js';
+import { MonitorPermissionRequest as MonitorPermissionRequestImpl } from '../../../agenc/upstream/components/permissions/MonitorPermissionRequest/MonitorPermissionRequest.js';
 
-/* eslint-disable @typescript-eslint/no-require-imports */
 function unsupportedPermissionFeature<T>(featureName: string): T {
   throw new Error(
     `AgenC build enabled ${featureName}, but that permission UI is not present in this runtime snapshot.`,
@@ -52,10 +51,9 @@ const WorkflowTool: Tool | null = feature('WORKFLOW_SCRIPTS')
 const WorkflowPermissionRequest: React.ComponentType<PermissionRequestProps> | null = feature('WORKFLOW_SCRIPTS')
   ? unsupportedPermissionFeature('WORKFLOW_SCRIPTS permission UI')
   : null;
-const MonitorTool = feature('MONITOR_TOOL') ? UpstreamMonitorTool : null;
-const MonitorPermissionRequest = feature('MONITOR_TOOL') ? UpstreamMonitorPermissionRequest : null;
+const MonitorTool = feature('MONITOR_TOOL') ? MonitorToolImpl : null;
+const MonitorPermissionRequest = feature('MONITOR_TOOL') ? MonitorPermissionRequestImpl : null;
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
-/* eslint-enable @typescript-eslint/no-require-imports */
 import type { z } from 'zod/v4';
 import type { PermissionUpdate } from '../../../agenc/upstream/utils/permissions/PermissionUpdateSchema.js';
 import type { WorkerBadgeProps } from '../../../agenc/upstream/components/permissions/WorkerBadge.js';

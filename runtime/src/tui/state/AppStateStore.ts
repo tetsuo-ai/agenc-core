@@ -14,6 +14,8 @@ import {
   type Tool,
   type ToolPermissionContext,
 } from '../../agenc/upstream/Tool.js'
+import { getIsNonInteractiveSession } from '../../agenc/upstream/bootstrap/state.js'
+import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../agenc/upstream/services/analytics/growthbook.js'
 import type { TaskState } from '../../tasks/types.js'
 import type { AgentColorName } from '../../tools/AgentTool/agentColorManager.js'
 import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir.js'
@@ -26,9 +28,6 @@ import {
   type AttributionState,
   createEmptyAttributionState,
 } from '../../agenc/upstream/utils/commitAttribution.js'
-import { getIsNonInteractiveSession } from '../../agenc/upstream/bootstrap/state.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../agenc/upstream/services/analytics/growthbook.js'
-import { isAgentSwarmsEnabled } from '../../agenc/upstream/utils/agentSwarmsEnabled.js'
 import type { EffortValue } from '../../agenc/upstream/utils/effort.js'
 import type { FileHistoryState } from '../../agenc/upstream/utils/fileHistory.js'
 import type { REPLHookContext } from '../../agenc/upstream/utils/hooks/postSamplingHooks.js'
@@ -38,8 +37,9 @@ import type { DenialTrackingState } from '../../agenc/upstream/utils/permissions
 import type { PermissionMode } from '../../agenc/upstream/utils/permissions/PermissionMode.js'
 import { getInitialSettings } from '../../agenc/upstream/utils/settings/settings.js'
 import type { SettingsJson } from '../../agenc/upstream/utils/settings/types.js'
-import { isPlanModeRequired, isTeammate } from '../../agenc/upstream/utils/teammate.js'
+import { isAgentSwarmsEnabled } from '../../agenc/upstream/utils/agentSwarmsEnabled.js'
 import { shouldEnableThinkingByDefault } from '../../agenc/upstream/utils/thinking.js'
+import { isPlanModeRequired, isTeammate } from '../../agenc/upstream/utils/teammate.js'
 import type { Store } from './store.js'
 
 export type CompletionBoundary =
@@ -460,7 +460,6 @@ export type AppStateStore = Store<AppState>
 
 export function getDefaultAppState(): AppState {
   const initialSettings = getInitialSettings()
-  // Determine initial permission mode for teammates spawned with plan_mode_required.
   const initialMode: PermissionMode =
     isTeammate() && isPlanModeRequired()
       ? 'plan'

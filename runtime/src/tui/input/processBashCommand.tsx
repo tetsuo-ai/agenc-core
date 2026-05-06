@@ -4,13 +4,14 @@ import * as React from 'react';
 import { BashModeProgress } from '../../agenc/upstream/components/BashModeProgress.js';
 import type { SetToolJSXFn } from '../../agenc/upstream/Tool.js';
 import { BashTool } from '../../agenc/upstream/tools/BashTool/BashTool.js';
+import { PowerShellTool } from '../../agenc/upstream/tools/PowerShellTool/PowerShellTool.js';
 import type { AttachmentMessage, SystemMessage, UserMessage } from '../../agenc/upstream/types/message.js';
 import type { ShellProgress } from '../../agenc/upstream/types/tools.js';
 import { logEvent } from '../../agenc/upstream/services/analytics/index.js';
 import { errorMessage, ShellError } from '../../agenc/upstream/utils/errors.js';
 import { createSyntheticUserCaveatMessage, createUserInterruptionMessage, createUserMessage, prepareUserContent } from '../../agenc/upstream/utils/messages.js';
 import { resolveDefaultShell } from '../../agenc/upstream/utils/shell/resolveDefaultShell.js';
-import { getPowerShellTool, isPowerShellToolEnabled } from '../../agenc/upstream/utils/shell/shellToolUtils.js';
+import { isPowerShellToolEnabled } from '../../agenc/upstream/utils/shell/shellToolUtils.js';
 import { processToolResultBlock } from '../../agenc/upstream/utils/toolResultStorage.js';
 import { escapeXml } from '../../agenc/upstream/utils/xml.js';
 import type { ProcessUserInputContext } from './processUserInput.js';
@@ -70,8 +71,12 @@ export async function processBashCommand(inputString: string, precedingInputBloc
     // cannot disable sandboxing by setting dangerouslyDisableSandbox directly.
     // PS sandbox is Linux/macOS/WSL2 only — on Windows native, shouldUseSandbox()
     // returns false regardless (unsupported platform).
-    const shellTool = usePowerShell ? getPowerShellTool() : BashTool;
-    const response = await shellTool.call({
+    const shellTool = usePowerShell ? PowerShellTool : BashTool;
+    const response = usePowerShell ? await PowerShellTool.call({
+      command: inputString,
+      dangerouslyDisableSandbox: true,
+      _dangerouslyDisableSandboxApproved: true
+    }, bashModeContext, undefined, undefined, onProgress) : await BashTool.call({
       command: inputString,
       dangerouslyDisableSandbox: true,
       _dangerouslyDisableSandboxApproved: true

@@ -61,6 +61,14 @@ function createRepo() {
     path.join(root, "runtime/src/existing.ts"),
     `import { existing } from "./agenc/upstream/existing.js";\nexport { existing };\n`,
   );
+  writeFileSync(
+    path.join(root, "runtime/src/existing-require.ts"),
+    `const existing = require("./agenc/upstream/existing-require.js");\nexport { existing };\n`,
+  );
+  writeFileSync(
+    path.join(root, "runtime/src/existing-array.ts"),
+    `const specifier = ["..", "agenc", "upstream", "existing.js"].join("/");\nexport { specifier };\n`,
+  );
   runGit(root, ["init", "-b", "main"]);
   runGit(root, ["config", "user.email", "test@localhost"]);
   runGit(root, ["config", "user.name", "AgenC Test"]);
@@ -129,7 +137,7 @@ try {
     );
     assert(
       "failure explains count delta",
-      growth.stderr.includes("grew from 1 to 2 (+1)"),
+      growth.stderr.includes("grew from 3 to 4 (+1)"),
       growth.stderr,
     );
     assert(

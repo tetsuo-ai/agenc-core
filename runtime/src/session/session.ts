@@ -40,7 +40,11 @@ import {
   monotonicMs,
 } from "./_deps/utils.js";
 import type { MCPManager, MCPManagerStartOpts } from "../mcp-client/manager.js";
-import { projectMcpManagerToConnections } from "../agenc/adapters/upstream-mcp-clients.js";
+import {
+  projectMcpManagerToConnections,
+  type McpManagerLike,
+} from "../agenc/adapters/upstream-mcp-clients.js";
+import type { MCPServerConnection } from "../agenc/upstream/services/mcp/types.js";
 import { ProviderHttpClient } from "../llm/client.js";
 import { setContextWindowUpgradeContext } from "../llm/context-window-upgrade.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
@@ -1395,9 +1399,9 @@ export class Session {
    * `getConfiguredServers` / `isConnected` (e.g. a compatibility shim
    * is installed).
    */
-  listMcpClients(): ReturnType<typeof projectMcpManagerToConnections> {
+  listMcpClients(): readonly MCPServerConnection[] {
     const manager = this.services.mcpManager as unknown as
-      | import("../agenc/adapters/upstream-mcp-clients.js").McpManagerLike
+      | McpManagerLike
       | null
       | undefined;
     if (

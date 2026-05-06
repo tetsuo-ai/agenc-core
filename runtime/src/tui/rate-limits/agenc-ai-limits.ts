@@ -1,26 +1,8 @@
 import { useEffect, useState } from 'react'
-import {
-  currentLimits,
-  getRawUtilization as getUpstreamRawUtilization,
-  statusListeners,
-} from 'src/services/claudeAiLimits.js' // branding-scan: allow existing upstream rate-limit service path
-import type { AgenCAILimits as UpstreamAgenCAILimits } from 'src/services/claudeAiLimits.js' // branding-scan: allow existing upstream rate-limit service path
+import * as rateLimitService from '../../agenc/upstream/services/claudeAiLimits.js' // branding-scan: allow existing upstream rate-limit service path
 
-type RateLimitSnapshot = UpstreamAgenCAILimits
-type RawUtilization = ReturnType<typeof getUpstreamRawUtilization>
-type RateLimitService = {
-  currentLimits: RateLimitSnapshot
-  statusListeners: Set<(limits: RateLimitSnapshot) => void>
-  getRawUtilization(): RawUtilization
-}
-
-const rateLimitService: RateLimitService = {
-  get currentLimits() {
-    return currentLimits
-  },
-  statusListeners,
-  getRawUtilization: getUpstreamRawUtilization,
-}
+type RawUtilization = ReturnType<typeof rateLimitService.getRawUtilization>
+type RateLimitSnapshot = typeof rateLimitService.currentLimits
 type AgenCAILimits = RateLimitSnapshot
 
 export function useAgenCAiLimits(): AgenCAILimits {
