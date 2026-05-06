@@ -9,6 +9,8 @@ import type { RouterResponseItem } from "./router.js";
 import type { ToolInvocation, ToolName } from "./context.js";
 import type { Tool } from "./types.js";
 import { EventLog } from "../session/event-log.js";
+import type { GuardianApprovalReviewOptions } from "../permissions/guardian/reviewer.js";
+import { buildGuardianApprovalRequest } from "../permissions/guardian/approval-request.js";
 
 const readTool: Tool = {
   name: "FileRead",
@@ -761,6 +763,116 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
     expect(reviewer.reviewApprovalRequest).toHaveBeenCalledOnce();
     expect(resolver.request).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  test("dispatchModelToolCall threads turn network policy interfaces into guardian approval context", async () => {
+    const execute = vi.fn(async () => ({ content: "should-not-run" }));
+    const policyDecider = {
+      decide: vi.fn(async () => ({ decision: "allow" as const })),
+    };
+    const blockedRequestObserver = {
+      onBlockedRequest: vi.fn(async () => {}),
+    };
+    const router = new ToolRouter([
+      {
+        tool: {
+          name: "Write",
+          description: "",
+          inputSchema: {},
+          requiresApproval: true,
+          execute,
+        },
+        supportsParallelToolCalls: false,
+      },
+    ]);
+    const observedRequests: unknown[] = [];
+    const observedInterfaces: Array<
+      Pick<
+        GuardianApprovalReviewOptions["ctx"],
+        "networkPolicyDecider" | "blockedRequestObserver"
+      >
+    > = [];
+    const reviewer = {
+      reviewApprovalRequest: vi.fn(
+        async ({ ctx, args }: GuardianApprovalReviewOptions) => {
+          observedInterfaces.push({
+            networkPolicyDecider: ctx.networkPolicyDecider,
+            blockedRequestObserver: ctx.blockedRequestObserver,
+          });
+          observedRequests.push(buildGuardianApprovalRequest(ctx, args ?? {}));
+          return {
+            decision: { kind: "denied" as const },
+            reviewId: "guardian-review-network-interfaces",
+            countedDenial: true,
+            reason: "guardian inspected network policy interfaces",
+          };
+        },
+      ),
+    };
+    const resolver = {
+      request: vi.fn(async () => ({ kind: "approved" as const })),
+    };
+
+    const result = await router.dispatchModelToolCall(
+      {
+        id: "call-guardian-network-interfaces",
+        name: "Write",
+        arguments: '{"file_path":"README.md"}',
+      },
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: {
+          subId: "turn-guardian-network-interfaces",
+          cwd: "/repo",
+          approvalPolicy: { value: "on_request" },
+          sandboxPolicy: { value: "workspace_write" },
+          config: { approvalsReviewer: "auto_review" },
+          network: {
+            policyDecider,
+            blockedRequestObserver,
+          },
+        } as never,
+        tracker: {
+          appendFileDiff: () => {},
+          snapshot: () => [],
+          clear: () => {},
+        },
+        approvalPolicy: "on_request",
+        sandboxMode: "workspace_write",
+        guardianApprovalReviewer: reviewer,
+        approvalResolver: resolver,
+      },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain(
+      "guardian inspected network policy interfaces",
+    );
+    expect(reviewer.reviewApprovalRequest).toHaveBeenCalledOnce();
+    expect(resolver.request).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(observedRequests).toEqual([
+      expect.objectContaining({
+        callId: "call-guardian-network-interfaces",
+        turnId: "turn-guardian-network-interfaces",
+        toolName: "Write",
+      }),
+    ]);
+    expect(observedInterfaces).toEqual([
+      {
+        networkPolicyDecider: policyDecider,
+        blockedRequestObserver,
+      },
+    ]);
+    expect(
+      observedRequests.every(
+        (request) =>
+          !("networkPolicyInterfaces" in (request as Record<string, unknown>)),
+      ),
+    ).toBe(true);
   });
 
   test("dispatchModelToolCall routes pre-hook ask through guardian even when turn policy skips", async () => {
