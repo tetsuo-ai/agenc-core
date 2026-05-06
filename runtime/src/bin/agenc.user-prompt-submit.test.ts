@@ -104,20 +104,72 @@ hooks = [{ type = "command", command = ${JSON.stringify(command)} }]
 }
 
 function installOneShotDaemonSpies() {
-  const startPromptAgent = vi.fn(
-    async (params: { readonly prompt: string }) => ({
-      agentId: "agent_one_shot_hooks",
-      objective: params.prompt,
-      status: "running" as const,
-      createdAt: "2026-05-06T00:00:00.000Z",
-      sessionId: "session_one_shot_hooks",
+  const requests: Array<{ method: string; params: unknown }> = [];
+  const startPromptAgent = vi.fn();
+  const client = {
+    request: vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      requests.push({ method, params });
+      if (method === "agent.create") {
+        return {
+          agentId: "agent_one_shot_hooks",
+          objective:
+            typeof params?.objective === "string" ? params.objective : "",
+          status: "running" as const,
+          createdAt: "2026-05-06T00:00:00.000Z",
+          sessionId: "session_one_shot_hooks",
+          activeSessionIds: ["session_one_shot_hooks"],
+        };
+      }
+      if (method === "agent.attach") {
+        return {
+          agentId: "agent_one_shot_hooks",
+          attachmentId: "attachment_one_shot_hooks",
+          sessionIds: ["session_one_shot_hooks"],
+          runtimeSessionId: "agent_one_shot_hooks",
+        };
+      }
+      if (method === "agent.stop") {
+        return { agentId: "agent_one_shot_hooks", stopped: true };
+      }
+      throw new Error(`unexpected daemon request: ${method}`);
     }),
-  );
+    subscribeToSessionEvents: vi.fn(
+      (_sessionId: string, cb: (event: unknown) => void) => {
+        queueMicrotask(() => {
+          cb({
+            method: "event.agent_status",
+            params: {
+              sessionId: "session_one_shot_hooks",
+              eventId: "complete_one_shot_hooks",
+              agentId: "agent_one_shot_hooks",
+              status: "idle",
+              runStatus: "completed",
+              message: "hook answer",
+            },
+          });
+        });
+        return () => undefined;
+      },
+    ),
+    getConnectionState: vi.fn(() => ({ status: "connected" })),
+    subscribeToConnectionState: vi.fn(() => () => undefined),
+    close: vi.fn().mockResolvedValue(undefined),
+  };
+  const createConnectedTuiClient = vi.fn(async () => client);
+  const ensureDaemonReady = vi.fn(() => vi.fn().mockResolvedValue(undefined));
+  const stopPromptAgent = vi.fn(async () => undefined);
   __setDaemonCliDepsForTest({
     startPromptAgent: startPromptAgent as never,
+    stopPromptAgent: stopPromptAgent as never,
+    createConnectedTuiClient: createConnectedTuiClient as never,
+    ensureDaemonReady: ensureDaemonReady as never,
   });
   return {
+    requests,
     startPromptAgent,
+    stopPromptAgent,
+    createConnectedTuiClient,
+    ensureDaemonReady,
     restore: () => {
       __setDaemonCliDepsForTest(null);
     },
@@ -478,9 +530,13 @@ process.stdin.on("end", () => {
       trustWorkspaceForTest(tmpHome, tmpCwd);
       const code = await oneShotCLI("review @secret.txt");
       expect(code).toBe(0);
-      expect(spies.startPromptAgent).toHaveBeenCalledTimes(1);
+      expect(spies.startPromptAgent).not.toHaveBeenCalled();
+      expect(spies.requests[0]).toEqual(
+        expect.objectContaining({ method: "agent.create" }),
+      );
       const daemonPrompt = String(
-        spies.startPromptAgent.mock.calls[0]?.[0]?.prompt,
+        (spies.requests[0]?.params as { readonly objective?: unknown })
+          ?.objective,
       );
       expect(daemonPrompt).toContain("<attached_files>");
       expect(daemonPrompt).toContain("one-shot file body");
@@ -524,6 +580,7 @@ process.exit(2);
       const code = await oneShotCLI("blocked prompt");
       expect(code).toBe(1);
       expect(spies.startPromptAgent).not.toHaveBeenCalled();
+      expect(spies.requests).toEqual([]);
       expect(
         stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
       ).toContain("blocked one-shot prompt");

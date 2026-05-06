@@ -102,8 +102,14 @@ import {
   findAgenCDaemonAgentBySessionId,
   listAgenCDaemonAgents,
   startAgenCDaemonPromptAgent,
+  stopAgenCDaemonPromptAgent,
 } from "../app-server-client/index.js";
-import type { MessageContentBlock } from "../app-server/protocol/index.js";
+import type {
+  AgentCreateParams,
+  AgentStopParams,
+  JsonObject,
+  MessageContentBlock,
+} from "../app-server/protocol/index.js";
 import {
   ensureAgenCDaemonAutostart,
   resolveAgenCDaemonAutostartEnabled,
@@ -171,6 +177,7 @@ import { setSessionTrustAccepted } from "../bootstrap/state.js";
 
 type AgenCDaemonCliDeps = {
   readonly startPromptAgent: typeof startAgenCDaemonPromptAgent;
+  readonly stopPromptAgent: typeof stopAgenCDaemonPromptAgent;
   readonly createConnectedTuiClient: typeof createConnectedAgenCJsonLineDaemonTuiClient;
   readonly findAgentBySessionId: typeof findAgenCDaemonAgentBySessionId;
   readonly createTuiContext: typeof createAgenCDaemonOnlyTuiContext;
@@ -179,6 +186,7 @@ type AgenCDaemonCliDeps = {
 
 const DEFAULT_DAEMON_CLI_DEPS: AgenCDaemonCliDeps = {
   startPromptAgent: startAgenCDaemonPromptAgent,
+  stopPromptAgent: stopAgenCDaemonPromptAgent,
   createConnectedTuiClient: createConnectedAgenCJsonLineDaemonTuiClient,
   findAgentBySessionId: findAgenCDaemonAgentBySessionId,
   createTuiContext: createAgenCDaemonOnlyTuiContext,
@@ -1480,12 +1488,263 @@ export function __setActiveInkUnmountForTest(fn: (() => void) | null): void {
   activeInkUnmount = fn;
 }
 
+type ConnectedDaemonTuiClient = Awaited<
+  ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
+>;
+
+async function stopDaemonAgentBestEffort(params: {
+  readonly deps: AgenCDaemonCliDeps;
+  readonly daemonClient?: ConnectedDaemonTuiClient | null;
+  readonly env: NodeJS.ProcessEnv;
+  readonly agentId: string;
+  readonly reason: string;
+}): Promise<void> {
+  const stopParams: AgentStopParams = {
+    agentId: params.agentId,
+    reason: params.reason,
+  };
+  if (params.daemonClient !== undefined && params.daemonClient !== null) {
+    try {
+      await params.daemonClient.request("agent.stop", stopParams);
+      return;
+    } catch {
+      /* fall through to one-shot stop client */
+    }
+  }
+  await params.deps
+    .stopPromptAgent({
+      agentId: params.agentId,
+      reason: params.reason,
+      env: params.env,
+    })
+    .catch(() => {
+      /* best effort */
+    });
+}
+
+type DaemonOneShotFinalStatus = {
+  readonly code: number;
+  readonly message?: string;
+};
+
+function isJsonRecord(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function daemonEventParams(event: unknown): JsonObject | null {
+  if (!isJsonRecord(event)) return null;
+  return isJsonRecord(event.params) ? event.params : event;
+}
+
+function daemonNestedTranscriptEvent(event: unknown): JsonObject | null {
+  const params = daemonEventParams(event);
+  if (params === null) return null;
+  if (isJsonRecord(params.event)) return params.event;
+  if (isJsonRecord(params.msg)) return params.msg;
+  return params;
+}
+
+function daemonOneShotMessageChunk(event: unknown): string | null {
+  if (!isJsonRecord(event)) return null;
+  const params = daemonEventParams(event);
+  if (
+    event.method === "event.message_chunk" &&
+    params !== null &&
+    typeof params.delta === "string"
+  ) {
+    return params.delta;
+  }
+  const transcriptEvent = daemonNestedTranscriptEvent(event);
+  if (transcriptEvent === null) return null;
+  const payload = isJsonRecord(transcriptEvent.payload)
+    ? transcriptEvent.payload
+    : null;
+  if (
+    transcriptEvent.type === "agent_message_delta" &&
+    payload !== null &&
+    typeof payload.delta === "string"
+  ) {
+    return payload.delta;
+  }
+  if (
+    transcriptEvent.type === "agent_message" &&
+    payload !== null &&
+    typeof payload.message === "string"
+  ) {
+    return `${payload.message}\n`;
+  }
+  return null;
+}
+
+function daemonOneShotFinalStatus(
+  event: unknown,
+): DaemonOneShotFinalStatus | null {
+  if (!isJsonRecord(event)) return null;
+  const params = daemonEventParams(event);
+  if (event.method === "event.agent_status" && params !== null) {
+    const runStatus =
+      typeof params.runStatus === "string" ? params.runStatus : undefined;
+    const status = typeof params.status === "string" ? params.status : undefined;
+    const message = typeof params.message === "string" ? params.message : undefined;
+    if (runStatus === "completed" || status === "idle") {
+      return { code: 0, ...(message !== undefined ? { message } : {}) };
+    }
+    if (runStatus === "stopped" || status === "stopped") {
+      return { code: 130, ...(message !== undefined ? { message } : {}) };
+    }
+    if (runStatus === "errored" || status === "error") {
+      return { code: 1, ...(message !== undefined ? { message } : {}) };
+    }
+  }
+  const transcriptEvent = daemonNestedTranscriptEvent(event);
+  if (transcriptEvent === null) return null;
+  const payload = isJsonRecord(transcriptEvent.payload)
+    ? transcriptEvent.payload
+    : null;
+  if (transcriptEvent.type === "turn_complete") {
+    const message =
+      payload !== null && typeof payload.lastAgentMessage === "string"
+        ? payload.lastAgentMessage
+        : undefined;
+    return { code: 0, ...(message !== undefined ? { message } : {}) };
+  }
+  if (transcriptEvent.type === "error") {
+    const message =
+      payload !== null && typeof payload.message === "string"
+        ? payload.message
+        : undefined;
+    return { code: 1, ...(message !== undefined ? { message } : {}) };
+  }
+  return null;
+}
+
+async function runDaemonOneShotPrompt(params: {
+  readonly deps: AgenCDaemonCliDeps;
+  readonly prompt: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly cwd: string;
+  readonly initialContent?: string | readonly MessageContentBlock[];
+}): Promise<number> {
+  await params.deps.ensureDaemonReady(params.env)();
+  const daemonClient = await params.deps.createConnectedTuiClient({
+    env: params.env,
+  });
+  let startedAgentId: string | null = null;
+  let unsubscribeEvents: (() => void) | null = null;
+  let unsubscribeConnection: (() => void) | null = null;
+  let completed = false;
+  let printedAssistantOutput = false;
+  let lastPrintedChar = "";
+
+  try {
+    const createParams: AgentCreateParams = {
+      objective: params.prompt,
+      instructions: params.prompt,
+      cwd: params.cwd,
+      ...(params.initialContent !== undefined
+        ? { initialContent: params.initialContent }
+        : {}),
+      metadata: {
+        source: "agenc.prompt",
+        mode: "one-shot",
+      },
+    };
+    const started = await daemonClient.request("agent.create", createParams);
+    startedAgentId = started.agentId;
+    const attachment = await daemonClient.request("agent.attach", {
+      agentId: started.agentId,
+      clientId: `agenc-one-shot-${process.pid}`,
+    });
+    const sessionId =
+      attachment.sessionIds[0] ?? started.sessionId ?? started.activeSessionIds?.[0];
+    if (sessionId === undefined) {
+      throw new Error(`daemon agent has no attached session: ${started.agentId}`);
+    }
+
+    const code = await new Promise<number>((resolve, reject) => {
+      let settled = false;
+      const settle = (next: { readonly code: number } | { readonly error: Error }) => {
+        if (settled) return;
+        settled = true;
+        unsubscribeEvents?.();
+        unsubscribeConnection?.();
+        if ("error" in next) {
+          reject(next.error);
+        } else {
+          resolve(next.code);
+        }
+      };
+
+      unsubscribeConnection = daemonClient.subscribeToConnectionState((state) => {
+        if (state.status === "disconnected") {
+          settle({
+            error: new Error(state.message ?? "daemon connection closed"),
+          });
+        }
+      });
+
+      unsubscribeEvents = daemonClient.subscribeToSessionEvents(
+        sessionId,
+        (event) => {
+          const chunk = daemonOneShotMessageChunk(event);
+          if (chunk !== null && chunk.length > 0) {
+            process.stdout.write(chunk);
+            printedAssistantOutput = true;
+            lastPrintedChar = chunk.at(-1) ?? lastPrintedChar;
+          }
+
+          const finalStatus = daemonOneShotFinalStatus(event);
+          if (finalStatus === null) return;
+          if (printedAssistantOutput) {
+            if (lastPrintedChar !== "\n") process.stdout.write("\n");
+          } else if (
+            finalStatus.code === 0 &&
+            finalStatus.message !== undefined &&
+            finalStatus.message.length > 0
+          ) {
+            process.stdout.write(`${finalStatus.message}\n`);
+          }
+          if (
+            finalStatus.code !== 0 &&
+            finalStatus.message !== undefined &&
+            finalStatus.message.length > 0
+          ) {
+            process.stderr.write(`${finalStatus.message}\n`);
+          }
+          settle({ code: finalStatus.code });
+        },
+      );
+    });
+    completed = true;
+    return code;
+  } catch (error) {
+    if (startedAgentId !== null && !completed) {
+      await stopDaemonAgentBestEffort({
+        deps: params.deps,
+        daemonClient,
+        env: params.env,
+        agentId: startedAgentId,
+        reason: "one_shot_failed",
+      });
+    }
+    throw error;
+  } finally {
+    const stopEvents = unsubscribeEvents as (() => void) | null;
+    const stopConnection = unsubscribeConnection as (() => void) | null;
+    stopEvents?.();
+    stopConnection?.();
+    await daemonClient.close().catch(() => {
+      /* best effort */
+    });
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // One-shot CLI - daemon-backed non-TUI path.
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Start a daemon-owned prompt agent and exit after printing its agent ID.
+ * Run a one-shot prompt through a daemon-owned agent and stream the answer.
  *
  * When `userMessage` is a non-empty string (routing path), it's used as
  * the prompt directly. Otherwise the function falls back to the
@@ -1567,15 +1826,13 @@ export async function oneShotCLI(
         : initialContent !== undefined
           ? "Multimodal AgenC startup"
           : preparedUserMessage;
-    const started = await daemonCliDeps().startPromptAgent({
+    return await runDaemonOneShotPrompt({
+      deps: daemonCliDeps(),
       prompt: daemonPrompt,
       env: process.env,
       cwd: daemonCwd,
       ...(initialContent !== undefined ? { initialContent } : {}),
-      metadata: { mode: "one-shot" },
     });
-    process.stdout.write(`${started.agentId}\n`);
-    return 0;
   } catch (error) {
     if (error instanceof InitAbortedError) {
       process.stderr.write(`agenc: ${error.message}\n`);
@@ -1807,16 +2064,6 @@ export async function resolveAttachTargetTrustRoot(
   return cwd;
 }
 
-export function envForAttachBootstrap(
-  env: NodeJS.ProcessEnv,
-  cwd: string,
-): NodeJS.ProcessEnv {
-  return {
-    ...env,
-    AGENC_WORKSPACE: cwd,
-  };
-}
-
 async function loadCreateDaemonTuiSession(): Promise<
   (opts: {
     baseSession: unknown;
@@ -1895,6 +2142,94 @@ function messageContentBlocksFromUnknown(input: unknown): MessageContentBlock[] 
   });
 }
 
+type TuiSessionShape = {
+  submit?: (
+    message: string,
+    opts?: { readonly displayUserMessage?: string | null },
+  ) => Promise<void>;
+  enqueueIdleInput?: (input: unknown) => number;
+  subscribeToEvents?: (cb: (event: unknown) => void) => () => void;
+  getInitialTranscriptEvents?: () => readonly unknown[];
+};
+
+type LocalTuiSlashOutcome =
+  | { readonly kind: "handled" }
+  | { readonly kind: "prompt"; readonly content: string };
+
+function emitLocalTuiSlashResult(
+  subscribers: Iterable<(event: unknown) => void>,
+  input: string,
+  result:
+    | { readonly kind: "text"; readonly text: string }
+    | { readonly kind: "compact"; readonly text: string }
+    | { readonly kind: "prompt"; readonly content: string }
+    | { readonly kind: "skip" }
+    | { readonly kind: "exit"; readonly code: number }
+    | { readonly kind: "error"; readonly message: string },
+): void {
+  const event = {
+    type: "slash_result",
+    input,
+    result,
+    timestamp: Date.now(),
+  };
+  for (const subscriber of subscribers) {
+    subscriber(event);
+  }
+}
+
+async function handleLocalTuiSlashCommand(params: {
+  readonly message: string;
+  readonly session: TuiSessionShape & Record<string, unknown>;
+  readonly subscribers: Iterable<(event: unknown) => void>;
+  readonly configStore: Pick<ConfigStore, "current">;
+  readonly agencHome: string;
+  readonly cwd: string;
+  readonly env: NodeJS.ProcessEnv;
+}): Promise<LocalTuiSlashOutcome> {
+  const appStateBridge = (
+    params.session as TuiSessionShape & {
+      appStateBridge?: SlashCommandAppStateBridge;
+    }
+  ).appStateBridge;
+  const slash = await runSlashCommand(params.message, {
+    session: params.session as unknown as Session,
+    cwd: params.cwd,
+    home: resolveUserHome(params.env, params.cwd),
+    agencHome: params.agencHome,
+    configStore: params.configStore as ConfigStore,
+    ...(appStateBridge ? { appState: appStateBridge } : {}),
+  });
+  switch (slash.kind) {
+    case "skip":
+      emitLocalTuiSlashResult(params.subscribers, params.message, {
+        kind: "error",
+        message: /[\r\n]/.test(params.message)
+          ? "slash command rejected (multi-line input not allowed)"
+          : "slash command rejected (invalid syntax)",
+      });
+      return { kind: "handled" };
+    case "passthrough":
+      return { kind: "prompt", content: slash.input };
+    case "unknown":
+    case "blocked_by_bridge":
+      emitLocalTuiSlashResult(params.subscribers, params.message, {
+        kind: "error",
+        message: slash.message,
+      });
+      return { kind: "handled" };
+    case "dispatched":
+      emitLocalTuiSlashResult(params.subscribers, params.message, slash.result);
+      if (slash.result.kind === "prompt") {
+        return { kind: "prompt", content: slash.result.content };
+      }
+      if (slash.result.kind === "exit") {
+        activeInkUnmount?.();
+      }
+      return { kind: "handled" };
+  }
+}
+
 async function createDeferredDaemonPromptTuiSession(params: {
   readonly baseSession: unknown;
   readonly configStore: Pick<ConfigStore, "current">;
@@ -1904,16 +2239,6 @@ async function createDeferredDaemonPromptTuiSession(params: {
   readonly cwd: string;
   readonly clientId: string;
 }): Promise<{ readonly session: unknown; readonly close: () => Promise<void> }> {
-  type TuiSessionShape = {
-    submit?: (
-      message: string,
-      opts?: { readonly displayUserMessage?: string | null },
-    ) => Promise<void>;
-    enqueueIdleInput?: (input: unknown) => number;
-    subscribeToEvents?: (cb: (event: unknown) => void) => () => void;
-    getInitialTranscriptEvents?: () => readonly unknown[];
-  };
-
   let liveSession: TuiSessionShape | null = null;
   let liveSessionPromise: Promise<TuiSessionShape | null> | null = null;
   let daemonClient: Awaited<
@@ -1930,7 +2255,6 @@ async function createDeferredDaemonPromptTuiSession(params: {
     if (liveSession !== null) return liveSession;
     if (liveSessionPromise !== null) return liveSessionPromise;
     liveSessionPromise = (async () => {
-      if (isLocalSlashCommandInput(firstMessage)) return null;
       const preparedFirstMessage =
         firstMessage.length > 0
           ? await prepareDaemonTuiPrompt({
@@ -1943,49 +2267,52 @@ async function createDeferredDaemonPromptTuiSession(params: {
             })
           : firstMessage;
       if (preparedFirstMessage === null) return null;
-    const content: MessageContentBlock[] = [
-      ...queuedInputs,
+      const content: MessageContentBlock[] = [
+        ...queuedInputs,
         ...(preparedFirstMessage.length > 0
           ? [{ type: "text" as const, text: preparedFirstMessage }]
-        : []),
-    ];
-    if (content.length === 0) return null;
-    const prompt =
+          : []),
+      ];
+      if (content.length === 0) return null;
+      const prompt =
         preparedFirstMessage.trim().length > 0
           ? preparedFirstMessage
-        : "Multimodal AgenC startup";
+          : "Multimodal AgenC startup";
       let startedAgentId: string | null = null;
       try {
-    const started = await params.deps.startPromptAgent({
-      prompt,
-      env: params.env,
-      cwd: params.cwd,
-      initialContent:
-        content.length === 1 && content[0]?.type === "text"
-          ? content[0].text
-          : content,
-      metadata: { mode: "tui" },
-    });
+        const started = await params.deps.startPromptAgent({
+          prompt,
+          env: params.env,
+          cwd: params.cwd,
+          initialContent:
+            content.length === 1 && content[0]?.type === "text"
+              ? content[0].text
+              : content,
+          metadata: { mode: "tui" },
+        });
         startedAgentId = started.agentId;
-    daemonClient = await params.deps.createConnectedTuiClient({
-      env: params.env,
-    });
-    const attachment = await daemonClient.request("agent.attach", {
-      agentId: started.agentId,
-      clientId: params.clientId,
-    });
-    const sessionId = attachment.sessionIds[0];
-    if (sessionId === undefined) {
-      throw new Error(`daemon agent has no attached session: ${started.agentId}`);
-    }
-    const createDaemonTuiSession = await loadCreateDaemonTuiSession();
+        daemonClient = await params.deps.createConnectedTuiClient({
+          env: params.env,
+        });
+        const attachment = await daemonClient.request("agent.attach", {
+          agentId: started.agentId,
+          clientId: params.clientId,
+        });
+        const sessionId = attachment.sessionIds[0];
+        if (sessionId === undefined) {
+          throw new Error(
+            `daemon agent has no attached session: ${started.agentId}`,
+          );
+        }
+        const createDaemonTuiSession = await loadCreateDaemonTuiSession();
         liveSession = wrapDaemonTuiSessionWithPromptPreparation(
           (await createDaemonTuiSession({
-      baseSession: params.baseSession,
-      client: daemonClient,
-      sessionId,
-      conversationId: attachment.runtimeSessionId ?? attachment.agentId ?? sessionId,
-      clientId: params.clientId,
+            baseSession: params.baseSession,
+            client: daemonClient,
+            sessionId,
+            conversationId:
+              attachment.runtimeSessionId ?? attachment.agentId ?? sessionId,
+            clientId: params.clientId,
           })) as TuiSessionShape,
           {
             configStore: params.configStore,
@@ -1995,23 +2322,24 @@ async function createDeferredDaemonPromptTuiSession(params: {
             stderr: process.stderr,
           },
         );
-    queuedInputs = [];
-    queuedInputCount = 0;
-    for (const subscriber of subscribers) {
-      const unsubscribe = liveSession.subscribeToEvents?.(subscriber);
-      if (unsubscribe !== undefined) liveUnsubscribers.set(subscriber, unsubscribe);
-    }
-    return liveSession;
+        queuedInputs = [];
+        queuedInputCount = 0;
+        for (const subscriber of subscribers) {
+          const unsubscribe = liveSession.subscribeToEvents?.(subscriber);
+          if (unsubscribe !== undefined) {
+            liveUnsubscribers.set(subscriber, unsubscribe);
+          }
+        }
+        return liveSession;
       } catch (error) {
         if (startedAgentId !== null) {
-          await daemonClient
-            ?.request("agent.stop", {
-              agentId: startedAgentId,
-              reason: "tui_startup_failed",
-            })
-            .catch(() => {
-              /* best effort */
-            });
+          await stopDaemonAgentBestEffort({
+            deps: params.deps,
+            daemonClient,
+            env: params.env,
+            agentId: startedAgentId,
+            reason: "tui_startup_failed",
+          });
         }
         throw error;
       }
@@ -2031,7 +2359,19 @@ async function createDeferredDaemonPromptTuiSession(params: {
         await liveSession.submit?.(message, opts);
         return;
       }
-      await ensureLiveSession(message);
+      const firstMessage = isLocalSlashCommandInput(message)
+        ? await handleLocalTuiSlashCommand({
+            message,
+            session,
+            subscribers,
+            configStore: params.configStore,
+            agencHome: params.agencHome,
+            cwd: params.cwd,
+            env: params.env,
+          })
+        : { kind: "prompt" as const, content: message };
+      if (firstMessage.kind === "handled") return;
+      await ensureLiveSession(firstMessage.content);
     },
     enqueueIdleInput: (input) => {
       if (liveSession !== null) {
@@ -2109,6 +2449,7 @@ function wrapDaemonTuiSessionWithPromptPreparation<
       message: string,
       opts?: { readonly displayUserMessage?: string | null },
     ) => Promise<void>;
+    subscribeToEvents?: (cb: (event: unknown) => void) => () => void;
   },
 >(
   session: Session,
@@ -2122,17 +2463,41 @@ function wrapDaemonTuiSessionWithPromptPreparation<
 ): Session {
   const originalSubmit = session.submit?.bind(session);
   if (originalSubmit === undefined) return session;
-  return {
+  const originalSubscribe = session.subscribeToEvents?.bind(session);
+  const localSubscribers = new Set<(event: unknown) => void>();
+  let wrapped!: Session;
+  wrapped = {
     ...session,
     submit: async (message, opts) => {
+      const nextMessage = isLocalSlashCommandInput(message)
+        ? await handleLocalTuiSlashCommand({
+            message,
+            session: wrapped as TuiSessionShape & Record<string, unknown>,
+            subscribers: localSubscribers,
+            configStore: params.configStore,
+            agencHome: params.agencHome,
+            cwd: params.cwd,
+            env: params.env,
+          })
+        : { kind: "prompt" as const, content: message };
+      if (nextMessage.kind === "handled") return;
       const prepared = await prepareDaemonTuiPrompt({
-        message,
+        message: nextMessage.content,
         ...params,
       });
       if (prepared === null) return;
       await originalSubmit(prepared, opts);
     },
+    subscribeToEvents: ((cb: (event: unknown) => void) => {
+      localSubscribers.add(cb);
+      const unsubscribeOriginal = originalSubscribe?.(cb);
+      return () => {
+        localSubscribers.delete(cb);
+        unsubscribeOriginal?.();
+      };
+    }) as Session["subscribeToEvents"],
   };
+  return wrapped;
 }
 
 type BootTUIEntryArgs = BootTUIArgs & { readonly resumeId?: string };
@@ -2265,19 +2630,39 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
       daemonCwd,
       process.env.HOME,
     );
-    const started = await daemonCliDeps().startPromptAgent({
+    const deps = daemonCliDeps();
+    const started = await deps.startPromptAgent({
       prompt: preparedObjective,
       env: process.env,
       cwd: daemonCwd,
       ...(initialContent !== undefined ? { initialContent } : {}),
       metadata: { mode: "tui" },
     });
-    return attachAgentTuiEntry({
-      agentId: started.agentId,
-      clientId: `agenc-tui-${process.pid}`,
-      initialComposerText:
-        args.initialPrompt === undefined ? capturedEarlyInput : "",
-    });
+    try {
+      const exitCode = await attachAgentTuiEntry({
+        agentId: started.agentId,
+        clientId: `agenc-tui-${process.pid}`,
+        initialComposerText:
+          args.initialPrompt === undefined ? capturedEarlyInput : "",
+      });
+      if (exitCode !== 0) {
+        await stopDaemonAgentBestEffort({
+          deps,
+          env: process.env,
+          agentId: started.agentId,
+          reason: "tui_startup_failed",
+        });
+      }
+      return exitCode;
+    } catch (error) {
+      await stopDaemonAgentBestEffort({
+        deps,
+        env: process.env,
+        agentId: started.agentId,
+        reason: "tui_startup_failed",
+      });
+      throw error;
+    }
   } catch (error) {
     consumeEarlyInput();
     if (

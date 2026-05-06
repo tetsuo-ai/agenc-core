@@ -4687,7 +4687,7 @@ async function migrationGates(item) {
       "--workspace=@tetsuo-ai/runtime",
       "vitest",
       "run",
-      "src/bin/agenc.daemon-fallback.test.ts",
+      "src/bin/agenc.daemon-only.test.ts",
       "src/bin/agenc.cli-branch.test.ts",
       "src/bin/agenc.test.ts",
       "src/bin/agenc.user-prompt-submit.test.ts",

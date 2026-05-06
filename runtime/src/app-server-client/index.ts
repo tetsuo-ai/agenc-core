@@ -45,6 +45,12 @@ export interface AgenCDaemonPromptAgentOptions {
   readonly metadata?: JsonObject;
 }
 
+export interface StopAgenCDaemonPromptAgentOptions {
+  readonly agentId: string;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly reason: string;
+}
+
 export async function startAgenCDaemonPromptAgent(
   options: AgenCDaemonPromptAgentOptions,
 ): Promise<AgentCreateResult> {
@@ -66,6 +72,17 @@ export async function startAgenCDaemonPromptAgent(
       source: "agenc.prompt",
       ...(options.metadata ?? {}),
     },
+  });
+}
+
+export async function stopAgenCDaemonPromptAgent(
+  options: StopAgenCDaemonPromptAgentOptions,
+): Promise<void> {
+  const env = options.env ?? process.env;
+  const client = createAgenCJsonLineDaemonClient({ env });
+  await client.stopAgent({
+    agentId: options.agentId,
+    reason: options.reason,
   });
 }
 

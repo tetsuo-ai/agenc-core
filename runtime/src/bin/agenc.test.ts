@@ -118,6 +118,9 @@ function installDaemonCliDepsForTest(
     readonly sessionId?: string;
     readonly runtimeSessionId?: string;
     readonly cwd?: string;
+    readonly oneShotEvents?: readonly unknown[];
+    readonly createConnectedTuiClientError?: Error;
+    readonly requestErrors?: Partial<Record<string, Error>>;
   } = {},
 ): {
   readonly agentId: string;
@@ -132,6 +135,7 @@ function installDaemonCliDepsForTest(
     close: ReturnType<typeof vi.fn>;
   };
   readonly startPromptAgent: ReturnType<typeof vi.fn>;
+  readonly stopPromptAgent: ReturnType<typeof vi.fn>;
   readonly createConnectedTuiClient: ReturnType<typeof vi.fn>;
   readonly findAgentBySessionId: ReturnType<typeof vi.fn>;
   readonly createTuiContext: ReturnType<typeof vi.fn>;
@@ -142,6 +146,29 @@ function installDaemonCliDepsForTest(
   const runtimeSessionId = options.runtimeSessionId ?? sessionId;
   const cwd = options.cwd ?? process.cwd();
   const requests: Array<{ method: string; params: unknown }> = [];
+  const oneShotEvents =
+    options.oneShotEvents ??
+    ([
+      {
+        method: "event.message_chunk",
+        params: {
+          sessionId,
+          eventId: "delta_test",
+          agentId,
+          delta: "daemon answer",
+        },
+      },
+      {
+        method: "event.agent_status",
+        params: {
+          sessionId,
+          eventId: "complete_test",
+          agentId,
+          status: "idle",
+          runStatus: "completed",
+        },
+      },
+    ] satisfies readonly unknown[]);
   const agent = {
     agentId,
     objective: "test objective",
@@ -156,6 +183,18 @@ function installDaemonCliDepsForTest(
   const client = {
     request: vi.fn(async (method: string, params?: Record<string, unknown>) => {
       requests.push({ method, params });
+      const requestError = options.requestErrors?.[method];
+      if (requestError !== undefined) throw requestError;
+      if (method === "agent.create") {
+        return {
+          ...agent,
+          objective:
+            typeof params?.objective === "string"
+              ? params.objective.trim()
+              : agent.objective,
+          sessionId,
+        };
+      }
       if (method === "agent.list") {
         return { agents: [agent] };
       }
@@ -166,6 +205,9 @@ function installDaemonCliDepsForTest(
           sessionIds: [sessionId],
           runtimeSessionId,
         };
+      }
+      if (method === "agent.stop") {
+        return { agentId, stopped: true };
       }
       if (method === "message.stream") {
         return {
@@ -179,7 +221,16 @@ function installDaemonCliDepsForTest(
       }
       throw new Error(`unexpected daemon request: ${method}`);
     }),
-    subscribeToSessionEvents: vi.fn(() => () => undefined),
+    subscribeToSessionEvents: vi.fn(
+      (targetSessionId: string, cb: (event: unknown) => void) => {
+        if (targetSessionId === sessionId) {
+          queueMicrotask(() => {
+            for (const event of oneShotEvents) cb(event);
+          });
+        }
+        return () => undefined;
+      },
+    ),
     getConnectionState: vi.fn(() => ({ status: "connected" })),
     subscribeToConnectionState: vi.fn(() => () => undefined),
     close: vi.fn().mockResolvedValue(undefined),
@@ -196,7 +247,13 @@ function installDaemonCliDepsForTest(
       };
     },
   );
-  const createConnectedTuiClient = vi.fn(async () => client);
+  const stopPromptAgent = vi.fn(async () => undefined);
+  const createConnectedTuiClient = vi.fn(async () => {
+    if (options.createConnectedTuiClientError !== undefined) {
+      throw options.createConnectedTuiClientError;
+    }
+    return client;
+  });
   const findAgentBySessionId = vi.fn(async (_client, targetSessionId: string) =>
     targetSessionId === sessionId ? agent : null,
   );
@@ -225,7 +282,11 @@ function installDaemonCliDepsForTest(
           cwd: params.cwd,
           provider: { slug: "xai" },
         },
-        services: {},
+        services: {
+          permissionModeRegistry: new PermissionModeRegistry(
+            createEmptyToolPermissionContext(),
+          ),
+        },
         abortController,
         abortTerminal: (reason?: unknown) => {
           if (!abortController.signal.aborted) abortController.abort(reason);
@@ -242,6 +303,7 @@ function installDaemonCliDepsForTest(
   const ensureDaemonReady = vi.fn(() => vi.fn().mockResolvedValue(undefined));
   __setDaemonCliDepsForTest({
     startPromptAgent: startPromptAgent as never,
+    stopPromptAgent: stopPromptAgent as never,
     createConnectedTuiClient: createConnectedTuiClient as never,
     findAgentBySessionId: findAgentBySessionId as never,
     createTuiContext: createTuiContext as never,
@@ -254,6 +316,7 @@ function installDaemonCliDepsForTest(
     requests,
     client,
     startPromptAgent,
+    stopPromptAgent,
     createConnectedTuiClient,
     findAgentBySessionId,
     createTuiContext,
@@ -1372,16 +1435,25 @@ describe("main() smoke", () => {
       trustWorkspaceForTest(tmpHome, tmpCwd);
       const code = await oneShotCLI("/help\nextra");
       expect(code).toBe(0);
-      expect(daemon.startPromptAgent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          prompt: "/help\nextra",
+      expect(daemon.requests[0]).toEqual({
+        method: "agent.create",
+        params: expect.objectContaining({
+          objective: "/help\nextra",
+          instructions: "/help\nextra",
           cwd: tmpCwd,
-          metadata: { mode: "one-shot" },
+          metadata: { source: "agenc.prompt", mode: "one-shot" },
+        }),
+      });
+      expect(daemon.requests[1]).toEqual(
+        expect.objectContaining({
+          method: "agent.attach",
+          params: expect.objectContaining({ agentId: "agent_slash" }),
         }),
       );
+      expect(daemon.startPromptAgent).not.toHaveBeenCalled();
       expect(
         stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
-      ).toContain("agent_slash\n");
+      ).toBe("daemon answer\n");
     } finally {
       stdoutSpy.mockRestore();
       for (const key of Object.keys(process.env)) {
@@ -1619,11 +1691,19 @@ describe("main() smoke", () => {
       trustWorkspaceForTest(tmpHome, tmpCwd);
       const code = await oneShotCLI("/notes.txt");
       expect(code).toBe(0);
-      expect(daemon.startPromptAgent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          prompt: "/notes.txt",
+      expect(daemon.requests[0]).toEqual({
+        method: "agent.create",
+        params: expect.objectContaining({
+          objective: "/notes.txt",
+          instructions: "/notes.txt",
           cwd: tmpCwd,
-          metadata: { mode: "one-shot" },
+          metadata: { source: "agenc.prompt", mode: "one-shot" },
+        }),
+      });
+      expect(daemon.requests[1]).toEqual(
+        expect.objectContaining({
+          method: "agent.attach",
+          params: expect.objectContaining({ agentId: "agent_slash_path" }),
         }),
       );
     } finally {
@@ -1661,9 +1741,11 @@ describe("main() smoke", () => {
         "http://127.0.0.1/cat.png",
       ]);
       expect(code).toBe(0);
-      expect(daemon.startPromptAgent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          prompt: "describe this",
+      expect(daemon.requests[0]).toEqual({
+        method: "agent.create",
+        params: expect.objectContaining({
+          objective: "describe this",
+          instructions: "describe this",
           cwd: tmpCwd,
           initialContent: [
             { type: "text", text: "describe this" },
@@ -1672,9 +1754,12 @@ describe("main() smoke", () => {
               image_url: { url: "http://127.0.0.1/cat.png" },
             },
           ],
+          metadata: { source: "agenc.prompt", mode: "one-shot" },
         }),
+      });
+      expect(daemon.requests[1]).toEqual(
+        expect.objectContaining({ method: "agent.attach" }),
       );
-      expect(daemon.requests).toEqual([]);
     } finally {
       stdoutSpy.mockRestore();
       for (const key of Object.keys(process.env)) {
@@ -1834,17 +1919,33 @@ describe("main() smoke", () => {
 
     try {
       trustWorkspaceForTest(tmpHome, tmpCwd);
-      const pending = bootTUIEntry({});
-      await new Promise((r) => setTimeout(r, 20));
-      expect(capturedSession).not.toBeNull();
+	      const pending = bootTUIEntry({});
+	      await new Promise((r) => setTimeout(r, 20));
+	      expect(capturedSession).not.toBeNull();
+	      const localEvents: Array<{
+	        readonly type?: string;
+	        readonly input?: string;
+	        readonly result?: { readonly kind?: string };
+	      }> = [];
+	      const unsubscribe = capturedSession?.subscribeToEvents?.((event) => {
+	        localEvents.push(event);
+	      });
 
-      await capturedSession?.submit?.(slashInput);
+	      await capturedSession?.submit?.(slashInput);
+	      unsubscribe?.();
 
-      resolveExit?.();
-      const code = await pending;
-      expect(code).toBe(0);
-      expect(daemon.startPromptAgent).not.toHaveBeenCalled();
-      expect(daemon.requests).toEqual([]);
+	      resolveExit?.();
+	      const code = await pending;
+	      expect(code).toBe(0);
+	      expect(daemon.startPromptAgent).not.toHaveBeenCalled();
+	      expect(daemon.requests).toEqual([]);
+	      expect(localEvents).toEqual([
+	        expect.objectContaining({
+	          type: "slash_result",
+	          input: slashInput,
+	          result: expect.objectContaining({ kind: "text" }),
+	        }),
+	      ]);
     } finally {
       process.argv = prevArgv;
       vi.doUnmock("../tui/main.js");
@@ -1857,6 +1958,141 @@ describe("main() smoke", () => {
     }
     },
   );
+
+  it("stops the daemon agent when deferred TUI client connection fails", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-connect-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-connect-cwd-"));
+    const prevEnv = { ...process.env };
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.XAI_API_KEY = "stub-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    const daemon = installDaemonCliDepsForTest({
+      agentId: "agent_connect_failure",
+      sessionId: "session_connect_failure",
+      cwd: tmpCwd,
+      createConnectedTuiClientError: new Error("connect failed"),
+    });
+
+    let resolveExit: (() => void) | null = null;
+    const waitUntilExit = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveExit = resolve;
+        }),
+    );
+    let capturedSession: { submit?: (message: string) => Promise<void> } | null =
+      null;
+    vi.doMock("../tui/main.js", () => ({
+      bootTUI: vi.fn(async (opts: { session: typeof capturedSession }) => {
+        capturedSession = opts.session as typeof capturedSession;
+        return { unmount: vi.fn(), waitUntilExit };
+      }),
+    }));
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      const pending = bootTUIEntry({});
+      await new Promise((r) => setTimeout(r, 20));
+      expect(capturedSession).not.toBeNull();
+      await expect(capturedSession?.submit?.("hello daemon")).rejects.toThrow(
+        "connect failed",
+      );
+      resolveExit?.();
+      await expect(pending).resolves.toBe(0);
+      expect(daemon.stopPromptAgent).toHaveBeenCalledWith({
+        agentId: "agent_connect_failure",
+        reason: "tui_startup_failed",
+        env: process.env,
+      });
+    } finally {
+      vi.doUnmock("../tui/main.js");
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("stops the daemon agent when eager TUI attach fails", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-attach-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-attach-cwd-"));
+    const prevEnv = { ...process.env };
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.XAI_API_KEY = "stub-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    const daemon = installDaemonCliDepsForTest({
+      agentId: "agent_attach_failure",
+      sessionId: "session_attach_failure",
+      cwd: tmpCwd,
+      requestErrors: { "agent.attach": new Error("attach failed") },
+    });
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      await expect(bootTUIEntry({ initialPrompt: "queue this" })).rejects.toThrow(
+        "attach failed",
+      );
+      expect(daemon.stopPromptAgent).toHaveBeenCalledWith({
+        agentId: "agent_attach_failure",
+        reason: "tui_startup_failed",
+        env: process.env,
+      });
+    } finally {
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("stops the daemon agent when eager TUI boot fails after attach", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-boot-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-boot-cwd-"));
+    const prevEnv = { ...process.env };
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.XAI_API_KEY = "stub-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    const daemon = installDaemonCliDepsForTest({
+      agentId: "agent_boot_failure",
+      sessionId: "session_boot_failure",
+      cwd: tmpCwd,
+    });
+    vi.doMock("../tui/main.js", () => ({
+      bootTUI: vi.fn(async () => {
+        throw new Error("boot failed");
+      }),
+    }));
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      await expect(bootTUIEntry({ initialPrompt: "queue this" })).rejects.toThrow(
+        "boot failed",
+      );
+      expect(daemon.stopPromptAgent).toHaveBeenCalledWith({
+        agentId: "agent_boot_failure",
+        reason: "tui_startup_failed",
+        env: process.env,
+      });
+    } finally {
+      vi.doUnmock("../tui/main.js");
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
 
   it("runs the full main() path through daemon-backed one-shot and exits 0", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-main-"));
@@ -1895,16 +2131,24 @@ describe("main() smoke", () => {
     try {
       const code = await main();
       expect(code).toBe(0);
-      expect(daemon.startPromptAgent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          prompt: "hi",
+      expect(daemon.requests[0]).toEqual({
+        method: "agent.create",
+        params: expect.objectContaining({
+          objective: "hi",
+          instructions: "hi",
           cwd: tmpCwd,
-          metadata: { mode: "one-shot" },
+          metadata: { source: "agenc.prompt", mode: "one-shot" },
+        }),
+      });
+      expect(daemon.requests[1]).toEqual(
+        expect.objectContaining({
+          method: "agent.attach",
+          params: expect.objectContaining({ agentId: "agent_main" }),
         }),
       );
       expect(
         stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
-      ).toContain("agent_main\n");
+      ).toBe("daemon answer\n");
     } finally {
       process.removeListener("unhandledRejection", onUnhandled);
       stdoutSpy.mockRestore();
