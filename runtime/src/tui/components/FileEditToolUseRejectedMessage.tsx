@@ -9,7 +9,7 @@ import { getCwd } from '../../utils/cwd.js'; // upstream-import: keep target is 
 import { Box, Text } from '../ink.js';
 import { HighlightedCode } from './markdown/HighlightedCode.js';
 import { MessageResponse } from './MessageResponse';
-import { StructuredDiffList } from './StructuredDiffList';
+import { StructuredDiffList } from './diff/StructuredDiffList';
 const MAX_LINES_TO_RENDER = 10;
 type Props = {
   file_path: string;

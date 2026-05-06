@@ -3,7 +3,7 @@
 import { c as _c } from "react-compiler-runtime";
 import { basename, relative } from 'path';
 import React from 'react';
-import { FileEditToolDiff } from '../../FileEditToolDiff.js';
+import { FileEditToolDiff } from '../../diff/FileEditToolDiff.js';
 import { getCwd } from '../../../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { z } from 'zod/v4';
 import { Text } from '../../../ink.js';
