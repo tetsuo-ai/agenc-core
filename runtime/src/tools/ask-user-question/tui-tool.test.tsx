@@ -15,7 +15,7 @@ import { AskUserQuestionTool } from './tui-tool.js'
 import {
   setAllowedChannels,
   setQuestionPreviewFormat,
-} from '../../agenc/upstream/bootstrap/state.js'
+} from '../../bootstrap/state.js'
 
 const input = {
   questions: [

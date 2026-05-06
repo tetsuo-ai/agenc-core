@@ -67,7 +67,7 @@ interface CacheStatsTrackerForTest {
 
 async function loadCacheStatsTrackerForTest(): Promise<CacheStatsTrackerForTest> {
   const trackerModulePath: string =
-    "../agenc/upstream/services/api/cacheStatsTracker.js";
+    "../services/api/cacheStatsTracker.js";
   return import(trackerModulePath) as Promise<CacheStatsTrackerForTest>;
 }
 

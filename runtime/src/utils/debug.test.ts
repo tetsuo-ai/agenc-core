@@ -9,7 +9,7 @@ const tempDirs: string[] = []
 
 async function loadDebugModule(sessionId = 'session-test') {
   vi.resetModules()
-  vi.doMock('../agenc/upstream/bootstrap/state.js', () => ({
+  vi.doMock('../bootstrap/state.js', () => ({
     getSessionId: () => sessionId,
   }))
   return import('./debug.js')
@@ -88,7 +88,7 @@ describe('debug utilities', () => {
 
     const debug = await loadDebugModule('session-cleanup')
     const { runCleanupFunctions } = await import(
-      '../agenc/upstream/utils/cleanupRegistry.js'
+      './cleanupRegistry.js'
     )
 
     debug.logForDebugging('api: cleanup diagnostic')

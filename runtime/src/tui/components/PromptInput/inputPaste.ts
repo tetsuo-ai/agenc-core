@@ -1,5 +1,5 @@
 import { getPastedTextRefNumLines } from '../../history/history.js'
-import type { PastedContent } from '../../../agenc/upstream/utils/config.js'
+import type { PastedContent } from '../../../utils/config.js'
 
 const TRUNCATION_THRESHOLD = 10000 // Characters before we truncate
 const PREVIEW_LENGTH = 1000 // Characters to show at start and end

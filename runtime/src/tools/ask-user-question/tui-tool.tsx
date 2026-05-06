@@ -2,7 +2,7 @@ import { Box, Text } from '../../tui/ink.js'
 import {
   getAllowedChannels,
   getQuestionPreviewFormat,
-} from '../../agenc/upstream/bootstrap/state.js'
+} from '../../bootstrap/state.js'
 import {
   ASK_USER_QUESTION_TOOL_NAME,
   parseAskUserQuestionInput,

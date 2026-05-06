@@ -1,7 +1,7 @@
 import React from 'react'
 import { describe, expect, test, vi, beforeEach } from 'vitest'
 
-import { renderToString } from '../../../agenc/upstream/utils/staticRender.js'
+import { renderToString } from '../../../utils/staticRender.js'
 import { CostThresholdDialog } from './CostThresholdDialog.js'
 import { getUpsellMessage, RateLimitMessage } from './RateLimitMessage.js'
 
@@ -62,13 +62,13 @@ vi.mock('../../../agenc/upstream/utils/model/providers.js', () => ({
   getAPIProvider: () => providerMock.provider,
 }))
 
-vi.mock('../../../agenc/upstream/commands/extra-usage/index.js', () => ({
+vi.mock('../../../commands/extra-usage/index.js', () => ({
   extraUsage: {
     isEnabled: () => rateLimitMock.extraUsageEnabled,
   },
 }))
 
-vi.mock('../../../agenc/upstream/services/rateLimitMocking.js', () => ({
+vi.mock('../../../services/rateLimitMocking.js', () => ({
   shouldProcessMockLimits: () => rateLimitMock.shouldProcessMockLimits,
 }))
 

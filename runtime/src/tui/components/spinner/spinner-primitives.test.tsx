@@ -1,7 +1,7 @@
 import React from 'react'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
-import { renderToString } from '../../../agenc/upstream/utils/staticRender.js'
+import { renderToString } from '../../../utils/staticRender.js'
 import { Text } from '../../ink.js'
 import { useShimmerAnimation } from './useShimmerAnimation.js'
 import {

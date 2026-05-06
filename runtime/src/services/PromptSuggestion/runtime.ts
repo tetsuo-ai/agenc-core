@@ -189,7 +189,7 @@ type AnalyticsModule = {
 }
 
 const forkedAgentModulePath = '../../agenc/upstream/utils/forkedAgent.js'
-const analyticsModulePath = '../../agenc/upstream/services/analytics/index.js'
+const analyticsModulePath = '../analytics/index.js'
 
 export type PromptSuggestionSettings = {
   readonly promptSuggestionEnabled?: boolean

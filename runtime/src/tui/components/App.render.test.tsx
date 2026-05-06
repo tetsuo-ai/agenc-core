@@ -83,7 +83,7 @@ vi.mock("../../agenc/upstream/context/stats.js", async () => {
   };
 });
 
-vi.mock("../../agenc/upstream/state/onChangeAppState.js", () => ({
+vi.mock("../state/onChangeAppState.js", () => ({
   onChangeAppState: providerProbe.onChangeAppState,
 }));
 

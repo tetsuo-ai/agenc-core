@@ -25,7 +25,7 @@
  *
  * @module
  */
-import type { MCPServerConnection } from "../upstream/services/mcp/types.js";
+import type { MCPServerConnection } from "../../services/mcp/types.js";
 
 /**
  * Minimal surface this adapter needs from `MCPManager`. Declared as a

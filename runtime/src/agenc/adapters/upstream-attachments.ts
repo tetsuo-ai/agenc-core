@@ -16,7 +16,7 @@
  * @module
  */
 import type { LLMContentPart, LLMMessage } from "../../llm/types.js";
-import type { PastedContent } from "../upstream/utils/config.js";
+import type { PastedContent } from "../../utils/config.js";
 
 const DEFAULT_IMAGE_MEDIA_TYPE = "image/png";
 

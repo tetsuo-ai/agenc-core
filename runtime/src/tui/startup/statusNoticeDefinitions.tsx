@@ -2,13 +2,13 @@
 import { Box, Text } from '../ink.js';
 import * as React from 'react';
 import figures from 'figures';
-import { formatNumber } from '../../agenc/upstream/utils/format.js';
-import type { getGlobalConfig } from '../../agenc/upstream/utils/config.js';
-import { getAnthropicApiKeyWithSource, getApiKeyFromConfigOrMacOSKeychain, getAuthTokenSource, isAgenCAISubscriber } from '../../agenc/upstream/utils/auth.js';
+import { formatNumber } from '../../utils/format.js';
+import type { getGlobalConfig } from '../../utils/config.js';
+import { getproviderApiKeyWithSource, getApiKeyFromConfigOrMacOSKeychain, getAuthTokenSource, isAgenCAISubscriber } from '../../utils/auth.js';
 import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir.js';
-import { getAgentDescriptionsTotalTokens, AGENT_DESCRIPTIONS_THRESHOLD } from '../../agenc/upstream/utils/statusNoticeHelpers.js';
-import { isSupportedJetBrainsTerminal, toIDEDisplayName, getTerminalIdeType } from '../../agenc/upstream/utils/ide.js';
-import { isJetBrainsPluginInstalledCachedSync } from '../../agenc/upstream/utils/jetbrains.js';
+import { getAgentDescriptionsTotalTokens, AGENT_DESCRIPTIONS_THRESHOLD } from '../../utils/statusNoticeHelpers.js';
+import { isSupportedJetBrainsTerminal, toIDEDisplayName, getTerminalIdeType } from '../../utils/ide.js';
+import { isJetBrainsPluginInstalledCachedSync } from '../../utils/jetbrains.js';
 
 // Types
 export type StatusNoticeType = 'warning' | 'info';
@@ -105,7 +105,7 @@ const apiKeyConflictNotice: StatusNoticeDefinition = {
   isActive: () => {
     const {
       source: apiKeySource
-    } = getAnthropicApiKeyWithSource({
+    } = getproviderApiKeyWithSource({
       skipRetrievingKeyFromApiKeyHelper: true
     });
     return !!getApiKeyFromConfigOrMacOSKeychain() && (apiKeySource === 'ANTHROPIC_API_KEY' || apiKeySource === 'apiKeyHelper');
@@ -113,13 +113,13 @@ const apiKeyConflictNotice: StatusNoticeDefinition = {
   render: () => {
     const {
       source: apiKeySource
-    } = getAnthropicApiKeyWithSource({
+    } = getproviderApiKeyWithSource({
       skipRetrievingKeyFromApiKeyHelper: true
     });
     return <Box flexDirection="row" marginTop={1}>
         <Text color="warning">{figures.warning}</Text>
         <Text color="warning">
-          Auth conflict: Using {apiKeySource} instead of Anthropic Console key.
+          Auth conflict: Using {apiKeySource} instead of provider Console key.
           Either unset {apiKeySource}, or run `agenc /logout`.
         </Text>
       </Box>;
@@ -131,7 +131,7 @@ const bothAuthMethodsNotice: StatusNoticeDefinition = {
   isActive: () => {
     const {
       source: apiKeySource
-    } = getAnthropicApiKeyWithSource({
+    } = getproviderApiKeyWithSource({
       skipRetrievingKeyFromApiKeyHelper: true
     });
     const authTokenInfo = getAuthTokenSource();
@@ -140,7 +140,7 @@ const bothAuthMethodsNotice: StatusNoticeDefinition = {
   render: () => {
     const {
       source: apiKeySource
-    } = getAnthropicApiKeyWithSource({
+    } = getproviderApiKeyWithSource({
       skipRetrievingKeyFromApiKeyHelper: true
     });
     const authTokenInfo = getAuthTokenSource();

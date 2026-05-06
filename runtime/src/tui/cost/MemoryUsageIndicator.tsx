@@ -1,7 +1,7 @@
 import * as React from 'react';
-import { useMemoryUsage } from '../../agenc/upstream/hooks/useMemoryUsage.js';
+import { useMemoryUsage } from '../hooks/useMemoryUsage.js';
 import { Box, Text } from '../ink.js';
-import { formatFileSize } from '../../agenc/upstream/utils/format.js';
+import { formatFileSize } from '../../utils/format.js';
 export function MemoryUsageIndicator(): React.ReactNode {
   // Ant-only: the /heapdump link is an internal debugging aid. Gating before
   // the hook means the 10s polling interval is never set up in external builds.

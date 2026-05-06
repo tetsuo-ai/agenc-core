@@ -1,6 +1,6 @@
 import React from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { renderToString } from '../../../agenc/upstream/utils/staticRender.js'
+import { renderToString } from '../../../utils/staticRender.js'
 import { Text } from '../../ink.js'
 
 type QueuedCommandFixture = {

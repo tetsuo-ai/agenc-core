@@ -1,10 +1,10 @@
 import React, { PureComponent, type ReactNode } from 'react';
-import { updateLastInteractionTime } from '../../../agenc/upstream/bootstrap/state.js';
-import { stopCapturingEarlyInput } from '../../../agenc/upstream/utils/earlyInput.js';
-import { isEnvTruthy } from '../../../agenc/upstream/utils/envUtils.js';
-import { isMouseClicksDisabled } from '../../../agenc/upstream/utils/fullscreen.js';
+import { updateLastInteractionTime } from '../../../bootstrap/state.js';
+import { stopCapturingEarlyInput } from '../../../utils/earlyInput.js';
+import { isEnvTruthy } from '../../../utils/envUtils.js';
+import { isMouseClicksDisabled } from '../../../utils/fullscreen.js';
 import { logForDebugging } from '../../../utils/debug.js';
-import { logError } from '../../../agenc/upstream/utils/log.js';
+import { logError } from '../../../utils/log.js';
 import { EventEmitter } from '../events/emitter.js';
 import { InputEvent } from '../events/input-event.js';
 import { TerminalFocusEvent } from '../events/terminal-focus-event.js';
@@ -662,7 +662,7 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
       // still reflects what the user clicked — deferring only the
       // browser-open so double-click can cancel it.
       const url = app.props.getHyperlinkAt(col, row);
-      // xterm.js (VS Code, Cursor, Windsurf, etc.) has its own OSC 8 link
+      // xterm.js-based editors have their own OSC 8 link
       // handler that fires on Cmd+click *without consuming the mouse event*
       // (Linkifier._handleMouseUp calls link.activate() but never
       // preventDefault/stopPropagation). The click is also forwarded to the

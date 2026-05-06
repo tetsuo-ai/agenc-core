@@ -372,7 +372,7 @@ async function loadProductionCommandSources(
   const bundledSkillsModulePath = "./agenc/upstream/skills/bundledSkills.js";
   const builtinPluginsModulePath = "./agenc/upstream/plugins/builtinPlugins.js";
   const workflowCommandsModulePath =
-    "./agenc/upstream/tools/WorkflowTool/createWorkflowCommand.js";
+    "./tools/WorkflowTool/createWorkflowCommand.js";
 
   const [
     skillDirCommands,

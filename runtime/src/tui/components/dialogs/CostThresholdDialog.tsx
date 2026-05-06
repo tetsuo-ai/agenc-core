@@ -1,8 +1,8 @@
 import React from 'react'
 import { Box, Link, Text } from '../../ink.js'
-import { Select } from '../../../agenc/upstream/components/CustomSelect/select.js'
-import { Dialog } from '../../../agenc/upstream/components/design-system/Dialog.js'
-import { getAPIProvider } from '../../../agenc/upstream/utils/model/providers.js'
+import { Select } from '../CustomSelect/select.js'
+import { Dialog } from '../design-system/Dialog.js'
+import { getAPIProvider } from '../../../utils/model/providers.js'
 
 type Props = {
   onDone: () => void
@@ -13,7 +13,7 @@ function getProviderLabel(): string {
   switch (provider) {
     case 'firstParty':
       // branding-scan: allow real provider display label
-      return 'Anthropic API'
+      return 'provider API'
     case 'bedrock':
       return 'AWS Bedrock'
     case 'vertex':
@@ -22,7 +22,7 @@ function getProviderLabel(): string {
       return 'Azure Foundry'
     case 'openai':
       // branding-scan: allow real provider display label
-      return 'OpenAI-compatible API'
+      return 'provider-compatible API'
     case 'gemini':
       return 'Gemini API'
     default:

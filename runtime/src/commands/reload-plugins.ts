@@ -68,7 +68,7 @@ function isEnvTruthy(value: string | undefined): boolean {
 async function loadRemoteSettingsSync(): Promise<RemoteSettingsSync | null> {
   if (remoteSettingsSyncForTesting) return remoteSettingsSyncForTesting;
   const settingsSyncModulePath: string =
-    "../agenc/upstream/services/settingsSync/index.js";
+    "../services/settingsSync/index.js";
   const settingsChangeModulePath: string =
     "../agenc/upstream/utils/settings/changeDetector.js";
   try {

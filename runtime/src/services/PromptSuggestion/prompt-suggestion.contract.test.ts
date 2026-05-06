@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const runtimeSrc = resolve(root, "runtime/src");
-const promptSuggestionMirror = resolve(runtimeSrc, "agenc/upstream/services/PromptSuggestion");
+const promptSuggestionMirror = resolve(runtimeSrc, "services/PromptSuggestion");
 
 function listSourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((entry) => {
@@ -82,9 +82,9 @@ describe("prompt suggestion service ownership", () => {
   it("resolves known live callers to AgenC-owned PromptSuggestion files", () => {
     const expected = new Map([
       ["runtime/src/agenc/upstream/query/stopHooks.ts", "runtime/src/services/PromptSuggestion/promptSuggestion.ts"],
-      ["runtime/src/agenc/upstream/screens/REPL.tsx", "runtime/src/services/PromptSuggestion/speculation.ts"],
-      ["runtime/src/agenc/upstream/tasks/LocalAgentTask/LocalAgentTask.tsx", "runtime/src/services/PromptSuggestion/speculation.ts"],
-      ["runtime/src/agenc/upstream/tasks/LocalShellTask/LocalShellTask.tsx", "runtime/src/services/PromptSuggestion/speculation.ts"],
+      ["runtime/src/tui/screens/REPL.tsx", "runtime/src/services/PromptSuggestion/speculation.ts"],
+      ["runtime/src/tasks/LocalAgentTask/LocalAgentTask.tsx", "runtime/src/services/PromptSuggestion/speculation.ts"],
+      ["runtime/src/tasks/LocalShellTask/LocalShellTask.tsx", "runtime/src/services/PromptSuggestion/speculation.ts"],
       ["runtime/src/agenc/upstream/main.tsx", "runtime/src/services/PromptSuggestion/promptSuggestion.ts"],
     ]);
 

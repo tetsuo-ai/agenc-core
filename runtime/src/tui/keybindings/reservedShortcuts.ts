@@ -1,4 +1,4 @@
-import { getPlatform } from '../../agenc/upstream/utils/platform.js'
+import { getPlatform } from '../../utils/platform.js'
 
 /**
  * Shortcuts that are typically intercepted by the OS, terminal, or shell

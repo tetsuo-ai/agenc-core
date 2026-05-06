@@ -28,14 +28,14 @@ import {
   getIsNonInteractiveSession as getBootstrapIsNonInteractiveSession,
   resetStateForTests,
   setIsInteractive,
-} from "../../agenc/upstream/bootstrap/state.js";
+} from "../../bootstrap/state.js";
 import {
   clearDynamicTeamContext,
   createTeammateContext,
   isTeammate as isLiveTeammate,
   runWithTeammateContext,
   setDynamicTeamContext,
-} from "../../agenc/upstream/utils/teammate.js";
+} from "../../utils/teammate.js";
 
 describe("PromptSuggestion service", () => {
   afterEach(() => {

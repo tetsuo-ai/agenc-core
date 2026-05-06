@@ -1,6 +1,6 @@
 import type { Key } from '../../ink.js'
-import { getGlobalConfig } from '../../../agenc/upstream/utils/config.js'
-import { env } from '../../../agenc/upstream/utils/env.js'
+import { getGlobalConfig } from '../../../utils/config.js'
+import { env } from '../../../utils/env.js'
 /**
  * Helper function to check if vim mode is currently enabled
  * @returns boolean indicating if vim mode is active

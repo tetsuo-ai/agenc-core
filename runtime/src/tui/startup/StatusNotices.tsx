@@ -1,8 +1,8 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir.js';
-import { getGlobalConfig } from '../../agenc/upstream/utils/config.js';
-import { buildMemoryDiagnostics } from '../../agenc/upstream/utils/status.js';
+import { getGlobalConfig } from '../../utils/config.js';
+import { buildMemoryDiagnostics } from '../../utils/status.js';
 import { Box } from '../ink.js';
 import { getActiveNotices, type StatusNoticeContext } from './statusNoticeDefinitions.js';
 type Props = {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import type { PastedContent } from "../agenc/upstream/utils/config.js";
+import type { PastedContent } from "../utils/config.js";
 import { pastedContentsToLLMMessage } from "../agenc/adapters/upstream-attachments.js";
 
 describe("pastedContentsToLLMMessage (TUI attachments → multipart user message)", () => {

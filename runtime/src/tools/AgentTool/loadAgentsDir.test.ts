@@ -21,7 +21,7 @@ import {
 } from './loadAgentsDir.js'
 import { getPrompt } from './prompt.js'
 
-const stateModulePath = '../../agenc/upstream/bootstrap/state.js'
+const stateModulePath = '../../bootstrap/state.js'
 const allSettingSources = [
   'userSettings',
   'projectSettings',

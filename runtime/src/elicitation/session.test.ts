@@ -28,7 +28,7 @@ vi.mock("../agenc/adapters/upstream-attachments.js", () => ({
   pastedContentsToLLMMessage: () => null,
 }));
 
-vi.mock("../agenc/upstream/tools.js", () => ({
+vi.mock("../tools.js", () => ({
   assembleToolPool: () => [],
   filterToolsByDenyRules: (tools: unknown) => tools,
   getAllBaseTools: () => [],
@@ -52,7 +52,7 @@ vi.mock("../agenc/upstream/context/stats.js", () => ({
   StatsProvider: ({ children }: { children: unknown }) => children,
 }));
 
-vi.mock("../agenc/upstream/state/onChangeAppState.js", () => ({
+vi.mock("../tui/state/onChangeAppState.js", () => ({
   onChangeAppState: () => {},
 }));
 

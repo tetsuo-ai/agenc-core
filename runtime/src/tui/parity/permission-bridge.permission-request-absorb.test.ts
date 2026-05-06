@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, test, vi } from "vitest";
 
-import type { Tool } from "../../agenc/upstream/Tool.js";
+import type { Tool } from "../../tools/Tool.js";
 import {
   __permissionRequestTest,
   type ToolUseConfirm,
@@ -56,40 +56,40 @@ vi.mock("../keybindings/useKeybinding.js", () => ({
 vi.mock("../../tools/ask-user-question/tui-tool.js", () => ({
   AskUserQuestionTool: permissionMocks.AskUserQuestionTool,
 }));
-vi.mock("../../agenc/upstream/tools/BashTool/BashTool.js", () => ({
+vi.mock("../../tools/BashTool/BashTool.js", () => ({
   BashTool: permissionMocks.BashTool,
 }));
-vi.mock("../../agenc/upstream/tools/EnterPlanModeTool/EnterPlanModeTool.js", () => ({
+vi.mock("../../tools/EnterPlanModeTool/EnterPlanModeTool.js", () => ({
   EnterPlanModeTool: permissionMocks.EnterPlanModeTool,
 }));
-vi.mock("../../agenc/upstream/tools/ExitPlanModeTool/ExitPlanModeV2Tool.js", () => ({
+vi.mock("../../tools/ExitPlanModeTool/ExitPlanModeV2Tool.js", () => ({
   ExitPlanModeV2Tool: permissionMocks.ExitPlanModeV2Tool,
 }));
-vi.mock("../../agenc/upstream/tools/FileEditTool/FileEditTool.js", () => ({
+vi.mock("../../tools/FileEditTool/FileEditTool.js", () => ({
   FileEditTool: permissionMocks.FileEditTool,
 }));
-vi.mock("../../agenc/upstream/tools/FileReadTool/FileReadTool.js", () => ({
+vi.mock("../../tools/FileReadTool/FileReadTool.js", () => ({
   FileReadTool: permissionMocks.FileReadTool,
 }));
-vi.mock("../../agenc/upstream/tools/FileWriteTool/FileWriteTool.js", () => ({
+vi.mock("../../tools/FileWriteTool/FileWriteTool.js", () => ({
   FileWriteTool: permissionMocks.FileWriteTool,
 }));
-vi.mock("../../agenc/upstream/tools/GlobTool/GlobTool.js", () => ({
+vi.mock("../../tools/GlobTool/GlobTool.js", () => ({
   GlobTool: permissionMocks.GlobTool,
 }));
-vi.mock("../../agenc/upstream/tools/GrepTool/GrepTool.js", () => ({
+vi.mock("../../tools/GrepTool/GrepTool.js", () => ({
   GrepTool: permissionMocks.GrepTool,
 }));
-vi.mock("../../agenc/upstream/tools/NotebookEditTool/NotebookEditTool.js", () => ({
+vi.mock("../../tools/NotebookEditTool/NotebookEditTool.js", () => ({
   NotebookEditTool: permissionMocks.NotebookEditTool,
 }));
-vi.mock("../../agenc/upstream/tools/PowerShellTool/PowerShellTool.js", () => ({
+vi.mock("../../tools/PowerShellTool/PowerShellTool.js", () => ({
   PowerShellTool: permissionMocks.PowerShellTool,
 }));
-vi.mock("../../agenc/upstream/tools/SkillTool/SkillTool.js", () => ({
+vi.mock("../../tools/SkillTool/SkillTool.js", () => ({
   SkillTool: permissionMocks.SkillTool,
 }));
-vi.mock("../../agenc/upstream/tools/WebFetchTool/WebFetchTool.js", () => ({
+vi.mock("../../tools/WebFetchTool/WebFetchTool.js", () => ({
   WebFetchTool: permissionMocks.WebFetchTool,
 }));
 vi.mock(

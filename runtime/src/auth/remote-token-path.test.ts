@@ -75,14 +75,14 @@ describe("remote token path resolution", () => {
   });
 });
 
-async function loadAuthFileDescriptor(): Promise<typeof import("../agenc/upstream/utils/authFileDescriptor.js")> {
+async function loadAuthFileDescriptor(): Promise<typeof import("../utils/authFileDescriptor.js")> {
   vi.resetModules();
-  return import("../agenc/upstream/utils/authFileDescriptor.js");
+  return import("../utils/authFileDescriptor.js");
 }
 
-async function loadSpawnUtils(): Promise<typeof import("../agenc/upstream/utils/swarm/spawnUtils.js")> {
+async function loadSpawnUtils(): Promise<typeof import("../utils/swarm/spawnUtils.js")> {
   vi.resetModules();
-  vi.doMock("../agenc/upstream/bootstrap/state.js", () => ({
+  vi.doMock("../bootstrap/state.js", () => ({
     getChromeFlagOverride: () => undefined,
     getFlagSettingsPath: () => undefined,
     getInlinePlugins: () => [],
@@ -93,7 +93,7 @@ async function loadSpawnUtils(): Promise<typeof import("../agenc/upstream/utils/
   vi.doMock("../agenc/upstream/utils/swarm/backends/teammateModeSnapshot.js", () => ({
     getTeammateModeFromSnapshot: () => "default",
   }));
-  return import("../agenc/upstream/utils/swarm/spawnUtils.js");
+  return import("../utils/swarm/spawnUtils.js");
 }
 
 async function tempHomeWithToken(token: string): Promise<string> {

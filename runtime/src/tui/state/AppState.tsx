@@ -1,12 +1,12 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { useContext, useEffect, useState, useSyncExternalStore } from 'react';
-import { MailboxProvider } from '../../agenc/upstream/context/mailbox.js';
-import { useEffectEventCompat } from '../../agenc/upstream/hooks/useEffectEventCompat.js';
-import { useSettingsChange } from '../../agenc/upstream/hooks/useSettingsChange.js';
+import { MailboxProvider } from '../context/mailbox.js';
+import { useEffectEventCompat } from '../hooks/useEffectEventCompat.js';
+import { useSettingsChange } from '../hooks/useSettingsChange.js';
 import { logForDebugging } from '../../utils/debug.js';
-import { createDisabledBypassPermissionsContext, isBypassPermissionsModeDisabled } from '../../agenc/upstream/utils/permissions/permissionSetup.js';
-import { applySettingsChange } from '../../agenc/upstream/utils/settings/applySettingsChange.js';
-import type { SettingSource } from '../../agenc/upstream/utils/settings/constants.js';
+import { createDisabledBypassPermissionsContext, isBypassPermissionsModeDisabled } from '../../utils/permissions/permissionSetup.js';
+import { applySettingsChange } from '../../utils/settings/applySettingsChange.js';
+import type { SettingSource } from '../../utils/settings/constants.js';
 import { createStore } from './store.js';
 
 import { type AppState, type AppStateStore, getDefaultAppState } from './AppStateStore.js';
