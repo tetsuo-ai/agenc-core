@@ -1,4 +1,4 @@
-import { queryHaiku } from '../../agenc/upstream/services/api/claude.js' // branding-scan: allow upstream provider module path pending purge // upstream-import: keep API service target is owned by a later purge item
+import { queryHaiku } from '../../services/api/anthropic.js'
 import { logError } from '../log.js'
 import { extractTextContent } from '../messages.js'
 import { asSystemPrompt } from '../systemPromptType.js'

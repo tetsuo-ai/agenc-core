@@ -14,7 +14,7 @@ import {
 } from '../constants/system.js'
 import { logEvent } from '../services/analytics/index.js'
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../services/analytics/metadata.js'
-import { getAPIMetadata } from '../agenc/upstream/services/api/claude.js' // branding-scan: allow upstream provider module path pending purge // upstream-import: keep API service target is owned by a later purge item
+import { getAPIMetadata } from '../services/api/anthropic.js'
 import { getAnthropicClient } from '../services/api/client.js'
 import { getModelBetas, modelSupportsStructuredOutputs } from './betas.js'
 import { computeFingerprint } from './fingerprint.js'

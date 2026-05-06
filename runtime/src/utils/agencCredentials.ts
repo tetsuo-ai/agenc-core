@@ -7,7 +7,7 @@ import {
   getCodexOAuthClientId as getAgencOAuthClientId,
   parseChatgptAccountId,
   decodeJwtPayload,
-} from '../agenc/upstream/services/api/codexOAuthShared.js' // branding-scan: allow upstream provider module path pending purge // upstream-import: keep OAuth shared target is owned by a later purge item
+} from '../services/api/openAiCodeOAuthShared.js'
 
 export const AGENC_STORAGE_KEY = 'agenc' as const
 const AGENC_TOKEN_REFRESH_SKEW_MS = 60_000

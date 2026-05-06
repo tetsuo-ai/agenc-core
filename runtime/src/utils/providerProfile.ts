@@ -9,7 +9,7 @@ import {
   resolveCodexApiCredentials,
   resolveProviderRequest,
 } from '../services/api/providerConfig.js'
-import { parseChatgptAccountId } from '../agenc/upstream/services/api/codexOAuthShared.js' // branding-scan: allow upstream provider module path pending purge // upstream-import: keep OAuth shared target is owned by a later purge item
+import { parseChatgptAccountId } from '../services/api/openAiCodeOAuthShared.js'
 import {
   getGoalDefaultOpenAIModel,
   normalizeRecommendationGoal,

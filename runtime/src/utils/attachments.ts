@@ -48,7 +48,7 @@ import {
 } from './agencmd.js'
 import { dirname, parse, relative, resolve } from 'path'
 import { getCwd } from 'src/utils/cwd.js'
-import { getViewedTeammateTask } from '../agenc/upstream/state/selectors.js' // upstream-import: keep state selectors target is owned by another Z-PURGE item
+import { getViewedTeammateTask } from '../tui/state/selectors.js'
 import { logError } from './log.js'
 import { logAntError } from 'src/utils/debug.js'
 import { isENOENT, toError } from './errors.js'
@@ -251,8 +251,8 @@ import {
 import { isInProcessTeammate } from './teammateContext.js'
 import { removeTeammateFromTeamFile } from './swarm/teamHelpers.js'
 import { unassignTeammateTasks } from './tasks.js'
-import { getCompanionIntroAttachment } from '../agenc/upstream/buddy/prompt.js' // upstream-import: keep buddy target is owned by another Z-PURGE item
-import { isBuddyEnabled } from '../agenc/upstream/buddy/feature.js' // upstream-import: keep buddy target is owned by another Z-PURGE item
+import { getCompanionIntroAttachment } from '../tui/buddy/prompt.js'
+import { isBuddyEnabled } from '../tui/buddy/feature.js'
 
 export const TODO_REMINDER_CONFIG = {
   TURNS_SINCE_WRITE: 10,

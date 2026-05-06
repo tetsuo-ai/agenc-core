@@ -14,7 +14,7 @@ import { getOauthConfig } from '../constants/oauth.js';
 import type { SDKMessage } from '../entrypoints/agentSdkTypes.js';
 import type { Root } from '../tui/ink.js';
 import { KeybindingSetup } from '../tui/keybindings/KeybindingProviderSetup.js';
-import { queryHaiku } from '../agenc/upstream/services/api/claude.js' // branding-scan: allow upstream provider module path pending purge // upstream-import: keep API service target is owned by a later purge item;
+import { queryHaiku } from '../services/api/anthropic.js'
 import { getSessionLogsViaOAuth, getTeleportEvents } from '../services/api/sessionIngress.js';
 import { getOrganizationUUID } from '../services/oauth/client.js';
 import { AppStateProvider } from '../tui/state/AppState.js';

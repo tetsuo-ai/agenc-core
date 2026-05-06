@@ -11,7 +11,7 @@ import type {
   SDKMessage,
   SDKRateLimitInfo,
 } from 'src/entrypoints/agentSdkTypes.js'
-import type { AgenCAILimits } from 'src/agenc/upstream/services/claudeAiLimits.js' // branding-scan: allow upstream provider module path pending purge // upstream-import: keep limits target is owned by a later purge item
+import type { AgenCAILimits } from 'src/services/agencAiLimits.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from 'src/tools/ExitPlanModeTool/constants.js'
 import type {
   AssistantMessage,
