@@ -38,3 +38,22 @@ agent-run and snapshot cleanup. Runtime ownership is split intentionally:
   policy, and the state pruners apply retention outside the live turn loop. This
   avoids having `runAgent` open state databases or prune while an agent turn is
   still active.
+
+## CF-11 `mcp.server`
+
+CF-11 is net-new AgenC config for serving AgenC's own MCP endpoint. Runtime
+ownership is split intentionally:
+
+- `runtime/src/config/schema.ts` owns the typed `McpServerModeConfig` and the
+  default `enabled=false`, `transport="stdio"`.
+- `runtime/src/bin/mcp-cli.ts` reads the config-backed defaults for manual
+  `agenc mcp serve` invocations; explicit CLI transport still wins.
+- `runtime/src/mcp/server/start.ts` owns the canonical start contract used by
+  both the CLI and daemon paths.
+- `runtime/src/app-server/daemon-autostart.ts` loads `mcp.server` with the
+  daemon autostart config so the F-04a autostart reader sees one consistent
+  snapshot.
+- `runtime/src/app-server/daemon-cli.ts` starts and cleans up enabled SSE mode
+  inside the foreground daemon. Enabled stdio mode is not daemon-autostarted
+  because stdio requires an attached foreground process; it remains available
+  through `agenc mcp serve`.

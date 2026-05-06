@@ -5,19 +5,22 @@
  * `agenc mcp serve --transport stdio|sse`.
  */
 
-import type { Server } from "node:http";
 import type { Readable, Writable } from "node:stream";
-import { cwd as processCwd } from "node:process";
-import type { AgenCConfig, McpServerModeConfig } from "../config/schema.js";
-import { VERSION } from "../index.js";
-import { McpHttpSseServerTransport } from "../mcp-server/http-sse.js";
-import { McpServerFramework } from "../mcp-server/framework.js";
-import { McpStdioServerTransport } from "../mcp-server/stdio.js";
-import { mcpToolRegistryFromAgenCTools } from "../mcp-server/tools.js";
+import type { AgenCConfig } from "../config/schema.js";
+import type { ToolRegistry } from "../tool-registry.js";
 import {
-  buildToolRegistry,
-  type ToolRegistry,
-} from "../tool-registry.js";
+  resolveMcpServeDefaults,
+  runMcpStdioServe,
+  startMcpSseServe,
+} from "../mcp/server/start.js";
+
+export {
+  formatMcpSseServeUrl,
+  resolveMcpServeDefaults,
+  startMcpSseServe,
+  type ResolvedMcpServeDefaults,
+  type StartedMcpSseServer,
+} from "../mcp/server/start.js";
 
 export type AgenCMcpCliCommand =
   | {
@@ -33,13 +36,6 @@ export interface AgenCMcpCliIo {
   readonly stdin: Readable;
   readonly stdout: Writable;
   readonly stderr: Writable;
-}
-
-export interface StartedMcpSseServer {
-  readonly server: Server;
-  readonly url: string;
-  close(): Promise<void>;
-  waitUntilClosed(): Promise<void>;
 }
 
 export interface AgenCMcpCliOptions {
@@ -133,39 +129,6 @@ export function parseMcpServeArgs(
   return { kind: "serve", transport, host, port };
 }
 
-export interface ResolvedMcpServeDefaults {
-  readonly enabled: boolean;
-  readonly transport: "stdio" | "sse";
-  readonly host: string;
-  readonly port: number;
-}
-
-export function resolveMcpServeDefaults(
-  config: McpServerModeConfig | undefined,
-): ResolvedMcpServeDefaults {
-  return {
-    enabled: config?.enabled === true,
-    transport: config?.transport === "sse" ? "sse" : "stdio",
-    host: readMcpServeHost(config?.host),
-    port: readMcpServePort(config?.port),
-  };
-}
-
-function readMcpServeHost(host: unknown): string {
-  return typeof host === "string" && host.trim().length > 0
-    ? host.trim()
-    : "127.0.0.1";
-}
-
-function readMcpServePort(port: unknown): number {
-  const valid =
-    typeof port === "number" &&
-    Number.isInteger(port) &&
-    port >= 0 &&
-    port <= 65_535;
-  return valid ? port : 3334;
-}
-
 export async function runAgenCMcpCli(
   command: AgenCMcpCliCommand,
   options: AgenCMcpCliOptions = {},
@@ -202,90 +165,4 @@ export async function runAgenCMcpCli(
         return 1;
       }
   }
-}
-
-export async function startMcpSseServe(
-  command: Extract<AgenCMcpCliCommand, { readonly kind: "serve" }>,
-  options: AgenCMcpCliOptions = {},
-): Promise<StartedMcpSseServer> {
-  const registry = resolveToolRegistry(options);
-  const host = normalizeMcpSseLoopbackHost(command.host);
-  const transport = new McpHttpSseServerTransport({
-    serverFactory: () => createMcpFramework(registry),
-  });
-  const server = transport.createNodeServer();
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(command.port, host, () => {
-      server.off("error", reject);
-      resolve();
-    });
-  });
-  const address = server.address();
-  const port =
-    typeof address === "object" && address !== null ? address.port : command.port;
-  const url = formatMcpSseServeUrl(host, port);
-  return {
-    server,
-    url,
-    close: () =>
-      new Promise((resolve, reject) => {
-        server.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          resolve();
-        });
-      }),
-    waitUntilClosed: () =>
-      new Promise((resolve) => {
-        server.once("close", resolve);
-      }),
-  };
-}
-
-export function formatMcpSseServeUrl(host: string, port: number): string {
-  const urlHost = normalizeMcpSseLoopbackHost(host);
-  const bracketedHost =
-    urlHost.includes(":") && !urlHost.startsWith("[") ? `[${urlHost}]` : urlHost;
-  return `http://${bracketedHost}:${port}/mcp`;
-}
-
-function normalizeMcpSseLoopbackHost(host: string): string {
-  const trimmed = host.trim();
-  if (trimmed === "127.0.0.1" || trimmed === "localhost" || trimmed === "::1") {
-    return trimmed;
-  }
-  throw new Error("AgenC MCP SSE transport only binds to loopback hosts");
-}
-
-async function runMcpStdioServe(
-  io: AgenCMcpCliIo,
-  options: AgenCMcpCliOptions,
-): Promise<void> {
-  const server = createMcpFramework(resolveToolRegistry(options));
-  await new Promise<void>((resolve, reject) => {
-    const transport = new McpStdioServerTransport({
-      input: io.stdin,
-      output: io.stdout,
-      server,
-      onClose: resolve,
-      onError: reject,
-    });
-    transport.start();
-  });
-}
-
-function resolveToolRegistry(options: AgenCMcpCliOptions): ToolRegistry {
-  return options.toolRegistry ?? buildToolRegistry({
-    workspaceRoot: options.cwd ?? processCwd(),
-  });
-}
-
-function createMcpFramework(registry: ToolRegistry): McpServerFramework {
-  return new McpServerFramework({
-    serverInfo: { version: VERSION },
-    toolProvider: mcpToolRegistryFromAgenCTools(registry),
-  });
 }
