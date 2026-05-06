@@ -112,11 +112,22 @@ describe("plugin registration", () => {
         cwd: pluginRoot,
         env: expect.objectContaining({
           AGENC_PLUGIN_ROOT: pluginRoot,
+          AGENC_PLUGIN_DATA: pluginDataDirPath(pluginRoot),
           AGENC_PLUGIN_NAME: "sample",
+          AGENC_PLUGIN_MCP_SERVER: "local",
+          AGENC_PLUGIN_SANDBOX: "stdio-child-process",
           TOKEN: "stored-token",
           TAGS: "alpha,beta",
           SCOPES: "read,write",
         }),
+        pluginSandbox: {
+          mode: "stdio-child-process",
+          pluginName: "sample",
+          pluginRoot,
+          pluginDataDir: pluginDataDirPath(pluginRoot),
+          serverName: "local",
+          scopedServerName: "plugin:sample:local",
+        },
       });
       expect(getUnconfiguredChannels(plugins[0]!)).toEqual([]);
 
@@ -290,6 +301,80 @@ describe("plugin registration", () => {
           delete process.env.AGENC_PLUGIN_TEST_CWD;
         } else {
           process.env.AGENC_PLUGIN_TEST_CWD = previousCwd;
+        }
+      }
+    });
+  });
+
+  test("plugin MCP sandbox env overrides manifest attempts to redefine reserved keys", async () => {
+    await withTempPlugin(async ({ pluginRoot, options }) => {
+      await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
+        name: "sample",
+        mcpServers: {
+          local: {
+            command: "node",
+            env: {
+              AGENC_PLUGIN_ROOT: "bad-root",
+              AGENC_PLUGIN_DATA: "bad-data",
+              AGENC_PLUGIN_NAME: "bad-name",
+              AGENC_PLUGIN_MCP_SERVER: "bad-server",
+              AGENC_PLUGIN_SANDBOX: "none",
+            },
+          },
+        },
+      });
+
+      const result = await loadPlugins(options);
+      const mcpServers = await loadPluginMcpServers({
+        plugins: result.enabled,
+      });
+      const server = mcpServers["plugin:sample:local"];
+
+      expect(server?.env).toMatchObject({
+        AGENC_PLUGIN_ROOT: pluginRoot,
+        AGENC_PLUGIN_DATA: pluginDataDirPath(pluginRoot),
+        AGENC_PLUGIN_NAME: "sample",
+        AGENC_PLUGIN_MCP_SERVER: "local",
+        AGENC_PLUGIN_SANDBOX: "stdio-child-process",
+      });
+    });
+  });
+
+  test("omits plugin MCP servers whose template-resolved cwd escapes the plugin root", async () => {
+    await withTempPlugin(async ({ pluginRoot, options }) => {
+      const previousCwd = process.env.AGENC_PLUGIN_TEST_CWD_ESCAPE;
+      try {
+        process.env.AGENC_PLUGIN_TEST_CWD_ESCAPE = "../outside";
+        await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
+          name: "sample",
+          mcpServers: {
+            local: {
+              command: "node",
+              cwd: "${AGENC_PLUGIN_TEST_CWD_ESCAPE}",
+            },
+          },
+        });
+
+        const result = await loadPlugins(options);
+        const errors: PluginLoadIssue[] = [];
+        const mcpServers = await loadPluginMcpServers({
+          plugins: result.enabled,
+          errors,
+        });
+
+        expect(mcpServers["plugin:sample:local"]).toBeUndefined();
+        expect(errors).toEqual([
+          expect.objectContaining({
+            type: "mcp",
+            path: "local",
+            message: expect.stringContaining("escapes plugin root"),
+          }),
+        ]);
+      } finally {
+        if (previousCwd === undefined) {
+          delete process.env.AGENC_PLUGIN_TEST_CWD_ESCAPE;
+        } else {
+          process.env.AGENC_PLUGIN_TEST_CWD_ESCAPE = previousCwd;
         }
       }
     });

@@ -217,6 +217,15 @@ export interface ManagedWorkspacesConfig {
 
 export type McpTransport = "stdio" | "sse" | "http" | "websocket" | "ws";
 
+export interface PluginMcpSandboxMetadata {
+  readonly mode: "stdio-child-process";
+  readonly pluginName: string;
+  readonly pluginRoot: string;
+  readonly pluginDataDir: string;
+  readonly serverName: string;
+  readonly scopedServerName: string;
+}
+
 export interface McpServerConfig {
   readonly command?: string;
   readonly args?: readonly string[];
@@ -233,6 +242,7 @@ export interface McpServerConfig {
   readonly enabled_tools?: readonly string[];
   readonly disabled_tools?: readonly string[];
   readonly tools?: Readonly<Record<string, PerToolConfig>>;
+  readonly pluginSandbox?: PluginMcpSandboxMetadata;
 }
 
 export type McpServerModeTransport = "stdio" | "sse";
