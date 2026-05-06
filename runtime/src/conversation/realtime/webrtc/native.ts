@@ -218,9 +218,15 @@ class NativeRealtimeWebrtcSessionHandle implements RealtimeWebrtcNativeSessionHa
     }
     if (this.#closed) throw realtimeWebrtcWorkerStoppedError();
     if (!this.#connected) {
+      try {
+        this.#startLocalAudioLevelTask();
+      } catch (error) {
+        const message = `failed to start realtime WebRTC local audio polling: ${errorMessage(error)}`;
+        this.#failAndFinish(message);
+        throw RealtimeWebrtcError.withMessage(message);
+      }
       this.#connected = true;
       this.#events.send({ type: "connected" });
-      this.#startLocalAudioLevelTask();
     }
   }
 
@@ -301,9 +307,7 @@ class NativeRealtimeWebrtcSessionHandle implements RealtimeWebrtcNativeSessionHa
       "iceconnectionstatechange",
       this.#connectionStateListener,
     );
-    for (const track of this.#mediaStream.getAudioTracks()) {
-      track.stop?.();
-    }
+    stopRealtimeWebrtcTracks(this.#mediaStream);
     try {
       this.#peerConnection.close();
     } catch {
@@ -381,9 +385,7 @@ function cleanupStartedPeerConnection(
   mediaStream: RealtimeWebrtcMediaStream | null,
 ): void {
   if (mediaStream !== null) {
-    for (const track of mediaStream.getAudioTracks()) {
-      track.stop?.();
-    }
+    stopRealtimeWebrtcTracks(mediaStream);
   }
   try {
     peerConnection?.close();
@@ -530,6 +532,24 @@ function realtimeWebrtcConnectionState(
   if (state === "closed") return "closed";
   if (state === "failed") return "failed";
   return "other";
+}
+
+function stopRealtimeWebrtcTracks(
+  mediaStream: RealtimeWebrtcMediaStream,
+): void {
+  let tracks: readonly RealtimeWebrtcMediaTrack[];
+  try {
+    tracks = mediaStream.getAudioTracks();
+  } catch {
+    return;
+  }
+  for (const track of tracks) {
+    try {
+      track.stop?.();
+    } catch {
+      continue;
+    }
+  }
 }
 
 function toRealtimeWebrtcError(

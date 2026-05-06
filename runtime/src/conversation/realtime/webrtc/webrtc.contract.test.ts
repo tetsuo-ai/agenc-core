@@ -27,12 +27,14 @@ class FakeAudioTrack implements RealtimeWebrtcMediaTrack {
 class FakeMediaStream implements RealtimeWebrtcMediaStream {
   readonly track = new FakeAudioTrack();
   readonly #tracks: readonly RealtimeWebrtcMediaTrack[];
+  getAudioTracksError: Error | null = null;
 
   constructor(tracks?: readonly RealtimeWebrtcMediaTrack[]) {
     this.#tracks = tracks ?? [this.track];
   }
 
   getAudioTracks(): readonly RealtimeWebrtcMediaTrack[] {
+    if (this.getAudioTracksError !== null) throw this.getAudioTracksError;
     return this.#tracks;
   }
 }
@@ -164,7 +166,11 @@ class FakePeerConnection implements RealtimeWebrtcPeerConnection {
   }
 }
 
-function fakeRuntime(): {
+function fakeRuntime(
+  options: {
+    readonly setInterval?: RealtimeWebrtcRuntimeSupport["setInterval"];
+  } = {},
+): {
   readonly peerConnection: FakePeerConnection;
   readonly mediaStream: FakeMediaStream;
   readonly runtime: RealtimeWebrtcRuntimeSupport;
@@ -176,10 +182,12 @@ function fakeRuntime(): {
   const runtime: RealtimeWebrtcRuntimeSupport = {
     createPeerConnection: () => peerConnection,
     getUserMedia: () => Promise.resolve(mediaStream),
-    setInterval: (callback) => {
-      intervalCallback = callback;
-      return { unref: vi.fn() } as RealtimeWebrtcTimer;
-    },
+    setInterval:
+      options.setInterval ??
+      ((callback) => {
+        intervalCallback = callback;
+        return { unref: vi.fn() } as RealtimeWebrtcTimer;
+      }),
     clearInterval: vi.fn(),
   };
   return {
@@ -400,6 +408,48 @@ describe("RealtimeWebrtcSession", () => {
 
     expect(mediaStream.track.stop).toHaveBeenCalledTimes(1);
     expect(fixture.peerConnection.close).toHaveBeenCalledTimes(1);
+  });
+
+  test("fails without connected when local audio polling setup throws", async () => {
+    const fixture = fakeRuntime({
+      setInterval: () => {
+        throw new Error("timer failed");
+      },
+    });
+    const started = await RealtimeWebrtcSession.start({
+      runtime: fixture.runtime,
+    });
+
+    await expect(
+      started.handle.applyAnswerSdp(VALID_ANSWER_SDP),
+    ).rejects.toThrow(
+      "failed to start realtime WebRTC local audio polling: timer failed",
+    );
+
+    expect(started.events.tryRecv()).toEqual({
+      type: "failed",
+      message:
+        "failed to start realtime WebRTC local audio polling: timer failed",
+    });
+    expect(fixture.peerConnection.close).toHaveBeenCalledTimes(1);
+  });
+
+  test("cleanup still closes the peer connection when track cleanup throws", async () => {
+    const fixture = fakeRuntime();
+    const started = await RealtimeWebrtcSession.start({
+      runtime: fixture.runtime,
+    });
+    fixture.mediaStream.track.stop.mockImplementation(() => {
+      throw new Error("stop failed");
+    });
+    fixture.mediaStream.getAudioTracksError = new Error("track list failed");
+
+    await started.handle.close();
+
+    expect(fixture.peerConnection.close).toHaveBeenCalledTimes(1);
+    await expect(nextEvent(started.events)).resolves.toEqual({
+      type: "closed",
+    });
   });
 
   test("ignores transient stats failures during local audio polling", async () => {
