@@ -94,6 +94,7 @@ const ITEM_EVIDENCE = {
   "CF-06": {
     files: [
       "runtime/src/config/schema.ts",
+      "runtime/src/config/PARITY.md",
       "runtime/src/config/config.test.ts",
       "runtime/src/state/pruning.ts",
       "runtime/src/state/pruning.test.ts",
@@ -101,15 +102,24 @@ const ITEM_EVIDENCE = {
       "runtime/src/state/snapshot-policy.test.ts",
       "runtime/src/app-server/daemon-cli.ts",
       "runtime/src/app-server/daemon-cli.contract.test.ts",
+      "runtime/src/agents/run-agent.ts",
     ],
     grepPresent: [
       { pattern: "AgentRunRetentionConfig", scope: "runtime/src/config/schema.ts" },
+      { pattern: "completed_days: 30", scope: "runtime/src/config/schema.ts" },
+      { pattern: "failed_days: 90", scope: "runtime/src/config/schema.ts" },
+      { pattern: "snapshot_days: 3", scope: "runtime/src/config/schema.ts" },
+      { pattern: "snapshot_max_count: 10_000", scope: "runtime/src/config/schema.ts" },
+      { pattern: "snapshot_max_bytes: 67_108_864", scope: "runtime/src/config/schema.ts" },
       { pattern: "agent\\.retention TOML overrides the default pruning windows", scope: "runtime/src/config/config.test.ts" },
+      { pattern: "runtime/src/agents/run-agent\\.ts.*does not read retention directly", scope: "runtime/src/config/PARITY.md" },
       { pattern: "pruneTerminalAgentRuns\\(driver, config\\.agent\\?\\.retention\\)", scope: "runtime/src/app-server/daemon-cli.ts" },
       { pattern: "pruneSessionStateSnapshots\\(driver, config\\.agent\\?\\.retention\\)", scope: "runtime/src/app-server/daemon-cli.ts" },
       { pattern: "snapshotRetention: authStartup\\.config\\.agent\\?\\.retention", scope: "runtime/src/app-server/daemon-cli.ts" },
       { pattern: "snapshotRetention: \\{ snapshot_max_count: 2 \\}", scope: "runtime/src/state/snapshot-policy.test.ts" },
-      { pattern: "foreground daemon applies agent\\.retention config to startup pruning", scope: "runtime/src/app-server/daemon-cli.contract.test.ts" },
+      { pattern: "run-prune-failed", scope: "runtime/src/app-server/daemon-cli.contract.test.ts" },
+      { pattern: "foreground daemon applies agent\\.retention config to terminal and snapshot startup pruning", scope: "runtime/src/app-server/daemon-cli.contract.test.ts" },
+      { pattern: "snapshot_max_bytes = 64", scope: "runtime/src/app-server/daemon-cli.contract.test.ts" },
     ],
     tests: [
       "runtime/src/config/config.test.ts",

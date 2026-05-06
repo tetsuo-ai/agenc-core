@@ -716,7 +716,7 @@ describe("AgenC daemon CLI", () => {
     await rm(agencHome, { recursive: true, force: true });
   });
 
-  it("foreground daemon applies agent.retention config to startup pruning", async () => {
+  it("foreground daemon applies agent.retention config to terminal and snapshot startup pruning", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
     const io = createIo();
@@ -728,29 +728,89 @@ describe("AgenC daemon CLI", () => {
 [agent.retention]
 completed_days = 10000
 failed_days = 10000
-snapshot_days = 10000
-snapshot_max_count = 10000
-snapshot_max_bytes = 67108864
+snapshot_days = 1
+snapshot_max_count = 2
+snapshot_max_bytes = 64
       `,
     );
     seedTerminalDaemonRun(agencHome, {
       cwd: process.cwd(),
-      runId: "run-retention-config",
-      sessionId: "session-retention-config",
+      runId: "run-retention-completed",
+      sessionId: "session-retention-completed",
       status: "completed",
       lastActiveAt: "2026-01-01T00:00:00.000Z",
     });
+    seedTerminalDaemonRun(agencHome, {
+      cwd: process.cwd(),
+      runId: "run-retention-failed",
+      sessionId: "session-retention-failed",
+      status: "failed",
+      lastActiveAt: "2026-01-01T00:00:00.000Z",
+    });
+    seedDaemonRunWithSnapshots(agencHome, {
+      cwd: process.cwd(),
+      runId: "run-retention-age",
+      sessionId: "session-retention-age",
+      snapshots: [
+        { snapshotAt: "2026-04-29T00:00:00.000Z" },
+        { snapshotAt: "2026-05-06T00:00:00.000Z" },
+      ],
+    });
+    seedDaemonRunWithSnapshots(agencHome, {
+      cwd: process.cwd(),
+      runId: "run-retention-count",
+      sessionId: "session-retention-count",
+      snapshots: [
+        { snapshotAt: "2026-05-06T00:00:00.000Z" },
+        { snapshotAt: "2026-05-06T00:00:01.000Z" },
+        { snapshotAt: "2026-05-06T00:00:02.000Z" },
+      ],
+    });
+    seedDaemonRunWithSnapshots(agencHome, {
+      cwd: process.cwd(),
+      runId: "run-retention-bytes",
+      sessionId: "session-retention-bytes",
+      snapshots: [
+        {
+          snapshotAt: "2026-05-06T00:00:00.000Z",
+          conversation: [{ role: "assistant", content: "x".repeat(256) }],
+        },
+        { snapshotAt: "2026-05-06T00:00:01.000Z" },
+      ],
+    });
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent-retention-unused",
+        startedAt: "2026-05-06T00:00:00.000Z",
+        status: "running",
+      }),
+    };
 
     const running = runAgenCDaemonCli(
       { kind: "command", action: "run" },
-      { host, io, signalProcess },
+      { host, io, signalProcess, runner },
     );
     let stopped = false;
     try {
       await expect(waitForPid(pidPath)).resolves.toBe(4100);
       expect(
-        readAgentRunStatus(agencHome, process.cwd(), "run-retention-config"),
+        readAgentRunStatus(agencHome, process.cwd(), "run-retention-completed"),
       ).toBe("completed");
+      expect(
+        readAgentRunStatus(agencHome, process.cwd(), "run-retention-failed"),
+      ).toBe("failed");
+      expect(
+        readSnapshotTimes(agencHome, process.cwd(), "session-retention-age"),
+      ).toEqual(["2026-05-06T00:00:00.000Z"]);
+      expect(
+        readSnapshotTimes(agencHome, process.cwd(), "session-retention-count"),
+      ).toEqual([
+        "2026-05-06T00:00:01.000Z",
+        "2026-05-06T00:00:02.000Z",
+      ]);
+      expect(
+        readSnapshotTimes(agencHome, process.cwd(), "session-retention-bytes"),
+      ).toEqual(["2026-05-06T00:00:01.000Z"]);
 
       signalProcess.emit("SIGTERM");
       stopped = true;
@@ -784,6 +844,13 @@ snapshot_max_bytes = 67108864
       runId: "run-prune",
       sessionId: "session-prune",
       status: "completed",
+      lastActiveAt: "2026-01-01T00:00:00.000Z",
+    });
+    seedTerminalDaemonRun(agencHome, {
+      cwd: process.cwd(),
+      runId: "run-prune-failed",
+      sessionId: "session-prune-failed",
+      status: "failed",
       lastActiveAt: "2026-01-01T00:00:00.000Z",
     });
     seedRecoverableDaemonState(agencHome, {
@@ -987,6 +1054,9 @@ snapshot_max_bytes = 67108864
       "poisoned",
     );
     expect(readAgentRunStatus(agencHome, process.cwd(), "run-prune")).toBeUndefined();
+    expect(
+      readAgentRunStatus(agencHome, process.cwd(), "run-prune-failed"),
+    ).toBeUndefined();
 
     await rm(otherCwd, { recursive: true, force: true });
     await rm(agencHome, { recursive: true, force: true });
@@ -1010,6 +1080,7 @@ snapshot_max_bytes = 67108864
 
     const live = restoredLiveAgent("run-replay", "/root/run-replay");
     const dispatch = vi.fn(async () => ({ content: "raw dispatch bypass" }));
+    // Replay uses executable Tool entries; registry.dispatch is kept as a bypass guard.
     const execute = vi.fn(async () => ({ content: "file text" }));
     const resumeAgentFromRollout = vi.fn(async () => ({
       resumedCount: 1,
@@ -1795,6 +1866,74 @@ function seedTerminalDaemonRun(
   }
 }
 
+function seedDaemonRunWithSnapshots(
+  agencHome: string,
+  params: {
+    readonly cwd: string;
+    readonly runId: string;
+    readonly sessionId: string;
+    readonly snapshots: readonly {
+      readonly snapshotAt: string;
+      readonly conversation?: readonly unknown[];
+      readonly toolState?: object;
+      readonly mcpConnectionState?: object;
+    }[];
+  },
+): void {
+  const lastSnapshotAt =
+    params.snapshots[params.snapshots.length - 1]?.snapshotAt ??
+    "2026-05-06T00:00:00.000Z";
+  const driver = openStateDatabases({
+    cwd: params.cwd,
+    agencHome,
+  });
+  try {
+    driver
+      .prepareState(
+        `INSERT INTO agent_runs (
+          id,
+          objective,
+          status,
+          started_at,
+          last_active_at,
+          current_session_id,
+          created_by_client,
+          last_snapshot_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        params.runId,
+        "prune daemon snapshots",
+        "running",
+        "2026-05-06T00:00:00.000Z",
+        lastSnapshotAt,
+        params.sessionId,
+        "client-1",
+        lastSnapshotAt,
+      );
+    const insertSnapshot = driver.prepareState(
+      `INSERT INTO session_state_snapshots (
+        session_id,
+        snapshot_at,
+        conversation_json,
+        tool_state_json,
+        mcp_connection_state_json
+      ) VALUES (?, ?, ?, ?, ?)`,
+    );
+    for (const snapshot of params.snapshots) {
+      insertSnapshot.run(
+        params.sessionId,
+        snapshot.snapshotAt,
+        JSON.stringify(snapshot.conversation ?? []),
+        JSON.stringify(snapshot.toolState ?? {}),
+        JSON.stringify(snapshot.mcpConnectionState ?? {}),
+      );
+    }
+  } finally {
+    driver.close();
+  }
+}
+
 function readRecoveredToolStatus(
   agencHome: string,
   cwd: string,
@@ -1834,6 +1973,30 @@ function readAgentRunStatus(
          WHERE id = ?`,
       )
       .get(runId)?.status;
+  } finally {
+    driver.close();
+  }
+}
+
+function readSnapshotTimes(
+  agencHome: string,
+  cwd: string,
+  sessionId: string,
+): string[] {
+  const driver = openStateDatabases({
+    cwd,
+    agencHome,
+  });
+  try {
+    return driver
+      .prepareState<[string], { snapshot_at: string }>(
+        `SELECT snapshot_at
+         FROM session_state_snapshots
+         WHERE session_id = ?
+         ORDER BY snapshot_at ASC`,
+      )
+      .all(sessionId)
+      .map((row) => row.snapshot_at);
   } finally {
     driver.close();
   }
