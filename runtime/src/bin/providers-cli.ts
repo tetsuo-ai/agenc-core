@@ -62,6 +62,11 @@ export function formatAgenCProvidersCliHelpText(): string {
     "Options:",
     "  --json             Print machine-readable JSON",
     "  --no-local-check   Skip localhost health probes",
+    "",
+    "Examples:",
+    "  agenc providers",
+    "  agenc providers --json",
+    "  agenc providers --no-local-check",
   ].join("\n");
 }
 

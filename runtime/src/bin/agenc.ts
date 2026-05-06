@@ -97,12 +97,14 @@ import {
   resolveResumeSessionId,
 } from "./resume-session.js";
 import {
+  formatAgenCDaemonCliHelpText,
   parseAgenCDaemonCliArgs,
   runAgenCDaemonCli,
 } from "../app-server/daemon-cli.js";
 import {
   createConnectedAgenCJsonLineDaemonTuiClient,
   defaultEnsureDaemonReady,
+  formatAgenCAgentCliHelpText,
   parseAgenCAgentCliArgs,
   resolveAgenCAgentAttachCwd,
   runAgenCAgentCli,
@@ -112,21 +114,36 @@ import {
   ensureAgenCDaemonAutostart,
   resolveAgenCDaemonAutostartEnabled,
 } from "../app-server/daemon-autostart.js";
-import { parseAgenCAuthCliArgs, runAgenCAuthCli } from "./auth-cli.js";
-import { parseAgenCMcpCliArgs, runAgenCMcpCli } from "./mcp-cli.js";
 import {
+  formatAgenCAuthCliHelpText,
+  parseAgenCAuthCliArgs,
+  runAgenCAuthCli,
+} from "./auth-cli.js";
+import {
+  formatAgenCMcpCliHelpText,
+  parseAgenCMcpCliArgs,
+  runAgenCMcpCli,
+} from "./mcp-cli.js";
+import {
+  formatAgenCProvidersCliHelpText,
   parseAgenCProvidersCliArgs,
   runAgenCProvidersCli,
 } from "./providers-cli.js";
 import {
+  formatAgenCPluginCliHelpText,
   parseAgenCPluginCliArgs,
   runAgenCPluginCli,
 } from "../plugins/cli/pluginCliCommands.js";
 import {
+  formatAgenCPermissionsCliHelpText,
   parseAgenCPermissionsCliArgs,
   runAgenCPermissionsCli,
 } from "../permissions/permission-cli.js";
-import { parseAgenCStateCliArgs, runAgenCStateCli } from "./state-cli.js";
+import {
+  formatAgenCStateCliHelpText,
+  parseAgenCStateCliArgs,
+  runAgenCStateCli,
+} from "./state-cli.js";
 import {
   executeUserPromptSubmitHooks,
   getUserPromptSubmitHookBlockingMessage,
@@ -157,6 +174,7 @@ function hasArgFlag(argv: readonly string[], flag: string): boolean {
 export function formatCliHelpText(): string {
   return [
     "Usage: agenc [options] [PROMPT]",
+    "       agenc help [command]",
     "       agenc login",
     "       agenc logout",
     "       agenc whoami",
@@ -174,8 +192,19 @@ export function formatCliHelpText(): string {
     "       agenc agent logs <id>",
     "       agenc mcp serve --transport <stdio|sse>",
     "",
+    "Commands:",
+    "  login | logout | whoami                  Manage the configured auth session",
+    "  providers                               Check provider readiness",
+    "  plugin                                  Manage local plugins and marketplaces",
+    "  permissions                             List or update permission rules",
+    "  state                                   Export or import project state",
+    "  daemon                                  Manage the local AgenC daemon",
+    "  agent                                   Start, attach, inspect, or stop background agents",
+    "  mcp                                     Serve AgenC tools over MCP",
+    "  help [command]                          Show top-level or command help",
+    "",
     "Options:",
-    "  --help                                   Show this help text",
+    "  -h, --help                              Show this help text",
     `  --version                                Show version (${VERSION})`,
     "  --no-tui                                 Force one-shot CLI mode",
     "  --no-daemon                              Skip daemon autostart for this invocation",
@@ -190,7 +219,51 @@ export function formatCliHelpText(): string {
     "  --yolo",
     "  --allow-dangerously-skip-permissions     Skip approval prompts",
     "  --image <file|url|data-url>              Attach a startup image",
+    "",
+    "Examples:",
+    "  agenc",
+    "  agenc \"summarize this repository\"",
+    "  agenc --no-tui \"run the tests and report failures\"",
+    "  agenc --resume <session-id>",
+    "  agenc agent start \"fix the failing parser test\"",
+    "  agenc mcp serve --transport stdio",
+    "  agenc help permissions",
   ].join("\n");
+}
+
+function normalizeCliHelpTopic(topic: string): string {
+  return topic.trim().toLowerCase();
+}
+
+export function formatCliHelpTopicText(topic: string): string | null {
+  switch (normalizeCliHelpTopic(topic)) {
+    case "":
+      return formatCliHelpText();
+    case "agent":
+      return formatAgenCAgentCliHelpText();
+    case "help":
+      return formatCliHelpText();
+    case "auth":
+    case "login":
+    case "logout":
+    case "whoami":
+      return formatAgenCAuthCliHelpText();
+    case "daemon":
+      return formatAgenCDaemonCliHelpText();
+    case "mcp":
+      return formatAgenCMcpCliHelpText();
+    case "permissions":
+      return formatAgenCPermissionsCliHelpText();
+    case "plugin":
+    case "plugins":
+      return formatAgenCPluginCliHelpText();
+    case "providers":
+      return formatAgenCProvidersCliHelpText();
+    case "state":
+      return formatAgenCStateCliHelpText();
+    default:
+      return null;
+  }
 }
 
 type StartupShortCircuit =
@@ -201,7 +274,27 @@ type StartupShortCircuit =
 export function detectStartupShortCircuit(
   argv: readonly string[],
 ): StartupShortCircuit | null {
-  if (hasArgFlag(argv, "--help")) {
+  if (argv[0] === "help") {
+    if (argv.length > 2) {
+      return {
+        kind: "error",
+        message: "help accepts at most one command topic",
+      };
+    }
+    const topic = argv[1] ?? "";
+    if (topic === "--help" || topic === "-h") {
+      return { kind: "help", text: formatCliHelpText() };
+    }
+    const text = formatCliHelpTopicText(topic);
+    if (text === null) {
+      return {
+        kind: "error",
+        message: `unknown help topic: ${topic}\nRun 'agenc help' to see available topics.`,
+      };
+    }
+    return { kind: "help", text };
+  }
+  if (hasArgFlag(argv, "--help") || hasArgFlag(argv, "-h")) {
     return { kind: "help", text: formatCliHelpText() };
   }
   if (hasArgFlag(argv, "--version")) {
