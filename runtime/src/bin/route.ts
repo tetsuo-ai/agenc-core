@@ -74,6 +74,7 @@ export const ROUTING_BOOLEAN_FLAGS = Object.freeze(["--no-tui"] as const);
 export const STARTUP_BOOLEAN_FLAGS = Object.freeze([
   "--help",
   "--version",
+  "--no-daemon",
   "--yolo",
   "--continue",
   "-c",
