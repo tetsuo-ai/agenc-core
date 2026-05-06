@@ -678,6 +678,7 @@ function validateMcpServerConfig(
   }
   const command = value.command;
   const endpoint = value.endpoint ?? value.url;
+  const transport = value.transport ?? value.type;
   if (
     command !== undefined &&
     (typeof command !== "string" || command.trim().length === 0)
@@ -692,6 +693,18 @@ function validateMcpServerConfig(
   }
   if (command === undefined && endpoint === undefined) {
     issues.push({ path: field, message: "MCP server requires command or endpoint" });
+  }
+  if (transport === "stdio" && command === undefined) {
+    issues.push({ path: `${field}.command`, message: "MCP stdio server requires command" });
+  }
+  if (
+    (transport === "http" ||
+      transport === "sse" ||
+      transport === "websocket" ||
+      transport === "ws") &&
+    endpoint === undefined
+  ) {
+    issues.push({ path: `${field}.endpoint`, message: "MCP remote server requires endpoint" });
   }
   validateOptionalStringArray(value.args, `${field}.args`, issues);
   validateOptionalStringRecord(value.env, `${field}.env`, issues);

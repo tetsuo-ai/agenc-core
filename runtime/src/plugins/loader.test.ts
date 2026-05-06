@@ -520,6 +520,14 @@ describe("plugin manifest schema", () => {
                 transport: "socket",
                 endpoint: "urn:agenc:plugin:mcp",
               },
+              stdioEndpointOnly: {
+                transport: "stdio",
+                endpoint: "urn:agenc:plugin:mcp",
+              },
+              remoteCommandOnly: {
+                transport: "http",
+                command: "node",
+              },
               missingTarget: {},
             },
             lspServers: {
@@ -556,6 +564,8 @@ describe("plugin manifest schema", () => {
           "mcpServers.emptyCommand.command",
           "mcpServers.badType.type",
           "mcpServers.badTransport.transport",
+          "mcpServers.stdioEndpointOnly.command",
+          "mcpServers.remoteCommandOnly.endpoint",
           "mcpServers.missingTarget",
           "lspServers.missingExtensionMap.extensionToLanguage",
           "lspServers.badShape.command",
@@ -887,6 +897,12 @@ describe("plugin loader", () => {
             type: "ws",
             url: "ws://127.0.0.1:4101/mcp",
           },
+          inferredWebsocket: {
+            endpoint: "wss://127.0.0.1:4102/mcp",
+          },
+          inferredHttp: {
+            endpoint: "https://127.0.0.1:4103/mcp",
+          },
         },
       });
 
@@ -905,6 +921,14 @@ describe("plugin loader", () => {
       expect(plugin?.mcpServers.alias).toMatchObject({
         transport: "ws",
         endpoint: "ws://127.0.0.1:4101/mcp",
+      });
+      expect(plugin?.mcpServers.inferredWebsocket).toMatchObject({
+        transport: "websocket",
+        endpoint: "wss://127.0.0.1:4102/mcp",
+      });
+      expect(plugin?.mcpServers.inferredHttp).toMatchObject({
+        transport: "http",
+        endpoint: "https://127.0.0.1:4103/mcp",
       });
     });
   });

@@ -135,6 +135,65 @@ describe("plugin MCP sandboxing", () => {
     });
   });
 
+  test("rejects missing cwd leaves beneath symlinked ancestors that escape the plugin root", async () => {
+    if (process.platform === "win32") return;
+    await withTempPluginRoot(async ({ root, pluginRoot, dataDir, plugin }) => {
+      const outside = path.join(root, "outside");
+      const link = path.join(pluginRoot, "outside-link");
+      await mkdir(outside, { recursive: true });
+      await symlink(outside, link, "dir");
+
+      const result = resolvePluginMcpSandboxedServer(
+        plugin,
+        "linked-missing",
+        { command: "node", cwd: path.join(link, "created-at-startup") },
+        { dataDir },
+      );
+
+      expect(result).toEqual({
+        issue: expect.objectContaining({
+          code: "cwd-outside-plugin-root",
+        }),
+      });
+    });
+  });
+
+  test("rejects transport configs that do not match their process shape", async () => {
+    await withTempPluginRoot(async ({ dataDir, plugin }) => {
+      const stdioEndpointOnly = resolvePluginMcpSandboxedServer(
+        plugin,
+        "stdio-endpoint",
+        {
+          transport: "stdio",
+          endpoint: "urn:agenc:plugin:stdio",
+        },
+        { dataDir },
+      );
+      expect(stdioEndpointOnly).toEqual({
+        issue: expect.objectContaining({
+          code: "invalid-transport-config",
+          message: expect.stringContaining("requires a command"),
+        }),
+      });
+
+      const remoteCommandOnly = resolvePluginMcpSandboxedServer(
+        plugin,
+        "http-command",
+        {
+          transport: "http",
+          command: "node",
+        },
+        { dataDir },
+      );
+      expect(remoteCommandOnly).toEqual({
+        issue: expect.objectContaining({
+          code: "invalid-transport-config",
+          message: expect.stringContaining("requires an endpoint"),
+        }),
+      });
+    });
+  });
+
   test("passes remote MCP servers through without child-process sandbox metadata", async () => {
     await withTempPluginRoot(async ({ dataDir, plugin }) => {
       for (const transport of ["http", "sse", "websocket", "ws"] as const) {

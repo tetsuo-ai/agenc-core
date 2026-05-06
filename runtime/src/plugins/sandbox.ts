@@ -37,7 +37,8 @@ export const RESERVED_PLUGIN_MCP_SANDBOX_ENV_KEYS = Object.freeze([
 
 export type PluginMcpSandboxIssueCode =
   | "cwd-outside-plugin-root"
-  | "cwd-realpath-failed";
+  | "cwd-realpath-failed"
+  | "invalid-transport-config";
 
 export interface PluginMcpSandboxIssue {
   readonly code: PluginMcpSandboxIssueCode;
@@ -84,6 +85,17 @@ function tryRealpath(value: string): RealpathResult {
   }
 }
 
+function deepestExistingAncestor(value: string): RealpathResult {
+  let current = path.resolve(value);
+  for (;;) {
+    const result = tryRealpath(current);
+    if (result.status !== "missing") return result;
+    const parent = path.dirname(current);
+    if (parent === current) return result;
+    current = parent;
+  }
+}
+
 function realpathContainmentIssue(
   pluginRoot: string,
   cwd: string,
@@ -97,7 +109,23 @@ function realpathContainmentIssue(
   }
 
   const realCwd = tryRealpath(cwd);
-  if (realCwd.status === "missing") return null;
+  if (realCwd.status === "missing") {
+    const realAncestor = deepestExistingAncestor(cwd);
+    if (realAncestor.status === "missing") return null;
+    if (realAncestor.status === "failed" || realAncestor.path === undefined) {
+      return {
+        code: "cwd-realpath-failed",
+        message: `Could not resolve plugin MCP working directory ancestor for sandbox containment: ${realAncestor.message ?? cwd}`,
+      };
+    }
+    if (!pathInsideOrEqual(realRoot.path, realAncestor.path)) {
+      return {
+        code: "cwd-outside-plugin-root",
+        message: `Plugin MCP working directory escapes plugin root: ${cwd}`,
+      };
+    }
+    return null;
+  }
   if (realCwd.status === "failed" || realCwd.path === undefined) {
     return {
       code: "cwd-realpath-failed",
@@ -120,7 +148,11 @@ export function isPluginMcpRemoteTransport(
     server.transport === "sse" ||
     server.transport === "websocket" ||
     server.transport === "ws" ||
-    (server.command === undefined && server.endpoint !== undefined);
+    (
+      server.transport === undefined &&
+      server.command === undefined &&
+      server.endpoint !== undefined
+    );
 }
 
 export function isPluginMcpStdioChildProcess(
@@ -128,6 +160,40 @@ export function isPluginMcpStdioChildProcess(
 ): boolean {
   return (server.transport === undefined || server.transport === "stdio") &&
     server.command !== undefined;
+}
+
+function transportConfigIssue(
+  server: Pick<McpServerConfig, "transport" | "endpoint" | "command">,
+): PluginMcpSandboxIssue | null {
+  if (
+    (server.transport === "stdio" || server.transport === undefined) &&
+    server.command === undefined &&
+    server.endpoint === undefined
+  ) {
+    return {
+      code: "invalid-transport-config",
+      message: "Plugin MCP stdio server requires a command",
+    };
+  }
+  if (server.transport === "stdio" && server.command === undefined) {
+    return {
+      code: "invalid-transport-config",
+      message: "Plugin MCP stdio server requires a command",
+    };
+  }
+  if (
+    (server.transport === "http" ||
+      server.transport === "sse" ||
+      server.transport === "websocket" ||
+      server.transport === "ws") &&
+    server.endpoint === undefined
+  ) {
+    return {
+      code: "invalid-transport-config",
+      message: "Plugin MCP remote server requires an endpoint",
+    };
+  }
+  return null;
 }
 
 export function pluginMcpSandboxEnvironment(
@@ -169,6 +235,9 @@ export function resolvePluginMcpSandboxedServer(
     readonly dataDir?: string;
   } = {},
 ): PluginMcpSandboxResult {
+  const transportIssue = transportConfigIssue(server);
+  if (transportIssue !== null) return { issue: transportIssue };
+
   if (isPluginMcpRemoteTransport(server) || !isPluginMcpStdioChildProcess(server)) {
     return { server: { ...server } };
   }

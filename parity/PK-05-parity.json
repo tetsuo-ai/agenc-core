@@ -15,7 +15,8 @@
     "runtime/src/plugins/loader.ts",
     "runtime/src/config/schema.ts",
     "runtime/src/mcp-client/types.ts",
-    "runtime/src/plugins/PARITY.md"
+    "runtime/src/plugins/PARITY.md",
+    "runtime/src/plugins/test-fixtures/plugin-mcp-env-server.cjs"
   ],
   "tests": [
     "runtime/src/plugins/sandbox.test.ts",
@@ -45,6 +46,17 @@
       ],
       "evidence": [
         "runtime/src/plugins/sandbox.test.ts",
+        "runtime/src/plugins/registration.test.ts"
+      ]
+    },
+    {
+      "source": "src/utils/plugins/mcpPluginIntegration.ts",
+      "target": "runtime/src/plugins/registration/mcp-plugin-integration.ts",
+      "coverage": [
+        "registered plugin MCP stdio servers start through the live MCP manager as child processes",
+        "the child process observes the sandbox-reserved environment and contained cwd"
+      ],
+      "evidence": [
         "runtime/src/plugins/registration.test.ts"
       ]
     },
