@@ -4,6 +4,11 @@ import * as React from 'react';
 import { useSyncExternalStore } from 'react';
 import { Box, Text } from '../ink.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../agenc/upstream/services/analytics/growthbook.js';
+import {
+  getStats as getContextCollapseStats,
+  isContextCollapseEnabled,
+  subscribe as subscribeToContextCollapse,
+} from '../../agenc/upstream/services/contextCollapse/index.js';
 import { calculateTokenWarningState, getEffectiveContextWindowSize, isAutoCompactEnabled } from '../../services/compact/autoCompact.js';
 import { useCompactWarningSuppression } from '../../services/compact/compactWarningHook.js';
 import { getUpgradeMessage } from '../../agenc/upstream/utils/model/contextWindowUpgradeCheck.js';
@@ -23,21 +28,10 @@ function CollapseLabel(t0) {
   const {
     upgradeMessage
   } = t0;
-  let t1;
-  if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
-    t1 = require("../../agenc/upstream/services/contextCollapse/index.js");
-    $[0] = t1;
-  } else {
-    t1 = $[0];
-  }
-  const {
-    getStats,
-    subscribe
-  } = t1 as typeof import('../../agenc/upstream/services/contextCollapse/index.js');
   let t2;
   if ($[1] === Symbol.for("react.memo_cache_sentinel")) {
     t2 = () => {
-      const s = getStats();
+      const s = getContextCollapseStats();
       const idleWarn = s.health.emptySpawnWarningEmitted ? 1 : 0;
       return `${s.collapsedSpans}|${s.stagedSpans}|${s.health.totalErrors}|${s.health.totalEmptySpawns}|${idleWarn}`;
     };
@@ -45,7 +39,7 @@ function CollapseLabel(t0) {
   } else {
     t2 = $[1];
   }
-  const snapshot = useSyncExternalStore(subscribe, t2);
+  const snapshot = useSyncExternalStore(subscribeToContextCollapse, t2);
   let t3;
   if ($[2] !== snapshot) {
     t3 = snapshot.split("|").map(Number);
@@ -133,9 +127,6 @@ export function TokenWarning(t0) {
     }
   }
   if (feature("CONTEXT_COLLAPSE")) {
-    const {
-      isContextCollapseEnabled
-    } = require("../../agenc/upstream/services/contextCollapse/index.js") as typeof import('../../agenc/upstream/services/contextCollapse/index.js');
     if (isContextCollapseEnabled()) {
       collapseMode = true;
     }

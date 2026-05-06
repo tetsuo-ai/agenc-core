@@ -10,7 +10,7 @@ import { logEvent } from '../../agenc/upstream/services/analytics/index.js';
 import { errorMessage, ShellError } from '../../agenc/upstream/utils/errors.js';
 import { createSyntheticUserCaveatMessage, createUserInterruptionMessage, createUserMessage, prepareUserContent } from '../../agenc/upstream/utils/messages.js';
 import { resolveDefaultShell } from '../../agenc/upstream/utils/shell/resolveDefaultShell.js';
-import { isPowerShellToolEnabled } from '../../agenc/upstream/utils/shell/shellToolUtils.js';
+import { getPowerShellTool, isPowerShellToolEnabled } from '../../agenc/upstream/utils/shell/shellToolUtils.js';
 import { processToolResultBlock } from '../../agenc/upstream/utils/toolResultStorage.js';
 import { escapeXml } from '../../agenc/upstream/utils/xml.js';
 import type { ProcessUserInputContext } from './processUserInput.js';
@@ -70,21 +70,8 @@ export async function processBashCommand(inputString: string, precedingInputBloc
     // cannot disable sandboxing by setting dangerouslyDisableSandbox directly.
     // PS sandbox is Linux/macOS/WSL2 only — on Windows native, shouldUseSandbox()
     // returns false regardless (unsupported platform).
-    // Lazy-require PowerShellTool so its ~300KB chunk only loads when the
-    // user has actually selected the powershell default shell.
-    type PSMod = typeof import('../../agenc/upstream/tools/PowerShellTool/PowerShellTool.js');
-    let PowerShellTool: PSMod['PowerShellTool'] | null = null;
-    if (usePowerShell) {
-      /* eslint-disable @typescript-eslint/no-require-imports */
-      PowerShellTool = (require('../../agenc/upstream/tools/PowerShellTool/PowerShellTool.js') as PSMod).PowerShellTool;
-      /* eslint-enable @typescript-eslint/no-require-imports */
-    }
-    const shellTool = PowerShellTool ?? BashTool;
-    const response = PowerShellTool ? await PowerShellTool.call({
-      command: inputString,
-      dangerouslyDisableSandbox: true,
-      _dangerouslyDisableSandboxApproved: true
-    }, bashModeContext, undefined, undefined, onProgress) : await BashTool.call({
+    const shellTool = usePowerShell ? getPowerShellTool() : BashTool;
+    const response = await shellTool.call({
       command: inputString,
       dangerouslyDisableSandbox: true,
       _dangerouslyDisableSandboxApproved: true

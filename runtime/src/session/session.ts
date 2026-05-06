@@ -1395,9 +1395,7 @@ export class Session {
    * `getConfiguredServers` / `isConnected` (e.g. a compatibility shim
    * is installed).
    */
-  listMcpClients(): readonly import(
-    "../agenc/upstream/services/mcp/types.js"
-  ).MCPServerConnection[] {
+  listMcpClients(): ReturnType<typeof projectMcpManagerToConnections> {
     const manager = this.services.mcpManager as unknown as
       | import("../agenc/adapters/upstream-mcp-clients.js").McpManagerLike
       | null

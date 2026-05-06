@@ -39,7 +39,6 @@ export function getCandidateLocalInstallDirs(options?: {
 function getCandidateLocalBinaryPaths(localInstallDir: string): string[] {
   return [
     join(localInstallDir, 'node_modules', '.bin', 'agenc'),
-    join(localInstallDir, 'node_modules', '.bin', 'claude'),
   ]
 }
 

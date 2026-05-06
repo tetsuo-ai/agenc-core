@@ -1,4 +1,9 @@
 import { useEffect, useState } from 'react'
+import {
+  currentLimits,
+  getRawUtilization as getUpstreamRawUtilization,
+  statusListeners,
+} from 'src/services/claudeAiLimits.js' // branding-scan: allow existing upstream rate-limit service path
 
 type QuotaStatus = 'allowed' | 'allowed_warning' | 'rejected'
 type RateLimitType =
@@ -33,8 +38,13 @@ type RateLimitService = {
   getRawUtilization(): RawUtilization
 }
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const rateLimitService = require('../../agenc/upstream/services/claudeAiLimits.js') as RateLimitService // branding-scan: allow existing upstream rate-limit service path
+const rateLimitService: RateLimitService = {
+  get currentLimits() {
+    return currentLimits
+  },
+  statusListeners,
+  getRawUtilization: getUpstreamRawUtilization,
+}
 type AgenCAILimits = RateLimitSnapshot
 
 export function useAgenCAiLimits(): AgenCAILimits {

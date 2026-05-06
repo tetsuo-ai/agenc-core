@@ -10,6 +10,11 @@ import type {
   RequestUserInputEvent,
   RequestUserInputResponse,
 } from "../elicitation/types.js";
+import type { projectMcpManagerToConnections } from "../agenc/adapters/upstream-mcp-clients.js";
+
+type TuiMcpServerConnection = ReturnType<
+  typeof projectMcpManagerToConnections
+>[number];
 
 export interface PermissionModeRegistryLike {
   current(): ToolPermissionContext;
@@ -77,7 +82,7 @@ export interface AgenCBridgeSession {
   setPendingProviderSwitch?(
     pending: { provider: string; model: string; profile?: string } | null,
   ): void;
-  listMcpClients?(): readonly import("../agenc/upstream/services/mcp/types.js").MCPServerConnection[];
+  listMcpClients?(): readonly TuiMcpServerConnection[];
 }
 
 export interface ConfigStoreLike {

@@ -13,6 +13,7 @@ import { FileReadTool } from '../../../agenc/upstream/tools/FileReadTool/FileRea
 import { FileWriteTool } from '../../../agenc/upstream/tools/FileWriteTool/FileWriteTool.js';
 import { GlobTool } from '../../../agenc/upstream/tools/GlobTool/GlobTool.js';
 import { GrepTool } from '../../../agenc/upstream/tools/GrepTool/GrepTool.js';
+import { MonitorTool as UpstreamMonitorTool } from '../../../agenc/upstream/tools/MonitorTool/MonitorTool.js';
 import { NotebookEditTool } from '../../../agenc/upstream/tools/NotebookEditTool/NotebookEditTool.js';
 import { PowerShellTool } from '../../../agenc/upstream/tools/PowerShellTool/PowerShellTool.js';
 import { SkillTool } from '../../../agenc/upstream/tools/SkillTool/SkillTool.js';
@@ -27,6 +28,7 @@ import { FallbackPermissionRequest } from '../../../agenc/upstream/components/pe
 import { FileEditPermissionRequest } from '../../../agenc/upstream/components/permissions/FileEditPermissionRequest/FileEditPermissionRequest.js';
 import { FilesystemPermissionRequest } from '../../../agenc/upstream/components/permissions/FilesystemPermissionRequest/FilesystemPermissionRequest.js';
 import { FileWritePermissionRequest } from '../../../agenc/upstream/components/permissions/FileWritePermissionRequest/FileWritePermissionRequest.js';
+import { MonitorPermissionRequest as UpstreamMonitorPermissionRequest } from '../../../agenc/upstream/components/permissions/MonitorPermissionRequest/MonitorPermissionRequest.js';
 import { NotebookEditPermissionRequest } from '../../../agenc/upstream/components/permissions/NotebookEditPermissionRequest/NotebookEditPermissionRequest.js';
 import { PowerShellPermissionRequest } from '../../../agenc/upstream/components/permissions/PowerShellPermissionRequest/PowerShellPermissionRequest.js';
 import { SkillPermissionRequest } from '../../../agenc/upstream/components/permissions/SkillPermissionRequest/SkillPermissionRequest.js';
@@ -50,8 +52,8 @@ const WorkflowTool: Tool | null = feature('WORKFLOW_SCRIPTS')
 const WorkflowPermissionRequest: React.ComponentType<PermissionRequestProps> | null = feature('WORKFLOW_SCRIPTS')
   ? unsupportedPermissionFeature('WORKFLOW_SCRIPTS permission UI')
   : null;
-const MonitorTool = feature('MONITOR_TOOL') ? (require('../../../agenc/upstream/tools/MonitorTool/MonitorTool.js') as typeof import('../../../agenc/upstream/tools/MonitorTool/MonitorTool.js')).MonitorTool : null;
-const MonitorPermissionRequest = feature('MONITOR_TOOL') ? (require('../../../agenc/upstream/components/permissions/MonitorPermissionRequest/MonitorPermissionRequest.js') as typeof import('../../../agenc/upstream/components/permissions/MonitorPermissionRequest/MonitorPermissionRequest.js')).MonitorPermissionRequest : null;
+const MonitorTool = feature('MONITOR_TOOL') ? UpstreamMonitorTool : null;
+const MonitorPermissionRequest = feature('MONITOR_TOOL') ? UpstreamMonitorPermissionRequest : null;
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
 /* eslint-enable @typescript-eslint/no-require-imports */
 import type { z } from 'zod/v4';

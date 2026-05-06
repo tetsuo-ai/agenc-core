@@ -1,10 +1,8 @@
 import { c as _c } from "react-compiler-runtime";
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { feature } from 'bun:bundle';
-// Dead code elimination: conditional import for COORDINATOR_MODE
-/* eslint-disable @typescript-eslint/no-require-imports */
-const coordinatorModule = feature('COORDINATOR_MODE') ? require('../../../agenc/upstream/coordinator/coordinatorMode.js') as typeof import('../../../agenc/upstream/coordinator/coordinatorMode.js') : undefined;
-/* eslint-enable @typescript-eslint/no-require-imports */
+import * as coordinatorRuntime from '../../../agenc/upstream/coordinator/coordinatorMode.js';
+const coordinatorModule = feature('COORDINATOR_MODE') ? coordinatorRuntime : undefined;
 import { Box, Text, Link } from '../../ink.js';
 import * as React from 'react';
 import figures from 'figures';
