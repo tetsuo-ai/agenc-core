@@ -156,6 +156,28 @@ describe("resolveStartupSelection", () => {
     expect(resolved.model).toBe("agenc");
   });
 
+  it('routes model = "agenc" through the hosted AgenC provider', () => {
+    const resolved = resolveStartupSelection({
+      config: mergeConfigs(defaultConfig(), { model: "agenc" }),
+      env: {},
+      argv: ["node", "agenc"],
+    });
+
+    expect(resolved.provider).toBe("agenc");
+    expect(resolved.model).toBe("agenc");
+  });
+
+  it("routes --model agenc through the hosted AgenC provider", () => {
+    const resolved = resolveStartupSelection({
+      config: defaultConfig(),
+      env: {},
+      argv: ["node", "agenc", "--model", "agenc"],
+    });
+
+    expect(resolved.provider).toBe("agenc");
+    expect(resolved.model).toBe("agenc");
+  });
+
   // branding-scan: allow real provider identifier in test title
   it("uses compatible-provider model env ahead of generic OpenAI env", () => {
     const resolved = resolveStartupSelection({

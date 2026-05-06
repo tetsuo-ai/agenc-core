@@ -1,4 +1,5 @@
 import {
+  resolveModel as resolveEnvModel,
   resolveProvider as resolveEnvProvider,
   resolveProviderApiKey as resolveEnvProviderApiKey,
   resolveProviderBaseURL as resolveEnvProviderBaseURL,
@@ -22,6 +23,12 @@ export {
 } from "../llm/registry/provider-info.js";
 
 export type ProviderSlug = keyof typeof BUILT_IN_PROVIDER_DEFAULT_MODELS;
+
+export function isAgencModelShortcut(
+  model: string | undefined,
+): boolean {
+  return model?.trim().toLowerCase() === "agenc";
+}
 
 export interface ResolvedProviderSettings {
   readonly provider: ProviderSlug;
@@ -63,16 +70,28 @@ export function readProviderConfig(
 
 export function resolveProviderSelection(params: {
   readonly cliProvider?: string;
+  readonly cliModel?: string;
   readonly config: AgenCConfig;
   readonly env?: EnvSnapshot;
   readonly fallback?: ProviderSlug;
 }): ProviderSlug | undefined {
-  const resolved =
+  const explicitProvider =
     normalizeProviderSlug(params.cliProvider) ??
-    normalizeProviderSlug(resolveEnvProvider(params.env)) ??
+    normalizeProviderSlug(resolveEnvProvider(params.env));
+  if (explicitProvider) return explicitProvider;
+
+  const envModel = resolveEnvModel("", params.env).trim();
+  const resolved =
+    isAgencModelShortcut(params.cliModel) ||
+    isAgencModelShortcut(envModel) ||
+    isAgencModelShortcut(params.config.model)
+      ? "agenc"
+      : undefined;
+  return (
+    resolved ??
     normalizeProviderSlug(params.config.model_provider) ??
-    params.fallback;
-  return resolved;
+    params.fallback
+  );
 }
 
 export function resolveProviderSettings(
