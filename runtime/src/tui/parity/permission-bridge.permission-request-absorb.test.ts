@@ -25,6 +25,7 @@ const permissionMocks = vi.hoisted(() => {
     FileWriteTool: tool("Write"),
     GlobTool: tool("Glob"),
     GrepTool: tool("Grep"),
+    MonitorTool: tool("Monitor"),
     NotebookEditTool: tool("NotebookEdit"),
     PowerShellTool: tool("PowerShell"),
     SkillTool: tool("Skill"),
@@ -37,6 +38,7 @@ const permissionMocks = vi.hoisted(() => {
     FileEditPermissionRequest: component(),
     FilesystemPermissionRequest: component(),
     FileWritePermissionRequest: component(),
+    MonitorPermissionRequest: component(),
     NotebookEditPermissionRequest: component(),
     PowerShellPermissionRequest: component(),
     SkillPermissionRequest: component(),
@@ -79,6 +81,9 @@ vi.mock("../../tools/GlobTool/GlobTool.js", () => ({
 }));
 vi.mock("../../tools/GrepTool/GrepTool.js", () => ({
   GrepTool: permissionMocks.GrepTool,
+}));
+vi.mock("../../tools/MonitorTool/MonitorTool.js", () => ({
+  MonitorTool: permissionMocks.MonitorTool,
 }));
 vi.mock("../../tools/NotebookEditTool/NotebookEditTool.js", () => ({
   NotebookEditTool: permissionMocks.NotebookEditTool,
@@ -136,6 +141,12 @@ vi.mock(
   "../components/permissions/FileWritePermissionRequest/FileWritePermissionRequest.js",
   () => ({
     FileWritePermissionRequest: permissionMocks.FileWritePermissionRequest,
+  }),
+);
+vi.mock(
+  "../components/permissions/MonitorPermissionRequest/MonitorPermissionRequest.js",
+  () => ({
+    MonitorPermissionRequest: permissionMocks.MonitorPermissionRequest,
   }),
 );
 vi.mock(
@@ -198,7 +209,7 @@ describe("PermissionRequest absorb wiring", () => {
       existsSync(
         resolve(
           runtimeRoot,
-          "src/tui/components/permissions",
+          "src/agenc/upstream/components/permissions",
           "PermissionRequest.tsx",
         ),
       ),

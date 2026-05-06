@@ -144,6 +144,75 @@ export function findActualString(
   return fileContent.substring(idx, idx + searchString.length);
 }
 
+function isOpeningQuoteContext(chars: readonly string[], index: number): boolean {
+  if (index === 0) return true;
+  const prev = chars[index - 1];
+  return (
+    prev === " " ||
+    prev === "\t" ||
+    prev === "\n" ||
+    prev === "\r" ||
+    prev === "(" ||
+    prev === "[" ||
+    prev === "{" ||
+    prev === "—" ||
+    prev === "–"
+  );
+}
+
+function applyCurlyDoubleQuotes(str: string): string {
+  const chars = [...str];
+  return chars
+    .map((char, index) => {
+      if (char !== '"') return char;
+      return isOpeningQuoteContext(chars, index)
+        ? LEFT_DOUBLE_CURLY_QUOTE
+        : RIGHT_DOUBLE_CURLY_QUOTE;
+    })
+    .join("");
+}
+
+function applyCurlySingleQuotes(str: string): string {
+  const chars = [...str];
+  return chars
+    .map((char, index) => {
+      if (char !== "'") return char;
+      const prev = index > 0 ? chars[index - 1] : undefined;
+      const next = index < chars.length - 1 ? chars[index + 1] : undefined;
+      const isContraction =
+        prev !== undefined &&
+        next !== undefined &&
+        /\p{L}/u.test(prev) &&
+        /\p{L}/u.test(next);
+      if (isContraction) return RIGHT_SINGLE_CURLY_QUOTE;
+      return isOpeningQuoteContext(chars, index)
+        ? LEFT_SINGLE_CURLY_QUOTE
+        : RIGHT_SINGLE_CURLY_QUOTE;
+    })
+    .join("");
+}
+
+function preserveQuoteStyle(
+  oldString: string,
+  actualOldString: string,
+  newString: string,
+): string {
+  if (oldString === actualOldString) return newString;
+
+  const hasDoubleQuotes =
+    actualOldString.includes(LEFT_DOUBLE_CURLY_QUOTE) ||
+    actualOldString.includes(RIGHT_DOUBLE_CURLY_QUOTE);
+  const hasSingleQuotes =
+    actualOldString.includes(LEFT_SINGLE_CURLY_QUOTE) ||
+    actualOldString.includes(RIGHT_SINGLE_CURLY_QUOTE);
+  if (!hasDoubleQuotes && !hasSingleQuotes) return newString;
+
+  let result = newString;
+  if (hasDoubleQuotes) result = applyCurlyDoubleQuotes(result);
+  if (hasSingleQuotes) result = applyCurlySingleQuotes(result);
+  return result;
+}
+
 // ── tool config / errors ──────────────────────────────────────────────
 
 export interface FileEditToolConfig {
@@ -355,11 +424,40 @@ function applyEdit(
   oldString: string,
   newString: string,
   replaceAll: boolean,
-): string {
-  if (replaceAll) {
-    return fileContent.split(oldString).join(newString);
+): { updated: string; replacements: number } {
+  let search = oldString;
+  // Donor parity: deleting a string that appears before a newline removes
+  // that following newline too. This is deliberately substring-based, so
+  // inline `oldString + "\n"` matches join the surrounding lines.
+  const stripTrailingNewline =
+    newString === "" &&
+    !oldString.endsWith("\n") && fileContent.includes(`${oldString}\n`);
+  if (stripTrailingNewline) search = `${oldString}\n`;
+
+  const updated = replaceAll
+    ? fileContent.replaceAll(search, () => newString)
+    : fileContent.replace(search, () => newString);
+  return {
+    updated,
+    replacements: countReplacementOccurrences(fileContent, search, replaceAll),
+  };
+}
+
+function countReplacementOccurrences(
+  fileContent: string,
+  search: string,
+  replaceAll: boolean,
+): number {
+  if (search === "") return 0;
+  if (!replaceAll) return fileContent.includes(search) ? 1 : 0;
+  let count = 0;
+  let from = 0;
+  while (true) {
+    const idx = fileContent.indexOf(search, from);
+    if (idx < 0) return count;
+    count += 1;
+    from = idx + search.length;
   }
-  return fileContent.replace(oldString, newString);
 }
 
 function applyValidatedEdit(
@@ -395,10 +493,13 @@ function applyValidatedEdit(
     };
   }
 
-  return {
-    updated: applyEdit(fileContent, actualOldString, newString, replaceAll),
-    replacements: matches,
-  };
+  const actualNewString = preserveQuoteStyle(
+    oldString,
+    actualOldString,
+    newString,
+  );
+
+  return applyEdit(fileContent, actualOldString, actualNewString, replaceAll);
 }
 
 /**

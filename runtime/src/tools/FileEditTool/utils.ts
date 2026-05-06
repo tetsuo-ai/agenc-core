@@ -1,7 +1,7 @@
 import { type StructuredPatchHunk, structuredPatch } from 'diff'
-import { logError } from 'src/utils/log.js'
-import { expandPath } from 'src/utils/path.js'
-import { countCharInString } from 'src/utils/stringUtils.js'
+import { logError } from '../../utils/log.js'
+import { expandPath } from '../../utils/path.js'
+import { countCharInString } from '../../utils/stringUtils.js'
 import {
   DIFF_TIMEOUT_MS,
   getPatchForDisplay,
@@ -23,10 +23,13 @@ export const RIGHT_SINGLE_CURLY_QUOTE = '’'
 export const LEFT_DOUBLE_CURLY_QUOTE = '“'
 export const RIGHT_DOUBLE_CURLY_QUOTE = '”'
 
+const UNICODE_DASH_RE = /[‐‑‒–—―−]/gu
+const UNICODE_SPACE_RE = /[  -   　]/gu
+
 /**
- * Normalizes quotes in a string by converting curly quotes to straight quotes
+ * Normalizes typographic variants to ASCII equivalents.
  * @param str The string to normalize
- * @returns The string with all curly quotes replaced by straight quotes
+ * @returns The string with curly quotes, Unicode dashes, and non-ASCII spaces normalized
  */
 export function normalizeQuotes(str: string): string {
   return str
@@ -34,6 +37,8 @@ export function normalizeQuotes(str: string): string {
     .replaceAll(RIGHT_SINGLE_CURLY_QUOTE, "'")
     .replaceAll(LEFT_DOUBLE_CURLY_QUOTE, '"')
     .replaceAll(RIGHT_DOUBLE_CURLY_QUOTE, '"')
+    .replace(UNICODE_DASH_RE, '-')
+    .replace(UNICODE_SPACE_RE, ' ')
 }
 
 /**
