@@ -12,6 +12,17 @@ describe("plugin policy", () => {
   test("blocks plugins disabled by managed policy or configured entries", () => {
     expect(
       isPluginBlockedByPolicy("tooling@team", {
+        plugins: {
+          enabled: false,
+          plugins: {
+            "tooling@team": true,
+          },
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isPluginBlockedByPolicy("tooling@team", {
+        plugins: { enabled: true },
         enabledPlugins: {
           "tooling@team": false,
         },
@@ -20,6 +31,7 @@ describe("plugin policy", () => {
     expect(
       isPluginBlockedByPolicy("tooling@team", {
         plugins: {
+          enabled: true,
           plugins: {
             "tooling@team": { enabled: false },
           },
@@ -28,6 +40,7 @@ describe("plugin policy", () => {
     ).toBe(true);
     expect(
       isPluginBlockedByPolicy("tooling@team", {
+        plugins: { enabled: true },
         enabledPlugins: {
           "tooling@team": true,
         },
@@ -39,6 +52,7 @@ describe("plugin policy", () => {
     expect(
       getManagedPluginNames({
         plugins: {
+          enabled: true,
           plugins: {
             "gamma@market": true,
           },
@@ -51,19 +65,35 @@ describe("plugin policy", () => {
           "object@market": { enabled: false },
         },
       }),
-    ).toEqual(new Set(["alpha", "beta", "gamma"]));
+    ).toEqual(new Set(["gamma"]));
     expect(getManagedPluginNames({ enabledPlugins: { local: true } })).toBeNull();
   });
 
   test("blocks plugins outside a configured allowlist", () => {
     expect(
       isPluginBlockedByPolicy("alpha@team", {
-        plugins: { allowlist: ["alpha"] },
+        plugins: { enabled: true, allowlist: ["alpha"] },
       }),
     ).toBe(false);
     expect(
       isPluginBlockedByPolicy("beta@team", {
-        plugins: { allowlist: ["alpha"] },
+        plugins: { enabled: true, allowlist: ["alpha"] },
+      }),
+    ).toBe(true);
+  });
+
+  test("uses configured plugin entries before legacy enabledPlugins", () => {
+    expect(
+      isPluginBlockedByPolicy("alpha@market", {
+        plugins: {
+          enabled: true,
+          plugins: {
+            "alpha@market": false,
+          },
+        },
+        enabledPlugins: {
+          "alpha@market": true,
+        },
       }),
     ).toBe(true);
   });
@@ -101,7 +131,10 @@ describe("plugin policy", () => {
       evaluatePluginPolicy({
         pluginId: "blocked@market",
         plugin,
-        settings: { enabledPlugins: { "blocked@market": false } },
+        settings: {
+          plugins: { enabled: true },
+          enabledPlugins: { "blocked@market": false },
+        },
       }),
     ).toMatchObject({
       allowed: false,

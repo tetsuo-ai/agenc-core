@@ -659,6 +659,35 @@ describe("plugin loader", () => {
     });
   });
 
+  test("does not activate configured plugin entries when plugins.enabled is false", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const workspaceRoot = join(root, "workspace");
+      const pluginRoot = join(workspaceRoot, "vendor", "toolbox");
+      await writePluginManifest(pluginRoot, {
+        name: "toolbox",
+        hooks: "./missing-hooks.json",
+      });
+
+      const result = await loadPlugins({
+        agencHome,
+        workspaceRoot,
+        config: {
+          plugins: {
+            enabled: false,
+            plugins: {
+              toolbox: { enabled: true, path: "vendor/toolbox" },
+            },
+          },
+        },
+      });
+
+      expect(result.enabled).toEqual([]);
+      expect(result.disabled.map((plugin) => plugin.name)).toEqual(["toolbox"]);
+      expect(result.errors).toEqual([]);
+    });
+  });
+
   test("loads default components and server declarations from local plugins", async () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");
@@ -728,6 +757,60 @@ describe("plugin loader", () => {
       expect(plugin?.settings).toEqual({
         options: { fromFile: true },
         metadata: { owner: "team" },
+      });
+    });
+  });
+
+  test("applies configured MCP server overlays to plugin MCP servers", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const workspaceRoot = join(root, "workspace");
+      const pluginRoot = join(agencHome, "plugins", "toolbox");
+      await writePluginManifest(pluginRoot, {
+        name: "toolbox",
+        mcpServers: {
+          local: { command: "node" },
+          disabled: { command: "node" },
+          passthrough: { command: "node" },
+        },
+      });
+
+      const result = await loadPlugins({
+        agencHome,
+        workspaceRoot,
+        config: {
+          plugins: {
+            enabled: true,
+            plugins: {
+              toolbox: {
+                mcp_servers: {
+                  local: {
+                    default_tools_approval_mode: "on-request",
+                    enabled_tools: ["read"],
+                    disabled_tools: ["write"],
+                    tools: {
+                      read: { default_permission_mode: "never" },
+                    },
+                  },
+                  disabled: { enabled: false },
+                },
+              },
+            },
+          },
+        },
+      });
+      const plugin = result.enabled[0];
+
+      expect(result.errors).toEqual([]);
+      expect(Object.keys(plugin?.mcpServers ?? {}).sort()).toEqual(["local", "passthrough"]);
+      expect(plugin?.mcpServers.local).toMatchObject({
+        command: "node",
+        default_tools_approval_mode: "on-request",
+        enabled_tools: ["read"],
+        disabled_tools: ["write"],
+        tools: {
+          read: { default_permission_mode: "never" },
+        },
       });
     });
   });

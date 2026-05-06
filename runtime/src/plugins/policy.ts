@@ -7,6 +7,7 @@ export type PluginPolicyEntry =
 export interface PluginPolicySettings {
   readonly enabledPlugins?: Readonly<Record<string, unknown>>;
   readonly plugins?: {
+    readonly enabled?: boolean;
     readonly allowlist?: readonly string[];
     readonly plugins?: Readonly<Record<string, unknown>>;
   };
@@ -46,7 +47,8 @@ export function isPluginBlockedByPolicy(
   settings?: PluginPolicySettings | null,
 ): boolean {
   const entry = pluginPolicyEntry(pluginId, settings);
-  return !isPluginAllowedByConfigAllowlist(pluginId, settings) ||
+  return pluginFeatureBlockedByConfig(settings) ||
+    !isPluginAllowedByConfigAllowlist(pluginId, settings) ||
     entry === false ||
     (isRecord(entry) && entry.enabled === false);
 }
@@ -54,10 +56,7 @@ export function isPluginBlockedByPolicy(
 export function getManagedPluginNames(
   settings?: PluginPolicySettings | null,
 ): Set<string> | null {
-  const entries = {
-    ...(isRecord(settings?.plugins?.plugins) ? settings.plugins.plugins : {}),
-    ...(isRecord(settings?.enabledPlugins) ? settings.enabledPlugins : {}),
-  };
+  const entries = pluginPolicyEntries(settings);
   if (Object.keys(entries).length === 0) return null;
 
   const names = new Set<string>();
@@ -130,9 +129,22 @@ export function pluginPolicyEntry(
   pluginId: string,
   settings?: PluginPolicySettings | null,
 ): unknown {
-  const managedEntry = settings?.enabledPlugins?.[pluginId];
-  if (managedEntry !== undefined) return managedEntry;
-  return settings?.plugins?.plugins?.[pluginId];
+  return pluginPolicyEntries(settings)[pluginId];
+}
+
+function pluginPolicyEntries(
+  settings?: PluginPolicySettings | null,
+): Readonly<Record<string, unknown>> {
+  if (isRecord(settings?.plugins?.plugins)) return settings.plugins.plugins;
+  if (isRecord(settings?.enabledPlugins)) return settings.enabledPlugins;
+  return {};
+}
+
+function pluginFeatureBlockedByConfig(
+  settings?: PluginPolicySettings | null,
+): boolean {
+  if (!isRecord(settings?.plugins)) return false;
+  return settings.plugins.enabled !== true;
 }
 
 function isPluginAllowedByConfigAllowlist(

@@ -11,6 +11,11 @@ import type { Tool, ToolResult, JSONSchema } from "./_deps/tools-types.js";
 import type { MCPToolBridge } from "./types.js";
 import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
+import {
+  isValidPermissionDefaultMode,
+  type PermissionDefaultMode,
+  type PerToolConfig,
+} from "../config/schema.js";
 import { createTurnDiffTracker, type ToolInvocation } from "../tools/context.js";
 import {
   arbitratePermissionMode,
@@ -61,6 +66,8 @@ export interface MCPToolCatalogPolicyConfig {
   readonly allowedTools?: readonly string[];
   readonly deniedTools?: readonly string[];
   readonly pinnedCatalogSha256?: string;
+  readonly defaultToolsApprovalMode?: PermissionDefaultMode;
+  readonly tools?: Readonly<Record<string, PerToolConfig>>;
   readonly riskControls?: unknown;
   readonly supplyChain?: {
     readonly catalogSha256?: string;
@@ -81,6 +88,30 @@ function filterMCPToolCatalog<T extends { name: string }>(
     if (allow && !allow.has(t.name)) return false;
     return true;
   });
+}
+
+function approvalModeAlias(raw: unknown): PermissionDefaultMode | undefined {
+  switch (raw) {
+    case "approve":
+      return "never";
+    case "prompt":
+      return "untrusted";
+    default:
+      return undefined;
+  }
+}
+
+function perMcpToolApprovalMode(
+  config: MCPToolCatalogPolicyConfig | undefined,
+  rawToolName: string,
+  namespacedToolName: string,
+): PermissionDefaultMode | undefined {
+  const toolConfig = config?.tools?.[rawToolName] ?? config?.tools?.[namespacedToolName];
+  const explicit = toolConfig?.default_permission_mode ??
+    toolConfig?.defaultPermissionMode ??
+    approvalModeAlias(toolConfig?.approval_mode);
+  if (isValidPermissionDefaultMode(explicit)) return explicit;
+  return config?.defaultToolsApprovalMode;
 }
 
 const DEFAULT_MCP_LIST_TOOLS_TIMEOUT_MS = 30_000;
@@ -723,6 +754,11 @@ export async function createToolBridge(
 
   const tools: Tool[] = mcpTools.map((mcpTool) => {
     const namespacedName = `mcp.${serverName}.${mcpTool.name}`;
+    const defaultPermissionMode = perMcpToolApprovalMode(
+      options.serverConfig,
+      mcpTool.name,
+      namespacedName,
+    );
 
     const bridgeTool: Tool = {
       name: namespacedName,
@@ -730,6 +766,7 @@ export async function createToolBridge(
       inputSchema: (mcpTool.inputSchema ?? { type: "object", properties: {} }) as JSONSchema,
       serverId: serverName,
       mcpInfo: { serverName, toolName: mcpTool.name },
+      ...(defaultPermissionMode !== undefined ? { defaultPermissionMode } : {}),
 
       async execute(args: Record<string, unknown>): Promise<ToolResult> {
         if (disposed) {

@@ -196,6 +196,43 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
     expect(ends[0]!.isError).toBe(false);
   });
 
+  test("applies server tool filters and approval defaults", async () => {
+    const fakeClient = {
+      listTools: async () => ({
+        tools: [
+          { name: "read", inputSchema: { type: "object", properties: {} } },
+          { name: "write", inputSchema: { type: "object", properties: {} } },
+          { name: "admin", inputSchema: { type: "object", properties: {} } },
+        ],
+      }),
+      callTool: async () => ({
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+      }),
+      close: async () => {},
+    };
+
+    const bridge = await createToolBridge(fakeClient, "srv", undefined, {
+      serverConfig: {
+        allowedTools: ["read", "write"],
+        deniedTools: ["admin"],
+        defaultToolsApprovalMode: "on-request",
+        tools: {
+          write: { default_permission_mode: "never" },
+        },
+      },
+    });
+
+    expect(bridge.tools.map((tool) => tool.name)).toEqual([
+      "mcp.srv.read",
+      "mcp.srv.write",
+    ]);
+    expect(bridge.tools.find((tool) => tool.name === "mcp.srv.read")?.defaultPermissionMode)
+      .toBe("on-request");
+    expect(bridge.tools.find((tool) => tool.name === "mcp.srv.write")?.defaultPermissionMode)
+      .toBe("never");
+  });
+
   test("observer.onEnd still fires with isError when client throws", async () => {
     const ends: Array<{ isError: boolean }> = [];
     const counters: Array<{ name: string; tags?: Record<string, string> }> = [];

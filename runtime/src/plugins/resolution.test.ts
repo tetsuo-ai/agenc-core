@@ -1140,6 +1140,7 @@ describe("plugin source resolution", () => {
         workspaceRoot,
         config: {
           plugins: {
+            enabled: true,
             plugins: {
               "app@main": { path: "vendor/app" },
               "lib@main": { path: "vendor/lib", enabled: false },
@@ -1192,6 +1193,7 @@ describe("plugin source resolution", () => {
         workspaceRoot,
         config: {
           plugins: {
+            enabled: true,
             plugins: {
               "app@main": { path: "vendor/app" },
               "lib@other": { path: "vendor/lib" },
@@ -1224,6 +1226,7 @@ describe("plugin source resolution", () => {
         workspaceRoot,
         config: {
           plugins: {
+            enabled: true,
             plugins: {
               "app@main": { path: "vendor/app" },
               "lib@main": { path: "vendor/lib" },

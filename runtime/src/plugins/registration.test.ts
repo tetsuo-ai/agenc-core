@@ -384,6 +384,7 @@ describe("plugin registration", () => {
       const configStore = {
         current: () => ({
           plugins: {
+            enabled: true,
             plugins: {
               sample: { path: pluginRoot },
             },
@@ -505,6 +506,7 @@ describe("plugin registration", () => {
       const configStore = {
         current: () => ({
           plugins: {
+            enabled: true,
             plugins: {
               sample: { path: pluginRoot },
             },

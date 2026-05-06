@@ -54,8 +54,10 @@ shape, but wraps it in AgenC's ship-safe `plugins.enabled` feature gate and
 
 - `runtime/src/config/schema.ts` owns the typed config and disabled defaults.
 - `runtime/src/plugins/loader.ts` applies the feature gate and allowlist before
-  plugin component loading.
+  plugin component loading, and applies `plugins.plugins.<id>.mcp_servers`
+  enablement/tool-policy overlays to plugin-contributed MCP servers.
 - `runtime/src/plugins/policy.ts` applies the same per-plugin and allowlist
   policy at permission decision time.
 - `runtime/src/plugins/cli/pluginOperations.ts` writes managed entries under
-  `plugins.plugins.<id>`.
+  `plugins.plugins.<id>` and turns on the global `plugins.enabled` gate for
+  install/enable operations.

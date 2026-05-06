@@ -228,6 +228,10 @@ export interface McpServerConfig {
   readonly enabled?: boolean;
   readonly timeout?: number;
   readonly required?: boolean;
+  readonly default_tools_approval_mode?: PermissionDefaultMode;
+  readonly enabled_tools?: readonly string[];
+  readonly disabled_tools?: readonly string[];
+  readonly tools?: Readonly<Record<string, PerToolConfig>>;
 }
 
 export type DaemonTransport = "unix" | "stdio";

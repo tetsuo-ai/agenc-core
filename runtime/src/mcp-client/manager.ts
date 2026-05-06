@@ -64,10 +64,29 @@ function toToolCatalogPolicyConfig(
   config: MCPServerConfig,
 ): MCPToolCatalogPolicyConfig | undefined {
   const typed = config as MCPServerConfig & MCPToolCatalogPolicyConfig;
-  if (!typed.riskControls && !typed.supplyChain) {
+  const allowedTools = typed.allowedTools ?? config.enabled_tools;
+  const deniedTools = typed.deniedTools ?? config.disabled_tools;
+  if (
+    !typed.riskControls &&
+    !typed.supplyChain &&
+    !typed.pinnedCatalogSha256 &&
+    allowedTools === undefined &&
+    deniedTools === undefined &&
+    config.default_tools_approval_mode === undefined &&
+    config.tools === undefined
+  ) {
     return undefined;
   }
   return {
+    ...(allowedTools !== undefined ? { allowedTools } : {}),
+    ...(deniedTools !== undefined ? { deniedTools } : {}),
+    ...(typed.pinnedCatalogSha256 !== undefined
+      ? { pinnedCatalogSha256: typed.pinnedCatalogSha256 }
+      : {}),
+    ...(config.default_tools_approval_mode !== undefined
+      ? { defaultToolsApprovalMode: config.default_tools_approval_mode }
+      : {}),
+    ...(config.tools !== undefined ? { tools: config.tools } : {}),
     riskControls: typed.riskControls,
     supplyChain: typed.supplyChain,
   };

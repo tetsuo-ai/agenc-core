@@ -1,12 +1,14 @@
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import { validateHooksConfig } from "../config/schema.js";
+import { isValidPermissionDefaultMode, validateHooksConfig } from "../config/schema.js";
 import type {
   AgenCConfig,
   HooksMap,
   LspServerConfigInput,
   McpServerConfig,
+  PerToolConfig,
   PluginEntryConfig,
+  PluginMcpServerConfig,
 } from "../config/schema.js";
 import { pluginDependencyIdentityFromSource, verifyPluginDependencyState } from "./resolution.js";
 import {
@@ -152,6 +154,7 @@ interface DiscoveredPluginRoot {
   readonly source: string;
   readonly enabled: boolean;
   readonly key?: string;
+  readonly featureGated?: boolean;
 }
 
 function configuredPluginEntries(
@@ -172,6 +175,14 @@ function pluginAutoDiscoveryEnabled(
 ): boolean {
   const plugins = config?.plugins;
   return isRecord(plugins) && plugins.enabled === true;
+}
+
+function pluginFeatureEnabled(
+  config: Pick<AgenCConfig, "plugins" | "enabledPlugins"> | undefined,
+): boolean {
+  const plugins = config?.plugins;
+  if (isRecord(plugins)) return plugins.enabled === true;
+  return isRecord(config?.enabledPlugins);
 }
 
 function configuredPluginAllowlist(
@@ -206,6 +217,17 @@ function configuredValueForRoot(
 ): boolean | PluginEntryConfig | undefined {
   return (root.key ? configured[root.key] : undefined) ??
     configured[root.source] ??
+    configured[basename(root.path)];
+}
+
+function configuredValueForPlugin(
+  root: DiscoveredPluginRoot,
+  configured: Readonly<Record<string, boolean | PluginEntryConfig>>,
+  manifestName: string,
+): boolean | PluginEntryConfig | undefined {
+  return (root.key ? configured[root.key] : undefined) ??
+    configured[root.source] ??
+    configured[manifestName] ??
     configured[basename(root.path)];
 }
 
@@ -319,6 +341,7 @@ export async function discoverPluginRoots(
 ): Promise<readonly DiscoveredPluginRoot[]> {
   const configured = configuredPluginEntries(options.config);
   const autoDiscoveryEnabled = pluginAutoDiscoveryEnabled(options.config);
+  const featureEnabled = pluginFeatureEnabled(options.config);
   const roots: DiscoveredPluginRoot[] = [];
   roots.push(
     ...(await discoverRootsUnder(join(options.agencHome, "plugins"))).map((root) => ({
@@ -338,20 +361,28 @@ export async function discoverPluginRoots(
       path: await maybeRealpath(resolvePath(options.workspaceRoot, path)),
       source: key,
       key,
-      enabled: configEntryEnabled(value),
+      enabled: featureEnabled && configEntryEnabled(value),
     });
   }
   for (const path of options.extraPluginDirs ?? []) {
-    roots.push(...(await discoverRootsUnder(resolvePath(options.workspaceRoot, path))));
+    roots.push(
+      ...(await discoverRootsUnder(resolvePath(options.workspaceRoot, path))).map((root) => ({
+        ...root,
+        featureGated: false,
+      })),
+    );
   }
 
   const deduped = new Map<string, DiscoveredPluginRoot>();
   for (const root of roots) {
     const configValue = configuredValueForRoot(root, configured);
+    const gateEnabled = root.featureGated === false ? true : featureEnabled;
+    const entryEnabled = configValue === undefined
+      ? root.enabled
+      : configEntryEnabled(configValue);
     deduped.set(root.path, {
       ...root,
-      enabled: (root.enabled || configValue !== undefined) &&
-        configEntryEnabled(configValue),
+      enabled: gateEnabled && entryEnabled,
     });
   }
   return [...deduped.values()].sort((a, b) => a.path.localeCompare(b.path));
@@ -364,24 +395,22 @@ export async function loadPlugins(
   const configured = configuredPluginEntries(options.config);
   const allowlist = configuredPluginAllowlist(options.config);
   const loaded = await Promise.all(
-    roots.map((root) =>
-      createPluginFromPath(root.path, {
+    roots.map((root) => {
+      const configEntry = (manifestName: string) =>
+        configuredValueForPlugin(root, configured, manifestName);
+      return createPluginFromPath(root.path, {
         source: root.source,
         enabled: root.enabled,
         fallbackName: basename(root.path),
-        isEnabled: (manifestName) => configEntryEnabled(
-          configured[root.key ?? ""] ??
-            configured[root.source] ??
-            configured[manifestName] ??
-            configured[basename(root.path)],
-        ) &&
+        configEntry,
+        isEnabled: (manifestName) => configEntryEnabled(configEntry(manifestName)) &&
           pluginAllowedByAllowlist(
             [root.key, root.source, manifestName, basename(root.path)]
               .filter((entry): entry is string => typeof entry === "string"),
             allowlist,
           ),
-      }),
-    ),
+      });
+    }),
   );
   const plugins = loaded.map((entry) => entry.plugin);
   const dependencyState = verifyPluginDependencyState(plugins);
@@ -460,6 +489,7 @@ export async function createPluginFromPath(
     readonly source: string;
     readonly enabled: boolean;
     readonly fallbackName: string;
+    readonly configEntry?: (manifestName: string) => boolean | PluginEntryConfig | undefined;
     readonly isEnabled?: (manifestName: string) => boolean;
   },
 ): Promise<{ plugin: LoadedPlugin; errors: readonly PluginLoadIssue[] }> {
@@ -548,6 +578,10 @@ export async function createPluginFromPath(
     opts.source,
     manifest.name,
   );
+  const configuredMcpServers = applyPluginMcpServerConfig(
+    mcpServers,
+    opts.configEntry?.(manifest.name),
+  );
   const lspServers = await loadServers<LspServerConfigInput>(
     "lsp",
     pluginPath,
@@ -589,7 +623,7 @@ export async function createPluginFromPath(
       : {}),
     outputStylesPaths,
     hookSources,
-    mcpServers,
+    mcpServers: configuredMcpServers,
     lspServers,
     appConnectorIds,
     ...(settings !== undefined ? { settings } : {}),
@@ -1094,6 +1128,45 @@ function normalizeServerMap<T>(
   return out;
 }
 
+function applyPluginMcpServerConfig(
+  servers: Readonly<Record<string, McpServerConfig>>,
+  entry: boolean | PluginEntryConfig | undefined,
+): Readonly<Record<string, McpServerConfig>> {
+  if (typeof entry !== "object" || entry === null || !isRecord(entry.mcp_servers)) {
+    return servers;
+  }
+  const out = nullProtoRecord<McpServerConfig>();
+  for (const [serverName, server] of Object.entries(servers)) {
+    const overlay = entry.mcp_servers[serverName];
+    if (!isPluginMcpServerConfig(overlay)) {
+      out[serverName] = server;
+      continue;
+    }
+    if (overlay.enabled === false) continue;
+    out[serverName] = {
+      ...server,
+      ...(overlay.enabled !== undefined ? { enabled: overlay.enabled } : {}),
+      ...(isValidPermissionDefaultMode(overlay.default_tools_approval_mode)
+        ? { default_tools_approval_mode: overlay.default_tools_approval_mode }
+        : {}),
+      ...(stringArray(overlay.enabled_tools) !== undefined
+        ? { enabled_tools: stringArray(overlay.enabled_tools) }
+        : {}),
+      ...(stringArray(overlay.disabled_tools) !== undefined
+        ? { disabled_tools: stringArray(overlay.disabled_tools) }
+        : {}),
+      ...(perToolConfigRecord(overlay.tools) !== undefined
+        ? { tools: perToolConfigRecord(overlay.tools) }
+        : {}),
+    };
+  }
+  return out;
+}
+
+function isPluginMcpServerConfig(value: unknown): value is PluginMcpServerConfig {
+  return isRecord(value);
+}
+
 function nullProtoRecord<T>(): Record<string, T> {
   return Object.create(null) as Record<string, T>;
 }
@@ -1282,12 +1355,30 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function stringArray(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out = value.filter((entry): entry is string => typeof entry === "string");
+  return out.length > 0 ? out : undefined;
+}
+
 function stringRecord(value: unknown): Record<string, string> | undefined {
   if (!isRecord(value)) return undefined;
   const out = nullProtoRecord<string>();
   for (const [key, entry] of Object.entries(value)) {
     if (isUnsafeObjectKey(key)) continue;
     if (typeof entry === "string") out[key] = entry;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function perToolConfigRecord(
+  value: unknown,
+): Readonly<Record<string, PerToolConfig>> | undefined {
+  if (!isRecord(value)) return undefined;
+  const out = nullProtoRecord<PerToolConfig>();
+  for (const [key, entry] of Object.entries(value)) {
+    if (isUnsafeObjectKey(key) || !isRecord(entry)) continue;
+    out[key] = entry as PerToolConfig;
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }

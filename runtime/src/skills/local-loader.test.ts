@@ -302,6 +302,7 @@ All=$ARGUMENTS
 
     const enabled = await services.skillsManager.skillsForConfig({
       plugins: {
+        enabled: true,
         plugins: {
           configured: { path: "vendor/configured" },
         },
