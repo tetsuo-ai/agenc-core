@@ -538,6 +538,7 @@ export interface Config {
   readonly agent_max_depth?: number;
   readonly maxTurns?: number;
   readonly experimental_realtime_start_instructions?: string;
+  readonly experimental_realtime_ws_backend_prompt?: string;
   /** Stage 2 (tool-result budgeting) thresholds. Falls back to defaults
    *  in `applyToolResultBudgeting` when absent. */
   readonly toolBudget?: ConfigToolBudget;

@@ -1432,6 +1432,7 @@ describe("loader: loadConfig", () => {
 model = "grok-3"
 max_turns = 7
 experimental_realtime_start_instructions = "custom realtime handoff"
+experimental_realtime_ws_backend_prompt = "custom realtime backend"
 
 [profiles.fast]
 model = "grok-4-fast"
@@ -1443,7 +1444,12 @@ model = "grok-4-fast"
     expect(out.config.experimental_realtime_start_instructions).toBe(
       "custom realtime handoff",
     );
+    expect(out.config.experimental_realtime_ws_backend_prompt).toBe(
+      "custom realtime backend",
+    );
     expect(KNOWN_CONFIG_KEYS.includes("experimental_realtime_start_instructions"))
+      .toBe(true);
+    expect(KNOWN_CONFIG_KEYS.includes("experimental_realtime_ws_backend_prompt"))
       .toBe(true);
     expect(out.config.profiles?.fast?.model).toBe("grok-4-fast");
   });

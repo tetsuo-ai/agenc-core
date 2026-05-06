@@ -80,7 +80,10 @@ export interface RealtimeStartupContextOptions {
 export interface RealtimeStartupContextSessionLike {
   readonly conversationId?: string;
   readonly cwd?: string;
-  readonly config?: { readonly cwd?: string };
+  readonly config?: {
+    readonly cwd?: string;
+    readonly experimental_realtime_ws_backend_prompt?: string | null;
+  };
   readonly sessionConfiguration?: { readonly cwd?: string };
   readonly snapshotHistoryMessages?: () => ReadonlyArray<ResponseItem>;
   readonly state?: {
