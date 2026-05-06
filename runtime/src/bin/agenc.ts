@@ -17,6 +17,7 @@
  *   AGENC_MODEL        optional — model override (default: grok-4-fast)
  *   AGENC_WORKSPACE    optional — project root (default: process.cwd())
  *   AGENC_HOME         optional — state dir (default: $HOME/.agenc)
+ *   AGENC_FORCE_DIRECT_RUNTIME optional — skip daemon autostart when truthy
  *
  * Invariants wired here:
  *   I-45 (SIGTERM orderly shutdown, exit 0)
@@ -177,6 +178,7 @@ export function formatCliHelpText(): string {
     "  --help                                   Show this help text",
     `  --version                                Show version (${VERSION})`,
     "  --no-tui                                 Force one-shot CLI mode",
+    "  --no-daemon                              Skip daemon autostart for this invocation",
     "  -c, --continue                           Continue the latest project session",
     "  -r, --resume <session-id>                Resume a prior project session in the TUI",
     "  --provider <name>                        Override the startup model provider",
@@ -206,6 +208,20 @@ export function detectStartupShortCircuit(
     return { kind: "version", text: `agenc ${VERSION}` };
   }
   return null;
+}
+
+function envFlagEnabled(value: string | undefined): boolean {
+  const raw = value?.trim().toLowerCase();
+  if (raw === undefined || raw.length === 0) return false;
+  return raw !== "0" && raw !== "false" && raw !== "off";
+}
+
+export function shouldSkipAgenCDaemonForStartup(
+  env: NodeJS.ProcessEnv = process.env,
+  argv: readonly string[] = process.argv.slice(2),
+): boolean {
+  return envFlagEnabled(env.AGENC_FORCE_DIRECT_RUNTIME) ||
+    argv.includes("--no-daemon");
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -2253,14 +2269,16 @@ export async function main(): Promise<number> {
   ) {
     return 1;
   }
-  if (await resolveAgenCDaemonAutostartEnabled(process.env)) {
+  if (
+    !shouldSkipAgenCDaemonForStartup(process.env, argv) &&
+    (await resolveAgenCDaemonAutostartEnabled(process.env))
+  ) {
     try {
       await ensureAgenCDaemonAutostart();
     } catch (error) {
       process.stderr.write(
-        `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
+        `agenc: daemon autostart failed; continuing without daemon: ${error instanceof Error ? error.message : String(error)}\n`,
       );
-      return 1;
     }
   }
   return routeCLI({
