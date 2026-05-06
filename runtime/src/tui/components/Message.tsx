@@ -15,7 +15,8 @@ import { type AdvisorBlock, isAdvisorBlock } from '../../utils/advisor.js'; // u
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logError } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { buildMessageLookups } from '../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { CompactSummary } from './CompactSummary';
+import { CompactBoundaryMessage } from './compact/CompactBoundaryMessage';
+import { CompactSummary } from './compact/CompactSummary';
 import { AdvisorMessage } from './messages/AdvisorMessage';
 import { AssistantRedactedThinkingMessage } from './messages/AssistantRedactedThinkingMessage';
 import { AssistantTextMessage } from './messages/AssistantTextMessage';
@@ -23,7 +24,6 @@ import { AssistantThinkingMessage } from './messages/AssistantThinkingMessage';
 import { AssistantToolUseMessage } from './messages/AssistantToolUseMessage';
 import { AttachmentMessage } from './messages/AttachmentMessage';
 import { CollapsedReadSearchContent } from './messages/CollapsedReadSearchContent';
-import { CompactBoundaryMessage } from './messages/CompactBoundaryMessage';
 import { GroupedToolUseContent } from './messages/GroupedToolUseContent';
 import { SystemTextMessage } from './messages/SystemTextMessage';
 import { UserImageMessage } from './messages/UserImageMessage';
