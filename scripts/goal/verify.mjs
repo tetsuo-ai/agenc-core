@@ -31,7 +31,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { findItem, repoRoot, fail } from "./checklist-utils.mjs";
+import { findItem, repoRoot, mainCheckoutRoot, fail } from "./checklist-utils.mjs";
 import {
   SHIM_BEHAVIOR_RATIO_LIMIT,
   formatShimBehaviorViolation,
@@ -1399,6 +1399,23 @@ const ITEM_EVIDENCE = {
       { pattern: "VOICE_MODE", scope: "runtime/src/build/feature.ts" },
       { pattern: "useVoiceIntegration|VoiceKeybindingHandler|insertTextRef|VOICE_MODE|voiceInterimRange", scope: "runtime/src/agenc/upstream/screens/REPL.tsx" },
     ],
+  },
+  "ZC-42": {
+    files: [
+      "runtime/src/migration/external-agent/project-importer.ts",
+      "runtime/src/migration/external-agent/toml.ts",
+      "runtime/src/migration/external-agent/PARITY.md",
+      "parity/ZC-42-parity.json",
+    ],
+    grepPresent: [
+      { pattern: "buildMcpConfigFromSource", scope: "runtime/src/migration/external-agent/project-importer.ts" },
+      { pattern: "importExternalAgentProject", scope: "runtime/src/migration/external-agent/project-importer.ts" },
+      { pattern: "importHooks", scope: "runtime/src/migration/external-agent/project-importer.ts" },
+      { pattern: "importSubagents", scope: "runtime/src/migration/external-agent/project-importer.ts" },
+      { pattern: "importCommands", scope: "runtime/src/migration/external-agent/project-importer.ts" },
+      { pattern: "External Agent Migration Parity", scope: "runtime/src/migration/external-agent/PARITY.md" },
+    ],
+    tests: ["runtime/src/migration/external-agent/project-importer.test.ts"],
   },
   "ZC-33": {
     files: [
@@ -5389,6 +5406,76 @@ function assertZc39VoicePartialPortResolved() {
   pass("ZC-39: voice partial-port UI, config, and keybinding surfaces removed from live runtime");
 }
 
+function assertZc42ExternalAgentMigrationPort() {
+  const requiredFiles = [
+    "runtime/src/migration/external-agent/project-importer.ts",
+    "runtime/src/migration/external-agent/toml.ts",
+    "runtime/src/migration/external-agent/PARITY.md",
+    "runtime/src/migration/external-agent/project-importer.test.ts",
+    "parity/ZC-42-parity.json",
+  ];
+  for (const rel of requiredFiles) {
+    if (!existsSync(path.join(root, rel))) {
+      failGate(`ZC-42: required migration port file is missing: ${rel}`);
+    }
+  }
+
+  const parity = JSON.parse(readFileSync(path.join(root, "parity/ZC-42-parity.json"), "utf8"));
+  if (parity.item !== "ZC-42" || parity.status !== "implemented") {
+    failGate("ZC-42: parity artifact must record implemented status for this item.");
+  }
+  const rows = Array.isArray(parity.rows) ? parity.rows : [];
+  for (const rowId of ["mcp-config-import", "hooks-import", "agents-and-commands-import"]) {
+    if (!rows.some((row) => row?.id === rowId && row?.status === "required")) {
+      failGate(`ZC-42: parity artifact is missing required row ${rowId}.`);
+    }
+  }
+
+  const importer = readFileSync(path.join(root, "runtime/src/migration/external-agent/project-importer.ts"), "utf8");
+  for (const required of [
+    "buildMcpConfigFromSource",
+    "importExternalAgentProject",
+    "importHooks",
+    "importSubagents",
+    "importCommands",
+    "renderMcpConfigToml",
+    "parseEnvPlaceholder",
+    "HOOK_EVENTS_TO_IMPORT",
+  ]) {
+    if (!importer.includes(required)) {
+      failGate(`ZC-42: project importer is missing expected implementation anchor ${required}.`);
+    }
+  }
+
+  const checklistPath = path.join(mainCheckoutRoot(), "PORT_CHECKLIST.md");
+  if (!existsSync(checklistPath)) {
+    failGate(`ZC-42: checklist not found at ${checklistPath}; cannot verify Phase 5 reclassification.`);
+  }
+  const checklist = readFileSync(checklistPath, "utf8");
+  const identitySkipLine = checklist
+    .split("\n")
+    .find((line) => line.includes("agent-identity/") && line.includes("keyring-store/"));
+  if (!identitySkipLine) {
+    failGate("ZC-42: could not find the Phase 5 identity/keyring skip row.");
+  }
+  if (/external-agent/i.test(identitySkipLine)) {
+    failGate("ZC-42: Phase 5 identity/keyring skip row still covers external-agent migration.");
+  }
+
+  const testRun = run("npm", [
+    "run",
+    "test",
+    "--workspace=@tetsuo-ai/runtime",
+    "--",
+    "src/migration/external-agent/project-importer.test.ts",
+  ]);
+  if (testRun.status !== 0) {
+    failGate("ZC-42: external-agent migration parity tests failed.");
+  }
+
+  pass("ZC-42: external-agent migration port, parity artifact, and tests locked");
+}
+
 function assertZc36TestFixtureParityCoverage() {
   const readRequired = (rel) => {
     const abs = path.join(root, rel);
@@ -6118,6 +6205,7 @@ async function cleanupGates(item) {
       "ZC-35": { custom: assertZc35OcCoverage },
       "ZC-37": { custom: assertZc37UndefinedDirectoryGone },
       "ZC-39": { custom: assertZc39VoicePartialPortResolved },
+      "ZC-42": { custom: assertZc42ExternalAgentMigrationPort },
       "ZC-36": { custom: assertZc36TestFixtureParityCoverage },
       "ZC-38": { custom: assertZc38DistBuildArtifactsIgnored },
       "ZC-40": { custom: assertZc40RuntimeParityDocsGone },
