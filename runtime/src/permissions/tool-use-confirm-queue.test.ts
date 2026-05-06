@@ -1,4 +1,4 @@
-import { afterEach, describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 
 import type { ApprovalCtx } from "../tools/orchestrator.js";
 import type { ReviewDecision } from "./review-decision.js";
@@ -8,7 +8,10 @@ import {
   APPROVED_FOR_SESSION,
   DENIED,
 } from "./review-decision.js";
-import { buildToolUseConfirmQueue } from "../agenc/adapters/permission-bridge-projection.js";
+vi.mock("../tui/components/permissions/PermissionRequest.js", () => ({
+  PermissionRequest: () => null,
+}));
+import { buildToolUseConfirmQueue } from "../tui/permission-requests.js";
 import { clearAskUserQuestionResponsesForTest, createAskUserQuestionTool } from "../tools/ask-user-question/tool.js";
 import type { AskUserQuestionInput } from "../tools/ask-user-question/tool.js";
 
@@ -50,7 +53,7 @@ const ASK_USER_QUESTION_INPUT: AskUserQuestionInput = {
       options: [
         {
           label: "Use AgenC picker (Recommended)",
-          description: "Use the interactive question bridge.",
+          description: "Use the interactive question flow.",
           preview: "Wire onAllow(updatedInput) to the model result.",
         },
         {
@@ -62,7 +65,7 @@ const ASK_USER_QUESTION_INPUT: AskUserQuestionInput = {
   ],
 };
 
-describe("buildToolUseConfirmQueue (TUI multi-approval queue projection)", () => {
+describe("buildToolUseConfirmQueue (TUI multi-approval queue)", () => {
   afterEach(() => {
     clearAskUserQuestionResponsesForTest();
   });
@@ -250,5 +253,13 @@ describe("buildToolUseConfirmQueue (TUI multi-approval queue projection)", () =>
     const r = makeRequest("Bash", "call-1", () => {});
     const got = buildToolUseConfirmQueue([r as never], []);
     expect(got).toEqual([]);
+  });
+
+  it("falls back to the first registry tool when none match the request", () => {
+    const r = makeRequest("MissingTool", "call-1", () => {});
+    const got = buildToolUseConfirmQueue([r as never], [{ name: "Bash" }]);
+    expect(got).toHaveLength(1);
+    expect((got[0] as { tool: { name: string } }).tool.name).toBe("Bash");
+    expect((got[0] as { toolUseID: string }).toolUseID).toBe("call-1");
   });
 });
