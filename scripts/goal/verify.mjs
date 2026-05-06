@@ -72,6 +72,25 @@ const ITEM_EVIDENCE = {
     ],
     tests: ["runtime/src/config/config.test.ts"],
   },
+  "CF-04": {
+    files: [
+      "runtime/src/config/resolve-provider.ts",
+      "runtime/src/config/resolve-model.ts",
+      "runtime/src/bin/startup-selection.ts",
+      "runtime/src/config/config.test.ts",
+      "runtime/src/bin/bootstrap.test.ts",
+    ],
+    grepPresent: [
+      { pattern: "isAgencModelShortcut", scope: "runtime/src/config/resolve-provider.ts" },
+      { pattern: "cliModel", scope: "runtime/src/bin/startup-selection.ts" },
+      { pattern: "model = \"agenc\"", scope: "runtime/src/config/config.test.ts" },
+      { pattern: "routes --model agenc", scope: "runtime/src/bin/bootstrap.test.ts" },
+    ],
+    tests: [
+      "runtime/src/config/config.test.ts",
+      "runtime/src/bin/bootstrap.test.ts",
+    ],
+  },
   "F-01": {
     files: ["runtime/src/constants/querySource.ts"],
     grepNotPresent: [{ pattern: "@ts-nocheck", scope: "runtime/src/constants/querySource.ts" }],

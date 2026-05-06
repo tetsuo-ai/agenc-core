@@ -5,6 +5,7 @@ import {
 import {
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
   buildProviderModelCatalog,
+  isAgencModelShortcut,
   normalizeProviderSlug,
   readProviderConfig,
   type ProviderSlug,
@@ -51,6 +52,10 @@ export function resolveModelSelection(params: {
   const envModel = params.env ? resolveEnvModel("", params.env).trim() : "";
   if (envModel) {
     return envModel;
+  }
+
+  if (!params.provider && isAgencModelShortcut(params.config.model)) {
+    return "agenc";
   }
 
   if (params.provider) {

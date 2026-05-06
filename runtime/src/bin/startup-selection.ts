@@ -170,6 +170,7 @@ export function resolveStartupSelection(params: {
 
   const providerOverride = resolveProviderSelection({
     cliProvider: cli.provider,
+    cliModel: cli.model,
     config: configWithProfile,
     env,
   });
