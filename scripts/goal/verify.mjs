@@ -2479,6 +2479,121 @@ header("branding-scan evasion + dynamic-import-of-upstream guard (Gate 3.6)");
   pass("no branding-scan evasion or dynamic upstream imports in non-test source");
 }
 
+// --- Gate 3.7: upstream-import non-growth + opportunistic migration ---------
+//
+// Two parts:
+//
+//   A. NON-GROWTH (additive guard): no file may add a NEW import from
+//      `agenc/upstream/`. The total upstream-import count in any file cannot
+//      go up. Adding a 77th importer fails the gate.
+//
+//   B. OPPORTUNISTIC MIGRATION (touch-tax): if your item modifies a file
+//      that ALREADY had upstream imports in main, you must remove at least
+//      one of those imports as part of the same diff. Touching a tainted
+//      file = obligation to clean ONE import while you're there. This drains
+//      the importer pool over time without needing a separate sweep item.
+//
+// Escape hatch: an import line preceded by `// upstream-import: keep <reason>`
+// (within 3 lines above) is exempt — for cases where the migration target
+// genuinely doesn't exist yet because it depends on another item.
+//
+// Gate is scoped to non-test files in runtime/src/, excluding the upstream/
+// tree itself (which is allowed to import from sibling upstream/ files
+// during the migration window).
+header("upstream-import non-growth + opportunistic migration (Gate 3.7)");
+{
+  const upstreamImportRe = /\bfrom\s+["'`][^"'`]*agenc\/upstream\//g;
+  const keepCommentRe = /\/\/\s*upstream-import:\s*keep\b/i;
+
+  // Get every file modified in this branch's diff vs main.
+  const diffRes = run("git", ["diff", "--name-only", "--diff-filter=ACMR", "main...HEAD"], { silent: true });
+  if (diffRes.status !== 0) {
+    failGate(`Gate 3.7: could not list diff files: ${diffRes.stderr || ""}`);
+  }
+  const diffFiles = (diffRes.stdout || "")
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .filter((f) => f.startsWith("runtime/src/"))
+    .filter((f) => !f.startsWith("runtime/src/agenc/upstream/"))
+    .filter((f) => /\.(ts|tsx|mts|cts)$/.test(f))
+    .filter((f) => !/\.test\.(ts|tsx|mts|cts)$/.test(f));
+
+  // Helper: count upstream imports in a string, excluding lines preceded by
+  // a `// upstream-import: keep` comment within the prior 3 lines.
+  function countUnexemptedImports(src) {
+    if (!src) return 0;
+    const lines = src.split("\n");
+    let count = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!upstreamImportRe.test(line)) {
+        upstreamImportRe.lastIndex = 0;
+        continue;
+      }
+      upstreamImportRe.lastIndex = 0;
+      // Look back up to 3 lines for the keep override.
+      let exempt = false;
+      for (let j = Math.max(0, i - 3); j < i; j++) {
+        if (keepCommentRe.test(lines[j])) { exempt = true; break; }
+      }
+      // Also accept same-line trailing comment.
+      if (!exempt && keepCommentRe.test(line)) exempt = true;
+      if (!exempt) count++;
+    }
+    return count;
+  }
+
+  function getMainContent(relPath) {
+    const r = spawnSync("git", ["-C", root, "show", `main:${relPath}`], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    });
+    return r.status === 0 ? r.stdout : "";
+  }
+
+  const newImports = [];        // Part A failures (count grew)
+  const missedMigrations = [];  // Part B failures (touched but didn't reduce)
+
+  for (const rel of diffFiles) {
+    const abs = path.join(root, rel);
+    if (!existsSync(abs)) continue; // file was deleted in this diff
+    let after;
+    try { after = readFileSync(abs, "utf8"); } catch { continue; }
+    const before = getMainContent(rel);
+
+    const beforeCount = countUnexemptedImports(before);
+    const afterCount = countUnexemptedImports(after);
+
+    if (afterCount > beforeCount) {
+      newImports.push(`${rel}: ${beforeCount} → ${afterCount} (+${afterCount - beforeCount})`);
+    }
+    if (beforeCount > 0 && afterCount >= beforeCount) {
+      // File had upstream imports AND we touched it AND we didn't remove any.
+      missedMigrations.push(`${rel}: still has ${afterCount} upstream import(s) — remove ≥1 while you're in this file`);
+    }
+  }
+
+  if (newImports.length > 0) {
+    failGate(
+      `Gate 3.7 (Part A): NEW upstream imports added — runtime/src/agenc/upstream/ is being deleted, do not add new importers:\n  ${newImports.join("\n  ")}\n\n` +
+        `Either import from the migrated AgenC-owned path, OR if the migration target genuinely doesn't exist yet, ` +
+        `add a previous-line comment "// upstream-import: keep <reason>" to exempt the import.`,
+    );
+  }
+
+  if (missedMigrations.length > 0) {
+    failGate(
+      `Gate 3.7 (Part B): files touched by this item still carry upstream imports — opportunistic migration required:\n  ${missedMigrations.join("\n  ")}\n\n` +
+        `When you touch a file that imports from agenc/upstream/, remove at least one of those imports as part of the same diff. ` +
+        `Either: (a) port the upstream module to its proper AgenC-owned destination and update this file's import, OR ` +
+        `(b) inline the small subset of the upstream module's behavior that this file actually uses, OR ` +
+        `(c) add "// upstream-import: keep <reason>" above the import line if the migration target genuinely depends on another item.`,
+    );
+  }
+
+  pass(`Gate 3.7: ${diffFiles.length} touched file(s) checked, no upstream-import growth, all touched-file migration obligations met`);
+}
+
 // --- Gate 4: typecheck (baseline + delta) -------------------------------
 
 if (skipTypecheck) {
