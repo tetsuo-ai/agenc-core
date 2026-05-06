@@ -7,7 +7,9 @@ export type PluginPolicyEntry =
 export interface PluginPolicySettings {
   readonly enabledPlugins?: Readonly<Record<string, unknown>>;
   readonly plugins?: {
-    readonly enabled?: Readonly<Record<string, unknown>>;
+    readonly enabled?: boolean;
+    readonly allowlist?: readonly string[];
+    readonly plugins?: Readonly<Record<string, unknown>>;
   };
 }
 
@@ -45,17 +47,20 @@ export function isPluginBlockedByPolicy(
   settings?: PluginPolicySettings | null,
 ): boolean {
   const entry = pluginPolicyEntry(pluginId, settings);
-  return entry === false || (isRecord(entry) && entry.enabled === false);
+  return pluginFeatureBlockedByConfig(settings) ||
+    !isPluginAllowedByConfigAllowlist(pluginId, settings) ||
+    entry === false ||
+    (isRecord(entry) && entry.enabled === false);
 }
 
 export function getManagedPluginNames(
   settings?: PluginPolicySettings | null,
 ): Set<string> | null {
-  const enabledPlugins = settings?.enabledPlugins;
-  if (!isRecord(enabledPlugins)) return null;
+  const entries = pluginPolicyEntries(settings);
+  if (Object.keys(entries).length === 0) return null;
 
   const names = new Set<string>();
-  for (const [pluginId, value] of Object.entries(enabledPlugins)) {
+  for (const [pluginId, value] of Object.entries(entries)) {
     if (typeof value !== "boolean" || !pluginId.includes("@")) continue;
     const [name] = pluginId.split("@");
     if (name) names.add(name);
@@ -124,9 +129,41 @@ export function pluginPolicyEntry(
   pluginId: string,
   settings?: PluginPolicySettings | null,
 ): unknown {
-  const managedEntry = settings?.enabledPlugins?.[pluginId];
-  if (managedEntry !== undefined) return managedEntry;
-  return settings?.plugins?.enabled?.[pluginId];
+  return pluginPolicyEntries(settings)[pluginId];
+}
+
+function pluginPolicyEntries(
+  settings?: PluginPolicySettings | null,
+): Readonly<Record<string, unknown>> {
+  return {
+    ...(isRecord(settings?.enabledPlugins) ? settings.enabledPlugins : {}),
+    ...(isRecord(settings?.plugins?.plugins) ? settings.plugins.plugins : {}),
+  };
+}
+
+function pluginFeatureBlockedByConfig(
+  settings?: PluginPolicySettings | null,
+): boolean {
+  if (!isRecord(settings?.plugins)) return false;
+  return settings.plugins.enabled !== true;
+}
+
+function isPluginAllowedByConfigAllowlist(
+  pluginId: string,
+  settings?: PluginPolicySettings | null,
+): boolean {
+  const allowlist = settings?.plugins?.allowlist;
+  if (!Array.isArray(allowlist) || allowlist.length === 0) return true;
+  const allowed = new Set(
+    allowlist
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  );
+  if (allowed.size === 0) return true;
+  const at = pluginId.lastIndexOf("@");
+  const name = at > 0 ? pluginId.slice(0, at) : pluginId;
+  return allowed.has(pluginId) || allowed.has(name);
 }
 
 function normalizeCapabilities(capabilities: readonly string[]): readonly string[] {

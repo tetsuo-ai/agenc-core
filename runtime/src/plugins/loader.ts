@@ -1,7 +1,15 @@
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import { validateHooksConfig } from "../config/schema.js";
-import type { AgenCConfig, HooksMap, LspServerConfigInput, McpServerConfig } from "../config/schema.js";
+import { isValidPermissionDefaultMode, validateHooksConfig } from "../config/schema.js";
+import type {
+  AgenCConfig,
+  HooksMap,
+  LspServerConfigInput,
+  McpServerConfig,
+  PerToolConfig,
+  PluginEntryConfig,
+  PluginMcpServerConfig,
+} from "../config/schema.js";
 import { pluginDependencyIdentityFromSource, verifyPluginDependencyState } from "./resolution.js";
 import {
   findPluginManifestPath,
@@ -134,11 +142,6 @@ export interface PluginLoadResult {
   readonly errors: readonly PluginLoadIssue[];
 }
 
-export interface PluginConfigEntry {
-  readonly enabled?: boolean;
-  readonly path?: string;
-}
-
 export interface PluginLoaderOptions {
   readonly agencHome: string;
   readonly workspaceRoot: string;
@@ -151,46 +154,106 @@ interface DiscoveredPluginRoot {
   readonly source: string;
   readonly enabled: boolean;
   readonly key?: string;
+  readonly featureGated?: boolean;
 }
 
 function configuredPluginEntries(
   config: Pick<AgenCConfig, "plugins" | "enabledPlugins"> | undefined,
-): Readonly<Record<string, boolean | PluginConfigEntry>> {
+): Readonly<Record<string, boolean | PluginEntryConfig>> {
   const plugins = config?.plugins;
-  if (isRecord(plugins) && isRecord(plugins.enabled)) {
-    return plugins.enabled as Readonly<Record<string, boolean | PluginConfigEntry>>;
-  }
-  if (isRecord(config?.enabledPlugins)) {
-    return config.enabledPlugins as Readonly<Record<string, boolean | PluginConfigEntry>>;
-  }
-  return {};
+  return {
+    ...(isRecord(config?.enabledPlugins)
+      ? config.enabledPlugins as Readonly<Record<string, boolean | PluginEntryConfig>>
+      : {}),
+    ...(isRecord(plugins) && isRecord(plugins.plugins)
+      ? plugins.plugins as Readonly<Record<string, boolean | PluginEntryConfig>>
+      : {}),
+  };
+}
+
+function pluginAutoDiscoveryEnabled(
+  config: Pick<AgenCConfig, "plugins"> | undefined,
+): boolean {
+  const plugins = config?.plugins;
+  return isRecord(plugins) && plugins.enabled === true;
+}
+
+function pluginFeatureEnabled(
+  config: Pick<AgenCConfig, "plugins" | "enabledPlugins"> | undefined,
+): boolean {
+  const plugins = config?.plugins;
+  if (isRecord(plugins)) return plugins.enabled === true;
+  return isRecord(config?.enabledPlugins);
+}
+
+function configuredPluginAllowlist(
+  config: Pick<AgenCConfig, "plugins"> | undefined,
+): ReadonlySet<string> | null {
+  const plugins = config?.plugins;
+  if (!isRecord(plugins) || !Array.isArray(plugins.allowlist)) return null;
+  const allowlist = plugins.allowlist
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return allowlist.length > 0 ? new Set(allowlist) : null;
 }
 
 function configuredPluginDirs(
-  options: PluginLoaderOptions,
-): string[] {
-  const dirs: string[] = [];
-  const plugins = options.config?.plugins;
-  if (isRecord(plugins) && Array.isArray(plugins.dirs)) {
-    dirs.push(
-      ...plugins.dirs.filter((entry): entry is string => typeof entry === "string"),
-    );
-  }
-  dirs.push(...(options.extraPluginDirs ?? []));
-  return dirs.map((dir) => resolvePath(options.workspaceRoot, dir));
+  config: Pick<AgenCConfig, "plugins"> | undefined,
+): readonly string[] {
+  const plugins = config?.plugins;
+  if (!isRecord(plugins) || !Array.isArray(plugins.dirs)) return [];
+  return plugins.dirs
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function pluginAllowedByAllowlist(
+  pluginIds: readonly string[],
+  allowlist: ReadonlySet<string> | null,
+): boolean {
+  if (allowlist === null) return true;
+  return pluginIds.some((pluginId) => {
+    const marketplaceSeparator = pluginId.lastIndexOf("@");
+    const pluginName = marketplaceSeparator > 0
+      ? pluginId.slice(0, marketplaceSeparator)
+      : pluginId;
+    return allowlist.has(pluginId) || allowlist.has(pluginName);
+  });
+}
+
+function configuredValueForRoot(
+  root: DiscoveredPluginRoot,
+  configured: Readonly<Record<string, boolean | PluginEntryConfig>>,
+): boolean | PluginEntryConfig | undefined {
+  return (root.key ? configured[root.key] : undefined) ??
+    configured[root.source] ??
+    configured[basename(root.path)];
+}
+
+function configuredValueForPlugin(
+  root: DiscoveredPluginRoot,
+  configured: Readonly<Record<string, boolean | PluginEntryConfig>>,
+  manifestName: string,
+): boolean | PluginEntryConfig | undefined {
+  return (root.key ? configured[root.key] : undefined) ??
+    configured[root.source] ??
+    configured[manifestName] ??
+    configured[basename(root.path)];
 }
 
 function resolvePath(base: string, path: string): string {
   return isAbsolute(path) ? path : resolve(base, path);
 }
 
-function configEntryEnabled(value: boolean | PluginConfigEntry | undefined): boolean {
+function configEntryEnabled(value: boolean | PluginEntryConfig | undefined): boolean {
   if (value === undefined) return true;
   if (typeof value === "boolean") return value;
   return value.enabled !== false;
 }
 
-function configEntryPath(value: boolean | PluginConfigEntry | undefined): string | undefined {
+function configEntryPath(value: boolean | PluginEntryConfig | undefined): string | undefined {
   return typeof value === "object" && value !== null && typeof value.path === "string"
     ? value.path
     : undefined;
@@ -289,10 +352,19 @@ export async function discoverPluginRoots(
   options: PluginLoaderOptions,
 ): Promise<readonly DiscoveredPluginRoot[]> {
   const configured = configuredPluginEntries(options.config);
-  const roots = [
-    ...(await discoverRootsUnder(join(options.agencHome, "plugins"))),
-    ...(await discoverRootsUnder(join(options.workspaceRoot, ".agents", "plugins"))),
-  ];
+  const autoDiscoveryEnabled = pluginAutoDiscoveryEnabled(options.config);
+  const featureEnabled = pluginFeatureEnabled(options.config);
+  const roots: DiscoveredPluginRoot[] = [];
+  roots.push(
+    ...(await discoverRootsUnder(join(options.agencHome, "plugins"))).map((root) => ({
+      ...root,
+      enabled: root.enabled && autoDiscoveryEnabled,
+    })),
+    ...(await discoverRootsUnder(join(options.workspaceRoot, ".agents", "plugins"))).map((root) => ({
+      ...root,
+      enabled: root.enabled && autoDiscoveryEnabled,
+    })),
+  );
 
   for (const [key, value] of Object.entries(configured).sort(([a], [b]) => a.localeCompare(b))) {
     const path = configEntryPath(value);
@@ -301,19 +373,36 @@ export async function discoverPluginRoots(
       path: await maybeRealpath(resolvePath(options.workspaceRoot, path)),
       source: key,
       key,
-      enabled: configEntryEnabled(value),
+      enabled: featureEnabled && configEntryEnabled(value),
     });
   }
-  for (const path of configuredPluginDirs(options)) {
-    roots.push(...(await discoverRootsUnder(path)));
+  for (const path of configuredPluginDirs(options.config)) {
+    roots.push(
+      ...(await discoverRootsUnder(resolvePath(options.workspaceRoot, path))).map((root) => ({
+        ...root,
+        enabled: root.enabled && featureEnabled,
+      })),
+    );
+  }
+  for (const path of options.extraPluginDirs ?? []) {
+    roots.push(
+      ...(await discoverRootsUnder(resolvePath(options.workspaceRoot, path))).map((root) => ({
+        ...root,
+        featureGated: false,
+      })),
+    );
   }
 
   const deduped = new Map<string, DiscoveredPluginRoot>();
   for (const root of roots) {
-    const configValue = root.key ? configured[root.key] : configured[basename(root.path)];
+    const configValue = configuredValueForRoot(root, configured);
+    const gateEnabled = root.featureGated === false ? true : featureEnabled;
+    const entryEnabled = configValue === undefined
+      ? root.enabled
+      : configEntryEnabled(configValue);
     deduped.set(root.path, {
       ...root,
-      enabled: root.enabled && configEntryEnabled(configValue),
+      enabled: gateEnabled && entryEnabled,
     });
   }
   return [...deduped.values()].sort((a, b) => a.path.localeCompare(b.path));
@@ -324,19 +413,24 @@ export async function loadPlugins(
 ): Promise<PluginLoadResult> {
   const roots = await discoverPluginRoots(options);
   const configured = configuredPluginEntries(options.config);
+  const allowlist = configuredPluginAllowlist(options.config);
   const loaded = await Promise.all(
-    roots.map((root) =>
-      createPluginFromPath(root.path, {
+    roots.map((root) => {
+      const configEntry = (manifestName: string) =>
+        configuredValueForPlugin(root, configured, manifestName);
+      return createPluginFromPath(root.path, {
         source: root.source,
         enabled: root.enabled,
         fallbackName: basename(root.path),
-        isEnabled: (manifestName) => configEntryEnabled(
-          configured[root.key ?? ""] ??
-            configured[manifestName] ??
-            configured[basename(root.path)],
-        ),
-      }),
-    ),
+        configEntry,
+        isEnabled: (manifestName) => configEntryEnabled(configEntry(manifestName)) &&
+          pluginAllowedByAllowlist(
+            [root.key, root.source, manifestName, basename(root.path)]
+              .filter((entry): entry is string => typeof entry === "string"),
+            allowlist,
+          ),
+      });
+    }),
   );
   const plugins = loaded.map((entry) => entry.plugin);
   const dependencyState = verifyPluginDependencyState(plugins);
@@ -415,6 +509,7 @@ export async function createPluginFromPath(
     readonly source: string;
     readonly enabled: boolean;
     readonly fallbackName: string;
+    readonly configEntry?: (manifestName: string) => boolean | PluginEntryConfig | undefined;
     readonly isEnabled?: (manifestName: string) => boolean;
   },
 ): Promise<{ plugin: LoadedPlugin; errors: readonly PluginLoadIssue[] }> {
@@ -503,6 +598,10 @@ export async function createPluginFromPath(
     opts.source,
     manifest.name,
   );
+  const configuredMcpServers = applyPluginMcpServerConfig(
+    mcpServers,
+    opts.configEntry?.(manifest.name),
+  );
   const lspServers = await loadServers<LspServerConfigInput>(
     "lsp",
     pluginPath,
@@ -544,7 +643,7 @@ export async function createPluginFromPath(
       : {}),
     outputStylesPaths,
     hookSources,
-    mcpServers,
+    mcpServers: configuredMcpServers,
     lspServers,
     appConnectorIds,
     ...(settings !== undefined ? { settings } : {}),
@@ -1049,6 +1148,45 @@ function normalizeServerMap<T>(
   return out;
 }
 
+function applyPluginMcpServerConfig(
+  servers: Readonly<Record<string, McpServerConfig>>,
+  entry: boolean | PluginEntryConfig | undefined,
+): Readonly<Record<string, McpServerConfig>> {
+  if (typeof entry !== "object" || entry === null || !isRecord(entry.mcp_servers)) {
+    return servers;
+  }
+  const out = nullProtoRecord<McpServerConfig>();
+  for (const [serverName, server] of Object.entries(servers)) {
+    const overlay = entry.mcp_servers[serverName];
+    if (!isPluginMcpServerConfig(overlay)) {
+      out[serverName] = server;
+      continue;
+    }
+    if (overlay.enabled === false) continue;
+    out[serverName] = {
+      ...server,
+      ...(overlay.enabled !== undefined ? { enabled: overlay.enabled } : {}),
+      ...(isValidPermissionDefaultMode(overlay.default_tools_approval_mode)
+        ? { default_tools_approval_mode: overlay.default_tools_approval_mode }
+        : {}),
+      ...(stringArray(overlay.enabled_tools) !== undefined
+        ? { enabled_tools: stringArray(overlay.enabled_tools) }
+        : {}),
+      ...(stringArray(overlay.disabled_tools) !== undefined
+        ? { disabled_tools: stringArray(overlay.disabled_tools) }
+        : {}),
+      ...(perToolConfigRecord(overlay.tools) !== undefined
+        ? { tools: perToolConfigRecord(overlay.tools) }
+        : {}),
+    };
+  }
+  return out;
+}
+
+function isPluginMcpServerConfig(value: unknown): value is PluginMcpServerConfig {
+  return isRecord(value);
+}
+
 function nullProtoRecord<T>(): Record<string, T> {
   return Object.create(null) as Record<string, T>;
 }
@@ -1237,12 +1375,30 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function stringArray(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out = value.filter((entry): entry is string => typeof entry === "string");
+  return out;
+}
+
 function stringRecord(value: unknown): Record<string, string> | undefined {
   if (!isRecord(value)) return undefined;
   const out = nullProtoRecord<string>();
   for (const [key, entry] of Object.entries(value)) {
     if (isUnsafeObjectKey(key)) continue;
     if (typeof entry === "string") out[key] = entry;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function perToolConfigRecord(
+  value: unknown,
+): Readonly<Record<string, PerToolConfig>> | undefined {
+  if (!isRecord(value)) return undefined;
+  const out = nullProtoRecord<PerToolConfig>();
+  for (const [key, entry] of Object.entries(value)) {
+    if (isUnsafeObjectKey(key) || !isRecord(entry)) continue;
+    out[key] = entry as PerToolConfig;
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }

@@ -84,6 +84,8 @@ describe("schema: defaultConfig", () => {
     expect(cfg.agent_max_depth).toBe(1);
     expect(cfg.auth?.backend).toBe("local");
     expect(cfg.auth?.managedKeys?.enabled).toBe(false);
+    expect(cfg.plugins?.enabled).toBe(false);
+    expect(cfg.plugins?.allowlist).toEqual([]);
     expect(cfg.mcp?.server).toEqual({
       enabled: false,
       transport: "stdio",
@@ -277,6 +279,49 @@ describe("schema: normalizeRawConfig", () => {
     });
     expect(out._unknown).toBeUndefined();
     expect(KNOWN_CONFIG_KEYS.includes("auth")).toBe(true);
+  });
+
+  test("preserves plugin config on the typed path", () => {
+    const out = normalizeRawConfig({
+      plugins: {
+        enabled: true,
+        allowlist: ["alpha", "beta@team"],
+        plugins: {
+          "alpha@team": {
+            enabled: true,
+            path: "vendor/alpha",
+            mcp_servers: {
+              api: {
+                enabled: true,
+                default_tools_approval_mode: "on-request",
+                enabled_tools: ["read"],
+                disabled_tools: ["write"],
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(out.plugins).toEqual({
+      enabled: true,
+      allowlist: ["alpha", "beta@team"],
+      plugins: {
+        "alpha@team": {
+          enabled: true,
+          path: "vendor/alpha",
+          mcp_servers: {
+            api: {
+              enabled: true,
+              default_tools_approval_mode: "on-request",
+              enabled_tools: ["read"],
+              disabled_tools: ["write"],
+            },
+          },
+        },
+      },
+    });
+    expect(out._unknown).toBeUndefined();
+    expect(KNOWN_CONFIG_KEYS.includes("plugins")).toBe(true);
   });
 
   test("preserves sandbox.mode config on the typed path", () => {
@@ -893,7 +938,9 @@ describe("schema: closed config block validators (CF-13)", () => {
   test("validatePluginsConfig accepts current and staged plugin block shapes", () => {
     const out = validatePluginsConfig({
       dirs: ["/workspace/plugins"],
-      enabled: {
+      enabled: true,
+      allowlist: ["local"],
+      plugins: {
         local: {
           enabled: true,
           path: "./plugins/local",
@@ -910,20 +957,26 @@ describe("schema: closed config block validators (CF-13)", () => {
             },
           },
         },
-      },
-      allowlist: ["local"],
-      plugins: {
         remote: false,
       },
     });
     expect(out?.dirs).toEqual(["/workspace/plugins"]);
+    expect(out?.enabled).toBe(true);
     expect(out?.allowlist).toEqual(["local"]);
     expect(out?.plugins?.remote).toBe(false);
-    const local = out?.enabled?.local;
+    const local = out?.plugins?.local;
     if (typeof local === "boolean" || local === undefined) {
       throw new Error("expected plugin entry config");
     }
     expect(local.mcp_servers?.tools?.tools?.read?.enabled).toBe(true);
+
+    const legacy = validatePluginsConfig({
+      enabled: {
+        legacy: false,
+      },
+    });
+    expect(legacy?.enabled).toBeUndefined();
+    expect(legacy?.plugins?.legacy).toBe(false);
   });
 
   test("validatePluginsConfig rejects plugin entry typos", () => {
@@ -941,10 +994,10 @@ describe("schema: closed config block validators (CF-13)", () => {
     );
   });
 
-  test("validatePluginsConfig rejects scalar plugins.enabled", () => {
+  test("validatePluginsConfig rejects invalid plugins.enabled", () => {
     let caught: unknown;
     try {
-      validatePluginsConfig({ enabled: true });
+      validatePluginsConfig({ enabled: ["bad"] });
     } catch (error) {
       caught = error;
     }
@@ -999,7 +1052,7 @@ describe("schema: closed config block validators (CF-13)", () => {
     expect(out.auth?.backend).toBe("local");
     expect(out.agent?.retention?.completed_days).toBe(7);
     expect(out.providers?.grok?.default_model).toBe("grok-4-fast");
-    expect(out.plugins?.enabled?.local).toBe(true);
+    expect(out.plugins?.plugins?.local).toBe(true);
     expect(out.mcp?.server).toEqual({
       enabled: true,
       transport: "sse",
@@ -1391,6 +1444,46 @@ enabled = true
     expect(out.config._unknown?.auth).toBeUndefined();
   });
 
+  test("plugins TOML overrides the disabled plugin defaults", async () => {
+    writeFileSync(
+      join(dir, "config.toml"),
+      `
+[plugins]
+enabled = true
+allowlist = ["alpha", "beta@team"]
+
+[plugins.plugins."alpha@team"]
+enabled = true
+path = "vendor/alpha"
+
+[plugins.plugins."alpha@team".mcp_servers.api]
+enabled = true
+enabled_tools = ["read"]
+disabled_tools = ["write"]
+      `,
+    );
+    const out = await loadConfig({ home: dir });
+    expect(out.exists).toBe(true);
+    expect(out.config.plugins).toEqual({
+      enabled: true,
+      allowlist: ["alpha", "beta@team"],
+      plugins: {
+        "alpha@team": {
+          enabled: true,
+          path: "vendor/alpha",
+          mcp_servers: {
+            api: {
+              enabled: true,
+              enabled_tools: ["read"],
+              disabled_tools: ["write"],
+            },
+          },
+        },
+      },
+    });
+    expect(out.config._unknown?.plugins).toBeUndefined();
+  });
+
   test("sandbox.mode TOML overrides the workspace-write default", async () => {
     writeFileSync(
       join(dir, "config.toml"),
@@ -1522,7 +1615,7 @@ extra = true
     ).toBe(true);
   });
 
-  test("loader rejects scalar plugins.enabled with field metadata", async () => {
+  test("loader accepts scalar plugins.enabled as the global plugin gate", async () => {
     writeFileSync(
       join(dir, "config.toml"),
       `
@@ -1535,9 +1628,9 @@ enabled = true
       home: dir,
       onWarn: (message) => warnings.push(message),
     });
-    expect(out.parseError).toContain("Invalid plugins.enabled");
-    expect(warnings.join("\n")).toContain("Invalid plugins.enabled");
-    expect(out.config.plugins).toBeUndefined();
+    expect(out.parseError).toBeUndefined();
+    expect(warnings.join("\n")).not.toContain("Invalid plugins.enabled");
+    expect(out.config.plugins?.enabled).toBe(true);
   });
 
   test("loader validates provider, plugins, agent, and mcp.server blocks", async () => {

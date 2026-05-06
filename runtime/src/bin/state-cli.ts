@@ -46,6 +46,10 @@ export function formatAgenCStateCliHelpText(): string {
     "Commands:",
     "  export <agent-id>    Print a JSON state export for one agent",
     "  import               Read a JSON state export from stdin and import it",
+    "",
+    "Examples:",
+    "  agenc state export agent_123 > state.json",
+    "  agenc state import < state.json",
   ].join("\n");
 }
 
@@ -55,6 +59,10 @@ export function parseAgenCStateCliArgs(
   if (argv[0] !== "state") return null;
   const action = argv[1];
   if (action === undefined || action === "--help" || action === "-h") {
+    return { kind: "help", text: formatAgenCStateCliHelpText() };
+  }
+  const rest = argv.slice(2);
+  if (rest.length === 1 && (rest[0] === "--help" || rest[0] === "-h")) {
     return { kind: "help", text: formatAgenCStateCliHelpText() };
   }
   if (action === "export") {

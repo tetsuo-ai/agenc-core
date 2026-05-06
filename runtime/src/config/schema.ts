@@ -228,6 +228,10 @@ export interface McpServerConfig {
   readonly enabled?: boolean;
   readonly timeout?: number;
   readonly required?: boolean;
+  readonly default_tools_approval_mode?: PermissionDefaultMode;
+  readonly enabled_tools?: readonly string[];
+  readonly disabled_tools?: readonly string[];
+  readonly tools?: Readonly<Record<string, PerToolConfig>>;
 }
 
 export type McpServerModeTransport = "stdio" | "sse";
@@ -413,7 +417,7 @@ export interface PluginMcpServerConfig {
 
 export interface PluginsConfig {
   readonly dirs?: readonly string[];
-  readonly enabled?: Readonly<Record<string, boolean | PluginEntryConfig>>;
+  readonly enabled?: boolean;
   readonly allowlist?: readonly string[];
   readonly plugins?: Readonly<Record<string, boolean | PluginEntryConfig>>;
 }
@@ -648,6 +652,10 @@ export function defaultConfig(): AgenCConfig {
         enabled: false,
       }) as AuthManagedKeysConfig,
     }) as AuthConfig,
+    plugins: Object.freeze({
+      enabled: false,
+      allowlist: Object.freeze([]) as readonly string[],
+    }) as PluginsConfig,
     mcp: Object.freeze({
       server: Object.freeze({
         enabled: false,
@@ -1670,11 +1678,22 @@ export function validatePluginsConfig(raw: unknown): PluginsConfig | undefined {
     (field, detail) => new InvalidPluginsConfigError(field, detail),
   );
   if (allowlist !== undefined) out.allowlist = allowlist;
+  let legacyEnabledPlugins: Readonly<Record<string, boolean | PluginEntryConfig>> | undefined;
   if (record.enabled !== undefined) {
-    out.enabled = validatePluginEntryMap(record.enabled, "enabled");
+    if (typeof record.enabled === "boolean") {
+      out.enabled = record.enabled;
+    } else {
+      legacyEnabledPlugins = validatePluginEntryMap(record.enabled, "enabled");
+    }
   }
   const plugins = validatePluginEntryMap(record.plugins, "plugins");
-  if (plugins !== undefined) out.plugins = plugins;
+  const mergedPlugins = {
+    ...(legacyEnabledPlugins ?? {}),
+    ...(plugins ?? {}),
+  };
+  if (Object.keys(mergedPlugins).length > 0) {
+    out.plugins = Object.freeze(mergedPlugins);
+  }
   return Object.freeze(out) as PluginsConfig;
 }
 

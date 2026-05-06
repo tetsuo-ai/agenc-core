@@ -16,6 +16,7 @@ import type {
 import type { Tool } from "./_deps/tools-types.js";
 import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
+import { isValidPermissionDefaultMode } from "../config/schema.js";
 import { createMCPConnection } from "./connection.js";
 import { createToolBridge } from "./tool-bridge.js";
 import { ResilientMCPBridge } from "./resilient-bridge.js";
@@ -64,10 +65,32 @@ function toToolCatalogPolicyConfig(
   config: MCPServerConfig,
 ): MCPToolCatalogPolicyConfig | undefined {
   const typed = config as MCPServerConfig & MCPToolCatalogPolicyConfig;
-  if (!typed.riskControls && !typed.supplyChain) {
+  const allowedTools = typed.allowedTools ?? config.enabled_tools;
+  const deniedTools = typed.deniedTools ?? config.disabled_tools;
+  const defaultToolsApprovalMode = isValidPermissionDefaultMode(config.default_tools_approval_mode)
+    ? config.default_tools_approval_mode
+    : undefined;
+  if (
+    !typed.riskControls &&
+    !typed.supplyChain &&
+    !typed.pinnedCatalogSha256 &&
+    allowedTools === undefined &&
+    deniedTools === undefined &&
+    defaultToolsApprovalMode === undefined &&
+    config.tools === undefined
+  ) {
     return undefined;
   }
   return {
+    ...(allowedTools !== undefined ? { allowedTools } : {}),
+    ...(deniedTools !== undefined ? { deniedTools } : {}),
+    ...(typed.pinnedCatalogSha256 !== undefined
+      ? { pinnedCatalogSha256: typed.pinnedCatalogSha256 }
+      : {}),
+    ...(defaultToolsApprovalMode !== undefined
+      ? { defaultToolsApprovalMode }
+      : {}),
+    ...(config.tools !== undefined ? { tools: config.tools } : {}),
     riskControls: typed.riskControls,
     supplyChain: typed.supplyChain,
   };

@@ -294,6 +294,7 @@ export async function installPluginOp(
       enabled: true,
       fallbackName: safeName,
     });
+    await writePluginConfigEntry(pluginName, { enabled: true }, input);
     return {
       plugin: summarizeLoadedPlugin(plugin.plugin),
       destination,
@@ -648,7 +649,11 @@ async function writePluginConfigEntry(
   const marker = managedMarker(pluginId);
   const block = renderManagedPluginBlock(pluginId, entry, marker);
   const text = await readOptionalText(path);
-  const next = appendManagedBlock(removeManagedBlock(text, marker), block);
+  const base = removeManagedBlock(text, marker);
+  const next = appendManagedBlock(
+    entry.enabled === false ? base : ensurePluginsFeatureEnabled(base),
+    block,
+  );
   await writeTextAtomic(path, next);
   return path;
 }
@@ -693,6 +698,37 @@ function appendManagedBlock(text: string, block: string): string {
   return `${trimmed}${trimmed.length > 0 ? "\n\n" : ""}${block}\n`;
 }
 
+function ensurePluginsFeatureEnabled(text: string): string {
+  const lines = text.replace(/\r\n/gu, "\n").split("\n");
+  let pluginsHeaderIndex = -1;
+  let enabledIndex = -1;
+  let inPluginsTable = false;
+  for (const [index, line] of lines.entries()) {
+    const table = line.match(/^\s*\[([^\]]+)\]\s*(?:#.*)?$/u)?.[1]?.trim();
+    if (table !== undefined) {
+      inPluginsTable = table === "plugins";
+      if (inPluginsTable && pluginsHeaderIndex === -1) {
+        pluginsHeaderIndex = index;
+      }
+      continue;
+    }
+    if (inPluginsTable && /^\s*enabled\s*=/u.test(line)) {
+      enabledIndex = index;
+      break;
+    }
+  }
+  if (enabledIndex !== -1) {
+    lines[enabledIndex] = "enabled = true";
+    return lines.join("\n").trimEnd();
+  }
+  if (pluginsHeaderIndex !== -1) {
+    lines.splice(pluginsHeaderIndex + 1, 0, "enabled = true");
+    return lines.join("\n").trimEnd();
+  }
+  const trimmed = text.trimEnd();
+  return `${trimmed}${trimmed.length > 0 ? "\n\n" : ""}[plugins]\nenabled = true`;
+}
+
 function renderManagedPluginBlock(
   pluginId: string,
   entry: PluginEntryConfig,
@@ -700,7 +736,7 @@ function renderManagedPluginBlock(
 ): string {
   const lines = [
     `${MANAGED_CONFIG_PREFIX} ${marker}`,
-    `[plugins.enabled.${tomlString(pluginId)}]`,
+    `[plugins.plugins.${tomlString(pluginId)}]`,
     `enabled = ${entry.enabled === false ? "false" : "true"}`,
   ];
   if (entry.path !== undefined) lines.push(`path = ${tomlString(entry.path)}`);

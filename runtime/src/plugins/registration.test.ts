@@ -177,7 +177,11 @@ describe("plugin registration", () => {
         name: "dollar",
       });
 
-      const result = await loadPlugins({ agencHome, workspaceRoot: root });
+      const result = await loadPlugins({
+        agencHome,
+        workspaceRoot: root,
+        config: { plugins: { enabled: true } },
+      });
       const plugin = result.enabled[0]!;
       const dataDir = pluginDataDirPath(plugin.source);
       await rm(dataDir, { recursive: true, force: true });
@@ -379,7 +383,12 @@ describe("plugin registration", () => {
       const hooksRuntime = { load: vi.fn() };
       const configStore = {
         current: () => ({
-          plugins: { dirs: [pluginRoot] },
+          plugins: {
+            enabled: true,
+            plugins: {
+              sample: { path: pluginRoot },
+            },
+          },
           hooks: {
             Stop: [
               {
@@ -475,7 +484,6 @@ describe("plugin registration", () => {
       await expect(loadPluginAgents({ cwd: root }))
         .resolves.toEqual([expect.objectContaining({ agentType: "sample:review" })]);
 
-      clearAgentDefinitionsCache();
       try {
         await expect(getAgentDefinitionsWithOverrides(root))
           .resolves.toEqual(
@@ -496,7 +504,14 @@ describe("plugin registration", () => {
       const cwd = join(root, "workspace-without-default-plugin");
       await mkdir(cwd, { recursive: true });
       const configStore = {
-        current: () => ({ plugins: { dirs: [pluginRoot] } }),
+        current: () => ({
+          plugins: {
+            enabled: true,
+            plugins: {
+              sample: { path: pluginRoot },
+            },
+          },
+        }),
       };
       const ctx = {
         cwd,
@@ -534,7 +549,13 @@ describe("plugin registration", () => {
   test("explicit plugin discovery bypasses active snapshots for commands, skills, and agents", async () => {
     await withTempPlugin(async ({ root, pluginRoot, options }) => {
       const configStore = {
-        current: () => ({ plugins: { dirs: [pluginRoot] } }),
+        current: () => ({
+          plugins: {
+            plugins: {
+              sample: { path: pluginRoot },
+            },
+          },
+        }),
       };
       await refreshActivePlugins({
         cwd: root,

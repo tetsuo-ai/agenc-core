@@ -57,6 +57,7 @@ describe("local skills loader", () => {
     const snapshot = await loadLocalSkillsSnapshot({
       agencHome,
       workspaceRoot,
+      config: { plugins: { enabled: true } },
       env: { HOME: home },
     });
 
@@ -274,8 +275,9 @@ All=$ARGUMENTS
       invokedAt: 1,
     });
 
-    const outcome = await services.skillsManager.skillsForConfig({}, null);
-    const pluginView = await services.pluginsManager.pluginsForConfig({});
+    const pluginConfig = { plugins: { enabled: true } };
+    const outcome = await services.skillsManager.skillsForConfig(pluginConfig, null);
+    const pluginView = await services.pluginsManager.pluginsForConfig(pluginConfig);
 
     expect(outcome.invokedSkills).toEqual(["repo-docs"]);
     expect(outcome.availableSkills?.map((skill) => skill.name)).toEqual(
@@ -300,7 +302,8 @@ All=$ARGUMENTS
 
     const enabled = await services.skillsManager.skillsForConfig({
       plugins: {
-        enabled: {
+        enabled: true,
+        plugins: {
           configured: { path: "vendor/configured" },
         },
       },
@@ -320,7 +323,7 @@ All=$ARGUMENTS
 
     const disabled = await services.skillsManager.skillsForConfig({
       plugins: {
-        enabled: {
+        plugins: {
           configured: { path: "vendor/configured", enabled: false },
         },
       },

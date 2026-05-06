@@ -598,6 +598,7 @@ export function buildBootstrapSessionServices(
   const skillsServices = createLocalSkillsServices({
     agencHome: opts.agencHome,
     workspaceRoot: opts.workspaceRoot,
+    config: opts.configStore.current(),
     env: {
       HOME: opts.env.HOME,
       AGENC_MANAGED_HOME: opts.env.AGENC_MANAGED_HOME,

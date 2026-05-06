@@ -41,6 +41,11 @@ describe("permission CLI parser", () => {
       kind: "help",
       text: expect.stringContaining("agenc permissions"),
     });
+    expect(parseAgenCPermissionsCliArgs(["permissions", "list", "--help"]))
+      .toEqual({
+        kind: "help",
+        text: expect.stringContaining("Examples:"),
+      });
     expect(
       parseAgenCPermissionsCliArgs([
         "permissions",

@@ -56,7 +56,7 @@ export interface StartupMarketplaceConfig {
   readonly extraKnownMarketplaces?: Readonly<Record<string, unknown>>;
   readonly enabledPlugins?: Readonly<Record<string, unknown>>;
   readonly plugins?: {
-    readonly enabled?: Readonly<Record<string, unknown>>;
+    readonly plugins?: Readonly<Record<string, unknown>>;
   };
 }
 
@@ -267,7 +267,7 @@ function declaredMarketplacesFromConfig(
   }
   if (
     referencesOfficialMarketplace(config?.enabledPlugins) ||
-    referencesOfficialMarketplace(config?.plugins?.enabled)
+    referencesOfficialMarketplace(config?.plugins?.plugins)
   ) {
     declared[AGENC_OFFICIAL_MARKETPLACE_NAME] ??= {
       source: AGENC_OFFICIAL_MARKETPLACE_SOURCE,

@@ -1157,8 +1157,9 @@ async function tryRunSamplingRequest(
   // request through the existing build path. Producer registry lives
   // in `runtime/src/prompts/attachments/orchestrator.ts`.
   const agencHome = session.services.configStore?.agencHome;
+  const currentConfig = session.services.configStore?.current();
   const fileMentionAllowedRoots = extractMentionAllowedRoots(
-    session.services.configStore?.current(),
+    currentConfig,
   );
   const attachments = await getAttachments({
     sessionKey: session,
@@ -1177,6 +1178,7 @@ async function tryRunSamplingRequest(
       : {}),
     ...(fileMentionAllowedRoots !== undefined ? { fileMentionAllowedRoots } : {}),
     skillsManager: session.services.skillsManager,
+    config: currentConfig,
     contextWindowTokens: ctx.modelInfo.contextWindow,
   });
   if (attachments.length > 0) {

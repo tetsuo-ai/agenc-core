@@ -7,6 +7,7 @@
  * @module
  */
 
+import type { PermissionDefaultMode, PerToolConfig } from "../config/schema.js";
 import type { Tool } from "./_deps/tools-types.js";
 
 /**
@@ -43,6 +44,14 @@ export interface MCPServerConfig {
    *  Currently only "desktop" is supported — the MCP server will be spawned
    *  via `docker exec` inside the desktop sandbox container. Stdio only. */
   container?: string;
+  /** Default approval mode for tools exposed by this server. */
+  default_tools_approval_mode?: PermissionDefaultMode;
+  /** Explicit allow-list of raw MCP tool names exposed from this server. */
+  enabled_tools?: readonly string[];
+  /** Explicit deny-list of raw MCP tool names removed after the allow-list. */
+  disabled_tools?: readonly string[];
+  /** Per raw MCP tool approval settings. */
+  tools?: Readonly<Record<string, PerToolConfig>>;
 }
 
 /**

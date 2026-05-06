@@ -54,6 +54,10 @@ export function formatAgenCMcpCliHelpText(): string {
     "",
     "Options:",
     "  --transport <stdio|sse>    Transport to serve (default: stdio)",
+    "",
+    "Examples:",
+    "  agenc mcp serve --transport stdio",
+    "  agenc mcp serve --transport sse",
   ].join("\n");
 }
 
