@@ -12,6 +12,8 @@
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import type { AgenCSystemAPIErrorMessage } from "../errors/api.js";
+
 export type Message = any;
 export type AssistantMessage = any;
 export type UserMessage = any;
@@ -24,7 +26,7 @@ export interface SystemCompactBoundaryMessage {
 }
 export type SystemMicrocompactBoundaryMessage = any;
 export type SystemMessageLevel = any;
-export type SystemAPIErrorMessage = any;
+export type SystemAPIErrorMessage = AgenCSystemAPIErrorMessage;
 export type SystemApiMetricsMessage = any;
 export type SystemAwaySummaryMessage = any;
 export type SystemBridgeStatusMessage = any;

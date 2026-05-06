@@ -176,10 +176,12 @@ export class LLMRateLimitError extends RuntimeError {
   public readonly providerName: string;
   public readonly retryAfterMs?: number;
 
-  constructor(providerName: string, retryAfterMs?: number) {
-    const msg = retryAfterMs
-      ? `${providerName} rate limited, retry after ${retryAfterMs}ms`
-      : `${providerName} rate limited`;
+  constructor(providerName: string, retryAfterMs?: number, message?: string) {
+    const msg =
+      message ??
+      (retryAfterMs
+        ? `${providerName} rate limited, retry after ${retryAfterMs}ms`
+        : `${providerName} rate limited`);
     super(msg, RuntimeErrorCodes.LLM_RATE_LIMIT);
     this.name = "LLMRateLimitError";
     this.providerName = providerName;
@@ -246,9 +248,11 @@ export class LLMAuthenticationError extends RuntimeError {
   public readonly providerName: string;
   public readonly statusCode: number;
 
-  constructor(providerName: string, statusCode: number) {
+  constructor(providerName: string, statusCode: number, message?: string) {
     super(
-      `${providerName} authentication failed (HTTP ${statusCode})`,
+      message
+        ? `${providerName} authentication failed (HTTP ${statusCode}): ${message}`
+        : `${providerName} authentication failed (HTTP ${statusCode})`,
       RuntimeErrorCodes.LLM_PROVIDER_ERROR,
     );
     this.name = "LLMAuthenticationError";

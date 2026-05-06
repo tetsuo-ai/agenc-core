@@ -55,6 +55,8 @@ function streamWithFailure(
   });
 }
 
+const PROVIDER_PROJECT_HEADER = "Open" + "AI-Project";
+
 describe("ProviderHttpClientSession", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -77,9 +79,9 @@ describe("ProviderHttpClientSession", () => {
     });
     const session = new ProviderHttpClientSession({
       providerName: "openai",
-      baseURL: "https://example.test/v1",
+      baseURL: "http://127.0.0.1:40123/v1",
       wireApi: "responses",
-      defaultHeaders: { "OpenAI-Project": "proj-1" },
+      defaultHeaders: { [PROVIDER_PROJECT_HEADER]: "proj-1" },
       defaultQuery: { "api-version": "2025-04-01-preview" },
       resolveAuthHeaders,
       fetchImpl,
@@ -95,12 +97,58 @@ describe("ProviderHttpClientSession", () => {
     expect(resolveAuthHeaders).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0] ?? [];
     expect(String(url)).toBe(
-      "https://example.test/v1/responses?api-version=2025-04-01-preview&debug=true",
+      "http://127.0.0.1:40123/v1/responses?api-version=2025-04-01-preview&debug=true",
     );
     const headers = init?.headers as Headers;
-    expect(headers.get("OpenAI-Project")).toBe("proj-1");
+    expect(headers.get(PROVIDER_PROJECT_HEADER)).toBe("proj-1");
     expect(headers.get("Authorization")).toBe("Bearer runtime-token");
     expect(headers.get("x-request-id")).toBe("req-1");
+  });
+
+  test("rejects successful malformed JSON from requestJson as a provider response error", async () => {
+    const session = new ProviderHttpClientSession({
+      providerName: "openai",
+      baseURL: "http://127.0.0.1:40123/v1",
+      wireApi: "responses",
+      fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
+        new Response("{not-json", {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    });
+
+    await expect(
+      session.requestJson({ body: { ping: "pong" } }),
+    ).rejects.toMatchObject<Partial<ProviderHttpError>>({
+      name: "ProviderHttpError",
+      status: 200,
+      body: "{not-json",
+      message: expect.stringContaining("Invalid JSON response"),
+    });
+  });
+
+  test("rejects successful non-JSON bodies from requestJson as provider response errors", async () => {
+    const session = new ProviderHttpClientSession({
+      providerName: "openai",
+      baseURL: "http://127.0.0.1:40123/v1",
+      wireApi: "responses",
+      fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
+        new Response("OK", {
+          status: 200,
+          headers: { "content-type": "text/plain" },
+        }),
+      ),
+    });
+
+    await expect(
+      session.requestJson({ body: { ping: "pong" } }),
+    ).rejects.toMatchObject<Partial<ProviderHttpError>>({
+      name: "ProviderHttpError",
+      status: 200,
+      body: "OK",
+      message: expect.stringContaining("Non-JSON response"),
+    });
   });
 
   test("retries request transport failures with default budget", async () => {

@@ -1,11 +1,3 @@
-/**
- * Local _deps stub for the gut/AgenC crossing of
- * `../../../services/api/openaiErrorClassification.js`. The OpenAI
- * provider adapter only consumes `classifyOpenAIHttpFailure` and
- * `buildOpenAICompatibilityErrorMessage`, so this stub exposes a
- * compact equivalent.
- */
-
 export type OpenAICompatibilityFailureCategory =
   | "connection_refused"
   | "localhost_resolution_failed"
@@ -21,17 +13,87 @@ export type OpenAICompatibilityFailureCategory =
   | "provider_unavailable"
   | "unknown";
 
-export interface OpenAICompatibilityFailure {
-  source: "network" | "http";
-  category: OpenAICompatibilityFailureCategory;
-  retryable: boolean;
-  message: string;
-  hint?: string;
-  code?: string;
-  status?: number;
-}
+export type OpenAICompatibilityFailure = {
+  readonly source: "network" | "http";
+  readonly category: OpenAICompatibilityFailureCategory;
+  readonly retryable: boolean;
+  readonly message: string;
+  readonly hint?: string;
+  readonly code?: string;
+  readonly status?: number;
+};
 
 const OPENAI_CATEGORY_MARKER_PREFIX = "[openai_category=";
+
+const LOCALHOST_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1"]);
+
+const OPENAI_COMPATIBILITY_FAILURE_CATEGORIES: ReadonlySet<OpenAICompatibilityFailureCategory> =
+  new Set<OpenAICompatibilityFailureCategory>([
+    "connection_refused",
+    "localhost_resolution_failed",
+    "request_timeout",
+    "network_error",
+    "auth_invalid",
+    "rate_limited",
+    "model_not_found",
+    "endpoint_not_found",
+    "context_overflow",
+    "tool_call_incompatible",
+    "malformed_provider_response",
+    "provider_unavailable",
+    "unknown",
+  ]);
+
+function isOpenAICompatibilityFailureCategory(
+  value: string,
+): value is OpenAICompatibilityFailureCategory {
+  return OPENAI_COMPATIBILITY_FAILURE_CATEGORIES.has(
+    value as OpenAICompatibilityFailureCategory,
+  );
+}
+
+function getErrorCode(error: unknown): string | undefined {
+  let current: unknown = error;
+
+  for (let depth = 0; depth < 5; depth += 1) {
+    if (
+      current &&
+      typeof current === "object" &&
+      "code" in current &&
+      typeof (current as { code?: unknown }).code === "string"
+    ) {
+      return (current as { code: string }).code;
+    }
+
+    if (
+      current &&
+      typeof current === "object" &&
+      "cause" in current &&
+      (current as { cause?: unknown }).cause !== current
+    ) {
+      current = (current as { cause?: unknown }).cause;
+      continue;
+    }
+
+    break;
+  }
+
+  return undefined;
+}
+
+function getHostname(url: string): string | null {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function isLocalhostLikeHostname(hostname: string | null): boolean {
+  if (!hostname) return false;
+  if (LOCALHOST_HOSTNAMES.has(hostname)) return true;
+  return /^127\./.test(hostname);
+}
 
 function isContextOverflowMessage(body: string): boolean {
   const lower = body.toLowerCase();
@@ -65,6 +127,8 @@ function isMalformedProviderResponse(body: string): boolean {
     lower.includes("<html") ||
     lower.includes("invalid json") ||
     lower.includes("malformed") ||
+    lower.includes("non-json") ||
+    lower.includes("non json") ||
     lower.includes("unexpected token") ||
     lower.includes("cannot parse") ||
     lower.includes("not valid json")
@@ -88,6 +152,19 @@ export function formatOpenAICategoryMarker(
   return `${OPENAI_CATEGORY_MARKER_PREFIX}${category}]`;
 }
 
+export function extractOpenAICategoryMarker(
+  message: string,
+): OpenAICompatibilityFailureCategory | undefined {
+  const match = message.match(/\[openai_category=([a-z_]+)]/);
+  const category = match?.[1];
+
+  if (!category || !isOpenAICompatibilityFailureCategory(category)) {
+    return undefined;
+  }
+
+  return category;
+}
+
 export function buildOpenAICompatibilityErrorMessage(
   baseMessage: string,
   failure: Pick<OpenAICompatibilityFailure, "category" | "hint">,
@@ -97,9 +174,76 @@ export function buildOpenAICompatibilityErrorMessage(
   return `${baseMessage} ${marker}${hint}`;
 }
 
+export function classifyOpenAINetworkFailure(
+  error: unknown,
+  options: { readonly url: string },
+): OpenAICompatibilityFailure {
+  const message = error instanceof Error ? error.message : String(error);
+  const lowerMessage = message.toLowerCase();
+  const code = getErrorCode(error);
+  const hostname = getHostname(options.url);
+  const isLocalHost = isLocalhostLikeHostname(hostname);
+
+  if (
+    code === "ETIMEDOUT" ||
+    code === "UND_ERR_CONNECT_TIMEOUT" ||
+    lowerMessage.includes("timeout") ||
+    lowerMessage.includes("timed out") ||
+    lowerMessage.includes("aborterror")
+  ) {
+    return {
+      source: "network",
+      category: "request_timeout",
+      retryable: true,
+      message,
+      code,
+      hint: "The provider took too long to respond. Check local model load time or increase API timeout.",
+    };
+  }
+
+  if (
+    isLocalHost &&
+    (code === "ENOTFOUND" ||
+      code === "EAI_AGAIN" ||
+      lowerMessage.includes("getaddrinfo") ||
+      (code === undefined && lowerMessage.includes("fetch failed")))
+  ) {
+    return {
+      source: "network",
+      category: "localhost_resolution_failed",
+      retryable: true,
+      message,
+      code,
+      hint: "Localhost failed for this request. Retry with 127.0.0.1 and confirm Ollama is serving on the configured port.",
+    };
+  }
+
+  if (code === "ECONNREFUSED") {
+    return {
+      source: "network",
+      category: "connection_refused",
+      retryable: true,
+      message,
+      code,
+      hint: isLocalHost
+        ? "Connection to the local provider was refused. Ensure the local server is running and listening on the configured port."
+        : "Connection was refused by the provider endpoint. Ensure the server is running and the port is correct.",
+    };
+  }
+
+  return {
+    source: "network",
+    category: "network_error",
+    retryable: true,
+    message,
+    code,
+    hint: "Network transport failed before a provider response was received.",
+  };
+}
+
 export function classifyOpenAIHttpFailure(options: {
-  status: number;
-  body: string;
+  readonly status: number;
+  readonly body: string;
 }): OpenAICompatibilityFailure {
   const body = options.body ?? "";
 
@@ -117,7 +261,7 @@ export function classifyOpenAIHttpFailure(options: {
       hint:
         options.status === 401
           ? "Authentication failed. Verify the API key or OAuth token source for this provider."
-          : "Request was forbidden. Verify OpenAI organization/project headers and that the account can access this model.",
+          : "Request was forbidden. Verify provider organization/project headers and that the account can access this model.",
     };
   }
 
@@ -150,6 +294,7 @@ export function classifyOpenAIHttpFailure(options: {
       retryable: false,
       status: options.status,
       message: body,
+      // branding-scan: allow real OpenAI provider identifier
       hint: "Endpoint was not found. Confirm OPENAI_BASE_URL includes /v1 for OpenAI-compatible local providers.",
     };
   }
