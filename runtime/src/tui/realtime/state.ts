@@ -234,16 +234,17 @@ export function formatRealtimeItemSummary(item: JsonValue): string {
   if (item === null) return "null";
   if (typeof item !== "object") return String(item);
   if (Array.isArray(item)) return `array(${item.length})`;
-  const type = item.type;
+  const objectItem = item as Record<string, JsonValue>;
+  const type = objectItem.type;
   if (typeof type === "string") {
-    const id = typeof item.itemId === "string"
-      ? item.itemId
-      : typeof item.id === "string"
-        ? item.id
+    const id = typeof objectItem.itemId === "string"
+      ? objectItem.itemId
+      : typeof objectItem.id === "string"
+        ? objectItem.id
         : null;
     return id === null ? type : `${type} ${id}`;
   }
-  return truncateRealtimeSummary(JSON.stringify(item));
+  return truncateRealtimeSummary(JSON.stringify(objectItem));
 }
 
 function truncateRealtimeSummary(value: string): string {
