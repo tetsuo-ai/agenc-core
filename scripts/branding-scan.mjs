@@ -100,6 +100,24 @@ const ALLOW_FILE_LINE_PATTERNS = [
     file: /(^|\/)\.gitignore$/,
     line: /\b(?:OpenClaude\w*|openclaude|Claude\w*|claude|Codex\w*|codex|Cursor)\b|\.openclaude\//, // branding-scan: allow gitignore exception pattern
   },
+  {
+    // Provider-management UI needs to render real provider names and
+    // ChatGPT credential labels. Keep this scoped to the provider
+    // setup surfaces instead of allowing these identifiers globally.
+    file: /(^|\/)runtime\/src\/tui\/components\/(?:ProviderManager(?:\.test)?|ConsoleOAuthFlow(?:\.test)?|useCodexOAuthFlow(?:\.test)?)\.(?:ts|tsx)$/,
+    line: /\b(?:Anthropic|OpenAI|Codex\w*|codex\w*)\b|chatgpt\.com\/(?:backend-api\/)?codex|CODEX_/, // branding-scan: allow scanner allow-list regex
+  },
+  {
+    // Usage and effort UI may refer to the real provider family.
+    file: /(^|\/)runtime\/src\/tui\/components\/(?:EffortPicker|Settings\/CodexUsage)\.(?:ts|tsx)$/, // branding-scan: allow scanner allow-list regex
+    line: /\b(?:OpenAI|Codex\w*|codex\w*)\b/, // branding-scan: allow scanner allow-list regex
+  },
+  {
+    // Text input internals use a caret utility type, not as an
+    // editor/product reference.
+    file: /(^|\/)runtime\/src\/tui\/(?:hooks\/(?:useTextInput|useSearchInput|useVimInput)|components\/TextInput(?:\.test)?)\.(?:ts|tsx)$/,
+    line: /\bCursor\b/, // branding-scan: allow text-caret utility identifier
+  },
 ];
 
 const OVERRIDE_RE = /branding-scan:\s*allow\b/i;
@@ -191,6 +209,9 @@ function isAbsorbImportRewriteLine(line, rel) {
     /(?:^|[./])components\/(?:Markdown|MarkdownTable|HighlightedCode)(?:\.js|\/Fallback(?:\.js)?)?/,
     /(?:^|[./])(?:Markdown|MarkdownTable|HighlightedCode)(?:\.js|\/Fallback(?:\.js)?)?/,
     /(?:^|[./])(?:tui\/)?components\/dialogs\/(?:CostThresholdDialog|RateLimitMessage)(?:\.js)?/,
+    /(?:^|[./])(?:tui\/)?components\//,
+    /(?:^|[./])(?:tui\/)?hooks\//,
+    /(?:^|[./])(?:tui\/)?context\//,
     /(?:^|[./])components\/(?:CostThresholdDialog|messages\/RateLimitMessage)(?:\.js)?/,
     /(?:^|[./])(?:CostThresholdDialog|RateLimitMessage)(?:\.js)?/,
     /(?:^|[./])services\/PromptSuggestion\/(?:promptSuggestion|speculation)(?:\.js)?/,

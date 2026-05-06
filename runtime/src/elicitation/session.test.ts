@@ -44,11 +44,11 @@ vi.mock("src/tools.js", () => ({
   getTools: () => [],
 }));
 
-vi.mock("../agenc/upstream/context/fpsMetrics.js", () => ({
+vi.mock("../tui/context/fpsMetrics.js", () => ({
   FpsMetricsProvider: ({ children }: { children: unknown }) => children,
 }));
 
-vi.mock("../agenc/upstream/context/stats.js", () => ({
+vi.mock("../tui/context/stats.js", () => ({
   StatsProvider: ({ children }: { children: unknown }) => children,
 }));
 

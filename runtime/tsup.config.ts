@@ -1,5 +1,5 @@
 import { defineConfig } from 'tsup';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 
 const entry = [
@@ -13,6 +13,11 @@ const entry = [
 const agencRoot = resolve(__dirname, 'src/agenc');
 const agencUpstreamRoot = resolve(agencRoot, 'upstream');
 const runtimeSourceRoot = resolve(__dirname, 'src');
+const relocatedTuiSourceRoots = [
+  resolve(runtimeSourceRoot, 'tui/components'),
+  resolve(runtimeSourceRoot, 'tui/context'),
+  resolve(runtimeSourceRoot, 'tui/hooks'),
+];
 const upstreamProduct = String.fromCharCode(99, 108, 97, 117, 100, 101);
 const runtimePackage = JSON.parse(
   readFileSync(resolve(__dirname, 'package.json'), 'utf8'),
@@ -20,26 +25,115 @@ const runtimePackage = JSON.parse(
 const displayVersion = runtimePackage.version ?? '0.0.0';
 
 function existingSourceFile(base: string): string | null {
-  const candidates = [
-    base,
-    base.replace(/\.js$/, '.ts'),
-    base.replace(/\.js$/, '.tsx'),
-    base.replace(/\.jsx$/, '.tsx'),
-  ];
-  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+  const hasExtension = /\.[^/\\]+$/.test(base);
+  const candidates = hasExtension
+    ? [
+        base,
+        base.replace(/\.js$/, '.ts'),
+        base.replace(/\.js$/, '.tsx'),
+        base.replace(/\.jsx$/, '.tsx'),
+      ]
+    : [
+        base,
+        `${base}.ts`,
+        `${base}.tsx`,
+        `${base}.mts`,
+        `${base}.cts`,
+        resolve(base, 'index.ts'),
+        resolve(base, 'index.tsx'),
+        resolve(base, 'index.js'),
+      ];
+  return candidates.find((candidate) => {
+    if (!existsSync(candidate)) return false;
+    try {
+      return statSync(candidate).isFile();
+    } catch {
+      return false;
+    }
+  }) ?? null;
+}
+
+function isWithin(root: string, file: string): boolean {
+  const rel = relative(root, file);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }
 
 function sourceRootForImporter(importer: string): string | null {
   const absoluteImporter = isAbsolute(importer) ? importer : resolve(__dirname, importer);
-  const rel = relative(agencUpstreamRoot, absoluteImporter);
-  return rel !== '' && !rel.startsWith('..') ? agencUpstreamRoot : null;
+  if (isWithin(agencUpstreamRoot, absoluteImporter)) return agencUpstreamRoot;
+  const relocatedRoot = relocatedTuiSourceRoots.find((root) =>
+    isWithin(root, absoluteImporter),
+  );
+  return relocatedRoot ?? null;
 }
 
 function resolveAgenCBareSrc(source: string): string | null {
   const sourceRelative = source.slice('src/'.length);
+  const relocatedTuiRelative = /^(components|context|hooks)\//.exec(sourceRelative);
+  if (relocatedTuiRelative) {
+    const found = existingSourceFile(resolve(runtimeSourceRoot, 'tui', sourceRelative));
+    if (found) return found;
+  }
   for (const root of [agencUpstreamRoot, runtimeSourceRoot]) {
     const found = existingSourceFile(resolve(root, sourceRelative));
     if (found) return found;
+  }
+  return null;
+}
+
+function normalizeRuntimePath(file: string): string {
+  return file.split(/[/\\]+/).join('/');
+}
+
+function topKey(logical: string): string {
+  return logical.split('/')[0]?.replace(/\.(?:jsx?|tsx?)$/, '') ?? '';
+}
+
+function relocatedLogicalCandidates(importer: string, source: string): string[] {
+  const candidates: string[] = [];
+  let logical: string | null = null;
+  if (source.startsWith('src/')) {
+    logical = source.slice('src/'.length);
+  } else if (source.startsWith('./') || source.startsWith('../')) {
+    const absolute = resolve(dirname(importer), source);
+    const relSource = normalizeRuntimePath(relative(runtimeSourceRoot, absolute));
+    if (relSource !== '' && !relSource.startsWith('..')) {
+      logical = relSource;
+    } else {
+      const relRuntime = normalizeRuntimePath(relative(resolve(__dirname), absolute));
+      if (relRuntime !== '' && !relRuntime.startsWith('..')) logical = relRuntime;
+    }
+  }
+  if (!logical) return candidates;
+  candidates.push(logical);
+  if (logical.startsWith('tui/tui/')) candidates.push(logical.slice('tui/'.length));
+  if (logical.startsWith('tui/')) candidates.push(logical.slice('tui/'.length));
+  const first = topKey(logical);
+  if (first === 'components' || first === 'context' || first === 'hooks') {
+    candidates.push(`tui/${logical}`);
+  }
+  return [...new Set(candidates)];
+}
+
+function resolveRelocatedTuiSource(importer: string, source: string): string | null {
+  for (const logical of relocatedLogicalCandidates(importer, source)) {
+    const direct = existingSourceFile(resolve(runtimeSourceRoot, logical));
+    if (direct) return direct;
+
+    const first = topKey(logical);
+    if (first === 'components' || first === 'context' || first === 'hooks') {
+      const moved = existingSourceFile(resolve(runtimeSourceRoot, 'tui', logical));
+      if (moved) return moved;
+    }
+
+    const upstream = existingSourceFile(resolve(agencUpstreamRoot, logical));
+    if (upstream) return upstream;
+
+    if (logical.startsWith('tui/')) {
+      const stripped = logical.slice('tui/'.length);
+      const strippedUpstream = existingSourceFile(resolve(agencUpstreamRoot, stripped));
+      if (strippedUpstream) return strippedUpstream;
+    }
   }
   return null;
 }
@@ -72,6 +166,9 @@ function resolveRelativeAgenCSource(importer: string, source: string): string | 
 
   const sourceRoot = sourceRootForImporter(absoluteImporter);
   if (sourceRoot === null) return null;
+  if (relocatedTuiSourceRoots.includes(sourceRoot)) {
+    return resolveRelocatedTuiSource(absoluteImporter, source);
+  }
   return null;
 }
 

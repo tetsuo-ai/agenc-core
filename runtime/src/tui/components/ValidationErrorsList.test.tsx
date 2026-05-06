@@ -27,7 +27,7 @@ vi.mock("../ink.js", async () => {
   };
 });
 
-vi.mock("../../agenc/upstream/components/design-system/Dialog.js", async () => {
+vi.mock("./design-system/Dialog.js", async () => {
   const React = await import("react");
   return {
     Dialog: ({
@@ -40,7 +40,7 @@ vi.mock("../../agenc/upstream/components/design-system/Dialog.js", async () => {
   };
 });
 
-vi.mock("../../agenc/upstream/components/CustomSelect/select.js", async () => {
+vi.mock("./CustomSelect/select.js", async () => {
   const React = await import("react");
   return {
     Select: ({

@@ -13,13 +13,13 @@ import { createStore } from "./store.js";
 vi.mock("bun:bundle", () => ({
   feature: () => false,
 }));
-vi.mock("../../agenc/upstream/context/mailbox.js", () => ({
+vi.mock("../context/mailbox.js", () => ({
   MailboxProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
-vi.mock("../../agenc/upstream/hooks/useEffectEventCompat.js", () => ({
+vi.mock("../hooks/useEffectEventCompat.js", () => ({
   useEffectEventCompat: (callback: unknown) => callback,
 }));
-vi.mock("../../agenc/upstream/hooks/useSettingsChange.js", () => ({
+vi.mock("../hooks/useSettingsChange.js", () => ({
   useSettingsChange: () => {},
 }));
 vi.mock("../../services/PromptSuggestion/promptSuggestion.js", () => ({
