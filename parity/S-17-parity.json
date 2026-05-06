@@ -1,0 +1,80 @@
+{
+  "item": "S-17",
+  "status": "implemented",
+  "sourceRootLabel": "typescript UI reference checkout",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "targetRoot": "..",
+  "sourceFiles": [
+    "src/services/github/deviceFlow.ts",
+    "src/services/github/deviceFlow.test.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/services/github/device-flow.ts",
+    "runtime/src/services/github/device-flow.test.ts"
+  ],
+  "testFiles": [
+    "runtime/src/services/github/device-flow.test.ts"
+  ],
+  "requiredBehaviors": [
+    {
+      "id": "device-code-request",
+      "behavior": "AgenC requests a GitHub device code with the public device-flow client id, an AgenC-specific environment override, the read:user scope, and JSON responses.",
+      "edgeCases": [
+        "AGENC_GITHUB_DEVICE_CLIENT_ID overrides the default client id",
+        "custom scopes retry with read:user when GitHub rejects the first request as invalid_scope",
+        "verification_uri is constrained to GitHub's HTTPS device-login URL before any browser opener receives it",
+        "HTTP and malformed response failures are surfaced as GitHubDeviceFlowError"
+      ],
+      "tests": [
+        "runtime/src/services/github/device-flow.test.ts"
+      ]
+    },
+    {
+      "id": "access-token-polling",
+      "behavior": "AgenC polls the GitHub OAuth device-code endpoint until an access token is returned or a terminal OAuth error occurs.",
+      "edgeCases": [
+        "authorization_pending sleeps for the current interval",
+        "slow_down increases the polling interval and clamps unsafe interval values",
+        "foreground polling sleeps remain referenced while the CLI is waiting for authorization",
+        "expired_token and access_denied become typed terminal errors",
+        "fetch/network failures are wrapped as GitHubDeviceFlowError"
+      ],
+      "tests": [
+        "runtime/src/services/github/device-flow.test.ts"
+      ]
+    },
+    {
+      "id": "copilot-token-exchange",
+      "behavior": "AgenC exchanges the OAuth token for a Copilot token using the required GitHub Copilot-class headers and validates the token response shape.",
+      "edgeCases": [
+        "Authorization uses the OAuth bearer token",
+        "User-Agent, Editor-Version, Editor-Plugin-Version, and Copilot-Integration-Id headers are preserved verbatim",
+        "malformed Copilot responses are rejected"
+      ],
+      "tests": [
+        "runtime/src/services/github/device-flow.test.ts"
+      ]
+    },
+    {
+      "id": "high-level-flow",
+      "behavior": "startGitHubDeviceFlow orchestrates device-code prompting, optional verification URI opening, access-token polling, and Copilot token exchange.",
+      "edgeCases": [
+        "the device-code callback runs before polling",
+        "the optional browser opener receives the verification URI",
+        "polling uses the interval and expiry from the device-code response"
+      ],
+      "tests": [
+        "runtime/src/services/github/device-flow.test.ts"
+      ]
+    }
+  ],
+  "intentionalShapeDifferences": [
+    "The target file uses kebab-case and AgenC-owned public names required by S-17: startGitHubDeviceFlow, pollForGitHubAccessToken, and exchangeForCopilotToken.",
+    "The high-level startGitHubDeviceFlow helper composes the lower-level source behaviors because no CLI wiring item exists yet.",
+    "The client-id environment override is AGENC_GITHUB_DEVICE_CLIENT_ID per the S-17 item body; the source checkout used its own product-specific environment name."
+  ],
+  "outOfScope": [
+    "Persisting either OAuth or Copilot tokens in AuthBackend is intentionally deferred to a future provider/auth integration item.",
+    "Provider selection and model routing for Copilot are outside S-17."
+  ]
+}
