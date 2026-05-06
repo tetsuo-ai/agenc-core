@@ -14,8 +14,8 @@ import {
   isBridgeSafeCommand,
   type LocalJSXCommandContext,
 } from '../../commands.js'
-import type { CanUseToolFn } from '../../agenc/upstream/hooks/useCanUseTool.js'
-import type { IDESelection } from '../../agenc/upstream/hooks/useIdeSelection.js'
+import type { CanUseToolFn } from '../hooks/useCanUseTool'
+import type { IDESelection } from '../hooks/useIdeSelection'
 import type { SetToolJSXFn, ToolUseContext } from '../../agenc/upstream/Tool.js'
 import type {
   AssistantMessage,

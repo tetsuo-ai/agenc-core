@@ -87,7 +87,7 @@ import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEve
 import { initializeAnalyticsGates } from 'src/services/analytics/sink.js';
 import { getOriginalCwd, setAdditionalDirectoriesForAgenCMd, setIsRemoteMode, setMainLoopModelOverride, setMainThreadAgentType, setTeleportedSessionInfo } from './bootstrap/state.js';
 import { filterCommandsForRemoteMode, getCommands } from '../../commands.js';
-import type { StatsStore } from './context/stats.js';
+import type { StatsStore } from '../../tui/context/stats';
 import { launchAssistantInstallWizard, launchAssistantSessionChooser, launchInvalidSettingsDialog, launchResumeChooser, launchSnapshotUpdateDialog, launchTeleportRepoMismatchDialog, launchTeleportResumeWrapper } from './dialogLaunchers.js';
 import { SHOW_CURSOR } from '../../tui/ink/termio/dec.js';
 import { exitWithError, exitWithMessage, getRenderContext, renderAndRun, showSetupScreens } from './interactiveHelpers.js';
@@ -2257,7 +2257,7 @@ async function run(): Promise<CommanderCommand> {
         if (choice === 'merge') {
           const {
             buildMergePrompt
-          } = await import('./components/agents/SnapshotUpdateDialog.js');
+          } = await import('../../tui/components/agents/SnapshotUpdateDialog');
           const mergePrompt = buildMergePrompt(agentDef.agentType, agentDef.memory!);
           inputPrompt = inputPrompt ? `${mergePrompt}\n\n${inputPrompt}` : mergePrompt;
         }
@@ -3548,7 +3548,7 @@ async function run(): Promise<CommanderCommand> {
             // Use progress UI for teleport
             const {
               teleportWithProgress
-            } = await import('./components/TeleportProgress.js');
+            } = await import('../../tui/components/TeleportProgress');
             const result = await teleportWithProgress(root, teleport);
             // Track teleported session for reliability logging
             setTeleportedSessionInfo({

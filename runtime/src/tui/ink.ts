@@ -1,5 +1,5 @@
 import { createElement, type ReactNode } from 'react'
-import { ThemeProvider } from '../agenc/upstream/components/design-system/ThemeProvider.js'
+import { ThemeProvider } from './components/design-system/ThemeProvider'
 import inkRender, {
   type Instance,
   createRoot as inkCreateRoot,
@@ -30,17 +30,17 @@ export async function createRoot(options?: RenderOptions): Promise<Root> {
   }
 }
 
-export { color } from '../agenc/upstream/components/design-system/color.js'
-export type { Props as BoxProps } from '../agenc/upstream/components/design-system/ThemedBox.js'
-export { default as Box } from '../agenc/upstream/components/design-system/ThemedBox.js'
-export type { Props as TextProps } from '../agenc/upstream/components/design-system/ThemedText.js'
-export { default as Text } from '../agenc/upstream/components/design-system/ThemedText.js'
+export { color } from './components/design-system/color'
+export type { Props as BoxProps } from './components/design-system/ThemedBox'
+export { default as Box } from './components/design-system/ThemedBox'
+export type { Props as TextProps } from './components/design-system/ThemedText'
+export { default as Text } from './components/design-system/ThemedText'
 export {
   ThemeProvider,
   usePreviewTheme,
   useTheme,
   useThemeSetting,
-} from '../agenc/upstream/components/design-system/ThemeProvider.js'
+} from './components/design-system/ThemeProvider'
 export { Ansi } from './ink/Ansi.js'
 export type { Props as AppProps } from './ink/components/AppContext.js'
 export type { Props as BaseBoxProps } from './ink/components/Box.js'

@@ -1,4 +1,4 @@
-import type { HistoryMode } from '../../../agenc/upstream/hooks/useArrowKeyHistory.js'
+import type { HistoryMode } from '../../hooks/useArrowKeyHistory'
 import type { PromptInputMode } from '../../../agenc/upstream/types/textInputTypes.js'
 
 export function prependModeCharacterToInput(

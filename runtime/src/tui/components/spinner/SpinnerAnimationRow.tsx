@@ -8,8 +8,8 @@ import type { InProcessTeammateTaskState } from '../../../agenc/upstream/tasks/I
 import { formatDuration, formatNumber } from '../../../agenc/upstream/utils/format.js';
 import { toInkColor } from '../../../agenc/upstream/utils/ink.js';
 import type { Theme } from '../../../agenc/upstream/utils/theme.js';
-import { Byline } from '../../../agenc/upstream/components/design-system/Byline.js';
-import FullWidthRow from '../../../agenc/upstream/components/design-system/FullWidthRow.js';
+import { Byline } from '../design-system/Byline';
+import FullWidthRow from '../design-system/FullWidthRow';
 import { GlimmerMessage } from './GlimmerMessage.js';
 import { SpinnerGlyph } from './SpinnerGlyph.js';
 import type { SpinnerMode } from './types.js';

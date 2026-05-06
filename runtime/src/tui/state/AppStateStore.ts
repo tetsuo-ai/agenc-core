@@ -1,4 +1,4 @@
-import type { Notification } from '../../agenc/upstream/context/notifications.js'
+import type { Notification } from '../context/notifications'
 import type { TodoList } from '../../agenc/upstream/utils/todo/types.js'
 import type { BridgePermissionCallbacks } from '../../agenc/upstream/bridge/bridgePermissionCallbacks.js'
 import type { Command } from '../../commands.js'

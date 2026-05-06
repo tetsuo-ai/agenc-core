@@ -1,5 +1,5 @@
 import React from 'react';
-import type { StatsStore } from './context/stats.js';
+import type { StatsStore } from '../../tui/context/stats';
 import type { Root } from '../../tui/ink.js';
 import type { Props as REPLProps } from './screens/REPL.js';
 import type { AppState } from '../../tui/state/AppStateStore.js';

@@ -1,9 +1,9 @@
 import { execa } from 'execa';
 import * as React from 'react';
 import { useEffect, useState } from 'react';
-import { Select } from '../../components/CustomSelect/select.js';
-import { Dialog } from '../../components/design-system/Dialog.js';
-import { LoadingState } from '../../components/design-system/LoadingState.js';
+import { Select } from '../../../../tui/components/CustomSelect/select';
+import { Dialog } from '../../../../tui/components/design-system/Dialog';
+import { LoadingState } from '../../../../tui/components/design-system/LoadingState';
 import { Box, Text } from '../../../../tui/ink.js';
 import { logEvent, type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS as SafeString } from '../../services/analytics/index.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';

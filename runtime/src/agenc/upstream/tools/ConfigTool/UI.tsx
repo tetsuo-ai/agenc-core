@@ -1,5 +1,5 @@
 import React from 'react';
-import { MessageResponse } from '../../components/MessageResponse.js';
+import { MessageResponse } from '../../../../tui/components/MessageResponse';
 import { Text } from '../../../../tui/ink.js';
 import { jsonStringify } from '../../utils/slowOperations.js';
 import type { Input, Output } from './ConfigTool.js';

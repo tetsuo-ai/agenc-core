@@ -1,7 +1,7 @@
 import React, { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { FpsMetricsProvider } from "../../agenc/upstream/context/fpsMetrics.js";
-import { StatsProvider, type StatsStore } from "../../agenc/upstream/context/stats.js";
+import { FpsMetricsProvider } from "../context/fpsMetrics";
+import { StatsProvider, type StatsStore } from "../context/stats";
 import { onChangeAppState } from "../../agenc/upstream/state/onChangeAppState.js";
 import type { FpsMetrics } from "../../agenc/upstream/utils/fpsTracker.js";
 import { Messages } from "./Messages.js";

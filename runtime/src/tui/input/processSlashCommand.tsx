@@ -8,7 +8,7 @@ import type { SetToolJSXFn, ToolUseContext } from '../../agenc/upstream/Tool.js'
 import type { AssistantMessage, AttachmentMessage, Message, NormalizedUserMessage, ProgressMessage, UserMessage } from '../../agenc/upstream/types/message.js';
 import { addInvokedSkill, getSessionId } from '../../agenc/upstream/bootstrap/state.js';
 import { COMMAND_MESSAGE_TAG, COMMAND_NAME_TAG } from '../../agenc/upstream/constants/xml.js';
-import type { CanUseToolFn } from '../../agenc/upstream/hooks/useCanUseTool.js';
+import type { CanUseToolFn } from '../hooks/useCanUseTool';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, type AnalyticsMetadata_I_VERIFIED_THIS_IS_PII_TAGGED, logEvent } from '../../agenc/upstream/services/analytics/index.js';
 import { getDumpPromptsPath } from '../../agenc/upstream/services/api/dumpPrompts.js';
 import { buildPostCompactMessages } from '../../services/compact/compact.js';

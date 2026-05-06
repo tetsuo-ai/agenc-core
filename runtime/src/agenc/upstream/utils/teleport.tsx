@@ -7,7 +7,7 @@ import { checkGate_CACHED_OR_BLOCKING } from 'src/services/analytics/growthbook.
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from 'src/services/analytics/index.js';
 import { isPolicyAllowed } from 'src/services/policyLimits/index.js';
 import { z } from 'zod/v4';
-import { getTeleportErrors, TeleportError, type TeleportLocalErrorType } from '../components/TeleportError.js';
+import { getTeleportErrors, TeleportError, type TeleportLocalErrorType } from '../../../tui/components/TeleportError';
 import { getOauthConfig } from '../constants/oauth.js';
 import type { SDKMessage } from '../entrypoints/agentSdkTypes.js';
 import type { Root } from '../../../tui/ink.js';

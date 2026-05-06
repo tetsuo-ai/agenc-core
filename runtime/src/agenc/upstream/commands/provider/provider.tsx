@@ -5,16 +5,16 @@ import { COMMON_HELP_ARGS, COMMON_INFO_ARGS } from '../../constants/xml.js'
 import {
   ProviderManager,
   type ProviderManagerResult,
-} from '../../components/ProviderManager.js'
-import TextInput from '../../components/TextInput.js'
+} from '../../../../tui/components/ProviderManager'
+import TextInput from '../../../../tui/components/TextInput'
 import {
   Select,
   type OptionWithDescription,
-} from '../../components/CustomSelect/select.js'
-import { Dialog } from '../../components/design-system/Dialog.js'
-import { LoadingState } from '../../components/design-system/LoadingState.js'
-import { useCodexOAuthFlow } from '../../components/useCodexOAuthFlow.js'
-import { useTerminalSize } from '../../hooks/useTerminalSize.js'
+} from '../../../../tui/components/CustomSelect/select'
+import { Dialog } from '../../../../tui/components/design-system/Dialog'
+import { LoadingState } from '../../../../tui/components/design-system/LoadingState'
+import { useCodexOAuthFlow } from '../../../../tui/components/useCodexOAuthFlow'
+import { useTerminalSize } from '../../../../tui/hooks/useTerminalSize'
 import { Box, Text } from '../../../../tui/ink.js'
 import {
   type CodexOAuthTokens,

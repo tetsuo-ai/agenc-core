@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { join } from 'path'
 
-import { optionForPermissionSaveDestination } from '../components/permissions/rules/AddPermissionRules.tsx'
+import { optionForPermissionSaveDestination } from '../../../tui/components/permissions/rules/AddPermissionRules'
 import { isAgenCSettingsPath } from './permissions/filesystem.ts'
 import { getValidationTip } from './settings/validationTips.ts'
 

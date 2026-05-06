@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import React, { useEffect, useRef, useState } from 'react';
-import { useTerminalSize } from '../hooks/useTerminalSize.js';
+import { useTerminalSize } from '../../../tui/hooks/useTerminalSize';
 import { stringWidth } from '../../../tui/ink/stringWidth.js';
 import { Box, Text } from '../../../tui/ink.js';
 import { useAppState, useSetAppState } from '../../../tui/state/AppState.js';

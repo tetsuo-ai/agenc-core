@@ -26,8 +26,8 @@ import { addToToolDuration } from '../../../../cost/tracker.js'
 import {
   buildCodeEditToolAttributes,
   isCodeEditingTool,
-} from '../../hooks/toolPermission/permissionLogging.js'
-import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
+} from '../../../../tui/hooks/toolPermission/permissionLogging'
+import type { CanUseToolFn } from '../../../../tui/hooks/useCanUseTool'
 import {
   findToolByName,
   type Tool,

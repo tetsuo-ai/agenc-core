@@ -2,7 +2,7 @@
 // Fail when a candidate adds production importers of runtime/src/agenc/upstream.
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -11,6 +11,8 @@ export const UPSTREAM_IMPORT_SEARCH_PATTERNS = [
   "agenc/upstream/",
   "\\[[^]]*[\"']agenc[\"'][^]]*[\"']upstream[\"']",
 ];
+const KEEP_COMMENT_RE = /\/\/\s*upstream-import:\s*keep\b/i;
+const UPSTREAM_IMPORT_LINE_RE = /\bagenc\/upstream\/|\[[^\]]*["']agenc["'][^\]]*["']upstream["']/;
 
 export function normalizeRepoPath(filePath) {
   return filePath.split(path.sep).join("/");
@@ -67,6 +69,39 @@ export function importerFilesFromGitGrepOutput(output, ref) {
   );
 }
 
+export function hasUnexemptedUpstreamImport(source) {
+  if (!source) return false;
+  const lines = source.split("\n");
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? "";
+    if (!UPSTREAM_IMPORT_LINE_RE.test(line)) continue;
+    let exempt = KEEP_COMMENT_RE.test(line);
+    for (let j = Math.max(0, i - 3); !exempt && j < i; j += 1) {
+      exempt = KEEP_COMMENT_RE.test(lines[j] ?? "");
+    }
+    if (!exempt) return true;
+  }
+  return false;
+}
+
+function filterUnexemptedImporterFiles(root, files) {
+  return files.filter((file) => {
+    try {
+      return hasUnexemptedUpstreamImport(
+        readFileSync(path.join(root, file), "utf8"),
+      );
+    } catch {
+      return true;
+    }
+  });
+}
+
+function fileAtRefHasUnexemptedUpstreamImport(root, ref, file) {
+  const result = runCommand("git", ["show", `${ref}:${file}`], { root });
+  if (result.status !== 0) return true;
+  return hasUnexemptedUpstreamImport(result.stdout);
+}
+
 function runCommand(cmd, args, options) {
   return spawnSync(cmd, args, {
     cwd: options.root,
@@ -95,7 +130,9 @@ function importerFilesAtRef(root, ref) {
       `git grep failed for ${ref}: ${(result.stderr || result.stdout).trim()}`,
     );
   }
-  return importerFilesFromGitGrepOutput(result.stdout, ref);
+  return importerFilesFromGitGrepOutput(result.stdout, ref).filter((file) =>
+    fileAtRefHasUnexemptedUpstreamImport(root, ref, file),
+  );
 }
 
 function importerFilesInWorktree(root) {
@@ -120,7 +157,10 @@ function importerFilesInWorktree(root) {
       `rg failed while scanning the candidate tree: ${(result.stderr || result.stdout).trim()}`,
     );
   }
-  return importerFilesFromRipgrepOutput(result.stdout);
+  return filterUnexemptedImporterFiles(
+    root,
+    importerFilesFromRipgrepOutput(result.stdout),
+  );
 }
 
 export function buildUpstreamImportGrowthReport(options = {}) {
