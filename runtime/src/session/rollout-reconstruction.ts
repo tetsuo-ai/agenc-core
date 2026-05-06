@@ -161,6 +161,11 @@ const CONTEXTUAL_USER_FRAGMENTS: ReadonlyArray<ContextualFragmentDef> = [
     startMarker: "# AGENC.md instructions for ",
     endMarker: "</INSTRUCTIONS>",
   },
+  // Imported instruction headers emitted by the current prompt path.
+  {
+    startMarker: "# AGENTS.md instructions for ", // branding-scan: allow live imported instruction marker
+    endMarker: "</INSTRUCTIONS>",
+  },
   // Environment context (agenc runtime ENVIRONMENT_CONTEXT_FRAGMENT).
   {
     startMarker: "<environment_context>",
@@ -179,6 +184,19 @@ const CONTEXTUAL_USER_FRAGMENTS: ReadonlyArray<ContextualFragmentDef> = [
   {
     startMarker: "<subagent_notification>",
     endMarker: "</subagent_notification>",
+  },
+  // Hook and editor context fragments emitted before the user prompt.
+  {
+    startMarker: "<session-start-hook>",
+    endMarker: "</session-start-hook>",
+  },
+  {
+    startMarker: "<user-prompt-submit-hook>",
+    endMarker: "</user-prompt-submit-hook>",
+  },
+  {
+    startMarker: "<ide_opened_file>",
+    endMarker: "</ide_opened_file>",
   },
 ];
 

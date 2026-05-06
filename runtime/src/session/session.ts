@@ -166,6 +166,10 @@ import {
   agencTelemetry,
   toMetricTags,
 } from "../observability/telemetry.js";
+import {
+  RealtimeConversationManager as RuntimeRealtimeConversationManager,
+  type RealtimeConversation,
+} from "../conversation/realtime/conversation.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Session-facing type contracts.
@@ -423,10 +427,8 @@ function mcpElicitationPendingKey(
   return `${serverName}\u0000${String(requestId)}`;
 }
 
-/** agenc runtime `RealtimeConversationManager`. T-future (realtime voice). */
-export interface RealtimeConversationManager {
-  runningState(): Promise<unknown | undefined>;
-}
+/** agenc runtime `RealtimeConversationManager`. */
+export type RealtimeConversationManager = RealtimeConversation;
 
 /** agenc runtime `GuardianReviewSessionManager`. */
 export interface GuardianReviewSessionManager {
@@ -1254,9 +1256,7 @@ export class Session {
     this.managedNetworkProxyRefreshLock = new AsyncLock<void>(undefined);
     this.features = opts.features;
     this.pendingMcpServerRefreshConfig = new AsyncLock<unknown | null>(null);
-    this.conversation = {
-      runningState: () => Promise.resolve(undefined),
-    };
+    this.conversation = new RuntimeRealtimeConversationManager();
     this.activeTurn = new AsyncLock<ActiveTurn | null>(null);
     const mailbox = new SimpleMailbox<
       InterAgentCommunication & { seq: number }
@@ -2765,6 +2765,11 @@ export class Session {
     });
 
     await Promise.race([drainAll, timeout]);
+    try {
+      await this.conversation.shutdown();
+    } catch {
+      /* best-effort */
+    }
 
     // Any orphans (children that didn't finish draining in time) get
     // a warning event so post-mortem can see the count (I-8 + I-87).
