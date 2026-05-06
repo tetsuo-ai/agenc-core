@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AuthBackend } from "../auth/backend.js";
+import { createAgenCJsonLineDaemonRequestClient } from "../app-server/agent-cli.js";
 import {
   createNodeDaemonCliHost,
   readAgenCDaemonPid,
@@ -26,6 +27,7 @@ import {
 import { findSystemBwrapInPath, systemBwrapWarningForPath } from "../sandbox/engine/bwrap.js";
 import { SandboxManager } from "../sandbox/engine/manager.js";
 import { MACOS_PATH_TO_SEATBELT_EXECUTABLE } from "../sandbox/engine/seatbelt.js";
+import { redactSecrets } from "../secrets/index.js";
 import type { McpManager, McpServerInfo } from "../session/session.js";
 
 export type DoctorSeverity = "ok" | "info" | "warn" | "error";
@@ -81,6 +83,7 @@ export interface DoctorOptions {
   readonly providerFetchImpl?: typeof fetch;
   readonly daemonPid?: number | null;
   readonly isDaemonPidRunning?: (pid: number) => boolean;
+  readonly pingDaemon?: (params: DaemonPingParams) => Promise<DaemonPingResult>;
   readonly statPath?: (target: string) => PathStat | null;
 }
 
@@ -107,6 +110,18 @@ interface PathStat {
   readonly isDirectory: boolean;
   readonly isSocket: boolean;
   readonly mode: number;
+}
+
+interface DaemonPingParams {
+  readonly env: NodeJS.ProcessEnv;
+  readonly userHome: string;
+  readonly socketPath: string;
+  readonly cookiePath: string;
+}
+
+interface DaemonPingResult {
+  readonly ok: boolean;
+  readonly detail: string;
 }
 
 const MIN_NODE_MAJOR = 25;
@@ -271,20 +286,35 @@ async function collectDaemonFindings(
   const socketStat = statPath(socketPath, options);
   const cookieStat = statPath(cookiePath, options);
   const findings: DoctorFinding[] = [];
-  findings.push({
-    category: "daemon",
-    code: "daemon-running",
-    severity: socketStat?.isSocket === true ? "ok" : socketStat?.exists === true ? "error" : "warn",
-    title: "daemon",
-    detail: socketStat?.isSocket === true
-      ? `pid ${pid} reachable at ${socketPath}`
-      : socketStat?.exists === true
+  if (socketStat?.isSocket === true) {
+    const ping = await pingDaemon({
+      env,
+      userHome,
+      socketPath,
+      cookiePath,
+    }, options);
+    findings.push({
+      category: "daemon",
+      code: "daemon-running",
+      severity: ping.ok ? "ok" : "warn",
+      title: "daemon",
+      detail: ping.ok
+        ? `pid ${pid} answered health.ping at ${socketPath}: ${ping.detail}`
+        : `pid ${pid} has a socket at ${socketPath}, but reachability was not verified: ${ping.detail}`,
+      ...(ping.ok ? {} : { remediation: "run `agenc daemon restart` and retry `/doctor`" }),
+    });
+  } else {
+    findings.push({
+      category: "daemon",
+      code: "daemon-running",
+      severity: socketStat?.exists === true ? "error" : "warn",
+      title: "daemon",
+      detail: socketStat?.exists === true
         ? `pid ${pid} running but socket path is not a socket: ${socketPath}`
         : `pid ${pid} running but socket is missing: ${socketPath}`,
-    ...(socketStat?.isSocket === true
-      ? {}
-      : { remediation: "run `agenc daemon restart` to recreate the local socket" }),
-  });
+      remediation: "run `agenc daemon restart` to recreate the local socket",
+    });
+  }
 
   if (cookieStat?.exists === true) {
     const insecureBits = cookieStat.mode & 0o077;
@@ -674,7 +704,7 @@ function mcpServerFinding(
     : manager.getConnectedServers !== undefined
       ? connected.has(name)
       : undefined;
-  const target = info.url ?? info.command ?? "configured server";
+  const target = sanitizeDoctorTarget(info.url ?? info.command ?? "configured server");
   if (connectedState === true) {
     return {
       category: "mcp",
@@ -749,6 +779,24 @@ function collectRuntimeArtifactFinding(
     };
   }
 
+  const artifactProblems = [
+    ...required.flatMap((rel) => validateNonEmptyArtifact(runtimeRoot, rel)),
+    ...validateExecutableArtifact(runtimeRoot, "bin/agenc"),
+    ...validateExecutableArtifact(runtimeRoot, "bin/agenc-linux-sandbox"),
+    ...validateVersionFile(path.join(runtimeRoot, "dist", "VERSION")),
+    ...validatePackageEntrypoints(runtimeRoot),
+  ];
+  if (artifactProblems.length > 0) {
+    return {
+      category: "runtime",
+      code: "runtime-artifacts",
+      severity: "error",
+      title: "runtime artifacts",
+      detail: artifactProblems.join("; "),
+      remediation: "rebuild the runtime package and rerun package entrypoint validation",
+    };
+  }
+
   const version = readVersionFile(path.join(runtimeRoot, "dist", "VERSION"));
   return {
     category: "runtime",
@@ -759,6 +807,30 @@ function collectRuntimeArtifactFinding(
       ? `built artifacts present in ${path.join(runtimeRoot, "dist")}`
       : `built artifacts present (${version})`,
   };
+}
+
+async function pingDaemon(
+  params: DaemonPingParams,
+  options: Pick<DoctorOptions, "pingDaemon">,
+): Promise<DaemonPingResult> {
+  if (options.pingDaemon !== undefined) return options.pingDaemon(params);
+  try {
+    const result = await createAgenCJsonLineDaemonRequestClient({
+      env: params.env,
+      userHome: params.userHome,
+      socketPath: params.socketPath,
+      timeoutMs: 750,
+    }).request("health.ping", {});
+    return {
+      ok: true,
+      detail: `ok at ${result.now}`,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      detail: errorMessage(error),
+    };
+  }
 }
 
 function readConfig(ctx: DoctorContext): AgenCConfig {
@@ -876,6 +948,89 @@ function isFile(target: string): boolean {
   }
 }
 
+function validateNonEmptyArtifact(
+  runtimeRoot: string,
+  rel: string,
+): readonly string[] {
+  try {
+    const stat = statSync(path.join(runtimeRoot, rel));
+    return stat.size > 0 ? [] : [`${rel} is empty`];
+  } catch {
+    return [`${rel} cannot be inspected`];
+  }
+}
+
+function validateExecutableArtifact(
+  runtimeRoot: string,
+  rel: string,
+): readonly string[] {
+  try {
+    const stat = statSync(path.join(runtimeRoot, rel));
+    return (stat.mode & 0o111) !== 0 ? [] : [`${rel} is not executable`];
+  } catch {
+    return [`${rel} cannot be inspected`];
+  }
+}
+
+function validateVersionFile(target: string): readonly string[] {
+  try {
+    const parsed = JSON.parse(readFileSync(target, "utf8")) as Record<string, unknown>;
+    const required = ["commit", "shortCommit", "buildTime", "runtimeVersion"];
+    return required.filter((key) => stringValue(parsed[key]) === undefined)
+      .map((key) => `dist/VERSION missing ${key}`);
+  } catch (error) {
+    return [`dist/VERSION is not valid JSON: ${errorMessage(error)}`];
+  }
+}
+
+function validatePackageEntrypoints(runtimeRoot: string): readonly string[] {
+  let manifest: Record<string, unknown>;
+  try {
+    manifest = JSON.parse(
+      readFileSync(path.join(runtimeRoot, "package.json"), "utf8"),
+    ) as Record<string, unknown>;
+  } catch (error) {
+    return [`package.json is not valid JSON: ${errorMessage(error)}`];
+  }
+  return collectPackageEntryPaths(manifest)
+    .filter((rel) => !isFile(path.join(runtimeRoot, rel)))
+    .map((rel) => `package entrypoint missing: ${rel}`);
+}
+
+function collectPackageEntryPaths(manifest: Record<string, unknown>): readonly string[] {
+  const paths = new Set<string>();
+  const add = (value: unknown): void => {
+    if (typeof value !== "string") return;
+    if (value.startsWith("node:") || value.startsWith("#")) return;
+    paths.add(value.startsWith("./") ? value.slice(2) : value);
+  };
+  add(manifest.main);
+  add(manifest.types);
+  add(manifest.module);
+  const bin = objectValue(manifest.bin);
+  if (bin !== undefined) {
+    for (const value of Object.values(bin)) add(value);
+  } else {
+    add(manifest.bin);
+  }
+  collectExportPaths(manifest.exports, add);
+  return [...paths];
+}
+
+function collectExportPaths(value: unknown, add: (value: unknown) => void): void {
+  if (typeof value === "string") {
+    add(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectExportPaths(item, add);
+    return;
+  }
+  const obj = objectValue(value);
+  if (obj === undefined) return;
+  for (const item of Object.values(obj)) collectExportPaths(item, add);
+}
+
 function readVersionFile(target: string): string | null {
   try {
     const parsed = JSON.parse(readFileSync(target, "utf8")) as {
@@ -909,6 +1064,33 @@ function providerRemediation(envVar: string | undefined): string {
   return envVar === undefined
     ? "configure provider credentials or switch to a usable provider"
     : `set ${envVar} or switch to a usable provider`;
+}
+
+function sanitizeDoctorTarget(target: string): string {
+  const urlRedacted = redactUrlTarget(target);
+  return redactSecrets(urlRedacted).replace(
+    /(\s--?(?:api[_-]?key|token|access[_-]?token|refresh[_-]?token|secret|password)(?:=|\s+))(?:"[^"]*"|'[^']*'|\S+)/giu,
+    `$1${REDACTED_DOCTOR_VALUE}`,
+  );
+}
+
+const REDACTED_DOCTOR_VALUE = "[REDACTED]";
+const SENSITIVE_QUERY_KEYS = /(?:api[_-]?key|token|access[_-]?token|refresh[_-]?token|secret|password|authorization)/iu;
+
+function redactUrlTarget(target: string): string {
+  try {
+    const url = new URL(target);
+    if (url.username.length > 0) url.username = REDACTED_DOCTOR_VALUE;
+    if (url.password.length > 0) url.password = REDACTED_DOCTOR_VALUE;
+    for (const key of [...url.searchParams.keys()]) {
+      if (SENSITIVE_QUERY_KEYS.test(key)) {
+        url.searchParams.set(key, REDACTED_DOCTOR_VALUE);
+      }
+    }
+    return url.toString();
+  } catch {
+    return target;
+  }
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {
