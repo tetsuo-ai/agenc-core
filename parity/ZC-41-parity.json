@@ -152,12 +152,14 @@
   "intentionalReductions": [
     "The default AgenC telemetry client is no-op and does not start an exporter in ZC-41.",
     "Metric and span identifiers use agenc.* names. Donor-owned result metadata keys are not shipped in runtime code.",
-    "Windows sandbox setup metrics are wired at the current AgenC unified-exec sandbox transform seam; platform backend expansion remains owned by sandbox items."
+    "Windows sandbox setup metrics are emitted only when the current AgenC sandbox selector chooses the Windows restricted-token backend; platform backend expansion remains owned by sandbox items."
   ],
   "tests": [
     "runtime/src/observability/telemetry.test.ts",
     "runtime/tests/runtime-session-compact-telemetry.test.ts",
+    "runtime/src/phases/stream-model.test.ts",
     "runtime/src/hooks/engine/dispatcher.test.ts",
-    "runtime/src/mcp-client/tool-bridge.test.ts"
+    "runtime/src/mcp-client/tool-bridge.test.ts",
+    "runtime/src/unified-exec/process-manager.test.ts"
   ]
 }

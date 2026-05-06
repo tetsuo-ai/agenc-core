@@ -271,6 +271,37 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
   });
 
   test("permission deny blocks MCP client dispatch", async () => {
+    const counters: Array<{ name: string; tags?: Record<string, string> }> = [];
+    const client: TelemetryClient = {
+      startSpan(name) {
+        return {
+          name,
+          setAttribute() {},
+          setAttributes() {},
+          addEvent() {},
+          enter(fn) {
+            return fn();
+          },
+          end() {},
+        };
+      },
+      withSpan(_name, _attributes, fn) {
+        return fn();
+      },
+      getCurrentSpan() {
+        return undefined;
+      },
+      counter(name, _increment, tags) {
+        counters.push({ name, tags });
+      },
+      histogram() {},
+      recordDuration() {},
+      timer(): TelemetryTimer {
+        return { record() {}, end() {} };
+      },
+      event() {},
+    };
+    setAgencTelemetryClient(client);
     const callTool = vi.fn(async () => ({
       content: [{ type: "text", text: "should-not-run" }],
       isError: false,
@@ -302,6 +333,94 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
       isError: true,
     });
     expect(callTool).not.toHaveBeenCalled();
+    expect(counters).toContainEqual({
+      name: "agenc.mcp.call",
+      tags: {
+        connector_id: "srv",
+        connector_name: "srv",
+        server: "srv",
+        status: "error",
+        tool: "write",
+      },
+    });
+  });
+
+  test("ends MCP spans when begin observers throw", async () => {
+    const spans: Array<{ name: string; ended: boolean }> = [];
+    const counters: Array<{ name: string; tags?: Record<string, string> }> = [];
+    const client: TelemetryClient = {
+      startSpan(name) {
+        const span = { name, ended: false };
+        spans.push(span);
+        return {
+          name,
+          setAttribute() {},
+          setAttributes() {},
+          addEvent() {},
+          enter(fn) {
+            return fn();
+          },
+          end() {
+            span.ended = true;
+          },
+        };
+      },
+      withSpan(_name, _attributes, fn) {
+        return fn();
+      },
+      getCurrentSpan() {
+        return undefined;
+      },
+      counter(name, _increment, tags) {
+        counters.push({ name, tags });
+      },
+      histogram() {},
+      recordDuration() {},
+      timer(): TelemetryTimer {
+        return { record() {}, end() {} };
+      },
+      event() {},
+    };
+    setAgencTelemetryClient(client);
+    const callTool = vi.fn(async () => ({
+      content: [{ type: "text", text: "should-not-run" }],
+      isError: false,
+    }));
+    const bridge = await createToolBridge(
+      {
+        listTools: async () => ({
+          tools: [{ name: "echo", description: "echoes" }],
+        }),
+        callTool,
+        close: async () => {},
+      },
+      "srv",
+      undefined,
+      {
+        callObserver: {
+          onBegin: () => {
+            throw new Error("observer exploded");
+          },
+        },
+      },
+    );
+
+    const result = await bridge.tools[0]!.execute({ value: 1 });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("observer exploded");
+    expect(callTool).not.toHaveBeenCalled();
+    expect(spans[0]?.ended).toBe(true);
+    expect(counters).toContainEqual({
+      name: "agenc.mcp.call",
+      tags: {
+        connector_id: "srv",
+        connector_name: "srv",
+        server: "srv",
+        status: "error",
+        tool: "echo",
+      },
+    });
   });
 
   test("permission approval dispatches MCP client tools with updated args", async () => {

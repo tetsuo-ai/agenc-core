@@ -166,7 +166,7 @@ function recordWindowsSandboxSetupTelemetry(
   status: "success" | "failure",
   durationMs: number,
 ): void {
-  if (windowsSandboxLevel === "disabled" && sandbox !== "windows_restricted_token") {
+  if (sandbox !== "windows_restricted_token") {
     return;
   }
   const tags = toMetricTags({

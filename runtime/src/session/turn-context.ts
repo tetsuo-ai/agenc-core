@@ -282,14 +282,18 @@ export class TurnTimingState {
     return Math.max(0, Math.trunc(this.firstTokenAtMs - this.startedAtMs));
   }
 
+  recordFirstToken(nowMs: number = Date.now()): number | undefined {
+    if (this.firstTokenAtMs !== undefined) return undefined;
+    this.firstTokenAtMs = nowMs;
+    return this.timeToFirstTokenMs();
+  }
+
   recordTtftForPhaseEvent(
     event: { readonly type: string; readonly content?: string },
     nowMs: number = Date.now(),
   ): number | undefined {
     if (!phaseEventRecordsTurnTtft(event)) return undefined;
-    if (this.firstTokenAtMs !== undefined) return undefined;
-    this.firstTokenAtMs = nowMs;
-    return this.timeToFirstTokenMs();
+    return this.recordFirstToken(nowMs);
   }
 
   recordTtfmForAssistantText(

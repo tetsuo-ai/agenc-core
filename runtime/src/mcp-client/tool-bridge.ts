@@ -750,25 +750,6 @@ export async function createToolBridge(
         ) {
           return callRequestPermissionsTool(args, callId, options.permissions);
         }
-        let executionArgs: Record<string, unknown>;
-        try {
-          const authorization = await authorizeMcpClientToolCall(
-            bridgeTool,
-            serverName,
-            mcpTool,
-            callId,
-            args,
-            options.permissions,
-          );
-          if (!authorization.ok) return authorization.result;
-          executionArgs = authorization.args;
-        } catch (error) {
-          return errorResult(
-            error instanceof Error ? error.message : String(error),
-          );
-        }
-        const callArgs = safeStringifyArgs(executionArgs);
-        const observer = options.callObserver;
         const connectorId =
           stringValue(asRecord(mcpTool)?.connectorId) ?? serverName;
         const connectorName =
@@ -787,19 +768,46 @@ export async function createToolBridge(
           "mcp.connector.name": connectorName,
           "tool.name": mcpTool.name,
           "tool.call_id": callId,
-          "agenc.mcp.target.id": "",
-          "agenc.mcp.server_user_flow.triggered": false,
         });
         recordMcpServerFields(span, options.serverOrigin);
-        observer?.onBegin?.({
-          callId,
-          server: serverName,
-          toolName: mcpTool.name,
-          args: callArgs,
-        });
         const startedAtMs = Date.now();
+        let telemetryRecorded = false;
+        const finishTelemetry = (status: string, durationMs: number) => {
+          if (telemetryRecorded) return;
+          telemetryRecorded = true;
+          recordMcpCallTelemetry(
+            span,
+            serverName,
+            mcpTool.name,
+            connectorId,
+            connectorName,
+            status,
+            durationMs,
+          );
+        };
 
         try {
+          const authorization = await authorizeMcpClientToolCall(
+            bridgeTool,
+            serverName,
+            mcpTool,
+            callId,
+            args,
+            options.permissions,
+          );
+          if (!authorization.ok) {
+            finishTelemetry("error", 0);
+            return authorization.result;
+          }
+          const executionArgs = authorization.args;
+          const callArgs = safeStringifyArgs(executionArgs);
+          const observer = options.callObserver;
+          observer?.onBegin?.({
+            callId,
+            server: serverName,
+            toolName: mcpTool.name,
+            args: callArgs,
+          });
           const result = await withRPCDeadline<MCPCallToolResponse>(
             `MCP tool "${mcpTool.name}" callTool`,
             callToolTimeoutMs,
@@ -842,15 +850,7 @@ export async function createToolBridge(
             isError,
             durationMs,
           });
-          recordMcpCallTelemetry(
-            span,
-            serverName,
-            mcpTool.name,
-            connectorId,
-            connectorName,
-            isError ? "error" : "ok",
-            durationMs,
-          );
+          finishTelemetry(isError ? "error" : "ok", durationMs);
           return {
             content,
             isError,
@@ -858,23 +858,18 @@ export async function createToolBridge(
         } catch (error) {
           const errMessage = `MCP tool "${mcpTool.name}" failed: ${(error as Error).message}`;
           const durationMs = Date.now() - startedAtMs;
-          observer?.onEnd?.({
-            callId,
-            server: serverName,
-            toolName: mcpTool.name,
-            result: errMessage,
-            isError: true,
-            durationMs,
-          });
-          recordMcpCallTelemetry(
-            span,
-            serverName,
-            mcpTool.name,
-            connectorId,
-            connectorName,
-            "error",
-            durationMs,
-          );
+          try {
+            options.callObserver?.onEnd?.({
+              callId,
+              server: serverName,
+              toolName: mcpTool.name,
+              result: errMessage,
+              isError: true,
+              durationMs,
+            });
+          } finally {
+            finishTelemetry("error", durationMs);
+          }
           return {
             content: errMessage,
             isError: true,

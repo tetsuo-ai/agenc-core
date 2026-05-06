@@ -5654,8 +5654,10 @@ function assertZc41ObservabilityCoverage() {
     "run",
     "src/observability/telemetry.test.ts",
     "tests/runtime-session-compact-telemetry.test.ts",
+    "src/phases/stream-model.test.ts",
     "src/hooks/engine/dispatcher.test.ts",
     "src/mcp-client/tool-bridge.test.ts",
+    "src/unified-exec/process-manager.test.ts",
   ]);
   if (testRun.status !== 0) {
     failGate("ZC-41: observability seam tests failed.");

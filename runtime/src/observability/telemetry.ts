@@ -42,9 +42,6 @@ export interface TelemetryClient {
   event(name: string, attributes?: TelemetryAttributes): void;
 }
 
-export const AGENC_TOOL_CALL_METRIC = "agenc.tool.call";
-export const AGENC_TOOL_CALL_DURATION_METRIC =
-  "agenc.tool.call.duration_ms";
 export const AGENC_TOOL_UNIFIED_EXEC_METRIC =
   "agenc.tool.unified_exec";
 export const AGENC_TOOL_UNIFIED_EXEC_DURATION_METRIC =
@@ -60,7 +57,6 @@ export const AGENC_TURN_TTFT_DURATION_METRIC =
   "agenc.turn.ttft.duration_ms";
 export const AGENC_TURN_TTFM_DURATION_METRIC =
   "agenc.turn.ttfm.duration_ms";
-export const AGENC_TURN_TOOL_CALL_METRIC = "agenc.turn.tool.call";
 export const AGENC_STARTUP_PREWARM_DURATION_METRIC =
   "agenc.startup_prewarm.duration_ms";
 export const AGENC_STARTUP_PREWARM_AGE_AT_FIRST_TURN_METRIC =
