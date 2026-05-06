@@ -11,7 +11,7 @@ import {
 
 export const AGENC_IDE_EXTENSION_REPOSITORY_NAME = "agenc-vscode" as const;
 export const AGENC_IDE_EXTENSION_PACKAGE_NAME =
-  "@tetsuo-ai/agenc-vscode" as const;
+  "agenc-vscode" as const;
 export const AGENC_IDE_EXTENSION_TARGET = "vscode" as const;
 export const AGENC_IDE_EXTENSION_CAPABILITY_NAMESPACE = "ide" as const;
 export const AGENC_IDE_EXTENSION_LSP_CAPABILITY = "lsp" as const;

@@ -4462,7 +4462,10 @@ function assertAgenCVscodeSiblingRepo() {
   }
 
   const packageFailures = [];
-  if (pkg.name !== "@tetsuo-ai/agenc-vscode") packageFailures.push("name must be @tetsuo-ai/agenc-vscode");
+  if (pkg.name !== "agenc-vscode") packageFailures.push("name must be agenc-vscode");
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(pkg.name ?? "")) {
+    packageFailures.push("name must be a VS Code extension id segment");
+  }
   if (pkg.displayName !== "AgenC") packageFailures.push("displayName must be AgenC");
   if (pkg.publisher !== "tetsuo-ai") packageFailures.push("publisher must be tetsuo-ai");
   if (pkg.engines?.vscode !== "^1.90.0") packageFailures.push("engines.vscode must be ^1.90.0");
