@@ -1301,6 +1301,18 @@ const ITEM_EVIDENCE = {
     ],
     tests: ["scripts/check-bin-classification.test.mjs"],
   },
+  "MG-03": {
+    files: [
+      "runtime/src/bin/MIGRATION.md",
+      "scripts/check-bin-classification.mjs",
+    ],
+    grepPresent: [
+      { pattern: "MG-03 Relocation Result", scope: "runtime/src/bin/MIGRATION.md" },
+      { pattern: "runtime/src/app-server/handlers", scope: "runtime/src/bin/MIGRATION.md" },
+      { pattern: "forbidDaemonOnly", scope: "scripts/check-bin-classification.mjs" },
+    ],
+    tests: ["scripts/check-bin-classification.test.mjs"],
+  },
   "MG-04": {
     grepNotPresent: [{ pattern: "directRuntime|direct.*runtime|legacy.*direct", scope: "runtime/src/bin" }],
   },
@@ -3620,10 +3632,18 @@ async function migrationGates(item) {
     return;
   }
   if (id === "MG-03") {
-    // Migration warning for direct-CLI fallback path users.
-    const found = grepRepo("daemon mode unavailable|daemon-mode unavailable|direct-runtime fallback", "runtime/src");
-    if (!found) failGate("MG-03: direct-runtime-fallback warning not found in runtime/src/");
-    pass("MG-03: fallback warning present");
+    const test = run("node", ["scripts/check-bin-classification.test.mjs"]);
+    if (test.status !== 0) {
+      failGate("MG-03: bin classification checker tests failed");
+    }
+    const check = run("node", [
+      "scripts/check-bin-classification.mjs",
+      "--forbid-daemon-only",
+    ]);
+    if (check.status !== 0) {
+      failGate("MG-03: daemon-only bin files remain after relocation");
+    }
+    pass("MG-03: runtime/src/bin has no daemon-only production files");
     return;
   }
   if (id === "MG-04") {

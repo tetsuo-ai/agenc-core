@@ -51,3 +51,18 @@ Side labels:
 under `runtime/src/bin/` appears exactly once in the inventory above with a
 valid side label. Update this file in the same change that adds, moves, or
 deletes production files in `runtime/src/bin/`.
+
+## MG-03 Relocation Result
+
+The recursive inventory above has zero `daemon-only` production files under
+`runtime/src/bin/`, so MG-03 has no files to relocate into
+`runtime/src/app-server/handlers/<family>/`.
+
+No deprecated forwarder modules are created for this empty move set. Current
+goal discipline forbids new forwarding-only modules, and there is no runtime
+backward-compatibility need when no daemon-owned bin file existed to move.
+Future daemon-owned RPC handlers belong under
+`runtime/src/app-server/handlers/<family>/`, not under `runtime/src/bin/`.
+
+Run `node scripts/check-bin-classification.mjs --forbid-daemon-only` to enforce
+that boundary.

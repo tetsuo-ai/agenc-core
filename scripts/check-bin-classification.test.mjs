@@ -11,6 +11,7 @@ import {
   compareBinClassification,
   directBinImportsFromSource,
   discoverBinSourceFiles,
+  findDaemonOnlyEntries,
   findSideDependencyContradictions,
   isProductionBinSourceFile,
   parseMigrationInventory,
@@ -62,12 +63,16 @@ function writeMigration(root, markdown) {
   writeFileSync(path.join(root, "runtime/src/bin/MIGRATION.md"), markdown);
 }
 
-function runChecker(root) {
-  return spawnSync(process.execPath, [scriptPath, "--root", root], {
-    cwd: root,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+function runChecker(root, extraArgs = []) {
+  return spawnSync(
+    process.execPath,
+    [scriptPath, "--root", root, ...extraArgs],
+    {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
 }
 
 try {
@@ -90,6 +95,13 @@ try {
     "parser reads migration table rows",
     parsed.length === 4 && parsed[3]?.classification === "shared",
     JSON.stringify(parsed),
+  );
+  assert(
+    "daemon-only entry finder reports matching rows",
+    findDaemonOnlyEntries([
+      ...parsed,
+      { relPath: "runtime/src/bin/daemon.ts", classification: "daemon-only" },
+    ]).map((entry) => entry.relPath).join(",") === "runtime/src/bin/daemon.ts",
   );
   assert(
     "import parser resolves direct bin dependencies",
@@ -200,6 +212,33 @@ try {
       "CLI passes complete migration",
       passingCli.status === 0,
       `${passingCli.stderr}${passingCli.stdout}`,
+    );
+    const passingForbiddenCli = runChecker(root, ["--forbid-daemon-only"]);
+    assert(
+      "CLI passes daemon-only ban when no daemon-only rows exist",
+      passingForbiddenCli.status === 0 &&
+        passingForbiddenCli.stdout.includes("no daemon-only bin files"),
+      `${passingForbiddenCli.stderr}${passingForbiddenCli.stdout}`,
+    );
+
+    writeMigration(
+      root,
+      `
+| File | Side | Notes |
+| --- | --- | --- |
+| \`runtime/src/bin/_deps/current-session.ts\` | shared | state |
+| \`runtime/src/bin/agenc.ts\` | daemon-only | misplaced daemon entry |
+| \`runtime/src/bin/route.ts\` | shared | route |
+| \`runtime/src/bin/bootstrap.ts\` | shared | runtime |
+`,
+    );
+    const failingForbiddenCli = runChecker(root, ["--forbid-daemon-only"]);
+    assert(
+      "CLI fails daemon-only ban when daemon-only rows remain",
+      failingForbiddenCli.status === 1 &&
+        failingForbiddenCli.stderr.includes("Daemon-only bin file row") &&
+        failingForbiddenCli.stderr.includes("runtime/src/bin/agenc.ts"),
+      `${failingForbiddenCli.stderr}${failingForbiddenCli.stdout}`,
     );
 
     writeMigration(
