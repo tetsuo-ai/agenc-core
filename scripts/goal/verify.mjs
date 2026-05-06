@@ -1619,15 +1619,16 @@ const ITEM_EVIDENCE = {
       { pattern: "policyDecider", scope: "runtime/src/session/turn-context.ts" },
       { pattern: "blockedRequestObserver", scope: "runtime/src/session/turn-context.ts" },
       { pattern: "turn-builder helpers preserve network policy decider", scope: "runtime/src/session/turn-context.test.ts" },
-      { pattern: "networkPolicyInterfaces", scope: "runtime/src/permissions/guardian/approval-request.ts" },
-      { pattern: "networkPolicyInterfaces", scope: "runtime/src/permissions/guardian/approval-request.test.ts" },
       { pattern: "networkPolicyInterfaces", scope: "runtime/src/tools/system/exec-command.ts" },
       { pattern: "networkPolicyInterfacesFromInvocation", scope: "runtime/src/tools/execution.ts" },
       { pattern: "legacy guardian approval fallback carries turn network policy interfaces", scope: "runtime/src/tools/execution.test.ts" },
       { pattern: "networkPolicyInterfacesFromTurn", scope: "runtime/src/tools/router.ts" },
-      { pattern: "networkPolicyInterfaces", scope: "runtime/src/tools/router.test.ts" },
+      { pattern: "guardian approval context", scope: "runtime/src/tools/router.test.ts" },
       { pattern: "networkPolicyDecider", scope: "runtime/src/unified-exec/process-manager.ts" },
       { pattern: "no-op-interface-port", scope: "parity/ZC-43-parity.json" },
+    ],
+    grepNotPresent: [
+      { pattern: "networkPolicyInterfaces", scope: "runtime/src/permissions/guardian/approval-request.ts" },
     ],
     tests: [
       "runtime/src/sandbox/network-policy.test.ts",
@@ -5997,6 +5998,9 @@ function assertZc43NetworkPolicyInterfaces() {
       "ZC-43: execution fallback approval path must test network policy interface threading.",
     );
   }
+  if (!executionTestSource.includes('"networkPolicyInterfaces" in')) {
+    failGate("ZC-43: execution fallback test must assert request serialization stays no-op.");
+  }
   const processManagerSource = readRequired("runtime/src/unified-exec/process-manager.ts");
   for (const marker of [
     "networkPolicyDecider",
@@ -6035,8 +6039,8 @@ function assertZc43NetworkPolicyInterfaces() {
     );
   }
   const guardianSource = readRequired("runtime/src/permissions/guardian/approval-request.ts");
-  if (!guardianSource.includes("networkPolicyInterfaces")) {
-    failGate("ZC-43: guardian approval request must carry network policy interface metadata.");
+  if (guardianSource.includes("networkPolicyInterfaces")) {
+    failGate("ZC-43: guardian approval request must not serialize network policy interfaces.");
   }
   const routerSource = readRequired("runtime/src/tools/router.ts");
   for (const marker of [
@@ -6051,10 +6055,13 @@ function assertZc43NetworkPolicyInterfaces() {
   const routerTestSource = readRequired("runtime/src/tools/router.test.ts");
   if (
     !routerTestSource.includes(
-      "threads turn network policy interfaces into guardian approval request",
+      "threads turn network policy interfaces into guardian approval context",
     )
   ) {
-    failGate("ZC-43: router guardian approval path must test network policy interface threading.");
+    failGate("ZC-43: router guardian approval path must test internal network policy interface threading.");
+  }
+  if (!routerTestSource.includes('"networkPolicyInterfaces" in')) {
+    failGate("ZC-43: router guardian approval test must assert request serialization stays no-op.");
   }
 
   const testRun = run("npm", [

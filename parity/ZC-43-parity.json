@@ -93,7 +93,7 @@
         "runtime/src/permissions/guardian/approval-request.test.ts",
         "runtime/src/permissions/guardian/arbiter.ts"
       ],
-      "resolution": "Threaded through ToolRouter approval-context construction into ApprovalCtx policyDecider and blockedRequestObserver fields, then represented on GuardianApprovalRequest as networkPolicyInterfaces metadata so review prompt construction sees the interface presence without serializing functions."
+      "resolution": "Threaded through ToolRouter approval-context construction into ApprovalCtx policyDecider and blockedRequestObserver fields. GuardianApprovalRequest intentionally does not serialize interface-presence metadata; review prompt payloads remain unchanged by this no-op interface port."
     }
   ],
   "requiredBehaviors": [
@@ -167,11 +167,12 @@
         "UnifiedExecRuntimeSandbox.blockedRequestObserver",
         "SandboxTransformRequest.networkPolicyDecider",
         "ApprovalCtx.networkPolicyDecider",
+        "ApprovalCtx.blockedRequestObserver",
         "ToolRouter.networkPolicyInterfacesFromTurn",
         "executeToolDispatch.networkPolicyInterfacesFromInvocation",
-        "GuardianApprovalRequestBase.networkPolicyInterfaces"
+        "buildGuardianApprovalRequest"
       ],
-      "behavior": "Exec, spawn, and guardian target surfaces carry the optional interface presence without starting a managed proxy transport. Interface presence alone remains no-op for managed-network sandbox selection; only real proxy config or enforceManagedNetwork marks managed-network requirements.",
+      "behavior": "Exec, spawn, and guardian approval-context target surfaces carry the optional interface presence without starting a managed proxy transport. Interface presence alone remains no-op for managed-network sandbox selection and is not serialized into GuardianApprovalRequest payloads; only real proxy config or enforceManagedNetwork marks managed-network requirements.",
       "tests": [
         "runtime/src/tools/system/exec-command.test.ts",
         "runtime/src/unified-exec/process-manager.test.ts",

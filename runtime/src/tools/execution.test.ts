@@ -1086,9 +1086,19 @@ test("legacy guardian approval fallback carries turn network policy interfaces",
   let observedRequest:
     | ReturnType<typeof buildGuardianApprovalRequest>
     | undefined;
+  let observedInterfaces:
+    | Pick<
+        GuardianApprovalReviewOptions["ctx"],
+        "networkPolicyDecider" | "blockedRequestObserver"
+      >
+    | undefined;
   const reviewer = {
     reviewApprovalRequest: vi.fn(
       async ({ ctx, args }: GuardianApprovalReviewOptions) => {
+        observedInterfaces = {
+          networkPolicyDecider: ctx.networkPolicyDecider,
+          blockedRequestObserver: ctx.blockedRequestObserver,
+        };
         observedRequest = buildGuardianApprovalRequest(ctx, args ?? {});
         return {
           decision: { kind: "denied" as const },
@@ -1123,12 +1133,16 @@ test("legacy guardian approval fallback carries turn network policy interfaces",
       callId: "fallback-network-interfaces",
       turnId: "t1",
       toolName: "Write",
-      networkPolicyInterfaces: {
-        policyDecider: true,
-        blockedRequestObserver: true,
-      },
     }),
   );
+  expect(observedInterfaces).toEqual({
+    networkPolicyDecider: policyDecider,
+    blockedRequestObserver,
+  });
+  expect(observedRequest).toBeDefined();
+  expect(
+    "networkPolicyInterfaces" in (observedRequest as Record<string, unknown>),
+  ).toBe(false);
 });
 
 // ─────────────────────────────────────────────────────────────────────

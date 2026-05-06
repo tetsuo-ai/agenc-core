@@ -112,7 +112,7 @@ describe("guardian approval request", () => {
     );
   });
 
-  test("carries approval decision metadata into guardian requests", () => {
+  test("carries approval metadata without serializing network policy interfaces", () => {
     const policyDecider = { decide: () => ({ decision: "allow" as const }) };
     const blockedRequestObserver = { onBlockedRequest: () => undefined };
     const request = buildGuardianApprovalRequest(
@@ -140,10 +140,7 @@ describe("guardian approval request", () => {
       "approved",
       "abort",
     ]);
-    expect(request.networkPolicyInterfaces).toEqual({
-      policyDecider: true,
-      blockedRequestObserver: true,
-    });
+    expect("networkPolicyInterfaces" in request).toBe(false);
   });
 
   test("does not label generic url-bearing tools as network approval requests", () => {

@@ -765,7 +765,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  test("dispatchModelToolCall threads turn network policy interfaces into guardian approval request", async () => {
+  test("dispatchModelToolCall threads turn network policy interfaces into guardian approval context", async () => {
     const execute = vi.fn(async () => ({ content: "should-not-run" }));
     const policyDecider = {
       decide: vi.fn(async () => ({ decision: "allow" as const })),
@@ -786,9 +786,19 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       },
     ]);
     const observedRequests: unknown[] = [];
+    const observedInterfaces: Array<
+      Pick<
+        GuardianApprovalReviewOptions["ctx"],
+        "networkPolicyDecider" | "blockedRequestObserver"
+      >
+    > = [];
     const reviewer = {
       reviewApprovalRequest: vi.fn(
         async ({ ctx, args }: GuardianApprovalReviewOptions) => {
+          observedInterfaces.push({
+            networkPolicyDecider: ctx.networkPolicyDecider,
+            blockedRequestObserver: ctx.blockedRequestObserver,
+          });
           observedRequests.push(buildGuardianApprovalRequest(ctx, args ?? {}));
           return {
             decision: { kind: "denied" as const },
@@ -849,12 +859,20 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
         callId: "call-guardian-network-interfaces",
         turnId: "turn-guardian-network-interfaces",
         toolName: "Write",
-        networkPolicyInterfaces: {
-          policyDecider: true,
-          blockedRequestObserver: true,
-        },
       }),
     ]);
+    expect(observedInterfaces).toEqual([
+      {
+        networkPolicyDecider: policyDecider,
+        blockedRequestObserver,
+      },
+    ]);
+    expect(
+      observedRequests.every(
+        (request) =>
+          !("networkPolicyInterfaces" in (request as Record<string, unknown>)),
+      ),
+    ).toBe(true);
   });
 
   test("dispatchModelToolCall routes pre-hook ask through guardian even when turn policy skips", async () => {
