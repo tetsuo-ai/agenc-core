@@ -17,6 +17,10 @@ import {
   type AgenCDaemonCliIo,
 } from "./daemon-cli.js";
 import { loadConfig } from "../config/loader.js";
+import {
+  resolveMcpServeDefaults,
+  type ResolvedMcpServeDefaults,
+} from "../mcp/server/start.js";
 
 export type AgenCDaemonAutostartStatus = "already-running" | "started";
 
@@ -30,6 +34,11 @@ export interface AgenCDaemonAutostartResult
   readonly status: AgenCDaemonAutostartStatus;
   readonly ready: true;
   readonly connected: boolean;
+}
+
+export interface AgenCDaemonAutostartConfig {
+  readonly daemonEnabled: boolean;
+  readonly mcpServer: ResolvedMcpServeDefaults;
 }
 
 export interface AgenCDaemonAutostartOptions {
@@ -65,10 +74,20 @@ export async function resolveAgenCDaemonAutostartEnabled(
   env: NodeJS.ProcessEnv = process.env,
   userHome?: string,
 ): Promise<boolean> {
+  return (await resolveAgenCDaemonAutostartConfig(env, userHome)).daemonEnabled;
+}
+
+export async function resolveAgenCDaemonAutostartConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  userHome?: string,
+): Promise<AgenCDaemonAutostartConfig> {
   const home = resolveAgenCDaemonHome(env, userHome);
   const loaded = await loadConfig({ home });
   const configAutostart = loaded.config.daemon?.autostart ?? true;
-  return shouldAutostartAgenCDaemon(env, configAutostart);
+  return {
+    daemonEnabled: shouldAutostartAgenCDaemon(env, configAutostart),
+    mcpServer: resolveMcpServeDefaults(loaded.config.mcp?.server),
+  };
 }
 
 export async function ensureAgenCDaemonAutostart(

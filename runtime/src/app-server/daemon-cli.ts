@@ -54,6 +54,7 @@ import type { ToolRecoveryCategory } from "../tools/types.js";
 import { createPermissionAuditFileLogger } from "../permissions/permission-audit-log.js";
 import { loadConfig } from "../config/loader.js";
 import type { AgenCConfig, AgentRunRetentionConfig } from "../config/schema.js";
+import { startMcpServerFromConfig } from "../mcp/server/start.js";
 import {
   recoverDaemonStateOnStartup,
   type DaemonStartupRecoveryReport,
@@ -644,6 +645,16 @@ async function runAgenCDaemonForeground(
     | { readonly reason: "daemon_shutdown" }
     | Awaited<typeof shutdownSignal.completed> = { reason: "daemon_shutdown" };
   try {
+    if (
+      !(await startConfiguredDaemonMcpServer(
+        authStartup.config,
+        cleanup,
+        io,
+      ))
+    ) {
+      exitCode = 1;
+      return exitCode;
+    }
     await socketServer.listen();
     await options.beforeDaemonReady?.();
     if (!shuttingDown) {
@@ -671,6 +682,34 @@ async function runAgenCDaemonForeground(
     }
   }
   return exitCode;
+}
+
+async function startConfiguredDaemonMcpServer(
+  config: AgenCConfig,
+  cleanup: AgenCCleanupRegistry,
+  io: AgenCDaemonCliIo,
+): Promise<boolean> {
+  try {
+    const result = await startMcpServerFromConfig(config, {
+      cwd: process.cwd(),
+    });
+    if (result.kind === "disabled") {
+      return true;
+    }
+    if (result.kind === "unsupported") {
+      io.stderr.write(`agenc: ${result.reason}; skipping daemon MCP autostart\n`);
+      return true;
+    }
+
+    cleanup.register("daemon-mcp-server", () => result.server.close());
+    io.stderr.write(`AgenC MCP server listening on ${result.server.url}\n`);
+    return true;
+  } catch (error) {
+    io.stderr.write(
+      `agenc: daemon MCP server start failed: ${formatCleanupError(error)}\n`,
+    );
+    return false;
+  }
 }
 
 function recoverAgenCDaemonStartupState(
