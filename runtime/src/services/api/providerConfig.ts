@@ -6,10 +6,10 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import {
-  isProviderCodeRefreshFailureCoolingDown,
-  readProviderCodeCredentials,
-  type ProviderCodeCredentialBlob,
-} from '../../utils/providerCodeCredentials.js'
+  isAgencRefreshFailureCoolingDown as isProviderCodeRefreshFailureCoolingDown,
+  readAgencCredentials as readProviderCodeCredentials,
+  type AgencCredentialBlob as ProviderCodeCredentialBlob,
+} from '../../utils/agencCredentials.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import {
@@ -942,3 +942,10 @@ export function supportsProviderCodeReasoningEffort(model: string): boolean {
 
   return /^gpt-5(?:[.-]|$)/.test(base)
 }
+
+export const DEFAULT_CODEX_BASE_URL = DEFAULT_PROVIDER_CODE_BASE_URL
+export const isCodexBaseUrl = isProviderCodeBaseUrl
+export const resolveCodexApiCredentials = resolveProviderCodeApiCredentials
+export const shouldUseCodexTransport = shouldUseProviderCodeTransport
+export const supportsCodexReasoningEffort = supportsProviderCodeReasoningEffort
+export const parseOpenAICompatibleApiFormat = parseOpenAiCompatibleApiFormat

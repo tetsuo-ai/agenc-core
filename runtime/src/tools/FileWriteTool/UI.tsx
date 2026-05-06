@@ -5,7 +5,7 @@ import type { StructuredPatchHunk } from 'diff';
 import { isAbsolute, relative, resolve } from 'path';
 import * as React from 'react';
 import { Suspense, use, useState } from 'react';
-import { MessageResponse } from 'src/components/MessageResponse.js';
+import { MessageResponse } from 'src/tui/components/MessageResponse.js';
 import { extractTag } from 'src/utils/messages.js';
 import { CtrlOToExpand } from '../../tui/components/CtrlOToExpand.js';
 import { FallbackToolUseErrorMessage } from '../../tui/components/FallbackToolUseErrorMessage.js';

@@ -4,9 +4,9 @@ import { isBareMode } from './envUtils.js'
 import { getSecureStorage } from './secureStorage/index.js'
 import {
   asTrimmedString,
-  CODEX_REFRESH_URL as AGENC_REFRESH_URL,
-  exchangeCodexIdTokenForApiKey as exchangeAgencIdTokenForApiKey,
-  getCodexOAuthClientId as getAgencOAuthClientId,
+  PROVIDER_CODE_REFRESH_URL as AGENC_REFRESH_URL,
+  exchangeProviderCodeIdTokenForApiKey as exchangeAgencIdTokenForApiKey,
+  getOpenAiCodeOAuthClientId as getAgencOAuthClientId,
   parseChatgptAccountId,
   decodeJwtPayload,
 } from '../services/api/openAiCodeOAuthShared.js'

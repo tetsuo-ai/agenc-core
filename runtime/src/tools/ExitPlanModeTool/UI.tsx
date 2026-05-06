@@ -1,8 +1,8 @@
 // @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import * as React from 'react';
 import { Markdown } from '../../tui/components/markdown/Markdown.js';
-import { MessageResponse } from 'src/components/MessageResponse.js';
-import { RejectedPlanMessage } from 'src/components/messages/UserToolResultMessage/RejectedPlanMessage.js';
+import { MessageResponse } from 'src/tui/components/MessageResponse.js';
+import { RejectedPlanMessage } from 'src/tui/components/messages/UserToolResultMessage/RejectedPlanMessage.js';
 import { BLACK_CIRCLE } from 'src/constants/figures.js';
 import { getModeColor } from 'src/utils/permissions/PermissionMode.js';
 import { Box, Text } from '../../tui/ink.js';

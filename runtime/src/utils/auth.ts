@@ -2027,3 +2027,7 @@ export async function validateForceLoginOrg(): Promise<OrgValidationResult> {
 }
 
 class GcpCredentialsTimeoutError extends Error {}
+
+export const getproviderApiKey = getAnthropicApiKey
+export const getproviderApiKeyWithSource = getAnthropicApiKeyWithSource
+export const isproviderAuthEnabled = isAnthropicAuthEnabled

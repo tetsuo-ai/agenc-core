@@ -120,7 +120,7 @@ export async function enrollTrustedDevice(): Promise<void> {
     // of getTrustedDeviceToken() don't need this; only /login does.
     /* eslint-disable @typescript-eslint/no-require-imports */
     const { getAgenCAIOAuthTokens } =
-      require('../../../utils/auth.js') as typeof import('../utils/auth.js')
+      require('../utils/auth.js') as typeof import('../utils/auth.js')
     /* eslint-enable @typescript-eslint/no-require-imports */
     const accessToken = getAgenCAIOAuthTokens()?.accessToken
     if (!accessToken) {

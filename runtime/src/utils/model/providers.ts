@@ -109,3 +109,6 @@ export function isFirstPartyAnthropicBaseUrl(): boolean {
     return false
   }
 }
+
+export const isFirstPartyproviderBaseUrl = isFirstPartyAnthropicBaseUrl
+export const isGithubNativeproviderMode = isGithubNativeAnthropicMode

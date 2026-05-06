@@ -37,6 +37,23 @@ const relocatedUpstreamRoots = [
 // as the owning purge items absorb those subsystems.
 const sourceFileBaseAliases = [
   {
+    runtimeBase: resolve(runtimeSourceRoot, 'Tool'),
+    upstreamBase: resolve(runtimeSourceRoot, 'tools/Tool'),
+  },
+  {
+    runtimeBase: resolve(runtimeSourceRoot, 'Task'),
+    upstreamBase: resolve(runtimeSourceRoot, 'tasks/Task'),
+  },
+  {
+    runtimeBase: resolve(runtimeSourceRoot, 'QueryEngine'),
+    upstreamBase: resolve(runtimeSourceRoot, 'query/QueryEngine'),
+  },
+  {
+    // branding-scan: allow text cursor compatibility alias
+    runtimeBase: resolve(runtimeSourceRoot, 'utils/Cursor'),
+    upstreamBase: resolve(runtimeSourceRoot, 'utils/TextCursor'),
+  },
+  {
     runtimeBase: resolve(runtimeSourceRoot, 'tools/Tool'),
     upstreamBase: resolve(agencUpstreamRoot, 'Tool'),
   },
@@ -54,6 +71,11 @@ const relocatedTuiSourceRoots = [
   resolve(runtimeSourceRoot, 'tui/context'),
   resolve(runtimeSourceRoot, 'tui/hooks'),
 ];
+const movedBoundaryPrefix =
+  '// @ts-nocheck\n' +
+  '// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.\n';
+const movedBoundaryInlinePrefix =
+  '// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.';
 const runtimePackage = JSON.parse(
   readFileSync(resolve(runtimeRoot, 'package.json'), 'utf8'),
 ) as { version?: string };
@@ -131,6 +153,26 @@ function relocatedUpstreamImporter(importer: string): string | null {
   return null;
 }
 
+function isMovedBoundaryImporter(importer: string): boolean {
+  const absoluteImporter = isAbsolute(importer) ? importer : resolve(runtimeRoot, importer);
+  if (!isWithin(runtimeSourceRoot, absoluteImporter)) return false;
+  if (!existsSync(absoluteImporter)) return false;
+  const source = readFileSync(absoluteImporter, 'utf8');
+  return (
+    source.startsWith(movedBoundaryPrefix) ||
+    source.startsWith(movedBoundaryInlinePrefix)
+  );
+}
+
+function shouldUseAgenCResolution(importer: string): boolean {
+  return (
+    importer.includes('/src/agenc/') ||
+    sourceRootForImporter(importer) !== null ||
+    relocatedUpstreamImporter(importer) !== null ||
+    isMovedBoundaryImporter(importer)
+  );
+}
+
 function resolveAgenCBareSrc(source: string): string | null {
   const sourceRelative = source.slice('src/'.length);
   const relocatedTuiRelative = /^(components|context|hooks)\//.exec(sourceRelative);
@@ -202,6 +244,56 @@ function resolveRelocatedTuiSource(importer: string, source: string): string | n
   return null;
 }
 
+const runtimeTopLevelSourceSegments = new Set([
+  'agents',
+  'auth',
+  'bootstrap',
+  'bridge',
+  'cli',
+  'commands',
+  'components',
+  'constants',
+  'context',
+  'coordinator',
+  'cost',
+  'entrypoints',
+  'grpc',
+  'hooks',
+  'jobs',
+  'outputStyles',
+  'permissions',
+  'plugins',
+  'proactive',
+  'query',
+  'remote',
+  'schemas',
+  'server',
+  'services',
+  'skills',
+  'state',
+  'tasks',
+  'tools',
+  'tui',
+  'types',
+  'utils',
+]);
+
+function resolveCollapsedRuntimeSource(source: string): string | null {
+  const parts = normalizeRuntimePath(source).split('/').filter(Boolean);
+  const start = parts.findIndex((part) =>
+    part !== '.' && part !== '..' && runtimeTopLevelSourceSegments.has(topKey(part)),
+  );
+  if (start === -1) return null;
+  const logical = parts.slice(start).join('/');
+  const direct = existingSourceFile(resolve(runtimeSourceRoot, logical));
+  if (direct) return direct;
+  const first = topKey(logical);
+  if (first === 'components' || first === 'context' || first === 'hooks') {
+    return existingSourceFile(resolve(runtimeSourceRoot, 'tui', logical));
+  }
+  return null;
+}
+
 const agencBareSrcAlias = {
   name: 'agenc-bare-src-alias',
   setup(build: {
@@ -211,15 +303,11 @@ const agencBareSrcAlias = {
     ) => void;
   }) {
     build.onResolve({ filter: /^src\// }, (args) => {
-      if (
-        !args.importer.includes('/src/agenc/') &&
-        sourceRootForImporter(args.importer) === null &&
-        relocatedUpstreamImporter(args.importer) === null
-      ) {
-        return null;
-      }
       const resolved = resolveAgenCBareSrc(args.path);
-      return resolved === null ? { path: args.path, external: true } : { path: resolved };
+      if (resolved !== null) return { path: resolved };
+      return shouldUseAgenCResolution(args.importer)
+        ? { path: args.path, external: true }
+        : null;
     });
   },
 };
@@ -228,6 +316,8 @@ function resolveRelativeAgenCSource(importer: string, source: string): string | 
   const absoluteImporter = isAbsolute(importer) ? importer : resolve(runtimeRoot, importer);
   const direct = existingSourceFile(resolve(dirname(absoluteImporter), source));
   if (direct) return direct;
+  const collapsed = resolveCollapsedRuntimeSource(source);
+  if (collapsed) return collapsed;
 
   const relocatedImporter = relocatedUpstreamImporter(absoluteImporter);
   if (relocatedImporter !== null) {
@@ -254,11 +344,7 @@ const agencOptionalExternal = {
   }) {
     build.onResolve({ filter: /^(?:[^./]|\.{1,2}\/)/ }, (args) => {
       const upstreamRoot = sourceRootForImporter(args.importer);
-      if (
-        !args.importer.includes('/src/agenc/') &&
-        upstreamRoot === null &&
-        relocatedUpstreamImporter(args.importer) === null
-      ) {
+      if (!shouldUseAgenCResolution(args.importer)) {
         return null;
       }
       if (args.path === 'bun:bundle' || args.path.startsWith('node:')) {
@@ -272,6 +358,52 @@ const agencOptionalExternal = {
         return null;
       }
       return { path: args.path, external: true };
+    });
+  },
+};
+
+const knownMissingOptionalModuleFragments = [
+  '/jobs/classifier.js',
+  '/proactive/index.js',
+  '/services/compact/reactiveCompact.js',
+  '/services/skillSearch/',
+  '/skills/mcpSkills.js',
+  '/utils/taskSummary.js',
+  '/utils/udsClient.js',
+  '/bridge/peerSessions.js',
+  '/tools/ListPeersTool/',
+  '/tools/OverflowTestTool/',
+  '/tools/PushNotificationTool/',
+  '/tools/SendUserFileTool/',
+  '/tools/SleepTool/SleepTool.js',
+  '/tools/SnipTool/',
+  '/tools/SubscribePRTool/',
+  '/tools/TerminalCaptureTool/',
+  '/tools/WebBrowserTool/',
+  '/tools/WorkflowTool/',
+  '../SendUserFileTool/',
+];
+
+function isKnownMissingOptionalModule(source: string): boolean {
+  if (source === '@mendable/firecrawl-js') return true;
+  const normalized = normalizeRuntimePath(source);
+  return knownMissingOptionalModuleFragments.some((fragment) =>
+    normalized.includes(fragment),
+  );
+}
+
+const agencKnownMissingOptionalExternal = {
+  name: 'agenc-known-missing-optional-external',
+  setup(build: {
+    onResolve: (
+      options: { filter: RegExp },
+      callback: (args: { path: string; importer: string }) => { path: string; external?: boolean } | null,
+    ) => void;
+  }) {
+    build.onResolve({ filter: /^(?:@mendable\/firecrawl-js|[^./]|\.{1,2}\/)/ }, (args) => {
+      return isKnownMissingOptionalModule(args.path)
+        ? { path: args.path, external: true }
+        : null;
     });
   },
 };
@@ -333,6 +465,7 @@ const external = [
   'semver',
   'sharp',
   'yaml',
+  '@mendable/firecrawl-js',
 ];
 
 export default defineConfig({
@@ -344,7 +477,11 @@ export default defineConfig({
   target: 'es2022',
   sourcemap: true,
   external,
-  esbuildPlugins: [agencBareSrcAlias, agencOptionalExternal],
+  esbuildPlugins: [
+    agencBareSrcAlias,
+    agencOptionalExternal,
+    agencKnownMissingOptionalExternal,
+  ],
   esbuildOptions(options) {
     options.define = {
       ...(options.define ?? {}),

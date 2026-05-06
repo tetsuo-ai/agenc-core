@@ -57,8 +57,8 @@ import type { BaseTextInputProps, PromptInputMode, VimMode } from '../../../type
 import { isAgentSwarmsEnabled } from '../../../utils/agentSwarmsEnabled.js';
 import { count } from '../../../utils/array.js';
 import type { AutoUpdaterResult } from '../../../utils/autoUpdater.js';
-// branding-scan: allow Cursor is the text-caret utility name.
-import { Cursor } from '../../../utils/Cursor.js';
+// branding-scan: allow TextCursor is the text-caret utility name.
+import { TextCursor } from '../../../utils/TextCursor.js';
 import { getGlobalConfig, type PastedContent, saveGlobalConfig } from '../../../utils/config.js';
 import { logForDebugging } from '../../../utils/debug.js';
 import { parseDirectMemberMessage, sendDirectMemberMessage } from '../../../utils/directMemberMessage.js';

@@ -2,7 +2,7 @@
 // Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
-import { Select } from 'src/components/CustomSelect/select.js';
+import { Select } from 'src/tui/components/CustomSelect/select.js';
 import { Box, Text } from '../../tui/ink.js';
 interface ExistingWorkflowStepProps {
   repoName: string;

@@ -4,7 +4,7 @@
  * Pure functions for resolving vim motions to cursor positions.
  */
 
-import type { Cursor as TextCursor } from '../../utils/Cursor.js' // branding-scan: allow text cursor utility filename
+import type { TextCursor } from '../../utils/TextCursor.js' // branding-scan: allow text cursor utility filename
 
 /**
  * Resolve a motion to a target cursor position.

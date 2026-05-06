@@ -1511,7 +1511,7 @@ export function areMcpConfigsAllowedWithEnterpriseMcpConfig(
 /* eslint-disable @typescript-eslint/no-require-imports */
 const DEFAULT_DISABLED_BUILTIN = feature('CHICAGO_MCP')
   ? (
-      require('../../../../utils/computerUse/common.js') as typeof import('../../utils/computerUse/common.js')
+      require('../../utils/computerUse/common.js') as typeof import('../../utils/computerUse/common.js')
     ).COMPUTER_USE_MCP_SERVER_NAME
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */

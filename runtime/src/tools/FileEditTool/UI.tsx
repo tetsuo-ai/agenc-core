@@ -4,8 +4,8 @@ import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs
 import type { StructuredPatchHunk } from 'diff';
 import * as React from 'react';
 import { Suspense, use, useState } from 'react';
-import { FileEditToolUseRejectedMessage } from 'src/components/FileEditToolUseRejectedMessage.js';
-import { MessageResponse } from 'src/components/MessageResponse.js';
+import { FileEditToolUseRejectedMessage } from 'src/tui/components/FileEditToolUseRejectedMessage.js';
+import { MessageResponse } from 'src/tui/components/MessageResponse.js';
 import { extractTag } from 'src/utils/messages.js';
 import { FallbackToolUseErrorMessage } from '../../tui/components/FallbackToolUseErrorMessage.js';
 import { FileEditToolUpdatedMessage } from '../../tui/components/FileEditToolUpdatedMessage.js';

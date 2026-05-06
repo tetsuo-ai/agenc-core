@@ -137,3 +137,8 @@ export async function exchangeProviderCodeIdTokenForApiKey(
 
   return apiKey
 }
+
+export const CODEX_REFRESH_URL = PROVIDER_CODE_REFRESH_URL
+export const getCodexOAuthClientId = getOpenAiCodeOAuthClientId
+export const exchangeCodexIdTokenForApiKey =
+  exchangeProviderCodeIdTokenForApiKey

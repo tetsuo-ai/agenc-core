@@ -8,7 +8,7 @@ import {
   isVimPunctuation,
   isVimWhitespace,
   isVimWordChar,
-} from '../../utils/Cursor.js' // branding-scan: allow text cursor utility filename
+} from '../../utils/TextCursor.js' // branding-scan: allow text cursor utility filename
 import { getGraphemeSegmenter } from '../../utils/intl.js'
 
 export type TextObjectRange = { start: number; end: number } | null

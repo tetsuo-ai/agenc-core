@@ -2,10 +2,10 @@
 import { c as _c } from "react-compiler-runtime";
 import type { ToolResultBlockParam, ToolUseBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import * as React from 'react';
-import { ConfigurableShortcutHint } from 'src/components/ConfigurableShortcutHint.js';
-import { CtrlOToExpand, SubAgentProvider } from 'src/components/CtrlOToExpand.js';
-import { Byline } from 'src/components/design-system/Byline.js';
-import { KeyboardShortcutHint } from 'src/components/design-system/KeyboardShortcutHint.js';
+import { ConfigurableShortcutHint } from 'src/tui/components/ConfigurableShortcutHint.js';
+import { CtrlOToExpand, SubAgentProvider } from 'src/tui/components/CtrlOToExpand.js';
+import { Byline } from 'src/tui/components/design-system/Byline.js';
+import { KeyboardShortcutHint } from 'src/tui/components/design-system/KeyboardShortcutHint.js';
 import type { z } from 'zod/v4';
 import { AgentProgressLine } from '../../tui/components/AgentProgressLine.js';
 import { FallbackToolUseErrorMessage } from '../../tui/components/FallbackToolUseErrorMessage.js';

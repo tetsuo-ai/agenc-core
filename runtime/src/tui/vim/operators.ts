@@ -4,7 +4,7 @@
  * Pure functions for executing vim operators (delete, change, yank, etc.)
  */
 
-import { Cursor as TextCursor } from '../../utils/Cursor.js' // branding-scan: allow text cursor utility filename
+import { TextCursor } from '../../utils/TextCursor.js' // branding-scan: allow text cursor utility filename
 import { firstGrapheme, lastGrapheme } from '../../utils/intl.js'
 import { countCharInString } from '../../utils/stringUtils.js'
 import {

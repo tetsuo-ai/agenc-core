@@ -27,9 +27,9 @@
  */
 import { APIError } from '@anthropic-ai/sdk'
 import {
-  readProviderCodeCredentialsAsync,
-  refreshProviderCodeAccessTokenIfNeeded,
-} from '../../utils/providerCodeCredentials.js'
+  readAgencCredentialsAsync as readProviderCodeCredentialsAsync,
+  refreshAgencAccessTokenIfNeeded as refreshProviderCodeAccessTokenIfNeeded,
+} from '../../utils/agencCredentials.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isBareMode, isEnvTruthy } from '../../utils/envUtils.js'
 import { resolveGeminiCredential } from '../../utils/geminiAuth.js'

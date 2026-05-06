@@ -244,11 +244,11 @@ const agencInChromeToolRendering =
 // GrowthBook tengu_malort_pedway (see gates.ts).
 const computerUseWrapper = feature('CHICAGO_MCP')
   ? (): typeof import('../../utils/computerUse/wrapper.js') =>
-    require('../../../../utils/computerUse/wrapper.js')
+    require('../../utils/computerUse/wrapper.js')
   : undefined
 const isComputerUseMCPServer = feature('CHICAGO_MCP')
   ? (
-    require('../../../../utils/computerUse/common.js') as typeof import('../../utils/computerUse/common.js')
+    require('../../utils/computerUse/common.js') as typeof import('../../utils/computerUse/common.js')
   ).isComputerUseMCPServer
   : undefined
 

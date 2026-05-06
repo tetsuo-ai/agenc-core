@@ -88,8 +88,8 @@ import {
 // Lazy: MessageSelector.tsx pulls React/ink; only needed for message filtering at query time
 /* eslint-disable @typescript-eslint/no-require-imports */
 const messageSelector =
-  (): typeof import('src/components/MessageSelector.js') =>
-    require('src/components/MessageSelector.js')
+  (): typeof import('src/tui/components/MessageSelector.js') =>
+    require('src/tui/components/MessageSelector.js')
 
 import {
   localCommandOutputToSDKAssistantMessage,
