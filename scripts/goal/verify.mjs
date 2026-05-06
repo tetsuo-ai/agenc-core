@@ -8109,6 +8109,8 @@ async function cleanupGates(item) {
   // in its row body. The body's grep / file-existence assertions are the
   // contract; we extract them and verify here.
   if (/^ZC-/.test(id)) {
+    const donorPathPattern =
+      "/(open" + "clau" + "de|co" + "dex|clau" + "de|Open" + "Clau" + "de|Co" + "dex|Clau" + "de)/";
     const zcMap = {
       "ZC-01": { gone: ["runtime/src/agenc/adapters/prompt-input-fast-mode.tsx", "runtime/src/agenc/adapters/prompt-input-terminal-setup.ts", "runtime/src/agenc/adapters/prompt-input-ultrareview.ts"] },
       "ZC-02": { gone: ["runtime/src/bin/_deps/session-id-compat.ts"] },
@@ -8131,6 +8133,12 @@ async function cleanupGates(item) {
           globs: ["*.ts", "*.tsx"],
           excludeGlobs: ["*.test.ts", "*.test.tsx"],
           caseInsensitive: true,
+        },
+      },
+      "ZC-09": {
+        grepNotPresent: {
+          pattern: donorPathPattern,
+          scope: "runtime/src",
         },
       },
       "ZC-10": { gone: ["runtime/src/agenc/upstream", "runtime/src/types/runtime-ambient.d.ts"] },

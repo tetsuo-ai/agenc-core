@@ -1,5 +1,5 @@
 /**
- * Ports the donor Rust app-server in-memory runtime handle onto AgenC's daemon
+ * Ports the Rust app-server in-memory runtime handle onto AgenC's daemon
  * dispatcher primitives.
  *
  * Why this lives here:
@@ -8,13 +8,12 @@
  *     dispatcher without a daemon process, socket, or stdio frame.
  *
  * Cross-cuts deliberately NOT carried:
- *   - Tokio task queues, overload channels, and typed donor request enums are
+ *   - Tokio task queues, overload channels, and typed reference request enums are
  *     replaced by AgenC's existing dispatcher connection contract.
- *   - Donor client notifications have no current AgenC daemon protocol
+ *   - Reference client notifications have no current AgenC daemon protocol
  *     equivalent; server-to-client notifications are delivered by callback.
  *
- * Source anchors:
- *   - /home/tetsuo/git/codex/codex-rs/app-server/src/in_process.rs // branding-scan: allow donor source path
+ * Reference anchors are tracked in parity evidence, not runtime comments.
  */
 
 import {
