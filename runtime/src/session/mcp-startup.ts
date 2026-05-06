@@ -159,6 +159,7 @@ function toRuntimeMcpServerConfig(
     ...raw,
     name,
     ...(config.args !== undefined ? { args: [...config.args] } : {}),
+    ...(config.env_vars !== undefined ? { env_vars: [...config.env_vars] } : {}),
     ...(config.env !== undefined ? { env: cloneRecord(config.env) } : {}),
     ...(config.headers !== undefined
       ? { headers: cloneRecord(config.headers) }
