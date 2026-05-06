@@ -291,6 +291,12 @@ assert(
     reviewSource.includes("runtime-internal known-missing allowlists") &&
     !reviewSource.includes("knownMissingOptionalModuleFragments allowlist"),
 );
+assert(
+  "review.mjs Z-PURGEFINAL reviewer uses verify.mjs as the cleanup marker gate",
+  reviewSource.includes("Z-PURGEFINAL is the final purge-state marker") &&
+    reviewSource.includes("root npm test command is not the completion gate") &&
+    reviewSource.includes("Do reject if verify.mjs Z-PURGEFINAL fails"),
+);
 
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
 process.exit(failed > 0 ? 1 : 0);

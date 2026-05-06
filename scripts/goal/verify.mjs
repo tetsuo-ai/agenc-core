@@ -81,6 +81,11 @@ const ITEM_EVIDENCE = {
       { pattern: "runtime/src/constants is therefore the AgenC-owned consuming subsystem", scope: "parity/Z-PURGEA-parity.json" },
     ],
   },
+  "Z-PURGEFINAL": {
+    grepNotPresent: [
+      { pattern: "agenc/upstream", scope: "runtime/src" },
+    ],
+  },
   "IDE-03": {
     files: [
       "scripts/goal/verify.mjs",
