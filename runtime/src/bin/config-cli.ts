@@ -277,6 +277,7 @@ async function runConfigGet(
   env: EnvSnapshot,
   io: AgenCConfigCliIo,
 ): Promise<number> {
+  assertReadableConfigPath(key);
   await runConfigMigrationForRead(agencHome, io);
   const loaded = await loadEffectiveConfigForCli(agencHome, env, io);
   if (loaded.parseError !== undefined) {
@@ -670,6 +671,14 @@ function assertEditableConfigPath(segments: readonly string[]): void {
   if (segments[0] === CONFIG_FILE_VERSION_KEY) {
     throw new Error(`${CONFIG_FILE_VERSION_KEY} is managed by AgenC`);
   }
+  assertNoForbiddenPathSegments(segments);
+}
+
+function assertReadableConfigPath(key: string): void {
+  assertNoForbiddenPathSegments(parseEditablePath(key));
+}
+
+function assertNoForbiddenPathSegments(segments: readonly string[]): void {
   const forbidden = segments.find((segment) =>
     FORBIDDEN_CONFIG_PATH_SEGMENTS.has(segment)
   );

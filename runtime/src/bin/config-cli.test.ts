@@ -309,6 +309,14 @@ describe("agenc config CLI", () => {
     expect(unsetPollution.code).toBe(1);
     expect(unsetPollution.io.stderrText()).toContain("path segment is not allowed");
     expect(({} as { polluted?: unknown }).polluted).toBeUndefined();
+
+    const readPollution = await run(parseAgenCConfigCliArgs([
+      "config",
+      "get",
+      "__proto__.toString",
+    ]), home);
+    expect(readPollution.code).toBe(1);
+    expect(readPollution.io.stderrText()).toContain("path segment is not allowed");
   });
 
   it("rejects invalid permissions config on validate and set", async () => {
