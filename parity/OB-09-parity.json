@@ -1,0 +1,63 @@
+{
+  "item": "OB-09",
+  "status": "implemented",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceRootLabel": "typescript UI reference checkout",
+  "targetRoot": "..",
+  "sourceFiles": [
+    "src/components/ApproveApiKey.tsx",
+    "src/hooks/useApiKeyVerification.ts",
+    "src/components/PromptInput/inputPaste.ts",
+    "src/utils/pasteStore.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/onboarding/ApproveApiKey.tsx",
+    "runtime/src/onboarding/useApiKeyVerification.ts",
+    "runtime/src/onboarding/inputPaste.ts",
+    "runtime/src/onboarding/pasteStore.ts",
+    "runtime/src/onboarding/Onboarding.tsx",
+    "runtime/src/auth/backends/local.ts",
+    "runtime/src/bin/bootstrap.ts",
+    "runtime/src/tui/components/App.tsx"
+  ],
+  "testFiles": [
+    "runtime/src/onboarding/onboarding.test.tsx",
+    "runtime/src/onboarding/useApiKeyVerification.test.ts",
+    "runtime/src/onboarding/inputPaste.test.ts",
+    "runtime/src/auth/backends/local.contract.test.ts",
+    "runtime/src/bin/bootstrap.test.ts",
+    "runtime/src/tui/components/App.render.test.tsx"
+  ],
+  "requiredBehaviors": [
+    {
+      "id": "first-run-key-entry",
+      "behavior": "The first-run API-key step accepts pasted BYOK provider keys, verifies them against the selected provider, and asks for explicit approval before persistence.",
+      "tests": [
+        "runtime/src/onboarding/onboarding.test.tsx",
+        "runtime/src/onboarding/useApiKeyVerification.test.ts",
+        "runtime/src/tui/components/App.render.test.tsx"
+      ]
+    },
+    {
+      "id": "local-auth-storage",
+      "behavior": "Approved BYOK keys are persisted through LocalAuthBackend in private auth state and are read during runtime startup before managed-key vending.",
+      "tests": [
+        "runtime/src/auth/backends/local.contract.test.ts",
+        "runtime/src/bin/bootstrap.test.ts"
+      ]
+    },
+    {
+      "id": "paste-capture",
+      "behavior": "Very large pasted onboarding inputs are split into secret-safe paste metadata plus private paste-cache entries stored with mode 0600 only after explicit key approval.",
+      "tests": [
+        "runtime/src/onboarding/inputPaste.test.ts"
+      ]
+    }
+  ],
+  "intentionalReductions": [
+    "AgenC persists approved provider keys as provider-neutral BYOK records in LocalAuthBackend instead of keeping approved/rejected key tails in global UI config.",
+    "AgenC verifies keys with provider metadata already owned by the runtime registry; it does not execute donor-specific API-key helper commands.",
+    "Paste-cache helpers avoid secret-bearing telemetry and log output. The API-key onboarding path does not render raw large-paste previews; it renders masked tails plus paste metadata and defers disk persistence until approval."
+  ],
+  "mergeResolutions": []
+}

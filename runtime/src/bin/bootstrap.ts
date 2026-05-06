@@ -85,6 +85,7 @@ import type {
   AuthBackend,
   AuthSubscriptionTier,
 } from "../auth/backend.js";
+import { LocalAuthBackend } from "../auth/backends/local.js";
 import { selectByokPrecedenceApiKey } from "../auth/byok-precedence.js";
 import { resolveAuthManagedKeysEnabled } from "../auth/selection.js";
 import { bindSessionAgentControl } from "./delegate-tool.js";
@@ -155,6 +156,32 @@ function firstNonEmptyString(...values: Array<string | undefined>): string | und
     }
   }
   return undefined;
+}
+
+interface AuthBackendWithLocalByokKeys extends AuthBackend {
+  readByokKey(
+    provider: string,
+  ): string | undefined | Promise<string | undefined>;
+}
+
+function canReadLocalByokKeys(
+  authBackend: AuthBackend | undefined,
+): authBackend is AuthBackendWithLocalByokKeys {
+  return (
+    authBackend !== undefined &&
+    typeof (authBackend as { readByokKey?: unknown }).readByokKey === "function"
+  );
+}
+
+async function readAuthBackendByokKey(
+  authBackend: AuthBackend | undefined,
+  provider: ProviderName,
+): Promise<string | undefined> {
+  if (!canReadLocalByokKeys(authBackend)) return undefined;
+  const apiKey = await authBackend.readByokKey(provider);
+  return typeof apiKey === "string" && apiKey.trim().length > 0
+    ? apiKey.trim()
+    : undefined;
 }
 
 async function resolveAuthSubscriptionTier(
@@ -851,10 +878,24 @@ export async function bootstrapLocalRuntimeSession(
     options.authBackend,
     conversationId,
   );
+  const localByokAuthBackend = new LocalAuthBackend({ agencHome, env });
   const managedKeysEnabled = resolveAuthManagedKeysEnabled(startup.config);
+  const startupInjectedByokKey = await readAuthBackendByokKey(
+    options.authBackend,
+    startup.provider,
+  );
+  const startupLocalByokKey = await readAuthBackendByokKey(
+    localByokAuthBackend,
+    startup.provider,
+  );
+  const startupByokApiKey = firstNonEmptyString(
+    startup.apiKey,
+    startupInjectedByokKey,
+    startupLocalByokKey,
+  );
   const byokApiKey = selectByokPrecedenceApiKey({
     explicitApiKey: options.apiKey,
-    byokApiKey: startup.apiKey,
+    byokApiKey: startupByokApiKey,
     managedKeysEnabled,
   });
   const startupProviderSettings = resolveProviderSettings(
@@ -887,12 +928,30 @@ export async function bootstrapLocalRuntimeSession(
     startup.config,
     env,
   );
+  const runtimeAuthBackendByokKey =
+    resolvedProvider === startup.provider
+      ? startupInjectedByokKey
+      : await readAuthBackendByokKey(options.authBackend, resolvedProvider);
+  const runtimeLocalByokKey =
+    resolvedProvider === startup.provider
+      ? startupLocalByokKey
+      : await readAuthBackendByokKey(localByokAuthBackend, resolvedProvider);
+  const runtimeByokApiKey = firstNonEmptyString(
+    startup.apiKey,
+    runtimeAuthBackendByokKey,
+    runtimeLocalByokKey,
+  );
+  const runtimeSelectedByokApiKey = selectByokPrecedenceApiKey({
+    explicitApiKey: options.apiKey,
+    byokApiKey: runtimeByokApiKey,
+    managedKeysEnabled,
+  });
   const providerSettings =
     profileProvider === resolvedProvider
       ? runtimeProviderSettings
       : resolveProviderSettings(profileProvider, startup.config, env);
   const managedKey =
-    byokApiKey === undefined &&
+    runtimeSelectedByokApiKey === undefined &&
     managedKeysEnabled &&
     !isHostedAgencProvider(resolvedProvider)
       ? await vendProviderKeyOrUndefined({
@@ -904,12 +963,14 @@ export async function bootstrapLocalRuntimeSession(
   const selectedApiKey = requireProviderApiKeyOrUndefined({
     provider: resolvedProvider,
     providerSettings: runtimeProviderSettings,
-    apiKey: selectByokPrecedenceApiKey({
-      explicitApiKey: options.apiKey,
-      byokApiKey: startup.apiKey,
-      managedKeysEnabled,
-      managedApiKey: managedKey.apiKey,
-    }),
+    apiKey:
+      runtimeSelectedByokApiKey ??
+      selectByokPrecedenceApiKey({
+        explicitApiKey: undefined,
+        byokApiKey: undefined,
+        managedKeysEnabled,
+        managedApiKey: managedKey.apiKey,
+      }),
     managedKey,
   });
   const providerFallback = buildProviderFallbackLadderOptions({

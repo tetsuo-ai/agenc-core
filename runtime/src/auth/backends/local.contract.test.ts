@@ -102,6 +102,106 @@ describe("LocalAuthBackend", () => {
     });
   });
 
+  it("treats malformed BYOK key records as logged out", async () => {
+    const agencHome = await makeTempHome();
+    homes.push(agencHome);
+    const authFile = join(agencHome, "auth.json");
+    await writeFile(
+      authFile,
+      JSON.stringify({
+        version: 1,
+        token: TEST_TOKEN,
+        createdAt: TEST_TIME.toISOString(),
+        provider: "local",
+        identity: {
+          accountId: "local",
+          displayName: "Local AgenC user",
+          plan: "free",
+        },
+        byokKeys: {
+          "": {
+            provider: "",
+            apiKey: "xai-test-key",
+            savedAt: TEST_TIME.toISOString(),
+          },
+        },
+      }),
+      { mode: 0o600 },
+    );
+    const backend = new LocalAuthBackend({ agencHome });
+
+    await expect(backend.whoami()).resolves.toEqual({
+      authenticated: false,
+    });
+    await expect(backend.readByokKey("grok")).resolves.toBeUndefined();
+  });
+
+  it("persists and reads provider BYOK keys without logging in", async () => {
+    const agencHome = await makeTempHome();
+    homes.push(agencHome);
+    const backend = new LocalAuthBackend({
+      agencHome,
+      randomUUID: () => TEST_TOKEN,
+      now: () => TEST_TIME,
+    });
+
+    await expect(
+      backend.saveByokKey({
+        provider: "Grok",
+        apiKey: "xai-test-key",
+      }),
+    ).resolves.toEqual({
+      provider: "grok",
+      apiKey: "xai-test-key",
+      savedAt: TEST_TIME.toISOString(),
+    });
+    await expect(backend.readByokKey("grok")).resolves.toBe("xai-test-key");
+
+    const parsed = JSON.parse(
+      await readFile(join(agencHome, "auth.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(parsed).toMatchObject({
+      provider: "local",
+      token: TEST_TOKEN,
+      byokKeys: {
+        grok: {
+          provider: "grok",
+          apiKey: "xai-test-key",
+          savedAt: TEST_TIME.toISOString(),
+        },
+      },
+    });
+    expect((await stat(join(agencHome, "auth.json"))).mode & 0o777).toBe(0o600);
+  });
+
+  it("preserves saved BYOK keys when local login refreshes the token", async () => {
+    const agencHome = await makeTempHome();
+    homes.push(agencHome);
+    const backend = new LocalAuthBackend({
+      agencHome,
+      randomUUID: () => TEST_TOKEN,
+      now: () => TEST_TIME,
+    });
+
+    await backend.saveByokKey({ provider: "grok", apiKey: "xai-test-key" });
+    await backend.login();
+
+    await expect(backend.readByokKey("grok")).resolves.toBe("xai-test-key");
+  });
+
+  it("rejects blank or whitespace BYOK key values", async () => {
+    const agencHome = await makeTempHome();
+    homes.push(agencHome);
+    const backend = new LocalAuthBackend({ agencHome });
+
+    await expect(
+      backend.saveByokKey({ provider: "grok", apiKey: "   " }),
+    ).rejects.toThrow(/API key is required/);
+    await expect(
+      backend.saveByokKey({ provider: "grok", apiKey: "xai test key" }),
+    ).rejects.toThrow(/must not contain whitespace/);
+  });
+
   it("forces BYOK fallback for managed keys and hosted model inference", () => {
     const backend = new LocalAuthBackend({
       agencHome: "/tmp/agenc-local-auth-test",

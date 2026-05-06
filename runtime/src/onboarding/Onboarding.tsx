@@ -19,6 +19,18 @@ import {
   normalizeBuiltInProviderSlug,
   type BuiltInProviderSlug,
 } from "../llm/registry/provider-info.js";
+import { LocalAuthBackend } from "../auth/backends/local.js";
+import { ApproveApiKey, maskedApiKeyTail } from "./ApproveApiKey.js";
+import {
+  maybeTruncateInput,
+  type PastedContent,
+} from "./inputPaste.js";
+import {
+  cleanupOldPastes,
+  deletePastedText,
+  hashPastedText,
+  storePastedText,
+} from "./pasteStore.js";
 import {
   incrementFirstRunOnboardingSeenCount,
   markFirstRunOnboardingComplete,
@@ -27,6 +39,10 @@ import {
 } from "./projectOnboardingState.js";
 import { OnboardingBox as Box, OnboardingText as Text } from "./elements.js";
 import { WelcomeV2 } from "./WelcomeV2.js";
+import {
+  verifyApiKey,
+  type VerificationStatus,
+} from "./useApiKeyVerification.js";
 
 export type FirstRunOnboardingStepId =
   | "preflight"
@@ -61,6 +77,17 @@ export interface ProviderConnectionCheck {
   readonly baseURL?: string;
 }
 
+export interface PendingApiKeyApproval {
+  readonly provider: BuiltInProviderSlug;
+  readonly apiKey: string;
+  readonly maskedTail: string;
+  readonly pasteHash?: string;
+  readonly pasteContent?: string;
+  readonly pastePreview?: string;
+  readonly verificationStatus: VerificationStatus;
+  readonly verificationError?: string;
+}
+
 export interface FirstRunOnboardingState {
   readonly currentStepId: FirstRunOnboardingStepId;
   readonly completedStepIds: readonly FirstRunOnboardingStepId[];
@@ -68,12 +95,22 @@ export interface FirstRunOnboardingState {
   readonly selectedProvider: BuiltInProviderSlug;
   readonly selectedModel: string;
   readonly connection: ProviderConnectionCheck | null;
+  readonly pastedContents: readonly PastedContent[];
+  readonly pendingApiKeyApproval: PendingApiKeyApproval | null;
   readonly error: string | null;
   readonly isCheckingConnection: boolean;
 }
 
+export interface FirstRunByokAuthBackend {
+  saveByokKey(params: {
+    readonly provider: string;
+    readonly apiKey: string;
+  }): unknown | Promise<unknown>;
+}
+
 export interface FirstRunOnboardingContext {
   readonly agencHome?: string;
+  readonly authBackend?: FirstRunByokAuthBackend;
   readonly config: AgenCConfig;
   readonly cwd?: string;
   readonly env?: OnboardingEnv;
@@ -191,6 +228,8 @@ export function createInitialFirstRunOnboardingState(
     selectedProvider: provider,
     selectedModel: model,
     connection: null,
+    pastedContents: [],
+    pendingApiKeyApproval: null,
     error: null,
     isCheckingConnection: false,
   };
@@ -263,6 +302,103 @@ function invalidCommandError(raw: string, expected: string): string | null {
   return raw.trim().toLowerCase() === expected
     ? null
     : `Type ${expected} to continue.`;
+}
+
+function normalizeApiKeyEntry(raw: string): string {
+  const trimmed = raw.trim();
+  const assignment = trimmed.match(/^[A-Z0-9_]+_API_KEY\s*=\s*(.+)$/u);
+  const candidate = assignment?.[1] ?? trimmed;
+  return stripMatchingQuotes(candidate.trim());
+}
+
+function stripMatchingQuotes(value: string): string {
+  if (
+    value.length >= 2 &&
+    ((value.startsWith("\"") && value.endsWith("\"")) ||
+      (value.startsWith("'") && value.endsWith("'")))
+  ) {
+    return value.slice(1, -1).trim();
+  }
+  return value;
+}
+
+function lowerCommand(raw: string): string {
+  return raw.trim().toLowerCase();
+}
+
+function isSkipApiKeyCommand(command: string): boolean {
+  return command === "" || command === "next" || command === "skip";
+}
+
+function approvalAnswer(command: string): "yes" | "no" | null {
+  if (command === "y" || command === "yes") return "yes";
+  if (command === "n" || command === "no" || command === "skip") return "no";
+  return null;
+}
+
+function captureApiKeyPaste(
+  state: FirstRunOnboardingState,
+  raw: string,
+): {
+  readonly pasteHash?: string;
+  readonly pasteContent?: string;
+  readonly pastePreview?: string;
+  readonly pastedContents: readonly PastedContent[];
+} {
+  const pasteResult = maybeTruncateInput(raw, state.pastedContents);
+  const latest =
+    pasteResult.pastedContents.length > state.pastedContents.length
+      ? pasteResult.pastedContents[pasteResult.pastedContents.length - 1]
+      : undefined;
+  if (latest === undefined) {
+    return { pastedContents: pasteResult.pastedContents };
+  }
+  const pastePreview = pasteResult.input.match(
+    /\[Pasted content #[^\]]+\]/u,
+  )?.[0];
+  const hash = hashPastedText(latest.content);
+  return {
+    pasteHash: hash,
+    pasteContent: latest.content,
+    ...(pastePreview !== undefined ? { pastePreview } : {}),
+    pastedContents: pasteResult.pastedContents,
+  };
+}
+
+async function saveOnboardingByokKey(
+  context: FirstRunOnboardingContext,
+  provider: BuiltInProviderSlug,
+  apiKey: string,
+): Promise<void> {
+  if (context.authBackend !== undefined) {
+    await context.authBackend.saveByokKey({ provider, apiKey });
+    return;
+  }
+  if (context.agencHome === undefined) {
+    throw new Error("AgenC home is required to save a BYOK API key");
+  }
+  await new LocalAuthBackend({ agencHome: context.agencHome }).saveByokKey({
+    provider,
+    apiKey,
+  });
+}
+
+async function saveApprovedApiKeyPaste(
+  context: FirstRunOnboardingContext,
+  approval: PendingApiKeyApproval,
+): Promise<void> {
+  if (
+    context.agencHome === undefined ||
+    approval.pasteHash === undefined ||
+    approval.pasteContent === undefined
+  ) {
+    return;
+  }
+  await storePastedText({
+    agencHome: context.agencHome,
+    hash: approval.pasteHash,
+    content: approval.pasteContent,
+  });
 }
 
 function localModelsUrl(provider: BuiltInProviderSlug, baseURL: string): string {
@@ -523,6 +659,8 @@ export async function submitFirstRunOnboardingInput(
             selectedProvider: provider,
             selectedModel,
             connection: null,
+            pastedContents: [],
+            pendingApiKeyApproval: null,
           },
           "provider",
           "connection-test",
@@ -553,19 +691,132 @@ export async function submitFirstRunOnboardingInput(
       };
     }
     case "api-key":
-      {
-        const error = invalidCommandError(raw, "next");
-        if (error !== null) {
+      if (state.pendingApiKeyApproval !== null) {
+        const answer = approvalAnswer(lowerCommand(raw));
+        if (answer === null) {
           return {
-            state: { ...state, error },
+            state: {
+              ...state,
+              error: "Type yes to save this key or no to continue without saving.",
+            },
             completed: false,
           };
         }
+        if (answer === "no") {
+          return {
+            state: withCompletedStep(
+              { ...state, pendingApiKeyApproval: null },
+              "api-key",
+              "security",
+            ),
+            completed: false,
+          };
+        }
+        try {
+          await saveApprovedApiKeyPaste(
+            context,
+            state.pendingApiKeyApproval,
+          );
+          await saveOnboardingByokKey(
+            context,
+            state.pendingApiKeyApproval.provider,
+            state.pendingApiKeyApproval.apiKey,
+          );
+        } catch (error) {
+          if (
+            context.agencHome !== undefined &&
+            state.pendingApiKeyApproval.pasteHash !== undefined
+          ) {
+            await deletePastedText({
+              agencHome: context.agencHome,
+              hash: state.pendingApiKeyApproval.pasteHash,
+            }).catch(() => {
+              /* best effort */
+            });
+          }
+          return {
+            state: {
+              ...state,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : "Could not save the BYOK API key.",
+            },
+            completed: false,
+          };
+        }
+        return {
+          state: withCompletedStep(
+            { ...state, pendingApiKeyApproval: null },
+            "api-key",
+            "security",
+          ),
+          completed: false,
+        };
       }
-      return {
-        state: withCompletedStep(state, "api-key", "security"),
-        completed: false,
-      };
+      {
+        const command = lowerCommand(raw);
+        if (isSkipApiKeyCommand(command)) {
+          return {
+            state: withCompletedStep(state, "api-key", "security"),
+            completed: false,
+          };
+        }
+        const apiKey = normalizeApiKeyEntry(raw);
+        if (apiKey.length === 0 || /\s/.test(apiKey)) {
+          return {
+            state: {
+              ...state,
+              error:
+                "Type next to continue without saving, or paste a single API key without whitespace.",
+            },
+            completed: false,
+          };
+        }
+        const pasteCapture = captureApiKeyPaste(state, raw);
+        const verification = await verifyApiKey({
+          provider: state.selectedProvider,
+          apiKey,
+          config: context.config,
+          env: context.env,
+          fetchImpl: context.fetchImpl,
+        });
+        if (verification.status !== "valid") {
+          return {
+            state: {
+              ...state,
+              error: verification.error ?? "API key verification failed.",
+            },
+            completed: false,
+          };
+        }
+        return {
+          state: {
+            ...state,
+            pastedContents: pasteCapture.pastedContents,
+            pendingApiKeyApproval: {
+              provider: state.selectedProvider,
+              apiKey,
+              maskedTail: maskedApiKeyTail(apiKey),
+              ...(pasteCapture.pasteHash !== undefined
+                ? { pasteHash: pasteCapture.pasteHash }
+                : {}),
+              ...(pasteCapture.pasteContent !== undefined
+                ? { pasteContent: pasteCapture.pasteContent }
+                : {}),
+              ...(pasteCapture.pastePreview !== undefined
+                ? { pastePreview: pasteCapture.pastePreview }
+                : {}),
+              verificationStatus: verification.status,
+              ...(verification.error !== undefined
+                ? { verificationError: verification.error }
+                : {}),
+            },
+            error: null,
+          },
+          completed: false,
+        };
+      }
     case "security":
       {
         const error = invalidCommandError(raw, "next");
@@ -635,6 +886,9 @@ export function useFirstRunOnboardingController(
     }
     recordedSeen.current = true;
     incrementFirstRunOnboardingSeenCount({ agencHome: options.agencHome });
+    void cleanupOldPastes({ agencHome: options.agencHome }).catch(() => {
+      /* best effort */
+    });
   }, [active, options.agencHome]);
 
   const submit = useCallback(
@@ -724,15 +978,24 @@ function detailLinesForStep(
             "Type test or next to run the connection check.",
           ];
     case "api-key": {
+      if (state.pendingApiKeyApproval !== null) {
+        return [];
+      }
       const connection = state.connection;
       if (connection === null) {
-        return ["Connection check has not run yet. Type next to continue."];
+        return [
+          "Connection check has not run yet.",
+          "Paste an API key to verify it, or type next to continue without saving.",
+        ];
       }
       return [
         connection.detail,
         connection.keyEnvVar === undefined
-          ? "Type next to continue."
-          : `Type next after setting ${connection.keyEnvVar}, or continue and add it later.`,
+          ? "Paste an API key to verify it, or type next to continue."
+          : `Paste ${connection.keyEnvVar} to verify it, or type next to add it later.`,
+        ...(state.pastedContents.length > 0
+          ? [`Captured ${state.pastedContents.length} large paste privately.`]
+          : []),
       ];
     }
     case "security":
@@ -770,9 +1033,20 @@ export function Onboarding({
       />
       <Box flexDirection="column" marginTop={1}>
         <Text bold>{currentStep.title}</Text>
-        {detailLinesForStep(state, context).map((line) => (
-          <Text key={line} dimColor>{line}</Text>
-        ))}
+        {state.currentStepId === "api-key" &&
+        state.pendingApiKeyApproval !== null ? (
+          <ApproveApiKey
+            provider={state.pendingApiKeyApproval.provider}
+            maskedTail={state.pendingApiKeyApproval.maskedTail}
+            status={state.pendingApiKeyApproval.verificationStatus}
+            error={state.pendingApiKeyApproval.verificationError}
+            pastePreview={state.pendingApiKeyApproval.pastePreview}
+          />
+        ) : (
+          detailLinesForStep(state, context).map((line) => (
+            <Text key={line} dimColor>{line}</Text>
+          ))
+        )}
         {state.error !== null ? <Text>{state.error}</Text> : null}
       </Box>
       <Box flexDirection="column" marginTop={1}>

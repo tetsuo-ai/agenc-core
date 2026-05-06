@@ -17,6 +17,7 @@ import {
 import { defaultConfig, mergeConfigs } from "../config/schema.js";
 import { trustProjectSync } from "../permissions/trust/project-trust.js";
 import type { AuthBackend } from "../auth/backend.js";
+import { LocalAuthBackend } from "../auth/backends/local.js";
 import type { Tool } from "../tools/types.js";
 import type { RolloutItem } from "../session/rollout-item.js";
 import { Session } from "../session/session.js";
@@ -1346,6 +1347,209 @@ describe("bootstrapLocalRuntimeSession", () => {
 
       expect(calls).toEqual(["getSubscriptionTier:conv-auth-disabled"]);
     } finally {
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("uses locally saved BYOK keys before managed key vending", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const authBackend = new LocalAuthBackend({ agencHome: home });
+    await authBackend.saveByokKey({
+      provider: "grok",
+      apiKey: "saved-xai-key",
+    });
+
+    const providerMod = await import("../llm/provider.js");
+    const createProviderSpy = vi
+      .spyOn(providerMod, "createProvider")
+      .mockImplementation(
+        () =>
+          ({
+            name: "stub",
+            chat: async () => ({
+              content: "ok",
+              toolCalls: [],
+              usage: {
+                promptTokens: 1,
+                completionTokens: 1,
+                totalTokens: 2,
+              },
+            }),
+          }) as never,
+      );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const vendSpy = vi.spyOn(authBackend, "vendKey");
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        authBackend,
+        conversationId: "conv-local-byok",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
+          AGENC_WORKSPACE: workspace,
+          AGENC_XAI_API_KEY: "",
+          HOME: home,
+          GROK_API_KEY: "",
+          XAI_API_KEY: "",
+        },
+      });
+      shutdown = boot.shutdown;
+
+      expect(boot.resolvedProvider).toBe("grok");
+      expect(createProviderSpy).toHaveBeenCalledWith(
+        "grok",
+        expect.objectContaining({
+          apiKey: "saved-xai-key",
+          model: "grok-4-fast",
+        }),
+      );
+      expect(vendSpy).not.toHaveBeenCalled();
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("does not vend managed keys when an explicit API key is provided", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const calls: string[] = [];
+    const authBackend: AuthBackend = {
+      login: () => ({ authenticated: true, provider: "local" }),
+      logout: () => ({ authenticated: false }),
+      whoami: () => ({ authenticated: true, provider: "local" }),
+      vendKey: (provider, sessionId) => {
+        calls.push(`vendKey:${provider}:${sessionId}`);
+        throw new Error("vendKey should not run");
+      },
+      inferAgencModel: () => {
+        throw new Error("inferAgencModel should not run");
+      },
+      getSubscriptionTier: ({ sessionId } = {}) => {
+        calls.push(`getSubscriptionTier:${sessionId ?? ""}`);
+        return "pro";
+      },
+    };
+
+    const providerMod = await import("../llm/provider.js");
+    const createProviderSpy = vi
+      .spyOn(providerMod, "createProvider")
+      .mockImplementation(
+        () =>
+          ({
+            name: "stub",
+            chat: async () => ({
+              content: "ok",
+              toolCalls: [],
+              usage: {
+                promptTokens: 1,
+                completionTokens: 1,
+                totalTokens: 2,
+              },
+            }),
+          }) as never,
+      );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "explicit-xai-key",
+        authBackend,
+        conversationId: "conv-explicit-byok",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
+          AGENC_WORKSPACE: workspace,
+          AGENC_XAI_API_KEY: "",
+          HOME: home,
+          GROK_API_KEY: "",
+          XAI_API_KEY: "",
+        },
+      });
+      shutdown = boot.shutdown;
+
+      expect(createProviderSpy).toHaveBeenCalledWith(
+        "grok",
+        expect.objectContaining({
+          apiKey: "explicit-xai-key",
+        }),
+      );
+      expect(calls).toEqual(["getSubscriptionTier:conv-explicit-byok"]);
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("uses locally saved BYOK keys without an injected auth backend", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    await new LocalAuthBackend({ agencHome: home }).saveByokKey({
+      provider: "grok",
+      apiKey: "saved-default-xai-key",
+    });
+
+    const providerMod = await import("../llm/provider.js");
+    const createProviderSpy = vi
+      .spyOn(providerMod, "createProvider")
+      .mockImplementation(
+        () =>
+          ({
+            name: "stub",
+            chat: async () => ({
+              content: "ok",
+              toolCalls: [],
+              usage: {
+                promptTokens: 1,
+                completionTokens: 1,
+                totalTokens: 2,
+              },
+            }),
+          }) as never,
+      );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        conversationId: "conv-default-local-byok",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          AGENC_XAI_API_KEY: "",
+          HOME: home,
+          GROK_API_KEY: "",
+          XAI_API_KEY: "",
+        },
+      });
+      shutdown = boot.shutdown;
+
+      expect(boot.resolvedProvider).toBe("grok");
+      expect(createProviderSpy).toHaveBeenCalledWith(
+        "grok",
+        expect.objectContaining({
+          apiKey: "saved-default-xai-key",
+          model: "grok-4-fast",
+        }),
+      );
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
       await rm(home, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
     }

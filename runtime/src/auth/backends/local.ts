@@ -35,6 +35,7 @@ interface LocalAuthDiskState {
     readonly displayName: string;
     readonly plan: AuthSubscriptionTier;
   };
+  readonly byokKeys?: Readonly<Record<string, LocalByokKeyRecord>>;
 }
 
 export interface LocalAuthBackendOptions {
@@ -53,6 +54,17 @@ export interface LocalAuthLoginResult extends AuthLoginResult {
 export interface LocalAuthWhoamiResult extends AuthWhoamiResult {
   readonly provider?: "local";
   readonly identity?: LocalAuthDiskState["identity"];
+}
+
+export interface LocalByokKeyRecord {
+  readonly provider: string;
+  readonly apiKey: string;
+  readonly savedAt: string;
+}
+
+export interface SaveLocalByokKeyParams {
+  readonly provider: string;
+  readonly apiKey: string;
 }
 
 export class LocalAuthBackend implements AuthBackend {
@@ -75,23 +87,16 @@ export class LocalAuthBackend implements AuthBackend {
   }
 
   async login(_params: AuthLoginParams = {}): Promise<LocalAuthLoginResult> {
-    const token = this.randomUUID();
+    const current = await readLocalAuthState(this.authFilePath);
     const state: LocalAuthDiskState = {
-      version: LOCAL_AUTH_STATE_VERSION,
-      token,
-      createdAt: this.now().toISOString(),
-      provider: "local",
-      identity: {
-        accountId: "local",
-        displayName: "Local AgenC user",
-        plan: "free",
-      },
+      ...this.createDiskState(),
+      ...(current?.byokKeys !== undefined ? { byokKeys: current.byokKeys } : {}),
     };
     await writeLocalAuthState(this.authFilePath, state);
     return {
       authenticated: true,
       provider: "local",
-      token,
+      token: state.token,
       identity: state.identity,
     };
   }
@@ -113,6 +118,39 @@ export class LocalAuthBackend implements AuthBackend {
       provider: "local",
       identity: state.identity,
     };
+  }
+
+  async saveByokKey(
+    params: SaveLocalByokKeyParams,
+  ): Promise<LocalByokKeyRecord> {
+    const provider = normalizeProviderKey(params.provider);
+    const apiKey = normalizeApiKey(params.apiKey);
+    const current = await readLocalAuthState(this.authFilePath);
+    const state = current ?? this.createDiskState();
+    const record: LocalByokKeyRecord = {
+      provider,
+      apiKey,
+      savedAt: this.now().toISOString(),
+    };
+    await writeLocalAuthState(this.authFilePath, {
+      ...state,
+      byokKeys: {
+        ...(state.byokKeys ?? {}),
+        [provider]: record,
+      },
+    });
+    return record;
+  }
+
+  async readByokKey(
+    provider: AuthProviderSlug | string,
+  ): Promise<string | undefined> {
+    const normalizedProvider = normalizeProviderKey(provider);
+    const state = await readLocalAuthState(this.authFilePath);
+    const apiKey = state?.byokKeys?.[normalizedProvider]?.apiKey;
+    return typeof apiKey === "string" && apiKey.trim().length > 0
+      ? apiKey
+      : undefined;
   }
 
   vendKey(
@@ -137,6 +175,20 @@ export class LocalAuthBackend implements AuthBackend {
   ): AuthSubscriptionTier {
     return "free";
   }
+
+  private createDiskState(): LocalAuthDiskState {
+    return {
+      version: LOCAL_AUTH_STATE_VERSION,
+      token: this.randomUUID(),
+      createdAt: this.now().toISOString(),
+      provider: "local",
+      identity: {
+        accountId: "local",
+        displayName: "Local AgenC user",
+        plan: "free",
+      },
+    };
+  }
 }
 
 function isLocalAuthDiskState(value: unknown): value is LocalAuthDiskState {
@@ -148,7 +200,8 @@ function isLocalAuthDiskState(value: unknown): value is LocalAuthDiskState {
     state.token.length > 0 &&
     typeof state.createdAt === "string" &&
     state.provider === "local" &&
-    isLocalAuthIdentity(state.identity)
+    isLocalAuthIdentity(state.identity) &&
+    isLocalByokKeys(state.byokKeys)
   );
 }
 
@@ -161,6 +214,37 @@ function isLocalAuthIdentity(
     identity.accountId === "local" &&
     typeof identity.displayName === "string" &&
     identity.plan === "free"
+  );
+}
+
+function isLocalByokKeys(
+  value: unknown,
+): value is Readonly<Record<string, LocalByokKeyRecord>> | undefined {
+  if (value === undefined) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.entries(value).every(([key, record]) =>
+    isNormalizedProviderKey(key) && isLocalByokKeyRecord(record)
+  );
+}
+
+function isLocalByokKeyRecord(value: unknown): value is LocalByokKeyRecord {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Partial<LocalByokKeyRecord>;
+  return (
+    typeof record.provider === "string" &&
+    isNormalizedProviderKey(record.provider) &&
+    typeof record.apiKey === "string" &&
+    record.apiKey.trim().length > 0 &&
+    !/\s/.test(record.apiKey) &&
+    typeof record.savedAt === "string"
+  );
+}
+
+function isNormalizedProviderKey(provider: string): boolean {
+  return (
+    provider.length > 0 &&
+    provider.trim().toLowerCase() === provider &&
+    !/\s/.test(provider)
   );
 }
 
@@ -180,6 +264,25 @@ async function readLocalAuthState(
     }
     throw error;
   }
+}
+
+function normalizeProviderKey(provider: AuthProviderSlug | string): string {
+  const normalized = provider.trim().toLowerCase();
+  if (normalized.length === 0) {
+    throw new Error("provider is required to save a BYOK key");
+  }
+  return normalized;
+}
+
+function normalizeApiKey(apiKey: string): string {
+  const trimmed = apiKey.trim();
+  if (trimmed.length === 0) {
+    throw new Error("API key is required");
+  }
+  if (/\s/.test(trimmed)) {
+    throw new Error("API key must not contain whitespace");
+  }
+  return trimmed;
 }
 
 async function writeLocalAuthState(
