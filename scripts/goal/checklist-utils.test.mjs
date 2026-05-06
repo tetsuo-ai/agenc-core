@@ -260,6 +260,7 @@ assert(
   "verify.mjs Z-PURGEC caps temporary typecheck and ts-nocheck boundaries",
   zPurgecGateSource.includes("assertZPurgecTemporaryBoundaries()") &&
     verifySource.includes("runtime/tsconfig.json has no broad migrated-root exclusions") &&
+    verifySource.includes("concreteExcludes.length > 400") &&
     verifySource.includes("boundaryFiles.length > 800") &&
     verifySource.includes("scripts/goal/purge-scans.test.mjs"),
 );
