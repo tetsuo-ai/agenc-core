@@ -1,0 +1,76 @@
+{
+  "item": "WP-02",
+  "status": "implemented",
+  "sourceRootLabel": "AgenC WP-02 checklist and app-server JSON-RPC protocol contract",
+  "targetRoot": "..",
+  "siblingEvidence": {
+    "agenc-portal": {
+      "path": "sibling:agenc-portal",
+      "commit": "7cb62b991d1d92c116ecad6778474cdb32bc64a7"
+    }
+  },
+  "sourceFiles": [
+    "runtime/src/app-server/protocol/index.ts",
+    "runtime/src/app-server/transport/websocket.ts",
+    "runtime/src/app-server-protocol/index.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/app-server-protocol/index.ts",
+    "runtime/src/app-server-protocol/portal.contract.test.ts",
+    "runtime/src/index.ts",
+    "agenc-portal/src/daemon-connection.js",
+    "agenc-portal/src/main.js",
+    "agenc-portal/src/styles.css",
+    "agenc-portal/scripts/check-scaffold.mjs",
+    "agenc-portal/README.md"
+  ],
+  "testFiles": [
+    "runtime/src/app-server-protocol/portal.contract.test.ts",
+    "agenc-portal/scripts/check-scaffold.mjs"
+  ],
+  "requiredBehaviors": [
+    {
+      "id": "websocket-initialize",
+      "behavior": "Portal daemon connections open a browser WebSocket to the selected local or remote endpoint and send initialize as the first JSON-RPC request with the daemon protocol version and portal capability flags.",
+      "edgeCases": [
+        "rejects non-websocket URLs before opening a socket",
+        "rejects credential-bearing URLs before opening a socket",
+        "rejects pending requests when the socket closes before a response"
+      ],
+      "tests": [
+        "agenc-portal/scripts/check-scaffold.mjs",
+        "runtime/src/app-server-protocol/portal.contract.test.ts"
+      ]
+    },
+    {
+      "id": "dashboard-read",
+      "behavior": "After initialize succeeds, the portal reads health.ready, health.stats, auth.whoami, session.list, and agent.list to build the dashboard snapshot.",
+      "edgeCases": [
+        "auth.whoami failure does not break the connected dashboard",
+        "closed daemon sessions normalize to the portal stopped status",
+        "errored daemon agents normalize to the portal failed status"
+      ],
+      "tests": [
+        "agenc-portal/scripts/check-scaffold.mjs"
+      ]
+    },
+    {
+      "id": "ui-controls",
+      "behavior": "The first screen exposes local and remote endpoint controls, connect, refresh, disconnect, and explicit connection states without rendering daemon data through HTML injection.",
+      "edgeCases": [
+        "hostile daemon strings are rendered as text content",
+        "refresh is disabled until a connection is initialized",
+        "mobile layout collapses endpoint controls into one column"
+      ],
+      "tests": [
+        "agenc-portal/scripts/check-scaffold.mjs"
+      ]
+    }
+  ],
+  "intentionalReductions": [
+    "WP-02 does not create or deploy a hosted portal backend; remote endpoints are operator-provided WebSocket targets.",
+    "Portal authentication actions are limited to auth.whoami for dashboard context. Authenticated mutations are owned by later WP items.",
+    "The portal repo stays dependency-light and uses the browser WebSocket API directly instead of adding a client framework or transport package."
+  ],
+  "mergeResolutions": []
+}
