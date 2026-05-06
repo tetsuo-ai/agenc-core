@@ -242,6 +242,60 @@ describe("agenc config CLI", () => {
     expect(readFileSync(configPath(home), "utf8")).toBe(before);
   });
 
+  it("rejects prototype-polluting path segments on set and unset", async () => {
+    const home = makeHome();
+
+    const setPollution = await run(parseAgenCConfigCliArgs([
+      "config",
+      "set",
+      "__proto__.polluted",
+      "true",
+    ]), home);
+    expect(setPollution.code).toBe(1);
+    expect(setPollution.io.stderrText()).toContain("path segment is not allowed");
+    expect(({} as { polluted?: unknown }).polluted).toBeUndefined();
+    expect(existsSync(configPath(home))).toBe(false);
+
+    const unsetPollution = await run(parseAgenCConfigCliArgs([
+      "config",
+      "unset",
+      "constructor.prototype.polluted",
+    ]), home);
+    expect(unsetPollution.code).toBe(1);
+    expect(unsetPollution.io.stderrText()).toContain("path segment is not allowed");
+    expect(({} as { polluted?: unknown }).polluted).toBeUndefined();
+  });
+
+  it("rejects invalid permissions config on validate and set", async () => {
+    const home = makeHome();
+    writeFileSync(
+      configPath(home),
+      `configVersion = ${CURRENT_CONFIG_FILE_VERSION}\n\n[permissions]\ndefault_mode = "bad"\n`,
+      "utf8",
+    );
+
+    const validate = await run(parseAgenCConfigCliArgs(["config", "validate"]), home);
+    expect(validate.code).toBe(1);
+    expect(validate.io.stderrText()).toContain("Invalid permissions.default_mode");
+
+    const setHome = makeHome();
+    writeFileSync(
+      configPath(setHome),
+      `configVersion = ${CURRENT_CONFIG_FILE_VERSION}\nmodel = "grok-3"\n`,
+      "utf8",
+    );
+    const before = readFileSync(configPath(setHome), "utf8");
+    const setInvalid = await run(parseAgenCConfigCliArgs([
+      "config",
+      "set",
+      "permissions.default_mode",
+      "bad",
+    ]), setHome);
+    expect(setInvalid.code).toBe(1);
+    expect(setInvalid.io.stderrText()).toContain("Invalid permissions.default_mode");
+    expect(readFileSync(configPath(setHome), "utf8")).toBe(before);
+  });
+
   it("unsets nested values, prunes empty records, and leaves missing config absent", async () => {
     const home = makeHome();
     writeFileSync(

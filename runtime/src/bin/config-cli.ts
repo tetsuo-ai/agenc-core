@@ -35,6 +35,8 @@ import {
   normalizeAgenCKeyAliases,
   normalizeRawConfig,
   validateAgenCConfigBlocks,
+  validatePermissionsConfig,
+  type AgenCConfig,
 } from "../config/schema.js";
 import { migrateRawAgenCConfig } from "../state/migrations/config-migrations.js";
 
@@ -77,6 +79,11 @@ type JsonRecord = Record<string, unknown>;
 const DEFAULT_FILE_MODE = 0o600;
 const CONFIG_PATH_LIMITATION =
   "Dot paths split on '.'; use 'agenc config edit' for keys containing literal dots.";
+const FORBIDDEN_CONFIG_PATH_SEGMENTS = new Set([
+  "__proto__",
+  "prototype",
+  "constructor",
+]);
 const UNSAFE_MIGRATION_SKIPS = new Set([
   "toml:read-failed",
   "toml:invalid",
@@ -251,6 +258,12 @@ async function runConfigShow(
     io.stderr.write(`agenc: config is invalid: ${loaded.parseError}\n`);
     return 1;
   }
+  try {
+    validateLoadedConfigForCli(loaded.config);
+  } catch (error) {
+    io.stderr.write(`agenc: config is invalid: ${errorMessage(error)}\n`);
+    return 1;
+  }
   io.stdout.write(`${formatConfigSnapshot(loaded.config)}\n`);
   return 0;
 }
@@ -268,6 +281,12 @@ async function runConfigGet(
     io.stderr.write(`agenc: config is invalid: ${loaded.parseError}\n`);
     return 1;
   }
+  try {
+    validateLoadedConfigForCli(loaded.config);
+  } catch (error) {
+    io.stderr.write(`agenc: config is invalid: ${errorMessage(error)}\n`);
+    return 1;
+  }
   io.stdout.write(`${getConfigPath(loaded.config, key)}\n`);
   return 0;
 }
@@ -282,6 +301,12 @@ async function runConfigValidate(
   });
   if (loaded.parseError !== undefined) {
     io.stderr.write(`agenc: config validation failed: ${loaded.parseError}\n`);
+    return 1;
+  }
+  try {
+    validateLoadedConfigForCli(loaded.config);
+  } catch (error) {
+    io.stderr.write(`agenc: config validation failed: ${errorMessage(error)}\n`);
     return 1;
   }
   io.stdout.write(`Config valid: ${loaded.path}\n`);
@@ -486,13 +511,23 @@ async function validateAndWriteConfig(
   raw: JsonRecord,
   target: WritableConfigTarget,
 ): Promise<void> {
-  validateAgenCConfigBlocks(normalizeRawConfig(cloneRecord(raw)));
+  validateRawConfigForCli(raw);
   const serialized = serializeConfigToml(raw);
   const parsed = parseToml(serialized) as Record<string, unknown>;
   if (stableJson(parsed) !== stableJson(raw)) {
     throw new Error("serialized config.toml did not round-trip");
   }
   await writeTextAtomic(target.path, serialized, target.mode);
+}
+
+function validateRawConfigForCli(raw: Readonly<Record<string, unknown>>): void {
+  const validated = validateAgenCConfigBlocks(normalizeRawConfig(cloneRecord(raw)));
+  validatePermissionsConfig(validated.permissions);
+}
+
+function validateLoadedConfigForCli(config: AgenCConfig): void {
+  const validated = validateAgenCConfigBlocks(config);
+  validatePermissionsConfig(validated.permissions);
 }
 
 async function writeTextAtomic(
@@ -529,6 +564,12 @@ function parseEditablePath(key: string): readonly string[] {
 function assertEditableConfigPath(segments: readonly string[]): void {
   if (segments[0] === CONFIG_FILE_VERSION_KEY) {
     throw new Error(`${CONFIG_FILE_VERSION_KEY} is managed by AgenC`);
+  }
+  const forbidden = segments.find((segment) =>
+    FORBIDDEN_CONFIG_PATH_SEGMENTS.has(segment)
+  );
+  if (forbidden !== undefined) {
+    throw new Error(`config path segment is not allowed: ${forbidden}`);
   }
 }
 
