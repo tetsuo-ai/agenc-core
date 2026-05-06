@@ -45,7 +45,7 @@ vi.mock('../../../utils/messages.js', () => ({
     input.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, ''),
 }))
 
-vi.mock('../StructuredDiff/colorDiff.js', () => ({
+vi.mock('../diff/StructuredDiff/colorDiff.js', () => ({
   expectColorFile: () => colorFileMock.ColorFile,
 }))
 

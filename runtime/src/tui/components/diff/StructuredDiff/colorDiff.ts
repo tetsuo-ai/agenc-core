@@ -5,8 +5,8 @@ import {
   ColorFile,
   getSyntaxTheme as nativeGetSyntaxTheme,
   type SyntaxTheme,
-} from '../../ink/native-ts/color-diff/index'
-import { isEnvDefinedFalsy } from '../../../utils/envUtils'
+} from '../../../ink/native-ts/color-diff/index'
+import { isEnvDefinedFalsy } from '../../../../utils/envUtils'
 
 export type ColorModuleUnavailableReason = 'env'
 

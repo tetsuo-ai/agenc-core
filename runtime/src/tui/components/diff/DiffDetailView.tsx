@@ -7,7 +7,7 @@ import { Box, Text } from '../../ink.js';
 import { getCwd } from '../../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { readFileSafe } from '../../../utils/file.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Divider } from '../design-system/Divider';
-import { StructuredDiff } from '../StructuredDiff';
+import { StructuredDiff } from './StructuredDiff';
 type Props = {
   filePath: string;
   hunks: StructuredPatchHunk[];

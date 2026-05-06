@@ -9,14 +9,14 @@ import { KeybindingSetup } from '../../../tui/keybindings/KeybindingProviderSetu
 import { AppStateProvider } from '../../../tui/state/AppState.js'
 import { ThemeProvider } from './design-system/ThemeProvider'
 
-mock.module('./StructuredDiff.js', () => ({
+mock.module('./diff/StructuredDiff.js', () => ({
   StructuredDiff: function StructuredDiffPreview(): React.ReactNode {
     const [theme] = useTheme()
     return <Text>{`Preview theme: ${theme}`}</Text>
   },
 }))
 
-mock.module('./StructuredDiff/colorDiff.js', () => ({
+mock.module('./diff/StructuredDiff/colorDiff.js', () => ({
   getColorModuleUnavailableReason: () => 'env',
   getSyntaxTheme: () => null,
 }))
