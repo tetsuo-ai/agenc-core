@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { createHash } from 'crypto'
 import { join } from 'path'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
@@ -30,7 +29,6 @@ import {
   type ScopedMcpServerConfig,
   type ServerResource,
 } from './types.js'
-
 /**
  * Filters tools by MCP server name
  *
@@ -553,7 +551,6 @@ export function extractAgentMcpServers(
 
   return result.sort((a, b) => a.name.localeCompare(b.name))
 }
-
 /**
  * Extracts the MCP server base URL (without query string) for analytics logging.
  * Query strings are stripped because they can contain access tokens.
@@ -566,7 +563,6 @@ export function getLoggingSafeMcpBaseUrl(
   if (!('url' in config) || typeof config.url !== 'string') {
     return undefined
   }
-
   try {
     const url = new URL(config.url)
     url.search = ''

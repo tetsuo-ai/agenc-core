@@ -1,15 +1,12 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Shared analytics configuration
  *
  * Common logic for determining when analytics should be disabled
  * across all analytics systems (Datadog, 1P)
  */
-
 import { isEnvTruthy } from '../../../../utils/envUtils.js'
 import { isTelemetryDisabled } from '../../../../utils/privacyLevel.js'
-
 /**
  * Check if analytics operations should be disabled
  *
@@ -22,7 +19,6 @@ export function isAnalyticsDisabled(): boolean {
   // Open AgenC does not send product telemetry.
   return true
 }
-
 /**
  * Check if the feedback survey should be suppressed.
  *

@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { extname, isAbsolute, resolve } from 'path'
 import {
@@ -28,7 +27,6 @@ import {
   renderToolUseMessage,
   renderToolUseRejectedMessage,
 } from './UI.js'
-
 export const inputSchema = lazySchema(() =>
   z.strictObject({
     notebook_path: z
@@ -377,7 +375,6 @@ export const NotebookEditTool = buildTool({
           cell_type = 'code' // Default to code if no cell_type specified
         }
       }
-
       const language = notebook.metadata.language_info?.name ?? 'python'
       let new_cell_id = undefined
       if (
@@ -390,7 +387,6 @@ export const NotebookEditTool = buildTool({
           new_cell_id = cell_id
         }
       }
-
       if (edit_mode === 'delete') {
         // Delete the specified cell
         notebook.cells.splice(cellIndex, 1)

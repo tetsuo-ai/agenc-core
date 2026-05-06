@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import { checkHasTrustDialogAccepted } from '../../../../utils/config.js'
 import { logAntError } from 'src/utils/debug.js'
@@ -14,7 +13,6 @@ import type {
   McpWebSocketServerConfig,
   ScopedMcpServerConfig,
 } from './types.js'
-
 /**
  * Check if the MCP server config comes from project settings (projectSettings or localSettings)
  * This is important for security checks
@@ -117,7 +115,6 @@ export async function getMcpHeadersFromHelper(
     return null
   }
 }
-
 /**
  * Get combined headers for an MCP server (static + dynamic)
  * @param serverName The name of the MCP server
@@ -131,7 +128,6 @@ export async function getMcpServerHeaders(
   const staticHeaders = config.headers || {}
   const dynamicHeaders =
     (await getMcpHeadersFromHelper(serverName, config)) || {}
-
   // Dynamic headers override static headers if both are present
   return {
     ...staticHeaders,

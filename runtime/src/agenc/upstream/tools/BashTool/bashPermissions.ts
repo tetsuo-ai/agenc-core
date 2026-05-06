@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { APIUserAbortError } from '@anthropic-ai/sdk'
 import type { z } from 'zod/v4'
@@ -79,7 +78,6 @@ import { checkPermissionMode } from './modeValidation.js'
 import { checkPathConstraints } from './pathValidation.js'
 import { checkSedConstraints } from './sedValidation.js'
 import { shouldUseSandbox } from './shouldUseSandbox.js'
-
 // DCE cliff: Bun's feature() evaluator has a per-function complexity budget.
 // bashToolHasPermission is right at the limit. `import { X as Y }` aliases
 // inside the import block count toward this budget; when they push it over
@@ -2568,7 +2566,6 @@ export function isNormalizedGitCommand(command: string): boolean {
   }
   return /^git(?:\s|$)/.test(stripped)
 }
-
 /**
  * Checks if a subcommand is a cd command after normalizing away safe wrappers
  * (env vars, timeout, etc.) and shell quotes.
@@ -2591,7 +2588,6 @@ export function isNormalizedCdCommand(command: string): boolean {
   }
   return /^(?:cd|pushd|popd)(?:\s|$)/.test(stripped)
 }
-
 /**
  * Checks if a compound command contains any cd command,
  * using normalized detection that handles env var prefixes and shell quotes.

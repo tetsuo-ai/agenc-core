@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { Base64ImageSource } from '@anthropic-ai/sdk/resources/index.mjs'
 import { readdir, readFile as readFileAsync } from 'fs/promises'
 import * as path from 'path'
@@ -94,7 +93,6 @@ import {
   renderToolUseTag,
   userFacingName,
 } from './UI.js'
-
 // Device files that would hang the process: infinite output or blocking input.
 // Checked by path only (no I/O). Safe devices like /dev/null are intentionally omitted.
 const BLOCKED_DEVICE_PATHS = new Set([
@@ -1175,7 +1173,6 @@ export async function readImageWithTokenBudget(
           })
           .jpeg({ quality: 20 })
           .toBuffer()
-
         return createImageResponse(fallbackBuffer, 'jpeg', originalSize)
       } catch (error) {
         logError(error)
@@ -1183,6 +1180,5 @@ export async function readImageWithTokenBudget(
       }
     }
   }
-
   return result
 }

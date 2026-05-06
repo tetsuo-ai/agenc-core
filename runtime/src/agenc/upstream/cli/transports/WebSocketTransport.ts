@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { StdoutMessage } from 'src/entrypoints/sdk/controlTypes.js'
 import type WsWebSocket from 'ws'
 import { logEvent } from '../../services/analytics/index.js'
@@ -18,7 +17,6 @@ import {
 } from '../../../../utils/sessionActivity.js'
 import { jsonStringify } from '../../../../utils/slowOperations.js'
 import type { Transport } from './Transport.js'
-
 const KEEP_ALIVE_FRAME = '{"type":"keep_alive"}\n'
 
 const DEFAULT_MAX_BUFFER_SIZE = 1000
@@ -773,7 +771,6 @@ export class WebSocketTransport implements Transport {
     if (isEnvTruthy(process.env.AGENC_REMOTE)) {
       return
     }
-
     this.keepAliveInterval = setInterval(() => {
       if (this.state === 'connected' && this.ws) {
         try {
@@ -792,7 +789,6 @@ export class WebSocketTransport implements Transport {
       }
     }, DEFAULT_KEEPALIVE_INTERVAL)
   }
-
   private stopKeepaliveInterval(): void {
     if (this.keepAliveInterval) {
       clearInterval(this.keepAliveInterval)

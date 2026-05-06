@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type {
   Base64ImageSource,
   ContentBlockParam,
@@ -23,7 +22,6 @@ import { countCharInString, plural } from '../../../../utils/stringUtils.js'
  */
 export function stripEmptyLines(content: string): string {
   const lines = content.split('\n')
-
   // Find the first non-empty line
   let startIndex = 0
   while (startIndex < lines.length && lines[startIndex]?.trim() === '') {
@@ -212,7 +210,6 @@ export function createContentSummary(content: ContentBlockParam[]): string {
       parts.push(preview + (block.text.length > 200 ? '...' : ''))
     }
   }
-
   const summary: string[] = []
   if (imageCount > 0) {
     summary.push(`[${imageCount} ${plural(imageCount, 'image')}]`)
@@ -220,6 +217,5 @@ export function createContentSummary(content: ContentBlockParam[]): string {
   if (textCount > 0) {
     summary.push(`[${textCount} text ${plural(textCount, 'block')}]`)
   }
-
   return `MCP Result: ${summary.join(', ')}${parts.length > 0 ? '\n\n' + parts.join('\n\n') : ''}`
 }

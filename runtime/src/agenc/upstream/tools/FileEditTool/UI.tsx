@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import type { StructuredPatchHunk } from 'diff';
@@ -114,13 +113,11 @@ export function renderToolUseRejectedMessage(input: {
   const oldString = input.old_string ?? '';
   const newString = input.new_string ?? '';
   const replaceAll = input.replace_all ?? false;
-
   // Defensive: if input has an unexpected shape, show a simple rejection message
   if ('edits' in input && input.edits != null) {
     return <FileEditToolUseRejectedMessage file_path={filePath} operation="update" firstLine={null} verbose={verbose} />;
   }
   const isNewFile = oldString === '';
-
   // For new file creation, show content preview instead of diff
   if (isNewFile) {
     return <FileEditToolUseRejectedMessage file_path={filePath} operation="write" content={newString} firstLine={firstLineOf(newString)} verbose={verbose} />;

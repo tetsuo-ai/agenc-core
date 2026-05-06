@@ -143,6 +143,7 @@ assert("at least one numeric phase parsed", hasNumericPhase, `phases=${[...phase
 const completeSource = readFileSync(new URL("./complete.mjs", import.meta.url), "utf8");
 const verifySource = readFileSync(new URL("./verify.mjs", import.meta.url), "utf8");
 const shimBehaviorSource = readFileSync(new URL("./shim-behavior.mjs", import.meta.url), "utf8");
+const vitestConfigSource = readFileSync(new URL("../../runtime/vitest.config.ts", import.meta.url), "utf8");
 assert(
   "complete.mjs hard-fails worktree removal failures",
   /const wtRemove =[\s\S]*if \(wtRemove\.status !== 0\) \{\s*abort\(/.test(completeSource),
@@ -198,6 +199,40 @@ assert(
     zc24GateSource.includes('"@ant/computer-use-mcp"') &&
     zc24GateSource.includes('"jimp"') &&
     zc24GateSource.includes('"markdown-it"'),
+);
+
+const upstreamGrowthGateStart = verifySource.indexOf("const upstreamNumstatRes");
+const upstreamGrowthGateEnd = verifySource.indexOf("const upstreamImportGrowthScript");
+const upstreamGrowthGateSource = upstreamGrowthGateStart === -1 || upstreamGrowthGateEnd === -1
+  ? ""
+  : verifySource.slice(upstreamGrowthGateStart, upstreamGrowthGateEnd);
+assert(
+  "verify.mjs upstream growth gate uses raw numstat",
+  upstreamGrowthGateSource.includes("row.added > row.deleted") &&
+    !upstreamGrowthGateSource.includes("effectiveAdded") &&
+    !upstreamGrowthGateSource.includes("neutralBoundary") &&
+    !upstreamGrowthGateSource.includes("ts-nocheck"),
+);
+
+const zPurgeaGateStart = verifySource.indexOf('if (id === "Z-PURGEA")');
+const zPurgeaGateEnd = verifySource.indexOf('if (id === "Z-PURGEB")');
+const zPurgeaGateSource = zPurgeaGateStart === -1 || zPurgeaGateEnd === -1
+  ? ""
+  : verifySource.slice(zPurgeaGateStart, zPurgeaGateEnd);
+assert(
+  "verify.mjs Z-PURGEA rejects agenc.dev in moved files",
+  zPurgeaGateSource.includes("agenc\\.(?:ai|com|dev)"),
+);
+assert(
+  "verify.mjs Z-PURGEA probes moved source importability",
+  zPurgeaGateSource.includes("tests/zpurgea-importability.test.ts") &&
+    zPurgeaGateSource.includes("movedDonorTests"),
+);
+assert(
+  "runtime vitest config mirrors moved utility resolution",
+  vitestConfigSource.includes("relocatedUpstreamImporter") &&
+    vitestConfigSource.includes("relocatedUpstreamRoots") &&
+    vitestConfigSource.includes("movedDonorTestFiles"),
 );
 
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);

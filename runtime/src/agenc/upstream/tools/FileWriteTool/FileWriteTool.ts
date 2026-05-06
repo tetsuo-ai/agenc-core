@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { dirname, sep } from 'path'
 import { logEvent } from 'src/services/analytics/index.js'
 import { z } from 'zod/v4'
@@ -54,7 +53,6 @@ import {
   renderToolUseRejectedMessage,
   userFacingName,
 } from './UI.js'
-
 const inputSchema = lazySchema(() =>
   z.strictObject({
     file_path: z
@@ -408,14 +406,12 @@ export const FileWriteTool = buildTool({
 
     // For creation of new files, count all lines as additions, right before yielding the result
     countLinesChanged([], content)
-
     logFileOperation({
       operation: 'write',
       tool: 'FileWriteTool',
       filePath: fullFilePath,
       type: 'create',
     })
-
     return {
       data,
     }

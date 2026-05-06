@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { StdoutMessage } from 'src/entrypoints/sdk/controlTypes.js'
 import { CCRClient } from '../cli/transports/ccrClient.js'
 import type { HybridTransport } from '../cli/transports/HybridTransport.js'
@@ -9,7 +8,6 @@ import { errorMessage } from '../../../utils/errors.js'
 import { updateSessionIngressAuthToken } from '../../../utils/sessionIngressAuth.js'
 import type { SessionState } from '../../../utils/sessionState.js'
 import { registerWorker } from './workSecret.js'
-
 /**
  * Transport abstraction for replBridge. Covers exactly the surface that
  * replBridge.ts uses against HybridTransport so the v1/v2 choice is
@@ -252,7 +250,6 @@ export async function createV2ReplTransport(opts: {
     ccr.reportDelivery(event.event_id, 'received')
     ccr.reportDelivery(event.event_id, 'processed')
   })
-
   // Both sse.connect() and ccr.initialize() are deferred to connect() below.
   // replBridge's calling order is newTransport → setOnConnect → setOnData →
   // setOnClose → connect(), and both calls need those callbacks wired first:
@@ -268,7 +265,6 @@ export async function createV2ReplTransport(opts: {
   let onConnectCb: (() => void) | undefined
   let ccrInitialized = false
   let closed = false
-
   return {
     write(msg) {
       return ccr.writeEvent(msg)

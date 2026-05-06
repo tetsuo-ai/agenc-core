@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { fileURLToPath } from 'url'
 import type { PublishDiagnosticsParams } from 'vscode-languageserver-protocol'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -9,7 +8,6 @@ import { jsonStringify } from '../../../../utils/slowOperations.js'
 import type { DiagnosticFile } from '../diagnosticTracking.js'
 import { registerPendingLSPDiagnostic } from './LSPDiagnosticRegistry.js'
 import type { LSPServerManager } from './LSPServerManager.js'
-
 /**
  * Map LSP severity to AgenC diagnostic severity
  *
@@ -296,7 +294,6 @@ export function registerLSPNotificationHandlers(
       )
     }
   }
-
   // Report overall registration status
   const totalServers = servers.size
   if (registrationErrors.length > 0) {
@@ -319,7 +316,6 @@ export function registerLSPNotificationHandlers(
       `LSP notification handlers registered successfully for all ${totalServers} server(s)`,
     )
   }
-
   // Return tracking data for monitoring and testing
   return {
     totalServers,

@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { type ChildProcess, spawn } from 'child_process'
 import {
   createMessageConnection,
@@ -41,7 +40,6 @@ export type LSPClient = {
   ) => void
   stop: () => Promise<void>
 }
-
 /**
  * Create an LSP client wrapper using vscode-jsonrpc.
  * Manages communication with an LSP server process via stdio.
@@ -436,10 +434,8 @@ export function createLSPClient(
           startFailed = true
           startError = shutdownError
         }
-
         logForDebugging(`LSP client stopped for ${serverName}`)
       }
-
       // Re-throw shutdown error after cleanup is complete
       if (shutdownError) {
         throw shutdownError

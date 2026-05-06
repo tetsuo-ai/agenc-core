@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { dirname, isAbsolute, sep } from 'path'
 import { logEvent } from 'src/services/analytics/index.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
@@ -77,7 +76,6 @@ import {
   getPatchForEdit,
   preserveQuoteStyle,
 } from './utils.js'
-
 // V8/Bun string length limit is ~2^30 characters (~1 billion). For typical
 // ASCII/Latin-1 files, 1 byte on disk = 1 character, so 1 GiB in stat bytes
 // ≈ 1 billion characters ≈ the runtime string limit. Multi-byte UTF-8 files
@@ -598,9 +596,7 @@ export const FileEditTool = buildTool({
     }
   },
 } satisfies ToolDef<ReturnType<typeof inputSchema>, FileEditOutput>)
-
 // --
-
 function readFileForEdit(absoluteFilePath: string): {
   content: string
   fileExists: boolean

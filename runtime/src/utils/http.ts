@@ -10,7 +10,6 @@ import {
   handleOAuth401Error,
   isAgenCAISubscriber,
 } from './auth.js'
-import { getAPIProvider } from './model/providers.js'
 import { getAgenCCodeUserAgent } from './userAgent.js'
 import { getWorkload } from './workloadContext.js'
 
@@ -57,10 +56,7 @@ export function getMCPUserAgent(): string {
 // operators match in robots.txt); the agenc-code suffix lets them distinguish
 // local CLI traffic from AgenC cloud server-side fetches.
 export function getWebFetchUserAgent(): string {
-  const supportUrl =
-    getAPIProvider() === 'firstParty'
-      ? 'https://support.anthropic.com/'
-      : 'https://github.com/Gitlawb/agenc'
+  const supportUrl = 'https://agenc.tech'
   return `AgenC-User (${getAgenCCodeUserAgent()}; +${supportUrl})`
 }
 

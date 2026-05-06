@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { BetaContentBlock } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { createHash, randomUUID, type UUID } from 'crypto'
 import { mkdir, readFile, writeFile } from 'fs/promises'
@@ -26,7 +25,6 @@ function shouldUseVCR(): boolean {
   if (process.env.NODE_ENV === 'test') {
     return true
   }
-
   if (process.env.USER_TYPE === 'ant' && isEnvTruthy(process.env.FORCE_VCR)) {
     return true
   }
@@ -377,10 +375,8 @@ export async function* withStreamingVCR(
     yield* cachedBuffer
     return
   }
-
   yield* buffer
 }
-
 export async function withTokenCountVCR(
   messages: unknown[],
   tools: unknown[],

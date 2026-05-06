@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * OpenAI-compatible API shim for AgenC.
  *
@@ -26,7 +25,6 @@
  *   GITHUB_TOKEN or GH_TOKEN         — Copilot API token (mapped to Bearer auth)
  *   OPENAI_MODEL                     — optional; use github:copilot or openai/gpt-4.1 style IDs
  */
-
 import { APIError } from '@anthropic-ai/sdk'
 import {
   readAgencCredentialsAsync,
@@ -2311,11 +2309,9 @@ export function createOpenAIShimClient(options: {
   if (process.env.BANKR_MODEL && !process.env.OPENAI_MODEL) {
     process.env.OPENAI_MODEL = process.env.BANKR_MODEL
   }
-
   const beta = new OpenAIShimBeta({
     ...(options.defaultHeaders ?? {}),
   }, options.reasoningEffort, options.providerOverride)
-
   return {
     beta,
     messages: beta.messages,

@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { buildTool, type ToolDef, toolMatchesName } from 'src/Tool.js';
@@ -56,7 +55,6 @@ import { filterAgentsByMcpRequirements, hasRequiredMcpServers, isBuiltInAgent } 
 import { getPrompt } from 'src/tools/AgentTool/prompt.js';
 import { runAgent } from './runAgent.js';
 import { renderGroupedAgentToolUse, renderToolResultMessage, renderToolUseErrorMessage, renderToolUseMessage, renderToolUseProgressMessage, renderToolUseRejectedMessage, renderToolUseTag, userFacingName, userFacingNameBackgroundColor } from './UI.js';
-
 /* eslint-disable @typescript-eslint/no-require-imports */
 const proactiveModule = feature('PROACTIVE') || feature('KAIROS') ? require('../../proactive/index.js') as typeof import('../../proactive/index.js') : null;
 /* eslint-enable @typescript-eslint/no-require-imports */
@@ -1244,7 +1242,6 @@ export const AgentTool = buildTool({
             // No messages collected, re-throw the error
             throw syncAgentError;
           }
-
           // We have some messages, try to finalize and return them
           // This allows the parent agent to see partial progress even after an error
           logForDebugging(`Sync agent recovering from error with ${agentMessages.length} messages`);
@@ -1297,7 +1294,6 @@ export const AgentTool = buildTool({
   },
   async checkPermissions(input, context): Promise<PermissionResult> {
     const appState = context.getAppState();
-
     // Only route through auto mode classifier when in auto mode
     // In all other modes, auto-approve sub-agent generation
     // Note: "external" === 'ant' guard enables dead code elimination for external builds

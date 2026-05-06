@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import {
   APIConnectionError,
   APIConnectionTimeoutError,
@@ -56,7 +55,6 @@ import {
   extractOpenAICategoryMarker,
   type OpenAICompatibilityFailureCategory,
 } from './openaiErrorClassification.js'
-
 export const API_ERROR_MESSAGE_PREFIX = 'API Error'
 
 function stripOpenAICompatibilityMetadata(message: string): string {
@@ -1350,12 +1348,10 @@ export function getErrorMessageIfRefusal(
   const baseMessage = getIsNonInteractiveSession()
     ? `${API_ERROR_MESSAGE_PREFIX}: AgenC is unable to respond to this request, which appears to violate our Usage Policy (${usagePolicyUrl}). Try rephrasing the request or attempting a different approach.`
     : `${API_ERROR_MESSAGE_PREFIX}: AgenC is unable to respond to this request, which appears to violate our Usage Policy (${usagePolicyUrl}). Please double press esc to edit your last message or start a new session for AgenC to assist with a different task.`
-
   const modelSuggestion =
     model !== 'claude-sonnet-4-20250514'
       ? ' If you are seeing this refusal repeatedly, try running /model claude-sonnet-4-20250514 to switch models.'
       : ''
-
   return createAssistantAPIErrorMessage({
     content: baseMessage + modelSuggestion,
     error: 'invalid_request',

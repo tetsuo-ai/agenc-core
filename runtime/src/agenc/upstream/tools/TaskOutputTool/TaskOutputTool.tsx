@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { z } from 'zod/v4';
@@ -36,7 +35,6 @@ const inputSchema = lazySchema(() => z.strictObject({
 }));
 type InputSchema = ReturnType<typeof inputSchema>;
 type TaskOutputToolInput = z.infer<InputSchema>;
-
 // Unified output type covering all task types
 type TaskOutput = {
   task_id: string;
@@ -240,7 +238,6 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
         }
       };
     }
-
     // Blocking: wait for completion
     if (onProgress) {
       onProgress({
@@ -269,7 +266,6 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
         }
       };
     }
-
     // Mark as notified
     updateTaskState(task_id, toolUseContext.setAppState, t => ({
       ...t,

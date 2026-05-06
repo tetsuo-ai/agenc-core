@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { BetaToolUnion } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import { createPatch } from 'diff'
@@ -17,7 +16,6 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../analytics/index.js'
-
 function getCacheBreakDiffPath(): string {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
   let suffix = ''
@@ -702,11 +700,9 @@ export function notifyCompaction(
 export function cleanupAgentTracking(agentId: AgentId): void {
   previousStateBySource.delete(agentId)
 }
-
 export function resetPromptCacheBreakDetection(): void {
   previousStateBySource.clear()
 }
-
 async function writeCacheBreakDiff(
   prevContent: string,
   newContent: string,

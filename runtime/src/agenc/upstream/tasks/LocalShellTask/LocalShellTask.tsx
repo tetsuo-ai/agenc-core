@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle';
 import { stat } from 'fs/promises';
 import { OUTPUT_FILE_TAG, STATUS_TAG, SUMMARY_TAG, TASK_ID_TAG, TASK_NOTIFICATION_TAG, TOOL_USE_ID_TAG } from '../../../../constants/xml.js';
@@ -20,7 +19,6 @@ import { backgroundAgentTask, isLocalAgentTask } from '../LocalAgentTask/LocalAg
 import { isMainSessionTask } from '../LocalMainSessionTask.js';
 import { type BashTaskKind, isLocalShellTask, type LocalShellTaskState } from './guards.js';
 import { killTask } from './killShellTasks.js';
-
 /** Prefix that identifies a LocalShellTask summary to the UI collapse transform. */
 export const BACKGROUND_BASH_SUMMARY_PREFIX = 'Background command ';
 const STALL_CHECK_INTERVAL_MS = 5_000;
@@ -498,7 +496,6 @@ export function unregisterForeground(taskId: string, setAppState: SetAppState): 
     if (!isLocalShellTask(task) || task.isBackgrounded) {
       return prev;
     }
-
     // Capture cleanup function to call outside of updater
     cleanupFn = task.unregisterCleanup;
     const {
@@ -510,7 +507,6 @@ export function unregisterForeground(taskId: string, setAppState: SetAppState): 
       tasks: rest
     };
   });
-
   // Call cleanup outside of the state updater (avoid side effects in updater)
   cleanupFn?.();
 }

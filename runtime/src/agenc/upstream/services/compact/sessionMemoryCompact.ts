@@ -1,9 +1,7 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * EXPERIMENT: Session memory compaction
  */
-
 import type { AgentId } from '../../types/ids.js'
 import type { HookResultMessage, Message } from '../../types/message.js'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -602,7 +600,6 @@ export async function trySessionMemoryCompaction(
     const postCompactMessages = buildPostCompactMessages(compactionResult)
 
     const postCompactTokenCount = estimateMessageTokens(postCompactMessages)
-
     // Only check threshold if one was provided (for autocompact)
     if (
       autoCompactThreshold !== undefined &&
@@ -614,7 +611,6 @@ export async function trySessionMemoryCompaction(
       })
       return null
     }
-
     return {
       ...compactionResult,
       postCompactTokenCount,

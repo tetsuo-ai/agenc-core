@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { logEvent } from 'src/services/analytics/index.js'
 import { extractHeredocs } from '../../../../utils/bash/heredoc.js'
 import { ParsedCommand } from '../../../../utils/bash/ParsedCommand.js'
@@ -10,7 +9,6 @@ import {
 } from '../../../../utils/bash/shellQuote.js'
 import type { TreeSitterAnalysis } from '../../../../utils/bash/treeSitterAnalysis.js'
 import type { PermissionResult } from '../../../../utils/permissions/PermissionResult.js'
-
 const HEREDOC_IN_SUBSTITUTION = /\$\(.*<</
 
 // Note: Backtick pattern is handled separately in validateDangerousPatterns
@@ -2569,7 +2567,6 @@ export async function bashCommandIsSafeAsync_DEPRECATED(
     validateZshDangerousCommands,
     validateMalformedTokenInjection,
   ]
-
   let deferredNonMisparsingResult: PermissionResult | null = null
   for (const validator of validators) {
     const result = validator(context)
@@ -2586,7 +2583,6 @@ export async function bashCommandIsSafeAsync_DEPRECATED(
   if (deferredNonMisparsingResult !== null) {
     return deferredNonMisparsingResult
   }
-
   return {
     behavior: 'passthrough',
     message: 'Command passed all security checks',

@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import type {
   ContentBlockParam,
@@ -132,7 +131,6 @@ import {
   runPostToolUseHooks,
   runPreToolUseHooks,
 } from './toolHooks.js'
-
 /** Minimum total hook duration (ms) to show inline timing summary */
 export const HOOK_TIMING_DISPLAY_THRESHOLD_MS = 500
 /** Log a debug warning when hooks/permission-decision block for this long. Matches
@@ -1727,7 +1725,6 @@ async function checkPermissionsAndCallTool(
 
     // Determine if this was a user interrupt
     const isInterrupt = error instanceof AbortError
-
     // Run PostToolUseFailure hooks
     const hookMessages: MessageUpdateLazy<
       AttachmentMessage | ProgressMessage<HookProgress>
@@ -1756,7 +1753,6 @@ async function checkPermissionsAndCallTool(
         delete hookChainsContext.hookChainsCanUseTool
       }
     }
-
     return [
       {
         message: createUserMessage({

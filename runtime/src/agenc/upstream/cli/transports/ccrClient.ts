@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { randomUUID } from 'crypto'
 import type {
   SDKPartialAssistantMessage,
@@ -30,7 +29,6 @@ import {
 } from './SerialBatchEventUploader.js'
 import type { SSETransport, StreamClientEvent } from './SSETransport.js'
 import { WorkerStateUploader } from './WorkerStateUploader.js'
-
 /** Default interval between heartbeat events (20s; server TTL is 60s). */
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 20_000
 
@@ -974,12 +972,10 @@ export class CCRClient {
   getWorkerEpoch(): number {
     return this.workerEpoch
   }
-
   /** Internal-event queue depth — shutdown-snapshot backpressure signal. */
   get internalEventsPending(): number {
     return this.internalEventUploader.pendingCount
   }
-
   /** Clean up uploaders and timers. */
   close(): void {
     this.closed = true

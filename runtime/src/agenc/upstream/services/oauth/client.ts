@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 // OAuth client for handling authentication flows with AgenC services
 import axios from 'axios'
 import {
@@ -32,7 +31,6 @@ import type {
   SubscriptionType,
   UserRolesResponse,
 } from './types.js'
-
 /**
  * Check if the user has AgenC.ai authentication scope
  * @private Only call this if you're OAuth / auth related code!
@@ -487,7 +485,6 @@ export async function populateOAuthAccountInfoIfNeeded(): Promise<boolean> {
   ) {
     return false
   }
-
   const tokens = getAgenCAIOAuthTokens()
   if (tokens?.accessToken) {
     const profile = await getOauthProfileFromOauthToken(tokens.accessToken)
@@ -515,7 +512,6 @@ export async function populateOAuthAccountInfoIfNeeded(): Promise<boolean> {
   }
   return false
 }
-
 export function storeOAuthAccountInfo({
   accountUuid,
   emailAddress,

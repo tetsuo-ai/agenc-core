@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import type {
   ToolResultBlockParam,
@@ -121,7 +120,6 @@ const taskSummaryModule = feature('BG_SESSIONS')
   ? (require('../../utils/taskSummary.js') as typeof import('../../utils/taskSummary.js'))
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
-
 function* yieldMissingToolResultBlocks(
   assistantMessages: AssistantMessage[],
   errorMessage: string,
@@ -1894,7 +1892,6 @@ async function* queryLoop(
     }
 
     queryCheckpoint('query_recursive_call')
-
     if (
       feature('CONVERSATION_ARC') &&
       getGlobalConfig().knowledgeGraphEnabled
@@ -1902,7 +1899,6 @@ async function* queryLoop(
       const { finalizeArcTurn } = await import('../../utils/conversationArc.js')
       finalizeArcTurn()
     }
-
     const next: State = {
       messages: [...messagesForQuery, ...assistantMessages, ...toolResults],
       toolUseContext: toolUseContextWithQueryTracking,

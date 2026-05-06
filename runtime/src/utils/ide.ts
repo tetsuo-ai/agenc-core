@@ -846,10 +846,12 @@ export function hasAccessToIDEExtensionDiffFeature(
   )
 }
 
+const PUBLIC_EXTENSION_ID = 'tetsuo-ai.agenc-code'
+const INTERNAL_EXTENSION_ID = 'tetsuo-ai.agenc-code-internal'
 const EXTENSION_ID =
   process.env.USER_TYPE === 'ant'
-    ? 'anthropic.agenc-code-internal'
-    : 'anthropic.agenc-code'
+    ? INTERNAL_EXTENSION_ID
+    : PUBLIC_EXTENSION_ID
 
 export async function isIDEExtensionInstalled(
   ideType: IdeType,
@@ -893,7 +895,7 @@ async function installIDEExtension(ideType: IdeType): Promise<string | null> {
         await sleep(500)
         const result = await execFileNoThrowWithCwd(
           command,
-          ['--force', '--install-extension', 'anthropic.agenc-code'],
+          ['--force', '--install-extension', PUBLIC_EXTENSION_ID],
           {
             env: getInstallationEnv(),
           },
@@ -943,7 +945,7 @@ async function getInstalledVSCodeExtensionVersion(
   const lines = stdout?.split('\n') || []
   for (const line of lines) {
     const [extensionId, version] = line.split('@')
-    if (extensionId === 'anthropic.agenc-code' && version) {
+    if (extensionId === PUBLIC_EXTENSION_ID && version) {
       return version
     }
   }

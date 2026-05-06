@@ -1,12 +1,10 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type {
   BetaContentBlock,
   BetaWebSearchTool20250305,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { getAPIProvider } from 'src/utils/model/providers.js'
 import type { PermissionResult } from 'src/utils/permissions/PermissionResult.js'
-
 import { z } from 'zod/v4'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { queryModelWithStreaming } from '../../services/api/claude.js'
@@ -862,10 +860,8 @@ export const WebSearchTool = buildTool({
         }
       }
     })
-
     formattedOutput +=
       '\nREMINDER: You MUST include the sources above in your response to the user using markdown hyperlinks.'
-
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',

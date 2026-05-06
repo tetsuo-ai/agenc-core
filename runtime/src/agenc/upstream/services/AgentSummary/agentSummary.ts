@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Periodic background summarization for coordinator mode sub-agents.
  *
@@ -11,7 +10,6 @@
  * to share the prompt cache. Tools are kept in the request for cache
  * key matching but denied via canUseTool callback.
  */
-
 import type { TaskContext } from '../../Task.js'
 import { updateAgentSummary } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { filterIncompleteToolCalls } from '../../tools/AgentTool/runAgent.js'
@@ -173,9 +171,7 @@ export function startAgentSummarization(
       summaryAbortController = null
     }
   }
-
   // Start the first timer
   scheduleNext()
-
   return { stop }
 }

@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 /**
  * Shared event metadata enrichment for analytics systems
@@ -7,7 +6,6 @@
  * This module provides a single source of truth for collecting and formatting
  * event metadata across all analytics systems (Datadog, 1P).
  */
-
 import { extname } from 'path'
 import memoize from 'lodash-es/memoize.js'
 import { env, getHostPlatformForAnalytics } from '../../../../utils/env.js'
@@ -948,7 +946,6 @@ export function to1PEventFormat(
       repository_owner_id: ghMeta.repositoryOwnerId,
     }
   }
-
   let auth: PublicApiAuth | undefined
   if (userMetadata.accountUuid || userMetadata.organizationUuid) {
     auth = {
@@ -956,7 +953,6 @@ export function to1PEventFormat(
       organization_uuid: userMetadata.organizationUuid,
     }
   }
-
   return {
     env,
     ...(processMetrics && {

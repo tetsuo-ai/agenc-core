@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import {
   discoverAuthorizationServerMetadata,
   discoverOAuthServerInfo,
@@ -60,7 +59,6 @@ import {
   getXaaIdpSettings,
   isXaaEnabled,
 } from './xaaIdpLogin.js'
-
 /**
  * Timeout for individual OAuth requests (metadata discovery, token refresh, etc.)
  */
@@ -2494,7 +2492,6 @@ export function clearMcpClientConfig(
     storage.update(existingData)
   }
 }
-
 export function getMcpClientConfig(
   serverName: string,
   serverConfig: McpSSEServerConfig | McpHTTPServerConfig,
@@ -2504,7 +2501,6 @@ export function getMcpClientConfig(
   const serverKey = getServerKey(serverName, serverConfig)
   return data?.mcpOAuthClientConfig?.[serverKey]
 }
-
 /**
  * Safely extracts scope information from AuthorizationServerMetadata.
  * The metadata can be either OAuthMetadata or OpenIdProviderDiscoveryMetadata,

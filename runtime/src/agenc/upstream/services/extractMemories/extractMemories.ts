@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Extracts durable memories from the current session transcript
  * and writes them to the auto-memory directory (~/.agenc/projects/<path>/memory/).
@@ -14,7 +13,6 @@
  * following the same pattern as confidenceRating.ts. Tests call
  * initExtractMemories() in beforeEach to get a fresh closure.
  */
-
 import { feature } from 'bun:bundle'
 import { basename } from 'path'
 import { getIsRemoteMode } from '../../bootstrap/state.js'
@@ -591,7 +589,6 @@ export function initExtractMemories(): void {
 // ============================================================================
 // Public API
 // ============================================================================
-
 /**
  * Run memory extraction at the end of a query loop.
  * Called fire-and-forget from handleStopHooks, alongside prompt suggestion/coaching.
@@ -603,7 +600,6 @@ export async function executeExtractMemories(
 ): Promise<void> {
   await extractor?.(context, appendSystemMessage)
 }
-
 /**
  * Awaits all in-flight extractions (including trailing stashed runs) with a
  * soft timeout. Called by print.ts after the response is flushed but before

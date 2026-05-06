@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * XAA IdP Login — acquires an OIDC id_token from an enterprise IdP via the
  * standard authorization_code + PKCE flow, then caches it by IdP issuer.
@@ -7,7 +6,6 @@
  * This is the "one browser pop" in the XAA value prop: one IdP login → N silent
  * MCP server auths. The id_token is cached in the keychain and reused until expiry.
  */
-
 import {
   exchangeAuthorization,
   startAuthorization,
@@ -478,12 +476,10 @@ export async function acquireIdpIdToken(
   const expiresAt = expFromJwt
     ? expFromJwt * 1000
     : Date.now() + (tokens.expires_in ?? 3600) * 1000
-
   saveIdpIdToken(idpIssuer, tokens.id_token, expiresAt)
   logMCPDebug(
     'xaa',
     `Cached id_token for ${idpIssuer} (expires ${new Date(expiresAt).toISOString()})`,
   )
-
   return tokens.id_token
 }

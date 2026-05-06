@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import React from 'react';
@@ -13,7 +12,6 @@ import type { ProgressMessage } from '../../types/message.js';
 import { FILE_NOT_FOUND_CWD_NOTE, getDisplayPath } from '../../../../utils/file.js';
 import { truncate } from '../../../../utils/format.js';
 import { extractTag } from '../../../../utils/messages.js';
-
 // Reusable component for search result summaries
 function SearchResultSummary(t0) {
   const $ = _c(26);
@@ -182,7 +180,6 @@ export function renderToolResultMessage({
   if (mode === 'count') {
     return <SearchResultSummary count={numMatches ?? 0} countLabel="matches" secondaryCount={numFiles} secondaryLabel="files" content={content} verbose={verbose} />;
   }
-
   // files_with_matches mode
   const fileListContent = filenames.map(filename => filename).join('\n');
   return <SearchResultSummary count={numFiles} countLabel="files" content={fileListContent} verbose={verbose} />;

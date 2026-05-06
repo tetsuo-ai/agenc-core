@@ -1,12 +1,10 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Tool Use Summary Generator
  *
  * Generates human-readable summaries of completed tool batches using Haiku.
  * Used by the SDK to provide high-level progress updates to clients.
  */
-
 import { E_TOOL_USE_SUMMARY_GENERATION_FAILED } from '../../../../constants/errorIds.js'
 import { toError } from '../../../../utils/errors.js'
 import { logError } from '../../../../utils/log.js'
@@ -87,7 +85,6 @@ export async function generateToolUseSummary({
       .map(block => (block.type === 'text' ? block.text : ''))
       .join('')
       .trim()
-
     return summary || null
   } catch (error) {
     // Log but don't fail - summaries are non-critical
@@ -97,7 +94,6 @@ export async function generateToolUseSummary({
     return null
   }
 }
-
 /**
  * Truncates a JSON value to a maximum length for the prompt.
  */

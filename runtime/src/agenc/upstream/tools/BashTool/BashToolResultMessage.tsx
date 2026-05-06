@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { removeSandboxViolationTags } from 'src/utils/sandbox/sandbox-ui-utils.js';
@@ -15,7 +14,6 @@ type Props = {
   verbose: boolean;
   timeoutMs?: number;
 };
-
 // Pattern to match "Shell cwd was reset to <path>" message
 // Use (?:^|\n) to match either start of string or after a newline
 const SHELL_CWD_RESET_PATTERN = /(?:^|\n)(Shell cwd was reset to .+)$/;
@@ -40,7 +38,6 @@ function extractSandboxViolations(stderr: string): {
     cleanedStderr
   };
 }
-
 /**
  * Extracts the "Shell cwd was reset" warning message from stderr
  * Returns the cleaned stderr and the warning message separately
@@ -56,7 +53,6 @@ function extractCwdResetWarning(stderr: string): {
       cwdResetWarning: null
     };
   }
-
   // Extract the warning message from capture group 1
   const cwdResetWarning = match[1] ?? null;
   // Remove the warning from stderr (replace the full match)

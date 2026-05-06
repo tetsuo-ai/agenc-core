@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import * as React from 'react';
@@ -23,7 +22,6 @@ import type { BashProgress, BashToolInput, Out } from './BashTool.js';
 import BashToolResultMessage from './BashToolResultMessage.js';
 import { extractBashCommentLabel } from './commentLabel.js';
 import { parseSedEditCommand } from './sedEditParser.js';
-
 // Constants for command display
 const MAX_COMMAND_DISPLAY_LINES = 2;
 const MAX_COMMAND_DISPLAY_CHARS = 160;
@@ -115,12 +113,10 @@ export function renderToolUseMessage(input: Partial<BashToolInput>, {
     const needsCharTruncation = command.length > MAX_COMMAND_DISPLAY_CHARS;
     if (needsLineTruncation || needsCharTruncation) {
       let truncated = command;
-
       // First truncate by lines if needed
       if (needsLineTruncation) {
         truncated = lines.slice(0, MAX_COMMAND_DISPLAY_LINES).join('\n');
       }
-
       // Then truncate by chars if still too long
       if (truncated.length > MAX_COMMAND_DISPLAY_CHARS) {
         truncated = truncated.slice(0, MAX_COMMAND_DISPLAY_CHARS);

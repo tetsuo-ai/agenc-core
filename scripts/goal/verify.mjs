@@ -31,6 +31,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 import { findItem, repoRoot, mainCheckoutRoot, fail } from "./checklist-utils.mjs";
 import {
   SHIM_BEHAVIOR_RATIO_LIMIT,
@@ -2136,50 +2137,16 @@ const upstreamNumstatRes = git(
   "--",
   "runtime/src/agenc/upstream",
 );
-const upstreamBoundaryDiffRes = git(
-  "diff",
-  "--unified=0",
-  "main...HEAD",
-  "--",
-  "runtime/src/agenc/upstream",
-);
-const upstreamBoundaryAdditionCounts = new Map();
-let upstreamBoundaryDiffFile = null;
-for (const line of upstreamBoundaryDiffRes.stdout.split("\n")) {
-  if (line.startsWith("+++ b/")) {
-    upstreamBoundaryDiffFile = line.slice("+++ b/".length);
-    continue;
-  }
-  if (!upstreamBoundaryDiffFile || line.startsWith("+++") || !line.startsWith("+")) continue;
-  const addedLine = line.slice(1).trim();
-  if (
-    addedLine === "// @ts-nocheck" ||
-    addedLine === "// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed."
-  ) {
-    upstreamBoundaryAdditionCounts.set(
-      upstreamBoundaryDiffFile,
-      (upstreamBoundaryAdditionCounts.get(upstreamBoundaryDiffFile) ?? 0) + 1,
-    );
-  }
-}
 const upstreamGrowth = upstreamNumstatRes.stdout
   .split("\n")
   .map((line) => line.trim())
   .filter(Boolean)
   .map((line) => {
     const [addedText, deletedText, file] = line.split("\t");
-    const added = Number.parseInt(addedText ?? "0", 10);
-    const deleted = Number.parseInt(deletedText ?? "0", 10);
-    const neutralBoundaryAdds =
-      id === "Z-PURGEA"
-        ? upstreamBoundaryAdditionCounts.get(file ?? "") ?? 0
-        : 0;
     return {
-      added,
-      deleted,
-      effectiveAdded: added - neutralBoundaryAdds,
+      added: Number.parseInt(addedText ?? "0", 10),
+      deleted: Number.parseInt(deletedText ?? "0", 10),
       file: file ?? "",
-      neutralBoundaryAdds,
     };
   })
   .filter((row) =>
@@ -2187,14 +2154,14 @@ const upstreamGrowth = upstreamNumstatRes.stdout
     Number.isFinite(row.deleted) &&
     row.file.startsWith("runtime/src/agenc/upstream/") &&
     !added.has(row.file) &&
-    row.effectiveAdded > row.deleted,
+    row.added > row.deleted,
   );
 if (upstreamGrowth.length > 0) {
   failGate(
     `forbidden: existing runtime/src/agenc/upstream/ file(s) have net-positive line growth. ` +
       `Absorb items may delete upstream files or rewrite imports, but must not grow the mirror.\n  ` +
       upstreamGrowth
-        .map((row) => `- ${row.file} (+${row.added}/-${row.deleted}, neutral boundary +${row.neutralBoundaryAdds})`)
+        .map((row) => `- ${row.file} (+${row.added}/-${row.deleted})`)
         .join("\n  "),
   );
 }
@@ -7262,6 +7229,143 @@ function writeBaseline(p, count) {
   );
 }
 
+async function assertZPurgeATsupAliasBoundaries() {
+  const root = repoRoot();
+  const configPath = path.join(root, "runtime/tsup.config.ts");
+  const configText = readFileSync(configPath, "utf8");
+  if (configText.includes("relocatedSourcePathAliases")) {
+    failGate(
+      "Z-PURGEA: tsup relocatedSourcePathAliases survived after their upstream tui/components and tui/buddy roots were purged",
+    );
+  }
+
+  const configModule = await import(pathToFileURL(configPath).href);
+  const helper = configModule.__agencTsupAliasTest;
+  if (!helper) {
+    failGate("Z-PURGEA: tsup config does not export __agencTsupAliasTest for alias drift checks");
+  }
+
+  const toRepoRel = (file) => path.relative(root, file).split(path.sep).join("/");
+  const expectResolution = (label, importerRel, source, expectedRel) => {
+    const resolved = helper.resolveRelativeAgenCSource(path.join(root, importerRel), source);
+    const actualRel = resolved ? toRepoRel(resolved) : null;
+    if (actualRel !== expectedRel) {
+      failGate(
+        `Z-PURGEA: tsup alias resolution failed for ${label}; expected ${expectedRel}, got ${actualRel ?? "null"}`,
+      );
+    }
+  };
+
+  const movedBoundaryPrefixes = [
+    "// @ts-nocheck\n" +
+      "// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.\n",
+    "// @ts-nocheck\n" +
+      "// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.\n",
+    "// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.\n",
+  ];
+  const expectedRelocatedRoots = new Map([
+    ["runtime/src/utils", "runtime/src/agenc/upstream/utils"],
+    ["runtime/src/constants", "runtime/src/agenc/upstream/constants"],
+    ["runtime/src/memdir", "runtime/src/agenc/upstream/memdir"],
+  ]);
+  for (const alias of helper.relocatedUpstreamRoots) {
+    const runtimeRel = toRepoRel(alias.runtimeRoot);
+    const upstreamRel = toRepoRel(alias.upstreamRoot);
+    if (expectedRelocatedRoots.get(runtimeRel) !== upstreamRel) {
+      failGate(`Z-PURGEA: unexpected relocated upstream root alias ${runtimeRel} -> ${upstreamRel}`);
+    }
+    const boundaryFiles = walkFiles(alias.runtimeRoot).filter((f) => {
+      if (!/\.(ts|tsx|mts|cts)$/.test(f)) return false;
+      const source = readFileSync(f, "utf8");
+      return movedBoundaryPrefixes.some((prefix) => source.startsWith(prefix));
+    });
+    if (boundaryFiles.length === 0) {
+      failGate(
+        `Z-PURGEA: relocated upstream root alias ${runtimeRel} has no documented temporary boundary files`,
+      );
+    }
+  }
+  if (helper.relocatedUpstreamRoots.length !== expectedRelocatedRoots.size) {
+    failGate("Z-PURGEA: relocated upstream root alias count changed without updating the gate");
+  }
+
+  const expectedFileBaseAliases = new Map([
+    ["runtime/src/tools/Tool", "runtime/src/agenc/upstream/Tool"],
+    ["runtime/src/agenc/upstream/tools/Tool", "runtime/src/agenc/upstream/Tool"],
+    ["runtime/src/agenc/upstream/tasks/Task", "runtime/src/agenc/upstream/Task"],
+  ]);
+  for (const alias of helper.sourceFileBaseAliases) {
+    const runtimeRel = toRepoRel(alias.runtimeBase);
+    const upstreamRel = toRepoRel(alias.upstreamBase);
+    if (expectedFileBaseAliases.get(runtimeRel) !== upstreamRel) {
+      failGate(`Z-PURGEA: unexpected source file-base alias ${runtimeRel} -> ${upstreamRel}`);
+    }
+    for (const ext of [".ts", ".tsx", ".js", ".jsx"]) {
+      if (existsSync(`${alias.runtimeBase}${ext}`)) {
+        failGate(
+          `Z-PURGEA: source file-base alias ${runtimeRel} is stale because ${runtimeRel}${ext} now exists`,
+        );
+      }
+    }
+  }
+  if (helper.sourceFileBaseAliases.length !== expectedFileBaseAliases.size) {
+    failGate("Z-PURGEA: source file-base alias count changed without updating the gate");
+  }
+
+  const expectedTuiRoots = new Set([
+    "runtime/src/tui/components",
+    "runtime/src/tui/context",
+    "runtime/src/tui/hooks",
+  ]);
+  for (const rootAlias of helper.relocatedTuiSourceRoots) {
+    const rootRel = toRepoRel(rootAlias);
+    if (!expectedTuiRoots.has(rootRel)) {
+      failGate(`Z-PURGEA: unexpected relocated TUI source root alias ${rootRel}`);
+    }
+  }
+  if (helper.relocatedTuiSourceRoots.length !== expectedTuiRoots.size) {
+    failGate("Z-PURGEA: relocated TUI source root alias count changed without updating the gate");
+  }
+
+  expectResolution(
+    "moved utility to upstream bootstrap",
+    "runtime/src/utils/attribution.ts",
+    "../bootstrap/state.js",
+    "runtime/src/agenc/upstream/bootstrap/state.ts",
+  );
+  expectResolution(
+    "moved constants to upstream Tool file-base",
+    "runtime/src/constants/prompts.ts",
+    "../tools/Tool.js",
+    "runtime/src/agenc/upstream/Tool.ts",
+  );
+  expectResolution(
+    "moved utility to upstream Task file-base",
+    "runtime/src/utils/attachments.ts",
+    "../tasks/Task.js",
+    "runtime/src/agenc/upstream/Task.ts",
+  );
+
+  const tuiImporter = path.join(root, "runtime/src/tui/components/PromptInput/PromptInput.tsx");
+  const tuiSourceRoot = helper.sourceRootForImporter(tuiImporter);
+  if (!tuiSourceRoot || toRepoRel(tuiSourceRoot) !== "runtime/src/tui/components") {
+    failGate(
+      `Z-PURGEA: tsup did not classify moved TUI importer; got ${tuiSourceRoot ? toRepoRel(tuiSourceRoot) : "null"}`,
+    );
+  }
+  const bareSrcResolved = helper.resolveAgenCBareSrc(
+    "src/components/FeedbackSurvey/FeedbackSurvey.js",
+  );
+  const bareSrcRel = bareSrcResolved ? toRepoRel(bareSrcResolved) : null;
+  if (bareSrcRel !== "runtime/src/tui/components/FeedbackSurvey/FeedbackSurvey.tsx") {
+    failGate(
+      `Z-PURGEA: tsup bare src TUI alias failed; expected runtime/src/tui/components/FeedbackSurvey/FeedbackSurvey.tsx, got ${bareSrcRel ?? "null"}`,
+    );
+  }
+
+  pass("Z-PURGEA: tsup temporary alias boundaries and direct resolver cases verified");
+}
+
 async function cleanupGates(item) {
   // Recognized cleanup IDs. Anything outside this set must fail rather than
   // silently no-op through the function with no checks fired.
@@ -7343,9 +7447,11 @@ async function cleanupGates(item) {
       "runtime/src/tui",
       "runtime/src/memdir",
     ];
-    const transitiveBoundaryPrefix =
+    const transitiveBoundaryPrefixes = [
       "// @ts-nocheck\n" +
-      "// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.\n";
+        "// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.\n",
+      "// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.\n",
+    ];
     const transitiveUnchecked = transitiveBoundaryRoots.flatMap((dir) => {
       const abs = path.join(root, dir);
       return existsSync(abs)
@@ -7356,7 +7462,9 @@ async function cleanupGates(item) {
         : [];
     });
     const undocumentedTransitiveUnchecked = transitiveUnchecked.filter((f) =>
-      !readFileSync(f, "utf8").startsWith(transitiveBoundaryPrefix),
+      !transitiveBoundaryPrefixes.some((prefix) =>
+        readFileSync(f, "utf8").startsWith(prefix),
+      ),
     );
     if (undocumentedTransitiveUnchecked.length > 0) {
       failGate(
@@ -7370,11 +7478,19 @@ async function cleanupGates(item) {
 
     const bannedMovedPatterns = [
       /github\.com\/anthropics\/agenc-code/i,
+      /github\.com\/Gitlawb\/agenc/i,
       /raw\.githubusercontent\.com\/anthropics\/agenc-code/i,
+      /raw\.githubusercontent\.com\/anthropics\/agenc-plugins-official/i,
       /anthropics\/agenc-code/i,
+      /anthropics\/agenc-plugins-official/i,
       /@anthropic-ai\/agenc-code/i,
+      /support\.anthropic\.com/i,
+      /noreply@anthropic\.com/i,
+      /agencusercontent\.com/i,
+      /anthropic\.agenc-code(?:-internal)?/i,
       /https:\/\/(?:code|platform|downloads)\.agenc\./i,
-      /https:\/\/agenc\.(?:ai|com)\b/i,
+      /agenc\.dev\b/i,
+      /https:\/\/agenc\.(?:ai|com|dev)\b/i,
       /mcp__claude-in-chrome__/i,
       /claude-in-chrome/i, // branding-scan: allow verifier rejects stale donor MCP prefix
       /com\.anthropic\.agenc/i,
@@ -7395,6 +7511,31 @@ async function cleanupGates(item) {
       );
     }
     pass("Z-PURGEA: moved utils/constants donor/domain sweep clean");
+    await assertZPurgeATsupAliasBoundaries();
+    const movedDonorTests = walkFiles(path.join(root, "runtime/src"))
+      .filter((file) =>
+        /runtime\/src\/(?:utils|constants)\/.*\.test\.(ts|tsx)$/.test(file.split(path.sep).join("/"))
+      );
+    const vitestConfigSource = readFileSync(path.join(root, "runtime/vitest.config.ts"), "utf8");
+    if (
+      movedDonorTests.length > 0 &&
+      !vitestConfigSource.includes("movedDonorTestFiles")
+    ) {
+      failGate("Z-PURGEA: moved donor-origin tests are not explicitly quarantined from Vitest");
+    }
+    pass(`Z-PURGEA: moved donor-origin test quarantine documented for ${movedDonorTests.length} file(s)`);
+    const movedRuntimeProbe = run("npm", [
+      "test",
+      "--workspace",
+      "@tetsuo-ai/runtime",
+      "--",
+      "--run",
+      "tests/zpurgea-importability.test.ts",
+    ]);
+    if (movedRuntimeProbe.status !== 0) {
+      failGate("Z-PURGEA: moved utility Vitest/importability probe failed");
+    }
+    pass("Z-PURGEA: moved utility Vitest/importability probe passed");
     return;
   }
   if (id === "Z-PURGEB") {

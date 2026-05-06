@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { z } from 'zod/v4'
 import { isReplBridgeActive } from '../../bootstrap/state.js'
@@ -44,7 +43,6 @@ import { resumeAgentBackground } from '../AgentTool/resumeAgent.js'
 import { SEND_MESSAGE_TOOL_NAME } from './constants.js'
 import { DESCRIPTION, getPrompt } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
-
 const StructuredMessage = lazySchema(() =>
   z.discriminatedUnion('type', [
     z.object({
@@ -903,7 +901,6 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
       if (input.to === '*') {
         throw new Error('structured messages cannot be broadcast')
       }
-
       switch (input.message.type) {
         case 'shutdown_request':
           return handleShutdownRequest(input.to, input.message.reason, context)
@@ -931,7 +928,6 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
           )
       }
     },
-
     renderToolUseMessage,
     renderToolResultMessage,
   } satisfies ToolDef<InputSchema, SendMessageToolOutput>)

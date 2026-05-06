@@ -18,12 +18,13 @@ import { getFsImplementation } from '../fsOperations.js'
 import { logError } from '../log.js'
 import { jsonParse, jsonStringify } from '../slowOperations.js'
 import { classifyFetchError, logPluginFetch } from './fetchTelemetry.js'
+import { OFFICIAL_MARKETPLACE_REPO } from './officialMarketplace.js'
 import { getPluginsDirectory } from './pluginDirectories.js'
 
 const INSTALL_COUNTS_CACHE_VERSION = 1
 const INSTALL_COUNTS_CACHE_FILENAME = 'install-counts-cache.json'
 const INSTALL_COUNTS_URL =
-  'https://raw.githubusercontent.com/anthropics/agenc-plugins-official/refs/heads/stats/stats/plugin-installs.json'
+  `https://raw.githubusercontent.com/${OFFICIAL_MARKETPLACE_REPO}/refs/heads/stats/stats/plugin-installs.json`
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000 // 24 hours in milliseconds
 
 /**

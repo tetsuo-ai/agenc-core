@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ToolUseBlock } from '@anthropic-ai/sdk/resources';
 import { getRemoteSessionUrl } from '../../../../constants/product.js';
 import { OUTPUT_FILE_TAG, REMOTE_REVIEW_PROGRESS_TAG, REMOTE_REVIEW_TAG, STATUS_TAG, SUMMARY_TAG, TASK_ID_TAG, TASK_NOTIFICATION_TAG, TASK_TYPE_TAG, TOOL_USE_ID_TAG, ULTRAPLAN_TAG } from '../../../../constants/xml.js';
@@ -70,7 +69,6 @@ export type AutofixPrRemoteTaskMetadata = {
   prNumber: number;
 };
 export type RemoteTaskMetadata = AutofixPrRemoteTaskMetadata;
-
 /**
  * Called on every poll tick for tasks with a matching remoteTaskType. Return a
  * non-null string to complete the task (string becomes the notification text),
@@ -830,7 +828,6 @@ export const RemoteAgentTask: Task = {
         endTime: Date.now()
       };
     });
-
     // Close the task_started bookend for SDK consumers. The poll loop's
     // early-return when status!=='running' won't emit a notification.
     if (killed) {
@@ -848,7 +845,6 @@ export const RemoteAgentTask: Task = {
     logForDebugging(`RemoteAgentTask ${taskId} killed, archiving session ${sessionId ?? 'unknown'}`);
   }
 };
-
 /**
  * Get the session URL for a remote task.
  */

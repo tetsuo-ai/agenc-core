@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import * as path from 'path'
 import { pathToFileURL } from 'url'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -43,7 +42,6 @@ export type LSPServerManager = {
   /** Check if a file is already open on a compatible LSP server */
   isFileOpen(filePath: string): boolean
 }
-
 /**
  * Creates an LSP server manager instance.
  *
@@ -400,12 +398,10 @@ export function createLSPServerManager(): LSPServerManager {
       throw err
     }
   }
-
   function isFileOpen(filePath: string): boolean {
     const fileUri = pathToFileURL(path.resolve(filePath)).href
     return openedFiles.has(fileUri)
   }
-
   return {
     initialize,
     shutdown,

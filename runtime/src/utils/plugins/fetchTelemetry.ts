@@ -17,7 +17,7 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS as SafeString,
 // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 } from '../../services/analytics/index.js'
-import { OFFICIAL_MARKETPLACE_NAME } from './officialMarketplace.js'
+import { OFFICIAL_MARKETPLACE_REPO } from './officialMarketplace.js'
 
 export type PluginFetchSource =
   | 'install_counts'
@@ -69,12 +69,12 @@ function extractHost(urlOrSpec: string): string {
 }
 
 /**
- * True if the URL/spec points at anthropics/agenc-plugins-official — the
- * repo GitHub complained about. Lets the dashboard separate "our problem"
- * traffic from user-configured marketplaces.
+ * True if the URL/spec points at the AgenC-owned official marketplace.
+ * This lets the dashboard separate first-party traffic from user-configured
+ * marketplaces.
  */
 function isOfficialRepo(urlOrSpec: string): boolean {
-  return urlOrSpec.includes(`anthropics/${OFFICIAL_MARKETPLACE_NAME}`)
+  return urlOrSpec.includes(OFFICIAL_MARKETPLACE_REPO)
 }
 
 export function logPluginFetch(

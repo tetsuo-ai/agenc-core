@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import * as React from 'react';
 import { Markdown } from '../../../../tui/components/markdown/Markdown.js';
 import { MessageResponse } from 'src/components/MessageResponse.js';
@@ -28,7 +27,6 @@ export function renderToolResultMessage(output: Output, _progressMessagesForMess
   const isEmpty = !plan || plan.trim() === '';
   const displayPath = filePath ? getDisplayPath(filePath) : '';
   const awaitingLeaderApproval = output.awaitingLeaderApproval;
-
   // Simplified message for empty plans
   if (isEmpty) {
     return <Box flexDirection="column" marginTop={1}>
@@ -38,7 +36,6 @@ export function renderToolResultMessage(output: Output, _progressMessagesForMess
         </Box>
       </Box>;
   }
-
   // When awaiting leader approval, show a different message
   if (awaitingLeaderApproval) {
     return <Box flexDirection="column" marginTop={1}>

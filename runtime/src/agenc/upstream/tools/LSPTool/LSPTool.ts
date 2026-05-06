@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { open } from 'fs/promises'
 import * as path from 'path'
 import { pathToFileURL } from 'url'
@@ -51,7 +50,6 @@ import {
   renderToolUseMessage,
   userFacingName,
 } from './UI.js'
-
 const MAX_LSP_FILE_SIZE_BYTES = 10_000_000
 
 /**
@@ -838,7 +836,6 @@ function countUniqueFilesFromCallItems(items: CallHierarchyItem[]): number {
   const validUris = items.map(item => item.uri).filter(uri => uri)
   return new Set(validUris).size
 }
-
 /**
  * Counts unique files from CallHierarchyIncomingCall array
  * Filters out calls with undefined URIs
@@ -849,7 +846,6 @@ function countUniqueFilesFromIncomingCalls(
   const validUris = calls.map(call => call.from?.uri).filter(uri => uri)
   return new Set(validUris).size
 }
-
 /**
  * Counts unique files from CallHierarchyOutgoingCall array
  * Filters out calls with undefined URIs

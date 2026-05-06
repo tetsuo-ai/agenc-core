@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Shared transport-layer helpers for bridge message handling.
  *
@@ -11,7 +10,6 @@
  * collaborators (transport, sessionId, UUID sets, callbacks) are passed
  * as params.
  */
-
 import { randomUUID } from 'crypto'
 import type { SDKMessage } from '../entrypoints/agentSdkTypes.js'
 import type {
@@ -450,11 +448,9 @@ export class BoundedUUIDSet {
     this.set.add(uuid)
     this.writeIdx = (this.writeIdx + 1) % this.capacity
   }
-
   has(uuid: string): boolean {
     return this.set.has(uuid)
   }
-
   clear(): void {
     this.set.clear()
     this.ring.fill(undefined)

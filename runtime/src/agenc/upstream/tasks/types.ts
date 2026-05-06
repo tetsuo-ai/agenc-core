@@ -1,8 +1,6 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 // Union of all concrete task state types
 // Use this for components that need to work with any task type
-
 import type { DreamTaskState } from './DreamTask/DreamTask.js'
 import type { InProcessTeammateTaskState } from './InProcessTeammateTask/types.js'
 import type { LocalAgentTaskState } from './LocalAgentTask/LocalAgentTask.js'
@@ -19,7 +17,6 @@ export type TaskState =
   | LocalWorkflowTaskState
   | MonitorMcpTaskState
   | DreamTaskState
-
 // Task types that can appear in the background tasks indicator
 export type BackgroundTaskState =
   | LocalShellTaskState
@@ -29,7 +26,6 @@ export type BackgroundTaskState =
   | LocalWorkflowTaskState
   | MonitorMcpTaskState
   | DreamTaskState
-
 /**
  * Check if a task should be shown in the background tasks indicator.
  * A task is considered a background task if:

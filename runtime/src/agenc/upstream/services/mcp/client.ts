@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import type {
   Base64ImageSource,
@@ -115,7 +114,6 @@ import {
 import { buildMcpToolName } from './mcpStringUtils.js'
 import { normalizeNameForMCP } from './normalization.js'
 import { getLoggingSafeMcpBaseUrl } from './utils.js'
-
 /* eslint-disable @typescript-eslint/no-require-imports */
 const fetchMcpSkillsForClient = feature('MCP_SKILLS')
   ? (
@@ -3398,7 +3396,6 @@ export async function setupSdkMcpClients(
       }
     }),
   )
-
   // Process results and collect clients and tools
   for (const result of results) {
     if (result.status === 'fulfilled') {
@@ -3407,6 +3404,5 @@ export async function setupSdkMcpClients(
     }
     // If rejected (unexpected), the error was already logged inside the promise
   }
-
   return { clients, tools }
 }

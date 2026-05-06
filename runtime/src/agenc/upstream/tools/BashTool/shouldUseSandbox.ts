@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import { splitCommand_DEPRECATED } from '../../../../utils/bash/commands.js'
 import { SandboxManager } from '../../../../utils/sandbox/sandbox-runtime.js'
@@ -11,7 +10,6 @@ import {
   stripAllLeadingEnvVars,
   stripSafeWrappers,
 } from './bashPermissions.js'
-
 type SandboxInput = {
   command?: string
   dangerouslyDisableSandbox?: boolean
@@ -159,11 +157,9 @@ export function shouldUseSandbox(input: Partial<SandboxInput>): boolean {
   if (!input.command) {
     return false
   }
-
   // Don't sandbox if the command contains user-configured excluded commands
   if (containsExcludedCommand(input.command)) {
     return false
   }
-
   return true
 }

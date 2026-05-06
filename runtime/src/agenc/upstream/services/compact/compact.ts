@@ -1,9 +1,7 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import type { UUID } from 'crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
-
 /* eslint-disable @typescript-eslint/no-require-imports */
 const sessionTranscriptModule = feature('KAIROS')
   ? (require('../sessionTranscript/sessionTranscript.js') as typeof import('../sessionTranscript/sessionTranscript.js'))
@@ -1703,13 +1701,11 @@ function shouldExcludeFromPostCompactRestore(
     for (const path of getProjectInstructionFilePaths(getOriginalCwd())) {
       normalizedMemoryPaths.add(expandPath(path))
     }
-
     if (normalizedMemoryPaths.has(normalizedFilename)) {
       return true
     }
   } catch {
     // If we can't get memory paths, continue
   }
-
   return false
 }

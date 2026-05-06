@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 // Background memory consolidation. Fires the /dream prompt as a forked
 // subagent when time-gate passes AND enough sessions have accumulated.
@@ -11,7 +10,6 @@
 //
 // State is closure-scoped inside initAutoDream() rather than module-level
 // (tests call initAutoDream() in beforeEach for a fresh closure).
-
 import type { REPLHookContext } from '../../../../utils/hooks/postSamplingHooks.js'
 import {
   createCacheSafeParams,
@@ -273,7 +271,6 @@ ${sessionIds.map(id => `- ${id}`).join('\n')}`
     }
   }
 }
-
 /**
  * Watch the forked agent's messages. For each assistant turn, extracts any
  * text blocks (the agent's reasoning/summary — what the user wants to see)
@@ -313,7 +310,6 @@ function makeDreamProgressWatcher(
     )
   }
 }
-
 /**
  * Entry point from stopHooks. No-op until initAutoDream() has been called.
  * Per-turn cost when enabled: one GB cache read + one stat.

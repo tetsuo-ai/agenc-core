@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { Ajv } from 'ajv'
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef, type ValidationResult } from '../../Tool.js'
@@ -12,7 +11,6 @@ import {
   renderToolUseMessage,
   renderToolUseProgressMessage,
 } from './UI.js'
-
 // Allow any input object since MCP tools define their own schemas
 export const inputSchema = lazySchema(() => z.object({}).passthrough())
 type InputSchema = ReturnType<typeof inputSchema>
@@ -56,7 +54,6 @@ function getCompiledValidator(schema: object) {
   }
   return validator
 }
-
 export const MCPTool = buildTool({
   isMcp: true,
   // Overridden in mcpClient.ts with the real MCP tool name + args
@@ -153,4 +150,3 @@ export const MCPTool = buildTool({
     }
   },
 } satisfies ToolDef<InputSchema, Output>)
-

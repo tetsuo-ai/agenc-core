@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { relative } from 'path'
 import type {
   CallHierarchyIncomingCall,
@@ -17,7 +16,6 @@ import type {
 import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage } from '../../../../utils/errors.js'
 import { plural } from '../../../../utils/stringUtils.js'
-
 /**
  * Formats a URI by converting it to a relative path if possible.
  * Handles URI decoding and gracefully falls back to un-decoded path if malformed.
@@ -585,10 +583,8 @@ export function formatOutgoingCallsResult(
           .join(', ')
         callLine += ` [called from: ${callSites}]`
       }
-
       lines.push(callLine)
     }
   }
-
   return lines.join('\n')
 }

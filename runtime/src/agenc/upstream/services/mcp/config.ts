@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { chmod, open, rename, stat, unlink } from 'fs/promises'
 import mapValues from 'lodash-es/mapValues.js'
@@ -57,7 +56,6 @@ import {
   type ScopedMcpServerConfig,
 } from './types.js'
 import { getProjectMcpServerStatus } from './utils.js'
-
 /**
  * Get the path to the managed MCP configuration file
  */
@@ -1563,13 +1561,11 @@ export function setMcpServerEnabled(name: string, enabled: boolean): void {
       if (next === prev) return current
       return { ...current, enabledMcpServers: next }
     }
-
     const prev = current.disabledMcpServers || []
     const next = toggleMembership(prev, name, !enabled)
     if (next === prev) return current
     return { ...current, disabledMcpServers: next }
   })
-
   if (isBuiltinStateChange) {
     logEvent('tengu_builtin_mcp_toggle', {
       serverName:

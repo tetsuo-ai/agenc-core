@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * PowerShell-specific path validation for command arguments.
  *
@@ -7,7 +6,6 @@
  * and validates they stay within allowed project directories.
  * Follows the same patterns as BashTool/pathValidation.ts.
  */
-
 import { homedir } from 'os'
 import { isAbsolute, resolve } from 'path'
 import type { ToolPermissionContext } from '../../Tool.js'
@@ -2024,7 +2022,6 @@ function checkPathConstraintsForStatement(
             decisionReason,
           }
         }
-
         firstAsk ??= {
           behavior: 'ask',
           message,
@@ -2041,7 +2038,6 @@ function checkPathConstraintsForStatement(
       }
     }
   }
-
   return (
     firstAsk ?? {
       behavior: 'passthrough',

@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import React from 'react';
@@ -22,7 +21,6 @@ export function renderToolResultMessage(output: Output, _progressMessages: Progr
   if (!output.message && !hasAttachments) {
     return null;
   }
-
   // In transcript mode (ctrl+o), model text is NOT filtered — keep the ⏺ so
   // SendUserMessage is visually distinct from the surrounding text blocks.
   if (options?.isTranscriptMode) {
@@ -36,7 +34,6 @@ export function renderToolResultMessage(output: Output, _progressMessages: Progr
         </Box>
       </Box>;
   }
-
   // Brief-only (chat) view: "AgenC" label + 2-col indent, matching the "You"
   // label UserPromptMessage applies to user input (#20889). The "N in background"
   // spinner status lives in BriefSpinner (Spinner.tsx) — stateless label here.
@@ -53,7 +50,6 @@ export function renderToolResultMessage(output: Output, _progressMessages: Progr
         </Box>
       </Box>;
   }
-
   // Default view: dropTextInBriefTurns (Messages.tsx) hides the redundant
   // assistant text that would otherwise precede this — SendUserMessage is the
   // only text-like content in its turn. No gutter mark; read as plain text.

@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type {
   BetaContentBlock,
   BetaContentBlockParam,
@@ -103,7 +102,6 @@ import {
   extractQuotaStatusFromHeaders,
 } from '../claudeAiLimits.js' // branding-scan: allow existing upstream provider-limit module path
 import { getAPIContextManagement } from '../compact/apiMicrocompact.js'
-
 /* eslint-disable @typescript-eslint/no-require-imports */
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
   ? (require('../../../../utils/permissions/autoModeState.js') as typeof import('../../../../utils/permissions/autoModeState.js'))
@@ -3440,7 +3438,6 @@ function isMaxTokensCapEnabled(): boolean {
 
 export function getMaxOutputTokensForModel(model: string): number {
   const maxOutputTokens = getModelMaxOutputTokens(model)
-
   // Slot-reservation cap: drop default to 8k for all models. BQ p99 output
   // = 4,911 tokens; 32k/64k defaults over-reserve 8-16× slot capacity.
   // Requests hitting the cap get one clean retry at 64k (query.ts
@@ -3450,7 +3447,6 @@ export function getMaxOutputTokensForModel(model: string): number {
   const defaultTokens = isMaxTokensCapEnabled()
     ? Math.min(maxOutputTokens.default, CAPPED_DEFAULT_MAX_TOKENS)
     : maxOutputTokens.default
-
   const result = validateBoundedIntEnvVar(
     'AGENC_MAX_OUTPUT_TOKENS',
     process.env.AGENC_MAX_OUTPUT_TOKENS,

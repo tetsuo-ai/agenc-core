@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { UUID } from 'crypto'
 import type { CanUseToolFn } from '../../../tui/hooks/useCanUseTool'
@@ -14,7 +13,6 @@ import type { ThemeName } from '../../../utils/theme.js'
 import type { LogOption } from './logs.js'
 import type { Message } from './message.js'
 import type { PluginManifest } from './plugin.js'
-
 export type LocalCommandResult =
   | { type: 'text'; value: string }
   | {
@@ -206,12 +204,10 @@ export type CommandBase = {
 
 export type Command = CommandBase &
   (PromptCommand | LocalCommand | LocalJSXCommand)
-
 /** Resolves the user-visible name, falling back to `cmd.name` when not overridden. */
 export function getCommandName(cmd: CommandBase): string {
   return cmd.userFacingName?.() ?? cmd.name
 }
-
 /** Resolves whether the command is enabled, defaulting to true. */
 export function isCommandEnabled(cmd: CommandBase): boolean {
   return cmd.isEnabled?.() ?? true

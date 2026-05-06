@@ -67,10 +67,10 @@ function getChromeBridgeUrl(): string | undefined {
   }
 
   if (isEnvTruthy(process.env.USE_STAGING_OAUTH)) {
-    return 'wss://bridge-staging.agencusercontent.com'
+    return 'wss://bridge-staging.agenc.tech'
   }
 
-  return 'wss://bridge.agencusercontent.com'
+  return 'wss://bridge.agenc.tech'
 }
 
 function isLocalBridge(): boolean {

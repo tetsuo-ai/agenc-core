@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { getSdkAgentProgressSummariesEnabled } from '../../bootstrap/state.js';
 import { OUTPUT_FILE_TAG, STATUS_TAG, SUMMARY_TAG, TASK_ID_TAG, TASK_NOTIFICATION_TAG, TOOL_USE_ID_TAG, WORKTREE_BRANCH_TAG, WORKTREE_PATH_TAG, WORKTREE_TAG } from '../../../../constants/xml.js';
 import { abortSpeculation } from '../../../../services/PromptSuggestion/speculation.js';
@@ -60,7 +59,6 @@ export function createProgressTracker(): ProgressTracker {
 export function getTokenCountFromTracker(tracker: ProgressTracker): number {
   return tracker.latestInputTokens + tracker.cumulativeOutputTokens;
 }
-
 /**
  * Resolver function that returns a human-readable activity description
  * for a given tool name and input. Used to pre-compute descriptions
@@ -666,7 +664,6 @@ export function unregisterAgentForeground(taskId: string, setAppState: SetAppSta
     if (!isLocalAgentTask(task) || task.isBackgrounded) {
       return prev;
     }
-
     // Capture cleanup function to call outside of updater
     cleanupFn = task.unregisterCleanup;
     const {
@@ -678,7 +675,6 @@ export function unregisterAgentForeground(taskId: string, setAppState: SetAppSta
       tasks: rest
     };
   });
-
   // Call cleanup outside of the state updater (avoid side effects in updater)
   cleanupFn?.();
 }

@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { toolMatchesName, type Tool, type Tools } from './Tool.js'
 import { AgentTool } from './tools/AgentTool/AgentTool.js'
@@ -146,7 +145,6 @@ const getPowerShellTool = () => {
   ).PowerShellTool
 }
 /* eslint-enable @typescript-eslint/no-require-imports */
-
 /**
  * Predefined tool presets that can be used with --tools flag
  */
@@ -340,7 +338,6 @@ export function assembleToolPool(
 
   // Filter out MCP tools that are in the deny list
   const allowedMcpTools = filterToolsByDenyRules(mcpTools, permissionContext)
-
   // Sort each partition for prompt-cache stability, keeping built-ins as a
   // contiguous prefix. The server's system cache policy places a
   // global cache breakpoint after the last prefix-matched built-in tool; a flat
@@ -355,7 +352,6 @@ export function assembleToolPool(
     'name',
   )
 }
-
 /**
  * Get all tools including both built-in tools and MCP tools.
  *

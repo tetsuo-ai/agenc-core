@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { Anthropic } from '@anthropic-ai/sdk'
 import type { BetaMessageParam as MessageParam } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 // @aws-sdk/client-bedrock-runtime is imported dynamically in countTokensWithBedrock()
@@ -28,7 +27,6 @@ import { isToolReferenceBlock } from '../../../utils/toolSearch.js'
 import { getAPIMetadata, getExtraBodyParams } from './api/claude.js'
 import { getAnthropicClient } from './api/client.js'
 import { withTokenCountVCR } from './vcr.js'
-
 // Minimal values for token counting with thinking enabled
 // API constraint: max_tokens must be greater than thinking.budget_tokens
 const TOKEN_COUNT_THINKING_BUDGET = 1024
@@ -601,7 +599,6 @@ async function countTokensWithBedrock({
     if (!modelId) {
       return null
     }
-
     const requestBody = {
       anthropic_version: 'bedrock-2023-05-31',
       // When we pass tools and no messages, we need to pass a dummy message
@@ -618,7 +615,6 @@ async function countTokensWithBedrock({
         },
       }),
     }
-
     const { CountTokensCommand } = await import(
       '@aws-sdk/client-bedrock-runtime'
     )

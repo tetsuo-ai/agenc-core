@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import uniqBy from 'lodash-es/uniqBy.js'
@@ -75,7 +74,6 @@ import {
   renderToolUseProgressMessage,
   renderToolUseRejectedMessage,
 } from './UI.js'
-
 /**
  * Gets all commands including MCP skills/prompts from AppState.
  * SkillTool needs this because getCommands() only returns local/bundled skills.
@@ -1091,7 +1089,6 @@ async function executeRemoteSkill(
     /\$\{AGENC_SESSION_ID\}/g,
     getSessionId(),
   )
-
   // Register with compaction-preservation state. Use the cached file path so
   // post-compact restoration knows where the content came from. Must use
   // finalContent (not raw content) so the base directory header and
@@ -1103,7 +1100,6 @@ async function executeRemoteSkill(
     finalContent,
     getAgentContext()?.agentId ?? null,
   )
-
   // Direct injection — wrap SKILL.md content in a meta user message. Matches
   // the shape of what processPromptSlashCommand produces for simple skills.
   const toolUseID = getToolUseIDFromParentMessage(

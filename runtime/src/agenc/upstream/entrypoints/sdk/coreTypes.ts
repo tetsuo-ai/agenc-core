@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 // SDK Core Types - Common serializable types used by both SDK consumers and SDK builders.
 //
 // Types are generated from Zod schemas in coreSchemas.ts.
@@ -9,7 +8,6 @@
 //
 // Schemas are available in coreSchemas.ts for runtime validation but are not
 // part of the public API.
-
 // Re-export sandbox types for SDK consumers
 export type {
   SandboxFilesystemConfig,
@@ -22,7 +20,6 @@ export type * from './coreTypes.generated.js'
 
 // Re-export utility types that can't be expressed as Zod schemas
 export type { NonNullableUsage } from './sdkUtilityTypes.js'
-
 // Const arrays for runtime usage
 export const HOOK_EVENTS = [
   'PreToolUse',
@@ -53,7 +50,6 @@ export const HOOK_EVENTS = [
   'CwdChanged',
   'FileChanged',
 ] as const
-
 export const EXIT_REASONS = [
   'clear',
   'resume',

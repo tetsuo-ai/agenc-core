@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import type { QuerySource } from '../../../../constants/querySource.js'
 import { clearSystemPromptSections } from '../../../../constants/systemPromptSections.js'
@@ -10,7 +9,6 @@ import { resetGetMemoryFilesCache } from '../../../../utils/agencmd.js'
 import { clearSessionMessagesCache } from '../../../../utils/sessionStorage.js'
 import { clearBetaTracingState } from '../../../../utils/telemetry/betaSessionTracing.js'
 import { resetMicrocompactState } from './microCompact.js'
-
 /**
  * Run cleanup of caches and tracking state after compaction.
  * Call this after both auto-compact and manual /compact to free memory
@@ -39,7 +37,6 @@ export function runPostCompactCleanup(querySource?: QuerySource): void {
     querySource === undefined ||
     querySource.startsWith('repl_main_thread') ||
     querySource === 'sdk'
-
   resetMicrocompactState()
   if (feature('CONTEXT_COLLAPSE')) {
     if (isMainThreadCompact) {

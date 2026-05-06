@@ -1,6 +1,7 @@
 import { defineConfig } from 'tsup';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const entry = [
   'src/index.ts',
@@ -10,9 +11,10 @@ const entry = [
   'src/tui/main.tsx',
 ];
 
-const agencRoot = resolve(__dirname, 'src/agenc');
+const runtimeRoot = dirname(fileURLToPath(import.meta.url));
+const agencRoot = resolve(runtimeRoot, 'src/agenc');
 const agencUpstreamRoot = resolve(agencRoot, 'upstream');
-const runtimeSourceRoot = resolve(__dirname, 'src');
+const runtimeSourceRoot = resolve(runtimeRoot, 'src');
 // Moved utils/constants still contain upstream-relative imports to sibling
 // subsystems that later purge items own. These aliases let the production
 // bundle resolve those imports without leaving dead external paths in dist.
@@ -28,16 +30,6 @@ const relocatedUpstreamRoots = [
   {
     runtimeRoot: resolve(runtimeSourceRoot, 'memdir'),
     upstreamRoot: resolve(agencUpstreamRoot, 'memdir'),
-  },
-];
-const relocatedSourcePathAliases = [
-  {
-    runtimeRoot: resolve(agencUpstreamRoot, 'tui/components'),
-    upstreamRoot: resolve(agencUpstreamRoot, 'components'),
-  },
-  {
-    runtimeRoot: resolve(agencUpstreamRoot, 'tui/buddy'),
-    upstreamRoot: resolve(agencUpstreamRoot, 'buddy'),
   },
 ];
 // File-level aliases for upstream modules whose historical import paths do
@@ -63,7 +55,7 @@ const relocatedTuiSourceRoots = [
   resolve(runtimeSourceRoot, 'tui/hooks'),
 ];
 const runtimePackage = JSON.parse(
-  readFileSync(resolve(__dirname, 'package.json'), 'utf8'),
+  readFileSync(resolve(runtimeRoot, 'package.json'), 'utf8'),
 ) as { version?: string };
 const displayVersion = runtimePackage.version ?? '0.0.0';
 
@@ -120,7 +112,7 @@ function isWithin(root: string, file: string): boolean {
 }
 
 function sourceRootForImporter(importer: string): string | null {
-  const absoluteImporter = isAbsolute(importer) ? importer : resolve(__dirname, importer);
+  const absoluteImporter = isAbsolute(importer) ? importer : resolve(runtimeRoot, importer);
   if (isWithin(agencUpstreamRoot, absoluteImporter)) return agencUpstreamRoot;
   const relocatedRoot = relocatedTuiSourceRoots.find((root) =>
     isWithin(root, absoluteImporter),
@@ -129,22 +121,11 @@ function sourceRootForImporter(importer: string): string | null {
 }
 
 function relocatedUpstreamImporter(importer: string): string | null {
-  const absoluteImporter = isAbsolute(importer) ? importer : resolve(__dirname, importer);
+  const absoluteImporter = isAbsolute(importer) ? importer : resolve(runtimeRoot, importer);
   for (const { runtimeRoot, upstreamRoot } of relocatedUpstreamRoots) {
     const rel = relative(runtimeRoot, absoluteImporter);
     if (rel !== '' && !rel.startsWith('..')) {
       return resolve(upstreamRoot, rel);
-    }
-  }
-  return null;
-}
-
-function resolveRelocatedPathAlias(target: string): string | null {
-  for (const { runtimeRoot, upstreamRoot } of relocatedSourcePathAliases) {
-    const rel = relative(runtimeRoot, target);
-    if (rel !== '' && !rel.startsWith('..')) {
-      const found = existingSourceFile(resolve(upstreamRoot, rel));
-      if (found) return found;
     }
   }
   return null;
@@ -183,7 +164,7 @@ function relocatedLogicalCandidates(importer: string, source: string): string[] 
     if (relSource !== '' && !relSource.startsWith('..')) {
       logical = relSource;
     } else {
-      const relRuntime = normalizeRuntimePath(relative(resolve(__dirname), absolute));
+      const relRuntime = normalizeRuntimePath(relative(runtimeRoot, absolute));
       if (relRuntime !== '' && !relRuntime.startsWith('..')) logical = relRuntime;
     }
   }
@@ -244,7 +225,7 @@ const agencBareSrcAlias = {
 };
 
 function resolveRelativeAgenCSource(importer: string, source: string): string | null {
-  const absoluteImporter = isAbsolute(importer) ? importer : resolve(__dirname, importer);
+  const absoluteImporter = isAbsolute(importer) ? importer : resolve(runtimeRoot, importer);
   const direct = existingSourceFile(resolve(dirname(absoluteImporter), source));
   if (direct) return direct;
 
@@ -253,8 +234,6 @@ function resolveRelativeAgenCSource(importer: string, source: string): string | 
     const relocatedTarget = resolve(dirname(relocatedImporter), source);
     const relocated = existingSourceFile(relocatedTarget);
     if (relocated) return relocated;
-    const aliasedRelocated = resolveRelocatedPathAlias(relocatedTarget);
-    if (aliasedRelocated) return aliasedRelocated;
   }
 
   const sourceRoot = sourceRootForImporter(absoluteImporter);
@@ -296,6 +275,15 @@ const agencOptionalExternal = {
     });
   },
 };
+
+export const __agencTsupAliasTest = {
+  relocatedTuiSourceRoots,
+  relocatedUpstreamRoots,
+  resolveAgenCBareSrc,
+  resolveRelativeAgenCSource,
+  sourceFileBaseAliases,
+  sourceRootForImporter,
+} as const;
 
 const external = [
   '@anthropic-ai/mcpb',

@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { randomUUID } from 'crypto'
 import {
@@ -68,7 +67,6 @@ import {
   clearBridgeDebugHandle,
   injectBridgeFault,
 } from './bridgeDebug.js'
-
 export type ReplBridgeHandle = {
   bridgeSessionId: string
   environmentId: string
@@ -2393,12 +2391,10 @@ async function startWorkPollLoop({
       await sleep(backoff, signal)
     }
   }
-
   logForDebugging(
     `[bridge:repl] Work poll loop ended (aborted=${signal.aborted}) env=${getCredentials().environmentId}`,
   )
 }
-
 // Exported for testing only
 export {
   startWorkPollLoop as _startWorkPollLoopForTesting,

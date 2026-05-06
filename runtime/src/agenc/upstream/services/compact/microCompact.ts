@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { QuerySource } from '../../../../constants/querySource.js'
@@ -30,7 +29,6 @@ import {
   getTimeBasedMCConfig,
   type TimeBasedMCConfig,
 } from './timeBasedMCConfig.js'
-
 // Inline from utils/toolResultStorage.ts — importing that file pulls in
 // sessionStorage → utils/messages → services/api/errors, completing a
 // circular-deps loop back through this file via promptCacheBreakDetection.
@@ -515,7 +513,6 @@ function maybeTimeBasedMicrocompact(
   logForDebugging(
     `[TIME-BASED MC] gap ${Math.round(gapMinutes)}min > ${config.gapThresholdMinutes}min, cleared ${clearSet.size} tool results (~${tokensSaved} tokens), kept last ${keepSet.size}`,
   )
-
   suppressCompactWarning()
   // Cached-MC state (module-level) holds tool IDs registered on prior turns.
   // We just content-cleared some of those tools AND invalidated the server
@@ -533,6 +530,5 @@ function maybeTimeBasedMicrocompact(
   if (feature('PROMPT_CACHE_BREAK_DETECTION') && querySource) {
     notifyCacheDeletion(querySource)
   }
-
   return { messages: result }
 }

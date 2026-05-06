@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
@@ -85,7 +84,6 @@ import type { ContentReplacementState } from '../../../../utils/toolResultStorag
 import { createAgentId } from '../../../../utils/uuid.js'
 import { resolveAgentTools } from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from 'src/tools/AgentTool/loadAgentsDir.js'
-
 /**
  * Initialize agent-specific MCP servers
  * Agents can define their own MCP servers in their frontmatter that are additive
@@ -976,13 +974,11 @@ function resolveSkillName(
       return qualifiedName
     }
   }
-
   // 3. Suffix match — find a skill whose name ends with ":skillName"
   const suffix = `:${skillName}`
   const match = allSkills.find(cmd => cmd.name.endsWith(suffix))
   if (match) {
     return match.name
   }
-
   return null
 }

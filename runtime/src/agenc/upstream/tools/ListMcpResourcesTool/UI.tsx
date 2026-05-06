@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import * as React from 'react';
 import { MessageResponse } from '../../../../tui/components/MessageResponse';
 import { OutputLine } from '../../../../tui/components/shell/OutputLine';
@@ -23,7 +22,6 @@ export function renderToolResultMessage(output: Output, _progressMessagesForMess
         <Text dimColor>(No resources found)</Text>
       </MessageResponse>;
   }
-
   // eslint-disable-next-line no-restricted-syntax -- human-facing UI, not tool_result
   const formattedOutput = jsonStringify(output, null, 2);
   return <OutputLine content={formattedOutput} verbose={verbose} />;

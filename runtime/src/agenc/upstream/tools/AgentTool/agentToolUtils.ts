@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { z } from 'zod/v4'
 import { clearInvokedSkillsForAgent } from '../../bootstrap/state.js'
@@ -68,7 +67,6 @@ export type ResolvedAgentTools = {
   resolvedTools: Tools
   allowedAgentTypes?: string[]
 }
-
 export function filterToolsForAgent({
   tools,
   isBuiltIn,
@@ -620,9 +618,7 @@ export async function runAsyncAgentLifecycle({
         finalMessage = `${handoffWarning}\n\n${finalMessage}`
       }
     }
-
     const worktreeResult = await getWorktreeResult()
-
     enqueueAgentNotification({
       taskId,
       description,

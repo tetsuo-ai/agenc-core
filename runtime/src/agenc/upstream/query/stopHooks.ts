@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { getShortcutDisplay } from '../../../tui/keybindings/shortcutFormat.js'
 import { isExtractModeActive } from '../memdir/paths.js'
@@ -41,7 +40,6 @@ import {
 import type { SystemPrompt } from '../../../utils/systemPromptType.js'
 import { getTaskListId, listTasks } from '../../../utils/tasks.js'
 import { getAgentName, getTeamName, isTeammate } from '../../../utils/teammate.js'
-
 /* eslint-disable @typescript-eslint/no-require-imports */
 const extractMemoriesModule = feature('EXTRACT_MEMORIES')
   ? (require('../services/extractMemories/extractMemories.js') as typeof import('../services/extractMemories/extractMemories.js'))
@@ -453,13 +451,11 @@ export async function* handleStopHooks(
         }
       }
     }
-
     return { blockingErrors: [], preventContinuation: false }
   } catch (error) {
     const durationMs = Date.now() - hookStartTime
     logEvent('tengu_stop_hook_error', {
       duration: durationMs,
-
       queryChainId: toolUseContext.queryTracking
         ?.chainId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       queryDepth: toolUseContext.queryTracking?.depth,

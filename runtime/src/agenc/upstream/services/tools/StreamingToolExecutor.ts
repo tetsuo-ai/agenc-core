@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ToolUseBlock } from '@anthropic-ai/sdk/resources/index.mjs'
 import {
   createUserMessage,
@@ -12,7 +11,6 @@ import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { createChildAbortController } from '../../../../utils/abortController.js'
 import { runToolUse } from './toolExecution.js'
-
 type MessageUpdate = {
   message?: Message
   newContext?: ToolUseContext
@@ -511,7 +509,6 @@ export class StreamingToolExecutor {
   private hasUnfinishedTools(): boolean {
     return this.tools.some(t => t.status !== 'yielded')
   }
-
   /**
    * Get the current tool use context (may have been modified by context modifiers)
    */
@@ -519,7 +516,6 @@ export class StreamingToolExecutor {
     return this.toolUseContext
   }
 }
-
 function markToolUseAsComplete(
   toolUseContext: ToolUseContext,
   toolUseID: string,

@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import type Anthropic from '@anthropic-ai/sdk'
 import {
@@ -48,7 +47,6 @@ import {
 } from '../rateLimitMocking.js'
 import { REPEATED_529_ERROR_MESSAGE } from './errors.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
-
 const abortError = () => new APIUserAbortError()
 
 const DEFAULT_MAX_RETRIES = 10
@@ -864,7 +862,6 @@ export function getRateLimitResetDelayMs(error: APIError): number | null {
     if (delayMs <= 0) return null
     return Math.min(delayMs, PERSISTENT_RESET_CAP_MS)
   }
-
   if (provider === 'openai' || provider === 'codex' || provider === 'github') {
     const reqHeader = error.headers?.get?.('x-ratelimit-reset-requests')
     const tokHeader = error.headers?.get?.('x-ratelimit-reset-tokens')
@@ -875,7 +872,6 @@ export function getRateLimitResetDelayMs(error: APIError): number | null {
     const delayMs = Math.max(reqMs ?? 0, tokMs ?? 0)
     return Math.min(delayMs, PERSISTENT_RESET_CAP_MS)
   }
-
   // bedrock, vertex, foundry, gemini — no standard reset header
   return null
 }

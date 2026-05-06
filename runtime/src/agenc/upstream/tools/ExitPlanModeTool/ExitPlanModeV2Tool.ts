@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { writeFile } from 'fs/promises'
 import { z } from 'zod/v4'
@@ -49,7 +48,6 @@ import {
   renderToolUseMessage,
   renderToolUseRejectedMessage,
 } from './UI.js'
-
 /* eslint-disable @typescript-eslint/no-require-imports */
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
   ? (require('../../../../utils/permissions/autoModeState.js') as typeof import('../../../../utils/permissions/autoModeState.js'))
@@ -483,10 +481,8 @@ Request ID: ${requestId}`,
     return {
       type: 'tool_result',
       content: `User has approved your plan. You can now start coding. Start with updating your todo list if applicable
-
 Your plan has been saved to: ${filePath}
 You can refer back to it if needed during implementation.${teamHint}
-
 ## ${planLabel}:
 ${plan}`,
       tool_use_id: toolUseID,
