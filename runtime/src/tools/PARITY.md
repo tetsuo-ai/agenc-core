@@ -70,7 +70,7 @@ Tests:
 - `runtime/src/sandbox/execpolicy/execpolicy.test.ts`
 - `runtime/src/permissions/bash.test.ts`
 - `runtime/src/tools/BashTool/bashPermissions.test.ts`
-- `runtime/src/tools/tool-stubs-bash-bridge.test.tsx`
+- `runtime/src/tools/tool-rendering-bash.test.tsx`
 
 Intentional reductions:
 - The primary visible terminal surface remains `exec_command` plus `write_stdin`. The dual-mode `system.bash` runner is present but deferred to avoid duplicate visible shell tools.

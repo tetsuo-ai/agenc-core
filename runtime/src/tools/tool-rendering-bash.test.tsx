@@ -214,7 +214,7 @@ describe("BashOutputView — local renderer fidelity to upstream visual contract
     expect(hasNoOutput).toBe(false);
   });
 
-  test("ANSI escape sequences inside <bash-stdout> are passed through verbatim — interpretation is the renderer's responsibility, not the bridge's", () => {
+  test("ANSI escape sequences inside <bash-stdout> are passed through verbatim — interpretation is the renderer's responsibility", () => {
     const ansi = "\x1b[31mred\x1b[0m text";
     const node = BashOutputView({
       content: `<bash-stdout>${ansi}</bash-stdout>[exit_code=0]`,
