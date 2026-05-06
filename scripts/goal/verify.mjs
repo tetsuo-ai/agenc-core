@@ -87,6 +87,30 @@ const ITEM_EVIDENCE = {
       { pattern: "agenc/upstream", scope: "runtime/src" },
     ],
   },
+  "ZC-08": {
+    tests: [
+      "runtime/src/tools/ask-user-question-tui-routing.test.tsx",
+      "runtime/src/tools/tool-rendering-bash.test.tsx",
+      "runtime/src/tools/tool-rendering-edit.test.tsx",
+      "runtime/src/tools/tool-rendering-extra.test.tsx",
+      "runtime/src/tui/parity/session-transcript.contract.test.ts",
+      "runtime/src/tui/parity/session-transcript.test.ts",
+      "runtime/src/tui/parity/session-transcript.streaming-tool-use.parity.test.ts",
+      "runtime/src/tui/parity/session-transcript.no-runningtoolprogress.parity.test.ts",
+      "runtime/src/tui/parity/session-transcript-hook.streaming-tool-use.parity.test.ts",
+    ],
+    filesAbsent: [
+      "runtime/src/tools/ask-user-question-bridge-routing.test.tsx",
+      "runtime/src/tools/tool-stubs-bash-bridge.test.tsx",
+      "runtime/src/tools/tool-stubs-edit-bridge.test.tsx",
+      "runtime/src/tools/tool-stubs-extra-bridge.test.tsx",
+      "runtime/src/tui/parity/message-adapter.contract.test.ts",
+      "runtime/src/tui/parity/message-adapter.test.ts",
+      "runtime/src/tui/parity/message-adapter.streaming-tool-use.parity.test.ts",
+      "runtime/src/tui/parity/message-adapter.no-runningtoolprogress.parity.test.ts",
+      "runtime/src/tui/parity/use-session-transcript.streaming-tool-use.parity.test.ts",
+    ],
+  },
   "OC-06": {
     files: [
       "runtime/src/tui/vim/types.ts",
@@ -1111,7 +1135,7 @@ const ITEM_EVIDENCE = {
       "runtime/src/tools/AskUserQuestionTool/prompt.ts",
     ],
     tests: [
-      "runtime/src/tools/ask-user-question-bridge-routing.test.tsx",
+      "runtime/src/tools/ask-user-question-tui-routing.test.tsx",
       "runtime/src/tools/ask-user-question/tui-tool.test.tsx",
       "runtime/src/tools/AgentTool/loadAgentsDir.test.ts",
     ],
@@ -3032,7 +3056,7 @@ async function t09ToolTargetGates() {
     "runtime/src/tui/components/App.tsx",
     "runtime/src/tui/state/AppStateStore.ts",
     "runtime/src/agenc/adapters/upstream-agent-list.ts",
-    "runtime/src/tools/ask-user-question-bridge-routing.test.tsx",
+    "runtime/src/tools/ask-user-question-tui-routing.test.tsx",
   ];
   const upstreamPathScan = run(
     "rg",
@@ -6046,6 +6070,56 @@ function assertZc20NoRuntimeShimCruft() {
   }
 }
 
+function assertZc08NoDeletedShimSubjectTests() {
+  const expectedRenames = [
+    "runtime/src/tools/ask-user-question-tui-routing.test.tsx",
+    "runtime/src/tools/tool-rendering-bash.test.tsx",
+    "runtime/src/tools/tool-rendering-edit.test.tsx",
+    "runtime/src/tools/tool-rendering-extra.test.tsx",
+    "runtime/src/tui/parity/session-transcript.contract.test.ts",
+    "runtime/src/tui/parity/session-transcript.test.ts",
+    "runtime/src/tui/parity/session-transcript.streaming-tool-use.parity.test.ts",
+    "runtime/src/tui/parity/session-transcript.no-runningtoolprogress.parity.test.ts",
+    "runtime/src/tui/parity/session-transcript-hook.streaming-tool-use.parity.test.ts",
+  ];
+  const missing = expectedRenames.filter((rel) => !existsSync(path.join(root, rel)));
+  if (missing.length > 0) {
+    failGate(`ZC-08: expected canonical test file(s) missing:\n${missing.join("\n")}`);
+  }
+  const expectedRenameSet = new Set(expectedRenames);
+
+  const stalePathPattern =
+    /(^|\/)(message-adapter|use-session-transcript|tool-stubs-[^/]*bridge|ask-user-question-bridge-routing)\.[^/]*test\.(ts|tsx)$/;
+  const stalePaths = listSourceFiles(path.join(root, "runtime/src")).filter(
+    (rel) => stalePathPattern.test(rel),
+  );
+  if (stalePaths.length > 0) {
+    failGate(`ZC-08: tests still named after deleted shim/adapter subjects:\n${stalePaths.join("\n")}`);
+  }
+
+  const staleImportPattern =
+    /(agenc\/adapters|tui\/bridges|response-adapter|session-id-compat|prompt-input-(fast-mode|terminal-setup|ultrareview))/;
+  const staleTextPattern =
+    /\b(message-adapter|use-session-transcript|tool-stubs|AskUserQuestion bridge routing|use-tool-jsx)\b|bridge's/;
+  const renamedCanonicalSubjectPattern =
+    /\b(?:[Oo][Pp][Ee][Nn][Cc][Ll][Aa][Uu][Dd][Ee]|bridge|adapter)\b|MESSAGE_ADAPTER/;
+  const offenders = [];
+  for (const rel of listSourceFiles(path.join(root, "runtime/src"))) {
+    if (!/\.test\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(rel)) continue;
+    const source = readFileSync(path.join(root, rel), "utf8");
+    if (
+      staleImportPattern.test(source) ||
+      staleTextPattern.test(source) ||
+      (expectedRenameSet.has(rel) && renamedCanonicalSubjectPattern.test(source))
+    ) {
+      offenders.push(rel);
+    }
+  }
+  if (offenders.length > 0) {
+    failGate(`ZC-08: test(s) still describe deleted shim/adapter subjects:\n${offenders.join("\n")}`);
+  }
+}
+
 function assertZc22ElicitationRendererInlined() {
   const appRel = "runtime/src/tui/components/App.tsx";
   const appPath = path.join(root, appRel);
@@ -8211,6 +8285,7 @@ async function cleanupGates(item) {
           caseInsensitive: true,
         },
       },
+      "ZC-08": { custom: assertZc08NoDeletedShimSubjectTests },
       "ZC-09": {
         grepNotPresent: {
           pattern: donorPathPattern,

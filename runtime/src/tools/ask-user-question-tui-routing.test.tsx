@@ -16,7 +16,7 @@ import {
 } from "../tui/tool-rendering.js";
 import { AskUserQuestionTool } from "./ask-user-question/tui-tool.js";
 
-describe("AskUserQuestion bridge routing", () => {
+describe("AskUserQuestion TUI routing", () => {
   test("uses the AgenC tool object so PermissionRequest selects the structured question UI", () => {
     expect(createTuiTool("AskUserQuestion")).toBe(AskUserQuestionTool);
     expect(createTuiTools([])).toContain(AskUserQuestionTool);

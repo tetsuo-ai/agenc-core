@@ -7,8 +7,8 @@ import {
 } from "../session-transcript.js";
 import { pickToolResultDispatch } from "../tool-result-routing.js";
 
-describe("AgenC TUI transcript bridge", () => {
-  test("maps AgenC user and streaming assistant events into upstream messages", () => {
+describe("AgenC TUI session transcript", () => {
+  test("maps AgenC user and streaming assistant events into renderable messages", () => {
     const transcript = adaptTranscriptEvents([
       {
         id: "turn",
@@ -234,7 +234,7 @@ describe("AgenC TUI transcript bridge", () => {
     ]);
   });
 
-  test("maps tool calls and AgenC agent events to upstream tool rows", () => {
+  test("maps tool calls and AgenC agent events to renderable tool rows", () => {
     const transcript = adaptTranscriptEvents([
       {
         id: "tool-start",
@@ -285,7 +285,7 @@ describe("AgenC TUI transcript bridge", () => {
     ]);
   });
 
-  test("tool_progress events are no longer captured into a runningToolProgress map (replaced by upstream streamingToolUses contract; see streaming-tool-use-parity row tui-remove-runningtoolprogressindicator)", () => {
+  test("tool_progress events are no longer captured into a runningToolProgress map and streamingToolUses is the live-tool contract", () => {
     const transcript = adaptTranscriptEvents([
       {
         id: "turn",
@@ -318,7 +318,7 @@ describe("AgenC TUI transcript bridge", () => {
     expect(Array.isArray(transcript.streamingToolUses)).toBe(true);
   });
 
-  test("formatStructuredToolResult wraps Bash stdout/stderr in upstream <bash-stdout>/<bash-stderr> tags so UserBashOutputMessage's extractTag can consume the joined content", () => {
+  test("formatStructuredToolResult wraps Bash stdout/stderr in <bash-stdout>/<bash-stderr> tags so the renderer can consume the joined content", () => {
     const blocks = formatStructuredToolResult("Bash", "exec_command_end", {
       stdout: "hello world",
       stderr: "warn",
@@ -331,7 +331,7 @@ describe("AgenC TUI transcript bridge", () => {
     expect(blocks[2]?.text).toBe("[exit_code=0 duration_ms=42]");
   });
 
-  test("formatStructuredToolResult always emits an empty <bash-stdout></bash-stdout> envelope so upstream extractTag never returns null for a present-but-silent Bash command", () => {
+  test("formatStructuredToolResult always emits an empty <bash-stdout></bash-stdout> envelope so silent Bash commands still have a stdout block", () => {
     const blocks = formatStructuredToolResult("Bash", "exec_command_end", {
       stdout: "",
       stderr: "",
@@ -349,7 +349,7 @@ describe("AgenC TUI transcript bridge", () => {
     expect(blocks.some((b) => b.text.startsWith("<bash-stderr>"))).toBe(false);
   });
 
-  test("formatStructuredToolResult wraps live FILE_EDIT_TOOL_NAME (\"Edit\") diff payload in <edit-file>/<edit-diff> tags so the bridge EditDiffView can extract file path and diff body separately", () => {
+  test("formatStructuredToolResult wraps live FILE_EDIT_TOOL_NAME (\"Edit\") diff payload in <edit-file>/<edit-diff> tags so EditDiffView can extract file path and diff body separately", () => {
     const blocks = formatStructuredToolResult("Edit", "tool_call_completed", {
       result: {
         path: "src/foo.ts",

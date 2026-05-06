@@ -29,7 +29,7 @@
     "runtime/src/tui/daemon-session.contract.test.ts",
     "runtime/src/app-server/agent-cli.contract.test.ts",
     "runtime/src/conversation/realtime/webrtc/webrtc.contract.test.ts",
-    "runtime/src/tui/parity/message-adapter.test.ts"
+    "runtime/src/tui/parity/session-transcript.test.ts"
   ],
   "parityMatrix": [
     {
@@ -91,7 +91,7 @@
         "realtime transcript deltas and completed user or assistant turns interleave with surrounding text transcript events",
         "realtime item-added, error, and closed notifications render as chat history cells in the adapter"
       ],
-      "evidence": ["runtime/src/tui/parity/message-adapter.test.ts"]
+      "evidence": ["runtime/src/tui/parity/session-transcript.test.ts"]
     },
     {
       "source": "tui/src/chatwidget/realtime.rs",
