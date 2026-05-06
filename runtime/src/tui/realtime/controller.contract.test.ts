@@ -153,4 +153,51 @@ describe("AgenC realtime TUI controller", () => {
     await controls.stop();
     expect(close).toHaveBeenCalledTimes(1);
   });
+
+  test.each([
+    [
+      "realtime_error",
+      { message: "remote failed" },
+      { phase: "inactive", errorBanner: "remote failed" },
+    ],
+    [
+      "realtime_closed",
+      { reason: "remote closed" },
+      {
+        phase: "inactive",
+        errorBanner: null,
+        closedBanner: "Realtime closed: remote closed",
+      },
+    ],
+  ])(
+    "closes the active WebRTC session on remote %s notifications",
+    async (type, payload, expectedState) => {
+      const client = createClient();
+      const channel = createRealtimeWebrtcEventChannel();
+      const close = vi.fn();
+      const started: StartedRealtimeWebrtcSession = {
+        offerSdp: "offer-sdp",
+        handle: new RealtimeWebrtcSessionHandle({
+          applyAnswerSdp: vi.fn(),
+          close,
+        }),
+        events: channel.receiver,
+      };
+      const controls = createRealtimeTuiControls({
+        threadId: "agent_1",
+        client,
+        emitEvent: () => {},
+        startWebrtcSession: async () => started,
+      });
+
+      await controls.start({ transport: "webrtc" });
+      controls.handleTranscriptEvent({ type, payload });
+
+      await waitFor(
+        () => close.mock.calls.length === 1,
+        "remote terminal WebRTC cleanup",
+      );
+      expect(controls.getState()).toMatchObject(expectedState);
+    },
+  );
 });

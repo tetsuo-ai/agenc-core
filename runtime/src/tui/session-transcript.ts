@@ -673,6 +673,7 @@ export function adaptTranscriptEvents(
   const runningToolNames = new Map<string, string>();
   const streamingToolUses: StreamingToolUse[] = [];
   let streamingText = "";
+  let realtimeStreamingText = "";
   let currentTurnId: string | null = null;
   let lastAssistantText = "";
   let isStreaming = false;
@@ -746,7 +747,7 @@ export function adaptTranscriptEvents(
           !isUserRealtimeRole(payload.role) &&
           typeof payload.delta === "string"
         ) {
-          streamingText += payload.delta;
+          realtimeStreamingText += payload.delta;
         }
         break;
       case "realtime_transcript_done":
@@ -757,7 +758,7 @@ export function adaptTranscriptEvents(
             out.push(makeAssistantTextMessage(payload.text));
             lastAssistantText = payload.text;
           }
-          streamingText = "";
+          realtimeStreamingText = "";
         }
         break;
       case "realtime_item_added":
@@ -777,11 +778,11 @@ export function adaptTranscriptEvents(
             "error",
           ),
         );
-        streamingText = "";
+        realtimeStreamingText = "";
         break;
       case "realtime_closed":
         out.push(makeSystemMessage(formatRealtimeClosed(payload), "info"));
-        streamingText = "";
+        realtimeStreamingText = "";
         break;
       case "agent_message":
         if (typeof payload.message === "string" && payload.message !== lastAssistantText) {
@@ -1005,7 +1006,12 @@ export function adaptTranscriptEvents(
 
   return {
     messages: out,
-    streamingText: streamingText.length > 0 ? streamingText : null,
+    streamingText:
+      streamingText.length > 0
+        ? streamingText
+        : realtimeStreamingText.length > 0
+          ? realtimeStreamingText
+          : null,
     inProgressToolUseIDs: openTools,
     toolNames,
     isStreaming,

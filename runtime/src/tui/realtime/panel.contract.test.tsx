@@ -38,7 +38,7 @@ describe("RealtimePanel", () => {
 
     const output = await renderToString(<RealtimePanel state={state} />, 100);
 
-    expect(output).toContain("voice | active | webrtc | mic muted");
+    expect(output).toContain("voice | active | webrtc | rt_1 | mic muted");
     expect(output).toContain("[############]");
     expect(output).toContain("assistant: ready");
     expect(output).toContain("item: message item_1");

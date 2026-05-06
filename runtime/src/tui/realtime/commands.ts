@@ -12,7 +12,9 @@ export function parseRealtimeComposerCommand(
   input: string,
 ): RealtimeComposerCommand | null {
   const trimmed = input.trim();
-  if (!trimmed.startsWith("/realtime")) return null;
+  if (trimmed !== "/realtime" && !trimmed.startsWith("/realtime ")) {
+    return null;
+  }
   const rest = trimmed.slice("/realtime".length).trim();
   if (rest.length === 0 || rest === "start") {
     return { kind: "start", transport: "websocket" };

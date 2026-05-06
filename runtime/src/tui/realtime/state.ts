@@ -147,6 +147,7 @@ export function reduceRealtimeTuiState(
         transport: null,
         realtimeSessionId: null,
         localAudioLevel: 0,
+        errorBanner: null,
         closedBanner:
           reason !== undefined && reason.length > 0
             ? `Realtime closed: ${reason}`
@@ -162,6 +163,7 @@ export function reduceRealtimeTuiState(
         realtimeSessionId: null,
         localAudioLevel: 0,
         errorBanner: event.message,
+        closedBanner: null,
       };
     case "local_audio_level":
       return {

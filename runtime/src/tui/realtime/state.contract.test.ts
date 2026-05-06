@@ -59,6 +59,15 @@ describe("AgenC TUI realtime state", () => {
       phase: "inactive",
       errorBanner: "microphone denied",
     });
+
+    const closedAfterError = reduceRealtimeTuiState(failed, {
+      type: "closed",
+      reason: "remote closed",
+    });
+    expect(closedAfterError).toMatchObject({
+      errorBanner: null,
+      closedBanner: "Realtime closed: remote closed",
+    });
   });
 
   test("tracks mute, push-to-talk, local meter, transcript, and items", () => {

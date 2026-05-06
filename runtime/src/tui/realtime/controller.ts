@@ -215,6 +215,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
         this.#dispatch({ type: "item_added", item: payload.item ?? null });
         break;
       case "realtime_error":
+        this.#closeActiveWebrtc();
         this.#dispatch({
           type: "error",
           message:
@@ -224,7 +225,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
         });
         break;
       case "realtime_closed":
-        this.#webRtc = null;
+        this.#closeActiveWebrtc();
         this.#dispatch({
           type: "closed",
           reason: typeof payload.reason === "string" ? payload.reason : null,
@@ -291,6 +292,13 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
   async #closeWebrtc(started: StartedRealtimeWebrtcSession): Promise<void> {
     started.events.close?.();
     await started.handle.close();
+  }
+
+  #closeActiveWebrtc(): void {
+    const started = this.#webRtc;
+    if (started === null) return;
+    this.#webRtc = null;
+    void this.#closeWebrtc(started).catch(() => {});
   }
 
   #dispatch(event: RealtimeTuiEvent): void {

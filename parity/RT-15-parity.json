@@ -21,8 +21,10 @@
   ],
   "tests": [
     "runtime/src/tui/realtime/state.contract.test.ts",
+    "runtime/src/tui/realtime/commands.contract.test.ts",
     "runtime/src/tui/realtime/controller.contract.test.ts",
     "runtime/src/tui/realtime/panel.contract.test.tsx",
+    "runtime/src/tui/components/App.render.test.tsx",
     "runtime/src/tui/daemon-session.contract.test.ts",
     "runtime/src/app-server/agent-cli.contract.test.ts",
     "runtime/src/conversation/realtime/webrtc/webrtc.contract.test.ts",

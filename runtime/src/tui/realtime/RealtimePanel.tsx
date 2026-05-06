@@ -24,6 +24,7 @@ export function RealtimePanel({ state }: RealtimePanelProps): React.ReactElement
     "voice",
     state.phase,
     state.transport ?? "idle",
+    state.realtimeSessionId,
     micMuted ? "mic muted" : "mic live",
     state.pushToTalk ? (state.pushToTalkHeld ? "ptt held" : "ptt armed") : null,
   ].filter((part): part is string => part !== null);
