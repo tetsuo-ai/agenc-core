@@ -639,6 +639,26 @@ describe("plugin manifest schema", () => {
 });
 
 describe("plugin loader", () => {
+  test("does not activate auto-discovered local plugins when plugins.enabled is false", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const workspaceRoot = join(root, "workspace");
+      await writePluginManifest(join(agencHome, "plugins", "toolbox"), {
+        name: "toolbox",
+      });
+
+      const result = await loadPlugins({
+        agencHome,
+        workspaceRoot,
+        config: { plugins: { enabled: false, allowlist: [] } },
+      });
+
+      expect(result.enabled).toEqual([]);
+      expect(result.disabled.map((plugin) => plugin.name)).toEqual(["toolbox"]);
+      expect(result.errors).toEqual([]);
+    });
+  });
+
   test("loads default components and server declarations from local plugins", async () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");
@@ -688,7 +708,11 @@ describe("plugin loader", () => {
         unsupported: true,
       });
 
-      const result = await loadPlugins({ agencHome, workspaceRoot });
+      const result = await loadPlugins({
+        agencHome,
+        workspaceRoot,
+        config: { plugins: { enabled: true } },
+      });
       const plugin = result.enabled[0];
 
       expect(result.errors).toEqual([]);
@@ -705,6 +729,28 @@ describe("plugin loader", () => {
         options: { fromFile: true },
         metadata: { owner: "team" },
       });
+    });
+  });
+
+  test("applies plugins.allowlist after manifest names are resolved", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const workspaceRoot = join(root, "workspace");
+      await writePluginManifest(join(agencHome, "plugins", "alpha-dir"), {
+        name: "alpha",
+      });
+      await writePluginManifest(join(agencHome, "plugins", "beta-dir"), {
+        name: "beta",
+      });
+
+      const result = await loadPlugins({
+        agencHome,
+        workspaceRoot,
+        config: { plugins: { enabled: true, allowlist: ["alpha"] } },
+      });
+
+      expect(result.enabled.map((plugin) => plugin.name)).toEqual(["alpha"]);
+      expect(result.disabled.map((plugin) => plugin.name)).toEqual(["beta"]);
     });
   });
 
@@ -799,7 +845,7 @@ describe("plugin loader", () => {
         workspaceRoot,
         config: {
           plugins: {
-            enabled: {
+            plugins: {
               missing: { path: "vendor/missing" },
             },
           },
@@ -829,7 +875,7 @@ describe("plugin loader", () => {
         workspaceRoot,
         config: {
           plugins: {
-            enabled: {
+            plugins: {
               disabled: { path: "vendor/disabled", enabled: false },
             },
           },
@@ -880,7 +926,11 @@ describe("plugin loader", () => {
         },
       });
 
-      const result = await loadPlugins({ agencHome, workspaceRoot });
+      const result = await loadPlugins({
+        agencHome,
+        workspaceRoot,
+        config: { plugins: { enabled: true } },
+      });
       const plugin = result.enabled[0];
 
       expect(Object.getPrototypeOf(plugin?.mcpServers)).toBeNull();
@@ -913,7 +963,8 @@ describe("plugin loader", () => {
         workspaceRoot,
         config: {
           plugins: {
-            enabled: {
+            enabled: true,
+            plugins: {
               "manifest-name": false,
             },
           },
@@ -1104,7 +1155,8 @@ describe("plugin loader", () => {
         workspaceRoot,
         config: {
           plugins: {
-            enabled: {
+            enabled: true,
+            plugins: {
               configured: { path: "vendor/configured" },
               disabled: { path: "vendor/disabled", enabled: false },
             },
@@ -1116,7 +1168,8 @@ describe("plugin loader", () => {
         workspaceRoot,
         config: {
           plugins: {
-            enabled: {
+            enabled: true,
+            plugins: {
               configured: { path: "vendor/configured" },
               disabled: { path: "vendor/disabled", enabled: false },
             },
@@ -1149,7 +1202,11 @@ describe("plugin loader", () => {
       });
       await writeFileAt(join(stylePlugin, "output-styles", "plain.md"), "# plain\n");
 
-      const result = await loadPlugins({ agencHome, workspaceRoot });
+      const result = await loadPlugins({
+        agencHome,
+        workspaceRoot,
+        config: { plugins: { enabled: true } },
+      });
 
       expect(result.enabled.map((plugin) => plugin.name).sort()).toEqual([
         "app-only",

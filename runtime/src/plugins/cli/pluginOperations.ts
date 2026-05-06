@@ -294,6 +294,7 @@ export async function installPluginOp(
       enabled: true,
       fallbackName: safeName,
     });
+    await writePluginConfigEntry(pluginName, { enabled: true }, input);
     return {
       plugin: summarizeLoadedPlugin(plugin.plugin),
       destination,
@@ -700,7 +701,7 @@ function renderManagedPluginBlock(
 ): string {
   const lines = [
     `${MANAGED_CONFIG_PREFIX} ${marker}`,
-    `[plugins.enabled.${tomlString(pluginId)}]`,
+    `[plugins.plugins.${tomlString(pluginId)}]`,
     `enabled = ${entry.enabled === false ? "false" : "true"}`,
   ];
   if (entry.path !== undefined) lines.push(`path = ${tomlString(entry.path)}`);

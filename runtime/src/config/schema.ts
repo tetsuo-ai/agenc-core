@@ -387,11 +387,21 @@ export interface PluginEntryConfig {
   readonly version?: string;
   readonly required?: boolean;
   readonly options?: Readonly<Record<string, unknown>>;
+  readonly mcp_servers?: Readonly<Record<string, PluginMcpServerConfig>>;
+}
+
+export interface PluginMcpServerConfig {
+  readonly enabled?: boolean;
+  readonly default_tools_approval_mode?: PermissionDefaultMode;
+  readonly enabled_tools?: readonly string[];
+  readonly disabled_tools?: readonly string[];
+  readonly tools?: Readonly<Record<string, PerToolConfig>>;
 }
 
 export interface PluginsConfig {
-  readonly dirs?: readonly string[];
-  readonly enabled?: Readonly<Record<string, boolean | PluginEntryConfig>>;
+  readonly enabled?: boolean;
+  readonly allowlist?: readonly string[];
+  readonly plugins?: Readonly<Record<string, boolean | PluginEntryConfig>>;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -619,6 +629,10 @@ export function defaultConfig(): AgenCConfig {
         enabled: false,
       }) as AuthManagedKeysConfig,
     }) as AuthConfig,
+    plugins: Object.freeze({
+      enabled: false,
+      allowlist: Object.freeze([]) as readonly string[],
+    }) as PluginsConfig,
     daemon: Object.freeze({
       transport: "unix",
       autostart: true,

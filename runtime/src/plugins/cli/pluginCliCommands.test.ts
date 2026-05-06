@@ -203,7 +203,7 @@ describe("agenc plugin CLI", () => {
     }, options(agencHome, workspaceRoot, disableIo));
     expect(disableExit).toBe(0);
     expect(await readFile(join(agencHome, "config.toml"), "utf8"))
-      .toContain("[plugins.enabled.\"alpha\"]\nenabled = false");
+      .toContain("[plugins.plugins.\"alpha\"]\nenabled = false");
 
     const disabledListIo = createIo();
     await runAgenCPluginCli({

@@ -239,7 +239,9 @@ describe("plugin source resolution", () => {
       const result = await loadPlugins({
         agencHome,
         workspaceRoot: root,
-        config: {},
+        config: {
+          plugins: { enabled: true },
+        },
       });
 
       expect(result.enabled.map((plugin) => plugin.name).sort()).toEqual(["app", "lib"]);
@@ -1138,7 +1140,7 @@ describe("plugin source resolution", () => {
         workspaceRoot,
         config: {
           plugins: {
-            enabled: {
+            plugins: {
               "app@main": { path: "vendor/app" },
               "lib@main": { path: "vendor/lib", enabled: false },
             },
@@ -1167,7 +1169,9 @@ describe("plugin source resolution", () => {
       const result = await loadPlugins({
         agencHome: join(root, "home"),
         workspaceRoot,
-        config: {},
+        config: {
+          plugins: { enabled: true },
+        },
       });
 
       expect(result.enabled.map((plugin) => plugin.name).sort()).toEqual(["app", "lib"]);
@@ -1188,7 +1192,7 @@ describe("plugin source resolution", () => {
         workspaceRoot,
         config: {
           plugins: {
-            enabled: {
+            plugins: {
               "app@main": { path: "vendor/app" },
               "lib@other": { path: "vendor/lib" },
             },
@@ -1220,7 +1224,7 @@ describe("plugin source resolution", () => {
         workspaceRoot,
         config: {
           plugins: {
-            enabled: {
+            plugins: {
               "app@main": { path: "vendor/app" },
               "lib@main": { path: "vendor/lib" },
             },

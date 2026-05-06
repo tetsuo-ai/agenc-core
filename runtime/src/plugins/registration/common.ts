@@ -401,8 +401,9 @@ export function hasExplicitPluginDiscoveryInput(
   const plugins = options.config?.plugins;
   if (isRecord(options.config?.enabledPlugins)) return true;
   return isRecord(plugins) &&
-    (Array.isArray(plugins.dirs) ||
-      isRecord(plugins.enabled));
+    (plugins.enabled === true ||
+      (Array.isArray(plugins.allowlist) && plugins.allowlist.length > 0) ||
+      isRecord(plugins.plugins));
 }
 
 export function substituteArguments(

@@ -1,7 +1,13 @@
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { validateHooksConfig } from "../config/schema.js";
-import type { AgenCConfig, HooksMap, LspServerConfigInput, McpServerConfig } from "../config/schema.js";
+import type {
+  AgenCConfig,
+  HooksMap,
+  LspServerConfigInput,
+  McpServerConfig,
+  PluginEntryConfig,
+} from "../config/schema.js";
 import { pluginDependencyIdentityFromSource, verifyPluginDependencyState } from "./resolution.js";
 import {
   findPluginManifestPath,
@@ -134,11 +140,6 @@ export interface PluginLoadResult {
   readonly errors: readonly PluginLoadIssue[];
 }
 
-export interface PluginConfigEntry {
-  readonly enabled?: boolean;
-  readonly path?: string;
-}
-
 export interface PluginLoaderOptions {
   readonly agencHome: string;
   readonly workspaceRoot: string;
@@ -155,42 +156,70 @@ interface DiscoveredPluginRoot {
 
 function configuredPluginEntries(
   config: Pick<AgenCConfig, "plugins" | "enabledPlugins"> | undefined,
-): Readonly<Record<string, boolean | PluginConfigEntry>> {
+): Readonly<Record<string, boolean | PluginEntryConfig>> {
   const plugins = config?.plugins;
-  if (isRecord(plugins) && isRecord(plugins.enabled)) {
-    return plugins.enabled as Readonly<Record<string, boolean | PluginConfigEntry>>;
+  if (isRecord(plugins) && isRecord(plugins.plugins)) {
+    return plugins.plugins as Readonly<Record<string, boolean | PluginEntryConfig>>;
   }
   if (isRecord(config?.enabledPlugins)) {
-    return config.enabledPlugins as Readonly<Record<string, boolean | PluginConfigEntry>>;
+    return config.enabledPlugins as Readonly<Record<string, boolean | PluginEntryConfig>>;
   }
   return {};
 }
 
-function configuredPluginDirs(
-  options: PluginLoaderOptions,
-): string[] {
-  const dirs: string[] = [];
-  const plugins = options.config?.plugins;
-  if (isRecord(plugins) && Array.isArray(plugins.dirs)) {
-    dirs.push(
-      ...plugins.dirs.filter((entry): entry is string => typeof entry === "string"),
-    );
-  }
-  dirs.push(...(options.extraPluginDirs ?? []));
-  return dirs.map((dir) => resolvePath(options.workspaceRoot, dir));
+function pluginAutoDiscoveryEnabled(
+  config: Pick<AgenCConfig, "plugins"> | undefined,
+): boolean {
+  const plugins = config?.plugins;
+  return isRecord(plugins) && plugins.enabled === true;
+}
+
+function configuredPluginAllowlist(
+  config: Pick<AgenCConfig, "plugins"> | undefined,
+): ReadonlySet<string> | null {
+  const plugins = config?.plugins;
+  if (!isRecord(plugins) || !Array.isArray(plugins.allowlist)) return null;
+  const allowlist = plugins.allowlist
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return allowlist.length > 0 ? new Set(allowlist) : null;
+}
+
+function pluginAllowedByAllowlist(
+  pluginIds: readonly string[],
+  allowlist: ReadonlySet<string> | null,
+): boolean {
+  if (allowlist === null) return true;
+  return pluginIds.some((pluginId) => {
+    const marketplaceSeparator = pluginId.lastIndexOf("@");
+    const pluginName = marketplaceSeparator > 0
+      ? pluginId.slice(0, marketplaceSeparator)
+      : pluginId;
+    return allowlist.has(pluginId) || allowlist.has(pluginName);
+  });
+}
+
+function configuredValueForRoot(
+  root: DiscoveredPluginRoot,
+  configured: Readonly<Record<string, boolean | PluginEntryConfig>>,
+): boolean | PluginEntryConfig | undefined {
+  return (root.key ? configured[root.key] : undefined) ??
+    configured[root.source] ??
+    configured[basename(root.path)];
 }
 
 function resolvePath(base: string, path: string): string {
   return isAbsolute(path) ? path : resolve(base, path);
 }
 
-function configEntryEnabled(value: boolean | PluginConfigEntry | undefined): boolean {
+function configEntryEnabled(value: boolean | PluginEntryConfig | undefined): boolean {
   if (value === undefined) return true;
   if (typeof value === "boolean") return value;
   return value.enabled !== false;
 }
 
-function configEntryPath(value: boolean | PluginConfigEntry | undefined): string | undefined {
+function configEntryPath(value: boolean | PluginEntryConfig | undefined): string | undefined {
   return typeof value === "object" && value !== null && typeof value.path === "string"
     ? value.path
     : undefined;
@@ -289,10 +318,18 @@ export async function discoverPluginRoots(
   options: PluginLoaderOptions,
 ): Promise<readonly DiscoveredPluginRoot[]> {
   const configured = configuredPluginEntries(options.config);
-  const roots = [
-    ...(await discoverRootsUnder(join(options.agencHome, "plugins"))),
-    ...(await discoverRootsUnder(join(options.workspaceRoot, ".agents", "plugins"))),
-  ];
+  const autoDiscoveryEnabled = pluginAutoDiscoveryEnabled(options.config);
+  const roots: DiscoveredPluginRoot[] = [];
+  roots.push(
+    ...(await discoverRootsUnder(join(options.agencHome, "plugins"))).map((root) => ({
+      ...root,
+      enabled: root.enabled && autoDiscoveryEnabled,
+    })),
+    ...(await discoverRootsUnder(join(options.workspaceRoot, ".agents", "plugins"))).map((root) => ({
+      ...root,
+      enabled: root.enabled && autoDiscoveryEnabled,
+    })),
+  );
 
   for (const [key, value] of Object.entries(configured).sort(([a], [b]) => a.localeCompare(b))) {
     const path = configEntryPath(value);
@@ -304,16 +341,17 @@ export async function discoverPluginRoots(
       enabled: configEntryEnabled(value),
     });
   }
-  for (const path of configuredPluginDirs(options)) {
-    roots.push(...(await discoverRootsUnder(path)));
+  for (const path of options.extraPluginDirs ?? []) {
+    roots.push(...(await discoverRootsUnder(resolvePath(options.workspaceRoot, path))));
   }
 
   const deduped = new Map<string, DiscoveredPluginRoot>();
   for (const root of roots) {
-    const configValue = root.key ? configured[root.key] : configured[basename(root.path)];
+    const configValue = configuredValueForRoot(root, configured);
     deduped.set(root.path, {
       ...root,
-      enabled: root.enabled && configEntryEnabled(configValue),
+      enabled: (root.enabled || configValue !== undefined) &&
+        configEntryEnabled(configValue),
     });
   }
   return [...deduped.values()].sort((a, b) => a.path.localeCompare(b.path));
@@ -324,6 +362,7 @@ export async function loadPlugins(
 ): Promise<PluginLoadResult> {
   const roots = await discoverPluginRoots(options);
   const configured = configuredPluginEntries(options.config);
+  const allowlist = configuredPluginAllowlist(options.config);
   const loaded = await Promise.all(
     roots.map((root) =>
       createPluginFromPath(root.path, {
@@ -332,9 +371,15 @@ export async function loadPlugins(
         fallbackName: basename(root.path),
         isEnabled: (manifestName) => configEntryEnabled(
           configured[root.key ?? ""] ??
+            configured[root.source] ??
             configured[manifestName] ??
             configured[basename(root.path)],
-        ),
+        ) &&
+          pluginAllowedByAllowlist(
+            [root.key, root.source, manifestName, basename(root.path)]
+              .filter((entry): entry is string => typeof entry === "string"),
+            allowlist,
+          ),
       }),
     ),
   );

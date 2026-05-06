@@ -72,6 +72,8 @@ describe("schema: defaultConfig", () => {
     expect(cfg.agent_max_depth).toBe(1);
     expect(cfg.auth?.backend).toBe("local");
     expect(cfg.auth?.managedKeys?.enabled).toBe(false);
+    expect(cfg.plugins?.enabled).toBe(false);
+    expect(cfg.plugins?.allowlist).toEqual([]);
     expect(cfg.daemon?.transport).toBe("unix");
     expect(cfg.daemon?.autostart).toBe(true);
     expect(cfg.permissions?.default_mode).toBe("on-request");
@@ -249,6 +251,49 @@ describe("schema: normalizeRawConfig", () => {
     });
     expect(out._unknown).toBeUndefined();
     expect(KNOWN_CONFIG_KEYS.includes("auth")).toBe(true);
+  });
+
+  test("preserves plugin config on the typed path", () => {
+    const out = normalizeRawConfig({
+      plugins: {
+        enabled: true,
+        allowlist: ["alpha", "beta@team"],
+        plugins: {
+          "alpha@team": {
+            enabled: true,
+            path: "vendor/alpha",
+            mcp_servers: {
+              api: {
+                enabled: true,
+                default_tools_approval_mode: "on-request",
+                enabled_tools: ["read"],
+                disabled_tools: ["write"],
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(out.plugins).toEqual({
+      enabled: true,
+      allowlist: ["alpha", "beta@team"],
+      plugins: {
+        "alpha@team": {
+          enabled: true,
+          path: "vendor/alpha",
+          mcp_servers: {
+            api: {
+              enabled: true,
+              default_tools_approval_mode: "on-request",
+              enabled_tools: ["read"],
+              disabled_tools: ["write"],
+            },
+          },
+        },
+      },
+    });
+    expect(out._unknown).toBeUndefined();
+    expect(KNOWN_CONFIG_KEYS.includes("plugins")).toBe(true);
   });
 
   test("preserves sandbox.mode config on the typed path", () => {
@@ -1097,6 +1142,46 @@ enabled = true
     expect(out.config.auth?.backend).toBe("remote");
     expect(out.config.auth?.managedKeys?.enabled).toBe(true);
     expect(out.config._unknown?.auth).toBeUndefined();
+  });
+
+  test("plugins TOML overrides the disabled plugin defaults", async () => {
+    writeFileSync(
+      join(dir, "config.toml"),
+      `
+[plugins]
+enabled = true
+allowlist = ["alpha", "beta@team"]
+
+[plugins.plugins."alpha@team"]
+enabled = true
+path = "vendor/alpha"
+
+[plugins.plugins."alpha@team".mcp_servers.api]
+enabled = true
+enabled_tools = ["read"]
+disabled_tools = ["write"]
+      `,
+    );
+    const out = await loadConfig({ home: dir });
+    expect(out.exists).toBe(true);
+    expect(out.config.plugins).toEqual({
+      enabled: true,
+      allowlist: ["alpha", "beta@team"],
+      plugins: {
+        "alpha@team": {
+          enabled: true,
+          path: "vendor/alpha",
+          mcp_servers: {
+            api: {
+              enabled: true,
+              enabled_tools: ["read"],
+              disabled_tools: ["write"],
+            },
+          },
+        },
+      },
+    });
+    expect(out.config._unknown?.plugins).toBeUndefined();
   });
 
   test("sandbox.mode TOML overrides the workspace-write default", async () => {

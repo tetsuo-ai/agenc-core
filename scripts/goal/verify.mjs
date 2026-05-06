@@ -91,6 +91,32 @@ const ITEM_EVIDENCE = {
       "runtime/src/bin/bootstrap.test.ts",
     ],
   },
+  "CF-10": {
+    files: [
+      "runtime/src/config/schema.ts",
+      "runtime/src/config/config.test.ts",
+      "runtime/src/plugins/loader.ts",
+      "runtime/src/plugins/policy.ts",
+      "runtime/src/plugins/cli/pluginOperations.ts",
+      "runtime/src/plugins/marketplace/startup_checks.ts",
+      "runtime/src/bin/bootstrap-services.ts",
+    ],
+    grepPresent: [
+      { pattern: "interface PluginsConfig", scope: "runtime/src/config/schema.ts" },
+      { pattern: "cfg\\.plugins\\?\\.enabled", scope: "runtime/src/config/config.test.ts" },
+      { pattern: "configuredPluginAllowlist", scope: "runtime/src/plugins/loader.ts" },
+      { pattern: "plugins\\.plugins", scope: "runtime/src/plugins/policy.ts" },
+      { pattern: "\\[plugins\\.plugins", scope: "runtime/src/plugins/cli/pluginOperations.ts" },
+      { pattern: "config: opts\\.configStore\\.current\\(\\)", scope: "runtime/src/bin/bootstrap-services.ts" },
+    ],
+    tests: [
+      "runtime/src/config/config.test.ts",
+      "runtime/src/plugins/loader.test.ts",
+      "runtime/src/plugins/policy.test.ts",
+      "runtime/src/plugins/cli/pluginCliCommands.test.ts",
+      "runtime/src/skills/local-loader.test.ts",
+    ],
+  },
   "F-01": {
     files: ["runtime/src/constants/querySource.ts"],
     grepNotPresent: [{ pattern: "@ts-nocheck", scope: "runtime/src/constants/querySource.ts" }],
