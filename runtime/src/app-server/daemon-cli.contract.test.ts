@@ -716,6 +716,38 @@ describe("AgenC daemon CLI", () => {
     await rm(agencHome, { recursive: true, force: true });
   });
 
+  it("foreground daemon starts a configured mcp.server SSE endpoint", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    await writeFile(
+      join(agencHome, "config.toml"),
+      `
+[mcp.server]
+enabled = true
+transport = "sse"
+port = 0
+      `,
+    );
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+
+    expect(io.stderrText()).toMatch(
+      /AgenC MCP server listening on http:\/\/127\.0\.0\.1:\d+\/mcp/,
+    );
+    signalProcess.emit("SIGTERM");
+    await expect(running).resolves.toBe(0);
+    await expect(readAgenCDaemonPid(pidPath)).resolves.toBeNull();
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
   it("foreground daemon applies agent.retention config to terminal and snapshot startup pruning", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
