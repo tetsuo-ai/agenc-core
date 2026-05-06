@@ -180,6 +180,68 @@ describe("MultiTurnContextManager", () => {
     ).toContain("original attachment");
   });
 
+  test("deep-clones caller-owned records on ingest", async () => {
+    const cwd = tempRoot();
+    writeFileSync(join(cwd, "note.txt"), "original attachment");
+    const manager = createMultiTurnContextManager();
+    const mutableMessage = message("original message") as {
+      message: { content: string };
+    };
+    const mutableInput = { nested: { path: "original path" } };
+
+    manager.addMessageToTurn(mutableMessage);
+    manager.addToolCallToTurn({
+      id: "call_1",
+      name: "read_file",
+      input: mutableInput,
+      timestamp: 1,
+    });
+    const returnedAttachment = await manager.attachFileMentions("read @note.txt", {
+      cwd,
+    });
+
+    mutableMessage.message.content = "mutated message";
+    mutableInput.nested.path = "mutated path";
+    (returnedAttachment.attachments[0] as { content: string }).content =
+      "mutated attachment";
+
+    const turn = manager.getCurrentTurn()!;
+    expect(
+      (turn.messages[0] as { message: { content: string } }).message.content,
+    ).toBe("original message");
+    expect(
+      (turn.toolCalls[0]?.input as { nested: { path: string } }).nested.path,
+    ).toBe("original path");
+    expect(
+      (turn.attachments[0] as { attachments: readonly { content: string }[] })
+        .attachments[0]?.content,
+    ).toBe("original attachment");
+  });
+
+  test("handles cyclic and prototype-polluting payloads while cloning", () => {
+    const manager = createMultiTurnContextManager();
+    const cyclic = message("cyclic message") as MultiTurnMessage & {
+      self?: unknown;
+    };
+    cyclic.self = cyclic;
+    const polluted = JSON.parse('{"__proto__":{"polluted":true},"safe":1}') as
+      Record<string, unknown>;
+
+    manager.addMessageToTurn(cyclic);
+    manager.addToolCallToTurn({
+      id: "call_1",
+      name: "unsafe_shape",
+      input: polluted,
+      timestamp: 1,
+    });
+
+    expect(() => manager.getTurnHistory()).not.toThrow();
+    expect(({} as { polluted?: boolean }).polluted).toBeUndefined();
+    expect(
+      (manager.getTurnHistory()[0]?.toolCalls[0]?.input as { safe: number }).safe,
+    ).toBe(1);
+  });
+
   test("reports compaction status from message tokens and thresholds", () => {
     const manager = createMultiTurnContextManager({
       contextWindowTokens: 20,
@@ -214,6 +276,38 @@ describe("MultiTurnContextManager", () => {
     expect(trigger.reason).toBe("auto_compact_threshold");
     expect(trigger.context.turnIds).toHaveLength(4);
     expect(trigger.context.compactableMessages).toHaveLength(4);
+  });
+
+  test("honors auto-compact disable switches while keeping max-token limits", () => {
+    const previous = process.env.AGENC_DISABLE_AUTO_COMPACT;
+    process.env.AGENC_DISABLE_AUTO_COMPACT = "1";
+    try {
+      const belowHardLimit = createMultiTurnContextManager({
+        contextWindowTokens: 20,
+        maxTokensPerTurn: 1_000,
+      });
+      belowHardLimit.addMessageToTurn(message("x".repeat(120)));
+      expect(belowHardLimit.getCompactionStatus()).toMatchObject({
+        exceedsAutoCompactThreshold: false,
+        shouldCompact: false,
+      });
+
+      const overHardLimit = createMultiTurnContextManager({
+        contextWindowTokens: 20,
+        maxTokensPerTurn: 5,
+      });
+      overHardLimit.addMessageToTurn(message("x".repeat(120)));
+      expect(overHardLimit.getCompactionStatus()).toMatchObject({
+        exceedsMaxTokensPerTurn: true,
+        shouldCompact: true,
+      });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.AGENC_DISABLE_AUTO_COMPACT;
+      } else {
+        process.env.AGENC_DISABLE_AUTO_COMPACT = previous;
+      }
+    }
   });
 
   test("handles just-below and equal compaction thresholds", () => {
@@ -254,6 +348,23 @@ describe("MultiTurnContextManager", () => {
     expect(manager.getCompactionStatus().currentTokens).toBe(0);
   });
 
+  test("uses recorded message token counts in active context payloads", () => {
+    let tokenEstimate = 1;
+    const manager = createMultiTurnContextManager(
+      {},
+      {
+        estimateMessageTokens: () => tokenEstimate,
+      },
+    );
+
+    manager.addMessageToTurn(message("stable count"));
+    tokenEstimate = 99;
+
+    const payload = manager.getActiveContextPayload();
+    expect(payload.messageTokens).toBe(1);
+    expect(payload.compactableMessages[0]?.tokens).toBe(1);
+  });
+
   test("records file mention rejections through the wrapper", async () => {
     const cwd = tempRoot();
     const outside = tempRoot();
@@ -268,6 +379,12 @@ describe("MultiTurnContextManager", () => {
     expect(attachment.attachments).toEqual([]);
     expect(attachment.rejected[0]?.reason).toBe("outside_workspace");
     expect(manager.getCurrentTurn()?.attachments).toHaveLength(1);
+    expect(manager.getActiveContextPayload().attachmentBlocks).toEqual([]);
+    expect(
+      manager
+        .getActiveContextPayload()
+        .compactableMessages.filter((entry) => entry.kind === "attachment"),
+    ).toEqual([]);
   });
 
   test("allows file mentions inside explicit allowed roots", async () => {
@@ -313,6 +430,8 @@ describe("MultiTurnContextManager", () => {
     });
 
     expect(attachment.attachments).toHaveLength(1);
+    expect(attachment.attachmentBlock).toContain("<attached_files>");
+    expect(attachment.attachmentBlock).not.toContain("<user_message>");
     expect(attachment.tokens).toBeGreaterThan(16);
     expect(manager.getCompactionStatus().attachmentTokens).toBe(attachment.tokens);
     expect(manager.shouldCompactCurrentTurn()).toBe(true);
@@ -371,6 +490,7 @@ describe("MultiTurnContextManager", () => {
       .toHaveLength(3);
     expect(payload.attachmentBlocks.map((entry) => entry.content).join("\n"))
       .toContain("Mentioned file sentinel.");
+    expect(payload.attachmentBlocks[0]?.content).not.toContain("<user_message>");
     expect(payload.attachmentBlocks.map((entry) => entry.content).join("\n"))
       .toContain("Project instruction sentinel.");
     expect(payload.attachmentBlocks.map((entry) => entry.content).join("\n"))

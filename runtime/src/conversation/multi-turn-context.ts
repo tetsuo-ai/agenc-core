@@ -33,6 +33,7 @@ import {
 import {
   getAutoCompactThreshold,
   getEffectiveContextWindowSize,
+  isAutoCompactEnabled,
 } from "../services/compact/autoCompact.js";
 import type { CompactContext } from "../services/compact/types.js";
 import {
@@ -88,6 +89,7 @@ export interface FileMentionTurnAttachment {
   readonly type: "file_mentions";
   readonly originalPrompt: string;
   readonly expandedPrompt: string;
+  readonly attachmentBlock: string;
   readonly attachments: readonly FileMentionAttachment[];
   readonly rejected: readonly FileMentionRejection[];
   readonly tokens: number;
@@ -114,6 +116,7 @@ export interface TurnContext {
   readonly turnId: string;
   readonly startTime: number;
   readonly messages: readonly MultiTurnMessage[];
+  readonly messageTokenCounts: readonly number[];
   readonly toolCalls: readonly MultiTurnToolCall[];
   readonly state: ReadonlyMap<string, unknown>;
   readonly attachments: readonly TurnAttachment[];
@@ -126,6 +129,7 @@ interface MutableTurnContext {
   turnId: string;
   startTime: number;
   messages: MultiTurnMessage[];
+  messageTokenCounts: number[];
   toolCalls: MultiTurnToolCall[];
   state: Map<string, unknown>;
   attachments: TurnAttachment[];
@@ -269,19 +273,38 @@ function normalizeOptions(options: MultiTurnOptions = {}): NormalizedMultiTurnOp
   };
 }
 
-function cloneValue<T>(value: T): T {
+function cloneValue<T>(value: T, seen = new WeakMap<object, unknown>()): T {
   if (value === null || typeof value !== "object") return value;
+  const objectValue = value as object;
+  const existing = seen.get(objectValue);
+  if (existing !== undefined) return existing as T;
   if (Array.isArray(value)) {
-    return value.map((entry) => cloneValue(entry)) as T;
+    const out: unknown[] = [];
+    seen.set(objectValue, out);
+    for (const entry of value) {
+      out.push(cloneValue(entry, seen));
+    }
+    return out as T;
   }
   if (value instanceof Map) {
-    return new Map(
-      [...value.entries()].map(([key, entry]) => [key, cloneValue(entry)]),
-    ) as T;
+    const out = new Map<unknown, unknown>();
+    seen.set(objectValue, out);
+    for (const [key, entry] of value.entries()) {
+      out.set(key, cloneValue(entry, seen));
+    }
+    return out as T;
   }
-  const out: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value)) {
-    out[key] = cloneValue(entry);
+  const out: Record<string, unknown> = Object.create(null);
+  seen.set(objectValue, out);
+  for (const key of Reflect.ownKeys(objectValue)) {
+    const descriptor = Object.getOwnPropertyDescriptor(objectValue, key);
+    if (descriptor === undefined || !("value" in descriptor)) continue;
+    Object.defineProperty(out, key, {
+      value: cloneValue(descriptor.value, seen),
+      enumerable: descriptor.enumerable,
+      configurable: true,
+      writable: true,
+    });
   }
   return out as T;
 }
@@ -291,6 +314,7 @@ function cloneTurn(turn: MutableTurnContext): TurnContext {
     turnId: turn.turnId,
     startTime: turn.startTime,
     messages: turn.messages.map((message) => cloneValue(message)),
+    messageTokenCounts: [...turn.messageTokenCounts],
     toolCalls: turn.toolCalls.map((call) => ({
       id: call.id,
       name: call.name,
@@ -359,7 +383,7 @@ function addTokens(turn: MutableTurnContext, tokens: number, kind: "message" | "
 function attachmentContent(attachment: TurnAttachment): string {
   switch (attachment.type) {
     case "file_mentions":
-      return attachment.expandedPrompt;
+      return attachment.attachmentBlock;
     case "agenc_instructions":
       return attachment.content;
     case "session_memory":
@@ -418,6 +442,7 @@ export class MultiTurnContextManager {
       turnId: `turn_${++this.turnCounter}_${now}`,
       startTime: now,
       messages: [],
+      messageTokenCounts: [],
       toolCalls: [],
       state: cloneStateForNewTurn(this.currentTurn, this.activeOptions),
       attachments: [],
@@ -438,8 +463,9 @@ export class MultiTurnContextManager {
 
   addMessageToTurn(message: MultiTurnMessage): void {
     const turn = this.ensureTurn();
-    turn.messages.push(message);
     const tokens = this.countMessages([message]);
+    turn.messages.push(cloneValue(message));
+    turn.messageTokenCounts.push(tokens);
     addTokens(turn, tokens, "message");
   }
 
@@ -448,7 +474,7 @@ export class MultiTurnContextManager {
     turn.toolCalls.push({
       id: call.id,
       name: call.name,
-      input: { ...call.input },
+      input: cloneValue(call.input),
       timestamp: call.timestamp,
     });
   }
@@ -501,33 +527,36 @@ export class MultiTurnContextManager {
       turnIds.push(turn.turnId);
       messageTokens += turn.messageTokens;
       attachmentTokens += turn.attachmentTokens;
-      for (const message of turn.messages) {
+      for (const [index, message] of turn.messages.entries()) {
+        const tokens = turn.messageTokenCounts[index] ?? 0;
         const clonedMessage = cloneValue(message);
         messages.push(clonedMessage);
         compactableMessages.push({
           turnId: turn.turnId,
           kind: "message",
           content: clonedMessage,
-          tokens: this.countMessages([message]),
+          tokens,
         });
       }
       for (const attachment of turn.attachments) {
         const clonedAttachment = cloneValue(attachment);
         const content = attachmentContent(clonedAttachment);
         attachments.push(clonedAttachment);
-        attachmentBlocks.push({
-          turnId: turn.turnId,
-          type: clonedAttachment.type,
-          content,
-          tokens: clonedAttachment.tokens,
-        });
-        compactableMessages.push({
-          turnId: turn.turnId,
-          kind: "attachment",
-          attachmentType: clonedAttachment.type,
-          content,
-          tokens: clonedAttachment.tokens,
-        });
+        if (content.length > 0) {
+          attachmentBlocks.push({
+            turnId: turn.turnId,
+            type: clonedAttachment.type,
+            content,
+            tokens: clonedAttachment.tokens,
+          });
+          compactableMessages.push({
+            turnId: turn.turnId,
+            kind: "attachment",
+            attachmentType: clonedAttachment.type,
+            content,
+            tokens: clonedAttachment.tokens,
+          });
+        }
       }
     }
 
@@ -553,14 +582,14 @@ export class MultiTurnContextManager {
     const autoCompactThresholdTokens =
       this.activeOptions.autoCompactThresholdTokens ??
       getAutoCompactThreshold(compactContext);
+    const autoCompactEnabled = isAutoCompactEnabled();
     const exceedsMaxTokensPerTurn =
       currentTokens >= this.activeOptions.maxTokensPerTurn;
     const exceedsAutoCompactThreshold =
-      currentTokens >= autoCompactThresholdTokens;
-    const threshold = Math.min(
-      this.activeOptions.maxTokensPerTurn,
-      autoCompactThresholdTokens,
-    );
+      autoCompactEnabled && currentTokens >= autoCompactThresholdTokens;
+    const threshold = autoCompactEnabled
+      ? Math.min(this.activeOptions.maxTokensPerTurn, autoCompactThresholdTokens)
+      : this.activeOptions.maxTokensPerTurn;
     return {
       currentTokens,
       messageTokens,
@@ -620,14 +649,15 @@ export class MultiTurnContextManager {
       type: "file_mentions",
       originalPrompt: prompt,
       expandedPrompt: expansion.prompt,
-      attachments: [...expansion.attachments],
-      rejected: [...expansion.rejected],
+      attachmentBlock,
+      attachments: expansion.attachments.map((entry) => cloneValue(entry)),
+      rejected: expansion.rejected.map((entry) => cloneValue(entry)),
       tokens,
       timestamp: this.deps.now(),
     };
-    turn.attachments.push(attachment);
+    turn.attachments.push(cloneValue(attachment));
     addTokens(turn, tokens, "attachment");
-    return attachment;
+    return cloneValue(attachment);
   }
 
   async attachAgenCInstructions(
@@ -649,9 +679,9 @@ export class MultiTurnContextManager {
       tokens,
       timestamp: this.deps.now(),
     };
-    turn.attachments.push(attachment);
+    turn.attachments.push(cloneValue(attachment));
     addTokens(turn, tokens, "attachment");
-    return attachment;
+    return cloneValue(attachment);
   }
 
   async attachSessionMemory(
@@ -669,9 +699,9 @@ export class MultiTurnContextManager {
       tokens,
       timestamp: this.deps.now(),
     };
-    turn.attachments.push(attachment);
+    turn.attachments.push(cloneValue(attachment));
     addTokens(turn, tokens, "attachment");
-    return attachment;
+    return cloneValue(attachment);
   }
 
   createTracker(): MultiTurnTracker {
