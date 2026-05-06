@@ -1314,6 +1314,28 @@ const ITEM_EVIDENCE = {
   "CF-01": {
     grepPresent: [{ pattern: "auth\\.backend", scope: "runtime/src/config" }],
   },
+  "CF-03": {
+    files: [
+      "runtime/src/config/schema.ts",
+      "runtime/src/config/env.ts",
+      "runtime/src/auth/selection.ts",
+      "runtime/src/auth/byok-precedence.ts",
+      "runtime/src/auth/backends/remote.ts",
+      "runtime/src/config/PARITY.md",
+    ],
+    grepPresent: [
+      { pattern: "managedKeys", scope: "runtime/src/config/schema.ts" },
+      { pattern: "AGENC_AUTH_MANAGED_KEYS_ENABLED", scope: "runtime/src/config/env.ts" },
+      { pattern: "resolveAuthManagedKeysEnabled", scope: "runtime/src/auth/selection.ts" },
+      { pattern: "managedKeysEnabled", scope: "runtime/src/auth/backends/remote.ts" },
+    ],
+    tests: [
+      "runtime/src/config/config.test.ts",
+      "runtime/src/auth/selection.contract.test.ts",
+      "runtime/src/auth/byok-precedence.contract.test.ts",
+      "runtime/src/auth/backends/remote.contract.test.ts",
+    ],
+  },
   "CF-05": {
     grepPresent: [{ pattern: "sandbox\\.mode", scope: "runtime/src/config" }],
   },
@@ -3676,7 +3698,7 @@ async function configGates(item) {
   const flagMap = {
     "CF-01": "auth.backend",
     "CF-02": "provider.default",
-    "CF-03": "provider.managed_keys",
+    "CF-03": "auth.managedKeys.enabled",
     "CF-04": "agenc",
     "CF-05": "sandbox.mode",
     "CF-06": "agent.retention_days",

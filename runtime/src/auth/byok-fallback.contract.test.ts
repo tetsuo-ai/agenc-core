@@ -108,12 +108,9 @@ describe("BYOK fallback", () => {
           },
         }),
       ).rejects.toThrow(
-        /grok provider requires an API key.*AuthBackend\.vendKey\(\).*XAI_API_KEY.*providers\.grok\.api_key_env/,
+        /grok provider requires an API key.*auth\.managedKeys\.enabled.*XAI_API_KEY.*providers\.grok\.api_key_env/,
       );
-      expect(calls).toEqual([
-        "getSubscriptionTier:conv-no-key",
-        "vendKey:grok:conv-no-key",
-      ]);
+      expect(calls).toEqual(["getSubscriptionTier:conv-no-key"]);
     } finally {
       await rm(agencHome, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });

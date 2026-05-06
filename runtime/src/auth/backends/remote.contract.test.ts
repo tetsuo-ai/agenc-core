@@ -391,6 +391,23 @@ describe("RemoteAuthBackend", () => {
     ]);
   });
 
+  it("does not request managed keys when config selection disables them", async () => {
+    const keyVendor = vi.fn(({ provider, sessionId }) => ({
+      provider,
+      sessionId,
+      apiKey: "managed-key",
+    }));
+    const backend = new RemoteAuthBackend({
+      keyVendor,
+      managedKeysEnabled: false,
+    });
+
+    await expect(backend.vendKey("grok", "session-1")).rejects.toThrow(
+      /auth\.managedKeys\.enabled/,
+    );
+    expect(keyVendor).not.toHaveBeenCalled();
+  });
+
   it("expires cached managed keys after the configured in-memory TTL", async () => {
     let nowMs = 1_000;
     let vendCount = 0;
