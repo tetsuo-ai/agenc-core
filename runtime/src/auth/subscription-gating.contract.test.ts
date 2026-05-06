@@ -28,6 +28,7 @@ describe("remote subscription gating", () => {
           conversationId: "conv-free-managed",
           env: {
             AGENC_HOME: agencHome,
+            AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
             AGENC_WORKSPACE: workspace,
             AGENC_XAI_API_KEY: "",
             GROK_API_KEY: "",
@@ -65,6 +66,7 @@ describe("remote subscription gating", () => {
           conversationId: "conv-free-daemon-managed",
           env: {
             AGENC_HOME: agencHome,
+            AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
             AGENC_WORKSPACE: workspace,
             AGENC_XAI_API_KEY: "",
             GROK_API_KEY: "",

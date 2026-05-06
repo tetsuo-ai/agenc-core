@@ -1,6 +1,7 @@
 export interface ByokPrecedenceApiKeyInput {
   readonly explicitApiKey?: string;
   readonly byokApiKey?: string;
+  readonly managedKeysEnabled?: boolean;
   readonly managedApiKey?: string;
 }
 
@@ -10,7 +11,7 @@ export function selectByokPrecedenceApiKey(
   return (
     nonEmpty(input.explicitApiKey) ??
     nonEmpty(input.byokApiKey) ??
-    nonEmpty(input.managedApiKey)
+    (input.managedKeysEnabled ? nonEmpty(input.managedApiKey) : undefined)
   );
 }
 

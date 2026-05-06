@@ -86,6 +86,7 @@ import type {
   AuthSubscriptionTier,
 } from "../auth/backend.js";
 import { selectByokPrecedenceApiKey } from "../auth/byok-precedence.js";
+import { resolveAuthManagedKeysEnabled } from "../auth/selection.js";
 import { bindSessionAgentControl } from "./delegate-tool.js";
 import {
   readStartupCliFlags,
@@ -181,6 +182,7 @@ function enforceRemoteSubscriptionGate(params: {
   readonly model: string;
   readonly providerSettings: ResolvedProviderSettings | undefined;
   readonly byokApiKey: string | undefined;
+  readonly managedKeysEnabled: boolean;
 }): void {
   if (!isRemoteAuthBackend(params.authBackend)) return;
   if (isSubscriptionEntitled(params.subscriptionTier)) return;
@@ -190,6 +192,7 @@ function enforceRemoteSubscriptionGate(params: {
     );
   }
   if (
+    params.managedKeysEnabled &&
     params.byokApiKey === undefined &&
     providerApiKeyEnvHint(params.provider, params.providerSettings) !== undefined
   ) {
@@ -283,6 +286,7 @@ async function vendProviderKeyOrUndefined(params: {
 
 interface ManagedProviderKeyResult {
   readonly attempted: boolean;
+  readonly disabled?: boolean;
   readonly apiKey?: string;
 }
 
@@ -306,9 +310,11 @@ function requireProviderApiKeyOrUndefined(params: {
   if (params.apiKey !== undefined) return params.apiKey;
   const envHint = providerApiKeyEnvHint(params.provider, params.providerSettings);
   if (envHint === undefined) return undefined;
-  const managedKeyHint = params.managedKey.attempted
-    ? "AuthBackend.vendKey() did not return a usable managed key."
-    : "No AuthBackend was configured to vend a managed key.";
+  const managedKeyHint = params.managedKey.disabled
+    ? "Managed key vending is disabled by auth.managedKeys.enabled."
+    : params.managedKey.attempted
+      ? "AuthBackend.vendKey() did not return a usable managed key."
+      : "No AuthBackend was configured to vend a managed key.";
   throw new Error(
     `${params.provider} provider requires an API key. ${managedKeyHint} Set ${envHint} or configure providers.${params.provider}.api_key_env for BYOK fallback.`,
   );
@@ -845,9 +851,11 @@ export async function bootstrapLocalRuntimeSession(
     options.authBackend,
     conversationId,
   );
+  const managedKeysEnabled = resolveAuthManagedKeysEnabled(startup.config);
   const byokApiKey = selectByokPrecedenceApiKey({
     explicitApiKey: options.apiKey,
     byokApiKey: startup.apiKey,
+    managedKeysEnabled,
   });
   const startupProviderSettings = resolveProviderSettings(
     startup.provider,
@@ -861,6 +869,7 @@ export async function bootstrapLocalRuntimeSession(
     model: startup.model,
     providerSettings: startupProviderSettings,
     byokApiKey,
+    managedKeysEnabled,
   });
   const modelSelection = await resolveAuthModelSelection({
     authBackend: options.authBackend,
@@ -883,19 +892,22 @@ export async function bootstrapLocalRuntimeSession(
       ? runtimeProviderSettings
       : resolveProviderSettings(profileProvider, startup.config, env);
   const managedKey =
-    byokApiKey === undefined && !isHostedAgencProvider(resolvedProvider)
+    byokApiKey === undefined &&
+    managedKeysEnabled &&
+    !isHostedAgencProvider(resolvedProvider)
       ? await vendProviderKeyOrUndefined({
           authBackend: options.authBackend,
           provider: resolvedProvider,
           sessionId: conversationId,
         })
-      : { attempted: false };
+      : { attempted: false, ...(!managedKeysEnabled ? { disabled: true } : {}) };
   const selectedApiKey = requireProviderApiKeyOrUndefined({
     provider: resolvedProvider,
     providerSettings: runtimeProviderSettings,
     apiKey: selectByokPrecedenceApiKey({
       explicitApiKey: options.apiKey,
       byokApiKey: startup.apiKey,
+      managedKeysEnabled,
       managedApiKey: managedKey.apiKey,
     }),
     managedKey,
