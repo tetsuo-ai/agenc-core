@@ -176,11 +176,17 @@ async function loadDiffData(file_path: string, edits: FileEdit[]): Promise<DiffD
 }
 function diffToolInputsOnly(filePath: string, edits: FileEdit[]): DiffData {
   return {
-    patch: edits.flatMap(e => getPatchForEdits({
-      filePath,
-      fileContents: e.old_string,
-      edits: [e]
-    }).patch),
+    patch: edits.flatMap(e => {
+      try {
+        return getPatchForEdits({
+          filePath,
+          fileContents: e.old_string,
+          edits: [e]
+        }).patch;
+      } catch {
+        return [];
+      }
+    }),
     firstLine: null,
     fileContent: undefined
   };

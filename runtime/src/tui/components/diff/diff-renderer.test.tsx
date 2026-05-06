@@ -478,6 +478,21 @@ describe('diff renderer components', () => {
     expect(output).toContain('zz')
   })
 
+  test('FileEditToolDiff input-only fallback resolves no-op edits without throwing', async () => {
+    const node = FileEditToolDiff({
+      file_path: 'src/noop.ts',
+      edits: [{ old_string: 'same', new_string: 'same' }],
+    }) as React.ReactElement<{
+      children: React.ReactElement<{ promise: Promise<unknown> }>
+    }>
+
+    await expect(node.props.children.props.promise).resolves.toMatchObject({
+      patch: [],
+      firstLine: null,
+      fileContent: undefined,
+    })
+  })
+
   test('FileEditToolDiff normalizes permission preview edits before display patching', async () => {
     async function loadPatchInput(
       edit: { old_string: string; new_string: string; replace_all?: boolean },
@@ -504,20 +519,20 @@ describe('diff renderer components', () => {
     await expect(
       loadPatchInput(
         { old_string: 'a-b', new_string: 'c-d' },
-        'a—b\n',
+        'a-b\n',
       ),
     ).resolves.toMatchObject({
-      oldContent: 'a—b\n',
+      oldContent: 'a-b\n',
       newContent: 'c-d\n',
     })
 
     await expect(
       loadPatchInput(
         { old_string: 'x y', new_string: 'z y' },
-        'x y\n',
+        'x y\n',
       ),
     ).resolves.toMatchObject({
-      oldContent: 'x y\n',
+      oldContent: 'x y\n',
       newContent: 'z y\n',
     })
 
@@ -552,35 +567,35 @@ describe('diff renderer components', () => {
     })
   })
 
-  test('FileEditToolDiff falls back to full-file normalized matching when raw scan misses', async () => {
+  test('FileEditToolDiff falls back to full-file quote matching when raw scan misses', async () => {
     fileEditMockState.openForScanCanOpen = true
     fileEditMockState.scanContext = {
       content: '',
       lineOffset: 1,
       truncated: false,
     }
-    fileEditMockState.readCappedContent = 'a—b\n'
+    fileEditMockState.readCappedContent = '“x”\n'
 
     const node = FileEditToolDiff({
       file_path: 'src/preview.md',
-      edits: [{ old_string: 'a-b', new_string: 'c-d' }],
+      edits: [{ old_string: '"x"', new_string: '"y"' }],
     }) as React.ReactElement<{
       children: React.ReactElement<{ promise: Promise<unknown> }>
     }>
     await node.props.children.props.promise
 
     expect(fileEditMockState.patchFromContentsInputs[0]).toMatchObject({
-      oldContent: 'a—b\n',
-      newContent: 'c-d\n',
+      oldContent: '“x”\n',
+      newContent: '“y”\n',
     })
   })
 
   test('FileEditToolDiff previews all replace_all matches outside the scanned context window', async () => {
     fileEditMockState.openForScanCanOpen = true
     fileEditMockState.readCappedContent =
-      'a—b\n' + 'middle\n'.repeat(40) + 'a–b\n'
+      'a-b\n' + 'middle\n'.repeat(40) + 'a—b\n'
     fileEditMockState.scanContext = {
-      content: 'a—b\nmiddle\nmiddle\n',
+      content: 'a-b\nmiddle\nmiddle\n',
       lineOffset: 1,
       truncated: false,
     }
@@ -594,8 +609,27 @@ describe('diff renderer components', () => {
     await node.props.children.props.promise
 
     expect(fileEditMockState.patchFromContentsInputs[0]).toMatchObject({
-      oldContent: 'a—b\n' + 'middle\n'.repeat(40) + 'a–b\n',
-      newContent: 'c-d\n' + 'middle\n'.repeat(40) + 'c-d\n',
+      oldContent: 'a-b\n' + 'middle\n'.repeat(40) + 'a—b\n',
+      newContent: 'c-d\n' + 'middle\n'.repeat(40) + 'a—b\n',
+    })
+  })
+
+  test('FileEditToolDiff keeps non-ASCII spaces literal in replace_all previews', async () => {
+    fileEditMockState.openForScanCanOpen = true
+    fileEditMockState.readCappedContent =
+      'x y\n' + 'middle\n'.repeat(40) + 'x y\n'
+
+    const node = FileEditToolDiff({
+      file_path: 'src/preview.md',
+      edits: [{ old_string: 'x y', new_string: 'z y', replace_all: true }],
+    }) as React.ReactElement<{
+      children: React.ReactElement<{ promise: Promise<unknown> }>
+    }>
+    await node.props.children.props.promise
+
+    expect(fileEditMockState.patchFromContentsInputs[0]).toMatchObject({
+      oldContent: 'x y\n' + 'middle\n'.repeat(40) + 'x y\n',
+      newContent: 'z y\n' + 'middle\n'.repeat(40) + 'x y\n',
     })
   })
 })

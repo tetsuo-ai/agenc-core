@@ -1,12 +1,12 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
-import { BLACK_CIRCLE } from '../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { Box, Text } from '../ink.js';
-import type { Screen } from '../screens/REPL';
-import type { NormalizedUserMessage } from '../../types/message';
-import { getUserMessageText } from '../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { ConfigurableShortcutHint } from './ConfigurableShortcutHint';
-import { MessageResponse } from './MessageResponse';
+import { BLACK_CIRCLE } from '../../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { Box, Text } from '../../ink.js';
+import type { Screen } from '../../screens/REPL';
+import type { NormalizedUserMessage } from '../../../types/message';
+import { getUserMessageText } from '../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
+import { MessageResponse } from '../MessageResponse';
 type Props = {
   message: NormalizedUserMessage;
   screen: Screen;

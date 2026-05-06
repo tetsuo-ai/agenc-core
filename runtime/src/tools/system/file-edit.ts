@@ -17,9 +17,9 @@
  *       * empty + existing empty    → accept
  *   - `replace_all`: when true, every occurrence is replaced; when false
  *     a multi-match is rejected with an actionable error.
- *   - Quote/typography normalization via {@link findActualString} —
- *     verbatim port from AgenC utils.ts. Smart quotes, en/em dashes,
- *     and NBSP normalize so a model can match against typographic prose.
+ *   - Quote normalization via {@link findActualString} — verbatim port from
+ *     AgenC utils.ts. Smart quotes normalize so a model can match against
+ *     typographic prose; dashes and non-ASCII spaces remain exact.
  *   - `old_string === new_string` is rejected with the verbatim
  *     AgenC error.
  *   - `.ipynb` files are rejected with a notebook-tool hint.
@@ -50,7 +50,6 @@ import type {
 import { buildFileMutationMetadata } from "../result-metadata.js";
 import {
   getSessionReadSnapshot,
-  hasSessionRead,
   recordSessionRead,
   resolveSessionId,
   safePathAllowingSessionPlanFile,
@@ -99,34 +98,23 @@ const RIGHT_SINGLE_CURLY_QUOTE = "’";
 const LEFT_DOUBLE_CURLY_QUOTE = "“";
 const RIGHT_DOUBLE_CURLY_QUOTE = "”";
 
-// Em-dash, en-dash, and other Unicode dashes that often appear in copy
-// from typography-aware editors. Normalized to ASCII `-` so a model
-// pasting straight ASCII can still match.
-const UNICODE_DASH_RE = /[‐‑‒–—―−]/gu;
-// NBSP and friends. Normalized to ASCII space.
-const UNICODE_SPACE_RE = /[  -   　]/gu;
-
 /**
- * Normalize curly quotes, Unicode dashes, and exotic spaces to their
- * ASCII equivalents. Lifted from the upstream `normalizeQuotes` helper,
- * extended with dash/space passes so a model whose `old_string` is
- * pure ASCII can still match against typographic file content.
+ * Normalize curly quotes to their ASCII equivalents. Lifted from the
+ * upstream `normalizeQuotes` helper.
  */
 function normalizeQuotes(str: string): string {
   return str
     .replaceAll(LEFT_SINGLE_CURLY_QUOTE, "'")
     .replaceAll(RIGHT_SINGLE_CURLY_QUOTE, "'")
     .replaceAll(LEFT_DOUBLE_CURLY_QUOTE, '"')
-    .replaceAll(RIGHT_DOUBLE_CURLY_QUOTE, '"')
-    .replace(UNICODE_DASH_RE, "-")
-    .replace(UNICODE_SPACE_RE, " ");
+    .replaceAll(RIGHT_DOUBLE_CURLY_QUOTE, '"');
 }
 
 /**
  * Verbatim port of the upstream `findActualString` helper. When
  * `searchString` is not literally present in `fileContent`, retry with
- * a quote/dash/space-normalized comparison and return the actual byte
- * range from the file at the matching offset.
+ * a quote-normalized comparison and return the actual byte range from
+ * the file at the matching offset.
  *
  * Returns `null` when no match exists under either pass.
  */
@@ -134,7 +122,14 @@ export function findActualString(
   fileContent: string,
   searchString: string,
 ): string | null {
-  return findNormalizedMatches(fileContent, searchString)[0]?.actualOldString ?? null;
+  if (fileContent.includes(searchString)) {
+    return searchString;
+  }
+  const normalizedSearch = normalizeQuotes(searchString);
+  const normalizedFile = normalizeQuotes(fileContent);
+  const idx = normalizedFile.indexOf(normalizedSearch);
+  if (idx < 0) return null;
+  return fileContent.substring(idx, idx + searchString.length);
 }
 
 function isOpeningQuoteContext(chars: readonly string[], index: number): boolean {
@@ -413,6 +408,12 @@ function comparableSessionContent(
     : undefined;
 }
 
+function isFullSessionRead(
+  snapshot: ReturnType<typeof getSessionReadSnapshot>,
+): boolean {
+  return snapshot?.viewKind === "full" && snapshot.isPartialView !== true;
+}
+
 async function writeFileCreatingParents(
   absolutePath: string,
   content: string,
@@ -464,33 +465,45 @@ async function snapshotPostWrite(
   });
 }
 
-interface NormalizedMatch {
-  readonly start: number;
-  readonly end: number;
-  readonly actualOldString: string;
-}
-
-function findNormalizedMatches(
+function applyEdit(
   fileContent: string,
   oldString: string,
-): NormalizedMatch[] {
-  if (oldString === "") return [];
-  const normalizedSearch = normalizeQuotes(oldString);
-  if (normalizedSearch === "") return [];
+  newString: string,
+  replaceAll: boolean,
+): { updated: string; replacements: number } {
+  let search = oldString;
+  // Donor parity: deleting a string that appears before a newline removes
+  // that following newline too. This is deliberately substring-based, so
+  // inline `oldString + "\n"` matches join the surrounding lines.
+  const stripTrailingNewline =
+    newString === "" &&
+    !oldString.endsWith("\n") &&
+    fileContent.includes(`${oldString}\n`);
+  if (stripTrailingNewline) search = `${oldString}\n`;
 
-  const normalizedFile = normalizeQuotes(fileContent);
-  const matches: NormalizedMatch[] = [];
+  const updated = replaceAll
+    ? fileContent.replaceAll(search, () => newString)
+    : fileContent.replace(search, () => newString);
+  return {
+    updated,
+    replacements: countReplacementOccurrences(fileContent, search, replaceAll),
+  };
+}
+
+function countReplacementOccurrences(
+  fileContent: string,
+  search: string,
+  replaceAll: boolean,
+): number {
+  if (search === "") return 0;
+  if (!replaceAll) return fileContent.includes(search) ? 1 : 0;
+  let count = 0;
   let from = 0;
   while (true) {
-    const idx = normalizedFile.indexOf(normalizedSearch, from);
-    if (idx < 0) return matches;
-    const end = idx + oldString.length;
-    matches.push({
-      start: idx,
-      end,
-      actualOldString: fileContent.substring(idx, end),
-    });
-    from = idx + normalizedSearch.length;
+    const idx = fileContent.indexOf(search, from);
+    if (idx < 0) return count;
+    count += 1;
+    from = idx + search.length;
   }
 }
 
@@ -500,57 +513,40 @@ function applyValidatedEdit(
   newString: string,
   replaceAll: boolean,
 ): { updated: string; replacements: number } | { error: string } {
-  const matches = findNormalizedMatches(fileContent, oldString);
-  if (matches.length === 0) {
+  const actualOldString = findActualString(fileContent, oldString);
+  if (actualOldString === null) {
     return {
       error: `String to replace not found in file.\nString: ${oldString}`,
     };
   }
 
-  if (!replaceAll && matches.length > 1) {
+  let matches = 0;
+  let from = 0;
+  while (true) {
+    const idx = fileContent.indexOf(actualOldString, from);
+    if (idx < 0) break;
+    matches += 1;
+    from = idx + actualOldString.length;
+    if (!replaceAll && matches > 1) break;
+  }
+  if (matches === 0) {
     return {
-      error: `Found ${matches.length} matches of the string to replace, but replace_all is false. To replace all occurrences, set replace_all to true. To replace only one occurrence, please provide more context to uniquely identify the instance.\nString: ${oldString}`,
+      error: `String to replace not found in file.\nString: ${oldString}`,
+    };
+  }
+  if (!replaceAll && matches > 1) {
+    return {
+      error: `Found ${matches} matches of the string to replace, but replace_all is false. To replace all occurrences, set replace_all to true. To replace only one occurrence, please provide more context to uniquely identify the instance.\nString: ${oldString}`,
     };
   }
 
-  // Donor parity: when deleting a string and any match is followed by a
-  // newline, replacements target `old_string + "\n"` and leave inline/final
-  // occurrences untouched.
-  const stripTrailingNewline =
-    newString === "" &&
-    !oldString.endsWith("\n") &&
-    matches.some((match) => fileContent.startsWith("\n", match.end));
-  const selectedMatches = replaceAll
-    ? stripTrailingNewline
-      ? matches.filter((match) => fileContent.startsWith("\n", match.end))
-      : matches
-    : matches.slice(0, 1);
+  const actualNewString = preserveQuoteStyle(
+    oldString,
+    actualOldString,
+    newString,
+  );
 
-  let updated = "";
-  let cursor = 0;
-  let replacements = 0;
-  for (const match of selectedMatches) {
-    if (match.start < cursor) continue;
-    const end =
-      stripTrailingNewline && fileContent.startsWith("\n", match.end)
-        ? match.end + 1
-        : match.end;
-    const actualNewString = preserveQuoteStyle(
-      oldString,
-      match.actualOldString,
-      newString,
-    );
-    updated += fileContent.slice(cursor, match.start);
-    updated += actualNewString;
-    cursor = end;
-    replacements += 1;
-  }
-  updated += fileContent.slice(cursor);
-
-  return {
-    updated,
-    replacements,
-  };
+  return applyEdit(fileContent, actualOldString, actualNewString, replaceAll);
 }
 
 /**
@@ -736,50 +732,17 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         );
       }
 
-      // File exists + empty old_string. Verbatim from FileEditTool.ts:248-264.
-      if (old_string === "") {
-        if (snapshot.content.trim() !== "") {
-          return errorResult("Cannot create new file - file already exists.");
-        }
-        // Empty file + empty old_string → write new_string.
-        try {
-          await writeFilePreservingSnapshot(
-            absoluteFilePath,
-            new_string,
-            snapshot,
-          );
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          return errorResult(`Failed to write file: ${message}`);
-        }
-        await snapshotPostWrite(
-          resolveSessionId(rawArgs),
-          absoluteFilePath,
-          new_string,
-        );
-        notifyLspFileChanged(absoluteFilePath, new_string);
-        return {
-          content: successText(file_path, false),
-          metadata: buildFileMutationMetadata({
-            filePath: file_path,
-            operation: "edit",
-            beforeText: snapshot.content,
-            afterText: new_string,
-            replacements: 1,
-          }),
-        };
-      }
-
-      // Read-before-write enforcement. User-initiated `FileRead`
-      // calls satisfy the gate even when they use offset/limit, matching
-      // AgenC's gate semantics. AgenC does not currently seed
-      // auto-injected processed content into this state.
+      // Read-before-write enforcement. Existing files require a full read
+      // snapshot; partial offset/limit reads do not authorize edits.
       //
-      // Skipped when no sessionId was injected (headless / unit-test
-      // path) so unit tests don't have to fake a session lifecycle.
+      // Skipped when no sessionId was injected (headless / unit-test path) so
+      // unit tests don't have to fake a session lifecycle.
       const sessionId = resolveSessionId(rawArgs);
+      let recordedSnapshot: ReturnType<typeof getSessionReadSnapshot> =
+        undefined;
       if (sessionId !== undefined) {
-        if (!hasSessionRead(sessionId, absoluteFilePath)) {
+        recordedSnapshot = getSessionReadSnapshot(sessionId, absoluteFilePath);
+        if (!isFullSessionRead(recordedSnapshot)) {
           return errorResult(READ_BEFORE_WRITE_ERROR);
         }
       }
@@ -790,10 +753,6 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       // timestamp is older than the current mtime, an external mutation
       // happened and the model's `old_string` may be stale.
       if (sessionId !== undefined) {
-        const recordedSnapshot = getSessionReadSnapshot(
-          sessionId,
-          absoluteFilePath,
-        );
         const recordedTs = recordedSnapshot?.timestamp;
         if (
           typeof recordedTs === "number" &&
@@ -812,6 +771,37 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
             return errorResult(FILE_UNEXPECTEDLY_MODIFIED_ERROR);
           }
         }
+      }
+
+      // File exists + empty old_string. Existing empty files still require the
+      // full-read and stale-read gates above; only nonexistent creates are
+      // exempt.
+      if (old_string === "") {
+        if (snapshot.content.trim() !== "") {
+          return errorResult("Cannot create new file - file already exists.");
+        }
+        try {
+          await writeFilePreservingSnapshot(
+            absoluteFilePath,
+            new_string,
+            snapshot,
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return errorResult(`Failed to write file: ${message}`);
+        }
+        await snapshotPostWrite(sessionId, absoluteFilePath, new_string);
+        notifyLspFileChanged(absoluteFilePath, new_string);
+        return {
+          content: successText(file_path, false),
+          metadata: buildFileMutationMetadata({
+            filePath: file_path,
+            operation: "edit",
+            beforeText: snapshot.content,
+            afterText: new_string,
+            replacements: 1,
+          }),
+        };
       }
 
       const applied = applyValidatedEdit(
@@ -1022,49 +1012,19 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
             `edits[${emptyOldStringIndex}].old_string cannot be empty in a multi-edit batch.`,
           );
         }
-        if (snapshot.content.trim() !== "") {
-          return errorResult("Cannot create new file - file already exists.");
-        }
-        try {
-          await writeFilePreservingSnapshot(
-            absoluteFilePath,
-            firstEdit.new_string,
-            snapshot,
-          );
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          return errorResult(`Failed to write file: ${message}`);
-        }
-        await snapshotPostWrite(
-          resolveSessionId(rawArgs),
-          absoluteFilePath,
-          firstEdit.new_string,
-        );
-        notifyLspFileChanged(absoluteFilePath, firstEdit.new_string);
-        return {
-          content: multiEditSuccessText(file_path, 1, 1),
-          metadata: buildFileMutationMetadata({
-            filePath: file_path,
-            operation: "edit",
-            beforeText: snapshot.content,
-            afterText: firstEdit.new_string,
-            replacements: 1,
-          }),
-        };
       }
 
       const sessionId = resolveSessionId(rawArgs);
+      let recordedSnapshot: ReturnType<typeof getSessionReadSnapshot> =
+        undefined;
       if (sessionId !== undefined) {
-        if (!hasSessionRead(sessionId, absoluteFilePath)) {
+        recordedSnapshot = getSessionReadSnapshot(sessionId, absoluteFilePath);
+        if (!isFullSessionRead(recordedSnapshot)) {
           return errorResult(READ_BEFORE_WRITE_ERROR);
         }
       }
 
       if (sessionId !== undefined) {
-        const recordedSnapshot = getSessionReadSnapshot(
-          sessionId,
-          absoluteFilePath,
-        );
         const recordedTs = recordedSnapshot?.timestamp;
         if (
           typeof recordedTs === "number" &&
@@ -1079,6 +1039,34 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
             return errorResult(FILE_UNEXPECTEDLY_MODIFIED_ERROR);
           }
         }
+      }
+
+      if (emptyOldStringIndex >= 0) {
+        if (snapshot.content.trim() !== "") {
+          return errorResult("Cannot create new file - file already exists.");
+        }
+        try {
+          await writeFilePreservingSnapshot(
+            absoluteFilePath,
+            firstEdit.new_string,
+            snapshot,
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return errorResult(`Failed to write file: ${message}`);
+        }
+        await snapshotPostWrite(sessionId, absoluteFilePath, firstEdit.new_string);
+        notifyLspFileChanged(absoluteFilePath, firstEdit.new_string);
+        return {
+          content: multiEditSuccessText(file_path, 1, 1),
+          metadata: buildFileMutationMetadata({
+            filePath: file_path,
+            operation: "edit",
+            beforeText: snapshot.content,
+            afterText: firstEdit.new_string,
+            replacements: 1,
+          }),
+        };
       }
 
       let updated = snapshot.content;

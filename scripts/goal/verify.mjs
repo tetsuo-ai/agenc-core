@@ -65,6 +65,7 @@ const MAX_ALLOWED_BASELINE = 22;
 //
 // Evidence shape:
 //   files: string[] | { globUnder, matching, minCount?, optional? }[]
+//   filesAbsent: string[]
 //   grepPresent: { pattern, scope }[]
 //   grepNotPresent: { pattern, scope }[]
 //   tests: string[] | { globUnder, matching, minCount?, optional? }[]
@@ -1216,6 +1217,39 @@ const ITEM_EVIDENCE = {
       {
         pattern: "tui/components/dialogs/RateLimitMessage\\.js",
         scope: "runtime/src/agenc/upstream/components/messages/AssistantTextMessage.tsx",
+      },
+    ],
+  },
+  "T-21": {
+    files: [
+      "runtime/src/tui/components/compact/CompactSummary.tsx",
+      "runtime/src/tui/components/compact/CompactBoundaryMessage.tsx",
+      "runtime/src/tui/components/compact/compact-rendering.test.tsx",
+      "parity/T-21-parity.json",
+    ],
+    filesAbsent: [
+      "runtime/src/tui/components/CompactSummary.tsx",
+      "runtime/src/tui/components/messages/CompactBoundaryMessage.tsx",
+    ],
+    tests: [
+      "runtime/src/tui/components/compact/compact-rendering.test.tsx",
+    ],
+    grepPresent: [
+      {
+        pattern: "\\./compact/CompactSummary",
+        scope: "runtime/src/tui/components/Message.tsx",
+      },
+      {
+        pattern: "\\./compact/CompactBoundaryMessage",
+        scope: "runtime/src/tui/components/Message.tsx",
+      },
+      {
+        pattern: "T-21 Compact Summary",
+        scope: "runtime/src/tui/components/PARITY.md",
+      },
+      {
+        pattern: "CompactBoundaryMessage\\.tsx",
+        scope: "parity/T-21-parity.json",
       },
     ],
   },
@@ -7237,6 +7271,11 @@ function evaluateEvidence(itemId, evidence) {
         const res = checkFilesGlob(f);
         if (!res.ok) failures.push(res.reason);
       }
+    }
+  }
+  if (evidence.filesAbsent) {
+    for (const f of evidence.filesAbsent) {
+      if (checkFileExists(f)) failures.push(`file should be absent: ${f}`);
     }
   }
   if (evidence.grepPresent) {
