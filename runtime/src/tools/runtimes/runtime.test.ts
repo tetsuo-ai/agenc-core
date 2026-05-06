@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -16,7 +17,12 @@ import type { Tool } from "../types.js";
 import { EXCLUSIVE, SHARED_READ } from "../concurrency.js";
 import { createApplyPatchTool } from "../apply-patch/tool.js";
 import { createExecCommandTool } from "../system/exec-command.js";
+import {
+  createFileEditTool,
+  createFileMultiEditTool,
+} from "../system/file-edit.js";
 import { createFileWriteTool } from "../system/file-write.js";
+import { recordSessionRead } from "../system/filesystem.js";
 import { createWriteStdinTool } from "../system/write-stdin.js";
 import {
   enforceRuntimeSandboxAttempt,
@@ -1364,6 +1370,175 @@ describe("tools/runtimes", () => {
     expect(allowed.isError).toBeFalsy();
     expect(existsSync(allowedPath)).toBe(true);
     expect(readFileSync(allowedPath, "utf8")).toBe("created by runtime sandbox\n");
+  });
+
+  test("actual Edit and MultiEdit handlers obey per-attempt file sandbox preflight", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-runtime-edit-"));
+    const outsideRoot = mkdtempSync(join(tmpdir(), "agenc-runtime-edit-outside-"));
+    const sessionId = "runtime-edit-session";
+    const router = new ToolRouter([
+      {
+        tool: createFileEditTool({ allowedPaths: [workspaceRoot] }),
+        supportsParallelToolCalls: false,
+      },
+      {
+        tool: createFileMultiEditTool({ allowedPaths: [workspaceRoot] }),
+        supportsParallelToolCalls: false,
+      },
+    ]);
+    const session = {
+      conversationId: sessionId,
+      eventLog: new EventLog(),
+      services: {},
+    } as never;
+    const dispatch = (
+      call: LLMToolCall,
+      sandboxMode: "read_only" | "workspace_write",
+      subId: string,
+    ) =>
+      router.dispatchModelToolCall(call, {
+        session,
+        turn: {
+          subId,
+          cwd: workspaceRoot,
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: sandboxMode },
+        } as never,
+        tracker: tracker() as never,
+        approvalPolicy: "never",
+        sandboxMode,
+      });
+    const recordRead = (filePath: string, content: string): void => {
+      const fileStats = statSync(filePath);
+      recordSessionRead(sessionId, filePath, {
+        content,
+        rawContent: content,
+        timestamp: fileStats.mtimeMs,
+        viewKind: "full",
+      });
+    };
+
+    const readOnlyEditPath = join(workspaceRoot, "read-only-edit.txt");
+    writeFileSync(readOnlyEditPath, "alpha\n");
+    recordRead(readOnlyEditPath, "alpha\n");
+    const readOnlyEdit = await dispatch(
+      {
+        id: "call-edit-read-only",
+        name: "Edit",
+        arguments: JSON.stringify({
+          file_path: "read-only-edit.txt",
+          old_string: "alpha",
+          new_string: "beta",
+        }),
+      },
+      "read_only",
+      "turn-edit-read-only",
+    );
+    expect(readOnlyEdit.isError).toBe(true);
+    expect(readOnlyEdit.content).toContain("read_only blocked");
+    expect(readFileSync(readOnlyEditPath, "utf8")).toBe("alpha\n");
+
+    const readOnlyMultiPath = join(workspaceRoot, "read-only-multi.txt");
+    writeFileSync(readOnlyMultiPath, "one\ntwo\n");
+    recordRead(readOnlyMultiPath, "one\ntwo\n");
+    const readOnlyMulti = await dispatch(
+      {
+        id: "call-multiedit-read-only",
+        name: "MultiEdit",
+        arguments: JSON.stringify({
+          file_path: "read-only-multi.txt",
+          edits: [{ old_string: "one", new_string: "uno" }],
+        }),
+      },
+      "read_only",
+      "turn-multiedit-read-only",
+    );
+    expect(readOnlyMulti.isError).toBe(true);
+    expect(readOnlyMulti.content).toContain("read_only blocked");
+    expect(readFileSync(readOnlyMultiPath, "utf8")).toBe("one\ntwo\n");
+
+    const outsideEditPath = join(outsideRoot, "outside-edit.txt");
+    writeFileSync(outsideEditPath, "outside alpha\n");
+    recordRead(outsideEditPath, "outside alpha\n");
+    const outsideEdit = await dispatch(
+      {
+        id: "call-edit-outside",
+        name: "Edit",
+        arguments: JSON.stringify({
+          file_path: outsideEditPath,
+          old_string: "alpha",
+          new_string: "beta",
+        }),
+      },
+      "workspace_write",
+      "turn-edit-outside",
+    );
+    expect(outsideEdit.isError).toBe(true);
+    expect(outsideEdit.content).toContain("workspace_write blocked");
+    expect(readFileSync(outsideEditPath, "utf8")).toBe("outside alpha\n");
+
+    const outsideMultiPath = join(outsideRoot, "outside-multi.txt");
+    writeFileSync(outsideMultiPath, "outside one\noutside two\n");
+    recordRead(outsideMultiPath, "outside one\noutside two\n");
+    const outsideMulti = await dispatch(
+      {
+        id: "call-multiedit-outside",
+        name: "MultiEdit",
+        arguments: JSON.stringify({
+          file_path: outsideMultiPath,
+          edits: [{ old_string: "outside one", new_string: "outside uno" }],
+        }),
+      },
+      "workspace_write",
+      "turn-multiedit-outside",
+    );
+    expect(outsideMulti.isError).toBe(true);
+    expect(outsideMulti.content).toContain("workspace_write blocked");
+    expect(readFileSync(outsideMultiPath, "utf8")).toBe(
+      "outside one\noutside two\n",
+    );
+
+    const insideEditPath = join(workspaceRoot, "inside-edit.txt");
+    writeFileSync(insideEditPath, "inside alpha\n");
+    recordRead(insideEditPath, "inside alpha\n");
+    const insideEdit = await dispatch(
+      {
+        id: "call-edit-inside",
+        name: "Edit",
+        arguments: JSON.stringify({
+          file_path: "inside-edit.txt",
+          old_string: "alpha",
+          new_string: "beta",
+        }),
+      },
+      "workspace_write",
+      "turn-edit-inside",
+    );
+    expect(insideEdit.isError).toBeFalsy();
+    expect(readFileSync(insideEditPath, "utf8")).toBe("inside beta\n");
+
+    const insideMultiPath = join(workspaceRoot, "inside-multi.txt");
+    writeFileSync(insideMultiPath, "inside one\ninside two\n");
+    recordRead(insideMultiPath, "inside one\ninside two\n");
+    const insideMulti = await dispatch(
+      {
+        id: "call-multiedit-inside",
+        name: "MultiEdit",
+        arguments: JSON.stringify({
+          file_path: "inside-multi.txt",
+          edits: [
+            { old_string: "inside one", new_string: "inside uno" },
+            { old_string: "inside two", new_string: "inside dos" },
+          ],
+        }),
+      },
+      "workspace_write",
+      "turn-multiedit-inside",
+    );
+    expect(insideMulti.isError).toBeFalsy();
+    expect(readFileSync(insideMultiPath, "utf8")).toBe(
+      "inside uno\ninside dos\n",
+    );
   });
 
   test("actual apply_patch handler obeys per-attempt workspace-write preflight", async () => {

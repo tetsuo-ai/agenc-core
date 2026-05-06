@@ -1439,7 +1439,54 @@ const ITEM_EVIDENCE = {
     tests: [{ globUnder: "runtime/src/permissions", matching: /permission.?mode.*\.test/i }],
   },
   "PE-05": {
-    grepPresent: [{ pattern: "sandbox", scope: "runtime/src/permissions" }],
+    files: [
+      "runtime/src/tools/execution.ts",
+      "runtime/src/tools/runtimes/sandboxing.ts",
+      "runtime/src/tools/runtimes/shell.ts",
+      "runtime/src/tools/runtimes/unified-exec.ts",
+      "runtime/src/tools/system/exec-command.ts",
+      "runtime/src/tools/system/write-stdin.ts",
+      "runtime/src/tools/runtimes/runtime.test.ts",
+    ],
+    tests: ["runtime/src/tools/runtimes/runtime.test.ts"],
+    grepPresent: [
+      {
+        pattern: "attachToolRuntimeContext",
+        scope: "runtime/src/tools/execution.ts",
+      },
+      {
+        pattern: "enforceRuntimeSandboxAttempt\\(\\{",
+        scope: "runtime/src/tools/execution.ts",
+      },
+      {
+        pattern: "runtimeSandboxForExec",
+        scope: "runtime/src/tools/system/exec-command.ts",
+      },
+      {
+        pattern: "manager\\.execCommand",
+        scope: "runtime/src/tools/system/exec-command.ts",
+      },
+      {
+        pattern: "runtimeSandbox !== undefined \\? \\{ runtimeSandbox \\}",
+        scope: "runtime/src/tools/system/exec-command.ts",
+      },
+      {
+        pattern: "runtimeSandboxForExec",
+        scope: "runtime/src/tools/system/write-stdin.ts",
+      },
+      {
+        pattern: "manager\\.writeStdin",
+        scope: "runtime/src/tools/system/write-stdin.ts",
+      },
+      {
+        pattern: "runtimeSandbox !== undefined \\? \\{ runtimeSandbox \\}",
+        scope: "runtime/src/tools/system/write-stdin.ts",
+      },
+      {
+        pattern: "actual Edit and MultiEdit handlers obey per-attempt file sandbox preflight",
+        scope: "runtime/src/tools/runtimes/runtime.test.ts",
+      },
+    ],
   },
   "PE-06": {
     files: [{ globUnder: "runtime/src/hooks", matching: /\.tsx?$/, minCount: 1 }],
